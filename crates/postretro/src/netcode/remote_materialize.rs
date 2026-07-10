@@ -126,6 +126,7 @@ mod tests {
 
         materialize_armed_remote_enemy(
             &RemoteEnemyMaterialize {
+                network_id: postretro_net::wire::NetworkId(7),
                 entity_id: id,
                 entity_class: "decraniated_mob".to_string(),
                 initial_animation_state: None,
@@ -176,6 +177,7 @@ mod tests {
 
         materialize_armed_remote_enemy(
             &RemoteEnemyMaterialize {
+                network_id: postretro_net::wire::NetworkId(7),
                 entity_id: id,
                 entity_class: "no_such_class".to_string(),
                 initial_animation_state: None,
@@ -205,6 +207,7 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let id = spawn_transform_only(&mut reg);
         let request = RemoteEnemyMaterialize {
+            network_id: postretro_net::wire::NetworkId(7),
             entity_id: id,
             entity_class: "decraniated_mob".to_string(),
             initial_animation_state: None,

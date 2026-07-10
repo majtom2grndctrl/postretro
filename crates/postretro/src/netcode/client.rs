@@ -77,6 +77,15 @@ const REFRESH_REASON_LEVEL_RELOAD: u8 = 2;
 /// the cadence covers the entity falling out of and back into the pending set.
 const REPAIR_RESEND_INTERVAL_MS: f32 = 200.0;
 
+/// Descriptor-immutable locomotion reference data for a remote enemy. The host
+/// replicates only its changing pose and mesh state; the client reads this from the
+/// shared descriptor table when that remote is materialized.
+#[derive(Debug, Clone)]
+struct RemoteEnemyWalkPlayback {
+    move_speed: f32,
+    walk_state: String,
+}
+
 /// A wire payload the client received but deliberately did not apply, recorded as a
 /// typed diagnostic rather than silently dropped. Phase 2's dumb mover is
 /// `Transform`-only; a `PlayerMovementState` payload on an unmapped full baseline
@@ -142,6 +151,10 @@ pub(crate) struct ClientReplication {
     /// entity's initial pose at spawn — the interpolation sampler drives the visible
     /// pose every frame thereafter.
     interp: RemoteInterpolationBuffer,
+    /// Descriptor-derived walk-rate references for remote AI enemies. This stays
+    /// beside the interpolation buffers because it is consumed by the same
+    /// per-frame client presentation step, but never crosses the wire.
+    remote_enemy_walk_playback: HashMap<NetworkId, RemoteEnemyWalkPlayback>,
     /// The local predicted pawn's `NetworkId`, once a `local_player` record has armed
     /// it (M15 Phase 3 Task 5). The local pawn is driven by client-side prediction +
     /// reconciliation, NOT the remote interpolation path: it is excluded from the
@@ -283,6 +296,9 @@ pub(crate) struct LocalReconcileInput {
 /// materialization and is never a remote enemy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RemoteEnemyMaterialize {
+    /// Host-assigned identity for the mapped remote entity. The descriptor-aware
+    /// receive glue uses this to cache its immutable locomotion reference data.
+    pub(crate) network_id: NetworkId,
     /// The mapped `EntityId` the spawn produced (Transform-only at this point).
     pub(crate) entity_id: EntityId,
     /// The descriptor class the host stamped on the wire. The caller resolves this to
@@ -388,6 +404,7 @@ impl ClientReplication {
         self.baselines.clear();
         self.pending_repairs.clear();
         self.interp = RemoteInterpolationBuffer::default();
+        self.remote_enemy_walk_playback.clear();
         self.local_pawn = None;
         self.mover_network_ids.clear();
         self.mover_history.clear();
@@ -635,6 +652,7 @@ impl ClientReplication {
                 }
                 self.maybe_surface_remote_enemy_materialize(
                     registry,
+                    network_id,
                     existing,
                     local_player,
                     entity_class,
@@ -734,6 +752,7 @@ impl ClientReplication {
                 if !local_player {
                     if let Some(class) = entity_class {
                         outcome.remote_enemies.push(RemoteEnemyMaterialize {
+                            network_id,
                             entity_id: id,
                             entity_class: class.to_string(),
                             initial_animation_state: first_mesh_animation_state(components),
@@ -796,6 +815,7 @@ impl ClientReplication {
         }
         self.maybe_surface_remote_enemy_materialize(
             registry,
+            network_id,
             id,
             local_player,
             entity_class,
@@ -813,6 +833,7 @@ impl ClientReplication {
     fn maybe_surface_remote_enemy_materialize(
         &self,
         registry: &EntityRegistry,
+        network_id: NetworkId,
         entity_id: EntityId,
         local_player: bool,
         entity_class: Option<&str>,
@@ -832,6 +853,7 @@ impl ClientReplication {
             return;
         }
         outcome.remote_enemies.push(RemoteEnemyMaterialize {
+            network_id,
             entity_id,
             entity_class: class.to_string(),
             initial_animation_state: first_mesh_animation_state(components),
@@ -877,6 +899,7 @@ impl ClientReplication {
         // buffered for it (a record applied before the arming snapshot seeded one).
         self.local_pawn = Some(network_id);
         self.interp.forget(network_id);
+        self.remote_enemy_walk_playback.remove(&network_id);
         self.mover_network_ids.remove(&network_id);
         outcome.armed_local_pawn = Some(ArmedLocalPawn {
             network_id,
@@ -952,6 +975,7 @@ impl ClientReplication {
         // Drop the entity's interpolation buffer; a later re-spawn under a fresh
         // NetworkId starts with an empty buffer.
         self.interp.forget(network_id);
+        self.remote_enemy_walk_playback.remove(&network_id);
         self.mover_network_ids.remove(&network_id);
         // If the local predicted pawn despawned, forget it: prediction re-arms off a
         // future `local_player` baseline (a fresh NetworkId).
@@ -1229,6 +1253,7 @@ impl ClientReplication {
         &mut self,
         registry: &mut EntityRegistry,
         render_server_tick: f64,
+        frame_anim_time: f64,
     ) -> InterpolationSampleStats {
         let mut stats = InterpolationSampleStats::default();
         // Collect (network_id, entity_id) first to avoid borrowing `self.map` while
@@ -1251,6 +1276,13 @@ impl ClientReplication {
             };
             let _ = registry.set_presentation_transform(entity_id, pose.transform);
             stats.presented += 1;
+            self.update_remote_enemy_walk_playback_rate(
+                registry,
+                network_id,
+                entity_id,
+                pose.speed_xz,
+                frame_anim_time,
+            );
             // Diagnostic: a HeldNewest after sustained starvation is the visible
             // freeze the buffer falls back to; logged sparingly at trace.
             if matches!(pose.source, PoseSource::HeldNewest) {
@@ -1267,6 +1299,65 @@ impl ClientReplication {
             }
         }
         stats
+    }
+
+    /// Record (or clear) the immutable descriptor data used to derive a remote
+    /// enemy's walk playback rate. Called by descriptor-aware receive glue, while
+    /// all per-frame registry writes remain in [`Self::sample_into_registry`].
+    pub(crate) fn cache_remote_enemy_walk_playback(
+        &mut self,
+        network_id: NetworkId,
+        reference: Option<(f32, String)>,
+    ) {
+        match reference {
+            Some((move_speed, walk_state)) => {
+                self.remote_enemy_walk_playback.insert(
+                    network_id,
+                    RemoteEnemyWalkPlayback {
+                        move_speed,
+                        walk_state,
+                    },
+                );
+            }
+            None => {
+                self.remote_enemy_walk_playback.remove(&network_id);
+            }
+        }
+    }
+
+    /// Apply the rate for one presented remote pose. Only an enemy whose current
+    /// mesh state is the descriptor's alert-mapped walk state receives its displayed
+    /// XZ speed; every other state deliberately rests at rate 1.
+    fn update_remote_enemy_walk_playback_rate(
+        &self,
+        registry: &mut EntityRegistry,
+        network_id: NetworkId,
+        entity_id: EntityId,
+        speed_xz: f32,
+        frame_anim_time: f64,
+    ) {
+        let Some(reference) = self.remote_enemy_walk_playback.get(&network_id) else {
+            return;
+        };
+        let Ok(mut mesh) = registry.get_component::<MeshComponent>(entity_id).cloned() else {
+            return;
+        };
+        let previous_mesh = mesh.clone();
+        let Some(animation) = mesh.animation.as_mut() else {
+            return;
+        };
+        let raw_ratio =
+            if animation.current_state == reference.walk_state && reference.move_speed > 0.0 {
+                speed_xz / reference.move_speed
+            } else {
+                1.0
+            };
+        animation.update_playback_rate(raw_ratio, frame_anim_time);
+        // The animation helper's epsilon guard avoids rebasing on every frame.
+        // Preserve that win by leaving the registry component untouched on a no-op.
+        if mesh != previous_mesh {
+            let _ = registry.set_component(entity_id, mesh);
+        }
     }
 
     /// Whether `network_id` is awaiting a baseline refresh (tests / diagnostics).
@@ -1574,6 +1665,9 @@ mod tests {
     use glam::Quat;
     use glam::Vec3;
     use postretro_entities::Transform;
+    use postretro_entities::components::mesh::{
+        RATE_MAX, RATE_MIN, resolve_pending_animation_stamps,
+    };
     use postretro_net::wire::{
         WireGroundRef, WireKinematicMoverState, WireMeshAnimationState, WireMovementState,
         WirePlayerMovementState, WireTransform,
@@ -1677,6 +1771,7 @@ mod tests {
         };
         let mut states = HashMap::new();
         states.insert("idle".to_string(), unresolved("Idle"));
+        states.insert("locomotion".to_string(), unresolved("Locomotion"));
         states.insert("attack".to_string(), unresolved("Attack"));
         MeshComponent::animated(
             "models/remote_enemy/scene.gltf".to_string(),
@@ -2640,7 +2735,7 @@ mod tests {
         // First present at render tick 102 -> interpolated x = 2.0. The pose must be
         // identical at alpha = 0.0, 0.5, and 1.0: the buffer's resolved pose is shown
         // verbatim, never re-blended by the render alpha.
-        let stats = client.sample_into_registry(&mut registry, 102.0);
+        let stats = client.sample_into_registry(&mut registry, 102.0, 0.0);
         assert_eq!(stats.presented, 1, "one remote entity presented");
         assert_eq!(stats.held_newest, 0, "bracketed pose did not starve");
         let at_zero = registry.interpolated_transform(id, 0.0).unwrap();
@@ -2665,7 +2760,7 @@ mod tests {
         // Second present at render tick 106 -> the buffer's own trajectory advances the
         // presented pose to x = 6.0, still alpha-invariant. Continuity comes from the
         // buffer, not from the render blend carrying a prior pose.
-        let stats = client.sample_into_registry(&mut registry, 106.0);
+        let stats = client.sample_into_registry(&mut registry, 106.0, 0.0);
         assert_eq!(stats.presented, 1, "one remote entity presented");
         assert_eq!(stats.held_newest, 0, "bracketed pose did not starve");
         let next_zero = registry.interpolated_transform(id, 0.0).unwrap();
@@ -2675,6 +2770,107 @@ mod tests {
             (next_zero.position.x - next_one.position.x).abs() < EPSILON,
             "still alpha-invariant after a second present"
         );
+    }
+
+    #[test]
+    fn remote_walk_rate_tracks_presented_speed_with_continuous_rebase() {
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                100,
+                vec![full_baseline(7, 1, vec![transform_payload(0.0)])],
+            ),
+        );
+        let id = *client.map().get(&NetworkId(7)).expect("remote is mapped");
+        let mut mesh = unresolved_mesh();
+        mesh.animation
+            .as_mut()
+            .expect("animated mesh")
+            .current_state = "locomotion".into();
+        registry.set_component(id, mesh).expect("attach mesh");
+        resolve_pending_animation_stamps(&mut registry, 0.0);
+        // 60 m/s is the reference speed: the first presented segment is half-speed
+        // (5 m over 10 server ticks), then the next is full speed (10 m).
+        client.cache_remote_enemy_walk_playback(NetworkId(7), Some((60.0, "locomotion".into())));
+
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(1, 110, vec![delta(7, 1, 2, vec![transform_payload(5.0)])]),
+        );
+        client.sample_into_registry(&mut registry, 105.0, 1.0);
+        let half_speed = registry
+            .get_component::<MeshComponent>(id)
+            .expect("mesh")
+            .animation
+            .as_ref()
+            .expect("animation")
+            .clone();
+        assert!((half_speed.rate - 0.5).abs() < EPSILON);
+
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(2, 120, vec![delta(7, 2, 3, vec![transform_payload(15.0)])]),
+        );
+        let before = registry
+            .get_component::<MeshComponent>(id)
+            .expect("mesh")
+            .animation
+            .as_ref()
+            .expect("animation")
+            .scaled_elapsed(2.0);
+        client.sample_into_registry(&mut registry, 115.0, 2.0);
+        let full_speed = registry
+            .get_component::<MeshComponent>(id)
+            .expect("mesh")
+            .animation
+            .as_ref()
+            .expect("animation");
+        let expected_full_rate =
+            (10.0 / (10.0 * crate::netcode::SERVER_TICK_MICROS as f32 / 1_000_000.0) / 60.0)
+                .clamp(RATE_MIN, RATE_MAX);
+        assert!((full_speed.rate - expected_full_rate).abs() < EPSILON);
+        assert!(
+            (full_speed.scaled_elapsed(2.0) - before).abs() < f64::EPSILON,
+            "the segment-rate change must not jump clip-local time"
+        );
+    }
+
+    #[test]
+    fn remote_non_walk_state_leaves_animation_component_unchanged() {
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                100,
+                vec![full_baseline(7, 1, vec![transform_payload(0.0)])],
+            ),
+        );
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(1, 110, vec![delta(7, 1, 2, vec![transform_payload(5.0)])]),
+        );
+        let id = *client.map().get(&NetworkId(7)).expect("remote is mapped");
+        let mut mesh = unresolved_mesh();
+        mesh.animation
+            .as_mut()
+            .expect("animated mesh")
+            .current_state = "attack".into();
+        registry.set_component(id, mesh).expect("attach mesh");
+        resolve_pending_animation_stamps(&mut registry, 0.0);
+        client.cache_remote_enemy_walk_playback(NetworkId(7), Some((60.0, "locomotion".into())));
+
+        let before = registry
+            .get_component::<MeshComponent>(id)
+            .expect("mesh")
+            .clone();
+        client.sample_into_registry(&mut registry, 105.0, 1.0);
+        let after = registry.get_component::<MeshComponent>(id).expect("mesh");
+        assert_eq!(after, &before, "non-walk state must not rebase or write");
     }
 
     // --- Starvation after sampling: a Transform-only remote (no velocity) holds its
@@ -2697,7 +2893,7 @@ mod tests {
             client.presented_source(NetworkId(7), 200.0),
             Some(PoseSource::HeldNewest)
         );
-        let stats = client.sample_into_registry(&mut registry, 200.0);
+        let stats = client.sample_into_registry(&mut registry, 200.0, 0.0);
         assert_eq!(stats.presented, 1, "one remote entity presented");
         assert_eq!(stats.held_newest, 1, "held-newest starvation is reported");
         assert_eq!(
@@ -2735,7 +2931,7 @@ mod tests {
         );
         client.apply_snapshot(&mut registry, &snapshot(1, 110, vec![]));
 
-        let stats = client.sample_into_registry(&mut registry, 200.0);
+        let stats = client.sample_into_registry(&mut registry, 200.0, 0.0);
         assert_eq!(stats.presented, 1, "stationary remote still presents");
         assert_eq!(stats.held_newest, 1, "pose holds newest as expected");
         assert_eq!(
@@ -2761,7 +2957,7 @@ mod tests {
             ),
         );
 
-        let stats = client.sample_into_registry(&mut registry, 200.0);
+        let stats = client.sample_into_registry(&mut registry, 200.0, 0.0);
         assert_eq!(stats.presented, 1, "moving remote still presents");
         assert_eq!(stats.held_newest, 1, "pose holds newest after starvation");
         assert_eq!(
@@ -3119,6 +3315,7 @@ mod tests {
         assert_eq!(
             out.remote_enemies,
             vec![RemoteEnemyMaterialize {
+                network_id: NetworkId(7),
                 entity_id: id,
                 entity_class: "decraniated_mob".to_string(),
                 initial_animation_state: None,
@@ -3153,6 +3350,7 @@ mod tests {
         assert_eq!(
             out.remote_enemies,
             vec![RemoteEnemyMaterialize {
+                network_id: NetworkId(7),
                 entity_id: id,
                 entity_class: "decraniated_mob".to_string(),
                 initial_animation_state: Some("attack".to_string()),
@@ -3340,6 +3538,7 @@ mod tests {
         assert_eq!(
             rebaseline.remote_enemies,
             vec![RemoteEnemyMaterialize {
+                network_id: NetworkId(7),
                 entity_id: id,
                 entity_class: "decraniated_mob".to_string(),
                 initial_animation_state: Some("attack".to_string()),

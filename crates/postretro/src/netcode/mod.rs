@@ -985,6 +985,18 @@ pub(crate) fn client_receive_and_apply(
         // rejects the snapshot). The entity is already mapped, so it interpolates regardless
         // of whether a mesh attached. Runs before the frame renders (Game-logic stage).
         for remote in &outcome.remote_enemies {
+            // Remote AI has no local AgentComponent, so derive its walk rate from
+            // exactly the motion this client presents. The shared descriptor supplies
+            // the immutable reference speed and alert-mapped locomotion state; neither
+            // belongs on the snapshot wire format.
+            let walk_reference = descriptors
+                .iter()
+                .find(|descriptor| {
+                    descriptor.canonical_name.as_deref() == Some(remote.entity_class.as_str())
+                })
+                .and_then(|descriptor| descriptor.ai.as_ref())
+                .map(|ai| (ai.move_speed, ai.states.alert.clone()));
+            replication.cache_remote_enemy_walk_playback(remote.network_id, walk_reference);
             let materialized = remote_materialize::materialize_armed_remote_enemy(
                 remote,
                 descriptors,
@@ -1234,12 +1246,15 @@ pub(crate) fn client_decay_local_correction(endpoint: Option<&mut NetEndpoint>) 
 /// `frame_dt_secs` is the frame's wall-clock delta (the same per-frame delta the frame
 /// loop computes); it drives the framerate-independent starvation feedback so the
 /// adaptive delay's time-constant does not scale with frame rate.
+/// `frame_anim_time` is the slow-mo/freeze-gated animation clock used by mesh sampling;
+/// remote walk-rate rebases must use this exact clock for clip-time continuity.
 pub(crate) fn client_sample_interpolation(
     registry: &mut EntityRegistry,
     replication: &mut ClientReplication,
     time_sync: &ClientTimeSync,
     interpolation_delay: &mut InterpolationDelayState,
     frame_dt_secs: f64,
+    frame_anim_time: f64,
 ) {
     // No estimate yet: render at the last-applied pose until the clock initializes.
     let Some(estimated_tick) = time_sync.estimated_server_tick() else {
@@ -1249,7 +1264,7 @@ pub(crate) fn client_sample_interpolation(
     let jitter = time_sync.jitter_micros().unwrap_or(0.0);
     let render_server_tick =
         interpolation_delay.render_server_tick(estimated_tick, jitter, SERVER_TICK_MICROS);
-    let stats = replication.sample_into_registry(registry, render_server_tick);
+    let stats = replication.sample_into_registry(registry, render_server_tick, frame_anim_time);
     if stats.presented > 0 {
         interpolation_delay.observe_sampled_frame(stats.starvation_feedback > 0, frame_dt_secs);
     }

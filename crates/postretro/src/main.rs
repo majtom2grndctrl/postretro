@@ -1991,7 +1991,7 @@ impl ApplicationHandler for App {
                 // not clobber the previous/current pair this writes) and BEFORE the
                 // render stage reads entities, so the renderer stays read-only.
                 // No-op for single-player and the host.
-                self.net_sample_remote_interpolation(frame_dt);
+                self.net_sample_remote_interpolation(frame_dt, frame_anim_time);
                 self.run_client_fire_path_post_loop(
                     gameplay_snapshot.as_ref(),
                     zero_tick_fire_snapshot.as_ref(),
@@ -4540,7 +4540,7 @@ impl App {
     /// Runs after the catch-up tick loop so the stage-0 `snapshot_transforms` cannot
     /// clobber the presented pose, and before the render stage reads entities.
     /// No-op for single-player and the host (no client interpolation buffers).
-    fn net_sample_remote_interpolation(&mut self, frame_dt: f32) {
+    fn net_sample_remote_interpolation(&mut self, frame_dt: f32, frame_anim_time: f64) {
         let Some(script_ctx) = self
             .session
             .as_ref()
@@ -4567,6 +4567,7 @@ impl App {
             time_sync,
             interpolation_delay,
             f64::from(frame_dt),
+            frame_anim_time,
         );
     }
 

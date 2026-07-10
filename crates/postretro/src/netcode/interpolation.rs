@@ -246,6 +246,11 @@ pub(crate) struct TransformSample {
 pub(crate) struct PresentedPose {
     pub(crate) transform: Transform,
     pub(crate) source: PoseSource,
+    /// Horizontal speed of the motion represented by `transform`. This is the
+    /// displayed motion, rather than a host-side simulation velocity: interpolated
+    /// Transform-only enemies derive it from their bracketing samples, and held
+    /// poses report zero because the client is visibly stationary.
+    pub(crate) speed_xz: f32,
 }
 
 /// Which branch of the sample state machine produced a [`PresentedPose`].
@@ -328,6 +333,7 @@ impl EntityBuffer {
             return Some(PresentedPose {
                 transform: oldest.transform,
                 source: PoseSource::HeldOldest,
+                speed_xz: 0.0,
             });
         }
 
@@ -354,6 +360,7 @@ impl EntityBuffer {
                 return Some(PresentedPose {
                     transform: lerp_transform(&a.transform, &b.transform, alpha),
                     source: PoseSource::Interpolated,
+                    speed_xz: xz_speed_between(a, b),
                 });
             }
         }
@@ -363,6 +370,7 @@ impl EntityBuffer {
         Some(PresentedPose {
             transform: newest.transform,
             source: PoseSource::HeldNewest,
+            speed_xz: 0.0,
         })
     }
 
@@ -388,6 +396,7 @@ impl EntityBuffer {
                 PresentedPose {
                     transform: predicted,
                     source: PoseSource::Extrapolated,
+                    speed_xz: xz_speed(velocity),
                 }
             }
             // No velocity (Transform-only mover) or past the extrapolation window:
@@ -395,6 +404,7 @@ impl EntityBuffer {
             _ => PresentedPose {
                 transform: newest.transform,
                 source: PoseSource::HeldNewest,
+                speed_xz: 0.0,
             },
         }
     }
@@ -417,6 +427,23 @@ impl EntityBuffer {
         };
         transform_changed(&previous.transform, &newest.transform)
     }
+}
+
+/// Magnitude of a world-space vector projected onto the gameplay ground plane.
+fn xz_speed(vector: Vec3) -> f32 {
+    Vec3::new(vector.x, 0.0, vector.z).length()
+}
+
+/// Average horizontal speed across a pair of server-tick-stamped samples. Equal
+/// tick samples are merged on insert, but retain the zero fallback as a defensive
+/// guard against malformed in-memory test data.
+fn xz_speed_between(a: &TransformSample, b: &TransformSample) -> f32 {
+    let tick_span = b.server_tick.saturating_sub(a.server_tick);
+    if tick_span == 0 {
+        return 0.0;
+    }
+    let span_secs = tick_span as f32 * crate::netcode::SERVER_TICK_MICROS as f32 / 1_000_000.0;
+    xz_speed(b.transform.position - a.transform.position) / span_secs
 }
 
 /// Per-remote-entity interpolation buffers, keyed by `NetworkId`. Receives
@@ -843,6 +870,35 @@ mod tests {
         // A quarter of the way (tick 102.5) -> x = 2.5.
         let quarter = buf.presented_pose(id, 102.5).expect("bracketed");
         assert!((quarter.transform.position.x - 2.5).abs() < POS_EPS);
+    }
+
+    #[test]
+    fn presented_speed_uses_bracketing_xz_motion_and_held_poses_are_stationary() {
+        let mut buf = RemoteInterpolationBuffer::new();
+        let id = NetworkId(1);
+        // Ten metres over ten 60 Hz server ticks is roughly 60 m/s. Include a Y
+        // displacement so this pins the ground-plane-only contract.
+        let mut later = sample(110, 10.0);
+        later.transform.position.y = 20.0;
+        buf.record(id, sample(100, 0.0));
+        buf.record(id, later);
+
+        let bracketed = buf.presented_pose(id, 105.0).expect("bracketed");
+        let expected = 10.0 / (10.0 * DEFAULT_MICROS_PER_TICK as f32 / 1_000_000.0);
+        assert_eq!(bracketed.source, PoseSource::Interpolated);
+        assert!(
+            (bracketed.speed_xz - expected).abs() < POS_EPS,
+            "bracketed horizontal speed {} != {expected}",
+            bracketed.speed_xz
+        );
+
+        let held_oldest = buf.presented_pose(id, 90.0).expect("held oldest");
+        assert_eq!(held_oldest.source, PoseSource::HeldOldest);
+        assert_eq!(held_oldest.speed_xz, 0.0);
+
+        let held_newest = buf.presented_pose(id, 200.0).expect("held newest");
+        assert_eq!(held_newest.source, PoseSource::HeldNewest);
+        assert_eq!(held_newest.speed_xz, 0.0);
     }
 
     #[test]

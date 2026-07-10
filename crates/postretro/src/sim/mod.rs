@@ -1,6 +1,5 @@
 // Headless fixed-tick game-state advance seam.
-// See: context/lib/entity_model.md §5
-// See: context/lib/networking.md
+// See: context/lib/entity_model.md §5 · context/lib/networking.md
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -137,7 +136,7 @@ pub(crate) fn simulate_tick(
         update_brain_animation_playback_rates(&mut registry, anim_time);
     }
 
-    let (authorized_shots, reload_deliveries) =
+    let (authorized_shots, mut reload_deliveries) =
         run_remote_weapon_commands(&registry, remote_pawn_commands, tick_dt);
     let weapon_fire = weapon_fire_command(command.fire_button, post_movement_command);
     let weapon = run_weapon_fire_tick(
@@ -149,6 +148,19 @@ pub(crate) fn simulate_tick(
         anim_time,
         tick_dt,
     );
+    // Route the OWN pawn's reload through the same named seam every remote pawn uses, so
+    // the ammo spec adds no separate own-pawn plumbing (Task 4, "one seam"). Appended last,
+    // mirroring the own fire path above. No-op when the local pawn or its active weapon is
+    // unresolvable, mirroring the remote path's weapon guard.
+    let own_pawn = {
+        let registry = registry.borrow();
+        local_movement_pawn(&registry)
+    };
+    if let (Some(pawn), Some(weapon_id)) = (own_pawn, active_wieldable)
+        && let Some(delivery) = deliver_reload_to_weapon(pawn, weapon_id, command.reload)
+    {
+        reload_deliveries.push(delivery);
+    }
     let death = run_death_sweep(&registry, progress_tracker);
 
     TickEvents {
@@ -335,6 +347,8 @@ fn run_remote_weapon_commands(
             button: remote.command.fire_button,
             aim_origin: Vec3::ZERO,
             aim_direction: Vec3::Z,
+            // Repurposes `can_fire` (elsewhere "aim valid") to mean "pawn has a NetworkId";
+            // the real fire gate is `button` -> `wants_fire`. The host casts no local aim ray.
             can_fire: remote.shot_id.is_some(),
         };
         let result = weapon::tick_state_only(&mut registry, Some(weapon), &command, tick_dt);

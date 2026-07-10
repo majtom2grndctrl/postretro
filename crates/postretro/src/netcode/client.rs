@@ -430,7 +430,6 @@ impl ClientReplication {
 
     /// Resolve a client-local entity to the host-assigned `NetworkId`, if this
     /// entity is currently mapped by replication.
-    #[allow(dead_code)]
     pub(crate) fn network_id_for_entity(&self, entity_id: EntityId) -> Option<NetworkId> {
         self.reverse_map.get(&entity_id).copied()
     }
@@ -442,6 +441,8 @@ impl ClientReplication {
     }
 
     /// Resolve a replicated `NetworkId` to the current client-local entity.
+    /// Test-only reverse lookup; production resolves via the forward map
+    /// (`network_id_for_entity`) instead.
     #[allow(dead_code)]
     pub(crate) fn entity_for_network_id(&self, network_id: NetworkId) -> Option<EntityId> {
         self.map.get(&network_id).copied()

@@ -1,5 +1,4 @@
-// Weapon fire tick (`tick_resolved`), hitscan/local hit resolution, and client fire prediction.
-// Owns fire commands, local hit records, and predicted-shot reconciliation state.
+// Weapon fire tick, hitscan/local hit resolution, and client fire prediction: owns fire commands, local hit records, and predicted-shot reconciliation state.
 // See: context/lib/entity_model.md §5, §7
 
 use std::collections::HashMap;
@@ -7,7 +6,7 @@ use std::collections::HashMap;
 use glam::Vec3;
 use parry3d::math::{Point, Vector};
 use postretro_entities::EntityTypeDescriptor;
-use postretro_entities::components::weapon::WeaponComponent;
+use postretro_entities::components::weapon::{EffectiveStats, WeaponComponent};
 use postretro_entities::registry::{EntityId, EntityRegistry};
 use postretro_foundation::{FireMode, ResolutionMode};
 
@@ -195,24 +194,25 @@ impl ClientPredictedShots {
         shot_id: u64,
         fire_accepted: bool,
         hit_accepted: bool,
-    ) -> Option<&PredictedShotRecord> {
+    ) -> Option<PredictedShotRecord> {
+        // A per-shot verdict is terminal: the record is reconciled exactly once,
+        // so a stored record is always `Pending`. Apply the rollback effects,
+        // then prune it — the map would otherwise grow unbounded across a session
+        // (unlike the age-pruned host mirror). A duplicate or late verdict finds
+        // nothing and is a harmless no-op.
         let record = self.shots.get_mut(&shot_id)?;
-        if record.status != PredictedShotStatus::Pending {
-            return Some(record);
-        }
         if fire_accepted {
             record.status = PredictedShotStatus::Accepted;
             record.hitmarker_visible &= hit_accepted;
-            return Some(record);
+        } else {
+            if state.cooldown_authority_generation == record.cooldown_authority_generation {
+                state.cooldown_remaining_ms = record.cooldown_before_ms.max(0.0);
+            }
+            record.muzzle_fx_visible = false;
+            record.hitmarker_visible = false;
+            record.status = PredictedShotStatus::Rejected;
         }
-
-        if state.cooldown_authority_generation == record.cooldown_authority_generation {
-            state.cooldown_remaining_ms = record.cooldown_before_ms.max(0.0);
-        }
-        record.muzzle_fx_visible = false;
-        record.hitmarker_visible = false;
-        record.status = PredictedShotStatus::Rejected;
-        Some(record)
+        self.shots.remove(&shot_id)
     }
 
     #[cfg(test)]
@@ -325,7 +325,7 @@ pub(crate) fn tick_resolved(
     let mut weapon = existing.clone();
 
     let stats = weapon.effective();
-    let fire = apply_weapon_fire_state(&mut weapon, command, tick_dt);
+    let fire = apply_weapon_fire_state(&mut weapon, command, &stats, tick_dt);
     let events = if fire == WeaponFireAuthorization::Accepted {
         fire_hitscan(
             command.aim_origin,
@@ -360,7 +360,8 @@ pub(crate) fn tick_state_only(
         return WeaponFireAuthorization::Rejected;
     };
     let mut weapon = existing.clone();
-    let result = apply_weapon_fire_state(&mut weapon, command, tick_dt);
+    let stats = weapon.effective();
+    let result = apply_weapon_fire_state(&mut weapon, command, &stats, tick_dt);
     let _ = registry.set_component(weapon_id, weapon);
     result
 }
@@ -368,12 +369,12 @@ pub(crate) fn tick_state_only(
 fn apply_weapon_fire_state(
     weapon: &mut WeaponComponent,
     command: &WeaponFireCommand,
+    stats: &EffectiveStats,
     tick_dt: f32,
 ) -> WeaponFireAuthorization {
     let dt_ms = (tick_dt.max(0.0)) * 1000.0;
     weapon.cooldown_remaining_ms = (weapon.cooldown_remaining_ms - dt_ms).max(0.0);
 
-    let stats = weapon.effective();
     let wants_fire = match stats.fire_mode {
         FireMode::Semi => command.button.pressed && !weapon.shoot_press_consumed,
         FireMode::Auto => command.button.active,
@@ -413,48 +414,24 @@ fn fire_hitscan(
 
     match resolution {
         ResolutionMode::Hitscan => {
-            // World geometry hit, clamped to weapon range. parry returns the
-            // nearest triangle intersection along the ray.
-            let world_hit = cast_ray(
+            let impact = match resolve_nearest_hit(
+                origin,
+                direction,
                 collision_world,
-                Point::new(origin.x, origin.y, origin.z),
-                Vector::new(direction.x, direction.y, direction.z),
-                range,
-            )
-            .map(|hit| WorldHit {
-                toi: hit.time_of_impact,
-                point: origin + direction * hit.time_of_impact,
-                normal: Vec3::new(hit.normal.x, hit.normal.y, hit.normal.z),
-            });
-
-            // Nearest entity hit (authored AABB or bone-posed capsule), clamped
-            // to the same range — resolved entirely by the standalone facility. A
-            // world hit nearer than every entity still wins; an entity behind the
-            // wall is never reached because its toi exceeds the wall's.
-            let entity_hit = nearest_entity_hit(
                 registry,
                 hit_zone_store,
                 anim_time,
-                origin,
-                direction,
                 range,
-            );
-
-            // World-vs-entity nearest-of resolution stays in the weapon. On a tie
-            // (entity toi == world toi) the wall wins (`entity.toi < world.toi`).
-            let impact = match (world_hit, entity_hit) {
-                (Some(world), Some(entity)) if entity.toi < world.toi => {
-                    impact_from_entity(entity, damage)
-                }
-                (Some(world), _) => WeaponImpact {
+            ) {
+                Some(NearestHit::Entity(entity)) => impact_from_entity(entity, damage),
+                Some(NearestHit::World(world)) => WeaponImpact {
                     point: world.point,
                     normal: world.normal,
                     target: None,
                     zone: None,
                     outcome: ActivationOutcome::Hit(DamagePayload { amount: damage }),
                 },
-                (None, Some(entity)) => impact_from_entity(entity, damage),
-                (None, None) => return events,
+                None => return events,
             };
             events.impact = Some(impact);
         }
@@ -530,31 +507,20 @@ fn resolve_client_hitscan(
     resolution: ResolutionMode,
 ) -> Vec<LocalHitRecord> {
     match resolution {
-        ResolutionMode::Hitscan => {
-            let world_toi = cast_ray(
-                collision_world,
-                Point::new(origin.x, origin.y, origin.z),
-                Vector::new(direction.x, direction.y, direction.z),
-                range,
-            )
-            .map(|hit| hit.time_of_impact);
-
-            let entity_hit = nearest_entity_hit(
-                registry,
-                hit_zone_store,
-                anim_time,
-                origin,
-                direction,
-                range,
-            );
-            match (world_toi, entity_hit) {
-                (Some(world_toi), Some(entity)) if entity.toi < world_toi => {
-                    vec![local_hit_record(entity)]
-                }
-                (None, Some(entity)) => vec![local_hit_record(entity)],
-                _ => Vec::new(),
-            }
-        }
+        ResolutionMode::Hitscan => match resolve_nearest_hit(
+            origin,
+            direction,
+            collision_world,
+            registry,
+            hit_zone_store,
+            anim_time,
+            range,
+        ) {
+            // Only an entity hit produces a local hit record; a nearer world hit
+            // (or no hit) yields none — the client owns no world-impact record.
+            Some(NearestHit::Entity(entity)) => vec![local_hit_record(entity)],
+            _ => Vec::new(),
+        },
     }
 }
 
@@ -584,6 +550,59 @@ struct WorldHit {
     toi: f32,
     point: Vec3,
     normal: Vec3,
+}
+
+/// The winner of the world-vs-entity nearest-of resolution along a fire ray.
+enum NearestHit {
+    World(WorldHit),
+    Entity(EntityRayHit),
+}
+
+/// Cast the fire ray against world geometry and the nearest targetable entity,
+/// both clamped to `range`, and return whichever is nearer. On a tie (entity toi
+/// == world toi) the wall wins (`entity.toi < world.toi`); an entity behind a
+/// wall is never reached because its toi exceeds the wall's. Both the sim fire
+/// path (`fire_hitscan`) and the client prediction path (`resolve_client_hitscan`)
+/// resolve through here so the tie-break lives in one place.
+fn resolve_nearest_hit(
+    origin: Vec3,
+    direction: Vec3,
+    collision_world: &CollisionWorld,
+    registry: &EntityRegistry,
+    hit_zone_store: &HitZoneStore,
+    anim_time: f64,
+    range: f32,
+) -> Option<NearestHit> {
+    // World geometry hit — parry returns the nearest triangle intersection.
+    let world_hit = cast_ray(
+        collision_world,
+        Point::new(origin.x, origin.y, origin.z),
+        Vector::new(direction.x, direction.y, direction.z),
+        range,
+    )
+    .map(|hit| WorldHit {
+        toi: hit.time_of_impact,
+        point: origin + direction * hit.time_of_impact,
+        normal: Vec3::new(hit.normal.x, hit.normal.y, hit.normal.z),
+    });
+
+    // Nearest entity hit (authored AABB or bone-posed capsule), resolved entirely
+    // by the standalone hit-zone facility.
+    let entity_hit = nearest_entity_hit(
+        registry,
+        hit_zone_store,
+        anim_time,
+        origin,
+        direction,
+        range,
+    );
+
+    match (world_hit, entity_hit) {
+        (Some(world), Some(entity)) if entity.toi < world.toi => Some(NearestHit::Entity(entity)),
+        (Some(world), _) => Some(NearestHit::World(world)),
+        (None, Some(entity)) => Some(NearestHit::Entity(entity)),
+        (None, None) => None,
+    }
 }
 
 /// Build a [`WeaponImpact`] from a facility entity hit, attaching the damage
@@ -1617,15 +1636,18 @@ mod tests {
             state.cooldown_authority_generation,
         );
 
-        predicted
+        let record = predicted
             .apply_verdict(&mut state, 0xA, true, true)
             .expect("verdict should match a predicted shot");
 
-        let record = predicted.get(0xA).expect("shot remains observable");
         assert!(record.muzzle_fx_visible);
         assert!(record.hitmarker_visible);
         assert_eq!(record.status, PredictedShotStatus::Accepted);
         assert!(approx_eq(state.cooldown_remaining_ms, 100.0));
+        assert!(
+            predicted.get(0xA).is_none(),
+            "a terminal verdict prunes the record"
+        );
     }
 
     #[test]
@@ -1649,15 +1671,18 @@ mod tests {
             state.cooldown_authority_generation,
         );
 
-        predicted
+        let record = predicted
             .apply_verdict(&mut state, 0xA, true, false)
             .expect("verdict should match a predicted shot");
 
-        let record = predicted.get(0xA).expect("shot remains observable");
         assert!(record.muzzle_fx_visible);
         assert!(!record.hitmarker_visible);
         assert_eq!(record.status, PredictedShotStatus::Accepted);
         assert!(approx_eq(state.cooldown_remaining_ms, 100.0));
+        assert!(
+            predicted.get(0xA).is_none(),
+            "a terminal verdict prunes the record"
+        );
     }
 
     #[test]
@@ -1681,15 +1706,18 @@ mod tests {
             state.cooldown_authority_generation,
         );
 
-        predicted
+        let record = predicted
             .apply_verdict(&mut state, 0xA, false, false)
             .expect("verdict should match a predicted shot");
 
-        let record = predicted.get(0xA).expect("shot remains observable");
         assert!(!record.muzzle_fx_visible);
         assert!(!record.hitmarker_visible);
         assert_eq!(record.status, PredictedShotStatus::Rejected);
         assert!(approx_eq(state.cooldown_remaining_ms, 25.0));
+        assert!(
+            predicted.get(0xA).is_none(),
+            "a terminal verdict prunes the record"
+        );
     }
 
     #[test]
@@ -1713,17 +1741,21 @@ mod tests {
             state.cooldown_authority_generation,
         );
 
-        predicted
+        let accepted = predicted
             .apply_verdict(&mut state, 0xA, true, true)
             .expect("accept should match");
-        predicted
-            .apply_verdict(&mut state, 0xA, false, false)
-            .expect("late reject should be idempotent");
+        assert_eq!(accepted.status, PredictedShotStatus::Accepted);
+        assert!(accepted.muzzle_fx_visible);
+        assert!(accepted.hitmarker_visible);
 
-        let record = predicted.get(0xA).expect("shot remains observable");
-        assert_eq!(record.status, PredictedShotStatus::Accepted);
-        assert!(record.muzzle_fx_visible);
-        assert!(record.hitmarker_visible);
+        // The terminal accept pruned the record, so a late reject finds nothing
+        // and cannot undo the accepted shot's cooldown or presentation.
+        assert!(
+            predicted
+                .apply_verdict(&mut state, 0xA, false, false)
+                .is_none()
+        );
+        assert!(predicted.get(0xA).is_none());
         assert!(approx_eq(state.cooldown_remaining_ms, 100.0));
     }
 
@@ -1749,17 +1781,20 @@ mod tests {
         );
 
         ClientPredictedShots::reconcile_cooldown(&mut state, 12.0);
-        predicted
+        let record = predicted
             .apply_verdict(&mut state, 0xA, false, false)
             .expect("reject should match");
 
-        let record = predicted.get(0xA).expect("shot remains observable");
         assert_eq!(record.status, PredictedShotStatus::Rejected);
         assert!(!record.muzzle_fx_visible);
         assert!(!record.hitmarker_visible);
         assert!(
             approx_eq(state.cooldown_remaining_ms, 12.0),
             "fresh owner-private cooldown must win over stale rollback"
+        );
+        assert!(
+            predicted.get(0xA).is_none(),
+            "a terminal verdict prunes the record"
         );
     }
 

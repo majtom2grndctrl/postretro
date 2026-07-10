@@ -7,7 +7,7 @@ use thiserror::Error;
 
 use postretro_entities::ComponentKind;
 
-use super::{parse_component_kind, DumpError};
+use super::{DumpError, parse_component_kind};
 use crate::movement::MovementInput;
 
 /// Default entry cap when a runspec omits `dump.cap`. Bounds the dumped entity
@@ -254,10 +254,9 @@ mod tests {
 
     #[test]
     fn absent_command_fields_read_as_neutral_input() {
-        let spec = parse_runspec(
-            r#"{ "map": "m.prl", "ticks": 1, "commands": [ { "tick": 0 } ] }"#,
-        )
-        .unwrap();
+        let spec =
+            parse_runspec(r#"{ "map": "m.prl", "ticks": 1, "commands": [ { "tick": 0 } ] }"#)
+                .unwrap();
         let entry = &spec.commands[0];
         assert_eq!(entry.movement, MovementCommand::default());
         assert!(entry.aim.is_none());
@@ -267,7 +266,10 @@ mod tests {
         let input = entry.movement_input(0.25);
         assert_eq!(input.wish_dir, Vec2::ZERO);
         assert!(!input.jump_pressed);
-        assert_eq!(input.facing_yaw, 0.25, "driver-supplied yaw threads through");
+        assert_eq!(
+            input.facing_yaw, 0.25,
+            "driver-supplied yaw threads through"
+        );
     }
 
     #[test]

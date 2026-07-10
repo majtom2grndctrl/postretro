@@ -854,7 +854,10 @@ pub(crate) fn install_world_gravity_and_nav(
     script_ctx: &postretro_entities::ScriptCtx,
 ) -> Option<crate::nav::NavGraph> {
     script_ctx.gravity.set(world.initial_gravity);
-    world.navmesh.as_ref().map(crate::nav::NavGraph::from_section)
+    world
+        .navmesh
+        .as_ref()
+        .map(crate::nav::NavGraph::from_section)
 }
 
 /// Rebuild the level's reaction subscribers: reinitialize the kill-progress
@@ -925,7 +928,8 @@ pub(crate) struct WorldInstallHandles<'a> {
         &'a mut crate::scripting_systems::fog_volume_bridge::FogVolumeBridge,
     pub(crate) classname_dispatch: &'a crate::scripting::builtins::ClassnameDispatch,
     pub(crate) script_runtime: &'a postretro_scripting_core::runtime::ScriptRuntime,
-    pub(crate) sequence_registry: &'a postretro_scripting_core::sequence::SequencedPrimitiveRegistry,
+    pub(crate) sequence_registry:
+        &'a postretro_scripting_core::sequence::SequencedPrimitiveRegistry,
     pub(crate) reaction_registry:
         &'a crate::scripting::reactions::registry::ReactionPrimitiveRegistry,
     pub(crate) system_registry:
@@ -957,7 +961,10 @@ pub(crate) struct WorldInstallHandles<'a> {
 pub(crate) fn install_world_cpu(
     handles: WorldInstallHandles<'_>,
     timings: &mut StartupTimings,
-    mut upload_mesh_models: impl FnMut(&[String], &mut crate::scripting_systems::mesh_anim::MeshClipTables),
+    mut upload_mesh_models: impl FnMut(
+        &[String],
+        &mut crate::scripting_systems::mesh_anim::MeshClipTables,
+    ),
 ) -> WorldInstallProducts {
     let WorldInstallHandles {
         world,
@@ -1040,7 +1047,8 @@ pub(crate) fn install_world_cpu(
             LevelManifest::default()
         };
         if world.data_script.is_some() {
-            manifest.reactions = validate_sequence_primitives(manifest.reactions, sequence_registry);
+            manifest.reactions =
+                validate_sequence_primitives(manifest.reactions, sequence_registry);
             // Register level-scope UI trees before the data-script VM context drops
             // and before the manifest is consumed by the data registry.
             modal_stack.register_script_trees(
@@ -1105,8 +1113,7 @@ pub(crate) fn install_world_cpu(
 
         // Camera pose is seeded from the first spawn regardless of spawn success
         // (a connected client holds it until the net baseline arms its pawn).
-        let first_spawn: Option<(Vec3, Vec3)> =
-            spawn_points.first().map(|e| (e.origin, e.angles));
+        let first_spawn: Option<(Vec3, Vec3)> = spawn_points.first().map(|e| (e.origin, e.angles));
 
         // A connected client must NOT spawn a boot pawn (its authoritative pawn
         // arrives as a host-replicated baseline); single-player and the listen host
@@ -1170,7 +1177,10 @@ pub(crate) fn install_world_cpu(
         hit_zone_store.insert_from_load(model, content_root);
     }
     crate::resolve_mesh_entity_clips(&mut script_ctx.registry.borrow_mut(), mesh_clip_tables);
-    crate::warn_unknown_zone_multipliers(&script_ctx.data_registry.borrow().entities, hit_zone_store);
+    crate::warn_unknown_zone_multipliers(
+        &script_ctx.data_registry.borrow().entities,
+        hit_zone_store,
+    );
     timings.record("model_load");
 
     // Fire `levelLoad`. Headless fires it too so data-script reactions and

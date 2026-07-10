@@ -36,8 +36,8 @@ use postretro_scripting_core::reaction_dispatch::ProgressTracker;
 use postretro_scripting_core::state_crossings::CrossingDetector;
 
 use super::{
-    AimCommand, CommandEntry, PawnHealth, PlayerPawnSummary, TickEventRecord, build_output_document,
-    parse_runspec, to_deterministic_json,
+    AimCommand, CommandEntry, PawnHealth, PlayerPawnSummary, TickEventRecord,
+    build_output_document, parse_runspec, to_deterministic_json,
 };
 
 /// Fixed game-logic tick length. Pinned to `1/60` s exactly (NOT
@@ -69,8 +69,8 @@ pub(crate) fn run_headless(runspec_arg: Option<&str>) -> ! {
 /// success; every error path bubbles up here so `run_headless` can map it to a
 /// stderr diagnostic and a non-zero exit without ever touching stdout.
 fn run_headless_inner(runspec_arg: Option<&str>) -> Result<String> {
-    let runspec_path = runspec_arg
-        .ok_or_else(|| anyhow!("`--headless` requires a runspec JSON path argument"))?;
+    let runspec_path =
+        runspec_arg.ok_or_else(|| anyhow!("`--headless` requires a runspec JSON path argument"))?;
 
     // 1. Parse + validate the runspec. Malformed JSON, unknown fields, and a
     //    missing map all surface as a non-zero exit with a stderr diagnostic.
@@ -338,10 +338,7 @@ fn local_pawn(registry: &EntityRegistry) -> Option<EntityId> {
 
 /// Build the curated player-pawn summary from the post-run registry. `None` when
 /// no player pawn spawned (a map without a `player_spawn`).
-fn build_player_summary(
-    registry: &EntityRegistry,
-    facing_yaw: f32,
-) -> Option<PlayerPawnSummary> {
+fn build_player_summary(registry: &EntityRegistry, facing_yaw: f32) -> Option<PlayerPawnSummary> {
     let id = local_pawn(registry)?;
     let transform = registry.get_component::<Transform>(id).ok()?;
     let health = registry
@@ -372,7 +369,10 @@ mod tests {
     fn yaw_from_negative_x_direction_is_quarter_turn() {
         // Camera forward at yaw = +pi/2 is (-1, 0, 0), so a -X aim yields +pi/2.
         let yaw = yaw_from_direction([-1.0, 0.0, 0.0]);
-        assert!((yaw - std::f32::consts::FRAC_PI_2).abs() < 1e-6, "got {yaw}");
+        assert!(
+            (yaw - std::f32::consts::FRAC_PI_2).abs() < 1e-6,
+            "got {yaw}"
+        );
     }
 
     #[test]
@@ -423,7 +423,10 @@ mod tests {
         // Aim set at tick 0, a later entry at tick 10 omits aim: it must persist.
         let commands = vec![entry(0, false, Some(aim.clone())), entry(10, true, None)];
         assert!(effective_aim_at(&commands, 0).is_some());
-        assert_eq!(effective_aim_at(&commands, 15).unwrap().direction, aim.direction);
+        assert_eq!(
+            effective_aim_at(&commands, 15).unwrap().direction,
+            aim.direction
+        );
     }
 
     #[test]

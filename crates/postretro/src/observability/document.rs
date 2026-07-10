@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use postretro_entities::{ComponentValue, EntityRegistry};
 
 use super::runspec::DumpSpec;
-use super::{DumpError, ALL_KINDS};
+use super::{ALL_KINDS, DumpError};
 
 /// The headless output document — the stable, tool-facing surface a run emits.
 /// Field order here is the emitted top-level order; nested map keys are sorted by
@@ -151,7 +151,10 @@ pub(crate) fn apply_dump(
                     continue;
                 }
             }
-            let tags = registry.get_tags(id).map(|t| t.to_vec()).unwrap_or_default();
+            let tags = registry
+                .get_tags(id)
+                .map(|t| t.to_vec())
+                .unwrap_or_default();
             records.push(EntityRecord {
                 entity: raw,
                 tags,
@@ -283,8 +286,11 @@ mod tests {
         let _id = spawn_with_health(&mut reg, &[], 20.0);
 
         let selection = apply_dump(&reg, &DumpSpec::default()).unwrap();
-        let kinds: HashSet<ComponentKind> =
-            selection.records.iter().map(|r| r.component.kind()).collect();
+        let kinds: HashSet<ComponentKind> = selection
+            .records
+            .iter()
+            .map(|r| r.component.kind())
+            .collect();
         assert!(kinds.contains(&ComponentKind::Transform));
         assert!(kinds.contains(&ComponentKind::Health));
     }
@@ -333,7 +339,10 @@ mod tests {
 
         assert_eq!(doc.map, "content/dev/maps/x.prl");
         assert_eq!(doc.ticks_run, 42);
-        assert_eq!(doc.out_of_frame.absent_headless, vec!["map_lights".to_string()]);
+        assert_eq!(
+            doc.out_of_frame.absent_headless,
+            vec!["map_lights".to_string()]
+        );
         assert_eq!(
             doc.out_of_frame.present_not_dumped,
             vec![
@@ -356,8 +365,7 @@ mod tests {
             events: false,
             ..DumpSpec::default()
         };
-        let doc =
-            build_output_document("m.prl", 1, &reg, &dump, events.clone(), None).unwrap();
+        let doc = build_output_document("m.prl", 1, &reg, &dump, events.clone(), None).unwrap();
         assert!(doc.events.is_empty(), "events suppressed when flag off");
 
         let dump_on = DumpSpec::default();

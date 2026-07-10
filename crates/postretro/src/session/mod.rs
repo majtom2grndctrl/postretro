@@ -569,8 +569,7 @@ impl ScriptingCore {
 
 /// Shared hint naming the observe launcher, used by both headless preconditions.
 #[cfg(feature = "observability")]
-const OBSERVE_LAUNCH_HINT: &str =
-    "launch headless via `cargo run -p xtask -- observe <runspec>`, which builds \
+const OBSERVE_LAUNCH_HINT: &str = "launch headless via `cargo run -p xtask -- observe <runspec>`, which builds \
      the `scripts-build` sidecar before running";
 
 /// Reduced session-lifetime container for headless runs: the scripting core and
@@ -689,7 +688,10 @@ mod headless_tests {
     fn headless_mod_manifest_none_errors_and_names_observe_launcher() {
         let err = require_headless_mod_manifest(false).expect_err("None manifest must reject");
         let msg = format!("{err}");
-        assert!(msg.contains("manifest"), "names the missing manifest: {msg}");
+        assert!(
+            msg.contains("manifest"),
+            "names the missing manifest: {msg}"
+        );
         assert!(
             msg.contains("cargo run -p xtask -- observe"),
             "names the observe launcher: {msg}",

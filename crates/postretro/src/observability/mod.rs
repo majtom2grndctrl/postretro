@@ -17,12 +17,12 @@ pub(crate) use driver::run_headless;
 // a few payload structs the driver serializes transitively rather than by name.
 #[allow(unused_imports)]
 pub(crate) use document::{
-    apply_dump, build_output_document, DumpSelection, EntityRecord, OutOfFrame, OutputDocument,
-    PawnHealth, PlayerPawnSummary, TickEventRecord,
+    DumpSelection, EntityRecord, OutOfFrame, OutputDocument, PawnHealth, PlayerPawnSummary,
+    TickEventRecord, apply_dump, build_output_document,
 };
 #[allow(unused_imports)]
 pub(crate) use runspec::{
-    parse_runspec, AimCommand, CommandEntry, DumpSpec, MovementCommand, RunSpec, RunSpecError,
+    AimCommand, CommandEntry, DumpSpec, MovementCommand, RunSpec, RunSpecError, parse_runspec,
 };
 
 use postretro_entities::ComponentKind;
@@ -103,9 +103,7 @@ fn parse_component_kind(name: &str) -> Option<ComponentKind> {
 /// across runs. Going through a `serde_json::Value` and sorting object keys makes
 /// the output stable regardless of the hasher seed or the serde_json
 /// `preserve_order` feature. Array order is data-bearing and is left untouched.
-pub(crate) fn to_deterministic_json<T: Serialize>(
-    value: &T,
-) -> Result<String, serde_json::Error> {
+pub(crate) fn to_deterministic_json<T: Serialize>(value: &T) -> Result<String, serde_json::Error> {
     let mut json = serde_json::to_value(value)?;
     sort_json_maps(&mut json);
     serde_json::to_string_pretty(&json)
@@ -139,8 +137,8 @@ fn sort_json_maps(value: &mut serde_json::Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use postretro_entities::components::health::HealthComponent;
     use postretro_entities::ComponentValue;
+    use postretro_entities::components::health::HealthComponent;
     use std::collections::HashMap;
 
     #[test]

@@ -9,6 +9,7 @@ import {
   defineUiTree,
   getGameState,
   getDesignTokens,
+  stateEquals,
 } from "postretro/ui";
 
 export const hudTheme = defineTheme({
@@ -98,4 +99,21 @@ export const reticle = defineUiTree({
     { anchor: "center", offset: [0.0, 0.0] },
     Text({ content: "+", font: font.mono }),
   ),
+});
+
+const reloadMeter = Bar({
+  bind: bindState(player.reloadProgress),
+  max: 1.0,
+  width: 120.0,
+  height: 24.0,
+  visibleWhen: stateEquals(player.reloadActive, true),
+  exitFade: { durationMs: 500.0 },
+  fill: color.ok,
+  background: color.hud.health.background,
+});
+
+export const reloadMeterTree = defineUiTree({
+  name: "hud.reloadMeter",
+  alwaysOn: true,
+  tree: Tree({ anchor: "center", offset: [0.0, 36.0] }, reloadMeter),
 });

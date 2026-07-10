@@ -698,7 +698,10 @@ export type BarBindProp = (ReadonlyStateRef<number> | LocalBindRef) & { tween: N
 --- as `getGameState().player.maxHealth`.
 export type BarMaxProp = number | ReadonlyStateRef<number>
 --- Props for `Bar`. `bind` is a readonly numeric bind; `max` is a number or readonly numeric ref.
-export type BarProps = { bind: BarBindProp, max: BarMaxProp, fill: WidgetColor, background: WidgetColor, styleRanges: StyleRangesProp?, id: string?, visibleWhen: Predicate?, role: WidgetRole? }
+--- Linear retained-UI exit fade for a `Bar` with `visibleWhen`.
+export type BarExitFade = { durationMs: number }
+--- Props for `Bar`. `width`/`height` are positive logical-reference px; `exitFade` requires `visibleWhen` and fades the retained terminal image linearly.
+export type BarProps = { bind: BarBindProp, max: BarMaxProp, fill: WidgetColor, background: WidgetColor, width: number?, height: number?, styleRanges: StyleRangesProp?, id: string?, visibleWhen: Predicate?, exitFade: BarExitFade?, role: WidgetRole? }
 --- A passive `bar`: fill fraction is `value/max` clamped to `[0, 1]`. `styleRanges` recolors the fill from that displayed fraction.
 declare function Bar(props: BarProps): WidgetDescriptor
 

@@ -10,15 +10,199 @@ fn bar_with_max(slot: &str, max: BarMax, style_ranges: Option<StyleRanges>) -> W
         max,
         fill: ColorValue::Literal([0.0, 1.0, 0.0, 1.0]),
         background: ColorValue::Literal([0.1, 0.1, 0.1, 1.0]),
+        width: None,
+        height: None,
         id: None,
         style_ranges,
         visible_when: None,
+        exit_fade: None,
         role: None,
     })
 }
 
 fn bar(slot: &str, max: f32, style_ranges: Option<StyleRanges>) -> Widget {
     bar_with_max(slot, BarMax::Literal(max), style_ranges)
+}
+
+fn lifecycle_bar() -> Widget {
+    Widget::Bar(BarWidget {
+        bind: SliderBind {
+            source: BindSource::Slot {
+                slot: "player.reloadProgress".into(),
+            },
+            tween: None,
+        },
+        max: BarMax::Literal(1.0),
+        fill: ColorValue::Literal([0.0, 1.0, 0.0, 1.0]),
+        background: ColorValue::Literal([0.1, 0.1, 0.1, 1.0]),
+        width: Some(120.0),
+        height: Some(24.0),
+        id: None,
+        style_ranges: None,
+        visible_when: Some(pred(
+            "player.reloadActive",
+            Some(PredicateValue::Boolean(true)),
+        )),
+        exit_fade: Some(BarExitFade { duration_ms: 500.0 }),
+        role: None,
+    })
+}
+
+fn reload_slots(active: bool, progress: f32) -> HashMap<String, SlotValue> {
+    HashMap::from([
+        (
+            "player.reloadActive".to_string(),
+            SlotValue::Boolean(active),
+        ),
+        (
+            "player.reloadProgress".to_string(),
+            SlotValue::Number(progress),
+        ),
+    ])
+}
+
+#[test]
+fn bar_authored_size_is_used_instead_of_the_default() {
+    let mut ui = UiTree::from_descriptor(&anchored(lifecycle_bar()), &theme());
+    let mut fs = font_system();
+    let draw = ui.build_draw_data_retained(
+        [1280, 720],
+        &mut fs,
+        &no_images(),
+        &reload_slots(true, 1.0),
+        &no_cells(),
+        0.0,
+    );
+    let background = draw
+        .quads
+        .instances
+        .first()
+        .expect("visible bar background");
+    // At this 1280×720 reference scale, logical pixels project 1:1.
+    assert!(approx(background.rect[2], 120.0));
+    assert!(approx(background.rect[3], 24.0));
+}
+
+#[test]
+fn bar_exit_fade_hides_initial_false_and_retains_terminal_image_until_expiry() {
+    let mut ui = UiTree::from_descriptor(&anchored(lifecycle_bar()), &theme());
+    let mut fs = font_system();
+
+    let initial_hidden = ui.build_draw_data_retained(
+        [1280, 720],
+        &mut fs,
+        &no_images(),
+        &reload_slots(false, 0.0),
+        &no_cells(),
+        0.0,
+    );
+    assert!(
+        initial_hidden.quads.instances.is_empty(),
+        "false first resolution is non-rendering"
+    );
+
+    let active = ui.build_draw_data_retained(
+        [1280, 720],
+        &mut fs,
+        &no_images(),
+        &reload_slots(true, 0.25),
+        &no_cells(),
+        0.1,
+    );
+    assert_eq!(
+        active.quads.instances.len(),
+        2,
+        "active full-alpha bar draws background + fill"
+    );
+    assert!(approx(active.quads.instances[0].color[3], 1.0));
+    assert!(approx(active.quads.instances[1].color[3], 1.0));
+
+    // Completion snapshot publishes terminal progress and inactive together.
+    let exit_start = ui.build_draw_data_retained(
+        [1280, 720],
+        &mut fs,
+        &no_images(),
+        &reload_slots(false, 1.0),
+        &no_cells(),
+        0.2,
+    );
+    assert_eq!(exit_start.quads.instances.len(), 2);
+    assert!(approx(
+        exit_start.quads.instances[1].rect[2],
+        exit_start.quads.instances[0].rect[2]
+    ));
+    assert!(approx(exit_start.quads.instances[0].color[3], 1.0));
+
+    // The next gameplay frame may reset progress, but the retained fade keeps
+    // the terminal full bar while alpha advances linearly from the UI clock.
+    let mid_fade = ui.build_draw_data_retained(
+        [1280, 720],
+        &mut fs,
+        &no_images(),
+        &reload_slots(false, 0.0),
+        &no_cells(),
+        0.45,
+    );
+    assert_eq!(mid_fade.quads.instances.len(), 2);
+    assert!(approx(
+        mid_fade.quads.instances[1].rect[2],
+        mid_fade.quads.instances[0].rect[2]
+    ));
+    assert!(approx(mid_fade.quads.instances[0].color[3], 0.5));
+    assert!(approx(mid_fade.quads.instances[1].color[3], 0.5));
+
+    let expired = ui.build_draw_data_retained(
+        [1280, 720],
+        &mut fs,
+        &no_images(),
+        &reload_slots(false, 0.0),
+        &no_cells(),
+        0.7,
+    );
+    assert!(
+        expired.quads.instances.is_empty(),
+        "expired fade emits no bar quads"
+    );
+}
+
+#[test]
+fn bar_exit_fade_retrigger_cancels_capture_and_restores_full_opacity() {
+    let mut ui = UiTree::from_descriptor(&anchored(lifecycle_bar()), &theme());
+    let mut fs = font_system();
+    ui.build_draw_data_retained(
+        [1280, 720],
+        &mut fs,
+        &no_images(),
+        &reload_slots(true, 1.0),
+        &no_cells(),
+        0.0,
+    );
+    ui.build_draw_data_retained(
+        [1280, 720],
+        &mut fs,
+        &no_images(),
+        &reload_slots(false, 1.0),
+        &no_cells(),
+        0.1,
+    );
+    let retriggered = ui.build_draw_data_retained(
+        [1280, 720],
+        &mut fs,
+        &no_images(),
+        &reload_slots(true, 0.25),
+        &no_cells(),
+        0.3,
+    );
+    assert_eq!(retriggered.quads.instances.len(), 2);
+    assert!(approx(retriggered.quads.instances[0].color[3], 1.0));
+    assert!(approx(retriggered.quads.instances[1].color[3], 1.0));
+    assert!(
+        approx(
+            retriggered.quads.instances[1].rect[2],
+            retriggered.quads.instances[0].rect[2] * 0.25
+        ),
+        "retrigger uses the fresh live target instead of stale terminal capture"
+    );
 }
 
 /// A slot map binding `player.health` to a Number value.
@@ -68,6 +252,235 @@ fn bar_fill_fraction_is_value_over_max_clamped() {
             assert!(approx(fill.rect[3], background.rect[3]));
         }
     }
+}
+
+#[test]
+fn retained_reload_meter_fill_grows_while_background_stays_fixed() {
+    // Models the dev HUD's named reload meter at the smallest CPU seam: a
+    // state-bound Bar with `max: 1`, rebuilt through the retained path as its
+    // published `player.reloadProgress` slot changes.
+    let tree = anchored(bar("player.reloadProgress", 1.0, None));
+    let mut ui = UiTree::from_descriptor(&tree, &theme());
+    let mut fs = font_system();
+
+    let mut empty = HashMap::new();
+    empty.insert("player.reloadProgress".to_string(), SlotValue::Number(0.0));
+    let zero =
+        ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &empty, &no_cells(), 0.0);
+    assert_eq!(
+        zero.quads.instances.len(),
+        1,
+        "zero progress has no fill quad"
+    );
+    let zero_background = zero.quads.instances[0];
+
+    let mut full = HashMap::new();
+    full.insert("player.reloadProgress".to_string(), SlotValue::Number(1.0));
+    let one =
+        ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &full, &no_cells(), 0.1);
+    assert_eq!(
+        one.quads.instances.len(),
+        2,
+        "full progress emits a fill quad"
+    );
+    let one_background = one.quads.instances[0];
+    let fill = one.quads.instances[1];
+    for index in 0..4 {
+        assert!(
+            approx(zero_background.rect[index], one_background.rect[index]),
+            "background rect component {index} stays fixed: {} vs {}",
+            zero_background.rect[index],
+            one_background.rect[index],
+        );
+    }
+    assert!(
+        approx(fill.rect[2], one_background.rect[2]),
+        "full reload progress fills the full background width: {} vs {}",
+        fill.rect[2],
+        one_background.rect[2],
+    );
+    assert!(
+        approx(fill.rect[3], one_background.rect[3]),
+        "fill keeps the background height: {} vs {}",
+        fill.rect[3],
+        one_background.rect[3],
+    );
+}
+
+#[test]
+fn retained_tweened_bar_rebuilds_when_its_numeric_slot_changes() {
+    // Regression: a retained Bar with a no-`from` tween must redraw from a
+    // later snapshot instead of keeping its initial empty fill.
+    let mut widget = bar("player.reloadProgress", 1.0, None);
+    let Widget::Bar(bar) = &mut widget else {
+        unreachable!("bar helper returns a Bar widget");
+    };
+    bar.bind.tween = Some(TextTween {
+        duration_ms: 90.0,
+        easing: Easing::EaseOut,
+        from: None,
+    });
+    let tree = anchored(widget);
+    let mut ui = UiTree::from_descriptor(&tree, &theme());
+    let mut fs = font_system();
+
+    let mut zero = HashMap::new();
+    zero.insert("player.reloadProgress".to_string(), SlotValue::Number(0.0));
+    let empty =
+        ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &zero, &no_cells(), 0.0);
+    assert_eq!(empty.quads.instances.len(), 1);
+
+    let mut quarter = HashMap::new();
+    quarter.insert("player.reloadProgress".to_string(), SlotValue::Number(0.25));
+    ui.build_draw_data_retained(
+        [1280, 720],
+        &mut fs,
+        &no_images(),
+        &quarter,
+        &no_cells(),
+        0.1,
+    );
+    let mut half = HashMap::new();
+    half.insert("player.reloadProgress".to_string(), SlotValue::Number(0.5));
+    let filled =
+        ui.build_draw_data_retained([1280, 720], &mut fs, &no_images(), &half, &no_cells(), 0.2);
+    assert_eq!(filled.quads.instances.len(), 2);
+    assert!(approx(
+        filled.quads.instances[1].rect[2],
+        filled.quads.instances[0].rect[2] * 0.25
+    ));
+}
+
+#[test]
+fn tweened_bar_recovers_from_a_missing_slot_with_a_fresh_segment() {
+    // A raw fallback must replace an in-flight tween segment. Otherwise when the
+    // same target returns, the bar resumes its pre-fallback display and jumps
+    // ahead of its visible zero fill.
+    let mut widget = bar("player.reloadProgress", 1.0, None);
+    let Widget::Bar(bar) = &mut widget else {
+        unreachable!("bar helper returns a Bar widget");
+    };
+    bar.bind.tween = Some(TextTween {
+        duration_ms: 1000.0,
+        easing: Easing::Linear,
+        from: Some(0.0),
+    });
+    let tree = anchored(widget);
+    let mut ui = UiTree::from_descriptor(&tree, &theme());
+    let mut fs = font_system();
+
+    ui.build_draw_data_retained(
+        [1280, 720],
+        &mut fs,
+        &no_images(),
+        &number_slots("player.reloadProgress", 1.0),
+        &no_cells(),
+        0.0,
+    );
+    let mid = ui.build_draw_data_retained(
+        [1280, 720],
+        &mut fs,
+        &no_images(),
+        &number_slots("player.reloadProgress", 1.0),
+        &no_cells(),
+        0.5,
+    );
+    assert!(
+        mid.quads.instances[1].rect[2] / mid.quads.instances[0].rect[2] > 0.49,
+        "the initial segment is mid-flight before the fallback"
+    );
+
+    let fallback = ui.build_draw_data_retained(
+        [1280, 720],
+        &mut fs,
+        &no_images(),
+        &no_slots(),
+        &no_cells(),
+        0.5,
+    );
+    assert_eq!(
+        fallback.quads.instances.len(),
+        1,
+        "missing slot draws raw zero fill"
+    );
+
+    let recovered = ui.build_draw_data_retained(
+        [1280, 720],
+        &mut fs,
+        &no_images(),
+        &number_slots("player.reloadProgress", 1.0),
+        &no_cells(),
+        0.6,
+    );
+    assert_eq!(
+        recovered.quads.instances.len(),
+        1,
+        "recovery starts a fresh segment at the visible fallback instead of resuming mid-flight",
+    );
+}
+
+#[test]
+fn retained_tweened_bar_advances_through_rapid_retargets() {
+    // Each target arrives 20ms after the last, well before this 90ms tween can
+    // settle. The retained display must carry forward the previous segment's
+    // progress; restarting from its stale prior-frame display would keep the
+    // bar at zero and emit no fill quad.
+    let mut widget = bar("player.reloadProgress", 1.0, None);
+    let Widget::Bar(bar) = &mut widget else {
+        unreachable!("bar helper returns a Bar widget");
+    };
+    bar.bind.tween = Some(TextTween {
+        duration_ms: 90.0,
+        easing: Easing::Linear,
+        from: None,
+    });
+    let tree = anchored(widget);
+    let mut ui = UiTree::from_descriptor(&tree, &theme());
+    let mut fs = font_system();
+
+    ui.build_draw_data_retained(
+        [1280, 720],
+        &mut fs,
+        &no_images(),
+        &number_slots("player.reloadProgress", 0.0),
+        &no_cells(),
+        0.0,
+    );
+    ui.build_draw_data_retained(
+        [1280, 720],
+        &mut fs,
+        &no_images(),
+        &number_slots("player.reloadProgress", 0.25),
+        &no_cells(),
+        0.02,
+    );
+    let second = ui.build_draw_data_retained(
+        [1280, 720],
+        &mut fs,
+        &no_images(),
+        &number_slots("player.reloadProgress", 0.5),
+        &no_cells(),
+        0.04,
+    );
+    let second_fraction = second.quads.instances[1].rect[2] / second.quads.instances[0].rect[2];
+    let third = ui.build_draw_data_retained(
+        [1280, 720],
+        &mut fs,
+        &no_images(),
+        &number_slots("player.reloadProgress", 0.75),
+        &no_cells(),
+        0.06,
+    );
+    let third_fraction = third.quads.instances[1].rect[2] / third.quads.instances[0].rect[2];
+
+    assert!(
+        second_fraction > EPS && second_fraction < 0.5 - EPS,
+        "the second rapid retarget preserves visible in-flight progress, got {second_fraction}"
+    );
+    assert!(
+        third_fraction > second_fraction + EPS && third_fraction < 0.75 - EPS,
+        "successive rapid retargets continue advancing the displayed fill: {second_fraction} -> {third_fraction}"
+    );
 }
 
 #[test]
@@ -213,9 +626,12 @@ fn bar_bind_tween_eases_the_displayed_fraction() {
         max: BarMax::Literal(100.0),
         fill: ColorValue::Literal([0.0, 1.0, 0.0, 1.0]),
         background: ColorValue::Literal([0.1, 0.1, 0.1, 1.0]),
+        width: None,
+        height: None,
         id: None,
         style_ranges: None,
         visible_when: None,
+        exit_fade: None,
         role: None,
     }));
     let mut ui = UiTree::from_descriptor(&tree, &theme());

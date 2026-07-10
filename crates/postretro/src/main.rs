@@ -2088,6 +2088,11 @@ impl ApplicationHandler for App {
                         .scripting
                         .player_hud_state
                         .tick_for_role(is_connected_client);
+                    #[cfg(feature = "dev-tools")]
+                    session
+                        .scripting
+                        .dev_reload_progress
+                        .tick(gameplay_snapshot.as_ref(), frame_dt);
                 }
                 // Flash-decay state writes the engine-owned `screen.flash`
                 // surface at the same game-logic stage as the HUD publisher, so
@@ -7436,11 +7441,10 @@ mod tests {
     fn ui_slot_snapshot_clones_present_values_and_skips_valueless_slots() {
         use postretro_entities::SlotValue;
 
-        // The default table carries engine `player.*` slots with `None` values
-        // plus two value-bearing engine surfaces: `screen.flash` (resting
-        // transparent) and `input.mode` (defaults to `focus`). Setting one of the
-        // value-less slots asserts the boundary contract: the snapshot clones
-        // value-bearing slots and omits value-less ones.
+        // The default table carries engine `player.*` slots with `None` values,
+        // except the reload-feedback slots, which start at inactive/zero. Setting
+        // one of the value-less slots asserts the boundary contract: the snapshot
+        // clones value-bearing slots and omits value-less ones.
         let mut table = postretro_entities::SlotTable::new();
         table
             .get_mut("player.health")
@@ -7453,6 +7457,16 @@ mod tests {
             snapshot.get("player.health"),
             Some(&SlotValue::Number(75.0)),
             "value-bearing slot is cloned into the snapshot",
+        );
+        assert_eq!(
+            snapshot.get("player.reloadActive"),
+            Some(&SlotValue::Boolean(false)),
+            "engine-owned player.reloadActive defaults to false and is cloned",
+        );
+        assert_eq!(
+            snapshot.get("player.reloadProgress"),
+            Some(&SlotValue::Number(0.0)),
+            "engine-owned player.reloadProgress defaults to zero and is cloned",
         );
         // `screen.flash` carries its default transparent value, so it is present.
         assert_eq!(
@@ -7491,8 +7505,8 @@ mod tests {
         );
         assert_eq!(
             snapshot.len(),
-            6,
-            "only the set player.health and the default-valued screen.flash + screen.vignette + screen.shake + input.mode + ui.textEntry appear",
+            8,
+            "only the set player.health and default-valued reload-feedback + screen.flash + screen.vignette + screen.shake + input.mode + ui.textEntry slots appear",
         );
     }
 

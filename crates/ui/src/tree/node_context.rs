@@ -6,7 +6,9 @@ use std::cell::RefCell;
 
 use taffy::prelude::Display;
 
-use super::super::descriptor::{BarMax, Border, PanelBind, Predicate, SliderBind, TextBind};
+use super::super::descriptor::{
+    BarExitFade, BarMax, Border, PanelBind, Predicate, SliderBind, TextBind,
+};
 use super::super::style_ranges::{StyleEffectState, StyleRanges};
 use super::style::TweenState;
 
@@ -122,6 +124,9 @@ pub enum NodeContext {
         max: BarMax,
         fill: [f32; 4],
         background: [f32; 4],
+        /// Optional retained exit policy. Only a Bar carries this narrow
+        /// lifecycle presentation behavior; it is not a generic opacity API.
+        exit_fade: Option<BarExitFade>,
         /// Nearest declaring `localState` scope id for a `{ local }` bind (see
         /// `NodeContext::Text::bind_scope`). `None` for a slot bind.
         bind_scope: Option<String>,
@@ -162,4 +167,42 @@ pub struct VisibilityState {
     pub visible_display: Display,
     /// Last resolved `0.0`/`1.0`. `None` before the first diff resolves it.
     pub prev: Option<f32>,
+    /// Runtime state for a `Bar`'s narrow exit fade. `None` for all other
+    /// reactive nodes and plain bars. The capture is presentation-local: it is
+    /// sourced after binding resolution and never writes gameplay state.
+    pub bar_exit_fade: Option<BarExitFadeState>,
+}
+
+/// Retained, linear exit presentation for one bar. A false first resolution
+/// never initializes `started_at`, so the bar begins hidden; a true→false flip
+/// captures the displayed numerator/denominator and retains them until expiry.
+#[derive(Debug, Clone)]
+pub struct BarExitFadeState {
+    pub duration_seconds: f64,
+    pub started_at: Option<f64>,
+    pub captured_value: Option<f32>,
+    pub captured_max: Option<f32>,
+}
+
+impl BarExitFadeState {
+    pub fn new(duration_ms: f32) -> Self {
+        Self {
+            duration_seconds: f64::from(duration_ms) / 1_000.0,
+            started_at: None,
+            captured_value: None,
+            captured_max: None,
+        }
+    }
+
+    pub fn alpha_at(&self, now: f64) -> Option<f32> {
+        let started_at = self.started_at?;
+        let progress = ((now - started_at) / self.duration_seconds).clamp(0.0, 1.0) as f32;
+        Some(1.0 - progress)
+    }
+
+    pub fn clear(&mut self) {
+        self.started_at = None;
+        self.captured_value = None;
+        self.captured_max = None;
+    }
 }

@@ -72,7 +72,7 @@ The net crate emits typed snapshots and **never mutates the registry.** All regi
 
 `NetworkId` is the network-stable identity assigned by the host; the host owns an `EntityId→NetworkId` allocator (monotonic, never recycled, stable for an entity's lifetime) and the client owns the inverse `NetworkId→EntityId` map. Stable ids keep the client's mapping coherent across snapshots. This is the network projection of the entity-model ownership rule (`entity_model.md` §6): game logic owns entities; replication is just another reader (host) and a controlled writer (client).
 
-Current component payloads are `Transform`, `PlayerMovementState`, `MeshAnimationState`, and `KinematicMoverState`, added in `ComponentKind` numeric order. `MeshAnimationState` carries the current animation state name; descriptor mesh data stays local. `KinematicMoverState` carries phase only: `mover_id`, segment index, direction, mode, elapsed/wait milliseconds, started/completed flags, and velocity. Static path data stays in PRL `KinematicGeometry`.
+Current component payloads are `Transform`, `PlayerMovementState`, `MeshAnimationState`, and `KinematicMoverState`, added in `ComponentKind` numeric order. `MeshAnimationState` carries the current animation state name; descriptor mesh data stays local. `KinematicMoverState` carries phase only: `mover_id`, segment index, direction, mode, elapsed/wait milliseconds, started/completed flags, velocity, and an optional target segment for a move-and-hold command. Static path data stays in PRL `KinematicGeometry`.
 
 Player movement grounding is a widened ground reference (`Airborne`, `World`, or `Mover(mover_id)`) rather than a bare boolean. The net crate validates only the enum shape and finite numeric fields; resolving a mover id to a loaded local mover is engine-owned client apply.
 
@@ -278,6 +278,8 @@ Phase 1/2 plans are historical. Do not read their old full-snapshot, no-despawn,
 Replicable-set policy is gameplay-authoritative first. Player pawns, AI/enemies, movers, and other networked gameplay objects go on the wire. Deterministic client-local or baked data — particles, sprite visuals, lights, fog volumes, and shared `.prl` map data — stays off the wire unless gameplay authority requires otherwise.
 
 Mover prediction is phase-seeded and separate from the pawn command-ring predictor. The host replicates authoritative mover phase; clients re-run the deterministic mover driver from that phase and reconcile in place, mapped by `NetworkId`. There is no provisional client-created mover copy.
+
+Trigger volumes are shared baked map data, not replicated state. Clients send a `use_pressed` input bit with movement input; only the host evaluates touch/use overlap and fires trigger commands. A fired command mutates replicated mover phase, including its optional target segment, so clients reconcile the resulting motion without ever evaluating the trigger locally.
 
 **Connected-client AI-enemy spawn suppression.** A connected client does not spawn local authoritative copies of map-placed AI enemies. Those enemies are host-authoritative: the client receives them solely as host snapshots. Client-side materialization attaches only the descriptor's mesh presentation; `Brain`, `Agent`, `Health`, and `Weapon` components are never attached on the client for a remote enemy. Remote enemies are presentation-only — they carry no local simulation state.
 

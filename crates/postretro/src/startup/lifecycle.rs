@@ -82,6 +82,8 @@ impl App {
         // fog-bridge clear is guarded — a no-op when there is no session yet.
         if let Some(session) = self.session.as_mut() {
             session.fog_volume_bridge.clear();
+            session.trigger_volume_bridge.clear();
+            session.trigger_system.clear();
         }
         self.collision_world.clear();
         self.kinematic_mover_colliders.clear();
@@ -663,6 +665,15 @@ impl App {
                 .expect("renderer installed before level install");
             renderer.set_fog_pixel_scale(world.fog_pixel_scale);
             renderer.install_fog_cell_masks_for_level(world.fog_cell_masks.clone());
+        }
+
+        if let Some(world) = self.level.as_ref() {
+            let mut registry = script_ctx.registry.borrow_mut();
+            self.session
+                .as_mut()
+                .expect("session installed before level install")
+                .trigger_volume_bridge
+                .populate_from_level(&mut registry, &world.trigger_volumes);
         }
 
         // Populate before the first game tick so movement collision is ready.
@@ -1250,6 +1261,9 @@ mod tests {
                 classname_dispatch: scripting::builtins::ClassnameDispatch::new(),
                 light_bridge: scripting_systems::light_bridge::LightBridge::new(),
                 fog_volume_bridge: scripting_systems::fog_volume_bridge::FogVolumeBridge::new(),
+                trigger_volume_bridge:
+                    scripting_systems::trigger_volume_bridge::TriggerVolumeBridge::new(),
+                trigger_system: crate::trigger_system::TriggerSystem::default(),
                 emitter_bridge: scripting_systems::emitter_bridge::EmitterBridge::new(),
                 particle_render: scripting_systems::particle_render::ParticleRenderCollector::new(),
                 mesh_render: scripting_systems::mesh_render::MeshRenderCollector::new(),
@@ -1559,6 +1573,7 @@ mod tests {
             data_script: None,
             map_entities: Vec::new(),
             kinematic_geometry: postretro_level_loader::KinematicGeometry::default(),
+            trigger_volumes: Vec::new(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
             initial_gravity: -9.8,

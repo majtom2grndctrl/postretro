@@ -171,6 +171,23 @@ pub struct MapKinematicWaypoint {
     pub origin: DVec3,
 }
 
+/// Invisible brush trigger resolved to an engine-space AABB. It intentionally
+/// retains no brush volume, so static BSP/collision/light/nav inputs cannot see it.
+#[derive(Debug, Clone)]
+pub struct MapTriggerVolume {
+    pub name: String,
+    pub tags: Vec<String>,
+    pub aabb_min: [f32; 3],
+    pub aabb_max: [f32; 3],
+    pub activation: u8,
+    pub target_tag: String,
+    pub command: u8,
+    pub command_arg: String,
+    pub fire_mode: u8,
+    pub rearm_ms: f32,
+    pub enabled_on_spawn: bool,
+}
+
 /// Light shape. Governs which fields of `MapLight` are meaningful.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LightType {
@@ -517,6 +534,8 @@ pub struct MapData {
     /// flows through generic runtime classname dispatch.
     pub kinematic_movers: Vec<MapKinematicMover>,
     pub kinematic_waypoints: Vec<MapKinematicWaypoint>,
+    /// Invisible `trigger_volume` brush entities, emitted as PRL AABBs only.
+    pub trigger_volumes: Vec<MapTriggerVolume>,
     /// Per-region volumetric fog volumes resolved from `fog_volume` brush
     /// entities and `fog_lamp` / `fog_tube` point entities. AABBs are in engine
     /// space (Y-up, meters). See `context/lib/build_pipeline.md`.

@@ -40,7 +40,8 @@ Capabilities attach via component columns in the registry. Current engine compon
 | Weapon | Runtime weapon params and per-instance cooldown state |
 | MeshComponent | Skinned model handle (`model: String`) plus optional declared animation states and per-entity animation state; spawned via `prop_mesh` or a descriptor carrying a mesh component |
 | Health | Hit points (`max`, `current`) plus optional hitscan hitbox (one world-aligned AABB, fixed per archetype); declared via the `components.health` descriptor block. Health-bearing entities are damage targets. They are hitscan-targetable when they have an authored AABB hitbox or a zone-bearing skinned model (§7). |
-| KinematicMover | Engine-owned deterministic mover driver seeded from PRL `KinematicGeometry`; not script-queryable in the first slice |
+| KinematicMover | Engine-owned deterministic mover driver seeded from PRL `KinematicGeometry`; readable through `world.query({ component: "kinematic_mover" })`, whose SDK handle builds declarative mover-command reactions |
+| TriggerVolume | Engine-owned, serializable touch/use activation state for an invisible level-authored AABB; fires closed-vocabulary mover commands on the host |
 
 Type-specific data lives in the component. An entity is "a player" by virtue of carrying `PlayerMovement`, not by belonging to a typed collection. Other entity types follow the same pattern: enemies use an **Agent** component for navmesh path-following and collide-and-slide movement, plus an **AI brain** component for engine-owned combat behavior. Doors, projectiles, and pickups should attach their behavior through components instead of typed collections.
 
@@ -106,11 +107,12 @@ Game logic runs at a fixed tick rate, decoupled from render framerate. Renderer 
 | 0 | Transform snapshot | Copies current→previous transform for every already-live entity before any movement system runs. Entities spawned this tick skip the snapshot and initialize previous == current at construction (no pop on spawn). |
 | 1 | Kinematic mover tick | Advances deterministic mover transforms and tick deltas before player movement consumes mover collision/carry |
 | 2 | Player movement tick | Input-driven; resolves capsule physics and position before anything reads player state |
-| 3 | AI brain tick | Updates engine-owned combat/behavior state after player movement settles |
-| 4 | Host camera callback | Host-side camera/aim work runs after movement and AI, before aim-dependent steering and weapon systems |
-| 5 | Agent steering tick | Applies navigation steering after AI decisions and host camera work |
-| 6 | Weapon fire tick | Consumes resolved fire and aim data; may spawn impact effects and apply damage |
-| 7 | Death sweep | Processes entities whose health reached zero after same-tick damage |
+| 3 | Trigger tick | Host evaluates touch-entry and use-overlap triggers after player movement; commands mutate mover phase for the next mover tick |
+| 4 | AI brain tick | Updates engine-owned combat/behavior state after player movement settles |
+| 5 | Host camera callback | Host-side camera/aim work runs after movement and AI, before aim-dependent steering and weapon systems |
+| 6 | Agent steering tick | Applies navigation steering after AI decisions and host camera work |
+| 7 | Weapon fire tick | Consumes resolved fire and aim data; may spawn impact effects and apply damage |
+| 8 | Death sweep | Processes entities whose health reached zero after same-tick damage |
 
 Scripting bridges run later, outside the core simulation seam. Emitter, particle sim, light, and fog-volume bridges each walk their component columns and may spawn or despawn entities.
 

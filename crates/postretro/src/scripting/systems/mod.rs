@@ -20,6 +20,7 @@ pub(crate) mod particle_sim;
 pub(crate) mod presentation_cells;
 pub(crate) mod shake_decay;
 pub(crate) mod system_reactions;
+pub(crate) mod trigger_volume_bridge;
 pub(crate) mod ui_proxy;
 pub(crate) mod vignette_decay;
 

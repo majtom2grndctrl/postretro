@@ -26,6 +26,7 @@ pub(crate) fn sim_command_to_input(cmd: &SimCommand, client_tick: u32) -> InputC
             running: cmd.movement.running,
             crouch_intent: cmd.movement.crouch_intent,
             facing_yaw: cmd.movement.facing_yaw,
+            use_pressed: cmd.use_pressed,
         },
         fire_button: WireFireButtonState {
             pressed: cmd.fire_button.pressed,
@@ -53,12 +54,14 @@ pub(crate) fn input_command_to_sim(input: &InputCommand) -> SimCommand {
             running: input.movement.running,
             crouch_intent: input.movement.crouch_intent,
             facing_yaw: input.movement.facing_yaw,
+            use_pressed: input.movement.use_pressed,
         },
         fire_button: FireButtonState {
             pressed: input.fire_button.pressed,
             active: input.fire_button.active,
         },
         reload: input.reload,
+        use_pressed: input.movement.use_pressed,
     }
 }
 
@@ -109,12 +112,14 @@ mod tests {
                 running: true,
                 crouch_intent: true,
                 facing_yaw: 1.234_5,
+                use_pressed: true,
             },
             fire_button: FireButtonState {
                 pressed: true,
                 active: false,
             },
             reload: true,
+            use_pressed: true,
         }
     }
 
@@ -126,9 +131,11 @@ mod tests {
         assert_eq!(a.movement.running, b.movement.running);
         assert_eq!(a.movement.crouch_intent, b.movement.crouch_intent);
         assert!((a.movement.facing_yaw - b.movement.facing_yaw).abs() < EPSILON);
+        assert_eq!(a.movement.use_pressed, b.movement.use_pressed);
         assert_eq!(a.fire_button.pressed, b.fire_button.pressed);
         assert_eq!(a.fire_button.active, b.fire_button.active);
         assert_eq!(a.reload, b.reload);
+        assert_eq!(a.use_pressed, b.use_pressed);
     }
 
     #[test]

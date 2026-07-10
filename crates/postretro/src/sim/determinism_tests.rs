@@ -93,12 +93,14 @@ impl RecordedCommand {
                 running: self.running,
                 crouch_intent: self.crouch_intent,
                 facing_yaw: self.facing_yaw,
+                use_pressed: false,
             },
             fire_button: FireButtonState {
                 pressed: self.fire_pressed,
                 active: self.fire_active,
             },
             reload: false,
+            use_pressed: false,
         }
     }
 
@@ -199,6 +201,7 @@ impl SimHarness {
             &sim_command,
             |_| command.to_post_movement_command(),
             DT,
+            None,
         )
     }
 
@@ -539,12 +542,14 @@ fn run_driven_agent_sim_tick(
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            use_pressed: false,
         },
         fire_button: FireButtonState {
             pressed: false,
             active: false,
         },
         reload: false,
+        use_pressed: false,
     };
     let _ = simulate_tick(
         registry,
@@ -565,6 +570,7 @@ fn run_driven_agent_sim_tick(
             aim_direction: Vec3::Z,
         },
         DT,
+        None,
     );
 }
 
@@ -901,6 +907,7 @@ fn run_movement_tick_applies_local_command_only_to_marked_pawn() {
         running: false,
         crouch_intent: false,
         facing_yaw: 0.0,
+        use_pressed: false,
     };
 
     let events = super::run_movement_tick(&registry, &floor_world(), GRAVITY, &input, DT);
@@ -964,6 +971,7 @@ fn run_movement_tick_no_marker_fallback_drives_first_movement_pawn_only() {
         running: false,
         crouch_intent: false,
         facing_yaw: 0.0,
+        use_pressed: false,
     };
 
     let events = super::run_movement_tick(&registry, &floor_world(), GRAVITY, &input, DT);
@@ -1024,6 +1032,7 @@ fn run_movement_tick_invalid_marker_fallback_drives_first_movement_pawn_only() {
         running: false,
         crouch_intent: false,
         facing_yaw: 0.0,
+        use_pressed: false,
     };
 
     let events = super::run_movement_tick(&registry, &floor_world(), GRAVITY, &input, DT);
@@ -1077,12 +1086,14 @@ fn simulate_tick_uses_sim_command_fire_button_with_callback_aim() {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            use_pressed: false,
         },
         fire_button: FireButtonState {
             pressed: false,
             active: false,
         },
         reload: false,
+        use_pressed: false,
     };
 
     let events = simulate_tick(
@@ -1104,6 +1115,7 @@ fn simulate_tick_uses_sim_command_fire_button_with_callback_aim() {
             aim_direction: Vec3::Z,
         },
         DT,
+        None,
     );
 
     assert!(
@@ -1145,12 +1157,14 @@ fn simulate_tick_normalizes_callback_aim_direction_before_weapon_fire() {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            use_pressed: false,
         },
         fire_button: FireButtonState {
             pressed: true,
             active: true,
         },
         reload: false,
+        use_pressed: false,
     };
 
     let events = simulate_tick(
@@ -1172,6 +1186,7 @@ fn simulate_tick_normalizes_callback_aim_direction_before_weapon_fire() {
             aim_direction: Vec3::new(0.0, 0.0, -2.0),
         },
         DT,
+        None,
     );
 
     assert_eq!(
@@ -1219,12 +1234,14 @@ fn simulate_tick_noops_weapon_fire_for_invalid_callback_aim_direction() {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            use_pressed: false,
         },
         fire_button: FireButtonState {
             pressed: true,
             active: true,
         },
         reload: false,
+        use_pressed: false,
     };
 
     let events = simulate_tick(
@@ -1246,6 +1263,7 @@ fn simulate_tick_noops_weapon_fire_for_invalid_callback_aim_direction() {
             aim_direction: Vec3::ZERO,
         },
         DT,
+        None,
     );
 
     assert!(
@@ -1298,12 +1316,14 @@ fn simulate_tick_noops_weapon_fire_for_non_finite_callback_aim_origin() {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            use_pressed: false,
         },
         fire_button: FireButtonState {
             pressed: true,
             active: true,
         },
         reload: false,
+        use_pressed: false,
     };
 
     let events = simulate_tick(
@@ -1325,6 +1345,7 @@ fn simulate_tick_noops_weapon_fire_for_non_finite_callback_aim_origin() {
             aim_direction: Vec3::NEG_Z,
         },
         DT,
+        None,
     );
 
     assert!(

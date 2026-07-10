@@ -17,7 +17,8 @@ pub mod slot_table;
 #[cfg(feature = "script-ffi")]
 mod ffi;
 
-pub use components::kinematic_mover::{KinematicMoverComponent, KinematicMoverMode};
+pub use components::kinematic_mover::{KinematicMoverComponent, KinematicMoverMode, MoverCommand};
+pub use components::trigger_volume::{TriggerActivation, TriggerFireMode, TriggerVolumeComponent};
 pub use ctx::ScriptCtx;
 pub use data_descriptors::*;
 pub use data_registry::{DataRegistry, ScopedCrossing, ScopedReaction};

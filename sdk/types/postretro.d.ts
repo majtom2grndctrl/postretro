@@ -518,12 +518,13 @@ declare module "postretro" {
 
   export type LightComponent = { origin: Vec3; lightType: LightKind; intensity: number; color: Vec3; falloffModel: FalloffKind; falloffRange: number; coneAngleInner: number | null; coneAngleOuter: number | null; coneDirection: Vec3 | null; isDynamic: boolean; animation: LightAnimation | null };
 
-  /** Component-name literals accepted by `worldQuery` and the `world.query` SDK wrapper. New queryable component types extend this union. Valid values: `light`, `transform`, `emitter`, `fog_volume`, `particle`, `sprite_visual`. */
+  /** Component-name literals accepted by `worldQuery` and the `world.query` SDK wrapper. New queryable component types extend this union. Valid values: `light`, `transform`, `emitter`, `fog_volume`, `kinematic_mover`, `particle`, `sprite_visual`. */
   export type WorldQueryComponent =
     | "light"
     | "transform"
     | "emitter"
     | "fog_volume"
+    | "kinematic_mover"
     /** Always returns []. Engine-managed; scripts never iterate individual particles. */
     | "particle"
     /** Always returns []. Engine-managed. */
@@ -569,6 +570,15 @@ declare module "postretro" {
     component: LightComponent;
   };
 
+  /** Raw mover snapshot returned by `worldQuery` when filtering for kinematic movers. The SDK world-query wrapper exposes closed command-reaction builders; raw mover components remain engine-managed. */
+  export type MoverEntity = {
+    id: EntityId;
+    /** Mover position at query time (from the entity's Transform). */
+    position: Vec3;
+    /** The entity's tags at query time. Empty array if untagged. */
+    tags: ReadonlyArray<string>;
+  };
+
   /** Returns true if the entity id refers to a live entity. */
   export function entityExists(id: EntityId): boolean;
 
@@ -587,8 +597,8 @@ declare module "postretro" {
   /** Return the current world gravity in m/s² (negative = downward; positive = upward). Seeded from the worldspawn `initialGravity` KVP at level load and persists until the next level load or a `worldSetGravity` call. The `world.ts` vocabulary module wraps this as `world.getGravity`. */
   export function worldGetGravity(): number;
 
-  /** Return an array of entity handles matching the filter. Available in definition and data contexts. Filter shape: { component: "light" | "transform" | "emitter" | "fog_volume" | "particle" | "sprite_visual", tag?: string }. `"particle"` and `"sprite_visual"` always return `[]` (engine-managed; scripts never iterate individual particles). Unknown component values raise InvalidArgument. The `world.ts` vocabulary module wraps this as `world.query`. */
-  export function worldQuery<T extends WorldQueryComponent>(filter: { component: T; tag?: string | null }): ReadonlyArray<EntityForComponent<T>>;
+  /** Return an array of raw entity snapshots matching the filter. Available in definition and data contexts. Filter shape: { component: "light" | "transform" | "emitter" | "fog_volume" | "kinematic_mover" | "particle" | "sprite_visual", tag?: string }. `"particle"` and `"sprite_visual"` always return `[]` (engine-managed; scripts never iterate individual particles). Unknown component values raise InvalidArgument. The `world.ts` vocabulary module wraps these snapshots as `world.query` handles. */
+  export function worldQuery<T extends WorldQueryComponent>(filter: { component: T; tag?: string | null }): ReadonlyArray<RawEntityForComponent<T>>;
 
   /** Set the world gravity in m/s² (negative = downward; positive = upward). NaN and non-finite values are silently ignored (a warning is logged) so a misbehaving script cannot wedge particle physics. Effect is immediate and persists until the next level load or another `worldSetGravity` call. The `world.ts` vocabulary module wraps this as `world.setGravity`. */
   export function worldSetGravity(value: number): void;
@@ -653,16 +663,36 @@ declare module "postretro" {
     fadeSaturation(opts: { from: number; to: number; periodMs: number }): SequenceStep[];
   }
 
-  /** Maps a component-name literal to the rich entity handle type. `"light"`
+  /** Typed mover handle returned by `world.query({ component: "kinematic_mover" })`. Raw mover phase is engine-managed; methods build closed command steps. */
+  export interface MoverEntityHandle extends MoverEntity {
+    start(): SequenceStep[];
+    stop(): SequenceStep[];
+    reverse(): SequenceStep[];
+    goToPathNode(node: string): SequenceStep[];
+  }
+
+  /** Maps a component-name literal to the rich `world.query` handle type. `"light"`
    * yields `LightEntityHandle` (capability methods); `"emitter"` yields
    * `EmitterEntity` (id, position, tags, plus the full `BillboardEmitterComponent`
-   * snapshot under `component`); `"fog_volume"` yields `FogVolumeHandle`.
+   * snapshot under `component`); `"fog_volume"` yields `FogVolumeHandle`; and
+   * `"kinematic_mover"` yields `MoverEntityHandle`.
    * Other component names fall back to the bare `Entity` shape (`id`,
    * `position`, `tags`). */
   export type EntityForComponent<T extends WorldQueryComponent> =
     T extends "light" ? LightEntityHandle :
     T extends "emitter" ? EmitterEntity :
     T extends "fog_volume" ? FogVolumeHandle :
+    T extends "kinematic_mover" ? MoverEntityHandle :
+    Entity;
+
+  /** Maps a component-name literal to the unwrapped `worldQuery` snapshot
+   * type. `world.query` applies the capability and command-builder wrappers
+   * represented by `EntityForComponent` above. */
+  export type RawEntityForComponent<T extends WorldQueryComponent> =
+    T extends "light" ? LightEntity :
+    T extends "emitter" ? EmitterEntity :
+    T extends "fog_volume" ? FogVolumeEntity :
+    T extends "kinematic_mover" ? MoverEntity :
     Entity;
 
   /** Vocabulary object installed as `globalThis.world`. */
@@ -768,6 +798,15 @@ declare module "postretro" {
     args: FogAnimation | null;
   };
 
+  /** Sequence step that resumes a kinematic mover. */
+  export type MoverStartStep = { id: EntityId; primitive: "moverStart"; args: Record<string, never> };
+  /** Sequence step that stops a kinematic mover. */
+  export type MoverStopStep = { id: EntityId; primitive: "moverStop"; args: Record<string, never> };
+  /** Sequence step that reverses a kinematic mover. */
+  export type MoverReverseStep = { id: EntityId; primitive: "moverReverse"; args: Record<string, never> };
+  /** Sequence step that moves a kinematic mover to a named path node. */
+  export type MoverGoToPathNodeStep = { id: EntityId; primitive: "moverGoToPathNode"; args: { node: string } };
+
   /** Union of every supported sequence step shape. New sequenced primitives extend this union. */
   export type SequenceStep =
     | SetLightAnimationStep
@@ -776,7 +815,11 @@ declare module "postretro" {
     | SetFogEdgeSoftnessStep
     | SetFogFalloffStep
     | SetFogParamsStep
-    | SetFogAnimationStep;
+    | SetFogAnimationStep
+    | MoverStartStep
+    | MoverStopStep
+    | MoverReverseStep
+    | MoverGoToPathNodeStep;
 
   /** Sequence reaction body: ordered per-entity primitive invocations. Steps run in array order at dispatch. */
   export type SequenceReactionDescriptor = {

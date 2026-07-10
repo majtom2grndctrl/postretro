@@ -215,6 +215,7 @@ pub(crate) fn kinematic_mover_state_to_wire(
             mover.current_linear_velocity.y,
             mover.current_linear_velocity.z,
         ],
+        target_segment: mover.target_segment,
     }
 }
 

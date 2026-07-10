@@ -517,12 +517,13 @@ export type LightAnimation = {
 
 export type LightComponent = { origin: Vec3, lightType: LightKind, intensity: number, color: Vec3, falloffModel: FalloffKind, falloffRange: number, coneAngleInner: number?, coneAngleOuter: number?, coneDirection: Vec3?, isDynamic: boolean, animation: LightAnimation? }
 
---- Component-name literals accepted by `worldQuery` and the `world.query` SDK wrapper. New queryable component types extend this union. Valid values: `light`, `transform`, `emitter`, `fog_volume`, `particle`, `sprite_visual`.
+--- Component-name literals accepted by `worldQuery` and the `world.query` SDK wrapper. New queryable component types extend this union. Valid values: `light`, `transform`, `emitter`, `fog_volume`, `kinematic_mover`, `particle`, `sprite_visual`.
 export type WorldQueryComponent =
   "light"
   | "transform"
   | "emitter"
   | "fog_volume"
+  | "kinematic_mover"
   --- Always returns []. Engine-managed; scripts never iterate individual particles.
   | "particle"
   --- Always returns []. Engine-managed.
@@ -568,6 +569,15 @@ export type LightEntity = {
   component: LightComponent,
 }
 
+--- Raw mover snapshot returned by `worldQuery` when filtering for kinematic movers. The SDK world-query wrapper exposes closed command-reaction builders; raw mover components remain engine-managed.
+export type MoverEntity = {
+  id: EntityId,
+  --- Mover position at query time (from the entity's Transform).
+  position: Vec3,
+  --- The entity's tags at query time. Empty array if untagged.
+  tags: {string},
+}
+
 --- Returns true if the entity id refers to a live entity.
 declare function entityExists(id: EntityId): boolean
 
@@ -586,8 +596,8 @@ declare function storeWrite(name: string, value: any): ()
 --- Return the current world gravity in m/s² (negative = downward; positive = upward). Seeded from the worldspawn `initialGravity` KVP at level load and persists until the next level load or a `worldSetGravity` call. The `world.ts` vocabulary module wraps this as `world.getGravity`.
 declare function worldGetGravity(): number
 
---- Return an array of entity handles matching the filter. Available in definition and data contexts. Filter shape: { component: "light" | "transform" | "emitter" | "fog_volume" | "particle" | "sprite_visual", tag?: string }. `"particle"` and `"sprite_visual"` always return `[]` (engine-managed; scripts never iterate individual particles). Unknown component values raise InvalidArgument. The `world.ts` vocabulary module wraps this as `world.query`.
-declare worldQuery: ((filter: { component: "light", tag: string? }) -> {LightEntity}) & ((filter: { component: "emitter", tag: string? }) -> {EmitterEntity}) & ((filter: { component: "fog_volume", tag: string? }) -> {FogVolumeEntity}) & ((filter: WorldQueryFilter) -> {Entity})
+--- Return an array of raw entity snapshots matching the filter. Available in definition and data contexts. Filter shape: { component: "light" | "transform" | "emitter" | "fog_volume" | "kinematic_mover" | "particle" | "sprite_visual", tag?: string }. `"particle"` and `"sprite_visual"` always return `[]` (engine-managed; scripts never iterate individual particles). Unknown component values raise InvalidArgument. The `world.ts` vocabulary module wraps these snapshots as `world.query` handles.
+declare worldQuery: ((filter: { component: "light", tag: string? }) -> {LightEntity}) & ((filter: { component: "emitter", tag: string? }) -> {EmitterEntity}) & ((filter: { component: "fog_volume", tag: string? }) -> {FogVolumeEntity}) & ((filter: { component: "kinematic_mover", tag: string? }) -> {MoverEntity}) & ((filter: WorldQueryFilter) -> {Entity})
 
 --- Set the world gravity in m/s² (negative = downward; positive = upward). NaN and non-finite values are silently ignored (a warning is logged) so a misbehaving script cannot wedge particle physics. Effect is immediate and persists until the next level load or another `worldSetGravity` call. The `world.ts` vocabulary module wraps this as `world.setGravity`.
 declare function worldSetGravity(value: number): ()
@@ -657,7 +667,7 @@ export type LightEntityHandle = {
 }
 
 --- Generic entity handle returned by `world:query` when the component is
---- not "light", "emitter", or "fog_volume". Carries only id, position, and tags.
+--- not "light", "emitter", "fog_volume", or "kinematic_mover". Carries only id, position, and tags.
 export type EntityHandle = {
   id: EntityId,
   position: Vec3,
@@ -680,16 +690,29 @@ export type FogVolumeHandle = {
   fadeSaturation: (self: FogVolumeHandle, opts: { from: number, to: number, periodMs: number }) -> {SetFogAnimationStep},
 }
 
+--- Typed mover handle returned by `world:query({ component = "kinematic_mover" })`.
+--- Raw mover phase is engine-managed; methods return closed command steps.
+export type MoverEntityHandle = {
+  id: EntityId,
+  position: Vec3,
+  tags: {string},
+  start: (self: MoverEntityHandle) -> {MoverStartStep},
+  stop: (self: MoverEntityHandle) -> {MoverStopStep},
+  reverse: (self: MoverEntityHandle) -> {MoverReverseStep},
+  goToPathNode: (self: MoverEntityHandle, node: string) -> {MoverGoToPathNodeStep},
+}
+
 --- `world` vocabulary global. Wraps `worldQuery` with a typed handle.
 --- `"light"` returns `LightEntityHandle` values (with capability methods);
 --- `"emitter"` returns `EmitterEntity` values carrying the full
 --- `BillboardEmitterComponent` snapshot under `component`; `"fog_volume"`
---- returns `FogVolumeHandle` values; other components fall back to the
---- bare `EntityHandle` shape.
+--- returns `FogVolumeHandle` values; `"kinematic_mover"` returns
+--- `MoverEntityHandle`; other components fall back to the bare `EntityHandle` shape.
 export type World = {
   query: ((self: World, filter: { component: "light", tag: string? }) -> {LightEntityHandle})
        & ((self: World, filter: { component: "emitter", tag: string? }) -> {EmitterEntity})
        & ((self: World, filter: { component: "fog_volume", tag: string? }) -> {FogVolumeHandle})
+       & ((self: World, filter: { component: "kinematic_mover", tag: string? }) -> {MoverEntityHandle})
        & ((self: World, filter: WorldQueryFilter) -> {EntityHandle}),
   --- Current world gravity in m/s² (negative = downward; positive = upward).
   --- Seeded from the worldspawn `initialGravity` KVP at level load and
@@ -843,9 +866,33 @@ export type SetFogAnimationStep = {
   args: FogAnimation?,
 }
 
+export type MoverStartStep = {
+  id: EntityId,
+  primitive: "moverStart",
+  args: {},
+}
+
+export type MoverStopStep = {
+  id: EntityId,
+  primitive: "moverStop",
+  args: {},
+}
+
+export type MoverReverseStep = {
+  id: EntityId,
+  primitive: "moverReverse",
+  args: {},
+}
+
+export type MoverGoToPathNodeStep = {
+  id: EntityId,
+  primitive: "moverGoToPathNode",
+  args: { node: string },
+}
+
 --- Union of every supported sequence step shape. New sequenced primitives
 --- extend this union.
-export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep
+export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep
 
 --- Sequence reaction body: ordered per-entity primitive invocations. Steps
 --- run in array order at dispatch.

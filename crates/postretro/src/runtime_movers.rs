@@ -185,7 +185,8 @@ fn spawn_from_geometry(
     let mut spawned = Vec::with_capacity(geometry.movers.len());
 
     for mover in &geometry.movers {
-        let waypoints = resolve_waypoint_chain(mover, &geometry.waypoints, &waypoint_indices)?;
+        let (waypoints, waypoint_names) =
+            resolve_waypoint_chain(mover, &geometry.waypoints, &waypoint_indices)?;
         let mode = mover_mode(mover)?;
         let transform = Transform {
             position: mover.origin,
@@ -201,6 +202,7 @@ fn spawn_from_geometry(
         let component = KinematicMoverComponent::new(
             mover.mover_id,
             waypoints,
+            waypoint_names,
             mover.speed_mps,
             mover.wait_ms,
             mode,
@@ -318,7 +320,7 @@ fn resolve_waypoint_chain(
     mover: &LoadedKinematicMover,
     waypoints: &[LoadedKinematicWaypoint],
     waypoint_indices: &HashMap<&str, usize>,
-) -> Result<Vec<Vec3>, RuntimeMoverLoadError> {
+) -> Result<(Vec<Vec3>, Vec<String>), RuntimeMoverLoadError> {
     if mover.path.is_empty() {
         return Err(RuntimeMoverLoadError::new(format!(
             "mover {} (`{}`) has an empty path",
@@ -327,6 +329,7 @@ fn resolve_waypoint_chain(
     }
 
     let mut resolved = Vec::new();
+    let mut resolved_names = Vec::new();
     let mut seen = HashSet::new();
     let mut current = mover.path.as_str();
     loop {
@@ -344,6 +347,7 @@ fn resolve_waypoint_chain(
         };
         let waypoint = &waypoints[index];
         resolved.push(waypoint.origin);
+        resolved_names.push(waypoint.name.clone());
         if waypoint.next.is_empty() {
             break;
         }
@@ -360,7 +364,7 @@ fn resolve_waypoint_chain(
         )));
     }
 
-    Ok(resolved)
+    Ok((resolved, resolved_names))
 }
 
 fn mover_mode(mover: &LoadedKinematicMover) -> Result<KinematicMoverMode, RuntimeMoverLoadError> {
@@ -455,6 +459,7 @@ mod tests {
             mover.waypoints,
             vec![Vec3::new(1.0, 2.0, 3.0), Vec3::new(3.0, 2.0, 3.0)]
         );
+        assert_eq!(mover.waypoint_names, ["a", "b"]);
         assert_eq!(mover.speed_mps, 2.0);
         assert_eq!(mover.wait_ms, 125.0);
         assert!(mover.started);

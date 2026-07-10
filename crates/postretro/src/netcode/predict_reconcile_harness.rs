@@ -20,14 +20,14 @@ use postretro_net::wire::ClientMessage;
 
 use super::predict_reconcile_harness_test_fixtures::{
     CLIENT_ID, DT, GRAVITY, LoopbackHarness, MOVING_PLATFORM_ID, MOVING_PLATFORM_SPEED_MPS,
-    forward_command, idle_command, input_at,
+    forward_command, idle_command, input_at, use_command,
 };
 use super::prediction::{ORDINARY_CORRECTION_MAX_M, TELEPORT_CORRECTION_MIN_M};
 use super::reconcile::reconcile_local_pawn;
 use crate::movement::MovementInput;
 use crate::netcode::host_handle_client_message;
 use crate::sim::SimCommand;
-use postretro_entities::Transform;
+use postretro_entities::{KinematicMoverComponent, Transform, TriggerVolumeComponent};
 use postretro_foundation::{GroundRef, PlayerMovementComponent};
 
 /// The mandated automated harness profile (Task 6 §B), applied in BOTH directions:
@@ -776,6 +776,87 @@ fn moving_platform_reconciles_under_mandated_profile_without_accumulating_drift(
     assert!(h.bystanders_alive());
 }
 
+// A remote Use edge must cross the real client-input wire path before only the host
+// evaluates the trigger. The resulting target phase then returns through ordinary
+// mover replication for the client's locally predicted mover to reconcile against.
+#[test]
+fn remote_use_trigger_fires_on_host_and_reconciles_mover_target() {
+    let mut h = LoopbackHarness::with_moving_platform(light_link());
+    const MOVER_TOLERANCE_M: f32 = 0.16;
+
+    h.step_until_armed(&idle_command());
+    assert!(
+        h.client_pawn.is_some(),
+        "client must arm before sending Use"
+    );
+
+    // Exactly one client input carries the Use edge; subsequent commands are neutral.
+    h.step(&use_command());
+
+    let use_trigger = h
+        .host_use_trigger
+        .expect("moving-platform fixture has Use trigger");
+    let mut observed_client_target = false;
+    let mut mover_errors = Vec::new();
+    for _ in 0..120 {
+        h.step(&idle_command());
+
+        let host_fired = h
+            .host_registry
+            .get_component::<TriggerVolumeComponent>(use_trigger)
+            .expect("host Use trigger remains live")
+            .latched;
+        let host_target = h
+            .host_registry
+            .get_component::<KinematicMoverComponent>(h.host_mover.expect("host mover"))
+            .expect("host mover component")
+            .target_segment;
+        let client_target = h
+            .client_registry
+            .get_component::<KinematicMoverComponent>(h.client_mover.expect("client mover"))
+            .expect("client mover component")
+            .target_segment;
+
+        if host_fired && host_target == Some(1) && client_target == Some(1) {
+            observed_client_target = true;
+            mover_errors.push(h.mover_position_error());
+            break;
+        }
+    }
+
+    assert!(
+        h.host_registry
+            .get_component::<TriggerVolumeComponent>(use_trigger)
+            .expect("host Use trigger remains live")
+            .latched,
+        "the remote Use edge must fire the host-only Use trigger"
+    );
+    assert_eq!(
+        h.host_registry
+            .get_component::<KinematicMoverComponent>(h.host_mover.expect("host mover"))
+            .expect("host mover component")
+            .target_segment,
+        Some(1),
+        "host trigger command targets the finish waypoint"
+    );
+    assert!(
+        observed_client_target,
+        "the host target phase must replicate to the client mover"
+    );
+    assert_eq!(
+        h.client_registry
+            .iter_with_kind(postretro_entities::ComponentKind::TriggerVolume)
+            .count(),
+        0,
+        "the client holds no trigger state and never evaluates trigger commands"
+    );
+    assert!(
+        mover_errors.iter().all(|error| *error <= MOVER_TOLERANCE_M),
+        "client mover must reconcile to the host-issued target; errors={mover_errors:?}"
+    );
+    assert!(h.bystanders_alive());
+}
+
 // ---------------------------------------------------------------------------
 // Section B — Headline deterministic latency gate
 // ---------------------------------------------------------------------------
@@ -986,12 +1067,14 @@ fn scripted_command(tick: u32) -> SimCommand {
             running: phase < 100,
             crouch_intent: false,
             facing_yaw,
+            use_pressed: false,
         },
         fire_button: crate::weapon::FireButtonState {
             pressed: false,
             active: false,
         },
         reload: false,
+        use_pressed: false,
     }
 }
 

@@ -86,6 +86,26 @@ cargo-udeps (nightly), cargo-audit (cargo-deny covers it), cargo-geiger (redunda
 
 CI (when adopted): `dtolnay/rust-toolchain@stable` + `Swatinem/rust-cache@v2` (`save-if` main only); install tool binaries via `taiki-e/install-action` (prebuilt, seconds); `apt-get install libasound2-dev libudev-dev`; parallel jobs — cheap-checks (< 1 min, no rust cache) / clippy / nextest. CI can run `cargo run -p xtask -- lint` for exact local/CI parity.
 
-## 5. Where LLM review still pays
+## 5. Security scanning
+
+> **Ownership decision:** `unsafe` is a **hard requirement** — `rquickjs` embeds QuickJS as C and `mlua` embeds Luau. We treat the safety of those libraries' internals as **their** maintainers' responsibility; auditing QuickJS's C is out of scope. `[workspace.lints.rust] unsafe_code = "deny"` still governs *our* crates (scoped `allow` in `alloc_probe.rs`) — the VM C code is an external dependency, not first-party unsafe. Postretro's security interest is the **FFI marshalling layer**: how script values are converted into engine data and interacted with at runtime, not the VM internals.
+
+Rust removes most classic scanner targets (memory-safety, injection), so the deterministic security surface here is narrow and specific: **dependency advisories** plus **malformed-input robustness of the code that crosses a trust boundary** — the script→data FFI marshalling, the `.prl` loader, and the netcode wire codec. Two tools, both selected to trial.
+
+### cargo-deny — dependency advisories (adopt)
+Already configured for dependency-boundary `bans` (§3.3); also enable its `advisories` check against the RustSec DB (~600 advisories, actively maintained — June 2026 release) and `[bans] multiple-versions`. Subsumes standalone `cargo-audit`, and surfaces *unmaintained* transitive crates — relevant given the C-backed VM stack. Seconds to run, no compilation.
+
+### cargo-fuzz — trust-boundary parsers and the FFI marshalling layer (trial)
+libFuzzer harnesses that feed arbitrary bytes to code ingesting untrusted input and assert **"returns `Err`, never panics, terminates."** This is the deterministic tool that systematically catches the panic-on-bad-input class the review found by hand (the `unreachable!` decoding disk data; the unvalidated replicated `target_segment`). Priority targets, in order of interest:
+
+1. **Script→data FFI marshalling** — the layer *after* the VM boundary where script values become engine data that is then interacted with at runtime. Fuzz the plain-Rust side, not the live VM: the descriptor/IR readers in `crates/scripting-core/src/data_descriptors/{js,lua}/*` and `ir/`, `conv.rs`, and the serde_json transit — feed arbitrary `serde_json::Value` / IR-descriptor input and assert bounded, panic-free conversion. This exercises the guards already living there (e.g. `JSON_CONVERSION_MAX_DEPTH = 64` in `crates/entities/src/ffi.rs`, which caps recursion from deeply-nested script objects) plus the depth/shape/type-coercion paths — without needing a QuickJS context. Fast and pure: the ideal fuzz surface, and the one that matches where we actually own risk.
+2. **`.prl` loader** — `from_bytes` / section decoders in `level-loader` and `level-format`. A target over raw file bytes asserting `Err`-not-panic would have caught the `trigger_volume_bridge.rs` `unreachable!`.
+3. **Netcode wire codec** — the client/host wire-apply path (`net`, `netcode`). Attacker-controlled bytes over the co-op socket; assert every client-supplied value is range-validated before it drives sim (the `target_segment` gap).
+
+cargo-fuzz needs nightly **only for the fuzz build** (libFuzzer/sanitizer instrumentation); it does not affect the stable workspace build — targets live in a `fuzz/` member excluded from the default workspace. Run on a schedule (nightly cron) with a committed seed corpus, not per-PR — fuzzing finds *over time*, so a per-PR run is theater. A found crash becomes a committed regression seed **plus** a `proptest`/unit test in the owning crate, so it stays fixed deterministically after the fuzzer moves on.
+
+**Ride-alongs if CI lands:** GitHub secret scanning and CodeQL (Rust GA since Oct 2025, security queries added Dec 2025) — near-zero marginal cost, modest signal for a no-web engine. Sanitizers (nightly `-Zsanitizer=address/undefined`) could exercise the QuickJS C boundary *if* the script sandbox ever enters the threat model — deferred per the ownership decision above.
+
+## 6. Where LLM review still pays
 
 Deterministic tooling shrinks the review surface; it does not replace review. Concentrate review tokens on: cross-module invariant coupling (duplicated lookups, global state lifecycles), spec semantics vs. driver invariants (the E17-C `stop`/`reverse` class — and note the mandated-deterministic-test-per-verb pattern in specs was the thing that actually caught those; keep requiring it), test assertions that encode fixture artifacts rather than contracts, and missing boundary diagnostics. Everything in §1's first table should never reach a reviewer again.

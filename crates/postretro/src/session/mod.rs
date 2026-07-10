@@ -561,11 +561,12 @@ impl ScriptingCore {
 // A reduced session-construction path beside `Session::build`: the scripting core
 // only (script runtime + context, registries, classname dispatch, the data-script
 // runner living on the runtime), with no audio, input, UI/modal stack, net
-// endpoint, player options I/O, or window. A headless driver (a LATER task) loads
-// a `.prl` map, runs fixed ticks with scripted commands, dumps world state, and
-// exits — without a GPU or display server. A net endpoint is deliberately omitted,
-// not designed out: Epic 15 Phase 4's dedicated server attaches one to this same
-// path later. See: context/plans/in-progress/agentic-observability.
+// endpoint, player options I/O, or window. The headless driver
+// (`observability::driver`) loads a `.prl` map, runs fixed ticks with scripted
+// commands, dumps world state, and exits — without a GPU or display server. A net
+// endpoint is deliberately omitted, not designed out: Epic 15 Phase 4's dedicated
+// server attaches one to this same path later. See:
+// context/plans/in-progress/agentic-observability.
 
 /// Shared hint naming the observe launcher, used by both headless preconditions.
 #[cfg(feature = "observability")]
@@ -603,7 +604,7 @@ impl HeadlessSession {
     ///
     /// Mod-init, the `None`-manifest check ([`require_headless_mod_manifest`]), and
     /// the manifest drain ([`ScriptingCore::drain_manifest_registrations`]) are
-    /// LATER driver steps, not part of construction.
+    /// driver steps performed by `observability::driver`, not part of construction.
     pub(crate) fn build(map_path: &std::path::Path) -> Result<Self> {
         require_scripts_build_sidecar()?;
         let content_root = crate::startup::session::content_root_from_map(map_path.to_str());

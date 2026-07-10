@@ -168,7 +168,6 @@ fn run_headless_inner(runspec_arg: Option<&str>) -> Result<String> {
     //    tracker (above), the AI-warning set, the mover tick states, and the
     //    animation clock advanced by dt each tick.
     let registry = script_ctx.registry.clone();
-    let gravity = script_ctx.gravity.get();
     let mut ai_warned: HashSet<String> = HashSet::new();
     let mut anim_time: f64 = 0.0;
     let mut prev_fire_active = false;
@@ -181,6 +180,10 @@ fn run_headless_inner(runspec_arg: Option<&str>) -> Result<String> {
         // (aim carries no neutral — it persists until overridden).
         let active = active_command_at(&runspec.commands, tick);
         let effective_aim = effective_aim_at(&runspec.commands, tick);
+        // Re-read every tick (a `Cell<f32>`, cheap) so a mid-run `world.setGravity`
+        // reaction is observed the same tick as the windowed loop (`main.rs`),
+        // rather than only at level-load time.
+        let gravity = script_ctx.gravity.get();
 
         let facing_yaw = effective_aim
             .map(|aim| yaw_from_direction(aim.direction))
@@ -237,13 +240,19 @@ fn run_headless_inner(runspec_arg: Option<&str>) -> Result<String> {
             TICK_DT,
         );
 
-        events.push(TickEventRecord {
-            tick,
-            movement: to_owned_strings(&tick_events.movement),
-            ai: to_owned_strings(&tick_events.ai),
-            weapon: to_owned_strings(&tick_events.weapon),
-            death: tick_events.death.clone(),
-        });
+        // Skip building/pushing the owned-string record entirely when the dump
+        // won't emit events — `build_output_document` discards this vec wholesale
+        // for `dump.events == false`, so buffering it per tick is pure wasted
+        // allocation (and an OOM vector on a large `ticks` with `events: false`).
+        if runspec.dump.events {
+            events.push(TickEventRecord {
+                tick,
+                movement: to_owned_strings(&tick_events.movement),
+                ai: to_owned_strings(&tick_events.ai),
+                weapon: to_owned_strings(&tick_events.weapon),
+                death: tick_events.death.clone(),
+            });
+        }
 
         anim_time += TICK_DT as f64;
     }
@@ -395,7 +404,7 @@ mod tests {
     fn entry(tick: u32, fire: bool, aim: Option<AimCommand>) -> CommandEntry {
         CommandEntry {
             tick,
-            movement: super::super::MovementCommand::default(),
+            movement: super::super::runspec::MovementCommand::default(),
             aim,
             fire,
             reload: false,

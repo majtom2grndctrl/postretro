@@ -12,24 +12,14 @@ mod runspec;
 
 pub(crate) use driver::run_headless;
 
-// `apply_dump` is re-exported for symmetry with the rest of the dump vocabulary
-// but is reached only through `build_output_document` today; the same is true of
-// a few payload structs the driver serializes transitively rather than by name.
-#[allow(unused_imports)]
-pub(crate) use document::{
-    DumpSelection, EntityRecord, OutOfFrame, OutputDocument, PawnHealth, PlayerPawnSummary,
-    TickEventRecord, apply_dump, build_output_document,
-};
-#[allow(unused_imports)]
-pub(crate) use runspec::{
-    AimCommand, CommandEntry, DumpSpec, MovementCommand, RunSpec, RunSpecError, parse_runspec,
-};
+pub(crate) use document::{PawnHealth, PlayerPawnSummary, TickEventRecord, build_output_document};
+pub(crate) use runspec::{AimCommand, CommandEntry, parse_runspec};
 
 use postretro_entities::ComponentKind;
 use serde::Serialize;
 use thiserror::Error;
 
-/// Failure applying a [`DumpSpec`] against a registry. The only currently
+/// Failure applying a [`runspec::DumpSpec`] against a registry. The only currently
 /// possible failure is an unrecognized component-kind filter string; it is a
 /// bad *value* (not a malformed document), so it surfaces here at dump time
 /// rather than at runspec-parse time. The headless driver exits non-zero on it.
@@ -137,26 +127,206 @@ fn sort_json_maps(value: &mut serde_json::Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use postretro_entities::ComponentValue;
+    use glam::Vec3;
+    use postretro_entities::components::agent::AgentComponent;
+    use postretro_entities::components::billboard_emitter::BillboardEmitterComponent;
+    use postretro_entities::components::brain::BrainComponent;
     use postretro_entities::components::health::HealthComponent;
-    use std::collections::HashMap;
+    use postretro_entities::components::light::{FalloffKind, LightComponent, LightKind};
+    use postretro_entities::components::mesh::MeshComponent;
+    use postretro_entities::components::particle::ParticleState;
+    use postretro_entities::components::player_movement::PlayerMovementComponent;
+    use postretro_entities::components::sprite_visual::SpriteVisual;
+    use postretro_entities::components::weapon::WeaponComponent;
+    use postretro_entities::{
+        AiDescriptor, AiStateNames, AirParams, CapsuleParams, ComponentValue, DescriptorProvenance,
+        DescriptorSpawnPath, FallParams, FireMode, FogVolumeComponent, GroundParams,
+        KinematicMoverComponent, KinematicMoverMode, PlayerMovementDescriptor, ResolutionMode,
+        SpeedParams, Transform, WeaponDescriptor,
+    };
+    use std::collections::{BTreeSet, HashMap};
+
+    /// Minimal valid movement descriptor for materializing a representative
+    /// `PlayerMovementComponent` in [`sample_component_value`].
+    fn sample_player_movement_descriptor() -> PlayerMovementDescriptor {
+        PlayerMovementDescriptor {
+            capsule: CapsuleParams {
+                radius: 0.35,
+                half_height: 0.9,
+                eye_height: 1.1,
+            },
+            ground: GroundParams {
+                speed: SpeedParams {
+                    walk: 7.0,
+                    run: 11.0,
+                    crouch: 3.0,
+                },
+                accel: 12.0,
+                step_height: 0.35,
+                max_slope: 45.0,
+            },
+            air: AirParams {
+                forward_steer: 0.3,
+                accel: 2.0,
+                max_control_speed: 4.0,
+                bunny_hop: true,
+                jumps: 1,
+                jump_velocity: 5.0,
+                jump_ceiling: 2.0,
+            },
+            fall: FallParams {
+                terminal_velocity: 50.0,
+            },
+            stuck_stop_enabled: true,
+            stuck_stop_threshold: 0.001,
+            dash: None,
+            forgiveness: None,
+            crouch: None,
+            view_feel: None,
+        }
+    }
+
+    /// One representative, validly-shaped `ComponentValue` for each
+    /// `ComponentKind`, used to derive the real serde `"kind"` tag. Exhaustive
+    /// `match` with no `_` arm on purpose: a new component kind is a compile
+    /// error here, so the drift guard below can never silently skip it.
+    fn sample_component_value(kind: ComponentKind) -> ComponentValue {
+        match kind {
+            ComponentKind::Transform => ComponentValue::Transform(Transform::default()),
+            ComponentKind::Light => ComponentValue::Light(LightComponent {
+                origin: [0.0, 0.0, 0.0],
+                light_type: LightKind::Point,
+                intensity: 1.0,
+                color: [1.0, 1.0, 1.0],
+                falloff_model: FalloffKind::Linear,
+                falloff_range: 10.0,
+                cone_angle_inner: None,
+                cone_angle_outer: None,
+                cone_direction: None,
+                is_dynamic: false,
+                animated_slot: None,
+                animation: None,
+            }),
+            ComponentKind::BillboardEmitter => {
+                ComponentValue::BillboardEmitter(BillboardEmitterComponent {
+                    rate: 1.0,
+                    burst: None,
+                    spread: 0.0,
+                    lifetime: 1.0,
+                    velocity: [0.0, 0.0, 0.0],
+                    buoyancy: 0.0,
+                    drag: 0.0,
+                    size_over_lifetime: [1.0].into(),
+                    opacity_over_lifetime: [1.0].into(),
+                    color: [1.0, 1.0, 1.0],
+                    sprite: "sprite".into(),
+                    spin_rate: 0.0,
+                    spin_animation: None,
+                })
+            }
+            ComponentKind::ParticleState => ComponentValue::ParticleState(ParticleState {
+                velocity: [0.0, 0.0, 0.0],
+                age: 0.0,
+                lifetime: 1.0,
+                buoyancy: 0.0,
+                drag: 0.0,
+                size_curve: [1.0].into(),
+                opacity_curve: [1.0].into(),
+                emitter: None,
+            }),
+            ComponentKind::SpriteVisual => ComponentValue::SpriteVisual(SpriteVisual {
+                sprite: "sprite".into(),
+                size: 1.0,
+                opacity: 1.0,
+                rotation: 0.0,
+                tint: [1.0, 1.0, 1.0],
+            }),
+            ComponentKind::FogVolume => ComponentValue::FogVolume(FogVolumeComponent {
+                density: 0.1,
+                glow: 0.0,
+                edge_softness: 0.0,
+                falloff: 1.0,
+                tint: [1.0, 1.0, 1.0],
+                saturation: 1.0,
+                min_brightness: 0.0,
+                light_range: 1.0,
+                animation: None,
+            }),
+            ComponentKind::PlayerMovement => ComponentValue::PlayerMovement(Box::new(
+                PlayerMovementComponent::from_descriptor(&sample_player_movement_descriptor()),
+            )),
+            ComponentKind::Weapon => {
+                ComponentValue::Weapon(WeaponComponent::from_descriptor(&WeaponDescriptor {
+                    damage: 10.0,
+                    range: 20.0,
+                    cooldown_ms: 100.0,
+                    fire_mode: FireMode::Semi,
+                    resolution: ResolutionMode::Hitscan,
+                    credit_source: None,
+                }))
+            }
+            ComponentKind::DescriptorProvenance => {
+                ComponentValue::DescriptorProvenance(DescriptorProvenance {
+                    canonical_name: "test_archetype".into(),
+                    owned_components: BTreeSet::new(),
+                    map_overrides: BTreeSet::new(),
+                    spawn_path: DescriptorSpawnPath::MapPlacement,
+                })
+            }
+            ComponentKind::Mesh => {
+                ComponentValue::Mesh(MeshComponent::stateless("test_model".into()))
+            }
+            ComponentKind::Health => ComponentValue::Health(HealthComponent {
+                max: 1.0,
+                current: 1.0,
+                hitbox: None,
+                death_handled: false,
+                zone_multipliers: HashMap::new(),
+                contributor_ledger: Default::default(),
+            }),
+            ComponentKind::Agent => ComponentValue::Agent(AgentComponent::new(0.3, 1.6, 0.35, 5.0)),
+            ComponentKind::Brain => {
+                ComponentValue::Brain(BrainComponent::from_descriptor(&AiDescriptor {
+                    detection_range: 10.0,
+                    attack_range: 2.0,
+                    leash_range: 15.0,
+                    attack_damage: 5.0,
+                    attack_cooldown_ms: 500.0,
+                    move_speed: 3.0,
+                    death_despawn_ms: 1000.0,
+                    states: AiStateNames {
+                        idle: "idle".into(),
+                        alert: "alert".into(),
+                        attack: "attack".into(),
+                        death: "death".into(),
+                    },
+                }))
+            }
+            ComponentKind::KinematicMover => {
+                ComponentValue::KinematicMover(KinematicMoverComponent::new(
+                    1,
+                    vec![Vec3::ZERO, Vec3::new(1.0, 0.0, 0.0)],
+                    1.0,
+                    0.0,
+                    KinematicMoverMode::Once,
+                    false,
+                ))
+            }
+        }
+    }
 
     #[test]
-    fn component_kind_snake_matches_component_value_serde_tag() {
-        // Drift guard: the filter string must equal the `kind` tag serde emits
-        // for that variant. Derive the expectation from `ComponentValue`'s own
-        // serialization rather than a hand-copied literal.
-        let health = ComponentValue::Health(HealthComponent {
-            max: 1.0,
-            current: 1.0,
-            hitbox: None,
-            death_handled: false,
-            zone_multipliers: HashMap::new(),
-            contributor_ledger: Default::default(),
-        });
-        let json = serde_json::to_value(&health).unwrap();
-        let tag = json.get("kind").unwrap().as_str().unwrap();
-        assert_eq!(tag, component_kind_snake(ComponentKind::Health));
+    fn component_kind_snake_matches_component_value_serde_tag_for_every_kind() {
+        // Drift guard: for every ComponentKind, the hand-written filter string
+        // must equal the `kind` tag ComponentValue's own serde envelope emits.
+        // `sample_component_value`'s exhaustive match means a new variant is a
+        // compile error there, not a silently-passing test here.
+        for kind in ALL_KINDS {
+            let value = sample_component_value(kind);
+            let json = serde_json::to_value(&value).unwrap();
+            let tag = json.get("kind").unwrap().as_str().unwrap();
+            assert_eq!(tag, component_kind_snake(kind), "kind={kind:?}");
+        }
     }
 
     #[test]

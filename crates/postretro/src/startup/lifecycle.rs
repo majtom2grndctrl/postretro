@@ -822,7 +822,10 @@ impl App {
         // level's sounds from `sounds/`, released at unload. Fault-tolerant — a
         // missing directory or undecodable file warns and is skipped; silent if
         // audio init failed (`audio` is `None`). Session-owned; clone the content
-        // root so the `self.session` borrow does not alias the read.
+        // root so the `self.session` borrow does not alias the read. Deliberately
+        // last in install, after `levelLoad`: safe because `playSound` enqueues an
+        // async `SystemReactionCommand` drained a frame later, after install
+        // completes, so no reaction observes unloaded sounds.
         let content_root = self.content_root.clone();
         if let Some(audio) = self
             .session
@@ -1185,7 +1188,12 @@ pub(crate) fn install_world_cpu(
 
     // Fire `levelLoad`. Headless fires it too so data-script reactions and
     // crossings compose identically; runs after the clip resolve so a
-    // `setAnimationState` reaction sees concrete clip indices.
+    // `setAnimationState` reaction sees concrete clip indices. This fire now
+    // precedes the windowed light/sprite enrollment passes
+    // (`absorb_dynamic_lights`, sprite-collection registration), which run after
+    // this function returns — so a `levelLoad` reaction that spawns a dynamic
+    // light or emitter is enrolled and renders (previously dropped). Intentional,
+    // accepted improvement.
     fire_named_event_with_sequences(
         "levelLoad",
         &script_ctx.data_registry.borrow(),
@@ -2658,14 +2666,13 @@ mod tests {
 
     #[test]
     fn windowed_install_assigns_light_entity_ids_before_fog_entity_ids() {
-        // Drift guard for the segment-A / segment-B split. The windowed install
-        // runs the light-bridge populate (creating one `LightComponent` entity per
-        // authored light) BETWEEN segment A and segment B, and segment B creates
-        // the fog-volume entities. Light `EntityId`s must therefore precede fog
-        // `EntityId`s — both bridges key dirty tracking on `EntityId`, so a single
-        // contiguous CPU install would reorder fog ids ahead of light ids. This
-        // asserts the ordering the two-function split preserves; the other
-        // lifecycle tests call the bridges directly and never check id order.
+        // Drift guard for segment B's fog-after-preexisting-lights behavior: given
+        // light entities already registered (as the windowed caller does BETWEEN
+        // segment A and segment B), segment B's fog-volume populate must land its
+        // ids after them — both bridges key dirty tracking on `EntityId`. This test
+        // reconstructs that sequence directly rather than driving
+        // `install_level_payload`, so it does NOT guard the real caller's call
+        // order — a future reorder there would not fail this test.
         let mut app = test_app();
         let ctx = script_ctx(&app);
 

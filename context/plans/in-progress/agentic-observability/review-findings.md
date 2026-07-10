@@ -17,6 +17,37 @@ Base for all line numbers: branch HEAD at review time (post-fmt commit).
 
 ---
 
+## Resolution status (fix pass)
+
+All ten 🟡 findings **resolved** this pass (owner-approved; the two deviations
+accepted + documented, no behavior revert):
+
+1. Out-of-order/duplicate command ticks → rejected at parse (`RunSpecError::UnorderedCommandTick`) + tests.
+2. Non-finite `wish_dir` → rejected at parse (`RunSpecError::NonFiniteWishDir`) + tests.
+3. Event buffering → `TickEventRecord` construction now gated behind `dump.events`.
+4. `levelLoad` order → ACCEPTED + documented (code comment + `boot_sequence.md` §3 note); splash confirmed not displaced.
+5. `audio_load` order → ACCEPTED + `boot_sequence.md` §3 table updated (sound load last) + code comment.
+6. Gravity → now re-read inside the tick loop (windowed parity).
+7. Component-kind drift guard → rewritten to iterate `ALL_KINDS` and assert each against `ComponentValue`'s serde tag.
+8. Light-before-fog drift-guard comment → corrected to state it guards segment B, not the caller's call order.
+9. Dead re-exports → pruned; both `#[allow(unused_imports)]` removed; dangling intra-doc links fixed.
+10. Stale "LATER" comments → updated to name `observability::driver`.
+
+Also fixed in the same pass: `boot_sequence.md` §3 sprite-pass rows (this branch
+folded two sprite passes into one — table renumbered, cross-refs updated); a
+`MovementCommand` re-export warning (driver test now uses the full `runspec::` path).
+
+🟢 nits: deferred (not this pass).
+
+**Pre-existing, NOT this branch — flagged for a separate decision:**
+`crates/postretro/src/scripting/systems/ai_tests.rs:~2316` trips
+`clippy::assertions_on_constants` under `cargo clippy --all-targets` (newer clippy).
+It is outside the session diff and blocks `--all-targets` clippy (so this pass's new
+test code is compiled + test-passing but not clippy-linted). Production-surface clippy
+(`-p postretro --features observability`, lib+bin) is clean.
+
+---
+
 ## 🟡 Should fix
 
 ### 1. Out-of-order / duplicate command ticks are silently mis-selected
@@ -65,9 +96,15 @@ Old body fired `levelLoad` dead last.
 - This is a **strict improvement** (no regression direction found; despawn case is
   also cleaner), BUT it deviates from Task 1's contract "behavior-preserving …
   same install order, same side effects."
-- **Fix:** conscious sign-off + a one-line code/spec note that `levelLoad`
-  reaction-spawned lights/emitters are now enrolled (previously dropped). No code
-  change needed if the improvement is accepted — just document it.
+- **DECISION (owner): ACCEPT + document.** Confirmed the splash is not displaced —
+  `install_level_payload` (fires `levelLoad` inside segment B, `lifecycle.rs:1190`)
+  runs at `lifecycle.rs:435`; `renderer.clear_splash()` is at `:443`, after install
+  returns, so the splash stays up through the whole install regardless of where
+  `levelLoad` fires within it.
+- **Fix (no behavior revert):** add a code comment at the `levelLoad` fire site
+  noting it now precedes the windowed light/sprite enrollment passes, so
+  reaction-spawned lights/emitters are enrolled (previously dropped); add a matching
+  note to `context/lib/boot_sequence.md` §3.
 
 ### 5. `audio_load` step relocated to the end of install
 **Found by 2 lenses (hygiene 🟡 + extraction tracer 🟢/safe).** `load_level_sounds`
@@ -80,9 +117,12 @@ stage 9).
 - Fragile: any future *synchronous* audio reaction primitive touching
   `session.audio` during `levelLoad` would now run before sounds load. Also shifts
   the observable startup-timing log order.
-- **Fix:** move `audio.load_level_sounds` back to before `install_world_cpu`
-  (right after `bridges_populated`), OR accept the reorder and update
-  `boot_sequence.md` §3 to match.
+- **DECISION (owner): ACCEPT + update docs.** Keep `audio_load` at the end of
+  install; update `context/lib/boot_sequence.md` §3's Level Install Order table to
+  place level-sound loading last (after the `levelLoad` event), matching the code.
+- **Fix (no behavior revert):** update `boot_sequence.md` §3; add a one-line code
+  comment at the `audio.load_level_sounds` call site noting the deliberate
+  end-of-install position and the async-`playSound` safety that makes it safe.
 
 ### 6. Gravity read once before the tick loop; windowed re-reads it every tick
 **Seam tracer.** `driver.rs` hoists `let gravity = script_ctx.gravity.get();`

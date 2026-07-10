@@ -12,7 +12,7 @@ use crate::movement::MovementInput;
 
 /// Default entry cap when a runspec omits `dump.cap`. Bounds the dumped entity
 /// list so a large world cannot produce an unbounded document; the driver still
-/// learns how many entries were dropped (see [`super::DumpSelection`]).
+/// learns how many entries were dropped (see [`super::document::DumpSelection`]).
 const DEFAULT_DUMP_CAP: usize = 1000;
 
 /// A complete headless run description: which map, how many fixed ticks, the
@@ -160,12 +160,63 @@ impl DumpSpec {
 pub(crate) enum RunSpecError {
     #[error("invalid runspec: {0}")]
     Parse(#[from] serde_json::Error),
+    /// `active_command_at`/`effective_aim_at` (`driver.rs`) select the active
+    /// entry with a reverse scan that is only correct if `commands` is sorted
+    /// strictly ascending by tick. An out-of-order or duplicate tick silently
+    /// shadows a command instead of erroring, so it is rejected here at parse
+    /// rather than sorted or de-duplicated for the caller.
+    #[error(
+        "invalid runspec: commands must be strictly ascending by tick; \
+         commands[{index}].tick = {tick} is not greater than the previous tick {previous}"
+    )]
+    UnorderedCommandTick {
+        index: usize,
+        tick: u32,
+        previous: u32,
+    },
+    /// `wish_dir` feeds `MovementInput::wish_dir` which the movement system
+    /// normalizes; a non-finite component (e.g. from an oversized authored
+    /// value overflowing to `inf`) normalizes to NaN, propagating to a NaN
+    /// pawn position that `serde_json` silently serializes as `null`. Rejected
+    /// here instead of clamped so authoring bugs surface loudly.
+    #[error("invalid runspec: commands[{index}].movement.wish_dir must be finite, got [{x}, {y}]")]
+    NonFiniteWishDir { index: usize, x: f32, y: f32 },
 }
 
-/// Parse a runspec from JSON text. Malformed JSON and unknown fields both yield
-/// an `Err` with a diagnostic message.
+/// Parse a runspec from JSON text. Malformed JSON, unknown fields, out-of-order
+/// or duplicate command ticks, and non-finite `wish_dir` components all yield an
+/// `Err` with a diagnostic message.
 pub(crate) fn parse_runspec(json: &str) -> Result<RunSpec, RunSpecError> {
-    Ok(serde_json::from_str(json)?)
+    let spec: RunSpec = serde_json::from_str(json)?;
+    validate_commands(&spec.commands)?;
+    Ok(spec)
+}
+
+/// Validate the sparse command timeline: ticks must be strictly ascending (no
+/// out-of-order or duplicate entries), and every `wish_dir` component must be
+/// finite. See [`RunSpecError::UnorderedCommandTick`] and
+/// [`RunSpecError::NonFiniteWishDir`] for why these are parse-time rejections
+/// rather than silent sort/clamp.
+fn validate_commands(commands: &[CommandEntry]) -> Result<(), RunSpecError> {
+    let mut previous_tick: Option<u32> = None;
+    for (index, entry) in commands.iter().enumerate() {
+        if let Some(previous) = previous_tick {
+            if entry.tick <= previous {
+                return Err(RunSpecError::UnorderedCommandTick {
+                    index,
+                    tick: entry.tick,
+                    previous,
+                });
+            }
+        }
+        previous_tick = Some(entry.tick);
+
+        let [x, y] = entry.movement.wish_dir;
+        if !x.is_finite() || !y.is_finite() {
+            return Err(RunSpecError::NonFiniteWishDir { index, x, y });
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -309,5 +360,69 @@ mod tests {
             spec.resolve_component(),
             Err(DumpError::UnknownComponentKind("shields".to_string()))
         );
+    }
+
+    // Regression: active_command_at/effective_aim_at (driver.rs) select the
+    // active entry via a reverse scan that assumes ascending ticks; an
+    // out-of-order entry was silently shadowed instead of rejected.
+    #[test]
+    fn parse_runspec_rejects_out_of_order_command_ticks() {
+        let json = r#"{
+            "map": "m.prl", "ticks": 20,
+            "commands": [ { "tick": 10 }, { "tick": 0 } ]
+        }"#;
+        let err = parse_runspec(json).unwrap_err();
+        assert!(
+            err.to_string().contains("commands[1]") && err.to_string().contains("10"),
+            "diagnostic should name the offending index and previous tick, got: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_runspec_rejects_duplicate_command_ticks() {
+        let json = r#"{
+            "map": "m.prl", "ticks": 20,
+            "commands": [ { "tick": 5 }, { "tick": 5 } ]
+        }"#;
+        let err = parse_runspec(json).unwrap_err();
+        assert!(
+            err.to_string().contains("commands[1]"),
+            "diagnostic should name the offending index, got: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_runspec_accepts_strictly_ascending_command_ticks() {
+        let json = r#"{
+            "map": "m.prl", "ticks": 20,
+            "commands": [ { "tick": 0 }, { "tick": 5 }, { "tick": 30 } ]
+        }"#;
+        let spec = parse_runspec(json).unwrap();
+        assert_eq!(spec.commands.len(), 3);
+    }
+
+    // Regression: a huge wish_dir magnitude overflows to inf, then normalizes
+    // to NaN downstream, producing a NaN pawn position serialized as `null`.
+    #[test]
+    fn parse_runspec_rejects_non_finite_wish_dir() {
+        let json = r#"{
+            "map": "m.prl", "ticks": 1,
+            "commands": [ { "tick": 0, "movement": { "wish_dir": [1e40, 0.0] } } ]
+        }"#;
+        let err = parse_runspec(json).unwrap_err();
+        assert!(
+            err.to_string().contains("wish_dir"),
+            "diagnostic should name wish_dir, got: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_runspec_accepts_normal_wish_dir() {
+        let json = r#"{
+            "map": "m.prl", "ticks": 1,
+            "commands": [ { "tick": 0, "movement": { "wish_dir": [0.5, -1.0] } } ]
+        }"#;
+        let spec = parse_runspec(json).unwrap();
+        assert_eq!(spec.commands[0].movement.wish_dir, [0.5, -1.0]);
     }
 }

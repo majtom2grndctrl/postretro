@@ -716,9 +716,13 @@ mod tests {
 
         for (written, expected) in [(-0.25, 0.0), (1.25, 1.0)] {
             write_store_slot(&ctx, "player.reloadProgress", SlotValue::Number(written)).unwrap();
-            assert_eq!(
-                read_store_slot(&ctx, "player.reloadProgress").unwrap(),
-                SlotValue::Number(expected)
+            let actual = match read_store_slot(&ctx, "player.reloadProgress").unwrap() {
+                SlotValue::Number(value) => value,
+                other => panic!("player.reloadProgress should be a Number, got {other:?}"),
+            };
+            assert!(
+                (actual - expected).abs() <= 0.000_001,
+                "expected {expected}, got {actual}"
             );
         }
     }

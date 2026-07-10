@@ -163,6 +163,9 @@ export type BarBindProp = (
 
 export type BarMaxProp = number | ReadonlyStateRef<number>;
 
+/** Linear retained-UI exit fade for a `Bar` with `visibleWhen`. */
+export type BarExitFade = { durationMs: number };
+
 /** One band in a `styleRanges` map. Mirrors `descriptor.rs` `StyleEntry`. */
 export type StyleRangeEntry = {
   upTo?: number;
@@ -913,9 +916,15 @@ export type BarProps = {
   max: BarMaxProp;
   fill: WidgetColor;
   background: WidgetColor;
+  /** Logical-reference px; omitted preserves the 120px default. */
+  width?: number;
+  /** Logical-reference px; omitted preserves the 12px default. */
+  height?: number;
   styleRanges?: StyleRangesProp;
   id?: string;
   visibleWhen?: Predicate;
+  /** Requires `visibleWhen`; the retained UI fades the terminal bar linearly. */
+  exitFade?: BarExitFade;
   role?: WidgetRole;
 };
 
@@ -940,6 +949,14 @@ export function Bar(props: BarProps): WidgetDescriptor {
     fill,
     background,
   };
+  for (const field of ["width", "height"] as const) {
+    const value = props[field];
+    if (value !== undefined) {
+      requireFiniteNumber(value, field, "Bar");
+      if (value <= 0) throw new Error(`Bar: \`${field}\` must be greater than zero`);
+      out[field] = value;
+    }
+  }
   if (props.id !== undefined) {
     requireNonemptyString(props.id, "id", "Bar");
     out.id = props.id;
@@ -947,6 +964,17 @@ export function Bar(props: BarProps): WidgetDescriptor {
   const styleRanges = buildStyleRanges(props.styleRanges, "Bar");
   if (styleRanges !== undefined) out.styleRanges = styleRanges;
   applyA11yFields(out, props, "Bar");
+  if (props.exitFade !== undefined) {
+    if (!("visibleWhen" in out)) {
+      throw new Error("Bar: `exitFade` requires `visibleWhen`");
+    }
+    requireObject(props.exitFade, "Bar.exitFade");
+    requireFiniteNumber(props.exitFade.durationMs, "exitFade.durationMs", "Bar");
+    if (props.exitFade.durationMs <= 0) {
+      throw new Error("Bar: `exitFade.durationMs` must be greater than zero");
+    }
+    out.exitFade = { durationMs: props.exitFade.durationMs };
+  }
   return out;
 }
 

@@ -17,7 +17,7 @@ use super::bindings::{
     BindingDiff, drive_bar_binding, drive_bar_max, drive_panel_binding, drive_text_binding,
 };
 use super::build::build_node;
-use super::draw::UiDrawData;
+use super::draw::{UiDrawData, bar_max_value, bar_slot_value};
 use super::predicate::resolve_predicate;
 use super::widget_meta::{harvest_image_nodes, harvest_visibility, measure_node};
 use super::{CellValues, ImageSizes};
@@ -58,10 +58,13 @@ pub struct UiTree {
     /// build from the descriptor's `visible_when` fields (harvested in lockstep
     /// with the taffy tree, so each predicate carries its nearest `localState`
     /// scope for `{ local }` resolution). The diff (`resolve_bindings`) resolves
-    /// each predicate per frame against the snapshot and, on a resolved-value
-    /// flip, toggles the node's taffy `Display` (`None` ⇄ `Flex`) and marks it
-    /// dirty. A node without `visibleWhen` never appears here and stays visible.
-    visibility: HashMap<NodeId, VisibilityState>,
+    /// each predicate per frame against the snapshot. Ordinary `visibleWhen`
+    /// flips toggle the node's taffy `Display` (`None` ⇄ `Flex`) and mark it
+    /// dirty. A `Bar` with `exitFade` is the exception: its visible→hidden flip
+    /// retains `Display` while its terminal image fades, then hides after the
+    /// authored duration. A node without `visibleWhen` never appears here and
+    /// stays visible.
+    pub(super) visibility: HashMap<NodeId, VisibilityState>,
     /// Image leaf nodes whose intrinsic size depends on renderer-owned
     /// `ImageSizes`. The map itself is an external measure input, so retained
     /// layout needs a compact generation check and a way to dirty only the nodes
@@ -533,18 +536,22 @@ impl UiTree {
         }
 
         // Reactive visibility (M13 G2, Task 2b): resolve each `visibleWhen`
-        // predicate against this frame's snapshot and, on a resolved-value FLIP
-        // since the last diff, toggle the node's taffy `Display` (`None` ⇄ `Flex`)
-        // and mark it dirty so the layout gate recomputes and the per-frame
-        // focus-rect re-export reflects it. A targeted invalidation: visibility
-        // flips are rare, authored-frequency events (`lib/ui.md` §3), so this
-        // re-uses the same relayout path bound content changes take. The first
-        // diff always applies (`prev` is `None`). The node STAYS in the taffy tree
-        // — only its `Display` flips — so the descriptor↔taffy 1:1 lockstep that
+        // predicate against this frame's snapshot. For ordinary widgets, a
+        // resolved-value FLIP since the last diff toggles taffy's `Display`
+        // (`None` ⇄ `Flex`) and marks it dirty so the layout gate recomputes and
+        // the per-frame focus-rect re-export reflects it. A `Bar` with `exitFade`
+        // is the exception: its true→false transition retains `Display` while its
+        // terminal image fades, then hides after the authored duration. This
+        // targeted invalidation re-uses the relayout path bound content changes
+        // take; visibility flips are rare, authored-frequency events (`lib/ui.md`
+        // §3). The first diff always applies (`prev` is `None`). The node STAYS in
+        // the taffy tree — only `Display` changes for binary visibility or after
+        // an exit fade — so the descriptor↔taffy 1:1 lockstep that
         // `export_focus_rects` walks survives. Visibility is NEVER applied in the
         // descriptor walk (`presentation_cells.rs::reconcile`), so a hidden subtree
         // never tears down its `localState` cells.
         let mut visibility_flips: Vec<(NodeId, Display)> = Vec::new();
+        let mut capture_bar_exit: Vec<NodeId> = Vec::new();
         for (node, state) in self.visibility.iter_mut() {
             let resolved = resolve_predicate(
                 &state.predicate.source,
@@ -553,18 +560,79 @@ impl UiTree {
                 slot_values,
                 cell_values,
             );
-            if state.prev != Some(resolved) {
-                state.prev = Some(resolved);
-                // A true predicate (`1.0`) shows the node at its authored
-                // `Display` (`Flex`/`Grid`); a false one (`0.0`) hides it via
-                // `Display::None` while leaving it in the tree.
-                let display = if resolved >= 0.5 {
-                    state.visible_display
+            let is_visible = resolved >= 0.5;
+            let was_visible = state.prev.map(|value| value >= 0.5);
+            if is_visible {
+                // A true retrigger while fading cancels the retained terminal
+                // image and restores a fully opaque live bar in this frame.
+                if let Some(exit) = state.bar_exit_fade.as_mut()
+                    && exit.started_at.is_some()
+                {
+                    exit.clear();
+                    diff.appearance_changed = true;
+                }
+                if was_visible != Some(true) {
+                    visibility_flips.push((*node, state.visible_display));
+                }
+            } else if was_visible.is_none() {
+                // A false first resolution is simply hidden; it never fades in.
+                visibility_flips.push((*node, Display::None));
+            } else if was_visible == Some(true) {
+                if let Some(exit) = state.bar_exit_fade.as_mut() {
+                    // Bindings were resolved above, so this captures the same
+                    // terminal displayed numerator/denominator this frame would
+                    // have drawn before lifecycle visibility changed.
+                    exit.started_at = Some(time_seconds);
+                    capture_bar_exit.push(*node);
+                    diff.appearance_changed = true;
                 } else {
-                    Display::None
-                };
-                visibility_flips.push((*node, display));
+                    visibility_flips.push((*node, Display::None));
+                }
+            } else if let Some(exit) = state.bar_exit_fade.as_mut()
+                && let Some(started_at) = exit.started_at
+            {
+                // The snapshot clock is accumulated `f64` time; accept its
+                // sub-ulp subtraction noise at the authored endpoint so a
+                // 500ms fade is gone on the exact 500ms frame.
+                if time_seconds - started_at >= exit.duration_seconds - f64::EPSILON {
+                    exit.clear();
+                    visibility_flips.push((*node, Display::None));
+                } else {
+                    // Fade alpha is clocked presentation state, so every active
+                    // fade frame needs a fresh CPU draw list even with no slot
+                    // changes.
+                    diff.appearance_changed = true;
+                }
             }
+            state.prev = Some(resolved);
+        }
+        for node in capture_bar_exit {
+            let (value, max) = match self.taffy.get_node_context(node) {
+                Some(NodeContext::Bar {
+                    bind,
+                    bind_scope,
+                    max,
+                    last_resolved,
+                    last_max_resolved,
+                    tween,
+                    ..
+                }) => {
+                    let value = match (tween, last_resolved) {
+                        (Some(_), Some(displayed)) => *displayed,
+                        _ => bar_slot_value(bind, bind_scope.as_deref(), slot_values, cell_values),
+                    };
+                    let max = last_max_resolved.unwrap_or_else(|| bar_max_value(max, slot_values));
+                    (value, max)
+                }
+                _ => continue,
+            };
+            let exit = self
+                .visibility
+                .get_mut(&node)
+                .and_then(|state| state.bar_exit_fade.as_mut())
+                .expect("only a Bar can request an exit fade");
+            exit.captured_value = Some(value);
+            exit.captured_max = Some(max);
         }
         for (node, display) in visibility_flips {
             let mut style = self.taffy.style(node).expect("node has a style").clone();

@@ -373,6 +373,16 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         network: ReplicationScope::OwnerPrivatePlayer,
     },
     EngineStateCatalogEntry {
+        wire_name: "player.reloadActive",
+        sdk_path: &["player", "reloadActive"],
+        value_type: EngineStateValueType::Boolean,
+        default: EngineStateDefault::Boolean(false),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
         wire_name: "player.reloadProgress",
         sdk_path: &["player", "reloadProgress"],
         value_type: EngineStateValueType::Number,
@@ -619,6 +629,7 @@ mod tests {
                 "input.mode",
                 "player.health",
                 "player.maxHealth",
+                "player.reloadActive",
                 "player.reloadProgress",
                 "player.weaponCooldownMs",
                 "screen.flash",
@@ -653,6 +664,18 @@ mod tests {
             player_max_health.capability,
             EngineStateCapability::Readonly
         );
+
+        let reload_active = entries
+            .iter()
+            .find(|entry| entry.wire_name == "player.reloadActive")
+            .unwrap();
+        assert_eq!(reload_active.sdk_path, &["player", "reloadActive"]);
+        assert_eq!(reload_active.value_type, EngineStateValueType::Boolean);
+        assert_eq!(reload_active.default, EngineStateDefault::Boolean(false));
+        assert_eq!(reload_active.range, None);
+        assert!(!reload_active.persist);
+        assert_eq!(reload_active.capability, EngineStateCapability::Readonly);
+        assert_eq!(reload_active.network, ReplicationScope::None);
 
         let reload_progress = entries
             .iter()

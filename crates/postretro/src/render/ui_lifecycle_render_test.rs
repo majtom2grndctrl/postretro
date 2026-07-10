@@ -669,6 +669,8 @@ fn health_bar_tree() -> AnchoredTree {
             }),
             fill: ColorValue::Literal(HUD_BAR_HEALTHY),
             background: ColorValue::Literal(HUD_BAR_BACKGROUND),
+            width: None,
+            height: None,
             id: None,
             style_ranges: Some(StyleRanges {
                 max: 1.0,
@@ -688,6 +690,7 @@ fn health_bar_tree() -> AnchoredTree {
                 ],
             }),
             visible_when: None,
+            exit_fade: None,
             role: None,
         }),
         capture_mode: CaptureMode::Passthrough,

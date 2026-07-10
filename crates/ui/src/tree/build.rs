@@ -309,8 +309,8 @@ fn build_bar(
     };
     let style = Style {
         size: Size {
-            width: length(DEFAULT_BAR_SIZE[0]),
-            height: length(DEFAULT_BAR_SIZE[1]),
+            width: length(bar.width.unwrap_or(DEFAULT_BAR_SIZE[0])),
+            height: length(bar.height.unwrap_or(DEFAULT_BAR_SIZE[1])),
         },
         ..Default::default()
     };
@@ -326,6 +326,7 @@ fn build_bar(
                 max: bar.max.clone(),
                 fill: resolve_color(&bar.fill, theme),
                 background: resolve_color(&bar.background, theme),
+                exit_fade: bar.exit_fade.clone(),
                 last_resolved: None,
                 last_max_resolved: None,
                 tween: None,

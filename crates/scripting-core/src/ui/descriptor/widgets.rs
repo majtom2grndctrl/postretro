@@ -520,12 +520,24 @@ pub struct SliderBind {
 /// `fill`/`background` are color slots (literal or theme token). `bar` is
 /// horizontal-only in v1 (a vertical field is a later additive change).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(
+    rename_all = "camelCase",
+    deny_unknown_fields,
+    try_from = "BarWidgetWire"
+)]
 pub struct BarWidget {
     pub bind: SliderBind,
     pub max: BarMax,
     pub fill: ColorValue,
     pub background: ColorValue,
+    /// Optional authored width in logical-reference pixels. Absent preserves the
+    /// original 120px bar width.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<f32>,
+    /// Optional authored height in logical-reference pixels. Absent preserves
+    /// the original 12px bar height.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<f32>,
     /// Authored stable id (M13 Goal F, Task 3). See `TextWidget::id`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -538,9 +550,95 @@ pub struct BarWidget {
     /// Optional reactive visibility predicate (M13 G2). See `TextWidget::visible_when`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visible_when: Option<Predicate>,
+    /// Optional linear exit fade. This is meaningful only alongside
+    /// `visible_when`; SDK and descriptor frontends reject orphaned fades.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_fade: Option<BarExitFade>,
     /// Optional a11y role override (M13 G2). See `TextWidget::role`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<Role>,
+}
+
+/// Serde-only input shape for [`BarWidget`]. Keeping validation in the
+/// descriptor type means editable JSON assets uphold the same bar contract as
+/// the JS and Luau bridges.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BarWidgetWire {
+    bind: SliderBind,
+    max: BarMax,
+    fill: ColorValue,
+    background: ColorValue,
+    #[serde(default)]
+    width: Option<f32>,
+    #[serde(default)]
+    height: Option<f32>,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    style_ranges: Option<StyleRanges>,
+    #[serde(default)]
+    visible_when: Option<Predicate>,
+    #[serde(default)]
+    exit_fade: Option<BarExitFade>,
+    #[serde(default)]
+    role: Option<Role>,
+}
+
+impl TryFrom<BarWidgetWire> for BarWidget {
+    type Error = String;
+
+    fn try_from(wire: BarWidgetWire) -> Result<Self, Self::Error> {
+        let bar = Self {
+            bind: wire.bind,
+            max: wire.max,
+            fill: wire.fill,
+            background: wire.background,
+            width: wire.width,
+            height: wire.height,
+            id: wire.id,
+            style_ranges: wire.style_ranges,
+            visible_when: wire.visible_when,
+            exit_fade: wire.exit_fade,
+            role: wire.role,
+        };
+        bar.validate()?;
+        Ok(bar)
+    }
+}
+
+impl BarWidget {
+    /// Validate the authored contract shared by script bridges and raw serde
+    /// descriptor loads.
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        for (field, value) in [("width", self.width), ("height", self.height)] {
+            if value.is_some_and(|value| !value.is_finite() || value <= 0.0) {
+                return Err(format!(
+                    "`bar.{field}` must be a finite number greater than zero"
+                ));
+            }
+        }
+        if let Some(exit_fade) = &self.exit_fade {
+            if self.visible_when.is_none() {
+                return Err("`bar.exitFade` requires `visibleWhen`".to_string());
+            }
+            if !exit_fade.duration_ms.is_finite() || exit_fade.duration_ms <= 0.0 {
+                return Err(
+                    "`bar.exitFade.durationMs` must be a finite number greater than zero"
+                        .to_string(),
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Authored linear exit-fade policy for a passive [`BarWidget`]. The retained UI
+/// owns the timer and capture; gameplay only publishes `visibleWhen`'s source.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BarExitFade {
+    pub duration_ms: f32,
 }
 
 /// Denominator for a `bar` fill fraction. A literal number keeps the original

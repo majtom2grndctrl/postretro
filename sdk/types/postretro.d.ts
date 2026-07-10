@@ -610,6 +610,7 @@ declare module "postretro" {
     readonly player: {
       readonly health: ReadonlyStateRef<number>;
       readonly maxHealth: ReadonlyStateRef<number>;
+      readonly reloadActive: ReadonlyStateRef<boolean>;
       readonly reloadProgress: ReadonlyStateRef<number>;
       readonly weaponCooldownMs: ReadonlyStateRef<number>;
     };
@@ -1214,8 +1215,10 @@ declare module "postretro/ui" {
   export type SliderProps = { id: string; bind: SliderBindProp; min: number; max: number; step: number; capturesNav?: string[]; focusNeighbors?: FocusNeighborsProp; disabled?: boolean; visibleWhen?: Predicate; role?: WidgetRole } & ({ label: LocalizedText; labelledBy?: never } | { labelledBy: string; label?: never });
   /** Build an interactive slider descriptor. */
   export function Slider(props: SliderProps): WidgetDescriptor;
-  /** Props for `Bar`. `bind` is readonly numeric state/local value; `max` is a finite number or readonly numeric state ref; `fill` and `background` are RGBA/token colors. */
-  export type BarProps = { bind: BarBindProp; max: BarMaxProp; fill: WidgetColor; background: WidgetColor; styleRanges?: StyleRangesProp; id?: string; visibleWhen?: Predicate; role?: WidgetRole };
+  /** Linear retained-UI exit fade for a `Bar` with `visibleWhen`. */
+  export type BarExitFade = { durationMs: number };
+  /** Props for `Bar`. `width`/`height` are positive logical-reference px; `exitFade` requires `visibleWhen` and fades the retained terminal image linearly. */
+  export type BarProps = { bind: BarBindProp; max: BarMaxProp; fill: WidgetColor; background: WidgetColor; width?: number; height?: number; styleRanges?: StyleRangesProp; id?: string; visibleWhen?: Predicate; exitFade?: BarExitFade; role?: WidgetRole };
   /** Build a passive bar descriptor. Displayed fill is `value / max` clamped to `[0, 1]`. */
   export function Bar(props: BarProps): WidgetDescriptor;
   /** Props for `Announce`. `priority` defaults to `"polite"`; `visibleWhen` gates whether the live-region message is active. */

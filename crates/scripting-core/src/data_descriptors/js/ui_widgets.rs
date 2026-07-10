@@ -2,6 +2,7 @@
 // See: context/lib/scripting.md
 
 use super::super::*;
+use crate::ui::descriptor::BarExitFade;
 
 // --- JS UI deserialization --------------------------------------------------
 
@@ -267,17 +268,40 @@ pub fn bar_widget_from_js<'js>(
     ctx: &Ctx<'js>,
     obj: &Object<'js>,
 ) -> Result<BarWidget, DescriptorError> {
-    Ok(BarWidget {
+    let visible_when = predicate_opt_from_js(obj, "visibleWhen")?;
+    let exit_fade = bar_exit_fade_from_js(obj)?;
+    let bar = BarWidget {
         bind: slider_bind_from_js(ctx, obj, "bind")?
             .ok_or(DescriptorError::MissingField { field: "bind" })?,
         max: bar_max_from_js(obj)?,
         fill: color_value_from_js(obj, "fill")?,
         background: color_value_from_js(obj, "background")?,
+        width: optional_bar_dimension_js(obj, "width")?,
+        height: optional_bar_dimension_js(obj, "height")?,
         id: get_optional_string_js(obj, "id")?,
         style_ranges: style_ranges_from_js(ctx, obj)?,
-        visible_when: predicate_opt_from_js(obj, "visibleWhen")?,
+        visible_when,
+        exit_fade,
         role: role_opt_from_js(obj)?,
-    })
+    };
+    bar.validate()
+        .map_err(|reason| DescriptorError::InvalidShape { reason })?;
+    Ok(bar)
+}
+
+fn optional_bar_dimension_js<'js>(
+    obj: &Object<'js>,
+    field: &'static str,
+) -> Result<Option<f32>, DescriptorError> {
+    get_optional_f32_js(obj, field)
+}
+
+fn bar_exit_fade_from_js<'js>(obj: &Object<'js>) -> Result<Option<BarExitFade>, DescriptorError> {
+    let Some(fade) = optional_object_js(obj, "exitFade")? else {
+        return Ok(None);
+    };
+    let duration_ms = get_required_f32_js(&fade, "durationMs")?;
+    Ok(Some(BarExitFade { duration_ms }))
 }
 
 /// Read an `announce` widget (M13 G2): a required `text` and an optional

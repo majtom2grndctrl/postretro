@@ -7442,9 +7442,9 @@ mod tests {
         use postretro_entities::SlotValue;
 
         // The default table carries engine `player.*` slots with `None` values,
-        // except `player.reloadProgress`, which starts at zero. Setting one of
-        // the value-less slots asserts the boundary contract: the snapshot clones
-        // value-bearing slots and omits value-less ones.
+        // except the reload-feedback slots, which start at inactive/zero. Setting
+        // one of the value-less slots asserts the boundary contract: the snapshot
+        // clones value-bearing slots and omits value-less ones.
         let mut table = postretro_entities::SlotTable::new();
         table
             .get_mut("player.health")
@@ -7457,6 +7457,11 @@ mod tests {
             snapshot.get("player.health"),
             Some(&SlotValue::Number(75.0)),
             "value-bearing slot is cloned into the snapshot",
+        );
+        assert_eq!(
+            snapshot.get("player.reloadActive"),
+            Some(&SlotValue::Boolean(false)),
+            "engine-owned player.reloadActive defaults to false and is cloned",
         );
         assert_eq!(
             snapshot.get("player.reloadProgress"),
@@ -7500,8 +7505,8 @@ mod tests {
         );
         assert_eq!(
             snapshot.len(),
-            7,
-            "only the set player.health and default-valued player.reloadProgress + screen.flash + screen.vignette + screen.shake + input.mode + ui.textEntry appear",
+            8,
+            "only the set player.health and default-valued reload-feedback + screen.flash + screen.vignette + screen.shake + input.mode + ui.textEntry slots appear",
         );
     }
 

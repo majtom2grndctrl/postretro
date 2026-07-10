@@ -610,6 +610,7 @@ declare module "postretro" {
     readonly player: {
       readonly health: ReadonlyStateRef<number>;
       readonly maxHealth: ReadonlyStateRef<number>;
+      readonly reloadProgress: ReadonlyStateRef<number>;
       readonly weaponCooldownMs: ReadonlyStateRef<number>;
     };
     readonly screen: {

@@ -373,6 +373,16 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         network: ReplicationScope::OwnerPrivatePlayer,
     },
     EngineStateCatalogEntry {
+        wire_name: "player.reloadProgress",
+        sdk_path: &["player", "reloadProgress"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::Number(0.0),
+        range: Some(NumericRange { min: 0.0, max: 1.0 }),
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
         wire_name: "player.weaponCooldownMs",
         sdk_path: &["player", "weaponCooldownMs"],
         value_type: EngineStateValueType::Number,
@@ -609,6 +619,7 @@ mod tests {
                 "input.mode",
                 "player.health",
                 "player.maxHealth",
+                "player.reloadProgress",
                 "player.weaponCooldownMs",
                 "screen.flash",
                 "screen.shake",
@@ -642,6 +653,19 @@ mod tests {
             player_max_health.capability,
             EngineStateCapability::Readonly
         );
+
+        let reload_progress = entries
+            .iter()
+            .find(|entry| entry.wire_name == "player.reloadProgress")
+            .unwrap();
+        assert_eq!(reload_progress.sdk_path, &["player", "reloadProgress"]);
+        assert_eq!(reload_progress.value_type, EngineStateValueType::Number);
+        assert_eq!(reload_progress.default, EngineStateDefault::Number(0.0));
+        assert_eq!(
+            reload_progress.range,
+            Some(NumericRange { min: 0.0, max: 1.0 })
+        );
+        assert_eq!(reload_progress.capability, EngineStateCapability::Readonly);
 
         let weapon_cooldown = entries
             .iter()

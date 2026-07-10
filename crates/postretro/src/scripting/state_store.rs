@@ -710,6 +710,19 @@ mod tests {
         assert!(write_store_slot(&ctx, "test.missing", SlotValue::Number(1.0)).is_err());
     }
 
+    #[test]
+    fn reload_progress_engine_writes_clamp_to_declared_unit_interval() {
+        let ctx = ScriptCtx::new();
+
+        for (written, expected) in [(-0.25, 0.0), (1.25, 1.0)] {
+            write_store_slot(&ctx, "player.reloadProgress", SlotValue::Number(written)).unwrap();
+            assert_eq!(
+                read_store_slot(&ctx, "player.reloadProgress").unwrap(),
+                SlotValue::Number(expected)
+            );
+        }
+    }
+
     // --- M13 Goal F, Task 4: setState readonly-gated JSON write ---
 
     #[test]

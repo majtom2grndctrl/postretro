@@ -609,6 +609,7 @@ export type GameStateRefs = {
   player: {
     health: ReadonlyStateRef<number>,
     maxHealth: ReadonlyStateRef<number>,
+    reloadProgress: ReadonlyStateRef<number>,
     weaponCooldownMs: ReadonlyStateRef<number>,
   },
   screen: {

@@ -320,6 +320,39 @@ Spec set drafted under the epic hub `context/plans/drafts/E19--render-stack-deco
 
 ---
 
+## Epic 20: Observability & Agent Tooling
+
+Give AI coding agents and content CI a way to drive the engine and inspect the result — no human, no window, no display server. **North star:** an agent loads a real `.prl`, runs scripted ticks, and reads back structured world state — and later frames and a live session — through one shared, deterministic vocabulary, byte-identical across runs.
+
+Like Epic 19, the testable outcomes are **developer- and agent-facing** — a headless run that exits clean on a stable JSON contract, a captured frame, a live attach — not new player-visible capability. Infrastructure track, deliberately roadmapped. The batch runner shipped as the foundation; frame capture and a live channel are the reach.
+
+**One substrate, layered faces.** The batch runner owns the hard part: a renderer-free session build, the world-install seam, deterministic serialization. Everything else is a face on it. The **live socket channel** is the load-bearing new capability — live introspection and driving of a *running* session, which batch cannot do. The engine has no live ingress today; session state is main-thread-only, so a transport thread marshals via mpsc plus a frame-boundary drain. **MCP is a frontend adapter, not a capability** — it exposes verbs, it does not create them. The main consumer is Claude-Code-shaped agents with a shell, which already reach the batch runner through the CLI. So MCP earns its place over the socket's *live* verbs (no CLI equivalent), not as a wrapper around a CLI the agent can already run.
+
+**Prerequisite:** the headless batch runner and its extracted session / world-install seams (below) ✓. Frame capture wants the Epic 19 renderer boundary (`wgpu` in one crate) but does not hard-require it.
+
+Specs ship seam-first, not a strict chain:
+
+- [x] **Headless batch runner** — `--headless <runspec>` and `xtask observe`: load a `.prl`, run N scripted ticks with per-tick commands, dump world state as deterministic JSON, exit. Renderer-free session build, two-segment world install, sorted-key serialization for byte-identical runs. Implemented and twice-reviewed; landing from `plans/in-progress/agentic-observability/`.
+- [ ] **Frame capture** — renderer-owned offscreen readback to PNG at a deterministic camera pose. The visual sibling of the state dump. A new renderer feature: live frames render into the swapchain with no `COPY_SRC`, so it needs an offscreen target plus blit (or a surface-usage change), and lives in `postretro-renderer` per renderer-owns-GPU. Natural neighbor to Epic 19's deferred `postretro-render-diagnostics`.
+- [ ] **Live socket channel** — the same runspec/output vocabulary over a localhost transport thread plus mpsc plus frame drain, to inspect and drive a *running windowed* session. The anchor capability. Read-only verbs first; live mutating verbs are gated on the host-authoritative sim — they need care, not a bespoke path. Shares the session seam with Epic 15 Phase 4's dedicated-server entry point — one substrate, two entry points; do not grow a parallel headless path.
+- [ ] **MCP frontend** — expose the live channel's verbs as MCP tools so an agent drives the engine in its normal tool-use loop. Depends on the live channel. A batch fallback rides the same frontend for shell-less hosts but does not lead. The MCP tool schema doubles as the typed contract the protocol crate defers.
+- [ ] **Streaming telemetry + structured log sink** — a continuous event/metric stream and a log ring buffer, versus the one-shot dump. Logging is `env_logger` stderr text today with no structured sink; this adds one.
+- [ ] **Protocol-crate extraction** (`postretro-observability-protocol`) — typed runspec/output. Gated on a second typed consumer; the batch runner passes JSON untyped, so the MCP frontend or live channel likely earns it. A refactor, not a feature.
+- [ ] **Record / replay** *(candidate — greenlight on need)* — record a command/input trace from a live or batch run, replay it deterministically. No replay/demo system exists today; the shipped determinism work (byte-identical runs, per-tick command trace, fixed tick length) is the foundation. Highest-leverage QA-and-agent capability beyond the dump, but net-new scope — draft when a concrete need lands.
+
+**Non-goals:**
+- MCP-over-batch as the first build. Main consumer has a shell and already runs the CLI; MCP earns its place over the live verbs.
+- A general RPC or plugin framework. A closed verb vocabulary, not an open command surface.
+- Human-facing dashboards or a debug TUI. Agent- and CI-facing; humans use the CLI and the existing egui diagnostics.
+- Multiplayer session replay. Single-player determinism only, like the batch runner; netcode record/replay is Epic 15 territory.
+- External state writes that fight sim authority. The engine predicts and reconciles; it does not accept arbitrary outside mutation.
+
+**Sequencing.** Frame capture and the live channel are the two anchors and run in parallel — capture is renderer work, the channel is transport work, disjoint. MCP, telemetry, and the protocol crate hang off the channel. Record / replay waits on a decision.
+
+**Testable outcome:** an agent captures a frame from a scripted run and attaches to a running session over a socket to read live state — both through the vocabulary the batch runner shipped, with the batch path still byte-identical.
+
+---
+
 ## Future / Speculative
 
 Features below are intended but not yet sequenced. Rough priority ordering within each group.

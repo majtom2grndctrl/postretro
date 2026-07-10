@@ -106,6 +106,32 @@ cargo-fuzz needs nightly **only for the fuzz build** (libFuzzer/sanitizer instru
 
 **Ride-alongs if CI lands:** GitHub secret scanning and CodeQL (Rust GA since Oct 2025, security queries added Dec 2025) — near-zero marginal cost, modest signal for a no-web engine. Sanitizers (nightly `-Zsanitizer=address/undefined`) could exercise the QuickJS C boundary *if* the script sandbox ever enters the threat model — deferred per the ownership decision above.
 
-## 6. Where LLM review still pays
+## 6. Custom repo-specific lint rules
+
+The architectural invariants live in prose (CLAUDE.md, development_guide.md) and the review shows they *do* drift. These convert "a reviewer might notice" into "CI blocks it." All are cheap grep-based `xtask` checks or one-line config — **none need dylint** (its rustc-internals maintenance cost isn't justified when every rule below is expressible as grep/config/`#[must_use]`). "Fires today" was checked against the tree; most start green and act as ratchets.
+
+### Tier 1 — high value
+
+1. **Global-mutable-state escape hatch in sim code.** Flag `OnceLock<Mutex<`, `static mut`, `Mutex<HashSet/Vec/HashMap>` under `crates/postretro/src/**` unless the file is on an allowlist; adding to the allowlist *is* the review gate. Encodes the state-explicit sim design (the existing pattern is thread-local, per `alloc_probe`). **Fires on 4 today** — `trigger_system.rs` gate recorder + guard and `kinematic_mover.rs` `WARNED_TARGETS`, all from PR #247; two review findings (the gate-recorder race, the never-cleared warn set) are symptoms of this one smell. Clean up or allowlist, then ratchet. Highest-signal custom rule the review surfaced.
+2. **`unsafe` allowlist gate.** `unsafe` may appear only in listed files (`alloc_probe.rs` today). Stronger than `unsafe_code = "deny"`, which any file can silently opt out of via `#![allow(unsafe_code)]` — the allowlist makes new unsafe a visible, approvable diff, exactly what CLAUDE.md §3.5 wants. Trivial grep.
+3. **spec-lint** (flagship — also referenced in §1). Resolve every backticked identifier and `` `file` ~line N `` anchor in `context/plans/{drafts,ready}/**` via `git grep`; flag duplicated >N-line blocks. Makes the `review-draft-spec` codebase-anchor pass deterministic instead of LLM-best-effort — would have caught the fabricated `PawnOwnerMap` (real type `MovementOwners`), the stale `~line 201`, and the twice-duplicated command table.
+4. **TODO-tag convention.** Every `TODO`/`FIXME` must match `TODO(slug):` or carry an issue link (encodes §1.4/§5.3's no-orphan-TODO rule). **Clean today** — all 4 TODOs already use `TODO(scripting-tools-dedup):` — a green ratchet locking in the habit.
+
+### Tier 2 — valuable, small caveats
+
+5. **`net` crate dependency purity.** Parse `crates/net/Cargo.toml`; assert no `glam`, `postretro-*`, or `wgpu`. Encodes "net is glam-free and postretro-free; the dependency arrow only points engine → net." **Clean today** → ratchet. cargo-deny can't cleanly express "crate X must not depend on Y," so a ~10-line manifest check beats it here.
+6. **`#[must_use]` on registry mutators** (`set_component` & siblings) + `clippy::let_underscore_must_use`. Turns the three silent `let _ = …set_component(...)` drops the review found into compile warnings.
+7. **Per-tick alloc probe.** Extend the existing `alloc_probe::CountingAllocator` windowed harness with an "idle sim tick allocates nothing" test — the deterministic guard for the per-fixed-tick heap-churn class (component clones with `String`s, fresh `Vec`/`HashMap` per tick). Not a lint; a test.
+
+### Tier 3 — skip / defer
+
+8. **Inline-WGSL ban** (§2.4). Baseline already clean — a scan finds only doc comments and shader-content *test assertions*, no inline shader source, and no `include_str!` bypass. A naive grep false-positives heavily; a real rule would need to target raw-string shader bodies. Not worth it while the convention holds.
+9. **Byte-reader naming consistency** (`u8_`/`string_` vs siblings' `read_u32`/`read_string`). Cosmetic; a lint here is over-engineering.
+
+### Not lintable — stays with review
+
+Cross-module invariant *coupling* is judgment-only: the duplicated local-player derivation (`followed_player_pawn` vs `local_movement_pawn`, whose divergence silently kills local Use triggers) and test assertions that encode a fixture artifact as a production invariant. No tool sees that two independent derivations must agree.
+
+## 7. Where LLM review still pays
 
 Deterministic tooling shrinks the review surface; it does not replace review. Concentrate review tokens on: cross-module invariant coupling (duplicated lookups, global state lifecycles), spec semantics vs. driver invariants (the E17-C `stop`/`reverse` class — and note the mandated-deterministic-test-per-verb pattern in specs was the thing that actually caught those; keep requiring it), test assertions that encode fixture artifacts rather than contracts, and missing boundary diagnostics. Everything in §1's first table should never reach a reviewer again.

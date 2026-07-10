@@ -92,6 +92,13 @@ total and idempotent-safe. E18 will not change these.
 A command applies only to entities carrying `KinematicMover`; the applier skips non-mover
 targets with a rate-limited warning (mirroring `applyDamage` skipping non-Health targets).
 
+`go_to_path_node` is names-only by design, not an open question: waypoint names are how
+modders address path nodes via `command_arg` on a `trigger_volume` KVP, and `world.query` +
+the mover handle already cover programmatic script use. A node-index overload would leak
+the compiler's internal resolved-segment order into the authoring contract and is brittle
+under waypoint reordering, where names are not; it stays deferred as a purely additive
+option (the driver already resolves names to an internal `target_segment` index).
+
 ## Boundary Inventory
 
 | Name | Rust | PRL / wire / serde | TypeScript / Luau | FGD |
@@ -410,4 +417,3 @@ None block this draft. Deferred by design:
 - Trigger ownership, activation fan-out, and late-join restoration — E18 (the seam above).
 - Whether a `use` trigger ever needs an aim raycast rather than volume overlap — revisit
   if a set-piece demands look-at interaction; C ships overlap-only.
-- Whether `goToPathNode` should accept a node index as well as a name — names only for now.

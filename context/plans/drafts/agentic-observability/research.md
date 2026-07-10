@@ -92,9 +92,11 @@ Two open questions resolved from project goals + source verification:
 - **Weapon fire headless: committed v1 scope.** Combat is the engine's core loop (the
   active in-progress plan is E16 client-authoritative-combat), and
   `sim/determinism_tests.rs` already fires weapons headless — spawns a weapon entity,
-  passes `Some(active_wieldable)` to `simulate_tick`, dedicated test
-  `simulate_tick_uses_sim_command_fire_button_with_callback_aim`. Only new driver work:
-  resolve the wieldable id after map load.
+  passes `Some(active_wieldable)` to `simulate_tick`. The firing proof is
+  `simulate_tick_normalizes_callback_aim_direction_before_weapon_fire`
+  (`determinism_tests.rs:1125`); `simulate_tick_uses_sim_command_fire_button_with_callback_aim`
+  is the negative control (asserts no fire when the button is inactive). Only new driver
+  work: resolve the wieldable id after map load.
 - **Epic 15 Phase 4: design requirement, not footnote.** Phase 4's testable outcome
   requires a standalone headless server entry point; Tasks 1–2 are its prerequisite
   seams. Constraints moved into the task paragraphs (no caller-lifetime assumptions; do

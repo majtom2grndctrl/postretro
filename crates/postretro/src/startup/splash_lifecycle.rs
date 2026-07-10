@@ -12,7 +12,6 @@ use crate::scripting::state_persistence::{
     STATE_FILE_PATH, load_persisted_state, overlay_persisted_state,
 };
 use crate::startup::{BootState, LevelRequest, LevelSource, SplashSource, StartupTimings};
-use postretro_scripting_core::reaction_dispatch::validate_scoped_sequence_primitives;
 
 impl App {
     /// Drive one Splash-state frame. Returns `false` when the splash frame was
@@ -241,6 +240,11 @@ impl App {
                 log::error!("[Scripting] mod_init failed: {err}");
             } else {
                 let has_manifest = session.scripting.script_runtime.mod_manifest().is_some();
+                // Drain the manifest's engine-global `DataRegistry` registrations
+                // (entity types, maps, global reactions/crossings) through the
+                // shared extractor also used by the headless observability path, so
+                // the two cannot drift. See: context/lib/boot_sequence.md §3.
+                session.scripting.drain_manifest_registrations();
                 // `frontend` is session-owned now; the `manifest` borrow below
                 // aliases `session.scripting.script_runtime`, so lift the committed frontend
                 // into a local and assign `session.frontend` after that borrow ends
@@ -249,24 +253,10 @@ impl App {
                     Option<postretro_scripting_core::runtime::Frontend>,
                 > = None;
                 if let Some(manifest) = session.scripting.script_runtime.mod_manifest_mut() {
-                    // Drain entity-type descriptors from the validated mod manifest
-                    // into the engine-global `DataRegistry`. Runtime parses; caller
-                    // owns lifecycle. See: context/lib/boot_sequence.md §3.
-                    let mut data_registry = session.scripting.script_ctx.data_registry.borrow_mut();
-                    for desc in std::mem::take(&mut manifest.entities) {
-                        data_registry.upsert_entity_type(desc);
-                    }
-                    data_registry.replace_maps(std::mem::take(&mut manifest.maps));
-                    let global_reactions = validate_scoped_sequence_primitives(
-                        std::mem::take(&mut manifest.reactions),
-                        &session.scripting.sequence_registry,
-                    );
-                    data_registry.replace_global_reactions(global_reactions);
-                    data_registry.replace_global_crossings(std::mem::take(&mut manifest.crossings));
-                    drop(data_registry);
-
-                    // Register mod-scope UI trees into the tiered registry at `Mod`
-                    // tier, before the mod-init VM context drops.
+                    // UI trees / theme / fonts / frontend are windowed-only surfaces
+                    // (headless has no modal stack), so they stay here rather than in
+                    // the shared drain above. Register mod-scope UI trees into the
+                    // tiered registry at `Mod` tier, before the mod-init VM drops.
                     session.modal_stack.register_script_trees(
                         std::mem::take(&mut manifest.ui_trees),
                         postretro_ui::modal_stack::ScopeTier::Mod,

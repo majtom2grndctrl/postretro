@@ -261,7 +261,11 @@ fn resolve_content_root(args: &[String], map_path: Option<&str>) -> PathBuf {
         .unwrap_or_else(|| content_root_from_map(map_path))
 }
 
-fn content_root_from_map(map_path: Option<&str>) -> PathBuf {
+/// Derive the content root from a map path: the map's grandparent directory
+/// (`content/<mod>/maps/x.prl` → `content/<mod>`), falling back to the dev-default
+/// root when no map is supplied. Windowed boot derives the root from argv; the
+/// headless observability path reuses this against the runspec map path.
+pub(crate) fn content_root_from_map(map_path: Option<&str>) -> PathBuf {
     // `Path::new("maps/test.prl").parent()` returns `Some("maps")`, and
     // `"maps".parent()` returns `Some("")` — an empty path, not `None`. Filter
     // out the empty case so the `unwrap_or` fallback to `"."` actually fires.

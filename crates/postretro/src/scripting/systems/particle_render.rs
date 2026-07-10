@@ -295,6 +295,7 @@ mod tests {
             data_script: None,
             map_entities: Vec::new(),
             kinematic_geometry: postretro_level_loader::KinematicGeometry::default(),
+            trigger_volumes: Vec::new(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
             initial_gravity: -9.81,

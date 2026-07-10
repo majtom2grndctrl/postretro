@@ -62,6 +62,9 @@ enum QueryFilter {
     FogVolume {
         tag: Option<String>,
     },
+    KinematicMover {
+        tag: Option<String>,
+    },
     /// Always returns an empty array. Particles and sprite-visuals are
     /// engine-managed; scripts have no business iterating individual ones.
     AlwaysEmpty,
@@ -75,21 +78,22 @@ fn parse_query_filter(component: &str, tag: Option<String>) -> Result<QueryFilte
         "transform" => Ok(QueryFilter::Transform { tag }),
         "emitter" => Ok(QueryFilter::Emitter { tag }),
         "fog_volume" => Ok(QueryFilter::FogVolume { tag }),
+        "kinematic_mover" => Ok(QueryFilter::KinematicMover { tag }),
         "particle" | "sprite_visual" => Ok(QueryFilter::AlwaysEmpty),
         other => Err(ScriptError::InvalidArgument {
             reason: format!(
                 "worldQuery: unknown component `{other}`; supported: \
-                 \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"particle\" | \"sprite_visual\""
+                 \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"kinematic_mover\" | \"particle\" | \"sprite_visual\""
             ),
         }),
     }
 }
 
-const WORLD_QUERY_DOC: &str = "Return an array of entity handles matching the filter. Available in definition and data contexts. \
-     Filter shape: { component: \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"particle\" | \"sprite_visual\", tag?: string }. \
+const WORLD_QUERY_DOC: &str = "Return an array of raw entity snapshots matching the filter. Available in definition and data contexts. \
+     Filter shape: { component: \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"kinematic_mover\" | \"particle\" | \"sprite_visual\", tag?: string }. \
      `\"particle\"` and `\"sprite_visual\"` always return `[]` (engine-managed; scripts never iterate individual particles). \
      Unknown component values raise InvalidArgument. \
-     The `world.ts` vocabulary module wraps this as `world.query`.";
+     The `world.ts` vocabulary module wraps these snapshots as `world.query` handles.";
 
 const WORLD_GET_GRAVITY_DOC: &str = "Return the current world gravity in m/s² (negative = downward; positive = upward). \
      Seeded from the worldspawn `initialGravity` KVP at level load and persists until the next level load or a `worldSetGravity` call. \
@@ -222,6 +226,40 @@ fn collect_fog_volume_handles_json(ctx: &ScriptCtx, tag: Option<&str>) -> serde_
     Value::Array(arr)
 }
 
+/// Collect kinematic-mover handles as JSON. Movers are queryable for their
+/// position and tags, while their deterministic phase remains engine-owned.
+fn collect_kinematic_mover_handles_json(ctx: &ScriptCtx, tag: Option<&str>) -> serde_json::Value {
+    use serde_json::{Map, Value};
+
+    let reg = ctx.registry.borrow();
+    let mut arr = Vec::new();
+    for (id, value) in reg.query_by_component_and_tag(ComponentKind::KinematicMover, tag) {
+        let ComponentValue::KinematicMover(_) = value else {
+            continue;
+        };
+        let tags = reg.get_tags(id).unwrap_or(&[]).to_vec();
+        let position = match reg.get_component::<Transform>(id) {
+            Ok(t) => {
+                let mut p = Map::with_capacity(3);
+                p.insert("x".to_string(), Value::from(t.position.x as f64));
+                p.insert("y".to_string(), Value::from(t.position.y as f64));
+                p.insert("z".to_string(), Value::from(t.position.z as f64));
+                Value::Object(p)
+            }
+            Err(_) => Value::Null,
+        };
+        let mut obj = Map::with_capacity(3);
+        obj.insert("id".to_string(), Value::from(id.to_raw()));
+        obj.insert("position".to_string(), position);
+        obj.insert(
+            "tags".to_string(),
+            Value::Array(tags.into_iter().map(Value::String).collect()),
+        );
+        arr.push(Value::Object(obj));
+    }
+    Value::Array(arr)
+}
+
 /// Register the world-domain primitives: `worldQuery`, `worldGetGravity`, and
 /// `worldSetGravity`. All three install in both definition and data contexts.
 pub(crate) fn register_world_primitives(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
@@ -250,6 +288,9 @@ fn register_world_query(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
                     ))),
                     QueryFilter::FogVolume { tag } => Ok(JsonValue(
                         collect_fog_volume_handles_json(&ctx, tag.as_deref()),
+                    )),
+                    QueryFilter::KinematicMover { tag } => Ok(JsonValue(
+                        collect_kinematic_mover_handles_json(&ctx, tag.as_deref()),
                     )),
                     QueryFilter::AlwaysEmpty => Ok(JsonValue(serde_json::Value::Array(Vec::new()))),
                 }
@@ -293,7 +334,9 @@ fn register_world_gravity(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glam::Vec3;
     use postretro_entities::components::light::{FalloffKind, LightComponent, LightKind};
+    use postretro_entities::{KinematicMoverComponent, KinematicMoverMode};
     use postretro_scripting_core::primitives_registry::PrimitiveRegistry;
 
     fn registry_with_gravity() -> (PrimitiveRegistry, ScriptCtx) {
@@ -332,6 +375,31 @@ mod tests {
             }
         }
         (ctx, id)
+    }
+
+    fn add_mover(ctx: &ScriptCtx, tag: Option<&str>) -> EntityId {
+        let mut reg = ctx.registry.borrow_mut();
+        let id = reg.spawn(Transform {
+            position: Vec3::new(4.0, 5.0, 6.0),
+            ..Transform::default()
+        });
+        reg.set_component(
+            id,
+            KinematicMoverComponent::new(
+                9,
+                vec![Vec3::ZERO, Vec3::X],
+                vec!["start".to_string(), "end".to_string()],
+                1.0,
+                0.0,
+                KinematicMoverMode::PingPong,
+                false,
+            ),
+        )
+        .unwrap();
+        if let Some(tag) = tag {
+            reg.set_tags(id, vec![tag.to_string()]).unwrap();
+        }
+        id
     }
 
     fn install_all(registry: &PrimitiveRegistry, qjs: &rquickjs::Ctx<'_>) {
@@ -450,6 +518,49 @@ mod tests {
         assert!((x - 1.0).abs() < 1e-5);
         assert!((y - 2.0).abs() < 1e-5);
         assert!((z - 3.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn world_query_kinematic_mover_returns_tagged_mover_snapshots() {
+        let (ctx, _) = test_ctx_with_light(true, Some("not_a_mover"));
+        let id = add_mover(&ctx, Some("bridge-lift"));
+        let r = registry_for(ctx);
+        let raw = id.to_raw();
+
+        let rt = rquickjs::Runtime::new().unwrap();
+        let jsctx = rquickjs::Context::full(&rt).unwrap();
+        jsctx.with(|qjs| {
+            install_all(&r, &qjs);
+            let json: String = qjs
+                .eval(
+                    r#"
+                    const hs = worldQuery({ component: "kinematic_mover", tag: "bridge-lift" });
+                    JSON.stringify(hs)
+                    "#,
+                )
+                .unwrap();
+            assert_eq!(
+                json,
+                format!(
+                    r#"[{{"id":{raw},"position":{{"x":4,"y":5,"z":6}},"tags":["bridge-lift"]}}]"#
+                )
+            );
+        });
+
+        let lua = mlua::Lua::new();
+        install_all_lua(&r, &lua);
+        let (count, returned_id, tag): (i64, i64, String) = lua
+            .load(
+                r#"
+                local hs = worldQuery({ component = "kinematic_mover", tag = "bridge-lift" })
+                return #hs, hs[1].id, hs[1].tags[1]
+                "#,
+            )
+            .eval()
+            .unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(returned_id as u32, raw);
+        assert_eq!(tag, "bridge-lift");
     }
 
     #[test]

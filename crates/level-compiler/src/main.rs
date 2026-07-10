@@ -37,6 +37,7 @@ pub mod sh_group;
 pub mod shadowmask_bake;
 pub mod texture_mips;
 pub mod texture_validation;
+pub mod trigger_volumes;
 pub mod visibility;
 
 use std::collections::HashSet;
@@ -485,6 +486,8 @@ fn main() -> anyhow::Result<()> {
         &map_data.kinematic_waypoints,
         &mut geo_result.texture_names,
     );
+    let trigger_volumes_section =
+        trigger_volumes::encode_trigger_volumes_section(&map_data.trigger_volumes);
     timings.push(("Geometry", stage_start.elapsed()));
     if args.verbose {
         let empty_leaf_count = result
@@ -1257,6 +1260,7 @@ fn main() -> anyhow::Result<()> {
         sdf_atlas_section.as_ref(),
         navmesh_section.as_ref(),
         kinematic_geometry_section.as_ref(),
+        trigger_volumes_section.as_ref(),
         cell_draw_index_bytes,
     )?;
     timings.push(("Packing", stage_start.elapsed()));

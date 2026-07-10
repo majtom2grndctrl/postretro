@@ -67,12 +67,14 @@ impl RecordedCommand {
                 running: self.running,
                 crouch_intent: self.crouch_intent,
                 facing_yaw: self.facing_yaw,
+                use_pressed: false,
             },
             fire_button: FireButtonState {
                 pressed: self.fire_pressed,
                 active: self.fire_active,
             },
             reload: false,
+            use_pressed: false,
         }
     }
 
@@ -181,6 +183,7 @@ impl SimHarness {
             &sim_command,
             |_| command.to_post_movement_command(),
             DT,
+            None,
         );
         if self.force_post_tick_rounding {
             self.force_round_post_tick_state();

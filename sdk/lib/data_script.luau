@@ -111,9 +111,33 @@ export type SetFogParamsStep = {
   args: { density: number?, scatter: number?, edgeSoftness: number?, falloff: number? },
 }
 
+export type MoverStartStep = {
+  id: number,
+  primitive: "moverStart",
+  args: {},
+}
+
+export type MoverStopStep = {
+  id: number,
+  primitive: "moverStop",
+  args: {},
+}
+
+export type MoverReverseStep = {
+  id: number,
+  primitive: "moverReverse",
+  args: {},
+}
+
+export type MoverGoToPathNodeStep = {
+  id: number,
+  primitive: "moverGoToPathNode",
+  args: { node: string },
+}
+
 -- `SetFogAnimationStep` is declared in `postretro.d.luau` (the SDK lib
 -- block generated from the primitive registry) and is not redeclared here.
-export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogScatterStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep
+export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogScatterStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep
 
 --- Descriptor produced by `defineReaction`. The `name` field is merged
 --- into the descriptor at the top level so the Rust deserializer can read

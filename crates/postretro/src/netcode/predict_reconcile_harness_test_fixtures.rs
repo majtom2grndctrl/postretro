@@ -17,7 +17,7 @@ use glam::{Vec2, Vec3};
 use parry3d::math::{Isometry, Point};
 use parry3d::shape::TriMesh;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::time::Duration;
 
@@ -30,7 +30,7 @@ use postretro_net::wire::{
 };
 
 use super::client::{ClientReplication, MoverCorrection};
-use super::command_queue::{HostCommandQueues, MovementOwners, host_resolve_movement_inputs};
+use super::command_queue::{HostCommandQueues, MovementOwners, host_resolve_remote_commands};
 use super::prediction::ClientPrediction;
 use super::reconcile::reconcile_local_pawn_with_mover_history;
 use super::replication::{ReplicableSet, host_register_loaded_movers, produce_owned_snapshots};
@@ -41,7 +41,9 @@ use crate::kinematic_mover::{MoverTickStateTable, run_kinematic_mover_tick};
 use crate::movement::MovementInput;
 use crate::netcode::{NetworkIdAllocator, host_handle_client_message};
 use crate::scripting::builtins::net_descriptor::materialize_net_local_movement_component;
+use crate::scripting_systems::trigger_volume_bridge::TriggerVolumeBridge;
 use crate::sim::SimCommand;
+use crate::trigger_system::{AuthoritativePlayer, PlayerId, TriggerSystem};
 use crate::weapon::FireButtonState;
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::provenance::{
@@ -49,7 +51,7 @@ use postretro_entities::provenance::{
 };
 use postretro_entities::{
     EntityId, EntityRegistry, EntityTypeDescriptor, KinematicMoverComponent, KinematicMoverMode,
-    Transform,
+    MoverCommand, Transform, TriggerActivation, TriggerFireMode, TriggerVolumeComponent,
 };
 use postretro_foundation::{
     AirParams, BoolOrIr, CapsuleParams, DashParams, FallParams, ForgivenessParams, GroundParams,
@@ -202,12 +204,14 @@ pub(crate) fn forward_command(dash_pressed: bool) -> SimCommand {
             running: true,
             crouch_intent: false,
             facing_yaw: 0.0,
+            use_pressed: false,
         },
         fire_button: FireButtonState {
             pressed: false,
             active: false,
         },
         reload: false,
+        use_pressed: false,
     }
 }
 
@@ -220,13 +224,25 @@ pub(crate) fn idle_command() -> SimCommand {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            use_pressed: false,
         },
         fire_button: FireButtonState {
             pressed: false,
             active: false,
         },
         reload: false,
+        use_pressed: false,
     }
+}
+
+/// One remote Use rising edge. Keep the full command and movement mirror in
+/// lockstep so the client-prediction and client-to-host input boundaries exercise
+/// the same authored edge.
+pub(crate) fn use_command() -> SimCommand {
+    let mut command = idle_command();
+    command.movement.use_pressed = true;
+    command.use_pressed = true;
+    command
 }
 
 /// An owned `InputCommand` directly at a chosen `client_tick` — used by the
@@ -242,6 +258,7 @@ pub(crate) fn input_at(client_tick: u32, wish_forward: f32) -> InputCommand {
             running: true,
             crouch_intent: false,
             facing_yaw: 0.0,
+            use_pressed: false,
         },
         fire_button: WireFireButtonState {
             pressed: false,
@@ -318,6 +335,9 @@ pub(crate) struct LoopbackHarness {
     pub(crate) mover_network_id: Option<NetworkId>,
     pub(crate) mover_colliders: Vec<MoverCollider>,
     pub(crate) host_mover_states: MoverTickStateTable,
+    pub(crate) host_trigger_system: TriggerSystem,
+    pub(crate) host_trigger_bridge: TriggerVolumeBridge,
+    pub(crate) host_use_trigger: Option<EntityId>,
     pub(crate) client_mover_states: MoverTickStateTable,
     pub(crate) latest_mover_corrections: Vec<MoverCorrection>,
     pub(crate) latest_local_corrections: Vec<f32>,
@@ -426,6 +446,9 @@ impl LoopbackHarness {
             mover_network_id: None,
             mover_colliders: Vec::new(),
             host_mover_states: MoverTickStateTable::default(),
+            host_trigger_system: TriggerSystem::default(),
+            host_trigger_bridge: TriggerVolumeBridge::new(),
+            host_use_trigger: None,
             client_mover_states: MoverTickStateTable::default(),
             latest_mover_corrections: Vec::new(),
             latest_local_corrections: Vec::new(),
@@ -447,6 +470,21 @@ impl LoopbackHarness {
 
         let host_mover = spawn_platform_mover(&mut h.host_registry);
         let client_mover = spawn_platform_mover(&mut h.client_registry);
+        h.host_registry
+            .set_tags(host_mover, vec!["harness-platform".into()])
+            .expect("tag host mover");
+        spawn_harness_trigger(
+            &mut h.host_registry,
+            &mut h.host_trigger_bridge,
+            TriggerActivation::Touch,
+            MoverCommand::Start,
+        );
+        h.host_use_trigger = Some(spawn_harness_trigger(
+            &mut h.host_registry,
+            &mut h.host_trigger_bridge,
+            TriggerActivation::Use,
+            MoverCommand::GoToPathNode("finish".into()),
+        ));
         h.mover_colliders
             .push(platform_collider(MOVING_PLATFORM_ID));
         host_register_loaded_movers(
@@ -561,8 +599,20 @@ impl LoopbackHarness {
         self.host_ticks_elapsed = self.host_ticks_elapsed.wrapping_add(1);
         self.host_registry.snapshot_transforms();
         run_kinematic_mover_tick(&mut self.host_registry, &mut self.host_mover_states, DT);
+        let mut trigger_use_edges = HashMap::new();
         if self.host_ticks_elapsed > PLAYOUT_WARMUP_TICKS {
-            let pawn_inputs = host_resolve_movement_inputs(&self.owners, &mut self.command_queues);
+            let resolved_commands =
+                host_resolve_remote_commands(&self.owners, &mut self.command_queues);
+            let pawn_inputs = resolved_commands
+                .iter()
+                .map(|resolved| (resolved.pawn, resolved.command.movement.clone()))
+                .collect::<Vec<_>>();
+            trigger_use_edges.extend(resolved_commands.iter().filter_map(|resolved| {
+                resolved
+                    .command
+                    .use_pressed
+                    .then_some((PlayerId::Remote(resolved.client_id), true))
+            }));
             let combined_collision = CombinedCollisionWorld::new(
                 &self.world,
                 &self.mover_colliders,
@@ -576,6 +626,16 @@ impl LoopbackHarness {
                 DT,
             );
         }
+        self.host_trigger_system.run_authoritative_tick(
+            &mut self.host_registry,
+            &self.host_trigger_bridge,
+            &[AuthoritativePlayer {
+                id: PlayerId::Remote(CLIENT_ID),
+                pawn: self.host_pawn,
+            }],
+            &trigger_use_edges,
+            DT,
+        );
         self.server_tick = self.server_tick.wrapping_add(1);
 
         // During the playout warmup the host has resolved no command yet (cursor is
@@ -1025,12 +1085,41 @@ fn spawn_platform_mover(registry: &mut EntityRegistry) -> EntityId {
     let mover = KinematicMoverComponent::new(
         MOVING_PLATFORM_ID,
         vec![Vec3::ZERO, Vec3::new(6.0, 0.0, 0.0)],
+        vec!["start".to_string(), "finish".to_string()],
         MOVING_PLATFORM_SPEED_MPS,
         0.0,
         KinematicMoverMode::PingPong,
-        true,
+        false,
     );
     registry.set_component(id, mover).unwrap();
+    id
+}
+
+/// Host-only trigger fixture for the network harness. Both volumes contain the
+/// remote pawn's spawn capsule: the touch trigger proves trigger evaluation is a
+/// host tick responsibility, while the use trigger exercises the client-input
+/// `use_pressed -> PlayerId::Remote` seam.
+fn spawn_harness_trigger(
+    registry: &mut EntityRegistry,
+    bridge: &mut TriggerVolumeBridge,
+    activation: TriggerActivation,
+    command: MoverCommand,
+) -> EntityId {
+    let id = registry.spawn(Transform::default());
+    registry
+        .set_component(
+            id,
+            TriggerVolumeComponent::new(
+                activation,
+                "harness-platform".into(),
+                command,
+                TriggerFireMode::Once,
+                0.0,
+                true,
+            ),
+        )
+        .expect("attach harness trigger");
+    bridge.insert_for_test(id, Vec3::new(-1.0, 0.0, -1.0), Vec3::new(1.0, 2.5, 1.0));
     id
 }
 

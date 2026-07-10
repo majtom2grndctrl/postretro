@@ -2,7 +2,7 @@
 // See: context/lib/entity_model.md §5 · context/lib/networking.md
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use glam::Vec3;
@@ -16,6 +16,8 @@ use crate::nav::NavGraph;
 use crate::netcode::{AuthorizedShot, OpenAuthorizedShot, ShotId};
 use crate::scripting_systems;
 use crate::scripting_systems::hit_zones::HitZoneStore;
+use crate::scripting_systems::trigger_volume_bridge::TriggerVolumeBridge;
+use crate::trigger_system::{AuthoritativePlayer, PlayerId, TriggerSystem};
 use crate::weapon::{self, FireButtonState, WeaponFireAuthorization, WeaponFireCommand};
 use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::components::brain::{BrainComponent, LogicalState};
@@ -32,6 +34,10 @@ pub(crate) struct SimCommand {
     pub(crate) movement: MovementInput,
     pub(crate) fire_button: FireButtonState,
     pub(crate) reload: bool,
+    /// Use rising edge routed to the host-authoritative trigger stage. Kept on
+    /// the full command alongside fire/reload; `MovementInput` mirrors it for the
+    /// client-prediction input boundary.
+    pub(crate) use_pressed: bool,
 }
 
 pub(crate) struct PostMovementCommand {
@@ -49,6 +55,15 @@ pub(crate) struct RemotePawnCommand {
     #[allow(dead_code)]
     pub(crate) client_tick: u32,
     pub(crate) command: SimCommand,
+}
+
+/// Host-only inputs for the trigger stage. The system itself consumes the
+/// per-player map, never an action snapshot; local and remote use edges are
+/// keyed by `PlayerId` at this boundary.
+pub(crate) struct TriggerTickContext<'a> {
+    pub(crate) system: &'a mut TriggerSystem,
+    pub(crate) bridge: &'a TriggerVolumeBridge,
+    pub(crate) use_edges: &'a HashMap<PlayerId, bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,6 +99,7 @@ pub(crate) fn simulate_tick(
     command: &SimCommand,
     mut post_movement: impl FnMut(&Rc<RefCell<EntityRegistry>>) -> PostMovementCommand,
     tick_dt: f32,
+    trigger_context: Option<TriggerTickContext<'_>>,
 ) -> TickEvents {
     registry.borrow_mut().snapshot_transforms();
 
@@ -116,6 +132,31 @@ pub(crate) fn simulate_tick(
         &command.movement,
         tick_dt,
     ));
+    if let Some(trigger_context) = trigger_context {
+        let mut players: Vec<AuthoritativePlayer> = remote_pawn_commands
+            .iter()
+            .map(|remote| AuthoritativePlayer {
+                id: PlayerId::Remote(remote.owner_client_id),
+                pawn: remote.pawn,
+            })
+            .collect();
+        let local_player = {
+            let registry = registry.borrow();
+            local_movement_pawn(&registry)
+        };
+        if let Some(pawn) = local_player {
+            let id = PlayerId::Local(pawn);
+            players.push(AuthoritativePlayer { id, pawn });
+        }
+        let mut registry = registry.borrow_mut();
+        trigger_context.system.run_authoritative_tick(
+            &mut registry,
+            trigger_context.bridge,
+            &players,
+            trigger_context.use_edges,
+            tick_dt,
+        );
+    }
     let ai = {
         let mut registry = registry.borrow_mut();
         scripting_systems::ai::run_ai_tick_with_navigation(
@@ -570,6 +611,7 @@ mod tests {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            use_pressed: false,
         }
     }
 
@@ -581,6 +623,7 @@ mod tests {
                 active: fire,
             },
             reload,
+            use_pressed: false,
         }
     }
 
@@ -632,6 +675,7 @@ mod tests {
                 aim_direction: Vec3::NEG_Z,
             },
             1.0 / 60.0,
+            None,
         )
     }
 

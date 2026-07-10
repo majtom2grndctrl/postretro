@@ -172,6 +172,7 @@ fn component_kind_name(k: ComponentKind) -> &'static str {
         ComponentKind::Agent => "agent",
         ComponentKind::Brain => "brain",
         ComponentKind::KinematicMover => "kinematic_mover",
+        ComponentKind::TriggerVolume => "trigger_volume",
     }
 }
 
@@ -337,6 +338,10 @@ impl<'js> IntoJs<'js> for ComponentValue {
                 ctx,
                 "KinematicMover component is engine-managed and not exposed to scripts",
             )),
+            ComponentValue::TriggerVolume(_) => Err(rquickjs::Exception::throw_type(
+                ctx,
+                "TriggerVolume component is engine-managed and not exposed to scripts",
+            )),
         }
     }
 }
@@ -472,6 +477,9 @@ impl IntoLua for ComponentValue {
             )),
             ComponentValue::KinematicMover(_) => Err(mlua::Error::RuntimeError(
                 "KinematicMover component is engine-managed and not exposed to scripts".to_string(),
+            )),
+            ComponentValue::TriggerVolume(_) => Err(mlua::Error::RuntimeError(
+                "TriggerVolume component is engine-managed and not exposed to scripts".to_string(),
             )),
         }
     }
@@ -709,5 +717,29 @@ fn lua_to_json_inner(value: LuaValue, depth: usize) -> mlua::Result<serde_json::
             }
         }
         _ => Ok(serde_json::Value::Null),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn raw_kinematic_mover_component_is_rejected_by_both_script_ffs() {
+        let runtime = rquickjs::Runtime::new().unwrap();
+        let context = rquickjs::Context::full(&runtime).unwrap();
+        context.with(|ctx| {
+            let value: JsValue = ctx.eval("({ kind: 'kinematic_mover' })").unwrap();
+            let err = ComponentValue::from_js(&ctx, value).unwrap_err();
+            assert!(err.to_string().contains("engine-managed"));
+        });
+
+        let lua = Lua::new();
+        let value: LuaValue = lua
+            .load("return { kind = 'kinematic_mover' }")
+            .eval()
+            .unwrap();
+        let err = ComponentValue::from_lua(value, &lua).unwrap_err();
+        assert!(err.to_string().contains("engine-managed"));
     }
 }

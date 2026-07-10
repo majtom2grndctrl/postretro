@@ -23,6 +23,8 @@ export type { LightEntityHandle } from "./entities/lights";
 
 export type { FogVolumeHandle } from "./entities/fog_volumes";
 
+export type { MoverEntityHandle } from "./entities/movers";
+
 export type { Keyframe } from "./util/keyframes";
 export { timeline, sequence } from "./util/keyframes";
 
@@ -40,6 +42,10 @@ export type {
   SetFogParamsStep,
   SetFogScatterStep,
   SetLightAnimationStep,
+  MoverStartStep,
+  MoverStopStep,
+  MoverReverseStep,
+  MoverGoToPathNodeStep,
   StateRef,
   StoreDeclaration,
   StoreDefinition,

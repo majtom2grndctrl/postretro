@@ -13,6 +13,12 @@ pub(crate) use crate::fx::fog_reactions::{
     register_fog_reaction_primitives, register_sequenced_fog_primitives,
 };
 
+pub(crate) use crate::kinematic_mover::register_sequenced_mover_primitives;
+
+pub(crate) fn register_mover_reaction_primitives(registry: &mut ReactionPrimitiveRegistry) {
+    crate::kinematic_mover::register_mover_reaction_primitives(registry);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -26,5 +32,19 @@ mod tests {
         assert!(r.contains("setAnimationState"));
         assert!(r.contains("applyDamage"));
         assert!(!r.contains("setLightAnimation"));
+    }
+
+    #[test]
+    fn mover_registrar_exposes_closed_command_vocabulary() {
+        let mut r = ReactionPrimitiveRegistry::new();
+        register_mover_reaction_primitives(&mut r);
+        for name in [
+            "moverStart",
+            "moverStop",
+            "moverReverse",
+            "moverGoToPathNode",
+        ] {
+            assert!(r.contains(name), "missing {name}");
+        }
     }
 }

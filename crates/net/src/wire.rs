@@ -62,7 +62,10 @@ pub struct NetworkId(pub u32);
 /// E16 client-authoritative combat did not bump this: shot verdicts ride
 /// `ServerMessage::ShotVerdicts` on the reliable input channel, not
 /// `RawSnapshotMessage`.
-pub const SNAPSHOT_VERSION: u16 = 8;
+///
+/// Bumped to 9 for E17 trigger commands: mover phase gained `target_segment`
+/// and movement input gained `use_pressed`.
+pub const SNAPSHOT_VERSION: u16 = 9;
 
 /// `record_kind` discriminant for a full-baseline (spawn / join / refresh) record.
 pub const RECORD_KIND_FULL_BASELINE: u16 = 0;
@@ -209,6 +212,7 @@ pub struct WireKinematicMoverState {
     pub started: bool,
     pub completed: bool,
     pub velocity: [f32; 3],
+    pub target_segment: Option<u16>,
 }
 
 impl WireKinematicMoverState {
@@ -817,6 +821,7 @@ pub struct WireMovementInput {
     pub running: bool,
     pub crouch_intent: bool,
     pub facing_yaw: f32,
+    pub use_pressed: bool,
 }
 
 /// Wire mirror of the engine `FireButtonState`.
@@ -1125,6 +1130,7 @@ mod tests {
             started: true,
             completed: false,
             velocity: [1.0, 0.0, -0.5],
+            target_segment: Some(2),
         }
     }
 
@@ -1193,6 +1199,7 @@ mod tests {
                 running: true,
                 crouch_intent: false,
                 facing_yaw: 1.234_5,
+                use_pressed: true,
             },
             fire_button: WireFireButtonState {
                 pressed: true,

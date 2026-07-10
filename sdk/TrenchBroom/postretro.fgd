@@ -315,6 +315,39 @@
     next(string) : "Next waypoint name" : ""
 ]
 
+@SolidClass
+    color(220 100 40)
+    = trigger_volume : "Invisible mover-command trigger brush"
+[
+    name(string) : "Trigger name" : ""
+    activation(choices) : "Activation" : "touch" =
+    [
+        "touch" : "Touch"
+        "use" : "Use"
+    ]
+    target_tag(string) : "Target mover tag" : ""
+    command(choices) : "Mover command" : "start" =
+    [
+        "start" : "Start"
+        "stop" : "Stop"
+        "reverse" : "Reverse"
+        "go_to_path_node" : "Go To Path Node"
+    ]
+    command_arg(string) : "Command argument (path node for go_to_path_node)" : ""
+    fire_mode(choices) : "Fire mode" : "once" =
+    [
+        "once" : "Once"
+        "multiple" : "Multiple"
+    ]
+    rearm_ms(float) : "Rearm delay (milliseconds)" : "0"
+    enabled_on_spawn(choices) : "Enabled on spawn" : 1 =
+    [
+        0 : "Off"
+        1 : "On"
+    ]
+    _tags(string) : "Space-delimited tags" : ""
+]
+
 // Per-region volumetric fog brush.
 //
 // Geometry behaviour is auto-detected from the brush faces:

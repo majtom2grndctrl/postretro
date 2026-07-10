@@ -1,16 +1,16 @@
 --!strict
--- World-query vocabulary: typed wrapper around `worldQuery`. Light handle
--- construction delegates via `wrapLightEntity` global installed by the
--- prelude before this module evaluates.
+-- World-query vocabulary: typed wrapper around `worldQuery`. Light,
+-- fog-volume, and mover handle construction delegate via temporary wrapper
+-- globals installed by the prelude before this module evaluates.
 
 -- `EntityId`, `LightEntity` (the generated snapshot shape),
 -- `WorldQueryFilter`, and the `worldQuery` primitive are provided
 -- ambiently by the generated `sdk/types/postretro.d.luau` definitions
 -- file.
--- `wrapLightEntity` is installed as a temporary global from
--- `sdk/lib/entities/lights.luau` by the prelude evaluator before this
--- module evaluates. It is nil'd out after this module returns so author
--- scripts never see it. See `luau.rs` `evaluate_prelude`.
+-- `wrapLightEntity`, `wrapFogVolumeEntity`, and `wrapMoverEntity` are
+-- installed as temporary globals by the prelude evaluator before this module
+-- evaluates. They are nil'd out after this module returns so author scripts
+-- never see them. See `luau.rs` `evaluate_prelude`.
 
 --- Base entity handle returned by `world:query` when the component type
 --- is not "light". Carries id, position, and tags.
@@ -25,12 +25,13 @@ export type EntityHandle = {
 --- with capability methods (`:pulse`, `:fade`, `:flicker`, `:colorShift`,
 --- `:sweep`); `{ component = "fog_volume", ... }` yields fog volume handles
 --- with capability methods (`:pulse`, `:fade`, `:flicker`, `:pulseSaturation`,
---- `:fadeSaturation`); `{ component = "emitter", ... }` yields
+--- `:fadeSaturation`); `{ component = "kinematic_mover", ... }` yields mover
+--- handles with `:start`, `:stop`, `:reverse`, and `:goToPathNode`; `{ component = "emitter", ... }` yields
 --- handles carrying the full `BillboardEmitterComponent` snapshot under
 --- `component`; any other component filter returns `EntityHandle` values
 --- (id, position, tags).
 ---
---- Supported component strings: `"light"`, `"fog_volume"`, `"transform"`,
+--- Supported component strings: `"light"`, `"fog_volume"`, `"kinematic_mover"`, `"transform"`,
 --- `"emitter"`, `"particle"`, `"sprite_visual"`. `"particle"` and
 --- `"sprite_visual"` always return `{}` (engine-managed). Unknown strings
 --- error at runtime.
@@ -65,6 +66,13 @@ local world: World = {
       local out: {any} = {}
       for i, snapshot in ipairs(raw) do
         out[i] = wrapFogVolumeEntity(snapshot :: any)
+      end
+      return out :: any
+    end
+    if filter.component == "kinematic_mover" then
+      local out: {any} = {}
+      for i, snapshot in ipairs(raw) do
+        out[i] = wrapMoverEntity(snapshot :: any)
       end
       return out :: any
     end

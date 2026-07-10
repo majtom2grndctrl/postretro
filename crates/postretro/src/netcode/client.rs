@@ -1634,6 +1634,7 @@ fn seed_kinematic_mover_phase(
     mover.started = wire.started;
     mover.completed = wire.completed;
     mover.current_linear_velocity = Vec3::from_array(wire.velocity);
+    mover.target_segment = wire.target_segment;
     Some(())
 }
 
@@ -1759,6 +1760,7 @@ mod tests {
             started: true,
             completed: false,
             velocity: [0.5, 0.0, 0.0],
+            target_segment: None,
         })
     }
 
@@ -1773,6 +1775,7 @@ mod tests {
             started: true,
             completed: false,
             velocity: [1.0, 0.0, 0.0],
+            target_segment: None,
         })
     }
 
@@ -1784,6 +1787,7 @@ mod tests {
                 KinematicMoverComponent::new(
                     mover_id,
                     vec![Vec3::ZERO, Vec3::X],
+                    vec!["start".to_string(), "finish".to_string()],
                     1.0,
                     0.0,
                     KinematicMoverMode::PingPong,

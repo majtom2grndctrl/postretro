@@ -49,7 +49,7 @@ pub const PROTOCOL_ID: u32 = 0x_5052_4C34; // "PRL4" — E16 adds hit declaratio
 /// type changes (added field, reordered enum, bumped bitcode major). Carried as
 /// `ProtocolVersion::wire_version` and folded into the transport-level
 /// `protocol_id` so a wire-incompatible peer is refused at the netcode layer.
-pub const WIRE_VERSION: u32 = 8; // E16 shot verdict separates FIRE accept from HIT accept
+pub const WIRE_VERSION: u32 = 9; // E17 mover target phase + use input bit
 
 /// Transport-level gate fed to renet_netcode as the netcode `protocol_id: u64`.
 /// Packs both hand-bumped consts so the encrypted handshake itself fails for any
@@ -724,33 +724,32 @@ mod tests {
     }
 
     #[test]
-    fn e16_version_constants_refuse_pre_change_peer_on_both_gates() {
-        const PRE_E16_PROTOCOL_ID: u32 = 0x_5052_4C33; // "PRL3"
-        const PRE_E16_WIRE_VERSION: u32 = 6;
+    fn e17_wire_version_refuses_pre_change_peer_on_both_gates() {
+        const PRE_E17_WIRE_VERSION: u32 = 8;
 
         assert_eq!(
             PROTOCOL_ID, 0x_5052_4C34,
             "E16 message-vocabulary changes require the PRL4 app protocol id"
         );
         assert_eq!(
-            WIRE_VERSION, 8,
-            "E16 shot verdict layout requires wire version 8"
+            WIRE_VERSION, 9,
+            "E17 mover target and use input layouts require wire version 9"
         );
         assert_ne!(
             transport_protocol_id(),
-            ((PRE_E16_PROTOCOL_ID as u64) << 32) | (PRE_E16_WIRE_VERSION as u64),
-            "gate 1 rejects a pre-E16 transport protocol id before app decode"
+            ((PROTOCOL_ID as u64) << 32) | (PRE_E17_WIRE_VERSION as u64),
+            "gate 1 rejects a pre-E17 transport protocol id before app decode"
         );
 
         let expected = protocol_version();
-        let pre_e16 = ProtocolVersion {
-            app_protocol_id: PRE_E16_PROTOCOL_ID,
-            wire_version: PRE_E16_WIRE_VERSION,
+        let pre_e17 = ProtocolVersion {
+            app_protocol_id: PROTOCOL_ID,
+            wire_version: PRE_E17_WIRE_VERSION,
         };
-        let err = validate_handshake(expected, pre_e16)
-            .expect_err("gate 2 rejects the pre-E16 app ProtocolVersion");
+        let err = validate_handshake(expected, pre_e17)
+            .expect_err("gate 2 rejects the pre-E17 app ProtocolVersion");
         assert_eq!(err.expected, expected);
-        assert_eq!(err.received, pre_e16);
+        assert_eq!(err.received, pre_e17);
     }
 
     #[test]

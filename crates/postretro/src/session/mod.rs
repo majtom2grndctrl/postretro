@@ -24,7 +24,8 @@ use crate::scripting::primitives::light::register_sequenced_light_primitives;
 use crate::scripting::primitives::register_all;
 use crate::scripting::reactions::registry::{
     ReactionPrimitiveRegistry, register_emitter_reaction_primitives,
-    register_fog_reaction_primitives, register_sequenced_fog_primitives,
+    register_fog_reaction_primitives, register_mover_reaction_primitives,
+    register_sequenced_fog_primitives, register_sequenced_mover_primitives,
 };
 use crate::scripting::reactions::system_commands::{
     SystemReactionRegistry, register_system_reaction_primitives,
@@ -117,6 +118,9 @@ pub(crate) struct Session {
     /// Per-level fog-volume registry side-table; packs `FogVolume` GPU bytes.
     /// See: context/lib/rendering_pipeline.md §7.5.
     pub(crate) fog_volume_bridge: scripting_systems::fog_volume_bridge::FogVolumeBridge,
+    pub(crate) trigger_volume_bridge: scripting_systems::trigger_volume_bridge::TriggerVolumeBridge,
+    /// Per-level rising-overlap state for host-authoritative trigger evaluation.
+    pub(crate) trigger_system: crate::trigger_system::TriggerSystem,
 
     /// Walks every `BillboardEmitterComponent` after game logic and before
     /// particle sim. See: context/lib/scripting.md.
@@ -341,12 +345,14 @@ impl Session {
         let mut sequence_registry = SequencedPrimitiveRegistry::new();
         register_sequenced_light_primitives(&mut sequence_registry, script_ctx.clone());
         register_sequenced_fog_primitives(&mut sequence_registry, script_ctx.clone());
+        register_sequenced_mover_primitives(&mut sequence_registry, script_ctx.clone());
 
         // Reaction-primitive handlers invoked by name when a `Primitive` reaction
         // fires. Populated once at startup; survives level reloads.
         let mut reaction_registry = ReactionPrimitiveRegistry::new();
         register_emitter_reaction_primitives(&mut reaction_registry);
         register_fog_reaction_primitives(&mut reaction_registry);
+        register_mover_reaction_primitives(&mut reaction_registry);
 
         // System-reaction handlers (no entity targets) — the second arm of the
         // shared named-reaction vocabulary. They enqueue typed commands onto
@@ -476,6 +482,9 @@ impl Session {
             classname_dispatch,
             light_bridge: scripting_systems::light_bridge::LightBridge::new(),
             fog_volume_bridge: scripting_systems::fog_volume_bridge::FogVolumeBridge::new(),
+            trigger_volume_bridge:
+                scripting_systems::trigger_volume_bridge::TriggerVolumeBridge::new(),
+            trigger_system: crate::trigger_system::TriggerSystem::default(),
             emitter_bridge: scripting_systems::emitter_bridge::EmitterBridge::new(),
             particle_render: scripting_systems::particle_render::ParticleRenderCollector::new(),
             mesh_render: scripting_systems::mesh_render::MeshRenderCollector::new(),

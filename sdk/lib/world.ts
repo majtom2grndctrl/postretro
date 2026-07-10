@@ -1,5 +1,5 @@
-// World-query vocabulary: typed wrapper around `worldQuery`. Light handle
-// construction delegates to `./entities/lights`.
+// World-query vocabulary: typed wrapper around `worldQuery`. Light,
+// fog-volume, and mover handle construction delegate to `./entities/*`.
 
 import { worldQuery, worldGetGravity, worldSetGravity } from "postretro";
 import type {
@@ -7,12 +7,15 @@ import type {
   Entity,
   FogVolumeEntity as GeneratedFogVolumeEntity,
   LightEntity as GeneratedLightEntity,
+  MoverEntity as GeneratedMoverEntity,
   WorldQueryFilter,
 } from "postretro";
 import { wrapLightEntity } from "./entities/lights";
 import type { LightEntityHandle } from "./entities/lights";
 import { wrapFogVolumeEntity } from "./entities/fog_volumes";
 import type { FogVolumeHandle } from "./entities/fog_volumes";
+import { wrapMoverEntity } from "./entities/movers";
+import type { MoverEntityHandle } from "./entities/movers";
 
 /**
  * Extend this as new component types gain dedicated handles; unknown
@@ -23,6 +26,7 @@ export type EntityForComponent<T extends string> =
   T extends "light" ? LightEntityHandle :
   T extends "emitter" ? EmitterEntity :
   T extends "fog_volume" ? FogVolumeHandle :
+  T extends "kinematic_mover" ? MoverEntityHandle :
   Entity;
 
 /** Typed vocabulary object returned from `world.query`. */
@@ -33,11 +37,12 @@ export interface World {
    * (carrying `pulse` / `fade` / `flicker` / `colorShift` / `sweep`
    * capability methods); `"fog_volume"` yields `FogVolumeHandle[]` (carrying
    * `pulse` / `fade` / `flicker` / `pulseSaturation` / `fadeSaturation`
-   * capability methods); `"emitter"` yields handles carrying the full
+   * capability methods); `"kinematic_mover"` yields `MoverEntityHandle[]`
+   * (carrying start / stop / reverse / goToPathNode command builders); `"emitter"` yields handles carrying the full
    * `BillboardEmitterComponent` snapshot under `component`; any other
    * component name yields base `Entity[]` (id, position, tags).
    *
-   * Supported component strings: `"light"`, `"fog_volume"`, `"transform"`,
+   * Supported component strings: `"light"`, `"fog_volume"`, `"kinematic_mover"`, `"transform"`,
    * `"emitter"`, `"particle"`, `"sprite_visual"`. Note that `"particle"` and
    * `"sprite_visual"` always return `[]` (engine-managed; scripts never
    * iterate individual particles or sprite visuals). Unknown component
@@ -83,6 +88,12 @@ export const world: World = {
         wrapFogVolumeEntity,
       );
       return volumes as EntityForComponent<T>[];
+    }
+    if (filter.component === "kinematic_mover") {
+      const movers = (raw as ReadonlyArray<GeneratedMoverEntity>).map(
+        wrapMoverEntity,
+      );
+      return movers as EntityForComponent<T>[];
     }
     // Thread the optional `component` sub-object through unchanged for
     // queries (e.g. `"emitter"`) whose Rust handle carries it; queries

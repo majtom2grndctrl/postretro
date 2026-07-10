@@ -70,8 +70,8 @@
 "speed" "15"
 "wait_ms" "750"
 "move_mode" "ping_pong"
-"start_on_spawn" "1"
-"_tags" "dev kinematic_platform"
+"start_on_spawn" "0"
+"_tags" "dev kinematic_platform platform_a"
 // brush 0
 {
 ( 176 320 16 ) ( 176 256 32 ) ( 176 256 16 ) 50-free-textures/concrete_stone_022 -32 0 0 1 1
@@ -259,4 +259,49 @@
 "_color" "253 252 255"
 "_falloff_range" "250"
 "style" "0"
+}
+// entity 22
+// Touch pad beside platform A. Walking onto it starts the initially-idle mover.
+{
+"classname" "trigger_volume"
+"name" "platform_a_start_pad"
+"activation" "touch"
+"target_tag" "platform_a"
+"command" "start"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"_tags" "dev trigger_pad"
+// brush 0
+{
+( 144 224 0 ) ( 145 224 0 ) ( 144 225 0 ) debug_ceiling_grey 0 0 0 1 1
+( 144 224 40 ) ( 144 225 40 ) ( 145 224 40 ) debug_ceiling_grey 0 0 0 1 1
+( 144 224 0 ) ( 144 225 0 ) ( 144 224 1 ) debug_ceiling_grey 0 0 0 1 1
+( 176 224 0 ) ( 176 224 1 ) ( 176 225 0 ) debug_ceiling_grey 0 0 0 1 1
+( 144 224 0 ) ( 144 224 1 ) ( 145 224 0 ) debug_ceiling_grey 0 0 0 1 1
+( 144 288 0 ) ( 145 288 0 ) ( 144 288 1 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+// entity 23
+// Use panel near platform A. Use while overlapping sends the mover to its end node.
+{
+"classname" "trigger_volume"
+"name" "platform_a_end_panel"
+"activation" "use"
+"target_tag" "platform_a"
+"command" "go_to_path_node"
+"command_arg" "platform_a_end"
+"fire_mode" "multiple"
+"rearm_ms" "250"
+"enabled_on_spawn" "1"
+"_tags" "dev trigger_panel"
+// brush 0
+{
+( 80 304 0 ) ( 81 304 0 ) ( 80 305 0 ) debug_ceiling_grey 0 0 0 1 1
+( 80 304 72 ) ( 80 305 72 ) ( 81 304 72 ) debug_ceiling_grey 0 0 0 1 1
+( 80 304 0 ) ( 80 305 0 ) ( 80 304 1 ) debug_ceiling_grey 0 0 0 1 1
+( 112 304 0 ) ( 112 304 1 ) ( 112 305 0 ) debug_ceiling_grey 0 0 0 1 1
+( 80 304 0 ) ( 80 304 1 ) ( 81 304 0 ) debug_ceiling_grey 0 0 0 1 1
+( 80 352 0 ) ( 81 352 0 ) ( 80 352 1 ) debug_ceiling_grey 0 0 0 1 1
+}
 }

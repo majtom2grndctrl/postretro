@@ -19,6 +19,7 @@ use crate::components::mesh::MeshComponent;
 use crate::components::particle::ParticleState;
 use crate::components::player_movement::PlayerMovementComponent;
 use crate::components::sprite_visual::SpriteVisual;
+use crate::components::trigger_volume::TriggerVolumeComponent;
 use crate::components::weapon::WeaponComponent;
 use crate::provenance::DescriptorProvenance;
 
@@ -109,10 +110,11 @@ pub enum ComponentKind {
     /// `components.ai` tuning (engine-internal, like `PlayerMovement`/`Agent` —
     /// never reachable through `worldQuery`). See `components::brain`.
     Brain = 12,
-    /// Engine-owned deterministic linear mover. Not queryable by scripts in the
-    /// first kinematic-platform slice, but stored as a normal component so a
-    /// future `world.query` registration can reach the state in place.
+    /// Deterministic linear mover. Scripts query mover handles through
+    /// `world.query`; raw phase remains engine-owned and non-attachable.
     KinematicMover = 13,
+    /// Engine-owned trigger configuration and mutable arming state.
+    TriggerVolume = 14,
 }
 
 impl ComponentKind {
@@ -136,6 +138,7 @@ impl ComponentKind {
             ComponentKind::Agent,
             ComponentKind::Brain,
             ComponentKind::KinematicMover,
+            ComponentKind::TriggerVolume,
         ];
         VARIANTS.len()
     };
@@ -190,6 +193,7 @@ pub enum ComponentValue {
     Agent(AgentComponent),
     Brain(BrainComponent),
     KinematicMover(KinematicMoverComponent),
+    TriggerVolume(TriggerVolumeComponent),
 }
 
 impl ComponentValue {
@@ -209,6 +213,7 @@ impl ComponentValue {
             ComponentValue::Agent(_) => ComponentKind::Agent,
             ComponentValue::Brain(_) => ComponentKind::Brain,
             ComponentValue::KinematicMover(_) => ComponentKind::KinematicMover,
+            ComponentValue::TriggerVolume(_) => ComponentKind::TriggerVolume,
         }
     }
 }
@@ -491,6 +496,19 @@ impl Component for KinematicMoverComponent {
 
     fn into_value(self) -> ComponentValue {
         ComponentValue::KinematicMover(self)
+    }
+}
+
+impl Component for TriggerVolumeComponent {
+    const KIND: ComponentKind = ComponentKind::TriggerVolume;
+    fn from_value(value: &ComponentValue) -> Option<&Self> {
+        match value {
+            ComponentValue::TriggerVolume(trigger) => Some(trigger),
+            _ => None,
+        }
+    }
+    fn into_value(self) -> ComponentValue {
+        ComponentValue::TriggerVolume(self)
     }
 }
 

@@ -10,7 +10,10 @@ Give AI coding agents a way to exercise the engine and inspect resulting game st
 without a window, GPU, or display server: load a real `.prl` map, run N fixed ticks with
 scripted player commands, dump world state as JSON, exit. This is the first slice of a
 larger observability effort (live socket channel and frame capture follow as separate
-plans); the command/query vocabulary born here is the shared substrate.
+plans); the command/query vocabulary born here is the shared substrate. Second audience:
+mod and map authors — this runner is the runtime sibling of `prl-build` for content CI,
+so the runspec/output format is designed as a stable tool-facing surface, not a
+throwaway debug format.
 
 ## Scope
 
@@ -55,6 +58,8 @@ plans); the command/query vocabulary born here is the shared substrate.
 - [ ] A runspec commanding forward movement for 60 ticks reports a player pawn position
       displaced from spawn; a runspec with no commands reports the pawn settled at spawn.
 - [ ] A runspec commanding a jump surfaces a movement tick event in the output.
+- [ ] A runspec commanding weapon fire with valid aim surfaces a weapon tick event
+      (authorized shot) in the output; the same runspec with `fire` false surfaces none.
 - [ ] Entity dump honors component-kind filter, tag filter, and an entry cap; a
       truncated dump says so explicitly (count of omitted entries), never silently.
 - [ ] The output document carries an out-of-frame declaration: renderer-derived entities
@@ -87,6 +92,10 @@ dependencies as parameters (registry handle, classname dispatch table, scripting
 handles) rather than reading `self`, so a headless caller without `App` can drive it.
 Behavior-preserving for the windowed path: same install order, same logs. This is the
 split-before-extend step for `lifecycle.rs` (2,602 lines); do not add headless logic here.
+Design constraint: the extracted function is shared substrate with two committed
+consumers — this plan's batch runner and Epic 15 Phase 4's dedicated-server entry point —
+so it must embed no assumptions about caller lifetime (no "run N ticks then exit" shape,
+no windowed-only state).
 
 ### Task 2: Headless session construction
 
@@ -97,7 +106,9 @@ no audio, input, UI, modal stack, net endpoint, options I/O, or window. Extract 
 scripting-core construction shared between `Session::build` and the headless path into
 one function so the two cannot drift; `Session::build` output is unchanged. The headless
 path requires the `scripts-build` sidecar exactly as the windowed engine does — surface a
-clear error naming the xtask launch when it is missing.
+clear error naming the xtask launch when it is missing. Same two-consumer constraint as
+Task 1: Epic 15 Phase 4's dedicated server will attach a net endpoint to this session
+later, so the construction path must not preclude one (omit it, don't design it out).
 
 ### Task 3: Observability vocabulary module
 
@@ -122,9 +133,13 @@ load the PRL synchronously via `postretro_level_loader::load_prl`, build the hea
 session (Task 2), run the extracted world install (Task 1), then loop the requested
 ticks calling `simulate_tick` with the per-tick `SimCommand` and a post-movement closure
 returning the runspec's aim; collect tick events; serialize the output document (Task 3)
-to stdout; exit 0, or non-zero with stderr diagnostics on any failure. Never constructs
-winit, wgpu, or kira types. Determinism guard: no wall-clock values in the document;
-iteration orders must be stable (registry column order; no `HashSet`-ordered output).
+to stdout; exit 0, or non-zero with stderr diagnostics on any failure. Weapon fire is in
+scope: the driver resolves the player's active wieldable from the spawned descriptor
+pawn and passes it to `simulate_tick` — the sim seam already supports this headless (the
+determinism tests fire weapons by passing the wieldable id with callback aim). Never
+constructs winit, wgpu, or kira types. Determinism guard: no wall-clock values in the
+document; iteration orders must be stable (registry column order; no `HashSet`-ordered
+output).
 
 ### Task 5: xtask observe subcommand
 
@@ -181,10 +196,10 @@ end-to-end verification of the whole plan.
   feature only gates modules. Deliberately not folded into `dev-tools`, which carries
   egui (slated for retirement under Epic 13 BIS); keeping them independent means the
   headless mode survives egui's removal and never links it.
-- Weapon-fire verification headless is untested territory: `active_wieldable` is set by
-  windowed wieldable install after the data script. The vocabulary carries fire/reload
-  from day one; whether firing produces authorized shots headless is a
-  decision-during-implementation (see Open questions).
+- Weapon fire headless is proven ground: `sim/determinism_tests.rs` spawns a weapon,
+  passes `Some(active_wieldable)` to `simulate_tick`, and asserts fire-button + callback-
+  aim behavior (`simulate_tick_uses_sim_command_fire_button_with_callback_aim`). The
+  driver's only new work is resolving the wieldable id after a map load.
 
 ## Boundary inventory
 
@@ -198,12 +213,12 @@ end-to-end verification of the whole plan.
 No JS/Luau/FGD surface — the runspec is consumed by tools, not by mods. Scripting SDK
 untouched.
 
-## Open questions
+## Promotion notes
 
-- Does weapon fire work headless in v1? `active_wieldable` plumbing may be
-  window-session-coupled. Resolve during Task 4: if wiring it is small, do it; if not,
-  document fire as inert headless and leave the vocabulary fields in place. Either
-  outcome satisfies the AC list (no AC requires fire).
-- Epic 15 Phase 4 (dedicated server) will want Tasks 1–2's seams. Coordinate at
-  promotion: note in the roadmap that the headless server entry point should consume the
-  world-install and headless-session functions rather than growing a parallel path.
+No open questions — earlier hedges resolved against source and project goals: weapon
+fire is committed v1 scope (the sim seam already fires headless in the determinism
+tests), and Tasks 1–2 are explicitly shared substrate with Epic 15 Phase 4.
+
+At promotion: add a line to the roadmap's Epic 15 Phase 4 entry stating the dedicated-
+server entry point consumes this plan's world-install and headless-session functions —
+one headless substrate, two entry points.

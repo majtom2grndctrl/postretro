@@ -85,6 +85,24 @@ Question: new crate or modules in `postretro`?
    dev-tools launch in the target agent environment before spending waves.
 3. **Later** — streaming telemetry, MCP wrapper over the same protocol.
 
+## Resolved hedges (zoom-out pass)
+
+Two open questions resolved from project goals + source verification:
+
+- **Weapon fire headless: committed v1 scope.** Combat is the engine's core loop (the
+  active in-progress plan is E16 client-authoritative-combat), and
+  `sim/determinism_tests.rs` already fires weapons headless — spawns a weapon entity,
+  passes `Some(active_wieldable)` to `simulate_tick`, dedicated test
+  `simulate_tick_uses_sim_command_fire_button_with_callback_aim`. Only new driver work:
+  resolve the wieldable id after map load.
+- **Epic 15 Phase 4: design requirement, not footnote.** Phase 4's testable outcome
+  requires a standalone headless server entry point; Tasks 1–2 are its prerequisite
+  seams. Constraints moved into the task paragraphs (no caller-lifetime assumptions; do
+  not preclude a net endpoint).
+- **Modder audience.** "Modder-friendly" is a stated project goal; this runner is
+  content-CI tooling (runtime sibling of prl-build). Runspec/output treated as a stable
+  tool-facing surface; format docs eventually graduate to human-facing `docs/`.
+
 ## Epic 15 Phase 4 coordination
 
 Roadmap: "A headless server entry point runs standalone, confirming dedicated-server

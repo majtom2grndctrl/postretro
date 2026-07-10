@@ -556,28 +556,15 @@ pub(crate) struct App {
     #[allow(dead_code)]
     pending_splash_override: Option<SplashSource>,
 
-    /// Classnames the built-in dispatch handled at level open. Captured during
-    /// install and consumed by the data-archetype sweep on the same frame.
-    /// `None` before level load and after the sweep consumes it.
-    builtin_handled: Option<std::collections::HashSet<String>>,
-
-    /// `player_spawn` placements partitioned from `world.map_entities` during
-    /// install. Consumed on the same frame by `spawn_from_player_starts` — a
-    /// separate path from `apply_data_archetype_dispatch`. `None` before level
-    /// load and after consumed.
-    pending_spawn_points: Option<Vec<crate::scripting::map_entity::MapEntity>>,
-
     /// A retained copy of the level's `player_spawn` placements for the host's
-    /// runtime net-slot accept path (M15 Phase 3 Task 4). Unlike
-    /// `pending_spawn_points` (consumed at install), this survives so each accepted
-    /// client's descriptor-backed remote pawn can be spawned from its deterministically
-    /// assigned placement. Empty before level load and on maps with no player_spawn.
+    /// runtime net-slot accept path (M15 Phase 3 Task 4), so each accepted
+    /// client's descriptor-backed remote pawn can be spawned from its
+    /// deterministically assigned placement. Populated from segment B's returned
+    /// spawn points at install. Empty before level load and on maps with no
+    /// player_spawn. The install-internal classname/archetype partition
+    /// (spawn-point / built-in-handled / remaining-entity bookkeeping) now lives
+    /// as locals inside `install_world_cpu`; only this host copy outlives install.
     host_spawn_points: Vec<crate::scripting::map_entity::MapEntity>,
-
-    /// Non-player-start map entities partitioned out of `world.map_entities`
-    /// during install, awaiting the data-archetype sweep on the same frame.
-    /// `None` before level load and after the sweep consumes them.
-    pending_map_entities: Option<Vec<crate::scripting::map_entity::MapEntity>>,
 
     /// Seconds since level load, not wall clock. Resets to zero on level unload
     /// and during level install. Maintained for future engine consumers that need a

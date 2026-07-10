@@ -63,7 +63,8 @@ throwaway debug format.
       adapter. All logging stays on stderr; stdout carries only the JSON document.
 - [ ] Two identical headless runs produce byte-identical stdout.
 - [ ] A runspec commanding forward movement for 60 ticks reports a player pawn position
-      displaced from spawn; a runspec with no commands reports the pawn settled at spawn.
+      displaced from spawn; a runspec with no commands reports the pawn at the spawn XZ
+      position (Y may settle to the floor under gravity).
 - [ ] A runspec commanding a jump surfaces a movement tick event in the output.
 - [ ] A runspec commanding weapon fire with valid aim surfaces a weapon tick event in
       the output; the same runspec with `fire` false surfaces none.
@@ -105,16 +106,27 @@ hit-zone-store resolve, ~:1057-1070; `simulate_tick` takes the hit-zone store) a
 compose identically to the windowed path). CPU steps are interleaved with renderer steps
 in the current body (texture/UV/geometry upload sits between the gravity set and the
 nav-graph build, :581-597; light-bridge populate sits between the nav-graph build and fog
-volumes); the extraction pulls the CPU steps into one contiguous function preserving
-their relative CPU order, and the windowed path keeps the same observable install
-behavior. Renderer/session-visual steps stay in the windowed path: texture install, UV
+volumes); the extraction pulls the CPU steps into contiguous functions preserving their
+relative CPU order. One interleave is load-bearing: light-bridge populate (windowed,
+renderer-fed) creates `LightComponent` entities whose registry ids must precede the
+fog-volume entity ids (comment at :651-652; bridges key dirty tracking on `EntityId`), so
+a single contiguous CPU function would reorder fog ids before light ids in the windowed
+path. The seam is therefore TWO functions: segment A (gravity set, nav-graph build) and
+segment B (fog-volume population onward). The windowed path calls A, then its renderer
+steps and light-bridge populate, then B — preserving today's exact entity-id order;
+headless calls A then B back-to-back (no light entities exist headless, so fog ids
+landing first is the documented headless shape). Add a drift-guard test asserting the
+windowed install assigns light entity ids before fog entity ids — the existing lifecycle
+tests call the bridges directly and do not cover this ordering. Renderer/session-visual steps stay in the windowed path: texture install, UV
 normalize, geometry install, light-bridge populate (fed by renderer light data), fog
 pixel scale and cell masks, mesh-model upload, smoke-collection registration, audio
 level-sound load, debug-UI reseed, and — within the archetype-sweep block — the spawn
 camera teleport and `light_bridge.absorb_dynamic_lights` (:992). The extracted function
 returns/populates everything the tick loop consumes:
 populated registry (via the passed handle), collision world, nav graph, mover colliders
-and mover tick-state table, gravity, hit-zone store, and the spawn result including
+and a fresh default mover tick-state table (the table is caller-owned tick state, not an
+install product — the windowed `App` field starts as `MoverTickStateTable::default()`),
+gravity, hit-zone store, and the spawn result including
 `active_wieldable` and its descriptor — so a caller without `App` can assemble
 `simulate_tick`'s arguments from the extracted function's outputs alone. The extracted
 function takes its dependencies as parameters (registry handle, classname dispatch table,
@@ -140,12 +152,20 @@ registries, classname dispatch (note `classname_dispatch` is a separate `Session
 not inside the `ScriptingCore` struct; the extractor produces both; the screen-effect
 decay fields inside `ScriptingCore` come along and sit unused headless). Mod-init is NOT
 part of `Session::build` — it runs post-build via `ScriptRuntime::run_mod_init` from
-App's deferred logo-frame path. Mod-init execution becomes a headless-driver step (Task 4
-calls `run_mod_init` after building the scripting core, before world install, to populate
-the data registry for the archetype sweep). The headless path derives its content root
-from the runspec map path (windowed derives from argv). The headless path requires the
-`scripts-build` sidecar exactly as the windowed engine does — surface a clear error
-naming the xtask launch when it is missing. Same two-consumer constraint as Task 1: Epic
+App's deferred logo-frame path. Mod-init execution becomes a headless-driver step. Note
+`run_mod_init` alone does NOT populate the data registry — it only parses and stores the
+manifest; the manifest-to-registry drain (the `upsert_entity_type` loop plus
+`replace_maps`/`replace_global_reactions`/`replace_global_crossings`/
+`register_script_trees`) lives in `splash_lifecycle.rs::run_deferred_mod_init`
+(~:251-273) and must be shared or replicated for headless, or the archetype sweep sees an
+empty entity-type list and no player pawn spawns. The headless path derives its content
+root from the runspec map path (windowed derives from argv; `content_root_from_map` in
+`startup/session.rs` is the existing helper). The headless path requires the
+`scripts-build` sidecar exactly as the windowed engine does — and because debug-build
+`run_mod_init` treats a missing start script as non-fatal (returns Ok with no manifest),
+the headless path must explicitly check for a missing sidecar / `None` manifest and error
+with a diagnostic naming the xtask launch, rather than relying on `run_mod_init` to
+reject. Same two-consumer constraint as Task 1: Epic
 15 Phase 4's dedicated server will attach a net endpoint to this session later, so the
 construction path must not preclude one (omit it, don't design it out).
 
@@ -163,26 +183,48 @@ geometry, hit zones), truncation count). Aim lives
 in the runspec because `SimCommand` carries no pitch — aim feeds the post-movement
 command, mirroring how the windowed engine derives aim from the camera. Unit tests:
 runspec round-trip, unknown-field rejection, filter semantics against an in-memory
-registry, truncation reporting, reload passthrough.
+registry, truncation reporting, reload passthrough. Two determinism/casing constraints
+this module owns: (a) some `ComponentValue` payloads carry std `HashMap` fields (e.g.
+health zone multipliers, mesh animation states) whose serde_json order is per-process
+random — the dump path must serialize map fields in stable sorted-key order or
+byte-identical output across runs breaks; (b) `ComponentKind`'s serde derive is
+PascalCase, so the snake_case component-kind filter string maps to `ComponentKind`
+explicitly in this module (same strings as `ComponentValue`'s `"kind"` tag) — do not
+touch `ComponentKind`'s derive.
 
 ### Task 4: Headless driver
 
 Wire `--headless <runspec.json>`: the branch lands in `startup::build_session`
 (`crates/postretro/src/startup/session.rs`), which collects argv and resolves the map
 path before `EventLoop::new()` — `main.rs` itself does no arg parsing and is touched at
-most trivially. The branch is `#[cfg(feature = "observability")]`-gated; a build without
-the feature that receives `--headless` exits non-zero with a diagnostic naming the xtask
-observe command. The driver: parse and validate the runspec, load the PRL synchronously
-via `postretro_level_loader::load_prl`, build the headless session (Task 2), run the
-extracted world install (Task 1), then loop the requested ticks calling `simulate_tick`
-with the per-tick `SimCommand` and a post-movement closure returning the runspec's aim;
-collect tick events; serialize the output document (Task 3) to stdout; exit 0, or
-non-zero with stderr diagnostics on any failure. Weapon fire is in scope: the driver
-receives `active_wieldable` from the world-install output (Task 1; windowed source:
-`spawn_from_player_starts` return, lifecycle.rs:927/:971) and passes it to
+most trivially. The `--headless` arg detection sits OUTSIDE the feature gate: the driver
+body is `#[cfg(feature = "observability")]`, and a `#[cfg(not(feature =
+"observability"))]` arm errors non-zero with a diagnostic naming `cargo run -p xtask --
+observe` — the diagnostic cannot live inside the gated block. The headless branch
+terminates the process (exit code) instead of returning a `BootSession`, so `main` never
+drives a windowless event loop. The driver: parse and validate the runspec, load the PRL
+synchronously via `postretro_level_loader::load_prl`, build the headless session (Task
+2), run mod-init AND the manifest-to-data-registry drain (parse via
+`ScriptRuntime::run_mod_init`, then drain the stored manifest into the data registry the
+way `splash_lifecycle.rs::run_deferred_mod_init` does — `run_mod_init` alone leaves the
+registry empty and no pawn spawns), run the extracted world install (Task 1, segments A
+then B), then loop the requested ticks calling `simulate_tick` with the per-tick
+`SimCommand` and a post-movement closure returning the runspec's aim; collect tick
+events; serialize the output document (Task 3) to stdout; exit 0, or non-zero with
+stderr diagnostics on any failure. Pin: `tick_dt` is `1.0 / 60.0` f32 — do NOT copy the
+windowed sites' `TICK_DURATION.as_secs_f32()` (0.016667 ≠ 1/60; the determinism tests'
+`DT` is the reference). Command mapping: runspec `fire` is a held/level signal — derive
+`FireButtonState { active: level, pressed: rising edge across consecutive ticks }` (the
+test fixtures' `pressed = active` models a different semantics; don't copy them).
+Runspec movement fields map onto `MovementInput { wish_dir, jump_pressed, dash_pressed,
+running, crouch_intent, facing_yaw }` with absent fields defaulting to false/zero and
+`facing_yaw` derived from the runspec aim direction's yaw. Weapon fire is in scope: the
+driver receives `active_wieldable` from the world-install output (Task 1; windowed
+source: `spawn_from_player_starts` return, lifecycle.rs:927/:971) and passes it to
 `simulate_tick`. Never constructs winit, wgpu, or kira types. Determinism guard: no
 wall-clock values in the document; iteration orders must be stable (registry column
-order; no `HashSet`-ordered output).
+order; no `HashSet`- or `HashMap`-ordered output — map-valued component fields serialize
+sorted, see Task 3).
 
 ### Task 5: xtask observe subcommand
 

@@ -2251,6 +2251,9 @@ mod tests {
         anim.interrupted_outgoing = Some(InterruptedOutgoing::Clip {
             state: "A".into(),
             entered_at: 0.0,
+            rate: 1.0,
+            rebase_time: Some(0.0),
+            rebase_elapsed: 0.0,
         });
 
         let id = reg.spawn(Transform::default());

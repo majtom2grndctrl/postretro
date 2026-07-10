@@ -155,11 +155,11 @@ fn snapshot_tag(entered_at: f64) -> postretro_model::sample_params::SnapshotTag 
     entered_at.to_bits()
 }
 
-/// The clip-local sample time for a state: `anim_time - entered_at`, plus a
-/// per-instance phase for LOOPING states (de-syncs a wave) and no phase for
+/// The clip-local sample time for a state: a caller-supplied elapsed value plus
+/// a per-instance phase for LOOPING states (de-syncs a wave) and no phase for
 /// one-shot states (plays from entry, synced to the triggering event).
-fn state_time(state: &AnimationState, entered_at: f64, anim_time: f64, phase: f32) -> f32 {
-    let elapsed = (anim_time - entered_at) as f32;
+fn state_time(state: &AnimationState, elapsed: f64, phase: f32) -> f32 {
+    let elapsed = elapsed as f32;
     if state.looping {
         elapsed + phase
     } else {
@@ -167,17 +167,13 @@ fn state_time(state: &AnimationState, entered_at: f64, anim_time: f64, phase: f3
     }
 }
 
-/// Build a [`ClipSample`] leg for a resolved state at its entry stamp.
-fn clip_sample(
-    state: &AnimationState,
-    entered_at: f64,
-    anim_time: f64,
-    phase: f32,
-) -> Option<ClipSample> {
+/// Build a [`ClipSample`] leg for a resolved state at its already-evaluated
+/// clip-local elapsed time.
+fn clip_sample(state: &AnimationState, elapsed: f64, phase: f32) -> Option<ClipSample> {
     let clip_index = state.clip_index?;
     Some(ClipSample {
         clip_index,
-        time: state_time(state, entered_at, anim_time, phase),
+        time: state_time(state, elapsed, phase),
         loop_policy: loop_policy(state),
     })
 }
@@ -215,7 +211,7 @@ pub(crate) fn animate_entity(
     // pass fills it before the collector runs, but guard anyway: an unfilled
     // stamp produces a zero-elapsed pose with no fade.
     let entered_at = anim.entered_at.unwrap_or(anim_time);
-    let primary = clip_sample(current, entered_at, anim_time, phase)?;
+    let primary = clip_sample(current, anim.scaled_elapsed(anim_time), phase)?;
 
     // Is a crossfade active? Only when a previous state is recorded AND its
     // stamp resolved AND the current entry stamp resolved (a still-pending
@@ -270,10 +266,10 @@ fn active_fade(
 fn fade_from_source(anim: &MeshAnimation, anim_time: f64, phase: f32) -> Option<FadeSource> {
     let prev_name = anim.previous_state.as_ref()?;
     let prev = anim.states.get(prev_name)?;
-    let prev_entered = anim.previous_entered_at?;
+    let _previous_entered_at = anim.previous_entered_at?;
     // The outgoing clip leg: advances on its OWN timeline from its own stamp.
     // A non-looping outgoing clip clamps (Loop::Clamp via loop_policy).
-    let outgoing = clip_sample(prev, prev_entered, anim_time, phase)?;
+    let outgoing = clip_sample(prev, anim.previous_scaled_elapsed(anim_time), phase)?;
 
     match anim.fade_source {
         FadeSourceKind::Snapshot => {
@@ -339,7 +335,7 @@ fn build_capture(
     let prev_name = anim.previous_state.as_ref()?;
     let prev = anim.states.get(prev_name)?;
     let in_stamp = anim.previous_entered_at?;
-    let incoming = clip_sample(prev, in_stamp, t2, phase)?;
+    let incoming = clip_sample(prev, anim.previous_scaled_elapsed(t2), phase)?;
 
     // w_interrupted: how far the interrupted OUT→IN fade had progressed at t2,
     // measured against IN's own crossfade window. Clamped so a finished or
@@ -356,9 +352,17 @@ fn build_capture(
     // A clip leg advances on its own timeline; a prior-snapshot reference carries
     // the incoming as its fallback so a culled prior capture degrades to IN.
     let outgoing = match anim.interrupted_outgoing.as_ref() {
-        Some(InterruptedOutgoing::Clip { state, entered_at }) => {
+        Some(InterruptedOutgoing::Clip {
+            state,
+            rebase_time,
+            rebase_elapsed,
+            rate,
+            ..
+        }) => {
             let out_state = anim.states.get(state)?;
-            FadeSource::Clip(clip_sample(out_state, *entered_at, t2, phase)?)
+            let elapsed =
+                rebase_time.map_or(0.0, |time| *rebase_elapsed + (t2 - time) * f64::from(*rate));
+            FadeSource::Clip(clip_sample(out_state, elapsed, phase)?)
         }
         Some(InterruptedOutgoing::Snapshot { tag }) => FadeSource::Snapshot {
             tag: *tag,
@@ -619,6 +623,85 @@ mod tests {
     }
 
     #[test]
+    fn scaled_outgoing_walk_keeps_phase_while_fade_weight_uses_real_clock() {
+        // A walk changed from 1x to 0.5x at t=1, then switched to idle at t=2.
+        // Its outgoing leg must continue from the scaled 1.5s phase, while the
+        // idle fade window remains a real-clock 200ms window.
+        let mut anim = anim_with(
+            &[
+                ("walk", state("walk", true, 200.0, Some(0))),
+                ("idle", state("idle", true, 200.0, Some(1))),
+            ],
+            "idle",
+            Some(2.0),
+        );
+        anim.rebase_time = Some(2.0);
+        anim.previous_state = Some("walk".into());
+        anim.previous_entered_at = Some(0.0);
+        anim.previous_rate = 0.5;
+        anim.previous_rebase_time = Some(1.0);
+        anim.previous_rebase_elapsed = 1.0;
+
+        let at_switch = animate_entity(&anim, 2.0, 0.0).unwrap();
+        let fade = at_switch.sample.fade.expect("fade active");
+        let FadeSource::Clip(outgoing) = fade.from else {
+            panic!("clip fade source expected");
+        };
+        assert!((outgoing.time - 1.5).abs() < EPS, "no outgoing phase jump");
+
+        let midway = animate_entity(&anim, 2.1, 0.0).unwrap();
+        let fade = midway.sample.fade.expect("fade active");
+        assert!(
+            (fade.weight - 0.5).abs() < EPS,
+            "fade stays real-clock based"
+        );
+        let FadeSource::Clip(outgoing) = fade.from else {
+            panic!("clip fade source expected");
+        };
+        assert!(
+            (outgoing.time - 1.55).abs() < EPS,
+            "outgoing walk remains scaled"
+        );
+    }
+
+    #[test]
+    fn smooth_interrupt_capture_uses_carried_scaled_outgoing_leg() {
+        let t2 = 1.1_f64;
+        let mut anim = anim_with(
+            &[
+                ("A", state("idle", true, 0.0, Some(0))),
+                ("B", state("walk", true, 200.0, Some(1))),
+                ("C", state("run", true, 100.0, Some(2))),
+            ],
+            "C",
+            Some(t2),
+        );
+        anim.rebase_time = Some(t2);
+        anim.previous_state = Some("B".into());
+        anim.previous_entered_at = Some(1.0);
+        anim.previous_rate = 0.5;
+        anim.previous_rebase_time = Some(1.0);
+        anim.fade_source = FadeSourceKind::Snapshot;
+        anim.interrupted_outgoing = Some(InterruptedOutgoing::Clip {
+            state: "A".into(),
+            entered_at: 0.0,
+            rate: 0.5,
+            rebase_time: Some(0.0),
+            rebase_elapsed: 0.0,
+        });
+
+        let capture = animate_entity(&anim, t2, 0.0)
+            .unwrap()
+            .capture
+            .expect("smooth interrupt emits capture");
+        assert!((capture.incoming.time - 0.05).abs() < EPS);
+        let FadeSource::Clip(outgoing) = capture.outgoing else {
+            panic!("carried outgoing clip expected");
+        };
+        assert!((outgoing.time - 0.55).abs() < EPS);
+    }
+
+    #[test]
     fn pending_stamp_contributes_no_fade() {
         let mut anim = anim_with(
             &[
@@ -704,6 +787,9 @@ mod tests {
         anim.interrupted_outgoing = Some(InterruptedOutgoing::Clip {
             state: "A".into(),
             entered_at: 0.0,
+            rate: 1.0,
+            rebase_time: Some(0.0),
+            rebase_elapsed: 0.0,
         });
 
         let t2 = 1.1_f64;

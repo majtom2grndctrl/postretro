@@ -1622,6 +1622,12 @@ mod tests {
             entered_at: Some(42.0),
             previous_state: Some("idle".into()),
             previous_entered_at: Some(10.0),
+            rate: 1.0,
+            rebase_time: Some(42.0),
+            rebase_elapsed: 0.0,
+            previous_rate: 1.0,
+            previous_rebase_time: Some(10.0),
+            previous_rebase_elapsed: 0.0,
             fade_source: FadeSourceKind::Clip,
             interrupted_outgoing: None,
         };

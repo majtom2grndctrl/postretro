@@ -1,6 +1,6 @@
 # E17-C — Trigger/Event and Script Command Surface
 
-> **Status:** draft.
+> **Status:** ready — reviewed (structural + implementability), awaiting implementation.
 >
 > **Epic:** 17 — Kinematic Geometry and Moving Platforms.
 >

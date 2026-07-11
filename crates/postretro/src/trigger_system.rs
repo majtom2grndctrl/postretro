@@ -13,6 +13,7 @@ use postretro_entities::{
 };
 use postretro_foundation::PlayerMovementComponent;
 use postretro_scripting_core::reaction_registry::ReactionPrimitiveRegistry;
+use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
 
 use crate::kinematic_mover::apply_mover_command_to_targets;
 use crate::scripting_systems::trigger_volume_bridge::TriggerVolumeBridge;
@@ -261,6 +262,30 @@ pub(crate) fn register_trigger_reaction_primitives(registry: &mut ReactionPrimit
     });
 }
 
+/// Register per-entity trigger controls for sequenced reactions. SDK trigger
+/// handles target one resolved entity id, while named primitive reactions use
+/// the tag-targeted registrar above.
+pub(crate) fn register_sequenced_trigger_primitives(
+    registry: &mut SequencedPrimitiveRegistry,
+    ctx: postretro_entities::ScriptCtx,
+) {
+    register_sequenced_trigger_command(registry, ctx.clone(), "armTrigger", arm_trigger_targets);
+    register_sequenced_trigger_command(registry, ctx, "disarmTrigger", disarm_trigger_targets);
+}
+
+fn register_sequenced_trigger_command(
+    registry: &mut SequencedPrimitiveRegistry,
+    ctx: postretro_entities::ScriptCtx,
+    name: &'static str,
+    command: fn(&mut EntityRegistry, &[EntityId]),
+) {
+    registry.register(name, move |id, _args| {
+        let mut entities = ctx.registry.borrow_mut();
+        command(&mut entities, &[id]);
+        Ok(())
+    });
+}
+
 fn warn_non_trigger_target_once(entity: EntityId) {
     static WARNED_TARGETS: OnceLock<Mutex<HashSet<EntityId>>> = OnceLock::new();
     let warned = WARNED_TARGETS.get_or_init(|| Mutex::new(HashSet::new()));
@@ -422,7 +447,9 @@ fn recorded_paired_exits() -> Vec<PlayerId> {
 mod tests {
     use super::*;
     use glam::Quat;
-    use postretro_entities::{KinematicMoverComponent, KinematicMoverMode, MoverCommand};
+    use postretro_entities::{
+        KinematicMoverComponent, KinematicMoverMode, MoverCommand, ScriptCtx,
+    };
     use postretro_foundation::{
         AirParams, CapsuleParams, FallParams, GroundParams, PlayerMovementComponent,
         PlayerMovementDescriptor, SpeedParams,
@@ -1157,5 +1184,66 @@ mod tests {
                 .is_err(),
             "a mixed tag target must not gain trigger state"
         );
+    }
+
+    #[test]
+    fn sequenced_trigger_primitives_apply_arm_and_disarm_to_the_resolved_id() {
+        let ctx = ScriptCtx::new();
+        let trigger = {
+            let mut registry = ctx.registry.borrow_mut();
+            let id = registry.spawn(Transform::default());
+            registry
+                .set_component(
+                    id,
+                    TriggerVolumeComponent::new(
+                        TriggerActivation::Touch,
+                        "tripwire".into(),
+                        String::new(),
+                        String::new(),
+                        MoverCommand::Start,
+                        TriggerFireMode::Once,
+                        100.0,
+                        true,
+                    ),
+                )
+                .unwrap();
+            id
+        };
+        let mut sequences = SequencedPrimitiveRegistry::new();
+        register_sequenced_trigger_primitives(&mut sequences, ctx.clone());
+        assert!(sequences.contains("armTrigger"));
+        assert!(sequences.contains("disarmTrigger"));
+
+        sequences.get("disarmTrigger").unwrap()(trigger, &serde_json::json!({}))
+            .expect("disarm sequenced primitive succeeds");
+        assert!(
+            !ctx.registry
+                .borrow()
+                .get_component::<TriggerVolumeComponent>(trigger)
+                .unwrap()
+                .armed
+        );
+
+        {
+            let mut registry = ctx.registry.borrow_mut();
+            let mut state = registry
+                .get_component::<TriggerVolumeComponent>(trigger)
+                .unwrap()
+                .clone();
+            state.latched = true;
+            state.rearm_remaining_ms = 50.0;
+            registry.set_component(trigger, state).unwrap();
+        }
+        sequences.get("armTrigger").unwrap()(trigger, &serde_json::json!({}))
+            .expect("arm sequenced primitive succeeds");
+        let state = ctx
+            .registry
+            .borrow()
+            .get_component::<TriggerVolumeComponent>(trigger)
+            .unwrap()
+            .clone();
+        assert!(state.armed);
+        assert!(!state.latched);
+        assert_eq!(state.rearm_remaining_ms, 0.0);
     }
 }

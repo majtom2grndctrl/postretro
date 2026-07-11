@@ -9,7 +9,7 @@ export type ProgressReactionDescriptor = {
   progress: { tag: string; at: number; fire: string };
 };
 
-/** Invokes a named Rust primitive. With `tag`, it targets entities carrying that tag and mutates them. Without `tag`, it is a system reaction (no entities) that enqueues a typed engine command — `playSound`, `rumble`, `flashScreen`, the UI-stack reactions. `args` carries the primitive's typed payload. */
+/** Invokes a named Rust primitive. With `tag`, it targets entities carrying that tag and mutates them. Tag-targeted primitives include emitter/fog/mover commands, `applyDamage`, `setAnimationState`, `armTrigger`, and `disarmTrigger`; arm/disarm use empty args. Without `tag`, it is a system reaction (no entities) that enqueues a typed engine command — `playSound`, `rumble`, `flashScreen`, the UI-stack reactions. `args` carries the primitive's typed payload. */
 export type PrimitiveReactionDescriptor = {
   primitive: string;
   tag?: string;
@@ -41,6 +41,8 @@ export type MoverStartStep = import("postretro").MoverStartStep;
 export type MoverStopStep = import("postretro").MoverStopStep;
 export type MoverReverseStep = import("postretro").MoverReverseStep;
 export type MoverGoToPathNodeStep = import("postretro").MoverGoToPathNodeStep;
+export type ArmTriggerStep = import("postretro").ArmTriggerStep;
+export type DisarmTriggerStep = import("postretro").DisarmTriggerStep;
 
 /** Union of supported sequence step shapes. Mirrors the generated
  * `SequenceStep` in `postretro.d.ts`; new sequenced primitives extend
@@ -56,7 +58,9 @@ export type SequenceStep =
   | MoverStartStep
   | MoverStopStep
   | MoverReverseStep
-  | MoverGoToPathNodeStep;
+  | MoverGoToPathNodeStep
+  | ArmTriggerStep
+  | DisarmTriggerStep;
 
 /** Ordered per-entity primitive invocations. Steps run in array order at dispatch time. */
 export type SequenceReactionDescriptor = {

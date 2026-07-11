@@ -1,7 +1,5 @@
-//! Host-authoritative fixed-tick evaluation for declarative trigger volumes.
-//!
-//! The system deliberately consumes only explicit player snapshots and per-player
-//! Use edges. Input ownership and remote-input plumbing remain outside this module.
+//! Host-authoritative fixed-tick trigger evaluation and command dispatch.
+//! See: context/lib/entity_model.md §5 · context/lib/scripting.md §10
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
@@ -18,8 +16,7 @@ use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
 use crate::kinematic_mover::apply_mover_command_to_targets;
 use crate::scripting_systems::trigger_volume_bridge::TriggerVolumeBridge;
 
-/// Identity passed to trigger activation without assigning trigger-ownership
-/// policy. E18 may use this distinction when it adds co-op ownership rules.
+/// Stable player identity for per-player trigger state and event ordering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum PlayerId {
     Local(EntityId),
@@ -48,13 +45,48 @@ pub(crate) struct TriggerEventFire {
     pub(crate) event_name: String,
 }
 
-/// Named trigger events produced by one authoritative tick. The split lets the
-/// binding/dispatch layer preserve enter and paired-exit semantics without
-/// re-evaluating trigger gates.
+/// Which edge produced a named trigger event. The trigger stage owns this
+/// ordering so commands from one edge can affect a later enter gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TriggerEventEdge {
+    Enter,
+    Exit,
+}
+
+/// A named trigger fire together with its source edge. This is the canonical
+/// fixed-tick event stream; it is ordered by `(trigger, player)`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TriggerEvent {
+    pub(crate) fire: TriggerEventFire,
+    pub(crate) edge: TriggerEventEdge,
+}
+
+/// Named trigger events produced by one authoritative tick. Consumers must
+/// preserve `fires` order; paired exits are already authorized and therefore
+/// never need a second gate evaluation.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct TriggerFireReport {
-    pub(crate) enters: Vec<TriggerEventFire>,
-    pub(crate) exits: Vec<TriggerEventFire>,
+    pub(crate) fires: Vec<TriggerEvent>,
+}
+
+impl TriggerFireReport {
+    #[cfg(test)]
+    fn enters(&self) -> Vec<TriggerEventFire> {
+        self.fires
+            .iter()
+            .filter(|event| event.edge == TriggerEventEdge::Enter)
+            .map(|event| event.fire.clone())
+            .collect()
+    }
+
+    #[cfg(test)]
+    fn exits(&self) -> Vec<TriggerEventFire> {
+        self.fires
+            .iter()
+            .filter(|event| event.edge == TriggerEventEdge::Exit)
+            .map(|event| event.fire.clone())
+            .collect()
+    }
 }
 
 /// Per-level trigger evaluator state. Sorted keys make edge emission stable
@@ -73,7 +105,7 @@ impl TriggerSystem {
 
     /// Number of players currently overlapping `trigger`, independently of
     /// whether the trigger was armed or its activation gate fired.
-    #[allow(dead_code)] // Consumed by the E18-B policy and E18 diagnostics tasks.
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     pub(crate) fn occupancy(&self, trigger: EntityId) -> usize {
         self.occupants.get(&trigger).map_or(0, BTreeSet::len)
     }
@@ -81,6 +113,7 @@ impl TriggerSystem {
     /// Run after player movement and before AI. This function is called only by
     /// the host/single-player simulation path; clients receive mover phase over
     /// replication and never evaluate or apply trigger commands locally.
+    #[cfg(test)]
     pub(crate) fn run_authoritative_tick(
         &mut self,
         registry: &mut EntityRegistry,
@@ -89,28 +122,50 @@ impl TriggerSystem {
         use_pressed: &HashMap<PlayerId, bool>,
         tick_dt: f32,
     ) -> TriggerFireReport {
-        let mut player_capsules: Vec<(PlayerId, Vec3, f32, f32)> = players
-            .iter()
-            .filter_map(|player| {
-                let transform = registry.get_component::<Transform>(player.pawn).ok()?;
-                let movement = registry
-                    .get_component::<PlayerMovementComponent>(player.pawn)
-                    .ok()?;
-                Some((
-                    player.id,
-                    transform.position,
-                    movement.capsule.radius,
-                    movement.capsule.half_height,
-                ))
-            })
-            .collect();
-        player_capsules.sort_unstable_by_key(|(player, _, _, _)| *player);
+        self.run_authoritative_tick_with_dispatch(
+            registry,
+            bridge,
+            players,
+            use_pressed,
+            tick_dt,
+            |_, _| {},
+        )
+    }
+
+    /// Evaluate and dispatch every trigger edge in one stable stream. The
+    /// callback runs immediately after the direct mover command and gate-state
+    /// update, before the next `(trigger, player)` edge is evaluated. This lets
+    /// a trigger reaction arm or disarm a later trigger in the same fixed tick
+    /// without bringing a script VM into the simulation seam.
+    pub(crate) fn run_authoritative_tick_with_dispatch(
+        &mut self,
+        registry: &mut EntityRegistry,
+        bridge: &TriggerVolumeBridge,
+        players: &[AuthoritativePlayer],
+        use_pressed: &HashMap<PlayerId, bool>,
+        tick_dt: f32,
+        mut dispatch: impl FnMut(&TriggerEvent, &mut EntityRegistry),
+    ) -> TriggerFireReport {
+        let player_capsules = canonical_player_capsules(registry, players);
 
         let mut trigger_ids: Vec<EntityId> = registry
             .iter_with_kind(ComponentKind::TriggerVolume)
             .map(|(id, _)| id)
             .collect();
         trigger_ids.sort_unstable();
+
+        // A despawned trigger, or one that loses its required bridge AABB, has
+        // no valid future edge on which to resolve its occupants. Drop both
+        // occupancy and paired-exit state instead of retaining stale IDs.
+        let active_triggers: BTreeSet<EntityId> = trigger_ids
+            .iter()
+            .copied()
+            .filter(|trigger| bridge.aabb(*trigger).is_some())
+            .collect();
+        self.occupants
+            .retain(|trigger, _| active_triggers.contains(trigger));
+        self.paired_enters
+            .retain(|(trigger, _)| active_triggers.contains(trigger));
 
         let mut report = TriggerFireReport::default();
 
@@ -126,84 +181,162 @@ impl TriggerSystem {
             };
 
             decrement_rearm(&mut trigger, tick_dt);
-            let current_occupants: BTreeSet<PlayerId> = player_capsules
-                .iter()
-                .filter_map(|&(player_id, center, radius, half_height)| {
-                    capsule_overlaps_aabb(center, radius, half_height, aabb_min, aabb_max)
-                        .then_some(player_id)
-                })
-                .collect();
-            let previous_occupants = self
-                .occupants
-                .insert(trigger_id, current_occupants.clone())
-                .unwrap_or_default();
+            let _ = registry.set_component(trigger_id, trigger.clone());
 
-            let edge_players: BTreeSet<PlayerId> = previous_occupants
-                .union(&current_occupants)
-                .copied()
-                .collect();
-            for player_id in edge_players {
-                let overlapping = current_occupants.contains(&player_id);
-                let was_overlapping = previous_occupants.contains(&player_id);
-                let entered = overlapping && !was_overlapping;
-                let left = was_overlapping && !overlapping;
-
-                if left {
-                    if self.paired_enters.remove(&(trigger_id, player_id)) {
-                        record_paired_exit(player_id);
-                        if !trigger.on_exit.is_empty() {
-                            report.exits.push(TriggerEventFire {
-                                trigger: trigger_id,
-                                player: player_id,
-                                event_name: trigger.on_exit.clone(),
-                            });
-                        }
-                    }
-                    continue;
+            // Retain the authoritative occupancy set in place. The old path
+            // rebuilt, cloned, and unioned a BTreeSet for every trigger on every
+            // tick. Only players that actually leave need temporary storage.
+            let leaving_players = {
+                let occupants = self.occupants.entry(trigger_id).or_default();
+                let leaving_players: Vec<PlayerId> = occupants
+                    .iter()
+                    .copied()
+                    .filter(|player_id| {
+                        let Some((_, center, radius, half_height)) = player_capsules.get(player_id)
+                        else {
+                            return true;
+                        };
+                        !capsule_overlaps_aabb(*center, *radius, *half_height, aabb_min, aabb_max)
+                    })
+                    .collect();
+                for &player_id in &leaving_players {
+                    occupants.remove(&player_id);
                 }
+                leaving_players
+            };
 
+            let mut edges: Vec<(PlayerId, TriggerEventEdge)> = leaving_players
+                .into_iter()
+                .map(|player| (player, TriggerEventEdge::Exit))
+                .collect();
+            for (&player_id, &(_, center, radius, half_height)) in &player_capsules {
+                let overlapping =
+                    capsule_overlaps_aabb(center, radius, half_height, aabb_min, aabb_max);
+                let entered = overlapping
+                    && self
+                        .occupants
+                        .entry(trigger_id)
+                        .or_default()
+                        .insert(player_id);
                 let activated = match trigger.activation {
                     TriggerActivation::Touch => entered,
                     TriggerActivation::Use => {
                         overlapping && use_pressed.get(&player_id).copied().unwrap_or(false)
                     }
                 };
-                if !activated {
-                    continue;
-                }
-
-                if evaluate_trigger_activation(&trigger, player_id)
-                    != TriggerActivationDecision::Fire
-                {
-                    continue;
-                }
-
-                let targets: Vec<EntityId> = registry
-                    .query_by_component_and_tag(
-                        ComponentKind::KinematicMover,
-                        Some(&trigger.target_tag),
-                    )
-                    .map(|(id, _)| id)
-                    .collect();
-                apply_mover_command_to_targets(registry, &targets, &trigger.command);
-                update_after_fire(&mut trigger);
-                self.paired_enters.insert((trigger_id, player_id));
-                if !trigger.on_fire.is_empty() {
-                    report.enters.push(TriggerEventFire {
-                        trigger: trigger_id,
-                        player: player_id,
-                        event_name: trigger.on_fire.clone(),
-                    });
+                if activated {
+                    edges.push((player_id, TriggerEventEdge::Enter));
                 }
             }
+            edges.sort_unstable_by_key(|(player, _)| *player);
 
-            // Store countdown progress even when no activation occurred. The
-            // explicit write also makes disabled triggers persist as inert state.
-            let _ = registry.set_component(trigger_id, trigger);
+            for (player_id, edge) in edges {
+                match edge {
+                    TriggerEventEdge::Exit => {
+                        if !self.paired_enters.remove(&(trigger_id, player_id)) {
+                            continue;
+                        }
+                        record_paired_exit(player_id);
+                        let Ok(trigger) = registry
+                            .get_component::<TriggerVolumeComponent>(trigger_id)
+                            .cloned()
+                        else {
+                            continue;
+                        };
+                        if trigger.on_exit.is_empty() {
+                            continue;
+                        }
+                        let event = TriggerEvent {
+                            fire: TriggerEventFire {
+                                trigger: trigger_id,
+                                player: player_id,
+                                event_name: trigger.on_exit,
+                            },
+                            edge,
+                        };
+                        dispatch(&event, registry);
+                        report.fires.push(event);
+                    }
+                    TriggerEventEdge::Enter => {
+                        // Re-read after every earlier event. A bound arm/disarm
+                        // command may have changed this trigger since its edge
+                        // was discovered, and only the gate decides whether the
+                        // enter is still eligible to fire.
+                        let Ok(mut trigger) = registry
+                            .get_component::<TriggerVolumeComponent>(trigger_id)
+                            .cloned()
+                        else {
+                            continue;
+                        };
+                        if evaluate_trigger_activation(&trigger, player_id)
+                            != TriggerActivationDecision::Fire
+                        {
+                            continue;
+                        }
+
+                        let mut targets: Vec<EntityId> = registry
+                            .query_by_component_and_tag(
+                                ComponentKind::KinematicMover,
+                                Some(&trigger.target_tag),
+                            )
+                            .map(|(id, _)| id)
+                            .collect();
+                        targets.sort_unstable();
+                        apply_mover_command_to_targets(registry, &targets, &trigger.command);
+                        update_after_fire(&mut trigger);
+                        let event_name = trigger.on_fire.clone();
+                        let _ = registry.set_component(trigger_id, trigger);
+                        self.paired_enters.insert((trigger_id, player_id));
+                        if event_name.is_empty() {
+                            continue;
+                        }
+                        let event = TriggerEvent {
+                            fire: TriggerEventFire {
+                                trigger: trigger_id,
+                                player: player_id,
+                                event_name,
+                            },
+                            edge,
+                        };
+                        dispatch(&event, registry);
+                        report.fires.push(event);
+                    }
+                }
+            }
         }
 
         report
     }
+}
+
+fn canonical_player_capsules(
+    registry: &EntityRegistry,
+    players: &[AuthoritativePlayer],
+) -> BTreeMap<PlayerId, (EntityId, Vec3, f32, f32)> {
+    let mut snapshots: BTreeMap<PlayerId, (EntityId, Vec3, f32, f32)> = BTreeMap::new();
+    for player in players {
+        let Ok(transform) = registry.get_component::<Transform>(player.pawn) else {
+            continue;
+        };
+        let Ok(movement) = registry.get_component::<PlayerMovementComponent>(player.pawn) else {
+            continue;
+        };
+        let snapshot = (
+            player.pawn,
+            transform.position,
+            movement.capsule.radius,
+            movement.capsule.half_height,
+        );
+        if let Some(existing) = snapshots.get_mut(&player.id) {
+            warn_duplicate_player_once(player.id);
+            if snapshot.0 < existing.0 {
+                *existing = snapshot;
+            }
+        } else {
+            snapshots.insert(player.id, snapshot);
+        }
+    }
+    snapshots
 }
 
 /// Fully re-arm a trigger. A fresh arm intentionally clears one-shot latching
@@ -297,9 +430,20 @@ fn warn_non_trigger_target_once(entity: EntityId) {
     }
 }
 
-/// The sole activation decision point for touch and use routes. It intentionally
-/// knows nothing about ownership policy; E18 extends this seam rather than adding
-/// a second firing path.
+fn warn_duplicate_player_once(player: PlayerId) {
+    static WARNED_PLAYERS: OnceLock<Mutex<HashSet<PlayerId>>> = OnceLock::new();
+    let warned = WARNED_PLAYERS.get_or_init(|| Mutex::new(HashSet::new()));
+    let Ok(mut warned) = warned.lock() else {
+        return;
+    };
+    if warned.insert(player) {
+        log::warn!(
+            "[Trigger] duplicate authoritative snapshot for {player:?}; using the lowest entity ID"
+        );
+    }
+}
+
+/// The sole activation decision point for touch and use routes.
 fn evaluate_trigger_activation(
     state: &TriggerVolumeComponent,
     #[allow(unused_variables)] activator: PlayerId,
@@ -843,7 +987,7 @@ mod tests {
         set_player_position(&mut registry, remote, Vec3::new(0.0, 1.0, 0.0));
         let enters = tick(&mut system, &mut registry, &bridge, &players, &[]);
         assert_eq!(
-            enters.enters,
+            enters.enters(),
             vec![
                 TriggerEventFire {
                     trigger: first_trigger,
@@ -872,7 +1016,7 @@ mod tests {
         set_player_position(&mut registry, remote, Vec3::new(4.0, 1.0, 0.0));
         let exits = tick(&mut system, &mut registry, &bridge, &players, &[]);
         assert_eq!(
-            exits.exits,
+            exits.exits(),
             vec![
                 TriggerEventFire {
                     trigger: first_trigger,
@@ -895,6 +1039,154 @@ mod tests {
                     event_name: "second_exit".into(),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn same_tick_enter_and_exit_share_one_trigger_player_order() {
+        let _guard = gate_test_guard().lock().expect("gate test guard poisoned");
+        reset_gate_fires();
+        let mut registry = EntityRegistry::new();
+        let mut bridge = TriggerVolumeBridge::new();
+        let trigger = spawn_trigger(
+            &mut registry,
+            &mut bridge,
+            TriggerActivation::Touch,
+            TriggerFireMode::Multiple,
+            0.0,
+            true,
+        );
+        set_event_names(&mut registry, trigger, "entered", "left");
+        let local = spawn_player(&mut registry, Vec3::new(0.0, 1.0, 0.0));
+        let remote = spawn_player(&mut registry, Vec3::new(4.0, 1.0, 0.0));
+        let local_id = PlayerId::Local(local);
+        let remote_id = PlayerId::Remote(7);
+        let players = [
+            AuthoritativePlayer {
+                id: remote_id,
+                pawn: remote,
+            },
+            AuthoritativePlayer {
+                id: local_id,
+                pawn: local,
+            },
+        ];
+        let mut system = TriggerSystem::default();
+
+        let _ = tick(&mut system, &mut registry, &bridge, &players, &[]);
+        set_player_position(&mut registry, local, Vec3::new(4.0, 1.0, 0.0));
+        set_player_position(&mut registry, remote, Vec3::new(0.0, 1.0, 0.0));
+
+        let report = tick(&mut system, &mut registry, &bridge, &players, &[]);
+        assert_eq!(
+            report.fires,
+            vec![
+                TriggerEvent {
+                    fire: TriggerEventFire {
+                        trigger,
+                        player: local_id,
+                        event_name: "left".into(),
+                    },
+                    edge: TriggerEventEdge::Exit,
+                },
+                TriggerEvent {
+                    fire: TriggerEventFire {
+                        trigger,
+                        player: remote_id,
+                        event_name: "entered".into(),
+                    },
+                    edge: TriggerEventEdge::Enter,
+                },
+            ],
+            "enter and paired-exit callbacks share the canonical (trigger, player) stream"
+        );
+    }
+
+    #[test]
+    fn missing_player_snapshot_removes_occupancy_and_fires_paired_exit() {
+        let _guard = gate_test_guard().lock().expect("gate test guard poisoned");
+        reset_gate_fires();
+        let mut registry = EntityRegistry::new();
+        let mut bridge = TriggerVolumeBridge::new();
+        let trigger = spawn_trigger(
+            &mut registry,
+            &mut bridge,
+            TriggerActivation::Touch,
+            TriggerFireMode::Multiple,
+            0.0,
+            true,
+        );
+        set_event_names(&mut registry, trigger, "entered", "left");
+        let player = spawn_player(&mut registry, Vec3::new(0.0, 1.0, 0.0));
+        let player_id = PlayerId::Local(player);
+        let players = [AuthoritativePlayer {
+            id: player_id,
+            pawn: player,
+        }];
+        let mut system = TriggerSystem::default();
+
+        assert_eq!(
+            tick(&mut system, &mut registry, &bridge, &players, &[]).enters(),
+            vec![TriggerEventFire {
+                trigger,
+                player: player_id,
+                event_name: "entered".into(),
+            }]
+        );
+        assert_eq!(system.occupancy(trigger), 1);
+
+        assert_eq!(
+            tick(&mut system, &mut registry, &bridge, &[], &[]).exits(),
+            vec![TriggerEventFire {
+                trigger,
+                player: player_id,
+                event_name: "left".into(),
+            }]
+        );
+        assert_eq!(system.occupancy(trigger), 0);
+        assert_eq!(recorded_paired_exits(), vec![player_id]);
+    }
+
+    #[test]
+    fn duplicate_player_ids_and_despawned_triggers_leave_no_stale_occupancy() {
+        let _guard = gate_test_guard().lock().expect("gate test guard poisoned");
+        reset_gate_fires();
+        let mut registry = EntityRegistry::new();
+        let mut bridge = TriggerVolumeBridge::new();
+        let trigger = spawn_trigger(
+            &mut registry,
+            &mut bridge,
+            TriggerActivation::Touch,
+            TriggerFireMode::Multiple,
+            0.0,
+            true,
+        );
+        set_event_names(&mut registry, trigger, "entered", "left");
+        let player = spawn_player(&mut registry, Vec3::new(0.0, 1.0, 0.0));
+        let player_id = PlayerId::Local(player);
+        let duplicate_players = [
+            AuthoritativePlayer {
+                id: player_id,
+                pawn: player,
+            },
+            AuthoritativePlayer {
+                id: player_id,
+                pawn: player,
+            },
+        ];
+        let mut system = TriggerSystem::default();
+
+        let report = tick(&mut system, &mut registry, &bridge, &duplicate_players, &[]);
+        assert_eq!(report.enters().len(), 1, "one PlayerId has one edge");
+        assert_eq!(system.occupancy(trigger), 1);
+
+        registry.despawn(trigger).expect("trigger can despawn");
+        let report = tick(&mut system, &mut registry, &bridge, &duplicate_players, &[]);
+        assert!(report.fires.is_empty());
+        assert_eq!(
+            system.occupancy(trigger),
+            0,
+            "despawn drops occupancy and paired-exit bookkeeping instead of retaining a stale trigger ID"
         );
     }
 
@@ -930,14 +1222,14 @@ mod tests {
         let _ = tick(&mut system, &mut registry, &bridge, &players, &[]);
         set_player_position(&mut registry, first, Vec3::new(0.0, 1.0, 0.0));
         let fired = tick(&mut system, &mut registry, &bridge, &players, &[]);
-        assert_eq!(fired.enters.len(), 1);
+        assert_eq!(fired.enters().len(), 1);
         set_player_position(&mut registry, second, Vec3::new(0.0, 1.0, 0.0));
         let suppressed = tick(&mut system, &mut registry, &bridge, &players, &[]);
-        assert!(suppressed.enters.is_empty());
+        assert!(suppressed.enters().is_empty());
         set_player_position(&mut registry, second, Vec3::new(4.0, 1.0, 0.0));
         let exited = tick(&mut system, &mut registry, &bridge, &players, &[]);
 
-        assert!(exited.exits.is_empty());
+        assert!(exited.exits().is_empty());
         assert!(recorded_paired_exits().is_empty());
     }
 
@@ -985,7 +1277,7 @@ mod tests {
         let _ = tick(&mut system, &mut registry, &bridge, &players, &[]);
         set_player_position(&mut registry, player, Vec3::new(0.0, 1.0, 0.0));
         let entered = tick(&mut system, &mut registry, &bridge, &players, &[]);
-        assert_eq!(entered.enters.len(), 3);
+        assert_eq!(entered.enters().len(), 3);
         assert!(
             registry
                 .get_component::<TriggerVolumeComponent>(once)
@@ -1004,7 +1296,7 @@ mod tests {
         set_player_position(&mut registry, player, Vec3::new(4.0, 1.0, 0.0));
         let exited = tick(&mut system, &mut registry, &bridge, &players, &[]);
         assert_eq!(
-            exited.exits,
+            exited.exits(),
             vec![
                 TriggerEventFire {
                     trigger: once,
@@ -1055,7 +1347,7 @@ mod tests {
         set_player_position(&mut registry, player, Vec3::new(0.0, 1.0, 0.0));
         assert!(
             tick(&mut system, &mut registry, &bridge, &players, &[])
-                .enters
+                .enters()
                 .is_empty(),
             "a disabled-on-spawn trigger must not fire"
         );
@@ -1080,7 +1372,7 @@ mod tests {
         let _ = tick(&mut system, &mut registry, &bridge, &players, &[]);
         set_player_position(&mut registry, player, Vec3::new(0.0, 1.0, 0.0));
         assert_eq!(
-            tick(&mut system, &mut registry, &bridge, &players, &[]).enters,
+            tick(&mut system, &mut registry, &bridge, &players, &[]).enters(),
             vec![TriggerEventFire {
                 trigger,
                 player: player_id,
@@ -1119,7 +1411,7 @@ mod tests {
         set_player_position(&mut registry, player, Vec3::new(0.0, 1.0, 0.0));
         assert_eq!(
             tick(&mut system, &mut registry, &bridge, &players, &[])
-                .enters
+                .enters()
                 .len(),
             1,
             "arming clears a once latch and enables a new enter"
@@ -1140,7 +1432,7 @@ mod tests {
         set_player_position(&mut registry, player, Vec3::new(0.0, 1.0, 0.0));
         assert!(
             tick(&mut system, &mut registry, &bridge, &players, &[])
-                .enters
+                .enters()
                 .is_empty(),
             "disarming prevents later enter fires"
         );

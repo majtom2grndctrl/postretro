@@ -35,6 +35,9 @@ pub struct TriggerVolumeComponent {
 }
 
 impl TriggerVolumeComponent {
+    // The authored trigger contract has eight independent fields; grouping them
+    // would make call sites less legible without reducing state surface.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         activation: TriggerActivation,
         target_tag: String,

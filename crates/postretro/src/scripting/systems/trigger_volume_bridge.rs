@@ -1,4 +1,5 @@
-//! Level-load bridge for invisible trigger-volume AABBs. Tick evaluation lives in E17-C Task 3.
+//! Level-load bridge for trigger-volume AABBs and authored event names.
+//! See: context/lib/build_pipeline.md §Entity resolution
 
 use glam::{Quat, Vec3};
 use postretro_entities::{
@@ -10,6 +11,7 @@ use std::collections::HashMap;
 
 pub(crate) struct TriggerVolumeBridge {
     aabbs: HashMap<EntityId, (Vec3, Vec3)>,
+    #[cfg(any(test, feature = "dev-tools"))]
     names: HashMap<EntityId, String>,
 }
 
@@ -17,17 +19,19 @@ impl TriggerVolumeBridge {
     pub(crate) fn new() -> Self {
         Self {
             aabbs: HashMap::new(),
+            #[cfg(any(test, feature = "dev-tools"))]
             names: HashMap::new(),
         }
     }
     pub(crate) fn clear(&mut self) {
         self.aabbs.clear();
+        #[cfg(any(test, feature = "dev-tools"))]
         self.names.clear();
     }
     pub(crate) fn aabb(&self, id: EntityId) -> Option<(Vec3, Vec3)> {
         self.aabbs.get(&id).copied()
     }
-    #[allow(dead_code)] // Read by the dev-tools trigger diagnostics snapshot.
+    #[cfg(any(test, feature = "dev-tools"))]
     pub(crate) fn name(&self, id: EntityId) -> Option<&str> {
         self.names.get(&id).map(String::as_str)
     }
@@ -85,6 +89,7 @@ impl TriggerVolumeBridge {
                 ),
             );
             self.aabbs.insert(id, (min, max));
+            #[cfg(any(test, feature = "dev-tools"))]
             self.names.insert(id, record.name.clone());
         }
     }

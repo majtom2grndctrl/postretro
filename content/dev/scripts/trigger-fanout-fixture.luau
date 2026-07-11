@@ -1,7 +1,5 @@
--- E18 authoring fixture — both trigger control surfaces in Luau.
---
--- `Primitive` reactions resolve targets from `tag`; handle methods build
--- per-id sequence steps. This mirrors trigger-fanout-fixture.ts exactly.
+-- Luau trigger-control authoring fixture.
+-- See: context/lib/scripting.md §5
 
 local Postretro = require("postretro")
 

@@ -18,7 +18,9 @@ use crate::scripting_systems;
 use crate::scripting_systems::hit_zones::HitZoneStore;
 use crate::scripting_systems::trigger_volume_bridge::TriggerVolumeBridge;
 use crate::trigger_bindings::{TriggerBindingEdge, TriggerBindingTable, TriggerResidualHandle};
-use crate::trigger_system::{AuthoritativePlayer, PlayerId, TriggerSystem};
+#[cfg(test)]
+use crate::trigger_system::TriggerEvent;
+use crate::trigger_system::{AuthoritativePlayer, PlayerId, TriggerEventEdge, TriggerSystem};
 use crate::weapon::{self, FireButtonState, WeaponFireAuthorization, WeaponFireCommand};
 use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::components::brain::{BrainComponent, LogicalState};
@@ -85,6 +87,20 @@ pub(crate) struct TickEvents {
     pub(crate) reload_deliveries: Vec<ReloadDelivery>,
     /// Bound trigger residuals drained app-side after every fixed tick this frame.
     pub(crate) trigger_residuals: Vec<TriggerResidualHandle>,
+    /// Test-only fixed-tick trace. Production consumes residual handles only;
+    /// keeping the detailed sequence out of non-test builds avoids a hot-path
+    /// diagnostic allocation.
+    #[cfg(test)]
+    pub(crate) trigger_fires: Vec<TriggerEvent>,
+    #[cfg(test)]
+    pub(crate) trigger_command_fires: Vec<TriggerCommandFire>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TriggerCommandFire {
+    pub(crate) event: TriggerEvent,
+    pub(crate) commands: Vec<crate::trigger_bindings::BoundTriggerCommandKind>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -138,6 +154,10 @@ pub(crate) fn simulate_tick(
         tick_dt,
     ));
     let mut trigger_residuals = Vec::new();
+    #[cfg(test)]
+    let mut trigger_fires = Vec::new();
+    #[cfg(test)]
+    let mut trigger_command_fires = Vec::new();
     if let Some(trigger_context) = trigger_context {
         let mut players: Vec<AuthoritativePlayer> = remote_pawn_commands
             .iter()
@@ -155,34 +175,37 @@ pub(crate) fn simulate_tick(
             players.push(AuthoritativePlayer { id, pawn });
         }
         let mut registry = registry.borrow_mut();
-        let report = trigger_context.system.run_authoritative_tick(
+        let mut slot_table = trigger_context.slot_table.borrow_mut();
+        let _report = trigger_context.system.run_authoritative_tick_with_dispatch(
             &mut registry,
             trigger_context.bridge,
             &players,
             trigger_context.use_edges,
             tick_dt,
+            |event, registry| {
+                let edge = match event.edge {
+                    TriggerEventEdge::Enter => TriggerBindingEdge::Enter,
+                    TriggerEventEdge::Exit => TriggerBindingEdge::Exit,
+                };
+                let execution = trigger_context.bindings.execute(
+                    event.fire.trigger,
+                    edge,
+                    registry,
+                    &mut slot_table,
+                );
+                #[cfg(test)]
+                {
+                    trigger_fires.push(event.clone());
+                    trigger_command_fires.push(TriggerCommandFire {
+                        event: event.clone(),
+                        commands: execution.commands.clone(),
+                    });
+                }
+                if let Some(handle) = execution.residual() {
+                    trigger_residuals.push(handle);
+                }
+            },
         );
-        let mut slot_table = trigger_context.slot_table.borrow_mut();
-        for fired in &report.enters {
-            if let Some(handle) = trigger_context.bindings.execute(
-                fired.trigger,
-                TriggerBindingEdge::Enter,
-                &mut registry,
-                &mut slot_table,
-            ) {
-                trigger_residuals.push(handle);
-            }
-        }
-        for fired in &report.exits {
-            if let Some(handle) = trigger_context.bindings.execute(
-                fired.trigger,
-                TriggerBindingEdge::Exit,
-                &mut registry,
-                &mut slot_table,
-            ) {
-                trigger_residuals.push(handle);
-            }
-        }
     }
     let ai = {
         let mut registry = registry.borrow_mut();
@@ -239,6 +262,10 @@ pub(crate) fn simulate_tick(
         authorized_shots,
         reload_deliveries,
         trigger_residuals,
+        #[cfg(test)]
+        trigger_fires,
+        #[cfg(test)]
+        trigger_command_fires,
     }
 }
 
@@ -962,6 +989,18 @@ mod tests {
         );
 
         assert_eq!(events.trigger_residuals.len(), 1);
+        assert_eq!(events.trigger_command_fires.len(), 1);
+        assert_eq!(
+            events.trigger_command_fires[0].commands,
+            vec![
+                crate::trigger_bindings::BoundTriggerCommandKind::Mover,
+                crate::trigger_bindings::BoundTriggerCommandKind::Damage,
+                crate::trigger_bindings::BoundTriggerCommandKind::AnimationState,
+                crate::trigger_bindings::BoundTriggerCommandKind::StoreSlot,
+                crate::trigger_bindings::BoundTriggerCommandKind::Arm,
+            ],
+            "each consequential command must cross the fixed-tick boundary once; final mover, arm, slot, and animation state alone are idempotent"
+        );
         let registry_ref = registry.borrow();
         assert!(
             registry_ref
@@ -1008,8 +1047,8 @@ mod tests {
         let mut system_registry = SystemReactionRegistry::new();
         register_system_reaction_primitives(&mut system_registry);
         let residual = bindings.residual(events.trigger_residuals[0]).unwrap();
-        fire_prepartitioned_reactions_with_sequences(
-            residual.descriptors(),
+        let _ = fire_prepartitioned_reactions_with_sequences(
+            residual.steps(),
             &sequence_registry,
             &reaction_registry,
             &system_registry,
@@ -1065,6 +1104,150 @@ mod tests {
             90.0,
             "the enter edge does not execute consequential work twice"
         );
+    }
+
+    #[test]
+    fn trigger_commands_recheck_later_same_tick_gates_in_stable_edge_order() {
+        for (command, second_starts_armed, expected_event_names, expected_health) in [
+            ("disarmTrigger", true, vec!["first"], 100.0_f32),
+            ("armTrigger", false, vec!["first", "second"], 95.0_f32),
+        ] {
+            let script_ctx = postretro_entities::ScriptCtx::new();
+            let registry = script_ctx.registry.clone();
+            let (first, second, target) = {
+                let mut registry = registry.borrow_mut();
+                let player = registry.spawn(Transform::default());
+                registry
+                    .set_component(player, trigger_movement())
+                    .expect("player movement attaches");
+
+                // Spawn order is the authored total order: first's command must
+                // settle before the second trigger's gate is evaluated.
+                let first = registry.spawn(Transform::default());
+                registry
+                    .set_component(first, trigger_component("first", true))
+                    .expect("first trigger attaches");
+                let second = registry.spawn(Transform::default());
+                registry
+                    .set_tags(second, vec!["second-trigger".into()])
+                    .expect("second trigger accepts tag");
+                registry
+                    .set_component(second, trigger_component("second", second_starts_armed))
+                    .expect("second trigger attaches");
+                let target = registry.spawn(Transform::default());
+                registry
+                    .set_tags(target, vec!["damage-target".into()])
+                    .expect("damage target accepts tag");
+                registry
+                    .set_component(
+                        target,
+                        HealthComponent {
+                            max: 100.0,
+                            current: 100.0,
+                            hitbox: None,
+                            death_handled: false,
+                            zone_multipliers: Default::default(),
+                            contributor_ledger: Default::default(),
+                        },
+                    )
+                    .expect("damage target health attaches");
+                (first, second, target)
+            };
+            let mut data = DataRegistry::new();
+            data.populate_level(
+                vec![
+                    NamedReaction {
+                        name: "first".into(),
+                        descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                            primitive: command.into(),
+                            tag: Some("second-trigger".into()),
+                            on_complete: None,
+                            args: serde_json::json!({}),
+                        }),
+                    },
+                    NamedReaction {
+                        name: "second".into(),
+                        descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                            primitive: "applyDamage".into(),
+                            tag: Some("damage-target".into()),
+                            on_complete: None,
+                            args: serde_json::json!({ "amount": 5 }),
+                        }),
+                    },
+                ],
+                Vec::new(),
+                &[],
+            );
+            let bindings = TriggerBindingTable::build(
+                &registry.borrow(),
+                &data,
+                &script_ctx.slot_table.borrow(),
+            );
+            let mut bridge = TriggerVolumeBridge::new();
+            for trigger in [first, second] {
+                bridge.insert_for_test(trigger, Vec3::splat(-4.0), Vec3::splat(4.0));
+            }
+            let mut trigger_system = TriggerSystem::default();
+            let mut progress = ProgressTracker::new();
+            let mut ai_warned = HashSet::new();
+            let mut mover_states = MoverTickStateTable::default();
+            let use_edges = HashMap::new();
+
+            let events = simulate_tick(
+                registry.clone(),
+                &CollisionWorld::new(),
+                &HitZoneStore::new(),
+                None,
+                -9.81,
+                None,
+                0.0,
+                &mut progress,
+                &mut ai_warned,
+                &[],
+                &mut mover_states,
+                &[],
+                &sim_command(false, false),
+                |_| PostMovementCommand {
+                    aim_origin: Vec3::ZERO,
+                    aim_direction: Vec3::NEG_Z,
+                },
+                1.0 / 60.0,
+                Some(TriggerTickContext {
+                    system: &mut trigger_system,
+                    bridge: &bridge,
+                    bindings: &bindings,
+                    slot_table: script_ctx.slot_table.clone(),
+                    use_edges: &use_edges,
+                }),
+            );
+
+            assert_eq!(
+                events
+                    .trigger_fires
+                    .iter()
+                    .map(|event| event.fire.event_name.as_str())
+                    .collect::<Vec<_>>(),
+                expected_event_names,
+                "{command} must affect the later trigger gate within this tick"
+            );
+            let observed_health = registry
+                .borrow()
+                .get_component::<HealthComponent>(target)
+                .expect("damage target remains present")
+                .current;
+            assert!(
+                (observed_health - expected_health).abs() <= 1.0e-6,
+                "the second trigger's consequential work must match the rechecked gate; expected {expected_health}, observed {observed_health}"
+            );
+            assert_eq!(
+                registry
+                    .borrow()
+                    .get_component::<TriggerVolumeComponent>(second)
+                    .expect("second trigger remains present")
+                    .armed,
+                command == "armTrigger"
+            );
+        }
     }
 
     #[test]

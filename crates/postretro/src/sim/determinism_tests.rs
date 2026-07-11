@@ -17,10 +17,13 @@ use crate::collision::moving::MoverCollider;
 use crate::kinematic_mover::MoverTickStateTable;
 use crate::movement::MovementInput;
 use crate::nav::NavGraph;
+use crate::netcode::ShotId;
 use crate::scripting_systems::hit_zones::HitZoneStore;
 use crate::scripting_systems::trigger_volume_bridge::TriggerVolumeBridge;
-use crate::trigger_bindings::TriggerBindingTable;
-use crate::trigger_system::TriggerSystem;
+use crate::trigger_bindings::{
+    BoundTriggerCommandKind, TriggerBindingTable, TriggerResidualHandle,
+};
+use crate::trigger_system::{PlayerId, TriggerEvent, TriggerEventEdge, TriggerSystem};
 use crate::weapon::FireButtonState;
 use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::components::brain::{AiStateMap, AiTuning, BrainComponent, LogicalState};
@@ -126,12 +129,81 @@ struct PawnOutcome {
     velocity: Vec3,
 }
 
+/// Stable name for every entity this harness spawns. `EntityId` indices are
+/// handed out in spawn order, so an id compared across spawn orders is not the
+/// same entity; the sibling stages sidestep this by reporting names, and every
+/// id leaving the tick is resolved to a label for the same reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EntityLabel {
+    Pawn(Role),
+    Enemy,
+    Weapon,
+    TriggerSource,
+    TriggerArmTarget,
+}
+
+/// Spawn-order-independent activator identity. `PlayerId::Remote` is already
+/// peer-stable; only the local pawn carries an `EntityId`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlayerLabel {
+    Local(Role),
+    Remote(u64),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RecordedTriggerFire {
+    trigger: EntityLabel,
+    player: PlayerLabel,
+    event_name: String,
+    edge: TriggerEventEdge,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct RecordedCommandFire {
+    fire: RecordedTriggerFire,
+    commands: Vec<BoundTriggerCommandKind>,
+}
+
+#[derive(Debug, PartialEq)]
+struct RecordedShot {
+    shot_id: ShotId,
+    owner_client_id: u64,
+    pawn: EntityLabel,
+    weapon: EntityLabel,
+    fire_tick: u32,
+    damage: f32,
+    range: f32,
+    pellet_count: usize,
+    credit_source: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct RecordedReload {
+    pawn: EntityLabel,
+    weapon: EntityLabel,
+}
+
+/// One tick of `TickEvents` projected onto stable labels. This is the only
+/// shape the determinism gate compares.
+#[derive(Debug, PartialEq)]
+struct RecordedTick {
+    movement: Vec<&'static str>,
+    ai: Vec<&'static str>,
+    weapon: Vec<&'static str>,
+    death: Vec<String>,
+    authorized_shots: Vec<RecordedShot>,
+    reload_deliveries: Vec<RecordedReload>,
+    trigger_residuals: Vec<TriggerResidualHandle>,
+    trigger_fires: Vec<RecordedTriggerFire>,
+    trigger_command_fires: Vec<RecordedCommandFire>,
+}
+
 #[derive(Debug)]
 struct SimRun {
     pawns: Vec<(Role, PawnOutcome)>,
     selected_player_health: f32,
     enemy_state: LogicalState,
-    events: Vec<TickEvents>,
+    events: Vec<RecordedTick>,
     trigger_residual_counts: Vec<usize>,
     trigger_slot: Option<SlotValue>,
     trigger_arm_target_armed: bool,
@@ -151,6 +223,7 @@ struct SimHarness {
     trigger_bindings: TriggerBindingTable,
     trigger_slots: Rc<RefCell<SlotTable>>,
     role_ids: Vec<(Role, EntityId)>,
+    labels: HashMap<EntityId, EntityLabel>,
     selected_player: EntityId,
     enemy: EntityId,
     trigger_arm_target: EntityId,
@@ -255,6 +328,15 @@ impl SimHarness {
         let mut trigger_bridge = TriggerVolumeBridge::new();
         trigger_bridge.insert_for_test(trigger_source, Vec3::splat(-4.0), Vec3::splat(4.0));
 
+        let mut labels = HashMap::new();
+        for (role, id) in &role_ids {
+            labels.insert(*id, EntityLabel::Pawn(*role));
+        }
+        labels.insert(enemy, EntityLabel::Enemy);
+        labels.insert(active_wieldable, EntityLabel::Weapon);
+        labels.insert(trigger_source, EntityLabel::TriggerSource);
+        labels.insert(trigger_arm_target, EntityLabel::TriggerArmTarget);
+
         Self {
             registry,
             world: floor_world(),
@@ -269,16 +351,17 @@ impl SimHarness {
             trigger_bindings,
             trigger_slots,
             role_ids,
+            labels,
             selected_player,
             enemy,
             trigger_arm_target,
         }
     }
 
-    fn tick(&mut self, command: RecordedCommand) -> TickEvents {
+    fn tick(&mut self, command: RecordedCommand) -> RecordedTick {
         let sim_command = command.to_sim_command();
         let trigger_use_edges = HashMap::new();
-        simulate_tick(
+        let events = simulate_tick(
             self.registry.clone(),
             &self.world,
             &self.hit_zones,
@@ -301,7 +384,81 @@ impl SimHarness {
                 slot_table: self.trigger_slots.clone(),
                 use_edges: &trigger_use_edges,
             }),
-        )
+        );
+        self.record(events)
+    }
+
+    /// Resolve every raw id a tick reports before it reaches the comparison.
+    fn record(&self, events: TickEvents) -> RecordedTick {
+        RecordedTick {
+            movement: events.movement,
+            ai: events.ai,
+            weapon: events.weapon,
+            death: events.death,
+            authorized_shots: events
+                .authorized_shots
+                .iter()
+                .map(|open| RecordedShot {
+                    shot_id: open.shot.shot_id,
+                    owner_client_id: open.owner_client_id,
+                    pawn: self.label(open.shot.pawn),
+                    weapon: self.label(open.shot.weapon),
+                    fire_tick: open.shot.fire_tick,
+                    damage: open.shot.damage,
+                    range: open.shot.range,
+                    pellet_count: open.shot.pellet_count,
+                    credit_source: open.shot.credit_source.clone(),
+                })
+                .collect(),
+            reload_deliveries: events
+                .reload_deliveries
+                .iter()
+                .map(|delivery| RecordedReload {
+                    pawn: self.label(delivery.pawn),
+                    weapon: self.label(delivery.weapon),
+                })
+                .collect(),
+            trigger_residuals: events.trigger_residuals,
+            trigger_fires: events
+                .trigger_fires
+                .iter()
+                .map(|event| self.record_trigger_fire(event))
+                .collect(),
+            trigger_command_fires: events
+                .trigger_command_fires
+                .iter()
+                .map(|fire| RecordedCommandFire {
+                    fire: self.record_trigger_fire(&fire.event),
+                    commands: fire.commands.clone(),
+                })
+                .collect(),
+        }
+    }
+
+    fn record_trigger_fire(&self, event: &TriggerEvent) -> RecordedTriggerFire {
+        RecordedTriggerFire {
+            trigger: self.label(event.fire.trigger),
+            player: self.player_label(event.fire.player),
+            event_name: event.fire.event_name.clone(),
+            edge: event.edge,
+        }
+    }
+
+    fn label(&self, id: EntityId) -> EntityLabel {
+        *self
+            .labels
+            .get(&id)
+            .expect("recorded events only reference entities this harness spawned")
+    }
+
+    fn player_label(&self, player: PlayerId) -> PlayerLabel {
+        match player {
+            PlayerId::Local(pawn) => match self.label(pawn) {
+                EntityLabel::Pawn(role) => PlayerLabel::Local(role),
+                other => panic!("local player must resolve to a spawned pawn, got {other:?}"),
+            },
+            PlayerId::Remote(client_id) => PlayerLabel::Remote(client_id),
+        }
     }
 
     fn role_outcomes(&self) -> Vec<(Role, PawnOutcome)> {

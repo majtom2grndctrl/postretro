@@ -378,10 +378,15 @@ mod tests {
     use glam::Vec3;
     use postretro_entities::components::light::{FalloffKind, LightComponent, LightKind};
     use postretro_entities::{
-        KinematicMoverComponent, KinematicMoverMode, MoverCommand, TriggerActivation,
-        TriggerFireMode, TriggerVolumeComponent,
+        KinematicMoverComponent, KinematicMoverMode, MoverCommand, NamedReaction,
+        PrimitiveDescriptor, ReactionDescriptor, SequenceStep, TriggerActivation, TriggerFireMode,
+        TriggerVolumeComponent,
     };
+    use postretro_level_format::data_script::DataScriptSection;
     use postretro_scripting_core::primitives_registry::PrimitiveRegistry;
+    use postretro_scripting_core::runtime::{ScriptRuntime, ScriptRuntimeConfig};
+    use serde_json::json;
+    use std::path::{Path, PathBuf};
 
     fn registry_with_gravity() -> (PrimitiveRegistry, ScriptCtx) {
         let ctx = ScriptCtx::new();
@@ -492,6 +497,40 @@ mod tests {
         );
         register_world_primitives(&mut r, ctx);
         r
+    }
+
+    fn dev_script_fixture(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("content/dev/scripts")
+            .join(name)
+    }
+
+    fn expected_trigger_fanout_reactions(trigger: EntityId) -> Vec<NamedReaction> {
+        let by_tag = |name: &str, primitive: &str| NamedReaction {
+            name: name.to_string(),
+            descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                primitive: primitive.to_string(),
+                tag: Some("fixture_tripwire".to_string()),
+                on_complete: None,
+                args: json!({}),
+            }),
+        };
+        let by_id = |name: &str, primitive: &str| NamedReaction {
+            name: format!("{name}.{}", trigger.to_raw()),
+            descriptor: ReactionDescriptor::Sequence(vec![SequenceStep {
+                id: trigger,
+                primitive: primitive.to_string(),
+                args: json!({}),
+            }]),
+        };
+
+        vec![
+            by_tag("trigger.fixture.armByTag", "armTrigger"),
+            by_tag("trigger.fixture.disarmByTag", "disarmTrigger"),
+            by_id("trigger.fixture.armById", "armTrigger"),
+            by_id("trigger.fixture.disarmById", "disarmTrigger"),
+        ]
     }
 
     #[test]
@@ -734,6 +773,50 @@ mod tests {
         assert_eq!(disarm_primitive, "disarmTrigger");
         assert!(!exposes_armed);
         assert!(bridge_hidden);
+    }
+
+    #[test]
+    fn trigger_fanout_authoring_fixtures_produce_identical_closed_arm_disarm_reactions() {
+        // Regression: the shipped fixtures must traverse the production TS bundler
+        // and per-level VM paths, not merely remain unreferenced review examples.
+        let ctx = ScriptCtx::new();
+        let trigger = add_trigger(&ctx, Some("fixture_tripwire"));
+        let primitives = registry_for(ctx.clone());
+        let runtime = ScriptRuntime::new(&primitives, &ScriptRuntimeConfig::default(), &ctx)
+            .expect("fixture runtime constructs");
+        let ts_fixture = dev_script_fixture("trigger-fanout-fixture.ts");
+        let luau_fixture = dev_script_fixture("trigger-fanout-fixture.luau");
+        let fixture_root = ts_fixture.parent().expect("fixture has a parent");
+
+        // `bundle_entry` is the library implementation behind `scripts-build`.
+        // The data runtime receives the resulting bytes exactly as a PRL section does.
+        let ts_section = DataScriptSection {
+            compiled_bytes: postretro_script_compiler::bundle_entry(&ts_fixture)
+                .expect("TypeScript fixture bundles through scripts-build")
+                .into_bytes(),
+            source_path: ts_fixture.to_string_lossy().into_owned(),
+        };
+        let luau_section = DataScriptSection {
+            compiled_bytes: std::fs::read(&luau_fixture).expect("Luau fixture reads"),
+            source_path: luau_fixture.to_string_lossy().into_owned(),
+        };
+
+        let ts = runtime.run_data_script(&ts_section, fixture_root);
+        let luau = runtime.run_data_script(&luau_section, fixture_root);
+        let expected = expected_trigger_fanout_reactions(trigger);
+
+        assert_eq!(
+            ts.reactions, expected,
+            "TS fixture queries the real trigger snapshot"
+        );
+        assert_eq!(
+            luau.reactions, expected,
+            "Luau fixture queries the real trigger snapshot"
+        );
+        assert_eq!(
+            ts, luau,
+            "both authoring runtimes register the same trigger control contract"
+        );
     }
 
     #[test]

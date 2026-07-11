@@ -95,7 +95,10 @@ use winit::window::{Window, WindowAttributes};
 
 use crate::camera::Camera;
 use crate::frame_timing::{FrameRateMeter, FrameTiming, InterpolableState};
+// Owns the apply-before-detect stage order of the frame's replicated-state path.
+// See: context/lib/networking.md
 use crate::input::{Action, ButtonState, DiagnosticAction, InputFocus};
+use crate::netcode::frame_order;
 use crate::render::Renderer;
 use crate::scripting::state_persistence::{
     STATE_FILE_PATH, collect_persisted_state, save_persisted_state,
@@ -121,7 +124,8 @@ use postretro_entities::SystemReactionCommand;
 use postretro_foundation::ModThemeTokens;
 use postretro_scripting_core::data_descriptors::RegisteredUiTree;
 use postretro_scripting_core::reaction_dispatch::{
-    fire_named_event, fire_named_event_with_sequences, fire_prepartitioned_reactions_with_sequences,
+    dispatch_deferred_named_events_with_sequences, fire_named_event,
+    fire_named_event_with_sequences, fire_prepartitioned_reactions_with_sequences,
 };
 use postretro_scripting_core::runtime::{
     Frontend, MenuCamera, ReloadSummary, StagedManifestCommitOutcome,
@@ -1749,6 +1753,7 @@ impl ApplicationHandler for App {
                 // Reserved for primitives that need a per-frame ordering stamp.
                 // See: context/lib/scripting.md
                 script_ctx.frame.set(script_ctx.frame.get().wrapping_add(1));
+                let engine_frame = script_ctx.frame.get();
 
                 // Net poll (M15 Phase 1): non-blocking, once per frame, BEFORE
                 // the catch-up tick loop. The client applies received
@@ -1757,12 +1762,16 @@ impl ApplicationHandler for App {
                 // serialize + send runs AFTER the tick loop (post-loop, beside
                 // the other drains). Single-player → inert no-op. See
                 // `context/lib/entity_model.md` §6, development_guide §4.3.
-                self.net_poll_and_apply(frame_dt);
+                //
+                // Driven through `netcode::frame_order` so the apply-before-detect
+                // order is owned by one seam: the witness minted here is the only key
+                // to the crossing stage below, so inverting the two is a type error.
+                let applied = frame_order::run_snapshot_apply_stage(self, engine_frame, frame_dt);
 
-                // Accumulate post-tick events across all ticks; drain after the
-                // tick loop completes so reactions see fully-settled world state
-                // and event order is never interleaved with ongoing physics. See:
-                // context/lib/entity_model.md §5
+                // Accumulate app-side residual and post-tick events across all ticks;
+                // drain after the loop against fully-settled world state. Direct trigger
+                // consequential work instead executes and rechecks inside each fixed tick.
+                // See: context/lib/entity_model.md §5
                 let mut pending_movement_events: Vec<&'static str> = Vec::new();
                 let mut pending_ai_events: Vec<&'static str> = Vec::new();
                 let mut pending_weapon_events: Vec<&'static str> = Vec::new();
@@ -2050,6 +2059,7 @@ impl ApplicationHandler for App {
                 // would no-op under plain `fire_named_event`. Chained-event names
                 // are discarded (`let _ =`), matching the drains above.
                 if let Some(session) = self.session.as_ref() {
+                    let mut pending_trigger_follow_ups = Vec::new();
                     for event_name in &pending_death_events {
                         let _ = fire_named_event_with_sequences(
                             event_name,
@@ -2067,8 +2077,23 @@ impl ApplicationHandler for App {
                             );
                             continue;
                         };
-                        fire_prepartitioned_reactions_with_sequences(
-                            residual.descriptors(),
+                        pending_trigger_follow_ups.extend(
+                            fire_prepartitioned_reactions_with_sequences(
+                                residual.steps(),
+                                &session.scripting.sequence_registry,
+                                &session.scripting.reaction_registry,
+                                &session.scripting.system_registry,
+                                &script_ctx,
+                            ),
+                        );
+                    }
+                    if !pending_trigger_follow_ups.is_empty() {
+                        // Direct residual work has already been partitioned and
+                        // run above. Follow-up names advance by bounded FIFO
+                        // hops so authored onComplete order is never flattened.
+                        dispatch_deferred_named_events_with_sequences(
+                            pending_trigger_follow_ups,
+                            &script_ctx.data_registry.borrow(),
                             &session.scripting.sequence_registry,
                             &session.scripting.reaction_registry,
                             &session.scripting.system_registry,
@@ -2138,21 +2163,12 @@ impl ApplicationHandler for App {
                 // through Task 2's shared named-reaction path; any system
                 // reactions thereby enqueued are drained immediately below so
                 // crossing-fired commands land in this frame, not the next.
-                if let Some(session) = self.session.as_mut() {
-                    let crossing_events = session
-                        .crossing_detector
-                        .detect(&script_ctx.slot_table.borrow());
-                    for event_name in &crossing_events {
-                        let _ = fire_named_event_with_sequences(
-                            event_name,
-                            &script_ctx.data_registry.borrow(),
-                            &session.scripting.sequence_registry,
-                            &session.scripting.reaction_registry,
-                            &session.scripting.system_registry,
-                            &script_ctx,
-                        );
-                    }
-                }
+                //
+                // Consumes this frame's `SnapshotsApplied` witness: on a connected
+                // client the replicated slot writes this frame's snapshots carried
+                // have already landed, so a crossing fires on the SAME frame its
+                // authoritative value arrives, never a frame late.
+                let _crossings = frame_order::run_crossing_stage(self, engine_frame, applied);
                 if !script_ctx.system_commands.is_empty() {
                     self.dispatch_system_commands();
                 }
@@ -3063,6 +3079,41 @@ impl ApplicationHandler for App {
     }
 }
 
+/// The production frame's two replicated-state stages. `netcode::frame_order` owns
+/// their order (apply, then detect); this impl supplies only the bodies. The headless
+/// co-op harness implements the same trait, so neither site invents its own sequencing.
+/// See: context/lib/networking.md
+impl frame_order::ReplicatedStateFrame for App {
+    fn apply_received_snapshots(&mut self, frame_dt: f32) {
+        self.net_poll_and_apply(frame_dt);
+    }
+
+    fn dispatch_state_crossings(&mut self) -> Vec<String> {
+        // Clone the `ScriptCtx` handle (cheap `Rc` bump) so the slot-table /
+        // data-registry reads borrow nothing of `self` while the disjoint
+        // `session` borrow below holds the detector and the reaction registries.
+        let Some(script_ctx) = self
+            .session
+            .as_ref()
+            .map(|session| session.scripting.script_ctx.clone())
+        else {
+            return Vec::new();
+        };
+        let Some(session) = self.session.as_mut() else {
+            return Vec::new();
+        };
+        crate::scripting::reactions::dispatch_state_crossings_with_sequences(
+            &mut session.crossing_detector,
+            &script_ctx.slot_table.borrow(),
+            &script_ctx.data_registry.borrow(),
+            &session.scripting.sequence_registry,
+            &session.scripting.reaction_registry,
+            &session.scripting.system_registry,
+            &script_ctx,
+        )
+    }
+}
+
 impl App {
     /// Finish deferred session startup on the first visible logo frame. Takes
     /// (and thereby consumes) `pending_session` so the install commits at most
@@ -3587,6 +3638,7 @@ impl App {
                         .recompose_active_sets(&self.active_level_tags);
                 }
                 self.rebuild_active_reaction_subscribers();
+                self.rebuild_active_trigger_bindings();
             }
             self.commit_staged_ui_manifest(&result, &outcome);
         }

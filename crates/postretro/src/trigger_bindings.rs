@@ -1,16 +1,17 @@
 //! Bind trigger event reactions at level install and execute their fixed-tick work.
 //! See: context/lib/entity_model.md §5 · context/lib/scripting.md §10
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use postretro_entities::{
     ComponentKind, EntityId, EntityRegistry, MoverCommand, SlotTable, SlotValue,
     TriggerVolumeComponent,
 };
 use postretro_scripting_core::data_descriptors::{
-    NamedReaction, PrimitiveDescriptor, ReactionDescriptor, SequenceStep,
+    NamedReaction, PrimitiveDescriptor, ProgressDescriptor, ReactionDescriptor, SequenceStep,
 };
 use postretro_scripting_core::data_registry::DataRegistry;
+use postretro_scripting_core::reaction_dispatch::PrepartitionedReactionStep;
 use postretro_scripting_core::store_bridge::{
     apply_store_slot_batch, json_value_for_slot, validate_slot_value,
 };
@@ -46,12 +47,12 @@ pub(crate) struct TriggerResidualHandle(usize);
 
 #[derive(Debug, Clone)]
 pub(crate) struct TriggerResidual {
-    descriptors: Vec<ReactionDescriptor>,
+    steps: Vec<PrepartitionedReactionStep>,
 }
 
 impl TriggerResidual {
-    pub(crate) fn descriptors(&self) -> &[ReactionDescriptor] {
-        &self.descriptors
+    pub(crate) fn steps(&self) -> &[PrepartitionedReactionStep] {
+        &self.steps
     }
 }
 
@@ -65,6 +66,33 @@ pub(crate) struct TriggerBindingTable {
 struct TriggerBinding {
     commands: Vec<BoundTriggerCommand>,
     residual: Option<TriggerResidualHandle>,
+}
+
+/// Result of one fixed-tick binding execution. The test-only command list is
+/// deliberately captured at the command-buffer boundary, where duplicate
+/// partitioning cannot hide behind idempotent final component state.
+#[derive(Debug)]
+pub(crate) struct TriggerBindingExecution {
+    residual: Option<TriggerResidualHandle>,
+    #[cfg(test)]
+    pub(crate) commands: Vec<BoundTriggerCommandKind>,
+}
+
+impl TriggerBindingExecution {
+    pub(crate) fn residual(self) -> Option<TriggerResidualHandle> {
+        self.residual
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BoundTriggerCommandKind {
+    Mover,
+    Damage,
+    Arm,
+    Disarm,
+    StoreSlot,
+    AnimationState,
 }
 
 /// The closed set of trigger work allowed in the VM-free fixed-tick seam.
@@ -186,37 +214,20 @@ impl TriggerBindingTable {
         }
 
         let mut commands = Vec::new();
-        let mut descriptors = Vec::new();
-        let mut chain_path = vec![event_name.to_string()];
+        let mut steps = Vec::new();
         for reaction in &matched {
-            partition_reaction(
+            partition_direct_reaction(
                 reaction,
-                false,
                 data_registry,
                 slot_table,
                 &mut commands,
-                &mut descriptors,
-            );
-        }
-        for next in matched
-            .iter()
-            .filter_map(|reaction| match &reaction.descriptor {
-                ReactionDescriptor::Primitive(primitive) => primitive.on_complete.as_deref(),
-                _ => None,
-            })
-        {
-            append_chain_residuals(
-                next,
-                data_registry,
-                slot_table,
-                &mut descriptors,
-                &mut chain_path,
+                &mut steps,
             );
         }
 
-        let residual = (!descriptors.is_empty()).then(|| {
+        let residual = (!steps.is_empty()).then(|| {
             let handle = TriggerResidualHandle(self.residuals.len());
-            self.residuals.push(TriggerResidual { descriptors });
+            self.residuals.push(TriggerResidual { steps });
             handle
         });
         self.bindings
@@ -229,12 +240,26 @@ impl TriggerBindingTable {
         edge: TriggerBindingEdge,
         registry: &mut EntityRegistry,
         slot_table: &mut SlotTable,
-    ) -> Option<TriggerResidualHandle> {
-        let binding = self.bindings.get(&(trigger, edge))?;
+    ) -> TriggerBindingExecution {
+        let Some(binding) = self.bindings.get(&(trigger, edge)) else {
+            return TriggerBindingExecution {
+                residual: None,
+                #[cfg(test)]
+                commands: Vec::new(),
+            };
+        };
+        #[cfg(test)]
+        let mut commands = Vec::with_capacity(binding.commands.len());
         for command in &binding.commands {
             command.execute(registry, slot_table);
+            #[cfg(test)]
+            commands.push(command.kind());
         }
-        binding.residual
+        TriggerBindingExecution {
+            residual: binding.residual,
+            #[cfg(test)]
+            commands,
+        }
     }
 
     pub(crate) fn residual(&self, handle: TriggerResidualHandle) -> Option<&TriggerResidual> {
@@ -243,7 +268,7 @@ impl TriggerBindingTable {
 
     /// Whether the authored event name for this trigger edge resolved against
     /// the active composed reaction set at level install.
-    #[allow(dead_code)] // Read by the dev-tools trigger diagnostics snapshot.
+    #[cfg(feature = "dev-tools")]
     pub(crate) fn is_bound(&self, trigger: EntityId, edge: TriggerBindingEdge) -> bool {
         self.bindings.contains_key(&(trigger, edge))
     }
@@ -295,6 +320,18 @@ impl BoundTriggerCommand {
             }
         }
     }
+
+    #[cfg(test)]
+    fn kind(&self) -> BoundTriggerCommandKind {
+        match self {
+            Self::Mover { .. } => BoundTriggerCommandKind::Mover,
+            Self::Damage { .. } => BoundTriggerCommandKind::Damage,
+            Self::Arm { .. } => BoundTriggerCommandKind::Arm,
+            Self::Disarm { .. } => BoundTriggerCommandKind::Disarm,
+            Self::StoreSlot { .. } => BoundTriggerCommandKind::StoreSlot,
+            Self::AnimationState { .. } => BoundTriggerCommandKind::AnimationState,
+        }
+    }
 }
 
 impl BoundTarget {
@@ -318,44 +355,49 @@ impl BoundTarget {
     }
 }
 
-fn partition_reaction(
+/// Keep only directly-owned work in the binding. `onComplete` names remain
+/// ordered residual hops, so their graphs resolve when the app drains rather
+/// than flattening recursively at level install.
+fn partition_direct_reaction(
     reaction: &NamedReaction,
-    defer_consequential: bool,
     data_registry: &DataRegistry,
     slot_table: &SlotTable,
     commands: &mut Vec<BoundTriggerCommand>,
-    descriptors: &mut Vec<ReactionDescriptor>,
+    steps: &mut Vec<PrepartitionedReactionStep>,
 ) {
     match &reaction.descriptor {
         ReactionDescriptor::Progress(progress) => {
-            if event_contains_consequential(&progress.fire, data_registry, &mut Vec::new()) {
-                log::warn!(
-                    "[Trigger] event `{}` reaches consequential work through Progress `{}`; it stays deferred to app dispatch",
-                    reaction.name,
-                    progress.fire,
-                );
-            }
-            descriptors.push(reaction.descriptor.clone());
+            // No residual entry: `ProgressTracker` already subscribes every Progress
+            // reaction in the DataRegistry and fires its target once the kill threshold
+            // is met. Binding it to a trigger arms the tracker's watch — it does not give
+            // the trigger a copy to fire. Retaining a residual descriptor here would
+            // double-fire the target (and skip the threshold on the trigger's copy).
+            warn_for_progress_target(&reaction.name, progress, data_registry);
         }
         ReactionDescriptor::Primitive(primitive) => {
-            let class = classify(&primitive.primitive);
-            let mut residual = primitive.clone();
-            residual.on_complete = None;
-            match class {
-                PrimitiveClass::Consequential if !defer_consequential => {
-                    if let Some(command) = bind_primitive(primitive, slot_table) {
-                        commands.push(command);
-                    }
+            if classify(&primitive.primitive) == PrimitiveClass::Consequential {
+                if let Some(command) = bind_primitive(primitive, slot_table) {
+                    commands.push(command);
                 }
-                _ => descriptors.push(ReactionDescriptor::Primitive(residual)),
+                if let Some(on_complete) = &primitive.on_complete {
+                    warn_for_deferred_event(&reaction.name, on_complete, data_registry);
+                    steps.push(PrepartitionedReactionStep::DeferredEvent(
+                        on_complete.clone(),
+                    ));
+                }
+            } else {
+                if let Some(on_complete) = &primitive.on_complete {
+                    warn_for_deferred_event(&reaction.name, on_complete, data_registry);
+                }
+                steps.push(PrepartitionedReactionStep::Descriptor(
+                    ReactionDescriptor::Primitive(primitive.clone()),
+                ));
             }
         }
-        ReactionDescriptor::Sequence(steps) => {
+        ReactionDescriptor::Sequence(sequence) => {
             let mut residual_steps = Vec::new();
-            for step in steps {
-                if classify(&step.primitive) == PrimitiveClass::Consequential
-                    && !defer_consequential
-                {
+            for step in sequence {
+                if classify(&step.primitive) == PrimitiveClass::Consequential {
                     if let Some(command) = bind_sequence_step(step, slot_table) {
                         commands.push(command);
                     }
@@ -364,99 +406,98 @@ fn partition_reaction(
                 }
             }
             if !residual_steps.is_empty() {
-                descriptors.push(ReactionDescriptor::Sequence(residual_steps));
+                steps.push(PrepartitionedReactionStep::Descriptor(
+                    ReactionDescriptor::Sequence(residual_steps),
+                ));
             }
         }
     }
 }
 
-fn append_chain_residuals(
-    event_name: &str,
-    data_registry: &DataRegistry,
-    slot_table: &SlotTable,
-    descriptors: &mut Vec<ReactionDescriptor>,
-    chain_path: &mut Vec<String>,
-) {
-    if chain_path.iter().any(|name| name == event_name) {
+/// An `onComplete` chain hops to a later app-side dispatch, so its work still runs
+/// on this trigger's fire — one drain later than the in-tick steps.
+fn warn_for_deferred_event(root_event: &str, deferred_event: &str, data_registry: &DataRegistry) {
+    if !event_exists(deferred_event, data_registry) {
         log::warn!(
-            "[Trigger] onComplete chain for `{}` contains a cycle through `{event_name}`; stopping residual expansion",
-            chain_path[0],
+            "[Trigger] event `{root_event}` references missing onComplete event `{deferred_event}`; it will be skipped at app dispatch"
         );
         return;
     }
-    let matched: Vec<&NamedReaction> = data_registry
-        .reactions
-        .iter()
-        .filter(|reaction| reaction.name == event_name)
-        .collect();
-    if matched.is_empty() {
+    if event_contains_consequential(deferred_event, data_registry) {
         log::warn!(
-            "[Trigger] onComplete chain for `{}` references unknown active event `{event_name}`",
-            chain_path[0],
-        );
-        return;
-    }
-    if event_contains_consequential(event_name, data_registry, &mut Vec::new()) {
-        log::warn!(
-            "[Trigger] event `{}` buries consequential work under onComplete `{event_name}`; it stays deferred to app dispatch",
-            chain_path[0],
+            "[Trigger] event `{root_event}` buries consequential work behind onComplete `{deferred_event}`; it stays deferred to app dispatch"
         );
     }
-
-    chain_path.push(event_name.to_string());
-    for reaction in &matched {
-        let mut ignored_commands = Vec::new();
-        partition_reaction(
-            reaction,
-            true,
-            data_registry,
-            slot_table,
-            &mut ignored_commands,
-            descriptors,
-        );
-    }
-    for next in matched
-        .iter()
-        .filter_map(|reaction| match &reaction.descriptor {
-            ReactionDescriptor::Primitive(primitive) => primitive.on_complete.as_deref(),
-            _ => None,
-        })
-    {
-        append_chain_residuals(next, data_registry, slot_table, descriptors, chain_path);
-    }
-    let _ = chain_path.pop();
 }
 
-fn event_contains_consequential(
-    event_name: &str,
+/// A `Progress` target is not deferred to the drain — it is owned by `ProgressTracker`
+/// and fires only at the kill threshold. The trigger never fires it, so an author who
+/// buried consequential work there needs to hear that it is gated on kills, not on this
+/// trigger.
+fn warn_for_progress_target(
+    root_event: &str,
+    progress: &ProgressDescriptor,
     data_registry: &DataRegistry,
-    seen: &mut Vec<String>,
-) -> bool {
-    if seen.iter().any(|name| name == event_name) {
-        return false;
+) {
+    let fire = &progress.fire;
+    if !event_exists(fire, data_registry) {
+        log::warn!(
+            "[Trigger] event `{root_event}` references missing Progress event `{fire}`; it will be skipped when the kill threshold is reached"
+        );
+        return;
     }
-    seen.push(event_name.to_string());
-    let found = data_registry
+    if event_contains_consequential(fire, data_registry) {
+        log::warn!(
+            "[Trigger] event `{root_event}` buries consequential work behind Progress `{fire}`; this trigger never fires it — ProgressTracker fires it once tag `{}` reaches a {} kill ratio",
+            progress.tag,
+            progress.at,
+        );
+    }
+}
+
+fn event_exists(event_name: &str, data_registry: &DataRegistry) -> bool {
+    data_registry
         .reactions
         .iter()
-        .filter(|reaction| reaction.name == event_name)
-        .any(|reaction| match &reaction.descriptor {
-            ReactionDescriptor::Progress(progress) => {
-                event_contains_consequential(&progress.fire, data_registry, seen)
+        .any(|reaction| reaction.name == event_name)
+}
+
+/// Follows unique event names iteratively so warning analysis cannot recursively
+/// expand a duplicate-name graph at install time.
+fn event_contains_consequential(event_name: &str, data_registry: &DataRegistry) -> bool {
+    let mut pending = vec![event_name.to_string()];
+    let mut visited = HashSet::new();
+    while let Some(name) = pending.pop() {
+        if !visited.insert(name.clone()) {
+            continue;
+        }
+        for reaction in data_registry
+            .reactions
+            .iter()
+            .filter(|reaction| reaction.name == name)
+        {
+            match &reaction.descriptor {
+                ReactionDescriptor::Progress(progress) => pending.push(progress.fire.clone()),
+                ReactionDescriptor::Primitive(primitive) => {
+                    if classify(&primitive.primitive) == PrimitiveClass::Consequential {
+                        return true;
+                    }
+                    if let Some(on_complete) = &primitive.on_complete {
+                        pending.push(on_complete.clone());
+                    }
+                }
+                ReactionDescriptor::Sequence(steps) => {
+                    if steps
+                        .iter()
+                        .any(|step| classify(&step.primitive) == PrimitiveClass::Consequential)
+                    {
+                        return true;
+                    }
+                }
             }
-            ReactionDescriptor::Primitive(primitive) => {
-                classify(&primitive.primitive) == PrimitiveClass::Consequential
-                    || primitive
-                        .on_complete
-                        .as_deref()
-                        .is_some_and(|next| event_contains_consequential(next, data_registry, seen))
-            }
-            ReactionDescriptor::Sequence(steps) => steps
-                .iter()
-                .any(|step| classify(&step.primitive) == PrimitiveClass::Consequential),
-        });
-    let _ = seen.pop();
-    found
+        }
+    }
+    false
 }
 
 fn classify(primitive: &str) -> PrimitiveClass {
@@ -473,13 +514,16 @@ fn bind_primitive(
     primitive: &PrimitiveDescriptor,
     slot_table: &SlotTable,
 ) -> Option<BoundTriggerCommand> {
-    let target = match primitive.primitive.as_str() {
-        "setState" => None,
-        _ => primitive
-            .tag
-            .as_deref()
-            .map(|tag| BoundTarget::Tag(tag.to_string())),
-    };
+    if primitive.primitive == "setState" && primitive.tag.is_some() {
+        log::warn!(
+            "[Trigger] setState is system-targeted and cannot carry a target tag; not binding"
+        );
+        return None;
+    }
+    let target = primitive
+        .tag
+        .as_deref()
+        .map(|tag| BoundTarget::Tag(tag.to_string()));
     bind_command(&primitive.primitive, target, &primitive.args, slot_table)
 }
 
@@ -738,14 +782,15 @@ mod tests {
             .residual(binding.residual.expect("presentation is residual"))
             .unwrap();
         assert!(matches!(
-            residual.descriptors(),
-            [ReactionDescriptor::Primitive(PrimitiveDescriptor { primitive, .. })]
-                if primitive == "flashScreen"
+            residual.steps(),
+            [PrepartitionedReactionStep::Descriptor(ReactionDescriptor::Primitive(
+                PrimitiveDescriptor { primitive, .. }
+            ))] if primitive == "flashScreen"
         ));
     }
 
     #[test]
-    fn bind_defers_consequential_on_complete_chain_to_residual() {
+    fn bind_defers_consequential_on_complete_as_later_residual_hop() {
         let mut registry = EntityRegistry::new();
         let trigger = spawn_trigger(&mut registry, "open");
         let mut data = DataRegistry::new();
@@ -779,9 +824,8 @@ mod tests {
             .residual(binding.residual.expect("chain is residual"))
             .unwrap();
         assert!(matches!(
-            residual.descriptors(),
-            [ReactionDescriptor::Primitive(PrimitiveDescriptor { primitive, .. })]
-                if primitive == "applyDamage"
+            residual.steps(),
+            [PrepartitionedReactionStep::DeferredEvent(event_name)] if event_name == "after_open"
         ));
     }
 
@@ -808,5 +852,96 @@ mod tests {
             .expect("the known event is recorded even when it has no executable work");
         assert!(binding.commands.is_empty());
         assert!(binding.residual.is_none());
+    }
+
+    // Regression: tagged setState bypassed the normal system-only dispatch contract.
+    #[test]
+    fn bind_rejects_tagged_set_state_without_an_in_tick_write() {
+        let mut registry = EntityRegistry::new();
+        let trigger = spawn_trigger(&mut registry, "set_tagged");
+        let mut data = DataRegistry::new();
+        data.populate_level(
+            vec![primitive(
+                "set_tagged",
+                "setState",
+                Some("not-a-system-target"),
+                serde_json::json!({ "slot": "trigger.flag", "value": 1 }),
+                None,
+            )],
+            Vec::new(),
+            &[],
+        );
+        let mut slots = writable_slots();
+
+        let table = TriggerBindingTable::build(&registry, &data, &slots);
+        let binding = table
+            .binding(trigger, TriggerBindingEdge::Enter)
+            .expect("the known event is recorded even when its invalid step is rejected");
+        assert!(binding.commands.is_empty());
+        assert!(binding.residual.is_none());
+
+        assert!(
+            table
+                .execute(
+                    trigger,
+                    TriggerBindingEdge::Enter,
+                    &mut registry,
+                    &mut slots,
+                )
+                .residual()
+                .is_none(),
+            "a rejected tagged setState must not leave residual work"
+        );
+        assert_eq!(
+            slots
+                .get("trigger.flag")
+                .and_then(|record| record.value.as_ref()),
+            Some(&SlotValue::Number(0.0)),
+            "tagged setState must retain the normal entity-targeted no-op contract"
+        );
+    }
+
+    // Regression: the binding retained a Progress descriptor in its residual, which
+    // fired the progress target on the app drain with zero kills — and then again
+    // when ProgressTracker hit the real threshold.
+    #[test]
+    fn bind_leaves_no_residual_for_a_progress_reaction() {
+        let mut registry = EntityRegistry::new();
+        let trigger = spawn_trigger(&mut registry, "wave_started");
+        let mut data = DataRegistry::new();
+        data.populate_level(
+            vec![
+                NamedReaction {
+                    name: "wave_started".to_string(),
+                    descriptor: ReactionDescriptor::Progress(ProgressDescriptor {
+                        tag: "wave1".to_string(),
+                        at: 1.0,
+                        fire: "open_vault".to_string(),
+                    }),
+                },
+                primitive(
+                    "open_vault",
+                    "moverStart",
+                    Some("vault"),
+                    serde_json::json!({}),
+                    None,
+                ),
+            ],
+            Vec::new(),
+            &[],
+        );
+
+        let table = TriggerBindingTable::build(&registry, &data, &writable_slots());
+        let binding = table
+            .binding(trigger, TriggerBindingEdge::Enter)
+            .expect("the known event is recorded even when it has no executable work");
+        assert!(
+            binding.commands.is_empty(),
+            "a Progress reaction owns no in-tick trigger work"
+        );
+        assert!(
+            binding.residual.is_none(),
+            "ProgressTracker owns the progress target; the residual must not fire it too"
+        );
     }
 }

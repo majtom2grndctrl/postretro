@@ -1,7 +1,7 @@
-//! Dev-tools trigger diagnostics and egui overlay projection.
+//! Trigger diagnostics snapshots and app-side egui overlay projection.
 //! See: context/lib/entity_model.md §5 · context/lib/rendering_pipeline.md §12
 
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Vec3, Vec4};
 use postretro_entities::{ComponentKind, ComponentValue, EntityRegistry, TriggerActivation};
 
 use crate::render;
@@ -16,9 +16,8 @@ pub(crate) struct TriggerOverlayLabel {
     armed: bool,
 }
 
-/// Build the renderer's trigger table from engine-owned component and binding
-/// state. The renderer never receives trigger component, binding, or entity-id
-/// types across this boundary.
+/// Build dev-tools rows from engine-owned trigger state.
+/// Renderer consumes row data, never trigger components or entity IDs.
 pub(crate) fn collect_trigger_diagnostics_rows(
     registry: &EntityRegistry,
     bridge: &TriggerVolumeBridge,
@@ -59,9 +58,8 @@ pub(crate) fn collect_trigger_diagnostics_rows(
     rows
 }
 
-/// Prepare screen-space labels and AABB edges for the egui foreground layer.
-/// Projection stays app-side because it depends on the live camera and does not
-/// require the GPU renderer to know about trigger-volume components.
+/// Prepare app-side labels and AABB edges from live camera state.
+/// Projection stays outside the renderer because it reads trigger component data.
 pub(crate) fn collect_trigger_overlay_labels(
     registry: &EntityRegistry,
     bridge: &TriggerVolumeBridge,
@@ -153,6 +151,9 @@ fn projected_aabb_edges(
     view_projection: Mat4,
     viewport_size_points: egui::Vec2,
 ) -> Vec<(egui::Pos2, egui::Pos2)> {
+    if viewport_size_points.x <= 0.0 || viewport_size_points.y <= 0.0 {
+        return Vec::new();
+    }
     let corners = [
         Vec3::new(min.x, min.y, min.z),
         Vec3::new(max.x, min.y, min.z),
@@ -177,11 +178,16 @@ fn projected_aabb_edges(
         (2, 6),
         (3, 7),
     ];
-    let projected =
-        corners.map(|corner| world_to_screen(corner, view_projection, viewport_size_points));
+    let clip_corners = corners.map(|corner| view_projection * corner.extend(1.0));
     EDGES
         .iter()
-        .filter_map(|&(from, to)| Some((projected[from]?, projected[to]?)))
+        .filter_map(|&(from, to)| {
+            let (from, to) = clip_segment_to_viewport(clip_corners[from], clip_corners[to])?;
+            Some((
+                clip_to_screen(from, viewport_size_points)?,
+                clip_to_screen(to, viewport_size_points)?,
+            ))
+        })
         .collect()
 }
 
@@ -190,24 +196,77 @@ fn world_to_screen(
     view_projection: Mat4,
     viewport_size_points: egui::Vec2,
 ) -> Option<egui::Pos2> {
+    clip_to_screen(
+        view_projection * world_position.extend(1.0),
+        viewport_size_points,
+    )
+}
+
+/// Clip a homogeneous segment before perspective division. Clipping in clip
+/// space keeps edges that cross the viewport or near plane finite on screen.
+fn clip_segment_to_viewport(start: Vec4, end: Vec4) -> Option<(Vec4, Vec4)> {
+    if !start.is_finite() || !end.is_finite() {
+        return None;
+    }
+
+    const MIN_CLIP_W: f32 = 1.0e-5;
+    let start_distances = clip_plane_distances(start, MIN_CLIP_W);
+    let end_distances = clip_plane_distances(end, MIN_CLIP_W);
+    let mut enter: f32 = 0.0;
+    let mut exit: f32 = 1.0;
+
+    for (&start_distance, &end_distance) in start_distances.iter().zip(end_distances.iter()) {
+        if start_distance < 0.0 && end_distance < 0.0 {
+            return None;
+        }
+        if start_distance < 0.0 {
+            enter = enter.max(start_distance / (start_distance - end_distance));
+        } else if end_distance < 0.0 {
+            exit = exit.min(start_distance / (start_distance - end_distance));
+        }
+        if enter > exit {
+            return None;
+        }
+    }
+
+    let direction = end - start;
+    let clipped_start = start + direction * enter;
+    let clipped_end = start + direction * exit;
+    (clipped_start.is_finite() && clipped_end.is_finite()).then_some((clipped_start, clipped_end))
+}
+
+fn clip_plane_distances(clip: Vec4, minimum_w: f32) -> [f32; 7] {
+    [
+        clip.w + clip.x,
+        clip.w - clip.x,
+        clip.w + clip.y,
+        clip.w - clip.y,
+        clip.z,
+        clip.w - clip.z,
+        clip.w - minimum_w,
+    ]
+}
+
+fn clip_to_screen(clip: Vec4, viewport_size_points: egui::Vec2) -> Option<egui::Pos2> {
     if viewport_size_points.x <= 0.0 || viewport_size_points.y <= 0.0 {
         return None;
     }
-    let clip = view_projection * world_position.extend(1.0);
     if clip.w <= 0.0 || !clip.is_finite() {
         return None;
     }
     let ndc = clip.truncate() / clip.w;
+    const CLIP_EPSILON: f32 = 1.0e-5;
     if !ndc.is_finite()
-        || ndc.x < -1.0
-        || ndc.x > 1.0
-        || ndc.y < -1.0
-        || ndc.y > 1.0
-        || ndc.z < 0.0
-        || ndc.z > 1.0
+        || ndc.x < -1.0 - CLIP_EPSILON
+        || ndc.x > 1.0 + CLIP_EPSILON
+        || ndc.y < -1.0 - CLIP_EPSILON
+        || ndc.y > 1.0 + CLIP_EPSILON
+        || ndc.z < -CLIP_EPSILON
+        || ndc.z > 1.0 + CLIP_EPSILON
     {
         return None;
     }
+    let ndc = ndc.clamp(Vec3::new(-1.0, -1.0, 0.0), Vec3::ONE);
     Some(egui::pos2(
         (ndc.x + 1.0) * 0.5 * viewport_size_points.x,
         (1.0 - ndc.y) * 0.5 * viewport_size_points.y,
@@ -217,10 +276,12 @@ fn world_to_screen(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use glam::Quat;
+    use glam::{Quat, Vec4};
     use postretro_entities::{
-        EntityId, MoverCommand, Transform, TriggerFireMode, TriggerVolumeComponent,
+        EntityId, MoverCommand, SlotTable, Transform, TriggerFireMode, TriggerVolumeComponent,
     };
+    use postretro_scripting_core::data_descriptors::{NamedReaction, ReactionDescriptor};
+    use postretro_scripting_core::data_registry::DataRegistry;
 
     fn spawn_trigger(registry: &mut EntityRegistry) -> EntityId {
         let id = registry.spawn(Transform {
@@ -248,26 +309,37 @@ mod tests {
     }
 
     #[test]
-    fn trigger_rows_snapshot_component_state_without_renderer_types() {
+    fn trigger_rows_report_binding_resolution_and_fallback_name() {
         let mut registry = EntityRegistry::new();
         let trigger = spawn_trigger(&mut registry);
         let mut bridge = TriggerVolumeBridge::new();
         bridge.insert_for_test(trigger, Vec3::splat(-1.0), Vec3::splat(1.0));
+        let mut data_registry = DataRegistry::new();
+        data_registry.populate_level(
+            vec![NamedReaction {
+                name: "open_door".into(),
+                descriptor: ReactionDescriptor::Sequence(Vec::new()),
+            }],
+            Vec::new(),
+            &[],
+        );
+        let bindings = TriggerBindingTable::build(&registry, &data_registry, &SlotTable::new());
 
         let rows = collect_trigger_diagnostics_rows(
             &registry,
             &bridge,
             &TriggerSystem::default(),
-            &TriggerBindingTable::default(),
+            &bindings,
         );
 
         assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name, trigger.to_string());
         assert_eq!(rows[0].tags, "plate");
         assert_eq!(rows[0].activation, "touch");
         assert!(rows[0].armed);
         assert_eq!(rows[0].occupancy, 0);
         assert_eq!(rows[0].on_fire, "open_door");
-        assert!(!rows[0].on_fire_resolved);
+        assert!(rows[0].on_fire_resolved);
         assert_eq!(rows[0].on_exit, "close_door");
         assert!(!rows[0].on_exit_resolved);
     }
@@ -282,5 +354,113 @@ mod tests {
         );
 
         assert_eq!(edges.len(), 12);
+    }
+
+    #[test]
+    fn projected_aabb_edges_clip_partially_visible_segments() {
+        let edges = projected_aabb_edges(
+            Vec3::new(-2.0, -0.5, 0.25),
+            Vec3::new(0.5, 0.5, 0.75),
+            Mat4::IDENTITY,
+            egui::vec2(640.0, 480.0),
+        );
+
+        assert_eq!(edges.len(), 8);
+        assert!(
+            edges
+                .iter()
+                .any(|(start, end)| start.x.abs() < 1.0e-3 || end.x.abs() < 1.0e-3)
+        );
+        assert_screen_edges_within_viewport(&edges, egui::vec2(640.0, 480.0));
+    }
+
+    #[test]
+    fn projected_aabb_edges_clip_near_plane_crossing_segments() {
+        let edges = projected_aabb_edges(
+            Vec3::new(-0.5, -0.5, -0.5),
+            Vec3::new(0.5, 0.5, 0.5),
+            Mat4::IDENTITY,
+            egui::vec2(640.0, 480.0),
+        );
+
+        assert_eq!(edges.len(), 8);
+        assert_screen_edges_within_viewport(&edges, egui::vec2(640.0, 480.0));
+    }
+
+    #[test]
+    fn trigger_overlay_degrades_for_missing_aabb_stale_id_zero_viewport_and_behind_camera() {
+        let mut registry = EntityRegistry::new();
+        let trigger = spawn_trigger(&mut registry);
+        let mut bridge = TriggerVolumeBridge::new();
+
+        assert!(
+            collect_trigger_overlay_labels(
+                &registry,
+                &bridge,
+                &TriggerSystem::default(),
+                Mat4::IDENTITY,
+                egui::vec2(640.0, 480.0),
+            )
+            .is_empty()
+        );
+
+        bridge.insert_for_test(trigger, Vec3::splat(-0.5), Vec3::splat(0.5));
+        let zero_viewport = collect_trigger_overlay_labels(
+            &registry,
+            &bridge,
+            &TriggerSystem::default(),
+            Mat4::IDENTITY,
+            egui::Vec2::ZERO,
+        );
+        assert_eq!(zero_viewport.len(), 1);
+        assert!(zero_viewport[0].screen_position.is_none());
+        assert!(zero_viewport[0].projected_edges.is_empty());
+
+        bridge.insert_for_test(
+            trigger,
+            Vec3::new(-0.5, -0.5, 1.0),
+            Vec3::new(0.5, 0.5, 2.0),
+        );
+        let behind_camera_projection = Mat4::from_cols(
+            Vec4::X,
+            Vec4::Y,
+            Vec4::new(0.0, 0.0, -1.0, -1.0),
+            Vec4::ZERO,
+        );
+        let behind_camera = collect_trigger_overlay_labels(
+            &registry,
+            &bridge,
+            &TriggerSystem::default(),
+            behind_camera_projection,
+            egui::vec2(640.0, 480.0),
+        );
+        assert_eq!(behind_camera.len(), 1);
+        assert!(behind_camera[0].screen_position.is_none());
+        assert!(behind_camera[0].projected_edges.is_empty());
+
+        registry.despawn(trigger).unwrap();
+        assert!(
+            collect_trigger_overlay_labels(
+                &registry,
+                &bridge,
+                &TriggerSystem::default(),
+                Mat4::IDENTITY,
+                egui::vec2(640.0, 480.0),
+            )
+            .is_empty()
+        );
+    }
+
+    fn assert_screen_edges_within_viewport(
+        edges: &[(egui::Pos2, egui::Pos2)],
+        viewport: egui::Vec2,
+    ) {
+        for &(start, end) in edges {
+            for point in [start, end] {
+                assert!(point.x.is_finite() && point.y.is_finite());
+                assert!((0.0..=viewport.x).contains(&point.x));
+                assert!((0.0..=viewport.y).contains(&point.y));
+            }
+        }
     }
 }

@@ -48,9 +48,9 @@ pub(crate) fn resolve_trigger_volume(
         .get("on_exit")
         .map(|v| v.trim().to_owned())
         .unwrap_or_default();
-    if target_tag.is_empty() && on_fire.is_empty() {
+    if target_tag.is_empty() && on_fire.is_empty() && on_exit.is_empty() {
         log::warn!(
-            "[LevelCompiler] trigger_volume `{name}` has neither `target_tag` nor `on_fire`; it will be inert"
+            "[LevelCompiler] trigger_volume `{name}` has neither `target_tag`, `on_fire`, nor `on_exit`; it will be inert"
         );
     }
     if command == 3 && command_arg.is_empty() {

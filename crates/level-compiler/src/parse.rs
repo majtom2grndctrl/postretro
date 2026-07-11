@@ -1860,6 +1860,24 @@ mod tests {
         assert_eq!(records.triggers[0].on_exit, "close_lift");
     }
 
+    #[test]
+    fn trigger_volume_accepts_exit_only_event() {
+        let map = trigger_volume_map("start", "", "100").replacen(
+            "\"rearm_ms\" \"100\"",
+            "\"rearm_ms\" \"100\"\n\"on_exit\" \"  close_lift  \"",
+            1,
+        );
+        let map = parse_inline_map(&map).expect("exit-only trigger must compile");
+        let trigger = &map.trigger_volumes[0];
+        assert!(trigger.target_tag.is_empty());
+        assert!(trigger.on_fire.is_empty());
+        assert_eq!(trigger.on_exit, "close_lift");
+
+        let records = crate::trigger_volumes::encode_trigger_volumes_section(&map.trigger_volumes)
+            .expect("one trigger produces a PRL section");
+        assert_eq!(records.triggers[0].on_exit, "close_lift");
+    }
+
     fn grouped_brush_test_map() -> &'static str {
         r#"
 // entity 0

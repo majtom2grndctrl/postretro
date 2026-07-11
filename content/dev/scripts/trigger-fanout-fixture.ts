@@ -1,8 +1,5 @@
-// E18 authoring fixture — both trigger control surfaces in TypeScript.
-//
-// `Primitive` reactions resolve their targets from `tag`; handle methods build
-// per-id sequence steps. The matching Luau fixture uses the same names and
-// descriptors so reviewers can compare runtime-language parity directly.
+// TypeScript trigger-control authoring fixture.
+// See: context/lib/scripting.md §5
 
 import { type NamedReactionDescriptor, defineReaction, world } from "postretro";
 

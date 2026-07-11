@@ -36,6 +36,23 @@ pub(crate) fn resolve_trigger_volume(
         .get("command_arg")
         .map(|v| v.trim().to_owned())
         .unwrap_or_default();
+    let target_tag = props
+        .get("target_tag")
+        .map(|v| v.trim().to_owned())
+        .unwrap_or_default();
+    let on_fire = props
+        .get("on_fire")
+        .map(|v| v.trim().to_owned())
+        .unwrap_or_default();
+    let on_exit = props
+        .get("on_exit")
+        .map(|v| v.trim().to_owned())
+        .unwrap_or_default();
+    if target_tag.is_empty() && on_fire.is_empty() {
+        log::warn!(
+            "[LevelCompiler] trigger_volume `{name}` has neither `target_tag` nor `on_fire`; it will be inert"
+        );
+    }
     if command == 3 && command_arg.is_empty() {
         anyhow::bail!("trigger_volume `{name}` `go_to_path_node` requires `command_arg`");
     }
@@ -102,15 +119,14 @@ pub(crate) fn resolve_trigger_volume(
         aabb_min: min.to_array().map(|v| v as f32),
         aabb_max: max.to_array().map(|v| v as f32),
         activation,
-        target_tag: props
-            .get("target_tag")
-            .map(|v| v.trim().to_owned())
-            .unwrap_or_default(),
+        target_tag,
         command,
         command_arg,
         fire_mode,
         rearm_ms,
         enabled_on_spawn,
+        on_fire,
+        on_exit,
     })
 }
 
@@ -132,6 +148,8 @@ pub fn encode_trigger_volumes_section(
                 fire_mode: t.fire_mode,
                 rearm_ms: t.rearm_ms,
                 enabled_on_spawn: t.enabled_on_spawn,
+                on_fire: t.on_fire.clone(),
+                on_exit: t.on_exit.clone(),
             })
             .collect(),
     })

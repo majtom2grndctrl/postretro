@@ -1842,6 +1842,24 @@ mod tests {
         assert!(parse_inline_map(&trigger_volume_map("start", "", "-1")).is_err());
     }
 
+    #[test]
+    fn trigger_volume_trims_event_names() {
+        let map = trigger_volume_map("start", "", "100").replacen(
+            "\"rearm_ms\" \"100\"",
+            "\"rearm_ms\" \"100\"\n\"on_fire\" \"  open_lift  \"\n\"on_exit\" \"  close_lift  \"",
+            1,
+        );
+        let map = parse_inline_map(&map).unwrap();
+        let trigger = &map.trigger_volumes[0];
+        assert_eq!(trigger.on_fire, "open_lift");
+        assert_eq!(trigger.on_exit, "close_lift");
+
+        let records = crate::trigger_volumes::encode_trigger_volumes_section(&map.trigger_volumes)
+            .expect("one trigger produces a PRL section");
+        assert_eq!(records.triggers[0].on_fire, "open_lift");
+        assert_eq!(records.triggers[0].on_exit, "close_lift");
+    }
+
     fn grouped_brush_test_map() -> &'static str {
         r#"
 // entity 0

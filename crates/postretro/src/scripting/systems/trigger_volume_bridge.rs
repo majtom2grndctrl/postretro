@@ -69,6 +69,8 @@ impl TriggerVolumeBridge {
                 TriggerVolumeComponent::new(
                     activation,
                     record.target_tag.clone(),
+                    record.on_fire.clone(),
+                    record.on_exit.clone(),
                     command,
                     fire_mode,
                     record.rearm_ms,
@@ -92,5 +94,41 @@ impl TriggerVolumeBridge {
 impl Default for TriggerVolumeBridge {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn level_records_preserve_trigger_event_names_on_components() {
+        let record = TriggerVolumeRecord {
+            name: "lift_plate".into(),
+            tags: vec!["lift".into()],
+            aabb_min: [-1.0, 0.0, -1.0],
+            aabb_max: [1.0, 2.0, 1.0],
+            activation: 0,
+            target_tag: "lift".into(),
+            command: 0,
+            command_arg: String::new(),
+            fire_mode: 0,
+            rearm_ms: 0.0,
+            enabled_on_spawn: true,
+            on_fire: "open_lift".into(),
+            on_exit: "close_lift".into(),
+        };
+        let mut registry = EntityRegistry::new();
+        let mut bridge = TriggerVolumeBridge::new();
+
+        bridge.populate_from_level(&mut registry, &[record]);
+
+        assert_eq!(bridge.count(), 1);
+        let id = *bridge.aabbs.keys().next().expect("trigger entity spawned");
+        let component = registry
+            .get_component::<TriggerVolumeComponent>(id)
+            .expect("trigger component attached");
+        assert_eq!(component.on_fire, "open_lift");
+        assert_eq!(component.on_exit, "close_lift");
     }
 }

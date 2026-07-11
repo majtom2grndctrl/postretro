@@ -21,6 +21,10 @@ pub enum TriggerFireMode {
 pub struct TriggerVolumeComponent {
     pub activation: TriggerActivation,
     pub target_tag: String,
+    #[serde(default)]
+    pub on_fire: String,
+    #[serde(default)]
+    pub on_exit: String,
     pub command: MoverCommand,
     pub fire_mode: TriggerFireMode,
     pub rearm_ms: f32,
@@ -34,6 +38,8 @@ impl TriggerVolumeComponent {
     pub fn new(
         activation: TriggerActivation,
         target_tag: String,
+        on_fire: String,
+        on_exit: String,
         command: MoverCommand,
         fire_mode: TriggerFireMode,
         rearm_ms: f32,
@@ -42,6 +48,8 @@ impl TriggerVolumeComponent {
         Self {
             activation,
             target_tag,
+            on_fire,
+            on_exit,
             command,
             fire_mode,
             rearm_ms,
@@ -62,6 +70,8 @@ mod tests {
         let mut trigger = TriggerVolumeComponent::new(
             TriggerActivation::Use,
             "door".into(),
+            "open_door".into(),
+            "close_door".into(),
             MoverCommand::Reverse,
             TriggerFireMode::Multiple,
             150.0,
@@ -77,5 +87,27 @@ mod tests {
                 .unwrap(),
             value
         );
+    }
+
+    #[test]
+    fn event_names_default_when_deserializing_pre_event_components() {
+        let trigger = TriggerVolumeComponent::new(
+            TriggerActivation::Touch,
+            "lift".into(),
+            "open_lift".into(),
+            "close_lift".into(),
+            MoverCommand::Start,
+            TriggerFireMode::Once,
+            0.0,
+            true,
+        );
+        let mut serialized = serde_json::to_value(trigger).unwrap();
+        let fields = serialized.as_object_mut().unwrap();
+        fields.remove("on_fire");
+        fields.remove("on_exit");
+
+        let deserialized: TriggerVolumeComponent = serde_json::from_value(serialized).unwrap();
+        assert_eq!(deserialized.on_fire, "");
+        assert_eq!(deserialized.on_exit, "");
     }
 }

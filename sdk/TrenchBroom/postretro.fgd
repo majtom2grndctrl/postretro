@@ -326,6 +326,8 @@
         "use" : "Use"
     ]
     target_tag(string) : "Target mover tag" : ""
+    on_fire(string) : "Reaction on activation" : "" : "Name of the reaction fired when this trigger activates."
+    on_exit(string) : "Reaction on exit" : "" : "Name of the reaction fired when a player leaves after activating this trigger."
     command(choices) : "Mover command" : "start" =
     [
         "start" : "Start"

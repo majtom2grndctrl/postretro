@@ -347,6 +347,8 @@ mod tests {
                 TriggerVolumeComponent::new(
                     activation,
                     "lift".into(),
+                    String::new(),
+                    String::new(),
                     MoverCommand::Start,
                     fire_mode,
                     rearm_ms,

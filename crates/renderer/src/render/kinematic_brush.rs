@@ -918,7 +918,7 @@ mod tests {
     #[test]
     fn kinematic_pass_uses_existing_bind_group_budget() {
         assert_eq!(KINEMATIC_BIND_GROUP_COUNT, 5);
-        assert!(KINEMATIC_BIND_GROUP_COUNT <= 8);
+        const { assert!(KINEMATIC_BIND_GROUP_COUNT <= 8) };
     }
 
     #[test]

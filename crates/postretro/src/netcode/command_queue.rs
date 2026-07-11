@@ -415,17 +415,6 @@ pub(crate) fn host_resolve_remote_commands(
     commands
 }
 
-#[cfg(test)]
-pub(crate) fn host_resolve_movement_inputs(
-    owners: &MovementOwners,
-    command_queues: &mut HostCommandQueues,
-) -> Vec<(EntityId, crate::movement::MovementInput)> {
-    host_resolve_remote_commands(owners, command_queues)
-        .into_iter()
-        .map(|resolved| (resolved.pawn, resolved.command.movement))
-        .collect()
-}
-
 /// A neutral (no-intent) sim command: no wish direction, no buttons, facing held at
 /// zero. The deterministic fallback when the gap policy exhausts the hold window.
 /// Facing 0.0 is acceptable for Phase 3's movement-only scope — a neutral tick

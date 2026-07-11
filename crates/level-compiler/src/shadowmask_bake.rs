@@ -965,7 +965,7 @@ mod tests {
 
     #[test]
     fn single_light_mask_writes_raw_visibility_to_assigned_channel() {
-        let lights = vec![(0, light(5.0))];
+        let lights = [(0, light(5.0))];
         let selected: Vec<(usize, u32, &MapLight)> = lights
             .iter()
             .enumerate()
@@ -982,7 +982,7 @@ mod tests {
 
     #[test]
     fn overlapping_lights_use_different_channels() {
-        let lights = vec![(0, light(5.0)), (1, light(4.0))];
+        let lights = [(0, light(5.0)), (1, light(4.0))];
         let selected: Vec<(usize, u32, &MapLight)> = lights
             .iter()
             .enumerate()
@@ -1002,7 +1002,7 @@ mod tests {
 
     #[test]
     fn five_way_overlap_drops_lowest_intensity_globally() {
-        let lights = vec![
+        let lights = [
             (0, light(5.0)),
             (1, light(4.0)),
             (2, light(1.0)),
@@ -1031,7 +1031,7 @@ mod tests {
 
     #[test]
     fn multi_layer_payload_uses_layer_major_texel_indexing() {
-        let lights = vec![(0, light(5.0))];
+        let lights = [(0, light(5.0))];
         let selected: Vec<(usize, u32, &MapLight)> = lights
             .iter()
             .enumerate()

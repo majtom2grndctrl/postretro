@@ -2,7 +2,7 @@
 // See: context/lib/development_guide.md
 
 use std::collections::HashSet;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -35,6 +35,10 @@ fn try_main() -> Result<i32, String> {
 
     if command == "run" {
         return run_postretro(args.collect());
+    }
+
+    if command == "observe" {
+        return observe_headless(args.collect());
     }
 
     if command == "bake-model-textures" {
@@ -158,17 +162,7 @@ fn run_postretro(engine_args: Vec<OsString>) -> Result<i32, String> {
     let workspace_root = workspace_root()?;
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
 
-    let mut sidecar_build = Command::new(&cargo);
-    sidecar_build
-        .current_dir(&workspace_root)
-        .arg("build")
-        .arg("-p")
-        .arg("postretro-script-compiler")
-        .arg("--bin")
-        .arg("scripts-build")
-        .args(sidecar_cargo_args);
-
-    run_checked(&mut sidecar_build, "build scripts-build")?;
+    build_scripts_sidecar(&cargo, &workspace_root, &sidecar_cargo_args)?;
 
     let mut command = Command::new(&cargo);
     command
@@ -190,6 +184,80 @@ fn run_postretro(engine_args: Vec<OsString>) -> Result<i32, String> {
             .status()
             .map_err(|e| format!("launch postretro: {e}")),
     )
+}
+
+/// Build the `scripts-build` sidecar shared by every launch path (`run`,
+/// `observe`). `sidecar_cargo_args` mirrors the subset of cargo flags that must
+/// reach the sidecar build (empty for `observe`, which takes no passthrough).
+fn build_scripts_sidecar(
+    cargo: &OsStr,
+    workspace_root: &Path,
+    sidecar_cargo_args: &[OsString],
+) -> Result<(), String> {
+    let mut sidecar_build = Command::new(cargo);
+    sidecar_build
+        .current_dir(workspace_root)
+        .arg("build")
+        .arg("-p")
+        .arg("postretro-script-compiler")
+        .arg("--bin")
+        .arg("scripts-build")
+        .args(sidecar_cargo_args);
+
+    run_checked(&mut sidecar_build, "build scripts-build")
+}
+
+/// `observe <runspec.json>`: build the scripts sidecar, then run the engine
+/// headless under the `observability` feature. xtask is a transparent pipe — it
+/// forwards the child's stdout, stderr, and exit code untouched and never parses
+/// the runspec or the JSON document the engine emits. Unlike `run`, `observe`
+/// takes no cargo/engine passthrough: it always builds with `--features
+/// observability` and always passes `--headless`.
+fn observe_headless(args: Vec<OsString>) -> Result<i32, String> {
+    let runspec = parse_observe_args(args)?;
+    let workspace_root = workspace_root()?;
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
+
+    build_scripts_sidecar(&cargo, &workspace_root, &[])?;
+
+    // Cargo's own build/status output goes to stderr; the engine writes the JSON
+    // document to stdout. Inheriting all three streams keeps stdout pristine JSON
+    // and propagates the child's exit code. Path resolution is left to cargo's
+    // working directory (the workspace root), mirroring the `run` plumbing.
+    let mut command = Command::new(&cargo);
+    command
+        .current_dir(&workspace_root)
+        .arg("run")
+        .arg("-p")
+        .arg("postretro")
+        .arg("--bin")
+        .arg("postretro")
+        .arg("--features")
+        .arg("observability")
+        .arg("--")
+        .arg("--headless")
+        .arg(&runspec)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+
+    status_code(
+        command
+            .status()
+            .map_err(|e| format!("launch postretro: {e}")),
+    )
+}
+
+fn parse_observe_args(args: Vec<OsString>) -> Result<PathBuf, String> {
+    match args.as_slice() {
+        [runspec] => Ok(PathBuf::from(runspec)),
+        [] => Err("observe requires a runspec path\n\n\
+             Usage: cargo run -p xtask -- observe <runspec.json>"
+            .to_string()),
+        _ => Err("observe accepts exactly one runspec path\n\n\
+             Usage: cargo run -p xtask -- observe <runspec.json>"
+            .to_string()),
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -295,14 +363,19 @@ fn print_help() {
          USAGE:\n\
            cargo run -p xtask -- run [cargo-run flags...] -- [postretro args...]\n\
            cargo run -p xtask -- run [postretro args...]\n\
+           cargo run -p xtask -- observe <runspec.json>\n\
            cargo run -p xtask -- bake-model-textures <scene.gltf>\n\n\
          COMMANDS:\n\
            run                  Build scripts-build, then run the postretro engine\n\
+           observe              Build scripts-build, then run the engine headless\n\
+                                (--features observability --headless), forwarding\n\
+                                the JSON document on stdout untouched\n\
            bake-model-textures  Bake glTF base-color sidecars into baked/materials\n\n\
          EXAMPLES:\n\
            cargo run -p xtask -- run content/dev/maps/campaign-test.prl\n\
            cargo run -p xtask -- run --features dev-tools -- content/dev/maps/campaign-test.prl\n\
            cargo run -p xtask -- run --release -- content/dev/maps/campaign-test.prl\n\
+           cargo run -p xtask -- observe runspec.json\n\
            cargo run -p xtask -- bake-model-textures content/dev/models/reference_enemy_kaykit_knight/scene.gltf\n\n\
          NOTES:\n\
            Cargo flags before `--` are passed to the engine cargo run. Only\n\
@@ -410,6 +483,17 @@ mod tests {
             ])),
             os_args(&["--target", "--target", "x86_64-unknown-linux-gnu"])
         );
+    }
+
+    #[test]
+    fn parse_observe_args_accepts_exactly_one_runspec_path() {
+        assert_eq!(
+            parse_observe_args(os_args(&["runspec.json"])),
+            Ok(PathBuf::from("runspec.json"))
+        );
+
+        assert!(parse_observe_args(Vec::new()).is_err());
+        assert!(parse_observe_args(os_args(&["a.json", "b.json"])).is_err());
     }
 
     #[test]

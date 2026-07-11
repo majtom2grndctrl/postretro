@@ -82,6 +82,8 @@ impl App {
         // fog-bridge clear is guarded — a no-op when there is no session yet.
         if let Some(session) = self.session.as_mut() {
             session.fog_volume_bridge.clear();
+            session.trigger_volume_bridge.clear();
+            session.trigger_system.clear();
         }
         self.collision_world.clear();
         self.kinematic_mover_colliders.clear();
@@ -638,13 +640,14 @@ impl App {
                 .populate_from_level(&level_lights, &mut registry, fgd_sample_float_count);
         }
 
-        // Segment B of the CPU world install: fog-volume entities, collision +
-        // kinematic movers, classname dispatch, the data script, the
-        // data-archetype sweep (incl. player spawn), the mesh sweep's CPU half,
-        // and the `levelLoad` fire — all renderer-free. The one renderer-coupled
-        // step (skinned-model upload + clip-table build) is injected as the
-        // `upload_mesh_models` hook so it stays windowed; a headless caller passes
-        // a no-op and its clip tables stay empty (the documented headless shape).
+        // Segment B of the CPU world install: fog-volume entities, trigger-volume
+        // entities, collision + kinematic movers, classname dispatch, the data
+        // script, the data-archetype sweep (incl. player spawn), the mesh sweep's
+        // CPU half, and the `levelLoad` fire — all renderer-free. The one
+        // renderer-coupled step (skinned-model upload + clip-table build) is
+        // injected as the `upload_mesh_models` hook so it stays windowed; a
+        // headless caller passes a no-op and its clip tables stay empty (the
+        // documented headless shape).
         // `suppress` gates the connected-client spawn / AI-enemy suppression
         // (`false` off a connected client — single-player, listen host, headless).
         let suppress = self.is_connected_client();
@@ -697,6 +700,7 @@ impl App {
             nav_graph: self.nav_graph.as_ref(),
             collision_world: &mut self.collision_world,
             fog_volume_bridge: &mut session.fog_volume_bridge,
+            trigger_volume_bridge: &mut session.trigger_volume_bridge,
             classname_dispatch: &session.classname_dispatch,
             script_runtime: &session.scripting.script_runtime,
             sequence_registry: &session.scripting.sequence_registry,
@@ -929,6 +933,8 @@ pub(crate) struct WorldInstallHandles<'a> {
     pub(crate) collision_world: &'a mut crate::collision::CollisionWorld,
     pub(crate) fog_volume_bridge:
         &'a mut crate::scripting_systems::fog_volume_bridge::FogVolumeBridge,
+    pub(crate) trigger_volume_bridge:
+        &'a mut crate::scripting_systems::trigger_volume_bridge::TriggerVolumeBridge,
     pub(crate) classname_dispatch: &'a crate::scripting::builtins::ClassnameDispatch,
     pub(crate) script_runtime: &'a postretro_scripting_core::runtime::ScriptRuntime,
     pub(crate) sequence_registry:
@@ -977,6 +983,7 @@ pub(crate) fn install_world_cpu(
         nav_graph,
         collision_world,
         fog_volume_bridge,
+        trigger_volume_bridge,
         classname_dispatch,
         script_runtime,
         sequence_registry,
@@ -996,6 +1003,16 @@ pub(crate) fn install_world_cpu(
     {
         let mut registry = script_ctx.registry.borrow_mut();
         fog_volume_bridge.populate_from_level(&mut registry, &world.fog_volumes);
+    }
+
+    // Trigger volumes — one entity per record. Kept directly after fog so the
+    // fog → trigger → mover entity-id order matches the pre-extraction windowed
+    // install. The host-authoritative trigger system evaluates these each tick
+    // (windowed / listen host); a headless run populates them but passes no
+    // trigger context to `simulate_tick`, so they are inert there.
+    {
+        let mut registry = script_ctx.registry.borrow_mut();
+        trigger_volume_bridge.populate_from_level(&mut registry, &world.trigger_volumes);
     }
 
     // Collision + kinematic movers. Populate before the first game tick so
@@ -1296,6 +1313,11 @@ mod tests {
                     player_hud_state: scripting_systems::ui_proxy::PlayerHudStatePublisher::new(
                         script_ctx.clone(),
                     ),
+                    #[cfg(feature = "dev-tools")]
+                    dev_reload_progress:
+                        scripting_systems::reload_progress::DevReloadProgressDriver::new(
+                            script_ctx.clone(),
+                        ),
                     flash_decay: scripting_systems::flash_decay::FlashDecay::new(
                         script_ctx.clone(),
                     ),
@@ -1317,6 +1339,9 @@ mod tests {
                 classname_dispatch: scripting::builtins::ClassnameDispatch::new(),
                 light_bridge: scripting_systems::light_bridge::LightBridge::new(),
                 fog_volume_bridge: scripting_systems::fog_volume_bridge::FogVolumeBridge::new(),
+                trigger_volume_bridge:
+                    scripting_systems::trigger_volume_bridge::TriggerVolumeBridge::new(),
+                trigger_system: crate::trigger_system::TriggerSystem::default(),
                 emitter_bridge: scripting_systems::emitter_bridge::EmitterBridge::new(),
                 particle_render: scripting_systems::particle_render::ParticleRenderCollector::new(),
                 mesh_render: scripting_systems::mesh_render::MeshRenderCollector::new(),
@@ -1623,6 +1648,7 @@ mod tests {
             data_script: None,
             map_entities: Vec::new(),
             kinematic_geometry: postretro_level_loader::KinematicGeometry::default(),
+            trigger_volumes: Vec::new(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
             initial_gravity: -9.8,
@@ -2705,6 +2731,7 @@ mod tests {
                 nav_graph: None,
                 collision_world: &mut app.collision_world,
                 fog_volume_bridge: &mut session.fog_volume_bridge,
+                trigger_volume_bridge: &mut session.trigger_volume_bridge,
                 classname_dispatch: &session.classname_dispatch,
                 script_runtime: &session.scripting.script_runtime,
                 sequence_registry: &session.scripting.sequence_registry,

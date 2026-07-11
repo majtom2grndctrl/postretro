@@ -83,6 +83,8 @@ impl CommandEntry {
             dash_pressed: m.dash_pressed,
             running: m.running,
             crouch_intent: m.crouch_intent,
+            // No "use" verb in the runspec yet; headless drives no trigger stage.
+            use_pressed: false,
             facing_yaw,
         }
     }

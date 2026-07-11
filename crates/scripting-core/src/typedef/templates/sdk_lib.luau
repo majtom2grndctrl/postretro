@@ -41,7 +41,7 @@ export type LightEntityHandle = {
 }
 
 --- Generic entity handle returned by `world:query` when the component is
---- not "light", "emitter", or "fog_volume". Carries only id, position, and tags.
+--- not "light", "emitter", "fog_volume", or "kinematic_mover". Carries only id, position, and tags.
 export type EntityHandle = {
   id: EntityId,
   position: Vec3,
@@ -64,16 +64,29 @@ export type FogVolumeHandle = {
   fadeSaturation: (self: FogVolumeHandle, opts: { from: number, to: number, periodMs: number }) -> {SetFogAnimationStep},
 }
 
+--- Typed mover handle returned by `world:query({ component = "kinematic_mover" })`.
+--- Raw mover phase is engine-managed; methods return closed command steps.
+export type MoverEntityHandle = {
+  id: EntityId,
+  position: Vec3,
+  tags: {string},
+  start: (self: MoverEntityHandle) -> {MoverStartStep},
+  stop: (self: MoverEntityHandle) -> {MoverStopStep},
+  reverse: (self: MoverEntityHandle) -> {MoverReverseStep},
+  goToPathNode: (self: MoverEntityHandle, node: string) -> {MoverGoToPathNodeStep},
+}
+
 --- `world` vocabulary global. Wraps `worldQuery` with a typed handle.
 --- `"light"` returns `LightEntityHandle` values (with capability methods);
 --- `"emitter"` returns `EmitterEntity` values carrying the full
 --- `BillboardEmitterComponent` snapshot under `component`; `"fog_volume"`
---- returns `FogVolumeHandle` values; other components fall back to the
---- bare `EntityHandle` shape.
+--- returns `FogVolumeHandle` values; `"kinematic_mover"` returns
+--- `MoverEntityHandle`; other components fall back to the bare `EntityHandle` shape.
 export type World = {
   query: ((self: World, filter: { component: "light", tag: string? }) -> {LightEntityHandle})
        & ((self: World, filter: { component: "emitter", tag: string? }) -> {EmitterEntity})
        & ((self: World, filter: { component: "fog_volume", tag: string? }) -> {FogVolumeHandle})
+       & ((self: World, filter: { component: "kinematic_mover", tag: string? }) -> {MoverEntityHandle})
        & ((self: World, filter: WorldQueryFilter) -> {EntityHandle}),
   --- Current world gravity in m/s² (negative = downward; positive = upward).
   --- Seeded from the worldspawn `initialGravity` KVP at level load and
@@ -227,9 +240,33 @@ export type SetFogAnimationStep = {
   args: FogAnimation?,
 }
 
+export type MoverStartStep = {
+  id: EntityId,
+  primitive: "moverStart",
+  args: {},
+}
+
+export type MoverStopStep = {
+  id: EntityId,
+  primitive: "moverStop",
+  args: {},
+}
+
+export type MoverReverseStep = {
+  id: EntityId,
+  primitive: "moverReverse",
+  args: {},
+}
+
+export type MoverGoToPathNodeStep = {
+  id: EntityId,
+  primitive: "moverGoToPathNode",
+  args: { node: string },
+}
+
 --- Union of every supported sequence step shape. New sequenced primitives
 --- extend this union.
-export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep
+export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep
 
 --- Sequence reaction body: ordered per-entity primitive invocations. Steps
 --- run in array order at dispatch.
@@ -661,7 +698,10 @@ export type BarBindProp = (ReadonlyStateRef<number> | LocalBindRef) & { tween: N
 --- as `getGameState().player.maxHealth`.
 export type BarMaxProp = number | ReadonlyStateRef<number>
 --- Props for `Bar`. `bind` is a readonly numeric bind; `max` is a number or readonly numeric ref.
-export type BarProps = { bind: BarBindProp, max: BarMaxProp, fill: WidgetColor, background: WidgetColor, styleRanges: StyleRangesProp?, id: string?, visibleWhen: Predicate?, role: WidgetRole? }
+--- Linear retained-UI exit fade for a `Bar` with `visibleWhen`.
+export type BarExitFade = { durationMs: number }
+--- Props for `Bar`. `width`/`height` are positive logical-reference px; `exitFade` requires `visibleWhen` and fades the retained terminal image linearly.
+export type BarProps = { bind: BarBindProp, max: BarMaxProp, fill: WidgetColor, background: WidgetColor, width: number?, height: number?, styleRanges: StyleRangesProp?, id: string?, visibleWhen: Predicate?, exitFade: BarExitFade?, role: WidgetRole? }
 --- A passive `bar`: fill fraction is `value/max` clamped to `[0, 1]`. `styleRanges` recolors the fill from that displayed fraction.
 declare function Bar(props: BarProps): WidgetDescriptor
 

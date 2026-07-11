@@ -45,6 +45,7 @@ const ALL_KINDS: [ComponentKind; ComponentKind::COUNT] = [
     ComponentKind::Agent,
     ComponentKind::Brain,
     ComponentKind::KinematicMover,
+    ComponentKind::TriggerVolume,
 ];
 
 /// Snake_case name for a component kind, matching `ComponentValue`'s serde
@@ -70,6 +71,7 @@ fn component_kind_snake(kind: ComponentKind) -> &'static str {
         ComponentKind::Agent => "agent",
         ComponentKind::Brain => "brain",
         ComponentKind::KinematicMover => "kinematic_mover",
+        ComponentKind::TriggerVolume => "trigger_volume",
     }
 }
 
@@ -138,8 +140,9 @@ mod tests {
     use postretro_entities::{
         AiDescriptor, AiStateNames, AirParams, CapsuleParams, ComponentValue, DescriptorProvenance,
         DescriptorSpawnPath, FallParams, FireMode, FogVolumeComponent, GroundParams,
-        KinematicMoverComponent, KinematicMoverMode, PlayerMovementDescriptor, ResolutionMode,
-        SpeedParams, Transform, WeaponDescriptor,
+        KinematicMoverComponent, KinematicMoverMode, MoverCommand, PlayerMovementDescriptor,
+        ResolutionMode, SpeedParams, Transform, TriggerActivation, TriggerFireMode,
+        TriggerVolumeComponent, WeaponDescriptor,
     };
     use std::collections::{BTreeSet, HashMap};
 
@@ -303,10 +306,21 @@ mod tests {
                 ComponentValue::KinematicMover(KinematicMoverComponent::new(
                     1,
                     vec![Vec3::ZERO, Vec3::new(1.0, 0.0, 0.0)],
+                    vec!["a".to_string(), "b".to_string()],
                     1.0,
                     0.0,
                     KinematicMoverMode::Once,
                     false,
+                ))
+            }
+            ComponentKind::TriggerVolume => {
+                ComponentValue::TriggerVolume(TriggerVolumeComponent::new(
+                    TriggerActivation::Touch,
+                    "sample".to_string(),
+                    MoverCommand::Start,
+                    TriggerFireMode::Once,
+                    0.0,
+                    true,
                 ))
             }
         }

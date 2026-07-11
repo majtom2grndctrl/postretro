@@ -639,6 +639,16 @@ function UiWidgetsSdk.Bar(props: any): WidgetDescriptor
     fill = fill,
     background = background,
   }
+  for _, field in { "width", "height" } do
+    local value = props[field]
+    if value ~= nil then
+      requireFiniteNumber(value, field, "Bar")
+      if value <= 0 then
+        error(`Bar: \`{field}\` must be greater than zero`)
+      end
+      out[field] = value
+    end
+  end
   if props.id ~= nil then
     requireNonemptyString(props.id, "id", "Bar")
     out.id = props.id
@@ -648,6 +658,17 @@ function UiWidgetsSdk.Bar(props: any): WidgetDescriptor
     out.styleRanges = styleRanges
   end
   applyA11yFields(out, props, "Bar")
+  if props.exitFade ~= nil then
+    if out.visibleWhen == nil then
+      error("Bar: `exitFade` requires `visibleWhen`")
+    end
+    requireObject(props.exitFade, "Bar.exitFade")
+    requireFiniteNumber(props.exitFade.durationMs, "exitFade.durationMs", "Bar")
+    if props.exitFade.durationMs <= 0 then
+      error("Bar: `exitFade.durationMs` must be greater than zero")
+    end
+    out.exitFade = { durationMs = props.exitFade.durationMs }
+  end
   return out
 end
 

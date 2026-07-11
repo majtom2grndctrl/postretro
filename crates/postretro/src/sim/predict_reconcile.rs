@@ -44,6 +44,7 @@ pub(crate) struct PrototypeCommand {
     pub(crate) running: bool,
     pub(crate) crouch_intent: bool,
     pub(crate) facing_yaw: f32,
+    pub(crate) use_pressed: bool,
 }
 
 impl PrototypeCommand {
@@ -56,12 +57,14 @@ impl PrototypeCommand {
                 running: self.running,
                 crouch_intent: self.crouch_intent,
                 facing_yaw: self.facing_yaw,
+                use_pressed: self.use_pressed,
             },
             fire_button: FireButtonState {
                 pressed: false,
                 active: false,
             },
             reload: false,
+            use_pressed: false,
         }
     }
 
@@ -155,6 +158,7 @@ impl PrototypeHarness {
             &sim_command,
             |_| command.to_post_movement_command(),
             DT,
+            None,
         );
     }
 
@@ -491,6 +495,7 @@ mod tests {
                 running: tick < 90,
                 crouch_intent: false,
                 facing_yaw: if tick < 80 { 0.0 } else { 0.3 },
+                use_pressed: false,
             })
             .collect()
     }

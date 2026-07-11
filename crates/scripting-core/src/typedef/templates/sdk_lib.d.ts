@@ -36,16 +36,36 @@
     fadeSaturation(opts: { from: number; to: number; periodMs: number }): SequenceStep[];
   }
 
-  /** Maps a component-name literal to the rich entity handle type. `"light"`
+  /** Typed mover handle returned by `world.query({ component: "kinematic_mover" })`. Raw mover phase is engine-managed; methods build closed command steps. */
+  export interface MoverEntityHandle extends MoverEntity {
+    start(): SequenceStep[];
+    stop(): SequenceStep[];
+    reverse(): SequenceStep[];
+    goToPathNode(node: string): SequenceStep[];
+  }
+
+  /** Maps a component-name literal to the rich `world.query` handle type. `"light"`
    * yields `LightEntityHandle` (capability methods); `"emitter"` yields
    * `EmitterEntity` (id, position, tags, plus the full `BillboardEmitterComponent`
-   * snapshot under `component`); `"fog_volume"` yields `FogVolumeHandle`.
+   * snapshot under `component`); `"fog_volume"` yields `FogVolumeHandle`; and
+   * `"kinematic_mover"` yields `MoverEntityHandle`.
    * Other component names fall back to the bare `Entity` shape (`id`,
    * `position`, `tags`). */
   export type EntityForComponent<T extends WorldQueryComponent> =
     T extends "light" ? LightEntityHandle :
     T extends "emitter" ? EmitterEntity :
     T extends "fog_volume" ? FogVolumeHandle :
+    T extends "kinematic_mover" ? MoverEntityHandle :
+    Entity;
+
+  /** Maps a component-name literal to the unwrapped `worldQuery` snapshot
+   * type. `world.query` applies the capability and command-builder wrappers
+   * represented by `EntityForComponent` above. */
+  export type RawEntityForComponent<T extends WorldQueryComponent> =
+    T extends "light" ? LightEntity :
+    T extends "emitter" ? EmitterEntity :
+    T extends "fog_volume" ? FogVolumeEntity :
+    T extends "kinematic_mover" ? MoverEntity :
     Entity;
 
   /** Vocabulary object installed as `globalThis.world`. */
@@ -151,6 +171,15 @@
     args: FogAnimation | null;
   };
 
+  /** Sequence step that resumes a kinematic mover. */
+  export type MoverStartStep = { id: EntityId; primitive: "moverStart"; args: Record<string, never> };
+  /** Sequence step that stops a kinematic mover. */
+  export type MoverStopStep = { id: EntityId; primitive: "moverStop"; args: Record<string, never> };
+  /** Sequence step that reverses a kinematic mover. */
+  export type MoverReverseStep = { id: EntityId; primitive: "moverReverse"; args: Record<string, never> };
+  /** Sequence step that moves a kinematic mover to a named path node. */
+  export type MoverGoToPathNodeStep = { id: EntityId; primitive: "moverGoToPathNode"; args: { node: string } };
+
   /** Union of every supported sequence step shape. New sequenced primitives extend this union. */
   export type SequenceStep =
     | SetLightAnimationStep
@@ -159,7 +188,11 @@
     | SetFogEdgeSoftnessStep
     | SetFogFalloffStep
     | SetFogParamsStep
-    | SetFogAnimationStep;
+    | SetFogAnimationStep
+    | MoverStartStep
+    | MoverStopStep
+    | MoverReverseStep
+    | MoverGoToPathNodeStep;
 
   /** Sequence reaction body: ordered per-entity primitive invocations. Steps run in array order at dispatch. */
   export type SequenceReactionDescriptor = {
@@ -430,8 +463,10 @@
   /** An interactive `slider`. Nav wires in `capturesNav` step the bound value by `step` within `[min, max]`. Exactly one of `label` / `labelledBy` is required. */
   export function Slider(props: SliderProps): WidgetDescriptor;
 
-  /** Props for `Bar`. `bind` is a readonly numeric bind; `max` is a number or readonly numeric ref. */
-  export type BarProps = { bind: BarBindProp; max: BarMaxProp; fill: WidgetColor; background: WidgetColor; styleRanges?: StyleRangesProp; id?: string; visibleWhen?: Predicate; role?: WidgetRole };
+  /** Linear retained-UI exit fade for a `Bar` with `visibleWhen`. */
+  export type BarExitFade = { durationMs: number };
+  /** Props for `Bar`. `width`/`height` are positive logical-reference px; `exitFade` requires `visibleWhen` and fades the retained terminal image linearly. */
+  export type BarProps = { bind: BarBindProp; max: BarMaxProp; fill: WidgetColor; background: WidgetColor; width?: number; height?: number; styleRanges?: StyleRangesProp; id?: string; visibleWhen?: Predicate; exitFade?: BarExitFade; role?: WidgetRole };
   /** A passive `bar`: fill fraction is `value/max` clamped to `[0, 1]`. `styleRanges` recolors the fill from that displayed fraction. */
   export function Bar(props: BarProps): WidgetDescriptor;
 

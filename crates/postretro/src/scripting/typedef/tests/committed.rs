@@ -92,6 +92,36 @@ fn committed_sdk_types_contain_ai_descriptor() {
     );
 }
 
+/// `worldQuery` exposes raw snapshots; the `world.query` SDK vocabulary is
+/// the layer that attaches light/fog capability methods and mover commands.
+/// Keeping those declarations distinct prevents the bare primitive from
+/// promising methods that its JSON serialization never includes.
+#[test]
+fn world_query_raw_snapshots_and_sdk_handles_remain_distinct() {
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
+
+    let mut r = PrimitiveRegistry::new();
+    register_all(&mut r, ScriptCtx::new());
+    let ts = generate_typescript(&r);
+    let luau = generate_luau(&r);
+
+    assert!(
+        ts.contains(
+            "export function worldQuery<T extends WorldQueryComponent>(filter: { component: T; tag?: string | null }): ReadonlyArray<RawEntityForComponent<T>>;"
+        ) && ts.contains("T extends \"kinematic_mover\" ? MoverEntity :")
+            && ts.contains("T extends \"kinematic_mover\" ? MoverEntityHandle :"),
+        "TypeScript must distinguish raw worldQuery mover snapshots from world.query handles:\n{ts}"
+    );
+    assert!(
+        luau.contains("((filter: { component: \"kinematic_mover\", tag: string? }) -> {MoverEntity})")
+            && luau.contains(
+                "((self: World, filter: { component: \"kinematic_mover\", tag: string? }) -> {MoverEntityHandle})"
+            ),
+        "Luau must distinguish raw worldQuery mover snapshots from world:query handles:\n{luau}"
+    );
+}
+
 /// `defineStore` returns a pure `{ declaration, state }` builder result.
 /// The generator special-cases it (like `worldQuery`) so the static SDK
 /// block's generic `defineStore<const S>` supplies the schema-keyed

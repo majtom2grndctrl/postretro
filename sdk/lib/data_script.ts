@@ -37,6 +37,10 @@ export type SetFogEdgeSoftnessStep = import("postretro").SetFogEdgeSoftnessStep;
 export type SetFogFalloffStep = import("postretro").SetFogFalloffStep;
 export type SetFogParamsStep = import("postretro").SetFogParamsStep;
 export type SetFogAnimationStep = import("postretro").SetFogAnimationStep;
+export type MoverStartStep = import("postretro").MoverStartStep;
+export type MoverStopStep = import("postretro").MoverStopStep;
+export type MoverReverseStep = import("postretro").MoverReverseStep;
+export type MoverGoToPathNodeStep = import("postretro").MoverGoToPathNodeStep;
 
 /** Union of supported sequence step shapes. Mirrors the generated
  * `SequenceStep` in `postretro.d.ts`; new sequenced primitives extend
@@ -48,7 +52,11 @@ export type SequenceStep =
   | SetFogEdgeSoftnessStep
   | SetFogFalloffStep
   | SetFogParamsStep
-  | SetFogAnimationStep;
+  | SetFogAnimationStep
+  | MoverStartStep
+  | MoverStopStep
+  | MoverReverseStep
+  | MoverGoToPathNodeStep;
 
 /** Ordered per-entity primitive invocations. Steps run in array order at dispatch time. */
 export type SequenceReactionDescriptor = {

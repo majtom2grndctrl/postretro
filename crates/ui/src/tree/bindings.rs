@@ -101,6 +101,11 @@ pub fn drive_text_binding(
             if lookup_bound(&bind.source, bind_scope, slot_values, cell_values).is_some() {
                 warn_non_tweenable_text(bind);
             }
+            // The raw fallback is now authoritative for this frame. It cannot
+            // seed an f32 segment reliably (it may be arbitrary text), so drop
+            // the old segment. If a numeric value returns with the same target,
+            // it must begin a fresh tween rather than resume stale display state.
+            *tween = None;
             resolve_text(Some(bind), bind_scope, content, slot_values, cell_values)
         }
     };
@@ -112,10 +117,10 @@ pub fn drive_text_binding(
     changed
 }
 
-/// Advance (or initialize / retarget) a text node's `f32` tween segment toward
-/// `target` at frame time `now`, returning the eased display value for this frame.
-/// Stores the advanced state back into `tween`. See `resolve_bindings` for the
-/// first-resolve / retarget / in-flight / settle mechanics.
+/// Advance (or initialize / retarget) an `f32` tween segment toward `target` at
+/// frame time `now`, returning the eased display value for this frame. Stores the
+/// advanced state back into `tween`. See `resolve_bindings` for the first-resolve
+/// / retarget / in-flight / settle mechanics.
 pub fn drive_tween_f32(
     tween: &mut Option<TweenState<f32>>,
     from: Option<f32>,
@@ -143,8 +148,12 @@ pub fn drive_tween_f32(
         }
         Some(state) => {
             // Retarget: a new target restarts the segment from the CURRENT display
-            // (never snapping mid-flight) at this frame's time.
+            // (never snapping mid-flight) at this frame's time. Sample the old
+            // segment first: state.display still describes its previous frame, so
+            // resetting before this sample would keep a continuously changing
+            // source pinned at its initial display value forever.
             if state.target != target {
+                state.display = advance_f32(state, duration_ms, easing, now);
                 state.start = state.display;
                 state.start_time = now;
                 state.target = target;
@@ -155,10 +164,11 @@ pub fn drive_tween_f32(
     }
 }
 
-/// Sample a text tween segment at `now`: normalized progress `(now - start_time) /
-/// duration`, eased, lerped from `start` to `target`. At `t >= 1` (including a
-/// non-positive duration) the value equals `target` EXACTLY so the settle is bit-
-/// exact. `duration_ms` is milliseconds; converted to seconds for the f64 clock.
+/// Sample an `f32` tween segment at `now`: normalized progress `(now - start_time)
+/// / duration`, eased, lerped from `start` to `target`. At `t >= 1` (including a
+/// non-positive duration) the value equals `target` EXACTLY so the settle is
+/// bit-exact. `duration_ms` is milliseconds; converted to seconds for the f64
+/// clock.
 fn advance_f32(state: &TweenState<f32>, duration_ms: f32, easing: Easing, now: f64) -> f32 {
     let duration = (duration_ms as f64) / 1000.0;
     if duration <= 0.0 || now - state.start_time >= duration {
@@ -173,7 +183,8 @@ fn advance_f32(state: &TweenState<f32>, duration_ms: f32, easing: Easing, now: f
 /// non-`Number` shape. Fires once per retained frame: the caller visits each node
 /// once per `resolve_bindings` call (one per retained frame) and there is no
 /// cross-frame dedup, matching the `resolve_panel_fill` precedent. The snap itself
-/// renders via `resolve_text`, so this never touches the tween state.
+/// renders via `resolve_text` and clears the numeric display segment so a later
+/// numeric recovery cannot resume stale presentation state.
 fn warn_non_tweenable_text(bind: &TextBind) {
     log::warn!(
         "[UI] text bind '{}' carries a tween but did not resolve to a Number; \
@@ -224,8 +235,14 @@ pub fn drive_panel_binding(
         // Non-tweenable shape (absent, wrong variant, or wrong length): snap
         // through the unchanged fill-resolution path. `resolve_panel_fill` already
         // owns the once-per-frame warn for a present-but-malformed value, so the
-        // tween adds none here.
-        _ => resolve_panel_fill(Some(bind), bind_scope, fallback, slot_values, cell_values),
+        // tween adds none here. Seed the next segment from that visible fallback:
+        // a later matching target must not resume a segment from before the snap.
+        _ => {
+            let fallback =
+                resolve_panel_fill(Some(bind), bind_scope, fallback, slot_values, cell_values);
+            seed_tween(tween, fallback, now);
+            fallback
+        }
     };
 
     let changed = last_resolved.is_none_or(|prev| !colors_eq(prev, resolved));
@@ -258,7 +275,11 @@ pub fn drive_bar_binding(
             Some(SlotValue::Number(n)) => {
                 drive_tween_f32(tween, cfg.from, *n, cfg.duration_ms, cfg.easing, now)
             }
-            _ => bar_slot_value(bind, bind_scope, slot_values, cell_values),
+            _ => {
+                let fallback = bar_slot_value(bind, bind_scope, slot_values, cell_values);
+                seed_tween(tween, fallback, now);
+                fallback
+            }
         },
         None => bar_slot_value(bind, bind_scope, slot_values, cell_values),
     };
@@ -287,8 +308,8 @@ pub fn drive_bar_max(
 
 /// Advance (or initialize / retarget) a panel node's RGBA tween segment toward
 /// `target` at frame time `now`, returning the eased per-channel display fill.
-/// Same first-resolve / retarget / in-flight / settle mechanics as the text
-/// driver, but the lerp runs per channel (alpha included, no rounding).
+/// Same first-resolve / retarget / in-flight / settle mechanics as the generic
+/// numeric/f32 driver, but the lerp runs per channel (alpha included, no rounding).
 fn drive_tween_rgba(
     tween: &mut Option<TweenState<[f32; 4]>>,
     from: Option<[f32; 4]>,
@@ -313,6 +334,10 @@ fn drive_tween_rgba(
         }
         Some(state) => {
             if state.target != target {
+                // Preserve the old segment's current display before beginning
+                // the new one. Otherwise a source that changes every frame can
+                // repeatedly reset without ever contributing visible progress.
+                state.display = advance_rgba(state, duration_ms, easing, now);
                 state.start = state.display;
                 state.start_time = now;
                 state.target = target;
@@ -348,4 +373,15 @@ fn advance_rgba(
 /// color stops re-flagging.
 pub fn colors_eq(a: [f32; 4], b: [f32; 4]) -> bool {
     a == b
+}
+
+/// Replace a tween segment after a raw fallback is rendered. The fallback is the
+/// visible presentation value, so a later tweenable target must start from it.
+fn seed_tween<T: Copy>(tween: &mut Option<TweenState<T>>, value: T, now: f64) {
+    *tween = Some(TweenState {
+        display: value,
+        start: value,
+        start_time: now,
+        target: value,
+    });
 }

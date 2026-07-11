@@ -198,7 +198,7 @@ Handle types compose them by channel: `LightEntityHandle extends AnimatableScala
 
 **TypeScript:** `sdk/lib/prelude.js` is generated at build time by `postretro`'s `build.rs` (via `postretro-script-compiler` as a `[build-dependencies]` entry) and written to `$OUT_DIR`. It is embedded in the engine binary via `include_str!(concat!(env!("OUT_DIR"), "/prelude.js"))` and evaluated in every QuickJS context. The file is gitignored and never committed — `cargo build` regenerates it automatically from `sdk/lib/**/*.ts`. Authors import SDK symbols as bare specifiers: `import { world, timeline, sequence, defineReaction, defineEntity } from "postretro"`. UI authors import from `"postretro/ui"`. The import is stripped at bundle time; the symbol resolves from the prelude-installed global.
 
-**Luau:** Each SDK library file under `sdk/lib/` is embedded via `include_str!` and evaluated in a fixed order in every Luau context. Non-UI return values are destructured into bare globals during the transition; UI return values populate only the `require("postretro/ui")` virtual module and are not promoted as bare globals. Evaluation order matters: `world.luau` captures `wrapLightEntity` from `entities/lights.luau` and `wrapFogVolumeEntity` from `entities/fog_volumes.luau` as closure upvalues; both must evaluate before `world.luau`. Both bridges are nil'd out after `world.luau` evaluates so author scripts never see them as bare globals. Type-only symbols (`export type` declarations) serve luau-lsp completions only — never promoted to runtime globals.
+**Luau:** Each SDK library file under `sdk/lib/` is embedded via `include_str!` and evaluated in a fixed order in every Luau context. Non-UI return values are destructured into bare globals during the transition; UI return values populate only the `require("postretro/ui")` virtual module and are not promoted as bare globals. Evaluation order matters: `world.luau` captures `wrapLightEntity` from `entities/lights.luau`, `wrapFogVolumeEntity` from `entities/fog_volumes.luau`, and `wrapMoverEntity` from `entities/movers.luau` as closure upvalues; all must evaluate before `world.luau`. The bridges are nil'd out after `world.luau` evaluates so author scripts never see them as bare globals. Type-only symbols (`export type` declarations) serve luau-lsp completions only — never promoted to runtime globals.
 
 Luau authors may opt into SDK modules with
 `local Postretro = require("postretro")` or
@@ -334,6 +334,10 @@ the frontend through the same path as `returnToFrontend()`.
 ### 10.5 Damage
 
 `applyDamage` is a tag-targeted reaction primitive: applies a damage amount to every tagged entity carrying health. Negative or non-finite amounts warn and no-op (no healing path); targets without health warn and skip. There is no imperative script damage/health API — runtime damage flows through reactions; engine systems (weapons, future AI) call the Rust damage chokepoint directly. Death resolves in an engine sweep, never in the reaction handler. The player pawn never despawns from damage: HP latches at zero and a one-shot `playerDied` event fires through the reaction system.
+
+### 10.6 Mover Commands
+
+`world.query({ component: "kinematic_mover", tag })` reads map movers. The raw query result is a snapshot (`id`, position, tags); the SDK wraps it in a mover handle that builds tag-targeted reaction steps. `start`, `stop`, `reverse`, and `goToPathNode(node)` map to the closed Rust command vocabulary. Commands are declarative reaction data, not a per-tick script-control path: the deterministic mover driver owns motion every tick.
 
 ---
 

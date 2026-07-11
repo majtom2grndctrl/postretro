@@ -48,14 +48,14 @@ pub fn generate_typescript(registry: &PrimitiveRegistry) -> String {
             writeln!(&mut out, "  /** {} */", p.doc).unwrap();
         }
         // `worldQuery` is special-cased: the generic `JsonValue → ReadonlyArray<Entity>`
-        // mapping undertypes the kind-specific return fields. Mirror the
-        // `world.query` SDK wrapper by generating a generic signature keyed
-        // off the filter's `component` literal via `EntityForComponent<T>`.
+        // mapping undertypes the kind-specific snapshot fields. Its raw
+        // results deliberately remain distinct from the richer `world.query`
+        // SDK handles, which add capability and command-builder methods.
         // The SDK wrapper lives in `sdk/lib/world.ts` / `world.luau`.
         if p.name == "worldQuery" {
             writeln!(
                 &mut out,
-                "  export function worldQuery<T extends WorldQueryComponent>(filter: {{ component: T; tag?: string | null }}): ReadonlyArray<EntityForComponent<T>>;",
+                "  export function worldQuery<T extends WorldQueryComponent>(filter: {{ component: T; tag?: string | null }}): ReadonlyArray<RawEntityForComponent<T>>;",
             )
             .unwrap();
             continue;
@@ -116,10 +116,10 @@ pub fn generate_luau(registry: &PrimitiveRegistry) -> String {
         if !p.doc.is_empty() {
             writeln!(&mut out, "--- {}", p.doc).unwrap();
         }
-        // `worldQuery` is special-cased: the bare export must mirror the
-        // `world:query` overload set so kind-specific return fields
-        // (`LightEntity.isDynamic`, `LightEntity.component`,
-        // `EmitterEntity.component`) are not silently lost.
+        // `worldQuery` is special-cased: its bare primitive returns
+        // component-specific snapshots. `world:query` wraps the light, fog,
+        // and mover snapshots into richer SDK handles, so its overload set is
+        // intentionally different.
         if p.name == "worldQuery" {
             writeln!(
                 &mut out,
@@ -127,6 +127,7 @@ pub fn generate_luau(registry: &PrimitiveRegistry) -> String {
                  ((filter: {{ component: \"light\", tag: string? }}) -> {{LightEntity}}) \
                  & ((filter: {{ component: \"emitter\", tag: string? }}) -> {{EmitterEntity}}) \
                  & ((filter: {{ component: \"fog_volume\", tag: string? }}) -> {{FogVolumeEntity}}) \
+                 & ((filter: {{ component: \"kinematic_mover\", tag: string? }}) -> {{MoverEntity}}) \
                  & ((filter: WorldQueryFilter) -> {{Entity}})",
             )
             .unwrap();

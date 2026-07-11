@@ -34,6 +34,7 @@ pub mod sh_volume;
 pub mod shadowmask_atlas;
 pub mod texture_cache_keys;
 pub mod texture_names;
+pub mod trigger_volumes;
 
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
@@ -254,6 +255,8 @@ pub enum SectionId {
     /// Origin-relative brush geometry and waypoint records for deterministic
     /// kinematic movers. See `kinematic_geometry::KinematicGeometrySection`.
     KinematicGeometry = 43,
+    /// Invisible AABB brush triggers with declarative mover commands.
+    TriggerVolumes = 44,
 }
 
 impl SectionId {
@@ -290,6 +293,7 @@ impl SectionId {
             41 => Some(Self::DirectShDeltaVolumes),
             42 => Some(Self::ShadowmaskAtlas),
             43 => Some(Self::KinematicGeometry),
+            44 => Some(Self::TriggerVolumes),
             _ => None,
         }
     }

@@ -412,6 +412,84 @@ fn text_tween_on_string_slot_snaps_through_unchanged_path() {
 }
 
 #[test]
+fn text_tween_recovers_from_a_non_numeric_slot_with_a_fresh_segment() {
+    // Text cannot seed a numeric tween from arbitrary raw content, so a
+    // snap-through clears the stale segment. A matching numeric target must
+    // restart from the configured `from`, not resume its old mid-flight value.
+    let tree = AnchoredTree {
+        anchor: Anchor::TopLeft,
+        offset: [0.0, 0.0],
+        root: tweened_text(
+            "fallback",
+            "player.health",
+            None,
+            TextTween {
+                duration_ms: 1000.0,
+                easing: Easing::Linear,
+                from: Some(0.0),
+            },
+        ),
+        capture_mode: CaptureMode::Passthrough,
+        initial_focus: None,
+        text_entry_target: None,
+        accessible_name: None,
+        role: None,
+    };
+    let mut ui = UiTree::from_descriptor(&tree, &theme());
+    let mut fs = font_system();
+
+    ui.build_draw_data_retained(
+        [1280, 720],
+        &mut fs,
+        &no_images(),
+        &number_slots("player.health", 100.0),
+        &no_cells(),
+        0.0,
+    );
+    let mid = ui.build_draw_data_retained(
+        [1280, 720],
+        &mut fs,
+        &no_images(),
+        &number_slots("player.health", 100.0),
+        &no_cells(),
+        0.5,
+    );
+    assert!(
+        text_value(&mid) >= 49.0,
+        "initial numeric segment reaches halfway"
+    );
+
+    let mut non_numeric = HashMap::new();
+    non_numeric.insert("player.health".to_string(), SlotValue::String("N/A".into()));
+    let snapped = ui.build_draw_data_retained(
+        [1280, 720],
+        &mut fs,
+        &no_images(),
+        &non_numeric,
+        &no_cells(),
+        0.5,
+    );
+    assert_eq!(
+        snapped.texts[0].content, "N/A",
+        "raw non-numeric content snaps through"
+    );
+
+    let recovered = ui.build_draw_data_retained(
+        [1280, 720],
+        &mut fs,
+        &no_images(),
+        &number_slots("player.health", 100.0),
+        &no_cells(),
+        0.6,
+    );
+    assert_eq!(
+        text_value(&recovered),
+        0.0,
+        "recovery starts a fresh segment instead of resuming the stale halfway display",
+    );
+}
+
+#[test]
 fn text_tween_fresh_path_resolves_target_directly_no_cross_frame_state() {
     // Fresh-path inertness: the same tweened descriptor through the fresh
     // `build_draw_data` (no time, no retained state) resolves the target

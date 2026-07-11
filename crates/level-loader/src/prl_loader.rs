@@ -38,6 +38,7 @@ use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use postretro_level_format::texture_names::TextureNamesSection;
+use postretro_level_format::trigger_volumes::TriggerVolumesSection;
 use postretro_level_format::{self as prl_format, SectionId};
 
 use postretro_render_data::geometry::{BvhLeaf, BvhNode, BvhTree, WorldVertex};
@@ -2098,6 +2099,47 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         kinematic_vertex_count,
         kinematic_index_count,
     );
+    // Optional — absent or empty means no trigger volumes.
+    let trigger_volumes = match prl_format::read_section_data(
+        &mut cursor,
+        &meta,
+        SectionId::TriggerVolumes as u32,
+    )? {
+        Some(data) => {
+            TriggerVolumesSection::from_bytes(&data)
+                .map_err(|err| section_validation_from_error("TriggerVolumes", err))?
+                .triggers
+        }
+        None => Vec::new(),
+    };
+    let touch_trigger_count = trigger_volumes
+        .iter()
+        .filter(|trigger| trigger.activation == 0)
+        .count();
+    let use_trigger_count = trigger_volumes
+        .iter()
+        .filter(|trigger| trigger.activation == 1)
+        .count();
+    let start_command_count = trigger_volumes
+        .iter()
+        .filter(|trigger| trigger.command == 0)
+        .count();
+    let stop_command_count = trigger_volumes
+        .iter()
+        .filter(|trigger| trigger.command == 1)
+        .count();
+    let reverse_command_count = trigger_volumes
+        .iter()
+        .filter(|trigger| trigger.command == 2)
+        .count();
+    let go_to_path_node_command_count = trigger_volumes
+        .iter()
+        .filter(|trigger| trigger.command == 3)
+        .count();
+    log::info!(
+        "[PRL] TriggerVolumes: {} trigger(s): {touch_trigger_count} touch, {use_trigger_count} use; commands: {start_command_count} start, {stop_command_count} stop, {reverse_command_count} reverse, {go_to_path_node_command_count} go_to_path_node",
+        trigger_volumes.len(),
+    );
 
     // Required — carries `initial_gravity` alongside fog volumes. Absence = pre-gravity PRL;
     // rejected so the engine never silently falls back to a hardcoded default.
@@ -2302,6 +2344,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         data_script,
         map_entities,
         kinematic_geometry,
+        trigger_volumes,
         fog_volumes,
         fog_pixel_scale,
         initial_gravity,

@@ -443,12 +443,14 @@ fn neutral_sim_command() -> SimCommand {
             running: false,
             crouch_intent: false,
             facing_yaw: 0.0,
+            use_pressed: false,
         },
         fire_button: FireButtonState {
             pressed: false,
             active: false,
         },
         reload: false,
+        use_pressed: false,
     }
 }
 
@@ -466,6 +468,8 @@ fn held_gap_sim_command(prev: &InputCommand) -> SimCommand {
         pressed: false,
         active: false,
     };
+    sim.movement.use_pressed = false;
+    sim.use_pressed = false;
     sim
 }
 
@@ -489,6 +493,7 @@ mod tests {
                 running: true,
                 crouch_intent: false,
                 facing_yaw: 0.5,
+                use_pressed: false,
             },
             fire_button: WireFireButtonState {
                 pressed: false,

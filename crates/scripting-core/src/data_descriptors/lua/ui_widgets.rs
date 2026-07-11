@@ -2,6 +2,7 @@
 // See: context/lib/scripting.md
 
 use super::super::*;
+use crate::ui::descriptor::BarExitFade;
 
 // --- Lua UI deserialization -------------------------------------------------
 
@@ -230,17 +231,40 @@ pub fn slider_widget_from_lua(table: &Table) -> Result<SliderWidget, DescriptorE
 }
 
 pub fn bar_widget_from_lua(table: &Table) -> Result<BarWidget, DescriptorError> {
-    Ok(BarWidget {
+    let visible_when = predicate_opt_from_lua(table, "visibleWhen")?;
+    let exit_fade = bar_exit_fade_from_lua(table)?;
+    let bar = BarWidget {
         bind: slider_bind_from_lua(table, "bind")?
             .ok_or(DescriptorError::MissingField { field: "bind" })?,
         max: bar_max_from_lua(table)?,
         fill: color_value_from_lua(table, "fill")?,
         background: color_value_from_lua(table, "background")?,
+        width: optional_bar_dimension_lua(table, "width")?,
+        height: optional_bar_dimension_lua(table, "height")?,
         id: get_optional_string_lua(table, "id")?,
         style_ranges: style_ranges_from_lua(table)?,
-        visible_when: predicate_opt_from_lua(table, "visibleWhen")?,
+        visible_when,
+        exit_fade,
         role: role_opt_from_lua(table)?,
-    })
+    };
+    bar.validate()
+        .map_err(|reason| DescriptorError::InvalidShape { reason })?;
+    Ok(bar)
+}
+
+fn optional_bar_dimension_lua(
+    table: &Table,
+    field: &'static str,
+) -> Result<Option<f32>, DescriptorError> {
+    get_optional_f32_lua(table, field)
+}
+
+fn bar_exit_fade_from_lua(table: &Table) -> Result<Option<BarExitFade>, DescriptorError> {
+    let Some(fade) = optional_table_lua(table, "exitFade")? else {
+        return Ok(None);
+    };
+    let duration_ms = get_required_f32_lua(&fade, "durationMs")?;
+    Ok(Some(BarExitFade { duration_ms }))
 }
 
 /// Lua twin of [`announce_widget_from_js`]: required non-empty `text`, optional

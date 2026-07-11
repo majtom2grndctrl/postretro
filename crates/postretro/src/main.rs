@@ -54,6 +54,7 @@ mod scripting;
 mod session;
 mod sim;
 mod startup;
+mod trigger_system;
 mod view_feel;
 
 #[cfg(test)]
@@ -73,7 +74,7 @@ mod scripting_systems;
 #[global_allocator]
 static COUNTING_ALLOCATOR: alloc_probe::CountingAllocator = alloc_probe::CountingAllocator;
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -762,6 +763,7 @@ fn build_sim_command(
     crouch_intent: bool,
     dash_pressed: bool,
     shoot_pressed: bool,
+    use_pressed: bool,
 ) -> sim::SimCommand {
     let jump_pressed = snapshot.button(Action::Jump).is_active();
     let sprint = snapshot.button(Action::Sprint).is_active();
@@ -779,12 +781,14 @@ fn build_sim_command(
             running: sprint,
             crouch_intent,
             facing_yaw: camera.yaw,
+            use_pressed,
         },
         fire_button: weapon::FireButtonState {
             pressed: shoot_pressed,
             active: shoot.is_active(),
         },
         reload: reload.is_active(),
+        use_pressed,
     }
 }
 
@@ -1828,12 +1832,23 @@ impl ApplicationHandler for App {
                             && matches!(snapshot.button(Action::Dash), ButtonState::Pressed);
                         let shoot_pressed = tick_index == 0
                             && matches!(snapshot.button(Action::Shoot), ButtonState::Pressed);
+                        let use_pressed = tick_index == 0
+                            && matches!(snapshot.button(Action::Use), ButtonState::Pressed);
+                        let mut trigger_use_edges = HashMap::new();
+                        if use_pressed {
+                            let registry = script_ctx.registry.borrow();
+                            if let Some(pawn) = followed_player_pawn(&registry) {
+                                trigger_use_edges
+                                    .insert(trigger_system::PlayerId::Local(pawn), true);
+                            }
+                        }
                         let command = build_sim_command(
                             snapshot,
                             &self.camera,
                             crouch_intent,
                             dash_pressed,
                             shoot_pressed,
+                            use_pressed,
                         );
 
                         // Connected-client prediction (M15 Phase 3 Task 3): send one
@@ -1905,6 +1920,14 @@ impl ApplicationHandler for App {
                         let resolved_remote_commands = self.host_resolve_remote_commands();
                         let remote_pawn_commands =
                             self.host_prepare_remote_pawn_commands(&resolved_remote_commands);
+                        trigger_use_edges.extend(remote_pawn_commands.iter().filter_map(
+                            |remote| {
+                                remote.command.use_pressed.then_some((
+                                    trigger_system::PlayerId::Remote(remote.owner_client_id),
+                                    true,
+                                ))
+                            },
+                        ));
 
                         // Borrow the two session-owned `simulate_tick` inputs
                         // (hit-zone store, progress tracker) and the boot-owned
@@ -1914,6 +1937,8 @@ impl ApplicationHandler for App {
                         let session = self.session.as_mut().expect("running session installed");
                         let hit_zone_store = &session.hit_zone_store;
                         let progress_tracker = &mut session.progress_tracker;
+                        let trigger_system = &mut session.trigger_system;
+                        let trigger_volume_bridge = &session.trigger_volume_bridge;
                         let camera = &mut self.camera;
                         #[cfg(feature = "dev-tools")]
                         let debug_chase_agent = self.debug_chase_agent;
@@ -1954,6 +1979,11 @@ impl ApplicationHandler for App {
                                 build_post_movement_command(camera)
                             },
                             tick_dt,
+                            Some(sim::TriggerTickContext {
+                                system: trigger_system,
+                                bridge: trigger_volume_bridge,
+                                use_edges: &trigger_use_edges,
+                            }),
                         );
                         self.host_record_authorized_shots(&tick_events.authorized_shots);
                         if self.host_flush_pending_hit_declarations() {
@@ -2050,6 +2080,11 @@ impl ApplicationHandler for App {
                         .scripting
                         .player_hud_state
                         .tick_for_role(is_connected_client);
+                    #[cfg(feature = "dev-tools")]
+                    session
+                        .scripting
+                        .dev_reload_progress
+                        .tick(gameplay_snapshot.as_ref(), frame_dt);
                 }
                 // Flash-decay state writes the engine-owned `screen.flash`
                 // surface at the same game-logic stage as the HUD publisher, so
@@ -4347,7 +4382,7 @@ impl App {
         };
         let zero_tick_fire_command = zero_tick_snapshot
             .filter(|_| button.pressed)
-            .map(|snapshot| build_sim_command(snapshot, &self.camera, false, false, true));
+            .map(|snapshot| build_sim_command(snapshot, &self.camera, false, false, true, false));
         let Some(state) = self.client_weapon_state.as_mut() else {
             if zero_tick_fire_command.is_some() {
                 if let Some(session) = self.session.as_mut() {
@@ -5735,12 +5770,14 @@ mod tests {
                 running: false,
                 crouch_intent: false,
                 facing_yaw: 0.0,
+                use_pressed: false,
             },
             fire_button: weapon::FireButtonState {
                 pressed: false,
                 active: false,
             },
             reload: false,
+            use_pressed: false,
         };
 
         let mut pushed_states = Vec::new();
@@ -5764,6 +5801,7 @@ mod tests {
                     build_post_movement_command(&camera)
                 },
                 TICK_DURATION.as_secs_f32(),
+                None,
             );
             frame_timing.push_state(InterpolableState::new(camera.position));
             pushed_states.push(frame_timing.current_state.position);
@@ -5901,7 +5939,7 @@ mod tests {
 
         let camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
         let commands: Vec<sim::SimCommand> = (0..2)
-            .map(|_| build_sim_command(&snapshot, &camera, crouch_intent, false, false))
+            .map(|_| build_sim_command(&snapshot, &camera, crouch_intent, false, false, false))
             .collect();
 
         assert_eq!(commands.len(), 2);
@@ -5931,7 +5969,7 @@ mod tests {
             .map(|tick_index| {
                 let dash_pressed = tick_index == 0
                     && matches!(snapshot.button(Action::Dash), ButtonState::Pressed);
-                build_sim_command(&snapshot, &camera, false, dash_pressed, false)
+                build_sim_command(&snapshot, &camera, false, dash_pressed, false, false)
             })
             .collect();
 
@@ -5957,7 +5995,7 @@ mod tests {
             .map(|tick_index| {
                 let shoot_pressed = tick_index == 0
                     && matches!(snapshot.button(Action::Shoot), ButtonState::Pressed);
-                build_sim_command(&snapshot, &camera, false, false, shoot_pressed)
+                build_sim_command(&snapshot, &camera, false, false, shoot_pressed, false)
             })
             .collect();
 
@@ -5985,7 +6023,7 @@ mod tests {
 
         let camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
         let commands: Vec<sim::SimCommand> = (0..2)
-            .map(|_| build_sim_command(&snapshot, &camera, false, false, false))
+            .map(|_| build_sim_command(&snapshot, &camera, false, false, false, false))
             .collect();
 
         assert!(
@@ -6015,6 +6053,7 @@ mod tests {
                     running: false,
                     crouch_intent: false,
                     facing_yaw: 0.0,
+                    use_pressed: false,
                 },
                 fire_button: postretro_net::wire::WireFireButtonState {
                     pressed: true,
@@ -6110,12 +6149,14 @@ mod tests {
                 running: false,
                 crouch_intent: false,
                 facing_yaw: 0.0,
+                use_pressed: false,
             },
             fire_button: weapon::FireButtonState {
                 pressed: true,
                 active: true,
             },
             reload: false,
+            use_pressed: false,
         };
         let mut resolved_aim_origin = None;
 
@@ -6140,6 +6181,7 @@ mod tests {
                 post
             },
             TICK_DURATION.as_secs_f32(),
+            None,
         );
 
         assert_eq!(resolved_aim_origin, Some(camera.position));
@@ -7391,11 +7433,10 @@ mod tests {
     fn ui_slot_snapshot_clones_present_values_and_skips_valueless_slots() {
         use postretro_entities::SlotValue;
 
-        // The default table carries engine `player.*` slots with `None` values
-        // plus two value-bearing engine surfaces: `screen.flash` (resting
-        // transparent) and `input.mode` (defaults to `focus`). Setting one of the
-        // value-less slots asserts the boundary contract: the snapshot clones
-        // value-bearing slots and omits value-less ones.
+        // The default table carries engine `player.*` slots with `None` values,
+        // except the reload-feedback slots, which start at inactive/zero. Setting
+        // one of the value-less slots asserts the boundary contract: the snapshot
+        // clones value-bearing slots and omits value-less ones.
         let mut table = postretro_entities::SlotTable::new();
         table
             .get_mut("player.health")
@@ -7408,6 +7449,16 @@ mod tests {
             snapshot.get("player.health"),
             Some(&SlotValue::Number(75.0)),
             "value-bearing slot is cloned into the snapshot",
+        );
+        assert_eq!(
+            snapshot.get("player.reloadActive"),
+            Some(&SlotValue::Boolean(false)),
+            "engine-owned player.reloadActive defaults to false and is cloned",
+        );
+        assert_eq!(
+            snapshot.get("player.reloadProgress"),
+            Some(&SlotValue::Number(0.0)),
+            "engine-owned player.reloadProgress defaults to zero and is cloned",
         );
         // `screen.flash` carries its default transparent value, so it is present.
         assert_eq!(
@@ -7446,8 +7497,8 @@ mod tests {
         );
         assert_eq!(
             snapshot.len(),
-            6,
-            "only the set player.health and the default-valued screen.flash + screen.vignette + screen.shake + input.mode + ui.textEntry appear",
+            8,
+            "only the set player.health and default-valued reload-feedback + screen.flash + screen.vignette + screen.shake + input.mode + ui.textEntry slots appear",
         );
     }
 

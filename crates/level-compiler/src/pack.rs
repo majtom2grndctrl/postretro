@@ -41,6 +41,7 @@ use postretro_level_format::sdf_atlas::SdfAtlasSection;
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
+use postretro_level_format::trigger_volumes::TriggerVolumesSection;
 use postretro_level_format::{
     SectionBlob, SectionId, read_container, read_section_data, write_prl,
 };
@@ -573,6 +574,7 @@ pub fn pack_and_write_portals(
     sdf_atlas: Option<&SdfAtlasSection>,
     navmesh: Option<&NavMeshSection>,
     kinematic_geometry: Option<&KinematicGeometrySection>,
+    trigger_volumes: Option<&TriggerVolumesSection>,
     // Pre-serialized CellDrawIndex (id 37) bytes, or `None` for zero-leaf maps.
     // Already-encoded because the bake is gated on non-empty BVH leaves upstream;
     // emission is independent of portal presence.
@@ -641,6 +643,7 @@ pub fn pack_and_write_portals(
     let sdf_atlas_bytes = sdf_atlas.map(|s| s.to_bytes());
     let navmesh_bytes = navmesh.map(|s| s.to_bytes());
     let kinematic_geometry_bytes = kinematic_geometry.map(|s| s.to_bytes());
+    let trigger_volumes_bytes = trigger_volumes.map(|s| s.to_bytes());
 
     let mut sections = vec![
         SectionBlob {
@@ -785,6 +788,11 @@ pub fn pack_and_write_portals(
         &mut sections,
         SectionId::KinematicGeometry as u32,
         kinematic_geometry_bytes.clone(),
+    );
+    append_optional_section(
+        &mut sections,
+        SectionId::TriggerVolumes as u32,
+        trigger_volumes_bytes.clone(),
     );
     append_optional_section(
         &mut sections,
@@ -1439,6 +1447,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             Some(sample_cell_draw_index_bytes()),
         )
         .expect("pack_and_write_portals should succeed");
@@ -1520,6 +1529,7 @@ mod tests {
             None,
             None,
             Some(&kinematic),
+            None,
             Some(sample_cell_draw_index_bytes()),
         )
         .expect("pack should succeed");
@@ -1573,6 +1583,7 @@ mod tests {
                 None,
                 None,
                 &FogVolumesSection::default(),
+                None,
                 None,
                 None,
                 None,
@@ -1682,6 +1693,7 @@ mod tests {
                 None,
                 None,
                 &FogVolumesSection::default(),
+                None,
                 None,
                 None,
                 None,
@@ -1800,6 +1812,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
                 Some(sample_cell_draw_index_bytes()),
             )
             .expect("pack should succeed");
@@ -1887,6 +1900,7 @@ mod tests {
                 None,
                 None,
                 &FogVolumesSection::default(),
+                None,
                 None,
                 None,
                 None,
@@ -1992,6 +2006,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let msg = result.expect_err("non-empty BVH without CellDrawIndex must fail");
@@ -2050,6 +2065,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .expect("empty BVH may omit CellDrawIndex");
 
@@ -2100,6 +2116,7 @@ mod tests {
             None,
             None,
             &FogVolumesSection::default(),
+            None,
             None,
             None,
             None,
@@ -2196,6 +2213,7 @@ mod tests {
             None,
             None,
             &FogVolumesSection::default(),
+            None,
             None,
             None,
             None,

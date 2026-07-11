@@ -371,6 +371,7 @@ mod tests {
                 running: true,
                 crouch_intent: false,
                 facing_yaw: 0.0,
+                use_pressed: false,
             },
             fire_button: WireFireButtonState {
                 pressed: false,
@@ -390,6 +391,7 @@ mod tests {
                 running: false,
                 crouch_intent: false,
                 facing_yaw: 0.0,
+                use_pressed: false,
             },
             fire_button: WireFireButtonState {
                 pressed: false,
@@ -833,6 +835,7 @@ mod tests {
         let mover_phase = KinematicMoverComponent::new(
             42,
             vec![Vec3::ZERO, Vec3::X],
+            vec!["start".to_string(), "finish".to_string()],
             1.0,
             0.0,
             KinematicMoverMode::PingPong,

@@ -25,6 +25,7 @@ use crate::movement::MovementInput;
 use crate::scripting_systems::fog_volume_bridge::FogVolumeBridge;
 use crate::scripting_systems::hit_zones::HitZoneStore;
 use crate::scripting_systems::mesh_anim::MeshClipTables;
+use crate::scripting_systems::trigger_volume_bridge::TriggerVolumeBridge;
 use crate::session::{HeadlessSession, require_headless_mod_manifest};
 use crate::sim::{PostMovementCommand, SimCommand, simulate_tick};
 use crate::startup::StartupTimings;
@@ -126,6 +127,10 @@ fn run_headless_inner(runspec_arg: Option<&str>) -> Result<String> {
 
     let mut collision_world = CollisionWorld::new();
     let mut fog_volume_bridge = FogVolumeBridge::new();
+    // Trigger volumes are populated for parity with the windowed install, but the
+    // tick loop passes no `TriggerTickContext` to `simulate_tick`, so the trigger
+    // system never evaluates them headless (declared out-of-frame in the dump).
+    let mut trigger_volume_bridge = TriggerVolumeBridge::new();
     // The sweep plumbing requires a modal-stack handle even though headless has no
     // UI; the level-scope tree registrations it receives are simply never rendered.
     let mut modal_stack = postretro_ui::modal_stack::ModalStack::new();
@@ -149,6 +154,7 @@ fn run_headless_inner(runspec_arg: Option<&str>) -> Result<String> {
             nav_graph: nav_graph.as_ref(),
             collision_world: &mut collision_world,
             fog_volume_bridge: &mut fog_volume_bridge,
+            trigger_volume_bridge: &mut trigger_volume_bridge,
             classname_dispatch: &session.classname_dispatch,
             script_runtime: &session.scripting.script_runtime,
             sequence_registry: &session.scripting.sequence_registry,
@@ -215,6 +221,8 @@ fn run_headless_inner(runspec_arg: Option<&str>) -> Result<String> {
             movement,
             fire_button,
             reload,
+            // No "use" verb in the runspec yet; headless drives no trigger stage.
+            use_pressed: false,
         };
 
         // The post-movement closure returns the runspec's aim (origin + a
@@ -248,6 +256,10 @@ fn run_headless_inner(runspec_arg: Option<&str>) -> Result<String> {
             &command,
             post_movement,
             TICK_DT,
+            // No trigger context headless: trigger volumes are populated but the
+            // host-authoritative trigger stage is not driven (no use/overlap
+            // routing), so triggers stay inert — declared out-of-frame in the dump.
+            None,
         );
 
         // Skip building/pushing the owned-string record entirely when the dump
@@ -322,6 +334,7 @@ fn neutral_movement(facing_yaw: f32) -> MovementInput {
         dash_pressed: false,
         running: false,
         crouch_intent: false,
+        use_pressed: false,
         facing_yaw,
     }
 }

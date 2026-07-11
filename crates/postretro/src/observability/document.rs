@@ -86,8 +86,8 @@ pub(crate) struct PawnHealth {
 pub(crate) struct OutOfFrame {
     /// State that does not exist as entities in headless mode at all.
     pub absent_headless: Vec<String>,
-    /// State that is present in the world but deliberately outside the entity
-    /// dump.
+    /// State — non-entity runtime data, or a windowed runtime behavior — that is
+    /// present in the world but deliberately outside the headless dump or sim.
     pub present_not_dumped: Vec<String>,
 }
 
@@ -99,11 +99,14 @@ impl OutOfFrame {
             // they are simply absent from a headless entity dump.
             absent_headless: vec!["map_lights".to_string()],
             // These exist at runtime but are not entity components, so the dump
-            // does not carry them.
+            // does not carry them. `trigger_evaluation` is the odd one out: the
+            // trigger-volume entities ARE dumped, but headless drives no trigger
+            // context into `simulate_tick`, so the trigger system never fires.
             present_not_dumped: vec![
                 "collision_geometry".to_string(),
                 "mover_geometry".to_string(),
                 "hit_zones".to_string(),
+                "trigger_evaluation".to_string(),
             ],
         }
     }
@@ -353,6 +356,7 @@ mod tests {
                 "collision_geometry".to_string(),
                 "mover_geometry".to_string(),
                 "hit_zones".to_string(),
+                "trigger_evaluation".to_string(),
             ]
         );
     }

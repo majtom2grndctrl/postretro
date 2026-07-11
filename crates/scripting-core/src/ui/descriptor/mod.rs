@@ -23,9 +23,9 @@ pub use values::{
     SpacingValue,
 };
 pub use widgets::{
-    AnnounceWidget, BarMax, BarMaxStateRef, BarWidget, ButtonWidget, ContainerWidget, GridWidget,
-    ImageWidget, PanelBind, PanelTween, PanelWidget, Priority, SliderBind, SliderWidget,
-    SpacerWidget, TextBind, TextTween, TextWidget, Widget,
+    AnnounceWidget, BarExitFade, BarMax, BarMaxStateRef, BarWidget, ButtonWidget, ContainerWidget,
+    GridWidget, ImageWidget, PanelBind, PanelTween, PanelWidget, Priority, SliderBind,
+    SliderWidget, SpacerWidget, TextBind, TextTween, TextWidget, Widget,
 };
 
 #[cfg(test)]
@@ -620,6 +620,57 @@ mod tests {
         assert_eq!(reserialized, plain);
         assert!(!reserialized.contains("styleRanges"));
         assert!(!reserialized.contains("\"id\""));
+    }
+
+    #[test]
+    fn bar_round_trips_sizing_and_exit_fade_while_defaults_stay_omitted() {
+        let json = r#"{"kind":"bar","bind":{"slot":"player.reloadProgress"},"max":1.0,"fill":"ok","background":"panel.default","width":120.0,"height":24.0,"visibleWhen":{"slot":"player.reloadActive","equals":true},"exitFade":{"durationMs":500.0}}"#;
+        let widget: Widget = serde_json::from_str(json).expect("must deserialize");
+        assert_eq!(serde_json::to_string(&widget).unwrap(), json);
+
+        let plain = r#"{"kind":"bar","bind":{"slot":"player.health"},"max":100.0,"fill":[0.0,1.0,0.0,1.0],"background":[0.1,0.1,0.1,1.0]}"#;
+        let widget: Widget = serde_json::from_str(plain).expect("must deserialize");
+        let serialized = serde_json::to_string(&widget).unwrap();
+        assert_eq!(serialized, plain);
+        for field in ["width", "height", "exitFade"] {
+            assert!(
+                !serialized.contains(field),
+                "omitted {field} stays absent on the wire"
+            );
+        }
+    }
+
+    #[test]
+    fn raw_bar_descriptors_reject_invalid_sizing_and_exit_fade_contracts() {
+        // JSON assets bypass the script bridges, so the descriptor serde path
+        // itself must reject every invalid authored bar shape.
+        for json in [
+            r#"{"kind":"bar","bind":{"slot":"player.reloadProgress"},"max":1.0,"fill":"ok","background":"panel.default","width":0.0}"#,
+            r#"{"kind":"bar","bind":{"slot":"player.reloadProgress"},"max":1.0,"fill":"ok","background":"panel.default","height":-24.0}"#,
+            r#"{"kind":"bar","bind":{"slot":"player.reloadProgress"},"max":1.0,"fill":"ok","background":"panel.default","exitFade":{"durationMs":500.0}}"#,
+            r#"{"kind":"bar","bind":{"slot":"player.reloadProgress"},"max":1.0,"fill":"ok","background":"panel.default","visibleWhen":{"slot":"player.reloadActive","equals":true},"exitFade":{"durationMs":0.0}}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<Widget>(json).is_err(),
+                "invalid raw descriptor must fail serde validation: {json}"
+            );
+        }
+    }
+
+    #[test]
+    fn bar_validation_rejects_non_finite_authored_values() {
+        // JSON cannot spell NaN/Infinity, but every other serde frontend and
+        // direct descriptor construction shares this semantic contract.
+        let json = r#"{"kind":"bar","bind":{"slot":"player.reloadProgress"},"max":1.0,"fill":"ok","background":"panel.default","visibleWhen":{"slot":"player.reloadActive","equals":true},"exitFade":{"durationMs":500.0}}"#;
+        let Widget::Bar(mut bar) = serde_json::from_str(json).expect("valid bar") else {
+            panic!("fixture is a bar");
+        };
+
+        bar.width = Some(f32::NAN);
+        assert!(bar.validate().is_err(), "NaN width is invalid");
+        bar.width = None;
+        bar.exit_fade.as_mut().unwrap().duration_ms = f32::INFINITY;
+        assert!(bar.validate().is_err(), "infinite fade duration is invalid");
     }
 
     // --- M13 G1a, Task 3: SDK widget/layout factory output validation ---

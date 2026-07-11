@@ -95,6 +95,70 @@ fn lua_bridge_parses_local_state_scope_and_local_bind() {
 }
 
 #[test]
+fn bar_bridge_accepts_sizing_and_exit_fade_and_rejects_invalid_authored_shapes() {
+    let valid_js = r#"({
+        anchor: "center", offset: [0.0, 0.0],
+        root: { kind: "bar", bind: { slot: "player.reloadProgress" }, max: 1.0,
+          fill: [0,1,0,1], background: [0,0,0,1], width: 120.0, height: 24.0,
+          visibleWhen: { slot: "player.reloadActive", equals: true },
+          exitFade: { durationMs: 500.0 } }
+    })"#;
+    let tree = eval_js(valid_js, |ctx, value| {
+        anchored_tree_from_js_value(ctx, value).unwrap()
+    });
+    let Widget::Bar(bar) = tree.root else {
+        panic!("root must be a bar");
+    };
+    assert_eq!(bar.width, Some(120.0));
+    assert_eq!(bar.height, Some(24.0));
+    assert_eq!(
+        bar.exit_fade.as_ref().map(|fade| fade.duration_ms),
+        Some(500.0)
+    );
+
+    let valid_lua = r#"return {
+        anchor = "center", offset = {0.0, 0.0},
+        root = { kind = "bar", bind = { slot = "player.reloadProgress" }, max = 1.0,
+          fill = {0,1,0,1}, background = {0,0,0,1}, width = 120.0, height = 24.0,
+          visibleWhen = { slot = "player.reloadActive", equals = true },
+          exitFade = { durationMs = 500.0 } }
+    }"#;
+    let tree = eval_lua(valid_lua, |value| {
+        anchored_tree_from_lua_value(value).expect("well-formed Luau bar must convert")
+    });
+    let Widget::Bar(bar) = tree.root else {
+        panic!("root must be a bar");
+    };
+    assert_eq!(bar.width, Some(120.0));
+    assert_eq!(bar.height, Some(24.0));
+    assert_eq!(
+        bar.exit_fade.as_ref().map(|fade| fade.duration_ms),
+        Some(500.0)
+    );
+
+    for invalid_js in [
+        r#"({ anchor:"center", offset:[0,0], root:{kind:"bar",bind:{slot:"x"},max:1,fill:[0,1,0,1],background:[0,0,0,1],width:0} })"#,
+        r#"({ anchor:"center", offset:[0,0], root:{kind:"bar",bind:{slot:"x"},max:1,fill:[0,1,0,1],background:[0,0,0,1],exitFade:{durationMs:500}} })"#,
+        r#"({ anchor:"center", offset:[0,0], root:{kind:"bar",bind:{slot:"x"},max:1,fill:[0,1,0,1],background:[0,0,0,1],visibleWhen:{slot:"active"},exitFade:{durationMs:0}} })"#,
+    ] {
+        let error = eval_js(invalid_js, |ctx, value| {
+            anchored_tree_from_js_value(ctx, value).unwrap_err()
+        });
+        assert!(matches!(error, DescriptorError::InvalidShape { .. }));
+    }
+
+    let invalid_lua = r#"return {
+        anchor = "center", offset = {0, 0},
+        root = { kind = "bar", bind = { slot = "x" }, max = 1,
+          fill = {0,1,0,1}, background = {0,0,0,1}, exitFade = { durationMs = 500 } }
+    }"#;
+    let error = eval_lua(invalid_lua, |value| {
+        anchored_tree_from_lua_value(value).unwrap_err()
+    });
+    assert!(matches!(error, DescriptorError::InvalidShape { .. }));
+}
+
+#[test]
 fn js_bridge_rejects_a_bind_with_neither_slot_nor_local() {
     // A bind object must carry exactly one source key; neither is a shape error.
     let src = r#"({

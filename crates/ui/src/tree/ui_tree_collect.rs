@@ -83,10 +83,11 @@ impl UiTree {
         walk: &DrawWalkCtx<'_>,
         data: &mut UiDrawData,
     ) {
-        // Reactive visibility (M13 G2, Task 2b): a `Display::None` node (a false
-        // `visibleWhen`) and its entire subtree draw nothing — skip the whole
-        // subtree so zero quads/glyphs are emitted. The node stays in the taffy
-        // tree (just hidden), so this only affects the draw, not the structure.
+        // Reactive visibility (M13 G2, Task 2b): a `Display::None` node (normally
+        // a false `visibleWhen`) and its entire subtree draw nothing — skip the
+        // whole subtree so zero quads/glyphs are emitted. An exit-fading Bar stays
+        // drawable while its predicate is false; otherwise the node remains in the
+        // taffy tree but is hidden, so this only affects the draw, not structure.
         if self.is_display_none(node) {
             return;
         }
@@ -174,25 +175,55 @@ impl UiTree {
                 max,
                 fill,
                 background,
+                exit_fade: _,
                 last_resolved,
                 last_max_resolved: _,
                 tween,
                 style_ranges,
                 style_state,
             }) => {
+                let exit = self
+                    .visibility
+                    .get(&node)
+                    .and_then(|state| state.bar_exit_fade.as_ref())
+                    .and_then(|fade| {
+                        fade.alpha_at(time_seconds).map(|alpha| {
+                            (
+                                alpha,
+                                fade.captured_value
+                                    .expect("active exit fade captures its bar value"),
+                                fade.captured_max
+                                    .expect("active exit fade captures its bar denominator"),
+                            )
+                        })
+                    });
                 // Background quad fills the whole laid-out rect.
                 let rect = project_rect(ref_origin, layout, scale, canvas_origin);
-                data.push_quad(UiInstance::panel(rect, *background, [0.0; 4]));
+                let mut background_color = *background;
+                if let Some((alpha, _, _)) = exit {
+                    background_color[3] *= alpha;
+                }
+                data.push_quad(UiInstance::panel(rect, background_color, [0.0; 4]));
 
                 // The displayed value: the eased tween display when active (the
                 // styleRanges/fill-fraction contract reads the value the widget
                 // RENDERS, which mid-tween is the display value), else the raw slot
                 // `Number`. The fresh/splash path never tweens, so it reads the slot.
-                let value = match (tween, last_resolved) {
-                    (Some(_), Some(displayed)) => *displayed,
-                    _ => bar_slot_value(bind, bind_scope.as_deref(), slot_values, cell_values),
+                let (value, max_value) = match exit {
+                    Some((_, value, max)) => (value, max),
+                    None => (
+                        match (tween, last_resolved) {
+                            (Some(_), Some(displayed)) => *displayed,
+                            _ => bar_slot_value(
+                                bind,
+                                bind_scope.as_deref(),
+                                slot_values,
+                                cell_values,
+                            ),
+                        },
+                        bar_max_value(max, slot_values),
+                    ),
                 };
-                let max_value = bar_max_value(max, slot_values);
                 let fraction = if max_value > 0.0 {
                     (value / max_value).clamp(0.0, 1.0)
                 } else {
@@ -212,6 +243,9 @@ impl UiTree {
                         &mut style_state.borrow_mut(),
                         time_seconds,
                     );
+                }
+                if let Some((alpha, _, _)) = exit {
+                    fill_color[3] *= alpha;
                 }
 
                 // Fill quad: same top-left/height, width scaled by the fraction.

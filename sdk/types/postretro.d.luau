@@ -609,6 +609,8 @@ export type GameStateRefs = {
   player: {
     health: ReadonlyStateRef<number>,
     maxHealth: ReadonlyStateRef<number>,
+    reloadActive: ReadonlyStateRef<boolean>,
+    reloadProgress: ReadonlyStateRef<number>,
     weaponCooldownMs: ReadonlyStateRef<number>,
   },
   screen: {
@@ -1173,7 +1175,10 @@ export type BarBindProp = (ReadonlyStateRef<number> | LocalBindRef) & { tween: N
 --- as `getGameState().player.maxHealth`.
 export type BarMaxProp = number | ReadonlyStateRef<number>
 --- Props for `Bar`. `bind` is a readonly numeric bind; `max` is a number or readonly numeric ref.
-export type BarProps = { bind: BarBindProp, max: BarMaxProp, fill: WidgetColor, background: WidgetColor, styleRanges: StyleRangesProp?, id: string?, visibleWhen: Predicate?, role: WidgetRole? }
+--- Linear retained-UI exit fade for a `Bar` with `visibleWhen`.
+export type BarExitFade = { durationMs: number }
+--- Props for `Bar`. `width`/`height` are positive logical-reference px; `exitFade` requires `visibleWhen` and fades the retained terminal image linearly.
+export type BarProps = { bind: BarBindProp, max: BarMaxProp, fill: WidgetColor, background: WidgetColor, width: number?, height: number?, styleRanges: StyleRangesProp?, id: string?, visibleWhen: Predicate?, exitFade: BarExitFade?, role: WidgetRole? }
 
 --- Props for `Announce`. `text` is the POSITIONAL second argument; `priority` defaults to `"polite"` (round-trips to omission).
 export type AnnounceProps = { priority: AnnouncePriority?, visibleWhen: Predicate? }

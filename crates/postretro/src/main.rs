@@ -36,6 +36,11 @@ mod nav;
 // The ONLY engine code that touches the registry on behalf of replication.
 // See `context/lib/entity_model.md` §6.
 mod netcode;
+// Headless batch-mode observability vocabulary: runspec, entity dump, and
+// deterministic JSON output. Feature-gated; consumed by the headless driver.
+// See: context/plans/done/agentic-observability
+#[cfg(feature = "observability")]
+mod observability;
 mod options;
 mod weapon;
 
@@ -552,28 +557,15 @@ pub(crate) struct App {
     #[allow(dead_code)]
     pending_splash_override: Option<SplashSource>,
 
-    /// Classnames the built-in dispatch handled at level open. Captured during
-    /// install and consumed by the data-archetype sweep on the same frame.
-    /// `None` before level load and after the sweep consumes it.
-    builtin_handled: Option<std::collections::HashSet<String>>,
-
-    /// `player_spawn` placements partitioned from `world.map_entities` during
-    /// install. Consumed on the same frame by `spawn_from_player_starts` — a
-    /// separate path from `apply_data_archetype_dispatch`. `None` before level
-    /// load and after consumed.
-    pending_spawn_points: Option<Vec<crate::scripting::map_entity::MapEntity>>,
-
     /// A retained copy of the level's `player_spawn` placements for the host's
-    /// runtime net-slot accept path (M15 Phase 3 Task 4). Unlike
-    /// `pending_spawn_points` (consumed at install), this survives so each accepted
-    /// client's descriptor-backed remote pawn can be spawned from its deterministically
-    /// assigned placement. Empty before level load and on maps with no player_spawn.
+    /// runtime net-slot accept path (M15 Phase 3 Task 4), so each accepted
+    /// client's descriptor-backed remote pawn can be spawned from its
+    /// deterministically assigned placement. Populated from segment B's returned
+    /// spawn points at install. Empty before level load and on maps with no
+    /// player_spawn. The install-internal classname/archetype partition
+    /// (spawn-point / built-in-handled / remaining-entity bookkeeping) now lives
+    /// as locals inside `install_world_cpu`; only this host copy outlives install.
     host_spawn_points: Vec<crate::scripting::map_entity::MapEntity>,
-
-    /// Non-player-start map entities partitioned out of `world.map_entities`
-    /// during install, awaiting the data-archetype sweep on the same frame.
-    /// `None` before level load and after the sweep consumes them.
-    pending_map_entities: Option<Vec<crate::scripting::map_entity::MapEntity>>,
 
     /// Seconds since level load, not wall clock. Resets to zero on level unload
     /// and during level install. Maintained for future engine consumers that need a
@@ -2088,6 +2080,11 @@ impl ApplicationHandler for App {
                         .scripting
                         .player_hud_state
                         .tick_for_role(is_connected_client);
+                    #[cfg(feature = "dev-tools")]
+                    session
+                        .scripting
+                        .dev_reload_progress
+                        .tick(gameplay_snapshot.as_ref(), frame_dt);
                 }
                 // Flash-decay state writes the engine-owned `screen.flash`
                 // surface at the same game-logic stage as the HUD publisher, so
@@ -7436,11 +7433,10 @@ mod tests {
     fn ui_slot_snapshot_clones_present_values_and_skips_valueless_slots() {
         use postretro_entities::SlotValue;
 
-        // The default table carries engine `player.*` slots with `None` values
-        // plus two value-bearing engine surfaces: `screen.flash` (resting
-        // transparent) and `input.mode` (defaults to `focus`). Setting one of the
-        // value-less slots asserts the boundary contract: the snapshot clones
-        // value-bearing slots and omits value-less ones.
+        // The default table carries engine `player.*` slots with `None` values,
+        // except the reload-feedback slots, which start at inactive/zero. Setting
+        // one of the value-less slots asserts the boundary contract: the snapshot
+        // clones value-bearing slots and omits value-less ones.
         let mut table = postretro_entities::SlotTable::new();
         table
             .get_mut("player.health")
@@ -7453,6 +7449,16 @@ mod tests {
             snapshot.get("player.health"),
             Some(&SlotValue::Number(75.0)),
             "value-bearing slot is cloned into the snapshot",
+        );
+        assert_eq!(
+            snapshot.get("player.reloadActive"),
+            Some(&SlotValue::Boolean(false)),
+            "engine-owned player.reloadActive defaults to false and is cloned",
+        );
+        assert_eq!(
+            snapshot.get("player.reloadProgress"),
+            Some(&SlotValue::Number(0.0)),
+            "engine-owned player.reloadProgress defaults to zero and is cloned",
         );
         // `screen.flash` carries its default transparent value, so it is present.
         assert_eq!(
@@ -7491,8 +7497,8 @@ mod tests {
         );
         assert_eq!(
             snapshot.len(),
-            6,
-            "only the set player.health and the default-valued screen.flash + screen.vignette + screen.shake + input.mode + ui.textEntry appear",
+            8,
+            "only the set player.health and default-valued reload-feedback + screen.flash + screen.vignette + screen.shake + input.mode + ui.textEntry slots appear",
         );
     }
 

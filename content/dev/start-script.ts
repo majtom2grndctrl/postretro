@@ -4,7 +4,7 @@ import { referencePistolEntity } from "./scripts/reference-pistol";
 import { animDemoGruntEntity } from "./scripts/anim-demo-grunt";
 import { targetDummyEntity } from "./scripts/target-dummy";
 import { referenceEntities } from "../../sdk/behaviors/reference/entities";
-import { hud, hudTheme, reticle } from "./scripts/hud";
+import { hud, hudTheme, reloadMeterTree, reticle } from "./scripts/hud";
 import { pauseMenu } from "./scripts/pause-menu";
 import { frontendMenu, frontendReactions, mapCatalog } from "./scripts/frontend-menu";
 
@@ -20,7 +20,7 @@ export default defineMod({
       pitch: -0.08,
     },
   },
-  uiTrees: [hud, reticle, pauseMenu, frontendMenu],
+  uiTrees: [hud, reticle, reloadMeterTree, pauseMenu, frontendMenu],
   theme: hudTheme,
   reactions: frontendReactions,
   entities: [

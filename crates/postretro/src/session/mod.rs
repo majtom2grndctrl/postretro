@@ -586,7 +586,7 @@ impl ScriptingCore {
 // commands, dumps world state, and exits — without a GPU or display server. A net
 // endpoint is deliberately omitted, not designed out: Epic 15 Phase 4's dedicated
 // server attaches one to this same path later. See:
-// context/plans/in-progress/agentic-observability.
+// context/plans/done/agentic-observability.
 
 /// Shared hint naming the observe launcher, used by both headless preconditions.
 #[cfg(feature = "observability")]

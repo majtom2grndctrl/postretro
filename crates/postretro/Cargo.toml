@@ -92,7 +92,7 @@ dev-tools = [
 ]
 # Headless batch mode for AI-agent and content-CI use. Gates modules only —
 # no optional deps, no egui, independent of dev-tools.
-# See: context/plans/in-progress/agentic-observability
+# See: context/plans/done/agentic-observability
 observability = []
 
 [build-dependencies]

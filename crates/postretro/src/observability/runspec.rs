@@ -1,5 +1,5 @@
 // Runspec input vocabulary: the tool-facing JSON a headless run is driven from.
-// See: context/plans/in-progress/agentic-observability
+// See: context/plans/done/agentic-observability
 
 use glam::Vec2;
 use serde::{Deserialize, Serialize};

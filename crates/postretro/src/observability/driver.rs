@@ -7,7 +7,7 @@
 // diagnostic goes to stderr. On any failure the process exits non-zero and no
 // partial JSON reaches stdout (the document is fully built in memory, then
 // printed once).
-// See: context/lib/boot_sequence.md §3, context/plans/in-progress/agentic-observability
+// See: context/lib/boot_sequence.md §3, context/plans/done/agentic-observability
 
 use std::cell::RefCell;
 use std::collections::HashSet;

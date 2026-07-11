@@ -38,7 +38,7 @@ mod nav;
 mod netcode;
 // Headless batch-mode observability vocabulary: runspec, entity dump, and
 // deterministic JSON output. Feature-gated; consumed by the headless driver.
-// See: context/plans/in-progress/agentic-observability
+// See: context/plans/done/agentic-observability
 #[cfg(feature = "observability")]
 mod observability;
 mod options;

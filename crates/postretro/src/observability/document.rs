@@ -1,6 +1,6 @@
 // Output document vocabulary: the entity-state dump a headless run emits, plus
 // the filter that selects entities out of a live registry.
-// See: context/plans/in-progress/agentic-observability
+// See: context/plans/done/agentic-observability
 
 use std::collections::HashSet;
 

@@ -317,7 +317,7 @@
 
 @SolidClass
     color(220 100 40)
-    = trigger_volume : "Invisible mover-command trigger brush"
+    = trigger_volume : "Invisible trigger brush for mover commands and named reactions"
 [
     name(string) : "Trigger name" : ""
     activation(choices) : "Activation" : "touch" =

@@ -41,7 +41,7 @@ Capabilities attach via component columns in the registry. Current engine compon
 | MeshComponent | Skinned model handle (`model: String`) plus optional declared animation states and per-entity animation state; spawned via `prop_mesh` or a descriptor carrying a mesh component |
 | Health | Hit points (`max`, `current`) plus optional hitscan hitbox (one world-aligned AABB, fixed per archetype); declared via the `components.health` descriptor block. Health-bearing entities are damage targets. They are hitscan-targetable when they have an authored AABB hitbox or a zone-bearing skinned model (§7). |
 | KinematicMover | Engine-owned deterministic mover driver seeded from PRL `KinematicGeometry`; readable through `world.query({ component: "kinematic_mover" })`, whose SDK handle builds declarative mover-command reactions |
-| TriggerVolume | Engine-owned, serializable touch/use activation state for an invisible level-authored AABB; fires closed-vocabulary mover commands on the host |
+| TriggerVolume | Engine-owned, serializable host-authoritative touch/use state for an invisible level-authored AABB. Named `on_fire` / `on_exit` reactions fan out effects; an exit fires only after that player's activation fired. Tracks occupancy; reactions can arm or disarm it. |
 
 Type-specific data lives in the component. An entity is "a player" by virtue of carrying `PlayerMovement`, not by belonging to a typed collection. Other entity types follow the same pattern: enemies use an **Agent** component for navmesh path-following and collide-and-slide movement, plus an **AI brain** component for engine-owned combat behavior. Doors, projectiles, and pickups should attach their behavior through components instead of typed collections.
 

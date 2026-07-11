@@ -48,9 +48,11 @@ export type ProgressReactionDescriptor = {
 }
 
 --- Primitive reaction body: invokes the named Rust primitive. With `tag`, it
---- targets entities carrying that tag and mutates them. Without `tag`, it is a
---- system reaction (no entities) that enqueues a typed engine command —
---- `playSound`, `rumble`, `flashScreen`, the UI-stack reactions. `args`
+--- targets entities carrying that tag and mutates them. Tag-targeted primitives
+--- include emitter/fog/mover commands, `applyDamage`, `setAnimationState`,
+--- `armTrigger`, and `disarmTrigger`; arm/disarm use empty args. Without `tag`,
+--- it is a system reaction (no entities) that enqueues a typed engine command
+--- — `playSound`, `rumble`, `flashScreen`, the UI-stack reactions. `args`
 --- carries the primitive's typed payload (e.g. `{ rate = 0 }` for
 --- `setEmitterRate`).
 export type PrimitiveReactionDescriptor = {
@@ -135,9 +137,21 @@ export type MoverGoToPathNodeStep = {
   args: { node: string },
 }
 
+export type ArmTriggerStep = {
+  id: number,
+  primitive: "armTrigger",
+  args: {},
+}
+
+export type DisarmTriggerStep = {
+  id: number,
+  primitive: "disarmTrigger",
+  args: {},
+}
+
 -- `SetFogAnimationStep` is declared in `postretro.d.luau` (the SDK lib
 -- block generated from the primitive registry) and is not redeclared here.
-export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogScatterStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep
+export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogScatterStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | ArmTriggerStep | DisarmTriggerStep
 
 --- Descriptor produced by `defineReaction`. The `name` field is merged
 --- into the descriptor at the top level so the Rust deserializer can read

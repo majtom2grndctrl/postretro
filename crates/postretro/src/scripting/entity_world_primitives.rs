@@ -65,6 +65,9 @@ enum QueryFilter {
     KinematicMover {
         tag: Option<String>,
     },
+    TriggerVolume {
+        tag: Option<String>,
+    },
     /// Always returns an empty array. Particles and sprite-visuals are
     /// engine-managed; scripts have no business iterating individual ones.
     AlwaysEmpty,
@@ -79,18 +82,19 @@ fn parse_query_filter(component: &str, tag: Option<String>) -> Result<QueryFilte
         "emitter" => Ok(QueryFilter::Emitter { tag }),
         "fog_volume" => Ok(QueryFilter::FogVolume { tag }),
         "kinematic_mover" => Ok(QueryFilter::KinematicMover { tag }),
+        "trigger_volume" => Ok(QueryFilter::TriggerVolume { tag }),
         "particle" | "sprite_visual" => Ok(QueryFilter::AlwaysEmpty),
         other => Err(ScriptError::InvalidArgument {
             reason: format!(
                 "worldQuery: unknown component `{other}`; supported: \
-                 \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"kinematic_mover\" | \"particle\" | \"sprite_visual\""
+                 \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"kinematic_mover\" | \"trigger_volume\" | \"particle\" | \"sprite_visual\""
             ),
         }),
     }
 }
 
 const WORLD_QUERY_DOC: &str = "Return an array of raw entity snapshots matching the filter. Available in definition and data contexts. \
-     Filter shape: { component: \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"kinematic_mover\" | \"particle\" | \"sprite_visual\", tag?: string }. \
+     Filter shape: { component: \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"kinematic_mover\" | \"trigger_volume\" | \"particle\" | \"sprite_visual\", tag?: string }. \
      `\"particle\"` and `\"sprite_visual\"` always return `[]` (engine-managed; scripts never iterate individual particles). \
      Unknown component values raise InvalidArgument. \
      The `world.ts` vocabulary module wraps these snapshots as `world.query` handles.";
@@ -260,6 +264,40 @@ fn collect_kinematic_mover_handles_json(ctx: &ScriptCtx, tag: Option<&str>) -> s
     Value::Array(arr)
 }
 
+/// Collect trigger-volume handles as JSON. Triggers are queryable for their
+/// placement identity only; arming and activation phase remain engine-owned.
+fn collect_trigger_volume_handles_json(ctx: &ScriptCtx, tag: Option<&str>) -> serde_json::Value {
+    use serde_json::{Map, Value};
+
+    let reg = ctx.registry.borrow();
+    let mut arr = Vec::new();
+    for (id, value) in reg.query_by_component_and_tag(ComponentKind::TriggerVolume, tag) {
+        let ComponentValue::TriggerVolume(_) = value else {
+            continue;
+        };
+        let tags = reg.get_tags(id).unwrap_or(&[]).to_vec();
+        let position = match reg.get_component::<Transform>(id) {
+            Ok(t) => {
+                let mut p = Map::with_capacity(3);
+                p.insert("x".to_string(), Value::from(t.position.x as f64));
+                p.insert("y".to_string(), Value::from(t.position.y as f64));
+                p.insert("z".to_string(), Value::from(t.position.z as f64));
+                Value::Object(p)
+            }
+            Err(_) => Value::Null,
+        };
+        let mut obj = Map::with_capacity(3);
+        obj.insert("id".to_string(), Value::from(id.to_raw()));
+        obj.insert("position".to_string(), position);
+        obj.insert(
+            "tags".to_string(),
+            Value::Array(tags.into_iter().map(Value::String).collect()),
+        );
+        arr.push(Value::Object(obj));
+    }
+    Value::Array(arr)
+}
+
 /// Register the world-domain primitives: `worldQuery`, `worldGetGravity`, and
 /// `worldSetGravity`. All three install in both definition and data contexts.
 pub(crate) fn register_world_primitives(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
@@ -291,6 +329,9 @@ fn register_world_query(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
                     )),
                     QueryFilter::KinematicMover { tag } => Ok(JsonValue(
                         collect_kinematic_mover_handles_json(&ctx, tag.as_deref()),
+                    )),
+                    QueryFilter::TriggerVolume { tag } => Ok(JsonValue(
+                        collect_trigger_volume_handles_json(&ctx, tag.as_deref()),
                     )),
                     QueryFilter::AlwaysEmpty => Ok(JsonValue(serde_json::Value::Array(Vec::new()))),
                 }
@@ -336,7 +377,10 @@ mod tests {
     use super::*;
     use glam::Vec3;
     use postretro_entities::components::light::{FalloffKind, LightComponent, LightKind};
-    use postretro_entities::{KinematicMoverComponent, KinematicMoverMode};
+    use postretro_entities::{
+        KinematicMoverComponent, KinematicMoverMode, MoverCommand, TriggerActivation,
+        TriggerFireMode, TriggerVolumeComponent,
+    };
     use postretro_scripting_core::primitives_registry::PrimitiveRegistry;
 
     fn registry_with_gravity() -> (PrimitiveRegistry, ScriptCtx) {
@@ -392,6 +436,32 @@ mod tests {
                 1.0,
                 0.0,
                 KinematicMoverMode::PingPong,
+                false,
+            ),
+        )
+        .unwrap();
+        if let Some(tag) = tag {
+            reg.set_tags(id, vec![tag.to_string()]).unwrap();
+        }
+        id
+    }
+
+    fn add_trigger(ctx: &ScriptCtx, tag: Option<&str>) -> EntityId {
+        let mut reg = ctx.registry.borrow_mut();
+        let id = reg.spawn(Transform {
+            position: Vec3::new(7.0, 8.0, 9.0),
+            ..Transform::default()
+        });
+        reg.set_component(
+            id,
+            TriggerVolumeComponent::new(
+                TriggerActivation::Touch,
+                "lift".to_string(),
+                "open_lift".to_string(),
+                "close_lift".to_string(),
+                MoverCommand::Start,
+                TriggerFireMode::Multiple,
+                0.0,
                 false,
             ),
         )
@@ -561,6 +631,109 @@ mod tests {
         assert_eq!(count, 1);
         assert_eq!(returned_id as u32, raw);
         assert_eq!(tag, "bridge-lift");
+    }
+
+    #[test]
+    fn world_query_trigger_volume_returns_identity_snapshot_without_runtime_state() {
+        let (ctx, _) = test_ctx_with_light(true, Some("not_a_trigger"));
+        let id = add_trigger(&ctx, Some("tripwire"));
+        let r = registry_for(ctx);
+        let raw = id.to_raw();
+
+        let rt = rquickjs::Runtime::new().unwrap();
+        let jsctx = rquickjs::Context::full(&rt).unwrap();
+        jsctx.with(|qjs| {
+            install_all(&r, &qjs);
+            let json: String = qjs
+                .eval(
+                    r#"
+                    const hs = worldQuery({ component: "trigger_volume", tag: "tripwire" });
+                    JSON.stringify(hs)
+                    "#,
+                )
+                .unwrap();
+            assert_eq!(
+                json,
+                format!(r#"[{{"id":{raw},"position":{{"x":7,"y":8,"z":9}},"tags":["tripwire"]}}]"#)
+            );
+        });
+
+        let lua = mlua::Lua::new();
+        install_all_lua(&r, &lua);
+        let (count, returned_id, tag, x, y, z): (i64, i64, String, f64, f64, f64) = lua
+            .load(
+                r#"
+                local hs = worldQuery({ component = "trigger_volume", tag = "tripwire" })
+                local h = hs[1]
+                return #hs, h.id, h.tags[1], h.position.x, h.position.y, h.position.z
+                "#,
+            )
+            .eval()
+            .unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(returned_id as u32, raw);
+        assert_eq!(tag, "tripwire");
+        assert_eq!((x, y, z), (7.0, 8.0, 9.0));
+    }
+
+    #[test]
+    fn world_query_trigger_volume_sdk_handles_build_arm_and_disarm_steps_in_both_runtimes() {
+        let (ctx, _) = test_ctx_with_light(true, Some("not_a_trigger"));
+        let id = add_trigger(&ctx, Some("tripwire"));
+        let r = registry_for(ctx);
+        let raw = id.to_raw();
+
+        let rt = rquickjs::Runtime::new().unwrap();
+        let jsctx = rquickjs::Context::full(&rt).unwrap();
+        jsctx.with(|qjs| {
+            install_all(&r, &qjs);
+            postretro_scripting_core::quickjs::evaluate_prelude(&qjs).unwrap();
+            let json: String = qjs
+                .eval(
+                    r#"
+                    const h = world.query({ component: "trigger_volume", tag: "tripwire" })[0];
+                    JSON.stringify({
+                      id: h.id,
+                      tags: h.tags,
+                      arm: h.arm(),
+                      disarm: h.disarm(),
+                      exposesArmed: Object.hasOwn(h, "armed"),
+                    })
+                    "#,
+                )
+                .unwrap();
+            assert_eq!(
+                json,
+                format!(
+                    r#"{{"id":{raw},"tags":["tripwire"],"arm":[{{"id":{raw},"primitive":"armTrigger","args":{{}}}}],"disarm":[{{"id":{raw},"primitive":"disarmTrigger","args":{{}}}}],"exposesArmed":false}}"#
+                )
+            );
+        });
+
+        let lua = mlua::Lua::new();
+        install_all_lua(&r, &lua);
+        postretro_scripting_core::luau_prelude::evaluate_prelude(&lua, None).unwrap();
+        let (returned_id, arm_primitive, disarm_primitive, exposes_armed, bridge_hidden): (
+            i64,
+            String,
+            String,
+            bool,
+            bool,
+        ) = lua
+            .load(
+                r#"
+                local h = world:query({ component = "trigger_volume", tag = "tripwire" })[1]
+                return h.id, h:arm()[1].primitive, h:disarm()[1].primitive,
+                    h.armed ~= nil, wrapTriggerVolumeEntity == nil
+                "#,
+            )
+            .eval()
+            .unwrap();
+        assert_eq!(returned_id as u32, raw);
+        assert_eq!(arm_primitive, "armTrigger");
+        assert_eq!(disarm_primitive, "disarmTrigger");
+        assert!(!exposes_armed);
+        assert!(bridge_hidden);
     }
 
     #[test]

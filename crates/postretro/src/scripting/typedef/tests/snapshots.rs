@@ -51,6 +51,7 @@ fn sdk_lib_block_is_present_in_full_outputs() {
         "AnimatableVec3",
         "LightEntityHandle",
         "FogVolumeHandle",
+        "TriggerVolumeHandle",
     ] {
         assert!(ts.contains(name), "ts missing sdk-lib symbol {name}");
         assert!(luau.contains(name), "luau missing sdk-lib symbol {name}");

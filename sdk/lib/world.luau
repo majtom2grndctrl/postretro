@@ -1,13 +1,14 @@
 --!strict
 -- World-query vocabulary: typed wrapper around `worldQuery`. Light,
--- fog-volume, and mover handle construction delegate via temporary wrapper
+-- fog-volume, mover, and trigger handle construction delegate via temporary wrapper
 -- globals installed by the prelude before this module evaluates.
 
 -- `EntityId`, `LightEntity` (the generated snapshot shape),
 -- `WorldQueryFilter`, and the `worldQuery` primitive are provided
 -- ambiently by the generated `sdk/types/postretro.d.luau` definitions
 -- file.
--- `wrapLightEntity`, `wrapFogVolumeEntity`, and `wrapMoverEntity` are
+-- `wrapLightEntity`, `wrapFogVolumeEntity`, `wrapMoverEntity`, and
+-- `wrapTriggerVolumeEntity` are
 -- installed as temporary globals by the prelude evaluator before this module
 -- evaluates. They are nil'd out after this module returns so author scripts
 -- never see them. See `luau.rs` `evaluate_prelude`.
@@ -26,12 +27,13 @@ export type EntityHandle = {
 --- `:sweep`); `{ component = "fog_volume", ... }` yields fog volume handles
 --- with capability methods (`:pulse`, `:fade`, `:flicker`, `:pulseSaturation`,
 --- `:fadeSaturation`); `{ component = "kinematic_mover", ... }` yields mover
---- handles with `:start`, `:stop`, `:reverse`, and `:goToPathNode`; `{ component = "emitter", ... }` yields
+--- handles with `:start`, `:stop`, `:reverse`, and `:goToPathNode`; `{ component = "trigger_volume", ... }`
+--- yields trigger handles with `:arm` and `:disarm`; `{ component = "emitter", ... }` yields
 --- handles carrying the full `BillboardEmitterComponent` snapshot under
 --- `component`; any other component filter returns `EntityHandle` values
 --- (id, position, tags).
 ---
---- Supported component strings: `"light"`, `"fog_volume"`, `"kinematic_mover"`, `"transform"`,
+--- Supported component strings: `"light"`, `"fog_volume"`, `"kinematic_mover"`, `"trigger_volume"`, `"transform"`,
 --- `"emitter"`, `"particle"`, `"sprite_visual"`. `"particle"` and
 --- `"sprite_visual"` always return `{}` (engine-managed). Unknown strings
 --- error at runtime.
@@ -47,6 +49,14 @@ export type World = {
 -- ---------------------------------------------------------------------
 -- Exported `world` singleton
 -- ---------------------------------------------------------------------
+
+-- Capture temporary wrapper bridges before the prelude evaluator nils their
+-- globals. `world:query` must retain these upvalues after sandboxing, while
+-- author scripts must not see the bridges as bare globals.
+local wrapLightEntity = wrapLightEntity
+local wrapFogVolumeEntity = wrapFogVolumeEntity
+local wrapMoverEntity = wrapMoverEntity
+local wrapTriggerVolumeEntity = wrapTriggerVolumeEntity
 
 local world: World = {
   query = function(self: World, filter: WorldQueryFilter): {EntityHandle}
@@ -73,6 +83,13 @@ local world: World = {
       local out: {any} = {}
       for i, snapshot in ipairs(raw) do
         out[i] = wrapMoverEntity(snapshot :: any)
+      end
+      return out :: any
+    end
+    if filter.component == "trigger_volume" then
+      local out: {any} = {}
+      for i, snapshot in ipairs(raw) do
+        out[i] = wrapTriggerVolumeEntity(snapshot :: any)
       end
       return out :: any
     end

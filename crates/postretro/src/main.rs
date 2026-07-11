@@ -54,6 +54,7 @@ mod scripting;
 mod session;
 mod sim;
 mod startup;
+mod trigger_bindings;
 mod trigger_system;
 mod view_feel;
 
@@ -118,7 +119,7 @@ use postretro_entities::SystemReactionCommand;
 use postretro_foundation::ModThemeTokens;
 use postretro_scripting_core::data_descriptors::RegisteredUiTree;
 use postretro_scripting_core::reaction_dispatch::{
-    fire_named_event, fire_named_event_with_sequences,
+    fire_named_event, fire_named_event_with_sequences, fire_prepartitioned_reactions_with_sequences,
 };
 use postretro_scripting_core::runtime::{
     Frontend, MenuCamera, ReloadSummary, StagedManifestCommitOutcome,
@@ -522,6 +523,9 @@ pub(crate) struct App {
     kinematic_mover_tick_states: kinematic_mover::MoverTickStateTable,
     /// Render-stage CPU collector for loaded kinematic mover brush instances.
     kinematic_mover_render: runtime_movers::KinematicMoverRenderCollector,
+    /// Per-level trigger event bindings resolved from the final composed
+    /// reaction set during install. The fixed-tick seam borrows this table.
+    trigger_bindings: trigger_bindings::TriggerBindingTable,
 
     /// Active wieldable instance equipped by the player. The companion
     /// descriptor name lets mod-init hot reload refresh authored weapon stats
@@ -1760,6 +1764,7 @@ impl ApplicationHandler for App {
                 let mut pending_movement_events: Vec<&'static str> = Vec::new();
                 let mut pending_ai_events: Vec<&'static str> = Vec::new();
                 let mut pending_weapon_events: Vec<&'static str> = Vec::new();
+                let mut pending_trigger_residuals = Vec::new();
                 let mut sent_client_fire_commands: Vec<ClientFrameFireCommand> = Vec::new();
                 // Death-event names accumulate here and drain through the
                 // sequence-aware dispatcher (a separate sibling loop below), so a
@@ -1939,6 +1944,7 @@ impl ApplicationHandler for App {
                         let progress_tracker = &mut session.progress_tracker;
                         let trigger_system = &mut session.trigger_system;
                         let trigger_volume_bridge = &session.trigger_volume_bridge;
+                        let trigger_bindings = &self.trigger_bindings;
                         let camera = &mut self.camera;
                         #[cfg(feature = "dev-tools")]
                         let debug_chase_agent = self.debug_chase_agent;
@@ -1982,6 +1988,8 @@ impl ApplicationHandler for App {
                             Some(sim::TriggerTickContext {
                                 system: trigger_system,
                                 bridge: trigger_volume_bridge,
+                                bindings: trigger_bindings,
+                                slot_table: script_ctx.slot_table.clone(),
                                 use_edges: &trigger_use_edges,
                             }),
                         );
@@ -1993,6 +2001,7 @@ impl ApplicationHandler for App {
                         pending_ai_events.extend(tick_events.ai);
                         pending_weapon_events.extend(tick_events.weapon);
                         pending_death_events.extend(tick_events.death);
+                        pending_trigger_residuals.extend(tick_events.trigger_residuals);
 
                         self.frame_timing
                             .push_state(InterpolableState::new(self.camera.position));
@@ -2043,6 +2052,21 @@ impl ApplicationHandler for App {
                         let _ = fire_named_event_with_sequences(
                             event_name,
                             &script_ctx.data_registry.borrow(),
+                            &session.scripting.sequence_registry,
+                            &session.scripting.reaction_registry,
+                            &session.scripting.system_registry,
+                            &script_ctx,
+                        );
+                    }
+                    for handle in &pending_trigger_residuals {
+                        let Some(residual) = self.trigger_bindings.residual(*handle) else {
+                            log::warn!(
+                                "[Trigger] residual handle {handle:?} was not bound at install"
+                            );
+                            continue;
+                        };
+                        fire_prepartitioned_reactions_with_sequences(
+                            residual.descriptors(),
                             &session.scripting.sequence_registry,
                             &session.scripting.reaction_registry,
                             &session.scripting.system_registry,

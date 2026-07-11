@@ -168,6 +168,29 @@ pub fn fire_named_event_with_sequences(
     chained
 }
 
+/// Execute descriptors resolved and partitioned earlier, without a reaction-name
+/// lookup. Trigger residuals use this after their consequential commands have
+/// already executed in the fixed simulation tick.
+pub fn fire_prepartitioned_reactions_with_sequences(
+    descriptors: &[ReactionDescriptor],
+    sequence_registry: &SequencedPrimitiveRegistry,
+    reaction_registry: &ReactionPrimitiveRegistry,
+    system_registry: &SystemReactionRegistry,
+    script_ctx: &ScriptCtx,
+) {
+    for descriptor in descriptors {
+        match descriptor {
+            ReactionDescriptor::Progress(_) => {}
+            ReactionDescriptor::Primitive(primitive) => {
+                dispatch_primitive(primitive, reaction_registry, system_registry, script_ctx);
+            }
+            ReactionDescriptor::Sequence(steps) => {
+                dispatch_sequence(steps, sequence_registry, script_ctx);
+            }
+        }
+    }
+}
+
 /// Routes a `Primitive` descriptor to one of two execution arms (M13 HUD
 /// dynamics): a `Some(tag)` resolves entities and runs the entity-targeted
 /// `ReactionPrimitiveRegistry`; a `None` tag is a system reaction, dispatched

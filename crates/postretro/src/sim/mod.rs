@@ -17,6 +17,7 @@ use crate::netcode::{AuthorizedShot, OpenAuthorizedShot, ShotId};
 use crate::scripting_systems;
 use crate::scripting_systems::hit_zones::HitZoneStore;
 use crate::scripting_systems::trigger_volume_bridge::TriggerVolumeBridge;
+use crate::trigger_bindings::{TriggerBindingEdge, TriggerBindingTable, TriggerResidualHandle};
 use crate::trigger_system::{AuthoritativePlayer, PlayerId, TriggerSystem};
 use crate::weapon::{self, FireButtonState, WeaponFireAuthorization, WeaponFireCommand};
 use postretro_entities::components::agent::AgentComponent;
@@ -26,7 +27,7 @@ use postretro_entities::components::health::{
 };
 use postretro_entities::components::mesh::MeshComponent;
 use postretro_entities::components::weapon::{UNKNOWN_WEAPON_CREDIT_SOURCE, WeaponComponent};
-use postretro_entities::{ComponentKind, EntityId, EntityRegistry};
+use postretro_entities::{ComponentKind, EntityId, EntityRegistry, SlotTable};
 use postretro_scripting_core::reaction_dispatch::ProgressTracker;
 
 #[derive(Debug, Clone)]
@@ -63,6 +64,8 @@ pub(crate) struct RemotePawnCommand {
 pub(crate) struct TriggerTickContext<'a> {
     pub(crate) system: &'a mut TriggerSystem,
     pub(crate) bridge: &'a TriggerVolumeBridge,
+    pub(crate) bindings: &'a TriggerBindingTable,
+    pub(crate) slot_table: Rc<RefCell<SlotTable>>,
     pub(crate) use_edges: &'a HashMap<PlayerId, bool>,
 }
 
@@ -80,6 +83,8 @@ pub(crate) struct TickEvents {
     pub(crate) death: Vec<String>,
     pub(crate) authorized_shots: Vec<OpenAuthorizedShot>,
     pub(crate) reload_deliveries: Vec<ReloadDelivery>,
+    /// Bound trigger residuals drained app-side after every fixed tick this frame.
+    pub(crate) trigger_residuals: Vec<TriggerResidualHandle>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -132,6 +137,7 @@ pub(crate) fn simulate_tick(
         &command.movement,
         tick_dt,
     ));
+    let mut trigger_residuals = Vec::new();
     if let Some(trigger_context) = trigger_context {
         let mut players: Vec<AuthoritativePlayer> = remote_pawn_commands
             .iter()
@@ -149,13 +155,34 @@ pub(crate) fn simulate_tick(
             players.push(AuthoritativePlayer { id, pawn });
         }
         let mut registry = registry.borrow_mut();
-        trigger_context.system.run_authoritative_tick(
+        let report = trigger_context.system.run_authoritative_tick(
             &mut registry,
             trigger_context.bridge,
             &players,
             trigger_context.use_edges,
             tick_dt,
         );
+        let mut slot_table = trigger_context.slot_table.borrow_mut();
+        for fired in &report.enters {
+            if let Some(handle) = trigger_context.bindings.execute(
+                fired.trigger,
+                TriggerBindingEdge::Enter,
+                &mut registry,
+                &mut slot_table,
+            ) {
+                trigger_residuals.push(handle);
+            }
+        }
+        for fired in &report.exits {
+            if let Some(handle) = trigger_context.bindings.execute(
+                fired.trigger,
+                TriggerBindingEdge::Exit,
+                &mut registry,
+                &mut slot_table,
+            ) {
+                trigger_residuals.push(handle);
+            }
+        }
     }
     let ai = {
         let mut registry = registry.borrow_mut();
@@ -211,6 +238,7 @@ pub(crate) fn simulate_tick(
         death,
         authorized_shots,
         reload_deliveries,
+        trigger_residuals,
     }
 }
 
@@ -584,13 +612,32 @@ mod tests {
     use super::*;
     use crate::collision::CollisionWorld;
     use crate::kinematic_mover::MoverTickStateTable;
+    use crate::scripting::reactions::registry::ReactionPrimitiveRegistry;
+    use crate::scripting::reactions::system_commands::{
+        SystemReactionRegistry, register_system_reaction_primitives,
+    };
     use crate::scripting_systems::hit_zones::HitZoneStore;
+    use crate::trigger_bindings::TriggerBindingTable;
     use crate::weapon::FireButtonState;
     use glam::Vec2;
-    use postretro_entities::Transform;
-    use postretro_foundation::{FireMode, ResolutionMode, WeaponDescriptor};
+    use postretro_entities::components::mesh::{
+        AnimationState, DEFAULT_CROSSFADE_MS, InterruptPolicy, MeshAnimation, MeshComponent,
+        resolve_pending_animation_stamps,
+    };
+    use postretro_entities::{
+        DataRegistry, KinematicMoverComponent, KinematicMoverMode, MoverCommand, NamedReaction,
+        NumericRange, PrimitiveDescriptor, ReactionDescriptor, SlotOwnership, SlotRecord,
+        SlotSchema, SlotTable, SlotType, SlotValue, Transform, TriggerActivation, TriggerFireMode,
+        TriggerVolumeComponent,
+    };
+    use postretro_foundation::{
+        AirParams, CapsuleParams, FallParams, FireMode, GroundParams, PlayerMovementComponent,
+        PlayerMovementDescriptor, ResolutionMode, SpeedParams, WeaponDescriptor,
+    };
     use postretro_net::wire::NetworkId;
-    use std::collections::HashSet;
+    use postretro_scripting_core::reaction_dispatch::fire_prepartitioned_reactions_with_sequences;
+    use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
+    use std::collections::{HashMap, HashSet};
 
     fn weapon_component(credit_source: &str) -> WeaponComponent {
         WeaponComponent::from_descriptor(&WeaponDescriptor {
@@ -625,6 +672,99 @@ mod tests {
             reload,
             use_pressed: false,
         }
+    }
+
+    fn trigger_movement() -> PlayerMovementComponent {
+        PlayerMovementComponent::from_descriptor(&PlayerMovementDescriptor {
+            capsule: CapsuleParams {
+                radius: 0.4,
+                half_height: 0.8,
+                eye_height: 0.5,
+            },
+            ground: GroundParams {
+                speed: SpeedParams {
+                    walk: 7.0,
+                    run: 11.0,
+                    crouch: 3.0,
+                },
+                accel: 10.0,
+                step_height: 0.3,
+                max_slope: 45.0,
+            },
+            air: AirParams {
+                forward_steer: 0.0,
+                accel: 0.7,
+                max_control_speed: 0.5,
+                bunny_hop: false,
+                jumps: 0,
+                jump_velocity: 5.5,
+                jump_ceiling: 0.0,
+            },
+            fall: FallParams {
+                terminal_velocity: 40.0,
+            },
+            stuck_stop_enabled: PlayerMovementDescriptor::DEFAULT_STUCK_STOP_ENABLED,
+            stuck_stop_threshold: PlayerMovementDescriptor::DEFAULT_STUCK_STOP_THRESHOLD,
+            dash: None,
+            forgiveness: None,
+            crouch: None,
+            view_feel: None,
+        })
+    }
+
+    fn animated_mesh() -> MeshComponent {
+        let mut states = HashMap::new();
+        for (name, clip_index) in [("idle", 0), ("attack", 1)] {
+            states.insert(
+                name.to_string(),
+                AnimationState {
+                    clip: format!("{name}_clip"),
+                    looping: name == "idle",
+                    crossfade_ms: DEFAULT_CROSSFADE_MS,
+                    interrupt: InterruptPolicy::Smooth,
+                    clip_index: Some(clip_index),
+                },
+            );
+        }
+        MeshComponent::animated(
+            "test_model".to_string(),
+            MeshAnimation::new(states, "idle".into()),
+        )
+    }
+
+    fn trigger_component(on_fire: &str, armed: bool) -> TriggerVolumeComponent {
+        TriggerVolumeComponent::new(
+            TriggerActivation::Touch,
+            String::new(),
+            on_fire.to_string(),
+            String::new(),
+            MoverCommand::Start,
+            TriggerFireMode::Multiple,
+            0.0,
+            armed,
+        )
+    }
+
+    fn trigger_slots() -> SlotTable {
+        let mut slots = SlotTable::new();
+        slots
+            .insert_namespace(
+                "trigger",
+                vec![(
+                    "flag".into(),
+                    SlotRecord::new(SlotSchema {
+                        slot_type: SlotType::Number,
+                        default: Some(SlotValue::Number(0.0)),
+                        range: Some(NumericRange { min: 0.0, max: 1.0 }),
+                        persist: false,
+                        readonly: false,
+                        ownership: SlotOwnership::Mod,
+                        network: Default::default(),
+                    }),
+                )],
+            )
+            .unwrap();
+        slots
     }
 
     fn remote_command(
@@ -677,6 +817,254 @@ mod tests {
             1.0 / 60.0,
             None,
         )
+    }
+
+    #[test]
+    fn trigger_consequences_run_in_tick_once_and_residual_reaches_app_drain() {
+        let script_ctx = postretro_entities::ScriptCtx::new();
+        *script_ctx.slot_table.borrow_mut() = trigger_slots();
+        let registry = script_ctx.registry.clone();
+        let (source_trigger, mover, animated_target, arm_target) = {
+            let mut registry = registry.borrow_mut();
+            let player = registry.spawn(Transform::default());
+            registry.set_component(player, trigger_movement()).unwrap();
+
+            let source_trigger = registry.spawn(Transform::default());
+            registry
+                .set_component(source_trigger, trigger_component("triggered", true))
+                .unwrap();
+
+            let mover = registry.spawn(Transform::default());
+            registry.set_tags(mover, vec!["door".into()]).unwrap();
+            registry
+                .set_component(
+                    mover,
+                    KinematicMoverComponent::new(
+                        1,
+                        vec![Vec3::ZERO, Vec3::new(2.0, 0.0, 0.0)],
+                        vec!["start".into(), "end".into()],
+                        1.0,
+                        0.0,
+                        KinematicMoverMode::Once,
+                        false,
+                    ),
+                )
+                .unwrap();
+
+            let animated_target = registry.spawn(Transform::default());
+            registry
+                .set_tags(animated_target, vec!["enemy".into()])
+                .unwrap();
+            registry
+                .set_component(animated_target, animated_mesh())
+                .unwrap();
+            registry
+                .set_component(
+                    animated_target,
+                    HealthComponent {
+                        max: 100.0,
+                        current: 100.0,
+                        hitbox: None,
+                        death_handled: false,
+                        zone_multipliers: Default::default(),
+                        contributor_ledger: Default::default(),
+                    },
+                )
+                .unwrap();
+            resolve_pending_animation_stamps(&mut registry, 0.0);
+
+            let arm_target = registry.spawn(Transform::default());
+            registry.set_tags(arm_target, vec!["rearm".into()]).unwrap();
+            registry
+                .set_component(arm_target, trigger_component("", false))
+                .unwrap();
+
+            (source_trigger, mover, animated_target, arm_target)
+        };
+
+        let mut data = DataRegistry::new();
+        let primitive =
+            |primitive: &str, tag: Option<&str>, args: serde_json::Value| NamedReaction {
+                name: "triggered".into(),
+                descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                    primitive: primitive.into(),
+                    tag: tag.map(str::to_string),
+                    on_complete: None,
+                    args,
+                }),
+            };
+        data.populate_level(
+            vec![
+                primitive("moverStart", Some("door"), serde_json::json!({})),
+                primitive(
+                    "applyDamage",
+                    Some("enemy"),
+                    serde_json::json!({ "amount": 10 }),
+                ),
+                primitive(
+                    "setAnimationState",
+                    Some("enemy"),
+                    serde_json::json!({ "state": "attack" }),
+                ),
+                primitive(
+                    "setState",
+                    None,
+                    serde_json::json!({ "slot": "trigger.flag", "value": 1 }),
+                ),
+                primitive("armTrigger", Some("rearm"), serde_json::json!({})),
+                primitive(
+                    "flashScreen",
+                    None,
+                    serde_json::json!({ "color": [1.0, 0.0, 0.0, 1.0], "durationMs": 30.0 }),
+                ),
+            ],
+            Vec::new(),
+            &[],
+        );
+        let bindings =
+            TriggerBindingTable::build(&registry.borrow(), &data, &script_ctx.slot_table.borrow());
+        let mut bridge = TriggerVolumeBridge::new();
+        bridge.insert_for_test(source_trigger, Vec3::splat(-4.0), Vec3::splat(4.0));
+        let mut trigger_system = TriggerSystem::default();
+        let mut progress = ProgressTracker::new();
+        let mut ai_warned = HashSet::new();
+        let mut mover_states = MoverTickStateTable::default();
+        let world = CollisionWorld::new();
+        let hit_zones = HitZoneStore::new();
+        let use_edges = HashMap::new();
+
+        let events = simulate_tick(
+            registry.clone(),
+            &world,
+            &hit_zones,
+            None,
+            -9.81,
+            None,
+            0.0,
+            &mut progress,
+            &mut ai_warned,
+            &[],
+            &mut mover_states,
+            &[],
+            &sim_command(false, false),
+            |_| PostMovementCommand {
+                aim_origin: Vec3::ZERO,
+                aim_direction: Vec3::NEG_Z,
+            },
+            1.0 / 60.0,
+            Some(TriggerTickContext {
+                system: &mut trigger_system,
+                bridge: &bridge,
+                bindings: &bindings,
+                slot_table: script_ctx.slot_table.clone(),
+                use_edges: &use_edges,
+            }),
+        );
+
+        assert_eq!(events.trigger_residuals.len(), 1);
+        let registry_ref = registry.borrow();
+        assert!(
+            registry_ref
+                .get_component::<KinematicMoverComponent>(mover)
+                .unwrap()
+                .started
+        );
+        assert_eq!(
+            registry_ref
+                .get_component::<HealthComponent>(animated_target)
+                .unwrap()
+                .current,
+            90.0
+        );
+        assert_eq!(
+            registry_ref
+                .get_component::<MeshComponent>(animated_target)
+                .unwrap()
+                .animation
+                .as_ref()
+                .unwrap()
+                .current_state,
+            "attack"
+        );
+        assert!(
+            registry_ref
+                .get_component::<TriggerVolumeComponent>(arm_target)
+                .unwrap()
+                .armed
+        );
+        drop(registry_ref);
+        assert_eq!(
+            script_ctx
+                .slot_table
+                .borrow()
+                .get("trigger.flag")
+                .unwrap()
+                .value,
+            Some(SlotValue::Number(1.0))
+        );
+
+        let sequence_registry = SequencedPrimitiveRegistry::new();
+        let reaction_registry = ReactionPrimitiveRegistry::new();
+        let mut system_registry = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut system_registry);
+        let residual = bindings.residual(events.trigger_residuals[0]).unwrap();
+        fire_prepartitioned_reactions_with_sequences(
+            residual.descriptors(),
+            &sequence_registry,
+            &reaction_registry,
+            &system_registry,
+            &script_ctx,
+        );
+        assert!(matches!(
+            script_ctx.system_commands.take().as_slice(),
+            [postretro_entities::SystemReactionCommand::FlashScreen { .. }]
+        ));
+
+        let _ = simulate_tick(
+            registry.clone(),
+            &world,
+            &hit_zones,
+            None,
+            -9.81,
+            None,
+            0.0,
+            &mut progress,
+            &mut ai_warned,
+            &[],
+            &mut mover_states,
+            &[],
+            &sim_command(false, false),
+            |_| PostMovementCommand {
+                aim_origin: Vec3::ZERO,
+                aim_direction: Vec3::NEG_Z,
+            },
+            1.0 / 60.0,
+            Some(TriggerTickContext {
+                system: &mut trigger_system,
+                bridge: &bridge,
+                bindings: &bindings,
+                slot_table: script_ctx.slot_table.clone(),
+                use_edges: &use_edges,
+            }),
+        );
+        let registry_ref = registry.borrow();
+        assert!(
+            registry_ref
+                .get_component::<Transform>(mover)
+                .unwrap()
+                .position
+                .x
+                > 0.0,
+            "the tick after same-tick mover start advances the mover without an app loop"
+        );
+        assert_eq!(
+            registry_ref
+                .get_component::<HealthComponent>(animated_target)
+                .unwrap()
+                .current,
+            90.0,
+            "the enter edge does not execute consequential work twice"
+        );
     }
 
     #[test]

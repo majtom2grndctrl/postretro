@@ -18,6 +18,7 @@ use crate::startup::{
     BootState, InFlightLevelLoad, LevelLoadEntry, LevelRequest, LevelSource, LoadOutcome,
     StartupTimings, spawn_level_worker,
 };
+use crate::trigger_bindings::TriggerBindingTable;
 use crate::{App, weapon};
 use postretro_scripting_core::data_descriptors::LevelManifest;
 use postretro_scripting_core::reaction_dispatch::{
@@ -89,6 +90,7 @@ impl App {
         self.kinematic_mover_colliders.clear();
         self.kinematic_mover_tick_states.clear();
         self.kinematic_mover_render.clear();
+        self.trigger_bindings = TriggerBindingTable::default();
         self.active_wieldable = None;
         self.active_wieldable_descriptor = None;
         self.client_weapon_state = None;
@@ -717,6 +719,7 @@ impl App {
         let products = install_world_cpu(handles, &mut self.level_timings, upload_mesh_models);
 
         self.kinematic_mover_colliders = products.mover_colliders;
+        self.trigger_bindings = products.trigger_bindings;
         // Retain the spawn-point placements for the host's runtime net-slot accept
         // path (M15 Phase 3 Task 4): the host materializes each accepted client's
         // descriptor pawn from them later.
@@ -896,6 +899,8 @@ fn rebuild_reaction_subscribers(
 pub(crate) struct WorldInstallProducts {
     /// Static colliders for every loaded kinematic mover.
     pub(crate) mover_colliders: Vec<crate::collision::moving::MoverCollider>,
+    /// Trigger reactions partitioned from the final composed active set.
+    pub(crate) trigger_bindings: TriggerBindingTable,
     /// A fresh, empty mover tick-state table. Not an install product — it is
     /// caller-owned per-tick state — returned only so the headless batch runner
     /// has one to hand `simulate_tick` without reaching into `App` (the windowed
@@ -1083,6 +1088,13 @@ pub(crate) fn install_world_cpu(
         );
         rebuild_reaction_subscribers(progress_tracker, crossing_detector, script_ctx);
     }
+    // Bind after subscriber rebuild: `populate_level` has committed the final
+    // composed reaction set, so tick dispatch never re-matches a name later.
+    let trigger_bindings = TriggerBindingTable::build(
+        &script_ctx.registry.borrow(),
+        &script_ctx.data_registry.borrow(),
+        &script_ctx.slot_table.borrow(),
+    );
     timings.record("data_script");
 
     // Data-archetype sweep: materialize every matching map placement the built-in
@@ -1223,6 +1235,7 @@ pub(crate) fn install_world_cpu(
 
     WorldInstallProducts {
         mover_colliders,
+        trigger_bindings,
         mover_tick_states: crate::kinematic_mover::MoverTickStateTable::default(),
         active_wieldable,
         active_wieldable_descriptor,
@@ -1377,6 +1390,7 @@ mod tests {
             kinematic_mover_colliders: Vec::new(),
             kinematic_mover_tick_states: crate::kinematic_mover::MoverTickStateTable::default(),
             kinematic_mover_render: crate::runtime_movers::KinematicMoverRenderCollector::new(),
+            trigger_bindings: crate::trigger_bindings::TriggerBindingTable::default(),
             active_wieldable: None,
             active_wieldable_descriptor: None,
             client_weapon_state: None,

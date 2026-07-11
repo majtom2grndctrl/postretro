@@ -26,6 +26,7 @@ use crate::scripting::reactions::registry::{
     ReactionPrimitiveRegistry, register_emitter_reaction_primitives,
     register_fog_reaction_primitives, register_mover_reaction_primitives,
     register_sequenced_fog_primitives, register_sequenced_mover_primitives,
+    register_trigger_reaction_primitives,
 };
 use crate::scripting::reactions::system_commands::{
     SystemReactionRegistry, register_system_reaction_primitives,
@@ -499,6 +500,7 @@ fn build_scripting_core(
     register_emitter_reaction_primitives(&mut reaction_registry);
     register_fog_reaction_primitives(&mut reaction_registry);
     register_mover_reaction_primitives(&mut reaction_registry);
+    register_trigger_reaction_primitives(&mut reaction_registry);
 
     // System-reaction handlers (no entity targets) — the second arm of the shared
     // named-reaction vocabulary. They enqueue typed commands onto

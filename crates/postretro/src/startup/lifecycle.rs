@@ -1086,6 +1086,11 @@ pub(crate) fn install_world_cpu(
             manifest.crossings,
             active_level_tags,
         );
+        // CROSSING-CHANNEL INSTALL ORDER (E18): the detector must capture this
+        // level's local slot defaults before any connected-client network baseline is
+        // applied. A late join then observes the host's persistent state as one real
+        // crossing instead of silently arming at the already-replicated value.
+        // Network baseline application begins only after world install returns.
         rebuild_reaction_subscribers(progress_tracker, crossing_detector, script_ctx);
     }
     // Bind after subscriber rebuild: `populate_level` has committed the final

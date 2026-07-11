@@ -2,7 +2,7 @@
 // See: context/lib/entity_model.md §5
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use glam::{Vec2, Vec3};
@@ -18,6 +18,9 @@ use crate::kinematic_mover::MoverTickStateTable;
 use crate::movement::MovementInput;
 use crate::nav::NavGraph;
 use crate::scripting_systems::hit_zones::HitZoneStore;
+use crate::scripting_systems::trigger_volume_bridge::TriggerVolumeBridge;
+use crate::trigger_bindings::TriggerBindingTable;
+use crate::trigger_system::TriggerSystem;
 use crate::weapon::FireButtonState;
 use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::components::brain::{AiStateMap, AiTuning, BrainComponent, LogicalState};
@@ -27,7 +30,11 @@ use postretro_entities::components::mesh::{
     RATE_MIN,
 };
 use postretro_entities::components::weapon::WeaponComponent;
-use postretro_entities::{EntityId, EntityRegistry, Transform};
+use postretro_entities::{
+    DataRegistry, EntityId, EntityRegistry, MoverCommand, NamedReaction, PrimitiveDescriptor,
+    ReactionDescriptor, ReplicationScope, SlotOwnership, SlotRecord, SlotSchema, SlotTable,
+    SlotType, SlotValue, Transform, TriggerActivation, TriggerFireMode, TriggerVolumeComponent,
+};
 use postretro_foundation::{
     AirParams, CapsuleParams, FallParams, FireMode, ForgivenessParams, GroundParams,
     PlayerMovementComponent, PlayerMovementDescriptor, ResolutionMode, SpeedParams,
@@ -125,6 +132,9 @@ struct SimRun {
     selected_player_health: f32,
     enemy_state: LogicalState,
     events: Vec<TickEvents>,
+    trigger_residual_counts: Vec<usize>,
+    trigger_slot: Option<SlotValue>,
+    trigger_arm_target_armed: bool,
 }
 
 struct SimHarness {
@@ -136,9 +146,14 @@ struct SimHarness {
     ai_warned: HashSet<String>,
     mover_colliders: Vec<MoverCollider>,
     mover_states: MoverTickStateTable,
+    trigger_system: TriggerSystem,
+    trigger_bridge: TriggerVolumeBridge,
+    trigger_bindings: TriggerBindingTable,
+    trigger_slots: Rc<RefCell<SlotTable>>,
     role_ids: Vec<(Role, EntityId)>,
     selected_player: EntityId,
     enemy: EntityId,
+    trigger_arm_target: EntityId,
 }
 
 impl SimHarness {
@@ -168,6 +183,78 @@ impl SimHarness {
             .find_map(|(role, id)| (*role == Role::Alpha).then_some(*id))
             .expect("alpha role is always spawned");
 
+        // The green-and-stays-green determinism gate includes a real trigger
+        // firing sequence: one direct shared-state command, one arm command,
+        // and a presentation residual. That pins deterministic trigger edge order
+        // as well as the post-tick registry/slot state the binding mutates.
+        let trigger_slots = Rc::new(RefCell::new(determinism_trigger_slots()));
+        let (trigger_source, trigger_arm_target) = {
+            let mut registry = registry.borrow_mut();
+            let source = registry.spawn(Transform::default());
+            registry
+                .set_component(
+                    source,
+                    TriggerVolumeComponent::new(
+                        TriggerActivation::Touch,
+                        String::new(),
+                        "determinismTrigger".to_string(),
+                        String::new(),
+                        MoverCommand::Start,
+                        TriggerFireMode::Once,
+                        0.0,
+                        true,
+                    ),
+                )
+                .expect("determinism trigger attaches");
+
+            let arm_target = registry.spawn(Transform::default());
+            registry
+                .set_tags(arm_target, vec!["determinism-arm-target".to_string()])
+                .expect("determinism trigger target accepts tag");
+            registry
+                .set_component(
+                    arm_target,
+                    TriggerVolumeComponent::new(
+                        TriggerActivation::Touch,
+                        String::new(),
+                        String::new(),
+                        String::new(),
+                        MoverCommand::Start,
+                        TriggerFireMode::Multiple,
+                        0.0,
+                        false,
+                    ),
+                )
+                .expect("determinism trigger arm target attaches");
+            (source, arm_target)
+        };
+        let mut trigger_data = DataRegistry::new();
+        trigger_data.populate_level(
+            vec![
+                deterministic_trigger_primitive(
+                    "setState",
+                    None,
+                    serde_json::json!({ "slot": "determinism.triggered", "value": 1 }),
+                ),
+                deterministic_trigger_primitive(
+                    "armTrigger",
+                    Some("determinism-arm-target"),
+                    serde_json::json!({}),
+                ),
+                deterministic_trigger_primitive(
+                    "flashScreen",
+                    None,
+                    serde_json::json!({ "color": [1.0, 0.0, 0.0, 1.0], "durationMs": 1.0 }),
+                ),
+            ],
+            Vec::new(),
+            &[],
+        );
+        let trigger_bindings =
+            TriggerBindingTable::build(&registry.borrow(), &trigger_data, &trigger_slots.borrow());
+        let mut trigger_bridge = TriggerVolumeBridge::new();
+        trigger_bridge.insert_for_test(trigger_source, Vec3::splat(-4.0), Vec3::splat(4.0));
+
         Self {
             registry,
             world: floor_world(),
@@ -177,14 +264,20 @@ impl SimHarness {
             ai_warned: HashSet::new(),
             mover_colliders: Vec::new(),
             mover_states: MoverTickStateTable::default(),
+            trigger_system: TriggerSystem::default(),
+            trigger_bridge,
+            trigger_bindings,
+            trigger_slots,
             role_ids,
             selected_player,
             enemy,
+            trigger_arm_target,
         }
     }
 
     fn tick(&mut self, command: RecordedCommand) -> TickEvents {
         let sim_command = command.to_sim_command();
+        let trigger_use_edges = HashMap::new();
         simulate_tick(
             self.registry.clone(),
             &self.world,
@@ -201,7 +294,13 @@ impl SimHarness {
             &sim_command,
             |_| command.to_post_movement_command(),
             DT,
-            None,
+            Some(super::TriggerTickContext {
+                system: &mut self.trigger_system,
+                bridge: &self.trigger_bridge,
+                bindings: &self.trigger_bindings,
+                slot_table: self.trigger_slots.clone(),
+                use_edges: &trigger_use_edges,
+            }),
         )
     }
 
@@ -244,6 +343,59 @@ impl SimHarness {
             .get_component::<BrainComponent>(self.enemy)
             .expect("enemy keeps brain")
             .state
+    }
+
+    fn trigger_slot(&self) -> Option<SlotValue> {
+        self.trigger_slots
+            .borrow()
+            .get("determinism.triggered")
+            .and_then(|record| record.value.clone())
+    }
+
+    fn trigger_arm_target_armed(&self) -> bool {
+        self.registry
+            .borrow()
+            .get_component::<TriggerVolumeComponent>(self.trigger_arm_target)
+            .expect("determinism arm target remains present")
+            .armed
+    }
+}
+
+fn determinism_trigger_slots() -> SlotTable {
+    let mut slots = SlotTable::new();
+    slots
+        .insert_namespace(
+            "determinism",
+            vec![(
+                "triggered".to_string(),
+                SlotRecord::new(SlotSchema {
+                    slot_type: SlotType::Number,
+                    default: Some(SlotValue::Number(0.0)),
+                    range: None,
+                    persist: false,
+                    readonly: false,
+                    ownership: SlotOwnership::Mod,
+                    network: ReplicationScope::None,
+                }),
+            )],
+        )
+        .expect("determinism namespace is unique");
+    slots
+}
+
+fn deterministic_trigger_primitive(
+    primitive: &str,
+    tag: Option<&str>,
+    args: serde_json::Value,
+) -> NamedReaction {
+    NamedReaction {
+        name: "determinismTrigger".to_string(),
+        descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+            primitive: primitive.to_string(),
+            tag: tag.map(str::to_string),
+            on_complete: None,
+            args,
+        }),
     }
 }
 
@@ -748,11 +900,17 @@ fn run_stream(commands: &[RecordedCommand], spawn_order: SpawnOrder) -> SimRun {
         .iter()
         .copied()
         .map(|command| harness.tick(command))
-        .collect();
+        .collect::<Vec<_>>();
     SimRun {
         pawns: harness.role_outcomes(),
         selected_player_health: harness.selected_player_health(),
         enemy_state: harness.enemy_state(),
+        trigger_residual_counts: events
+            .iter()
+            .map(|events| events.trigger_residuals.len())
+            .collect(),
+        trigger_slot: harness.trigger_slot(),
+        trigger_arm_target_armed: harness.trigger_arm_target_armed(),
         events,
     }
 }
@@ -772,6 +930,18 @@ fn assert_runs_match(actual: &SimRun, expected: &SimRun) {
     assert_eq!(
         actual.selected_player_health, expected.selected_player_health,
         "selected player health must match exactly"
+    );
+    assert_eq!(
+        actual.trigger_residual_counts, expected.trigger_residual_counts,
+        "trigger fire/residual sequence must match exactly"
+    );
+    assert_eq!(
+        actual.trigger_slot, expected.trigger_slot,
+        "trigger fixed-tick slot write must match exactly"
+    );
+    assert_eq!(
+        actual.trigger_arm_target_armed, expected.trigger_arm_target_armed,
+        "trigger fixed-tick registry mutation must match exactly"
     );
     assert_eq!(
         actual.pawns.len(),

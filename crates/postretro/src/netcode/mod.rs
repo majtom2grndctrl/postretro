@@ -41,6 +41,10 @@ mod boot_spawn_gate_test;
 // `StateBaselineRefresh` without reconnect.
 #[cfg(test)]
 mod state_slot_loss_harness_test;
+// E18 Task 6: conditioned two-endpoint proof that a host trigger's persistent
+// shared-state write drives client-local crossing presentation without an event wire path.
+#[cfg(test)]
+mod trigger_state_channel_harness_test;
 // E10 (Networked Enemy Authority Baseline) Task 7: the integration harness proving the
 // whole host→client enemy path end to end (host registration → wire → conditioned link
 // → client remote-presentation materialization → interpolation → despawn cleanup →

@@ -241,6 +241,13 @@ impl TriggerBindingTable {
         self.residuals.get(handle.0)
     }
 
+    /// Whether the authored event name for this trigger edge resolved against
+    /// the active composed reaction set at level install.
+    #[allow(dead_code)] // Read by the dev-tools trigger diagnostics snapshot.
+    pub(crate) fn is_bound(&self, trigger: EntityId, edge: TriggerBindingEdge) -> bool {
+        self.bindings.contains_key(&(trigger, edge))
+    }
+
     #[cfg(test)]
     fn binding(&self, trigger: EntityId, edge: TriggerBindingEdge) -> Option<&TriggerBinding> {
         self.bindings.get(&(trigger, edge))

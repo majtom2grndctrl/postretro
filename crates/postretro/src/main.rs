@@ -55,6 +55,8 @@ mod session;
 mod sim;
 mod startup;
 mod trigger_bindings;
+#[cfg(feature = "dev-tools")]
+mod trigger_diagnostics;
 mod trigger_system;
 mod view_feel;
 
@@ -2627,6 +2629,45 @@ impl ApplicationHandler for App {
                     #[cfg(feature = "dev-tools")]
                     let agent_rows =
                         agent_diagnostics::agent_overlay_diagnostics_rows(&agent_overlay_labels);
+                    #[cfg(feature = "dev-tools")]
+                    let (trigger_rows, trigger_overlay_labels) = {
+                        let diagnostics_visible = session
+                            .debug_ui
+                            .as_ref()
+                            .is_some_and(|debug_ui| debug_ui.is_visible());
+                        if diagnostics_visible {
+                            let registry = script_ctx.registry.borrow();
+                            let viewport_size_points = self
+                                .window_state
+                                .as_ref()
+                                .map(|ws| {
+                                    let size = ws.window.inner_size();
+                                    let scale_factor = ws.window.scale_factor() as f32;
+                                    egui::vec2(
+                                        size.width as f32 / scale_factor,
+                                        size.height as f32 / scale_factor,
+                                    )
+                                })
+                                .unwrap_or(egui::Vec2::ZERO);
+                            (
+                                trigger_diagnostics::collect_trigger_diagnostics_rows(
+                                    &registry,
+                                    &session.trigger_volume_bridge,
+                                    &session.trigger_system,
+                                    &self.trigger_bindings,
+                                ),
+                                trigger_diagnostics::collect_trigger_overlay_labels(
+                                    &registry,
+                                    &session.trigger_volume_bridge,
+                                    &session.trigger_system,
+                                    view_proj,
+                                    viewport_size_points,
+                                ),
+                            )
+                        } else {
+                            (Vec::new(), Vec::new())
+                        }
+                    };
 
                     // Build the egui UI before `render_frame_indirect` so
                     // the SH diagnostic overlay can push debug lines that
@@ -2666,6 +2707,10 @@ impl ApplicationHandler for App {
                                         );
                                     }
                                     if diagnostics_visible {
+                                        trigger_diagnostics::paint_trigger_overlay_labels(
+                                            ctx,
+                                            &trigger_overlay_labels,
+                                        );
                                         render::debug_ui::draw_diagnostics_panel(
                                             ctx,
                                             panel_state,
@@ -2673,6 +2718,7 @@ impl ApplicationHandler for App {
                                             renderer,
                                             timing_snapshot.as_ref(),
                                             &agent_rows,
+                                            &trigger_rows,
                                         );
                                     }
                                 });

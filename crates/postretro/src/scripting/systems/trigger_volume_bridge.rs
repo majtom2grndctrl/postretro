@@ -10,19 +10,26 @@ use std::collections::HashMap;
 
 pub(crate) struct TriggerVolumeBridge {
     aabbs: HashMap<EntityId, (Vec3, Vec3)>,
+    names: HashMap<EntityId, String>,
 }
 
 impl TriggerVolumeBridge {
     pub(crate) fn new() -> Self {
         Self {
             aabbs: HashMap::new(),
+            names: HashMap::new(),
         }
     }
     pub(crate) fn clear(&mut self) {
         self.aabbs.clear();
+        self.names.clear();
     }
     pub(crate) fn aabb(&self, id: EntityId) -> Option<(Vec3, Vec3)> {
         self.aabbs.get(&id).copied()
+    }
+    #[allow(dead_code)] // Read by the dev-tools trigger diagnostics snapshot.
+    pub(crate) fn name(&self, id: EntityId) -> Option<&str> {
+        self.names.get(&id).map(String::as_str)
     }
     pub(crate) fn populate_from_level(
         &mut self,
@@ -78,6 +85,7 @@ impl TriggerVolumeBridge {
                 ),
             );
             self.aabbs.insert(id, (min, max));
+            self.names.insert(id, record.name.clone());
         }
     }
     #[cfg(test)]
@@ -130,5 +138,6 @@ mod tests {
             .expect("trigger component attached");
         assert_eq!(component.on_fire, "open_lift");
         assert_eq!(component.on_exit, "close_lift");
+        assert_eq!(bridge.name(id), Some("lift_plate"));
     }
 }

@@ -298,6 +298,21 @@ Plans ship in this sequence:
 
 Turn multiplayer foundations, enemies, combat, and optional movers into authored co-op play: trigger ownership, reveal/spawn fan-out, shared progress, late-join restoration, respawn and player-leave policy, and one playable encounter that proves the loop is fun. This epic owns co-op semantics rather than generic networking plumbing; it consumes E15 state replication, E10 enemies, the Combat epic, and E17 kinematic machinery only where the set-piece needs them.
 
+**Design intent:** `context/research/co-op-triggers-trap-pools.md` (trigger fan-out, pressure plates, spawners, semi-random trap pools).
+
+**Load-bearing decisions E18-A locks — later specs inherit these:**
+- **Effect-based dispatch split.** Reactions fired from the authoritative tick partition by effect class: *consequential* (mutate replicated state — mover / damage / arm-disarm / `setState` / `setAnimationState`) bind to closed command lists at level install and execute in-tick; *presentation* (fog / light / emitter / sound) stay host-local on the app drain; *lifecycle* (`loadLevel` / `restartLevel` / `returnToFrontend`) queue as app-level requests. New verbs (spawner, etc.) slot into the consequential class.
+- **Bind-at-install.** Consequential trigger effects bind to closed commands at level install because the sim tick is VM-free (no reaction registry reachable inside `simulate_tick`). E14 BakedIr bind/eval is the precedent.
+- **Co-op atmosphere channel.** Persistent shared state rides `sharedGlobal` slots + per-client crossings (state-sync converges values under idempotent setters); transient stings are host-local in v1, because state-sync converges values, not edges, and cannot reliably carry a pulse under loss.
+
+**Spec sequence** — seam-first; only A is settled, later entries are provisional scope:
+- [x] **A — Trigger event fan-out + plate semantics.** Triggers fire named reactions (not only mover commands) with in-tick consequential dispatch; `on_fire`/`on_exit` KVPs, occupancy + paired-exit edges, runtime arm/disarm, and the co-op atmosphere-channel proof. Reviewed (draft-spec + implementability) and promoted: `plans/ready/E18--trigger-event-fanout/`.
+- [ ] **B — Co-op activation policy.** Activation vocabulary beyond any-player (all-players, host-only, count thresholds), consuming A's per-trigger occupancy input. Hard-disarm-cancels-pending-exit lands here if ever wanted.
+- [ ] **C — Spawner entity + reveal/spawn fan-out.** `spawnFromSpawner` as a consequential verb; monster-closet spawn flavor with dormant-Brain closet containment (enemies don't aggro/path out of a sealed closet before the reveal).
+- [ ] **D — Trap pools + semi-random arming.** A per-level script defines closet-trap pools; a fresh host-only roll at install arms a defined count so layouts stay learnable but runs vary. Needs seeded gameplay RNG (host-only at install; consequences replicate — never shared-seed client re-sim).
+- [ ] **R — Respawn + player-leave policy.** The co-op respawn and player-leave handling the capstone encounter needs — charter-named, unspecified elsewhere.
+- [ ] **E — Playable encounter.** One authored reveal-closet set-piece that proves the loop is fun — the capstone consuming A–R. Its sealed closets motivate E17-F (doors as occluders); E18-E is that spec's consumer, not the reverse.
+
 ---
 
 ## Epic 19: Render-Stack Decomposition

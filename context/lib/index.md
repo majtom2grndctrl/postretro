@@ -8,6 +8,7 @@
 ## Agent Router (Task → Minimal Docs)
 
 - **Engineering conventions / code style** → `development_guide.md`
+- **Crate layering / where new code goes / dependency direction** → `development_guide.md` §Workspace
 - **Context file writing / updates** → `context_style_guide.md`
 - **Testing** → `testing_guide.md`
 - **Rendering pipeline / lighting** → `rendering_pipeline.md`

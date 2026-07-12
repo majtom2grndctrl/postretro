@@ -3,10 +3,20 @@
 
 struct CameraUniforms {
     view_proj: mat4x4<f32>,
+    camera_position: vec3<f32>,
+    ambient_floor: f32,
 };
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 
 @group(1) @binding(0) var base_texture: texture_2d<f32>;
+@group(1) @binding(2) var spec_texture: texture_2d<f32>;
+
+struct MaterialUniform {
+    shininess: f32,
+    _pad: vec3<f32>,
+};
+@group(1) @binding(3) var<uniform> material: MaterialUniform;
+@group(1) @binding(4) var t_normal: texture_2d<f32>;
 @group(1) @binding(5) var aniso_sampler: sampler;
 
 struct GpuLight {
@@ -38,6 +48,8 @@ struct KinematicLightParams {
     time: f32,
     lighting_isolation: u32,
     ambient_floor: f32,
+    dynamic_light_count: u32,
+    _pad: vec3<u32>,
 };
 @group(2) @binding(4) var<uniform> kinematic_light_params: KinematicLightParams;
 
@@ -99,7 +111,9 @@ struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) world_normal: vec3<f32>,
-    @location(2) world_position: vec3<f32>,
+    @location(2) world_tangent: vec3<f32>,
+    @location(3) bitangent_sign: f32,
+    @location(4) world_position: vec3<f32>,
 };
 
 fn oct_decode(enc: vec2<u32>) -> vec3<f32> {
@@ -130,6 +144,15 @@ fn vs_main(in: VertexInput, @builtin(instance_index) instance_index: u32) -> Ver
     let n_local = oct_decode(in.normal_oct);
     let model3 = mat3x3<f32>(instance.model[0].xyz, instance.model[1].xyz, instance.model[2].xyz);
     out.world_normal = normalize(model3 * n_local);
+
+    // `tangent_packed.y` stores the handedness in its high bit; the lower 15
+    // bits carry the octahedral v component. Match the static-world decode
+    // before transforming the tangent into the mover's world-space basis.
+    let sign_bit = in.tangent_packed.y & 0x8000u;
+    let v_15bit = in.tangent_packed.y & 0x7FFFu;
+    let v_16bit = v_15bit * 65535u / 32767u;
+    out.world_tangent = normalize(model3 * oct_decode(vec2<u32>(in.tangent_packed.x, v_16bit)));
+    out.bitangent_sign = select(-1.0, 1.0, sign_bit != 0u);
     return out;
 }
 
@@ -167,7 +190,14 @@ fn sample_sh_direct(world_pos: vec3<f32>, shading_normal: vec3<f32>, geo_normal:
     );
 }
 
-fn accumulate_dynamic_direct(world_pos: vec3<f32>, n: vec3<f32>, use_dynamic: bool) -> vec3<f32> {
+fn accumulate_dynamic_direct(
+    world_pos: vec3<f32>,
+    n: vec3<f32>,
+    V: vec3<f32>,
+    spec_exp: f32,
+    spec_int: f32,
+    use_dynamic: bool,
+) -> vec3<f32> {
     var total = vec3<f32>(0.0);
     let light_count = select(0u, kinematic_light_params.light_count, use_dynamic);
     for (var i: u32 = 0u; i < light_count; i = i + 1u) {
@@ -237,6 +267,13 @@ fn accumulate_dynamic_direct(world_pos: vec3<f32>, n: vec3<f32>, use_dynamic: bo
             }
         }
         total = total + effective_color * attenuation * max(dot(n, L), 0.0);
+
+        // The runtime buffer lists dynamic-tier lights first, then promoted
+        // static records. Dynamic lights remain diffuse-only; a promoted
+        // record's effective color already carries its de-promotion weight.
+        if i >= kinematic_light_params.dynamic_light_count {
+            total = total + blinn_phong(L, V, n, effective_color, spec_exp, spec_int) * attenuation;
+        }
     }
     return total;
 }
@@ -267,16 +304,21 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let ddy = dpdy(in.uv);
 
     let base_color = sample_post_retro(base_texture, aniso_sampler, in.uv, ddx, ddy);
-    let n = normalize(in.world_normal);
-    let indirect = sample_sh_indirect(in.world_position, n, n);
+    let mesh_n = normalize(in.world_normal);
+    let n_ts = sample_normal(t_normal, in.uv, ddx, ddy);
+    let n = reconstruct_tbn_normal(mesh_n, in.world_tangent, in.bitangent_sign, n_ts);
+    let indirect = sample_sh_indirect(in.world_position, n, mesh_n);
     var direct = vec3<f32>(0.0);
     if dynamic_direct.has_direct != 0u {
-        direct = dynamic_direct.scale * sample_sh_direct(in.world_position, n, n);
+        direct = dynamic_direct.scale * sample_sh_direct(in.world_position, n, mesh_n);
     }
 
     let iso = kinematic_light_params.lighting_isolation;
     let use_dynamic = (iso == 0u) || (iso == 1u) || (iso == 2u) || (iso == 8u);
-    let dynamic = accumulate_dynamic_direct(in.world_position, n, use_dynamic);
+    let V = normalize(camera.camera_position - in.world_position);
+    let spec_exp = max(material.shininess, 1.0);
+    let spec_int = sample_post_retro(spec_texture, aniso_sampler, in.uv, ddx, ddy).r;
+    let dynamic = accumulate_dynamic_direct(in.world_position, n, V, spec_exp, spec_int, use_dynamic);
 
     var lighting = indirect + direct;
     if dynamic_direct.isolation == 1u {

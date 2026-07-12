@@ -31,6 +31,7 @@ pub(crate) enum ActivationOutcome {
     Hit(DamagePayload),
     Effect,
     Spawned(EntityId),
+    Empty,
 }
 
 #[allow(dead_code)]
@@ -250,11 +251,15 @@ pub(crate) struct WeaponImpact {
 pub(crate) struct WeaponFireEvents {
     pub(crate) activate: Option<WeaponActivation>,
     pub(crate) impact: Option<WeaponImpact>,
+    pub(crate) dry_fire: bool,
 }
 
 impl WeaponFireEvents {
     pub(crate) fn event_names(&self) -> Vec<&'static str> {
-        let mut names = Vec::with_capacity(2);
+        let mut names = Vec::with_capacity(3);
+        if self.dry_fire {
+            names.push("dry_fire");
+        }
         if self.activate.is_some() {
             names.push("activate");
         }
@@ -265,10 +270,11 @@ impl WeaponFireEvents {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum WeaponFireAuthorization {
     Accepted,
     Rejected,
+    Empty(ActivationOutcome),
 }
 
 #[allow(clippy::too_many_arguments)] // weapon fire genuinely needs all of these inputs.
@@ -326,8 +332,8 @@ pub(crate) fn tick_resolved(
 
     let stats = weapon.effective();
     let fire = apply_weapon_fire_state(&mut weapon, command, &stats, tick_dt);
-    let events = if fire == WeaponFireAuthorization::Accepted {
-        fire_hitscan(
+    let events = match fire {
+        WeaponFireAuthorization::Accepted => fire_hitscan(
             command.aim_origin,
             command.aim_direction,
             collision_world,
@@ -337,9 +343,14 @@ pub(crate) fn tick_resolved(
             stats.damage,
             stats.range,
             stats.resolution,
-        )
-    } else {
-        WeaponFireEvents::default()
+        ),
+        WeaponFireAuthorization::Empty(ActivationOutcome::Empty) => WeaponFireEvents {
+            dry_fire: true,
+            ..WeaponFireEvents::default()
+        },
+        WeaponFireAuthorization::Empty(_) | WeaponFireAuthorization::Rejected => {
+            WeaponFireEvents::default()
+        }
     };
 
     let _ = registry.set_component(weapon_id, weapon);
@@ -385,14 +396,23 @@ fn apply_weapon_fire_state(
         weapon.shoot_press_consumed = false;
     }
 
-    if command.can_fire && wants_fire && weapon.cooldown_remaining_ms <= 0.0 {
-        // Ammo validation/consumption belongs to the E16 ammo seam; this state half
-        // owns cooldown/fire-mode legitimacy only.
-        weapon.cooldown_remaining_ms = stats.cooldown_ms;
-        WeaponFireAuthorization::Accepted
-    } else {
-        WeaponFireAuthorization::Rejected
+    if !command.can_fire || !wants_fire || weapon.cooldown_remaining_ms > 0.0 {
+        return WeaponFireAuthorization::Rejected;
     }
+
+    if weapon.reload_remaining_ms > 0 {
+        return WeaponFireAuthorization::Rejected;
+    }
+
+    if let Some(ammo) = stats.ammo.as_ref() {
+        if weapon.magazine < ammo.cost_per_shot {
+            return WeaponFireAuthorization::Empty(ActivationOutcome::Empty);
+        }
+        weapon.magazine -= ammo.cost_per_shot;
+    }
+
+    weapon.cooldown_remaining_ms = stats.cooldown_ms;
+    WeaponFireAuthorization::Accepted
 }
 
 #[allow(clippy::too_many_arguments)] // weapon fire genuinely needs all of these inputs.
@@ -410,6 +430,7 @@ fn fire_hitscan(
     let mut events = WeaponFireEvents {
         activate: Some(WeaponActivation { origin, direction }),
         impact: None,
+        dry_fire: false,
     };
 
     match resolution {
@@ -625,8 +646,8 @@ mod tests {
     use parry3d::shape::TriMesh;
     use postretro_entities::components::health::{HealthComponent, Hitbox};
     use postretro_entities::registry::{ComponentKind, Transform};
-    use postretro_entities::{EntityTypeDescriptor, MeshDescriptor};
-    use postretro_foundation::WeaponDescriptor;
+    use postretro_entities::{AmmoReserve, EntityTypeDescriptor, MeshDescriptor};
+    use postretro_foundation::{AmmoResource, WeaponDescriptor, WeaponResource};
     use winit::event::MouseButton;
 
     const EPSILON: f32 = 1.0e-5;
@@ -660,6 +681,23 @@ mod tests {
             credit_source: None,
             resource: None,
         })
+    }
+
+    fn ammo_weapon_component(
+        fire_mode: FireMode,
+        cooldown_ms: f32,
+        magazine: u32,
+        cost_per_shot: u32,
+    ) -> WeaponComponent {
+        let mut descriptor = weapon_descriptor(fire_mode, cooldown_ms);
+        descriptor.resource = Some(WeaponResource::Ammo(AmmoResource {
+            ammo_type: "bullets.light".to_string(),
+            magazine,
+            cost_per_shot,
+            reserve: 48,
+            reload_ms: 900,
+        }));
+        WeaponComponent::from_descriptor(&descriptor)
     }
 
     fn weapon_descriptor(fire_mode: FireMode, cooldown_ms: f32) -> WeaponDescriptor {
@@ -1035,6 +1073,200 @@ mod tests {
             .get_component::<WeaponComponent>(weapon_id)
             .expect("weapon component should still exist");
         assert!(approx_eq(weapon.cooldown_remaining_ms, 100.0));
+    }
+
+    #[test]
+    fn ammo_shot_consumes_effective_cost_once_and_resolves_normally() {
+        let mut registry = EntityRegistry::new();
+        let weapon_id = spawn_weapon(
+            &mut registry,
+            ammo_weapon_component(FireMode::Semi, 100.0, 12, 2),
+        );
+        let pawn = registry.spawn(Transform::default());
+        let mut reserve = AmmoReserve::new();
+        reserve.credit("bullets.light", 48);
+        registry.set_component(pawn, reserve).unwrap();
+        let camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
+        let world = wall_world();
+        let mut input = input_system();
+        let pressed = shoot_snapshot(&mut input, true);
+
+        let events = fire_tick(
+            &mut registry,
+            Some(weapon_id),
+            &pressed,
+            &camera,
+            &world,
+            1.0 / 60.0,
+        );
+
+        assert_eq!(events.event_names(), vec!["activate", "impact"]);
+        assert_eq!(
+            registry
+                .get_component::<WeaponComponent>(weapon_id)
+                .unwrap()
+                .magazine,
+            10
+        );
+        assert_eq!(
+            registry
+                .get_component::<AmmoReserve>(pawn)
+                .unwrap()
+                .available("bullets.light"),
+            48
+        );
+    }
+
+    #[test]
+    fn ammo_shot_spends_cost_on_open_space_miss() {
+        let mut registry = EntityRegistry::new();
+        let weapon_id = spawn_weapon(
+            &mut registry,
+            ammo_weapon_component(FireMode::Semi, 100.0, 12, 2),
+        );
+        let camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
+        let mut input = input_system();
+        let pressed = shoot_snapshot(&mut input, true);
+
+        let events = fire_tick(
+            &mut registry,
+            Some(weapon_id),
+            &pressed,
+            &camera,
+            &CollisionWorld::new(),
+            1.0 / 60.0,
+        );
+
+        assert_eq!(events.event_names(), vec!["activate"]);
+        assert!(events.impact.is_none());
+        assert_eq!(
+            registry
+                .get_component::<WeaponComponent>(weapon_id)
+                .unwrap()
+                .magazine,
+            10
+        );
+    }
+
+    #[test]
+    fn below_cost_is_empty_at_state_seam_and_emits_only_dry_fire() {
+        let command = WeaponFireCommand {
+            button: FireButtonState {
+                pressed: true,
+                active: true,
+            },
+            aim_origin: Vec3::ZERO,
+            aim_direction: Vec3::NEG_Z,
+            can_fire: true,
+        };
+        let mut component = ammo_weapon_component(FireMode::Semi, 100.0, 2, 3);
+        let stats = component.effective();
+        assert_eq!(
+            apply_weapon_fire_state(&mut component, &command, &stats, 1.0 / 60.0),
+            WeaponFireAuthorization::Empty(ActivationOutcome::Empty)
+        );
+        assert_eq!(component.magazine, 2);
+        assert_eq!(component.cooldown_remaining_ms, 0.0);
+
+        let mut registry = EntityRegistry::new();
+        let weapon_id = spawn_weapon(
+            &mut registry,
+            ammo_weapon_component(FireMode::Semi, 100.0, 2, 3),
+        );
+        let target = spawn_hitbox_entity(
+            &mut registry,
+            Vec3::new(0.0, 0.0, -5.0),
+            Vec3::splat(0.5),
+            Vec3::ZERO,
+        );
+        let before_health = registry
+            .get_component::<HealthComponent>(target)
+            .unwrap()
+            .current;
+        let events = tick_resolved(
+            &mut registry,
+            Some(weapon_id),
+            &command,
+            &CollisionWorld::new(),
+            &HitZoneStore::new(),
+            0.0,
+            1.0 / 60.0,
+        );
+
+        assert_eq!(events.event_names(), vec!["dry_fire"]);
+        assert!(events.activate.is_none());
+        assert!(events.impact.is_none());
+        assert_eq!(
+            registry
+                .get_component::<WeaponComponent>(weapon_id)
+                .unwrap()
+                .magazine,
+            2
+        );
+        assert_eq!(
+            registry
+                .get_component::<HealthComponent>(target)
+                .unwrap()
+                .current,
+            before_health
+        );
+    }
+
+    #[test]
+    fn reload_in_flight_silently_blocks_without_cancelling_or_spending() {
+        let mut registry = EntityRegistry::new();
+        let mut component = ammo_weapon_component(FireMode::Semi, 100.0, 12, 2);
+        component.reload_remaining_ms = 450;
+        component.reload_total_ms = 900;
+        let weapon_id = spawn_weapon(&mut registry, component);
+        let camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
+        let world = CollisionWorld::new();
+        let mut input = input_system();
+        let pressed = shoot_snapshot(&mut input, true);
+
+        let events = fire_tick(
+            &mut registry,
+            Some(weapon_id),
+            &pressed,
+            &camera,
+            &world,
+            1.0 / 60.0,
+        );
+        let weapon = registry
+            .get_component::<WeaponComponent>(weapon_id)
+            .unwrap();
+
+        assert!(events.event_names().is_empty());
+        assert_eq!(weapon.magazine, 12);
+        assert_eq!(weapon.reload_remaining_ms, 450);
+        assert_eq!(weapon.reload_total_ms, 900);
+        assert_eq!(weapon.cooldown_remaining_ms, 0.0);
+    }
+
+    #[test]
+    fn resourceless_weapon_fires_without_magazine_gating_or_consumption() {
+        let mut registry = EntityRegistry::new();
+        let weapon_id = spawn_weapon(&mut registry, weapon_component(FireMode::Semi, 100.0));
+        let camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
+        let world = CollisionWorld::new();
+        let mut input = input_system();
+        let pressed = shoot_snapshot(&mut input, true);
+
+        let events = fire_tick(
+            &mut registry,
+            Some(weapon_id),
+            &pressed,
+            &camera,
+            &world,
+            1.0 / 60.0,
+        );
+
+        assert_eq!(events.event_names(), vec!["activate"]);
+        let weapon = registry
+            .get_component::<WeaponComponent>(weapon_id)
+            .unwrap();
+        assert!(weapon.ammo.is_none());
+        assert_eq!(weapon.magazine, 0);
     }
 
     #[test]

@@ -85,8 +85,9 @@ resource-grant chokepoint (inverse of `applyDamage`) as a clean seam a later
   also blocked while a reload is in flight (reload is non-cancellable).
 - Reload (`Action::Reload`, already bound) as a timed transfer. On the rising
   edge of the reload command the weapon starts a reload timer from the effective
-  reload duration (guarded: ignored if already reloading, magazine full, or
-  reserve empty — each a distinct blocked outcome). The timer advances per fixed
+  reload duration (guarded: a fresh press while already reloading is a silent
+  no-op — the rising-edge dedup; a full magazine or empty reserve is a distinct
+  blocked outcome). The timer advances per fixed
   tick; on completion it performs one atomic transfer of
   `min(capacity - magazine, available(type))` from the pawn reserve pool into the
   magazine. The reload seam is the shipped `deliver_reload_to_weapon`, which both
@@ -179,7 +180,7 @@ Each is its own later roadmap bullet; the shape only accommodates them.
   `dry_fire` event reaching the caller's event drain (via `event_names()`) AND
   `ActivationOutcome::Empty`, not a silent no-op. Cooldown-blocked shots stay
   silent as today. While a reload is in flight the trigger is likewise blocked
-  and does not cancel the reload.
+  silently and does not cancel the reload.
 - [ ] Reload is timed by the **effective** reload duration: on a fresh reload
   press (rising edge of the held `SimCommand.reload` bit) the reload timer starts
   from `effective().reload_ms`; a held reload button starts exactly one reload.
@@ -370,10 +371,11 @@ emitting a bare `ReloadDelivery`). It is already called for the local/host pawn
 `sim/mod.rs:382`) — filling it wires reload for every pawn against that pawn's
 `AmmoReserve`. On a fresh rising edge with an ammo resource present:
 
-- **Guards (start-time, each a distinct blocked outcome carried on
-  `ReloadDelivery`):** already reloading → ignore; magazine full
-  (`magazine == capacity`) → blocked; `available(type) == 0` → blocked. No timer
-  starts and no rounds move on any blocked outcome.
+- **Guards (start-time):** a fresh edge while already reloading is a silent
+  no-op (no `ReloadDelivery`) — the rising-edge dedup. A full magazine
+  (`magazine == capacity`) or an empty reserve (`available(type) == 0`) is a
+  distinct blocked outcome carried on `ReloadDelivery` (`blocked-full` /
+  `blocked-empty`); no timer starts and no rounds move.
 - **Start:** set `reload_total_ms = reload_remaining_ms = effective().reload_ms`.
 - **Advance:** decrement `reload_remaining_ms` by the fixed-tick delta on the
   same per-tick pass that advances `cooldown_remaining_ms`, at the reload site
@@ -408,8 +410,9 @@ player.maxHealth, player.weaponCooldownMs}` at `:718-748` with every other slot
 `None`; add `player.ammo`, `player.ammoReserve`, `player.reloadProgress`,
 `player.reloadActive` to that owner-private set). Adding four slots to the
 replicated `OwnerPrivatePlayer` set changes the replicated state-slot fingerprint;
-bump the state/fingerprint version constant if the netcode handshake gates on it
-(verify against the fingerprint gate — the shipped reload-feedback plan noted
+bump the state/fingerprint version constant — distinct from `WIRE_VERSION`, which
+stays as the shipped prerequisite left it — if the netcode handshake gates on it
+(verify against the fingerprint gate; the shipped reload-feedback plan noted
 `ReplicationScope::None` deliberately kept those slots *out* of the fingerprint).
 
 **Ammo publisher.** Extend/mirror `PlayerHudStatePublisher`
@@ -433,9 +436,12 @@ active→inactive transition rather than latching the last value. This may exten
 way it writes through the same engine-owned readonly-slot path.
 
 **Retire the dev driver.** Delete `DevReloadProgressDriver`
-(`crates/postretro/src/scripting/systems/reload_progress.rs`) and its
-`#[cfg(feature = "dev-tools")]` construction/tick (`main.rs:2083-2087`) — the real
-producer replaces it. Leave the `hud.reloadMeter` tree in
+(`crates/postretro/src/scripting/systems/reload_progress.rs`), its
+`#[cfg(feature = "dev-tools")]` tick (`main.rs:2083-2087`), and its field and
+construction sites (`session/mod.rs:227-228` field, `:519-521` construct,
+`:535-536` assign; `startup/lifecycle.rs:1317-1318`) — deleting the type alone
+leaves those dangling. The real producer replaces it. Leave the `hud.reloadMeter`
+tree in
 `content/dev/scripts/hud.ts` untouched (already bound to the two slots with
 `visibleWhen` + `exitFade`); the reload-feedback plan promised no UI rework.
 
@@ -466,7 +472,8 @@ the two existing projections:
 
 - **`player.ammo`, `player.reloadProgress`, `player.reloadActive`** live on the
   pawn's **weapon** entity (magazine, reload timer). Mirror
-  **`descriptor_weapon_cooldown_for_pawn`** (`state_slots.rs:458`), which reaches
+  **`descriptor_weapon_cooldown_for_pawn`** (defined at `state_slots.rs:498`,
+  dispatched from `owner_private_source_value` at `:458`), which reaches
   the pawn's active weapon through the `WeaponOwners` map — *not*
   `descriptor_health_for_pawn`, which is pawn-local and cannot see the weapon's
   magazine or timer. Note `player.reloadActive` is a **Boolean**: the projection
@@ -523,10 +530,10 @@ carries `point`/`normal`/`outcome`), `WeaponFireCommand` (`:50`),
 (`run_remote_weapon_commands:382`) routing, and `run_weapon_fire_tick` /
 `local_movement_pawn` in `crates/postretro/src/sim/mod.rs`; the production host
 resolver `host_resolve_remote_commands` (`command_queue.rs:396`),
-`neutral_sim_command` (`:452`), and `wire_convert.rs`
+`neutral_sim_command` (`:434`), and `wire_convert.rs`
 `input_command_to_sim`/`sim_command_to_input`; `WIRE_VERSION`
-(`crates/net/src/transport.rs:52`, already bumped for reload by the shipped
-prerequisite — not re-bumped here); the HUD catalog in
+(`crates/net/src/transport.rs:52`) — reload already ships on `InputCommand`, so
+no wire field is added and no bump happens here; the HUD catalog in
 `crates/entities/src/engine_state_catalog.rs` (`BUILTIN_ENGINE_STATE`;
 `player.maxHealth:361`, `player.reloadActive:375`, `player.reloadProgress:385`,
 `player.weaponCooldownMs:395`; tests `built_in_catalog_preserves_wire_names_and_capabilities`,

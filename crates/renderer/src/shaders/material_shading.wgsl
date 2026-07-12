@@ -1,5 +1,5 @@
-// Shared material leaf helpers for world-material shader consumers.
-// Consumers declare `aniso_sampler` and keep their own `sample_post_retro`.
+// Shared world-material WGSL helpers for specular and normal-map shading.
+// See: context/lib/rendering_pipeline.md
 
 // No `(1-ks)` attenuation, no Fresnel — retro aesthetic wants punchy additive
 // highlights, not energy conservation.

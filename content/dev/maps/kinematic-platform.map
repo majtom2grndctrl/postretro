@@ -70,6 +70,16 @@
 ( 400 368 0 ) ( 128 368 160 ) ( 128 368 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
 ( 400 352 0 ) ( 400 368 160 ) ( 400 368 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
 }
+// brush 7 -- promoted-static comparison wall. It stays inside the mover-only
+// spotlight cone without entering either mover's path.
+{
+( 1120 368 0 ) ( 1120 352 64 ) ( 1120 352 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1120 352 0 ) ( 1248 352 64 ) ( 1248 352 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1120 352 0 ) ( 1248 368 0 ) ( 1120 368 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1120 368 64 ) ( 1248 352 64 ) ( 1120 352 64 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1248 368 0 ) ( 1120 368 64 ) ( 1120 368 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1248 352 0 ) ( 1248 368 64 ) ( 1248 368 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
 }
 // entity 1
 {
@@ -417,7 +427,7 @@
 "origin" "1024 304 40"
 }
 // entity 33 -- Bright selected static spot. The two adjacent movers alone make
-// it promotion-relevant; the floor intentionally remains a non-receiver.
+// it promotion-relevant; the floor and static comparison wall remain non-receivers.
 {
 "classname" "light_spot"
 "origin" "1264 256 224"

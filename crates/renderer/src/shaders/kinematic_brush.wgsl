@@ -270,12 +270,13 @@ fn accumulate_dynamic_direct(
                 attenuation = 1.0;
             }
         }
-        total = total + effective_color * attenuation * max(dot(n, L), 0.0);
+        let n_dot_l = dot(n, L);
+        total = total + effective_color * attenuation * max(n_dot_l, 0.0);
 
         // The runtime buffer lists dynamic-tier lights first, then promoted
         // static records. Dynamic lights remain diffuse-only; a promoted
         // record's effective color already carries its de-promotion weight.
-        if i >= kinematic_light_params.dynamic_light_count {
+        if i >= kinematic_light_params.dynamic_light_count && n_dot_l > 0.0 {
             total = total + blinn_phong(L, V, n, effective_color, spec_exp, spec_int) * attenuation;
         }
     }

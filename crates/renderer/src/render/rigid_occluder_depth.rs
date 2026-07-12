@@ -123,10 +123,8 @@ impl RigidOccluderDepthPass {
             else {
                 continue;
             };
-            let Some(active_draw) = kinematic_brush
-                .active_draws()
-                .iter()
-                .find(|draw| draw.mover_draw_index == mover_draw_index)
+            let Some(active_draw) =
+                kinematic_brush.active_draw_for_mover_draw_index(mover_draw_index)
             else {
                 continue;
             };

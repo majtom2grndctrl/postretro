@@ -597,8 +597,21 @@ mod tests {
         assert_eq!(collector.occluder_aabbs().len(), 1);
         let aabb = collector.occluder_aabbs()[0];
         assert_eq!(aabb.mover_id, 7);
-        assert_eq!(aabb.world_aabb.min, Vec3::new(3.0, 2.0, 3.0));
-        assert_eq!(aabb.world_aabb.max, Vec3::new(4.0, 3.0, 3.0));
+        const EPSILON: f32 = 1.0e-5;
+        assert!(
+            (aabb.world_aabb.min - Vec3::new(3.0, 2.0, 3.0))
+                .abs()
+                .max_element()
+                <= EPSILON,
+            "interpolated mover AABB min must match the interpolated transform",
+        );
+        assert!(
+            (aabb.world_aabb.max - Vec3::new(4.0, 3.0, 3.0))
+                .abs()
+                .max_element()
+                <= EPSILON,
+            "interpolated mover AABB max must match the interpolated transform",
+        );
     }
 
     #[test]

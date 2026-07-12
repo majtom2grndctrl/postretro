@@ -76,6 +76,7 @@ pub(crate) struct KinematicBrushPass {
     movers: Vec<UploadedMoverDraw>,
     mover_lookup: HashMap<u32, usize>,
     active_draws: Vec<ActiveMoverDraw>,
+    active_draw_lookup: HashMap<usize, ActiveMoverDraw>,
     mover_index_ranges: Vec<MoverIndexRange>,
     instance_bytes: Vec<u8>,
 }
@@ -146,7 +147,7 @@ fn light_bind_group_layout_entries(cube_array_supported: bool) -> Vec<wgpu::Bind
             ty: wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Uniform,
                 has_dynamic_offset: false,
-                min_binding_size: None,
+                min_binding_size: std::num::NonZeroU64::new(KINEMATIC_LIGHT_PARAMS_SIZE as u64),
             },
             count: None,
         },
@@ -434,6 +435,7 @@ impl KinematicBrushPass {
             movers: Vec::new(),
             mover_lookup: HashMap::new(),
             active_draws: Vec::new(),
+            active_draw_lookup: HashMap::new(),
             mover_index_ranges: Vec::new(),
             instance_bytes: Vec::new(),
         }
@@ -448,12 +450,16 @@ impl KinematicBrushPass {
         self.movers.clear();
         self.mover_lookup.clear();
         self.active_draws.clear();
+        self.active_draw_lookup.clear();
         self.mover_index_ranges.clear();
 
         let Some(geometry) = geometry else {
             self.install_empty_geometry(device);
             return;
         };
+        // This map is rebuilt every render collection; reserve at level install
+        // so shadow recording does not trigger a per-frame reallocation.
+        self.active_draw_lookup.reserve(geometry.movers.len());
 
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
@@ -562,9 +568,16 @@ impl KinematicBrushPass {
     /// Resolve a game-side mover id through this pass's uploaded mover list to
     /// the draw index that keys active instances and full index spans.
     pub(crate) fn mover_draw_index_for_mover_id(&self, mover_id: u32) -> Option<usize> {
-        self.movers
-            .iter()
-            .position(|mover| mover.mover_id == mover_id)
+        self.mover_lookup.get(&mover_id).copied()
+    }
+
+    /// Resolve an active transform-buffer record by its geometry draw index.
+    /// External mover ids must first pass through [`Self::mover_draw_index_for_mover_id`].
+    pub(crate) fn active_draw_for_mover_draw_index(
+        &self,
+        mover_draw_index: usize,
+    ) -> Option<ActiveMoverDraw> {
+        self.active_draw_lookup.get(&mover_draw_index).copied()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -639,6 +652,7 @@ impl KinematicBrushPass {
         instances: &[KinematicMoverInstance],
     ) {
         self.active_draws.clear();
+        self.active_draw_lookup.clear();
         self.instance_bytes.clear();
 
         for instance in instances {
@@ -648,10 +662,17 @@ impl KinematicBrushPass {
             let instance_index = (self.instance_bytes.len() / INSTANCE_ENTRY_SIZE) as u32;
             self.instance_bytes
                 .extend_from_slice(&build_instance_entry(instance.transform));
-            self.active_draws.push(ActiveMoverDraw {
+            let active_draw = ActiveMoverDraw {
                 mover_draw_index,
                 instance_index,
-            });
+            };
+            self.active_draws.push(active_draw);
+            // A mover id has one external AABB. Keep its first packed instance
+            // so the depth recorder preserves the former `iter().find()` behavior
+            // if malformed input ever duplicates that id.
+            self.active_draw_lookup
+                .entry(mover_draw_index)
+                .or_insert(active_draw);
         }
 
         if self.instance_bytes.is_empty() {
@@ -1020,6 +1041,30 @@ mod tests {
     }
 
     #[test]
+    fn kinematic_light_layout_requires_32_byte_params_uniform() {
+        let entries = light_bind_group_layout_entries(true);
+        let params_entry = entries
+            .iter()
+            .find(|entry| entry.binding == 4)
+            .expect("kinematic light layout must bind params at binding 4");
+        let wgpu::BindingType::Buffer {
+            ty,
+            has_dynamic_offset,
+            min_binding_size,
+        } = params_entry.ty
+        else {
+            panic!("kinematic light binding 4 must be a uniform buffer");
+        };
+
+        assert_eq!(ty, wgpu::BufferBindingType::Uniform);
+        assert!(!has_dynamic_offset);
+        assert_eq!(
+            min_binding_size.map(std::num::NonZeroU64::get),
+            Some(KINEMATIC_LIGHT_PARAMS_SIZE as u64),
+        );
+    }
+
+    #[test]
     fn kinematic_light_params_uploads_dynamic_tier_count_in_second_uniform_row() {
         let bytes = build_light_params_bytes(KinematicLightParams {
             light_count: 11,
@@ -1040,22 +1085,53 @@ mod tests {
     }
 
     #[test]
-    fn kinematic_light_params_wgsl_span_matches_second_uniform_row() {
+    fn kinematic_light_params_wgsl_layout_matches_rust_upload() {
         let module = naga::front::wgsl::parse_str(SHADER_SOURCE)
             .expect("composed kinematic brush shader should parse as WGSL");
-        let span = module
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("composed kinematic brush shader should pass Naga validation");
+
+        let (span, members) = module
             .types
             .iter()
             .find_map(|(_handle, ty)| match (&ty.name, &ty.inner) {
-                (Some(name), naga::TypeInner::Struct { span, .. })
+                (Some(name), naga::TypeInner::Struct { span, members, .. })
                     if name == "KinematicLightParams" =>
                 {
-                    Some(*span)
+                    Some((*span, members))
                 }
                 _ => None,
             })
             .expect("kinematic brush shader should declare KinematicLightParams");
+
         assert_eq!(span as usize, KINEMATIC_LIGHT_PARAMS_SIZE);
+        assert_eq!(
+            members
+                .iter()
+                .map(|member| member.name.as_deref())
+                .collect::<Vec<_>>(),
+            vec![
+                Some("light_count"),
+                Some("time"),
+                Some("lighting_isolation"),
+                Some("ambient_floor"),
+                Some("dynamic_light_count"),
+                Some("_pad0"),
+                Some("_pad1"),
+                Some("_pad2"),
+            ],
+        );
+        assert_eq!(
+            members
+                .iter()
+                .map(|member| member.offset)
+                .collect::<Vec<_>>(),
+            vec![0, 4, 8, 12, 16, 20, 24, 28],
+        );
     }
 
     #[test]
@@ -1072,8 +1148,9 @@ mod tests {
             "accumulate_dynamic_direct",
         );
         assert!(
-            dynamic_loop.contains("if i >= kinematic_light_params.dynamic_light_count"),
-            "only records after the dynamic tier may add mover specular",
+            dynamic_loop
+                .contains("if i >= kinematic_light_params.dynamic_light_count && n_dot_l > 0.0"),
+            "only front-lit promoted records may add mover specular",
         );
         assert!(
             dynamic_loop.contains(

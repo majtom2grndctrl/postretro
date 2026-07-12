@@ -5,6 +5,15 @@
 use super::renderer_types::PromotedStaticLightState;
 use super::*;
 
+/// Discard the paired per-frame mover inputs when level geometry changes.
+fn clear_kinematic_mover_frame_state(
+    draws: &mut Vec<kinematic_brush::KinematicMoverInstance>,
+    occluder_aabbs: &mut Vec<rigid_occluder_depth::MoverOccluderAabb>,
+) {
+    draws.clear();
+    occluder_aabbs.clear();
+}
+
 impl Renderer {
     /// First caller's `spec_intensity` and `lifetime` win — per-collection, not per-emitter.
     pub fn register_smoke_collection(
@@ -78,8 +87,11 @@ impl Renderer {
         self.full_mut().smoke_pass.clear_collections();
         self.full_mut().mesh_pass.release_level_resources();
         self.full_mut().mesh_draws.clear();
-        self.full_mut().kinematic_mover_draws.clear();
-        self.full_mut().mover_occluder_aabbs.clear();
+        let full = self.full_mut();
+        clear_kinematic_mover_frame_state(
+            &mut full.kinematic_mover_draws,
+            &mut full.mover_occluder_aabbs,
+        );
         self.full_mut().bone_palette_scratch.clear();
         self.full_mut().fog_cell_masks = None;
         self.full_mut().active_fog_aabbs.clear();
@@ -534,7 +546,10 @@ impl Renderer {
             geometry.kinematic_geometry,
             geometry.texture_materials.len(),
         );
-        full.kinematic_mover_draws.clear();
+        clear_kinematic_mover_frame_state(
+            &mut full.kinematic_mover_draws,
+            &mut full.mover_occluder_aabbs,
+        );
 
         if has_geometry {
             log::info!(
@@ -543,5 +558,32 @@ impl Renderer {
                 full.bvh_leaves.len(),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use glam::{Mat4, Vec3};
+    use postretro_render_data::cone_frustum::Aabb;
+
+    #[test]
+    fn kinematic_mover_frame_state_reset_clears_draws_and_occluder_aabbs() {
+        let mut draws = vec![kinematic_brush::KinematicMoverInstance {
+            mover_id: 7,
+            transform: Mat4::IDENTITY,
+        }];
+        let mut occluder_aabbs = vec![rigid_occluder_depth::MoverOccluderAabb {
+            mover_id: 7,
+            world_aabb: Aabb {
+                min: Vec3::ZERO,
+                max: Vec3::ONE,
+            },
+        }];
+
+        clear_kinematic_mover_frame_state(&mut draws, &mut occluder_aabbs);
+
+        assert!(draws.is_empty());
+        assert!(occluder_aabbs.is_empty());
     }
 }

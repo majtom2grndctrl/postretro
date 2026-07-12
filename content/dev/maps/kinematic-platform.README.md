@@ -38,8 +38,9 @@ before claiming that part of the manual acceptance check.
 - **Mover-only promotion station (x 960–1,568).** Two adjacent concrete movers
   cross under one bright static spotlight. No skinned mesh is placed here.
   They make the light promotion-relevant, receive the promoted-static broad
-  specular lobe, and cast onto each other. The floor is deliberately not a
-  promoted-static receiver.
+  specular lobe, and cast onto each other. A same-material static comparison
+  wall sits immediately north of their track, inside the spotlight cone. The
+  floor and wall are deliberately not promoted-static shadow receivers.
 - **Mixed ranker station (x 2,040–2,464).** A mover and skinned mesh overlap
   three bright static point lights. The lights compete for the fixed two-slot
   promoted-cube budget, so use this station to confirm graceful ranker
@@ -50,11 +51,13 @@ before claiming that part of the manual acceptance check.
 1. At the west station, compare a north-facing mover side and the north-facing
    static wall. Their concrete diffuse and bump response should agree under a
    comparable view and light angle.
-2. Under the mover-only station's promoted static spotlight, observe the
-   concrete specular lobe and the mover-to-mover shadow. Move with either
-   platform until it leaves the light's influence: the lobe must fade with
-   de-promotion, not pop. The floor must not receive that promoted-static mover
-   shadow.
+2. Under the mover-only station's promoted static spotlight, compare a mover's
+   concrete specular lobe with the in-range concrete static wall. The broad
+   highlight should match in character, not pixel-for-pixel: the wall uses its
+   baked static path while the mover uses the promoted runtime record. Move
+   either platform until it leaves the light's influence: its lobe must fade
+   with de-promotion, not pop. The floor and comparison wall must not receive
+   that promoted-static mover shadow.
 3. At the west station, the dynamic spot and point lights may brighten movers
    and the wall diffusely, but must not create a specular glint. Watch a moving
    platform shadow sweep across the floor under both dynamic lights, and across

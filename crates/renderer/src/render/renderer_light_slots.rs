@@ -328,7 +328,7 @@ impl Renderer {
             // cull frustum planes (one source of truth, no recomputation).
             full.spot_shadow_pool.slot_cone_matrices[slot as usize] = Some(m);
             // Record whether this slot's occupant renders entity occluders. The
-            // shadow-depth loop draws skinned occluders into the slot only when
+            // shadow-depth loop draws skinned meshes and rigid movers into the slot only when
             // this is set; an ineligible (e.g. toggle-off dynamic) slot keeps its
             // world shadow but draws none.
             let promoted_static = full

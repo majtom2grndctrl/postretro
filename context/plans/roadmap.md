@@ -228,7 +228,7 @@ The on-hit / on-kill substrate (`combat-events.md`): the engine emits structured
 
 Grow the single shipped hitscan weapon into the durable wieldable model (`weapon-model.md`): per-instance state, resources, loadout, augments, and richer activations. The first spec banks the combat-events source-id seam. Co-op-correct ammo/reload depends on the pulled-forward `E16 — Client-Authoritative Combat` spec (Resolution Modes).
 
-- [ ] **ammo resource** — the resource tagged-union's ammo variant: a pooled-by-type reserve on the inventory, a per-instance magazine, atomic reload.
+- [x] **ammo resource** — the resource tagged-union's ammo variant: a pooled-by-type reserve on the inventory, a per-instance magazine, atomic reload. Shipped: `context/plans/done/E16--ammo-resource/`.
 - [ ] **heat + cell resources** — the other two union variants plus the per-tick resource update (heat dissipates, cells regen — independent of fire).
 - [ ] **per-shell reload** — the cancellable, interruptible reload state machine (the shotgun case), versus atomic magazine reload.
 - [ ] **switching + inventory** — the inventory of owned wieldables; the active reference repoints, preserving per-instance state. Replaces the `active_wieldable` chokepoint.

@@ -1,6 +1,6 @@
 # E16 - Ammo Resource
 
-> **Status:** in-progress.
+> **Status:** done.
 >
 > **Epic:** 16 - Combat.
 >
@@ -157,7 +157,7 @@ Each is its own later roadmap bullet; the shape only accommodates them.
 
 ## Acceptance criteria
 
-- [ ] Authors can set `components.weapon.resource` (an `ammo`-kind block) in
+- [x] Authors can set `components.weapon.resource` (an `ammo`-kind block) in
   TypeScript and Luau. An absent `resource` parses to `None`. Rejection happens
   at two layers: (a) serde-deserialize rejections — unknown `kind`, or a
   wrong-type or negative value for any `u32` field (`magazine`, `costPerShot`,
@@ -166,18 +166,18 @@ Each is its own later roadmap bullet; the shape only accommodates them.
   `magazine < 1`, `cost_per_shot < 1`, `reload_ms < 1`. Both layers reject
   identically across the QuickJS and Luau runtimes, which are behavioral twins
   for descriptor parsing (`scripting.md` §1).
-- [ ] Generated TypeScript and Luau SDK types include the `resource` tagged union
+- [x] Generated TypeScript and Luau SDK types include the `resource` tagged union
   on `WeaponDescriptor` with an `ammo` variant carrying `type`, `magazine`,
   `costPerShot`, `reserve`, `reloadMs`, all camelCase, identical in both runtimes.
-- [ ] A weapon with `resource: None` fires with no magazine gating and cannot
+- [x] A weapon with `resource: None` fires with no magazine gating and cannot
   reload — the current single-weapon fire tests pass unchanged (back-compat).
-- [ ] At equip-at-spawn a weapon with an ammo resource materializes with a full
+- [x] At equip-at-spawn a weapon with an ammo resource materializes with a full
   magazine (`= magazine` capacity), an idle reload timer, and the pawn's reserve
   pool for that ammo type credited the descriptor's starting `reserve`.
-- [ ] Firing consumes `costPerShot` from the magazine; the shot resolves exactly
+- [x] Firing consumes `costPerShot` from the magazine; the shot resolves exactly
   as today (hit-zone multiplier, ledger attribution, impact FX unchanged). The
   reserve is untouched by firing.
-- [ ] With magazine `< costPerShot` the trigger blocks: no shot resolves, no ammo
+- [x] With magazine `< costPerShot` the trigger blocks: no shot resolves, no ammo
   is consumed, no damage is applied, and the block is observable. The caller-drain
   signal is the `dry_fire` event (via `event_names()`); the internal
   fire-state seam returns `WeaponFireAuthorization::Empty`. A dry fire builds no
@@ -185,7 +185,7 @@ Each is its own later roadmap bullet; the shape only accommodates them.
   It is not a silent no-op. Cooldown-blocked shots stay silent as today. While a
   reload is in flight the trigger is likewise blocked silently and does not cancel
   the reload.
-- [ ] Reload is timed by the **effective** reload duration: on a fresh reload
+- [x] Reload is timed by the **effective** reload duration: on a fresh reload
   press (rising edge of the held `SimCommand.reload` bit) the reload timer starts
   from `effective().reload_ms`; a held reload button starts exactly one reload.
   The timer advances per fixed tick, and on completion transfers
@@ -193,12 +193,12 @@ Each is its own later roadmap bullet; the shape only accommodates them.
   into the magazine in one atomic step. A reload attempt with a full magazine or
   an empty reserve pool is a distinct blocked outcome (no timer started), not a
   partial or silent transfer.
-- [ ] Hot reload preserves the live `magazine` count, the in-flight reload timer,
+- [x] Hot reload preserves the live `magazine` count, the in-flight reload timer,
   the `reload_press_consumed` edge flag, and cooldown through
   `refresh_from_descriptor` while updating authored capacity/cost/type/reload-duration
   — an implementation that resets the magazine to full or aborts an in-flight
   reload on descriptor reload fails this criterion.
-- [ ] `player.ammo` reflects the active wieldable's live magazine and
+- [x] `player.ammo` reflects the active wieldable's live magazine and
   `player.ammoReserve` reflects its ammo type's reserve pool, republished each
   frame; both are readonly engine-owned slots the dev HUD reads through
   `getGameState().player`. Correct for single-player and the host's own pawn via
@@ -207,7 +207,7 @@ Each is its own later roadmap bullet; the shape only accommodates them.
   wieldable (no pawn / fly-camera), the publisher skips the ammo write, matching
   the health publisher — the slots keep their last value rather than publishing a
   stale 0.
-- [ ] `player.reloadProgress` ramps `0 → 1` over the effective reload duration
+- [x] `player.reloadProgress` ramps `0 → 1` over the effective reload duration
   and `player.reloadActive` is true only while reloading; unlike the ammo slots,
   the reload producer writes `reloadActive = false` / `reloadProgress = 0` every
   idle frame (no active reload) so the retained `exitFade` triggers rather than
@@ -217,16 +217,16 @@ Each is its own later roadmap bullet; the shape only accommodates them.
   the reload-feedback driver test; the `hud.reloadMeter` bar fill and exit-fade is
   retained-UI presentation (`ui.md` §3), verified by manual dev observation as the
   shipped reload-feedback plan did.
-- [ ] No ammo-grant, `onKill`, resource-grant, or progression behavior runs as
+- [x] No ammo-grant, `onKill`, resource-grant, or progression behavior runs as
   part of this plan (review/grep gate).
-- [ ] No heat/cell variant, per-shell / cancellable reload, `reloadStyle`,
+- [x] No heat/cell variant, per-shell / cancellable reload, `reloadStyle`,
   pickup, or inventory is built (review/grep gate). No new `unsafe`
   (review/grep gate).
-- [ ] A net-slot pawn materializes host-side with its descriptor-seeded reserve
+- [x] A net-slot pawn materializes host-side with its descriptor-seeded reserve
   and a full magazine (Task 3 seeding). A remote client's reload, routed through
   the shipped `deliver_reload_to_weapon` seam this spec fills, draws against this
   same host-side reserve.
-- [ ] A co-op remote client observes their own pawn's `player.ammo` /
+- [x] A co-op remote client observes their own pawn's `player.ammo` /
   `player.ammoReserve` / `player.reloadProgress` / `player.reloadActive`, not the
   host's, via the per-pawn projection (Task 7).
 

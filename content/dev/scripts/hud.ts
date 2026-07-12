@@ -52,6 +52,22 @@ const status = Text({
   bind: bindState(player.health, { format: "HP {}" }),
 });
 
+const ammo = Text({
+  content: "AMMO -- / --",
+  color: color.hud.text,
+  font: font.hud.status,
+  fontSize: 24.0,
+  bind: bindState(player.ammo, { format: "AMMO {}" }),
+});
+
+const ammoReserve = Text({
+  content: "/ --",
+  color: color.hud.text,
+  font: font.hud.status,
+  fontSize: 24.0,
+  bind: bindState(player.ammoReserve, { format: "/ {}" }),
+});
+
 const bar = Bar({
   bind: bindState(player.health, {
     tween: {
@@ -85,7 +101,7 @@ export const hud = defineUiTree({
         fill: color.hud.panel,
       },
       [
-        HStack({ gap: spacing.hud.gap, align: "center" }, [status]),
+        HStack({ gap: spacing.hud.gap, align: "center" }, [status, ammo, ammoReserve]),
         bar,
       ],
     ),

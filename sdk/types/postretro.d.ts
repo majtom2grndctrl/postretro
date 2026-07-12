@@ -639,6 +639,8 @@ declare module "postretro" {
       readonly mode: ReadonlyStateRef<"pointer" | "focus">;
     };
     readonly player: {
+      readonly ammo: ReadonlyStateRef<number>;
+      readonly ammoReserve: ReadonlyStateRef<number>;
       readonly health: ReadonlyStateRef<number>;
       readonly maxHealth: ReadonlyStateRef<number>;
       readonly reloadActive: ReadonlyStateRef<boolean>;

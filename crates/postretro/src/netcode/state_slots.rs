@@ -814,8 +814,12 @@ mod tests {
             vec![
                 "net.alpha",
                 "net.bravo",
+                "player.ammo",
+                "player.ammoReserve",
                 "player.health",
                 "player.maxHealth",
+                "player.reloadActive",
+                "player.reloadProgress",
                 "player.weaponCooldownMs",
             ]
         );
@@ -847,8 +851,12 @@ mod tests {
         assert_eq!(
             names,
             vec![
+                "player.ammo",
+                "player.ammoReserve",
                 "player.health",
                 "player.maxHealth",
+                "player.reloadActive",
+                "player.reloadProgress",
                 "player.weaponCooldownMs"
             ]
         );
@@ -903,7 +911,7 @@ mod tests {
         let net = schema.to_net_schema();
         assert_eq!(net.fingerprint(), schema.fingerprint());
         // Two mod slots plus the owner-private engine player slots.
-        assert_eq!(net.len(), 5);
+        assert_eq!(net.len(), 9);
         let alpha = net
             .descriptor(StateSlotId(0))
             .expect("alpha descriptor exists");
@@ -962,13 +970,17 @@ mod tests {
     /// the dedicated player-health tests below).
     fn shared_and_private_table() -> SlotTable {
         let mut table = SlotTable::new();
-        table.get_mut("player.health").unwrap().schema.network = ReplicationScope::None;
-        table.get_mut("player.maxHealth").unwrap().schema.network = ReplicationScope::None;
-        table
-            .get_mut("player.weaponCooldownMs")
-            .unwrap()
-            .schema
-            .network = ReplicationScope::None;
+        for name in [
+            "player.ammo",
+            "player.ammoReserve",
+            "player.health",
+            "player.maxHealth",
+            "player.reloadActive",
+            "player.reloadProgress",
+            "player.weaponCooldownMs",
+        ] {
+            table.get_mut(name).unwrap().schema.network = ReplicationScope::None;
+        }
         table
             .insert_namespace(
                 "net",
@@ -1118,14 +1130,18 @@ mod tests {
         let records = host
             .produce_for_client(CLIENT_A, 0)
             .expect("registered client produces records");
-        assert_eq!(records.len(), 2, "health + maxHealth projected");
+        assert_eq!(
+            records.len(),
+            4,
+            "health pair plus reload defaults projected"
+        );
 
         // Client applies through the store path; the engine-owned readonly player slots
         // receive the replicated values (engine bypass honors readonly).
         let mut client_table = player_health_replicated_table();
         let mut client = ClientStateApply::new();
         let outcome = client.apply_snapshot_state(&mut client_table, 0, &fingerprint, &records);
-        assert_eq!(outcome.slot_baselines.len(), 2);
+        assert_eq!(outcome.slot_baselines.len(), 4);
         assert_eq!(
             client_table.get("player.health").unwrap().value,
             Some(SlotValue::Number(75.0)),
@@ -1479,7 +1495,11 @@ mod tests {
         let records = host
             .produce_for_client(CLIENT_A, 0)
             .expect("registered client produces records");
-        assert_eq!(records.len(), 2, "health + maxHealth projected");
+        assert_eq!(
+            records.len(),
+            4,
+            "health pair plus reload defaults projected"
+        );
 
         // The slot ids come from the same deterministic schema as store slots.
         let schema = ReplicatedSlotSchema::build(&host_table);
@@ -1493,7 +1513,7 @@ mod tests {
         let mut client_table = player_health_replicated_table();
         let mut client = ClientStateApply::new();
         let outcome = client.apply_snapshot_state(&mut client_table, 0, &fingerprint, &records);
-        assert_eq!(outcome.slot_baselines.len(), 2);
+        assert_eq!(outcome.slot_baselines.len(), 4);
         assert_eq!(
             client_table.get("player.health").unwrap().value,
             Some(SlotValue::Number(120.0)),

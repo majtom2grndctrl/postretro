@@ -2115,27 +2115,23 @@ impl ApplicationHandler for App {
                     self.dispatch_system_commands();
                 }
 
-                // Player HUD state: republish the engine-owned health slots
+                // Player HUD state: republish engine-owned health/ammo/reload slots
                 // after game logic settles and before crossing detection / UI
                 // snapshot construction, so same-frame consumers see the
-                // settled pawn HP. See: context/lib/scripting.md §5.
+                // settled pawn and weapon state. See: context/lib/scripting.md §5.
                 //
-                // M15 Phase 3.5 Task 4: skip on a connected client. `player.health`
-                // / `player.maxHealth` are now owner-private replicated slots; the
-                // server writes them through the state-slot apply path, so a client
+                // Skip on a connected client. The player HUD slots are
+                // owner-private replicated; the server writes them through the
+                // state-slot apply path, so a client
                 // must not overwrite the replicated values from its own (non-
                 // authoritative) pawn. Host and single-player keep publishing.
                 let is_connected_client = self.is_connected_client();
+                let active_wieldable = self.active_wieldable;
                 if let Some(session) = self.session.as_mut() {
                     session
                         .scripting
                         .player_hud_state
-                        .tick_for_role(is_connected_client);
-                    #[cfg(feature = "dev-tools")]
-                    session
-                        .scripting
-                        .dev_reload_progress
-                        .tick(gameplay_snapshot.as_ref(), frame_dt);
+                        .tick_for_role(is_connected_client, active_wieldable);
                 }
                 // Flash-decay state writes the engine-owned `screen.flash`
                 // surface at the same game-logic stage as the HUD publisher, so

@@ -795,6 +795,7 @@ pub(crate) fn component_kind_discriminant(kind: ComponentKind) -> u16 {
         ComponentKind::Brain => 12,
         ComponentKind::KinematicMover => 13,
         ComponentKind::TriggerVolume => 14,
+        ComponentKind::AmmoReserve => 15,
     }
 }
 
@@ -1719,6 +1720,9 @@ fn cleanup_remote_pawn_owned_state(
     client_id: u64,
     pawn: EntityId,
 ) {
+    // Pawn and sibling weapon are one runtime ownership unit. Despawning both
+    // prevents a non-cancellable reload from surviving without the reserve-owning
+    // pawn that must finish its transfer.
     let weapon = weapon_owners.weapon_of(pawn);
     pending_hit_declarations.remove_client(client_id);
     open_shots.remove_client(client_id);
@@ -2255,6 +2259,7 @@ mod tests {
             fire_mode: FireMode::Semi,
             resolution: ResolutionMode::Hitscan,
             credit_source: Some("weapon.test.net".to_string()),
+            resource: None,
         })
     }
 
@@ -2909,7 +2914,8 @@ mod tests {
                 ComponentKind::Agent => Some(ComponentKind::Brain),
                 ComponentKind::Brain => Some(ComponentKind::KinematicMover),
                 ComponentKind::KinematicMover => Some(ComponentKind::TriggerVolume),
-                ComponentKind::TriggerVolume => None,
+                ComponentKind::TriggerVolume => Some(ComponentKind::AmmoReserve),
+                ComponentKind::AmmoReserve => None,
             }
         }
 

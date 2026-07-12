@@ -95,6 +95,13 @@ The state store has engine-global lifetime and is never cleared on level unload,
 
 Engine-owned slots may be readonly to scripts while remaining writable by engine systems. Engine writes bypass readonly but still apply declared type, enum, finite-number, and range validation. Mod-owned slots are script-writable unless declared otherwise. Scripts and engine systems address slots by dotted name so references remain valid after the authoring VM drops.
 
+Numeric slots use `f32` end to end. Integer-shaped producers remain exact only
+through 2^24. `player.ammo` and `player.ammoReserve` expose the full authored
+`u32` domain without clamping, so extreme counts above that boundary may round
+in HUD and owner-private state projection. Exact full-width integer slots need
+a separate state-store and replication contract; ammo does not widen the global
+numeric value type.
+
 An engine-owned numeric slot may gain its declared range after registration: the producing engine system attaches it when the governing data materializes (`player.health` carries `[0, max HP]` once a player with health spawns). Range attachment is engine-side only; readonly gating for scripts is unchanged.
 
 Declaration attempts validate as a whole before commit. Repeating an identical schema preserves current values. New non-overlapping namespaces may commit during staged hot reload. Changed schemas, duplicate declarations, and namespace overlap reject the whole staged result. Removed declarations do not clear committed stores.

@@ -20,6 +20,33 @@ pub enum ResolutionMode {
     Hitscan,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum WeaponResource {
+    Ammo(AmmoResource),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AmmoResource {
+    #[serde(rename = "type")]
+    pub ammo_type: String,
+    pub magazine: u32,
+    #[serde(default = "default_cost_per_shot", rename = "costPerShot")]
+    pub cost_per_shot: u32,
+    pub reserve: u32,
+    #[serde(default = "default_reload_ms", rename = "reloadMs")]
+    pub reload_ms: u32,
+}
+
+const fn default_cost_per_shot() -> u32 {
+    1
+}
+
+const fn default_reload_ms() -> u32 {
+    1000
+}
+
 /// Authored weapon component preset. This is descriptor-owned tuning data:
 /// maps do not override these params, and the runtime materializes a separate
 /// wieldable instance entity from the descriptor at player spawn.
@@ -34,6 +61,8 @@ pub struct WeaponDescriptor {
     pub resolution: ResolutionMode,
     #[serde(default, rename = "creditSource")]
     pub credit_source: Option<String>,
+    #[serde(default)]
+    pub resource: Option<WeaponResource>,
 }
 
 impl WeaponDescriptor {
@@ -65,21 +94,40 @@ impl WeaponDescriptor {
         if let Some(credit_source) = self.credit_source.as_deref() {
             validate_credit_source(credit_source)?;
         }
+        if let Some(WeaponResource::Ammo(ammo)) = self.resource.as_ref() {
+            validate_ascii_identifier("resource.type", &ammo.ammo_type)?;
+            for (field, value) in [
+                ("magazine", ammo.magazine),
+                ("costPerShot", ammo.cost_per_shot),
+                ("reloadMs", ammo.reload_ms),
+            ] {
+                if value < 1 {
+                    return Err(DescriptorError::InvalidShape {
+                        reason: format!(
+                            "`components.weapon.resource.{field}` must be >= 1, got {value}"
+                        ),
+                    });
+                }
+            }
+        }
         Ok(self)
     }
 }
 
 fn validate_credit_source(value: &str) -> Result<(), DescriptorError> {
+    validate_ascii_identifier("creditSource", value)
+}
+
+fn validate_ascii_identifier(field: &str, value: &str) -> Result<(), DescriptorError> {
     if value.is_empty() {
         return Err(DescriptorError::InvalidShape {
-            reason: "`components.weapon.creditSource` must be a non-empty ASCII identifier"
-                .to_string(),
+            reason: format!("`components.weapon.{field}` must be a non-empty ASCII identifier"),
         });
     }
     if value.len() > 64 {
         return Err(DescriptorError::InvalidShape {
             reason: format!(
-                "`components.weapon.creditSource` must be at most 64 bytes, got {}",
+                "`components.weapon.{field}` must be at most 64 bytes, got {}",
                 value.len()
             ),
         });
@@ -89,8 +137,7 @@ fn validate_credit_source(value: &str) -> Result<(), DescriptorError> {
         .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b':' | b'-'))
     {
         return Err(DescriptorError::InvalidShape {
-            reason: "`components.weapon.creditSource` must match [A-Za-z0-9_.:-] and be ASCII"
-                .to_string(),
+            reason: format!("`components.weapon.{field}` must match [A-Za-z0-9_.:-] and be ASCII"),
         });
     }
     Ok(())
@@ -270,6 +317,7 @@ mod tests {
             fire_mode: FireMode::Semi,
             resolution: ResolutionMode::Hitscan,
             credit_source: credit_source.map(str::to_string),
+            resource: None,
         }
     }
 
@@ -300,5 +348,97 @@ mod tests {
             err.to_string().contains("64 bytes"),
             "unexpected overlength error: {err}"
         );
+    }
+
+    #[test]
+    fn weapon_ammo_resource_defaults_and_validates() {
+        let mut descriptor = weapon_descriptor(None);
+        descriptor.resource = Some(WeaponResource::Ammo(AmmoResource {
+            ammo_type: "shells.primary".to_string(),
+            magazine: 8,
+            cost_per_shot: 1,
+            reserve: 0,
+            reload_ms: 1000,
+        }));
+        assert!(descriptor.validate().is_ok());
+
+        let parsed: WeaponDescriptor = serde_json::from_value(serde_json::json!({
+            "damage": 10.0,
+            "range": 64.0,
+            "fireRateMs": 180.0,
+            "fireMode": "semi",
+            "resolution": "hitscan",
+            "resource": {
+                "kind": "ammo",
+                "type": "shells",
+                "magazine": 8,
+                "reserve": 32
+            }
+        }))
+        .unwrap();
+        let Some(WeaponResource::Ammo(ammo)) = parsed.resource else {
+            panic!("expected ammo resource");
+        };
+        assert_eq!(ammo.cost_per_shot, 1);
+        assert_eq!(ammo.reload_ms, 1000);
+    }
+
+    #[test]
+    fn weapon_ammo_resource_rejects_semantically_invalid_values() {
+        for (field, value) in [
+            ("type", serde_json::json!("bad ammo")),
+            ("magazine", serde_json::json!(0)),
+            ("costPerShot", serde_json::json!(0)),
+            ("reloadMs", serde_json::json!(0)),
+        ] {
+            let mut ammo = serde_json::json!({
+                "kind": "ammo",
+                "type": "shells",
+                "magazine": 8,
+                "costPerShot": 1,
+                "reserve": 32,
+                "reloadMs": 1000
+            });
+            ammo[field] = value;
+            let mut descriptor = weapon_descriptor(None);
+            descriptor.resource = Some(serde_json::from_value(ammo).unwrap());
+            let err = descriptor.validate().unwrap_err();
+            assert!(err.to_string().contains(field), "unexpected error: {err}");
+        }
+
+        for invalid_type in ["", "rocket/primary", "plasma.\u{00e9}"] {
+            let mut descriptor = weapon_descriptor(None);
+            descriptor.resource = Some(WeaponResource::Ammo(AmmoResource {
+                ammo_type: invalid_type.to_string(),
+                magazine: 8,
+                cost_per_shot: 1,
+                reserve: 32,
+                reload_ms: 1000,
+            }));
+            assert!(descriptor.validate().is_err(), "accepted {invalid_type:?}");
+        }
+
+        let mut descriptor = weapon_descriptor(None);
+        descriptor.resource = Some(WeaponResource::Ammo(AmmoResource {
+            ammo_type: "a".repeat(65),
+            magazine: 8,
+            cost_per_shot: 1,
+            reserve: 32,
+            reload_ms: 1000,
+        }));
+        let err = descriptor.validate().unwrap_err();
+        assert!(err.to_string().contains("64 bytes"));
+    }
+
+    #[test]
+    fn weapon_ammo_resource_rejects_invalid_serde_shapes() {
+        for resource in [
+            serde_json::json!({"kind": "cell", "type": "cells", "magazine": 8, "reserve": 32}),
+            serde_json::json!({"kind": "ammo", "type": "cells", "magazine": -1, "reserve": 32}),
+            serde_json::json!({"kind": "ammo", "type": "cells", "magazine": 8, "reserve": -1}),
+            serde_json::json!({"kind": "ammo", "type": "cells", "magazine": "8", "reserve": 32}),
+        ] {
+            assert!(serde_json::from_value::<WeaponResource>(resource).is_err());
+        }
     }
 }

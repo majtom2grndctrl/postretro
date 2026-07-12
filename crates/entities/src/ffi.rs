@@ -173,6 +173,7 @@ fn component_kind_name(k: ComponentKind) -> &'static str {
         ComponentKind::Brain => "brain",
         ComponentKind::KinematicMover => "kinematic_mover",
         ComponentKind::TriggerVolume => "trigger_volume",
+        ComponentKind::AmmoReserve => "ammo_reserve",
     }
 }
 
@@ -346,6 +347,10 @@ impl<'js> IntoJs<'js> for ComponentValue {
                 ctx,
                 "TriggerVolume component is engine-managed and not exposed to scripts",
             )),
+            ComponentValue::AmmoReserve(_) => Err(rquickjs::Exception::throw_type(
+                ctx,
+                "AmmoReserve component is engine-managed and not exposed to scripts",
+            )),
         }
     }
 }
@@ -488,6 +493,9 @@ impl IntoLua for ComponentValue {
             )),
             ComponentValue::TriggerVolume(_) => Err(mlua::Error::RuntimeError(
                 "TriggerVolume component is engine-managed and not exposed to scripts".to_string(),
+            )),
+            ComponentValue::AmmoReserve(_) => Err(mlua::Error::RuntimeError(
+                "AmmoReserve component is engine-managed and not exposed to scripts".to_string(),
             )),
         }
     }

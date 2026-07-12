@@ -1,6 +1,6 @@
 # E16 - Ammo Resource
 
-> **Status:** ready.
+> **Status:** done.
 >
 > **Epic:** 16 - Combat.
 >
@@ -13,11 +13,11 @@
 > `crates/postretro/src/netcode/wire_convert.rs`), the `neutral_sim_command`
 > default (`crates/postretro/src/netcode/command_queue.rs:452`), and the
 > per-pawn reload delivery seam `deliver_reload_to_weapon`
-> (`crates/postretro/src/sim/mod.rs:424`) — today a no-op that emits a
-> `ReloadDelivery` (`sim/mod.rs:70`) with no ammo transfer. Both the local/host
-> pawn (`sim/mod.rs:200`) and remote co-op pawns (`run_remote_weapon_commands`,
-> `sim/mod.rs:382`) already route reload intent through that seam. This spec
-> **fills** it. The production host resolver `host_resolve_remote_commands`
+> (`crates/postretro/src/sim/mod.rs:424`). Both the local/host pawn
+> (`sim/mod.rs:200`) and remote co-op pawns (`run_remote_weapon_commands`,
+> `sim/mod.rs:382`) route reload intent through that seam. This spec makes the
+> seam own reload timing and ammo transfer. The production host resolver
+> `host_resolve_remote_commands`
 > (`command_queue.rs:396`) already resolves the full per-pawn `SimCommand`
 > (movement + fire + reload); there is no movement-only limitation to work
 > around.
@@ -81,8 +81,10 @@ resource-grant chokepoint (inverse of `applyDamage`) as a clean seam a later
   materializes full.
 - Firing consumes `costPerShot` from the magazine at `weapon::tick_resolved`. An
   empty magazine blocks the activation and surfaces it (a `dry_fire` event +
-  `ActivationOutcome::Empty`), consuming no ammo and dealing no damage. Firing is
-  also blocked while a reload is in flight (reload is non-cancellable).
+  `WeaponFireAuthorization::Empty`), consuming no ammo and dealing no damage.
+  Empty activations use the effective fire interval, so a held Auto trigger emits
+  at weapon cadence rather than every fixed tick. Firing is also blocked while a
+  reload is in flight (reload is non-cancellable).
 - Reload (`Action::Reload`, already bound) as a timed transfer. On the rising
   edge of the reload command the weapon starts a reload timer from the effective
   reload duration (guarded: a fresh press while already reloading is a silent
@@ -155,7 +157,7 @@ Each is its own later roadmap bullet; the shape only accommodates them.
 
 ## Acceptance criteria
 
-- [ ] Authors can set `components.weapon.resource` (an `ammo`-kind block) in
+- [x] Authors can set `components.weapon.resource` (an `ammo`-kind block) in
   TypeScript and Luau. An absent `resource` parses to `None`. Rejection happens
   at two layers: (a) serde-deserialize rejections — unknown `kind`, or a
   wrong-type or negative value for any `u32` field (`magazine`, `costPerShot`,
@@ -164,26 +166,26 @@ Each is its own later roadmap bullet; the shape only accommodates them.
   `magazine < 1`, `cost_per_shot < 1`, `reload_ms < 1`. Both layers reject
   identically across the QuickJS and Luau runtimes, which are behavioral twins
   for descriptor parsing (`scripting.md` §1).
-- [ ] Generated TypeScript and Luau SDK types include the `resource` tagged union
+- [x] Generated TypeScript and Luau SDK types include the `resource` tagged union
   on `WeaponDescriptor` with an `ammo` variant carrying `type`, `magazine`,
   `costPerShot`, `reserve`, `reloadMs`, all camelCase, identical in both runtimes.
-- [ ] A weapon with `resource: None` fires with no magazine gating and cannot
+- [x] A weapon with `resource: None` fires with no magazine gating and cannot
   reload — the current single-weapon fire tests pass unchanged (back-compat).
-- [ ] At equip-at-spawn a weapon with an ammo resource materializes with a full
+- [x] At equip-at-spawn a weapon with an ammo resource materializes with a full
   magazine (`= magazine` capacity), an idle reload timer, and the pawn's reserve
   pool for that ammo type credited the descriptor's starting `reserve`.
-- [ ] Firing consumes `costPerShot` from the magazine; the shot resolves exactly
+- [x] Firing consumes `costPerShot` from the magazine; the shot resolves exactly
   as today (hit-zone multiplier, ledger attribution, impact FX unchanged). The
   reserve is untouched by firing.
-- [ ] With magazine `< costPerShot` the trigger blocks: no shot resolves, no ammo
+- [x] With magazine `< costPerShot` the trigger blocks: no shot resolves, no ammo
   is consumed, no damage is applied, and the block is observable. The caller-drain
   signal is the `dry_fire` event (via `event_names()`); the internal
-  `apply_weapon_fire_state` seam returns `ActivationOutcome::Empty` (a dry fire
-  builds no `WeaponImpact`, the only `ActivationOutcome` carrier, so `Empty` is
-  asserted at that fire-state seam, not on the drained events). It is not a silent
-  no-op. Cooldown-blocked shots stay silent as today. While a reload is in flight
-  the trigger is likewise blocked silently and does not cancel the reload.
-- [ ] Reload is timed by the **effective** reload duration: on a fresh reload
+  fire-state seam returns `WeaponFireAuthorization::Empty`. A dry fire builds no
+  `WeaponImpact`; it arms the effective fire interval and emits once per interval.
+  It is not a silent no-op. Cooldown-blocked shots stay silent as today. While a
+  reload is in flight the trigger is likewise blocked silently and does not cancel
+  the reload.
+- [x] Reload is timed by the **effective** reload duration: on a fresh reload
   press (rising edge of the held `SimCommand.reload` bit) the reload timer starts
   from `effective().reload_ms`; a held reload button starts exactly one reload.
   The timer advances per fixed tick, and on completion transfers
@@ -191,12 +193,12 @@ Each is its own later roadmap bullet; the shape only accommodates them.
   into the magazine in one atomic step. A reload attempt with a full magazine or
   an empty reserve pool is a distinct blocked outcome (no timer started), not a
   partial or silent transfer.
-- [ ] Hot reload preserves the live `magazine` count, the in-flight reload timer,
+- [x] Hot reload preserves the live `magazine` count, the in-flight reload timer,
   the `reload_press_consumed` edge flag, and cooldown through
   `refresh_from_descriptor` while updating authored capacity/cost/type/reload-duration
   — an implementation that resets the magazine to full or aborts an in-flight
   reload on descriptor reload fails this criterion.
-- [ ] `player.ammo` reflects the active wieldable's live magazine and
+- [x] `player.ammo` reflects the active wieldable's live magazine and
   `player.ammoReserve` reflects its ammo type's reserve pool, republished each
   frame; both are readonly engine-owned slots the dev HUD reads through
   `getGameState().player`. Correct for single-player and the host's own pawn via
@@ -205,7 +207,7 @@ Each is its own later roadmap bullet; the shape only accommodates them.
   wieldable (no pawn / fly-camera), the publisher skips the ammo write, matching
   the health publisher — the slots keep their last value rather than publishing a
   stale 0.
-- [ ] `player.reloadProgress` ramps `0 → 1` over the effective reload duration
+- [x] `player.reloadProgress` ramps `0 → 1` over the effective reload duration
   and `player.reloadActive` is true only while reloading; unlike the ammo slots,
   the reload producer writes `reloadActive = false` / `reloadProgress = 0` every
   idle frame (no active reload) so the retained `exitFade` triggers rather than
@@ -215,16 +217,16 @@ Each is its own later roadmap bullet; the shape only accommodates them.
   the reload-feedback driver test; the `hud.reloadMeter` bar fill and exit-fade is
   retained-UI presentation (`ui.md` §3), verified by manual dev observation as the
   shipped reload-feedback plan did.
-- [ ] No ammo-grant, `onKill`, resource-grant, or progression behavior runs as
+- [x] No ammo-grant, `onKill`, resource-grant, or progression behavior runs as
   part of this plan (review/grep gate).
-- [ ] No heat/cell variant, per-shell / cancellable reload, `reloadStyle`,
+- [x] No heat/cell variant, per-shell / cancellable reload, `reloadStyle`,
   pickup, or inventory is built (review/grep gate). No new `unsafe`
   (review/grep gate).
-- [ ] A net-slot pawn materializes host-side with its descriptor-seeded reserve
+- [x] A net-slot pawn materializes host-side with its descriptor-seeded reserve
   and a full magazine (Task 3 seeding). A remote client's reload, routed through
   the shipped `deliver_reload_to_weapon` seam this spec fills, draws against this
   same host-side reserve.
-- [ ] A co-op remote client observes their own pawn's `player.ammo` /
+- [x] A co-op remote client observes their own pawn's `player.ammo` /
   `player.ammoReserve` / `player.reloadProgress` / `player.reloadActive`, not the
   host's, via the per-pawn projection (Task 7).
 
@@ -281,7 +283,9 @@ Add to `WeaponComponent`:
 - the live `magazine: u32`;
 - the live reload timer `reload_remaining_ms: u32` (0 = not reloading) and
   `reload_total_ms: u32` (the effective duration sampled at reload start, so
-  progress reads `1 - remaining / total`).
+  progress reads `1 - remaining / total`), plus a serde-defaulted fractional
+  elapsed-millisecond carry. The carry prevents fixed-tick rounding drift while
+  keeping HUD and replication timer fields as `u32`.
 
 `from_descriptor` initializes the tuning and magazine from the descriptor's
 `AmmoResource` (0 / absent when `resource: None`), the magazine materializing at
@@ -355,12 +359,12 @@ cooldown gate passes and the weapon wants to fire, gate in order: (1) if a reloa
 is in flight (`reload_remaining_ms > 0`), block silently — reload owns the weapon
 and is non-cancellable; (2) if the effective stats carry an ammo resource and
 `magazine < cost_per_shot`, block and surface it — resolve no shot, consume no
-ammo, and set `ActivationOutcome::Empty` (a new variant beside
-`Hit`/`Effect`/`Spawned`, `weapon/mod.rs:30-34`). These gates live where the fire
-decision is made: the private `apply_weapon_fire_state` (`weapon/mod.rs:369-396`,
-called by `tick_resolved`) today returns a two-state authorization — widen it to
-distinguish the empty-magazine rejection from the silent cooldown/reload
-rejections, so `tick_resolved` sets `dry_fire = true` only for the empty case.
+ammo, and return `WeaponFireAuthorization::Empty`. Arm the effective fire interval
+for this activation so a held Auto trigger cannot emit every fixed tick. These
+gates live where the fire decision is made: the private `apply_weapon_fire_state`
+(`weapon/mod.rs:369-396`, called by `tick_resolved`) distinguishes the
+empty-magazine rejection from silent cooldown/reload rejections, so
+`tick_resolved` sets `dry_fire = true` only for the empty case.
 
 `ActivationOutcome` alone does not reach the caller: it rides inside
 `WeaponImpact` (`:231-247`), which requires a `point`/`normal` a dry fire has
@@ -396,15 +400,12 @@ needs the same treatment Task 2 gives `magazine` and the reload timer — a
 so it survives hot reload; otherwise a freed edge under a held R re-triggers a
 second reload.
 
-Fill the shipped `deliver_reload_to_weapon` seam (`sim/mod.rs:424`, today emits a
-bare `ReloadDelivery` and early-returns when the reload bit is false, transferring
-no ammo). It is already called each tick for the local/host pawn (`sim/mod.rs:200`)
-and remote co-op pawns (`run_remote_weapon_commands`, `sim/mod.rs:382`) — filling
-it wires reload for every pawn against that pawn's `AmmoReserve`. Widen its
-signature to take `&mut` registry access and the fixed-tick delta (it needs the
-weapon component and the pawn's `AmmoReserve`), and **remove the current
-early-return-when-`reload`-is-false guard** — a released button must still advance
-and complete an in-flight reload. All logic runs inside this one seam each tick:
+The shipped `deliver_reload_to_weapon` seam (`sim/mod.rs:424`) owns reload timing
+and ammo transfer for every pawn against that pawn's `AmmoReserve`. It is called
+each tick for the local/host pawn (`sim/mod.rs:200`) and remote co-op pawns
+(`run_remote_weapon_commands`, `sim/mod.rs:382`). Its contract requires mutable
+registry access and the fixed-tick delta so a released button still advances and
+completes an in-flight reload. All logic runs inside this one seam each tick:
 
 - **On a fresh rising edge with an ammo resource — Guards (start-time):** a fresh
   edge while already reloading is a silent no-op (no `ReloadDelivery`) — the
@@ -413,10 +414,12 @@ and complete an in-flight reload. All logic runs inside this one seam each tick:
   `ReloadDelivery` (`blocked-full` / `blocked-empty`); no timer starts and no
   rounds move.
 - **On that same fresh edge — Start:** set
-  `reload_total_ms = reload_remaining_ms = effective().reload_ms`.
+  `reload_total_ms = reload_remaining_ms = effective().reload_ms` and clear the
+  fractional elapsed carry.
 - **Every tick while `reload_remaining_ms > 0`, regardless of the reload bit —
-  Advance:** decrement `reload_remaining_ms` by the fixed-tick delta (a released
-  button must still complete a non-cancellable reload). Do this here, *not* on the
+  Advance:** accumulate the fixed-tick delta in milliseconds, decrement by whole
+  elapsed milliseconds, and carry the fraction into the next tick. A released
+  button must still complete a non-cancellable reload. Do this here, *not* on the
   cooldown-decrement pass: `cooldown_remaining_ms` is decremented in the private
   `apply_weapon_fire_state` (`weapon/mod.rs:376`), which is weapon-only with no
   `AmmoReserve` in scope; the reload timer must live where the pawn reserve is
@@ -425,9 +428,11 @@ and complete an in-flight reload. All logic runs inside this one seam each tick:
   `take(type, min(capacity - magazine, available(type)))` and add the returned
   rounds to the magazine. `take` is the atomic step; never index the pool
   directly. Evaluate the `min`/`take` at completion against the live reserve.
+  A `Started` outcome owns the rest of its start tick: fire stays blocked that
+  tick even when a short reload also reaches `Completed` immediately.
 
-Reload does not interrupt cooldown, does not cancel on fire (Task 4 blocks the
-trigger while reloading), and is not a per-shell state machine (out of scope).
+Reload does not interrupt cooldown, does not cancel on fire (the fire gate blocks
+the trigger while reloading), and is not a per-shell state machine (out of scope).
 Reload skips the `weapon_fire_command` → `WeaponFireCommand` hop entirely — that
 command is aim/fire only; reload rides `SimCommand.reload` and `ReloadDelivery`.
 
@@ -442,20 +447,17 @@ a closer analog than `player.health`. Flip the already-shipped
 `ReplicationScope::None` to `OwnerPrivatePlayer` (the reload-feedback plan
 deferred this to the real producer). Adding two slots and re-scoping two breaks
 two tests in the catalog's test module — update both:
-`built_in_catalog_preserves_wire_names_and_capabilities` (its hard-coded
-wire-name vector, currently 10 entries at `:626-640` — insert the two new names in
-sorted position; it also asserts `reload_active.network == ReplicationScope::None`
-at `:678`, which must flip to `OwnerPrivatePlayer` when `player.reloadActive` is
-re-scoped) and **`player_owner_private_slots_are_replicated`** (`:711`,
-which asserts the owner-private *set* — currently `{player.health,
-player.maxHealth, player.weaponCooldownMs}` at `:718-748` with every other slot
-`None`; add `player.ammo`, `player.ammoReserve`, `player.reloadProgress`,
-`player.reloadActive` to that owner-private set). The same flip also breaks three tests in
-`netcode/state_slots.rs`, which seeds `SlotTable::new()` from this catalog —
-update all three: `build_includes_only_replicated_slots_sorted_by_name` (`:805`,
-hard-coded 5-name replicated vector → 9), `default_table_has_player_owner_private_slots`
-(`:841`, 3-slot set → 7), and `net_schema_carries_fingerprint_and_descriptors`
-(`:906`, asserts `net.len() == 5` → 9). No version bump is required: the replicated
+`built_in_catalog_preserves_wire_names_and_capabilities` must assert the full
+sorted wire-name vector includes `player.ammo` and `player.ammoReserve`, and that
+both reload slots use `OwnerPrivatePlayer`. The
+**`player_owner_private_slots_are_replicated`** test must assert the exact
+owner-private set: `player.ammo`, `player.ammoReserve`, `player.health`,
+`player.maxHealth`, `player.reloadActive`, `player.reloadProgress`, and
+`player.weaponCooldownMs`; every other built-in slot remains `None`. The
+`netcode/state_slots.rs` tests must derive the same contract from
+`SlotTable::new()`: replicated names stay sorted, the default schema contains
+exactly those owner-private player slots, and the net schema carries matching
+descriptors and fingerprint. No version bump is required: the replicated
 state-slot fingerprint (`compute_fingerprint`, `state_slots.rs:197`) is
 content-derived — it hashes each replicated entry's name/type/range/scope, so
 adding and re-scoping slots changes it automatically and both peers recompute it
@@ -510,7 +512,7 @@ the resource block (incl. `reloadMs` and the reload-speed-as-stat note). Add the
 Rust tests: descriptor parse/validate in both runtimes (incl. `reloadMs` bounds
 and the two-layer serde/`validate()` rejection), SDK type generation, magazine +
 reload-timer seed and hot-reload preservation, reserve seed, fire consumption,
-empty-magazine block (`dry_fire` + the internal `ActivationOutcome::Empty`),
+empty-magazine block (`dry_fire` + the internal `WeaponFireAuthorization::Empty`),
 fire-blocked-while-reloading, timed atomic reload transfer at completion, the
 full/empty reload block outcomes, unlimited-fire back-compat, ammo +
 reload-progress HUD publish, reload-meter idle write, dev-driver removal (grep
@@ -655,8 +657,8 @@ A reload press starts the timer from `effective().reload_ms`; the timer advances
 per tick; at completion it atomically `take`s
 `min(capacity - magazine, available)` into the magazine. Firing decrements
 `magazine` by the effective `cost_per_shot`; an empty magazine (or an in-flight
-reload) blocks the trigger — the empty case yields `ActivationOutcome::Empty` and
-a `dry_fire` event, never a silent no-op. The reload timer drives
+reload) blocks the trigger — the empty case yields `WeaponFireAuthorization::Empty`
+and a rate-limited `dry_fire` event, never a silent no-op. The reload timer drives
 `player.reloadProgress` / `player.reloadActive`.
 
 ## Boundary inventory

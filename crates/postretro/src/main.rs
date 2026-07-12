@@ -891,27 +891,12 @@ fn has_player_pawn(registry: &postretro_entities::EntityRegistry) -> bool {
         .is_some()
 }
 
-/// Resolve the followed player pawn: registry marker first, then first
-/// `PlayerMovement` entity. See also `local_movement_pawn` (sim/mod.rs)
-/// and `player_position` (scripting/systems/ai.rs).
+/// Resolve the pawn followed by local camera and input consumers. Identity follows
+/// the registry's movement-pawn policy; callers apply camera-specific component gates.
 fn followed_player_pawn(
     registry: &postretro_entities::EntityRegistry,
 ) -> Option<postretro_entities::EntityId> {
-    use postretro_entities::ComponentKind;
-
-    if let Some(id) = registry.local_player_pawn() {
-        if matches!(
-            registry.has_component_kind(id, ComponentKind::PlayerMovement),
-            Ok(true)
-        ) {
-            return Some(id);
-        }
-    }
-
-    registry
-        .iter_with_kind(ComponentKind::PlayerMovement)
-        .next()
-        .map(|(id, _)| id)
+    registry.local_player_movement_pawn()
 }
 
 /// Follow the camera to the local pawn's eye. `presentation_offset` is the M15
@@ -1775,6 +1760,7 @@ impl ApplicationHandler for App {
                 let mut pending_movement_events: Vec<&'static str> = Vec::new();
                 let mut pending_ai_events: Vec<&'static str> = Vec::new();
                 let mut pending_weapon_events: Vec<&'static str> = Vec::new();
+                let mut pending_reload_deliveries: Vec<sim::ReloadDelivery> = Vec::new();
                 let mut pending_trigger_residuals = Vec::new();
                 let mut sent_client_fire_commands: Vec<ClientFrameFireCommand> = Vec::new();
                 // Death-event names accumulate here and drain through the
@@ -2011,6 +1997,7 @@ impl ApplicationHandler for App {
                         pending_movement_events.extend(tick_events.movement);
                         pending_ai_events.extend(tick_events.ai);
                         pending_weapon_events.extend(tick_events.weapon);
+                        pending_reload_deliveries.extend(tick_events.reload_deliveries);
                         pending_death_events.extend(tick_events.death);
                         pending_trigger_residuals.extend(tick_events.trigger_residuals);
 
@@ -2024,6 +2011,7 @@ impl ApplicationHandler for App {
                 // loop, beside the post-loop drains, so the snapshot carries this
                 // frame's fully-settled host-authoritative state. No-op for the
                 // client and single-player. See `context/lib/entity_model.md` §6.
+                let host_owner_state_projected = self.host_owner_state_projection_due();
                 self.net_serialize_and_send();
 
                 // Task 6 client remote interpolation: sample each remote entity's
@@ -2053,6 +2041,12 @@ impl ApplicationHandler for App {
                 }
                 for event_name in &pending_weapon_events {
                     let _ = fire_named_event(event_name, &script_ctx.data_registry.borrow());
+                }
+                for delivery in &pending_reload_deliveries {
+                    let _ = fire_named_event(
+                        delivery.outcome.event_name(),
+                        &script_ctx.data_registry.borrow(),
+                    );
                 }
                 // Death events drain through the sequence-aware dispatcher in
                 // their OWN loop: a `progress` reaction that names a sequence
@@ -2115,27 +2109,35 @@ impl ApplicationHandler for App {
                     self.dispatch_system_commands();
                 }
 
-                // Player HUD state: republish the engine-owned health slots
+                // Player HUD state: republish engine-owned health/ammo/reload slots
                 // after game logic settles and before crossing detection / UI
                 // snapshot construction, so same-frame consumers see the
-                // settled pawn HP. See: context/lib/scripting.md §5.
+                // settled pawn and weapon state. See: context/lib/scripting.md §5.
                 //
-                // M15 Phase 3.5 Task 4: skip on a connected client. `player.health`
-                // / `player.maxHealth` are now owner-private replicated slots; the
-                // server writes them through the state-slot apply path, so a client
+                // Skip on a connected client. The player HUD slots are
+                // owner-private replicated; the server writes them through the
+                // state-slot apply path, so a client
                 // must not overwrite the replicated values from its own (non-
                 // authoritative) pawn. Host and single-player keep publishing.
                 let is_connected_client = self.is_connected_client();
+                let active_wieldable = self.active_wieldable;
                 if let Some(session) = self.session.as_mut() {
                     session
                         .scripting
                         .player_hud_state
-                        .tick_for_role(is_connected_client);
-                    #[cfg(feature = "dev-tools")]
-                    session
-                        .scripting
-                        .dev_reload_progress
-                        .tick(gameplay_snapshot.as_ref(), frame_dt);
+                        .tick_for_role(is_connected_client, active_wieldable);
+                }
+                // Network projection runs before HUD publication. Clear the
+                // one-frame reload endpoints only after both consumers have had
+                // a chance to observe them.
+                if let Some(weapon) = active_wieldable {
+                    sim::clear_reload_feedback_for_weapon(
+                        &mut script_ctx.registry.borrow_mut(),
+                        weapon,
+                    );
+                }
+                if host_owner_state_projected {
+                    sim::clear_all_reload_feedback(&mut script_ctx.registry.borrow_mut());
                 }
                 // Flash-decay state writes the engine-owned `screen.flash`
                 // surface at the same game-logic stage as the HUD publisher, so
@@ -4666,10 +4668,11 @@ impl App {
             // M15 Phase 3.5: borrow the slot table (immutable) alongside the registry so
             // `host_replicate` can collect this frame's replicated-state source values
             // and splice the per-client state records into the snapshot envelope. The
-            // two RefCells are disjoint, so both borrows coexist. Game logic and the HUD
-            // publisher have already settled the slot table by this post-tick point; the
-            // descriptor-fed health projection reads live `HealthComponent`s, so it sees
-            // this frame's settled HP regardless of the host HUD publisher's later tick.
+            // two RefCells are disjoint, so both borrows coexist. Game logic has settled
+            // the live components by this post-tick point, but host HUD slot publication
+            // occurs later in the frame. Owner-private projections read the live components
+            // directly, so replication observes this frame's settled authoritative state
+            // without depending on those later HUD slot writes.
             let registry = script_ctx.registry.borrow();
             let slot_table = script_ctx.slot_table.borrow();
             netcode::host_replicate(
@@ -4882,6 +4885,16 @@ impl App {
         };
         let registry = session.scripting.script_ctx.registry.clone();
         sim::run_death_sweep(&registry, &mut session.progress_tracker)
+    }
+
+    fn host_owner_state_projection_due(&self) -> bool {
+        matches!(
+            self.session
+                .as_ref()
+                .and_then(|session| session.net_endpoint.as_ref()),
+            Some(netcode::NetEndpoint::Host { tick, .. })
+                if *tick % netcode::SNAPSHOT_TICK_INTERVAL == 0
+        )
     }
 
     /// Advance the listen host's authoritative fixed-simulation tick after one

@@ -361,15 +361,6 @@ fn decode_lightmap_direction(enc: vec4<f32>) -> vec3<f32> {
     return normalize(vec3<f32>(x, y, z));
 }
 
-// No `(1-ks)` attenuation, no Fresnel — retro aesthetic wants punchy additive
-// highlights, not energy conservation.
-fn blinn_phong(L: vec3<f32>, V: vec3<f32>, N: vec3<f32>,
-               color: vec3<f32>, spec_exp: f32, spec_int: f32) -> vec3<f32> {
-    let H = normalize(L + V);
-    let NdH = max(dot(N, H), 0.0);
-    return color * pow(NdH, spec_exp) * spec_int;
-}
-
 // Cone falloff from pre-baked cos cutoffs (static `SpecLight` path). Non-spot
 // lights pack cos_inner = 1, cos_outer = -1 so this returns 1.0 everywhere.
 fn cone_attenuation_cos(L: vec3<f32>, aim: vec3<f32>, cos_inner: f32, cos_outer: f32) -> f32 {
@@ -465,16 +456,6 @@ fn sample_post_retro(tex: texture_2d<f32>, samp: sampler, uv: vec2<f32>,
 // sampler with the in-shader texel-grid reconstruction in `sample_post_retro`.
 fn sample_color(tex: texture_2d<f32>, uv: vec2<f32>, ddx: vec2<f32>, ddy: vec2<f32>) -> vec4<f32> {
     return sample_post_retro(tex, aniso_sampler, uv, ddx, ddy);
-}
-
-// Normal-map dispatch: BC5 stores only tangent-space (x, y) in RG, so decode
-// those (`* 2 - 1`) and reconstruct z = sqrt(1 - x² - y²). Renormalize
-// unconditionally — BC5 endpoint quantisation plus bilinear filtering leaves
-// the sampled vector slightly off unit length.
-fn sample_normal(tex: texture_2d<f32>, uv: vec2<f32>, ddx: vec2<f32>, ddy: vec2<f32>) -> vec3<f32> {
-    let rg = sample_post_retro(tex, aniso_sampler, uv, ddx, ddy).rg * 2.0 - 1.0;
-    let z  = sqrt(max(0.0, 1.0 - dot(rg, rg)));
-    return normalize(vec3<f32>(rg, z));
 }
 
 // Depth-aware 2×2 bilateral upsample of the half-res SDF shadow factor at
@@ -829,19 +810,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var N_bump: vec3<f32> = mesh_n;
     if iso != 4u {
         let n_ts = sample_normal(t_normal, in.uv, ddx, ddy);
-        // Degenerate-tangent guard: meshes with collapsed UVs produce zero-length
-        // tangents. Skip TBN in that case to avoid NaN propagation.
-        const TBN_EPS: f32 = 1.0e-4;
-        if dot(in.world_tangent, in.world_tangent) >= TBN_EPS * TBN_EPS {
-            // Gram-Schmidt: project out mesh_n component so T stays in the tangent plane.
-            let T = normalize(in.world_tangent - mesh_n * dot(in.world_tangent, mesh_n));
-            let B = cross(mesh_n, T) * in.bitangent_sign;
-            let TBN = mat3x3<f32>(T, B, mesh_n);
-            let n_ts_world = TBN * n_ts;
-            if dot(n_ts_world, n_ts_world) >= TBN_EPS * TBN_EPS {
-                N_bump = normalize(n_ts_world);
-            }
-        }
+        N_bump = reconstruct_tbn_normal(mesh_n, in.world_tangent, in.bitangent_sign, n_ts);
     }
 
     // Lighting isolation mode — enables each contributing term independently

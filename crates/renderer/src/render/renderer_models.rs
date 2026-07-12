@@ -259,8 +259,8 @@ impl Renderer {
     }
 
     /// Replace this frame's active kinematic mover bounds. This renderer-owned
-    /// CPU state gates static-light promotion today and will feed the rigid
-    /// occluder recorder directly in the shadow pass.
+    /// CPU state gates static-light promotion and feeds the rigid occluder
+    /// recorder directly in the shadow pass.
     ///
     /// The render collector must call this before `render_frame_indirect`; an
     /// empty slice clears stale movers so static-only maps retain their existing

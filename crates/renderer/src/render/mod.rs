@@ -12,7 +12,6 @@ mod kinematic_brush;
 mod loaded_texture;
 mod mesh_pass;
 mod promoted_depth_cache;
-#[allow(dead_code)] // Task 5 owns the live shadow-pass call sites.
 mod rigid_occluder_depth;
 mod screen_effects;
 mod sdf_atlas;

@@ -575,8 +575,9 @@ mod tests {
     #[test]
     fn render_collector_exposes_interpolated_active_mover_occluder_aabb() {
         let mut registry = EntityRegistry::new();
-        let world = single_cell_world(geometry(0));
-        let mover_id = spawn_from_geometry(&mut registry, &world).unwrap()[0];
+        let geometry = geometry(0);
+        let mover_id = spawn_from_geometry(&mut registry, &geometry).unwrap()[0];
+        let world = single_cell_world(geometry);
 
         registry.snapshot_transforms();
         registry

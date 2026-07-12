@@ -8,6 +8,7 @@ use wgpu::util::DeviceExt;
 use super::*;
 
 const INSTANCE_ENTRY_SIZE: usize = 64;
+const KINEMATIC_LIGHT_PARAMS_SIZE: usize = 32;
 #[cfg(test)]
 const KINEMATIC_BIND_GROUP_COUNT: usize = 5;
 
@@ -24,6 +25,8 @@ struct KinematicLightParams {
     time: f32,
     lighting_isolation: u32,
     ambient_floor: f32,
+    dynamic_light_count: u32,
+    _pad: [u32; 3],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,6 +83,8 @@ pub(crate) struct KinematicBrushPass {
 const SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/kinematic_brush.wgsl"),
     "\n",
+    include_str!("../shaders/material_shading.wgsl"),
+    "\n",
     include_str!("../shaders/sh_sample.wgsl"),
     "\n",
     include_str!("../shaders/curve_eval.wgsl"),
@@ -106,12 +111,16 @@ fn build_instance_entry(model: glam::Mat4) -> [u8; INSTANCE_ENTRY_SIZE] {
     bytes
 }
 
-fn build_light_params_bytes(params: KinematicLightParams) -> [u8; 16] {
-    let mut bytes = [0u8; 16];
+/// Serialize the 32-byte uniform row shared with `KinematicLightParams` in
+/// `kinematic_brush.wgsl`. The dynamic-tier count sits at byte 16; the tail
+/// stays explicit padding so the next uniform row remains 16-byte aligned.
+fn build_light_params_bytes(params: KinematicLightParams) -> [u8; KINEMATIC_LIGHT_PARAMS_SIZE] {
+    let mut bytes = [0u8; KINEMATIC_LIGHT_PARAMS_SIZE];
     bytes[0..4].copy_from_slice(&params.light_count.to_ne_bytes());
     bytes[4..8].copy_from_slice(&params.time.to_ne_bytes());
     bytes[8..12].copy_from_slice(&params.lighting_isolation.to_ne_bytes());
     bytes[12..16].copy_from_slice(&params.ambient_floor.to_ne_bytes());
+    bytes[16..20].copy_from_slice(&params.dynamic_light_count.to_ne_bytes());
     bytes
 }
 
@@ -404,7 +413,7 @@ impl KinematicBrushPass {
         });
         let light_params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Kinematic Brush Light Params"),
-            size: 16,
+            size: KINEMATIC_LIGHT_PARAMS_SIZE as wgpu::BufferAddress,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -680,6 +689,7 @@ impl KinematicBrushPass {
         &self,
         queue: &wgpu::Queue,
         light_count: u32,
+        dynamic_light_count: u32,
         time: f32,
         lighting_isolation: u32,
         ambient_floor: f32,
@@ -689,9 +699,11 @@ impl KinematicBrushPass {
             0,
             &build_light_params_bytes(KinematicLightParams {
                 light_count,
+                dynamic_light_count,
                 time,
                 lighting_isolation,
                 ambient_floor,
+                _pad: [0; 3],
             }),
         );
     }
@@ -1011,6 +1023,70 @@ mod tests {
                 .iter()
                 .all(|entry| !entry.visibility.contains(wgpu::ShaderStages::VERTEX)),
             "runtime-light bindings must not spend vertex-stage storage budget",
+        );
+    }
+
+    #[test]
+    fn kinematic_light_params_uploads_dynamic_tier_count_in_second_uniform_row() {
+        let bytes = build_light_params_bytes(KinematicLightParams {
+            light_count: 11,
+            time: 1.5,
+            lighting_isolation: 8,
+            ambient_floor: 0.375,
+            dynamic_light_count: 7,
+            _pad: [0; 3],
+        });
+
+        assert_eq!(bytes.len(), KINEMATIC_LIGHT_PARAMS_SIZE);
+        assert_eq!(bytes[0..4], 11u32.to_ne_bytes());
+        assert_eq!(bytes[4..8], 1.5f32.to_ne_bytes());
+        assert_eq!(bytes[8..12], 8u32.to_ne_bytes());
+        assert_eq!(bytes[12..16], 0.375f32.to_ne_bytes());
+        assert_eq!(bytes[16..20], 7u32.to_ne_bytes());
+        assert_eq!(bytes[20..], [0; 12]);
+    }
+
+    #[test]
+    fn kinematic_light_params_wgsl_span_matches_second_uniform_row() {
+        let module = naga::front::wgsl::parse_str(SHADER_SOURCE)
+            .expect("composed kinematic brush shader should parse as WGSL");
+        let span = module
+            .types
+            .iter()
+            .find_map(|(_handle, ty)| match (&ty.name, &ty.inner) {
+                (Some(name), naga::TypeInner::Struct { span, .. })
+                    if name == "KinematicLightParams" =>
+                {
+                    Some(*span)
+                }
+                _ => None,
+            })
+            .expect("kinematic brush shader should declare KinematicLightParams");
+        assert_eq!(span as usize, KINEMATIC_LIGHT_PARAMS_SIZE);
+    }
+
+    #[test]
+    fn kinematic_shader_uses_shared_material_helpers_for_promoted_static_specular() {
+        assert!(
+            SHADER_SOURCE.contains("fn blinn_phong(")
+                && SHADER_SOURCE.contains("fn sample_normal(")
+                && SHADER_SOURCE.contains("fn reconstruct_tbn_normal("),
+            "the composed mover shader must append the shared material shading snippet",
+        );
+
+        let dynamic_loop = extract_wgsl_fn(
+            include_str!("../shaders/kinematic_brush.wgsl"),
+            "accumulate_dynamic_direct",
+        );
+        assert!(
+            dynamic_loop.contains("if i >= kinematic_light_params.dynamic_light_count"),
+            "only records after the dynamic tier may add mover specular",
+        );
+        assert!(
+            dynamic_loop.contains(
+                "blinn_phong(L, V, n, effective_color, spec_exp, spec_int) * attenuation"
+            ),
+            "promoted mover specular must retain the runtime attenuation, cone, shadow, and promotion color factors",
         );
     }
 }

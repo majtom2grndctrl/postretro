@@ -366,6 +366,7 @@ impl Renderer {
                 full.kinematic_brush.write_light_params(
                     queue,
                     full.total_light_count,
+                    full.light_count,
                     full.mesh_dynamic_time,
                     full.lighting_isolation as u32,
                     full.ambient_floor,

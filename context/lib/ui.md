@@ -1,7 +1,7 @@
 # UI Layer
 
 > **Read this when:** working on the UI layer — CPU model (`postretro-ui` crate) or renderer pass (`render/ui/`, `postretro` crate) — widgets, theming, HUD state binding, UI animation.
-> **Key invariant:** scripts declare widget trees and state values; Rust owns the live UI. Authoritative values live in the state store; anything the UI animates or displays is renderer-local presentation state that never writes back.
+> **Key invariant:** scripts declare widget trees and state values; Rust owns the live UI. Authoritative values live in the state store; anything the UI animates or displays is retained-UI-local presentation state that never writes back. The renderer only consumes the resulting draw list at the GPU boundary.
 > **Related:** `context/research/ui-layer.md` (design exploration) · `scripting.md` (state store) · `rendering_pipeline.md` (frame structure) · historical plans under `context/plans/done/M13--*`.
 
 ---
@@ -56,12 +56,13 @@ In TypeScript, token leaves are keyed from the concrete theme object, so editors
 
 ## 3. Display vs. Authoritative Values
 
-Widgets bind authoritative store slots by state reference at the SDK layer and by dotted slot name on the retained wire. The renderer may hold a per-node **display value** that eases toward the authoritative target over a declared duration and curve (tweening). Contract:
+Widgets bind authoritative store slots by state reference at the SDK layer and by dotted slot name on the retained wire. The retained UI may hold a per-node **display value** that eases toward the authoritative target over a declared duration and curve (tweening). Contract:
 
 - The authoritative slot is always the target; the widget renders the display value, never the slot directly.
-- Display state is presentation-only and renderer-local — no store write ever originates in the UI module.
+- Display state is presentation-only and retained-UI-local; the renderer consumes its resulting draw list at the GPU boundary. No store write ever originates in the UI module.
 - Retargeting is continuous: a target change mid-flight eases from the current display value, never snaps.
 - Bar widgets may resolve `max` from either a literal number or a readonly numeric state reference. The bar fill normalizes the displayed value against that resolved max. `styleRanges` on a bar evaluate the normalized displayed fill; health bars use thresholds in `[0, 1]` and `styleRanges.max = 1.0`.
+- A `Bar` may author positive logical-reference `width` and `height`; omission preserves the 120×12 default. `exitFade: { durationMs }` is deliberately Bar-only, requires `visibleWhen`, and is a linear retained-UI exit: on a true→false lifecycle transition it captures the terminal displayed numerator and denominator, retains both quads while alpha fades for the authored duration, then emits no quads. A false first resolution begins hidden; a true retrigger during the fade cancels it and renders the live bar fully opaque in that same frame. This is presentation-local state: gameplay publishes lifecycle/value snapshots and never drives the fade timer or opacity.
 - UI time is dt-accumulated game time, never wall clock — pausing game logic pauses presentation.
 - Structural tree rebuilds discard display state (in-flight values snap to target); rebuilds are rare, authored events.
 - `styleRanges` (continuous value→style) evaluate the value the widget renders — the display value mid-tween; state crossings (`onStateCrossing`) watch the **authoritative** slot, engine-side, after game-logic writes. The two may diverge mid-tween by design.

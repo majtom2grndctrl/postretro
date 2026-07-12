@@ -1,9 +1,13 @@
-// Player HUD state publisher. Publishes live pawn HP into the readonly
-// engine-owned `player.health` and `player.maxHealth` slots each frame.
+// Player HUD state publisher. Publishes authoritative pawn health and active
+// weapon ammo/reload state into readonly engine-owned slots each frame.
 // See: context/lib/scripting.md §5 "Durable State Store"
 
+use std::collections::HashSet;
+
 use crate::scripting::primitives::store::write_store_slot;
+use postretro_entities::AmmoReserve;
 use postretro_entities::components::health::pawn_with_health;
+use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::ctx::ScriptCtx;
 use postretro_entities::registry::{EntityId, EntityRegistry};
 use postretro_entities::slot_table::SlotValue;
@@ -20,10 +24,34 @@ fn pawn_health_values(registry: &EntityRegistry) -> Option<(EntityId, f32, f32)>
     pawn_with_health(registry).map(|(id, health)| (id, health.current, health.max))
 }
 
+fn weapon_hud_values(
+    registry: &EntityRegistry,
+    active_wieldable: Option<EntityId>,
+) -> (Option<(u32, u32)>, f32, bool) {
+    let Some(pawn) = registry.local_player_movement_pawn() else {
+        return (None, 0.0, false);
+    };
+    let Some(weapon_id) = active_wieldable else {
+        return (None, 0.0, false);
+    };
+    let Ok(weapon) = registry.get_component::<WeaponComponent>(weapon_id) else {
+        return (None, 0.0, false);
+    };
+    let (progress, active) = weapon.reload_status();
+    let ammo = weapon.effective().ammo.map(|ammo| {
+        let reserve = registry
+            .get_component::<AmmoReserve>(pawn)
+            .map_or(0, |reserve| reserve.available(ammo.ammo_type));
+        (weapon.magazine, reserve)
+    });
+    (ammo, progress, active)
+}
+
 /// Engine-side producer for the HUD store slots.
 pub(crate) struct PlayerHudStatePublisher {
     ctx: ScriptCtx,
     invalid_max_warned_for: Option<EntityId>,
+    write_failure_warned_slots: HashSet<&'static str>,
 }
 
 impl PlayerHudStatePublisher {
@@ -32,24 +60,39 @@ impl PlayerHudStatePublisher {
         Self {
             ctx,
             invalid_max_warned_for: None,
+            write_failure_warned_slots: HashSet::new(),
+        }
+    }
+
+    fn write_hud_slot(&mut self, name: &'static str, value: SlotValue) {
+        if let Err(err) = write_store_slot(&self.ctx, name, value)
+            && self.write_failure_warned_slots.insert(name)
+        {
+            log::warn!(
+                "[HUD] failed to publish built-in slot `{name}`; suppressing repeated warnings for this slot: {err}"
+            );
         }
     }
 
     /// Republish the player HUD store slots for this frame unless this endpoint is
     /// a connected client.
     ///
-    /// M15 Phase 3.5 Task 4: `player.health` / `player.maxHealth` are owner-private
-    /// replicated slots. On a connected client the server writes them through the
+    /// Owner-private `player.*` HUD slots are replicated. On a connected client
+    /// the server writes them through the
     /// state-slot apply path, so the local (non-authoritative) publisher must not
     /// overwrite them. The host and single-player keep publishing as before. The
     /// `is_connected_client` decision is owned by the `main.rs` call site (the
     /// `NetEndpoint` role lives there); this method keeps the gate testable without
     /// an `App`.
-    pub(crate) fn tick_for_role(&mut self, is_connected_client: bool) {
+    pub(crate) fn tick_for_role(
+        &mut self,
+        is_connected_client: bool,
+        active_wieldable: Option<EntityId>,
+    ) {
         if is_connected_client {
             return;
         }
-        self.tick();
+        self.tick(active_wieldable);
     }
 
     /// Republish the player HUD store slots for this frame.
@@ -63,7 +106,7 @@ impl PlayerHudStatePublisher {
     ///
     /// Runs in the frame loop after game logic and before the UI read-snapshot
     /// build, so the snapshot picks up these values the same frame.
-    pub(crate) fn tick(&mut self) {
+    pub(crate) fn tick(&mut self, active_wieldable: Option<EntityId>) {
         // `player.health`/`player.maxHealth` mirror the live pawn HP. No pawn /
         // no health component → skip; the readonly slots retain their previous
         // values. The registry borrow is scoped to the read so it drops before
@@ -71,20 +114,12 @@ impl PlayerHudStatePublisher {
         // cell).
         let pawn_health = pawn_health_values(&self.ctx.registry.borrow());
         if let Some((pawn, current, max)) = pawn_health {
-            // Engine-owned and always declared, so this write succeeds; an error
-            // here would be a real bug, hence no skip-with-warn.
-            if let Err(err) =
-                write_store_slot(&self.ctx, "player.health", SlotValue::Number(current))
-            {
-                log::warn!("[HUD] failed to write player.health: {err}");
-            }
+            // Engine-owned and always declared, so a write error is a real bug
+            // and must be surfaced rather than silently skipped.
+            self.write_hud_slot("player.health", SlotValue::Number(current));
 
             if max.is_finite() && max >= 1.0 {
-                if let Err(err) =
-                    write_store_slot(&self.ctx, "player.maxHealth", SlotValue::Number(max))
-                {
-                    log::warn!("[HUD] failed to write player.maxHealth: {err}");
-                }
+                self.write_hud_slot("player.maxHealth", SlotValue::Number(max));
             } else if self.invalid_max_warned_for != Some(pawn) {
                 log::warn!(
                     "[HUD] skipping player.maxHealth for pawn {pawn}: invalid max health {max}"
@@ -92,6 +127,15 @@ impl PlayerHudStatePublisher {
                 self.invalid_max_warned_for = Some(pawn);
             }
         }
+
+        let (ammo, reload_progress, reload_active) =
+            weapon_hud_values(&self.ctx.registry.borrow(), active_wieldable);
+        if let Some((magazine, reserve)) = ammo {
+            self.write_hud_slot("player.ammo", SlotValue::Number(magazine as f32));
+            self.write_hud_slot("player.ammoReserve", SlotValue::Number(reserve as f32));
+        }
+        self.write_hud_slot("player.reloadProgress", SlotValue::Number(reload_progress));
+        self.write_hud_slot("player.reloadActive", SlotValue::Boolean(reload_active));
     }
 }
 
@@ -100,10 +144,12 @@ mod tests {
     use super::*;
     use postretro_entities::components::health::HealthComponent;
     use postretro_entities::components::player_movement::PlayerMovementComponent;
+    use postretro_entities::components::weapon::ReloadFeedback;
     use postretro_entities::registry::{EntityId, Transform};
     use postretro_scripting_core::data_descriptors::{
-        AirParams, CapsuleParams, FallParams, GroundParams, HealthDescriptor,
-        PlayerMovementDescriptor, SpeedParams,
+        AirParams, AmmoResource, CapsuleParams, FallParams, FireMode, GroundParams,
+        HealthDescriptor, PlayerMovementDescriptor, ResolutionMode, SpeedParams, WeaponDescriptor,
+        WeaponResource,
     };
 
     /// A minimal movement descriptor so a spawned entity qualifies as the pawn
@@ -147,9 +193,7 @@ mod tests {
         }
     }
 
-    /// Spawn a pawn (carries `PlayerMovement`) with a `Health` component whose
-    /// `current` HP is `current`. Returns the pawn id.
-    fn spawn_pawn_with_health(ctx: &ScriptCtx, current: f32) -> EntityId {
+    fn spawn_movement_pawn(ctx: &ScriptCtx) -> EntityId {
         let mut registry = ctx.registry.borrow_mut();
         let id = registry.spawn(Transform::default());
         registry
@@ -158,14 +202,279 @@ mod tests {
                 PlayerMovementComponent::from_descriptor(&movement_descriptor()),
             )
             .unwrap();
+        id
+    }
+
+    /// Spawn a pawn (carries `PlayerMovement`) with a `Health` component whose
+    /// `current` HP is `current`. Returns the pawn id.
+    fn spawn_pawn_with_health(ctx: &ScriptCtx, current: f32) -> EntityId {
+        let id = spawn_movement_pawn(ctx);
         let mut health = HealthComponent::from_descriptor(&HealthDescriptor {
             max: 100.0,
             hitbox: None,
             zone_multipliers: std::collections::HashMap::new(),
         });
         health.current = current;
+        let mut registry = ctx.registry.borrow_mut();
         registry.set_component(id, health).unwrap();
         id
+    }
+
+    fn spawn_ammo_weapon(ctx: &ScriptCtx, pawn: EntityId) -> EntityId {
+        let descriptor = WeaponDescriptor {
+            damage: 10.0,
+            range: 64.0,
+            cooldown_ms: 100.0,
+            fire_mode: FireMode::Semi,
+            resolution: ResolutionMode::Hitscan,
+            credit_source: None,
+            resource: Some(WeaponResource::Ammo(AmmoResource {
+                ammo_type: "bullets.light".to_string(),
+                magazine: 12,
+                cost_per_shot: 1,
+                reserve: 48,
+                reload_ms: 500,
+            })),
+        };
+        let mut weapon = WeaponComponent::from_descriptor(&descriptor);
+        weapon.magazine = 5;
+        weapon.reload_remaining_ms = 250;
+        weapon.reload_total_ms = 500;
+        let mut reserve = AmmoReserve::new();
+        reserve.credit("bullets.light", 20);
+        let mut registry = ctx.registry.borrow_mut();
+        registry.set_component(pawn, reserve).unwrap();
+        let id = registry.spawn(Transform::default());
+        registry.set_component(id, weapon).unwrap();
+        id
+    }
+
+    #[test]
+    fn tick_publishes_ammo_reserve_and_reload_then_resets_idle_reload_slots() {
+        use crate::scripting::primitives::store::read_store_slot;
+
+        let ctx = ScriptCtx::new();
+        let pawn = spawn_pawn_with_health(&ctx, 100.0);
+        let weapon_id = spawn_ammo_weapon(&ctx, pawn);
+        let mut publisher = PlayerHudStatePublisher::new(ctx.clone());
+
+        publisher.tick(Some(weapon_id));
+        assert_eq!(
+            read_store_slot(&ctx, "player.ammo").unwrap(),
+            SlotValue::Number(5.0)
+        );
+        assert_eq!(
+            read_store_slot(&ctx, "player.ammoReserve").unwrap(),
+            SlotValue::Number(20.0)
+        );
+        assert_eq!(
+            read_store_slot(&ctx, "player.reloadProgress").unwrap(),
+            SlotValue::Number(0.5)
+        );
+        assert_eq!(
+            read_store_slot(&ctx, "player.reloadActive").unwrap(),
+            SlotValue::Boolean(true)
+        );
+
+        let mut weapon = ctx
+            .registry
+            .borrow()
+            .get_component::<WeaponComponent>(weapon_id)
+            .unwrap()
+            .clone();
+        weapon.reload_feedback = Some(ReloadFeedback::Started);
+        ctx.registry
+            .borrow_mut()
+            .set_component(weapon_id, weapon)
+            .unwrap();
+        publisher.tick(Some(weapon_id));
+        assert_eq!(
+            read_store_slot(&ctx, "player.reloadProgress").unwrap(),
+            SlotValue::Number(0.0)
+        );
+        assert_eq!(
+            read_store_slot(&ctx, "player.reloadActive").unwrap(),
+            SlotValue::Boolean(true)
+        );
+
+        let mut weapon = ctx
+            .registry
+            .borrow()
+            .get_component::<WeaponComponent>(weapon_id)
+            .unwrap()
+            .clone();
+        weapon.reload_feedback = Some(ReloadFeedback::Completed);
+        weapon.reload_remaining_ms = 0;
+        ctx.registry
+            .borrow_mut()
+            .set_component(weapon_id, weapon)
+            .unwrap();
+        publisher.tick(Some(weapon_id));
+        assert_eq!(
+            read_store_slot(&ctx, "player.reloadProgress").unwrap(),
+            SlotValue::Number(1.0)
+        );
+        assert_eq!(
+            read_store_slot(&ctx, "player.reloadActive").unwrap(),
+            SlotValue::Boolean(true)
+        );
+
+        let mut weapon = ctx
+            .registry
+            .borrow()
+            .get_component::<WeaponComponent>(weapon_id)
+            .unwrap()
+            .clone();
+        weapon.reload_remaining_ms = 0;
+        weapon.reload_feedback = None;
+        ctx.registry
+            .borrow_mut()
+            .set_component(weapon_id, weapon)
+            .unwrap();
+        publisher.tick(Some(weapon_id));
+        assert_eq!(
+            read_store_slot(&ctx, "player.reloadProgress").unwrap(),
+            SlotValue::Number(0.0)
+        );
+        assert_eq!(
+            read_store_slot(&ctx, "player.reloadActive").unwrap(),
+            SlotValue::Boolean(false)
+        );
+
+        let mut weapon = ctx
+            .registry
+            .borrow()
+            .get_component::<WeaponComponent>(weapon_id)
+            .unwrap()
+            .clone();
+        weapon.reload_remaining_ms = 10;
+        weapon.reload_total_ms = 0;
+        ctx.registry
+            .borrow_mut()
+            .set_component(weapon_id, weapon)
+            .unwrap();
+        publisher.tick(Some(weapon_id));
+        assert_eq!(
+            read_store_slot(&ctx, "player.reloadProgress").unwrap(),
+            SlotValue::Number(0.0)
+        );
+        assert_eq!(
+            read_store_slot(&ctx, "player.reloadActive").unwrap(),
+            SlotValue::Boolean(true)
+        );
+    }
+
+    #[test]
+    fn weapon_hud_values_use_movement_pawn_without_requiring_health() {
+        let ctx = ScriptCtx::new();
+        let pawn = spawn_movement_pawn(&ctx);
+        let weapon = spawn_ammo_weapon(&ctx, pawn);
+
+        assert_eq!(pawn_health_values(&ctx.registry.borrow()), None);
+        assert_eq!(
+            weapon_hud_values(&ctx.registry.borrow(), Some(weapon)).0,
+            Some((5, 20)),
+            "ammo HUD identity is independent of the Health component"
+        );
+    }
+
+    #[test]
+    fn tick_keeps_reload_active_when_hot_refresh_removes_ammo_tuning() {
+        use crate::scripting::primitives::store::{read_store_slot, write_store_slot};
+
+        let ctx = ScriptCtx::new();
+        let pawn = spawn_pawn_with_health(&ctx, 100.0);
+        let weapon_id = spawn_ammo_weapon(&ctx, pawn);
+        let mut weapon = ctx
+            .registry
+            .borrow()
+            .get_component::<WeaponComponent>(weapon_id)
+            .unwrap()
+            .clone();
+        weapon.ammo = None;
+        ctx.registry
+            .borrow_mut()
+            .set_component(weapon_id, weapon)
+            .unwrap();
+        write_store_slot(&ctx, "player.ammo", SlotValue::Number(7.0)).unwrap();
+        let mut publisher = PlayerHudStatePublisher::new(ctx.clone());
+
+        publisher.tick(Some(weapon_id));
+
+        assert_eq!(
+            read_store_slot(&ctx, "player.ammo").unwrap(),
+            SlotValue::Number(7.0),
+            "removed tuning still suppresses ammo publication"
+        );
+        assert_eq!(
+            read_store_slot(&ctx, "player.reloadProgress").unwrap(),
+            SlotValue::Number(0.5)
+        );
+        assert_eq!(
+            read_store_slot(&ctx, "player.reloadActive").unwrap(),
+            SlotValue::Boolean(true)
+        );
+    }
+
+    #[test]
+    fn tick_skips_ammo_but_clears_reload_without_pawn_weapon_or_resource() {
+        use crate::scripting::primitives::store::{read_store_slot, write_store_slot};
+
+        let ctx = ScriptCtx::new();
+        write_store_slot(&ctx, "player.ammo", SlotValue::Number(7.0)).unwrap();
+        write_store_slot(&ctx, "player.ammoReserve", SlotValue::Number(31.0)).unwrap();
+        write_store_slot(&ctx, "player.reloadProgress", SlotValue::Number(0.8)).unwrap();
+        write_store_slot(&ctx, "player.reloadActive", SlotValue::Boolean(true)).unwrap();
+        let mut publisher = PlayerHudStatePublisher::new(ctx.clone());
+
+        publisher.tick(None);
+        assert_eq!(
+            read_store_slot(&ctx, "player.ammo").unwrap(),
+            SlotValue::Number(7.0)
+        );
+        assert_eq!(
+            read_store_slot(&ctx, "player.ammoReserve").unwrap(),
+            SlotValue::Number(31.0)
+        );
+        assert_eq!(
+            read_store_slot(&ctx, "player.reloadProgress").unwrap(),
+            SlotValue::Number(0.0)
+        );
+        assert_eq!(
+            read_store_slot(&ctx, "player.reloadActive").unwrap(),
+            SlotValue::Boolean(false)
+        );
+
+        let pawn = spawn_pawn_with_health(&ctx, 100.0);
+        let weapon_id = {
+            let mut registry = ctx.registry.borrow_mut();
+            let id = registry.spawn(Transform::default());
+            registry
+                .set_component(
+                    id,
+                    WeaponComponent::from_descriptor(&WeaponDescriptor {
+                        damage: 10.0,
+                        range: 64.0,
+                        cooldown_ms: 100.0,
+                        fire_mode: FireMode::Semi,
+                        resolution: ResolutionMode::Hitscan,
+                        credit_source: None,
+                        resource: None,
+                    }),
+                )
+                .unwrap();
+            id
+        };
+        let _ = pawn;
+        publisher.tick(Some(weapon_id));
+        assert_eq!(
+            read_store_slot(&ctx, "player.ammo").unwrap(),
+            SlotValue::Number(7.0)
+        );
+        assert_eq!(
+            read_store_slot(&ctx, "player.reloadActive").unwrap(),
+            SlotValue::Boolean(false)
+        );
     }
 
     #[test]
@@ -176,7 +485,7 @@ mod tests {
         spawn_pawn_with_health(&ctx, 73.0);
         let mut publisher = PlayerHudStatePublisher::new(ctx.clone());
 
-        publisher.tick();
+        publisher.tick(None);
         assert_eq!(
             read_store_slot(&ctx, "player.health").unwrap(),
             SlotValue::Number(73.0)
@@ -199,7 +508,7 @@ mod tests {
         spawn_pawn_with_health(&ctx, 73.0);
         let mut publisher = PlayerHudStatePublisher::new(ctx.clone());
 
-        publisher.tick_for_role(true);
+        publisher.tick_for_role(true, None);
         assert_eq!(
             read_store_slot(&ctx, "player.health").ok(),
             None,
@@ -207,7 +516,7 @@ mod tests {
         );
 
         // Host / single-player (is_connected_client == false) still publishes.
-        publisher.tick_for_role(false);
+        publisher.tick_for_role(false, None);
         assert_eq!(
             read_store_slot(&ctx, "player.health").unwrap(),
             SlotValue::Number(73.0),
@@ -226,7 +535,7 @@ mod tests {
         let pawn = spawn_pawn_with_health(&ctx, 100.0);
         let mut publisher = PlayerHudStatePublisher::new(ctx.clone());
 
-        publisher.tick();
+        publisher.tick(None);
         assert_eq!(
             read_store_slot(&ctx, "player.health").unwrap(),
             SlotValue::Number(100.0)
@@ -242,7 +551,7 @@ mod tests {
             health.current = 40.0;
             registry.set_component(pawn, health).unwrap();
         }
-        publisher.tick();
+        publisher.tick(None);
         assert_eq!(
             read_store_slot(&ctx, "player.health").unwrap(),
             SlotValue::Number(40.0)
@@ -258,7 +567,7 @@ mod tests {
         let ctx = ScriptCtx::new();
         let pawn = spawn_pawn_with_health(&ctx, 100.0);
         let mut publisher = PlayerHudStatePublisher::new(ctx.clone());
-        publisher.tick();
+        publisher.tick(None);
 
         ctx.data_registry.borrow_mut().populate_level(
             Vec::new(),
@@ -283,7 +592,7 @@ mod tests {
             registry.set_component(pawn, health).unwrap();
         }
 
-        publisher.tick();
+        publisher.tick(None);
         assert_eq!(
             read_store_slot(&ctx, "player.health").unwrap(),
             SlotValue::Number(10.0)
@@ -306,7 +615,7 @@ mod tests {
         write_store_slot(&ctx, "player.health", SlotValue::Number(55.0)).unwrap();
         let mut publisher = PlayerHudStatePublisher::new(ctx.clone());
 
-        publisher.tick();
+        publisher.tick(None);
         assert_eq!(
             read_store_slot(&ctx, "player.health").unwrap(),
             SlotValue::Number(55.0),
@@ -361,7 +670,7 @@ mod tests {
         }
         let mut publisher = PlayerHudStatePublisher::new(ctx.clone());
 
-        publisher.tick();
+        publisher.tick(None);
 
         assert_eq!(
             read_store_slot(&ctx, "player.health").unwrap(),
@@ -390,9 +699,9 @@ mod tests {
             registry.set_component(first, health).unwrap();
         }
 
-        publisher.tick();
+        publisher.tick(None);
         assert_eq!(publisher.invalid_max_warned_for, Some(first));
-        publisher.tick();
+        publisher.tick(None);
         assert_eq!(
             publisher.invalid_max_warned_for,
             Some(first),
@@ -414,11 +723,41 @@ mod tests {
             registry.set_component(second, health).unwrap();
         }
 
-        publisher.tick();
+        publisher.tick(None);
         assert_eq!(
             publisher.invalid_max_warned_for,
             Some(second),
             "new pawn lifetime can emit one warning"
+        );
+    }
+
+    #[test]
+    fn persistent_write_failures_latch_once_per_distinct_slot() {
+        use postretro_entities::slot_table::SlotType;
+
+        let ctx = ScriptCtx::new();
+        {
+            let mut slots = ctx.slot_table.borrow_mut();
+            slots
+                .get_mut("player.reloadProgress")
+                .unwrap()
+                .schema
+                .slot_type = SlotType::Boolean;
+            slots
+                .get_mut("player.reloadActive")
+                .unwrap()
+                .schema
+                .slot_type = SlotType::Number;
+        }
+        let mut publisher = PlayerHudStatePublisher::new(ctx);
+
+        publisher.tick(None);
+        publisher.tick(None);
+
+        assert_eq!(
+            publisher.write_failure_warned_slots,
+            HashSet::from(["player.reloadActive", "player.reloadProgress"]),
+            "persistent failures stay latched while distinct slots remain visible"
         );
     }
 }

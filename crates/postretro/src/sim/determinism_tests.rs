@@ -2,7 +2,7 @@
 // See: context/lib/entity_model.md §5
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use glam::{Vec2, Vec3};
@@ -11,13 +11,19 @@ use parry3d::shape::TriMesh;
 use postretro_level_format::navmesh::{NAVMESH_VERSION, NavMeshSection, NavRegion};
 use proptest::prelude::*;
 
-use super::{SimCommand, TickEvents, simulate_tick};
+use super::{RemotePawnCommand, SimCommand, TickEvents, simulate_tick};
 use crate::collision::CollisionWorld;
 use crate::collision::moving::MoverCollider;
 use crate::kinematic_mover::MoverTickStateTable;
 use crate::movement::MovementInput;
 use crate::nav::NavGraph;
+use crate::netcode::ShotId;
 use crate::scripting_systems::hit_zones::HitZoneStore;
+use crate::scripting_systems::trigger_volume_bridge::TriggerVolumeBridge;
+use crate::trigger_bindings::{
+    BoundTriggerCommandKind, TriggerBindingTable, TriggerResidualHandle,
+};
+use crate::trigger_system::{PlayerId, TriggerEvent, TriggerEventEdge, TriggerSystem};
 use crate::weapon::FireButtonState;
 use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::components::brain::{AiStateMap, AiTuning, BrainComponent, LogicalState};
@@ -27,7 +33,11 @@ use postretro_entities::components::mesh::{
     RATE_MIN,
 };
 use postretro_entities::components::weapon::WeaponComponent;
-use postretro_entities::{EntityId, EntityRegistry, Transform};
+use postretro_entities::{
+    DataRegistry, EntityId, EntityRegistry, MoverCommand, NamedReaction, PrimitiveDescriptor,
+    ReactionDescriptor, ReplicationScope, SlotOwnership, SlotRecord, SlotSchema, SlotTable,
+    SlotType, SlotValue, Transform, TriggerActivation, TriggerFireMode, TriggerVolumeComponent,
+};
 use postretro_foundation::{
     AirParams, CapsuleParams, FallParams, FireMode, ForgivenessParams, GroundParams,
     PlayerMovementComponent, PlayerMovementDescriptor, ResolutionMode, SpeedParams,
@@ -119,12 +129,84 @@ struct PawnOutcome {
     velocity: Vec3,
 }
 
+/// Stable name for every entity this harness spawns. `EntityId` indices are
+/// handed out in spawn order, so an id compared across spawn orders is not the
+/// same entity; the sibling stages sidestep this by reporting names, and every
+/// id leaving the tick is resolved to a label for the same reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EntityLabel {
+    Pawn(Role),
+    Enemy,
+    Weapon,
+    TriggerSource,
+    TriggerArmTarget,
+}
+
+/// Spawn-order-independent activator identity. `PlayerId::Remote` is already
+/// peer-stable; only the local pawn carries an `EntityId`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlayerLabel {
+    Local(Role),
+    Remote(u64),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RecordedTriggerFire {
+    trigger: EntityLabel,
+    player: PlayerLabel,
+    event_name: String,
+    edge: TriggerEventEdge,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct RecordedCommandFire {
+    fire: RecordedTriggerFire,
+    commands: Vec<BoundTriggerCommandKind>,
+}
+
+#[derive(Debug, PartialEq)]
+struct RecordedShot {
+    shot_id: ShotId,
+    owner_client_id: u64,
+    pawn: EntityLabel,
+    weapon: EntityLabel,
+    fire_tick: u32,
+    damage: f32,
+    range: f32,
+    pellet_count: usize,
+    credit_source: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct RecordedReload {
+    pawn: EntityLabel,
+    weapon: EntityLabel,
+}
+
+/// One tick of `TickEvents` projected onto stable labels. This is the only
+/// shape the determinism gate compares.
+#[derive(Debug, PartialEq)]
+struct RecordedTick {
+    movement: Vec<&'static str>,
+    ai: Vec<&'static str>,
+    weapon: Vec<&'static str>,
+    death: Vec<String>,
+    authorized_shots: Vec<RecordedShot>,
+    reload_deliveries: Vec<RecordedReload>,
+    trigger_residuals: Vec<TriggerResidualHandle>,
+    trigger_fires: Vec<RecordedTriggerFire>,
+    trigger_command_fires: Vec<RecordedCommandFire>,
+}
+
 #[derive(Debug)]
 struct SimRun {
     pawns: Vec<(Role, PawnOutcome)>,
     selected_player_health: f32,
     enemy_state: LogicalState,
-    events: Vec<TickEvents>,
+    events: Vec<RecordedTick>,
+    trigger_residual_counts: Vec<usize>,
+    trigger_slot: Option<SlotValue>,
+    trigger_arm_target_armed: bool,
 }
 
 struct SimHarness {
@@ -136,9 +218,16 @@ struct SimHarness {
     ai_warned: HashSet<String>,
     mover_colliders: Vec<MoverCollider>,
     mover_states: MoverTickStateTable,
+    trigger_system: TriggerSystem,
+    trigger_bridge: TriggerVolumeBridge,
+    trigger_bindings: TriggerBindingTable,
+    trigger_slots: Rc<RefCell<SlotTable>>,
     role_ids: Vec<(Role, EntityId)>,
+    labels: HashMap<EntityId, EntityLabel>,
     selected_player: EntityId,
+    remote_player: EntityId,
     enemy: EntityId,
+    trigger_arm_target: EntityId,
 }
 
 impl SimHarness {
@@ -167,6 +256,91 @@ impl SimHarness {
             .iter()
             .find_map(|(role, id)| (*role == Role::Alpha).then_some(*id))
             .expect("alpha role is always spawned");
+        let remote_player = role_ids
+            .iter()
+            .find_map(|(role, id)| (*role == Role::Beta).then_some(*id))
+            .expect("beta role is always spawned");
+
+        // The green-and-stays-green determinism gate includes a real trigger
+        // firing sequence: one direct shared-state command, one arm command,
+        // and a presentation residual. That pins deterministic trigger edge order
+        // as well as the post-tick registry/slot state the binding mutates.
+        let trigger_slots = Rc::new(RefCell::new(determinism_trigger_slots()));
+        let (trigger_source, trigger_arm_target) = {
+            let mut registry = registry.borrow_mut();
+            let source = registry.spawn(Transform::default());
+            registry
+                .set_component(
+                    source,
+                    TriggerVolumeComponent::new(
+                        TriggerActivation::Touch,
+                        String::new(),
+                        "determinismTrigger".to_string(),
+                        String::new(),
+                        MoverCommand::Start,
+                        TriggerFireMode::Multiple,
+                        0.0,
+                        true,
+                    ),
+                )
+                .expect("determinism trigger attaches");
+
+            let arm_target = registry.spawn(Transform::default());
+            registry
+                .set_tags(arm_target, vec!["determinism-arm-target".to_string()])
+                .expect("determinism trigger target accepts tag");
+            registry
+                .set_component(
+                    arm_target,
+                    TriggerVolumeComponent::new(
+                        TriggerActivation::Touch,
+                        String::new(),
+                        String::new(),
+                        String::new(),
+                        MoverCommand::Start,
+                        TriggerFireMode::Multiple,
+                        0.0,
+                        false,
+                    ),
+                )
+                .expect("determinism trigger arm target attaches");
+            (source, arm_target)
+        };
+        let mut trigger_data = DataRegistry::new();
+        trigger_data.populate_level(
+            vec![
+                deterministic_trigger_primitive(
+                    "setState",
+                    None,
+                    serde_json::json!({ "slot": "determinism.triggered", "value": 1 }),
+                ),
+                deterministic_trigger_primitive(
+                    "armTrigger",
+                    Some("determinism-arm-target"),
+                    serde_json::json!({}),
+                ),
+                deterministic_trigger_primitive(
+                    "flashScreen",
+                    None,
+                    serde_json::json!({ "color": [1.0, 0.0, 0.0, 1.0], "durationMs": 1.0 }),
+                ),
+            ],
+            Vec::new(),
+            &[],
+        );
+        let trigger_bindings =
+            TriggerBindingTable::build(&registry.borrow(), &trigger_data, &trigger_slots.borrow());
+        let mut trigger_bridge = TriggerVolumeBridge::new();
+        trigger_bridge.insert_for_test(trigger_source, Vec3::splat(-4.0), Vec3::splat(4.0));
+
+        let mut labels = HashMap::new();
+        for (role, id) in &role_ids {
+            labels.insert(*id, EntityLabel::Pawn(*role));
+        }
+        labels.insert(enemy, EntityLabel::Enemy);
+        labels.insert(active_wieldable, EntityLabel::Weapon);
+        labels.insert(trigger_source, EntityLabel::TriggerSource);
+        labels.insert(trigger_arm_target, EntityLabel::TriggerArmTarget);
 
         Self {
             registry,
@@ -177,15 +351,32 @@ impl SimHarness {
             ai_warned: HashSet::new(),
             mover_colliders: Vec::new(),
             mover_states: MoverTickStateTable::default(),
+            trigger_system: TriggerSystem::default(),
+            trigger_bridge,
+            trigger_bindings,
+            trigger_slots,
             role_ids,
+            labels,
             selected_player,
+            remote_player,
             enemy,
+            trigger_arm_target,
         }
     }
 
-    fn tick(&mut self, command: RecordedCommand) -> TickEvents {
+    fn tick(&mut self, command: RecordedCommand) -> RecordedTick {
         let sim_command = command.to_sim_command();
-        simulate_tick(
+        let remote_pawn_commands = [RemotePawnCommand {
+            pawn: self.remote_player,
+            owner_client_id: 1,
+            weapon: None,
+            shot_id: None,
+            fire_tick: 0,
+            client_tick: 0,
+            command: command.to_sim_command(),
+        }];
+        let trigger_use_edges = HashMap::new();
+        let events = simulate_tick(
             self.registry.clone(),
             &self.world,
             &self.hit_zones,
@@ -197,12 +388,92 @@ impl SimHarness {
             &mut self.ai_warned,
             &self.mover_colliders,
             &mut self.mover_states,
-            &[],
+            &remote_pawn_commands,
             &sim_command,
             |_| command.to_post_movement_command(),
             DT,
-            None,
-        )
+            Some(super::TriggerTickContext {
+                system: &mut self.trigger_system,
+                bridge: &self.trigger_bridge,
+                bindings: &self.trigger_bindings,
+                slot_table: self.trigger_slots.clone(),
+                use_edges: &trigger_use_edges,
+            }),
+        );
+        self.record(events)
+    }
+
+    /// Resolve every raw id a tick reports before it reaches the comparison.
+    fn record(&self, events: TickEvents) -> RecordedTick {
+        RecordedTick {
+            movement: events.movement,
+            ai: events.ai,
+            weapon: events.weapon,
+            death: events.death,
+            authorized_shots: events
+                .authorized_shots
+                .iter()
+                .map(|open| RecordedShot {
+                    shot_id: open.shot.shot_id,
+                    owner_client_id: open.owner_client_id,
+                    pawn: self.label(open.shot.pawn),
+                    weapon: self.label(open.shot.weapon),
+                    fire_tick: open.shot.fire_tick,
+                    damage: open.shot.damage,
+                    range: open.shot.range,
+                    pellet_count: open.shot.pellet_count,
+                    credit_source: open.shot.credit_source.clone(),
+                })
+                .collect(),
+            reload_deliveries: events
+                .reload_deliveries
+                .iter()
+                .map(|delivery| RecordedReload {
+                    pawn: self.label(delivery.pawn),
+                    weapon: self.label(delivery.weapon),
+                })
+                .collect(),
+            trigger_residuals: events.trigger_residuals,
+            trigger_fires: events
+                .trigger_fires
+                .iter()
+                .map(|event| self.record_trigger_fire(event))
+                .collect(),
+            trigger_command_fires: events
+                .trigger_command_fires
+                .iter()
+                .map(|fire| RecordedCommandFire {
+                    fire: self.record_trigger_fire(&fire.event),
+                    commands: fire.commands.clone(),
+                })
+                .collect(),
+        }
+    }
+
+    fn record_trigger_fire(&self, event: &TriggerEvent) -> RecordedTriggerFire {
+        RecordedTriggerFire {
+            trigger: self.label(event.fire.trigger),
+            player: self.player_label(event.fire.player),
+            event_name: event.fire.event_name.clone(),
+            edge: event.edge,
+        }
+    }
+
+    fn label(&self, id: EntityId) -> EntityLabel {
+        *self
+            .labels
+            .get(&id)
+            .expect("recorded events only reference entities this harness spawned")
+    }
+
+    fn player_label(&self, player: PlayerId) -> PlayerLabel {
+        match player {
+            PlayerId::Local(pawn) => match self.label(pawn) {
+                EntityLabel::Pawn(role) => PlayerLabel::Local(role),
+                other => panic!("local player must resolve to a spawned pawn, got {other:?}"),
+            },
+            PlayerId::Remote(client_id) => PlayerLabel::Remote(client_id),
+        }
     }
 
     fn role_outcomes(&self) -> Vec<(Role, PawnOutcome)> {
@@ -244,6 +515,59 @@ impl SimHarness {
             .get_component::<BrainComponent>(self.enemy)
             .expect("enemy keeps brain")
             .state
+    }
+
+    fn trigger_slot(&self) -> Option<SlotValue> {
+        self.trigger_slots
+            .borrow()
+            .get("determinism.triggered")
+            .and_then(|record| record.value.clone())
+    }
+
+    fn trigger_arm_target_armed(&self) -> bool {
+        self.registry
+            .borrow()
+            .get_component::<TriggerVolumeComponent>(self.trigger_arm_target)
+            .expect("determinism arm target remains present")
+            .armed
+    }
+}
+
+fn determinism_trigger_slots() -> SlotTable {
+    let mut slots = SlotTable::new();
+    slots
+        .insert_namespace(
+            "determinism",
+            vec![(
+                "triggered".to_string(),
+                SlotRecord::new(SlotSchema {
+                    slot_type: SlotType::Number,
+                    default: Some(SlotValue::Number(0.0)),
+                    range: None,
+                    persist: false,
+                    readonly: false,
+                    ownership: SlotOwnership::Mod,
+                    network: ReplicationScope::None,
+                }),
+            )],
+        )
+        .expect("determinism namespace is unique");
+    slots
+}
+
+fn deterministic_trigger_primitive(
+    primitive: &str,
+    tag: Option<&str>,
+    args: serde_json::Value,
+) -> NamedReaction {
+    NamedReaction {
+        name: "determinismTrigger".to_string(),
+        descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+            primitive: primitive.to_string(),
+            tag: tag.map(str::to_string),
+            on_complete: None,
+            args,
+        }),
     }
 }
 
@@ -367,6 +691,7 @@ fn spawn_weapon(registry: &mut EntityRegistry) -> EntityId {
                 fire_mode: FireMode::Semi,
                 resolution: ResolutionMode::Hitscan,
                 credit_source: None,
+                resource: None,
             }),
         )
         .expect("weapon component should attach");
@@ -748,13 +1073,37 @@ fn run_stream(commands: &[RecordedCommand], spawn_order: SpawnOrder) -> SimRun {
         .iter()
         .copied()
         .map(|command| harness.tick(command))
-        .collect();
+        .collect::<Vec<_>>();
     SimRun {
         pawns: harness.role_outcomes(),
         selected_player_health: harness.selected_player_health(),
         enemy_state: harness.enemy_state(),
+        trigger_residual_counts: events
+            .iter()
+            .map(|events| events.trigger_residuals.len())
+            .collect(),
+        trigger_slot: harness.trigger_slot(),
+        trigger_arm_target_armed: harness.trigger_arm_target_armed(),
         events,
     }
+}
+
+fn assert_trigger_positive_anchors(run: &SimRun) {
+    assert_eq!(
+        run.trigger_slot,
+        Some(SlotValue::Number(1.0)),
+        "the baseline trigger must write its shared-state slot"
+    );
+    assert!(
+        run.trigger_arm_target_armed,
+        "the baseline trigger must arm its target"
+    );
+    assert!(
+        run.events
+            .iter()
+            .any(|events| !events.trigger_fires.is_empty()),
+        "the baseline must include at least one named trigger fire"
+    );
 }
 
 fn assert_runs_match(actual: &SimRun, expected: &SimRun) {
@@ -772,6 +1121,18 @@ fn assert_runs_match(actual: &SimRun, expected: &SimRun) {
     assert_eq!(
         actual.selected_player_health, expected.selected_player_health,
         "selected player health must match exactly"
+    );
+    assert_eq!(
+        actual.trigger_residual_counts, expected.trigger_residual_counts,
+        "trigger fire/residual sequence must match exactly"
+    );
+    assert_eq!(
+        actual.trigger_slot, expected.trigger_slot,
+        "trigger fixed-tick slot write must match exactly"
+    );
+    assert_eq!(
+        actual.trigger_arm_target_armed, expected.trigger_arm_target_armed,
+        "trigger fixed-tick registry mutation must match exactly"
     );
     assert_eq!(
         actual.pawns.len(),
@@ -873,8 +1234,48 @@ fn simulate_tick_determinism_harness_matches_run_to_run_and_spawn_order() {
     let rerun = run_stream(&commands, SpawnOrder::AlphaThenBeta);
     let reversed_spawn = run_stream(&commands, SpawnOrder::BetaThenAlpha);
 
+    assert_trigger_positive_anchors(&baseline);
     assert_runs_match(&rerun, &baseline);
     assert_runs_match(&reversed_spawn, &baseline);
+}
+
+#[test]
+fn trigger_events_keep_two_activator_order_across_spawn_reversal() {
+    let commands = [RecordedCommand {
+        wish_dir: Vec2::ZERO,
+        jump_pressed: false,
+        dash_pressed: false,
+        running: false,
+        crouch_intent: false,
+        facing_yaw: 0.0,
+        fire_pressed: false,
+        fire_active: false,
+    }];
+    let alpha_then_beta = run_stream(&commands, SpawnOrder::AlphaThenBeta);
+    let beta_then_alpha = run_stream(&commands, SpawnOrder::BetaThenAlpha);
+    let expected = vec![
+        RecordedTriggerFire {
+            trigger: EntityLabel::TriggerSource,
+            player: PlayerLabel::Local(Role::Alpha),
+            event_name: "determinismTrigger".to_string(),
+            edge: TriggerEventEdge::Enter,
+        },
+        RecordedTriggerFire {
+            trigger: EntityLabel::TriggerSource,
+            player: PlayerLabel::Remote(1),
+            event_name: "determinismTrigger".to_string(),
+            edge: TriggerEventEdge::Enter,
+        },
+    ];
+
+    assert_eq!(
+        alpha_then_beta.events[0].trigger_fires, expected,
+        "both local and remote activators must reach the trigger stage"
+    );
+    assert_eq!(
+        beta_then_alpha.events[0].trigger_fires, alpha_then_beta.events[0].trigger_fires,
+        "trigger event ordering must not depend on pawn spawn order"
+    );
 }
 
 #[test]
@@ -1384,6 +1785,7 @@ proptest! {
         let rerun = run_stream(&commands, SpawnOrder::AlphaThenBeta);
         let reversed_spawn = run_stream(&commands, SpawnOrder::BetaThenAlpha);
 
+        assert_trigger_positive_anchors(&baseline);
         assert_runs_match(&rerun, &baseline);
         assert_runs_match(&reversed_spawn, &baseline);
     }

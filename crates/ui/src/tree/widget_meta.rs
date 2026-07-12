@@ -11,7 +11,7 @@ use taffy::prelude::{NodeId, Size, TaffyTree};
 use super::super::descriptor::{BindSource, LocalState, Predicate, Widget};
 use super::ImageSizes;
 use super::draw::{FocusNeighbors, NodeInteraction};
-use super::node_context::{NodeContext, VisibilityState};
+use super::node_context::{BarExitFadeState, NodeContext, VisibilityState};
 use crate::text::measure_run;
 
 /// taffy measure callback: resolve a leaf's intrinsic size from its content.
@@ -248,6 +248,16 @@ pub fn harvest_visibility(
                 scope: pred_scope,
                 visible_display,
                 prev: None,
+                // The build step carries this narrow draw policy on the Bar's
+                // node context; harvest it into mutable visibility state where
+                // the retained clock/capture belongs.
+                bar_exit_fade: match taffy.get_node_context(node) {
+                    Some(NodeContext::Bar {
+                        exit_fade: Some(fade),
+                        ..
+                    }) => Some(BarExitFadeState::new(fade.duration_ms)),
+                    _ => None,
+                },
             },
         );
     }

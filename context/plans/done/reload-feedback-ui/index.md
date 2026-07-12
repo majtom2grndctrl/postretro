@@ -224,3 +224,158 @@ export const reloadMeterTree = defineUiTree({
 
 - Meter placement and size beside the reticle (offset, width) are dev-content
   tuning, resolved during implementation — not a blocking decision.
+
+---
+
+## Polish addendum: centered, lifecycle-visible reload meter
+
+This addendum supersedes the earlier dev-HUD placement / always-on-empty-bar
+details. It is deliberately a small `Bar` capability, not a general animation
+or scripting runtime: authored UI declares the policy; the retained UI owns the
+presentation clock and never writes state back to gameplay.
+
+### Contract and ownership
+
+- Add engine-owned readonly Boolean `player.reloadActive`, default `false`,
+  `persist: false`, `ReplicationScope::None`, SDK path
+  `getGameState().player.reloadActive`. It means the authoritative reload
+  lifecycle is active, not "the meter happens to have a nonzero fraction". The
+  eventual reload gameplay producer writes both this Boolean and
+  `player.reloadProgress`; the dev driver remains the temporary producer.
+- `player.reloadProgress` continues to be the authoritative numeric target.
+  At completion the producer publishes `reloadProgress = 1.0` and
+  `reloadActive = false` in the same snapshot, then may return progress to its
+  resting `0.0` on the following tick. This gives the UI the terminal value to
+  retain without putting a post-completion timer in game logic.
+- The retained UI samples that one snapshot, then owns the exit presentation:
+  it captures the displayed bar value and denominator on the active→inactive
+  transition, retains its layout/draw node, and fades both background and fill
+  alpha over the authored duration. State changes while it is exiting do not
+  alter that captured image. At the end it becomes `Display::None` and emits no
+  quads. A false first resolution is immediately `Display::None`; there is no
+  fade-in. A false→true transition (including a retrigger during exit) cancels
+  the exit, restores authored display, and renders at full alpha in that frame.
+- UI time remains the existing dt-accumulated `UiReadSnapshot::time_seconds`;
+  it pauses with game logic and is never wall-clock time. This remains
+  renderer-local presentation state in `postretro-ui`, not renderer GPU state
+  and not a Rust-side gameplay opacity slot.
+
+### Exact additive public API
+
+Extend only the passive `Bar` primitive (the concrete consumer), preserving all
+old defaults and wire forms when omitted:
+
+```ts
+type BarExitFade = { durationMs: number };
+
+type BarProps = {
+  // existing props …
+  width?: number;       // finite, > 0 logical-reference px; default 120
+  height?: number;      // finite, > 0 logical-reference px; default 12
+  visibleWhen?: Predicate;
+  exitFade?: BarExitFade; // legal only with visibleWhen; finite durationMs > 0
+};
+```
+
+The descriptor wire fields are camelCase `width`, `height`, and `exitFade`,
+with `BarExitFade { duration_ms: f32 }` in Rust. The fade is intentionally
+linear and has no `from`, target, or easing option: adding those would create a
+general visibility-animation vocabulary without a second consumer. The SDK
+factories for both TypeScript and Luau reject non-finite / non-positive sizes
+and durations, and reject `exitFade` without `visibleWhen` at authoring time.
+Direct descriptor inputs still use serde's normal malformed-registration
+containment.
+
+The dev HUD authors the requested treatment directly:
+
+```ts
+const reloadMeter = Bar({
+  bind: bindState(player.reloadProgress),
+  max: 1.0,
+  width: 120.0,
+  height: 24.0,
+  visibleWhen: stateEquals(player.reloadActive, true),
+  exitFade: { durationMs: 500.0 },
+  fill: color.ok,
+  background: color.hud.health.background,
+});
+
+Tree({ anchor: "center", offset: [0.0, 36.0] }, reloadMeter)
+```
+
+`offset: [0.0, 36.0]` centers the meter horizontally and puts its center below
+the reticle; `height: 24.0` is exactly twice the existing 12 logical-pixel bar
+height. Width remains the existing 120 logical pixels.
+
+### Scope changes
+
+In scope now includes the above `reloadActive` lifecycle slot, per-bar logical
+dimensions, and a `Bar` exit fade. The earlier "whole-widget hide-when-idle" and
+"beside the reticle" exclusions/criteria are replaced by this addendum. The
+following remain out of scope: reload/ammo gameplay, production fake drivers,
+replication, generic widget opacity, generic enter/exit animation systems, and
+nonlinear visibility choreography.
+
+### Tasks and sequencing
+
+**Task 4 — Lifecycle state and dev producer (after existing Tasks 1–2).**
+Add `player.reloadActive` to `crates/entities/src/engine_state_catalog.rs` with
+the Boolean/default/network contract above; regenerate and commit both SDK
+typedef files; extend the catalog and UI-snapshot expectations. Update
+`crates/postretro/src/scripting/systems/reload_progress.rs` so press sets
+active true and starts progress at zero, the half-second ramp writes progress,
+completion writes `(1.0, false)` together, and the next tick restores only
+progress to zero. A fresh press restarts an active ramp and also starts a new
+lifecycle if it arrives while the UI is fading. The dev-only gate and its
+pre-UI-snapshot tick location stay unchanged.
+
+**Task 5 — Sized, exit-fading `Bar` (after Task 4).** Add the descriptor fields
+in `crates/scripting-core/src/ui/descriptor/widgets.rs`; TypeScript/Luau
+factory validation and public declarations in `sdk/lib/ui/widgets.{ts,luau}`;
+then regenerate `sdk/types/postretro.d.{ts,luau}`. Teach
+`crates/ui/src/tree/build.rs` to use authored width/height or the existing
+120×12 default. Extend the retained visibility state / node draw context in
+`crates/ui/src/tree/{widget_meta.rs,ui_tree.rs,node_context.rs,ui_tree_collect.rs}`
+to implement the lifecycle above, multiplying both `Bar` quad alphas and
+freezing the terminal presented value while exiting. Keep the renderer API and
+GPU code unchanged: it already consumes alpha-bearing draw-list colors. Update
+`context/lib/ui.md` §3 with the durable `visibleWhen`/`Bar.exitFade` ownership
+and retrigger contract.
+
+**Task 6 — Dev HUD polish (after Tasks 4–5).** Update
+`content/dev/scripts/hud.ts` to import `stateEquals`, use the exact `Bar` and
+tree values above, and keep `hud.reloadMeter` as its own always-on anchored
+tree. `alwaysOn` means the retained tree participates in composition; the
+bar itself is non-rendering at idle through `visibleWhen`.
+
+### Acceptance and verification
+
+- [ ] The generated TS and Luau game-state trees expose readonly
+  `player.reloadActive` as Boolean and retain the existing numeric
+  `player.reloadProgress`; catalog tests pin both entries and their defaults.
+- [ ] The dev driver test observes press → `(active=true, progress rising)` →
+  `(active=false, progress=1.0)` → `(active=false, progress=0.0)`, using
+  deterministic deltas and approximate float assertions.
+- [ ] Descriptor/SDK tests prove `Bar` round-trips `width`, `height`, and
+  `exitFade` in camelCase; omitted fields preserve old descriptor wire output;
+  TypeScript and Luau factories reject invalid dimensions/durations and an
+  orphan `exitFade`.
+- [ ] Retained UI tests prove: initially false emits zero bar quads; true shows
+  full-alpha quads immediately; true→false retains the terminal 100% fill and
+  fades background and fill alpha over exactly 500 ms; after expiry it emits no
+  bar quads; and a true retrigger mid-fade cancels the old exit without stale
+  opacity or frozen value. These are CPU draw-list tests, not GPU tests.
+- [ ] Manual `dev-tools` check using
+  `cargo run -p xtask -- run --features dev-tools -- content/dev/maps/campaign-test.prl`:
+  R shows a 120×24 meter centered below the crosshair, fills over the dev
+  ramp, holds its terminal image at completion, and fades away over 500 ms;
+  pressing R during the fade starts a fresh, fully opaque meter.
+
+**Phase P1 (sequential):** Task 4 establishes the authoritative lifecycle
+signal used by both the HUD expression and the dev driver test.
+
+**Phase P2 (sequential):** Task 5 consumes that semantic contract and adds the
+small renderer-local presentation capability. It is intentionally before HUD
+authoring so the final content uses real typed API, not a temporary shape.
+
+**Phase P3:** Task 6, focused checks, then visual dev verification.

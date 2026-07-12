@@ -186,6 +186,8 @@ pub struct MapTriggerVolume {
     pub fire_mode: u8,
     pub rearm_ms: f32,
     pub enabled_on_spawn: bool,
+    pub on_fire: String,
+    pub on_exit: String,
 }
 
 /// Light shape. Governs which fields of `MapLight` are meaningful.

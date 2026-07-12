@@ -9,6 +9,13 @@ export const referencePistolEntity = defineEntity({
       fireRateMs: 180.0,
       fireMode: "semi",
       resolution: "hitscan",
+      resource: {
+        kind: "ammo",
+        type: "bullets.light",
+        magazine: 12,
+        reserve: 48,
+        reloadMs: 500,
+      },
     },
   },
 });

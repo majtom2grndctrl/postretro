@@ -89,6 +89,29 @@ mod tests {
         );
     }
 
+    #[test]
+    fn load_named_tree_with_invalid_bar_contract_degrades_to_none() {
+        // Editable JSON trees reach the registry through this loader, so a bar
+        // rejected by descriptor serde follows the normal malformed-asset
+        // containment path instead of registering an invalid tree.
+        let path = std::env::temp_dir().join(format!(
+            "postretro-ui-invalid-bar-contract-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            r#"{"anchor":"center","offset":[0.0,0.0],"root":{"kind":"bar","bind":{"slot":"player.reloadProgress"},"max":1.0,"fill":"ok","background":"panel.default","width":0.0}}"#,
+        )
+        .expect("write malformed UI asset fixture");
+
+        let loaded = load_named_tree(&path);
+        let _ = std::fs::remove_file(&path);
+        assert!(
+            loaded.is_none(),
+            "invalid bar JSON is contained as an unavailable tree"
+        );
+    }
+
     /// The shipped HUD asset deserializes through the standard wire path to a
     /// well-formed, non-empty tree. JSON is the source of truth for the HUD now (no
     /// hand-assembled builder remains), so this is a structural load check, not a

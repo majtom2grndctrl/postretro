@@ -9,6 +9,10 @@ use std::collections::VecDeque;
 mod client;
 mod command_queue;
 mod descriptor_class;
+// The ordered frame stages of the replicated-state → presentation path (snapshot apply,
+// then state-crossing detection). Owns the order via a witness value so `App` and the
+// headless co-op harness cannot each invent their own sequencing.
+pub(crate) mod frame_order;
 mod interpolation;
 mod lifecycle;
 mod movement_state;
@@ -41,6 +45,10 @@ mod boot_spawn_gate_test;
 // `StateBaselineRefresh` without reconnect.
 #[cfg(test)]
 mod state_slot_loss_harness_test;
+// Test-only co-op harness covers trigger-state replication through client presentation.
+// It shares production ordering; trigger events remain local and never cross the wire.
+#[cfg(test)]
+mod trigger_state_channel_harness_test;
 // E10 (Networked Enemy Authority Baseline) Task 7: the integration harness proving the
 // whole host→client enemy path end to end (host registration → wire → conditioned link
 // → client remote-presentation materialization → interpolation → despawn cleanup →
@@ -787,6 +795,7 @@ pub(crate) fn component_kind_discriminant(kind: ComponentKind) -> u16 {
         ComponentKind::Brain => 12,
         ComponentKind::KinematicMover => 13,
         ComponentKind::TriggerVolume => 14,
+        ComponentKind::AmmoReserve => 15,
     }
 }
 
@@ -1711,6 +1720,9 @@ fn cleanup_remote_pawn_owned_state(
     client_id: u64,
     pawn: EntityId,
 ) {
+    // Pawn and sibling weapon are one runtime ownership unit. Despawning both
+    // prevents a non-cancellable reload from surviving without the reserve-owning
+    // pawn that must finish its transfer.
     let weapon = weapon_owners.weapon_of(pawn);
     pending_hit_declarations.remove_client(client_id);
     open_shots.remove_client(client_id);
@@ -2247,6 +2259,7 @@ mod tests {
             fire_mode: FireMode::Semi,
             resolution: ResolutionMode::Hitscan,
             credit_source: Some("weapon.test.net".to_string()),
+            resource: None,
         })
     }
 
@@ -2900,8 +2913,9 @@ mod tests {
                 ComponentKind::Health => Some(ComponentKind::Agent),
                 ComponentKind::Agent => Some(ComponentKind::Brain),
                 ComponentKind::Brain => Some(ComponentKind::KinematicMover),
-                ComponentKind::KinematicMover => None,
-                ComponentKind::TriggerVolume => None,
+                ComponentKind::KinematicMover => Some(ComponentKind::TriggerVolume),
+                ComponentKind::TriggerVolume => Some(ComponentKind::AmmoReserve),
+                ComponentKind::AmmoReserve => None,
             }
         }
 

@@ -9,3 +9,4 @@ license.workspace = true
 [dependencies]
 postretro-level-compiler = { workspace = true }
 postretro-level-format = { workspace = true, features = ["gltf-resolve"] }
+serde_json = { workspace = true }

@@ -130,7 +130,7 @@ pub use renderer_types::{
 pub(crate) use renderer_types::{GpuTexture, POST_RETRO_ANISO_CLAMP};
 
 #[cfg(feature = "dev-tools")]
-pub use debug_ui::{AgentDiagnosticsRow, DebugUi, draw_diagnostics_panel};
+pub use debug_ui::{AgentDiagnosticsRow, DebugUi, TriggerDiagnosticsRow, draw_diagnostics_panel};
 #[cfg(feature = "dev-tools")]
 pub use frame_timing::FrameTimingSnapshot;
 #[cfg(feature = "dev-tools")]

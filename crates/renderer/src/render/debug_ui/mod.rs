@@ -51,15 +51,17 @@ pub enum DiagnosticsTab {
     Performance,
     Spatial,
     Agents,
+    Triggers,
 }
 
 impl DiagnosticsTab {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::Lighting,
         Self::Volumes,
         Self::Performance,
         Self::Spatial,
         Self::Agents,
+        Self::Triggers,
     ];
 
     const fn label(self) -> &'static str {
@@ -69,6 +71,7 @@ impl DiagnosticsTab {
             Self::Performance => "Performance",
             Self::Spatial => "Spatial",
             Self::Agents => "Agents",
+            Self::Triggers => "Triggers",
         }
     }
 }
@@ -85,6 +88,25 @@ pub struct AgentDiagnosticsRow {
     pub arrived: bool,
     pub blocked: bool,
     pub has_path: bool,
+}
+
+/// Renderer-facing trigger diagnostics row.
+///
+/// Trigger components, bindings, and entity identifiers remain engine-owned;
+/// the renderer receives only this prepared CPU display snapshot.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TriggerDiagnosticsRow {
+    pub name: String,
+    pub tags: String,
+    pub activation: String,
+    pub armed: bool,
+    pub latched: bool,
+    pub rearm_remaining_ms: f32,
+    pub occupancy: usize,
+    pub on_fire: String,
+    pub on_fire_resolved: bool,
+    pub on_exit: String,
+    pub on_exit_resolved: bool,
 }
 
 /// Diagnostics-panel widget state. The panel binds these to renderer setters
@@ -221,6 +243,7 @@ pub fn draw_diagnostics_panel(
     renderer: &mut Renderer,
     frame_timing: Option<&FrameTimingSnapshot>,
     agent_rows: &[AgentDiagnosticsRow],
+    trigger_rows: &[TriggerDiagnosticsRow],
 ) {
     // Seed slider state from live renderer values on first draw so toggling
     // the panel open does not snap ambient floor / indirect scale to whatever
@@ -267,6 +290,7 @@ pub fn draw_diagnostics_panel(
             DiagnosticsTab::Performance => draw_performance_tab(ui, frame_timing),
             DiagnosticsTab::Spatial => draw_spatial_tab(ui, state, renderer),
             DiagnosticsTab::Agents => draw_agents_tab(ui, renderer, agent_rows),
+            DiagnosticsTab::Triggers => draw_triggers_tab(ui, trigger_rows),
         }
     });
 }
@@ -672,6 +696,66 @@ fn draw_agents_tab(ui: &mut egui::Ui, renderer: &mut Renderer, agent_rows: &[Age
         });
 }
 
+fn trigger_event_status_label(event_name: &str, resolved: bool) -> String {
+    if event_name.is_empty() {
+        "-".to_string()
+    } else if resolved {
+        format!("{event_name} (resolved)")
+    } else {
+        format!("{event_name} (unresolved)")
+    }
+}
+
+fn draw_triggers_tab(ui: &mut egui::Ui, trigger_rows: &[TriggerDiagnosticsRow]) {
+    egui::CollapsingHeader::new("Live triggers")
+        .default_open(true)
+        .show(ui, |ui| {
+            if trigger_rows.is_empty() {
+                ui.label("No live triggers");
+                return;
+            }
+
+            egui::ScrollArea::both().auto_shrink(false).show(ui, |ui| {
+                egui::Grid::new("trigger_diagnostics_grid")
+                    .num_columns(10)
+                    .striped(true)
+                    .show(ui, |ui| {
+                        ui.strong("Name");
+                        ui.strong("Tags");
+                        ui.strong("Activation");
+                        ui.strong("Armed");
+                        ui.strong("Latched");
+                        ui.strong("Rearm");
+                        ui.strong("Occupancy");
+                        ui.strong("On fire");
+                        ui.strong("On exit");
+                        ui.strong("State");
+                        ui.end_row();
+
+                        for row in trigger_rows {
+                            ui.label(row.name.as_str());
+                            ui.label(row.tags.as_str());
+                            ui.label(row.activation.as_str());
+                            ui.label(row.armed.to_string());
+                            ui.label(row.latched.to_string());
+                            ui.label(format!("{:.1} ms", row.rearm_remaining_ms));
+                            ui.label(row.occupancy.to_string());
+                            ui.label(trigger_event_status_label(
+                                &row.on_fire,
+                                row.on_fire_resolved,
+                            ));
+                            ui.label(trigger_event_status_label(
+                                &row.on_exit,
+                                row.on_exit_resolved,
+                            ));
+                            ui.label(if row.armed { "ready" } else { "disarmed" });
+                            ui.end_row();
+                        }
+                    });
+            });
+        });
+}
+
 fn cell_set_diagnostic_label(value: SpatialCellSetDiagnostics, empty_note: &str) -> String {
     match value {
         SpatialCellSetDiagnostics::DrawAll => "DrawAll".to_string(),
@@ -1012,7 +1096,7 @@ mod tests {
     }
 
     #[test]
-    fn diagnostics_tabs_expose_spatial_without_extra_action() {
+    fn diagnostics_tabs_expose_spatial_and_triggers_without_extra_action() {
         assert_eq!(
             DiagnosticsTab::ALL,
             [
@@ -1021,10 +1105,12 @@ mod tests {
                 DiagnosticsTab::Performance,
                 DiagnosticsTab::Spatial,
                 DiagnosticsTab::Agents,
+                DiagnosticsTab::Triggers,
             ],
         );
         assert_eq!(DiagnosticsTab::Spatial.label(), "Spatial");
         assert_eq!(DiagnosticsTab::Agents.label(), "Agents");
+        assert_eq!(DiagnosticsTab::Triggers.label(), "Triggers");
     }
 
     #[test]
@@ -1048,5 +1134,18 @@ mod tests {
 
         assert_eq!(agent_flags_label(&idle), "none");
         assert_eq!(agent_flags_label(&moving), "arrived, blocked, has-path");
+    }
+
+    #[test]
+    fn trigger_event_status_labels_empty_and_binding_states() {
+        assert_eq!(trigger_event_status_label("", false), "-");
+        assert_eq!(
+            trigger_event_status_label("door_open", true),
+            "door_open (resolved)"
+        );
+        assert_eq!(
+            trigger_event_status_label("missing", false),
+            "missing (unresolved)"
+        );
     }
 }

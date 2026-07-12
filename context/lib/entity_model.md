@@ -37,11 +37,12 @@ Capabilities attach via component columns in the registry. Current engine compon
 | ParticleState | Per-particle simulation state |
 | SpriteVisual | Billboard visual parameters |
 | FogVolume | Runtime fog-volume parameters |
-| Weapon | Runtime weapon params and per-instance cooldown state |
+| Weapon | Descriptor-authored weapon tuning plus live magazine, cooldown, reload, and fire/reload input-edge state |
+| AmmoReserve | Pawn-owned ammunition balances pooled by authored ammo type; reloads transfer from this reserve into the active weapon magazine |
 | MeshComponent | Skinned model handle (`model: String`) plus optional declared animation states and per-entity animation state; spawned via `prop_mesh` or a descriptor carrying a mesh component |
 | Health | Hit points (`max`, `current`) plus optional hitscan hitbox (one world-aligned AABB, fixed per archetype); declared via the `components.health` descriptor block. Health-bearing entities are damage targets. They are hitscan-targetable when they have an authored AABB hitbox or a zone-bearing skinned model (§7). |
 | KinematicMover | Engine-owned deterministic mover driver seeded from PRL `KinematicGeometry`; readable through `world.query({ component: "kinematic_mover" })`, whose SDK handle builds declarative mover-command reactions |
-| TriggerVolume | Engine-owned, serializable touch/use activation state for an invisible level-authored AABB; fires closed-vocabulary mover commands on the host |
+| TriggerVolume | Engine-owned, serializable host-authoritative touch/use state for an invisible level-authored AABB. Named `on_fire` / `on_exit` reactions fan out effects; an exit fires only after that player's activation fired. Tracks occupancy; arming reopens Touch activation for already-standing players, while Use remains press-driven. |
 
 Type-specific data lives in the component. An entity is "a player" by virtue of carrying `PlayerMovement`, not by belonging to a typed collection. Other entity types follow the same pattern: enemies use an **Agent** component for navmesh path-following and collide-and-slide movement, plus an **AI brain** component for engine-owned combat behavior. Doors, projectiles, and pickups should attach their behavior through components instead of typed collections.
 
@@ -73,6 +74,12 @@ Entities are destroyed when:
 - Level unloads (all entities destroyed).
 
 Destruction is immediate: the entity's slot is cleared and its generation bumped (or the slot retired on generation overflow) in the same call that removes the entity. Callers must not hold entity IDs across points where destruction can occur.
+
+Pawn-owned auxiliary entities share the pawn lifecycle. Remote slot cleanup
+despawns the pawn and its sibling weapon together. Local level teardown clears
+the whole registry and active-wieldable handle together. Player damage does not
+despawn the local pawn. These rules keep live weapon timers attached to their
+reserve-owning pawn; reload is never cancelled as orphan cleanup.
 
 ---
 
@@ -111,7 +118,7 @@ Game logic runs at a fixed tick rate, decoupled from render framerate. Renderer 
 | 4 | AI brain tick | Updates engine-owned combat/behavior state after player movement settles |
 | 5 | Host camera callback | Host-side camera/aim work runs after movement and AI, before aim-dependent steering and weapon systems |
 | 6 | Agent steering tick | Applies navigation steering after AI decisions and host camera work |
-| 7 | Weapon fire tick | Consumes resolved fire and aim data; may spawn impact effects and apply damage |
+| 7 | Weapon reload and fire tick | Advances reloads and transfers completed reloads from pawn reserves before consuming resolved fire and aim data; firing may spawn impact effects and apply damage |
 | 8 | Death sweep | Processes entities whose health reached zero after same-tick damage |
 
 Scripting bridges run later, outside the core simulation seam. Emitter, particle sim, light, and fog-volume bridges each walk their component columns and may spawn or despawn entities.

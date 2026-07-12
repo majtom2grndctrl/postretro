@@ -2,7 +2,7 @@
 
 use crate::FormatError;
 
-pub const TRIGGER_VOLUMES_VERSION: u16 = 1;
+pub const TRIGGER_VOLUMES_VERSION: u16 = 2;
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TriggerVolumesSection {
@@ -23,6 +23,9 @@ pub struct TriggerVolumeRecord {
     pub fire_mode: u8,
     pub rearm_ms: f32,
     pub enabled_on_spawn: bool,
+    // Appended in v2. Do not move before the v1 fields above.
+    pub on_fire: String,
+    pub on_exit: String,
 }
 
 impl TriggerVolumesSection {
@@ -45,6 +48,8 @@ impl TriggerVolumesSection {
             out.push(trigger.fire_mode);
             out.extend_from_slice(&trigger.rearm_ms.to_le_bytes());
             out.push(u8::from(trigger.enabled_on_spawn));
+            string(&mut out, &trigger.on_fire);
+            string(&mut out, &trigger.on_exit);
         }
         out
     }
@@ -52,9 +57,11 @@ impl TriggerVolumesSection {
     pub fn from_bytes(data: &[u8]) -> crate::Result<Self> {
         let mut o = 0;
         let version = u16_(&mut o, data, "version")?;
-        if version != TRIGGER_VOLUMES_VERSION {
-            return invalid(format!("trigger volumes: unsupported version {version}"));
-        }
+        let has_event_names = match version {
+            1 => false,
+            TRIGGER_VOLUMES_VERSION => true,
+            _ => return invalid(format!("trigger volumes: unsupported version {version}")),
+        };
         let n = count_(&mut o, data, "trigger count")?;
         let mut triggers = Vec::with_capacity(n);
         for i in 0..n {
@@ -111,6 +118,14 @@ impl TriggerVolumesSection {
                     ));
                 }
             };
+            let (on_fire, on_exit) = if has_event_names {
+                (
+                    string_(&mut o, data, &format!("trigger {i} on_fire"))?,
+                    string_(&mut o, data, &format!("trigger {i} on_exit"))?,
+                )
+            } else {
+                (String::new(), String::new())
+            };
             triggers.push(TriggerVolumeRecord {
                 name,
                 tags,
@@ -123,6 +138,8 @@ impl TriggerVolumesSection {
                 fire_mode,
                 rearm_ms,
                 enabled_on_spawn,
+                on_fire,
+                on_exit,
             });
         }
         if o != data.len() {
@@ -215,9 +232,34 @@ mod tests {
                 fire_mode: 1,
                 rearm_ms: 200.0,
                 enabled_on_spawn: true,
+                on_fire: "open_lift".into(),
+                on_exit: "close_lift".into(),
             }],
         }
     }
+
+    fn v1_bytes() -> Vec<u8> {
+        let trigger = &sample().triggers[0];
+        let mut out = Vec::new();
+        out.extend_from_slice(&1_u16.to_le_bytes());
+        count(&mut out, 1);
+        string(&mut out, &trigger.name);
+        count(&mut out, trigger.tags.len());
+        for tag in &trigger.tags {
+            string(&mut out, tag);
+        }
+        vec3(&mut out, trigger.aabb_min);
+        vec3(&mut out, trigger.aabb_max);
+        out.push(trigger.activation);
+        string(&mut out, &trigger.target_tag);
+        out.push(trigger.command);
+        string(&mut out, &trigger.command_arg);
+        out.push(trigger.fire_mode);
+        out.extend_from_slice(&trigger.rearm_ms.to_le_bytes());
+        out.push(u8::from(trigger.enabled_on_spawn));
+        out
+    }
+
     #[test]
     fn round_trip_preserves_persistent_field_order() {
         let section = sample();
@@ -226,10 +268,48 @@ mod tests {
             section
         );
     }
+
+    #[test]
+    fn v2_appends_event_names_after_the_v1_layout() {
+        let mut v2 = sample().to_bytes();
+        v2[..2].copy_from_slice(&1_u16.to_le_bytes());
+        let v1 = v1_bytes();
+        assert_eq!(&v2[..v1.len()], v1);
+    }
+
+    #[test]
+    fn v1_decode_defaults_event_names_to_empty() {
+        let mut expected = sample();
+        expected.triggers[0].on_fire.clear();
+        expected.triggers[0].on_exit.clear();
+        assert_eq!(
+            TriggerVolumesSection::from_bytes(&v1_bytes()).unwrap(),
+            expected
+        );
+    }
+
     #[test]
     fn rejects_invalid_enabled_byte() {
-        let mut bytes = sample().to_bytes();
+        let mut bytes = v1_bytes();
         *bytes.last_mut().unwrap() = 2;
+        assert!(TriggerVolumesSection::from_bytes(&bytes).is_err());
+    }
+
+    #[test]
+    fn rejects_trailing_bytes_for_v1_and_v2() {
+        let mut v1 = v1_bytes();
+        v1.push(0);
+        assert!(TriggerVolumesSection::from_bytes(&v1).is_err());
+
+        let mut v2 = sample().to_bytes();
+        v2.push(0);
+        assert!(TriggerVolumesSection::from_bytes(&v2).is_err());
+    }
+
+    #[test]
+    fn rejects_unsupported_version() {
+        let mut bytes = sample().to_bytes();
+        bytes[..2].copy_from_slice(&3_u16.to_le_bytes());
         assert!(TriggerVolumesSection::from_bytes(&bytes).is_err());
     }
 }

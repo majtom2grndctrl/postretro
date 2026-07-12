@@ -252,6 +252,7 @@ fn spawn_weapon(registry: &mut EntityRegistry) -> EntityId {
                 fire_mode: FireMode::Semi,
                 resolution: ResolutionMode::Hitscan,
                 credit_source: None,
+                resource: None,
             }),
         )
         .expect("weapon component should attach");

@@ -17,6 +17,7 @@ use std::collections::{BTreeSet, HashSet};
 use glam::Vec3;
 
 use super::MapEntity;
+use postretro_entities::AmmoReserve;
 use postretro_entities::components::agent::attach_agent;
 use postretro_entities::components::billboard_emitter::BillboardEmitterComponent;
 use postretro_entities::components::brain::{attach_brain, validate_brain_animation_states};
@@ -33,7 +34,9 @@ use postretro_entities::provenance::{
 };
 use postretro_entities::registry::{ComponentKind, EntityId, EntityRegistry, Transform};
 use postretro_foundation::NavAgentParams;
-use postretro_scripting_core::data_descriptors::{EntityTypeDescriptor, LightDescriptor};
+use postretro_scripting_core::data_descriptors::{
+    EntityTypeDescriptor, LightDescriptor, WeaponResource,
+};
 
 /// Capsule fallback for a descriptor-spawned agent when the map has no navmesh
 /// (`agent_params == None`). The agent still materializes — it simply cannot
@@ -46,6 +49,27 @@ pub(crate) const DEFAULT_AGENT_PARAMS: NavAgentParams = NavAgentParams {
     step_height: 0.4,
     max_slope_deg: 45.0,
 };
+
+pub(super) fn seed_weapon_reserve(
+    registry: &mut EntityRegistry,
+    pawn: EntityId,
+    weapon_descriptor: &EntityTypeDescriptor,
+) {
+    let Some(WeaponResource::Ammo(ammo)) = weapon_descriptor
+        .weapon
+        .as_ref()
+        .and_then(|weapon| weapon.resource.as_ref())
+    else {
+        return;
+    };
+
+    let mut reserve = registry
+        .get_component::<AmmoReserve>(pawn)
+        .cloned()
+        .unwrap_or_default();
+    reserve.credit(&ammo.ammo_type, ammo.reserve);
+    let _ = registry.set_component(pawn, reserve);
+}
 
 /// Apply the `initial_<field>` KVP override convention to the descriptor's
 /// component presets. Each scalar field (`f32`, `u32`) parses via `FromStr`;
@@ -743,6 +767,7 @@ pub(crate) fn spawn_from_player_starts(
             ) {
                 Some(weapon_id) => {
                     let _ = registry.set_map_kvps(weapon_id, Default::default());
+                    seed_weapon_reserve(registry, id, weapon_descriptor);
                     if active_wieldable.is_none() {
                         active_wieldable = Some(weapon_id);
                         active_wieldable_descriptor = Some(default_weapon.to_string());
@@ -778,8 +803,8 @@ pub(crate) fn spawn_from_player_starts(
 mod tests {
     use super::*;
     use postretro_scripting_core::data_descriptors::{
-        AirParams, CapsuleParams, FallParams, FireMode, GroundParams, PlayerMovementDescriptor,
-        ResolutionMode, SpeedParams, WeaponDescriptor,
+        AirParams, AmmoResource, CapsuleParams, FallParams, FireMode, GroundParams,
+        PlayerMovementDescriptor, ResolutionMode, SpeedParams, WeaponDescriptor,
     };
 
     // Shared descriptor/placement builders live in the sibling fixture module so
@@ -1706,11 +1731,24 @@ mod tests {
                 fire_mode: FireMode::Semi,
                 resolution: ResolutionMode::Hitscan,
                 credit_source: None,
+                resource: None,
             }),
             mesh: None,
             health: None,
             ai: None,
         }
+    }
+
+    fn ammo_weapon_descriptor(classname: &str) -> EntityTypeDescriptor {
+        let mut descriptor = weapon_descriptor(classname);
+        descriptor.weapon.as_mut().unwrap().resource = Some(WeaponResource::Ammo(AmmoResource {
+            ammo_type: "bullets.light".to_string(),
+            magazine: 12,
+            cost_per_shot: 1,
+            reserve: 48,
+            reload_ms: 900,
+        }));
+        descriptor
     }
 
     fn player_with_default_weapon(classname: &str, default_weapon: &str) -> EntityTypeDescriptor {
@@ -1961,6 +1999,55 @@ mod tests {
         assert_eq!(weapon.damage, 12.0);
         assert_eq!(weapon.effective().credit_source, "reference_pistol");
         assert_eq!(live_count(&reg), 2, "player plus sibling weapon entity");
+    }
+
+    #[test]
+    fn player_spawn_seeds_pawn_local_ammo_reserve_and_full_weapon_magazine() {
+        let mut reg = EntityRegistry::new();
+        let descriptors = vec![
+            player_with_default_weapon("player", "reference_pistol"),
+            ammo_weapon_descriptor("reference_pistol"),
+        ];
+
+        let result = spawn_from_player_starts(&[spawn_point(&[])], &descriptors, &mut reg, None);
+        let weapon_id = result.active_wieldable.expect("active wieldable");
+        let pawn = reg
+            .iter_with_kind(ComponentKind::Transform)
+            .map(|(id, _)| id)
+            .find(|id| *id != weapon_id)
+            .expect("spawned pawn");
+
+        assert_eq!(
+            reg.get_component::<AmmoReserve>(pawn)
+                .unwrap()
+                .available("bullets.light"),
+            48
+        );
+        assert_eq!(
+            reg.get_component::<WeaponComponent>(weapon_id)
+                .unwrap()
+                .magazine,
+            12
+        );
+    }
+
+    #[test]
+    fn player_spawn_without_weapon_resource_does_not_create_ammo_reserve() {
+        let mut reg = EntityRegistry::new();
+        let descriptors = vec![
+            player_with_default_weapon("player", "reference_pistol"),
+            weapon_descriptor("reference_pistol"),
+        ];
+
+        let result = spawn_from_player_starts(&[spawn_point(&[])], &descriptors, &mut reg, None);
+        let weapon_id = result.active_wieldable.unwrap();
+        let pawn = reg
+            .iter_with_kind(ComponentKind::Transform)
+            .map(|(id, _)| id)
+            .find(|id| *id != weapon_id)
+            .unwrap();
+
+        assert!(reg.get_component::<AmmoReserve>(pawn).is_err());
     }
 
     #[test]

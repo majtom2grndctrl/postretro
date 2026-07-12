@@ -36,6 +36,11 @@ mod nav;
 // The ONLY engine code that touches the registry on behalf of replication.
 // See `context/lib/entity_model.md` §6.
 mod netcode;
+// Headless batch-mode observability vocabulary: runspec, entity dump, and
+// deterministic JSON output. Feature-gated; consumed by the headless driver.
+// See: context/plans/done/agentic-observability
+#[cfg(feature = "observability")]
+mod observability;
 mod options;
 mod weapon;
 
@@ -49,6 +54,9 @@ mod scripting;
 mod session;
 mod sim;
 mod startup;
+mod trigger_bindings;
+#[cfg(feature = "dev-tools")]
+mod trigger_diagnostics;
 mod trigger_system;
 mod view_feel;
 
@@ -88,6 +96,9 @@ use winit::window::{Window, WindowAttributes};
 use crate::camera::Camera;
 use crate::frame_timing::{FrameRateMeter, FrameTiming, InterpolableState};
 use crate::input::{Action, ButtonState, DiagnosticAction, InputFocus};
+// Owns the apply-before-detect stage order of the frame's replicated-state path.
+// See: context/lib/networking.md
+use crate::netcode::frame_order;
 use crate::render::Renderer;
 use crate::scripting::state_persistence::{
     STATE_FILE_PATH, collect_persisted_state, save_persisted_state,
@@ -113,7 +124,8 @@ use postretro_entities::SystemReactionCommand;
 use postretro_foundation::ModThemeTokens;
 use postretro_scripting_core::data_descriptors::RegisteredUiTree;
 use postretro_scripting_core::reaction_dispatch::{
-    fire_named_event, fire_named_event_with_sequences,
+    dispatch_deferred_named_events_with_sequences, fire_named_event,
+    fire_named_event_with_sequences, fire_prepartitioned_reactions_with_sequences,
 };
 use postretro_scripting_core::runtime::{
     Frontend, MenuCamera, ReloadSummary, StagedManifestCommitOutcome,
@@ -517,6 +529,9 @@ pub(crate) struct App {
     kinematic_mover_tick_states: kinematic_mover::MoverTickStateTable,
     /// Render-stage CPU collector for loaded kinematic mover brush instances.
     kinematic_mover_render: runtime_movers::KinematicMoverRenderCollector,
+    /// Per-level trigger event bindings resolved from the final composed
+    /// reaction set during install. The fixed-tick seam borrows this table.
+    trigger_bindings: trigger_bindings::TriggerBindingTable,
 
     /// Active wieldable instance equipped by the player. The companion
     /// descriptor name lets mod-init hot reload refresh authored weapon stats
@@ -552,28 +567,15 @@ pub(crate) struct App {
     #[allow(dead_code)]
     pending_splash_override: Option<SplashSource>,
 
-    /// Classnames the built-in dispatch handled at level open. Captured during
-    /// install and consumed by the data-archetype sweep on the same frame.
-    /// `None` before level load and after the sweep consumes it.
-    builtin_handled: Option<std::collections::HashSet<String>>,
-
-    /// `player_spawn` placements partitioned from `world.map_entities` during
-    /// install. Consumed on the same frame by `spawn_from_player_starts` — a
-    /// separate path from `apply_data_archetype_dispatch`. `None` before level
-    /// load and after consumed.
-    pending_spawn_points: Option<Vec<crate::scripting::map_entity::MapEntity>>,
-
     /// A retained copy of the level's `player_spawn` placements for the host's
-    /// runtime net-slot accept path (M15 Phase 3 Task 4). Unlike
-    /// `pending_spawn_points` (consumed at install), this survives so each accepted
-    /// client's descriptor-backed remote pawn can be spawned from its deterministically
-    /// assigned placement. Empty before level load and on maps with no player_spawn.
+    /// runtime net-slot accept path (M15 Phase 3 Task 4), so each accepted
+    /// client's descriptor-backed remote pawn can be spawned from its
+    /// deterministically assigned placement. Populated from segment B's returned
+    /// spawn points at install. Empty before level load and on maps with no
+    /// player_spawn. The install-internal classname/archetype partition
+    /// (spawn-point / built-in-handled / remaining-entity bookkeeping) now lives
+    /// as locals inside `install_world_cpu`; only this host copy outlives install.
     host_spawn_points: Vec<crate::scripting::map_entity::MapEntity>,
-
-    /// Non-player-start map entities partitioned out of `world.map_entities`
-    /// during install, awaiting the data-archetype sweep on the same frame.
-    /// `None` before level load and after the sweep consumes them.
-    pending_map_entities: Option<Vec<crate::scripting::map_entity::MapEntity>>,
 
     /// Seconds since level load, not wall clock. Resets to zero on level unload
     /// and during level install. Maintained for future engine consumers that need a
@@ -889,27 +891,12 @@ fn has_player_pawn(registry: &postretro_entities::EntityRegistry) -> bool {
         .is_some()
 }
 
-/// Resolve the followed player pawn: registry marker first, then first
-/// `PlayerMovement` entity. See also `local_movement_pawn` (sim/mod.rs)
-/// and `player_position` (scripting/systems/ai.rs).
+/// Resolve the pawn followed by local camera and input consumers. Identity follows
+/// the registry's movement-pawn policy; callers apply camera-specific component gates.
 fn followed_player_pawn(
     registry: &postretro_entities::EntityRegistry,
 ) -> Option<postretro_entities::EntityId> {
-    use postretro_entities::ComponentKind;
-
-    if let Some(id) = registry.local_player_pawn() {
-        if matches!(
-            registry.has_component_kind(id, ComponentKind::PlayerMovement),
-            Ok(true)
-        ) {
-            return Some(id);
-        }
-    }
-
-    registry
-        .iter_with_kind(ComponentKind::PlayerMovement)
-        .next()
-        .map(|(id, _)| id)
+    registry.local_player_movement_pawn()
 }
 
 /// Follow the camera to the local pawn's eye. `presentation_offset` is the M15
@@ -1751,6 +1738,7 @@ impl ApplicationHandler for App {
                 // Reserved for primitives that need a per-frame ordering stamp.
                 // See: context/lib/scripting.md
                 script_ctx.frame.set(script_ctx.frame.get().wrapping_add(1));
+                let engine_frame = script_ctx.frame.get();
 
                 // Net poll (M15 Phase 1): non-blocking, once per frame, BEFORE
                 // the catch-up tick loop. The client applies received
@@ -1759,15 +1747,21 @@ impl ApplicationHandler for App {
                 // serialize + send runs AFTER the tick loop (post-loop, beside
                 // the other drains). Single-player → inert no-op. See
                 // `context/lib/entity_model.md` §6, development_guide §4.3.
-                self.net_poll_and_apply(frame_dt);
+                //
+                // Driven through `netcode::frame_order` so the apply-before-detect
+                // order is owned by one seam: the witness minted here is the only key
+                // to the crossing stage below, so inverting the two is a type error.
+                let applied = frame_order::run_snapshot_apply_stage(self, engine_frame, frame_dt);
 
-                // Accumulate post-tick events across all ticks; drain after the
-                // tick loop completes so reactions see fully-settled world state
-                // and event order is never interleaved with ongoing physics. See:
-                // context/lib/entity_model.md §5
+                // Accumulate app-side residual and post-tick events across all ticks;
+                // drain after the loop against fully-settled world state. Direct trigger
+                // consequential work instead executes and rechecks inside each fixed tick.
+                // See: context/lib/entity_model.md §5
                 let mut pending_movement_events: Vec<&'static str> = Vec::new();
                 let mut pending_ai_events: Vec<&'static str> = Vec::new();
                 let mut pending_weapon_events: Vec<&'static str> = Vec::new();
+                let mut pending_reload_deliveries: Vec<sim::ReloadDelivery> = Vec::new();
+                let mut pending_trigger_residuals = Vec::new();
                 let mut sent_client_fire_commands: Vec<ClientFrameFireCommand> = Vec::new();
                 // Death-event names accumulate here and drain through the
                 // sequence-aware dispatcher (a separate sibling loop below), so a
@@ -1947,6 +1941,7 @@ impl ApplicationHandler for App {
                         let progress_tracker = &mut session.progress_tracker;
                         let trigger_system = &mut session.trigger_system;
                         let trigger_volume_bridge = &session.trigger_volume_bridge;
+                        let trigger_bindings = &self.trigger_bindings;
                         let camera = &mut self.camera;
                         #[cfg(feature = "dev-tools")]
                         let debug_chase_agent = self.debug_chase_agent;
@@ -1990,6 +1985,8 @@ impl ApplicationHandler for App {
                             Some(sim::TriggerTickContext {
                                 system: trigger_system,
                                 bridge: trigger_volume_bridge,
+                                bindings: trigger_bindings,
+                                slot_table: script_ctx.slot_table.clone(),
                                 use_edges: &trigger_use_edges,
                             }),
                         );
@@ -2000,7 +1997,9 @@ impl ApplicationHandler for App {
                         pending_movement_events.extend(tick_events.movement);
                         pending_ai_events.extend(tick_events.ai);
                         pending_weapon_events.extend(tick_events.weapon);
+                        pending_reload_deliveries.extend(tick_events.reload_deliveries);
                         pending_death_events.extend(tick_events.death);
+                        pending_trigger_residuals.extend(tick_events.trigger_residuals);
 
                         self.frame_timing
                             .push_state(InterpolableState::new(self.camera.position));
@@ -2012,6 +2011,7 @@ impl ApplicationHandler for App {
                 // loop, beside the post-loop drains, so the snapshot carries this
                 // frame's fully-settled host-authoritative state. No-op for the
                 // client and single-player. See `context/lib/entity_model.md` §6.
+                let host_owner_state_projected = self.host_owner_state_projection_due();
                 self.net_serialize_and_send();
 
                 // Task 6 client remote interpolation: sample each remote entity's
@@ -2042,14 +2042,51 @@ impl ApplicationHandler for App {
                 for event_name in &pending_weapon_events {
                     let _ = fire_named_event(event_name, &script_ctx.data_registry.borrow());
                 }
+                for delivery in &pending_reload_deliveries {
+                    let _ = fire_named_event(
+                        delivery.outcome.event_name(),
+                        &script_ctx.data_registry.borrow(),
+                    );
+                }
                 // Death events drain through the sequence-aware dispatcher in
                 // their OWN loop: a `progress` reaction that names a sequence
                 // would no-op under plain `fire_named_event`. Chained-event names
                 // are discarded (`let _ =`), matching the drains above.
                 if let Some(session) = self.session.as_ref() {
+                    let mut pending_trigger_follow_ups = Vec::new();
                     for event_name in &pending_death_events {
                         let _ = fire_named_event_with_sequences(
                             event_name,
+                            &script_ctx.data_registry.borrow(),
+                            &session.scripting.sequence_registry,
+                            &session.scripting.reaction_registry,
+                            &session.scripting.system_registry,
+                            &script_ctx,
+                        );
+                    }
+                    for handle in &pending_trigger_residuals {
+                        let Some(residual) = self.trigger_bindings.residual(*handle) else {
+                            log::warn!(
+                                "[Trigger] residual handle {handle:?} was not bound at install"
+                            );
+                            continue;
+                        };
+                        pending_trigger_follow_ups.extend(
+                            fire_prepartitioned_reactions_with_sequences(
+                                residual.steps(),
+                                &session.scripting.sequence_registry,
+                                &session.scripting.reaction_registry,
+                                &session.scripting.system_registry,
+                                &script_ctx,
+                            ),
+                        );
+                    }
+                    if !pending_trigger_follow_ups.is_empty() {
+                        // Direct residual work has already been partitioned and
+                        // run above. Follow-up names advance by bounded FIFO
+                        // hops so authored onComplete order is never flattened.
+                        dispatch_deferred_named_events_with_sequences(
+                            pending_trigger_follow_ups,
                             &script_ctx.data_registry.borrow(),
                             &session.scripting.sequence_registry,
                             &session.scripting.reaction_registry,
@@ -2072,22 +2109,35 @@ impl ApplicationHandler for App {
                     self.dispatch_system_commands();
                 }
 
-                // Player HUD state: republish the engine-owned health slots
+                // Player HUD state: republish engine-owned health/ammo/reload slots
                 // after game logic settles and before crossing detection / UI
                 // snapshot construction, so same-frame consumers see the
-                // settled pawn HP. See: context/lib/scripting.md §5.
+                // settled pawn and weapon state. See: context/lib/scripting.md §5.
                 //
-                // M15 Phase 3.5 Task 4: skip on a connected client. `player.health`
-                // / `player.maxHealth` are now owner-private replicated slots; the
-                // server writes them through the state-slot apply path, so a client
+                // Skip on a connected client. The player HUD slots are
+                // owner-private replicated; the server writes them through the
+                // state-slot apply path, so a client
                 // must not overwrite the replicated values from its own (non-
                 // authoritative) pawn. Host and single-player keep publishing.
                 let is_connected_client = self.is_connected_client();
+                let active_wieldable = self.active_wieldable;
                 if let Some(session) = self.session.as_mut() {
                     session
                         .scripting
                         .player_hud_state
-                        .tick_for_role(is_connected_client);
+                        .tick_for_role(is_connected_client, active_wieldable);
+                }
+                // Network projection runs before HUD publication. Clear the
+                // one-frame reload endpoints only after both consumers have had
+                // a chance to observe them.
+                if let Some(weapon) = active_wieldable {
+                    sim::clear_reload_feedback_for_weapon(
+                        &mut script_ctx.registry.borrow_mut(),
+                        weapon,
+                    );
+                }
+                if host_owner_state_projected {
+                    sim::clear_all_reload_feedback(&mut script_ctx.registry.borrow_mut());
                 }
                 // Flash-decay state writes the engine-owned `screen.flash`
                 // surface at the same game-logic stage as the HUD publisher, so
@@ -2115,21 +2165,12 @@ impl ApplicationHandler for App {
                 // through Task 2's shared named-reaction path; any system
                 // reactions thereby enqueued are drained immediately below so
                 // crossing-fired commands land in this frame, not the next.
-                if let Some(session) = self.session.as_mut() {
-                    let crossing_events = session
-                        .crossing_detector
-                        .detect(&script_ctx.slot_table.borrow());
-                    for event_name in &crossing_events {
-                        let _ = fire_named_event_with_sequences(
-                            event_name,
-                            &script_ctx.data_registry.borrow(),
-                            &session.scripting.sequence_registry,
-                            &session.scripting.reaction_registry,
-                            &session.scripting.system_registry,
-                            &script_ctx,
-                        );
-                    }
-                }
+                //
+                // Consumes this frame's `SnapshotsApplied` witness: on a connected
+                // client the replicated slot writes this frame's snapshots carried
+                // have already landed, so a crossing fires on the SAME frame its
+                // authoritative value arrives, never a frame late.
+                let _crossings = frame_order::run_crossing_stage(self, engine_frame, applied);
                 if !script_ctx.system_commands.is_empty() {
                     self.dispatch_system_commands();
                 }
@@ -2606,6 +2647,45 @@ impl ApplicationHandler for App {
                     #[cfg(feature = "dev-tools")]
                     let agent_rows =
                         agent_diagnostics::agent_overlay_diagnostics_rows(&agent_overlay_labels);
+                    #[cfg(feature = "dev-tools")]
+                    let (trigger_rows, trigger_overlay_labels) = {
+                        let diagnostics_visible = session
+                            .debug_ui
+                            .as_ref()
+                            .is_some_and(|debug_ui| debug_ui.is_visible());
+                        if diagnostics_visible {
+                            let registry = script_ctx.registry.borrow();
+                            let viewport_size_points = self
+                                .window_state
+                                .as_ref()
+                                .map(|ws| {
+                                    let size = ws.window.inner_size();
+                                    let scale_factor = ws.window.scale_factor() as f32;
+                                    egui::vec2(
+                                        size.width as f32 / scale_factor,
+                                        size.height as f32 / scale_factor,
+                                    )
+                                })
+                                .unwrap_or(egui::Vec2::ZERO);
+                            (
+                                trigger_diagnostics::collect_trigger_diagnostics_rows(
+                                    &registry,
+                                    &session.trigger_volume_bridge,
+                                    &session.trigger_system,
+                                    &self.trigger_bindings,
+                                ),
+                                trigger_diagnostics::collect_trigger_overlay_labels(
+                                    &registry,
+                                    &session.trigger_volume_bridge,
+                                    &session.trigger_system,
+                                    view_proj,
+                                    viewport_size_points,
+                                ),
+                            )
+                        } else {
+                            (Vec::new(), Vec::new())
+                        }
+                    };
 
                     // Build the egui UI before `render_frame_indirect` so
                     // the SH diagnostic overlay can push debug lines that
@@ -2645,6 +2725,10 @@ impl ApplicationHandler for App {
                                         );
                                     }
                                     if diagnostics_visible {
+                                        trigger_diagnostics::paint_trigger_overlay_labels(
+                                            ctx,
+                                            &trigger_overlay_labels,
+                                        );
                                         render::debug_ui::draw_diagnostics_panel(
                                             ctx,
                                             panel_state,
@@ -2652,6 +2736,7 @@ impl ApplicationHandler for App {
                                             renderer,
                                             timing_snapshot.as_ref(),
                                             &agent_rows,
+                                            &trigger_rows,
                                         );
                                     }
                                 });
@@ -2993,6 +3078,41 @@ impl ApplicationHandler for App {
         self.renderer = None;
         self.window_state = None;
         log::info!("[Engine] Exited");
+    }
+}
+
+/// The production frame's two replicated-state stages. `netcode::frame_order` owns
+/// their order (apply, then detect); this impl supplies only the bodies. The headless
+/// co-op harness implements the same trait, so neither site invents its own sequencing.
+/// See: context/lib/networking.md
+impl frame_order::ReplicatedStateFrame for App {
+    fn apply_received_snapshots(&mut self, frame_dt: f32) {
+        self.net_poll_and_apply(frame_dt);
+    }
+
+    fn dispatch_state_crossings(&mut self) -> Vec<String> {
+        // Clone the `ScriptCtx` handle (cheap `Rc` bump) so the slot-table /
+        // data-registry reads borrow nothing of `self` while the disjoint
+        // `session` borrow below holds the detector and the reaction registries.
+        let Some(script_ctx) = self
+            .session
+            .as_ref()
+            .map(|session| session.scripting.script_ctx.clone())
+        else {
+            return Vec::new();
+        };
+        let Some(session) = self.session.as_mut() else {
+            return Vec::new();
+        };
+        crate::scripting::reactions::dispatch_state_crossings_with_sequences(
+            &mut session.crossing_detector,
+            &script_ctx.slot_table.borrow(),
+            &script_ctx.data_registry.borrow(),
+            &session.scripting.sequence_registry,
+            &session.scripting.reaction_registry,
+            &session.scripting.system_registry,
+            &script_ctx,
+        )
     }
 }
 
@@ -3520,6 +3640,7 @@ impl App {
                         .recompose_active_sets(&self.active_level_tags);
                 }
                 self.rebuild_active_reaction_subscribers();
+                self.rebuild_active_trigger_bindings();
             }
             self.commit_staged_ui_manifest(&result, &outcome);
         }
@@ -4547,10 +4668,11 @@ impl App {
             // M15 Phase 3.5: borrow the slot table (immutable) alongside the registry so
             // `host_replicate` can collect this frame's replicated-state source values
             // and splice the per-client state records into the snapshot envelope. The
-            // two RefCells are disjoint, so both borrows coexist. Game logic and the HUD
-            // publisher have already settled the slot table by this post-tick point; the
-            // descriptor-fed health projection reads live `HealthComponent`s, so it sees
-            // this frame's settled HP regardless of the host HUD publisher's later tick.
+            // two RefCells are disjoint, so both borrows coexist. Game logic has settled
+            // the live components by this post-tick point, but host HUD slot publication
+            // occurs later in the frame. Owner-private projections read the live components
+            // directly, so replication observes this frame's settled authoritative state
+            // without depending on those later HUD slot writes.
             let registry = script_ctx.registry.borrow();
             let slot_table = script_ctx.slot_table.borrow();
             netcode::host_replicate(
@@ -4763,6 +4885,16 @@ impl App {
         };
         let registry = session.scripting.script_ctx.registry.clone();
         sim::run_death_sweep(&registry, &mut session.progress_tracker)
+    }
+
+    fn host_owner_state_projection_due(&self) -> bool {
+        matches!(
+            self.session
+                .as_ref()
+                .and_then(|session| session.net_endpoint.as_ref()),
+            Some(netcode::NetEndpoint::Host { tick, .. })
+                if *tick % netcode::SNAPSHOT_TICK_INTERVAL == 0
+        )
     }
 
     /// Advance the listen host's authoritative fixed-simulation tick after one
@@ -7436,11 +7568,10 @@ mod tests {
     fn ui_slot_snapshot_clones_present_values_and_skips_valueless_slots() {
         use postretro_entities::SlotValue;
 
-        // The default table carries engine `player.*` slots with `None` values
-        // plus two value-bearing engine surfaces: `screen.flash` (resting
-        // transparent) and `input.mode` (defaults to `focus`). Setting one of the
-        // value-less slots asserts the boundary contract: the snapshot clones
-        // value-bearing slots and omits value-less ones.
+        // The default table carries engine `player.*` slots with `None` values,
+        // except the reload-feedback slots, which start at inactive/zero. Setting
+        // one of the value-less slots asserts the boundary contract: the snapshot
+        // clones value-bearing slots and omits value-less ones.
         let mut table = postretro_entities::SlotTable::new();
         table
             .get_mut("player.health")
@@ -7453,6 +7584,16 @@ mod tests {
             snapshot.get("player.health"),
             Some(&SlotValue::Number(75.0)),
             "value-bearing slot is cloned into the snapshot",
+        );
+        assert_eq!(
+            snapshot.get("player.reloadActive"),
+            Some(&SlotValue::Boolean(false)),
+            "engine-owned player.reloadActive defaults to false and is cloned",
+        );
+        assert_eq!(
+            snapshot.get("player.reloadProgress"),
+            Some(&SlotValue::Number(0.0)),
+            "engine-owned player.reloadProgress defaults to zero and is cloned",
         );
         // `screen.flash` carries its default transparent value, so it is present.
         assert_eq!(
@@ -7491,8 +7632,8 @@ mod tests {
         );
         assert_eq!(
             snapshot.len(),
-            6,
-            "only the set player.health and the default-valued screen.flash + screen.vignette + screen.shake + input.mode + ui.textEntry appear",
+            8,
+            "only the set player.health and default-valued reload-feedback + screen.flash + screen.vignette + screen.shake + input.mode + ui.textEntry slots appear",
         );
     }
 

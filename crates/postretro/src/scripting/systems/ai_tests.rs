@@ -2313,10 +2313,12 @@ fn run_ticks_until_facing_converges(
 
 #[test]
 fn facing_turn_rate_is_at_least_steering_turn_rate() {
-    assert!(
-        FACING_TURN_RATE >= agent_steering::MAX_TURN_RATE,
-        "enemy facing must keep up with path steering"
-    );
+    const {
+        assert!(
+            FACING_TURN_RATE >= agent_steering::MAX_TURN_RATE,
+            "enemy facing must keep up with path steering"
+        );
+    }
 }
 
 #[test]

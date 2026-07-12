@@ -36,6 +36,42 @@ fn committed_sdk_types_match_current_registry() {
     );
 }
 
+#[test]
+fn committed_sdk_types_contain_weapon_ammo_resource() {
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
+
+    let mut registry = PrimitiveRegistry::new();
+    register_all(&mut registry, ScriptCtx::new());
+    let generated_ts = generate_typescript(&registry);
+    let generated_luau = generate_luau(&registry);
+    let committed_ts = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../sdk/types/postretro.d.ts"
+    ))
+    .expect("read committed postretro.d.ts");
+    let committed_luau = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../sdk/types/postretro.d.luau"
+    ))
+    .expect("read committed postretro.d.luau");
+
+    for output in [&generated_ts, &committed_ts] {
+        assert!(output.contains("export type AmmoResource = {"));
+        assert!(output.contains("| ({ kind: \"ammo\" } & AmmoResource);"));
+        assert!(output.contains("resource?: WeaponResource;"));
+        assert!(output.contains("costPerShot?: number;"));
+        assert!(output.contains("reloadMs?: number;"));
+    }
+    for output in [&generated_luau, &committed_luau] {
+        assert!(output.contains("export type AmmoResource = {"));
+        assert!(output.contains("(AmmoResource & { kind: \"ammo\" })"));
+        assert!(output.contains("resource: WeaponResource?,"));
+        assert!(output.contains("costPerShot: number?,"));
+        assert!(output.contains("reloadMs: number?,"));
+    }
+}
+
 /// Positive-content guard for the `AiDescriptor` typedef registration.
 /// The drift test (`committed_sdk_types_match_current_registry`) only proves
 /// the committed files MATCH the generator — it would pass vacuously if
@@ -93,7 +129,8 @@ fn committed_sdk_types_contain_ai_descriptor() {
 }
 
 /// `worldQuery` exposes raw snapshots; the `world.query` SDK vocabulary is
-/// the layer that attaches light/fog capability methods and mover commands.
+/// the layer that attaches light/fog capability methods plus mover and trigger
+/// commands.
 /// Keeping those declarations distinct prevents the bare primitive from
 /// promising methods that its JSON serialization never includes.
 #[test]
@@ -110,16 +147,51 @@ fn world_query_raw_snapshots_and_sdk_handles_remain_distinct() {
         ts.contains(
             "export function worldQuery<T extends WorldQueryComponent>(filter: { component: T; tag?: string | null }): ReadonlyArray<RawEntityForComponent<T>>;"
         ) && ts.contains("T extends \"kinematic_mover\" ? MoverEntity :")
-            && ts.contains("T extends \"kinematic_mover\" ? MoverEntityHandle :"),
-        "TypeScript must distinguish raw worldQuery mover snapshots from world.query handles:\n{ts}"
+            && ts.contains("T extends \"kinematic_mover\" ? MoverEntityHandle :")
+            && ts.contains("T extends \"trigger_volume\" ? TriggerVolumeEntity :")
+            && ts.contains("T extends \"trigger_volume\" ? TriggerVolumeHandle :"),
+        "TypeScript must distinguish raw worldQuery mover/trigger snapshots from world.query handles:\n{ts}"
     );
     assert!(
         luau.contains("((filter: { component: \"kinematic_mover\", tag: string? }) -> {MoverEntity})")
             && luau.contains(
                 "((self: World, filter: { component: \"kinematic_mover\", tag: string? }) -> {MoverEntityHandle})"
+            )
+            && luau.contains(
+                "((filter: { component: \"trigger_volume\", tag: string? }) -> {TriggerVolumeEntity})"
+            )
+            && luau.contains(
+                "((self: World, filter: { component: \"trigger_volume\", tag: string? }) -> {TriggerVolumeHandle})"
             ),
-        "Luau must distinguish raw worldQuery mover snapshots from world:query handles:\n{luau}"
+        "Luau must distinguish raw worldQuery mover/trigger snapshots from world:query handles:\n{luau}"
     );
+}
+
+#[test]
+fn trigger_command_step_types_are_emitted_in_both_sdk_surfaces() {
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
+
+    let mut r = PrimitiveRegistry::new();
+    register_all(&mut r, ScriptCtx::new());
+    let ts = generate_typescript(&r);
+    let luau = generate_luau(&r);
+
+    for (label, output) in [("ts", &ts), ("luau", &luau)] {
+        for needle in [
+            "ArmTriggerArgs",
+            "DisarmTriggerArgs",
+            "ArmTriggerStep",
+            "DisarmTriggerStep",
+            "armTrigger",
+            "disarmTrigger",
+        ] {
+            assert!(
+                output.contains(needle),
+                "{label} typedef output missing trigger command type `{needle}`"
+            );
+        }
+    }
 }
 
 /// `defineStore` returns a pure `{ declaration, state }` builder result.
@@ -251,14 +323,12 @@ fn game_state_refs_emit_catalog_paths_and_capabilities() {
         "ts missing getGameState declaration:\n{ts}"
     );
     assert!(
-        ts.contains("readonly player: {\n      readonly health: ReadonlyStateRef<number>;\n      readonly maxHealth: ReadonlyStateRef<number>;")
+        ts.contains("readonly player: {\n      readonly ammo: ReadonlyStateRef<number>;\n      readonly ammoReserve: ReadonlyStateRef<number>;\n      readonly health: ReadonlyStateRef<number>;\n      readonly maxHealth: ReadonlyStateRef<number>;")
             && ts.contains("readonly textEntry: WritableStateRef<string>;"),
         "ts GameStateRefs missing catalog path/capability refs:\n{ts}"
     );
     assert!(
-        !ts.contains("postretro/game-state")
-            && !ts.contains("ReadonlyStateValue")
-            && !ts.contains("readonly ammo:"),
+        !ts.contains("postretro/game-state") && !ts.contains("ReadonlyStateValue"),
         "legacy game-state module/value handles must be gone"
     );
 
@@ -268,9 +338,10 @@ fn game_state_refs_emit_catalog_paths_and_capabilities() {
         "luau missing getGameState declaration:\n{luau}"
     );
     assert!(
-        luau.contains("health: ReadonlyStateRef<number>,")
+        luau.contains("ammo: ReadonlyStateRef<number>,")
+            && luau.contains("ammoReserve: ReadonlyStateRef<number>,")
+            && luau.contains("health: ReadonlyStateRef<number>,")
             && luau.contains("maxHealth: ReadonlyStateRef<number>,")
-            && !luau.contains("ammo: ReadonlyStateRef<number>,")
             && luau.contains("textEntry: WritableStateRef<string>,"),
         "luau GameStateRefs missing catalog path/capability refs"
     );

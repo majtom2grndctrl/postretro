@@ -44,11 +44,18 @@
     goToPathNode(node: string): SequenceStep[];
   }
 
+  /** Typed trigger handle returned by `world.query({ component: "trigger_volume" })`. Arming state remains engine-owned; methods build closed command steps. */
+  export interface TriggerVolumeHandle extends TriggerVolumeEntity {
+    arm(): SequenceStep[];
+    disarm(): SequenceStep[];
+  }
+
   /** Maps a component-name literal to the rich `world.query` handle type. `"light"`
    * yields `LightEntityHandle` (capability methods); `"emitter"` yields
    * `EmitterEntity` (id, position, tags, plus the full `BillboardEmitterComponent`
    * snapshot under `component`); `"fog_volume"` yields `FogVolumeHandle`; and
-   * `"kinematic_mover"` yields `MoverEntityHandle`.
+   * `"kinematic_mover"` yields `MoverEntityHandle`; `"trigger_volume"`
+   * yields `TriggerVolumeHandle`.
    * Other component names fall back to the bare `Entity` shape (`id`,
    * `position`, `tags`). */
   export type EntityForComponent<T extends WorldQueryComponent> =
@@ -56,6 +63,7 @@
     T extends "emitter" ? EmitterEntity :
     T extends "fog_volume" ? FogVolumeHandle :
     T extends "kinematic_mover" ? MoverEntityHandle :
+    T extends "trigger_volume" ? TriggerVolumeHandle :
     Entity;
 
   /** Maps a component-name literal to the unwrapped `worldQuery` snapshot
@@ -66,6 +74,7 @@
     T extends "emitter" ? EmitterEntity :
     T extends "fog_volume" ? FogVolumeEntity :
     T extends "kinematic_mover" ? MoverEntity :
+    T extends "trigger_volume" ? TriggerVolumeEntity :
     Entity;
 
   /** Vocabulary object installed as `globalThis.world`. */
@@ -105,13 +114,23 @@
     progress: { tag: string; at: number; fire: string };
   };
 
-  /** Primitive reaction body: invokes the named Rust primitive. With `tag`, it targets entities carrying that tag and mutates them. Without `tag`, it is a system reaction (no entities) that enqueues a typed engine command — `playSound`, `rumble`, `flashScreen`, the UI-stack reactions. `args` carries the primitive's typed payload (e.g. `{ rate: 0 }` for `setEmitterRate`, `{ sound: "alarm" }` for `playSound`). */
+  /** Primitive reaction body: invokes the named Rust primitive. With `tag`, it targets entities carrying that tag and mutates them. Tag-targeted primitives include emitter/fog/mover commands, `applyDamage`, `setAnimationState`, `armTrigger`, and `disarmTrigger`; arm/disarm use their empty typed args below. Without `tag`, it is a system reaction (no entities) that enqueues a typed engine command — `playSound`, `rumble`, `flashScreen`, the UI-stack reactions. `args` carries the primitive's typed payload (e.g. `{ rate: 0 }` for `setEmitterRate`, `{ sound: "alarm" }` for `playSound`). */
   export type PrimitiveReactionDescriptor = {
     primitive: string;
     tag?: string;
     args?: Record<string, unknown>;
     onComplete?: string;
   };
+
+  /** Tag-targeted trigger primitive `armTrigger` takes no payload; its target comes from `PrimitiveReactionDescriptor.tag`. */
+  export interface ArmTriggerArgs {
+    readonly [key: string]: never;
+  }
+
+  /** Tag-targeted trigger primitive `disarmTrigger` takes no payload; its target comes from `PrimitiveReactionDescriptor.tag`. */
+  export interface DisarmTriggerArgs {
+    readonly [key: string]: never;
+  }
 
   /** One step in a `sequence` reaction body: invokes the named sequenced primitive against the given entity with `args`. Sequence steps target a single `EntityId`; tag-targeted primitives belong on the `Primitive` reaction path. */
   export type SetLightAnimationStep = {
@@ -180,6 +199,11 @@
   /** Sequence step that moves a kinematic mover to a named path node. */
   export type MoverGoToPathNodeStep = { id: EntityId; primitive: "moverGoToPathNode"; args: { node: string } };
 
+  /** Sequence step that arms one trigger volume. */
+  export type ArmTriggerStep = { id: EntityId; primitive: "armTrigger"; args: ArmTriggerArgs };
+  /** Sequence step that disarms one trigger volume. */
+  export type DisarmTriggerStep = { id: EntityId; primitive: "disarmTrigger"; args: DisarmTriggerArgs };
+
   /** Union of every supported sequence step shape. New sequenced primitives extend this union. */
   export type SequenceStep =
     | SetLightAnimationStep
@@ -192,7 +216,9 @@
     | MoverStartStep
     | MoverStopStep
     | MoverReverseStep
-    | MoverGoToPathNodeStep;
+    | MoverGoToPathNodeStep
+    | ArmTriggerStep
+    | DisarmTriggerStep;
 
   /** Sequence reaction body: ordered per-entity primitive invocations. Steps run in array order at dispatch. */
   export type SequenceReactionDescriptor = {
@@ -463,8 +489,10 @@
   /** An interactive `slider`. Nav wires in `capturesNav` step the bound value by `step` within `[min, max]`. Exactly one of `label` / `labelledBy` is required. */
   export function Slider(props: SliderProps): WidgetDescriptor;
 
-  /** Props for `Bar`. `bind` is a readonly numeric bind; `max` is a number or readonly numeric ref. */
-  export type BarProps = { bind: BarBindProp; max: BarMaxProp; fill: WidgetColor; background: WidgetColor; styleRanges?: StyleRangesProp; id?: string; visibleWhen?: Predicate; role?: WidgetRole };
+  /** Linear retained-UI exit fade for a `Bar` with `visibleWhen`. */
+  export type BarExitFade = { durationMs: number };
+  /** Props for `Bar`. `width`/`height` are positive logical-reference px; `exitFade` requires `visibleWhen` and fades the retained terminal image linearly. */
+  export type BarProps = { bind: BarBindProp; max: BarMaxProp; fill: WidgetColor; background: WidgetColor; width?: number; height?: number; styleRanges?: StyleRangesProp; id?: string; visibleWhen?: Predicate; exitFade?: BarExitFade; role?: WidgetRole };
   /** A passive `bar`: fill fraction is `value/max` clamped to `[0, 1]`. `styleRanges` recolors the fill from that displayed fraction. */
   export function Bar(props: BarProps): WidgetDescriptor;
 

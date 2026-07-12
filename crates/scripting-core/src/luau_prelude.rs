@@ -42,6 +42,13 @@ pub(super) const FOG_VOLUMES_LUAU_SRC: &str =
 /// handle returned from `wrapMoverEntity`; no bare globals.
 const MOVERS_LUAU_SRC: &str = include_str!("../../../sdk/lib/entities/movers.luau");
 
+/// SDK library prelude — `entities/triggers.luau` returns a table whose only
+/// promoted field is `wrapTriggerVolumeEntity`, installed as a temporary global
+/// for `world.luau` to capture and then nil'd out before the sandbox freezes.
+/// Command builders (`arm`, `disarm`) live on the returned handle; no bare
+/// globals are exposed.
+const TRIGGERS_LUAU_SRC: &str = include_str!("../../../sdk/lib/entities/triggers.luau");
+
 /// SDK library prelude — `data_script.luau` returns a table whose fields
 /// (`defineReaction`, `defineEntity`, `defineMod`, `defineMapCatalog`, `defineStore`)
 /// are destructured into globals so data-script authors call them by bare name.
@@ -111,6 +118,9 @@ const FOG_VOLUMES_LUAU_FIELDS: &[&str] = &[];
 
 /// Mover capability methods live on handles, not bare globals.
 const MOVERS_LUAU_FIELDS: &[&str] = &[];
+
+/// Trigger capability methods live on handles, not bare globals.
+const TRIGGERS_LUAU_FIELDS: &[&str] = &[];
 
 /// Data-script SDK fields lifted to globals after evaluating
 /// `data_script.luau`.
@@ -409,9 +419,41 @@ pub fn evaluate_prelude(
             })?;
     }
 
+    let triggers_sdk: Table = lua
+        .load(TRIGGERS_LUAU_SRC)
+        .set_name("postretro/sdk/entities/triggers.luau")
+        .eval()
+        .map_err(|e| ScriptError::ScriptThrew {
+            msg: format!("failed to evaluate SDK prelude `entities/triggers.luau`: {e}"),
+            source_name: "sdk/lib/entities/triggers.luau".to_string(),
+        })?;
+    let wrap_trigger_volume_entity: mlua::Value = triggers_sdk
+        .get("wrapTriggerVolumeEntity")
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: format!("entities/triggers.luau missing `wrapTriggerVolumeEntity`: {e}"),
+        })?;
+    globals
+        .set("wrapTriggerVolumeEntity", wrap_trigger_volume_entity)
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: format!("failed to install temporary global `wrapTriggerVolumeEntity`: {e}"),
+        })?;
+    for field in TRIGGERS_LUAU_FIELDS {
+        let value: mlua::Value =
+            triggers_sdk
+                .get(*field)
+                .map_err(|e| ScriptError::InvalidArgument {
+                    reason: format!("entities/triggers.luau missing `{field}`: {e}"),
+                })?;
+        globals
+            .set(*field, value)
+            .map_err(|e| ScriptError::InvalidArgument {
+                reason: format!("failed to install global `{field}`: {e}"),
+            })?;
+    }
+
     // Step 3: evaluate `world.luau`. Its `query` closure captures the light,
-    // fog-volume, and mover wrappers as upvalues at evaluation time, so step
-    // 4's nil-out does not break the closure.
+    // fog-volume, mover, and trigger wrappers as upvalues at evaluation time,
+    // so step 4's nil-out does not break the closure.
     let world: mlua::Value = lua
         .load(WORLD_LUAU_SRC)
         .set_name("postretro/sdk/world.luau")
@@ -426,7 +468,7 @@ pub fn evaluate_prelude(
             reason: format!("failed to install global `world`: {e}"),
         })?;
 
-    // Step 4: nil out the temporary light, fog-volume, and mover wrapper
+    // Step 4: nil out the temporary light, fog-volume, mover, and trigger wrapper
     // bridges so author scripts never see them as bare globals once
     // `sandbox(true)` freezes `_G`.
     globals
@@ -443,6 +485,11 @@ pub fn evaluate_prelude(
         .set("wrapMoverEntity", mlua::Value::Nil)
         .map_err(|e| ScriptError::InvalidArgument {
             reason: format!("failed to clear temporary global `wrapMoverEntity`: {e}"),
+        })?;
+    globals
+        .set("wrapTriggerVolumeEntity", mlua::Value::Nil)
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: format!("failed to clear temporary global `wrapTriggerVolumeEntity`: {e}"),
         })?;
 
     // Step 5: evaluate `util/keyframes.luau` and lift its fields to globals.

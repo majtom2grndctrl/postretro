@@ -10289,7 +10289,7 @@
 }
 // entity 7
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "3840 -3840 296"
 "light" "220"
 "_color" "0 255 120"
@@ -10328,7 +10328,7 @@
 }
 // entity 10
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "0 -3200 296"
 "light" "150"
 "_color" "0 255 200"
@@ -10338,7 +10338,7 @@
 }
 // entity 11
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "5120 -2560 296"
 "light" "150"
 "_color" "255 0 200"
@@ -10348,7 +10348,7 @@
 }
 // entity 12
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "-2560 -1920 296"
 "light" "220"
 "_color" "255 160 40"
@@ -10361,7 +10361,7 @@
 }
 // entity 13
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-640 -1280 296"
 "light" "150"
 "_color" "40 160 255"
@@ -10384,7 +10384,7 @@
 }
 // entity 15
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "3200 -1280 296"
 "light" "150"
 "_color" "0 255 120"
@@ -10407,7 +10407,7 @@
 }
 // entity 17
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "-2560 0 296"
 "light" "220"
 "_color" "120 220 255"
@@ -10501,7 +10501,7 @@
 }
 // entity 24
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-2560 1920 296"
 "light" "150"
 "_color" "255 60 60"
@@ -10524,7 +10524,7 @@
 }
 // entity 26
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "2560 1920 296"
 "light" "150"
 "_color" "0 255 200"
@@ -10550,7 +10550,7 @@
 }
 // entity 28
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-4480 3200 296"
 "light" "150"
 "_color" "255 160 40"
@@ -10573,7 +10573,7 @@
 }
 // entity 30
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-640 3200 296"
 "light" "150"
 "_color" "180 0 255"
@@ -10583,7 +10583,7 @@
 }
 // entity 31
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "2560 3200 296"
 "light" "150"
 "_color" "0 255 120"
@@ -10593,7 +10593,7 @@
 }
 // entity 32
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "5120 3840 296"
 "light" "220"
 "_color" "255 60 60"
@@ -10619,7 +10619,7 @@
 }
 // entity 34
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-3840 4480 296"
 "light" "150"
 "_color" "0 255 200"
@@ -10629,7 +10629,7 @@
 }
 // entity 35
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-2560 4480 296"
 "light" "150"
 "_color" "255 0 200"
@@ -10668,7 +10668,7 @@
 }
 // entity 38
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "1920 4480 296"
 "light" "150"
 "_color" "180 0 255"
@@ -10678,7 +10678,7 @@
 }
 // entity 39
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "3840 4480 296"
 "light" "150"
 "_color" "0 255 120"
@@ -10701,7 +10701,7 @@
 }
 // entity 41
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-1920 -3840 680"
 "light" "150"
 "_color" "120 220 255"
@@ -10711,7 +10711,7 @@
 }
 // entity 42
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "0 -4480 680"
 "light" "220"
 "_color" "0 255 200"
@@ -10737,7 +10737,7 @@
 }
 // entity 44
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "3200 -4480 680"
 "light" "150"
 "_color" "255 160 40"
@@ -10773,7 +10773,7 @@
 }
 // entity 47
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "-3840 -3200 680"
 "light" "220"
 "_color" "0 255 120"
@@ -10838,7 +10838,7 @@
 }
 // entity 52
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "-1920 -1920 680"
 "light" "220"
 "_color" "255 160 40"
@@ -10851,7 +10851,7 @@
 }
 // entity 53
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "1280 -1920 680"
 "light" "150"
 "_color" "40 160 255"
@@ -10887,7 +10887,7 @@
 }
 // entity 56
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-5120 -640 680"
 "light" "150"
 "_color" "255 60 60"
@@ -10965,7 +10965,7 @@
 }
 // entity 62
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "5120 -640 680"
 "light" "220"
 "_color" "180 0 255"
@@ -10978,7 +10978,7 @@
 }
 // entity 63
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-5120 640 680"
 "light" "150"
 "_color" "0 255 120"
@@ -10988,7 +10988,7 @@
 }
 // entity 64
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-3200 1280 680"
 "light" "150"
 "_color" "255 60 60"
@@ -10998,7 +10998,7 @@
 }
 // entity 65
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-1280 640 680"
 "light" "150"
 "_color" "120 220 255"
@@ -11008,7 +11008,7 @@
 }
 // entity 66
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "0 1280 680"
 "light" "150"
 "_color" "0 255 200"
@@ -11034,7 +11034,7 @@
 }
 // entity 68
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "4480 1280 680"
 "light" "150"
 "_color" "255 160 40"
@@ -11044,7 +11044,7 @@
 }
 // entity 69
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-5120 1920 680"
 "light" "150"
 "_color" "40 160 255"
@@ -11054,7 +11054,7 @@
 }
 // entity 70
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-1280 1920 680"
 "light" "150"
 "_color" "180 0 255"
@@ -11093,7 +11093,7 @@
 }
 // entity 73
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-4480 3840 680"
 "light" "150"
 "_color" "120 220 255"
@@ -11103,7 +11103,7 @@
 }
 // entity 74
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-2560 3200 680"
 "light" "150"
 "_color" "0 255 200"
@@ -11126,7 +11126,7 @@
 }
 // entity 76
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "0 3840 680"
 "light" "150"
 "_color" "255 160 40"
@@ -11136,7 +11136,7 @@
 }
 // entity 77
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "1280 3200 680"
 "light" "220"
 "_color" "40 160 255"
@@ -11149,7 +11149,7 @@
 }
 // entity 78
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "3840 3840 680"
 "light" "150"
 "_color" "180 0 255"
@@ -11214,7 +11214,7 @@
 }
 // entity 83
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-4480 -3840 1064"
 "light" "150"
 "_color" "255 0 200"
@@ -11237,7 +11237,7 @@
 }
 // entity 85
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-640 -3840 1064"
 "light" "150"
 "_color" "40 160 255"
@@ -11247,7 +11247,7 @@
 }
 // entity 86
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "1280 -3840 1064"
 "light" "150"
 "_color" "180 0 255"
@@ -11257,7 +11257,7 @@
 }
 // entity 87
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "3200 -4480 1064"
 "light" "220"
 "_color" "0 255 120"
@@ -11270,7 +11270,7 @@
 }
 // entity 88
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "5120 -4480 1064"
 "light" "150"
 "_color" "255 60 60"
@@ -11280,7 +11280,7 @@
 }
 // entity 89
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "3200 -3200 1064"
 "light" "150"
 "_color" "120 220 255"
@@ -11303,7 +11303,7 @@
 }
 // entity 91
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-4480 -1280 1064"
 "light" "150"
 "_color" "255 0 200"
@@ -11329,7 +11329,7 @@
 }
 // entity 93
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "0 -1920 1064"
 "light" "150"
 "_color" "40 160 255"
@@ -11339,7 +11339,7 @@
 }
 // entity 94
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "1920 -1920 1064"
 "light" "150"
 "_color" "180 0 255"
@@ -11349,7 +11349,7 @@
 }
 // entity 95
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "3840 -1920 1064"
 "light" "150"
 "_color" "0 255 120"
@@ -11388,7 +11388,7 @@
 }
 // entity 98
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "5120 0 1064"
 "light" "150"
 "_color" "0 255 200"
@@ -11424,7 +11424,7 @@
 }
 // entity 101
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-2560 640 1064"
 "light" "150"
 "_color" "40 160 255"
@@ -11450,7 +11450,7 @@
 }
 // entity 103
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "3200 640 1064"
 "light" "150"
 "_color" "0 255 120"
@@ -11499,7 +11499,7 @@
 }
 // entity 107
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "640 1920 1064"
 "light" "220"
 "_color" "255 0 200"
@@ -11512,7 +11512,7 @@
 }
 // entity 108
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "2560 2560 1064"
 "light" "150"
 "_color" "255 160 40"
@@ -11535,7 +11535,7 @@
 }
 // entity 110
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "5120 1920 1064"
 "light" "150"
 "_color" "180 0 255"
@@ -11558,7 +11558,7 @@
 }
 // entity 112
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "640 3840 1064"
 "light" "220"
 "_color" "255 60 60"
@@ -11610,7 +11610,7 @@
 }
 // entity 116
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-1280 4480 1064"
 "light" "150"
 "_color" "255 160 40"
@@ -11649,7 +11649,7 @@
 }
 // entity 119
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-5120 -4480 1448"
 "light" "150"
 "_color" "0 255 120"
@@ -11659,7 +11659,7 @@
 }
 // entity 120
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-3200 -4480 1448"
 "light" "150"
 "_color" "255 60 60"
@@ -11669,7 +11669,7 @@
 }
 // entity 121
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-1280 -4480 1448"
 "light" "150"
 "_color" "120 220 255"
@@ -11721,7 +11721,7 @@
 }
 // entity 125
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "5120 -3840 1448"
 "light" "150"
 "_color" "40 160 255"
@@ -11760,7 +11760,7 @@
 }
 // entity 128
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-4480 -1920 1448"
 "light" "150"
 "_color" "255 60 60"
@@ -11770,7 +11770,7 @@
 }
 // entity 129
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-2560 -1280 1448"
 "light" "150"
 "_color" "120 220 255"
@@ -11780,7 +11780,7 @@
 }
 // entity 130
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-640 -1280 1448"
 "light" "150"
 "_color" "0 255 200"
@@ -11803,7 +11803,7 @@
 }
 // entity 132
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "3200 -1280 1448"
 "light" "220"
 "_color" "255 160 40"
@@ -11829,7 +11829,7 @@
 }
 // entity 134
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-5120 -640 1448"
 "light" "150"
 "_color" "180 0 255"
@@ -11839,7 +11839,7 @@
 }
 // entity 135
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-3840 0 1448"
 "light" "150"
 "_color" "0 255 120"
@@ -11849,7 +11849,7 @@
 }
 // entity 136
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "1280 -640 1448"
 "light" "150"
 "_color" "255 60 60"
@@ -11859,7 +11859,7 @@
 }
 // entity 137
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "5120 -640 1448"
 "light" "220"
 "_color" "120 220 255"
@@ -11872,7 +11872,7 @@
 }
 // entity 138
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-5120 640 1448"
 "light" "150"
 "_color" "0 255 200"
@@ -11882,7 +11882,7 @@
 }
 // entity 139
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-2560 1280 1448"
 "light" "150"
 "_color" "255 0 200"
@@ -11892,7 +11892,7 @@
 }
 // entity 140
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-1280 1280 1448"
 "light" "150"
 "_color" "255 160 40"
@@ -11944,7 +11944,7 @@
 }
 // entity 144
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-5120 2560 1448"
 "light" "150"
 "_color" "255 60 60"
@@ -11980,7 +11980,7 @@
 }
 // entity 147
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "2560 1920 1448"
 "light" "220"
 "_color" "255 0 200"
@@ -12006,7 +12006,7 @@
 }
 // entity 149
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "5120 1920 1448"
 "light" "150"
 "_color" "40 160 255"
@@ -12016,7 +12016,7 @@
 }
 // entity 150
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "-1920 3840 1448"
 "light" "150"
 "_color" "180 0 255"
@@ -12081,7 +12081,7 @@
 }
 // entity 155
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "0 4480 1448"
 "light" "150"
 "_color" "255 0 200"
@@ -12091,7 +12091,7 @@
 }
 // entity 156
 {
-"classname" "light_dynamic"
+"classname" "light"
 "origin" "1280 4480 1448"
 "light" "150"
 "_color" "255 160 40"
@@ -12101,7 +12101,7 @@
 }
 // entity 157
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "3200 4480 1448"
 "light" "220"
 "_color" "40 160 255"

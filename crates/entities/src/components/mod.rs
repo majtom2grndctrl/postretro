@@ -1,7 +1,8 @@
-// Script-facing component structs.
-// See: context/lib/scripting.md §12.
+// Component barrel for script-facing structs and engine-owned runtime state.
+// Governing context: context/lib/entity_model.md
 
 pub mod agent;
+pub mod ammo_reserve;
 pub mod animation;
 pub mod billboard_emitter;
 pub mod brain;

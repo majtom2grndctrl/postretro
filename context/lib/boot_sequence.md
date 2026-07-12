@@ -94,20 +94,23 @@ Level install runs on the main thread after worker delivery. It is repeatable: e
 | 6 | Light bridge: one light entity per map-authored light |
 | 7 | Fog bridge: fog-volume entities + renderer pixel-scale / cell masks |
 | 8 | Collision world populated from static geometry (separate from BSP) |
-| 9 | Level sound loading from `sounds/` (fault-tolerant; silent if audio init failed) |
-| 10 | Built-in classname dispatch (player spawns partitioned out; remainder dispatched, handled set stashed) |
-| 11 | Sprite-collection registration for map-spawned emitters |
-| 12 | Data script run → compose active reactions/crossings from matching mod-global definitions plus level-local definitions; progress tracker and crossing detector init from the composed active sets |
-| 13 | Data-archetype sweep (match map placements against registered entity types not already handled), player spawn, camera teleport to first player spawn (or geometry center) |
-| 14 | Second sprite pass for descriptor-spawned emitters |
-| 15 | Mesh model sweep: upload each distinct mesh model once, then resolve every animated mesh entity's clip indices (see mesh-sweep note below) |
-| 16 | Fire the `levelLoad` named event |
+| 9 | Built-in classname dispatch (player spawns partitioned out; remainder dispatched, handled set stashed) |
+| 10 | Data script run → compose active reactions/crossings from matching mod-global definitions plus level-local definitions; rebuild reaction subscribers, then `TriggerBindingTable::build` from the final active reactions |
+| 11 | Data-archetype sweep (match map placements against registered entity types not already handled), player spawn, camera teleport to first player spawn (or geometry center) |
+| 12 | Mesh model sweep: upload each distinct mesh model once, then resolve every animated mesh entity's clip indices (see mesh-sweep note below) |
+| 13 | Fire the `levelLoad` named event |
+| 14 | Sprite-collection registration — a single windowed pass registering every distinct emitter `sprite` in the registry (map- and descriptor-spawned alike) plus the weapon-impact collection; folded from two interleaved passes, runs after `levelLoad` once segment B has populated the full registry (see enrollment note below) |
+| 15 | Level sound loading from `sounds/` (fault-tolerant; silent if audio init failed) — last, after `levelLoad` (see note below) |
 
 Lights come from PRL data via the light bridge, not classname dispatch. Entity types and mod-global reaction/crossing definitions arrive at mod-init via the mod manifest. `setupLevel`/the data script contributes level-local reactions and crossings only (see `scripting.md` §2). Level install composes active behavior after the data script returns and before progress/crossing initialization, so both systems see the final active set.
 
 **Mesh-spawn seam.** World mesh spawning is its own install stage, distinct from classname dispatch. The durable contract: map geometry becomes renderable mesh entities here, after geometry upload and before the light/fog bridges. (The current implementation hardwires a single world mesh; a classname-driven handler is planned — see §7.)
 
-**Mesh-sweep order.** The single mesh model sweep (model upload + clip-index resolve) runs *after* the data-archetype sweep (stage 13), so it sees both classname-dispatched `prop_mesh` entities and descriptor-spawned animated meshes (`components.mesh`) — every mesh model uploads once and every animated state resolves its `clip_index`. It runs *before* the `levelLoad` fire (stage 16), because a `setAnimationState` reaction in `levelLoad` requires resolved clip indices. Running it earlier (right after classname dispatch) would miss descriptor-spawned meshes entirely, leaving their clips `None` — the bug this ordering fixes.
+**Mesh-sweep order.** The single mesh model sweep (model upload + clip-index resolve) runs *after* the data-archetype sweep (stage 11), so it sees both classname-dispatched `prop_mesh` entities and descriptor-spawned animated meshes (`components.mesh`) — every mesh model uploads once and every animated state resolves its `clip_index`. It runs *before* the `levelLoad` fire (stage 13), because a `setAnimationState` reaction in `levelLoad` requires resolved clip indices. Running it earlier (right after classname dispatch) would miss descriptor-spawned meshes entirely, leaving their clips `None` — the bug this ordering fixes.
+
+**`levelLoad` vs. dynamic light/sprite enrollment.** The `levelLoad` fire (stage 13) precedes two windowed-only passes that run after this CPU-install sequence completes: absorbing untracked `LightComponent`s into the light bridge, and the single sprite-collection registration pass (stage 14). A `levelLoad` reaction that spawns a dynamic light or emitter is picked up by these passes and renders — an intentional, accepted improvement (previously such reaction-spawned lights/emitters were dropped).
+
+**Level-sound load position.** Level sound loading (stage 15) runs last, after `levelLoad`, not alongside the earlier bridges. Safe because `playSound` enqueues an async `SystemReactionCommand` drained a frame later, after install completes — no reaction observes unloaded sounds during install.
 
 ---
 

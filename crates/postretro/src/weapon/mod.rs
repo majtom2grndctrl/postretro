@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use glam::Vec3;
 use parry3d::math::{Point, Vector};
 use postretro_entities::EntityTypeDescriptor;
-use postretro_entities::components::weapon::{EffectiveStats, WeaponComponent};
+use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::registry::{EntityId, EntityRegistry};
 use postretro_foundation::{FireMode, ResolutionMode};
 
@@ -224,7 +224,7 @@ impl ClientPredictedShots {
 // Not `Copy`: `zone: Option<String>` carries a heap-backed tag for skeletal
 // hit-zone hits, so `WeaponImpact` (and `WeaponFireEvents`, which embeds it)
 // move/borrow rather than copy. Audited call sites: `fire_hitscan` constructs it
-// (the sole literal site, production), and `run_weapon_fire_tick` borrows
+// (the sole literal site, production), and the sim weapon stage borrows
 // `events.impact` rather than copying it out.
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
@@ -250,11 +250,15 @@ pub(crate) struct WeaponImpact {
 pub(crate) struct WeaponFireEvents {
     pub(crate) activate: Option<WeaponActivation>,
     pub(crate) impact: Option<WeaponImpact>,
+    pub(crate) dry_fire: bool,
 }
 
 impl WeaponFireEvents {
     pub(crate) fn event_names(&self) -> Vec<&'static str> {
-        let mut names = Vec::with_capacity(2);
+        let mut names = Vec::with_capacity(3);
+        if self.dry_fire {
+            names.push("dry_fire");
+        }
         if self.activate.is_some() {
             names.push("activate");
         }
@@ -265,10 +269,11 @@ impl WeaponFireEvents {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum WeaponFireAuthorization {
     Accepted,
     Rejected,
+    Empty,
 }
 
 #[allow(clippy::too_many_arguments)] // weapon fire genuinely needs all of these inputs.
@@ -302,10 +307,12 @@ pub(crate) fn tick(
         hit_zone_store,
         anim_time,
         tick_dt,
+        false,
     )
 }
 
 #[allow(clippy::too_many_arguments)] // weapon fire genuinely needs all of these inputs.
+#[cfg(test)]
 pub(crate) fn tick_resolved(
     registry: &mut EntityRegistry,
     active_wieldable: Option<EntityId>,
@@ -314,6 +321,7 @@ pub(crate) fn tick_resolved(
     hit_zone_store: &HitZoneStore,
     anim_time: f64,
     tick_dt: f32,
+    reload_started_this_tick: bool,
 ) -> WeaponFireEvents {
     let Some(weapon_id) = active_wieldable else {
         return WeaponFireEvents::default();
@@ -324,33 +332,75 @@ pub(crate) fn tick_resolved(
     };
     let mut weapon = existing.clone();
 
+    let events = tick_resolved_component(
+        registry,
+        &mut weapon,
+        command,
+        collision_world,
+        hit_zone_store,
+        anim_time,
+        tick_dt,
+        reload_started_this_tick,
+    );
+
+    let _ = registry.set_component(weapon_id, weapon);
+    events
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn tick_resolved_component(
+    registry: &EntityRegistry,
+    weapon: &mut WeaponComponent,
+    command: &WeaponFireCommand,
+    collision_world: &CollisionWorld,
+    hit_zone_store: &HitZoneStore,
+    anim_time: f64,
+    tick_dt: f32,
+    reload_started_this_tick: bool,
+) -> WeaponFireEvents {
     let stats = weapon.effective();
-    let fire = apply_weapon_fire_state(&mut weapon, command, &stats, tick_dt);
-    let events = if fire == WeaponFireAuthorization::Accepted {
-        fire_hitscan(
+    let damage = stats.damage;
+    let range = stats.range;
+    let resolution = stats.resolution;
+    let fire_mode = stats.fire_mode;
+    let cooldown_ms = stats.cooldown_ms;
+    let cost_per_shot = stats.ammo.as_ref().map(|ammo| ammo.cost_per_shot);
+    let fire = apply_weapon_fire_state(
+        weapon,
+        command,
+        fire_mode,
+        cooldown_ms,
+        cost_per_shot,
+        tick_dt,
+        reload_started_this_tick,
+    );
+    match fire {
+        WeaponFireAuthorization::Accepted => fire_hitscan(
             command.aim_origin,
             command.aim_direction,
             collision_world,
             registry,
             hit_zone_store,
             anim_time,
-            stats.damage,
-            stats.range,
-            stats.resolution,
-        )
-    } else {
-        WeaponFireEvents::default()
-    };
-
-    let _ = registry.set_component(weapon_id, weapon);
-    events
+            damage,
+            range,
+            resolution,
+        ),
+        WeaponFireAuthorization::Empty => WeaponFireEvents {
+            dry_fire: true,
+            ..WeaponFireEvents::default()
+        },
+        WeaponFireAuthorization::Rejected => WeaponFireEvents::default(),
+    }
 }
 
+#[cfg(test)]
 pub(crate) fn tick_state_only(
     registry: &mut EntityRegistry,
     active_wieldable: Option<EntityId>,
     command: &WeaponFireCommand,
     tick_dt: f32,
+    reload_started_this_tick: bool,
 ) -> WeaponFireAuthorization {
     let Some(weapon_id) = active_wieldable else {
         return WeaponFireAuthorization::Rejected;
@@ -360,39 +410,74 @@ pub(crate) fn tick_state_only(
         return WeaponFireAuthorization::Rejected;
     };
     let mut weapon = existing.clone();
-    let stats = weapon.effective();
-    let result = apply_weapon_fire_state(&mut weapon, command, &stats, tick_dt);
+    let result = tick_state_only_component(&mut weapon, command, tick_dt, reload_started_this_tick);
     let _ = registry.set_component(weapon_id, weapon);
     result
+}
+
+pub(crate) fn tick_state_only_component(
+    weapon: &mut WeaponComponent,
+    command: &WeaponFireCommand,
+    tick_dt: f32,
+    reload_started_this_tick: bool,
+) -> WeaponFireAuthorization {
+    let stats = weapon.effective();
+    let fire_mode = stats.fire_mode;
+    let cooldown_ms = stats.cooldown_ms;
+    let cost_per_shot = stats.ammo.as_ref().map(|ammo| ammo.cost_per_shot);
+    apply_weapon_fire_state(
+        weapon,
+        command,
+        fire_mode,
+        cooldown_ms,
+        cost_per_shot,
+        tick_dt,
+        reload_started_this_tick,
+    )
 }
 
 fn apply_weapon_fire_state(
     weapon: &mut WeaponComponent,
     command: &WeaponFireCommand,
-    stats: &EffectiveStats,
+    fire_mode: FireMode,
+    cooldown_ms: f32,
+    cost_per_shot: Option<u32>,
     tick_dt: f32,
+    reload_started_this_tick: bool,
 ) -> WeaponFireAuthorization {
     let dt_ms = (tick_dt.max(0.0)) * 1000.0;
     weapon.cooldown_remaining_ms = (weapon.cooldown_remaining_ms - dt_ms).max(0.0);
 
-    let wants_fire = match stats.fire_mode {
+    let wants_fire = match fire_mode {
         FireMode::Semi => command.button.pressed && !weapon.shoot_press_consumed,
         FireMode::Auto => command.button.active,
     };
-    if stats.fire_mode == FireMode::Semi && command.button.pressed {
+    if fire_mode == FireMode::Semi && command.button.pressed {
         weapon.shoot_press_consumed = true;
     } else if !command.button.active {
         weapon.shoot_press_consumed = false;
     }
 
-    if command.can_fire && wants_fire && weapon.cooldown_remaining_ms <= 0.0 {
-        // Ammo validation/consumption belongs to the E16 ammo seam; this state half
-        // owns cooldown/fire-mode legitimacy only.
-        weapon.cooldown_remaining_ms = stats.cooldown_ms;
-        WeaponFireAuthorization::Accepted
-    } else {
-        WeaponFireAuthorization::Rejected
+    if !command.can_fire || !wants_fire || weapon.cooldown_remaining_ms > 0.0 {
+        return WeaponFireAuthorization::Rejected;
     }
+
+    // Starting a reload owns the entire tick even when its duration is no
+    // longer than this tick and the atomic transfer already completed.
+    if reload_started_this_tick || weapon.reload_remaining_ms > 0 {
+        return WeaponFireAuthorization::Rejected;
+    }
+
+    if let Some(cost_per_shot) = cost_per_shot {
+        if weapon.magazine < cost_per_shot {
+            weapon.cooldown_remaining_ms = cooldown_ms;
+            return WeaponFireAuthorization::Empty;
+        }
+        weapon.magazine -= cost_per_shot;
+    }
+
+    weapon.cooldown_remaining_ms = cooldown_ms;
+    WeaponFireAuthorization::Accepted
 }
 
 #[allow(clippy::too_many_arguments)] // weapon fire genuinely needs all of these inputs.
@@ -410,6 +495,7 @@ fn fire_hitscan(
     let mut events = WeaponFireEvents {
         activate: Some(WeaponActivation { origin, direction }),
         impact: None,
+        dry_fire: false,
     };
 
     match resolution {
@@ -625,8 +711,8 @@ mod tests {
     use parry3d::shape::TriMesh;
     use postretro_entities::components::health::{HealthComponent, Hitbox};
     use postretro_entities::registry::{ComponentKind, Transform};
-    use postretro_entities::{EntityTypeDescriptor, MeshDescriptor};
-    use postretro_foundation::WeaponDescriptor;
+    use postretro_entities::{AmmoReserve, EntityTypeDescriptor, MeshDescriptor};
+    use postretro_foundation::{AmmoResource, WeaponDescriptor, WeaponResource};
     use winit::event::MouseButton;
 
     const EPSILON: f32 = 1.0e-5;
@@ -658,7 +744,25 @@ mod tests {
             fire_mode,
             resolution: ResolutionMode::Hitscan,
             credit_source: None,
+            resource: None,
         })
+    }
+
+    fn ammo_weapon_component(
+        fire_mode: FireMode,
+        cooldown_ms: f32,
+        magazine: u32,
+        cost_per_shot: u32,
+    ) -> WeaponComponent {
+        let mut descriptor = weapon_descriptor(fire_mode, cooldown_ms);
+        descriptor.resource = Some(WeaponResource::Ammo(AmmoResource {
+            ammo_type: "bullets.light".to_string(),
+            magazine,
+            cost_per_shot,
+            reserve: 48,
+            reload_ms: 900,
+        }));
+        WeaponComponent::from_descriptor(&descriptor)
     }
 
     fn weapon_descriptor(fire_mode: FireMode, cooldown_ms: f32) -> WeaponDescriptor {
@@ -669,6 +773,7 @@ mod tests {
             fire_mode,
             resolution: ResolutionMode::Hitscan,
             credit_source: None,
+            resource: None,
         }
     }
 
@@ -1036,6 +1141,281 @@ mod tests {
     }
 
     #[test]
+    fn ammo_shot_consumes_effective_cost_once_and_resolves_normally() {
+        let mut registry = EntityRegistry::new();
+        let weapon_id = spawn_weapon(
+            &mut registry,
+            ammo_weapon_component(FireMode::Semi, 100.0, 12, 2),
+        );
+        let pawn = registry.spawn(Transform::default());
+        let mut reserve = AmmoReserve::new();
+        reserve.credit("bullets.light", 48);
+        registry.set_component(pawn, reserve).unwrap();
+        let camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
+        let world = wall_world();
+        let mut input = input_system();
+        let pressed = shoot_snapshot(&mut input, true);
+
+        let events = fire_tick(
+            &mut registry,
+            Some(weapon_id),
+            &pressed,
+            &camera,
+            &world,
+            1.0 / 60.0,
+        );
+
+        assert_eq!(events.event_names(), vec!["activate", "impact"]);
+        assert_eq!(
+            registry
+                .get_component::<WeaponComponent>(weapon_id)
+                .unwrap()
+                .magazine,
+            10
+        );
+        assert_eq!(
+            registry
+                .get_component::<AmmoReserve>(pawn)
+                .unwrap()
+                .available("bullets.light"),
+            48
+        );
+    }
+
+    #[test]
+    fn ammo_shot_spends_cost_on_open_space_miss() {
+        let mut registry = EntityRegistry::new();
+        let weapon_id = spawn_weapon(
+            &mut registry,
+            ammo_weapon_component(FireMode::Semi, 100.0, 12, 2),
+        );
+        let camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
+        let mut input = input_system();
+        let pressed = shoot_snapshot(&mut input, true);
+
+        let events = fire_tick(
+            &mut registry,
+            Some(weapon_id),
+            &pressed,
+            &camera,
+            &CollisionWorld::new(),
+            1.0 / 60.0,
+        );
+
+        assert_eq!(events.event_names(), vec!["activate"]);
+        assert!(events.impact.is_none());
+        assert_eq!(
+            registry
+                .get_component::<WeaponComponent>(weapon_id)
+                .unwrap()
+                .magazine,
+            10
+        );
+    }
+
+    #[test]
+    fn below_cost_is_empty_at_state_seam_and_emits_only_dry_fire() {
+        let command = WeaponFireCommand {
+            button: FireButtonState {
+                pressed: true,
+                active: true,
+            },
+            aim_origin: Vec3::ZERO,
+            aim_direction: Vec3::NEG_Z,
+            can_fire: true,
+        };
+        let mut component = ammo_weapon_component(FireMode::Semi, 100.0, 2, 3);
+        let stats = component.effective();
+        let fire_mode = stats.fire_mode;
+        let cooldown_ms = stats.cooldown_ms;
+        let cost_per_shot = stats.ammo.as_ref().map(|ammo| ammo.cost_per_shot);
+        assert_eq!(
+            apply_weapon_fire_state(
+                &mut component,
+                &command,
+                fire_mode,
+                cooldown_ms,
+                cost_per_shot,
+                1.0 / 60.0,
+                false,
+            ),
+            WeaponFireAuthorization::Empty
+        );
+        assert_eq!(component.magazine, 2);
+        assert!(approx_eq(component.cooldown_remaining_ms, 100.0));
+
+        let mut registry = EntityRegistry::new();
+        let weapon_id = spawn_weapon(
+            &mut registry,
+            ammo_weapon_component(FireMode::Semi, 100.0, 2, 3),
+        );
+        let target = spawn_hitbox_entity(
+            &mut registry,
+            Vec3::new(0.0, 0.0, -5.0),
+            Vec3::splat(0.5),
+            Vec3::ZERO,
+        );
+        let before_health = registry
+            .get_component::<HealthComponent>(target)
+            .unwrap()
+            .current;
+        let events = tick_resolved(
+            &mut registry,
+            Some(weapon_id),
+            &command,
+            &CollisionWorld::new(),
+            &HitZoneStore::new(),
+            0.0,
+            1.0 / 60.0,
+            false,
+        );
+
+        assert_eq!(events.event_names(), vec!["dry_fire"]);
+        assert!(events.activate.is_none());
+        assert!(events.impact.is_none());
+        assert_eq!(
+            registry
+                .get_component::<WeaponComponent>(weapon_id)
+                .unwrap()
+                .magazine,
+            2
+        );
+        assert_eq!(
+            registry
+                .get_component::<HealthComponent>(target)
+                .unwrap()
+                .current,
+            before_health
+        );
+    }
+
+    // Regression: a held Auto trigger emitted dry_fire on every fixed tick.
+    #[test]
+    fn empty_auto_weapon_emits_once_per_fire_interval() {
+        let registry = EntityRegistry::new();
+        let world = CollisionWorld::new();
+        let hit_zones = HitZoneStore::new();
+        let mut weapon = ammo_weapon_component(FireMode::Auto, 100.0, 1, 1);
+        weapon.magazine = 0;
+        let pressed = WeaponFireCommand {
+            button: FireButtonState {
+                pressed: true,
+                active: true,
+            },
+            aim_origin: Vec3::ZERO,
+            aim_direction: Vec3::NEG_Z,
+            can_fire: true,
+        };
+
+        let first = tick_resolved_component(
+            &registry,
+            &mut weapon,
+            &pressed,
+            &world,
+            &hit_zones,
+            0.0,
+            0.0,
+            false,
+        );
+        assert_eq!(first.event_names(), vec!["dry_fire"]);
+        assert!(approx_eq(weapon.cooldown_remaining_ms, 100.0));
+        assert_eq!(weapon.magazine, 0);
+
+        let held = WeaponFireCommand {
+            button: FireButtonState {
+                pressed: false,
+                active: true,
+            },
+            ..pressed
+        };
+        let cooling = tick_resolved_component(
+            &registry,
+            &mut weapon,
+            &held,
+            &world,
+            &hit_zones,
+            0.0,
+            0.04,
+            false,
+        );
+        assert!(cooling.event_names().is_empty());
+        assert!(approx_eq(weapon.cooldown_remaining_ms, 60.0));
+
+        let ready = tick_resolved_component(
+            &registry,
+            &mut weapon,
+            &held,
+            &world,
+            &hit_zones,
+            0.0,
+            0.061,
+            false,
+        );
+        assert_eq!(ready.event_names(), vec!["dry_fire"]);
+        assert!(ready.activate.is_none());
+        assert!(ready.impact.is_none());
+        assert!(approx_eq(weapon.cooldown_remaining_ms, 100.0));
+        assert_eq!(weapon.magazine, 0);
+    }
+
+    #[test]
+    fn reload_in_flight_silently_blocks_without_cancelling_or_spending() {
+        let mut registry = EntityRegistry::new();
+        let mut component = ammo_weapon_component(FireMode::Semi, 100.0, 12, 2);
+        component.reload_remaining_ms = 450;
+        component.reload_total_ms = 900;
+        let weapon_id = spawn_weapon(&mut registry, component);
+        let camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
+        let world = CollisionWorld::new();
+        let mut input = input_system();
+        let pressed = shoot_snapshot(&mut input, true);
+
+        let events = fire_tick(
+            &mut registry,
+            Some(weapon_id),
+            &pressed,
+            &camera,
+            &world,
+            1.0 / 60.0,
+        );
+        let weapon = registry
+            .get_component::<WeaponComponent>(weapon_id)
+            .unwrap();
+
+        assert!(events.event_names().is_empty());
+        assert_eq!(weapon.magazine, 12);
+        assert_eq!(weapon.reload_remaining_ms, 450);
+        assert_eq!(weapon.reload_total_ms, 900);
+        assert_eq!(weapon.cooldown_remaining_ms, 0.0);
+    }
+
+    #[test]
+    fn resourceless_weapon_fires_without_magazine_gating_or_consumption() {
+        let mut registry = EntityRegistry::new();
+        let weapon_id = spawn_weapon(&mut registry, weapon_component(FireMode::Semi, 100.0));
+        let camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
+        let world = CollisionWorld::new();
+        let mut input = input_system();
+        let pressed = shoot_snapshot(&mut input, true);
+
+        let events = fire_tick(
+            &mut registry,
+            Some(weapon_id),
+            &pressed,
+            &camera,
+            &world,
+            1.0 / 60.0,
+        );
+
+        assert_eq!(events.event_names(), vec!["activate"]);
+        let weapon = registry
+            .get_component::<WeaponComponent>(weapon_id)
+            .unwrap();
+        assert!(weapon.ammo.is_none());
+        assert_eq!(weapon.magazine, 0);
+    }
+
+    #[test]
     fn state_only_fire_advances_cooldown_without_hitscan_events() {
         let mut registry = EntityRegistry::new();
         let weapon_id = spawn_weapon(&mut registry, weapon_component(FireMode::Semi, 100.0));
@@ -1049,7 +1429,7 @@ mod tests {
             can_fire: true,
         };
 
-        let result = tick_state_only(&mut registry, Some(weapon_id), &command, 1.0 / 60.0);
+        let result = tick_state_only(&mut registry, Some(weapon_id), &command, 1.0 / 60.0, false);
 
         assert_eq!(result, WeaponFireAuthorization::Accepted);
         let weapon = registry
@@ -1300,7 +1680,7 @@ mod tests {
         assert_vec3_approx(impact.point, Vec3::new(0.0, 0.0, -5.0));
     }
 
-    // --- Skeletal hit-zone delegation (Task 4) ------------------------------
+    // --- Skeletal hit-zone delegation ---------------------------------------
 
     use crate::scripting_systems::hit_zones::ModelHitZones;
     use postretro_entities::components::mesh::MeshComponent;

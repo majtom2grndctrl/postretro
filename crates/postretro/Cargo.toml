@@ -90,12 +90,19 @@ dev-tools = [
     "postretro-net/dev-tools",
     "postretro-renderer/dev-tools",
 ]
+# Headless batch mode for AI-agent and content-CI use. Gates modules only —
+# no optional deps, no egui, independent of dev-tools.
+# See: context/plans/done/agentic-observability
+observability = []
 
 [build-dependencies]
 postretro-script-compiler = { path = "../script-compiler" }
 
 [dev-dependencies]
 postretro-ui = { workspace = true, features = ["test-fixtures"] }
+# Exercise shipped TypeScript data scripts through the same SWC bundler used by
+# `scripts-build`, without spawning the sidecar process during unit tests.
+postretro-script-compiler = { path = "../script-compiler" }
 
 # Enable the net crate's dev-only in-memory packet conditioner (`postretro_net::harness`:
 # `PacketConditioner`/`LinkConfig`) for the Phase 3 prediction/reconciliation latency

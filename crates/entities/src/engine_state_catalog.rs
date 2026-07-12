@@ -373,6 +373,56 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         network: ReplicationScope::OwnerPrivatePlayer,
     },
     EngineStateCatalogEntry {
+        wire_name: "player.ammo",
+        sdk_path: &["player", "ammo"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::None,
+        range: Some(NumericRange {
+            min: 0.0,
+            max: f32::INFINITY,
+        }),
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        // Magazine state is server-authoritative and projected only to the pawn's owner.
+        network: ReplicationScope::OwnerPrivatePlayer,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "player.ammoReserve",
+        sdk_path: &["player", "ammoReserve"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::None,
+        range: Some(NumericRange {
+            min: 0.0,
+            max: f32::INFINITY,
+        }),
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        // Reserve state is pawn-owned and projected only to that pawn's owner.
+        network: ReplicationScope::OwnerPrivatePlayer,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "player.reloadActive",
+        sdk_path: &["player", "reloadActive"],
+        value_type: EngineStateValueType::Boolean,
+        default: EngineStateDefault::Boolean(false),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        // Reload lifecycle is authoritative per pawn and visible only to that pawn's owner.
+        network: ReplicationScope::OwnerPrivatePlayer,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "player.reloadProgress",
+        sdk_path: &["player", "reloadProgress"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::Number(0.0),
+        range: Some(NumericRange { min: 0.0, max: 1.0 }),
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        // Reload timing pairs with reload lifecycle under the same owner-private projection.
+        network: ReplicationScope::OwnerPrivatePlayer,
+    },
+    EngineStateCatalogEntry {
         wire_name: "player.weaponCooldownMs",
         sdk_path: &["player", "weaponCooldownMs"],
         value_type: EngineStateValueType::Number,
@@ -607,8 +657,12 @@ mod tests {
             wire_names,
             vec![
                 "input.mode",
+                "player.ammo",
+                "player.ammoReserve",
                 "player.health",
                 "player.maxHealth",
+                "player.reloadActive",
+                "player.reloadProgress",
                 "player.weaponCooldownMs",
                 "screen.flash",
                 "screen.shake",
@@ -643,6 +697,35 @@ mod tests {
             EngineStateCapability::Readonly
         );
 
+        let reload_active = entries
+            .iter()
+            .find(|entry| entry.wire_name == "player.reloadActive")
+            .unwrap();
+        assert_eq!(reload_active.sdk_path, &["player", "reloadActive"]);
+        assert_eq!(reload_active.value_type, EngineStateValueType::Boolean);
+        assert_eq!(reload_active.default, EngineStateDefault::Boolean(false));
+        assert_eq!(reload_active.range, None);
+        assert!(!reload_active.persist);
+        assert_eq!(reload_active.capability, EngineStateCapability::Readonly);
+        assert_eq!(reload_active.network, ReplicationScope::OwnerPrivatePlayer);
+
+        let reload_progress = entries
+            .iter()
+            .find(|entry| entry.wire_name == "player.reloadProgress")
+            .unwrap();
+        assert_eq!(reload_progress.sdk_path, &["player", "reloadProgress"]);
+        assert_eq!(reload_progress.value_type, EngineStateValueType::Number);
+        assert_eq!(reload_progress.default, EngineStateDefault::Number(0.0));
+        assert_eq!(
+            reload_progress.range,
+            Some(NumericRange { min: 0.0, max: 1.0 })
+        );
+        assert_eq!(reload_progress.capability, EngineStateCapability::Readonly);
+        assert_eq!(
+            reload_progress.network,
+            ReplicationScope::OwnerPrivatePlayer
+        );
+
         let weapon_cooldown = entries
             .iter()
             .find(|entry| entry.wire_name == "player.weaponCooldownMs")
@@ -671,6 +754,10 @@ mod tests {
         for wire_name in [
             "player.health",
             "player.maxHealth",
+            "player.ammo",
+            "player.ammoReserve",
+            "player.reloadActive",
+            "player.reloadProgress",
             "player.weaponCooldownMs",
         ] {
             let entry = entries
@@ -688,6 +775,10 @@ mod tests {
             if ![
                 "player.health",
                 "player.maxHealth",
+                "player.ammo",
+                "player.ammoReserve",
+                "player.reloadActive",
+                "player.reloadProgress",
                 "player.weaponCooldownMs",
             ]
             .contains(&entry.wire_name)

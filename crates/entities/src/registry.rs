@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::components::agent::AgentComponent;
+use crate::components::ammo_reserve::AmmoReserve;
 use crate::components::billboard_emitter::BillboardEmitterComponent;
 use crate::components::brain::BrainComponent;
 use crate::components::fog_volume::FogAnimation;
@@ -29,7 +30,7 @@ use crate::provenance::DescriptorProvenance;
 /// above the design ceiling for a single level. When a slot's generation is
 /// bumped past `u16::MAX` on despawn, the slot is **permanently retired**
 /// (removed from the free list and never re-allocated); see [`EntityRegistry::despawn`].
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct EntityId(u32);
 
 impl EntityId {
@@ -83,8 +84,9 @@ impl fmt::Display for EntityId {
 /// All component kinds the engine tracks internally.
 ///
 /// Not all variants are queryable via the script surface (`worldQuery`):
-/// `PlayerMovement` and `Weapon` are engine-owned runtime components, so
-/// scripts address them through higher-level descriptors and systems.
+/// `PlayerMovement`, `Weapon`, and `AmmoReserve` are engine-owned runtime
+/// components, so scripts address them through higher-level descriptors and
+/// systems.
 ///
 /// `#[repr(u16)]` makes the discriminant a zero-cost index into the
 /// component-storage vector array. Not `#[non_exhaustive]`: the enum is
@@ -115,6 +117,8 @@ pub enum ComponentKind {
     KinematicMover = 13,
     /// Engine-owned trigger configuration and mutable arming state.
     TriggerVolume = 14,
+    /// Pawn-owned ammunition balances pooled by authored ammo type.
+    AmmoReserve = 15,
 }
 
 impl ComponentKind {
@@ -139,6 +143,7 @@ impl ComponentKind {
             ComponentKind::Brain,
             ComponentKind::KinematicMover,
             ComponentKind::TriggerVolume,
+            ComponentKind::AmmoReserve,
         ];
         VARIANTS.len()
     };
@@ -194,6 +199,7 @@ pub enum ComponentValue {
     Brain(BrainComponent),
     KinematicMover(KinematicMoverComponent),
     TriggerVolume(TriggerVolumeComponent),
+    AmmoReserve(AmmoReserve),
 }
 
 impl ComponentValue {
@@ -214,6 +220,7 @@ impl ComponentValue {
             ComponentValue::Brain(_) => ComponentKind::Brain,
             ComponentValue::KinematicMover(_) => ComponentKind::KinematicMover,
             ComponentValue::TriggerVolume(_) => ComponentKind::TriggerVolume,
+            ComponentValue::AmmoReserve(_) => ComponentKind::AmmoReserve,
         }
     }
 }
@@ -512,6 +519,19 @@ impl Component for TriggerVolumeComponent {
     }
 }
 
+impl Component for AmmoReserve {
+    const KIND: ComponentKind = ComponentKind::AmmoReserve;
+    fn from_value(value: &ComponentValue) -> Option<&Self> {
+        match value {
+            ComponentValue::AmmoReserve(reserve) => Some(reserve),
+            _ => None,
+        }
+    }
+    fn into_value(self) -> ComponentValue {
+        ComponentValue::AmmoReserve(self)
+    }
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum RegistryError {
     #[error("entity {0} does not exist")]
@@ -588,6 +608,22 @@ impl EntityRegistry {
     pub fn local_player_pawn(&self) -> Option<EntityId> {
         self.local_player_pawn
             .filter(|id| self.validate(*id).is_ok())
+    }
+
+    /// Resolve the pawn driven by local movement input. A live marked pawn wins when
+    /// it carries `PlayerMovement`; otherwise older maps and fixtures fall back to the
+    /// first movement pawn in registry order. This selects identity only. Callers apply
+    /// their own Health, Transform, camera, or presentation requirements afterward.
+    pub fn local_player_movement_pawn(&self) -> Option<EntityId> {
+        if let Some(id) = self.local_player_pawn()
+            && self.has_component_kind(id, ComponentKind::PlayerMovement) == Ok(true)
+        {
+            return Some(id);
+        }
+
+        self.iter_with_kind(ComponentKind::PlayerMovement)
+            .next()
+            .map(|(id, _)| id)
     }
 
     /// Attach the per-placement KVP bag (authored on the source `.map` entity)
@@ -1013,6 +1049,9 @@ mod tests {
     use crate::components::billboard_emitter::{BillboardEmitterComponent, SpinAnimation};
     use crate::components::particle::ParticleState;
     use crate::components::sprite_visual::SpriteVisual;
+    use crate::data_descriptors::{
+        AirParams, CapsuleParams, FallParams, GroundParams, PlayerMovementDescriptor, SpeedParams,
+    };
 
     fn sample_transform() -> Transform {
         Transform {
@@ -1020,6 +1059,52 @@ mod tests {
             rotation: Quat::from_rotation_y(0.5),
             scale: Vec3::splat(2.0),
         }
+    }
+
+    fn test_movement_component() -> PlayerMovementComponent {
+        PlayerMovementComponent::from_descriptor(&PlayerMovementDescriptor {
+            capsule: CapsuleParams {
+                radius: 0.35,
+                half_height: 0.9,
+                eye_height: 1.1,
+            },
+            ground: GroundParams {
+                speed: SpeedParams {
+                    walk: 7.0,
+                    run: 11.0,
+                    crouch: 3.0,
+                },
+                accel: 12.0,
+                step_height: 0.35,
+                max_slope: 45.0,
+            },
+            air: AirParams {
+                forward_steer: 0.3,
+                accel: 2.0,
+                max_control_speed: 4.0,
+                bunny_hop: true,
+                jumps: 1,
+                jump_velocity: 5.0,
+                jump_ceiling: 2.0,
+            },
+            fall: FallParams {
+                terminal_velocity: 50.0,
+            },
+            stuck_stop_enabled: true,
+            stuck_stop_threshold: 0.001,
+            dash: None,
+            forgiveness: None,
+            crouch: None,
+            view_feel: None,
+        })
+    }
+
+    fn spawn_test_movement_pawn(registry: &mut EntityRegistry) -> EntityId {
+        let pawn = registry.spawn(Transform::default());
+        registry
+            .set_component(pawn, test_movement_component())
+            .unwrap();
+        pawn
     }
 
     #[test]
@@ -1035,6 +1120,36 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let id = reg.spawn(sample_transform());
         assert!(reg.exists(id));
+    }
+
+    #[test]
+    fn local_player_movement_pawn_prefers_marked_pawn_over_registry_order() {
+        let mut registry = EntityRegistry::new();
+        let first = spawn_test_movement_pawn(&mut registry);
+        let marked = spawn_test_movement_pawn(&mut registry);
+        registry.mark_local_player_pawn(marked).unwrap();
+
+        assert_eq!(registry.local_player_movement_pawn(), Some(marked));
+        assert_ne!(marked, first);
+    }
+
+    #[test]
+    fn local_player_movement_pawn_falls_back_to_first_movement_pawn() {
+        let mut registry = EntityRegistry::new();
+        let first = spawn_test_movement_pawn(&mut registry);
+        let _second = spawn_test_movement_pawn(&mut registry);
+
+        assert_eq!(registry.local_player_movement_pawn(), Some(first));
+
+        let marked_without_movement = registry.spawn(Transform::default());
+        registry
+            .mark_local_player_pawn(marked_without_movement)
+            .unwrap();
+        assert_eq!(
+            registry.local_player_movement_pawn(),
+            Some(first),
+            "a marker without movement does not replace the legacy movement fallback"
+        );
     }
 
     #[test]

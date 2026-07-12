@@ -77,7 +77,7 @@ Once registered, the runtime installs each primitive into every context it creat
 
 **Naming convention:** Primitive names are camelCase, matching the idiom of the target languages (TypeScript, JavaScript, Luau). Wire format field names match the script-facing API; internal Rust representation may differ. Named entity instance constants in user scripts follow the same camelCase rule (`const exhaustPort = defineEntity({...})`, `const campfire = defineEntity({...})`). PascalCase is reserved for types and interfaces only.
 
-`postretro-scripting-core` owns primitive registry machinery, VM runtimes, type generation, marshalling/newtype substrate, and canonical durable-store contract helpers. `crates/postretro/src/scripting/primitives/mod.rs` owns shared registration ordering and the engine primitive entry point. Light primitive logic and wiring live in `crates/lighting/src/script_primitives.rs` behind `postretro-lighting`'s off-by-default `script-ffi` feature; `crates/postretro/src/scripting/primitives/light.rs` is a compatibility barrel. That lighting module also carries the world-query shared type registrations (`WorldQueryComponent`, `WorldQueryFilter`, `Entity`, `EmitterEntity`) to preserve typedef emission order; splitting them back out is deliberate future work, not a casual cleanup. State-store primitive registration and wiring live in `crates/postretro/src/scripting/state_store.rs`; durable-store contract helpers live in scripting-core, with a compatibility barrel at `crates/postretro/src/scripting/primitives/store.rs`. World/entity primitive logic lives in `crates/postretro/src/scripting/entity_world_primitives.rs`, with compatibility barrels at `crates/postretro/src/scripting/primitives/{world,entity}.rs`.
+`postretro-scripting-core` owns primitive registry machinery, VM runtimes, type generation, marshalling/newtype substrate, and canonical durable-store contract helpers. `crates/postretro/src/scripting/primitives/mod.rs` owns shared registration ordering and the engine primitive entry point. Light primitive logic and wiring live in `crates/lighting/src/script_primitives.rs` behind `postretro-lighting`'s off-by-default `script-ffi` feature; `crates/postretro/src/scripting/primitives/light.rs` is a compatibility barrel. That lighting module also carries the world-query shared type registrations (`WorldQueryComponent`, `WorldQueryFilter`, `Entity`, `EmitterEntity`, `MoverEntity`, `TriggerVolumeEntity`) to preserve typedef emission order; splitting them back out is deliberate future work, not a casual cleanup. State-store primitive registration and wiring live in `crates/postretro/src/scripting/state_store.rs`; durable-store contract helpers live in scripting-core, with a compatibility barrel at `crates/postretro/src/scripting/primitives/store.rs`. World/entity primitive logic lives in `crates/postretro/src/scripting/entity_world_primitives.rs`, with compatibility barrels at `crates/postretro/src/scripting/primitives/{world,entity}.rs`.
 
 **Import rule.** Floor/core APIs import directly from `postretro_foundation`, `postretro_entities`, or `postretro_scripting_core`. Do not route those APIs through `crate::scripting::*`. Use `crate::scripting` only for retained `scripting/typedef` fixture and down-edge paths, plus postretro-owned real modules and compatibility paths.
 
@@ -94,6 +94,13 @@ The state store has engine-global lifetime and is never cleared on level unload,
 `defineStore` is a pure SDK builder. It returns `declaration` data for `ModManifest.stores` and a `state` reference tree keyed by schema field. Calling it performs no FFI and changes no engine state. Unreturned declarations disappear when the short-lived setup VM drops.
 
 Engine-owned slots may be readonly to scripts while remaining writable by engine systems. Engine writes bypass readonly but still apply declared type, enum, finite-number, and range validation. Mod-owned slots are script-writable unless declared otherwise. Scripts and engine systems address slots by dotted name so references remain valid after the authoring VM drops.
+
+Numeric slots use `f32` end to end. Integer-shaped producers remain exact only
+through 2^24. `player.ammo` and `player.ammoReserve` expose the full authored
+`u32` domain without clamping, so extreme counts above that boundary may round
+in HUD and owner-private state projection. Exact full-width integer slots need
+a separate state-store and replication contract; ammo does not widen the global
+numeric value type.
 
 An engine-owned numeric slot may gain its declared range after registration: the producing engine system attaches it when the governing data materializes (`player.health` carries `[0, max HP]` once a player with health spawns). Range attachment is engine-side only; readonly gating for scripts is unchanged.
 
@@ -170,6 +177,8 @@ Higher-level vocabulary (`world`, `timeline`, `sequence`, etc.) is provided by t
 - `sdk/lib/entities/lights.{ts,luau}` — light vocabulary: `LightEntityHandle` wrapper with `pulse`, `fade`, `flicker`, `colorShift`, `sweep` methods.
 - `sdk/lib/entities/emitters.{ts,luau}` — emitter vocabulary: the `emitter()` component constructor plus `smokeEmitter`, `sparkEmitter`, `dustEmitter` presets.
 - `sdk/lib/entities/fog_volumes.{ts,luau}` — fog volume vocabulary: `FogVolumeHandle` wrapper with density-curve methods.
+- `sdk/lib/entities/movers.{ts,luau}` — mover vocabulary: `MoverEntityHandle` wrapper with closed motion-command builders.
+- `sdk/lib/entities/triggers.{ts,luau}` — trigger vocabulary: `TriggerVolumeHandle` wrapper with closed arm/disarm builders.
 - `sdk/lib/entities/transforms.{ts,luau}` — transform-only handle type (`TransformHandle`). Type-only; no runtime globals promoted.
 - `sdk/lib/util/keyframes.{ts,luau}` — structurally generic keyframe utilities: the `Keyframe` type alias, `timeline`, and `sequence`. Not light-specific; usable for any keyframed animation.
 - `sdk/lib/data_script.{ts,luau}` — definition-context vocabulary.
@@ -198,7 +207,7 @@ Handle types compose them by channel: `LightEntityHandle extends AnimatableScala
 
 **TypeScript:** `sdk/lib/prelude.js` is generated at build time by `postretro`'s `build.rs` (via `postretro-script-compiler` as a `[build-dependencies]` entry) and written to `$OUT_DIR`. It is embedded in the engine binary via `include_str!(concat!(env!("OUT_DIR"), "/prelude.js"))` and evaluated in every QuickJS context. The file is gitignored and never committed — `cargo build` regenerates it automatically from `sdk/lib/**/*.ts`. Authors import SDK symbols as bare specifiers: `import { world, timeline, sequence, defineReaction, defineEntity } from "postretro"`. UI authors import from `"postretro/ui"`. The import is stripped at bundle time; the symbol resolves from the prelude-installed global.
 
-**Luau:** Each SDK library file under `sdk/lib/` is embedded via `include_str!` and evaluated in a fixed order in every Luau context. Non-UI return values are destructured into bare globals during the transition; UI return values populate only the `require("postretro/ui")` virtual module and are not promoted as bare globals. Evaluation order matters: `world.luau` captures `wrapLightEntity` from `entities/lights.luau`, `wrapFogVolumeEntity` from `entities/fog_volumes.luau`, and `wrapMoverEntity` from `entities/movers.luau` as closure upvalues; all must evaluate before `world.luau`. The bridges are nil'd out after `world.luau` evaluates so author scripts never see them as bare globals. Type-only symbols (`export type` declarations) serve luau-lsp completions only — never promoted to runtime globals.
+**Luau:** Each SDK library file under `sdk/lib/` is embedded via `include_str!` and evaluated in a fixed order in every Luau context. Non-UI return values are destructured into bare globals during the transition; UI return values populate only the `require("postretro/ui")` virtual module and are not promoted as bare globals. Evaluation order matters: `world.luau` captures `wrapLightEntity` from `entities/lights.luau`, `wrapFogVolumeEntity` from `entities/fog_volumes.luau`, `wrapMoverEntity` from `entities/movers.luau`, and `wrapTriggerVolumeEntity` from `entities/triggers.luau` as closure upvalues; all must evaluate before `world.luau`. These wrappers exist only as temporary globals until capture, then are nil'd out after `world.luau` evaluates so author scripts never see them as bare globals. Type-only symbols (`export type` declarations) serve luau-lsp completions only — never promoted to runtime globals.
 
 Luau authors may opt into SDK modules with
 `local Postretro = require("postretro")` or
@@ -338,6 +347,10 @@ the frontend through the same path as `returnToFrontend()`.
 ### 10.6 Mover Commands
 
 `world.query({ component: "kinematic_mover", tag })` reads map movers. The raw query result is a snapshot (`id`, position, tags); the SDK wraps it in a mover handle that builds tag-targeted reaction steps. `start`, `stop`, `reverse`, and `goToPathNode(node)` map to the closed Rust command vocabulary. Commands are declarative reaction data, not a per-tick script-control path: the deterministic mover driver owns motion every tick.
+
+### 10.7 Trigger Commands
+
+`world.query({ component: "trigger_volume", tag })` returns trigger handles with snapshot `id`, position, and tags. Armed state and activation phase remain engine-owned. `arm()` and `disarm()` build closed, entity-targeted sequence steps using the handle ID. Arming reopens a Touch trigger for players already standing in it; Use still requires a press. They declare later reaction work; scripts cannot mutate trigger components or poll their runtime state.
 
 ---
 

@@ -446,6 +446,8 @@ mod tests {
     fn new_registers_engine_player_namespace() {
         let table = SlotTable::new();
         for name in [
+            "player.ammo",
+            "player.ammoReserve",
             "player.health",
             "player.maxHealth",
             "player.weaponCooldownMs",
@@ -478,10 +480,8 @@ mod tests {
             }),
             "weapon cooldown carries a non-negative millisecond range",
         );
-        assert!(
-            table.get("player.ammo").is_none(),
-            "fake ammo is not an engine-owned HUD state slot"
-        );
+        assert!(table.get("player.ammo").is_some());
+        assert!(table.get("player.ammoReserve").is_some());
     }
 
     #[test]

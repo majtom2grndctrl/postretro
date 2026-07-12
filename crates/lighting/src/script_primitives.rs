@@ -289,6 +289,7 @@ pub fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .variant("emitter", "")
         .variant("fog_volume", "")
         .variant("kinematic_mover", "")
+        .variant("trigger_volume", "")
         .variant("particle", "Always returns []. Engine-managed; scripts never iterate individual particles.")
         .variant("sprite_visual", "Always returns []. Engine-managed.")
         .finish();
@@ -354,6 +355,17 @@ pub fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .doc("Raw mover snapshot returned by `worldQuery` when filtering for kinematic movers. The SDK world-query wrapper exposes closed command-reaction builders; raw mover components remain engine-managed.")
         .field("id", "EntityId", "")
         .field("position", "Vec3", "Mover position at query time (from the entity's Transform).")
+        .field(
+            "tags",
+            "Vec<String>",
+            "The entity's tags at query time. Empty array if untagged.",
+        )
+        .finish();
+    registry
+        .register_type("TriggerVolumeEntity")
+        .doc("Raw trigger snapshot returned by `worldQuery` when filtering for trigger volumes. Arming and activation phase remain engine-managed; the SDK wrapper exposes only arm/disarm command builders.")
+        .field("id", "EntityId", "")
+        .field("position", "Vec3", "Trigger position at query time (from the entity's Transform).")
         .field(
             "tags",
             "Vec<String>",

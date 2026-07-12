@@ -9,6 +9,7 @@ import {
   defineUiTree,
   getGameState,
   getDesignTokens,
+  stateEquals,
 } from "postretro/ui";
 
 export const hudTheme = defineTheme({
@@ -51,6 +52,22 @@ const status = Text({
   bind: bindState(player.health, { format: "HP {}" }),
 });
 
+const ammo = Text({
+  content: "AMMO -- / --",
+  color: color.hud.text,
+  font: font.hud.status,
+  fontSize: 24.0,
+  bind: bindState(player.ammo, { format: "AMMO {}" }),
+});
+
+const ammoReserve = Text({
+  content: "/ --",
+  color: color.hud.text,
+  font: font.hud.status,
+  fontSize: 24.0,
+  bind: bindState(player.ammoReserve, { format: "/ {}" }),
+});
+
 const bar = Bar({
   bind: bindState(player.health, {
     tween: {
@@ -84,7 +101,7 @@ export const hud = defineUiTree({
         fill: color.hud.panel,
       },
       [
-        HStack({ gap: spacing.hud.gap, align: "center" }, [status]),
+        HStack({ gap: spacing.hud.gap, align: "center" }, [status, ammo, ammoReserve]),
         bar,
       ],
     ),
@@ -98,4 +115,21 @@ export const reticle = defineUiTree({
     { anchor: "center", offset: [0.0, 0.0] },
     Text({ content: "+", font: font.mono }),
   ),
+});
+
+const reloadMeter = Bar({
+  bind: bindState(player.reloadProgress),
+  max: 1.0,
+  width: 120.0,
+  height: 24.0,
+  visibleWhen: stateEquals(player.reloadActive, true),
+  exitFade: { durationMs: 500.0 },
+  fill: color.ok,
+  background: color.hud.health.background,
+});
+
+export const reloadMeterTree = defineUiTree({
+  name: "hud.reloadMeter",
+  alwaysOn: true,
+  tree: Tree({ anchor: "center", offset: [0.0, 36.0] }, reloadMeter),
 });

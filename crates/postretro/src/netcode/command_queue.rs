@@ -30,7 +30,7 @@
 // seam (`sim::host_movement`). Intake runs `wire_convert::sanitize_input_command`
 // before queueing — an invalid command never mutates a queue.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use postretro_net::wire::InputCommand;
 
@@ -154,9 +154,56 @@ struct ClientCommandState {
     /// whenever a real command resolves; once it reaches [`INPUT_HOLD_TICKS`] the gap
     /// policy synthesizes neutral input.
     held_ticks: u32,
+    /// Reload is a level bit at the wire/sim boundary but an edge-triggered action at
+    /// the weapon. Record rising edges from the reliable-ordered receive stream before
+    /// stale-drop or catch-up trimming so a delayed tap survives command recovery.
+    pending_reload_presses: VecDeque<u32>,
+    /// Newest command observed at intake and its reload level. Only strictly newer
+    /// ticks advance this pair, so duplicate/stale retransmits cannot mint another edge.
+    latest_observed_reload: Option<(u32, bool)>,
+    /// Reload level emitted on the previous authoritative resolution. A recovered
+    /// press waits behind one false tick when necessary so the weapon's level-to-edge
+    /// dedup sees a genuine rising edge.
+    last_emitted_reload: bool,
 }
 
 impl ClientCommandState {
+    fn observe_reload_level(&mut self, cmd: &InputCommand) {
+        if self
+            .latest_observed_reload
+            .is_some_and(|(tick, _)| client_tick_le(cmd.client_tick, tick))
+        {
+            return;
+        }
+
+        let previous_level = self
+            .latest_observed_reload
+            .map(|(_, reload)| reload)
+            .unwrap_or(false);
+        if cmd.reload && !previous_level {
+            self.pending_reload_presses.push_back(cmd.client_tick);
+        }
+        self.latest_observed_reload = Some((cmd.client_tick, cmd.reload));
+    }
+
+    fn preserve_due_reload_press(&mut self, resolved_tick: u32, command: &mut SimCommand) {
+        let press_due = self
+            .pending_reload_presses
+            .front()
+            .is_some_and(|tick| client_tick_le(*tick, resolved_tick));
+        if press_due {
+            if self.last_emitted_reload {
+                // The false tick clears `WeaponComponent::reload_press_consumed`; keep
+                // the press queued for the next authoritative resolution.
+                command.reload = false;
+            } else {
+                command.reload = true;
+                self.pending_reload_presses.pop_front();
+            }
+        }
+        self.last_emitted_reload = command.reload;
+    }
+
     /// Insert a sanitized command into the pending queue with stale-drop and
     /// exact-duplicate collapse. Returns `true` if the command was queued, `false`
     /// if it was dropped (stale or duplicate). Invalid commands never reach here —
@@ -267,18 +314,18 @@ impl HostCommandQueues {
     /// Ingest one raw inbound `InputCommand` for `client_id`: sanitize it (Task 2),
     /// then queue with stale-drop and duplicate-collapse. Returns `true` if the
     /// command was sanitized AND queued; `false` if it was rejected (non-finite),
-    /// stale, or a duplicate. A rejected command mutates no queue state — the
-    /// invalid-input invariant the task requires.
+    /// stale, or a duplicate. Invalid input mutates no state. A strictly newer stale
+    /// command may still contribute a reload rising edge to the recovery lane; its
+    /// movement, look, and fire fields remain dropped.
     pub(crate) fn ingest(&mut self, client_id: u64, raw: &InputCommand) -> bool {
         let Some(sanitized) = sanitize_input_command(raw) else {
             // Non-finite: never touch any queue or cursor. The client's state is not
             // even created on a rejected first command.
             return false;
         };
-        self.clients
-            .entry(client_id)
-            .or_default()
-            .enqueue(sanitized)
+        let state = self.clients.entry(client_id).or_default();
+        state.observe_reload_level(&sanitized);
+        state.enqueue(sanitized)
     }
 
     /// Resolve exactly one command for `client_id`'s pawn this fixed tick, applying
@@ -310,8 +357,10 @@ impl HostCommandQueues {
         // up faster than the +1-per-tick cursor consumes them — a startup-handshake or
         // hitch backlog. Drop all but the newest INPUT_BUFFER_TARGET so the resolved
         // cursor never sits more than a small bounded buffer behind the newest received
-        // command. Wrap-aware throughout: the new oldest's `client_tick - 1` (serial
-        // arithmetic) is the cursor the normal exact-tick path then consumes as `Real`.
+        // command. Reload edges from the discarded prefix remain in their independent
+        // recovery lane. Wrap-aware throughout: the new oldest's `client_tick - 1`
+        // (serial arithmetic) is the cursor the normal exact-tick path then consumes as
+        // `Real`.
         if state.pending.len() > INPUT_BUFFER_MAX {
             let drop_count = state.pending.len() - INPUT_BUFFER_TARGET;
             state.pending.drain(0..drop_count);
@@ -333,11 +382,12 @@ impl HostCommandQueues {
 
         // Exact-tick hit: a real command resolves this tick.
         if let Some(cmd) = state.take_exact(expected) {
-            let sim = input_command_to_sim(&cmd);
+            let mut sim = input_command_to_sim(&cmd);
             state.last_resolved = Some(cmd);
             state.held_ticks = 0;
             state.resolved_cursor = Some(expected);
             state.drop_stale(expected);
+            state.preserve_due_reload_press(expected, &mut sim);
             return Some(ResolvedCommand {
                 command: sim,
                 client_tick: expected,
@@ -346,7 +396,7 @@ impl HostCommandQueues {
         }
 
         // Gap: hold the previous command for up to INPUT_HOLD_TICKS, then neutral.
-        let (sim, source) = if state.held_ticks < INPUT_HOLD_TICKS {
+        let (mut sim, source) = if state.held_ticks < INPUT_HOLD_TICKS {
             match &state.last_resolved {
                 Some(prev) => {
                     state.held_ticks += 1;
@@ -365,6 +415,7 @@ impl HostCommandQueues {
 
         state.resolved_cursor = Some(expected);
         state.drop_stale(expected);
+        state.preserve_due_reload_press(expected, &mut sim);
         Some(ResolvedCommand {
             command: sim,
             client_tick: expected,
@@ -415,17 +466,6 @@ pub(crate) fn host_resolve_remote_commands(
     commands
 }
 
-#[cfg(test)]
-pub(crate) fn host_resolve_movement_inputs(
-    owners: &MovementOwners,
-    command_queues: &mut HostCommandQueues,
-) -> Vec<(EntityId, crate::movement::MovementInput)> {
-    host_resolve_remote_commands(owners, command_queues)
-        .into_iter()
-        .map(|resolved| (resolved.pawn, resolved.command.movement))
-        .collect()
-}
-
 /// A neutral (no-intent) sim command: no wish direction, no buttons, facing held at
 /// zero. The deterministic fallback when the gap policy exhausts the hold window.
 /// Facing 0.0 is acceptable for Phase 3's movement-only scope — a neutral tick
@@ -456,12 +496,10 @@ fn neutral_sim_command() -> SimCommand {
 
 /// Build a held-gap command from the previous resolved command, clearing FIRE but
 /// carrying movement and `reload` forward unchanged. The two fields diverge on
-/// purpose: `fire_button` authorizes a shot's cooldown/authorization gate (and, later,
-/// ammo) each time it resolves `active`, so a held/duplicated command must NOT
-/// re-authorize FIRE — that would let one real button-press synthesize repeat shots
-/// across a gap. `reload` is a level bit the ammo spec dedups at consumption on its
-/// rising edge, so repeating it across a hold is harmless and keeps intent (e.g. a
-/// player mid-reload when packets drop) from being silently dropped.
+/// purpose: `fire_button` authorizes cooldown and ammo consumption whenever it resolves
+/// `active`, so a held command must not re-authorize FIRE. `reload` is a level bit;
+/// weapon-owned `reload_press_consumed` deduplicates it while held. Carrying that bit
+/// preserves reload intent across a packet gap without synthesizing another press.
 fn held_gap_sim_command(prev: &InputCommand) -> SimCommand {
     let mut sim = input_command_to_sim(prev);
     sim.fire_button = crate::weapon::FireButtonState {
@@ -562,6 +600,124 @@ mod tests {
         assert!(
             !neutral.command.reload,
             "neutral fallback clears reload intent"
+        );
+    }
+
+    // Regression: a delayed true→false reload tap could arrive after gap recovery had
+    // already advanced past both ticks, so stale-drop discarded the entire press.
+    #[test]
+    fn stale_reload_tap_is_delivered_once_on_next_resolution() {
+        let mut queues = HostCommandQueues::new();
+        assert!(queues.ingest(CLIENT, &command(0, 0.25)));
+        assert!(!queues.resolve_tick(CLIENT).unwrap().command.reload);
+        assert!(!queues.resolve_tick(CLIENT).unwrap().command.reload);
+        assert!(!queues.resolve_tick(CLIENT).unwrap().command.reload);
+
+        let mut pressed = command(1, 0.75);
+        pressed.reload = true;
+        assert!(
+            !queues.ingest(CLIENT, &pressed),
+            "late press command is stale"
+        );
+        assert!(
+            !queues.ingest(CLIENT, &command(2, -0.5)),
+            "late release command is stale"
+        );
+
+        let recovered = queues.resolve_tick(CLIENT).expect("recovery tick resolves");
+        assert!(recovered.command.reload, "stale reload edge is preserved");
+        assert!(
+            (recovered.command.movement.wish_dir.y - 0.25).abs() < EPSILON,
+            "edge recovery does not replay stale movement"
+        );
+        assert!(
+            !queues.resolve_tick(CLIENT).unwrap().command.reload,
+            "recovered tap is one tick wide"
+        );
+    }
+
+    // Regression: catch-up trimmed a reload tap along with the old movement prefix.
+    #[test]
+    fn backlog_trim_preserves_reload_press_from_dropped_prefix() {
+        let mut queues = HostCommandQueues::new();
+        for tick in 0..=(INPUT_BUFFER_MAX as u32 + 2) {
+            let mut cmd = command(tick, tick as f32 / 10.0);
+            cmd.reload = tick == 3;
+            assert!(queues.ingest(CLIENT, &cmd));
+        }
+
+        let recovered = queues.resolve_tick(CLIENT).expect("catch-up resolves");
+        assert_eq!(recovered.source, ResolutionSource::Real);
+        assert_eq!(recovered.client_tick, INPUT_BUFFER_MAX as u32 + 1);
+        assert!(
+            recovered.command.reload,
+            "reload edge survives the trimmed command prefix"
+        );
+        assert!(
+            (recovered.command.movement.wish_dir.y - (INPUT_BUFFER_MAX as f32 + 1.0) / 10.0).abs()
+                < EPSILON,
+            "catch-up still uses the retained real command's movement"
+        );
+        assert!(
+            !queues.resolve_tick(CLIENT).unwrap().command.reload,
+            "trimmed tap is delivered only once"
+        );
+    }
+
+    // Regression: retransmitting the stale tap after recovery could re-latch the same
+    // reload edge if intake tracked only the latest Boolean level.
+    #[test]
+    fn stale_reload_retransmit_does_not_deliver_duplicate_press() {
+        let mut queues = HostCommandQueues::new();
+        assert!(queues.ingest(CLIENT, &command(0, 0.0)));
+        let _ = queues.resolve_tick(CLIENT);
+        let _ = queues.resolve_tick(CLIENT);
+        let _ = queues.resolve_tick(CLIENT);
+
+        let mut pressed = command(1, 0.0);
+        pressed.reload = true;
+        assert!(!queues.ingest(CLIENT, &pressed));
+        assert!(!queues.ingest(CLIENT, &command(2, 0.0)));
+        assert!(queues.resolve_tick(CLIENT).unwrap().command.reload);
+
+        assert!(
+            !queues.ingest(CLIENT, &pressed),
+            "duplicate press stays stale"
+        );
+        assert!(
+            !queues.ingest(CLIENT, &command(2, 0.0)),
+            "duplicate release stays stale"
+        );
+        for _ in 0..3 {
+            assert!(
+                !queues.resolve_tick(CLIENT).unwrap().command.reload,
+                "duplicate/stale retransmit cannot mint another reload press"
+            );
+        }
+    }
+
+    #[test]
+    fn recovered_reload_press_inserts_release_after_held_reload_level() {
+        let mut queues = HostCommandQueues::new();
+        let mut initial_press = command(0, 0.0);
+        initial_press.reload = true;
+        assert!(queues.ingest(CLIENT, &initial_press));
+        assert!(queues.resolve_tick(CLIENT).unwrap().command.reload);
+        assert!(queues.resolve_tick(CLIENT).unwrap().command.reload);
+        assert!(queues.resolve_tick(CLIENT).unwrap().command.reload);
+
+        assert!(!queues.ingest(CLIENT, &command(1, 0.0)));
+        let mut second_press = command(2, 0.0);
+        second_press.reload = true;
+        assert!(!queues.ingest(CLIENT, &second_press));
+
+        assert!(
+            !queues.resolve_tick(CLIENT).unwrap().command.reload,
+            "recovery emits a release before a second rising edge"
+        );
+        assert!(
+            queues.resolve_tick(CLIENT).unwrap().command.reload,
+            "preserved press follows the synthetic release exactly once"
         );
     }
 

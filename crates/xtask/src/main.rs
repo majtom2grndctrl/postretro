@@ -9,6 +9,8 @@ use std::process::{Command, Stdio};
 
 use postretro_level_format::prm::cache_filename_for_key;
 
+mod crate_graph;
+
 fn main() {
     let code = match try_main() {
         Ok(code) => code,
@@ -43,6 +45,10 @@ fn try_main() -> Result<i32, String> {
 
     if command == "bake-model-textures" {
         return bake_model_textures_command(args.collect());
+    }
+
+    if command == "crate-graph" {
+        return crate_graph::run(args.collect());
     }
 
     Err(format!(
@@ -364,13 +370,17 @@ fn print_help() {
            cargo run -p xtask -- run [cargo-run flags...] -- [postretro args...]\n\
            cargo run -p xtask -- run [postretro args...]\n\
            cargo run -p xtask -- observe <runspec.json>\n\
-           cargo run -p xtask -- bake-model-textures <scene.gltf>\n\n\
+           cargo run -p xtask -- bake-model-textures <scene.gltf>\n\
+           cargo run -p xtask -- crate-graph [--write | --check | --dependents <crate> | --dependencies <crate>]\n\n\
          COMMANDS:\n\
            run                  Build scripts-build, then run the postretro engine\n\
            observe              Build scripts-build, then run the engine headless\n\
                                 (--features observability --headless), forwarding\n\
                                 the JSON document on stdout untouched\n\
-           bake-model-textures  Bake glTF base-color sidecars into baked/materials\n\n\
+           bake-model-textures  Bake glTF base-color sidecars into baked/materials\n\
+           crate-graph          Analyze the internal crate dependency graph: print it,\n\
+                                --write the committed snapshot, --check its freshness,\n\
+                                or query --dependents / --dependencies of a crate\n\n\
          EXAMPLES:\n\
            cargo run -p xtask -- run content/dev/maps/campaign-test.prl\n\
            cargo run -p xtask -- run --features dev-tools -- content/dev/maps/campaign-test.prl\n\

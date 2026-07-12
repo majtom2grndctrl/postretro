@@ -9,6 +9,7 @@
 
 - **Engineering conventions / code style** → `development_guide.md`
 - **Crate layering / where new code goes / dependency direction** → `development_guide.md` §Workspace
+- **Crate dependency graph / blast radius / what depends on X** → `crate-graph.md` (generated); live queries via `cargo run -p xtask -- crate-graph --dependents <crate>`
 - **Context file writing / updates** → `context_style_guide.md`
 - **Testing** → `testing_guide.md`
 - **Rendering pipeline / lighting** → `rendering_pipeline.md`

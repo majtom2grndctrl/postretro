@@ -49,7 +49,11 @@ struct KinematicLightParams {
     lighting_isolation: u32,
     ambient_floor: f32,
     dynamic_light_count: u32,
-    _pad: vec3<u32>,
+    // Keep the second 16-byte row scalar-packed. A vec3 here would align to
+    // byte 32 and make the uniform 48 bytes, diverging from the Rust upload.
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
 };
 @group(2) @binding(4) var<uniform> kinematic_light_params: KinematicLightParams;
 

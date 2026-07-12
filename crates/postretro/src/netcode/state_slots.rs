@@ -14,7 +14,7 @@ use postretro_net::state_slots::{
 };
 
 use postretro_entities::{
-    EntityRegistry, NumericRange, ReplicationScope, SlotTable, SlotType, SlotValue,
+    AmmoReserve, EntityRegistry, NumericRange, ReplicationScope, SlotTable, SlotType, SlotValue,
 };
 
 /// Version prefix folded into the schema fingerprint. Bump when the canonical byte
@@ -441,10 +441,11 @@ fn shared_source_value(slot_table: &SlotTable, name: &str) -> Option<WireSlotVal
 
 /// The per-owner source value for an owner-private slot. Descriptor-fed player slots
 /// read from owner-specific component state: `player.health` / `player.maxHealth`
-/// from the owning pawn's live `HealthComponent`, and `player.weaponCooldownMs`
-/// through `WeaponOwners` to the sibling `WeaponComponent`. Any other owner-private
-/// slot falls back to the slot table's current value keyed to this owner (a single
-/// global value replicated privately). `None` when no source value exists.
+/// from the owning pawn's live `HealthComponent`; weapon cooldown, ammo, and
+/// reload state resolve through `WeaponOwners` to the sibling `WeaponComponent`;
+/// ammo reserve reads the owning pawn's `AmmoReserve`. Any other owner-private
+/// slot falls back to the slot table's current value keyed to this owner (a
+/// single global value replicated privately). `None` when no source value exists.
 fn owner_private_source_value(
     slot_table: &SlotTable,
     registry: &EntityRegistry,
@@ -458,9 +459,65 @@ fn owner_private_source_value(
     if let Some(value) = descriptor_weapon_cooldown_for_pawn(registry, name, pawn, weapon_owners) {
         return slot_value_to_wire(&value);
     }
+    if let Some(value) = descriptor_ammo_for_pawn(registry, name, pawn, weapon_owners) {
+        return value.as_ref().and_then(slot_value_to_wire);
+    }
     let record = slot_table.get(name)?;
     let value = record.value.as_ref()?;
     slot_value_to_wire(value)
+}
+
+/// Project E16 ammo/reload slots from one owner's pawn and sibling weapon.
+/// The outer `Option` identifies names owned by this projection; the inner
+/// option is absent when ammo has no valid source, preventing fallback to the
+/// host's global HUD slots and cross-owner leakage.
+fn descriptor_ammo_for_pawn(
+    registry: &EntityRegistry,
+    name: &str,
+    pawn: EntityId,
+    weapon_owners: &WeaponOwners,
+) -> Option<Option<SlotValue>> {
+    if !matches!(
+        name,
+        "player.ammo" | "player.ammoReserve" | "player.reloadProgress" | "player.reloadActive"
+    ) {
+        return None;
+    }
+
+    let component = weapon_owners
+        .weapon_of(pawn)
+        .and_then(|weapon| registry.get_component::<WeaponComponent>(weapon).ok());
+    let ammo = component.and_then(|weapon| weapon.effective().ammo);
+
+    let value = match name {
+        "player.ammo" => match (component, ammo.as_ref()) {
+            (Some(weapon), Some(_)) => Some(SlotValue::Number(weapon.magazine as f32)),
+            _ => None,
+        },
+        "player.ammoReserve" => ammo.as_ref().map(|ammo| {
+            let available = registry
+                .get_component::<AmmoReserve>(pawn)
+                .map_or(0, |reserve| reserve.available(&ammo.ammo_type));
+            SlotValue::Number(available as f32)
+        }),
+        "player.reloadProgress" => {
+            let progress = match (component, ammo.as_ref()) {
+                (Some(weapon), Some(_))
+                    if weapon.reload_remaining_ms > 0 && weapon.reload_total_ms > 0 =>
+                {
+                    (1.0 - weapon.reload_remaining_ms as f32 / weapon.reload_total_ms as f32)
+                        .clamp(0.0, 1.0)
+                }
+                _ => 0.0,
+            };
+            Some(SlotValue::Number(progress))
+        }
+        "player.reloadActive" => Some(SlotValue::Boolean(
+            matches!((component, ammo.as_ref()), (Some(weapon), Some(_)) if weapon.reload_remaining_ms > 0),
+        )),
+        _ => unreachable!("recognized ammo projection name"),
+    };
+    Some(value)
 }
 
 /// Read the descriptor-fed health value for `name` from `pawn`'s live
@@ -767,6 +824,7 @@ fn wire_value_to_slot(value: &WireSlotValue) -> Option<SlotValue> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use postretro_entities::components::weapon::WeaponAmmoTuning;
     use postretro_entities::{SlotOwnership, SlotRecord, SlotSchema};
 
     fn replicated_number(name: &str, scope: ReplicationScope) -> (String, SlotRecord) {
@@ -1065,6 +1123,170 @@ mod tests {
         let mut weapon_owners = WeaponOwners::new();
         weapon_owners.set(pawn, weapon);
         (registry, owners, weapon_owners, pawn, weapon)
+    }
+
+    fn add_owned_ammo_pawn(
+        registry: &mut EntityRegistry,
+        owners: &mut MovementOwners,
+        weapon_owners: &mut WeaponOwners,
+        client: u64,
+        ammo_type: &str,
+        magazine: u32,
+        reserve: Option<u32>,
+        reload_remaining_ms: u32,
+        reload_total_ms: u32,
+    ) -> (EntityId, EntityId) {
+        let pawn = registry.spawn(Transform::default());
+        let weapon = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                weapon,
+                WeaponComponent {
+                    damage: 10.0,
+                    range: 100.0,
+                    cooldown_ms: 250.0,
+                    fire_mode: postretro_entities::data_descriptors::FireMode::Semi,
+                    resolution: postretro_entities::data_descriptors::ResolutionMode::Hitscan,
+                    cooldown_remaining_ms: 0.0,
+                    shoot_press_consumed: false,
+                    reload_press_consumed: false,
+                    credit_source: "weapon.test.ammo".to_string(),
+                    ammo: Some(WeaponAmmoTuning {
+                        ammo_type: ammo_type.to_string(),
+                        capacity: 12,
+                        cost_per_shot: 1,
+                        reload_ms: 500,
+                    }),
+                    magazine,
+                    reload_remaining_ms,
+                    reload_total_ms,
+                },
+            )
+            .unwrap();
+        if let Some(amount) = reserve {
+            let mut ammo_reserve = AmmoReserve::new();
+            ammo_reserve.credit(ammo_type, amount);
+            registry.set_component(pawn, ammo_reserve).unwrap();
+        }
+        owners.set(pawn, client);
+        weapon_owners.set(pawn, weapon);
+        (pawn, weapon)
+    }
+
+    #[test]
+    fn owner_private_ammo_reload_projection_is_per_pawn_and_typed() {
+        let mut host_table = player_health_replicated_table();
+        // Host/global values must never leak into a valid remote pawn projection.
+        host_table.get_mut("player.ammo").unwrap().value = Some(SlotValue::Number(999.0));
+        host_table.get_mut("player.ammoReserve").unwrap().value = Some(SlotValue::Number(999.0));
+        host_table.get_mut("player.reloadProgress").unwrap().value = Some(SlotValue::Number(0.9));
+        host_table.get_mut("player.reloadActive").unwrap().value = Some(SlotValue::Boolean(false));
+
+        let mut registry = EntityRegistry::new();
+        let mut owners = MovementOwners::new();
+        let mut weapon_owners = WeaponOwners::new();
+        let (pawn_idle, weapon_idle) = add_owned_ammo_pawn(
+            &mut registry,
+            &mut owners,
+            &mut weapon_owners,
+            CLIENT_A,
+            "cells",
+            3,
+            Some(11),
+            250,
+            500,
+        );
+        add_owned_ammo_pawn(
+            &mut registry,
+            &mut owners,
+            &mut weapon_owners,
+            CLIENT_B,
+            "shells",
+            8,
+            None,
+            10,
+            0,
+        );
+
+        let mut host = HostStateReplication::new();
+        host.register_client(CLIENT_A);
+        host.register_client(CLIENT_B);
+        let fingerprint = host.fingerprint(&host_table);
+        host.ingest_frame(&host_table, &registry, &owners, &weapon_owners);
+        let records_a = host.produce_for_client(CLIENT_A, 0).unwrap();
+        let records_b = host.produce_for_client(CLIENT_B, 0).unwrap();
+
+        let mut table_a = player_health_replicated_table();
+        let mut table_b = player_health_replicated_table();
+        ClientStateApply::new().apply_snapshot_state(&mut table_a, 0, &fingerprint, &records_a);
+        ClientStateApply::new().apply_snapshot_state(&mut table_b, 0, &fingerprint, &records_b);
+
+        for (table, magazine, reserve, progress, active) in [
+            (&table_a, 3.0, 11.0, 0.5, true),
+            (&table_b, 8.0, 0.0, 0.0, true),
+        ] {
+            assert_eq!(
+                table.get("player.ammo").unwrap().value,
+                Some(SlotValue::Number(magazine))
+            );
+            assert_eq!(
+                table.get("player.ammoReserve").unwrap().value,
+                Some(SlotValue::Number(reserve))
+            );
+            assert_eq!(
+                table.get("player.reloadProgress").unwrap().value,
+                Some(SlotValue::Number(progress))
+            );
+            assert_eq!(
+                table.get("player.reloadActive").unwrap().value,
+                Some(SlotValue::Boolean(active)),
+                "reloadActive remains Boolean on the wire/apply path"
+            );
+        }
+
+        let mut idle_weapon = registry
+            .get_component::<WeaponComponent>(weapon_idle)
+            .unwrap()
+            .clone();
+        idle_weapon.reload_remaining_ms = 0;
+        idle_weapon.reload_total_ms = 500;
+        registry.set_component(weapon_idle, idle_weapon).unwrap();
+        assert_eq!(
+            descriptor_ammo_for_pawn(
+                &registry,
+                "player.reloadProgress",
+                pawn_idle,
+                &weapon_owners
+            ),
+            Some(Some(SlotValue::Number(0.0)))
+        );
+        assert_eq!(
+            descriptor_ammo_for_pawn(&registry, "player.reloadActive", pawn_idle, &weapon_owners),
+            Some(Some(SlotValue::Boolean(false)))
+        );
+    }
+
+    #[test]
+    fn missing_ammo_source_does_not_fall_back_to_global_values() {
+        let registry = EntityRegistry::new();
+        let pawn = EntityId::from_raw(0);
+        let owners = WeaponOwners::new();
+        assert_eq!(
+            descriptor_ammo_for_pawn(&registry, "player.ammo", pawn, &owners),
+            Some(None)
+        );
+        assert_eq!(
+            descriptor_ammo_for_pawn(&registry, "player.ammoReserve", pawn, &owners),
+            Some(None)
+        );
+        assert_eq!(
+            descriptor_ammo_for_pawn(&registry, "player.reloadProgress", pawn, &owners),
+            Some(Some(SlotValue::Number(0.0)))
+        );
+        assert_eq!(
+            descriptor_ammo_for_pawn(&registry, "player.reloadActive", pawn, &owners),
+            Some(Some(SlotValue::Boolean(false)))
+        );
     }
 
     // A shared slot and an owner-private slot round-trip from host production into the

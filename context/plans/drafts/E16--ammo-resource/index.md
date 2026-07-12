@@ -192,9 +192,10 @@ Each is its own later roadmap bullet; the shape only accommodates them.
   an empty reserve pool is a distinct blocked outcome (no timer started), not a
   partial or silent transfer.
 - [ ] Hot reload preserves the live `magazine` count, the in-flight reload timer,
-  and cooldown through `refresh_from_descriptor` while updating authored
-  capacity/cost/type/reload-duration — an implementation that resets the magazine
-  to full or aborts an in-flight reload on descriptor reload fails this criterion.
+  the `reload_press_consumed` edge flag, and cooldown through
+  `refresh_from_descriptor` while updating authored capacity/cost/type/reload-duration
+  — an implementation that resets the magazine to full or aborts an in-flight
+  reload on descriptor reload fails this criterion.
 - [ ] `player.ammo` reflects the active wieldable's live magazine and
   `player.ammoReserve` reflects its ammo type's reserve pool, republished each
   frame; both are readonly engine-owned slots the dev HUD reads through
@@ -311,7 +312,8 @@ rounds by ammo type (`type → u32`). It references no `EntityId`. As a new
 registry component read per-owner (like `HealthComponent` / `WeaponComponent`), it
 extends the closed component vocabulary: add an `AmmoReserve` arm to
 `ComponentKind` (`crates/entities/src/registry.rs:94`), a `ComponentValue` variant
-(~`:208`), and a `Component`/`KIND` impl mirroring `Weapon` (`registry.rs:398`) —
+(enum decl `registry.rs:176-197`, `Weapon` at `:189`, plus its `kind()` match arm
+~`:208`), and a `Component`/`KIND` impl mirroring `Weapon` (`registry.rs:398`) —
 the compiler's exhaustive-match errors enumerate the remaining sites. The pawn and
 its active wieldable are separate entities: inside `attach_descriptor_components`
 (`crates/postretro/src/scripting/builtins/data_archetype.rs:365`) only the
@@ -387,31 +389,39 @@ across ticks; this spec derives the **rising edge** from a new per-instance
 goes false — so a held R starts exactly one reload. There is no per-pawn
 resolved-command store at the local-pawn consumption site
 (`ClientCommandState.last_resolved`, `command_queue.rs:152`, is per-client and
-remote-only); the weapon-component flag is the reachable home.
+remote-only); the weapon-component flag is the reachable home. `reload_press_consumed`
+needs the same treatment Task 2 gives `magazine` and the reload timer — a
+`from_descriptor` init, the workspace struct-literal update, and
+`refresh_from_descriptor` preservation (as `shoot_press_consumed` already has) —
+so it survives hot reload; otherwise a freed edge under a held R re-triggers a
+second reload.
 
-Fill the shipped `deliver_reload_to_weapon` seam (`sim/mod.rs:424`, today a pure
-no-op that early-returns when the reload bit is false). It is already called each
-tick for the local/host pawn (`sim/mod.rs:200`) and remote co-op pawns
-(`run_remote_weapon_commands`, `sim/mod.rs:382`) — filling it wires reload for
-every pawn against that pawn's `AmmoReserve`. Widen its signature to take `&mut`
-registry access and the fixed-tick delta (it needs the weapon component and the
-pawn's `AmmoReserve`). Start, advance, and completion all run inside this one
-seam; on a fresh rising edge with an ammo resource present:
+Fill the shipped `deliver_reload_to_weapon` seam (`sim/mod.rs:424`, today emits a
+bare `ReloadDelivery` and early-returns when the reload bit is false, transferring
+no ammo). It is already called each tick for the local/host pawn (`sim/mod.rs:200`)
+and remote co-op pawns (`run_remote_weapon_commands`, `sim/mod.rs:382`) — filling
+it wires reload for every pawn against that pawn's `AmmoReserve`. Widen its
+signature to take `&mut` registry access and the fixed-tick delta (it needs the
+weapon component and the pawn's `AmmoReserve`), and **remove the current
+early-return-when-`reload`-is-false guard** — a released button must still advance
+and complete an in-flight reload. All logic runs inside this one seam each tick:
 
-- **Guards (start-time):** a fresh edge while already reloading is a silent
-  no-op (no `ReloadDelivery`) — the rising-edge dedup. A full magazine
-  (`magazine == capacity`) or an empty reserve (`available(type) == 0`) is a
-  distinct blocked outcome carried on `ReloadDelivery` (`blocked-full` /
-  `blocked-empty`); no timer starts and no rounds move.
-- **Start:** set `reload_total_ms = reload_remaining_ms = effective().reload_ms`.
-- **Advance:** decrement `reload_remaining_ms` by the fixed-tick delta
-  **unconditionally each tick** — independent of the reload bit, since a released
-  button must still complete a non-cancellable reload — inside this seam, *not* on
-  the cooldown-decrement pass. (`cooldown_remaining_ms` is decremented in the
-  private `apply_weapon_fire_state` (`weapon/mod.rs:376`), which is weapon-only
-  with no `AmmoReserve` in scope; the reload timer must live where the pawn
-  reserve is reachable — this seam.)
-- **Complete (`reload_remaining_ms` reaches 0):** perform one atomic
+- **On a fresh rising edge with an ammo resource — Guards (start-time):** a fresh
+  edge while already reloading is a silent no-op (no `ReloadDelivery`) — the
+  rising-edge dedup. A full magazine (`magazine == capacity`) or an empty reserve
+  (`available(type) == 0`) is a distinct blocked outcome carried on
+  `ReloadDelivery` (`blocked-full` / `blocked-empty`); no timer starts and no
+  rounds move.
+- **On that same fresh edge — Start:** set
+  `reload_total_ms = reload_remaining_ms = effective().reload_ms`.
+- **Every tick while `reload_remaining_ms > 0`, regardless of the reload bit —
+  Advance:** decrement `reload_remaining_ms` by the fixed-tick delta (a released
+  button must still complete a non-cancellable reload). Do this here, *not* on the
+  cooldown-decrement pass: `cooldown_remaining_ms` is decremented in the private
+  `apply_weapon_fire_state` (`weapon/mod.rs:376`), which is weapon-only with no
+  `AmmoReserve` in scope; the reload timer must live where the pawn reserve is
+  reachable — this seam.
+- **The tick `reload_remaining_ms` reaches 0 — Complete:** perform one atomic
   `take(type, min(capacity - magazine, available(type)))` and add the returned
   rounds to the magazine. `take` is the atomic step; never index the pool
   directly. Evaluate the `min`/`take` at completion against the live reserve.
@@ -434,7 +444,9 @@ deferred this to the real producer). Adding two slots and re-scoping two breaks
 two tests in the catalog's test module — update both:
 `built_in_catalog_preserves_wire_names_and_capabilities` (its hard-coded
 wire-name vector, currently 10 entries at `:626-640` — insert the two new names in
-sorted position) and **`player_owner_private_slots_are_replicated`** (`:711`,
+sorted position; it also asserts `reload_active.network == ReplicationScope::None`
+at `:678`, which must flip to `OwnerPrivatePlayer` when `player.reloadActive` is
+re-scoped) and **`player_owner_private_slots_are_replicated`** (`:711`,
 which asserts the owner-private *set* — currently `{player.health,
 player.maxHealth, player.weaponCooldownMs}` at `:718-748` with every other slot
 `None`; add `player.ammo`, `player.ammoReserve`, `player.reloadProgress`,

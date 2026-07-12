@@ -52,6 +52,8 @@ pub struct WeaponComponent {
     pub cooldown_remaining_ms: f32,
     #[serde(default)]
     pub shoot_press_consumed: bool,
+    #[serde(default)]
+    pub reload_press_consumed: bool,
     #[serde(default = "default_credit_source")]
     pub credit_source: String,
     #[serde(default)]
@@ -83,6 +85,7 @@ impl WeaponComponent {
             resolution: desc.resolution,
             cooldown_remaining_ms: 0.0,
             shoot_press_consumed: false,
+            reload_press_consumed: false,
             credit_source: resolve_credit_source(desc, canonical_name),
             ammo,
             magazine,
@@ -118,13 +121,13 @@ impl WeaponComponent {
             self.credit_source = credit_source.clone();
         }
         self.ammo = ammo_tuning(desc);
-        // `cooldown_remaining_ms` and `shoot_press_consumed` are live instance
-        // state, as are `magazine` and both reload timer values. Hot reload
-        // changes authored tuning, not the current trigger edge, ammunition,
-        // active reload sample, or whether this instance is mid-cooldown. An
-        // absent `creditSource` also keeps the already-resolved spawn-time
-        // default so canonical defaults do not regress to `weapon.unknown` on
-        // reload.
+        // `cooldown_remaining_ms`, `shoot_press_consumed`, and
+        // `reload_press_consumed` are live instance state, as are `magazine`
+        // and both reload timer values. Hot reload changes authored tuning, not
+        // the current input edges, ammunition, active reload sample, or whether
+        // this instance is mid-cooldown. An absent `creditSource` also keeps the
+        // already-resolved spawn-time default so canonical defaults do not
+        // regress to `weapon.unknown` on reload.
     }
 }
 
@@ -255,6 +258,7 @@ mod tests {
         component.reload_total_ms = 800;
         component.cooldown_remaining_ms = 42.0;
         component.shoot_press_consumed = true;
+        component.reload_press_consumed = true;
 
         component.refresh_from_descriptor(&ammo_descriptor("cells", 30, 3, 1400));
 
@@ -273,6 +277,7 @@ mod tests {
         assert_eq!(component.reload_total_ms, 800);
         assert_eq!(component.cooldown_remaining_ms, 42.0);
         assert!(component.shoot_press_consumed);
+        assert!(component.reload_press_consumed);
     }
 
     #[test]

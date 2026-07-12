@@ -1039,6 +1039,7 @@ mod tests {
                     resolution: postretro_entities::data_descriptors::ResolutionMode::Hitscan,
                     cooldown_remaining_ms,
                     shoot_press_consumed: false,
+                    reload_press_consumed: false,
                     credit_source: "weapon.test".to_string(),
                     ammo: None,
                     magazine: 0,

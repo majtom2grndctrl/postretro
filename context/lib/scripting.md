@@ -343,7 +343,7 @@ the frontend through the same path as `returnToFrontend()`.
 
 ### 10.7 Trigger Commands
 
-`world.query({ component: "trigger_volume", tag })` returns trigger handles with snapshot `id`, position, and tags. Armed state and activation phase remain engine-owned. `arm()` and `disarm()` build closed, entity-targeted sequence steps using the handle ID. They declare later reaction work; scripts cannot mutate trigger components or poll their runtime state.
+`world.query({ component: "trigger_volume", tag })` returns trigger handles with snapshot `id`, position, and tags. Armed state and activation phase remain engine-owned. `arm()` and `disarm()` build closed, entity-targeted sequence steps using the handle ID. Arming reopens a Touch trigger for players already standing in it; Use still requires a press. They declare later reaction work; scripts cannot mutate trigger components or poll their runtime state.
 
 ---
 

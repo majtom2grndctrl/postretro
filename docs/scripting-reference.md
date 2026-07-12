@@ -746,7 +746,7 @@ canonical progress use is a threshold that fires an event of the same name — s
 
 These tag-targeted primitives take no arguments. The reaction's `tag` selects
 all matching trigger volumes; matching entities without trigger state are
-skipped. Empty target sets are a debug-log no-op.
+skipped. Empty target sets are silent no-ops.
 
 ```typescript
 defineReaction("unlockPads", {

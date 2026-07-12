@@ -1,5 +1,5 @@
 -- Luau trigger-control authoring fixture.
--- See: context/lib/scripting.md §5
+-- See: context/lib/scripting.md §10.7
 
 local Postretro = require("postretro")
 

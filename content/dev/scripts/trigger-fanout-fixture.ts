@@ -1,5 +1,5 @@
 // TypeScript trigger-control authoring fixture.
-// See: context/lib/scripting.md §5
+// See: context/lib/scripting.md §10.7
 
 import { type NamedReactionDescriptor, defineReaction, world } from "postretro";
 

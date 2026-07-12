@@ -658,6 +658,7 @@ mod tests {
             fire_mode,
             resolution: ResolutionMode::Hitscan,
             credit_source: None,
+            resource: None,
         })
     }
 
@@ -669,6 +670,7 @@ mod tests {
             fire_mode,
             resolution: ResolutionMode::Hitscan,
             credit_source: None,
+            resource: None,
         }
     }
 

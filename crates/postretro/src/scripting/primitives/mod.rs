@@ -247,6 +247,21 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         )
         .finish();
     registry
+        .register_type("AmmoResource")
+        .doc("Finite-ammunition tuning for a weapon. Defines the authored magazine, reserve, shot cost, and reload timing contract.")
+        .field("type", "String", "Ammo resource identifier. Must be non-empty ASCII, at most 64 bytes, and use only [A-Za-z0-9_.:-].")
+        .field("magazine", "u32", "Magazine capacity. Must be at least 1.")
+        .field("costPerShot?", "u32", "Units consumed per shot. Must be at least 1; defaults to 1.")
+        .field("reserve", "u32", "Reserve capacity. Any unsigned 32-bit value is accepted, including 0.")
+        .field("reloadMs?", "u32", "Reload duration in milliseconds. Must be at least 1; defaults to 1000.")
+        .finish();
+    registry
+        .register_tagged_union("WeaponResource")
+        .flat()
+        .doc("Optional resource model for a weapon. Omit the weapon resource to preserve unlimited-fire behavior.")
+        .variant("ammo", "AmmoResource", "Finite magazine-and-reserve ammunition.")
+        .finish();
+    registry
         .register_type("WeaponDescriptor")
         .doc("Authored weapon component preset. Descriptor-owned tuning data; maps do not override these params. Spawn-time player equip materializes a separate wieldable instance entity from this descriptor.")
         .field("damage", "f32", "Base damage payload per resolved shot. Must be finite and ≥ 0.")
@@ -255,6 +270,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("fireMode", "FireMode", "Semi or automatic input gate.")
         .field("resolution", "ResolutionMode", "Shot resolution mode. Currently supports hitscan only.")
         .field("creditSource?", "String", "Optional combat attribution source id for this weapon. Must be non-empty ASCII, at most 64 bytes, and use only [A-Za-z0-9_.:-]. Omit to use the resolved canonical weapon name at spawn.")
+        .field("resource?", "WeaponResource", "Optional weapon resource tuning. Omit to preserve unlimited-fire behavior.")
         .finish();
     registry
         .register_type("HitboxDescriptor")

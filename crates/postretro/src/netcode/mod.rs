@@ -2255,6 +2255,7 @@ mod tests {
             fire_mode: FireMode::Semi,
             resolution: ResolutionMode::Hitscan,
             credit_source: Some("weapon.test.net".to_string()),
+            resource: None,
         })
     }
 

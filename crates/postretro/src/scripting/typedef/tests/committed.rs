@@ -36,6 +36,42 @@ fn committed_sdk_types_match_current_registry() {
     );
 }
 
+#[test]
+fn committed_sdk_types_contain_weapon_ammo_resource() {
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
+
+    let mut registry = PrimitiveRegistry::new();
+    register_all(&mut registry, ScriptCtx::new());
+    let generated_ts = generate_typescript(&registry);
+    let generated_luau = generate_luau(&registry);
+    let committed_ts = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../sdk/types/postretro.d.ts"
+    ))
+    .expect("read committed postretro.d.ts");
+    let committed_luau = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../sdk/types/postretro.d.luau"
+    ))
+    .expect("read committed postretro.d.luau");
+
+    for output in [&generated_ts, &committed_ts] {
+        assert!(output.contains("export type AmmoResource = {"));
+        assert!(output.contains("| ({ kind: \"ammo\" } & AmmoResource);"));
+        assert!(output.contains("resource?: WeaponResource;"));
+        assert!(output.contains("costPerShot?: number;"));
+        assert!(output.contains("reloadMs?: number;"));
+    }
+    for output in [&generated_luau, &committed_luau] {
+        assert!(output.contains("export type AmmoResource = {"));
+        assert!(output.contains("(AmmoResource & { kind: \"ammo\" })"));
+        assert!(output.contains("resource: WeaponResource?,"));
+        assert!(output.contains("costPerShot: number?,"));
+        assert!(output.contains("reloadMs: number?,"));
+    }
+}
+
 /// Positive-content guard for the `AiDescriptor` typedef registration.
 /// The drift test (`committed_sdk_types_match_current_registry`) only proves
 /// the committed files MATCH the generator — it would pass vacuously if

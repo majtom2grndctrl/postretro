@@ -184,6 +184,25 @@ export type ResolutionMode =
   --- Resolve instantly against the static-world collision ray.
   "hitscan"
 
+--- Finite-ammunition tuning for a weapon. Defines the authored magazine, reserve, shot cost, and reload timing contract.
+export type AmmoResource = {
+  --- Ammo resource identifier. Must be non-empty ASCII, at most 64 bytes, and use only [A-Za-z0-9_.:-].
+  type: string,
+  --- Magazine capacity. Must be at least 1.
+  magazine: number,
+  --- Units consumed per shot. Must be at least 1; defaults to 1.
+  costPerShot: number?,
+  --- Reserve capacity. Any unsigned 32-bit value is accepted, including 0.
+  reserve: number,
+  --- Reload duration in milliseconds. Must be at least 1; defaults to 1000.
+  reloadMs: number?,
+}
+
+--- Optional resource model for a weapon. Omit the weapon resource to preserve unlimited-fire behavior.
+export type WeaponResource =
+  --- Finite magazine-and-reserve ammunition.
+  (AmmoResource & { kind: "ammo" })
+
 --- Authored weapon component preset. Descriptor-owned tuning data; maps do not override these params. Spawn-time player equip materializes a separate wieldable instance entity from this descriptor.
 export type WeaponDescriptor = {
   --- Base damage payload per resolved shot. Must be finite and ≥ 0.
@@ -198,6 +217,8 @@ export type WeaponDescriptor = {
   resolution: ResolutionMode,
   --- Optional combat attribution source id for this weapon. Must be non-empty ASCII, at most 64 bytes, and use only [A-Za-z0-9_.:-]. Omit to use the resolved canonical weapon name at spawn.
   creditSource: string?,
+  --- Optional weapon resource tuning. Omit to preserve unlimited-fire behavior.
+  resource: WeaponResource?,
 }
 
 --- One world-aligned AABB hitbox. Carrying one makes the entity hitscan-targetable. `halfExtents` is the box half-size on each axis; `offset` shifts the box center from the entity's transform position.

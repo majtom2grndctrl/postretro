@@ -1706,6 +1706,7 @@ mod tests {
                 fire_mode: FireMode::Semi,
                 resolution: ResolutionMode::Hitscan,
                 credit_source: None,
+                resource: None,
             }),
             mesh: None,
             health: None,

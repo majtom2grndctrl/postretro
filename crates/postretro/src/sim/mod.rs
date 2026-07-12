@@ -670,6 +670,7 @@ mod tests {
             fire_mode: FireMode::Semi,
             resolution: ResolutionMode::Hitscan,
             credit_source: Some(credit_source.to_string()),
+            resource: None,
         })
     }
 

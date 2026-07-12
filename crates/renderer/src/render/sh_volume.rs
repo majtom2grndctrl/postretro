@@ -1550,6 +1550,8 @@ mod tests {
         const FORWARD_SHADER_SOURCE: &str = concat!(
             include_str!("../shaders/forward.wgsl"),
             "\n",
+            include_str!("../shaders/material_shading.wgsl"),
+            "\n",
             include_str!("../shaders/curve_eval.wgsl"),
             "\n",
             include_str!("../shaders/sh_sample.wgsl"),

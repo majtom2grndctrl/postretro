@@ -12,6 +12,8 @@ mod kinematic_brush;
 mod loaded_texture;
 mod mesh_pass;
 mod promoted_depth_cache;
+#[allow(dead_code)] // Task 5 owns the live shadow-pass call sites.
+mod rigid_occluder_depth;
 mod screen_effects;
 mod sdf_atlas;
 mod sdf_shadow;
@@ -128,6 +130,7 @@ pub use renderer_types::{
     WorldWireframeMode,
 };
 pub(crate) use renderer_types::{GpuTexture, POST_RETRO_ANISO_CLAMP};
+pub use rigid_occluder_depth::MoverOccluderAabb;
 
 #[cfg(feature = "dev-tools")]
 pub use debug_ui::{AgentDiagnosticsRow, DebugUi, TriggerDiagnosticsRow, draw_diagnostics_panel};

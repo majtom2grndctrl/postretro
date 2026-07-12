@@ -39,10 +39,22 @@ struct UploadedMoverDraw {
     material_ranges: Vec<MaterialRange>,
 }
 
+/// Full shared-index-buffer span for one uploaded mover. Unlike the material
+/// ranges, this is a single draw range suitable for the depth-only path, which
+/// does not bind or batch by material.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ActiveMoverDraw {
-    mover_draw_index: usize,
-    instance_index: u32,
+pub(crate) struct MoverIndexRange {
+    pub(crate) index_start: u32,
+    pub(crate) index_count: u32,
+}
+
+/// One active mover's dense transform-buffer index. `mover_draw_index` is the
+/// stable key for geometry metadata; it deliberately is not the game-side
+/// mover id, which the depth recorder resolves through `KinematicBrushPass`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ActiveMoverDraw {
+    pub(crate) mover_draw_index: usize,
+    pub(crate) instance_index: u32,
 }
 
 pub(crate) struct KinematicBrushPass {
@@ -61,6 +73,7 @@ pub(crate) struct KinematicBrushPass {
     movers: Vec<UploadedMoverDraw>,
     mover_lookup: HashMap<u32, usize>,
     active_draws: Vec<ActiveMoverDraw>,
+    mover_index_ranges: Vec<MoverIndexRange>,
     instance_bytes: Vec<u8>,
 }
 
@@ -412,6 +425,7 @@ impl KinematicBrushPass {
             movers: Vec::new(),
             mover_lookup: HashMap::new(),
             active_draws: Vec::new(),
+            mover_index_ranges: Vec::new(),
             instance_bytes: Vec::new(),
         }
     }
@@ -425,6 +439,7 @@ impl KinematicBrushPass {
         self.movers.clear();
         self.mover_lookup.clear();
         self.active_draws.clear();
+        self.mover_index_ranges.clear();
 
         let Some(geometry) = geometry else {
             self.install_empty_geometry(device);
@@ -461,6 +476,10 @@ impl KinematicBrushPass {
                 mover_id: mover.mover_id,
                 material_ranges: ranges,
             });
+            self.mover_index_ranges.push(MoverIndexRange {
+                index_start: index_base,
+                index_count: mover.indices.len() as u32,
+            });
         }
 
         if vertices.is_empty() || indices.is_empty() {
@@ -495,6 +514,55 @@ impl KinematicBrushPass {
             usage: wgpu::BufferUsages::INDEX,
         });
         self.index_count = 0;
+    }
+
+    /// Shared position-bearing vertex buffer. The rigid depth path consumes
+    /// only location 0 while retaining this buffer's world-vertex stride.
+    #[allow(dead_code)] // Wired into live shadow passes by E17-B Task 5.
+    pub(crate) fn shared_vertex_buffer(&self) -> &wgpu::Buffer {
+        &self.vertex_buffer
+    }
+
+    /// Shared geometry index buffer used by both mover beauty and depth draws.
+    #[allow(dead_code)] // Wired into live shadow passes by E17-B Task 5.
+    pub(crate) fn shared_index_buffer(&self) -> &wgpu::Buffer {
+        &self.index_buffer
+    }
+
+    /// Layout for the uploaded per-instance model transforms. The rigid depth
+    /// pipeline keeps it at group 1, separate from the beauty path's group 3.
+    #[allow(dead_code)] // Consumed when E17-B Task 5 constructs the rigid depth pass.
+    pub(crate) fn instance_transform_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.instance_bind_group_layout
+    }
+
+    /// Existing per-instance model-transform binding populated by
+    /// [`Self::upload_instances`] before shadow recording.
+    #[allow(dead_code)] // Wired into live shadow passes by E17-B Task 5.
+    pub(crate) fn instance_transform_bind_group(&self) -> &wgpu::BindGroup {
+        &self.instance_bind_group
+    }
+
+    /// Dense active mover instances, keyed by `mover_draw_index` rather than
+    /// the game-side mover id.
+    #[allow(dead_code)] // Read by the rigid recorder once Task 5 wires shadow passes.
+    pub(crate) fn active_draws(&self) -> &[ActiveMoverDraw] {
+        &self.active_draws
+    }
+
+    /// One full index span per uploaded mover, keyed by `mover_draw_index`.
+    #[allow(dead_code)] // Read by the rigid recorder once Task 5 wires shadow passes.
+    pub(crate) fn mover_index_ranges(&self) -> &[MoverIndexRange] {
+        &self.mover_index_ranges
+    }
+
+    /// Resolve a game-side mover id through this pass's uploaded mover list to
+    /// the draw index that keys active instances and full index spans.
+    #[allow(dead_code)] // Read by the rigid recorder once Task 5 wires shadow passes.
+    pub(crate) fn mover_draw_index_for_mover_id(&self, mover_id: u32) -> Option<usize> {
+        self.movers
+            .iter()
+            .position(|mover| mover.mover_id == mover_id)
     }
 
     #[allow(clippy::too_many_arguments)]

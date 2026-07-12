@@ -3,81 +3,12 @@
 
 # Crate graph
 
-Internal workspace crates and their normal (non-dev, non-build) dependency
-edges. External crates are omitted by design. A crate's layer is computed
-from the graph: one above its deepest internal dependency. See the layering
-invariants in `development_guide.md` §Workspace.
+Internal workspace crates, grouped by layer and ranked by how many crates
+depend on them. External crates are omitted by design. A crate's layer is
+one above its deepest internal dependency. See the layering invariants in
+`development_guide.md` §Workspace.
 
-## Diagram
-
-```mermaid
-graph TD
-    postretro["postretro"]
-    entities["entities"]
-    foundation["foundation"]
-    level_compiler["level-compiler"]
-    level_format["level-format"]
-    level_loader["level-loader"]
-    lighting["lighting"]
-    model["model"]
-    net["net"]
-    render_cpu["render-cpu"]
-    render_data["render-data"]
-    renderer["renderer"]
-    script_compiler["script-compiler"]
-    scripting_core["scripting-core"]
-    ui["ui"]
-    visibility["visibility"]
-    xtask["xtask"]
-    postretro --> entities
-    postretro --> foundation
-    postretro --> level_format
-    postretro --> level_loader
-    postretro --> lighting
-    postretro --> model
-    postretro --> net
-    postretro --> render_cpu
-    postretro --> render_data
-    postretro --> renderer
-    postretro --> scripting_core
-    postretro --> ui
-    postretro --> visibility
-    entities --> foundation
-    level_compiler --> level_format
-    level_loader --> level_format
-    level_loader --> render_data
-    lighting --> entities
-    lighting --> foundation
-    lighting --> level_loader
-    lighting --> render_data
-    lighting --> scripting_core
-    model --> level_format
-    model --> render_data
-    render_cpu --> entities
-    render_cpu --> level_format
-    render_cpu --> level_loader
-    render_cpu --> model
-    render_cpu --> render_data
-    render_cpu --> visibility
-    renderer --> entities
-    renderer --> level_format
-    renderer --> level_loader
-    renderer --> lighting
-    renderer --> model
-    renderer --> render_cpu
-    renderer --> render_data
-    renderer --> scripting_core
-    renderer --> ui
-    renderer --> visibility
-    scripting_core --> entities
-    scripting_core --> foundation
-    scripting_core --> level_format
-    ui --> entities
-    ui --> scripting_core
-    visibility --> level_loader
-    xtask --> level_compiler
-    xtask --> level_format
-```
+Generate the full edge diagram on demand with `cargo run -p xtask -- crate-graph --mermaid`; query a crate's blast radius with `--rdeps <crate>` or its dependencies with `--deps <crate>`.
 
 ## Layers
 

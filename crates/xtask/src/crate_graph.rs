@@ -5,11 +5,15 @@
 //! external crates omitted by design. From that one deterministic reduction it
 //! serves three jobs, all documented in `context/lib/development_guide.md`:
 //!
-//! - **view** (`crate-graph`): print the layer-annotated Mermaid diagram;
+//! - **view** (`crate-graph`, or `--mermaid` for the on-demand edge diagram);
 //! - **gate** (`crate-graph --check`): fail if the committed
 //!   `context/lib/crate-graph.md` is stale, the `cargo fmt --check` pattern;
 //! - **query** (`crate-graph --rdeps/--deps <crate>`): live blast-radius /
 //!   forward-dependency questions.
+//!
+//! The committed snapshot holds only the layers and chokepoint ranking — the
+//! cheap, diff-stable views. The full edge diagram is generated on demand
+//! (`--mermaid`) rather than committed, so no dense graph churns the diff.
 //!
 //! The layering *invariants* are enforced separately as a `#[test]` (see the
 //! bottom of this file), so `cargo test` in preflight catches an upward edge or
@@ -62,6 +66,11 @@ pub fn run(args: Vec<OsString>) -> Result<i32, String> {
             let graph = load_graph(&workspace_root)?;
             check_committed_doc(&workspace_root, &graph)
         }
+        [flag] if flag == "--mermaid" => {
+            let graph = load_graph(&workspace_root)?;
+            print!("{}", render_mermaid(&graph));
+            Ok(0)
+        }
         [flag, name] if flag == "--rdeps" => {
             let graph = load_graph(&workspace_root)?;
             print_query(&graph, name, Direction::Dependents)
@@ -76,9 +85,10 @@ pub fn run(args: Vec<OsString>) -> Result<i32, String> {
 
 fn usage() -> String {
     "crate-graph usage:\n  \
-       cargo run -p xtask -- crate-graph                       Print the layer-annotated graph\n  \
-       cargo run -p xtask -- crate-graph --write               Regenerate context/lib/crate-graph.md\n  \
+       cargo run -p xtask -- crate-graph                  Print the layers + chokepoint ranking\n  \
+       cargo run -p xtask -- crate-graph --write          Regenerate context/lib/crate-graph.md\n  \
        cargo run -p xtask -- crate-graph --check          Fail if the committed doc is stale\n  \
+       cargo run -p xtask -- crate-graph --mermaid        Print the full edge diagram (Mermaid)\n  \
        cargo run -p xtask -- crate-graph --rdeps <crate>  What depends on <crate> (blast radius)\n  \
        cargo run -p xtask -- crate-graph --deps <crate>   What <crate> depends on"
         .to_string()
@@ -286,15 +296,15 @@ fn render_doc(graph: &Graph) -> String {
          <!-- Regenerate whenever a crate's internal (non-dev) dependencies change; \
          `crate-graph --check` gates staleness in preflight. -->\n\n\
          # Crate graph\n\n\
-         Internal workspace crates and their normal (non-dev, non-build) dependency\n\
-         edges. External crates are omitted by design. A crate's layer is computed\n\
-         from the graph: one above its deepest internal dependency. See the layering\n\
-         invariants in `development_guide.md` §Workspace.\n\n\
-         ## Diagram\n\n\
-         ```mermaid\n",
+         Internal workspace crates, grouped by layer and ranked by how many crates\n\
+         depend on them. External crates are omitted by design. A crate's layer is\n\
+         one above its deepest internal dependency. See the layering invariants in\n\
+         `development_guide.md` §Workspace.\n\n\
+         Generate the full edge diagram on demand with `cargo run -p xtask -- \
+         crate-graph --mermaid`; query a crate's blast radius with `--rdeps <crate>` \
+         or its dependencies with `--deps <crate>`.\n\n\
+         ## Layers\n\n",
     );
-    out.push_str(&render_mermaid(graph));
-    out.push_str("```\n\n## Layers\n\n");
     for (rank, members) in graph.layers().iter().enumerate() {
         let label = if rank == 0 { " (leaves)" } else { "" };
         let names: Vec<&str> = members.iter().map(|m| short(m)).collect();

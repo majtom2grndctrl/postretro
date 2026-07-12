@@ -371,7 +371,7 @@ fn print_help() {
            cargo run -p xtask -- run [postretro args...]\n\
            cargo run -p xtask -- observe <runspec.json>\n\
            cargo run -p xtask -- bake-model-textures <scene.gltf>\n\
-           cargo run -p xtask -- crate-graph [--write | --check | --rdeps <crate> | --deps <crate>]\n\n\
+           cargo run -p xtask -- crate-graph [--write | --check | --mermaid | --rdeps <crate> | --deps <crate>]\n\n\
          COMMANDS:\n\
            run                  Build scripts-build, then run the postretro engine\n\
            observe              Build scripts-build, then run the engine headless\n\

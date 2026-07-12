@@ -100,6 +100,9 @@ postretro-script-compiler = { path = "../script-compiler" }
 
 [dev-dependencies]
 postretro-ui = { workspace = true, features = ["test-fixtures"] }
+# Exercise shipped TypeScript data scripts through the same SWC bundler used by
+# `scripts-build`, without spawning the sidecar process during unit tests.
+postretro-script-compiler = { path = "../script-compiler" }
 
 # Enable the net crate's dev-only in-memory packet conditioner (`postretro_net::harness`:
 # `PacketConditioner`/`LinkConfig`) for the Phase 3 prediction/reconciliation latency

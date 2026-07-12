@@ -14,9 +14,14 @@ pub(crate) use crate::fx::fog_reactions::{
 };
 
 pub(crate) use crate::kinematic_mover::register_sequenced_mover_primitives;
+pub(crate) use crate::trigger_system::register_sequenced_trigger_primitives;
 
 pub(crate) fn register_mover_reaction_primitives(registry: &mut ReactionPrimitiveRegistry) {
     crate::kinematic_mover::register_mover_reaction_primitives(registry);
+}
+
+pub(crate) fn register_trigger_reaction_primitives(registry: &mut ReactionPrimitiveRegistry) {
+    crate::trigger_system::register_trigger_reaction_primitives(registry);
 }
 
 #[cfg(test)]
@@ -46,5 +51,13 @@ mod tests {
         ] {
             assert!(r.contains(name), "missing {name}");
         }
+    }
+
+    #[test]
+    fn trigger_registrar_exposes_arm_and_disarm() {
+        let mut r = ReactionPrimitiveRegistry::new();
+        register_trigger_reaction_primitives(&mut r);
+        assert!(r.contains("armTrigger"));
+        assert!(r.contains("disarmTrigger"));
     }
 }

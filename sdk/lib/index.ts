@@ -25,6 +25,8 @@ export type { FogVolumeHandle } from "./entities/fog_volumes";
 
 export type { MoverEntityHandle } from "./entities/movers";
 
+export type { TriggerVolumeHandle } from "./entities/triggers";
+
 export type { Keyframe } from "./util/keyframes";
 export { timeline, sequence } from "./util/keyframes";
 
@@ -46,6 +48,8 @@ export type {
   MoverStopStep,
   MoverReverseStep,
   MoverGoToPathNodeStep,
+  ArmTriggerStep,
+  DisarmTriggerStep,
   StateRef,
   StoreDeclaration,
   StoreDefinition,

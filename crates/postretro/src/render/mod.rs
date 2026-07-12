@@ -29,4 +29,5 @@ pub use postretro_renderer::{
 #[allow(unused_imports)]
 pub use postretro_renderer::{
     AgentDiagnosticsRow, DeltaVolumeMeta, FrameTimingSnapshot, MarkerMode, ShDiagnosticsState,
+    TriggerDiagnosticsRow,
 };

@@ -518,13 +518,14 @@ declare module "postretro" {
 
   export type LightComponent = { origin: Vec3; lightType: LightKind; intensity: number; color: Vec3; falloffModel: FalloffKind; falloffRange: number; coneAngleInner: number | null; coneAngleOuter: number | null; coneDirection: Vec3 | null; isDynamic: boolean; animation: LightAnimation | null };
 
-  /** Component-name literals accepted by `worldQuery` and the `world.query` SDK wrapper. New queryable component types extend this union. Valid values: `light`, `transform`, `emitter`, `fog_volume`, `kinematic_mover`, `particle`, `sprite_visual`. */
+  /** Component-name literals accepted by `worldQuery` and the `world.query` SDK wrapper. New queryable component types extend this union. Valid values: `light`, `transform`, `emitter`, `fog_volume`, `kinematic_mover`, `trigger_volume`, `particle`, `sprite_visual`. */
   export type WorldQueryComponent =
     | "light"
     | "transform"
     | "emitter"
     | "fog_volume"
     | "kinematic_mover"
+    | "trigger_volume"
     /** Always returns []. Engine-managed; scripts never iterate individual particles. */
     | "particle"
     /** Always returns []. Engine-managed. */
@@ -579,6 +580,15 @@ declare module "postretro" {
     tags: ReadonlyArray<string>;
   };
 
+  /** Raw trigger snapshot returned by `worldQuery` when filtering for trigger volumes. Arming and activation phase remain engine-managed; the SDK wrapper exposes only arm/disarm command builders. */
+  export type TriggerVolumeEntity = {
+    id: EntityId;
+    /** Trigger position at query time (from the entity's Transform). */
+    position: Vec3;
+    /** The entity's tags at query time. Empty array if untagged. */
+    tags: ReadonlyArray<string>;
+  };
+
   /** Returns true if the entity id refers to a live entity. */
   export function entityExists(id: EntityId): boolean;
 
@@ -597,7 +607,7 @@ declare module "postretro" {
   /** Return the current world gravity in m/s² (negative = downward; positive = upward). Seeded from the worldspawn `initialGravity` KVP at level load and persists until the next level load or a `worldSetGravity` call. The `world.ts` vocabulary module wraps this as `world.getGravity`. */
   export function worldGetGravity(): number;
 
-  /** Return an array of raw entity snapshots matching the filter. Available in definition and data contexts. Filter shape: { component: "light" | "transform" | "emitter" | "fog_volume" | "kinematic_mover" | "particle" | "sprite_visual", tag?: string }. `"particle"` and `"sprite_visual"` always return `[]` (engine-managed; scripts never iterate individual particles). Unknown component values raise InvalidArgument. The `world.ts` vocabulary module wraps these snapshots as `world.query` handles. */
+  /** Return an array of raw entity snapshots matching the filter. Available in definition and data contexts. Filter shape: { component: "light" | "transform" | "emitter" | "fog_volume" | "kinematic_mover" | "trigger_volume" | "particle" | "sprite_visual", tag?: string }. `"particle"` and `"sprite_visual"` always return `[]` (engine-managed; scripts never iterate individual particles). Unknown component values raise InvalidArgument. The `world.ts` vocabulary module wraps these snapshots as `world.query` handles. */
   export function worldQuery<T extends WorldQueryComponent>(filter: { component: T; tag?: string | null }): ReadonlyArray<RawEntityForComponent<T>>;
 
   /** Set the world gravity in m/s² (negative = downward; positive = upward). NaN and non-finite values are silently ignored (a warning is logged) so a misbehaving script cannot wedge particle physics. Effect is immediate and persists until the next level load or another `worldSetGravity` call. The `world.ts` vocabulary module wraps this as `world.setGravity`. */
@@ -673,11 +683,18 @@ declare module "postretro" {
     goToPathNode(node: string): SequenceStep[];
   }
 
+  /** Typed trigger handle returned by `world.query({ component: "trigger_volume" })`. Arming state remains engine-owned; methods build closed command steps. */
+  export interface TriggerVolumeHandle extends TriggerVolumeEntity {
+    arm(): SequenceStep[];
+    disarm(): SequenceStep[];
+  }
+
   /** Maps a component-name literal to the rich `world.query` handle type. `"light"`
    * yields `LightEntityHandle` (capability methods); `"emitter"` yields
    * `EmitterEntity` (id, position, tags, plus the full `BillboardEmitterComponent`
    * snapshot under `component`); `"fog_volume"` yields `FogVolumeHandle`; and
-   * `"kinematic_mover"` yields `MoverEntityHandle`.
+   * `"kinematic_mover"` yields `MoverEntityHandle`; `"trigger_volume"`
+   * yields `TriggerVolumeHandle`.
    * Other component names fall back to the bare `Entity` shape (`id`,
    * `position`, `tags`). */
   export type EntityForComponent<T extends WorldQueryComponent> =
@@ -685,6 +702,7 @@ declare module "postretro" {
     T extends "emitter" ? EmitterEntity :
     T extends "fog_volume" ? FogVolumeHandle :
     T extends "kinematic_mover" ? MoverEntityHandle :
+    T extends "trigger_volume" ? TriggerVolumeHandle :
     Entity;
 
   /** Maps a component-name literal to the unwrapped `worldQuery` snapshot
@@ -695,6 +713,7 @@ declare module "postretro" {
     T extends "emitter" ? EmitterEntity :
     T extends "fog_volume" ? FogVolumeEntity :
     T extends "kinematic_mover" ? MoverEntity :
+    T extends "trigger_volume" ? TriggerVolumeEntity :
     Entity;
 
   /** Vocabulary object installed as `globalThis.world`. */
@@ -734,13 +753,23 @@ declare module "postretro" {
     progress: { tag: string; at: number; fire: string };
   };
 
-  /** Primitive reaction body: invokes the named Rust primitive. With `tag`, it targets entities carrying that tag and mutates them. Without `tag`, it is a system reaction (no entities) that enqueues a typed engine command — `playSound`, `rumble`, `flashScreen`, the UI-stack reactions. `args` carries the primitive's typed payload (e.g. `{ rate: 0 }` for `setEmitterRate`, `{ sound: "alarm" }` for `playSound`). */
+  /** Primitive reaction body: invokes the named Rust primitive. With `tag`, it targets entities carrying that tag and mutates them. Tag-targeted primitives include emitter/fog/mover commands, `applyDamage`, `setAnimationState`, `armTrigger`, and `disarmTrigger`; arm/disarm use their empty typed args below. Without `tag`, it is a system reaction (no entities) that enqueues a typed engine command — `playSound`, `rumble`, `flashScreen`, the UI-stack reactions. `args` carries the primitive's typed payload (e.g. `{ rate: 0 }` for `setEmitterRate`, `{ sound: "alarm" }` for `playSound`). */
   export type PrimitiveReactionDescriptor = {
     primitive: string;
     tag?: string;
     args?: Record<string, unknown>;
     onComplete?: string;
   };
+
+  /** Tag-targeted trigger primitive `armTrigger` takes no payload; its target comes from `PrimitiveReactionDescriptor.tag`. */
+  export interface ArmTriggerArgs {
+    readonly [key: string]: never;
+  }
+
+  /** Tag-targeted trigger primitive `disarmTrigger` takes no payload; its target comes from `PrimitiveReactionDescriptor.tag`. */
+  export interface DisarmTriggerArgs {
+    readonly [key: string]: never;
+  }
 
   /** One step in a `sequence` reaction body: invokes the named sequenced primitive against the given entity with `args`. Sequence steps target a single `EntityId`; tag-targeted primitives belong on the `Primitive` reaction path. */
   export type SetLightAnimationStep = {
@@ -809,6 +838,11 @@ declare module "postretro" {
   /** Sequence step that moves a kinematic mover to a named path node. */
   export type MoverGoToPathNodeStep = { id: EntityId; primitive: "moverGoToPathNode"; args: { node: string } };
 
+  /** Sequence step that arms one trigger volume. */
+  export type ArmTriggerStep = { id: EntityId; primitive: "armTrigger"; args: ArmTriggerArgs };
+  /** Sequence step that disarms one trigger volume. */
+  export type DisarmTriggerStep = { id: EntityId; primitive: "disarmTrigger"; args: DisarmTriggerArgs };
+
   /** Union of every supported sequence step shape. New sequenced primitives extend this union. */
   export type SequenceStep =
     | SetLightAnimationStep
@@ -821,7 +855,9 @@ declare module "postretro" {
     | MoverStartStep
     | MoverStopStep
     | MoverReverseStep
-    | MoverGoToPathNodeStep;
+    | MoverGoToPathNodeStep
+    | ArmTriggerStep
+    | DisarmTriggerStep;
 
   /** Sequence reaction body: ordered per-entity primitive invocations. Steps run in array order at dispatch. */
   export type SequenceReactionDescriptor = {

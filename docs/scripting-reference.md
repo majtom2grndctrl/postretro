@@ -331,7 +331,7 @@ Per-level data scripts export a `setupLevel(ctx)` function to register reactions
 
 ## world.query
 
-`world.query(filter)` returns an array of entity handles matching a filter. The concrete handle type depends on the `component` you query — `"light"` returns `LightEntity[]` and `"fog_volume"` returns `FogVolumeHandle[]`. Querying an unknown component name throws `InvalidArgument`.
+`world.query(filter)` returns an array of entity handles matching a filter. The concrete handle type depends on the `component` you query — `"light"` returns `LightEntity[]`, `"fog_volume"` returns `FogVolumeHandle[]`, and `"trigger_volume"` returns `TriggerVolumeHandle[]`. Querying an unknown component name throws `InvalidArgument`.
 
 ```typescript
 world.query({ component: "light" })            // all lights → LightEntity[]
@@ -407,6 +407,31 @@ for i, light in ipairs(lights) do
     phase = (i - 1) / #lights,
   })
 end
+```
+
+### TriggerVolumeHandle
+
+Returned when `component` is `"trigger_volume"`. The snapshot exposes only
+`id`, `position`, and `tags`; arming state and activation phase remain
+engine-owned. The handle adds command builders for the live entity.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `EntityId` | Stable entity id. |
+| `position` | `{ x, y, z }` | Trigger origin in world space at query time. |
+| `tags` | `string[]` | Trigger tags at query time. Empty array if untagged. |
+
+```typescript
+trigger.arm();    // [{ id: trigger.id, primitive: "armTrigger", args: {} }]
+trigger.disarm(); // [{ id: trigger.id, primitive: "disarmTrigger", args: {} }]
+```
+
+Use either returned array as a named reaction's `sequence`. In Luau, call the
+same methods with `trigger:arm()` and `trigger:disarm()`:
+
+```lua
+trigger:arm()    -- { { id = trigger.id, primitive = "armTrigger", args = {} } }
+trigger:disarm() -- { { id = trigger.id, primitive = "disarmTrigger", args = {} } }
 ```
 
 ---
@@ -629,7 +654,10 @@ Returned in `FogVolumeHandle.component` from `world.query({ component: "fog_volu
 
 ## Reaction primitives
 
-Reaction primitives are dispatched from sequenced reactions registered via `registerReaction("levelLoad", { sequence: [...] })`. Each step in the sequence carries `{ id, primitive, args }`. The scripting VM is not live at runtime — primitives execute entirely in Rust against the entity registry.
+Reaction primitives run from named reactions built with `defineReaction` and
+returned by `setupLevel`. Each `sequence` step carries `{ id, primitive, args }`.
+The scripting VM is not live at runtime — primitives execute entirely in Rust
+against the entity registry.
 
 The fog reaction primitives are tag-targeted: when the surrounding reaction's `tag` filter resolves to a list of fog-bearing entities, every match receives the update. Entities matched by tag but lacking a `FogVolumeComponent` are skipped with `log::warn!` (typo guard). Empty target sets are a debug-log no-op.
 
@@ -702,13 +730,42 @@ it to script scene damage (a trap, a collapsing floor, a retaliation strike).
 healing is out of scope). The handler never despawns — a target driven to zero HP
 is resolved by the next death sweep, the same path a weapon kill takes.
 
-**This reaction only fires through the death-event drain.** Name the reaction
-(the first `defineReaction` argument) to match the event that triggers it. A
-`progress` reaction's `fire` event reaches `applyDamage`; the plain movement /
-weapon event drains do not, and `levelLoad` fires before the first frame (so a
-drop there is invisible). The canonical use is a `progress` threshold that fires
-an event of the same name — see [the combat-demo
-walkthrough](../content/dev/maps/combat-demo.README.md).
+Name the reaction (the first `defineReaction` argument) to match its event. A
+`progress` reaction can fire it, or a `trigger_volume` can name it through
+`on_fire` or `on_exit`. When a trigger fires, its top-level consequential steps
+— including `applyDamage` — run in that fixed tick. Presentation, system, and
+lifecycle steps drain app-side afterward. Work reached through `onComplete` is
+retained as a deferred residual and drains through that app-side path on the same
+fire. A `progress` reaction behaves differently: naming one from a trigger does
+**not** fire its target — progress is tracked independently, and its target fires
+only when the kill threshold is reached, however many ticks later that is. The
+canonical progress use is a threshold that fires an event of the same name — see
+[the combat-demo walkthrough](../content/dev/maps/combat-demo.README.md).
+
+### `armTrigger` and `disarmTrigger`
+
+These tag-targeted primitives take no arguments. The reaction's `tag` selects
+all matching trigger volumes; matching entities without trigger state are
+skipped. Empty target sets are silent no-ops.
+
+```typescript
+defineReaction("unlockPads", {
+  primitive: "armTrigger",
+  tag: "security_pad",
+  args: {},
+});
+
+defineReaction("lockPads", {
+  primitive: "disarmTrigger",
+  tag: "security_pad",
+  args: {},
+});
+```
+
+`armTrigger` fully re-arms every target: it enables firing, clears a `once`
+latch, and cancels any running re-arm timer so the next valid enter can fire
+immediately. `disarmTrigger` blocks future enter activations but does not cancel
+an exit already paired with an earlier enter.
 
 ---
 

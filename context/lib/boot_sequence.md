@@ -95,7 +95,7 @@ Level install runs on the main thread after worker delivery. It is repeatable: e
 | 7 | Fog bridge: fog-volume entities + renderer pixel-scale / cell masks |
 | 8 | Collision world populated from static geometry (separate from BSP) |
 | 9 | Built-in classname dispatch (player spawns partitioned out; remainder dispatched, handled set stashed) |
-| 10 | Data script run → compose active reactions/crossings from matching mod-global definitions plus level-local definitions; progress tracker and crossing detector init from the composed active sets |
+| 10 | Data script run → compose active reactions/crossings from matching mod-global definitions plus level-local definitions; rebuild reaction subscribers, then `TriggerBindingTable::build` from the final active reactions |
 | 11 | Data-archetype sweep (match map placements against registered entity types not already handled), player spawn, camera teleport to first player spawn (or geometry center) |
 | 12 | Mesh model sweep: upload each distinct mesh model once, then resolve every animated mesh entity's clip indices (see mesh-sweep note below) |
 | 13 | Fire the `levelLoad` named event |

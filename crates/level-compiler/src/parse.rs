@@ -15,8 +15,8 @@ use shambler::face::{FaceWinding, face_centers, face_indices, face_vertices};
 use crate::format::quake_map;
 use crate::map_data::{
     BrushPlane, BrushSide, BrushVolume, EntityInfo, EntityShadowParams, KinematicMoveMode, MapData,
-    MapEntityRecord, MapFogVolume, MapKinematicMover, MapKinematicWaypoint, MapLight,
-    MapTriggerVolume, NavParams, TextureProjection,
+    MapEntityRecord, MapFogVolume, MapKinematicMover, MapKinematicWaypoint, MapLight, NavParams,
+    TextureProjection,
 };
 use crate::map_format::MapFormat;
 use postretro_level_format::fog_volumes::{MAX_FOG_VOLUMES, MAX_PLANES_PER_VOLUME};
@@ -27,7 +27,7 @@ use postretro_level_format::kinematic_geometry::KINEMATIC_WAYPOINT_MIN_SEGMENT_L
 /// This is the **input precision boundary**: shambler stores coordinates as f32
 /// (parsed from the .map text), and we widen them to f64 here. All subsequent
 /// compile-time geometry is computed in double precision.
-fn shambler_to_dvec3(v: &shambler::Vector3) -> DVec3 {
+pub(crate) fn shambler_to_dvec3(v: &shambler::Vector3) -> DVec3 {
     DVec3::new(v.x as f64, v.y as f64, v.z as f64)
 }
 
@@ -43,7 +43,7 @@ fn shambler_to_dvec3(v: &shambler::Vector3) -> DVec3 {
 /// For positions and plane distances, also multiply by `MapFormat::units_to_meters()`
 /// after swizzling. Normals are direction vectors — scale must not be applied
 /// to them (only the swizzle).
-fn quake_to_engine(v: DVec3) -> DVec3 {
+pub(crate) fn quake_to_engine(v: DVec3) -> DVec3 {
     DVec3::new(-v.y, v.z, -v.x)
 }
 
@@ -91,110 +91,6 @@ struct PendingKinematicMover {
     move_mode: KinematicMoveMode,
     start_on_spawn: bool,
     brush_ids: Vec<BrushId>,
-}
-
-fn resolve_trigger_volume(
-    geo_map: &GeoMap,
-    brush_ids: &[BrushId],
-    props: &HashMap<String, String>,
-    scale: f64,
-) -> Result<MapTriggerVolume> {
-    let name = props
-        .get("name")
-        .map(|v| v.trim().to_owned())
-        .unwrap_or_default();
-    let activation = match props.get("activation").map(|v| v.trim()).unwrap_or("touch") {
-        "touch" | "0" => 0,
-        "use" | "1" => 1,
-        other => anyhow::bail!("trigger_volume `{name}` has unknown `activation` `{other}`"),
-    };
-    let command = match props.get("command").map(|v| v.trim()).unwrap_or("start") {
-        "start" | "0" => 0,
-        "stop" | "1" => 1,
-        "reverse" | "2" => 2,
-        "go_to_path_node" | "goToPathNode" | "3" => 3,
-        other => anyhow::bail!("trigger_volume `{name}` has unknown `command` `{other}`"),
-    };
-    let command_arg = props
-        .get("command_arg")
-        .map(|v| v.trim().to_owned())
-        .unwrap_or_default();
-    if command == 3 && command_arg.is_empty() {
-        anyhow::bail!("trigger_volume `{name}` `go_to_path_node` requires `command_arg`");
-    }
-    let fire_mode = match props.get("fire_mode").map(|v| v.trim()).unwrap_or("once") {
-        "once" | "0" => 0,
-        "multiple" | "1" => 1,
-        other => anyhow::bail!("trigger_volume `{name}` has unknown `fire_mode` `{other}`"),
-    };
-    let rearm_ms = props
-        .get("rearm_ms")
-        .map(|v| v.trim().parse::<f32>())
-        .transpose()
-        .map_err(|e| anyhow::anyhow!("trigger_volume `{name}` invalid `rearm_ms`: {e}"))?
-        .unwrap_or(0.0);
-    if !rearm_ms.is_finite() || rearm_ms < 0.0 {
-        anyhow::bail!(
-            "trigger_volume `{name}` `rearm_ms` must be finite and non-negative, got {rearm_ms}"
-        );
-    }
-    let enabled_on_spawn = match props
-        .get("enabled_on_spawn")
-        .map(|v| v.trim())
-        .unwrap_or("1")
-    {
-        "1" | "true" | "True" => true,
-        "0" | "false" | "False" => false,
-        other => {
-            anyhow::bail!("trigger_volume `{name}` `enabled_on_spawn` must be 0/1, got `{other}`")
-        }
-    };
-    let geo_planes = face_planes(&geo_map.face_planes);
-    let entity_brush_faces: BTreeMap<BrushId, Vec<shambler::face::FaceId>> = brush_ids
-        .iter()
-        .filter_map(|id| {
-            geo_map
-                .brush_faces
-                .get(id)
-                .map(|faces| (*id, faces.clone()))
-        })
-        .collect();
-    let hulls = brush_hulls(&entity_brush_faces, &geo_planes);
-    let (face_verts, _) = face_vertices(&entity_brush_faces, &geo_planes, &hulls);
-    let mut min = DVec3::splat(f64::INFINITY);
-    let mut max = DVec3::splat(f64::NEG_INFINITY);
-    for verts in face_verts.values() {
-        for v in verts {
-            let p = quake_to_engine(shambler_to_dvec3(v)) * scale;
-            min = min.min(p);
-            max = max.max(p);
-        }
-    }
-    if !min.is_finite() {
-        anyhow::bail!("trigger_volume `{name}` brushes produced no usable vertices");
-    }
-    if (max - min).min_element() <= 0.0 {
-        anyhow::bail!("trigger_volume `{name}` AABB has zero extent");
-    }
-    Ok(MapTriggerVolume {
-        name,
-        tags: props
-            .get("_tags")
-            .map(|s| s.split_whitespace().map(str::to_owned).collect())
-            .unwrap_or_default(),
-        aabb_min: min.to_array().map(|v| v as f32),
-        aabb_max: max.to_array().map(|v| v as f32),
-        activation,
-        target_tag: props
-            .get("target_tag")
-            .map(|v| v.trim().to_owned())
-            .unwrap_or_default(),
-        command,
-        command_arg,
-        fire_mode,
-        rearm_ms,
-        enabled_on_spawn,
-    })
 }
 
 /// Sentinel standing in for a space inside an encoded brush-face material name.
@@ -540,7 +436,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     // and `fog_tube`). Walked alongside the entity pass; brush AABBs come from
     // brush-face vertices, point-entity AABBs from origin + radius/height.
     let mut fog_volumes: Vec<MapFogVolume> = Vec::new();
-    let mut trigger_volumes: Vec<MapTriggerVolume> = Vec::new();
+    let mut trigger_volumes = Vec::new();
 
     // Worldspawn `fog_pixel_scale` (1=full-res, 8=coarsest). Default 4 when
     // unset. `0` is the "unset" sentinel — pass it through as `0` so the
@@ -727,7 +623,9 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         if has_brushes {
             if classname == "trigger_volume" {
                 let props = collect_entity_properties(&geo_map, entity_id);
-                trigger_volumes.push(resolve_trigger_volume(&geo_map, &brush_ids, &props, scale)?);
+                trigger_volumes.push(crate::trigger_volumes::resolve_trigger_volume(
+                    &geo_map, &brush_ids, &props, scale,
+                )?);
                 continue;
             }
             if classname == "kinematic_mover" {
@@ -1942,6 +1840,42 @@ mod tests {
         assert!(parse_inline_map(&trigger_volume_map("nonsense", "", "0")).is_err());
         assert!(parse_inline_map(&trigger_volume_map("go_to_path_node", "", "0")).is_err());
         assert!(parse_inline_map(&trigger_volume_map("start", "", "-1")).is_err());
+    }
+
+    #[test]
+    fn trigger_volume_trims_event_names() {
+        let map = trigger_volume_map("start", "", "100").replacen(
+            "\"rearm_ms\" \"100\"",
+            "\"rearm_ms\" \"100\"\n\"on_fire\" \"  open_lift  \"\n\"on_exit\" \"  close_lift  \"",
+            1,
+        );
+        let map = parse_inline_map(&map).unwrap();
+        let trigger = &map.trigger_volumes[0];
+        assert_eq!(trigger.on_fire, "open_lift");
+        assert_eq!(trigger.on_exit, "close_lift");
+
+        let records = crate::trigger_volumes::encode_trigger_volumes_section(&map.trigger_volumes)
+            .expect("one trigger produces a PRL section");
+        assert_eq!(records.triggers[0].on_fire, "open_lift");
+        assert_eq!(records.triggers[0].on_exit, "close_lift");
+    }
+
+    #[test]
+    fn trigger_volume_accepts_exit_only_event() {
+        let map = trigger_volume_map("start", "", "100").replacen(
+            "\"rearm_ms\" \"100\"",
+            "\"rearm_ms\" \"100\"\n\"on_exit\" \"  close_lift  \"",
+            1,
+        );
+        let map = parse_inline_map(&map).expect("exit-only trigger must compile");
+        let trigger = &map.trigger_volumes[0];
+        assert!(trigger.target_tag.is_empty());
+        assert!(trigger.on_fire.is_empty());
+        assert_eq!(trigger.on_exit, "close_lift");
+
+        let records = crate::trigger_volumes::encode_trigger_volumes_section(&map.trigger_volumes)
+            .expect("one trigger produces a PRL section");
+        assert_eq!(records.triggers[0].on_exit, "close_lift");
     }
 
     fn grouped_brush_test_map() -> &'static str {

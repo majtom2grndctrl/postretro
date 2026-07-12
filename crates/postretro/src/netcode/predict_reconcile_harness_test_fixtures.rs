@@ -1112,6 +1112,8 @@ fn spawn_harness_trigger(
             TriggerVolumeComponent::new(
                 activation,
                 "harness-platform".into(),
+                String::new(),
+                String::new(),
                 command,
                 TriggerFireMode::Once,
                 0.0,

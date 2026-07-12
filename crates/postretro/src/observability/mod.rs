@@ -317,6 +317,8 @@ mod tests {
                 ComponentValue::TriggerVolume(TriggerVolumeComponent::new(
                     TriggerActivation::Touch,
                     "sample".to_string(),
+                    String::new(),
+                    String::new(),
                     MoverCommand::Start,
                     TriggerFireMode::Once,
                     0.0,

@@ -175,6 +175,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
         kinematic_mover_colliders: Vec::new(),
         kinematic_mover_tick_states: kinematic_mover::MoverTickStateTable::default(),
         kinematic_mover_render: runtime_movers::KinematicMoverRenderCollector::new(),
+        trigger_bindings: crate::trigger_bindings::TriggerBindingTable::default(),
         active_wieldable: None,
         active_wieldable_descriptor: None,
         client_weapon_state: None,

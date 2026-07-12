@@ -118,7 +118,7 @@ pub fn generate_luau(registry: &PrimitiveRegistry) -> String {
         }
         // `worldQuery` is special-cased: its bare primitive returns
         // component-specific snapshots. `world:query` wraps the light, fog,
-        // and mover snapshots into richer SDK handles, so its overload set is
+        // mover, and trigger snapshots into richer SDK handles, so its overload set is
         // intentionally different.
         if p.name == "worldQuery" {
             writeln!(
@@ -128,6 +128,7 @@ pub fn generate_luau(registry: &PrimitiveRegistry) -> String {
                  & ((filter: {{ component: \"emitter\", tag: string? }}) -> {{EmitterEntity}}) \
                  & ((filter: {{ component: \"fog_volume\", tag: string? }}) -> {{FogVolumeEntity}}) \
                  & ((filter: {{ component: \"kinematic_mover\", tag: string? }}) -> {{MoverEntity}}) \
+                 & ((filter: {{ component: \"trigger_volume\", tag: string? }}) -> {{TriggerVolumeEntity}}) \
                  & ((filter: WorldQueryFilter) -> {{Entity}})",
             )
             .unwrap();

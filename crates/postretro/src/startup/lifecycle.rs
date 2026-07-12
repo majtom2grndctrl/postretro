@@ -18,6 +18,7 @@ use crate::startup::{
     BootState, InFlightLevelLoad, LevelLoadEntry, LevelRequest, LevelSource, LoadOutcome,
     StartupTimings, spawn_level_worker,
 };
+use crate::trigger_bindings::TriggerBindingTable;
 use crate::{App, weapon};
 use postretro_scripting_core::data_descriptors::LevelManifest;
 use postretro_scripting_core::reaction_dispatch::{
@@ -72,14 +73,14 @@ impl App {
     }
 
     pub(crate) fn clear_surface_lifetime_level_state(&mut self) {
-        // Fog-volume entities live in the script registry; clearing the
-        // bridge's id table here keeps it from referencing stale slots if a
-        // future surface re-creation re-runs `populate_from_level`.
-        // collision_world is reset for the same reason — it must be in a
-        // clean placeholder state before populate_from_level runs on resume.
+        // Fog- and trigger-volume entities live in the script registry;
+        // clearing their bridge id tables and trigger state prevents stale
+        // slots or bindings if a future surface re-creation re-runs
+        // `populate_from_level`. collision_world is reset for the same
+        // reason — it must be a clean placeholder before resume populates it.
         // Called both from `unload_level` (session installed) and the suspend
         // path (session may be absent if suspend arrives pre-install), so the
-        // fog-bridge clear is guarded — a no-op when there is no session yet.
+        // session-owned state clears are guarded — a no-op with no session yet.
         if let Some(session) = self.session.as_mut() {
             session.fog_volume_bridge.clear();
             session.trigger_volume_bridge.clear();
@@ -89,6 +90,7 @@ impl App {
         self.kinematic_mover_colliders.clear();
         self.kinematic_mover_tick_states.clear();
         self.kinematic_mover_render.clear();
+        self.trigger_bindings = TriggerBindingTable::default();
         self.active_wieldable = None;
         self.active_wieldable_descriptor = None;
         self.client_weapon_state = None;
@@ -102,7 +104,7 @@ impl App {
     /// |---|---|
     /// | `self.level` (LevelWorld) | renderer device/queue, window |
     /// | per-level GPU resources (textures, geometry) | `script_ctx`, `ScriptRuntime` |
-    /// | light bridge, fog bridge, collision world | slot table (no clear method — engine-global) |
+    /// | light bridge, fog bridge, trigger-volume bridge, trigger system, trigger bindings, collision world | slot table (no clear method — engine-global) |
     /// | level sounds, sprite collections, `emitter_bridge`, `mesh_render`, `mesh_clip_tables`, `hit_zone_store` | entity-type registry (`data_registry.entities`), mod map catalog (`data_registry.maps`) |
     /// | `data_registry` reactions + crossings, presentation cells | persisted-state save path |
     /// | level-scope UI trees (`modal_stack` `ScopeTier::Level`) | |
@@ -306,6 +308,19 @@ impl App {
             &mut session.crossing_detector,
             &session.scripting.script_ctx,
         );
+    }
+
+    /// Rebind trigger events after staged mod-init recomposes the active reaction
+    /// set. Tick dispatch holds bound commands, never reaction names, so it must
+    /// be refreshed alongside the other active reaction consumers.
+    pub(crate) fn rebuild_active_trigger_bindings(&mut self) {
+        let bindings = {
+            let Some(session) = self.session.as_ref() else {
+                return;
+            };
+            build_trigger_bindings(&session.scripting.script_ctx)
+        };
+        self.trigger_bindings = bindings;
     }
 
     fn resolve_level_source(&self, source: LevelSource) -> Option<InFlightLevelLoad> {
@@ -717,6 +732,7 @@ impl App {
         let products = install_world_cpu(handles, &mut self.level_timings, upload_mesh_models);
 
         self.kinematic_mover_colliders = products.mover_colliders;
+        self.trigger_bindings = products.trigger_bindings;
         // Retain the spawn-point placements for the host's runtime net-slot accept
         // path (M15 Phase 3 Task 4): the host materializes each accepted client's
         // descriptor pawn from them later.
@@ -888,6 +904,14 @@ fn rebuild_reaction_subscribers(
     );
 }
 
+fn build_trigger_bindings(script_ctx: &postretro_entities::ScriptCtx) -> TriggerBindingTable {
+    TriggerBindingTable::build(
+        &script_ctx.registry.borrow(),
+        &script_ctx.data_registry.borrow(),
+        &script_ctx.slot_table.borrow(),
+    )
+}
+
 /// CPU world-install products the tick loop consumes. [`install_world_cpu`]
 /// fills these from a level payload without touching the renderer, so a headless
 /// caller assembles `simulate_tick`'s arguments from the return value plus the
@@ -896,6 +920,8 @@ fn rebuild_reaction_subscribers(
 pub(crate) struct WorldInstallProducts {
     /// Static colliders for every loaded kinematic mover.
     pub(crate) mover_colliders: Vec<crate::collision::moving::MoverCollider>,
+    /// Trigger reactions partitioned from the final composed active set.
+    pub(crate) trigger_bindings: TriggerBindingTable,
     /// A fresh, empty mover tick-state table. Not an install product — it is
     /// caller-owned per-tick state — returned only so the headless batch runner
     /// has one to hand `simulate_tick` without reaching into `App` (the windowed
@@ -1081,8 +1107,16 @@ pub(crate) fn install_world_cpu(
             manifest.crossings,
             active_level_tags,
         );
+        // CROSSING-CHANNEL INSTALL ORDER (E18): the detector must capture this
+        // level's local slot defaults before any connected-client network baseline is
+        // applied. A late join then observes the host's persistent state as one real
+        // crossing instead of silently arming at the already-replicated value.
+        // Network baseline application begins only after world install returns.
         rebuild_reaction_subscribers(progress_tracker, crossing_detector, script_ctx);
     }
+    // Bind after subscriber rebuild: `populate_level` has committed the final
+    // composed reaction set, so tick dispatch never re-matches a name later.
+    let trigger_bindings = build_trigger_bindings(script_ctx);
     timings.record("data_script");
 
     // Data-archetype sweep: materialize every matching map placement the built-in
@@ -1223,6 +1257,7 @@ pub(crate) fn install_world_cpu(
 
     WorldInstallProducts {
         mover_colliders,
+        trigger_bindings,
         mover_tick_states: crate::kinematic_mover::MoverTickStateTable::default(),
         active_wieldable,
         active_wieldable_descriptor,
@@ -1243,8 +1278,9 @@ mod tests {
     use crate::scripting::primitives::register_all;
     use crate::{input, options, scripting_systems, view_feel};
     use postretro_entities::{
-        CrossingCondition, CrossingDescriptor, EntityTypeDescriptor, NamedReaction,
-        PrimitiveDescriptor, ProgressDescriptor, ReactionDescriptor,
+        CrossingCondition, CrossingDescriptor, EntityTypeDescriptor, MoverCommand, NamedReaction,
+        PrimitiveDescriptor, ProgressDescriptor, ReactionDescriptor, TriggerActivation,
+        TriggerFireMode, TriggerVolumeComponent,
     };
     use postretro_entities::{
         ScriptCtx, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue, Transform,
@@ -1377,6 +1413,7 @@ mod tests {
             kinematic_mover_colliders: Vec::new(),
             kinematic_mover_tick_states: crate::kinematic_mover::MoverTickStateTable::default(),
             kinematic_mover_render: crate::runtime_movers::KinematicMoverRenderCollector::new(),
+            trigger_bindings: crate::trigger_bindings::TriggerBindingTable::default(),
             active_wieldable: None,
             active_wieldable_descriptor: None,
             client_weapon_state: None,
@@ -1481,6 +1518,21 @@ mod tests {
     ) -> postretro_entities::ScopedReaction {
         postretro_entities::ScopedReaction {
             reaction: progress_reaction(name, tag, 1.0, fire),
+            levels: Vec::new(),
+        }
+    }
+
+    fn scoped_global_set_state(name: &str, value: f32) -> postretro_entities::ScopedReaction {
+        postretro_entities::ScopedReaction {
+            reaction: NamedReaction {
+                name: name.to_string(),
+                descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                    primitive: "setState".to_string(),
+                    tag: None,
+                    on_complete: None,
+                    args: serde_json::json!({ "slot": "trigger.flag", "value": value }),
+                }),
+            },
             levels: Vec::new(),
         }
     }
@@ -2590,6 +2642,112 @@ mod tests {
                 .crossing_detector
                 .detect(&ctx.slot_table.borrow()),
             vec!["healthLow".to_string()],
+        );
+    }
+
+    // Regression: staged global reaction reload left trigger bindings pointing at the prior active set.
+    #[test]
+    fn staged_recomposition_rebinds_trigger_commands_to_the_committed_reactions() {
+        let mut app = test_app();
+        app.level = Some(level_world("trigger_reload_level", 1));
+        let trigger = {
+            let ctx = script_ctx(&app);
+            let mut entities = ctx.registry.borrow_mut();
+            let id = entities.spawn(Transform::default());
+            entities
+                .set_component(
+                    id,
+                    TriggerVolumeComponent::new(
+                        TriggerActivation::Touch,
+                        String::new(),
+                        "plate_pressed".to_string(),
+                        String::new(),
+                        MoverCommand::Start,
+                        TriggerFireMode::Multiple,
+                        0.0,
+                        true,
+                    ),
+                )
+                .expect("trigger component attaches");
+            id
+        };
+        script_ctx(&app)
+            .slot_table
+            .borrow_mut()
+            .insert("trigger.flag".to_string(), number_slot(0.0))
+            .expect("trigger fixture slot should be vacant");
+
+        script_ctx(&app)
+            .data_registry
+            .borrow_mut()
+            .replace_global_reactions(vec![scoped_global_set_state("plate_pressed", 1.0)]);
+        script_ctx(&app)
+            .data_registry
+            .borrow_mut()
+            .recompose_active_sets(&app.active_level_tags);
+        app.rebuild_active_reaction_subscribers();
+        app.rebuild_active_trigger_bindings();
+        {
+            let ctx = script_ctx(&app);
+            let mut entities = ctx.registry.borrow_mut();
+            let mut slots = ctx.slot_table.borrow_mut();
+            assert!(
+                app.trigger_bindings
+                    .execute(
+                        trigger,
+                        crate::trigger_system::TriggerEventEdge::Enter,
+                        &mut entities,
+                        &mut slots,
+                    )
+                    .residual()
+                    .is_none(),
+                "the setState-only binding has no app-side residual"
+            );
+        }
+        assert_eq!(
+            script_ctx(&app)
+                .slot_table
+                .borrow()
+                .get("trigger.flag")
+                .and_then(|record| record.value.clone()),
+            Some(SlotValue::Number(1.0)),
+        );
+
+        script_ctx(&app)
+            .data_registry
+            .borrow_mut()
+            .replace_global_reactions(vec![scoped_global_set_state("plate_pressed", 2.0)]);
+        script_ctx(&app)
+            .data_registry
+            .borrow_mut()
+            .recompose_active_sets(&app.active_level_tags);
+        app.rebuild_active_reaction_subscribers();
+        app.rebuild_active_trigger_bindings();
+        {
+            let ctx = script_ctx(&app);
+            let mut entities = ctx.registry.borrow_mut();
+            let mut slots = ctx.slot_table.borrow_mut();
+            assert!(
+                app.trigger_bindings
+                    .execute(
+                        trigger,
+                        crate::trigger_system::TriggerEventEdge::Enter,
+                        &mut entities,
+                        &mut slots,
+                    )
+                    .residual()
+                    .is_none(),
+                "the replacement setState-only binding has no app-side residual"
+            );
+        }
+        assert_eq!(
+            script_ctx(&app)
+                .slot_table
+                .borrow()
+                .get("trigger.flag")
+                .and_then(|record| record.value.clone()),
+            Some(SlotValue::Number(2.0)),
+            "the post-reload binding must not retain the old command",
         );
     }
 

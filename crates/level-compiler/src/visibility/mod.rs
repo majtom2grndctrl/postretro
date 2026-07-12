@@ -804,41 +804,26 @@ mod tests {
     }
 
     fn sealed_box_with_wedge_ceiling() -> Vec<crate::map_data::BrushVolume> {
-        let mut brushes = Vec::new();
-        brushes.push(box_volume(
-            DVec3::new(-60.0, -60.0, -60.0),
-            DVec3::new(-50.0, 60.0, 60.0),
-        ));
-        brushes.push(box_volume(
-            DVec3::new(50.0, -60.0, -60.0),
-            DVec3::new(60.0, 60.0, 60.0),
-        ));
-        brushes.push(box_volume(
-            DVec3::new(-60.0, -60.0, -60.0),
-            DVec3::new(60.0, -50.0, 60.0),
-        ));
-        brushes.push(box_volume(
-            DVec3::new(-60.0, -60.0, -60.0),
-            DVec3::new(60.0, 60.0, -50.0),
-        ));
-        brushes.push(box_volume(
-            DVec3::new(-60.0, -60.0, 50.0),
-            DVec3::new(60.0, 60.0, 60.0),
-        ));
-
         let ceiling_min = DVec3::new(-60.0, 50.0, -60.0);
         let ceiling_max = DVec3::new(60.0, 60.0, 60.0);
-        brushes.push(wedge_volume(
-            ceiling_min,
-            ceiling_max,
-            WedgeHalf::XLessEqualZ,
-        ));
-        brushes.push(wedge_volume(
-            ceiling_min,
-            ceiling_max,
-            WedgeHalf::XGreaterEqualZ,
-        ));
-        brushes
+        vec![
+            box_volume(
+                DVec3::new(-60.0, -60.0, -60.0),
+                DVec3::new(-50.0, 60.0, 60.0),
+            ),
+            box_volume(DVec3::new(50.0, -60.0, -60.0), DVec3::new(60.0, 60.0, 60.0)),
+            box_volume(
+                DVec3::new(-60.0, -60.0, -60.0),
+                DVec3::new(60.0, -50.0, 60.0),
+            ),
+            box_volume(
+                DVec3::new(-60.0, -60.0, -60.0),
+                DVec3::new(60.0, 60.0, -50.0),
+            ),
+            box_volume(DVec3::new(-60.0, -60.0, 50.0), DVec3::new(60.0, 60.0, 60.0)),
+            wedge_volume(ceiling_min, ceiling_max, WedgeHalf::XLessEqualZ),
+            wedge_volume(ceiling_min, ceiling_max, WedgeHalf::XGreaterEqualZ),
+        ]
     }
 
     #[test]

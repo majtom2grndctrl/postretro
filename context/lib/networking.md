@@ -72,6 +72,10 @@ The net crate emits typed snapshots and **never mutates the registry.** All regi
 
 `NetworkId` is the network-stable identity assigned by the host; the host owns an `EntityId→NetworkId` allocator (monotonic, never recycled, stable for an entity's lifetime) and the client owns the inverse `NetworkId→EntityId` map. Stable ids keep the client's mapping coherent across snapshots. This is the network projection of the entity-model ownership rule (`entity_model.md` §6): game logic owns entities; replication is just another reader (host) and a controlled writer (client).
 
+### Snapshot apply ordering
+
+On every client game-logic frame, apply received snapshots before state-crossing detection. Snapshot apply mints a frame-stamped `SnapshotsApplied` witness; crossing detection consumes it after game logic settles same-frame local slot writes. The witness cannot be forged or reused from a prior frame, so crossings always observe received replicated state before they inspect the slot table.
+
 Current component payloads are `Transform`, `PlayerMovementState`, `MeshAnimationState`, and `KinematicMoverState`, added in `ComponentKind` numeric order. `MeshAnimationState` carries the current animation state name; descriptor mesh data stays local. `KinematicMoverState` carries phase only: `mover_id`, segment index, direction, mode, elapsed/wait milliseconds, started/completed flags, velocity, and an optional target segment for a move-and-hold command. Static path data stays in PRL `KinematicGeometry`.
 
 Player movement grounding is a widened ground reference (`Airborne`, `World`, or `Mover(mover_id)`) rather than a bare boolean. The net crate validates only the enum shape and finite numeric fields; resolving a mover id to a loaded local mover is engine-owned client apply.

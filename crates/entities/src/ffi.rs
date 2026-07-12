@@ -248,6 +248,10 @@ impl<'js> FromJs<'js> for ComponentValue {
                 ctx,
                 "KinematicMover component is engine-managed and not exposed to scripts",
             )),
+            "trigger_volume" => Err(rquickjs::Exception::throw_type(
+                ctx,
+                "TriggerVolume component is engine-managed and not exposed to scripts",
+            )),
             "fog_volume" => fog_from_js(ctx, &o),
             other => Err(rquickjs::Exception::throw_type(
                 ctx,
@@ -405,6 +409,10 @@ impl FromLua for ComponentValue {
             )),
             "kinematic_mover" => Err(mlua::Error::RuntimeError(
                 "KinematicMover component is engine-managed and not exposed to scripts"
+                    .to_string(),
+            )),
+            "trigger_volume" => Err(mlua::Error::RuntimeError(
+                "TriggerVolume component is engine-managed and not exposed to scripts"
                     .to_string(),
             )),
             "fog_volume" => fog_from_lua(t),
@@ -723,23 +731,30 @@ fn lua_to_json_inner(value: LuaValue, depth: usize) -> mlua::Result<serde_json::
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rquickjs::CatchResultExt;
 
     #[test]
-    fn raw_kinematic_mover_component_is_rejected_by_both_script_ffs() {
+    fn raw_engine_managed_components_are_rejected_by_both_script_ffis() {
         let runtime = rquickjs::Runtime::new().unwrap();
         let context = rquickjs::Context::full(&runtime).unwrap();
         context.with(|ctx| {
-            let value: JsValue = ctx.eval("({ kind: 'kinematic_mover' })").unwrap();
-            let err = ComponentValue::from_js(&ctx, value).unwrap_err();
-            assert!(err.to_string().contains("engine-managed"));
+            for kind in ["kinematic_mover", "trigger_volume"] {
+                let value = Object::new(ctx.clone()).unwrap();
+                value.set("kind", kind).unwrap();
+                let err = ComponentValue::from_js(&ctx, value.into_value())
+                    .catch(&ctx)
+                    .unwrap_err();
+                assert!(err.is_exception(), "{kind} must throw a JavaScript error");
+                assert!(err.to_string().contains("engine-managed"));
+            }
         });
 
         let lua = Lua::new();
-        let value: LuaValue = lua
-            .load("return { kind = 'kinematic_mover' }")
-            .eval()
-            .unwrap();
-        let err = ComponentValue::from_lua(value, &lua).unwrap_err();
-        assert!(err.to_string().contains("engine-managed"));
+        for kind in ["kinematic_mover", "trigger_volume"] {
+            let value = lua.create_table().unwrap();
+            value.set("kind", kind).unwrap();
+            let err = ComponentValue::from_lua(LuaValue::Table(value), &lua).unwrap_err();
+            assert!(err.to_string().contains("engine-managed"));
+        }
     }
 }

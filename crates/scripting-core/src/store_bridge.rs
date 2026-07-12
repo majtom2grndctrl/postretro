@@ -477,7 +477,10 @@ fn replication_scope_for(
     }
 }
 
-fn json_value_for_slot(
+/// Convert a JSON `setState` payload into the slot's native value type without
+/// mutating the table. Fixed-tick engine binders use this before scheduling a
+/// validated batch write.
+pub fn json_value_for_slot(
     name: &str,
     slot_type: &SlotType,
     value: &Value,

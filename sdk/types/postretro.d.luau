@@ -517,13 +517,14 @@ export type LightAnimation = {
 
 export type LightComponent = { origin: Vec3, lightType: LightKind, intensity: number, color: Vec3, falloffModel: FalloffKind, falloffRange: number, coneAngleInner: number?, coneAngleOuter: number?, coneDirection: Vec3?, isDynamic: boolean, animation: LightAnimation? }
 
---- Component-name literals accepted by `worldQuery` and the `world.query` SDK wrapper. New queryable component types extend this union. Valid values: `light`, `transform`, `emitter`, `fog_volume`, `kinematic_mover`, `particle`, `sprite_visual`.
+--- Component-name literals accepted by `worldQuery` and the `world.query` SDK wrapper. New queryable component types extend this union. Valid values: `light`, `transform`, `emitter`, `fog_volume`, `kinematic_mover`, `trigger_volume`, `particle`, `sprite_visual`.
 export type WorldQueryComponent =
   "light"
   | "transform"
   | "emitter"
   | "fog_volume"
   | "kinematic_mover"
+  | "trigger_volume"
   --- Always returns []. Engine-managed; scripts never iterate individual particles.
   | "particle"
   --- Always returns []. Engine-managed.
@@ -578,6 +579,15 @@ export type MoverEntity = {
   tags: {string},
 }
 
+--- Raw trigger snapshot returned by `worldQuery` when filtering for trigger volumes. Arming and activation phase remain engine-managed; the SDK wrapper exposes only arm/disarm command builders.
+export type TriggerVolumeEntity = {
+  id: EntityId,
+  --- Trigger position at query time (from the entity's Transform).
+  position: Vec3,
+  --- The entity's tags at query time. Empty array if untagged.
+  tags: {string},
+}
+
 --- Returns true if the entity id refers to a live entity.
 declare function entityExists(id: EntityId): boolean
 
@@ -596,8 +606,8 @@ declare function storeWrite(name: string, value: any): ()
 --- Return the current world gravity in m/s² (negative = downward; positive = upward). Seeded from the worldspawn `initialGravity` KVP at level load and persists until the next level load or a `worldSetGravity` call. The `world.ts` vocabulary module wraps this as `world.getGravity`.
 declare function worldGetGravity(): number
 
---- Return an array of raw entity snapshots matching the filter. Available in definition and data contexts. Filter shape: { component: "light" | "transform" | "emitter" | "fog_volume" | "kinematic_mover" | "particle" | "sprite_visual", tag?: string }. `"particle"` and `"sprite_visual"` always return `[]` (engine-managed; scripts never iterate individual particles). Unknown component values raise InvalidArgument. The `world.ts` vocabulary module wraps these snapshots as `world.query` handles.
-declare worldQuery: ((filter: { component: "light", tag: string? }) -> {LightEntity}) & ((filter: { component: "emitter", tag: string? }) -> {EmitterEntity}) & ((filter: { component: "fog_volume", tag: string? }) -> {FogVolumeEntity}) & ((filter: { component: "kinematic_mover", tag: string? }) -> {MoverEntity}) & ((filter: WorldQueryFilter) -> {Entity})
+--- Return an array of raw entity snapshots matching the filter. Available in definition and data contexts. Filter shape: { component: "light" | "transform" | "emitter" | "fog_volume" | "kinematic_mover" | "trigger_volume" | "particle" | "sprite_visual", tag?: string }. `"particle"` and `"sprite_visual"` always return `[]` (engine-managed; scripts never iterate individual particles). Unknown component values raise InvalidArgument. The `world.ts` vocabulary module wraps these snapshots as `world.query` handles.
+declare worldQuery: ((filter: { component: "light", tag: string? }) -> {LightEntity}) & ((filter: { component: "emitter", tag: string? }) -> {EmitterEntity}) & ((filter: { component: "fog_volume", tag: string? }) -> {FogVolumeEntity}) & ((filter: { component: "kinematic_mover", tag: string? }) -> {MoverEntity}) & ((filter: { component: "trigger_volume", tag: string? }) -> {TriggerVolumeEntity}) & ((filter: WorldQueryFilter) -> {Entity})
 
 --- Set the world gravity in m/s² (negative = downward; positive = upward). NaN and non-finite values are silently ignored (a warning is logged) so a misbehaving script cannot wedge particle physics. Effect is immediate and persists until the next level load or another `worldSetGravity` call. The `world.ts` vocabulary module wraps this as `world.setGravity`.
 declare function worldSetGravity(value: number): ()
@@ -669,7 +679,8 @@ export type LightEntityHandle = {
 }
 
 --- Generic entity handle returned by `world:query` when the component is
---- not "light", "emitter", "fog_volume", or "kinematic_mover". Carries only id, position, and tags.
+--- not "light", "emitter", "fog_volume", "kinematic_mover", or
+--- "trigger_volume". Carries only id, position, and tags.
 export type EntityHandle = {
   id: EntityId,
   position: Vec3,
@@ -704,17 +715,29 @@ export type MoverEntityHandle = {
   goToPathNode: (self: MoverEntityHandle, node: string) -> {MoverGoToPathNodeStep},
 }
 
+--- Typed trigger handle returned by `world:query({ component = "trigger_volume" })`.
+--- Arming state remains engine-owned; methods return closed command steps.
+export type TriggerVolumeHandle = {
+  id: EntityId,
+  position: Vec3,
+  tags: {string},
+  arm: (self: TriggerVolumeHandle) -> {ArmTriggerStep},
+  disarm: (self: TriggerVolumeHandle) -> {DisarmTriggerStep},
+}
+
 --- `world` vocabulary global. Wraps `worldQuery` with a typed handle.
 --- `"light"` returns `LightEntityHandle` values (with capability methods);
 --- `"emitter"` returns `EmitterEntity` values carrying the full
 --- `BillboardEmitterComponent` snapshot under `component`; `"fog_volume"`
 --- returns `FogVolumeHandle` values; `"kinematic_mover"` returns
---- `MoverEntityHandle`; other components fall back to the bare `EntityHandle` shape.
+--- `MoverEntityHandle`; `"trigger_volume"` returns `TriggerVolumeHandle`;
+--- other components fall back to the bare `EntityHandle` shape.
 export type World = {
   query: ((self: World, filter: { component: "light", tag: string? }) -> {LightEntityHandle})
        & ((self: World, filter: { component: "emitter", tag: string? }) -> {EmitterEntity})
        & ((self: World, filter: { component: "fog_volume", tag: string? }) -> {FogVolumeHandle})
        & ((self: World, filter: { component: "kinematic_mover", tag: string? }) -> {MoverEntityHandle})
+       & ((self: World, filter: { component: "trigger_volume", tag: string? }) -> {TriggerVolumeHandle})
        & ((self: World, filter: WorldQueryFilter) -> {EntityHandle}),
   --- Current world gravity in m/s² (negative = downward; positive = upward).
   --- Seeded from the worldspawn `initialGravity` KVP at level load and
@@ -798,17 +821,27 @@ export type ProgressReactionDescriptor = {
 }
 
 --- Primitive reaction body: invokes the named Rust primitive. With `tag`, it
---- targets entities carrying that tag and mutates them. Without `tag`, it is a
---- system reaction (no entities) that enqueues a typed engine command —
---- `playSound`, `rumble`, `flashScreen`, the UI-stack reactions. `args`
---- carries the primitive's typed payload (e.g. `{ rate = 0 }` for
---- `setEmitterRate`, `{ sound = "alarm" }` for `playSound`).
+--- targets entities carrying that tag and mutates them. Tag-targeted primitives
+--- include emitter/fog/mover commands, `applyDamage`, `setAnimationState`,
+--- `armTrigger`, and `disarmTrigger`; arm/disarm use their empty typed args
+--- below. Without `tag`, it is a system reaction (no entities) that enqueues a
+--- typed engine command — `playSound`, `rumble`, `flashScreen`, the UI-stack
+--- reactions. `args` carries the primitive's typed payload (e.g. `{ rate = 0 }`
+--- for `setEmitterRate`, `{ sound = "alarm" }` for `playSound`).
 export type PrimitiveReactionDescriptor = {
   primitive: string,
   tag: string?,
   args: { [string]: any }?,
   onComplete: string?,
 }
+
+--- Tag-targeted trigger primitive `armTrigger` takes no payload; its target
+--- comes from `PrimitiveReactionDescriptor.tag`.
+export type ArmTriggerArgs = {}
+
+--- Tag-targeted trigger primitive `disarmTrigger` takes no payload; its target
+--- comes from `PrimitiveReactionDescriptor.tag`.
+export type DisarmTriggerArgs = {}
 
 --- One step in a `sequence` reaction body: invokes the named sequenced
 --- primitive against the given entity with `args`. Sequence steps target a
@@ -892,9 +925,21 @@ export type MoverGoToPathNodeStep = {
   args: { node: string },
 }
 
+export type ArmTriggerStep = {
+  id: EntityId,
+  primitive: "armTrigger",
+  args: ArmTriggerArgs,
+}
+
+export type DisarmTriggerStep = {
+  id: EntityId,
+  primitive: "disarmTrigger",
+  args: DisarmTriggerArgs,
+}
+
 --- Union of every supported sequence step shape. New sequenced primitives
 --- extend this union.
-export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep
+export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | ArmTriggerStep | DisarmTriggerStep
 
 --- Sequence reaction body: ordered per-entity primitive invocations. Steps
 --- run in array order at dispatch.

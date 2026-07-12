@@ -29,7 +29,7 @@ use crate::provenance::DescriptorProvenance;
 /// above the design ceiling for a single level. When a slot's generation is
 /// bumped past `u16::MAX` on despawn, the slot is **permanently retired**
 /// (removed from the free list and never re-allocated); see [`EntityRegistry::despawn`].
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct EntityId(u32);
 
 impl EntityId {

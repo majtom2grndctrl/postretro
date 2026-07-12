@@ -45,10 +45,10 @@ impl PresentHandle {
 }
 
 /// Minimum useful ambient. Default value seeded into the Diagnostics panel slider on first open.
-pub const DEFAULT_AMBIENT_FLOOR: f32 = 0.001;
+pub const DEFAULT_AMBIENT_FLOOR: f32 = 0.0;
 
 /// Full SH contribution weight — production default. Default value seeded into the Diagnostics panel slider on first open.
-pub const DEFAULT_INDIRECT_SCALE: f32 = 1.0;
+pub const DEFAULT_INDIRECT_SCALE: f32 = 0.33;
 
 /// Full dynamic baked-static-direct SH weight — production default. Seeded into
 /// the Diagnostics panel slider on first open.

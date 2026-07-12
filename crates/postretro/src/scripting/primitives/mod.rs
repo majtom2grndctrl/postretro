@@ -248,11 +248,11 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("AmmoResource")
-        .doc("Finite-ammunition tuning for a weapon. Defines the authored magazine, reserve, shot cost, and reload timing contract.")
+        .doc("Finite-ammunition tuning for a weapon. Defines the authored magazine, starting reserve balance, shot cost, and reload timing contract.")
         .field("type", "String", "Ammo resource identifier. Must be non-empty ASCII, at most 64 bytes, and use only [A-Za-z0-9_.:-].")
         .field("magazine", "u32", "Magazine capacity. Must be at least 1.")
         .field("costPerShot?", "u32", "Units consumed per shot. Must be at least 1; defaults to 1.")
-        .field("reserve", "u32", "Reserve capacity. Any unsigned 32-bit value is accepted, including 0.")
+        .field("reserve", "u32", "Starting reserve balance credited at spawn. Any unsigned 32-bit value is accepted, including 0.")
         .field("reloadMs?", "u32", "Reload duration in milliseconds. Must be at least 1; defaults to 1000.")
         .finish();
     registry

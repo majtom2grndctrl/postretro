@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use glam::Vec3;
 use parry3d::math::{Point, Vector};
 use postretro_entities::EntityTypeDescriptor;
-use postretro_entities::components::weapon::{EffectiveStats, WeaponComponent};
+use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::registry::{EntityId, EntityRegistry};
 use postretro_foundation::{FireMode, ResolutionMode};
 
@@ -308,6 +308,7 @@ pub(crate) fn tick(
         hit_zone_store,
         anim_time,
         tick_dt,
+        false,
     )
 }
 
@@ -320,6 +321,7 @@ pub(crate) fn tick_resolved(
     hit_zone_store: &HitZoneStore,
     anim_time: f64,
     tick_dt: f32,
+    reload_started_this_tick: bool,
 ) -> WeaponFireEvents {
     let Some(weapon_id) = active_wieldable else {
         return WeaponFireEvents::default();
@@ -331,7 +333,21 @@ pub(crate) fn tick_resolved(
     let mut weapon = existing.clone();
 
     let stats = weapon.effective();
-    let fire = apply_weapon_fire_state(&mut weapon, command, &stats, tick_dt);
+    let damage = stats.damage;
+    let range = stats.range;
+    let resolution = stats.resolution;
+    let fire_mode = stats.fire_mode;
+    let cooldown_ms = stats.cooldown_ms;
+    let cost_per_shot = stats.ammo.as_ref().map(|ammo| ammo.cost_per_shot);
+    let fire = apply_weapon_fire_state(
+        &mut weapon,
+        command,
+        fire_mode,
+        cooldown_ms,
+        cost_per_shot,
+        tick_dt,
+        reload_started_this_tick,
+    );
     let events = match fire {
         WeaponFireAuthorization::Accepted => fire_hitscan(
             command.aim_origin,
@@ -340,9 +356,9 @@ pub(crate) fn tick_resolved(
             registry,
             hit_zone_store,
             anim_time,
-            stats.damage,
-            stats.range,
-            stats.resolution,
+            damage,
+            range,
+            resolution,
         ),
         WeaponFireAuthorization::Empty(ActivationOutcome::Empty) => WeaponFireEvents {
             dry_fire: true,
@@ -362,6 +378,7 @@ pub(crate) fn tick_state_only(
     active_wieldable: Option<EntityId>,
     command: &WeaponFireCommand,
     tick_dt: f32,
+    reload_started_this_tick: bool,
 ) -> WeaponFireAuthorization {
     let Some(weapon_id) = active_wieldable else {
         return WeaponFireAuthorization::Rejected;
@@ -372,7 +389,18 @@ pub(crate) fn tick_state_only(
     };
     let mut weapon = existing.clone();
     let stats = weapon.effective();
-    let result = apply_weapon_fire_state(&mut weapon, command, &stats, tick_dt);
+    let fire_mode = stats.fire_mode;
+    let cooldown_ms = stats.cooldown_ms;
+    let cost_per_shot = stats.ammo.as_ref().map(|ammo| ammo.cost_per_shot);
+    let result = apply_weapon_fire_state(
+        &mut weapon,
+        command,
+        fire_mode,
+        cooldown_ms,
+        cost_per_shot,
+        tick_dt,
+        reload_started_this_tick,
+    );
     let _ = registry.set_component(weapon_id, weapon);
     result
 }
@@ -380,17 +408,20 @@ pub(crate) fn tick_state_only(
 fn apply_weapon_fire_state(
     weapon: &mut WeaponComponent,
     command: &WeaponFireCommand,
-    stats: &EffectiveStats,
+    fire_mode: FireMode,
+    cooldown_ms: f32,
+    cost_per_shot: Option<u32>,
     tick_dt: f32,
+    reload_started_this_tick: bool,
 ) -> WeaponFireAuthorization {
     let dt_ms = (tick_dt.max(0.0)) * 1000.0;
     weapon.cooldown_remaining_ms = (weapon.cooldown_remaining_ms - dt_ms).max(0.0);
 
-    let wants_fire = match stats.fire_mode {
+    let wants_fire = match fire_mode {
         FireMode::Semi => command.button.pressed && !weapon.shoot_press_consumed,
         FireMode::Auto => command.button.active,
     };
-    if stats.fire_mode == FireMode::Semi && command.button.pressed {
+    if fire_mode == FireMode::Semi && command.button.pressed {
         weapon.shoot_press_consumed = true;
     } else if !command.button.active {
         weapon.shoot_press_consumed = false;
@@ -400,18 +431,20 @@ fn apply_weapon_fire_state(
         return WeaponFireAuthorization::Rejected;
     }
 
-    if weapon.reload_remaining_ms > 0 {
+    // Starting a reload owns the entire tick even when its duration is no
+    // longer than this tick and the atomic transfer already completed.
+    if reload_started_this_tick || weapon.reload_remaining_ms > 0 {
         return WeaponFireAuthorization::Rejected;
     }
 
-    if let Some(ammo) = stats.ammo.as_ref() {
-        if weapon.magazine < ammo.cost_per_shot {
+    if let Some(cost_per_shot) = cost_per_shot {
+        if weapon.magazine < cost_per_shot {
             return WeaponFireAuthorization::Empty(ActivationOutcome::Empty);
         }
-        weapon.magazine -= ammo.cost_per_shot;
+        weapon.magazine -= cost_per_shot;
     }
 
-    weapon.cooldown_remaining_ms = stats.cooldown_ms;
+    weapon.cooldown_remaining_ms = cooldown_ms;
     WeaponFireAuthorization::Accepted
 }
 
@@ -1161,8 +1194,19 @@ mod tests {
         };
         let mut component = ammo_weapon_component(FireMode::Semi, 100.0, 2, 3);
         let stats = component.effective();
+        let fire_mode = stats.fire_mode;
+        let cooldown_ms = stats.cooldown_ms;
+        let cost_per_shot = stats.ammo.as_ref().map(|ammo| ammo.cost_per_shot);
         assert_eq!(
-            apply_weapon_fire_state(&mut component, &command, &stats, 1.0 / 60.0),
+            apply_weapon_fire_state(
+                &mut component,
+                &command,
+                fire_mode,
+                cooldown_ms,
+                cost_per_shot,
+                1.0 / 60.0,
+                false,
+            ),
             WeaponFireAuthorization::Empty(ActivationOutcome::Empty)
         );
         assert_eq!(component.magazine, 2);
@@ -1191,6 +1235,7 @@ mod tests {
             &HitZoneStore::new(),
             0.0,
             1.0 / 60.0,
+            false,
         );
 
         assert_eq!(events.event_names(), vec!["dry_fire"]);
@@ -1283,7 +1328,7 @@ mod tests {
             can_fire: true,
         };
 
-        let result = tick_state_only(&mut registry, Some(weapon_id), &command, 1.0 / 60.0);
+        let result = tick_state_only(&mut registry, Some(weapon_id), &command, 1.0 / 60.0, false);
 
         assert_eq!(result, WeaponFireAuthorization::Accepted);
         let weapon = registry
@@ -1534,7 +1579,7 @@ mod tests {
         assert_vec3_approx(impact.point, Vec3::new(0.0, 0.0, -5.0));
     }
 
-    // --- Skeletal hit-zone delegation (Task 4) ------------------------------
+    // --- Skeletal hit-zone delegation ---------------------------------------
 
     use crate::scripting_systems::hit_zones::ModelHitZones;
     use postretro_entities::components::mesh::MeshComponent;

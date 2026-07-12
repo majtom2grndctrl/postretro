@@ -70,6 +70,19 @@ fn js_to_json_inner<'js>(
         return Ok(serde_json::Value::Number(serde_json::Number::from(i)));
     }
     if let Some(f) = v.as_float() {
+        // QuickJS tags only signed 32-bit values as integers. Preserve every
+        // other exactly represented JavaScript integer as a JSON integer too,
+        // so serde sees the same numeric shape as it does from Luau. Restrict
+        // normalization to JavaScript's safe-integer range; outside it the
+        // source number may already have lost integer precision.
+        if f.is_finite() && f.fract() == 0.0 && f.abs() <= 9_007_199_254_740_991.0 {
+            let number = if f >= 0.0 {
+                serde_json::Number::from(f as u64)
+            } else {
+                serde_json::Number::from(f as i64)
+            };
+            return Ok(serde_json::Value::Number(number));
+        }
         return Ok(serde_json::Number::from_f64(f)
             .map(serde_json::Value::Number)
             .unwrap_or(serde_json::Value::Null));
@@ -89,6 +102,12 @@ fn js_to_json_inner<'js>(
         let mut map = serde_json::Map::new();
         for entry in obj.props::<String, JsValue>() {
             let (k, val) = entry?;
+            // JSON.stringify and ordinary TypeScript authoring both treat an
+            // undefined object property as absent. Arrays retain their slot
+            // and continue to convert undefined to null above.
+            if val.is_undefined() {
+                continue;
+            }
             map.insert(k, js_to_json_inner(ctx, val, depth + 1)?);
         }
         return Ok(serde_json::Value::Object(map));
@@ -240,5 +259,36 @@ mod tests {
         let value = lua.load("return { 10, 20, 30 }").eval().unwrap();
 
         assert_eq!(lua_to_json(value).unwrap(), serde_json::json!([10, 20, 30]));
+    }
+
+    #[test]
+    fn js_to_json_preserves_safe_integral_numbers_above_i32() {
+        let rt = rquickjs::Runtime::new().unwrap();
+        let js = rquickjs::Context::full(&rt).unwrap();
+        js.with(|ctx| {
+            for (source, expected) in [
+                ("2147483648", serde_json::json!(2_147_483_648_u64)),
+                ("4294967295", serde_json::json!(4_294_967_295_u64)),
+                ("-2147483649", serde_json::json!(-2_147_483_649_i64)),
+            ] {
+                let value: JsValue = ctx.eval(source).unwrap();
+                assert_eq!(js_to_json(&ctx, value).unwrap(), expected);
+            }
+        });
+    }
+
+    #[test]
+    fn js_to_json_omits_undefined_object_properties_but_preserves_array_slots() {
+        let rt = rquickjs::Runtime::new().unwrap();
+        let js = rquickjs::Context::full(&rt).unwrap();
+        js.with(|ctx| {
+            let value: JsValue = ctx
+                .eval("({ omitted: undefined, explicit: null, values: [undefined, null] })")
+                .unwrap();
+            assert_eq!(
+                js_to_json(&ctx, value).unwrap(),
+                serde_json::json!({ "explicit": null, "values": [null, null] })
+            );
+        });
     }
 }

@@ -201,11 +201,14 @@ Client-authoritative combat splits weapon fire into two independently-owned halv
 riding the prediction/reconciliation contract above — no server rewind, no
 lag-compensation history window (see *Non-goals*).
 
-**FIRE is host-authoritative, client-predicted.** Cooldown and ammo — how often and how
-many shots — are the damage-integrity surface. The host validates fire legitimacy,
+**FIRE is host-authoritative; cooldown is client-predicted.** Cooldown and ammo — how
+often and how many shots — are the damage-integrity surface. The host validates fire
+legitimacy, consumes the magazine, owns timed reload progression and reserve transfer,
 advances cooldown, and mints an authorized shot; it never casts a ray. The firing client
-predicts its own cooldown locally and reconciles against an owner-private cooldown fact,
-the same pattern movement prediction uses.
+predicts its own cooldown and reconciles against an owner-private cooldown fact, the same
+pattern movement prediction uses. Client-side ammo and reload prediction/reconciliation
+remain out of scope. Owner-private state-slot projection supplies each owner with the
+host's authoritative magazine, reserve, reload progress, and reload-active state.
 
 **HIT is client-authoritative declaration.** The client casts its own ray against the
 world it renders and declares the result; the host validates cheaply and applies damage.
@@ -222,9 +225,10 @@ firing connection. A declaration is accepted only when its `shot_id` matches a s
 shot owned by the declaring client — ownership is checked, not assumed, because `shot_id`
 derives from public inputs (pawn network id + tick) and is therefore guessable. Accepting
 a declaration retires its shot, so one authorized fire accepts at most one declaration. A
-fire the host rejected (cooling, or later, out of ammo) mints no authorized shot, so no
-declaration can bind to it — free damage is structurally unreachable, not merely
-discouraged by a check. This binding is validated first, before any geometry check.
+fire the host rejected because it is cooling, reloading, or lacks enough magazine ammo
+mints no authorized shot, so no declaration can bind to it — free damage is structurally
+unreachable, not merely discouraged by a check. This binding is validated first, before
+any geometry check.
 
 ### World-LOS-only validation
 
@@ -258,10 +262,11 @@ standing-eye ray would false-reject a legitimate crouched shot near cover.
   arrive on a later tick than its fire (projectile-ready). An empty record list is valid —
   it declares a shot that hit nothing.
 - **`ShotVerdict`** (server -> client, owner-private): the per-shot accept/reject fact,
-  scoped to the declaring client only and never broadcast. A separate owner-private state
-  slot carries the firing pawn's own weapon cooldown, following the same per-owner
-  projection pattern as `player.health`. The firing client reconciles its predicted fire
-  and hitmarker state against these two facts.
+  scoped to the declaring client only and never broadcast. Owner-private state slots
+  carry the firing pawn's cooldown, magazine, reserve, reload progress, and reload-active
+  state, following the same per-owner projection pattern as `player.health`. The firing
+  client reconciles predicted fire and hitmarker state against the verdict and cooldown;
+  ammo and reload remain authoritative projections rather than predicted state.
 
 ### Version gates
 

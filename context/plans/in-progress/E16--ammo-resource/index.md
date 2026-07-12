@@ -1,6 +1,6 @@
 # E16 - Ammo Resource
 
-> **Status:** ready.
+> **Status:** in-progress.
 >
 > **Epic:** 16 - Combat.
 >
@@ -13,11 +13,11 @@
 > `crates/postretro/src/netcode/wire_convert.rs`), the `neutral_sim_command`
 > default (`crates/postretro/src/netcode/command_queue.rs:452`), and the
 > per-pawn reload delivery seam `deliver_reload_to_weapon`
-> (`crates/postretro/src/sim/mod.rs:424`) — today a no-op that emits a
-> `ReloadDelivery` (`sim/mod.rs:70`) with no ammo transfer. Both the local/host
-> pawn (`sim/mod.rs:200`) and remote co-op pawns (`run_remote_weapon_commands`,
-> `sim/mod.rs:382`) already route reload intent through that seam. This spec
-> **fills** it. The production host resolver `host_resolve_remote_commands`
+> (`crates/postretro/src/sim/mod.rs:424`). Both the local/host pawn
+> (`sim/mod.rs:200`) and remote co-op pawns (`run_remote_weapon_commands`,
+> `sim/mod.rs:382`) route reload intent through that seam. This spec makes the
+> seam own reload timing and ammo transfer. The production host resolver
+> `host_resolve_remote_commands`
 > (`command_queue.rs:396`) already resolves the full per-pawn `SimCommand`
 > (movement + fire + reload); there is no movement-only limitation to work
 > around.
@@ -281,7 +281,9 @@ Add to `WeaponComponent`:
 - the live `magazine: u32`;
 - the live reload timer `reload_remaining_ms: u32` (0 = not reloading) and
   `reload_total_ms: u32` (the effective duration sampled at reload start, so
-  progress reads `1 - remaining / total`).
+  progress reads `1 - remaining / total`), plus a serde-defaulted fractional
+  elapsed-millisecond carry. The carry prevents fixed-tick rounding drift while
+  keeping HUD and replication timer fields as `u32`.
 
 `from_descriptor` initializes the tuning and magazine from the descriptor's
 `AmmoResource` (0 / absent when `resource: None`), the magazine materializing at
@@ -396,15 +398,12 @@ needs the same treatment Task 2 gives `magazine` and the reload timer — a
 so it survives hot reload; otherwise a freed edge under a held R re-triggers a
 second reload.
 
-Fill the shipped `deliver_reload_to_weapon` seam (`sim/mod.rs:424`, today emits a
-bare `ReloadDelivery` and early-returns when the reload bit is false, transferring
-no ammo). It is already called each tick for the local/host pawn (`sim/mod.rs:200`)
-and remote co-op pawns (`run_remote_weapon_commands`, `sim/mod.rs:382`) — filling
-it wires reload for every pawn against that pawn's `AmmoReserve`. Widen its
-signature to take `&mut` registry access and the fixed-tick delta (it needs the
-weapon component and the pawn's `AmmoReserve`), and **remove the current
-early-return-when-`reload`-is-false guard** — a released button must still advance
-and complete an in-flight reload. All logic runs inside this one seam each tick:
+The shipped `deliver_reload_to_weapon` seam (`sim/mod.rs:424`) owns reload timing
+and ammo transfer for every pawn against that pawn's `AmmoReserve`. It is called
+each tick for the local/host pawn (`sim/mod.rs:200`) and remote co-op pawns
+(`run_remote_weapon_commands`, `sim/mod.rs:382`). Its contract requires mutable
+registry access and the fixed-tick delta so a released button still advances and
+completes an in-flight reload. All logic runs inside this one seam each tick:
 
 - **On a fresh rising edge with an ammo resource — Guards (start-time):** a fresh
   edge while already reloading is a silent no-op (no `ReloadDelivery`) — the
@@ -413,10 +412,12 @@ and complete an in-flight reload. All logic runs inside this one seam each tick:
   `ReloadDelivery` (`blocked-full` / `blocked-empty`); no timer starts and no
   rounds move.
 - **On that same fresh edge — Start:** set
-  `reload_total_ms = reload_remaining_ms = effective().reload_ms`.
+  `reload_total_ms = reload_remaining_ms = effective().reload_ms` and clear the
+  fractional elapsed carry.
 - **Every tick while `reload_remaining_ms > 0`, regardless of the reload bit —
-  Advance:** decrement `reload_remaining_ms` by the fixed-tick delta (a released
-  button must still complete a non-cancellable reload). Do this here, *not* on the
+  Advance:** accumulate the fixed-tick delta in milliseconds, decrement by whole
+  elapsed milliseconds, and carry the fraction into the next tick. A released
+  button must still complete a non-cancellable reload. Do this here, *not* on the
   cooldown-decrement pass: `cooldown_remaining_ms` is decremented in the private
   `apply_weapon_fire_state` (`weapon/mod.rs:376`), which is weapon-only with no
   `AmmoReserve` in scope; the reload timer must live where the pawn reserve is
@@ -425,9 +426,11 @@ and complete an in-flight reload. All logic runs inside this one seam each tick:
   `take(type, min(capacity - magazine, available(type)))` and add the returned
   rounds to the magazine. `take` is the atomic step; never index the pool
   directly. Evaluate the `min`/`take` at completion against the live reserve.
+  A `Started` outcome owns the rest of its start tick: fire stays blocked that
+  tick even when a short reload also reaches `Completed` immediately.
 
-Reload does not interrupt cooldown, does not cancel on fire (Task 4 blocks the
-trigger while reloading), and is not a per-shell state machine (out of scope).
+Reload does not interrupt cooldown, does not cancel on fire (the fire gate blocks
+the trigger while reloading), and is not a per-shell state machine (out of scope).
 Reload skips the `weapon_fire_command` → `WeaponFireCommand` hop entirely — that
 command is aim/fire only; reload rides `SimCommand.reload` and `ReloadDelivery`.
 
@@ -442,20 +445,17 @@ a closer analog than `player.health`. Flip the already-shipped
 `ReplicationScope::None` to `OwnerPrivatePlayer` (the reload-feedback plan
 deferred this to the real producer). Adding two slots and re-scoping two breaks
 two tests in the catalog's test module — update both:
-`built_in_catalog_preserves_wire_names_and_capabilities` (its hard-coded
-wire-name vector, currently 10 entries at `:626-640` — insert the two new names in
-sorted position; it also asserts `reload_active.network == ReplicationScope::None`
-at `:678`, which must flip to `OwnerPrivatePlayer` when `player.reloadActive` is
-re-scoped) and **`player_owner_private_slots_are_replicated`** (`:711`,
-which asserts the owner-private *set* — currently `{player.health,
-player.maxHealth, player.weaponCooldownMs}` at `:718-748` with every other slot
-`None`; add `player.ammo`, `player.ammoReserve`, `player.reloadProgress`,
-`player.reloadActive` to that owner-private set). The same flip also breaks three tests in
-`netcode/state_slots.rs`, which seeds `SlotTable::new()` from this catalog —
-update all three: `build_includes_only_replicated_slots_sorted_by_name` (`:805`,
-hard-coded 5-name replicated vector → 9), `default_table_has_player_owner_private_slots`
-(`:841`, 3-slot set → 7), and `net_schema_carries_fingerprint_and_descriptors`
-(`:906`, asserts `net.len() == 5` → 9). No version bump is required: the replicated
+`built_in_catalog_preserves_wire_names_and_capabilities` must assert the full
+sorted wire-name vector includes `player.ammo` and `player.ammoReserve`, and that
+both reload slots use `OwnerPrivatePlayer`. The
+**`player_owner_private_slots_are_replicated`** test must assert the exact
+owner-private set: `player.ammo`, `player.ammoReserve`, `player.health`,
+`player.maxHealth`, `player.reloadActive`, `player.reloadProgress`, and
+`player.weaponCooldownMs`; every other built-in slot remains `None`. The
+`netcode/state_slots.rs` tests must derive the same contract from
+`SlotTable::new()`: replicated names stay sorted, the default schema contains
+exactly those owner-private player slots, and the net schema carries matching
+descriptors and fingerprint. No version bump is required: the replicated
 state-slot fingerprint (`compute_fingerprint`, `state_slots.rs:197`) is
 content-derived — it hashes each replicated entry's name/type/range/scope, so
 adding and re-scoping slots changes it automatically and both peers recompute it

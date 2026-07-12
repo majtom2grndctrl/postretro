@@ -497,7 +497,7 @@ fn descriptor_ammo_for_pawn(
         "player.ammoReserve" => ammo.as_ref().map(|ammo| {
             let available = registry
                 .get_component::<AmmoReserve>(pawn)
-                .map_or(0, |reserve| reserve.available(&ammo.ammo_type));
+                .map_or(0, |reserve| reserve.available(ammo.ammo_type));
             SlotValue::Number(available as f32)
         }),
         "player.reloadProgress" => {
@@ -864,7 +864,7 @@ mod tests {
         let table = table_with_replicated();
         let schema = ReplicatedSlotSchema::build(&table);
         let names: Vec<&str> = schema.entries().iter().map(|e| e.name.as_str()).collect();
-        // After the Task 4 catalog flip the two engine player slots are also
+        // After the Task 4 catalog flip the engine player slots are also
         // replicated (owner-private), so they join the two mod slots, all sorted
         // by dotted name.
         assert_eq!(
@@ -1054,7 +1054,7 @@ mod tests {
     /// A slot table whose player owner-private slots are replicated. The catalog
     /// sets this scope, so a plain `SlotTable::new()` carries it; both peers build
     /// this identically.
-    fn player_health_replicated_table() -> SlotTable {
+    fn owner_private_player_table() -> SlotTable {
         let table = SlotTable::new();
         debug_assert_eq!(
             table.get("player.health").unwrap().schema.network,
@@ -1115,6 +1115,7 @@ mod tests {
                     magazine: 0,
                     reload_remaining_ms: 0,
                     reload_total_ms: 0,
+                    reload_elapsed_sub_ms: 0.0,
                 },
             )
             .unwrap();
@@ -1160,6 +1161,7 @@ mod tests {
                     magazine,
                     reload_remaining_ms,
                     reload_total_ms,
+                    reload_elapsed_sub_ms: 0.0,
                 },
             )
             .unwrap();
@@ -1175,7 +1177,7 @@ mod tests {
 
     #[test]
     fn owner_private_ammo_reload_projection_is_per_pawn_and_typed() {
-        let mut host_table = player_health_replicated_table();
+        let mut host_table = owner_private_player_table();
         // Host/global values must never leak into a valid remote pawn projection.
         host_table.get_mut("player.ammo").unwrap().value = Some(SlotValue::Number(999.0));
         host_table.get_mut("player.ammoReserve").unwrap().value = Some(SlotValue::Number(999.0));
@@ -1216,8 +1218,8 @@ mod tests {
         let records_a = host.produce_for_client(CLIENT_A, 0).unwrap();
         let records_b = host.produce_for_client(CLIENT_B, 0).unwrap();
 
-        let mut table_a = player_health_replicated_table();
-        let mut table_b = player_health_replicated_table();
+        let mut table_a = owner_private_player_table();
+        let mut table_b = owner_private_player_table();
         ClientStateApply::new().apply_snapshot_state(&mut table_a, 0, &fingerprint, &records_a);
         ClientStateApply::new().apply_snapshot_state(&mut table_b, 0, &fingerprint, &records_b);
 
@@ -1338,7 +1340,7 @@ mod tests {
     fn descriptor_health_projects_and_replicates_like_a_store_slot() {
         // A table whose player health slots are owner-private replicated (the Task 4
         // catalog flip, set directly here so Task 3 can prove the descriptor path).
-        let host_table = player_health_replicated_table();
+        let host_table = owner_private_player_table();
 
         // The descriptor-fed source: an owned pawn with a live HealthComponent. No slot
         // value is ever written on the host — the value comes straight from the
@@ -1360,7 +1362,7 @@ mod tests {
 
         // Client applies through the store path; the engine-owned readonly player slots
         // receive the replicated values (engine bypass honors readonly).
-        let mut client_table = player_health_replicated_table();
+        let mut client_table = owner_private_player_table();
         let mut client = ClientStateApply::new();
         let outcome = client.apply_snapshot_state(&mut client_table, 0, &fingerprint, &records);
         assert_eq!(outcome.slot_baselines.len(), 4);
@@ -1378,7 +1380,7 @@ mod tests {
 
     #[test]
     fn weapon_cooldown_projects_through_owned_weapon_map() {
-        let host_table = player_health_replicated_table();
+        let host_table = owner_private_player_table();
         let (registry, owners, weapon_owners, _pawn, _weapon) =
             registry_with_owned_weapon_cooldown(CLIENT_A, 123.0);
 
@@ -1399,7 +1401,7 @@ mod tests {
             "cooldown record is produced from pawn -> weapon projection"
         );
 
-        let mut client_table = player_health_replicated_table();
+        let mut client_table = owner_private_player_table();
         let mut client = ClientStateApply::new();
         let outcome = client.apply_snapshot_state(&mut client_table, 0, &fingerprint, &records);
         assert!(
@@ -1507,7 +1509,7 @@ mod tests {
     // private slot, and each sees its own descriptor-fed health.
     #[test]
     fn owner_private_health_is_per_client_through_glue() {
-        let host_table = player_health_replicated_table();
+        let host_table = owner_private_player_table();
 
         // Two owned pawns with distinct health, owned by A and B.
         let mut registry = EntityRegistry::new();
@@ -1534,8 +1536,8 @@ mod tests {
         let records_b = host.produce_for_client(CLIENT_B, 0).unwrap();
 
         // Each client's batch carries only ITS pawn's health.
-        let mut table_a = player_health_replicated_table();
-        let mut table_b = player_health_replicated_table();
+        let mut table_a = owner_private_player_table();
+        let mut table_b = owner_private_player_table();
         let mut client_a = ClientStateApply::new();
         let mut client_b = ClientStateApply::new();
         client_a.apply_snapshot_state(&mut table_a, 0, &fingerprint, &records_a);
@@ -1707,7 +1709,7 @@ mod tests {
     // a `StateSlotId` from the same deterministic schema.
     #[test]
     fn descriptor_parsed_health_projects_through_named_slots() {
-        let host_table = player_health_replicated_table();
+        let host_table = owner_private_player_table();
         let (registry, owners) = registry_with_descriptor_health(CLIENT_A, 120.0);
 
         let mut host = HostStateReplication::new();
@@ -1732,7 +1734,7 @@ mod tests {
         assert!(record_ids.contains(&health_id.0));
         assert!(record_ids.contains(&max_id.0));
 
-        let mut client_table = player_health_replicated_table();
+        let mut client_table = owner_private_player_table();
         let mut client = ClientStateApply::new();
         let outcome = client.apply_snapshot_state(&mut client_table, 0, &fingerprint, &records);
         assert_eq!(outcome.slot_baselines.len(), 4);
@@ -1817,7 +1819,7 @@ mod tests {
     // reads it, and the value must survive the crossing.
     #[test]
     fn first_baseline_populates_ui_read_snapshot_player_health_slots() {
-        let host_table = player_health_replicated_table();
+        let host_table = owner_private_player_table();
         let (registry, owners, _pawn) = registry_with_owned_health(CLIENT_A, 75.0, 100.0);
 
         let mut host = HostStateReplication::new();
@@ -1830,7 +1832,7 @@ mod tests {
 
         // A fresh client table whose player slots have NO value yet: the UI read
         // snapshot must not carry them before the baseline lands.
-        let mut client_table = player_health_replicated_table();
+        let mut client_table = owner_private_player_table();
         client_table.get_mut("player.health").unwrap().value = None;
         client_table.get_mut("player.maxHealth").unwrap().value = None;
         assert!(

@@ -52,7 +52,7 @@ fn weapon_hud_values(
     };
     let reserve = registry
         .get_component::<AmmoReserve>(pawn)
-        .map_or(0, |reserve| reserve.available(&ammo.ammo_type));
+        .map_or(0, |reserve| reserve.available(ammo.ammo_type));
     let active = weapon.reload_remaining_ms > 0;
     let progress = if active && weapon.reload_total_ms > 0 {
         (1.0 - weapon.reload_remaining_ms as f32 / weapon.reload_total_ms as f32).clamp(0.0, 1.0)
@@ -60,6 +60,12 @@ fn weapon_hud_values(
         0.0
     };
     (Some((weapon.magazine, reserve)), progress, active)
+}
+
+fn write_hud_slot(ctx: &ScriptCtx, name: &str, value: SlotValue) {
+    if let Err(err) = write_store_slot(ctx, name, value) {
+        log::warn!("[HUD] failed to write {name}: {err}");
+    }
 }
 
 /// Engine-side producer for the HUD store slots.
@@ -117,20 +123,12 @@ impl PlayerHudStatePublisher {
         // cell).
         let pawn_health = pawn_health_values(&self.ctx.registry.borrow());
         if let Some((pawn, current, max)) = pawn_health {
-            // Engine-owned and always declared, so this write succeeds; an error
-            // here would be a real bug, hence no skip-with-warn.
-            if let Err(err) =
-                write_store_slot(&self.ctx, "player.health", SlotValue::Number(current))
-            {
-                log::warn!("[HUD] failed to write player.health: {err}");
-            }
+            // Engine-owned and always declared, so a write error is a real bug
+            // and must be surfaced rather than silently skipped.
+            write_hud_slot(&self.ctx, "player.health", SlotValue::Number(current));
 
             if max.is_finite() && max >= 1.0 {
-                if let Err(err) =
-                    write_store_slot(&self.ctx, "player.maxHealth", SlotValue::Number(max))
-                {
-                    log::warn!("[HUD] failed to write player.maxHealth: {err}");
-                }
+                write_hud_slot(&self.ctx, "player.maxHealth", SlotValue::Number(max));
             } else if self.invalid_max_warned_for != Some(pawn) {
                 log::warn!(
                     "[HUD] skipping player.maxHealth for pawn {pawn}: invalid max health {max}"
@@ -142,19 +140,19 @@ impl PlayerHudStatePublisher {
         let (ammo, reload_progress, reload_active) =
             weapon_hud_values(&self.ctx.registry.borrow(), active_wieldable);
         if let Some((magazine, reserve)) = ammo {
-            let _ = write_store_slot(&self.ctx, "player.ammo", SlotValue::Number(magazine as f32));
-            let _ = write_store_slot(
+            write_hud_slot(&self.ctx, "player.ammo", SlotValue::Number(magazine as f32));
+            write_hud_slot(
                 &self.ctx,
                 "player.ammoReserve",
                 SlotValue::Number(reserve as f32),
             );
         }
-        let _ = write_store_slot(
+        write_hud_slot(
             &self.ctx,
             "player.reloadProgress",
             SlotValue::Number(reload_progress),
         );
-        let _ = write_store_slot(
+        write_hud_slot(
             &self.ctx,
             "player.reloadActive",
             SlotValue::Boolean(reload_active),

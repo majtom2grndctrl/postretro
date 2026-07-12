@@ -185,7 +185,7 @@ declare module "postretro" {
     /** Resolve instantly against the static-world collision ray. */
     | "hitscan";
 
-  /** Finite-ammunition tuning for a weapon. Defines the authored magazine, reserve, shot cost, and reload timing contract. */
+  /** Finite-ammunition tuning for a weapon. Defines the authored magazine, starting reserve balance, shot cost, and reload timing contract. */
   export type AmmoResource = {
     /** Ammo resource identifier. Must be non-empty ASCII, at most 64 bytes, and use only [A-Za-z0-9_.:-]. */
     type: string;
@@ -193,7 +193,7 @@ declare module "postretro" {
     magazine: number;
     /** Units consumed per shot. Must be at least 1; defaults to 1. */
     costPerShot?: number;
-    /** Reserve capacity. Any unsigned 32-bit value is accepted, including 0. */
+    /** Starting reserve balance credited at spawn. Any unsigned 32-bit value is accepted, including 0. */
     reserve: number;
     /** Reload duration in milliseconds. Must be at least 1; defaults to 1000. */
     reloadMs?: number;

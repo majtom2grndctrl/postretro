@@ -445,12 +445,10 @@ fn neutral_sim_command() -> SimCommand {
 
 /// Build a held-gap command from the previous resolved command, clearing FIRE but
 /// carrying movement and `reload` forward unchanged. The two fields diverge on
-/// purpose: `fire_button` authorizes a shot's cooldown/authorization gate (and, later,
-/// ammo) each time it resolves `active`, so a held/duplicated command must NOT
-/// re-authorize FIRE — that would let one real button-press synthesize repeat shots
-/// across a gap. `reload` is a level bit the ammo spec dedups at consumption on its
-/// rising edge, so repeating it across a hold is harmless and keeps intent (e.g. a
-/// player mid-reload when packets drop) from being silently dropped.
+/// purpose: `fire_button` authorizes cooldown and ammo consumption whenever it resolves
+/// `active`, so a held command must not re-authorize FIRE. `reload` is a level bit;
+/// weapon-owned `reload_press_consumed` deduplicates it while held. Carrying that bit
+/// preserves reload intent across a packet gap without synthesizing another press.
 fn held_gap_sim_command(prev: &InputCommand) -> SimCommand {
     let mut sim = input_command_to_sim(prev);
     sim.fire_button = crate::weapon::FireButtonState {

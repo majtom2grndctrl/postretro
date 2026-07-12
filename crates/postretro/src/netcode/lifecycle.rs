@@ -890,6 +890,15 @@ mod tests {
         );
         let old_pawn = slot_pawns.pawn_for(CLIENT_A).expect("first pawn");
         let old_weapon = weapon_owners.weapon_of(old_pawn).expect("first weapon");
+        let mut reloading_weapon = registry
+            .get_component::<postretro_entities::components::weapon::WeaponComponent>(old_weapon)
+            .unwrap()
+            .clone();
+        reloading_weapon.reload_remaining_ms = 500;
+        reloading_weapon.reload_total_ms = 1000;
+        registry
+            .set_component(old_weapon, reloading_weapon)
+            .unwrap();
         let old_pawn_net = allocator.network_id_for_entity(old_pawn).unwrap();
         let old_weapon_net = allocator.stamp(old_weapon);
         replicable.register(old_weapon);
@@ -941,7 +950,10 @@ mod tests {
             .expect("replacement pawn spawned");
         assert_ne!(replacement, old_pawn);
         assert!(registry.exists(replacement));
-        assert!(!registry.exists(old_weapon));
+        assert!(
+            !registry.exists(old_weapon),
+            "stale pawn cleanup must not strand a reload-locked sibling weapon"
+        );
         assert_eq!(owners.owner_of(old_pawn), None);
         assert_eq!(weapon_owners.weapon_of(old_pawn), None);
         assert!(!allocator.maps_entity(old_pawn));

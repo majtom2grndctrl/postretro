@@ -232,24 +232,24 @@ pub(crate) fn simulate_tick(
         update_brain_animation_playback_rates(&mut registry, anim_time);
     }
 
-    let (authorized_shots, mut reload_deliveries) =
+    let (authorized_shots, mut reload_deliveries, remote_weapon_events) =
         run_remote_weapon_commands(&registry, remote_pawn_commands, tick_dt);
     let own_pawn = {
         let registry = registry.borrow();
         local_movement_pawn(&registry)
     };
+    let mut local_reload_started = false;
     if let (Some(pawn), Some(weapon_id)) = (own_pawn, active_wieldable) {
         let mut registry = registry.borrow_mut();
-        reload_deliveries.extend(deliver_reload_to_weapon(
-            &mut registry,
-            pawn,
-            weapon_id,
-            command.reload,
-            tick_dt,
-        ));
+        let local_deliveries =
+            deliver_reload_to_weapon(&mut registry, pawn, weapon_id, command.reload, tick_dt);
+        local_reload_started = local_deliveries
+            .iter()
+            .any(|delivery| delivery.outcome == ReloadOutcome::Started);
+        reload_deliveries.extend(local_deliveries);
     }
     let weapon_fire = weapon_fire_command(command.fire_button, post_movement_command);
-    let weapon = run_weapon_fire_tick(
+    let mut weapon = run_weapon_fire_tick(
         &registry,
         active_wieldable,
         &weapon_fire,
@@ -257,7 +257,9 @@ pub(crate) fn simulate_tick(
         hit_zone_store,
         anim_time,
         tick_dt,
+        local_reload_started,
     );
+    weapon.extend(remote_weapon_events);
     let death = run_death_sweep(&registry, progress_tracker);
 
     TickEvents {
@@ -349,7 +351,7 @@ pub(crate) mod predict_reconcile;
 /// the registry marker, then drives it through the shared host multi-pawn seam
 /// (`host_movement::run_host_movement_tick`) with a one-element input list. The host
 /// netcode path bypasses this entirely and calls the seam directly with EVERY
-/// authoritative pawn (Task 4) — `local_movement_pawn` is the single-player resolver
+/// authoritative pawn — `local_movement_pawn` is the single-player resolver
 /// only, never the authoritative-host resolver.
 fn run_movement_tick(
     registry: &Rc<RefCell<EntityRegistry>>,
@@ -431,22 +433,31 @@ fn run_remote_weapon_commands(
     registry: &Rc<RefCell<EntityRegistry>>,
     remote_pawn_commands: &[RemotePawnCommand],
     tick_dt: f32,
-) -> (Vec<OpenAuthorizedShot>, Vec<ReloadDelivery>) {
+) -> (
+    Vec<OpenAuthorizedShot>,
+    Vec<ReloadDelivery>,
+    Vec<&'static str>,
+) {
     let mut registry = registry.borrow_mut();
     let mut authorized = Vec::new();
     let mut reload_deliveries = Vec::new();
+    let mut weapon_events = Vec::new();
 
     for remote in remote_pawn_commands {
         let Some(weapon) = remote.weapon else {
             continue;
         };
-        reload_deliveries.extend(deliver_reload_to_weapon(
+        let deliveries = deliver_reload_to_weapon(
             &mut registry,
             remote.pawn,
             weapon,
             remote.command.reload,
             tick_dt,
-        ));
+        );
+        let reload_started = deliveries
+            .iter()
+            .any(|delivery| delivery.outcome == ReloadOutcome::Started);
+        reload_deliveries.extend(deliveries);
 
         let command = WeaponFireCommand {
             button: remote.command.fire_button,
@@ -456,9 +467,20 @@ fn run_remote_weapon_commands(
             // the real fire gate is `button` -> `wants_fire`. The host casts no local aim ray.
             can_fire: remote.shot_id.is_some(),
         };
-        let result = weapon::tick_state_only(&mut registry, Some(weapon), &command, tick_dt);
-        if result != WeaponFireAuthorization::Accepted {
-            continue;
+        let result = weapon::tick_state_only(
+            &mut registry,
+            Some(weapon),
+            &command,
+            tick_dt,
+            reload_started,
+        );
+        match result {
+            WeaponFireAuthorization::Accepted => {}
+            WeaponFireAuthorization::Empty(weapon::ActivationOutcome::Empty) => {
+                weapon_events.push("dry_fire");
+                continue;
+            }
+            WeaponFireAuthorization::Empty(_) | WeaponFireAuthorization::Rejected => continue,
         }
         let Some(shot_id) = remote.shot_id else {
             continue;
@@ -476,13 +498,13 @@ fn run_remote_weapon_commands(
                 damage: effective.damage,
                 range: effective.range,
                 pellet_count: 1,
-                credit_source: effective.credit_source,
+                credit_source: effective.credit_source.to_string(),
             },
             owner_client_id: remote.owner_client_id,
         });
     }
 
-    (authorized, reload_deliveries)
+    (authorized, reload_deliveries, weapon_events)
 }
 
 fn deliver_reload_to_weapon(
@@ -511,7 +533,10 @@ fn deliver_reload_to_weapon(
             let _ = registry.set_component(weapon, component);
             return deliveries;
         };
-        if component.magazine >= ammo.capacity {
+        let capacity = ammo.capacity;
+        let reload_ms = ammo.reload_ms;
+        let ammo_type = ammo.ammo_type.to_string();
+        if component.magazine >= capacity {
             deliveries.push(ReloadDelivery {
                 pawn,
                 weapon,
@@ -522,7 +547,7 @@ fn deliver_reload_to_weapon(
         }
         let available = registry
             .get_component::<AmmoReserve>(pawn)
-            .map_or(0, |reserve| reserve.available(&ammo.ammo_type));
+            .map_or(0, |reserve| reserve.available(&ammo_type));
         if available == 0 {
             deliveries.push(ReloadDelivery {
                 pawn,
@@ -533,8 +558,9 @@ fn deliver_reload_to_weapon(
             return deliveries;
         }
 
-        component.reload_total_ms = ammo.reload_ms;
-        component.reload_remaining_ms = ammo.reload_ms;
+        component.reload_total_ms = reload_ms;
+        component.reload_remaining_ms = reload_ms;
+        component.reload_elapsed_sub_ms = 0.0;
         deliveries.push(ReloadDelivery {
             pawn,
             weapon,
@@ -542,24 +568,24 @@ fn deliver_reload_to_weapon(
         });
     }
 
-    // Component timers are integer milliseconds; round the fixed delta once
-    // per tick so local and remote paths advance identically.
-    let tick_ms = (tick_dt.max(0.0) * 1000.0).round() as u32;
-    component.reload_remaining_ms = component.reload_remaining_ms.saturating_sub(tick_ms);
+    advance_reload_timer(&mut component, tick_dt);
     if component.reload_remaining_ms > 0 {
         let _ = registry.set_component(weapon, component);
         return deliveries;
     }
 
-    let effective_ammo = component.effective().ammo;
-    let transferred = if let Some(ammo) = effective_ammo {
-        let need = ammo.capacity.saturating_sub(component.magazine);
+    let effective_ammo = component
+        .effective()
+        .ammo
+        .map(|ammo| (ammo.capacity, ammo.ammo_type.to_string()));
+    let transferred = if let Some((capacity, ammo_type)) = effective_ammo {
+        let need = capacity.saturating_sub(component.magazine);
         let mut reserve = registry
             .get_component::<AmmoReserve>(pawn)
             .cloned()
             .unwrap_or_default();
-        let requested = need.min(reserve.available(&ammo.ammo_type));
-        let transferred = reserve.take(&ammo.ammo_type, requested);
+        let requested = need.min(reserve.available(&ammo_type));
+        let transferred = reserve.take(&ammo_type, requested);
         component.magazine = component.magazine.saturating_add(transferred);
         if registry.has_component_kind(pawn, ComponentKind::AmmoReserve) == Ok(true) {
             let _ = registry.set_component(pawn, reserve);
@@ -577,6 +603,32 @@ fn deliver_reload_to_weapon(
     deliveries
 }
 
+fn advance_reload_timer(component: &mut WeaponComponent, tick_dt: f32) {
+    let tick_ms = if tick_dt.is_finite() && tick_dt > 0.0 {
+        f64::from(tick_dt) * 1000.0
+    } else {
+        0.0
+    };
+    let carried_ms = if component.reload_elapsed_sub_ms.is_finite()
+        && component.reload_elapsed_sub_ms >= 0.0
+        && component.reload_elapsed_sub_ms < 1.0
+    {
+        component.reload_elapsed_sub_ms
+    } else {
+        0.0
+    };
+    let elapsed_ms = carried_ms + tick_ms;
+    if elapsed_ms >= f64::from(component.reload_remaining_ms) {
+        component.reload_remaining_ms = 0;
+        component.reload_elapsed_sub_ms = 0.0;
+        return;
+    }
+
+    let whole_ms = elapsed_ms.floor() as u32;
+    component.reload_remaining_ms -= whole_ms;
+    component.reload_elapsed_sub_ms = elapsed_ms - f64::from(whole_ms);
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_weapon_fire_tick(
     registry: &Rc<RefCell<EntityRegistry>>,
@@ -586,6 +638,7 @@ fn run_weapon_fire_tick(
     hit_zone_store: &HitZoneStore,
     anim_time: f64,
     tick_dt: f32,
+    reload_started_this_tick: bool,
 ) -> Vec<&'static str> {
     let mut registry = registry.borrow_mut();
     let events = weapon::tick_resolved(
@@ -596,6 +649,7 @@ fn run_weapon_fire_tick(
         hit_zone_store,
         anim_time,
         tick_dt,
+        reload_started_this_tick,
     );
     if let Some(impact) = events.impact.as_ref() {
         weapon::spawn_impact_effect_at(&mut registry, impact.point, impact.normal);
@@ -629,7 +683,7 @@ pub(crate) fn apply_weapon_impact_damage(
         weapon_id,
         attacker,
         impact,
-        effective.credit_source,
+        effective.credit_source.to_string(),
         payload.amount,
     );
 }
@@ -977,6 +1031,40 @@ mod tests {
                 aim_direction: Vec3::NEG_Z,
             },
             1.0 / 60.0,
+            None,
+        )
+    }
+
+    fn run_local_only_tick(
+        registry: Rc<RefCell<EntityRegistry>>,
+        weapon: EntityId,
+        command: &SimCommand,
+        tick_dt: f32,
+    ) -> TickEvents {
+        let world = CollisionWorld::new();
+        let hit_zones = HitZoneStore::new();
+        let mut progress = ProgressTracker::new();
+        let mut ai_warned = HashSet::new();
+        let mut mover_states = MoverTickStateTable::default();
+        simulate_tick(
+            registry,
+            &world,
+            &hit_zones,
+            None,
+            -9.81,
+            Some(weapon),
+            0.0,
+            &mut progress,
+            &mut ai_warned,
+            &[],
+            &mut mover_states,
+            &[],
+            command,
+            |_| PostMovementCommand {
+                aim_origin: Vec3::ZERO,
+                aim_direction: Vec3::NEG_Z,
+            },
+            tick_dt,
             None,
         )
     }
@@ -1492,6 +1580,38 @@ mod tests {
     }
 
     #[test]
+    fn remote_empty_magazines_surface_each_dry_fire_without_authorizing_shots() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn_a, weapon_a, pawn_b, weapon_b) = {
+            let mut registry = registry.borrow_mut();
+            let (pawn_a, weapon_a) = spawn_reload_pair(&mut registry, 10, 8, 1000, 0);
+            let (pawn_b, weapon_b) = spawn_reload_pair(&mut registry, 10, 8, 1000, 0);
+            (pawn_a, weapon_a, pawn_b, weapon_b)
+        };
+
+        let events = run_remote_only_tick(
+            registry.clone(),
+            &[
+                remote_command(pawn_a, Some(weapon_a), 42, 9, true, false),
+                remote_command(pawn_b, Some(weapon_b), 43, 9, true, false),
+            ],
+        );
+
+        assert_eq!(events.weapon, vec!["dry_fire", "dry_fire"]);
+        assert!(events.authorized_shots.is_empty());
+        let registry = registry.borrow();
+        for weapon in [weapon_a, weapon_b] {
+            assert_eq!(
+                registry
+                    .get_component::<WeaponComponent>(weapon)
+                    .unwrap()
+                    .magazine,
+                0
+            );
+        }
+    }
+
+    #[test]
     fn held_reload_starts_once_and_release_still_advances_to_completion() {
         let mut registry = EntityRegistry::new();
         let (pawn, weapon) = spawn_reload_pair(&mut registry, 10, 20, 1000, 2);
@@ -1586,7 +1706,7 @@ mod tests {
         );
 
         assert_eq!(
-            deliver_reload_to_weapon(&mut registry, pawn, weapon, false, 0.001),
+            deliver_reload_to_weapon(&mut registry, pawn, weapon, false, 0.0011),
             vec![ReloadDelivery {
                 pawn,
                 weapon,
@@ -1633,6 +1753,77 @@ mod tests {
         assert_eq!(component.reload_total_ms, 100);
         assert_eq!(component.reload_remaining_ms, 0);
         assert_eq!(component.magazine, 10);
+    }
+
+    #[test]
+    fn fractional_reload_elapsed_completes_one_second_at_sixty_hz_without_drift() {
+        let mut registry = EntityRegistry::new();
+        let (pawn, weapon) = spawn_reload_pair(&mut registry, 10, 8, 1000, 2);
+
+        for tick in 0..59 {
+            let deliveries =
+                deliver_reload_to_weapon(&mut registry, pawn, weapon, tick == 0, 1.0 / 60.0);
+            assert!(
+                !deliveries
+                    .iter()
+                    .any(|delivery| matches!(delivery.outcome, ReloadOutcome::Completed { .. }))
+            );
+        }
+        assert!(
+            registry
+                .get_component::<WeaponComponent>(weapon)
+                .unwrap()
+                .reload_remaining_ms
+                > 0
+        );
+
+        let completion = deliver_reload_to_weapon(&mut registry, pawn, weapon, false, 1.0 / 60.0)
+            .iter()
+            .any(|delivery| {
+                matches!(
+                    delivery.outcome,
+                    ReloadOutcome::Completed { transferred: 8 }
+                )
+            });
+        assert!(completion);
+    }
+
+    #[test]
+    fn reload_timer_ignores_invalid_delta_and_saturates_huge_delta() {
+        let mut registry = EntityRegistry::new();
+        let (pawn, weapon) = spawn_reload_pair(&mut registry, 10, 8, 1000, 2);
+
+        assert_eq!(
+            deliver_reload_to_weapon(&mut registry, pawn, weapon, true, f32::NAN),
+            vec![ReloadDelivery {
+                pawn,
+                weapon,
+                outcome: ReloadOutcome::Started,
+            }]
+        );
+        assert_eq!(
+            registry
+                .get_component::<WeaponComponent>(weapon)
+                .unwrap()
+                .reload_remaining_ms,
+            1000
+        );
+        assert!(deliver_reload_to_weapon(&mut registry, pawn, weapon, false, -1.0).is_empty());
+        assert!(
+            deliver_reload_to_weapon(&mut registry, pawn, weapon, false, f32::INFINITY).is_empty()
+        );
+        assert_eq!(
+            registry
+                .get_component::<WeaponComponent>(weapon)
+                .unwrap()
+                .reload_remaining_ms,
+            1000
+        );
+        assert!(
+            deliver_reload_to_weapon(&mut registry, pawn, weapon, false, f32::MAX)
+                .iter()
+                .any(|delivery| matches!(delivery.outcome, ReloadOutcome::Completed { .. }))
+        );
     }
 
     #[test]
@@ -1773,6 +1964,73 @@ mod tests {
                 .available("bullets.light"),
             8
         );
+    }
+
+    #[test]
+    fn immediate_local_reload_still_blocks_fire_for_start_tick() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, weapon) = {
+            let mut registry = registry.borrow_mut();
+            let (pawn, weapon) = spawn_reload_pair(&mut registry, 10, 8, 10, 2);
+            registry.set_component(pawn, trigger_movement()).unwrap();
+            registry.mark_local_player_pawn(pawn).unwrap();
+            (pawn, weapon)
+        };
+        let events = run_local_only_tick(
+            registry.clone(),
+            weapon,
+            &sim_command(true, true),
+            1.0 / 60.0,
+        );
+
+        assert!(events.weapon.is_empty());
+        assert!(events.reload_deliveries.iter().any(|delivery| {
+            delivery.pawn == pawn && delivery.outcome == ReloadOutcome::Started
+        }));
+        assert!(events.reload_deliveries.iter().any(|delivery| {
+            delivery.pawn == pawn
+                && matches!(
+                    delivery.outcome,
+                    ReloadOutcome::Completed { transferred: 8 }
+                )
+        }));
+        assert_eq!(
+            registry
+                .borrow()
+                .get_component::<WeaponComponent>(weapon)
+                .unwrap()
+                .magazine,
+            10
+        );
+    }
+
+    #[test]
+    fn immediate_remote_reload_still_blocks_fire_for_start_tick() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, weapon) = {
+            let mut registry = registry.borrow_mut();
+            spawn_reload_pair(&mut registry, 10, 8, 10, 2)
+        };
+
+        let events = run_remote_only_tick(
+            registry,
+            &[remote_command(pawn, Some(weapon), 42, 9, true, true)],
+        );
+
+        assert!(events.authorized_shots.is_empty());
+        assert!(events.weapon.is_empty());
+        assert!(
+            events
+                .reload_deliveries
+                .iter()
+                .any(|delivery| { delivery.outcome == ReloadOutcome::Started })
+        );
+        assert!(events.reload_deliveries.iter().any(|delivery| {
+            matches!(
+                delivery.outcome,
+                ReloadOutcome::Completed { transferred: 8 }
+            )
+        }));
     }
 
     #[test]

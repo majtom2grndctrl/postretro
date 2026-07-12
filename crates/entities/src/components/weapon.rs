@@ -1,6 +1,5 @@
-// Weapon component: descriptor-authored stats plus live wieldable state.
-// Spawn and hot reload refresh descriptor stats; firing preserves and mutates
-// per-instance cooldown here.
+// Weapon component: descriptor-authored tuning plus live cooldown, magazine,
+// input-edge, and reload state.
 //
 // See: context/lib/entity_model.md §4 (descriptor-owned tuning params)
 
@@ -16,22 +15,22 @@ pub const UNKNOWN_WEAPON_CREDIT_SOURCE: &str = "weapon.unknown";
 static WARNED_UNKNOWN_CREDIT_SOURCE: Once = Once::new();
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct EffectiveAmmoStats {
-    pub ammo_type: String,
+pub struct EffectiveAmmoStats<'a> {
+    pub ammo_type: &'a str,
     pub capacity: u32,
     pub cost_per_shot: u32,
     pub reload_ms: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct EffectiveStats {
+pub struct EffectiveStats<'a> {
     pub damage: f32,
     pub range: f32,
     pub cooldown_ms: f32,
     pub fire_mode: FireMode,
     pub resolution: ResolutionMode,
-    pub credit_source: String,
-    pub ammo: Option<EffectiveAmmoStats>,
+    pub credit_source: &'a str,
+    pub ammo: Option<EffectiveAmmoStats<'a>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,6 +63,11 @@ pub struct WeaponComponent {
     pub reload_remaining_ms: u32,
     #[serde(default)]
     pub reload_total_ms: u32,
+    /// Fractional elapsed milliseconds carried between fixed ticks. Public HUD
+    /// and replication fields remain integer milliseconds; this remainder keeps
+    /// their countdown from accumulating per-tick rounding bias.
+    #[serde(default)]
+    pub reload_elapsed_sub_ms: f64,
 }
 
 impl WeaponComponent {
@@ -91,19 +95,20 @@ impl WeaponComponent {
             magazine,
             reload_remaining_ms: 0,
             reload_total_ms: 0,
+            reload_elapsed_sub_ms: 0.0,
         }
     }
 
-    pub fn effective(&self) -> EffectiveStats {
+    pub fn effective(&self) -> EffectiveStats<'_> {
         EffectiveStats {
             damage: self.damage,
             range: self.range,
             cooldown_ms: self.cooldown_ms,
             fire_mode: self.fire_mode,
             resolution: self.resolution,
-            credit_source: self.credit_source.clone(),
+            credit_source: &self.credit_source,
             ammo: self.ammo.as_ref().map(|ammo| EffectiveAmmoStats {
-                ammo_type: ammo.ammo_type.clone(),
+                ammo_type: &ammo.ammo_type,
                 capacity: ammo.capacity,
                 cost_per_shot: ammo.cost_per_shot,
                 reload_ms: ammo.reload_ms,
@@ -121,9 +126,8 @@ impl WeaponComponent {
             self.credit_source = credit_source.clone();
         }
         self.ammo = ammo_tuning(desc);
-        // `cooldown_remaining_ms`, `shoot_press_consumed`, and
-        // `reload_press_consumed` are live instance state, as are `magazine`
-        // and both reload timer values. Hot reload changes authored tuning, not
+        // Cooldown, input edges, magazine, and all reload timer values are live
+        // instance state. Hot reload changes authored tuning, not
         // the current input edges, ammunition, active reload sample, or whether
         // this instance is mid-cooldown. An absent `creditSource` also keeps the
         // already-resolved spawn-time default so canonical defaults do not
@@ -220,6 +224,7 @@ mod tests {
         assert_eq!(component.magazine, 12);
         assert_eq!(component.reload_remaining_ms, 0);
         assert_eq!(component.reload_total_ms, 0);
+        assert_eq!(component.reload_elapsed_sub_ms, 0.0);
     }
 
     #[test]
@@ -241,7 +246,7 @@ mod tests {
         assert_eq!(
             component.effective().ammo,
             Some(EffectiveAmmoStats {
-                ammo_type: "shells.heavy".to_string(),
+                ammo_type: "shells.heavy",
                 capacity: 8,
                 cost_per_shot: 1,
                 reload_ms: 1200,
@@ -256,6 +261,7 @@ mod tests {
         component.magazine = 3;
         component.reload_remaining_ms = 275;
         component.reload_total_ms = 800;
+        component.reload_elapsed_sub_ms = 0.625;
         component.cooldown_remaining_ms = 42.0;
         component.shoot_press_consumed = true;
         component.reload_press_consumed = true;
@@ -275,6 +281,7 @@ mod tests {
         assert_eq!(component.magazine, 3);
         assert_eq!(component.reload_remaining_ms, 275);
         assert_eq!(component.reload_total_ms, 800);
+        assert_eq!(component.reload_elapsed_sub_ms, 0.625);
         assert_eq!(component.cooldown_remaining_ms, 42.0);
         assert!(component.shoot_press_consumed);
         assert!(component.reload_press_consumed);

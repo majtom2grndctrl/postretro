@@ -3,6 +3,47 @@
 use super::super::*;
 use super::common::*;
 
+fn parse_js_ammo_resource(resource: &str) -> Result<EntityTypeDescriptor, DescriptorError> {
+    let src = format!(
+        r#"({{ components: {{ weapon: {{ damage: 12, range: 64, fireRateMs: 180, fireMode: "semi", resolution: "hitscan", resource: {resource} }} }} }})"#
+    );
+    eval_js(&src, entity_descriptor_from_js)
+}
+
+fn parse_lua_ammo_resource(resource: &str) -> Result<EntityTypeDescriptor, DescriptorError> {
+    let src = format!(
+        r#"return {{ components = {{ weapon = {{ damage = 12, range = 64, fireRateMs = 180, fireMode = "semi", resolution = "hitscan", resource = {resource} }} }} }}"#
+    );
+    eval_lua(&src, entity_descriptor_from_lua)
+}
+
+fn ammo_resource(descriptor: EntityTypeDescriptor) -> AmmoResource {
+    let Some(WeaponResource::Ammo(ammo)) = descriptor.weapon.unwrap().resource else {
+        panic!("expected ammo resource");
+    };
+    ammo
+}
+
+fn assert_ammo_pair_rejects(
+    label: &str,
+    js_resource: &str,
+    lua_resource: &str,
+    expected_error: &str,
+) {
+    let js_error = parse_js_ammo_resource(js_resource).unwrap_err();
+    let lua_error = parse_lua_ammo_resource(lua_resource).unwrap_err();
+    let js_error = js_error.to_string();
+    let lua_error = lua_error.to_string();
+    assert!(
+        js_error.contains(expected_error),
+        "QuickJS {label} error should contain {expected_error:?}, got: {js_error}"
+    );
+    assert!(
+        lua_error.contains(expected_error),
+        "Luau {label} error should contain {expected_error:?}, got: {lua_error}"
+    );
+}
+
 #[test]
 fn entity_descriptor_with_emitter_only_deserializes() {
     let src = r#"({
@@ -137,45 +178,246 @@ fn js_weapon_descriptor_without_credit_source_parses_as_none() {
 }
 
 #[test]
-fn js_weapon_ammo_resource_parses_with_defaults() {
-    let src = r#"({
-        canonicalName: "reference_pistol",
-        components: { weapon: {
-            damage: 12, range: 64, fireRateMs: 180,
-            fireMode: "semi", resolution: "hitscan",
-            resource: { kind: "ammo", type: "bullets.light", magazine: 12, reserve: 48 }
-        }}
-    })"#;
-    let d = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
-    let Some(WeaponResource::Ammo(ammo)) = d.weapon.unwrap().resource else {
-        panic!("expected ammo resource");
-    };
-    assert_eq!(ammo.ammo_type, "bullets.light");
-    assert_eq!(ammo.magazine, 12);
-    assert_eq!(ammo.cost_per_shot, 1);
-    assert_eq!(ammo.reserve, 48);
-    assert_eq!(ammo.reload_ms, 1000);
+fn paired_weapon_ammo_resource_defaults_match() {
+    let js = ammo_resource(
+        parse_js_ammo_resource(
+            r#"{ kind: "ammo", type: "bullets.light", magazine: 12, costPerShot: undefined, reserve: 48, reloadMs: undefined }"#,
+        )
+        .unwrap(),
+    );
+    let lua = ammo_resource(
+        parse_lua_ammo_resource(
+            r#"{ kind = "ammo", type = "bullets.light", magazine = 12, reserve = 48 }"#,
+        )
+        .unwrap(),
+    );
+    assert_eq!(js, lua);
+    assert_eq!(js.ammo_type, "bullets.light");
+    assert_eq!(js.magazine, 12);
+    assert_eq!(js.cost_per_shot, 1);
+    assert_eq!(js.reserve, 48);
+    assert_eq!(js.reload_ms, 1000);
 }
 
 #[test]
-fn js_weapon_ammo_resource_rejects_serde_and_semantic_errors() {
-    for resource in [
-        r#"{ kind: "cell", type: "cells", magazine: 8, reserve: 32 }"#,
-        r#"{ kind: "ammo", type: "cells", magazine: -1, reserve: 32 }"#,
-        r#"{ kind: "ammo", type: "cells", magazine: "8", reserve: 32 }"#,
-        r#"{ kind: "ammo", type: "cells", magazine: 8, reserve: -1 }"#,
-        r#"{ kind: "ammo", type: "bad ammo", magazine: 8, reserve: 32 }"#,
-        r#"{ kind: "ammo", type: "cells", magazine: 0, reserve: 32 }"#,
-        r#"{ kind: "ammo", type: "cells", magazine: 8, costPerShot: 0, reserve: 32 }"#,
-        r#"{ kind: "ammo", type: "cells", magazine: 8, reserve: 32, reloadMs: 0 }"#,
+fn paired_weapon_ammo_resource_accepts_identifier_and_u32_boundaries() {
+    let type_64 = "a".repeat(64);
+    let js = ammo_resource(
+        parse_js_ammo_resource(&format!(
+            r#"{{ kind: "ammo", type: "{type_64}", magazine: 4294967295, costPerShot: 4294967295, reserve: 4294967295, reloadMs: 4294967295 }}"#
+        ))
+        .unwrap(),
+    );
+    let lua = ammo_resource(
+        parse_lua_ammo_resource(&format!(
+            r#"{{ kind = "ammo", type = "{type_64}", magazine = 4294967295, costPerShot = 4294967295, reserve = 4294967295, reloadMs = 4294967295 }}"#
+        ))
+        .unwrap(),
+    );
+    assert_eq!(js, lua);
+    assert_eq!(js.ammo_type.len(), 64);
+    assert_eq!(js.magazine, u32::MAX);
+    assert_eq!(js.cost_per_shot, u32::MAX);
+    assert_eq!(js.reserve, u32::MAX);
+    assert_eq!(js.reload_ms, u32::MAX);
+}
+
+#[test]
+fn paired_weapon_ammo_resource_rejects_wrong_type_and_negative_u32_fields() {
+    for (field, js_resource, lua_resource) in [
+        (
+            "magazine wrong type",
+            r#"{ kind: "ammo", type: "cells", magazine: "8", costPerShot: 1, reserve: 32, reloadMs: 1000 }"#,
+            r#"{ kind = "ammo", type = "cells", magazine = "8", costPerShot = 1, reserve = 32, reloadMs = 1000 }"#,
+        ),
+        (
+            "costPerShot wrong type",
+            r#"{ kind: "ammo", type: "cells", magazine: 8, costPerShot: "1", reserve: 32, reloadMs: 1000 }"#,
+            r#"{ kind = "ammo", type = "cells", magazine = 8, costPerShot = "1", reserve = 32, reloadMs = 1000 }"#,
+        ),
+        (
+            "reserve wrong type",
+            r#"{ kind: "ammo", type: "cells", magazine: 8, costPerShot: 1, reserve: "32", reloadMs: 1000 }"#,
+            r#"{ kind = "ammo", type = "cells", magazine = 8, costPerShot = 1, reserve = "32", reloadMs = 1000 }"#,
+        ),
+        (
+            "reloadMs wrong type",
+            r#"{ kind: "ammo", type: "cells", magazine: 8, costPerShot: 1, reserve: 32, reloadMs: "1000" }"#,
+            r#"{ kind = "ammo", type = "cells", magazine = 8, costPerShot = 1, reserve = 32, reloadMs = "1000" }"#,
+        ),
+        (
+            "magazine negative",
+            r#"{ kind: "ammo", type: "cells", magazine: -1, costPerShot: 1, reserve: 32, reloadMs: 1000 }"#,
+            r#"{ kind = "ammo", type = "cells", magazine = -1, costPerShot = 1, reserve = 32, reloadMs = 1000 }"#,
+        ),
+        (
+            "costPerShot negative",
+            r#"{ kind: "ammo", type: "cells", magazine: 8, costPerShot: -1, reserve: 32, reloadMs: 1000 }"#,
+            r#"{ kind = "ammo", type = "cells", magazine = 8, costPerShot = -1, reserve = 32, reloadMs = 1000 }"#,
+        ),
+        (
+            "reserve negative",
+            r#"{ kind: "ammo", type: "cells", magazine: 8, costPerShot: 1, reserve: -1, reloadMs: 1000 }"#,
+            r#"{ kind = "ammo", type = "cells", magazine = 8, costPerShot = 1, reserve = -1, reloadMs = 1000 }"#,
+        ),
+        (
+            "reloadMs negative",
+            r#"{ kind: "ammo", type: "cells", magazine: 8, costPerShot: 1, reserve: 32, reloadMs: -1 }"#,
+            r#"{ kind = "ammo", type = "cells", magazine = 8, costPerShot = 1, reserve = 32, reloadMs = -1 }"#,
+        ),
     ] {
-        let src = format!(
-            r#"({{ components: {{ weapon: {{ damage: 12, range: 64, fireRateMs: 180, fireMode: "semi", resolution: "hitscan", resource: {resource} }} }} }})"#
+        assert_ammo_pair_rejects(field, js_resource, lua_resource, "expected u32");
+    }
+}
+
+#[test]
+fn paired_weapon_ammo_resource_rejects_u32_overflow() {
+    for (field, js_resource, lua_resource) in [
+        (
+            "magazine",
+            r#"{ kind: "ammo", type: "cells", magazine: 4294967296, costPerShot: 1, reserve: 32, reloadMs: 1000 }"#,
+            r#"{ kind = "ammo", type = "cells", magazine = 4294967296, costPerShot = 1, reserve = 32, reloadMs = 1000 }"#,
+        ),
+        (
+            "costPerShot",
+            r#"{ kind: "ammo", type: "cells", magazine: 8, costPerShot: 4294967296, reserve: 32, reloadMs: 1000 }"#,
+            r#"{ kind = "ammo", type = "cells", magazine = 8, costPerShot = 4294967296, reserve = 32, reloadMs = 1000 }"#,
+        ),
+        (
+            "reserve",
+            r#"{ kind: "ammo", type: "cells", magazine: 8, costPerShot: 1, reserve: 4294967296, reloadMs: 1000 }"#,
+            r#"{ kind = "ammo", type = "cells", magazine = 8, costPerShot = 1, reserve = 4294967296, reloadMs = 1000 }"#,
+        ),
+        (
+            "reloadMs",
+            r#"{ kind: "ammo", type: "cells", magazine: 8, costPerShot: 1, reserve: 32, reloadMs: 4294967296 }"#,
+            r#"{ kind = "ammo", type = "cells", magazine = 8, costPerShot = 1, reserve = 32, reloadMs = 4294967296 }"#,
+        ),
+    ] {
+        assert_ammo_pair_rejects(field, js_resource, lua_resource, "expected u32");
+    }
+}
+
+#[test]
+fn paired_weapon_ammo_resource_rejects_fractional_and_non_finite_u32_fields() {
+    for (field, js_resource, lua_resource) in [
+        (
+            "fractional magazine",
+            r#"{ kind: "ammo", type: "cells", magazine: 1.5, costPerShot: 1, reserve: 32, reloadMs: 1000 }"#,
+            r#"{ kind = "ammo", type = "cells", magazine = 1.5, costPerShot = 1, reserve = 32, reloadMs = 1000 }"#,
+        ),
+        (
+            "fractional costPerShot",
+            r#"{ kind: "ammo", type: "cells", magazine: 8, costPerShot: 1.5, reserve: 32, reloadMs: 1000 }"#,
+            r#"{ kind = "ammo", type = "cells", magazine = 8, costPerShot = 1.5, reserve = 32, reloadMs = 1000 }"#,
+        ),
+        (
+            "fractional reserve",
+            r#"{ kind: "ammo", type: "cells", magazine: 8, costPerShot: 1, reserve: 1.5, reloadMs: 1000 }"#,
+            r#"{ kind = "ammo", type = "cells", magazine = 8, costPerShot = 1, reserve = 1.5, reloadMs = 1000 }"#,
+        ),
+        (
+            "fractional reloadMs",
+            r#"{ kind: "ammo", type: "cells", magazine: 8, costPerShot: 1, reserve: 32, reloadMs: 1.5 }"#,
+            r#"{ kind = "ammo", type = "cells", magazine = 8, costPerShot = 1, reserve = 32, reloadMs = 1.5 }"#,
+        ),
+        (
+            "non-finite magazine",
+            r#"{ kind: "ammo", type: "cells", magazine: Infinity, costPerShot: 1, reserve: 32, reloadMs: 1000 }"#,
+            r#"{ kind = "ammo", type = "cells", magazine = math.huge, costPerShot = 1, reserve = 32, reloadMs = 1000 }"#,
+        ),
+        (
+            "non-finite costPerShot",
+            r#"{ kind: "ammo", type: "cells", magazine: 8, costPerShot: Infinity, reserve: 32, reloadMs: 1000 }"#,
+            r#"{ kind = "ammo", type = "cells", magazine = 8, costPerShot = math.huge, reserve = 32, reloadMs = 1000 }"#,
+        ),
+        (
+            "non-finite reserve",
+            r#"{ kind: "ammo", type: "cells", magazine: 8, costPerShot: 1, reserve: Infinity, reloadMs: 1000 }"#,
+            r#"{ kind = "ammo", type = "cells", magazine = 8, costPerShot = 1, reserve = math.huge, reloadMs = 1000 }"#,
+        ),
+        (
+            "non-finite reloadMs",
+            r#"{ kind: "ammo", type: "cells", magazine: 8, costPerShot: 1, reserve: 32, reloadMs: Infinity }"#,
+            r#"{ kind = "ammo", type = "cells", magazine = 8, costPerShot = 1, reserve = 32, reloadMs = math.huge }"#,
+        ),
+    ] {
+        assert_ammo_pair_rejects(field, js_resource, lua_resource, "expected u32");
+    }
+}
+
+#[test]
+fn paired_weapon_ammo_resource_rejects_invalid_kind_type_and_positive_bounds() {
+    let type_65 = "a".repeat(65);
+    let cases = [
+        (
+            "unknown kind",
+            r#"{ kind: "cell", type: "cells", magazine: 8, reserve: 32 }"#.to_string(),
+            r#"{ kind = "cell", type = "cells", magazine = 8, reserve = 32 }"#.to_string(),
+            "unknown variant",
+        ),
+        (
+            "empty type",
+            r#"{ kind: "ammo", type: "", magazine: 8, reserve: 32 }"#.to_string(),
+            r#"{ kind = "ammo", type = "", magazine = 8, reserve = 32 }"#.to_string(),
+            "non-empty ASCII identifier",
+        ),
+        (
+            "65-byte type",
+            format!(r#"{{ kind: "ammo", type: "{type_65}", magazine: 8, reserve: 32 }}"#),
+            format!(r#"{{ kind = "ammo", type = "{type_65}", magazine = 8, reserve = 32 }}"#),
+            "at most 64 bytes",
+        ),
+        (
+            "illegal type character",
+            r#"{ kind: "ammo", type: "bad ammo", magazine: 8, reserve: 32 }"#.to_string(),
+            r#"{ kind = "ammo", type = "bad ammo", magazine = 8, reserve = 32 }"#.to_string(),
+            "resource.type",
+        ),
+        (
+            "non-ASCII type",
+            r#"{ kind: "ammo", type: "célls", magazine: 8, reserve: 32 }"#.to_string(),
+            r#"{ kind = "ammo", type = "célls", magazine = 8, reserve = 32 }"#.to_string(),
+            "and be ASCII",
+        ),
+        (
+            "zero magazine",
+            r#"{ kind: "ammo", type: "cells", magazine: 0, reserve: 32 }"#.to_string(),
+            r#"{ kind = "ammo", type = "cells", magazine = 0, reserve = 32 }"#.to_string(),
+            "resource.magazine",
+        ),
+        (
+            "zero costPerShot",
+            r#"{ kind: "ammo", type: "cells", magazine: 8, costPerShot: 0, reserve: 32 }"#
+                .to_string(),
+            r#"{ kind = "ammo", type = "cells", magazine = 8, costPerShot = 0, reserve = 32 }"#
+                .to_string(),
+            "resource.costPerShot",
+        ),
+        (
+            "zero reloadMs",
+            r#"{ kind: "ammo", type: "cells", magazine: 8, reserve: 32, reloadMs: 0 }"#.to_string(),
+            r#"{ kind = "ammo", type = "cells", magazine = 8, reserve = 32, reloadMs = 0 }"#
+                .to_string(),
+            "resource.reloadMs",
+        ),
+    ];
+    for (label, js_resource, lua_resource, expected_error) in cases {
+        assert_ammo_pair_rejects(label, &js_resource, &lua_resource, expected_error);
+    }
+}
+
+#[test]
+fn js_weapon_ammo_resource_explicit_null_does_not_default() {
+    for field in ["costPerShot", "reloadMs"] {
+        let resource = format!(
+            r#"{{ kind: "ammo", type: "cells", magazine: 8, costPerShot: 1, reserve: 32, reloadMs: 1000, {field}: null }}"#
         );
-        let err = eval_js(&src, |ctx, v| {
-            entity_descriptor_from_js(ctx, v).unwrap_err()
-        });
-        assert!(!err.to_string().is_empty(), "expected error for {resource}");
+        let error = parse_js_ammo_resource(&resource).unwrap_err().to_string();
+        assert!(
+            error.contains("expected u32"),
+            "unexpected {field} error: {error}"
+        );
     }
 }
 
@@ -303,47 +545,6 @@ fn lua_weapon_descriptor_without_credit_source_parses_as_none() {
     let weapon = d.weapon.expect("weapon present");
     assert_eq!(weapon.credit_source, None);
     assert_eq!(weapon.resource, None);
-}
-
-#[test]
-fn lua_weapon_ammo_resource_parses_with_defaults() {
-    let src = r#"return {
-        canonicalName = "reference_pistol",
-        components = { weapon = {
-            damage = 12, range = 64, fireRateMs = 180,
-            fireMode = "semi", resolution = "hitscan",
-            resource = { kind = "ammo", type = "bullets.light", magazine = 12, reserve = 48 },
-        }}
-    }"#;
-    let d = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap());
-    let Some(WeaponResource::Ammo(ammo)) = d.weapon.unwrap().resource else {
-        panic!("expected ammo resource");
-    };
-    assert_eq!(ammo.ammo_type, "bullets.light");
-    assert_eq!(ammo.magazine, 12);
-    assert_eq!(ammo.cost_per_shot, 1);
-    assert_eq!(ammo.reserve, 48);
-    assert_eq!(ammo.reload_ms, 1000);
-}
-
-#[test]
-fn lua_weapon_ammo_resource_rejects_serde_and_semantic_errors() {
-    for resource in [
-        r#"{ kind = "cell", type = "cells", magazine = 8, reserve = 32 }"#,
-        r#"{ kind = "ammo", type = "cells", magazine = -1, reserve = 32 }"#,
-        r#"{ kind = "ammo", type = "cells", magazine = "8", reserve = 32 }"#,
-        r#"{ kind = "ammo", type = "cells", magazine = 8, reserve = -1 }"#,
-        r#"{ kind = "ammo", type = "bad ammo", magazine = 8, reserve = 32 }"#,
-        r#"{ kind = "ammo", type = "cells", magazine = 0, reserve = 32 }"#,
-        r#"{ kind = "ammo", type = "cells", magazine = 8, costPerShot = 0, reserve = 32 }"#,
-        r#"{ kind = "ammo", type = "cells", magazine = 8, reserve = 32, reloadMs = 0 }"#,
-    ] {
-        let src = format!(
-            r#"return {{ components = {{ weapon = {{ damage = 12, range = 64, fireRateMs = 180, fireMode = "semi", resolution = "hitscan", resource = {resource} }} }} }}"#
-        );
-        let err = eval_lua(&src, |v| entity_descriptor_from_lua(v).unwrap_err());
-        assert!(!err.to_string().is_empty(), "expected error for {resource}");
-    }
 }
 
 #[test]

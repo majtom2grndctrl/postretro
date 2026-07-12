@@ -95,9 +95,9 @@ use winit::window::{Window, WindowAttributes};
 
 use crate::camera::Camera;
 use crate::frame_timing::{FrameRateMeter, FrameTiming, InterpolableState};
+use crate::input::{Action, ButtonState, DiagnosticAction, InputFocus};
 // Owns the apply-before-detect stage order of the frame's replicated-state path.
 // See: context/lib/networking.md
-use crate::input::{Action, ButtonState, DiagnosticAction, InputFocus};
 use crate::netcode::frame_order;
 use crate::render::Renderer;
 use crate::scripting::state_persistence::{

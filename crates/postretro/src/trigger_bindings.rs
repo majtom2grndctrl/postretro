@@ -20,7 +20,7 @@ use serde::Deserialize;
 use crate::health::reactions::{self as health_reactions, ApplyDamageArgs};
 use crate::kinematic_mover::apply_mover_command_to_targets;
 use crate::scripting::reactions::animation::{self as animation_reactions, SetAnimationStateArgs};
-use crate::trigger_system::{arm_trigger_targets, disarm_trigger_targets};
+use crate::trigger_system::{TriggerEventEdge, arm_trigger_targets, disarm_trigger_targets};
 
 const CONSEQUENTIAL_PRIMITIVES: &[&str] = &[
     "moverStart",
@@ -35,12 +35,6 @@ const CONSEQUENTIAL_PRIMITIVES: &[&str] = &[
 ];
 
 const LIFECYCLE_PRIMITIVES: &[&str] = &["loadLevel", "restartLevel", "returnToFrontend"];
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum TriggerBindingEdge {
-    Enter,
-    Exit,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct TriggerResidualHandle(usize);
@@ -58,7 +52,7 @@ impl TriggerResidual {
 
 #[derive(Debug, Default)]
 pub(crate) struct TriggerBindingTable {
-    bindings: HashMap<(EntityId, TriggerBindingEdge), TriggerBinding>,
+    bindings: HashMap<(EntityId, TriggerEventEdge), TriggerBinding>,
     residuals: Vec<TriggerResidual>,
 }
 
@@ -174,14 +168,14 @@ impl TriggerBindingTable {
             };
             table.bind_event(
                 trigger,
-                TriggerBindingEdge::Enter,
+                TriggerEventEdge::Enter,
                 &component.on_fire,
                 data_registry,
                 slot_table,
             );
             table.bind_event(
                 trigger,
-                TriggerBindingEdge::Exit,
+                TriggerEventEdge::Exit,
                 &component.on_exit,
                 data_registry,
                 slot_table,
@@ -193,7 +187,7 @@ impl TriggerBindingTable {
     fn bind_event(
         &mut self,
         trigger: EntityId,
-        edge: TriggerBindingEdge,
+        edge: TriggerEventEdge,
         event_name: &str,
         data_registry: &DataRegistry,
         slot_table: &SlotTable,
@@ -237,7 +231,7 @@ impl TriggerBindingTable {
     pub(crate) fn execute(
         &self,
         trigger: EntityId,
-        edge: TriggerBindingEdge,
+        edge: TriggerEventEdge,
         registry: &mut EntityRegistry,
         slot_table: &mut SlotTable,
     ) -> TriggerBindingExecution {
@@ -269,12 +263,12 @@ impl TriggerBindingTable {
     /// Whether the authored event name for this trigger edge resolved against
     /// the active composed reaction set at level install.
     #[cfg(feature = "dev-tools")]
-    pub(crate) fn is_bound(&self, trigger: EntityId, edge: TriggerBindingEdge) -> bool {
+    pub(crate) fn is_bound(&self, trigger: EntityId, edge: TriggerEventEdge) -> bool {
         self.bindings.contains_key(&(trigger, edge))
     }
 
     #[cfg(test)]
-    fn binding(&self, trigger: EntityId, edge: TriggerBindingEdge) -> Option<&TriggerBinding> {
+    fn binding(&self, trigger: EntityId, edge: TriggerEventEdge) -> Option<&TriggerBinding> {
         self.bindings.get(&(trigger, edge))
     }
 }
@@ -528,7 +522,13 @@ fn bind_primitive(
 }
 
 fn bind_sequence_step(step: &SequenceStep, slot_table: &SlotTable) -> Option<BoundTriggerCommand> {
-    let target = (step.primitive != "setState").then_some(BoundTarget::Entity(step.id));
+    if step.primitive == "setState" {
+        log::warn!(
+            "[Trigger] setState is system-targeted and cannot carry an entity target; not binding"
+        );
+        return None;
+    }
+    let target = Some(BoundTarget::Entity(step.id));
     bind_command(&step.primitive, target, &step.args, slot_table)
 }
 
@@ -764,7 +764,7 @@ mod tests {
 
         let table = TriggerBindingTable::build(&registry, &data, &writable_slots());
         let binding = table
-            .binding(trigger, TriggerBindingEdge::Enter)
+            .binding(trigger, TriggerEventEdge::Enter)
             .expect("named trigger event binds");
         assert_eq!(binding.commands.len(), 2);
         assert!(matches!(
@@ -817,7 +817,7 @@ mod tests {
 
         let table = TriggerBindingTable::build(&registry, &data, &writable_slots());
         let binding = table
-            .binding(trigger, TriggerBindingEdge::Enter)
+            .binding(trigger, TriggerEventEdge::Enter)
             .expect("named trigger event binds");
         assert_eq!(binding.commands.len(), 1);
         let residual = table
@@ -848,7 +848,7 @@ mod tests {
 
         let table = TriggerBindingTable::build(&registry, &data, &SlotTable::new());
         let binding = table
-            .binding(trigger, TriggerBindingEdge::Enter)
+            .binding(trigger, TriggerEventEdge::Enter)
             .expect("the known event is recorded even when it has no executable work");
         assert!(binding.commands.is_empty());
         assert!(binding.residual.is_none());
@@ -875,19 +875,14 @@ mod tests {
 
         let table = TriggerBindingTable::build(&registry, &data, &slots);
         let binding = table
-            .binding(trigger, TriggerBindingEdge::Enter)
+            .binding(trigger, TriggerEventEdge::Enter)
             .expect("the known event is recorded even when its invalid step is rejected");
         assert!(binding.commands.is_empty());
         assert!(binding.residual.is_none());
 
         assert!(
             table
-                .execute(
-                    trigger,
-                    TriggerBindingEdge::Enter,
-                    &mut registry,
-                    &mut slots,
-                )
+                .execute(trigger, TriggerEventEdge::Enter, &mut registry, &mut slots,)
                 .residual()
                 .is_none(),
             "a rejected tagged setState must not leave residual work"
@@ -898,6 +893,50 @@ mod tests {
                 .and_then(|record| record.value.as_ref()),
             Some(&SlotValue::Number(0.0)),
             "tagged setState must retain the normal entity-targeted no-op contract"
+        );
+    }
+
+    // Regression: sequence setState silently discarded its entity target and
+    // performed a system write despite the malformed authoring shape.
+    #[test]
+    fn bind_rejects_entity_targeted_sequence_set_state_without_an_in_tick_write() {
+        let mut registry = EntityRegistry::new();
+        let trigger = spawn_trigger(&mut registry, "set_sequence_tagged");
+        let mut data = DataRegistry::new();
+        data.populate_level(
+            vec![NamedReaction {
+                name: "set_sequence_tagged".to_string(),
+                descriptor: ReactionDescriptor::Sequence(vec![SequenceStep {
+                    id: trigger,
+                    primitive: "setState".to_string(),
+                    args: serde_json::json!({ "slot": "trigger.flag", "value": 1 }),
+                }]),
+            }],
+            Vec::new(),
+            &[],
+        );
+        let mut slots = writable_slots();
+
+        let table = TriggerBindingTable::build(&registry, &data, &slots);
+        let binding = table
+            .binding(trigger, TriggerEventEdge::Enter)
+            .expect("the known event is recorded even when its invalid step is rejected");
+        assert!(binding.commands.is_empty());
+        assert!(binding.residual.is_none());
+
+        assert!(
+            table
+                .execute(trigger, TriggerEventEdge::Enter, &mut registry, &mut slots,)
+                .residual()
+                .is_none(),
+            "a rejected sequence setState must not leave residual work"
+        );
+        assert_eq!(
+            slots
+                .get("trigger.flag")
+                .and_then(|record| record.value.as_ref()),
+            Some(&SlotValue::Number(0.0)),
+            "entity-targeted sequence setState must not perform an in-tick write"
         );
     }
 
@@ -933,7 +972,7 @@ mod tests {
 
         let table = TriggerBindingTable::build(&registry, &data, &writable_slots());
         let binding = table
-            .binding(trigger, TriggerBindingEdge::Enter)
+            .binding(trigger, TriggerEventEdge::Enter)
             .expect("the known event is recorded even when it has no executable work");
         assert!(
             binding.commands.is_empty(),

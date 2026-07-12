@@ -32,6 +32,8 @@ pub struct TriggerVolumeComponent {
     pub armed: bool,
     pub latched: bool,
     pub rearm_remaining_ms: f32,
+    #[serde(default)]
+    pub touch_reactivation_pending: bool,
 }
 
 impl TriggerVolumeComponent {
@@ -60,6 +62,7 @@ impl TriggerVolumeComponent {
             armed: enabled_on_spawn,
             latched: false,
             rearm_remaining_ms: 0.0,
+            touch_reactivation_pending: false,
         }
     }
 }
@@ -108,9 +111,11 @@ mod tests {
         let fields = serialized.as_object_mut().unwrap();
         fields.remove("on_fire");
         fields.remove("on_exit");
+        fields.remove("touch_reactivation_pending");
 
         let deserialized: TriggerVolumeComponent = serde_json::from_value(serialized).unwrap();
         assert_eq!(deserialized.on_fire, "");
         assert_eq!(deserialized.on_exit, "");
+        assert!(!deserialized.touch_reactivation_pending);
     }
 }

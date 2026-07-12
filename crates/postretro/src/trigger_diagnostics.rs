@@ -6,8 +6,8 @@ use postretro_entities::{ComponentKind, ComponentValue, EntityRegistry, TriggerA
 
 use crate::render;
 use crate::scripting_systems::trigger_volume_bridge::TriggerVolumeBridge;
-use crate::trigger_bindings::{TriggerBindingEdge, TriggerBindingTable};
-use crate::trigger_system::TriggerSystem;
+use crate::trigger_bindings::TriggerBindingTable;
+use crate::trigger_system::{TriggerEventEdge, TriggerSystem};
 
 pub(crate) struct TriggerOverlayLabel {
     screen_position: Option<egui::Pos2>,
@@ -48,9 +48,9 @@ pub(crate) fn collect_trigger_diagnostics_rows(
                 rearm_remaining_ms: trigger.rearm_remaining_ms,
                 occupancy: trigger_system.occupancy(id),
                 on_fire: trigger.on_fire.clone(),
-                on_fire_resolved: bindings.is_bound(id, TriggerBindingEdge::Enter),
+                on_fire_resolved: bindings.is_bound(id, TriggerEventEdge::Enter),
                 on_exit: trigger.on_exit.clone(),
-                on_exit_resolved: bindings.is_bound(id, TriggerBindingEdge::Exit),
+                on_exit_resolved: bindings.is_bound(id, TriggerEventEdge::Exit),
             })
         })
         .collect();

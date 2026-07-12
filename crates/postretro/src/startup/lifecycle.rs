@@ -2695,7 +2695,7 @@ mod tests {
                 app.trigger_bindings
                     .execute(
                         trigger,
-                        crate::trigger_bindings::TriggerBindingEdge::Enter,
+                        crate::trigger_system::TriggerEventEdge::Enter,
                         &mut entities,
                         &mut slots,
                     )
@@ -2731,7 +2731,7 @@ mod tests {
                 app.trigger_bindings
                     .execute(
                         trigger,
-                        crate::trigger_bindings::TriggerBindingEdge::Enter,
+                        crate::trigger_system::TriggerEventEdge::Enter,
                         &mut entities,
                         &mut slots,
                     )

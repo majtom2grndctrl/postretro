@@ -11,7 +11,7 @@ use parry3d::shape::TriMesh;
 use postretro_level_format::navmesh::{NAVMESH_VERSION, NavMeshSection, NavRegion};
 use proptest::prelude::*;
 
-use super::{SimCommand, TickEvents, simulate_tick};
+use super::{RemotePawnCommand, SimCommand, TickEvents, simulate_tick};
 use crate::collision::CollisionWorld;
 use crate::collision::moving::MoverCollider;
 use crate::kinematic_mover::MoverTickStateTable;
@@ -225,6 +225,7 @@ struct SimHarness {
     role_ids: Vec<(Role, EntityId)>,
     labels: HashMap<EntityId, EntityLabel>,
     selected_player: EntityId,
+    remote_player: EntityId,
     enemy: EntityId,
     trigger_arm_target: EntityId,
 }
@@ -255,6 +256,10 @@ impl SimHarness {
             .iter()
             .find_map(|(role, id)| (*role == Role::Alpha).then_some(*id))
             .expect("alpha role is always spawned");
+        let remote_player = role_ids
+            .iter()
+            .find_map(|(role, id)| (*role == Role::Beta).then_some(*id))
+            .expect("beta role is always spawned");
 
         // The green-and-stays-green determinism gate includes a real trigger
         // firing sequence: one direct shared-state command, one arm command,
@@ -273,7 +278,7 @@ impl SimHarness {
                         "determinismTrigger".to_string(),
                         String::new(),
                         MoverCommand::Start,
-                        TriggerFireMode::Once,
+                        TriggerFireMode::Multiple,
                         0.0,
                         true,
                     ),
@@ -353,6 +358,7 @@ impl SimHarness {
             role_ids,
             labels,
             selected_player,
+            remote_player,
             enemy,
             trigger_arm_target,
         }
@@ -360,6 +366,15 @@ impl SimHarness {
 
     fn tick(&mut self, command: RecordedCommand) -> RecordedTick {
         let sim_command = command.to_sim_command();
+        let remote_pawn_commands = [RemotePawnCommand {
+            pawn: self.remote_player,
+            owner_client_id: 1,
+            weapon: None,
+            shot_id: None,
+            fire_tick: 0,
+            client_tick: 0,
+            command: command.to_sim_command(),
+        }];
         let trigger_use_edges = HashMap::new();
         let events = simulate_tick(
             self.registry.clone(),
@@ -373,7 +388,7 @@ impl SimHarness {
             &mut self.ai_warned,
             &self.mover_colliders,
             &mut self.mover_states,
-            &[],
+            &remote_pawn_commands,
             &sim_command,
             |_| command.to_post_movement_command(),
             DT,
@@ -1072,6 +1087,24 @@ fn run_stream(commands: &[RecordedCommand], spawn_order: SpawnOrder) -> SimRun {
     }
 }
 
+fn assert_trigger_positive_anchors(run: &SimRun) {
+    assert_eq!(
+        run.trigger_slot,
+        Some(SlotValue::Number(1.0)),
+        "the baseline trigger must write its shared-state slot"
+    );
+    assert!(
+        run.trigger_arm_target_armed,
+        "the baseline trigger must arm its target"
+    );
+    assert!(
+        run.events
+            .iter()
+            .any(|events| !events.trigger_fires.is_empty()),
+        "the baseline must include at least one named trigger fire"
+    );
+}
+
 fn assert_runs_match(actual: &SimRun, expected: &SimRun) {
     assert_eq!(
         actual.events, expected.events,
@@ -1200,8 +1233,48 @@ fn simulate_tick_determinism_harness_matches_run_to_run_and_spawn_order() {
     let rerun = run_stream(&commands, SpawnOrder::AlphaThenBeta);
     let reversed_spawn = run_stream(&commands, SpawnOrder::BetaThenAlpha);
 
+    assert_trigger_positive_anchors(&baseline);
     assert_runs_match(&rerun, &baseline);
     assert_runs_match(&reversed_spawn, &baseline);
+}
+
+#[test]
+fn trigger_events_keep_two_activator_order_across_spawn_reversal() {
+    let commands = [RecordedCommand {
+        wish_dir: Vec2::ZERO,
+        jump_pressed: false,
+        dash_pressed: false,
+        running: false,
+        crouch_intent: false,
+        facing_yaw: 0.0,
+        fire_pressed: false,
+        fire_active: false,
+    }];
+    let alpha_then_beta = run_stream(&commands, SpawnOrder::AlphaThenBeta);
+    let beta_then_alpha = run_stream(&commands, SpawnOrder::BetaThenAlpha);
+    let expected = vec![
+        RecordedTriggerFire {
+            trigger: EntityLabel::TriggerSource,
+            player: PlayerLabel::Local(Role::Alpha),
+            event_name: "determinismTrigger".to_string(),
+            edge: TriggerEventEdge::Enter,
+        },
+        RecordedTriggerFire {
+            trigger: EntityLabel::TriggerSource,
+            player: PlayerLabel::Remote(1),
+            event_name: "determinismTrigger".to_string(),
+            edge: TriggerEventEdge::Enter,
+        },
+    ];
+
+    assert_eq!(
+        alpha_then_beta.events[0].trigger_fires, expected,
+        "both local and remote activators must reach the trigger stage"
+    );
+    assert_eq!(
+        beta_then_alpha.events[0].trigger_fires, alpha_then_beta.events[0].trigger_fires,
+        "trigger event ordering must not depend on pawn spawn order"
+    );
 }
 
 #[test]
@@ -1711,6 +1784,7 @@ proptest! {
         let rerun = run_stream(&commands, SpawnOrder::AlphaThenBeta);
         let reversed_spawn = run_stream(&commands, SpawnOrder::BetaThenAlpha);
 
+        assert_trigger_positive_anchors(&baseline);
         assert_runs_match(&rerun, &baseline);
         assert_runs_match(&reversed_spawn, &baseline);
     }

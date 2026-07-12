@@ -199,12 +199,25 @@ pub fn fire_prepartitioned_reactions_with_sequences(
                 // kills — and then again at the real threshold.
             }
             PrepartitionedReactionStep::Descriptor(ReactionDescriptor::Primitive(primitive)) => {
+                #[cfg(debug_assertions)]
+                debug_assert!(
+                    !is_trigger_consequential_primitive(&primitive.primitive),
+                    "trigger residual contains consequential primitive `{}`; binding must execute it in the fixed tick",
+                    primitive.primitive,
+                );
                 dispatch_primitive(primitive, reaction_registry, system_registry, script_ctx);
                 if let Some(on_complete) = &primitive.on_complete {
                     chained.push(on_complete.clone());
                 }
             }
             PrepartitionedReactionStep::Descriptor(ReactionDescriptor::Sequence(steps)) => {
+                #[cfg(debug_assertions)]
+                debug_assert!(
+                    steps
+                        .iter()
+                        .all(|step| !is_trigger_consequential_primitive(&step.primitive)),
+                    "trigger residual contains a consequential sequence step; binding must execute it in the fixed tick",
+                );
                 dispatch_sequence(steps, sequence_registry, script_ctx);
             }
         }
@@ -212,8 +225,12 @@ pub fn fire_prepartitioned_reactions_with_sequences(
     chained
 }
 
-/// Dispatch named follow-ups breadth-first. The cap turns malformed duplicate
-/// name graphs into a bounded warning instead of an unbounded app-loop drain.
+/// The trigger app-frame drain supplies every same-frame residual root in one
+/// batch. Follow-ups dispatch breadth-first across that batch, with one shared
+/// 256-hop cap: this is deliberately a cycle breaker, not a per-root delivery
+/// budget.
+/// It bounds malformed duplicate-name graphs without changing FIFO order among
+/// the work that fits below the cap.
 pub fn dispatch_deferred_named_events_with_sequences(
     initial_events: impl IntoIterator<Item = String>,
     data_registry: &DataRegistry,
@@ -222,7 +239,7 @@ pub fn dispatch_deferred_named_events_with_sequences(
     system_registry: &SystemReactionRegistry,
     script_ctx: &ScriptCtx,
 ) {
-    const MAX_DISPATCH_HOPS: usize = 256;
+    const MAX_BATCH_DISPATCH_HOPS: usize = 256;
     let _ = dispatch_deferred_named_events_with_sequences_up_to(
         initial_events,
         data_registry,
@@ -230,7 +247,7 @@ pub fn dispatch_deferred_named_events_with_sequences(
         reaction_registry,
         system_registry,
         script_ctx,
-        MAX_DISPATCH_HOPS,
+        MAX_BATCH_DISPATCH_HOPS,
     );
 }
 
@@ -248,7 +265,7 @@ fn dispatch_deferred_named_events_with_sequences_up_to(
     while let Some(event_name) = pending.pop_front() {
         if dispatched == max_dispatch_hops {
             log::warn!(
-                "[Scripting] deferred reaction dispatch reached the {max_dispatch_hops}-hop cap; dropping {} queued event(s)",
+                "[Scripting] deferred reaction dispatch reached the {max_dispatch_hops}-hop aggregate batch cap; dropping {} queued event(s)",
                 pending.len() + 1,
             );
             break;
@@ -274,6 +291,26 @@ fn dispatch_deferred_named_events_with_sequences_up_to(
         ));
     }
     dispatched
+}
+
+/// Mirrors the trigger binder's closed fixed-tick command set. This assertion
+/// lives at the residual executor boundary so a future partitioning path cannot
+/// silently run consequential work twice. It is debug-only because validated
+/// level-install bindings are the release contract.
+#[cfg(debug_assertions)]
+fn is_trigger_consequential_primitive(primitive: &str) -> bool {
+    matches!(
+        primitive,
+        "moverStart"
+            | "moverStop"
+            | "moverReverse"
+            | "moverGoToPathNode"
+            | "applyDamage"
+            | "armTrigger"
+            | "disarmTrigger"
+            | "setState"
+            | "setAnimationState"
+    )
 }
 
 /// Routes a `Primitive` descriptor to one of two execution arms (M13 HUD
@@ -874,7 +911,7 @@ mod tests {
     }
 
     #[test]
-    fn deferred_named_events_are_breadth_first_and_hop_bounded() {
+    fn deferred_named_events_are_breadth_first_and_batch_hop_bounded() {
         let script_ctx = ScriptCtx::new();
         let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
         let calls_for_handler = Arc::clone(&calls);
@@ -930,7 +967,7 @@ mod tests {
                 "second".to_string(),
                 "after_first".to_string(),
             ],
-            "later onComplete hops stay behind already-queued sibling events"
+            "the shared batch cap applies after FIFO drains both roots, then the first follow-up"
         );
     }
 

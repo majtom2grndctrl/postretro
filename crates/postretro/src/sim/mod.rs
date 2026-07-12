@@ -17,10 +17,10 @@ use crate::netcode::{AuthorizedShot, OpenAuthorizedShot, ShotId};
 use crate::scripting_systems;
 use crate::scripting_systems::hit_zones::HitZoneStore;
 use crate::scripting_systems::trigger_volume_bridge::TriggerVolumeBridge;
-use crate::trigger_bindings::{TriggerBindingEdge, TriggerBindingTable, TriggerResidualHandle};
+use crate::trigger_bindings::{TriggerBindingTable, TriggerResidualHandle};
 #[cfg(test)]
 use crate::trigger_system::TriggerEvent;
-use crate::trigger_system::{AuthoritativePlayer, PlayerId, TriggerEventEdge, TriggerSystem};
+use crate::trigger_system::{AuthoritativePlayer, PlayerId, TriggerSystem};
 use crate::weapon::{self, FireButtonState, WeaponFireAuthorization, WeaponFireCommand};
 use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::components::brain::{BrainComponent, LogicalState};
@@ -183,13 +183,9 @@ pub(crate) fn simulate_tick(
             trigger_context.use_edges,
             tick_dt,
             |event, registry| {
-                let edge = match event.edge {
-                    TriggerEventEdge::Enter => TriggerBindingEdge::Enter,
-                    TriggerEventEdge::Exit => TriggerBindingEdge::Exit,
-                };
                 let execution = trigger_context.bindings.execute(
                     event.fire.trigger,
-                    edge,
+                    event.edge,
                     registry,
                     &mut slot_table,
                 );

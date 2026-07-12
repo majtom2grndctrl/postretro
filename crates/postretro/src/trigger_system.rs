@@ -47,7 +47,7 @@ pub(crate) struct TriggerEventFire {
 
 /// Which edge produced a named trigger event. The trigger stage owns this
 /// ordering so commands from one edge can affect a later enter gate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum TriggerEventEdge {
     Enter,
     Exit,
@@ -154,9 +154,9 @@ impl TriggerSystem {
             .collect();
         trigger_ids.sort_unstable();
 
-        // A despawned trigger, or one that loses its required bridge AABB, has
-        // no valid future edge on which to resolve its occupants. Drop both
-        // occupancy and paired-exit state instead of retaining stale IDs.
+        // Removing a trigger deliberately drops any unmatched paired exits:
+        // without its AABB, no valid edge remains to resolve them on. Revisit
+        // this policy if runtime trigger despawn becomes supported.
         let active_triggers: BTreeSet<EntityId> = trigger_ids
             .iter()
             .copied()
@@ -181,6 +181,9 @@ impl TriggerSystem {
             };
 
             decrement_rearm(&mut trigger, tick_dt);
+            let touch_reactivation_pending = trigger.activation == TriggerActivation::Touch
+                && trigger.touch_reactivation_pending;
+            trigger.touch_reactivation_pending = false;
             let _ = registry.set_component(trigger_id, trigger.clone());
 
             // Retain the authoritative occupancy set in place. The old path
@@ -219,7 +222,9 @@ impl TriggerSystem {
                         .or_default()
                         .insert(player_id);
                 let activated = match trigger.activation {
-                    TriggerActivation::Touch => entered,
+                    TriggerActivation::Touch => {
+                        entered || (touch_reactivation_pending && overlapping)
+                    }
                     TriggerActivation::Use => {
                         overlapping && use_pressed.get(&player_id).copied().unwrap_or(false)
                     }
@@ -341,10 +346,14 @@ fn canonical_player_capsules(
 
 /// Fully re-arm a trigger. A fresh arm intentionally clears one-shot latching
 /// and any running rearm timer so map logic can re-use a trigger immediately.
+/// Touch triggers also admit their currently standing occupants on the next tick.
 pub(crate) fn arm_trigger(trigger: &mut TriggerVolumeComponent) {
     trigger.armed = true;
     trigger.latched = false;
     trigger.rearm_remaining_ms = 0.0;
+    if trigger.activation == TriggerActivation::Touch {
+        trigger.touch_reactivation_pending = true;
+    }
 }
 
 /// Disarm future enter activation without cancelling a previously paired exit.
@@ -446,8 +455,10 @@ fn warn_duplicate_player_once(player: PlayerId) {
 /// The sole activation decision point for touch and use routes.
 fn evaluate_trigger_activation(
     state: &TriggerVolumeComponent,
-    #[allow(unused_variables)] activator: PlayerId,
+    activator: PlayerId,
 ) -> TriggerActivationDecision {
+    #[cfg(not(any(feature = "dev-tools", test)))]
+    let _ = activator;
     #[cfg(feature = "dev-tools")]
     log::debug!("[Trigger] activation candidate from {activator:?}");
 
@@ -1367,17 +1378,29 @@ mod tests {
                 .expect("trigger exists")
                 .armed
         );
-        let _ = tick(&mut system, &mut registry, &bridge, &players, &[]);
-        set_player_position(&mut registry, player, Vec3::new(4.0, 1.0, 0.0));
-        let _ = tick(&mut system, &mut registry, &bridge, &players, &[]);
-        set_player_position(&mut registry, player, Vec3::new(0.0, 1.0, 0.0));
         assert_eq!(
             tick(&mut system, &mut registry, &bridge, &players, &[]).enters(),
             vec![TriggerEventFire {
                 trigger,
                 player: player_id,
                 event_name: "armed_enter".into(),
+            }],
+            "arming reopens a Touch trigger for a player already standing in it"
+        );
+        set_player_position(&mut registry, player, Vec3::new(4.0, 1.0, 0.0));
+        assert_eq!(
+            tick(&mut system, &mut registry, &bridge, &players, &[]).exits(),
+            vec![TriggerEventFire {
+                trigger,
+                player: player_id,
+                event_name: "armed_exit".into(),
             }]
+        );
+        assert!(
+            tick(&mut system, &mut registry, &bridge, &players, &[])
+                .exits()
+                .is_empty(),
+            "the reactivated entry retains one paired exit"
         );
 
         let mut component = registry
@@ -1435,6 +1458,137 @@ mod tests {
                 .enters()
                 .is_empty(),
             "disarming prevents later enter fires"
+        );
+    }
+
+    #[test]
+    fn rearming_touch_while_standing_refires_once_and_keeps_one_paired_exit() {
+        let _guard = gate_test_guard().lock().expect("gate test guard poisoned");
+        reset_gate_fires();
+        let mut registry = EntityRegistry::new();
+        let mut bridge = TriggerVolumeBridge::new();
+        let trigger = spawn_trigger(
+            &mut registry,
+            &mut bridge,
+            TriggerActivation::Touch,
+            TriggerFireMode::Once,
+            0.0,
+            true,
+        );
+        set_event_names(&mut registry, trigger, "entered", "left");
+        let player = spawn_player(&mut registry, Vec3::new(0.0, 1.0, 0.0));
+        let player_id = PlayerId::Local(player);
+        let players = [AuthoritativePlayer {
+            id: player_id,
+            pawn: player,
+        }];
+        let mut system = TriggerSystem::default();
+        let mut reactions = ReactionPrimitiveRegistry::new();
+        register_trigger_reaction_primitives(&mut reactions);
+
+        assert_eq!(
+            tick(&mut system, &mut registry, &bridge, &players, &[]).enters(),
+            vec![TriggerEventFire {
+                trigger,
+                player: player_id,
+                event_name: "entered".into(),
+            }]
+        );
+        reactions
+            .dispatch(
+                "armTrigger",
+                &mut registry,
+                &[trigger],
+                &serde_json::Value::Null,
+            )
+            .expect("re-arm dispatch succeeds");
+        assert_eq!(
+            tick(&mut system, &mut registry, &bridge, &players, &[]).enters(),
+            vec![TriggerEventFire {
+                trigger,
+                player: player_id,
+                event_name: "entered".into(),
+            }],
+            "a puzzle-reset arm re-fires a player still on the plate"
+        );
+
+        set_player_position(&mut registry, player, Vec3::new(4.0, 1.0, 0.0));
+        assert_eq!(
+            tick(&mut system, &mut registry, &bridge, &players, &[]).exits(),
+            vec![TriggerEventFire {
+                trigger,
+                player: player_id,
+                event_name: "left".into(),
+            }],
+            "repeated entries share one paired exit while occupancy is continuous"
+        );
+        assert!(
+            tick(&mut system, &mut registry, &bridge, &players, &[])
+                .exits()
+                .is_empty(),
+            "leaving cannot consume the same pair twice"
+        );
+    }
+
+    #[test]
+    fn arming_use_while_standing_still_requires_a_press() {
+        let _guard = gate_test_guard().lock().expect("gate test guard poisoned");
+        reset_gate_fires();
+        let mut registry = EntityRegistry::new();
+        let mut bridge = TriggerVolumeBridge::new();
+        let trigger = spawn_trigger(
+            &mut registry,
+            &mut bridge,
+            TriggerActivation::Use,
+            TriggerFireMode::Once,
+            0.0,
+            false,
+        );
+        set_event_names(&mut registry, trigger, "used", "released");
+        let player = spawn_player(&mut registry, Vec3::new(0.0, 1.0, 0.0));
+        let player_id = PlayerId::Local(player);
+        let players = [AuthoritativePlayer {
+            id: player_id,
+            pawn: player,
+        }];
+        let mut system = TriggerSystem::default();
+        let mut reactions = ReactionPrimitiveRegistry::new();
+        register_trigger_reaction_primitives(&mut reactions);
+
+        assert!(
+            tick(&mut system, &mut registry, &bridge, &players, &[])
+                .enters()
+                .is_empty(),
+            "a disabled Use trigger ignores an overlapping player"
+        );
+        reactions
+            .dispatch(
+                "armTrigger",
+                &mut registry,
+                &[trigger],
+                &serde_json::Value::Null,
+            )
+            .expect("arm dispatch succeeds");
+        assert!(
+            tick(&mut system, &mut registry, &bridge, &players, &[])
+                .enters()
+                .is_empty(),
+            "arming a Use trigger does not synthesize a touch entry"
+        );
+        assert_eq!(
+            tick(
+                &mut system,
+                &mut registry,
+                &bridge,
+                &players,
+                &[(player_id, true)],
+            )
+            .enters(),
+            vec![TriggerEventFire {
+                trigger,
+                player: player_id,
+                event_name: "used".into(),
+            }]
         );
     }
 

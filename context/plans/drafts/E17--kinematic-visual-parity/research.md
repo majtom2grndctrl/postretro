@@ -54,9 +54,21 @@ The mover's group 2 is the **runtime dynamic-light** path, not the static `spec_
 - `max_bind_groups = 8` (`renderer_init_resources.rs`); groups 0–6 allocated, one free. The mover depth-only draw binds only group 0 (light-space uniform) + a mover-instance group → no ninth group.
 - Required feature `TEXTURE_COMPRESSION_BC` (material textures, not shadow-specific). `TIMESTAMP_QUERY` optional (timing). `CUBE_ARRAY_TEXTURES` gates the cube pool (graceful). A mover-occluder path adds no new required feature.
 
+## Static-light promotion for movers (specular + casting under static lights)
+
+The decision to give movers specular under **promoted static lights** (not the full static-chunk list) rests on these facts.
+
+- **Promotion is skinned-mesh-driven only today.** The gate `selected_static_light_has_shadow_entity` (`crates/renderer/src/render/renderer_light_slots.rs` ~1079–1105) iterates only the skinned `MeshFramePlan` instances; `update_dynamic_light_slots` (~96–108) `continue`s past a selected static light with no intersecting skinned mesh. The plan is built skinned-only at `renderer_render_frame.rs` (~71–82, `promotion_mesh_frame_plan` from `mesh_draws`). Movers (`KinematicMoverInstance`) never enter `mesh_draws`/`MeshFramePlan`. **Consequence:** a static light near a mover-only scene is not promoted. The spec adds mover world-bounds to this gate (Task 3).
+- **The mover loop already iterates promoted records.** `accumulate_dynamic_direct` (`kinematic_brush.wgsl` ~170) loops `kinematic_light_params.light_count`, written as `full.total_light_count` (`renderer_render_frame.rs` ~366) = `full.light_count + full.promoted_static_records.len()` (`renderer_light_slots.rs` ~851). The mover's group-2 `lights`/`light_influence` bind the **same** `full.lights_buffer`/`full.influence_buffer` the mesh pass binds (`renderer_full_init.rs` ~425–448; `renderer_resources.rs` ~344–358), with promoted records appended at the tail (`build_count_split_light_upload` ~1134–1149). So a specular term in that loop covers dynamic + promoted static lights with no new bindings.
+- **Crossfade weight `w` is pre-folded into the promoted record's color** on the CPU (`renderer_light_slots.rs` ~1134–1137: `weighted.intensity *= record.weight`). Both mesh and mover diffuse terms use `effective_color = light.color_and_falloff_model.xyz` (already carrying `w`), so a specular term scaled by `effective_color` inherits `w` for free. The `(1−w)` baked-direct half lives in the composed direct SH atlas (`base − Σ wᵢ·deltaᵢ`), which the mover already samples via the shared group-4 `mesh_bind_group` (`renderer_render_frame.rs` ~397). The baked direct atlas is diffuse L2-SH irradiance only (no view-dependent lobe), so runtime specular does not double-count.
+- **Movers cast no shadows today.** The dynamic and promoted spot/cube entity-occluder passes (`renderer_shadow_passes.rs` ~312–336, ~549–572, ~394–411, ~626–641) draw only `mesh_pass.record_skinned_depth(...)`. No kinematic depth pipeline exists. Casting under a promoted static light needs both (i) the light promoted (Task 3) and (ii) a mover occluder drawn into the promoted `LoadOp::Load` pass (Tasks 2/4).
+
+**Net:** specular-under-promoted-static and promoted-slot casting share one enabler — movers in the promotion-relevance set — so both land in one wave. The full per-chunk static-light specular (billboard precedent) stays the deferred escalation.
+
 ## Oversized files a B implementation touches
 
-- `crates/renderer/src/render/renderer_shadow_passes.rs` — 1141 (Task 3 wiring; conditional split).
+- `crates/renderer/src/render/renderer_shadow_passes.rs` — 1141 (Task 4 wiring; conditional split).
+- `crates/renderer/src/render/renderer_light_slots.rs` — ~1281 (Task 3 promotion-gate change; localized).
 - `crates/renderer/src/render/kinematic_brush.rs` — 948 (Task 1 shader-source wiring + per-mover ranges; Task 2 avoids growing it via a new module).
 - `crates/renderer/src/render/mesh_pass.rs` — 3362 (reference template only; not extended).
 - `crates/renderer/src/shaders/forward.wgsl` — 1273 (reference for normal/specular WGSL; source of a possible shared helper).

@@ -15,16 +15,14 @@ local artifact after the run when it is no longer useful.
 
 ## Fixture Material
 
-The movers and comparison wall use
-`50-free-textures/concrete_stone_022`. Its diffuse, `_n`, and `_s` sources are
-present under `content/dev/textures/50-free-textures/`, so the fixture exercises
-the complete world-material bundle.
+The fixture uses two complete world-material bundles:
 
-There is currently no tracked `metal_*`, `glass_*`, or `neon_*` source bundle
-with both `_n` and `_s` siblings. The available fixture therefore validates the
-Concrete (broad, shininess 4) promoted-static lobe, but **cannot demonstrate the
-tighter Metal (shininess 64) comparison**. Add an authored Metal source bundle
-before claiming that part of the manual acceptance check.
+- `50-free-textures/concrete_stone_022` supplies the broad Concrete (shininess
+  4) reference used at the west station and by promotion mover B.
+- `metal/metal_brushed_012` supplies the tight Metal (shininess 64) reference
+  used by promotion mover A and its in-range static wall. Its reusable asset
+  provenance and generated sibling-map details live in
+  [`content/dev/textures/metal/SOURCE.md`](../textures/metal/SOURCE.md).
 
 ## Stations
 
@@ -35,12 +33,12 @@ before claiming that part of the manual acceptance check.
   orientation. The explicitly authored `light_dynamic_spot` and
   `light_dynamic` both set `_cast_entity_shadows 1`; the point light covers the
   two movers and the mesh beside platform B.
-- **Mover-only promotion station (x 960–1,568).** Two adjacent concrete movers
-  cross under one bright static spotlight. No skinned mesh is placed here.
-  They make the light promotion-relevant, receive the promoted-static broad
-  specular lobe, and cast onto each other. A same-material static comparison
-  wall sits immediately north of their track, inside the spotlight cone. The
-  floor and wall are deliberately not promoted-static shadow receivers.
+- **Mover-only promotion station (x 960–1,568).** A Metal mover and a Concrete
+  mover cross under one bright static spotlight. No skinned mesh is placed
+  here. They make the light promotion-relevant, receive promoted-static
+  specular, and cast onto each other. An in-range Metal static comparison wall
+  sits immediately north of mover A's track. The floor and wall are deliberately
+  not promoted-static shadow receivers.
 - **Mixed ranker station (x 2,040–2,464).** A mover and skinned mesh overlap
   three bright static point lights. The lights compete for the fixed two-slot
   promoted-cube budget, so use this station to confirm graceful ranker
@@ -51,13 +49,14 @@ before claiming that part of the manual acceptance check.
 1. At the west station, compare a north-facing mover side and the north-facing
    static wall. Their concrete diffuse and bump response should agree under a
    comparable view and light angle.
-2. Under the mover-only station's promoted static spotlight, compare a mover's
-   concrete specular lobe with the in-range concrete static wall. The broad
-   highlight should match in character, not pixel-for-pixel: the wall uses its
-   baked static path while the mover uses the promoted runtime record. Move
-   either platform until it leaves the light's influence: its lobe must fade
-   with de-promotion, not pop. The floor and comparison wall must not receive
-   that promoted-static mover shadow.
+2. Under the mover-only station's promoted static spotlight, compare Metal
+   mover A's tight lobe with the in-range Metal static wall. It should match in
+   character, not pixel-for-pixel: the wall uses its baked static path while
+   the mover uses the promoted runtime record. Compare that lobe with Concrete
+   mover B's broader response under the same light. Move either platform until
+   it leaves the light's influence: its lobe must fade with de-promotion, not
+   pop. The floor and comparison wall must not receive that promoted-static
+   mover shadow.
 3. At the west station, the dynamic spot and point lights may brighten movers
    and the wall diffusely, but must not create a specular glint. Watch a moving
    platform shadow sweep across the floor under both dynamic lights, and across

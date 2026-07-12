@@ -70,15 +70,15 @@
 ( 400 368 0 ) ( 128 368 160 ) ( 128 368 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
 ( 400 352 0 ) ( 400 368 160 ) ( 400 368 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
 }
-// brush 7 -- promoted-static comparison wall. It stays inside the mover-only
-// spotlight cone without entering either mover's path.
+// brush 7 -- Metal promoted-static comparison wall. It stays inside the
+// mover-only spotlight cone without entering either mover's path.
 {
-( 1120 368 0 ) ( 1120 352 64 ) ( 1120 352 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
-( 1120 352 0 ) ( 1248 352 64 ) ( 1248 352 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
-( 1120 352 0 ) ( 1248 368 0 ) ( 1120 368 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
-( 1120 368 64 ) ( 1248 352 64 ) ( 1120 352 64 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
-( 1248 368 0 ) ( 1120 368 64 ) ( 1120 368 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
-( 1248 352 0 ) ( 1248 368 64 ) ( 1248 368 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1120 368 0 ) ( 1120 352 64 ) ( 1120 352 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 1120 352 0 ) ( 1248 352 64 ) ( 1248 352 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 1120 352 0 ) ( 1248 368 0 ) ( 1120 368 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 1120 368 64 ) ( 1248 352 64 ) ( 1120 352 64 ) metal/metal_brushed_012 0 0 0 1 1
+( 1248 368 0 ) ( 1120 368 64 ) ( 1120 368 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 1248 352 0 ) ( 1248 368 64 ) ( 1248 368 0 ) metal/metal_brushed_012 0 0 0 1 1
 }
 }
 // entity 1
@@ -371,12 +371,12 @@
 "_tags" "dev kinematic_qa promotion_pair"
 // brush 0
 {
-( 960 240 16 ) ( 960 176 64 ) ( 960 176 16 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
-( 960 176 16 ) ( 1088 176 64 ) ( 1088 176 16 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
-( 960 176 16 ) ( 1088 240 16 ) ( 960 240 16 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
-( 960 240 64 ) ( 1088 176 64 ) ( 960 176 64 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
-( 1088 240 16 ) ( 960 240 64 ) ( 960 240 16 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
-( 1088 176 16 ) ( 1088 240 64 ) ( 1088 240 16 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 960 240 16 ) ( 960 176 64 ) ( 960 176 16 ) metal/metal_brushed_012 0 0 0 1 1
+( 960 176 16 ) ( 1088 176 64 ) ( 1088 176 16 ) metal/metal_brushed_012 0 0 0 1 1
+( 960 176 16 ) ( 1088 240 16 ) ( 960 240 16 ) metal/metal_brushed_012 0 0 0 1 1
+( 960 240 64 ) ( 1088 176 64 ) ( 960 176 64 ) metal/metal_brushed_012 0 0 0 1 1
+( 1088 240 16 ) ( 960 240 64 ) ( 960 240 16 ) metal/metal_brushed_012 0 0 0 1 1
+( 1088 176 16 ) ( 1088 240 64 ) ( 1088 240 16 ) metal/metal_brushed_012 0 0 0 1 1
 }
 }
 // entity 28

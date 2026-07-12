@@ -1,125 +1,81 @@
 # Geometry Integrity — Hole Root-Cause and Compile-Time Validation
 
-> **Status:** draft — not yet reviewed. Follow-up work spun out of the shipped watertightness diagnostic.
+> **Status:** draft — not yet reviewed. Follow-up to the shipped watertightness diagnostic.
 >
 > **Area:** level compiler (`postretro-level-compiler`), geometry pipeline.
 >
-> **Related context:** `context/lib/build_pipeline.md` §PRL Compilation · `context/research/code-quality-tooling.md` §Custom repo-specific lint rules (compiler validation family).
+> **Related:** `context/lib/build_pipeline.md` §PRL Compilation · `context/research/code-quality-tooling.md` §Custom repo-specific lint rules.
 
 ## Background
 
-Compiled `.prl` maps show **holes** in the static world geometry — faces you can see
-through. A prior fix (`7fa6a95`, non-robust convex hull in face extraction) removed the
-large holes; smaller ones remain and shift as brushes are added or removed.
+Compiled `.prl` maps show holes in the static world geometry — faces you can see through. A prior fix (`7fa6a95`) removed the large holes; smaller ones remain and shift as brushes change.
 
-A **watertightness diagnostic** now ships (`crates/level-compiler/src/partition/manifold.rs`,
-called from `main.rs` after `partition::partition`). It groups every emitted face edge by
-its supporting line and reports sub-intervals covered an odd number of times — open
-boundaries that indicate a dropped face. It is a **warning, never a build failure**, and it
-runs on the pre-exterior-cull face set (where the solid boundary is closed). Measured
-baseline across dev maps: most report **0** open edges (including the 5.2k-face
-`stress-warren`); `movement-feel` reports ~152, `occlusion-test` ~64, `campaign-test` ~57.
+A watertightness diagnostic now ships (`crates/level-compiler/src/partition/manifold.rs`, called from `main.rs` after `partition::partition`). It groups each emitted face edge by its supporting line and warns on sub-intervals covered an odd number of times — open boundaries that signal a dropped face. Warning only, never a build failure. Runs on the pre-exterior-cull face set, where the solid boundary is closed.
 
-This plan does the follow-up the diagnostic set up: find and fix the mechanism producing the
-residual holes, add the cheaper companion checks, and decide whether the diagnostic graduates
-from warning to gate.
+## What the measurements show
+
+Probed via `parse_map_file` → `partition` → `check_watertight` across the dev maps:
+
+- Most maps report **0** open edges, including the 5.2k-face `stress-warren`.
+- `movement-feel` reports 152, `occlusion-test` 64, `campaign-test` 57.
+- The residual is **real, not a diagnostic artifact.** Open-edge counts are stable under the line-grouping quantum (`ANCHOR_QUANTUM` 1e-4→1e-2: 152→148). So these are genuine odd-covered boundaries, not failed T-junction cancellation.
+- The residual is **scattered, not localized.** `movement-feel`'s 152 edges spread across 83 distinct 1 m cells, ≤4 per cell. A single missing face is a tight loop of edges in one spot; this pattern reads as many hairline gaps, not a few big holes.
+
+### Ruled out — do not re-test
+
+Both epsilon knobs the pipeline investigation suspected have **no effect** on the residual:
+
+| Knob | File | Swept | Result |
+|------|------|-------|--------|
+| `SPLIT_EPSILON` (clip snap-and-drop) | `face_extract.rs:19` | 0.1 → 1e-3 → 1e-4 | `movement-feel` 152 → 150; others unchanged |
+| `COPLANAR_DISTANCE_EPSILON` (coplanar dedup) | `face_extract.rs:29` | 1e-3 → 1e-5 → 1e-7 | no change on any map |
+
+The clip epsilon is not the cause. The earlier draft's central hypothesis was wrong.
+
+## Open questions
+
+Two unknowns gate any fix. Resolve them first — in order.
+
+1. **Do the diagnostic's open edges correspond to the holes seen in-game?** Unconfirmed from the compiler alone. The scattered, low-density pattern may be hairline seam cracks, distinct from a "hole you can see through." This must be settled by rendering `movement-feel` and inspecting the reported coordinates in the engine.
+2. **What mechanism drops the faces?** Not the clip or coplanar epsilons (ruled out above). Remaining candidates: fragments buried in solid leaves during the Pass-1 tree walk, residue of the convex-hull merge the big-holes fix hardened, or a structural classification error. Unknown until Q1 confirms what to chase.
 
 ## Goal
 
-Drive the residual small-hole count toward zero by fixing the compiler mechanism that drops
-faces, and harden the compile-time geometry checks so a future regression surfaces
-immediately — without ever blocking a level designer on a compiler bug.
-
-## Motivating hypothesis
-
-The most likely remaining hole generator is the clipping epsilon in face extraction:
-
-- **`SPLIT_EPSILON = 0.1` (`face_extract.rs:19`) is 0.1 metre** — the coordinate space is
-  meters by this stage. It is orders of magnitude larger than its neighbours
-  (`PLANE_DISTANCE_EPSILON = 1e-4` at `:24`, portal `PORTAL_EPSILON = 0.01`, region
-  `REGION_CLASSIFICATION_EPSILON = 1e-3`). During clipping, a vertex within 10 cm of a split
-  plane is snapped on-plane and duplicated to both sides; a fragment that then falls below 3
-  vertices is dropped. A face fragment thinner than ~10 cm along a split direction can vanish,
-  and because it depends on the split configuration, the hole moves as geometry changes —
-  matching the observed symptom.
-- Secondary suspect: the coplanar dedup tolerance (`COPLANAR_DISTANCE_EPSILON = 1e-3` at
-  `:29`; containment test in `convex_contains`). A partially-overlapping coplanar side falsely
-  judged "contained" is dropped, leaving a mm–cm gap.
-
-`SPLIT_EPSILON` is probably load-bearing against slivers and numerical noise, so it must not be
-lowered blind — the shipped diagnostic is the metric that makes tuning it safe (measure hole
-count before/after; watch for new degenerate slivers).
+Confirm whether the diagnostic finds the real holes, find the mechanism that drops faces, and drive the residual toward zero — without ever blocking a level designer on a compiler bug.
 
 ## Scope
 
 ### In scope
 
-1. **Root-cause the residual holes.** Use the watertightness diagnostic as the deterministic
-   metric. Reduce `SPLIT_EPSILON` (and, if implicated, the coplanar tolerance) incrementally,
-   re-measuring open-edge counts across the dev map set (`movement-feel`, `campaign-test`,
-   `occlusion-test` are the current non-zero maps). Confirm holes drop without a rise in
-   degenerate/near-zero-area faces or new z-fighting. Land the smallest epsilon that holds the
-   whole map set at (or near) zero. If the epsilon is genuinely load-bearing and can't be
-   reduced, replace the snap-and-drop with a split that preserves thin fragments instead.
+1. **Correlate diagnostic output with real holes (prerequisite).** Compile `movement-feel` (highest count; carried the original big hole), inspect the reported coordinates in-engine. Decide: are the open edges the visible holes, hairline cracks, or a mix? This determines whether the rest is a face-drop hunt (Q2) or a diagnostic-severity problem (item 3).
 
-2. **Per-face near-zero-area assertion after triangulation** (`geometry.rs`, post
-   fan-triangulation ~`:135`). Reuse the `polygon_area` pattern from `portals.rs`. Warn (do not
-   fail) on emitted triangles below an area threshold — catches degenerate survivors and sliver
-   artifacts of the clip, and guards the epsilon change in item 1.
+2. **Root-cause the face drop (if Q1 finds real dropped faces).** Use the diagnostic as the metric. `SPLIT_EPSILON` and coplanar dedup are already eliminated — start at the buried-in-solid fragment path and the hull-merge residue. Land the smallest change that holds the dev map set at (or near) zero, with a before/after count table. Preserve compile determinism (`build_pipeline.md` §Determinism invariant).
 
-3. **Promote the exterior flood-fill leak check to actionable.** `visibility::find_exterior_leaves`
-   (`visibility/mod.rs:39`) already flood-fills from outside the map and currently only `warn!`s
-   (`:70`, `:123`). Emit a **pointfile** (world-space trace from a leaked interior entity to the
-   void) so genuine unsealed maps are diagnosable, and consider a hard-error opt-in
-   (`--strict-seal` or worldspawn KVP). **Note explicitly** in the spec and output that this does
-   *not* cover dropped-face holes — leak detection and watertightness are complementary
-   (solidity/portals derive from brush half-spaces independent of the face list, so a dropped
-   face leaves the portal graph sealed).
+3. **Cluster open edges into hole regions, ranked by significance.** Connected open edges become one reported region with an enclosed-area or span estimate. Isolated hairline edges rank below closed loops. This sharpens the warning ("1 hole near X" over "N loose edges") and, per Q1, may itself be the deliverable if the residual is mostly cracks rather than holes. A unit test covers the clustering.
 
-4. **Harden the watertightness diagnostic.**
-   - **Cluster** adjacent open spans into hole *regions* (connected open edges) so the report
-     says "1 hole near (x,y,z)" instead of N loose edges — better signal for the designer.
-   - **Classify** residual open spans: true missing face vs. T-junction crack the coverage test
-     didn't fully cancel (e.g. non-collinear near-coincident edges). Determines whether the
-     `movement-feel`/`campaign-test` residuals are real holes or a diagnostic noise floor.
-   - **Coincident-face robustness:** confirm behaviour when three+ coplanar faces overlap
-     (odd coverage from z-fighting brushes, not a hole); exempt or report distinctly.
-   - **Graduation decision:** once the dev map set holds at zero after item 1, decide whether to
-     add an opt-in gate (`--strict-geometry`) that fails the build on open edges — default stays
-     warn so a compiler bug never blocks authoring.
+4. **Per-face near-zero-area check after triangulation.** In `geometry.rs`, post fan-triangulation, warn on emitted triangles below an area threshold — catches degenerate survivors. Reuse the `polygon_area` pattern from `portals.rs`. Unit test on a degenerate input.
+
+5. **Exterior leak pointfile.** `visibility::find_exterior_leaves` (`visibility/mod.rs:39`) flood-fills from outside the map and today only `warn!`s. Emit a pointfile tracing a leaked interior entity to the void, and offer a hard-error opt-in. State in output and spec that this does **not** cover dropped-face holes — leak detection and watertightness are complementary (solidity and portals derive from brush half-spaces, independent of the face list, so a dropped face leaves the portal graph sealed).
+
+6. **Graduation decision.** Once the map set holds at zero, decide whether to add an opt-in gate (`--strict-geometry`) that fails on open edges. Default stays warn — a compiler bug must never block authoring.
 
 ### Out of scope
 
-- A general T-junction *welding* pass (inserting the missing vertices so cracks close in the
-  rendered mesh). That is a larger meshing change; this plan detects and root-causes, and only
-  welds if item 1 shows welding is the necessary fix rather than the epsilon.
-- Runtime geometry validation (the runtime already cross-validates portals/`CellDrawIndex` at
-  load; this plan is compile-time).
-- Any change to the BSP solidity classification or portal generation.
+- General T-junction welding (inserting vertices so cracks close in the rendered mesh). Larger meshing change; revisit only if Q1/Q2 show welding is the needed fix.
+- Runtime geometry validation — the runtime already cross-validates portals and `CellDrawIndex` at load.
+- Changes to BSP solidity classification or portal generation.
 
 ## Acceptance criteria
 
-1. The watertightness diagnostic reports **0 open edges** on the full dev map set
-   (`content/dev/maps/*.map`) after the root-cause fix, or every remaining non-zero is
-   confirmed a genuine authored open (documented per map) rather than a compiler drop.
-2. The epsilon/clip change lands with a before/after open-edge count table in the plan's
-   completion notes, and no net increase in near-zero-area emitted faces (item 2's check).
-3. `geometry.rs` emits a warning, not a failure, on degenerate triangles; a unit test covers a
-   degenerate input.
-4. The exterior leak check emits a pointfile on a deliberately unsealed fixture map, and the
-   output states it does not cover dropped-face holes.
-5. The watertightness report clusters open spans into regions and names a representative
-   location + brush per region; a unit test covers the clustering.
-6. Every change is a compiler warning or opt-in gate — a default build never fails on a
-   geometry-integrity finding. Determinism of the compile output is preserved (see
-   `build_pipeline.md` §Determinism invariant).
+1. Q1 answered in writing: the correspondence between diagnostic open edges and in-game holes on `movement-feel`, with engine evidence.
+2. If real dropped faces exist: the diagnostic reports 0 across `content/dev/maps/*.map` after the fix, or each remaining non-zero is a documented authored open. Before/after count table in completion notes. No net increase in near-zero-area faces.
+3. `geometry.rs` warns (not fails) on degenerate triangles; unit test covers it.
+4. The leak check emits a pointfile on a deliberately unsealed fixture, and its output disclaims dropped-face coverage.
+5. The report clusters open edges into ranked regions with a representative location and brush per region; unit test covers the clustering.
+6. Every check is a warning or opt-in gate. A default build never fails on a geometry-integrity finding. Compile determinism preserved.
 
 ## Notes for the implementer
 
-- The diagnostic's constants (`SPLIT_EPSILON` sibling tolerances, `MIN_OPEN_SPAN = 1e-3`,
-  `ANCHOR_QUANTUM = 1e-4`) interact: if item 1 lowers `SPLIT_EPSILON`, re-check that
-  `MIN_OPEN_SPAN` still filters clip noise without hiding real small holes.
-- Fast iteration path: the diagnostic runs at the partition stage, before the lightmap/SH
-  bakes. Exercise it via `parse_map_file` → `partition::partition` → `check_watertight` (as the
-  `partition_with_test_map` test does) to avoid the multi-minute full bake while tuning.
-- `movement-feel.map` is the highest-signal map (it carried the original big hole); start there.
+- **Fast iteration.** The diagnostic runs at the partition stage, before the lightmap and SH bakes. Drive it through `parse_map_file` → `partition` → `check_watertight` (as the `partition_with_test_map` test does) to skip the multi-minute full bake while tuning.
+- **Start at `movement-feel.map`** — highest count, and the map the original big hole lived in.
+- **Diagnostic constants interact.** If item 2 lowers a clip tolerance, re-check that `MIN_OPEN_SPAN` (1e-3) still filters clip noise without hiding real small holes.

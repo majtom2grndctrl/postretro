@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::components::agent::AgentComponent;
+use crate::components::ammo_reserve::AmmoReserve;
 use crate::components::billboard_emitter::BillboardEmitterComponent;
 use crate::components::brain::BrainComponent;
 use crate::components::fog_volume::FogAnimation;
@@ -83,8 +84,9 @@ impl fmt::Display for EntityId {
 /// All component kinds the engine tracks internally.
 ///
 /// Not all variants are queryable via the script surface (`worldQuery`):
-/// `PlayerMovement` and `Weapon` are engine-owned runtime components, so
-/// scripts address them through higher-level descriptors and systems.
+/// `PlayerMovement`, `Weapon`, and `AmmoReserve` are engine-owned runtime
+/// components, so scripts address them through higher-level descriptors and
+/// systems.
 ///
 /// `#[repr(u16)]` makes the discriminant a zero-cost index into the
 /// component-storage vector array. Not `#[non_exhaustive]`: the enum is
@@ -115,6 +117,8 @@ pub enum ComponentKind {
     KinematicMover = 13,
     /// Engine-owned trigger configuration and mutable arming state.
     TriggerVolume = 14,
+    /// Pawn-owned ammunition balances pooled by authored ammo type.
+    AmmoReserve = 15,
 }
 
 impl ComponentKind {
@@ -139,6 +143,7 @@ impl ComponentKind {
             ComponentKind::Brain,
             ComponentKind::KinematicMover,
             ComponentKind::TriggerVolume,
+            ComponentKind::AmmoReserve,
         ];
         VARIANTS.len()
     };
@@ -194,6 +199,7 @@ pub enum ComponentValue {
     Brain(BrainComponent),
     KinematicMover(KinematicMoverComponent),
     TriggerVolume(TriggerVolumeComponent),
+    AmmoReserve(AmmoReserve),
 }
 
 impl ComponentValue {
@@ -214,6 +220,7 @@ impl ComponentValue {
             ComponentValue::Brain(_) => ComponentKind::Brain,
             ComponentValue::KinematicMover(_) => ComponentKind::KinematicMover,
             ComponentValue::TriggerVolume(_) => ComponentKind::TriggerVolume,
+            ComponentValue::AmmoReserve(_) => ComponentKind::AmmoReserve,
         }
     }
 }
@@ -509,6 +516,19 @@ impl Component for TriggerVolumeComponent {
     }
     fn into_value(self) -> ComponentValue {
         ComponentValue::TriggerVolume(self)
+    }
+}
+
+impl Component for AmmoReserve {
+    const KIND: ComponentKind = ComponentKind::AmmoReserve;
+    fn from_value(value: &ComponentValue) -> Option<&Self> {
+        match value {
+            ComponentValue::AmmoReserve(reserve) => Some(reserve),
+            _ => None,
+        }
+    }
+    fn into_value(self) -> ComponentValue {
+        ComponentValue::AmmoReserve(self)
     }
 }
 

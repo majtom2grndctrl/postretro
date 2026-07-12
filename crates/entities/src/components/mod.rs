@@ -2,6 +2,7 @@
 // See: context/lib/scripting.md §12.
 
 pub mod agent;
+pub mod ammo_reserve;
 pub mod animation;
 pub mod billboard_emitter;
 pub mod brain;

@@ -2,7 +2,9 @@
 // See: context/lib/networking.md
 
 use super::MapEntity;
-use super::data_archetype::{DEFAULT_AGENT_PARAMS, find_descriptor, spawn_descriptor_instance};
+use super::data_archetype::{
+    DEFAULT_AGENT_PARAMS, find_descriptor, seed_weapon_reserve, spawn_descriptor_instance,
+};
 use postretro_entities::components::mesh::{
     MeshAnimation, MeshComponent, capsule_center_to_feet_origin_offset,
 };
@@ -106,6 +108,7 @@ pub(crate) fn spawn_net_slot_pawn(
                 ) {
                     Some(weapon_id) => {
                         let _ = registry.set_map_kvps(weapon_id, Default::default());
+                        seed_weapon_reserve(registry, id, weapon_descriptor);
                         active_weapon = Some(weapon_id);
                     }
                     None => log::warn!(
@@ -268,8 +271,8 @@ mod tests {
     use postretro_entities::provenance::DescriptorProvenance;
     use postretro_entities::registry::Transform;
     use postretro_scripting_core::data_descriptors::{
-        AirParams, CapsuleParams, FallParams, FireMode, GroundParams, MeshDescriptor,
-        PlayerMovementDescriptor, ResolutionMode, SpeedParams, WeaponDescriptor,
+        AirParams, AmmoResource, CapsuleParams, FallParams, FireMode, GroundParams, MeshDescriptor,
+        PlayerMovementDescriptor, ResolutionMode, SpeedParams, WeaponDescriptor, WeaponResource,
     };
     use std::collections::HashMap;
 
@@ -630,6 +633,18 @@ mod tests {
         }
     }
 
+    fn ammo_weapon_descriptor(classname: &str) -> EntityTypeDescriptor {
+        let mut descriptor = weapon_descriptor(classname);
+        descriptor.weapon.as_mut().unwrap().resource = Some(WeaponResource::Ammo(AmmoResource {
+            ammo_type: "bullets.light".to_string(),
+            magazine: 12,
+            cost_per_shot: 1,
+            reserve: 48,
+            reload_ms: 900,
+        }));
+        descriptor
+    }
+
     fn spawn_point(kvps: &[(&str, &str)]) -> MapEntity {
         let mut kv = HashMap::new();
         for (k, v) in kvps {
@@ -716,6 +731,33 @@ mod tests {
             Some(pawn),
             "a net-slot pawn still is not marked as the local player"
         );
+    }
+
+    #[test]
+    fn net_slot_pawn_seeds_local_reserve_and_full_sibling_weapon_magazine() {
+        let mut reg = EntityRegistry::new();
+        let descriptors = vec![
+            player_with_default_weapon("player", "reference_pistol"),
+            ammo_weapon_descriptor("reference_pistol"),
+        ];
+
+        let (pawn, weapon) =
+            spawn_net_slot_pawn(&spawn_point(&[]), &descriptors, &mut reg, None).unwrap();
+        let weapon = weapon.expect("net-slot sibling weapon");
+
+        assert_eq!(
+            reg.get_component::<postretro_entities::AmmoReserve>(pawn)
+                .unwrap()
+                .available("bullets.light"),
+            48
+        );
+        assert_eq!(
+            reg.get_component::<postretro_entities::components::weapon::WeaponComponent>(weapon)
+                .unwrap()
+                .magazine,
+            12
+        );
+        assert_ne!(reg.local_player_pawn(), Some(pawn));
     }
 
     // The net-slot path defaults `entity_class` to "player", matching

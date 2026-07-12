@@ -795,6 +795,7 @@ pub(crate) fn component_kind_discriminant(kind: ComponentKind) -> u16 {
         ComponentKind::Brain => 12,
         ComponentKind::KinematicMover => 13,
         ComponentKind::TriggerVolume => 14,
+        ComponentKind::AmmoReserve => 15,
     }
 }
 
@@ -2910,7 +2911,8 @@ mod tests {
                 ComponentKind::Agent => Some(ComponentKind::Brain),
                 ComponentKind::Brain => Some(ComponentKind::KinematicMover),
                 ComponentKind::KinematicMover => Some(ComponentKind::TriggerVolume),
-                ComponentKind::TriggerVolume => None,
+                ComponentKind::TriggerVolume => Some(ComponentKind::AmmoReserve),
+                ComponentKind::AmmoReserve => None,
             }
         }
 

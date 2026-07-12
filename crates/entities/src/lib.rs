@@ -17,6 +17,7 @@ pub mod slot_table;
 #[cfg(feature = "script-ffi")]
 mod ffi;
 
+pub use components::ammo_reserve::AmmoReserve;
 pub use components::kinematic_mover::{KinematicMoverComponent, KinematicMoverMode, MoverCommand};
 pub use components::trigger_volume::{TriggerActivation, TriggerFireMode, TriggerVolumeComponent};
 pub use ctx::ScriptCtx;

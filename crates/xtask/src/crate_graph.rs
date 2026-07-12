@@ -8,8 +8,8 @@
 //! - **view** (`crate-graph`): print the layer-annotated Mermaid diagram;
 //! - **gate** (`crate-graph --check`): fail if the committed
 //!   `context/lib/crate-graph.md` is stale, the `cargo fmt --check` pattern;
-//! - **query** (`crate-graph --dependents/--dependencies <crate>`): live
-//!   blast-radius / forward-dependency questions.
+//! - **query** (`crate-graph --rdeps/--deps <crate>`): live blast-radius /
+//!   forward-dependency questions.
 //!
 //! The layering *invariants* are enforced separately as a `#[test]` (see the
 //! bottom of this file), so `cargo test` in preflight catches an upward edge or
@@ -62,11 +62,11 @@ pub fn run(args: Vec<OsString>) -> Result<i32, String> {
             let graph = load_graph(&workspace_root)?;
             check_committed_doc(&workspace_root, &graph)
         }
-        [flag, name] if flag == "--dependents" => {
+        [flag, name] if flag == "--rdeps" => {
             let graph = load_graph(&workspace_root)?;
             print_query(&graph, name, Direction::Dependents)
         }
-        [flag, name] if flag == "--dependencies" => {
+        [flag, name] if flag == "--deps" => {
             let graph = load_graph(&workspace_root)?;
             print_query(&graph, name, Direction::Dependencies)
         }
@@ -78,9 +78,9 @@ fn usage() -> String {
     "crate-graph usage:\n  \
        cargo run -p xtask -- crate-graph                       Print the layer-annotated graph\n  \
        cargo run -p xtask -- crate-graph --write               Regenerate context/lib/crate-graph.md\n  \
-       cargo run -p xtask -- crate-graph --check               Fail if the committed doc is stale\n  \
-       cargo run -p xtask -- crate-graph --dependents <crate>  What depends on <crate> (blast radius)\n  \
-       cargo run -p xtask -- crate-graph --dependencies <crate>  What <crate> depends on"
+       cargo run -p xtask -- crate-graph --check          Fail if the committed doc is stale\n  \
+       cargo run -p xtask -- crate-graph --rdeps <crate>  What depends on <crate> (blast radius)\n  \
+       cargo run -p xtask -- crate-graph --deps <crate>   What <crate> depends on"
         .to_string()
 }
 

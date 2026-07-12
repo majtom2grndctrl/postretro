@@ -10,7 +10,7 @@ use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
 use crate::data_descriptors::HealthDescriptor;
-use crate::registry::{ComponentKind, EntityId, EntityRegistry};
+use crate::registry::{EntityId, EntityRegistry};
 use postretro_foundation::DamagePayload;
 
 /// Maximum number of exact contributor source ids retained per target before
@@ -302,21 +302,7 @@ impl HealthComponent {
 /// (attaching `[0, max]` at materialization) and the hot-reload range-follow
 /// hook both resolve the pawn the same way.
 pub fn pawn_with_health(registry: &EntityRegistry) -> Option<(EntityId, HealthComponent)> {
-    if let Some(pawn) = registry.local_player_pawn() {
-        if matches!(
-            registry.has_component_kind(pawn, ComponentKind::PlayerMovement),
-            Ok(true)
-        ) {
-            return registry
-                .get_component::<HealthComponent>(pawn)
-                .ok()
-                .map(|health| (pawn, health.clone()));
-        }
-    }
-
-    let (pawn, _) = registry
-        .iter_with_kind(ComponentKind::PlayerMovement)
-        .next()?;
+    let pawn = registry.local_player_movement_pawn()?;
     registry
         .get_component::<HealthComponent>(pawn)
         .ok()

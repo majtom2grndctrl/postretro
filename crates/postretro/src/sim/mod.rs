@@ -162,7 +162,7 @@ pub(crate) fn simulate_tick(
             .collect();
         let local_player = {
             let registry = registry.borrow();
-            local_movement_pawn(&registry)
+            registry.local_player_movement_pawn()
         };
         if let Some(pawn) = local_player {
             let id = PlayerId::Local(pawn);
@@ -221,7 +221,7 @@ pub(crate) fn simulate_tick(
         run_remote_weapon_commands(&registry, remote_pawn_commands, tick_dt);
     let own_pawn = {
         let registry = registry.borrow();
-        local_movement_pawn(&registry)
+        registry.local_player_movement_pawn()
     };
     let weapon_fire = weapon_fire_command(command.fire_button, post_movement_command);
     let (local_deliveries, mut weapon) = run_local_weapon_command(
@@ -346,7 +346,7 @@ fn run_movement_tick(
 ) -> Vec<&'static str> {
     let local = {
         let registry = registry.borrow();
-        local_movement_pawn(&registry)
+        registry.local_player_movement_pawn()
     };
     let Some(id) = local else {
         return Vec::new();
@@ -355,25 +355,6 @@ fn run_movement_tick(
     let pawn_inputs = [(id, input.clone())];
     let mut registry = registry.borrow_mut();
     host_movement::run_host_movement_tick(&mut registry, collision, gravity, &pawn_inputs, tick_dt)
-}
-
-/// Resolve the local movement pawn: registry marker first, then first
-/// `PlayerMovement` entity. See also `followed_player_pawn` (main.rs)
-/// and `player_position` (scripting/systems/ai.rs).
-fn local_movement_pawn(registry: &EntityRegistry) -> Option<EntityId> {
-    if let Some(id) = registry.local_player_pawn() {
-        if matches!(
-            registry.has_component_kind(id, ComponentKind::PlayerMovement),
-            Ok(true)
-        ) {
-            return Some(id);
-        }
-    }
-
-    registry
-        .iter_with_kind(ComponentKind::PlayerMovement)
-        .next()
-        .map(|(id, _)| id)
 }
 
 fn weapon_fire_command(
@@ -469,11 +450,11 @@ fn run_remote_weapon_commands(
         let _ = registry.set_component(weapon, weapon_component);
         match result {
             WeaponFireAuthorization::Accepted => {}
-            WeaponFireAuthorization::Empty(weapon::ActivationOutcome::Empty) => {
+            WeaponFireAuthorization::Empty => {
                 weapon_events.push("dry_fire");
                 continue;
             }
-            WeaponFireAuthorization::Empty(_) | WeaponFireAuthorization::Rejected => continue,
+            WeaponFireAuthorization::Rejected => continue,
         }
         let Some(shot_id) = remote.shot_id else {
             continue;
@@ -1525,6 +1506,61 @@ mod tests {
         }
     }
 
+    // Regression: the remote Auto path drained dry_fire every fixed tick while held.
+    #[test]
+    fn remote_empty_auto_weapon_reemits_dry_fire_only_after_cooldown() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, weapon) = {
+            let mut registry = registry.borrow_mut();
+            let (pawn, weapon) = spawn_reload_pair(&mut registry, 10, 8, 1000, 0);
+            let mut component = registry
+                .get_component::<WeaponComponent>(weapon)
+                .unwrap()
+                .clone();
+            component.fire_mode = FireMode::Auto;
+            component.cooldown_ms = 45.0;
+            registry.set_component(weapon, component).unwrap();
+            (pawn, weapon)
+        };
+
+        let first = run_remote_only_tick(
+            registry.clone(),
+            &[remote_command(pawn, Some(weapon), 42, 1, true, false)],
+        );
+        assert_eq!(first.weapon, vec!["dry_fire"]);
+        assert!(first.authorized_shots.is_empty());
+
+        for client_tick in [2, 3] {
+            let cooling = run_remote_only_tick(
+                registry.clone(),
+                &[remote_command(
+                    pawn,
+                    Some(weapon),
+                    42,
+                    client_tick,
+                    true,
+                    false,
+                )],
+            );
+            assert!(cooling.weapon.is_empty());
+            assert!(cooling.authorized_shots.is_empty());
+        }
+
+        let ready = run_remote_only_tick(
+            registry.clone(),
+            &[remote_command(pawn, Some(weapon), 42, 4, true, false)],
+        );
+        assert_eq!(ready.weapon, vec!["dry_fire"]);
+        assert!(ready.authorized_shots.is_empty());
+        let component = registry
+            .borrow()
+            .get_component::<WeaponComponent>(weapon)
+            .unwrap()
+            .clone();
+        assert_eq!(component.magazine, 0);
+        assert!((component.cooldown_remaining_ms - 45.0).abs() <= 1.0e-5);
+    }
+
     #[test]
     fn held_reload_starts_once_and_release_still_advances_to_completion() {
         let mut registry = EntityRegistry::new();
@@ -1915,6 +1951,57 @@ mod tests {
                 .unwrap()
                 .magazine,
             10
+        );
+    }
+
+    #[test]
+    fn local_reload_completion_refills_before_same_tick_fire() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (pawn, weapon) = {
+            let mut registry = registry.borrow_mut();
+            let (pawn, weapon) = spawn_reload_pair(&mut registry, 10, 8, 100, 2);
+            registry.set_component(pawn, trigger_movement()).unwrap();
+            registry.mark_local_player_pawn(pawn).unwrap();
+            (pawn, weapon)
+        };
+
+        let started =
+            run_local_only_tick(registry.clone(), weapon, &sim_command(false, true), 0.04);
+        assert_eq!(
+            started.reload_deliveries,
+            vec![ReloadDelivery {
+                pawn,
+                weapon,
+                outcome: ReloadOutcome::Started,
+            }]
+        );
+        let advancing =
+            run_local_only_tick(registry.clone(), weapon, &sim_command(false, false), 0.04);
+        assert!(advancing.reload_deliveries.is_empty());
+
+        // Completion is not a new reload start: transfer settles before fire
+        // authorization, so this tick may spend from the refilled magazine.
+        let completed_and_fired =
+            run_local_only_tick(registry.clone(), weapon, &sim_command(true, false), 0.021);
+        assert_eq!(
+            completed_and_fired.reload_deliveries,
+            vec![ReloadDelivery {
+                pawn,
+                weapon,
+                outcome: ReloadOutcome::Completed { transferred: 8 },
+            }]
+        );
+        assert_eq!(completed_and_fired.weapon, vec!["activate"]);
+        let registry = registry.borrow();
+        let component = registry.get_component::<WeaponComponent>(weapon).unwrap();
+        assert_eq!(component.reload_remaining_ms, 0);
+        assert_eq!(component.magazine, 9);
+        assert_eq!(
+            registry
+                .get_component::<AmmoReserve>(pawn)
+                .unwrap()
+                .available("bullets.light"),
+            0
         );
     }
 

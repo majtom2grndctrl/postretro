@@ -9,7 +9,7 @@ use postretro_entities::AmmoReserve;
 use postretro_entities::components::health::pawn_with_health;
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::ctx::ScriptCtx;
-use postretro_entities::registry::{ComponentKind, EntityId, EntityRegistry};
+use postretro_entities::registry::{EntityId, EntityRegistry};
 use postretro_entities::slot_table::SlotValue;
 
 /// Read the current and maximum HP of the player pawn resolved by the local
@@ -24,23 +24,11 @@ fn pawn_health_values(registry: &EntityRegistry) -> Option<(EntityId, f32, f32)>
     pawn_with_health(registry).map(|(id, health)| (id, health.current, health.max))
 }
 
-fn local_pawn(registry: &EntityRegistry) -> Option<EntityId> {
-    if let Some(pawn) = registry.local_player_pawn()
-        && registry.has_component_kind(pawn, ComponentKind::PlayerMovement) == Ok(true)
-    {
-        return Some(pawn);
-    }
-    registry
-        .iter_with_kind(ComponentKind::PlayerMovement)
-        .next()
-        .map(|(id, _)| id)
-}
-
 fn weapon_hud_values(
     registry: &EntityRegistry,
     active_wieldable: Option<EntityId>,
 ) -> (Option<(u32, u32)>, f32, bool) {
-    let Some(pawn) = local_pawn(registry) else {
+    let Some(pawn) = registry.local_player_movement_pawn() else {
         return (None, 0.0, false);
     };
     let Some(weapon_id) = active_wieldable else {
@@ -205,9 +193,7 @@ mod tests {
         }
     }
 
-    /// Spawn a pawn (carries `PlayerMovement`) with a `Health` component whose
-    /// `current` HP is `current`. Returns the pawn id.
-    fn spawn_pawn_with_health(ctx: &ScriptCtx, current: f32) -> EntityId {
+    fn spawn_movement_pawn(ctx: &ScriptCtx) -> EntityId {
         let mut registry = ctx.registry.borrow_mut();
         let id = registry.spawn(Transform::default());
         registry
@@ -216,12 +202,20 @@ mod tests {
                 PlayerMovementComponent::from_descriptor(&movement_descriptor()),
             )
             .unwrap();
+        id
+    }
+
+    /// Spawn a pawn (carries `PlayerMovement`) with a `Health` component whose
+    /// `current` HP is `current`. Returns the pawn id.
+    fn spawn_pawn_with_health(ctx: &ScriptCtx, current: f32) -> EntityId {
+        let id = spawn_movement_pawn(ctx);
         let mut health = HealthComponent::from_descriptor(&HealthDescriptor {
             max: 100.0,
             hitbox: None,
             zone_multipliers: std::collections::HashMap::new(),
         });
         health.current = current;
+        let mut registry = ctx.registry.borrow_mut();
         registry.set_component(id, health).unwrap();
         id
     }
@@ -367,6 +361,20 @@ mod tests {
         assert_eq!(
             read_store_slot(&ctx, "player.reloadActive").unwrap(),
             SlotValue::Boolean(true)
+        );
+    }
+
+    #[test]
+    fn weapon_hud_values_use_movement_pawn_without_requiring_health() {
+        let ctx = ScriptCtx::new();
+        let pawn = spawn_movement_pawn(&ctx);
+        let weapon = spawn_ammo_weapon(&ctx, pawn);
+
+        assert_eq!(pawn_health_values(&ctx.registry.borrow()), None);
+        assert_eq!(
+            weapon_hud_values(&ctx.registry.borrow(), Some(weapon)).0,
+            Some((5, 20)),
+            "ammo HUD identity is independent of the Health component"
         );
     }
 

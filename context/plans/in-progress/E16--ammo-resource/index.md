@@ -81,8 +81,10 @@ resource-grant chokepoint (inverse of `applyDamage`) as a clean seam a later
   materializes full.
 - Firing consumes `costPerShot` from the magazine at `weapon::tick_resolved`. An
   empty magazine blocks the activation and surfaces it (a `dry_fire` event +
-  `ActivationOutcome::Empty`), consuming no ammo and dealing no damage. Firing is
-  also blocked while a reload is in flight (reload is non-cancellable).
+  `WeaponFireAuthorization::Empty`), consuming no ammo and dealing no damage.
+  Empty activations use the effective fire interval, so a held Auto trigger emits
+  at weapon cadence rather than every fixed tick. Firing is also blocked while a
+  reload is in flight (reload is non-cancellable).
 - Reload (`Action::Reload`, already bound) as a timed transfer. On the rising
   edge of the reload command the weapon starts a reload timer from the effective
   reload duration (guarded: a fresh press while already reloading is a silent
@@ -178,11 +180,11 @@ Each is its own later roadmap bullet; the shape only accommodates them.
 - [ ] With magazine `< costPerShot` the trigger blocks: no shot resolves, no ammo
   is consumed, no damage is applied, and the block is observable. The caller-drain
   signal is the `dry_fire` event (via `event_names()`); the internal
-  `apply_weapon_fire_state` seam returns `ActivationOutcome::Empty` (a dry fire
-  builds no `WeaponImpact`, the only `ActivationOutcome` carrier, so `Empty` is
-  asserted at that fire-state seam, not on the drained events). It is not a silent
-  no-op. Cooldown-blocked shots stay silent as today. While a reload is in flight
-  the trigger is likewise blocked silently and does not cancel the reload.
+  fire-state seam returns `WeaponFireAuthorization::Empty`. A dry fire builds no
+  `WeaponImpact`; it arms the effective fire interval and emits once per interval.
+  It is not a silent no-op. Cooldown-blocked shots stay silent as today. While a
+  reload is in flight the trigger is likewise blocked silently and does not cancel
+  the reload.
 - [ ] Reload is timed by the **effective** reload duration: on a fresh reload
   press (rising edge of the held `SimCommand.reload` bit) the reload timer starts
   from `effective().reload_ms`; a held reload button starts exactly one reload.
@@ -357,12 +359,12 @@ cooldown gate passes and the weapon wants to fire, gate in order: (1) if a reloa
 is in flight (`reload_remaining_ms > 0`), block silently — reload owns the weapon
 and is non-cancellable; (2) if the effective stats carry an ammo resource and
 `magazine < cost_per_shot`, block and surface it — resolve no shot, consume no
-ammo, and set `ActivationOutcome::Empty` (a new variant beside
-`Hit`/`Effect`/`Spawned`, `weapon/mod.rs:30-34`). These gates live where the fire
-decision is made: the private `apply_weapon_fire_state` (`weapon/mod.rs:369-396`,
-called by `tick_resolved`) today returns a two-state authorization — widen it to
-distinguish the empty-magazine rejection from the silent cooldown/reload
-rejections, so `tick_resolved` sets `dry_fire = true` only for the empty case.
+ammo, and return `WeaponFireAuthorization::Empty`. Arm the effective fire interval
+for this activation so a held Auto trigger cannot emit every fixed tick. These
+gates live where the fire decision is made: the private `apply_weapon_fire_state`
+(`weapon/mod.rs:369-396`, called by `tick_resolved`) distinguishes the
+empty-magazine rejection from silent cooldown/reload rejections, so
+`tick_resolved` sets `dry_fire = true` only for the empty case.
 
 `ActivationOutcome` alone does not reach the caller: it rides inside
 `WeaponImpact` (`:231-247`), which requires a `point`/`normal` a dry fire has
@@ -510,7 +512,7 @@ the resource block (incl. `reloadMs` and the reload-speed-as-stat note). Add the
 Rust tests: descriptor parse/validate in both runtimes (incl. `reloadMs` bounds
 and the two-layer serde/`validate()` rejection), SDK type generation, magazine +
 reload-timer seed and hot-reload preservation, reserve seed, fire consumption,
-empty-magazine block (`dry_fire` + the internal `ActivationOutcome::Empty`),
+empty-magazine block (`dry_fire` + the internal `WeaponFireAuthorization::Empty`),
 fire-blocked-while-reloading, timed atomic reload transfer at completion, the
 full/empty reload block outcomes, unlimited-fire back-compat, ammo +
 reload-progress HUD publish, reload-meter idle write, dev-driver removal (grep
@@ -655,8 +657,8 @@ A reload press starts the timer from `effective().reload_ms`; the timer advances
 per tick; at completion it atomically `take`s
 `min(capacity - magazine, available)` into the magazine. Firing decrements
 `magazine` by the effective `cost_per_shot`; an empty magazine (or an in-flight
-reload) blocks the trigger — the empty case yields `ActivationOutcome::Empty` and
-a `dry_fire` event, never a silent no-op. The reload timer drives
+reload) blocks the trigger — the empty case yields `WeaponFireAuthorization::Empty`
+and a rate-limited `dry_fire` event, never a silent no-op. The reload timer drives
 `player.reloadProgress` / `player.reloadActive`.
 
 ## Boundary inventory

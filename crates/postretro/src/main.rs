@@ -891,27 +891,12 @@ fn has_player_pawn(registry: &postretro_entities::EntityRegistry) -> bool {
         .is_some()
 }
 
-/// Resolve the followed player pawn: registry marker first, then first
-/// `PlayerMovement` entity. See also `local_movement_pawn` (sim/mod.rs)
-/// and `player_position` (scripting/systems/ai.rs).
+/// Resolve the pawn followed by local camera and input consumers. Identity follows
+/// the registry's movement-pawn policy; callers apply camera-specific component gates.
 fn followed_player_pawn(
     registry: &postretro_entities::EntityRegistry,
 ) -> Option<postretro_entities::EntityId> {
-    use postretro_entities::ComponentKind;
-
-    if let Some(id) = registry.local_player_pawn() {
-        if matches!(
-            registry.has_component_kind(id, ComponentKind::PlayerMovement),
-            Ok(true)
-        ) {
-            return Some(id);
-        }
-    }
-
-    registry
-        .iter_with_kind(ComponentKind::PlayerMovement)
-        .next()
-        .map(|(id, _)| id)
+    registry.local_player_movement_pawn()
 }
 
 /// Follow the camera to the local pawn's eye. `presentation_offset` is the M15

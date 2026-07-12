@@ -94,6 +94,8 @@ pub(super) fn tick(
         return deliveries;
     }
 
+    // Completion honors current effective tuning: a hot descriptor refresh
+    // during reload redirects capacity and transfer to the refreshed ammo pool.
     let effective_ammo = component
         .effective()
         .ammo

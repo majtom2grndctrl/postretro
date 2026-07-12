@@ -31,7 +31,6 @@ pub(crate) enum ActivationOutcome {
     Hit(DamagePayload),
     Effect,
     Spawned(EntityId),
-    Empty,
 }
 
 #[allow(dead_code)]
@@ -274,7 +273,7 @@ impl WeaponFireEvents {
 pub(crate) enum WeaponFireAuthorization {
     Accepted,
     Rejected,
-    Empty(ActivationOutcome),
+    Empty,
 }
 
 #[allow(clippy::too_many_arguments)] // weapon fire genuinely needs all of these inputs.
@@ -387,13 +386,11 @@ pub(crate) fn tick_resolved_component(
             range,
             resolution,
         ),
-        WeaponFireAuthorization::Empty(ActivationOutcome::Empty) => WeaponFireEvents {
+        WeaponFireAuthorization::Empty => WeaponFireEvents {
             dry_fire: true,
             ..WeaponFireEvents::default()
         },
-        WeaponFireAuthorization::Empty(_) | WeaponFireAuthorization::Rejected => {
-            WeaponFireEvents::default()
-        }
+        WeaponFireAuthorization::Rejected => WeaponFireEvents::default(),
     }
 }
 
@@ -473,7 +470,8 @@ fn apply_weapon_fire_state(
 
     if let Some(cost_per_shot) = cost_per_shot {
         if weapon.magazine < cost_per_shot {
-            return WeaponFireAuthorization::Empty(ActivationOutcome::Empty);
+            weapon.cooldown_remaining_ms = cooldown_ms;
+            return WeaponFireAuthorization::Empty;
         }
         weapon.magazine -= cost_per_shot;
     }
@@ -1241,10 +1239,10 @@ mod tests {
                 1.0 / 60.0,
                 false,
             ),
-            WeaponFireAuthorization::Empty(ActivationOutcome::Empty)
+            WeaponFireAuthorization::Empty
         );
         assert_eq!(component.magazine, 2);
-        assert_eq!(component.cooldown_remaining_ms, 0.0);
+        assert!(approx_eq(component.cooldown_remaining_ms, 100.0));
 
         let mut registry = EntityRegistry::new();
         let weapon_id = spawn_weapon(
@@ -1289,6 +1287,75 @@ mod tests {
                 .current,
             before_health
         );
+    }
+
+    // Regression: a held Auto trigger emitted dry_fire on every fixed tick.
+    #[test]
+    fn empty_auto_weapon_emits_once_per_fire_interval() {
+        let registry = EntityRegistry::new();
+        let world = CollisionWorld::new();
+        let hit_zones = HitZoneStore::new();
+        let mut weapon = ammo_weapon_component(FireMode::Auto, 100.0, 1, 1);
+        weapon.magazine = 0;
+        let pressed = WeaponFireCommand {
+            button: FireButtonState {
+                pressed: true,
+                active: true,
+            },
+            aim_origin: Vec3::ZERO,
+            aim_direction: Vec3::NEG_Z,
+            can_fire: true,
+        };
+
+        let first = tick_resolved_component(
+            &registry,
+            &mut weapon,
+            &pressed,
+            &world,
+            &hit_zones,
+            0.0,
+            0.0,
+            false,
+        );
+        assert_eq!(first.event_names(), vec!["dry_fire"]);
+        assert!(approx_eq(weapon.cooldown_remaining_ms, 100.0));
+        assert_eq!(weapon.magazine, 0);
+
+        let held = WeaponFireCommand {
+            button: FireButtonState {
+                pressed: false,
+                active: true,
+            },
+            ..pressed
+        };
+        let cooling = tick_resolved_component(
+            &registry,
+            &mut weapon,
+            &held,
+            &world,
+            &hit_zones,
+            0.0,
+            0.04,
+            false,
+        );
+        assert!(cooling.event_names().is_empty());
+        assert!(approx_eq(weapon.cooldown_remaining_ms, 60.0));
+
+        let ready = tick_resolved_component(
+            &registry,
+            &mut weapon,
+            &held,
+            &world,
+            &hit_zones,
+            0.0,
+            0.061,
+            false,
+        );
+        assert_eq!(ready.event_names(), vec!["dry_fire"]);
+        assert!(ready.activate.is_none());
+        assert!(ready.impact.is_none());
+        assert!(approx_eq(weapon.cooldown_remaining_ms, 100.0));
+        assert_eq!(weapon.magazine, 0);
     }
 
     #[test]

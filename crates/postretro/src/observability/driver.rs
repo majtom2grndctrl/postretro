@@ -18,7 +18,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use glam::{Vec2, Vec3};
 
 use postretro_entities::components::health::HealthComponent;
-use postretro_entities::{ComponentKind, EntityId, EntityRegistry, Transform};
+use postretro_entities::{EntityId, EntityRegistry, Transform};
 
 use crate::collision::CollisionWorld;
 use crate::movement::MovementInput;
@@ -379,22 +379,9 @@ fn to_owned_strings(events: &[&'static str]) -> Vec<String> {
     events.iter().map(|event| (*event).to_string()).collect()
 }
 
-/// Resolve the local player pawn: the registry's marked pawn if it still carries
-/// movement, else the first `PlayerMovement` entity. Mirrors the windowed
-/// `followed_player_pawn` resolution.
+/// Resolve the pawn summarized by headless observability.
 fn local_pawn(registry: &EntityRegistry) -> Option<EntityId> {
-    if let Some(id) = registry.local_player_pawn() {
-        if matches!(
-            registry.has_component_kind(id, ComponentKind::PlayerMovement),
-            Ok(true)
-        ) {
-            return Some(id);
-        }
-    }
-    registry
-        .iter_with_kind(ComponentKind::PlayerMovement)
-        .next()
-        .map(|(id, _)| id)
+    registry.local_player_movement_pawn()
 }
 
 /// Build the curated player-pawn summary from the post-run registry. `None` when

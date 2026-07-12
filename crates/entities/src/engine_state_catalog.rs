@@ -383,6 +383,7 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         }),
         persist: false,
         capability: EngineStateCapability::Readonly,
+        // Magazine state is server-authoritative and projected only to the pawn's owner.
         network: ReplicationScope::OwnerPrivatePlayer,
     },
     EngineStateCatalogEntry {
@@ -396,6 +397,7 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         }),
         persist: false,
         capability: EngineStateCapability::Readonly,
+        // Reserve state is pawn-owned and projected only to that pawn's owner.
         network: ReplicationScope::OwnerPrivatePlayer,
     },
     EngineStateCatalogEntry {
@@ -406,6 +408,7 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         range: None,
         persist: false,
         capability: EngineStateCapability::Readonly,
+        // Reload lifecycle is authoritative per pawn and visible only to that pawn's owner.
         network: ReplicationScope::OwnerPrivatePlayer,
     },
     EngineStateCatalogEntry {
@@ -416,6 +419,7 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         range: Some(NumericRange { min: 0.0, max: 1.0 }),
         persist: false,
         capability: EngineStateCapability::Readonly,
+        // Reload timing pairs with reload lifecycle under the same owner-private projection.
         network: ReplicationScope::OwnerPrivatePlayer,
     },
     EngineStateCatalogEntry {

@@ -385,6 +385,16 @@ impl HostStateReplication {
             .iter()
             .map(|e| (e.slot_id, e.name.clone(), e.scope))
             .collect();
+        let owner_projections: Vec<(EntityId, u64, AmmoSlotProjection)> = owners
+            .iter()
+            .map(|(pawn, client_id)| {
+                (
+                    pawn,
+                    client_id,
+                    AmmoSlotProjection::for_pawn(registry, pawn, weapon_owners),
+                )
+            })
+            .collect();
 
         #[cfg(debug_assertions)]
         {
@@ -400,15 +410,17 @@ impl HostStateReplication {
                     }
                 }
                 ReplicationScope::OwnerPrivatePlayer => {
-                    for (pawn, client_id) in owners.iter() {
+                    for (pawn, client_id, ammo_projection) in &owner_projections {
                         if let Some(value) = owner_private_source_value(
                             slot_table,
                             registry,
                             &name,
-                            pawn,
+                            *pawn,
                             weapon_owners,
+                            ammo_projection,
                         ) {
-                            self.tracker.ingest_owner_private(slot_id, client_id, value);
+                            self.tracker
+                                .ingest_owner_private(slot_id, *client_id, value);
                         }
                     }
                 }
@@ -445,6 +457,7 @@ fn owner_private_source_value(
     name: &str,
     pawn: EntityId,
     weapon_owners: &WeaponOwners,
+    ammo_projection: &AmmoSlotProjection,
 ) -> Option<WireSlotValue> {
     if let Some(value) = descriptor_health_for_pawn(registry, name, pawn) {
         return slot_value_to_wire(&value);
@@ -452,7 +465,7 @@ fn owner_private_source_value(
     if let Some(value) = descriptor_weapon_cooldown_for_pawn(registry, name, pawn, weapon_owners) {
         return slot_value_to_wire(&value);
     }
-    if let Some(value) = descriptor_ammo_for_pawn(registry, name, pawn, weapon_owners) {
+    if let Some(value) = ammo_projection.slot_value(name) {
         return value.as_ref().and_then(slot_value_to_wire);
     }
     let record = slot_table.get(name)?;
@@ -460,49 +473,68 @@ fn owner_private_source_value(
     slot_value_to_wire(value)
 }
 
-/// Project E16 ammo/reload slots from one owner's pawn and sibling weapon.
+/// Project ammo/reload slots from one owner's pawn and sibling weapon.
 /// The outer `Option` identifies names owned by this projection; the inner
 /// option is absent when ammo has no valid source, preventing fallback to the
 /// host's global HUD slots and cross-owner leakage.
+#[cfg(test)]
 fn descriptor_ammo_for_pawn(
     registry: &EntityRegistry,
     name: &str,
     pawn: EntityId,
     weapon_owners: &WeaponOwners,
 ) -> Option<Option<SlotValue>> {
-    if !matches!(
-        name,
-        "player.ammo" | "player.ammoReserve" | "player.reloadProgress" | "player.reloadActive"
-    ) {
-        return None;
+    AmmoSlotProjection::for_pawn(registry, pawn, weapon_owners).slot_value(name)
+}
+
+struct AmmoSlotProjection {
+    magazine: Option<f32>,
+    reserve: Option<f32>,
+    reload_progress: f32,
+    reload_active: bool,
+}
+
+impl AmmoSlotProjection {
+    fn for_pawn(registry: &EntityRegistry, pawn: EntityId, weapon_owners: &WeaponOwners) -> Self {
+        let component = weapon_owners
+            .weapon_of(pawn)
+            .and_then(|weapon| registry.get_component::<WeaponComponent>(weapon).ok());
+        let (reload_progress, reload_active) = component
+            .map(WeaponComponent::reload_status)
+            .unwrap_or((0.0, false));
+        let mut magazine = None;
+        let mut reserve = None;
+        if let Some(weapon) = component {
+            let effective = weapon.effective();
+            if let Some(ammo) = effective.ammo {
+                magazine = Some(weapon.magazine as f32);
+                reserve = Some(
+                    registry
+                        .get_component::<AmmoReserve>(pawn)
+                        .map_or(0, |reserve| reserve.available(ammo.ammo_type))
+                        as f32,
+                );
+            }
+        }
+
+        Self {
+            magazine,
+            reserve,
+            reload_progress,
+            reload_active,
+        }
     }
 
-    let component = weapon_owners
-        .weapon_of(pawn)
-        .and_then(|weapon| registry.get_component::<WeaponComponent>(weapon).ok());
-    let ammo = component.and_then(|weapon| weapon.effective().ammo);
-
-    let value = match name {
-        "player.ammo" => match (component, ammo.as_ref()) {
-            (Some(weapon), Some(_)) => Some(SlotValue::Number(weapon.magazine as f32)),
-            _ => None,
-        },
-        "player.ammoReserve" => ammo.as_ref().map(|ammo| {
-            let available = registry
-                .get_component::<AmmoReserve>(pawn)
-                .map_or(0, |reserve| reserve.available(ammo.ammo_type));
-            SlotValue::Number(available as f32)
-        }),
-        "player.reloadProgress" => {
-            let progress = component.map_or(0.0, |weapon| weapon.reload_status().0);
-            Some(SlotValue::Number(progress))
-        }
-        "player.reloadActive" => Some(SlotValue::Boolean(
-            component.is_some_and(|weapon| weapon.reload_status().1),
-        )),
-        _ => unreachable!("recognized ammo projection name"),
-    };
-    Some(value)
+    fn slot_value(&self, name: &str) -> Option<Option<SlotValue>> {
+        let value = match name {
+            "player.ammo" => self.magazine.map(SlotValue::Number),
+            "player.ammoReserve" => self.reserve.map(SlotValue::Number),
+            "player.reloadProgress" => Some(SlotValue::Number(self.reload_progress)),
+            "player.reloadActive" => Some(SlotValue::Boolean(self.reload_active)),
+            _ => return None,
+        };
+        Some(value)
+    }
 }
 
 /// Read the descriptor-fed health value for `name` from `pawn`'s live

@@ -189,13 +189,13 @@ declare module "postretro" {
   export type AmmoResource = {
     /** Ammo resource identifier. Must be non-empty ASCII, at most 64 bytes, and use only [A-Za-z0-9_.:-]. */
     type: string;
-    /** Magazine capacity. Must be at least 1. */
+    /** Magazine capacity. Range: 1..=4,294,967,295. */
     magazine: number;
-    /** Units consumed per shot. Must be at least 1; defaults to 1. */
+    /** Units consumed per shot. Range: 1..=4,294,967,295; defaults to 1. */
     costPerShot?: number;
-    /** Starting reserve balance credited at spawn. Any unsigned 32-bit value is accepted, including 0. */
+    /** Starting reserve balance credited at spawn. Range: 0..=4,294,967,295. */
     reserve: number;
-    /** Reload duration in milliseconds. Must be at least 1; defaults to 1000. */
+    /** Reload duration in milliseconds. Range: 1..=4,294,967,295; defaults to 1000. */
     reloadMs?: number;
   };
 

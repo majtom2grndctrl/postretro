@@ -2,6 +2,8 @@
 // weapon ammo/reload state into readonly engine-owned slots each frame.
 // See: context/lib/scripting.md §5 "Durable State Store"
 
+use std::collections::HashSet;
+
 use crate::scripting::primitives::store::write_store_slot;
 use postretro_entities::AmmoReserve;
 use postretro_entities::components::health::pawn_with_health;
@@ -47,31 +49,21 @@ fn weapon_hud_values(
     let Ok(weapon) = registry.get_component::<WeaponComponent>(weapon_id) else {
         return (None, 0.0, false);
     };
-    let Some(ammo) = weapon.effective().ammo else {
-        return (None, 0.0, false);
-    };
-    let reserve = registry
-        .get_component::<AmmoReserve>(pawn)
-        .map_or(0, |reserve| reserve.available(ammo.ammo_type));
-    let active = weapon.reload_remaining_ms > 0;
-    let progress = if active && weapon.reload_total_ms > 0 {
-        (1.0 - weapon.reload_remaining_ms as f32 / weapon.reload_total_ms as f32).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    (Some((weapon.magazine, reserve)), progress, active)
-}
-
-fn write_hud_slot(ctx: &ScriptCtx, name: &str, value: SlotValue) {
-    if let Err(err) = write_store_slot(ctx, name, value) {
-        log::warn!("[HUD] failed to write {name}: {err}");
-    }
+    let (progress, active) = weapon.reload_status();
+    let ammo = weapon.effective().ammo.map(|ammo| {
+        let reserve = registry
+            .get_component::<AmmoReserve>(pawn)
+            .map_or(0, |reserve| reserve.available(ammo.ammo_type));
+        (weapon.magazine, reserve)
+    });
+    (ammo, progress, active)
 }
 
 /// Engine-side producer for the HUD store slots.
 pub(crate) struct PlayerHudStatePublisher {
     ctx: ScriptCtx,
     invalid_max_warned_for: Option<EntityId>,
+    write_failure_warned_slots: HashSet<&'static str>,
 }
 
 impl PlayerHudStatePublisher {
@@ -80,6 +72,17 @@ impl PlayerHudStatePublisher {
         Self {
             ctx,
             invalid_max_warned_for: None,
+            write_failure_warned_slots: HashSet::new(),
+        }
+    }
+
+    fn write_hud_slot(&mut self, name: &'static str, value: SlotValue) {
+        if let Err(err) = write_store_slot(&self.ctx, name, value)
+            && self.write_failure_warned_slots.insert(name)
+        {
+            log::warn!(
+                "[HUD] failed to publish built-in slot `{name}`; suppressing repeated warnings for this slot: {err}"
+            );
         }
     }
 
@@ -125,10 +128,10 @@ impl PlayerHudStatePublisher {
         if let Some((pawn, current, max)) = pawn_health {
             // Engine-owned and always declared, so a write error is a real bug
             // and must be surfaced rather than silently skipped.
-            write_hud_slot(&self.ctx, "player.health", SlotValue::Number(current));
+            self.write_hud_slot("player.health", SlotValue::Number(current));
 
             if max.is_finite() && max >= 1.0 {
-                write_hud_slot(&self.ctx, "player.maxHealth", SlotValue::Number(max));
+                self.write_hud_slot("player.maxHealth", SlotValue::Number(max));
             } else if self.invalid_max_warned_for != Some(pawn) {
                 log::warn!(
                     "[HUD] skipping player.maxHealth for pawn {pawn}: invalid max health {max}"
@@ -140,23 +143,11 @@ impl PlayerHudStatePublisher {
         let (ammo, reload_progress, reload_active) =
             weapon_hud_values(&self.ctx.registry.borrow(), active_wieldable);
         if let Some((magazine, reserve)) = ammo {
-            write_hud_slot(&self.ctx, "player.ammo", SlotValue::Number(magazine as f32));
-            write_hud_slot(
-                &self.ctx,
-                "player.ammoReserve",
-                SlotValue::Number(reserve as f32),
-            );
+            self.write_hud_slot("player.ammo", SlotValue::Number(magazine as f32));
+            self.write_hud_slot("player.ammoReserve", SlotValue::Number(reserve as f32));
         }
-        write_hud_slot(
-            &self.ctx,
-            "player.reloadProgress",
-            SlotValue::Number(reload_progress),
-        );
-        write_hud_slot(
-            &self.ctx,
-            "player.reloadActive",
-            SlotValue::Boolean(reload_active),
-        );
+        self.write_hud_slot("player.reloadProgress", SlotValue::Number(reload_progress));
+        self.write_hud_slot("player.reloadActive", SlotValue::Boolean(reload_active));
     }
 }
 
@@ -165,6 +156,7 @@ mod tests {
     use super::*;
     use postretro_entities::components::health::HealthComponent;
     use postretro_entities::components::player_movement::PlayerMovementComponent;
+    use postretro_entities::components::weapon::ReloadFeedback;
     use postretro_entities::registry::{EntityId, Transform};
     use postretro_scripting_core::data_descriptors::{
         AirParams, AmmoResource, CapsuleParams, FallParams, FireMode, GroundParams,
@@ -296,7 +288,51 @@ mod tests {
             .get_component::<WeaponComponent>(weapon_id)
             .unwrap()
             .clone();
+        weapon.reload_feedback = Some(ReloadFeedback::Started);
+        ctx.registry
+            .borrow_mut()
+            .set_component(weapon_id, weapon)
+            .unwrap();
+        publisher.tick(Some(weapon_id));
+        assert_eq!(
+            read_store_slot(&ctx, "player.reloadProgress").unwrap(),
+            SlotValue::Number(0.0)
+        );
+        assert_eq!(
+            read_store_slot(&ctx, "player.reloadActive").unwrap(),
+            SlotValue::Boolean(true)
+        );
+
+        let mut weapon = ctx
+            .registry
+            .borrow()
+            .get_component::<WeaponComponent>(weapon_id)
+            .unwrap()
+            .clone();
+        weapon.reload_feedback = Some(ReloadFeedback::Completed);
         weapon.reload_remaining_ms = 0;
+        ctx.registry
+            .borrow_mut()
+            .set_component(weapon_id, weapon)
+            .unwrap();
+        publisher.tick(Some(weapon_id));
+        assert_eq!(
+            read_store_slot(&ctx, "player.reloadProgress").unwrap(),
+            SlotValue::Number(1.0)
+        );
+        assert_eq!(
+            read_store_slot(&ctx, "player.reloadActive").unwrap(),
+            SlotValue::Boolean(true)
+        );
+
+        let mut weapon = ctx
+            .registry
+            .borrow()
+            .get_component::<WeaponComponent>(weapon_id)
+            .unwrap()
+            .clone();
+        weapon.reload_remaining_ms = 0;
+        weapon.reload_feedback = None;
         ctx.registry
             .borrow_mut()
             .set_component(weapon_id, weapon)
@@ -327,6 +363,44 @@ mod tests {
         assert_eq!(
             read_store_slot(&ctx, "player.reloadProgress").unwrap(),
             SlotValue::Number(0.0)
+        );
+        assert_eq!(
+            read_store_slot(&ctx, "player.reloadActive").unwrap(),
+            SlotValue::Boolean(true)
+        );
+    }
+
+    #[test]
+    fn tick_keeps_reload_active_when_hot_refresh_removes_ammo_tuning() {
+        use crate::scripting::primitives::store::{read_store_slot, write_store_slot};
+
+        let ctx = ScriptCtx::new();
+        let pawn = spawn_pawn_with_health(&ctx, 100.0);
+        let weapon_id = spawn_ammo_weapon(&ctx, pawn);
+        let mut weapon = ctx
+            .registry
+            .borrow()
+            .get_component::<WeaponComponent>(weapon_id)
+            .unwrap()
+            .clone();
+        weapon.ammo = None;
+        ctx.registry
+            .borrow_mut()
+            .set_component(weapon_id, weapon)
+            .unwrap();
+        write_store_slot(&ctx, "player.ammo", SlotValue::Number(7.0)).unwrap();
+        let mut publisher = PlayerHudStatePublisher::new(ctx.clone());
+
+        publisher.tick(Some(weapon_id));
+
+        assert_eq!(
+            read_store_slot(&ctx, "player.ammo").unwrap(),
+            SlotValue::Number(7.0),
+            "removed tuning still suppresses ammo publication"
+        );
+        assert_eq!(
+            read_store_slot(&ctx, "player.reloadProgress").unwrap(),
+            SlotValue::Number(0.5)
         );
         assert_eq!(
             read_store_slot(&ctx, "player.reloadActive").unwrap(),
@@ -646,6 +720,36 @@ mod tests {
             publisher.invalid_max_warned_for,
             Some(second),
             "new pawn lifetime can emit one warning"
+        );
+    }
+
+    #[test]
+    fn persistent_write_failures_latch_once_per_distinct_slot() {
+        use postretro_entities::slot_table::SlotType;
+
+        let ctx = ScriptCtx::new();
+        {
+            let mut slots = ctx.slot_table.borrow_mut();
+            slots
+                .get_mut("player.reloadProgress")
+                .unwrap()
+                .schema
+                .slot_type = SlotType::Boolean;
+            slots
+                .get_mut("player.reloadActive")
+                .unwrap()
+                .schema
+                .slot_type = SlotType::Number;
+        }
+        let mut publisher = PlayerHudStatePublisher::new(ctx);
+
+        publisher.tick(None);
+        publisher.tick(None);
+
+        assert_eq!(
+            publisher.write_failure_warned_slots,
+            HashSet::from(["player.reloadActive", "player.reloadProgress"]),
+            "persistent failures stay latched while distinct slots remain visible"
         );
     }
 }

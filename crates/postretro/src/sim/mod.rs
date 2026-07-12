@@ -29,7 +29,7 @@ use postretro_entities::components::health::{
 };
 use postretro_entities::components::mesh::MeshComponent;
 use postretro_entities::components::weapon::{UNKNOWN_WEAPON_CREDIT_SOURCE, WeaponComponent};
-use postretro_entities::{AmmoReserve, ComponentKind, EntityId, EntityRegistry, SlotTable};
+use postretro_entities::{ComponentKind, EntityId, EntityRegistry, SlotTable};
 use postretro_scripting_core::reaction_dispatch::ProgressTracker;
 
 #[derive(Debug, Clone)]
@@ -69,21 +69,6 @@ pub(crate) struct TriggerTickContext<'a> {
     pub(crate) bindings: &'a TriggerBindingTable,
     pub(crate) slot_table: Rc<RefCell<SlotTable>>,
     pub(crate) use_edges: &'a HashMap<PlayerId, bool>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ReloadDelivery {
-    pub(crate) pawn: EntityId,
-    pub(crate) weapon: EntityId,
-    pub(crate) outcome: ReloadOutcome,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ReloadOutcome {
-    Started,
-    Completed { transferred: u32 },
-    BlockedFull,
-    BlockedEmpty,
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -238,27 +223,19 @@ pub(crate) fn simulate_tick(
         let registry = registry.borrow();
         local_movement_pawn(&registry)
     };
-    let mut local_reload_started = false;
-    if let (Some(pawn), Some(weapon_id)) = (own_pawn, active_wieldable) {
-        let mut registry = registry.borrow_mut();
-        let local_deliveries =
-            deliver_reload_to_weapon(&mut registry, pawn, weapon_id, command.reload, tick_dt);
-        local_reload_started = local_deliveries
-            .iter()
-            .any(|delivery| delivery.outcome == ReloadOutcome::Started);
-        reload_deliveries.extend(local_deliveries);
-    }
     let weapon_fire = weapon_fire_command(command.fire_button, post_movement_command);
-    let mut weapon = run_weapon_fire_tick(
+    let (local_deliveries, mut weapon) = run_local_weapon_command(
         &registry,
+        own_pawn,
         active_wieldable,
         &weapon_fire,
+        command.reload,
         collision_world,
         hit_zone_store,
         anim_time,
         tick_dt,
-        local_reload_started,
     );
+    reload_deliveries.extend(local_deliveries);
     weapon.extend(remote_weapon_events);
     let death = run_death_sweep(&registry, progress_tracker);
 
@@ -336,6 +313,13 @@ fn update_brain_animation_playback_rates(registry: &mut EntityRegistry, anim_tim
 }
 
 mod host_movement;
+mod reload;
+
+pub(crate) use reload::{ReloadDelivery, ReloadOutcome};
+pub(crate) use reload::{
+    clear_all_feedback as clear_all_reload_feedback,
+    clear_feedback_for_weapon as clear_reload_feedback_for_weapon,
+};
 
 #[cfg(test)]
 pub(crate) use host_movement::run_host_movement_tick;
@@ -447,10 +431,15 @@ fn run_remote_weapon_commands(
         let Some(weapon) = remote.weapon else {
             continue;
         };
-        let deliveries = deliver_reload_to_weapon(
+        let Ok(mut weapon_component) = registry.get_component::<WeaponComponent>(weapon).cloned()
+        else {
+            continue;
+        };
+        let deliveries = reload::tick(
             &mut registry,
             remote.pawn,
             weapon,
+            &mut weapon_component,
             remote.command.reload,
             tick_dt,
         );
@@ -467,13 +456,17 @@ fn run_remote_weapon_commands(
             // the real fire gate is `button` -> `wants_fire`. The host casts no local aim ray.
             can_fire: remote.shot_id.is_some(),
         };
-        let result = weapon::tick_state_only(
-            &mut registry,
-            Some(weapon),
+        let result = weapon::tick_state_only_component(
+            &mut weapon_component,
             &command,
             tick_dt,
             reload_started,
         );
+        let effective = weapon_component.effective();
+        let damage = effective.damage;
+        let range = effective.range;
+        let credit_source = effective.credit_source.to_string();
+        let _ = registry.set_component(weapon, weapon_component);
         match result {
             WeaponFireAuthorization::Accepted => {}
             WeaponFireAuthorization::Empty(weapon::ActivationOutcome::Empty) => {
@@ -485,20 +478,16 @@ fn run_remote_weapon_commands(
         let Some(shot_id) = remote.shot_id else {
             continue;
         };
-        let Ok(weapon_component) = registry.get_component::<WeaponComponent>(weapon) else {
-            continue;
-        };
-        let effective = weapon_component.effective();
         authorized.push(OpenAuthorizedShot {
             shot: AuthorizedShot {
                 shot_id,
                 pawn: remote.pawn,
                 weapon,
                 fire_tick: remote.fire_tick,
-                damage: effective.damage,
-                range: effective.range,
+                damage,
+                range,
                 pellet_count: 1,
-                credit_source: effective.credit_source.to_string(),
+                credit_source,
             },
             owner_client_id: remote.owner_client_id,
         });
@@ -507,156 +496,58 @@ fn run_remote_weapon_commands(
     (authorized, reload_deliveries, weapon_events)
 }
 
-fn deliver_reload_to_weapon(
-    registry: &mut EntityRegistry,
-    pawn: EntityId,
-    weapon: EntityId,
-    reload: bool,
-    tick_dt: f32,
-) -> Vec<ReloadDelivery> {
-    let Ok(existing) = registry.get_component::<WeaponComponent>(weapon) else {
-        return Vec::new();
-    };
-    let mut component = existing.clone();
-    let was_reloading = component.reload_remaining_ms > 0;
-    let fresh_press = reload && !component.reload_press_consumed;
-    component.reload_press_consumed = reload;
-    let mut deliveries = Vec::new();
-
-    if !was_reloading {
-        if !fresh_press {
-            let _ = registry.set_component(weapon, component);
-            return deliveries;
-        }
-
-        let Some(ammo) = component.effective().ammo else {
-            let _ = registry.set_component(weapon, component);
-            return deliveries;
-        };
-        let capacity = ammo.capacity;
-        let reload_ms = ammo.reload_ms;
-        let ammo_type = ammo.ammo_type.to_string();
-        if component.magazine >= capacity {
-            deliveries.push(ReloadDelivery {
-                pawn,
-                weapon,
-                outcome: ReloadOutcome::BlockedFull,
-            });
-            let _ = registry.set_component(weapon, component);
-            return deliveries;
-        }
-        let available = registry
-            .get_component::<AmmoReserve>(pawn)
-            .map_or(0, |reserve| reserve.available(&ammo_type));
-        if available == 0 {
-            deliveries.push(ReloadDelivery {
-                pawn,
-                weapon,
-                outcome: ReloadOutcome::BlockedEmpty,
-            });
-            let _ = registry.set_component(weapon, component);
-            return deliveries;
-        }
-
-        component.reload_total_ms = reload_ms;
-        component.reload_remaining_ms = reload_ms;
-        component.reload_elapsed_sub_ms = 0.0;
-        deliveries.push(ReloadDelivery {
-            pawn,
-            weapon,
-            outcome: ReloadOutcome::Started,
-        });
-    }
-
-    advance_reload_timer(&mut component, tick_dt);
-    if component.reload_remaining_ms > 0 {
-        let _ = registry.set_component(weapon, component);
-        return deliveries;
-    }
-
-    let effective_ammo = component
-        .effective()
-        .ammo
-        .map(|ammo| (ammo.capacity, ammo.ammo_type.to_string()));
-    let transferred = if let Some((capacity, ammo_type)) = effective_ammo {
-        let need = capacity.saturating_sub(component.magazine);
-        let mut reserve = registry
-            .get_component::<AmmoReserve>(pawn)
-            .cloned()
-            .unwrap_or_default();
-        let requested = need.min(reserve.available(&ammo_type));
-        let transferred = reserve.take(&ammo_type, requested);
-        component.magazine = component.magazine.saturating_add(transferred);
-        if registry.has_component_kind(pawn, ComponentKind::AmmoReserve) == Ok(true) {
-            let _ = registry.set_component(pawn, reserve);
-        }
-        transferred
-    } else {
-        0
-    };
-    let _ = registry.set_component(weapon, component);
-    deliveries.push(ReloadDelivery {
-        pawn,
-        weapon,
-        outcome: ReloadOutcome::Completed { transferred },
-    });
-    deliveries
-}
-
-fn advance_reload_timer(component: &mut WeaponComponent, tick_dt: f32) {
-    let tick_ms = if tick_dt.is_finite() && tick_dt > 0.0 {
-        f64::from(tick_dt) * 1000.0
-    } else {
-        0.0
-    };
-    let carried_ms = if component.reload_elapsed_sub_ms.is_finite()
-        && component.reload_elapsed_sub_ms >= 0.0
-        && component.reload_elapsed_sub_ms < 1.0
-    {
-        component.reload_elapsed_sub_ms
-    } else {
-        0.0
-    };
-    let elapsed_ms = carried_ms + tick_ms;
-    if elapsed_ms >= f64::from(component.reload_remaining_ms) {
-        component.reload_remaining_ms = 0;
-        component.reload_elapsed_sub_ms = 0.0;
-        return;
-    }
-
-    let whole_ms = elapsed_ms.floor() as u32;
-    component.reload_remaining_ms -= whole_ms;
-    component.reload_elapsed_sub_ms = elapsed_ms - f64::from(whole_ms);
-}
-
 #[allow(clippy::too_many_arguments)]
-fn run_weapon_fire_tick(
+fn run_local_weapon_command(
     registry: &Rc<RefCell<EntityRegistry>>,
+    pawn: Option<EntityId>,
     active_wieldable: Option<EntityId>,
     command: &WeaponFireCommand,
+    reload_pressed: bool,
     collision_world: &CollisionWorld,
     hit_zone_store: &HitZoneStore,
     anim_time: f64,
     tick_dt: f32,
-    reload_started_this_tick: bool,
-) -> Vec<&'static str> {
+) -> (Vec<ReloadDelivery>, Vec<&'static str>) {
+    let Some(weapon_id) = active_wieldable else {
+        return (Vec::new(), Vec::new());
+    };
     let mut registry = registry.borrow_mut();
-    let events = weapon::tick_resolved(
-        &mut registry,
-        active_wieldable,
+    let Ok(mut weapon_component) = registry
+        .get_component::<WeaponComponent>(weapon_id)
+        .cloned()
+    else {
+        return (Vec::new(), Vec::new());
+    };
+    let deliveries = pawn.map_or_else(Vec::new, |pawn| {
+        reload::tick(
+            &mut registry,
+            pawn,
+            weapon_id,
+            &mut weapon_component,
+            reload_pressed,
+            tick_dt,
+        )
+    });
+    let reload_started = deliveries
+        .iter()
+        .any(|delivery| delivery.outcome == ReloadOutcome::Started);
+    let events = weapon::tick_resolved_component(
+        &registry,
+        &mut weapon_component,
         command,
         collision_world,
         hit_zone_store,
         anim_time,
         tick_dt,
-        reload_started_this_tick,
+        reload_started,
     );
+    let _ = registry.set_component(weapon_id, weapon_component);
     if let Some(impact) = events.impact.as_ref() {
         weapon::spawn_impact_effect_at(&mut registry, impact.point, impact.normal);
-        let attacker = local_movement_pawn(&registry);
+        let attacker = pawn;
         apply_weapon_impact_damage(&mut registry, active_wieldable, attacker, impact);
     }
-    events.event_names()
+    (deliveries, events.event_names())
 }
 
 pub(crate) fn apply_weapon_impact_damage(
@@ -778,6 +669,29 @@ pub(crate) fn run_death_sweep(
 }
 
 #[cfg(test)]
+fn deliver_reload_to_weapon(
+    registry: &mut EntityRegistry,
+    pawn: EntityId,
+    weapon: EntityId,
+    reload_pressed: bool,
+    tick_dt: f32,
+) -> Vec<ReloadDelivery> {
+    let Ok(mut component) = registry.get_component::<WeaponComponent>(weapon).cloned() else {
+        return Vec::new();
+    };
+    let deliveries = reload::tick(
+        registry,
+        pawn,
+        weapon,
+        &mut component,
+        reload_pressed,
+        tick_dt,
+    );
+    let _ = registry.set_component(weapon, component);
+    deliveries
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::collision::CollisionWorld;
@@ -795,10 +709,10 @@ mod tests {
         resolve_pending_animation_stamps,
     };
     use postretro_entities::{
-        DataRegistry, KinematicMoverComponent, KinematicMoverMode, MoverCommand, NamedReaction,
-        NumericRange, PrimitiveDescriptor, ReactionDescriptor, SlotOwnership, SlotRecord,
-        SlotSchema, SlotTable, SlotType, SlotValue, Transform, TriggerActivation, TriggerFireMode,
-        TriggerVolumeComponent,
+        AmmoReserve, DataRegistry, KinematicMoverComponent, KinematicMoverMode, MoverCommand,
+        NamedReaction, NumericRange, PrimitiveDescriptor, ReactionDescriptor, SlotOwnership,
+        SlotRecord, SlotSchema, SlotTable, SlotType, SlotValue, Transform, TriggerActivation,
+        TriggerFireMode, TriggerVolumeComponent,
     };
     use postretro_foundation::{
         AirParams, AmmoResource, CapsuleParams, FallParams, FireMode, GroundParams,

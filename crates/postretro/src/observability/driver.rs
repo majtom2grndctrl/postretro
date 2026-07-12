@@ -267,11 +267,18 @@ fn run_headless_inner(runspec_arg: Option<&str>) -> Result<String> {
         // for `dump.events == false`, so buffering it per tick is pure wasted
         // allocation (and an OOM vector on a large `ticks` with `events: false`).
         if runspec.dump.events {
+            let mut weapon_events = to_owned_strings(&tick_events.weapon);
+            weapon_events.extend(
+                tick_events
+                    .reload_deliveries
+                    .iter()
+                    .map(|delivery| delivery.outcome.event_name().to_string()),
+            );
             events.push(TickEventRecord {
                 tick,
                 movement: to_owned_strings(&tick_events.movement),
                 ai: to_owned_strings(&tick_events.ai),
-                weapon: to_owned_strings(&tick_events.weapon),
+                weapon: weapon_events,
                 death: tick_events.death.clone(),
             });
         }

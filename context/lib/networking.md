@@ -186,6 +186,13 @@ policies govern resolution:
   hold→neutral→real resume path stays intact. `INPUT_BUFFER_MAX > INPUT_BUFFER_TARGET`
   gives hysteresis so catch-up does not thrash.
 
+Reload uses a reliable edge lane beside command playout. Host intake observes reload
+rising edges before stale-drop and backlog trimming, then delivers each due edge once on
+an authoritative resolution. Duplicate or stale retransmits cannot create another edge.
+If the previously emitted reload level is still high, recovery emits a low tick before
+the preserved press so weapon-side level dedup sees a genuine rising edge. Movement,
+look, and fire keep the ordinary gap and catch-up behavior.
+
 A catch-up jump advances `last_processed_client_tick` by more than one tick. This is
 safe for client reconciliation: the client prunes predicted history monotonically up to
 the acked tick, so a forward jump simply discards a larger span of settled predictions

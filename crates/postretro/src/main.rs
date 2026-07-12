@@ -1775,6 +1775,7 @@ impl ApplicationHandler for App {
                 let mut pending_movement_events: Vec<&'static str> = Vec::new();
                 let mut pending_ai_events: Vec<&'static str> = Vec::new();
                 let mut pending_weapon_events: Vec<&'static str> = Vec::new();
+                let mut pending_reload_deliveries: Vec<sim::ReloadDelivery> = Vec::new();
                 let mut pending_trigger_residuals = Vec::new();
                 let mut sent_client_fire_commands: Vec<ClientFrameFireCommand> = Vec::new();
                 // Death-event names accumulate here and drain through the
@@ -2011,6 +2012,7 @@ impl ApplicationHandler for App {
                         pending_movement_events.extend(tick_events.movement);
                         pending_ai_events.extend(tick_events.ai);
                         pending_weapon_events.extend(tick_events.weapon);
+                        pending_reload_deliveries.extend(tick_events.reload_deliveries);
                         pending_death_events.extend(tick_events.death);
                         pending_trigger_residuals.extend(tick_events.trigger_residuals);
 
@@ -2024,6 +2026,7 @@ impl ApplicationHandler for App {
                 // loop, beside the post-loop drains, so the snapshot carries this
                 // frame's fully-settled host-authoritative state. No-op for the
                 // client and single-player. See `context/lib/entity_model.md` §6.
+                let host_owner_state_projected = self.host_owner_state_projection_due();
                 self.net_serialize_and_send();
 
                 // Task 6 client remote interpolation: sample each remote entity's
@@ -2053,6 +2056,12 @@ impl ApplicationHandler for App {
                 }
                 for event_name in &pending_weapon_events {
                     let _ = fire_named_event(event_name, &script_ctx.data_registry.borrow());
+                }
+                for delivery in &pending_reload_deliveries {
+                    let _ = fire_named_event(
+                        delivery.outcome.event_name(),
+                        &script_ctx.data_registry.borrow(),
+                    );
                 }
                 // Death events drain through the sequence-aware dispatcher in
                 // their OWN loop: a `progress` reaction that names a sequence
@@ -2132,6 +2141,18 @@ impl ApplicationHandler for App {
                         .scripting
                         .player_hud_state
                         .tick_for_role(is_connected_client, active_wieldable);
+                }
+                // Network projection runs before HUD publication. Clear the
+                // one-frame reload endpoints only after both consumers have had
+                // a chance to observe them.
+                if let Some(weapon) = active_wieldable {
+                    sim::clear_reload_feedback_for_weapon(
+                        &mut script_ctx.registry.borrow_mut(),
+                        weapon,
+                    );
+                }
+                if host_owner_state_projected {
+                    sim::clear_all_reload_feedback(&mut script_ctx.registry.borrow_mut());
                 }
                 // Flash-decay state writes the engine-owned `screen.flash`
                 // surface at the same game-logic stage as the HUD publisher, so
@@ -4879,6 +4900,16 @@ impl App {
         };
         let registry = session.scripting.script_ctx.registry.clone();
         sim::run_death_sweep(&registry, &mut session.progress_tracker)
+    }
+
+    fn host_owner_state_projection_due(&self) -> bool {
+        matches!(
+            self.session
+                .as_ref()
+                .and_then(|session| session.net_endpoint.as_ref()),
+            Some(netcode::NetEndpoint::Host { tick, .. })
+                if *tick % netcode::SNAPSHOT_TICK_INTERVAL == 0
+        )
     }
 
     /// Advance the listen host's authoritative fixed-simulation tick after one

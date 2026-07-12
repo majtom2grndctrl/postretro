@@ -1,7 +1,5 @@
-// Weapon component: descriptor-authored tuning plus live cooldown, magazine,
-// input-edge, and reload state.
-//
-// See: context/lib/entity_model.md §4 (descriptor-owned tuning params)
+// Weapon descriptor tuning plus live magazine, cooldown, reload, and input-edge state.
+// See: context/lib/entity_model.md §4, §5
 
 use serde::{Deserialize, Serialize};
 #[cfg(debug_assertions)]
@@ -41,6 +39,12 @@ pub struct WeaponAmmoTuning {
     pub reload_ms: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReloadFeedback {
+    Started,
+    Completed,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WeaponComponent {
     pub damage: f32,
@@ -68,6 +72,10 @@ pub struct WeaponComponent {
     /// their countdown from accumulating per-tick rounding bias.
     #[serde(default)]
     pub reload_elapsed_sub_ms: f64,
+    /// One-frame lifecycle endpoint retained until network projection and local
+    /// HUD publication have both observed it.
+    #[serde(skip)]
+    pub reload_feedback: Option<ReloadFeedback>,
 }
 
 impl WeaponComponent {
@@ -96,6 +104,7 @@ impl WeaponComponent {
             reload_remaining_ms: 0,
             reload_total_ms: 0,
             reload_elapsed_sub_ms: 0.0,
+            reload_feedback: None,
         }
     }
 
@@ -132,6 +141,20 @@ impl WeaponComponent {
         // this instance is mid-cooldown. An absent `creditSource` also keeps the
         // already-resolved spawn-time default so canonical defaults do not
         // regress to `weapon.unknown` on reload.
+    }
+
+    pub fn reload_status(&self) -> (f32, bool) {
+        match self.reload_feedback {
+            Some(ReloadFeedback::Started) => (0.0, true),
+            Some(ReloadFeedback::Completed) => (1.0, true),
+            None if self.reload_remaining_ms > 0 && self.reload_total_ms > 0 => (
+                (1.0 - self.reload_remaining_ms as f32 / self.reload_total_ms as f32)
+                    .clamp(0.0, 1.0),
+                true,
+            ),
+            None if self.reload_remaining_ms > 0 => (0.0, true),
+            None => (0.0, false),
+        }
     }
 }
 
@@ -225,6 +248,7 @@ mod tests {
         assert_eq!(component.reload_remaining_ms, 0);
         assert_eq!(component.reload_total_ms, 0);
         assert_eq!(component.reload_elapsed_sub_ms, 0.0);
+        assert_eq!(component.reload_feedback, None);
     }
 
     #[test]
@@ -262,6 +286,7 @@ mod tests {
         component.reload_remaining_ms = 275;
         component.reload_total_ms = 800;
         component.reload_elapsed_sub_ms = 0.625;
+        component.reload_feedback = Some(ReloadFeedback::Started);
         component.cooldown_remaining_ms = 42.0;
         component.shoot_press_consumed = true;
         component.reload_press_consumed = true;
@@ -282,6 +307,7 @@ mod tests {
         assert_eq!(component.reload_remaining_ms, 275);
         assert_eq!(component.reload_total_ms, 800);
         assert_eq!(component.reload_elapsed_sub_ms, 0.625);
+        assert_eq!(component.reload_feedback, Some(ReloadFeedback::Started));
         assert_eq!(component.cooldown_remaining_ms, 42.0);
         assert!(component.shoot_press_consumed);
         assert!(component.reload_press_consumed);
@@ -301,6 +327,27 @@ mod tests {
         assert_eq!(component.magazine, 4);
         assert_eq!(component.reload_remaining_ms, 300);
         assert_eq!(component.reload_total_ms, 800);
+        assert_eq!(component.reload_status(), (0.625, true));
+    }
+
+    #[test]
+    fn reload_status_exposes_lifecycle_endpoints_and_timer_without_ammo_tuning() {
+        let mut component =
+            WeaponComponent::from_descriptor(&ammo_descriptor("bullets", 12, 1, 800));
+        component.reload_remaining_ms = 600;
+        component.reload_total_ms = 800;
+        assert_eq!(component.reload_status(), (0.25, true));
+
+        component.reload_feedback = Some(ReloadFeedback::Started);
+        assert_eq!(component.reload_status(), (0.0, true));
+        component.reload_feedback = Some(ReloadFeedback::Completed);
+        component.reload_remaining_ms = 0;
+        assert_eq!(component.reload_status(), (1.0, true));
+
+        component.ammo = None;
+        component.reload_feedback = None;
+        component.reload_remaining_ms = 400;
+        assert_eq!(component.reload_status(), (0.5, true));
     }
 
     #[test]

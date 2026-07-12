@@ -225,7 +225,7 @@ impl ClientPredictedShots {
 // Not `Copy`: `zone: Option<String>` carries a heap-backed tag for skeletal
 // hit-zone hits, so `WeaponImpact` (and `WeaponFireEvents`, which embeds it)
 // move/borrow rather than copy. Audited call sites: `fire_hitscan` constructs it
-// (the sole literal site, production), and `run_weapon_fire_tick` borrows
+// (the sole literal site, production), and the sim weapon stage borrows
 // `events.impact` rather than copying it out.
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
@@ -313,6 +313,7 @@ pub(crate) fn tick(
 }
 
 #[allow(clippy::too_many_arguments)] // weapon fire genuinely needs all of these inputs.
+#[cfg(test)]
 pub(crate) fn tick_resolved(
     registry: &mut EntityRegistry,
     active_wieldable: Option<EntityId>,
@@ -332,6 +333,32 @@ pub(crate) fn tick_resolved(
     };
     let mut weapon = existing.clone();
 
+    let events = tick_resolved_component(
+        registry,
+        &mut weapon,
+        command,
+        collision_world,
+        hit_zone_store,
+        anim_time,
+        tick_dt,
+        reload_started_this_tick,
+    );
+
+    let _ = registry.set_component(weapon_id, weapon);
+    events
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn tick_resolved_component(
+    registry: &EntityRegistry,
+    weapon: &mut WeaponComponent,
+    command: &WeaponFireCommand,
+    collision_world: &CollisionWorld,
+    hit_zone_store: &HitZoneStore,
+    anim_time: f64,
+    tick_dt: f32,
+    reload_started_this_tick: bool,
+) -> WeaponFireEvents {
     let stats = weapon.effective();
     let damage = stats.damage;
     let range = stats.range;
@@ -340,7 +367,7 @@ pub(crate) fn tick_resolved(
     let cooldown_ms = stats.cooldown_ms;
     let cost_per_shot = stats.ammo.as_ref().map(|ammo| ammo.cost_per_shot);
     let fire = apply_weapon_fire_state(
-        &mut weapon,
+        weapon,
         command,
         fire_mode,
         cooldown_ms,
@@ -348,7 +375,7 @@ pub(crate) fn tick_resolved(
         tick_dt,
         reload_started_this_tick,
     );
-    let events = match fire {
+    match fire {
         WeaponFireAuthorization::Accepted => fire_hitscan(
             command.aim_origin,
             command.aim_direction,
@@ -367,12 +394,10 @@ pub(crate) fn tick_resolved(
         WeaponFireAuthorization::Empty(_) | WeaponFireAuthorization::Rejected => {
             WeaponFireEvents::default()
         }
-    };
-
-    let _ = registry.set_component(weapon_id, weapon);
-    events
+    }
 }
 
+#[cfg(test)]
 pub(crate) fn tick_state_only(
     registry: &mut EntityRegistry,
     active_wieldable: Option<EntityId>,
@@ -388,21 +413,30 @@ pub(crate) fn tick_state_only(
         return WeaponFireAuthorization::Rejected;
     };
     let mut weapon = existing.clone();
+    let result = tick_state_only_component(&mut weapon, command, tick_dt, reload_started_this_tick);
+    let _ = registry.set_component(weapon_id, weapon);
+    result
+}
+
+pub(crate) fn tick_state_only_component(
+    weapon: &mut WeaponComponent,
+    command: &WeaponFireCommand,
+    tick_dt: f32,
+    reload_started_this_tick: bool,
+) -> WeaponFireAuthorization {
     let stats = weapon.effective();
     let fire_mode = stats.fire_mode;
     let cooldown_ms = stats.cooldown_ms;
     let cost_per_shot = stats.ammo.as_ref().map(|ammo| ammo.cost_per_shot);
-    let result = apply_weapon_fire_state(
-        &mut weapon,
+    apply_weapon_fire_state(
+        weapon,
         command,
         fire_mode,
         cooldown_ms,
         cost_per_shot,
         tick_dt,
         reload_started_this_tick,
-    );
-    let _ = registry.set_component(weapon_id, weapon);
-    result
+    )
 }
 
 fn apply_weapon_fire_state(

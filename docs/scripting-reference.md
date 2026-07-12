@@ -180,7 +180,7 @@ defineEntity({
 | `fireMode` | `"semi" \| "auto"` | Semi-automatic or automatic input gate. |
 | `resolution` | `"hitscan"` | Shot resolution mode. Hitscan is the supported mode today. |
 | `creditSource` | `string` (optional) | Combat attribution source id for damage caused by this weapon. Must be non-empty ASCII, at most 64 bytes, and use only `A-Z`, `a-z`, `0-9`, `_`, `.`, `:`, or `-`. If omitted, the engine uses the resolved canonical weapon name; if no canonical name is available, it uses a stable engine fallback. |
-| `resource` | `{ kind: "ammo", type, magazine, costPerShot?, reserve, reloadMs? }` (optional) | Finite ammunition tuning. `type` uses the same identifier rules as `creditSource`; `magazine`, `costPerShot`, and `reloadMs` must be positive unsigned integers; `reserve` may be zero. `costPerShot` defaults to `1` and `reloadMs` defaults to `1000`. Omit the block for unlimited fire. |
+| `resource` | `{ kind: "ammo", type, magazine, costPerShot?, reserve, reloadMs? }` (optional) | Finite ammunition tuning. `type` uses the same identifier rules as `creditSource`. `magazine`, `costPerShot`, and `reloadMs` accept `1..=4,294,967,295`; `reserve` accepts `0..=4,294,967,295`. `costPerShot` defaults to `1` and `reloadMs` defaults to `1000`. Omit the block for unlimited fire. |
 
 The authored `reloadMs` is the base reload duration. Runtime systems read it
 through the weapon's effective-stat seam, so future stat modifiers can adjust

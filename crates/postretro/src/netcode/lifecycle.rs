@@ -1,26 +1,5 @@
-// Connection-slot lifecycle glue: slot -> remote-pawn mapping and the accept/close
-// cleanup path that spawns and despawns slot-owned network pawns.
-// See: context/lib/networking.md · entity_model.md §6
-//
-// M15 Phase 2 Task 4. `postretro-net` (`slots.rs`) models the connection slot state
-// machine (Pending -> Accepted -> Closed) and surfaces accept/close transitions; it
-// is registry-blind. This module is the engine half that knows both sides: it owns
-// the slot -> remote-pawn `EntityId`/`NetworkId` mapping and runs the registry
-// mutation through the game-logic-owned apply path.
-//
-// On accept: spawn (or register) one slot-owned network pawn, stamp it with a
-// fresh session-monotonic `NetworkId` via the existing allocator, and add it to the
-// Phase 2 `ReplicableSet` so it replicates like any other authoritative object.
-//
-// On close (clean disconnect OR timeout — one path for both): despawn the pawn
-// through `EntityRegistry::despawn`, remove it from the `ReplicableSet`, and drop the
-// slot mapping. The vanished registered entity makes the next `produce_owned_snapshots`
-// emit nothing for that `NetworkId`, so `ServerReplication::ingest_tick` turns it into
-// a resending despawn tombstone that reaches the remaining clients.
-//
-// Phase 2 cleanup is immediate. This is a mechanics substrate, not the co-op
-// player-leave policy — Phase 4 may replace the gameplay policy while reusing this
-// slot/pawn/close machinery (no respawn, spectate, or input application here).
+// Host connection-slot lifecycle owns remote pawn and sibling weapon materialization and cleanup.
+// See: context/lib/networking.md §Game-logic-owned apply invariant · context/lib/entity_model.md §3
 
 use std::collections::HashMap;
 

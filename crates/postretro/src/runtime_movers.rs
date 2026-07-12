@@ -17,7 +17,7 @@ use postretro_level_loader::{
 use postretro_visibility::VisibleCells;
 
 use crate::collision::moving::MoverCollider;
-use crate::render::KinematicMoverInstance;
+use crate::render::{KinematicMoverInstance, MoverOccluderAabb};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RuntimeMoverLoadError {
@@ -58,6 +58,7 @@ pub(crate) fn build_loaded_mover_colliders(world: &LevelWorld) -> Vec<MoverColli
 
 pub(crate) struct KinematicMoverRenderCollector {
     instances: Vec<KinematicMoverInstance>,
+    occluder_aabbs: Vec<MoverOccluderAabb>,
     mover_bounds: HashMap<u32, (Vec3, Vec3)>,
     mover_bounds_source: Option<MoverBoundsSource>,
     visible_cell_bounds: Vec<(u32, Vec3, Vec3)>,
@@ -67,6 +68,7 @@ impl KinematicMoverRenderCollector {
     pub(crate) fn new() -> Self {
         Self {
             instances: Vec::new(),
+            occluder_aabbs: Vec::new(),
             mover_bounds: HashMap::new(),
             mover_bounds_source: None,
             visible_cell_bounds: Vec::new(),
@@ -75,6 +77,7 @@ impl KinematicMoverRenderCollector {
 
     pub(crate) fn clear(&mut self) {
         self.instances.clear();
+        self.occluder_aabbs.clear();
         self.mover_bounds.clear();
         self.mover_bounds_source = None;
         self.visible_cell_bounds.clear();
@@ -88,6 +91,7 @@ impl KinematicMoverRenderCollector {
         alpha: f32,
     ) {
         self.instances.clear();
+        self.occluder_aabbs.clear();
         self.refresh_mover_bounds(world);
         self.rebuild_visible_cell_bounds(world, visible);
 
@@ -119,15 +123,30 @@ impl KinematicMoverRenderCollector {
             let interpolated = registry
                 .interpolated_transform(id, alpha)
                 .unwrap_or(*current);
+            let transform = transform_matrix(interpolated);
+            let world_aabb = postretro_render_data::cone_frustum::Aabb {
+                min: local_bounds.0,
+                max: local_bounds.1,
+            }
+            .transformed(&transform);
             self.instances.push(KinematicMoverInstance {
                 mover_id: mover.mover_id,
-                transform: transform_matrix(interpolated),
+                transform,
+            });
+            self.occluder_aabbs.push(MoverOccluderAabb {
+                mover_id: mover.mover_id,
+                world_aabb,
             });
         }
     }
 
     pub(crate) fn instances(&self) -> &[KinematicMoverInstance] {
         &self.instances
+    }
+
+    /// Active movers' interpolated world bounds, aligned with [`Self::instances`].
+    pub(crate) fn occluder_aabbs(&self) -> &[MoverOccluderAabb] {
+        &self.occluder_aabbs
     }
 
     fn refresh_mover_bounds(&mut self, world: &LevelWorld) {
@@ -383,7 +402,9 @@ mod tests {
     use super::*;
     use postretro_entities::ComponentKind;
     use postretro_level_format::geometry::Vertex;
-    use postretro_level_loader::{LoadedKinematicMover, LoadedKinematicWaypoint};
+    use postretro_level_loader::{
+        CellData, CellLocatorChild, LevelWorld, LoadedKinematicMover, LoadedKinematicWaypoint,
+    };
 
     fn vertex(position: [f32; 3]) -> Vertex {
         Vertex::new(
@@ -434,6 +455,30 @@ mod tests {
                 },
             ],
         }
+    }
+
+    fn single_cell_world(kinematic_geometry: KinematicGeometry) -> LevelWorld {
+        let mut world = LevelWorld::new_visibility_only(
+            vec![CellData {
+                bounds_min: Vec3::splat(-1.0e6),
+                bounds_max: Vec3::splat(1.0e6),
+                face_start: 0,
+                face_count: 0,
+                portal_ref_start: 0,
+                portal_ref_count: 0,
+                is_solid: false,
+                is_exterior: false,
+                is_drawable: false,
+            }],
+            Vec::new(),
+            CellLocatorChild::Cell(0),
+            Vec::new(),
+            Vec::new(),
+            false,
+        )
+        .expect("single-cell mover fixture must be visibility-valid");
+        world.kinematic_geometry = kinematic_geometry;
+        world
     }
 
     #[test]
@@ -505,6 +550,13 @@ mod tests {
             mover_id: 7,
             transform: glam::Mat4::IDENTITY,
         });
+        collector.occluder_aabbs.push(MoverOccluderAabb {
+            mover_id: 7,
+            world_aabb: postretro_render_data::cone_frustum::Aabb {
+                min: Vec3::ZERO,
+                max: Vec3::ONE,
+            },
+        });
         collector.mover_bounds.insert(7, (Vec3::ZERO, Vec3::ONE));
         collector.mover_bounds_source = Some(MoverBoundsSource { ptr: 1, len: 1 });
         collector
@@ -514,9 +566,38 @@ mod tests {
         collector.clear();
 
         assert!(collector.instances.is_empty());
+        assert!(collector.occluder_aabbs.is_empty());
         assert!(collector.mover_bounds.is_empty());
         assert_eq!(collector.mover_bounds_source, None);
         assert!(collector.visible_cell_bounds.is_empty());
+    }
+
+    #[test]
+    fn render_collector_exposes_interpolated_active_mover_occluder_aabb() {
+        let mut registry = EntityRegistry::new();
+        let world = single_cell_world(geometry(0));
+        let mover_id = spawn_from_geometry(&mut registry, &world).unwrap()[0];
+
+        registry.snapshot_transforms();
+        registry
+            .set_component(
+                mover_id,
+                Transform {
+                    position: Vec3::new(5.0, 2.0, 3.0),
+                    ..Transform::default()
+                },
+            )
+            .unwrap();
+
+        let mut collector = KinematicMoverRenderCollector::new();
+        collector.collect(&registry, &world, &VisibleCells::DrawAll, 0.5);
+
+        assert_eq!(collector.instances().len(), 1);
+        assert_eq!(collector.occluder_aabbs().len(), 1);
+        let aabb = collector.occluder_aabbs()[0];
+        assert_eq!(aabb.mover_id, 7);
+        assert_eq!(aabb.world_aabb.min, Vec3::new(3.0, 2.0, 3.0));
+        assert_eq!(aabb.world_aabb.max, Vec3::new(4.0, 3.0, 3.0));
     }
 
     #[test]

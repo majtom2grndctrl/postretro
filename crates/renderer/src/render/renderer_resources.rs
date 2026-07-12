@@ -79,6 +79,7 @@ impl Renderer {
         self.full_mut().mesh_pass.release_level_resources();
         self.full_mut().mesh_draws.clear();
         self.full_mut().kinematic_mover_draws.clear();
+        self.full_mut().mover_occluder_aabbs.clear();
         self.full_mut().bone_palette_scratch.clear();
         self.full_mut().fog_cell_masks = None;
         self.full_mut().active_fog_aabbs.clear();

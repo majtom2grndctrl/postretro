@@ -258,6 +258,19 @@ impl Renderer {
             .upload_instances(device, queue, &full.kinematic_mover_draws);
     }
 
+    /// Replace this frame's active kinematic mover bounds. This renderer-owned
+    /// CPU state gates static-light promotion today and will feed the rigid
+    /// occluder recorder directly in the shadow pass.
+    ///
+    /// The render collector must call this before `render_frame_indirect`; an
+    /// empty slice clears stale movers so static-only maps retain their existing
+    /// promotion behavior.
+    pub fn set_mover_occluder_aabbs(&mut self, aabbs: &[rigid_occluder_depth::MoverOccluderAabb]) {
+        let full = self.full_mut();
+        full.mover_occluder_aabbs.clear();
+        full.mover_occluder_aabbs.extend_from_slice(aabbs);
+    }
+
     /// Reset per-level transient mesh-pass state at level load. `pub` forwarder
     /// over the private `mesh_pass`; called from the level-load model sweep at the
     /// model-cache install site (where each distinct model uploads). Empties the

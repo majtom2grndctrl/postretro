@@ -1,6 +1,6 @@
 # E16 - Ammo Resource
 
-> **Status:** draft.
+> **Status:** ready.
 >
 > **Epic:** 16 - Combat.
 >

@@ -1040,6 +1040,10 @@ mod tests {
                     cooldown_remaining_ms,
                     shoot_press_consumed: false,
                     credit_source: "weapon.test".to_string(),
+                    ammo: None,
+                    magazine: 0,
+                    reload_remaining_ms: 0,
+                    reload_total_ms: 0,
                 },
             )
             .unwrap();

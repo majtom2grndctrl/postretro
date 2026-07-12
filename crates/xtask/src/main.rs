@@ -380,7 +380,7 @@ fn print_help() {
            bake-model-textures  Bake glTF base-color sidecars into baked/materials\n\
            crate-graph          Analyze the internal crate dependency graph: print it,\n\
                                 --write the committed snapshot, --check its freshness,\n\
-                                or query --dependents / --dependencies of a crate\n\n\
+                                --mermaid the diagram, or query --rdeps / --deps of a crate\n\n\
          EXAMPLES:\n\
            cargo run -p xtask -- run content/dev/maps/campaign-test.prl\n\
            cargo run -p xtask -- run --features dev-tools -- content/dev/maps/campaign-test.prl\n\

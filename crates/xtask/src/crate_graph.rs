@@ -286,9 +286,10 @@ fn render_mermaid(graph: &Graph) -> String {
     out
 }
 
-/// The committed snapshot: header, Mermaid diagram, computed layers, and the
-/// chokepoint ranking. Generated verbatim by `--write` and byte-compared by
-/// `--check`, so the format must stay deterministic.
+/// The committed snapshot: header, computed layers, and the chokepoint ranking
+/// (the full edge diagram is generated on demand by `--mermaid`, not committed).
+/// Generated verbatim by `--write` and byte-compared by `--check`, so the format
+/// must stay deterministic.
 fn render_doc(graph: &Graph) -> String {
     let mut out = String::new();
     out.push_str(

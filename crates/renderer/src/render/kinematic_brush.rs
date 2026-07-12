@@ -527,47 +527,40 @@ impl KinematicBrushPass {
 
     /// Shared position-bearing vertex buffer. The rigid depth path consumes
     /// only location 0 while retaining this buffer's world-vertex stride.
-    #[allow(dead_code)] // Wired into live shadow passes by E17-B Task 5.
     pub(crate) fn shared_vertex_buffer(&self) -> &wgpu::Buffer {
         &self.vertex_buffer
     }
 
     /// Shared geometry index buffer used by both mover beauty and depth draws.
-    #[allow(dead_code)] // Wired into live shadow passes by E17-B Task 5.
     pub(crate) fn shared_index_buffer(&self) -> &wgpu::Buffer {
         &self.index_buffer
     }
 
     /// Layout for the uploaded per-instance model transforms. The rigid depth
     /// pipeline keeps it at group 1, separate from the beauty path's group 3.
-    #[allow(dead_code)] // Consumed when E17-B Task 5 constructs the rigid depth pass.
     pub(crate) fn instance_transform_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
         &self.instance_bind_group_layout
     }
 
     /// Existing per-instance model-transform binding populated by
     /// [`Self::upload_instances`] before shadow recording.
-    #[allow(dead_code)] // Wired into live shadow passes by E17-B Task 5.
     pub(crate) fn instance_transform_bind_group(&self) -> &wgpu::BindGroup {
         &self.instance_bind_group
     }
 
     /// Dense active mover instances, keyed by `mover_draw_index` rather than
     /// the game-side mover id.
-    #[allow(dead_code)] // Read by the rigid recorder once Task 5 wires shadow passes.
     pub(crate) fn active_draws(&self) -> &[ActiveMoverDraw] {
         &self.active_draws
     }
 
     /// One full index span per uploaded mover, keyed by `mover_draw_index`.
-    #[allow(dead_code)] // Read by the rigid recorder once Task 5 wires shadow passes.
     pub(crate) fn mover_index_ranges(&self) -> &[MoverIndexRange] {
         &self.mover_index_ranges
     }
 
     /// Resolve a game-side mover id through this pass's uploaded mover list to
     /// the draw index that keys active instances and full index spans.
-    #[allow(dead_code)] // Read by the rigid recorder once Task 5 wires shadow passes.
     pub(crate) fn mover_draw_index_for_mover_id(&self, mover_id: u32) -> Option<usize> {
         self.movers
             .iter()

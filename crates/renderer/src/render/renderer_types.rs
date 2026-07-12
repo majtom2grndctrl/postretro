@@ -546,8 +546,8 @@ pub(super) struct FullRenderer {
     /// stage-0-snapshotted registry transforms.
     pub(super) kinematic_mover_draws: Vec<kinematic_brush::KinematicMoverInstance>,
     /// Conservative world AABBs for active movers, keyed by authored mover id.
-    /// Static-light promotion reads this renderer-owned state now; the rigid
-    /// occluder recorder will read the same field in a later shadow pass.
+    /// Static-light promotion and rigid shadow occluder recording read this
+    /// renderer-owned state.
     pub(super) mover_occluder_aabbs: Vec<rigid_occluder_depth::MoverOccluderAabb>,
     pub(super) ambient_floor: f32,
     pub(super) indirect_scale: f32,
@@ -679,6 +679,7 @@ pub(super) struct FullRenderer {
     /// 5's presence in the shared BGL.
     pub(super) cube_shadow_pool: Option<crate::lighting::cube_shadow::CubeShadowPool>,
     pub(super) kinematic_brush: kinematic_brush::KinematicBrushPass,
+    pub(super) rigid_occluder_depth: rigid_occluder_depth::RigidOccluderDepthPass,
     pub(super) promoted_static_states: Vec<PromotedStaticLightState>,
     pub(super) promoted_static_records: Vec<PromotedStaticLightRecord>,
     pub(super) promoted_static_weights: Vec<f32>,

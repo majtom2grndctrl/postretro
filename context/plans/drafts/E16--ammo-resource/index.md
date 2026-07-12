@@ -176,11 +176,13 @@ Each is its own later roadmap bullet; the shape only accommodates them.
   as today (hit-zone multiplier, ledger attribution, impact FX unchanged). The
   reserve is untouched by firing.
 - [ ] With magazine `< costPerShot` the trigger blocks: no shot resolves, no ammo
-  is consumed, no damage is applied, and the block is observable — both a
-  `dry_fire` event reaching the caller's event drain (via `event_names()`) AND
-  `ActivationOutcome::Empty`, not a silent no-op. Cooldown-blocked shots stay
-  silent as today. While a reload is in flight the trigger is likewise blocked
-  silently and does not cancel the reload.
+  is consumed, no damage is applied, and the block is observable. The caller-drain
+  signal is the `dry_fire` event (via `event_names()`); the internal
+  `apply_weapon_fire_state` seam returns `ActivationOutcome::Empty` (a dry fire
+  builds no `WeaponImpact`, the only `ActivationOutcome` carrier, so `Empty` is
+  asserted at that fire-state seam, not on the drained events). It is not a silent
+  no-op. Cooldown-blocked shots stay silent as today. While a reload is in flight
+  the trigger is likewise blocked silently and does not cancel the reload.
 - [ ] Reload is timed by the **effective** reload duration: on a fresh reload
   press (rising edge of the held `SimCommand.reload` bit) the reload timer starts
   from `effective().reload_ms`; a held reload button starts exactly one reload.
@@ -203,12 +205,15 @@ Each is its own later roadmap bullet; the shape only accommodates them.
   the health publisher — the slots keep their last value rather than publishing a
   stale 0.
 - [ ] `player.reloadProgress` ramps `0 → 1` over the effective reload duration
-  and `player.reloadActive` is true only while reloading; the shipped
-  `hud.reloadMeter` bar fills and then exit-fades on completion. Unlike the ammo
-  slots, the reload producer writes `reloadActive = false` / `reloadProgress = 0`
-  every idle frame (no active reload) so the retained `exitFade` triggers rather
-  than latching. The dev-only `DevReloadProgressDriver` is removed and is no
-  longer the producer.
+  and `player.reloadActive` is true only while reloading; unlike the ammo slots,
+  the reload producer writes `reloadActive = false` / `reloadProgress = 0` every
+  idle frame (no active reload) so the retained `exitFade` triggers rather than
+  latching. The dev-only `DevReloadProgressDriver` is removed and is no longer the
+  producer. The automated slice is the producer's slot lifecycle (progress ramp,
+  active-only-while-reloading, idle false/0 write), unit-tested via slot reads like
+  the reload-feedback driver test; the `hud.reloadMeter` bar fill and exit-fade is
+  retained-UI presentation (`ui.md` §3), verified by manual dev observation as the
+  shipped reload-feedback plan did.
 - [ ] No ammo-grant, `onKill`, resource-grant, or progression behavior runs as
   part of this plan (review/grep gate).
 - [ ] No heat/cell variant, per-shell / cancellable reload, `reloadStyle`,
@@ -226,7 +231,10 @@ Each is its own later roadmap bullet; the shape only accommodates them.
 
 ### Task 1: Resource tagged union on the descriptor + SDK types
 
-Add `resource: Option<WeaponResource>` to `WeaponDescriptor` (`crates/foundation/src/data_descriptors/types/combat.rs:28`).
+Add `resource: Option<WeaponResource>` (with `#[serde(default)]`, matching the
+sibling `credit_source` field at `combat.rs:35`, so an absent `resource`
+deserializes to `None`) to `WeaponDescriptor`
+(`crates/foundation/src/data_descriptors/types/combat.rs:28`).
 `WeaponResource` is a serde-tagged (`#[serde(tag = "kind", rename_all = "camelCase")]`)
 enum with one variant, `Ammo(AmmoResource)`; the tag reserves `heat`/`cell` for
 siblings. `AmmoResource` carries `ammo_type` (wire `type`), `magazine` (u32
@@ -291,12 +299,20 @@ resourceless weapon skips gating.
 `cooldown_remaining_ms` (`weapon.rs:35`, preserved at `:83-88`), not authored
 tuning. Adding the tuning `Option`, the `magazine` field, and the reload-timer
 fields to `WeaponComponent`, and the mirrored fields to `EffectiveStats`,
-requires updating their struct literals across the crate.
+requires updating their struct literals across the workspace — not only in
+`postretro-entities` but also postretro-crate literals such as the
+`WeaponComponent` built in `netcode/state_slots.rs` test code; the workspace build
+surfaces each one.
 
 ### Task 3: Pawn reserve pool + spawn seeding
 
 Add an engine-owned reserve component (`AmmoReserve`, entities crate) pooling
-rounds by ammo type (`type → u32`). It references no `EntityId`. The pawn and
+rounds by ammo type (`type → u32`). It references no `EntityId`. As a new
+registry component read per-owner (like `HealthComponent` / `WeaponComponent`), it
+extends the closed component vocabulary: add an `AmmoReserve` arm to
+`ComponentKind` (`crates/entities/src/registry.rs:94`), a `ComponentValue` variant
+(~`:208`), and a `Component`/`KIND` impl mirroring `Weapon` (`registry.rs:398`) —
+the compiler's exhaustive-match errors enumerate the remaining sites. The pawn and
 its active wieldable are separate entities: inside `attach_descriptor_components`
 (`crates/postretro/src/scripting/builtins/data_archetype.rs:365`) only the
 single spawned entity's `id` is in scope, and for the weapon spawn that `id` is
@@ -338,7 +354,11 @@ is in flight (`reload_remaining_ms > 0`), block silently — reload owns the wea
 and is non-cancellable; (2) if the effective stats carry an ammo resource and
 `magazine < cost_per_shot`, block and surface it — resolve no shot, consume no
 ammo, and set `ActivationOutcome::Empty` (a new variant beside
-`Hit`/`Effect`/`Spawned`, `weapon/mod.rs:30-34`).
+`Hit`/`Effect`/`Spawned`, `weapon/mod.rs:30-34`). These gates live where the fire
+decision is made: the private `apply_weapon_fire_state` (`weapon/mod.rs:369-396`,
+called by `tick_resolved`) today returns a two-state authorization — widen it to
+distinguish the empty-magazine rejection from the silent cooldown/reload
+rejections, so `tick_resolved` sets `dry_fire = true` only for the empty case.
 
 `ActivationOutcome` alone does not reach the caller: it rides inside
 `WeaponImpact` (`:231-247`), which requires a `point`/`normal` a dry fire has
@@ -361,15 +381,22 @@ here.
 samples it with `snapshot.button(Action::Reload).is_active()` (`main.rs:790`), and
 `held_gap_sim_command` documents it as "a level bit the ammo spec dedups at
 consumption on its rising edge" (`command_queue.rs:462`). So a held R stays true
-across ticks; this spec's consumer derives the **rising edge** by comparing
-against the pawn's previously-resolved reload bit (tracked per pawn beside the
-resolved-command state), starting exactly one reload per press.
+across ticks; this spec derives the **rising edge** from a new per-instance
+`reload_press_consumed` flag on `WeaponComponent`, mirroring the existing
+`shoot_press_consumed` field (`weapon.rs:37`) — set on start, cleared when the bit
+goes false — so a held R starts exactly one reload. There is no per-pawn
+resolved-command store at the local-pawn consumption site
+(`ClientCommandState.last_resolved`, `command_queue.rs:152`, is per-client and
+remote-only); the weapon-component flag is the reachable home.
 
-Fill the shipped `deliver_reload_to_weapon` seam (`sim/mod.rs:424`, today a no-op
-emitting a bare `ReloadDelivery`). It is already called for the local/host pawn
-(`sim/mod.rs:200`) and remote co-op pawns (`run_remote_weapon_commands`,
-`sim/mod.rs:382`) — filling it wires reload for every pawn against that pawn's
-`AmmoReserve`. On a fresh rising edge with an ammo resource present:
+Fill the shipped `deliver_reload_to_weapon` seam (`sim/mod.rs:424`, today a pure
+no-op that early-returns when the reload bit is false). It is already called each
+tick for the local/host pawn (`sim/mod.rs:200`) and remote co-op pawns
+(`run_remote_weapon_commands`, `sim/mod.rs:382`) — filling it wires reload for
+every pawn against that pawn's `AmmoReserve`. Widen its signature to take `&mut`
+registry access and the fixed-tick delta (it needs the weapon component and the
+pawn's `AmmoReserve`). Start, advance, and completion all run inside this one
+seam; on a fresh rising edge with an ammo resource present:
 
 - **Guards (start-time):** a fresh edge while already reloading is a silent
   no-op (no `ReloadDelivery`) — the rising-edge dedup. A full magazine
@@ -377,10 +404,13 @@ emitting a bare `ReloadDelivery`). It is already called for the local/host pawn
   distinct blocked outcome carried on `ReloadDelivery` (`blocked-full` /
   `blocked-empty`); no timer starts and no rounds move.
 - **Start:** set `reload_total_ms = reload_remaining_ms = effective().reload_ms`.
-- **Advance:** decrement `reload_remaining_ms` by the fixed-tick delta on the
-  same per-tick pass that advances `cooldown_remaining_ms`, at the reload site
-  beside `run_weapon_fire_tick` where `local_movement_pawn` (and each remote
-  pawn) resolves the pawn owning `AmmoReserve`.
+- **Advance:** decrement `reload_remaining_ms` by the fixed-tick delta
+  **unconditionally each tick** — independent of the reload bit, since a released
+  button must still complete a non-cancellable reload — inside this seam, *not* on
+  the cooldown-decrement pass. (`cooldown_remaining_ms` is decremented in the
+  private `apply_weapon_fire_state` (`weapon/mod.rs:376`), which is weapon-only
+  with no `AmmoReserve` in scope; the reload timer must live where the pawn
+  reserve is reachable — this seam.)
 - **Complete (`reload_remaining_ms` reaches 0):** perform one atomic
   `take(type, min(capacity - magazine, available(type)))` and add the returned
   rounds to the magazine. `take` is the atomic step; never index the pool
@@ -408,12 +438,17 @@ sorted position) and **`player_owner_private_slots_are_replicated`** (`:711`,
 which asserts the owner-private *set* — currently `{player.health,
 player.maxHealth, player.weaponCooldownMs}` at `:718-748` with every other slot
 `None`; add `player.ammo`, `player.ammoReserve`, `player.reloadProgress`,
-`player.reloadActive` to that owner-private set). Adding four slots to the
-replicated `OwnerPrivatePlayer` set changes the replicated state-slot fingerprint;
-bump the state/fingerprint version constant — distinct from `WIRE_VERSION`, which
-stays as the shipped prerequisite left it — if the netcode handshake gates on it
-(verify against the fingerprint gate; the shipped reload-feedback plan noted
-`ReplicationScope::None` deliberately kept those slots *out* of the fingerprint).
+`player.reloadActive` to that owner-private set). The same flip also breaks three tests in
+`netcode/state_slots.rs`, which seeds `SlotTable::new()` from this catalog —
+update all three: `build_includes_only_replicated_slots_sorted_by_name` (`:805`,
+hard-coded 5-name replicated vector → 9), `default_table_has_player_owner_private_slots`
+(`:841`, 3-slot set → 7), and `net_schema_carries_fingerprint_and_descriptors`
+(`:906`, asserts `net.len() == 5` → 9). No version bump is required: the replicated
+state-slot fingerprint (`compute_fingerprint`, `state_slots.rs:197`) is
+content-derived — it hashes each replicated entry's name/type/range/scope, so
+adding and re-scoping slots changes it automatically and both peers recompute it
+identically. `FINGERPRINT_STREAM_VERSION` (`state_slots.rs:23`) bumps only on a
+stream-*shape* change, which this is not; leave it and `WIRE_VERSION` untouched.
 
 **Ammo publisher.** Extend/mirror `PlayerHudStatePublisher`
 (`crates/postretro/src/scripting/systems/ui_proxy.rs:24`) to read the active
@@ -455,9 +490,19 @@ and the meter are demoable end to end.
 **Docs + fixtures + tests.** Update the committed SDK snapshot tests that assert
 ammo's absence (`crates/postretro/src/scripting/typedef/tests/committed.rs:261`
 `readonly ammo:` / `:273` `ammo: ReadonlyStateRef<number>`) to assert its
-presence. Extend the `## components.weapon` section of `docs/scripting-reference.md`
-(line 145) with the resource block (incl. `reloadMs` and the reload-speed-as-stat
-note). Add the Rust tests listed in Scope.
+presence; because `player.ammo` / `player.ammoReserve` sort before `player.health`
+in the generated `player` object, also update the prefix-ordering assertion at
+`committed.rs:254` (which pins `readonly player: { readonly health: ...`). Extend
+the `## components.weapon` section of `docs/scripting-reference.md` (line 145) with
+the resource block (incl. `reloadMs` and the reload-speed-as-stat note). Add the
+Rust tests: descriptor parse/validate in both runtimes (incl. `reloadMs` bounds
+and the two-layer serde/`validate()` rejection), SDK type generation, magazine +
+reload-timer seed and hot-reload preservation, reserve seed, fire consumption,
+empty-magazine block (`dry_fire` + the internal `ActivationOutcome::Empty`),
+fire-blocked-while-reloading, timed atomic reload transfer at completion, the
+full/empty reload block outcomes, unlimited-fire back-compat, ammo +
+reload-progress HUD publish, reload-meter idle write, dev-driver removal (grep
+gate), and the per-owner projection for ammo and reload.
 
 ### Task 7: Per-owner ammo + reload projection (co-op)
 
@@ -479,9 +524,12 @@ the two existing projections:
   magazine or timer. Note `player.reloadActive` is a **Boolean**: the projection
   must yield a Boolean slot value, not only the numeric shape the cooldown/health
   projections use.
-- **`player.ammoReserve`** is pawn-local (`AmmoReserve`). Mirror
-  **`descriptor_health_for_pawn`** (`state_slots.rs:471`), which reads a
-  pawn-resident component per owner.
+- **`player.ammoReserve`** reads the pawn-local `AmmoReserve`, but is keyed by the
+  active weapon's ammo type — so it is a hybrid, not a pure mirror: resolve the
+  pawn's weapon via `WeaponOwners` (as `descriptor_weapon_cooldown_for_pawn` does)
+  to read the effective ammo type, *then* read that pawn-resident
+  `AmmoReserve.available(type)` (the pawn-local read `descriptor_health_for_pawn`,
+  `state_slots.rs:471`, models).
 
 This is ammo's/reload's own projection over state already seeded by Task 3 and
 timed by Task 5. It is not client-side prediction of reload (out of scope) — it

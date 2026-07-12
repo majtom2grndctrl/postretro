@@ -545,6 +545,10 @@ pub(super) struct FullRenderer {
     /// Per-frame kinematic mover instances collected by the game layer from
     /// stage-0-snapshotted registry transforms.
     pub(super) kinematic_mover_draws: Vec<kinematic_brush::KinematicMoverInstance>,
+    /// Conservative world AABBs for active movers, keyed by authored mover id.
+    /// Static-light promotion reads this renderer-owned state now; the rigid
+    /// occluder recorder will read the same field in a later shadow pass.
+    pub(super) mover_occluder_aabbs: Vec<rigid_occluder_depth::MoverOccluderAabb>,
     pub(super) ambient_floor: f32,
     pub(super) indirect_scale: f32,
     /// DYNAMIC baked-static-direct SH scale (0..1). Debug instrument for the

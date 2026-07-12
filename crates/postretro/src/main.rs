@@ -2604,6 +2604,8 @@ impl ApplicationHandler for App {
                             frame_result.alpha,
                         );
                         renderer.set_kinematic_mover_draws(self.kinematic_mover_render.instances());
+                        renderer
+                            .set_mover_occluder_aabbs(self.kinematic_mover_render.occluder_aabbs());
                     }
 
                     #[cfg(feature = "dev-tools")]

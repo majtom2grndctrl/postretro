@@ -99,6 +99,19 @@ fn count_submitted_candidates(
         .count() as u32
 }
 
+/// Adds actual entity-depth draws to the pool total and, for a promoted slot,
+/// to its promoted subset.
+fn tally_entity_occluder_submissions(
+    pool_total: &mut u32,
+    promoted_total: Option<&mut u32>,
+    submitted: u32,
+) {
+    *pool_total += submitted;
+    if let Some(promoted_total) = promoted_total {
+        *promoted_total += submitted;
+    }
+}
+
 impl Renderer {
     /// Refresh dev-tools camera-cull diagnostics from the current frame's CPU
     /// visibility inputs before the debug UI reads them. The tree-walk baseline
@@ -333,16 +346,24 @@ impl Renderer {
                                 slot * stride,
                                 &cone_planes,
                             );
-                            full.spot_entity_occluders_submitted += submitted;
-                            full.promoted_entity_occluders_submitted += submitted;
+                            tally_entity_occluder_submissions(
+                                &mut full.spot_entity_occluders_submitted,
+                                Some(&mut full.promoted_entity_occluders_submitted),
+                                submitted,
+                            );
                         }
-                        full.rigid_occluder_depth.record_kinematic_movers(
+                        let submitted = full.rigid_occluder_depth.record_kinematic_movers(
                             &mut pass,
                             &full.kinematic_brush,
                             &full.mover_occluder_aabbs,
                             &full.shadow_vs_bind_group,
                             slot * stride,
                             &cone_planes,
+                        );
+                        tally_entity_occluder_submissions(
+                            &mut full.spot_entity_occluders_submitted,
+                            Some(&mut full.promoted_entity_occluders_submitted),
+                            submitted,
                         );
                     }
                 }
@@ -397,23 +418,32 @@ impl Renderer {
                     let cone_planes =
                         postretro_render_data::cone_frustum::cone_frustum_planes(&cone_matrix);
                     if let Some(plan) = &mesh_frame_plan {
-                        full.spot_entity_occluders_submitted +=
-                            full.mesh_pass.record_skinned_depth(
-                                &mut pass,
-                                plan,
-                                MeshDepthInstanceFilter::ForwardVisibleOnly,
-                                &full.shadow_vs_bind_group,
-                                slot * stride,
-                                &cone_planes,
-                            );
+                        let submitted = full.mesh_pass.record_skinned_depth(
+                            &mut pass,
+                            plan,
+                            MeshDepthInstanceFilter::ForwardVisibleOnly,
+                            &full.shadow_vs_bind_group,
+                            slot * stride,
+                            &cone_planes,
+                        );
+                        tally_entity_occluder_submissions(
+                            &mut full.spot_entity_occluders_submitted,
+                            None,
+                            submitted,
+                        );
                     }
-                    full.rigid_occluder_depth.record_kinematic_movers(
+                    let submitted = full.rigid_occluder_depth.record_kinematic_movers(
                         &mut pass,
                         &full.kinematic_brush,
                         &full.mover_occluder_aabbs,
                         &full.shadow_vs_bind_group,
                         slot * stride,
                         &cone_planes,
+                    );
+                    tally_entity_occluder_submissions(
+                        &mut full.spot_entity_occluders_submitted,
+                        None,
+                        submitted,
                     );
                 }
             }
@@ -577,16 +607,24 @@ impl Renderer {
                                 layer as u32 * stride,
                                 &face_planes,
                             );
-                            full.cube_entity_occluders_submitted += submitted;
-                            full.promoted_entity_occluders_submitted += submitted;
+                            tally_entity_occluder_submissions(
+                                &mut full.cube_entity_occluders_submitted,
+                                Some(&mut full.promoted_entity_occluders_submitted),
+                                submitted,
+                            );
                         }
-                        full.rigid_occluder_depth.record_kinematic_movers(
+                        let submitted = full.rigid_occluder_depth.record_kinematic_movers(
                             &mut pass,
                             &full.kinematic_brush,
                             &full.mover_occluder_aabbs,
                             &full.cube_shadow_vs_bind_group,
                             layer as u32 * stride,
                             &face_planes,
+                        );
+                        tally_entity_occluder_submissions(
+                            &mut full.cube_entity_occluders_submitted,
+                            Some(&mut full.promoted_entity_occluders_submitted),
+                            submitted,
                         );
                     }
                     continue;
@@ -644,23 +682,32 @@ impl Renderer {
                     let face_planes =
                         postretro_render_data::cone_frustum::cone_frustum_planes(&face_matrix);
                     if let Some(plan) = &mesh_frame_plan {
-                        full.cube_entity_occluders_submitted +=
-                            full.mesh_pass.record_skinned_depth(
-                                &mut pass,
-                                plan,
-                                MeshDepthInstanceFilter::ForwardVisibleOnly,
-                                &full.cube_shadow_vs_bind_group,
-                                layer as u32 * stride,
-                                &face_planes,
-                            );
+                        let submitted = full.mesh_pass.record_skinned_depth(
+                            &mut pass,
+                            plan,
+                            MeshDepthInstanceFilter::ForwardVisibleOnly,
+                            &full.cube_shadow_vs_bind_group,
+                            layer as u32 * stride,
+                            &face_planes,
+                        );
+                        tally_entity_occluder_submissions(
+                            &mut full.cube_entity_occluders_submitted,
+                            None,
+                            submitted,
+                        );
                     }
-                    full.rigid_occluder_depth.record_kinematic_movers(
+                    let submitted = full.rigid_occluder_depth.record_kinematic_movers(
                         &mut pass,
                         &full.kinematic_brush,
                         &full.mover_occluder_aabbs,
                         &full.cube_shadow_vs_bind_group,
                         layer as u32 * stride,
                         &face_planes,
+                    );
+                    tally_entity_occluder_submissions(
+                        &mut full.cube_entity_occluders_submitted,
+                        None,
+                        submitted,
                     );
                 }
             }
@@ -1112,6 +1159,28 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn entity_occluder_tally_counts_movers_in_dynamic_and_promoted_paths() {
+        let mut spot = 0;
+        let mut cube = 0;
+        let mut promoted = 0;
+
+        // Skinned submissions arrive first; mover recorder returns must join
+        // the same pool total and only promoted slots join the subset.
+        tally_entity_occluder_submissions(&mut spot, None, 2);
+        tally_entity_occluder_submissions(&mut spot, None, 3);
+        tally_entity_occluder_submissions(&mut spot, Some(&mut promoted), 5);
+        tally_entity_occluder_submissions(&mut spot, Some(&mut promoted), 7);
+        tally_entity_occluder_submissions(&mut cube, None, 11);
+        tally_entity_occluder_submissions(&mut cube, None, 13);
+        tally_entity_occluder_submissions(&mut cube, Some(&mut promoted), 17);
+        tally_entity_occluder_submissions(&mut cube, Some(&mut promoted), 19);
+
+        assert_eq!(spot, 17);
+        assert_eq!(cube, 60);
+        assert_eq!(promoted, 48);
+    }
 
     fn leaf(cell_id: u32) -> postretro_render_data::geometry::BvhLeaf {
         postretro_render_data::geometry::BvhLeaf {

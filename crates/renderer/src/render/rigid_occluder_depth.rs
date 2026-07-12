@@ -93,7 +93,8 @@ impl RigidOccluderDepthPass {
 
     /// Record active kinematic movers into an already-open live shadow pass.
     /// The caller owns clearing/caching policy; this method only loads shared
-    /// mover buffers and appends surviving depth draws.
+    /// mover buffers and appends surviving depth draws. Returns those draws so
+    /// shadow diagnostics count movers with skinned entity occluders.
     pub(crate) fn record_kinematic_movers(
         &self,
         pass: &mut wgpu::RenderPass<'_>,

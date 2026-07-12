@@ -363,6 +363,7 @@ impl Renderer {
                 let full = full
                     .as_mut()
                     .expect("renderer full-init must complete before full-ready paths run");
+                // Total records bound the loop; the dynamic-tier count marks the promoted specular tail.
                 full.kinematic_brush.write_light_params(
                     queue,
                     full.total_light_count,

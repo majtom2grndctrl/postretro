@@ -5,12 +5,14 @@
 use super::renderer_types::PromotedStaticLightState;
 use super::*;
 
-/// Discard the paired per-frame mover inputs when level geometry changes.
+/// Discard the cull-split per-frame mover inputs when level geometry changes.
 fn clear_kinematic_mover_frame_state(
     draws: &mut Vec<kinematic_brush::KinematicMoverInstance>,
+    shadow_draws: &mut Vec<kinematic_brush::KinematicMoverInstance>,
     occluder_aabbs: &mut Vec<rigid_occluder_depth::MoverOccluderAabb>,
 ) {
     draws.clear();
+    shadow_draws.clear();
     occluder_aabbs.clear();
 }
 
@@ -90,6 +92,7 @@ impl Renderer {
         let full = self.full_mut();
         clear_kinematic_mover_frame_state(
             &mut full.kinematic_mover_draws,
+            &mut full.kinematic_mover_shadow_draws,
             &mut full.mover_occluder_aabbs,
         );
         self.full_mut().bone_palette_scratch.clear();
@@ -548,6 +551,7 @@ impl Renderer {
         );
         clear_kinematic_mover_frame_state(
             &mut full.kinematic_mover_draws,
+            &mut full.kinematic_mover_shadow_draws,
             &mut full.mover_occluder_aabbs,
         );
 
@@ -568,8 +572,12 @@ mod tests {
     use postretro_render_data::cone_frustum::Aabb;
 
     #[test]
-    fn kinematic_mover_frame_state_reset_clears_draws_and_occluder_aabbs() {
+    fn kinematic_mover_frame_state_reset_clears_draws_shadow_casters_and_occluders() {
         let mut draws = vec![kinematic_brush::KinematicMoverInstance {
+            mover_id: 7,
+            transform: Mat4::IDENTITY,
+        }];
+        let mut shadow_draws = vec![kinematic_brush::KinematicMoverInstance {
             mover_id: 7,
             transform: Mat4::IDENTITY,
         }];
@@ -581,9 +589,10 @@ mod tests {
             },
         }];
 
-        clear_kinematic_mover_frame_state(&mut draws, &mut occluder_aabbs);
+        clear_kinematic_mover_frame_state(&mut draws, &mut shadow_draws, &mut occluder_aabbs);
 
         assert!(draws.is_empty());
+        assert!(shadow_draws.is_empty());
         assert!(occluder_aabbs.is_empty());
     }
 }

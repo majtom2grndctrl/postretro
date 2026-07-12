@@ -57,9 +57,12 @@ pub(crate) fn build_loaded_mover_colliders(world: &LevelWorld) -> Vec<MoverColli
 }
 
 pub(crate) struct KinematicMoverRenderCollector {
+    /// Camera-PVS-visible instances for the beauty pass.
     instances: Vec<KinematicMoverInstance>,
+    /// Renderable movers sent to shadow-depth recording.
+    shadow_instances: Vec<KinematicMoverInstance>,
     occluder_aabbs: Vec<MoverOccluderAabb>,
-    mover_bounds: HashMap<u32, (Vec3, Vec3)>,
+    mover_bounds: HashMap<u32, postretro_render_data::cone_frustum::Aabb>,
     mover_bounds_source: Option<MoverBoundsSource>,
     visible_cell_bounds: Vec<(u32, Vec3, Vec3)>,
 }
@@ -68,6 +71,7 @@ impl KinematicMoverRenderCollector {
     pub(crate) fn new() -> Self {
         Self {
             instances: Vec::new(),
+            shadow_instances: Vec::new(),
             occluder_aabbs: Vec::new(),
             mover_bounds: HashMap::new(),
             mover_bounds_source: None,
@@ -77,6 +81,7 @@ impl KinematicMoverRenderCollector {
 
     pub(crate) fn clear(&mut self) {
         self.instances.clear();
+        self.shadow_instances.clear();
         self.occluder_aabbs.clear();
         self.mover_bounds.clear();
         self.mover_bounds_source = None;
@@ -91,6 +96,7 @@ impl KinematicMoverRenderCollector {
         alpha: f32,
     ) {
         self.instances.clear();
+        self.shadow_instances.clear();
         self.occluder_aabbs.clear();
         self.refresh_mover_bounds(world);
         self.rebuild_visible_cell_bounds(world, visible);
@@ -107,36 +113,34 @@ impl KinematicMoverRenderCollector {
             };
 
             let current_model = transform_matrix(*current);
-            let (world_min, world_max) =
-                transform_aabb(local_bounds.0, local_bounds.1, current_model);
-            let origin_cell = world.locate_cell(current.position) as u32;
-            if !mover_visible_against_cell_bounds(
-                visible,
-                origin_cell,
-                world_min,
-                world_max,
-                &self.visible_cell_bounds,
-            ) {
-                continue;
-            }
-
+            let current_world_aabb = local_bounds.transformed(&current_model);
             let interpolated = registry
                 .interpolated_transform(id, alpha)
                 .unwrap_or(*current);
             let transform = transform_matrix(interpolated);
-            let world_aabb = postretro_render_data::cone_frustum::Aabb {
-                min: local_bounds.0,
-                max: local_bounds.1,
-            }
-            .transformed(&transform);
-            self.instances.push(KinematicMoverInstance {
+            let world_aabb = local_bounds.transformed(&transform);
+            let instance = KinematicMoverInstance {
                 mover_id: mover.mover_id,
                 transform,
-            });
+            };
+            // Shadow cones intentionally ignore camera PVS. A mover outside the
+            // camera-visible cells can still shadow a visible receiver.
+            self.shadow_instances.push(instance);
             self.occluder_aabbs.push(MoverOccluderAabb {
                 mover_id: mover.mover_id,
                 world_aabb,
             });
+
+            let origin_cell = world.locate_cell(current.position) as u32;
+            if mover_visible_against_cell_bounds(
+                visible,
+                origin_cell,
+                current_world_aabb.min,
+                current_world_aabb.max,
+                &self.visible_cell_bounds,
+            ) {
+                self.instances.push(instance);
+            }
         }
     }
 
@@ -144,7 +148,12 @@ impl KinematicMoverRenderCollector {
         &self.instances
     }
 
-    /// Active movers' interpolated world bounds, aligned with [`Self::instances`].
+    /// Interpolated transforms for renderable movers sent to shadow-depth recording.
+    pub(crate) fn shadow_instances(&self) -> &[KinematicMoverInstance] {
+        &self.shadow_instances
+    }
+
+    /// World bounds for renderable movers used by promotion and depth culling.
     pub(crate) fn occluder_aabbs(&self) -> &[MoverOccluderAabb] {
         &self.occluder_aabbs
     }
@@ -159,8 +168,9 @@ impl KinematicMoverRenderCollector {
         self.mover_bounds
             .reserve(world.kinematic_geometry.movers.len());
         for mover in &world.kinematic_geometry.movers {
-            let bounds = mover_local_bounds(mover).unwrap_or((Vec3::ZERO, Vec3::ZERO));
-            self.mover_bounds.insert(mover.mover_id, bounds);
+            if let Some(bounds) = mover_local_bounds(mover) {
+                self.mover_bounds.insert(mover.mover_id, bounds);
+            }
         }
         self.mover_bounds_source = Some(source);
     }
@@ -250,7 +260,12 @@ fn build_mover_collider(mover: &LoadedKinematicMover) -> Option<MoverCollider> {
     MoverCollider::from_local_triangles(mover.mover_id, &vertices, &triangles)
 }
 
-fn mover_local_bounds(mover: &LoadedKinematicMover) -> Option<(Vec3, Vec3)> {
+fn mover_local_bounds(
+    mover: &LoadedKinematicMover,
+) -> Option<postretro_render_data::cone_frustum::Aabb> {
+    if mover.indices.is_empty() {
+        return None;
+    }
     let first = mover.vertices.first()?;
     let mut min = Vec3::from(first.position);
     let mut max = min;
@@ -259,7 +274,10 @@ fn mover_local_bounds(mover: &LoadedKinematicMover) -> Option<(Vec3, Vec3)> {
         min = min.min(pos);
         max = max.max(pos);
     }
-    Some((min, max))
+    if !min.is_finite() || !max.is_finite() || min.x > max.x || min.y > max.y || min.z > max.z {
+        return None;
+    }
+    Some(postretro_render_data::cone_frustum::Aabb { min, max })
 }
 
 fn transform_matrix(transform: Transform) -> glam::Mat4 {
@@ -268,27 +286,6 @@ fn transform_matrix(transform: Transform) -> glam::Mat4 {
         transform.rotation,
         transform.position,
     )
-}
-
-fn transform_aabb(min: Vec3, max: Vec3, transform: glam::Mat4) -> (Vec3, Vec3) {
-    let corners = [
-        Vec3::new(min.x, min.y, min.z),
-        Vec3::new(max.x, min.y, min.z),
-        Vec3::new(min.x, max.y, min.z),
-        Vec3::new(max.x, max.y, min.z),
-        Vec3::new(min.x, min.y, max.z),
-        Vec3::new(max.x, min.y, max.z),
-        Vec3::new(min.x, max.y, max.z),
-        Vec3::new(max.x, max.y, max.z),
-    ];
-    let mut world_min = Vec3::splat(f32::INFINITY);
-    let mut world_max = Vec3::splat(f32::NEG_INFINITY);
-    for corner in corners {
-        let point = transform.transform_point3(corner);
-        world_min = world_min.min(point);
-        world_max = world_max.max(point);
-    }
-    (world_min, world_max)
 }
 
 fn mover_visible_against_cell_bounds(
@@ -481,6 +478,43 @@ mod tests {
         world
     }
 
+    fn two_cell_world(kinematic_geometry: KinematicGeometry) -> LevelWorld {
+        let mut world = LevelWorld::new_visibility_only(
+            vec![
+                CellData {
+                    bounds_min: Vec3::splat(-10.0),
+                    bounds_max: Vec3::splat(5.0),
+                    face_start: 0,
+                    face_count: 0,
+                    portal_ref_start: 0,
+                    portal_ref_count: 0,
+                    is_solid: false,
+                    is_exterior: false,
+                    is_drawable: false,
+                },
+                CellData {
+                    bounds_min: Vec3::splat(10.0),
+                    bounds_max: Vec3::splat(20.0),
+                    face_start: 0,
+                    face_count: 0,
+                    portal_ref_start: 0,
+                    portal_ref_count: 0,
+                    is_solid: false,
+                    is_exterior: false,
+                    is_drawable: false,
+                },
+            ],
+            Vec::new(),
+            CellLocatorChild::Cell(0),
+            Vec::new(),
+            Vec::new(),
+            false,
+        )
+        .expect("two-cell mover fixture must be visibility-valid");
+        world.kinematic_geometry = kinematic_geometry;
+        world
+    }
+
     #[test]
     fn spawn_loaded_movers_creates_transform_component_tags_and_resolved_waypoints() {
         let mut registry = EntityRegistry::new();
@@ -550,6 +584,10 @@ mod tests {
             mover_id: 7,
             transform: glam::Mat4::IDENTITY,
         });
+        collector.shadow_instances.push(KinematicMoverInstance {
+            mover_id: 7,
+            transform: glam::Mat4::IDENTITY,
+        });
         collector.occluder_aabbs.push(MoverOccluderAabb {
             mover_id: 7,
             world_aabb: postretro_render_data::cone_frustum::Aabb {
@@ -557,7 +595,13 @@ mod tests {
                 max: Vec3::ONE,
             },
         });
-        collector.mover_bounds.insert(7, (Vec3::ZERO, Vec3::ONE));
+        collector.mover_bounds.insert(
+            7,
+            postretro_render_data::cone_frustum::Aabb {
+                min: Vec3::ZERO,
+                max: Vec3::ONE,
+            },
+        );
         collector.mover_bounds_source = Some(MoverBoundsSource { ptr: 1, len: 1 });
         collector
             .visible_cell_bounds
@@ -566,6 +610,7 @@ mod tests {
         collector.clear();
 
         assert!(collector.instances.is_empty());
+        assert!(collector.shadow_instances.is_empty());
         assert!(collector.occluder_aabbs.is_empty());
         assert!(collector.mover_bounds.is_empty());
         assert_eq!(collector.mover_bounds_source, None);
@@ -594,6 +639,7 @@ mod tests {
         collector.collect(&registry, &world, &VisibleCells::DrawAll, 0.5);
 
         assert_eq!(collector.instances().len(), 1);
+        assert_eq!(collector.shadow_instances().len(), 1);
         assert_eq!(collector.occluder_aabbs().len(), 1);
         let aabb = collector.occluder_aabbs()[0];
         assert_eq!(aabb.mover_id, 7);
@@ -612,6 +658,65 @@ mod tests {
                 <= EPSILON,
             "interpolated mover AABB max must match the interpolated transform",
         );
+    }
+
+    #[test]
+    fn render_collector_retains_offscreen_caster_while_culling_beauty_draw() {
+        // Regression: camera-PVS culling used to drop this mover from the
+        // shadow path, even when its light cone could reach a visible receiver.
+        let mut registry = EntityRegistry::new();
+        let geometry = geometry(0);
+        spawn_from_geometry(&mut registry, &geometry).unwrap();
+        let world = two_cell_world(geometry);
+
+        let mut collector = KinematicMoverRenderCollector::new();
+        collector.collect(&registry, &world, &VisibleCells::Culled(vec![1]), 0.0);
+
+        assert!(collector.instances().is_empty());
+        assert_eq!(collector.shadow_instances().len(), 1);
+        assert_eq!(collector.occluder_aabbs().len(), 1);
+        assert_eq!(collector.shadow_instances()[0].mover_id, 7);
+        assert_eq!(collector.occluder_aabbs()[0].mover_id, 7);
+    }
+
+    #[test]
+    fn render_collector_replaces_shadow_casters_when_movers_are_absent() {
+        let mut registry = EntityRegistry::new();
+        let valid_geometry = geometry(0);
+        spawn_from_geometry(&mut registry, &valid_geometry).unwrap();
+        let world = single_cell_world(valid_geometry);
+        let mut collector = KinematicMoverRenderCollector::new();
+
+        collector.collect(&registry, &world, &VisibleCells::DrawAll, 0.0);
+        collector.collect(&EntityRegistry::new(), &world, &VisibleCells::DrawAll, 0.0);
+
+        assert!(collector.instances().is_empty());
+        assert!(collector.shadow_instances().is_empty());
+        assert!(collector.occluder_aabbs().is_empty());
+    }
+
+    #[test]
+    fn render_collector_excludes_geometry_less_movers_from_shadow_and_promotion_sets() {
+        // Regression: an empty mover fell back to a zero AABB and could consume
+        // a promoted static-light slot despite having no installed geometry.
+        let mut registry = EntityRegistry::new();
+        let valid_geometry = geometry(0);
+        spawn_from_geometry(&mut registry, &valid_geometry).unwrap();
+        let world = single_cell_world(valid_geometry);
+        let mut collector = KinematicMoverRenderCollector::new();
+
+        collector.collect(&registry, &world, &VisibleCells::DrawAll, 0.0);
+        assert_eq!(collector.shadow_instances().len(), 1);
+        assert_eq!(collector.occluder_aabbs().len(), 1);
+
+        let mut geometry_without_draws = geometry(0);
+        geometry_without_draws.movers[0].vertices.clear();
+        let world_without_draws = single_cell_world(geometry_without_draws);
+        collector.collect(&registry, &world_without_draws, &VisibleCells::DrawAll, 0.0);
+
+        assert!(collector.instances().is_empty());
+        assert!(collector.shadow_instances().is_empty());
+        assert!(collector.occluder_aabbs().is_empty());
     }
 
     #[test]
@@ -651,13 +756,29 @@ mod tests {
     }
 
     #[test]
-    fn transformed_aabb_contains_rotated_corners() {
-        let transform = glam::Mat4::from_rotation_y(std::f32::consts::FRAC_PI_2);
-        let (min, max) = transform_aabb(Vec3::ZERO, Vec3::new(2.0, 1.0, 1.0), transform);
-        assert!(min.x <= 1.0e-5);
-        assert!(min.z <= -2.0 + 1.0e-5);
-        assert!(max.x >= 1.0 - 1.0e-5);
-        assert!(max.z >= -1.0e-5);
+    fn render_collector_transforms_rotated_mover_bounds() {
+        let mut registry = EntityRegistry::new();
+        let geometry = geometry(0);
+        let mover_id = spawn_from_geometry(&mut registry, &geometry).unwrap()[0];
+        registry
+            .set_component(
+                mover_id,
+                Transform {
+                    position: Vec3::ZERO,
+                    rotation: Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+                    scale: Vec3::ONE,
+                },
+            )
+            .unwrap();
+
+        let world = single_cell_world(geometry);
+        let mut collector = KinematicMoverRenderCollector::new();
+        collector.collect(&registry, &world, &VisibleCells::DrawAll, 1.0);
+
+        let aabb = collector.occluder_aabbs()[0].world_aabb;
+        const EPSILON: f32 = 1.0e-5;
+        assert!((aabb.min - Vec3::new(0.0, 0.0, -1.0)).abs().max_element() <= EPSILON);
+        assert!((aabb.max - Vec3::new(0.0, 1.0, 0.0)).abs().max_element() <= EPSILON);
     }
 
     #[test]

@@ -107,16 +107,16 @@ impl Renderer {
 }
 
 impl Renderer {
-    /// Count of skinned entity occluder instances submitted into spot shadow
+    /// Count of skinned and rigid entity occluders submitted into spot shadow
     /// slots last frame (summed across slots). The CPU-side verification for the
-    /// out-of-cone acceptance criterion — an instance the per-light cone cull
+    /// out-of-cone acceptance criterion — an occluder the per-light cone cull
     /// rejects is never tallied here. No GPU readback.
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     pub fn spot_entity_occluders_submitted(&self) -> u32 {
         self.full().spot_entity_occluders_submitted
     }
 
-    /// Count of skinned entity occluder instances submitted into CUBE point-light
+    /// Count of skinned and rigid entity occluders submitted into CUBE point-light
     /// shadow faces last frame (summed across occupied slots × 6 faces). The
     /// CPU-side verification that entity occluders render only for eligible point
     /// lights and only inside a face frustum. No GPU readback.

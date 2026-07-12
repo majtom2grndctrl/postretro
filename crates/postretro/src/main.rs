@@ -2603,7 +2603,10 @@ impl ApplicationHandler for App {
                             &visible_cells,
                             frame_result.alpha,
                         );
-                        renderer.set_kinematic_mover_draws(self.kinematic_mover_render.instances());
+                        renderer.set_kinematic_mover_draws(
+                            self.kinematic_mover_render.instances(),
+                            self.kinematic_mover_render.shadow_instances(),
+                        );
                         renderer
                             .set_mover_occluder_aabbs(self.kinematic_mover_render.occluder_aabbs());
                     }

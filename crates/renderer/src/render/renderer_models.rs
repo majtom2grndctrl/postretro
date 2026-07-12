@@ -235,13 +235,13 @@ impl Renderer {
         self.full_mut().mesh_draws.extend_from_slice(instances);
     }
 
-    /// Upload this frame's kinematic brush mover instances. The game layer has
-    /// already performed conservative visibility collection from registry
-    /// transforms; this method only transfers plain CPU matrices into the
-    /// renderer-owned instance buffer.
+    /// Upload this frame's cull-split kinematic mover instances. The visible
+    /// subset feeds beauty draws; every present mover stays in the transform
+    /// buffer so shadow depth can cone-cull independently of camera PVS.
     pub fn set_kinematic_mover_draws(
         &mut self,
-        instances: &[kinematic_brush::KinematicMoverInstance],
+        visible_instances: &[kinematic_brush::KinematicMoverInstance],
+        shadow_instances: &[kinematic_brush::KinematicMoverInstance],
     ) {
         let Self {
             device,
@@ -253,14 +253,22 @@ impl Renderer {
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
         full.kinematic_mover_draws.clear();
-        full.kinematic_mover_draws.extend_from_slice(instances);
-        full.kinematic_brush
-            .upload_instances(device, queue, &full.kinematic_mover_draws);
+        full.kinematic_mover_draws
+            .extend_from_slice(visible_instances);
+        full.kinematic_mover_shadow_draws.clear();
+        full.kinematic_mover_shadow_draws
+            .extend_from_slice(shadow_instances);
+        full.kinematic_brush.upload_instances(
+            device,
+            queue,
+            &full.kinematic_mover_draws,
+            &full.kinematic_mover_shadow_draws,
+        );
     }
 
-    /// Replace this frame's active kinematic mover bounds. This renderer-owned
-    /// CPU state gates static-light promotion and feeds the rigid occluder
-    /// recorder directly in the shadow pass.
+    /// Replace this frame's all-present kinematic mover bounds. This
+    /// renderer-owned CPU state gates static-light promotion and feeds the
+    /// rigid occluder recorder directly in the shadow pass.
     ///
     /// The render collector must call this before `render_frame_indirect`; an
     /// empty slice clears stale movers so static-only maps retain their existing

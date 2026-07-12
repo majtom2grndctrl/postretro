@@ -4,6 +4,7 @@
 struct CameraUniforms {
     view_proj: mat4x4<f32>,
     camera_position: vec3<f32>,
+    // Layout-only: remains to mirror the shared camera uniform buffer.
     ambient_floor: f32,
 };
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;

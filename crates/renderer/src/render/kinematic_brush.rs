@@ -75,8 +75,11 @@ pub(crate) struct KinematicBrushPass {
     cube_array_supported: bool,
     movers: Vec<UploadedMoverDraw>,
     mover_lookup: HashMap<u32, usize>,
+    /// Every present mover transform, including camera-PVS-culled shadow casters.
     active_draws: Vec<ActiveMoverDraw>,
     active_draw_lookup: HashMap<usize, ActiveMoverDraw>,
+    /// Camera-visible subset of `active_draws` for the beauty pass.
+    beauty_draws: Vec<ActiveMoverDraw>,
     mover_index_ranges: Vec<MoverIndexRange>,
     instance_bytes: Vec<u8>,
 }
@@ -436,6 +439,7 @@ impl KinematicBrushPass {
             mover_lookup: HashMap::new(),
             active_draws: Vec::new(),
             active_draw_lookup: HashMap::new(),
+            beauty_draws: Vec::new(),
             mover_index_ranges: Vec::new(),
             instance_bytes: Vec::new(),
         }
@@ -451,6 +455,7 @@ impl KinematicBrushPass {
         self.mover_lookup.clear();
         self.active_draws.clear();
         self.active_draw_lookup.clear();
+        self.beauty_draws.clear();
         self.mover_index_ranges.clear();
 
         let Some(geometry) = geometry else {
@@ -460,6 +465,7 @@ impl KinematicBrushPass {
         // This map is rebuilt every render collection; reserve at level install
         // so shadow recording does not trigger a per-frame reallocation.
         self.active_draw_lookup.reserve(geometry.movers.len());
+        self.beauty_draws.reserve(geometry.movers.len());
 
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
@@ -554,8 +560,9 @@ impl KinematicBrushPass {
         &self.instance_bind_group
     }
 
-    /// Dense active mover instances, keyed by `mover_draw_index` rather than
-    /// the game-side mover id.
+    /// Dense all-present mover instances, keyed by `mover_draw_index` rather
+    /// than the game-side mover id. Shadow depth reads this list; beauty draws
+    /// use the camera-visible subset held separately.
     pub(crate) fn active_draws(&self) -> &[ActiveMoverDraw] {
         &self.active_draws
     }
@@ -649,13 +656,15 @@ impl KinematicBrushPass {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        instances: &[KinematicMoverInstance],
+        beauty_instances: &[KinematicMoverInstance],
+        shadow_instances: &[KinematicMoverInstance],
     ) {
         self.active_draws.clear();
         self.active_draw_lookup.clear();
+        self.beauty_draws.clear();
         self.instance_bytes.clear();
 
-        for instance in instances {
+        for instance in shadow_instances {
             let Some(&mover_draw_index) = self.mover_lookup.get(&instance.mover_id) else {
                 continue;
             };
@@ -673,6 +682,16 @@ impl KinematicBrushPass {
             self.active_draw_lookup
                 .entry(mover_draw_index)
                 .or_insert(active_draw);
+        }
+
+        for instance in beauty_instances {
+            let Some(&mover_draw_index) = self.mover_lookup.get(&instance.mover_id) else {
+                continue;
+            };
+            let Some(active_draw) = self.active_draw_lookup.get(&mover_draw_index) else {
+                continue;
+            };
+            self.beauty_draws.push(*active_draw);
         }
 
         if self.instance_bytes.is_empty() {
@@ -723,7 +742,7 @@ impl KinematicBrushPass {
     }
 
     pub fn has_draws(&self) -> bool {
-        self.index_count > 0 && !self.active_draws.is_empty()
+        self.index_count > 0 && !self.beauty_draws.is_empty()
     }
 
     pub fn record_draws(&self, pass: &mut wgpu::RenderPass<'_>, materials: &[GpuTexture]) {
@@ -740,7 +759,7 @@ impl KinematicBrushPass {
         pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 
-        for active in &self.active_draws {
+        for active in &self.beauty_draws {
             let mover = &self.movers[active.mover_draw_index];
             let instance_range = active.instance_index..active.instance_index + 1;
             for range in &mover.material_ranges {

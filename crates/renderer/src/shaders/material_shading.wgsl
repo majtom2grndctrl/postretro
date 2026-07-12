@@ -1,5 +1,5 @@
 // Shared world-material WGSL helpers for specular and normal-map shading.
-// See: context/lib/rendering_pipeline.md
+// See: context/lib/rendering_pipeline.md §8
 
 // No `(1-ks)` attenuation, no Fresnel — retro aesthetic wants punchy additive
 // highlights, not energy conservation.

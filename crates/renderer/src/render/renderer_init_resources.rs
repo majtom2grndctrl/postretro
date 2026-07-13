@@ -119,7 +119,7 @@ pub(crate) fn request_renderer_device(
     // context/plans/drafts/perf-animated-sh-light-culling/index.md
     // tracks the fix: sparse per-light delta storage that keeps the total
     // binding under the 128 MiB spec floor regardless of light count.
-    const REQUIRED_STORAGE_BUFFER_BINDING_SIZE: u64 = 512 * 1024 * 1024;
+    const REQUIRED_STORAGE_BUFFER_BINDING_SIZE: u64 = 2 * 1024 * 1024 * 1024 - 4;
     // Lightmap atlases bake up to 8192² (see
     // `crates/level-compiler/src/lightmap_bake.rs::MAX_ATLAS_DIMENSION`).
     // The bake is a CLI with no GPU device, so its cap is a fixed constant —

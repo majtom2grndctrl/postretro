@@ -6618,6 +6618,7 @@ version = "0.1.0"
 dependencies = [
  "postretro-level-compiler",
  "postretro-level-format",
+ "serde_json",
 ]
 
 [[package]]

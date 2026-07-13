@@ -6,12 +6,14 @@
 pub(crate) mod brush_bsp;
 mod bsp;
 mod face_extract;
+mod manifold;
 pub(crate) mod region_polytope;
 mod types;
 
 pub use brush_bsp::build_bsp_from_brushes;
 pub use bsp::find_leaf_for_point;
 pub use face_extract::{CoplanarConflict, FaceExtractionResult, extract_faces};
+pub use manifold::{OpenEdge, WatertightReport, check_watertight};
 pub use types::*;
 
 use crate::map_data::{BrushVolume, Face};

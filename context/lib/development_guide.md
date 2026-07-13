@@ -30,6 +30,20 @@
 | `postretro-net` | library | Netcode transport and wire codec for co-op multiplayer. glam-free and postretro-free — dependency arrow only points engine → net. |
 | `xtask` | binary | Development workflow task runner (build, run, lint commands). |
 
+### Layering invariants
+
+Crates form a one-way dependency graph: `foundation` and `entities` at the base, CPU library crates in the middle, the terminal `renderer` crate holding all `wgpu`, the `postretro` binary on top. No crate depends upward — an edge pointing back toward the binary is the mistake this section prevents.
+
+**`entities` is a compile chokepoint.** Renderer, render-cpu, UI, lighting, and scripting-core all depend on it. Changing a public type or field there recompiles the whole downstream stack. Keep `entities` to the registry mechanism plus stable component *storage* — the POD structs the registry's closed component vocabulary holds.
+
+**Domain logic stays out of `entities`.** Stat resolution, balance rules, resource math, per-kind behavior — none belongs at the chokepoint, where its churn needlessly recompiles the render and UI stack. Pure substrate lives in a leaf crate; `entities` re-exports it as a component column. Movement is the precedent: `foundation` owns the movement substrate, `entities` re-exports it as the player-movement component. This is the data side of the engine-data floor (`scripting.md §12`).
+
+**Collision lives in the binary.** So do the fixed-tick gameplay systems — movement, kinematic movers, triggers, AI, combat resolution — because they call into the binary's collision module, which no crate below the binary exposes. A gameplay system cannot become a leaf crate while it reaches up into collision.
+
+**Target shape.** Two boundaries sit above `entities`. The combat model — stat resolution, resources, augments, damage taxonomy — is domain logic that belongs in its own crate, not the registry. The fixed-tick simulation belongs in a `postretro-sim` crate formalizing the headless `simulate` seam, with collision moving into it. The render stack reads entity state from `entities` directly, so `sim` is a sibling to the renderer over `entities`, not a dependency — the binary orchestrates tick-then-draw. Extract when a second entry point (dedicated server) forces the sim to be a shared library, or when measured compile pressure justifies the lift.
+
+**Tooling.** The committed `crate-graph.md` is a generated snapshot of the layers and chokepoint ranking, kept fresh by the `crate-graph --check` preflight gate. Generate the full edge diagram on demand with `cargo run -p xtask -- crate-graph --mermaid` (it isn't committed — no dense graph to hand-maintain). Query the graph live with `--rdeps <crate>` for a crate's blast radius (reverse deps), or `--deps <crate>` for what it pulls in. The invariants above (nothing depends on the binary, `foundation` stays a leaf, `entities` depends only on `foundation`) are enforced by the `layering_invariants_hold` test — an upward edge or a widened chokepoint fails `cargo test`.
+
 ## Stack
 
 ### Engine (`postretro`)

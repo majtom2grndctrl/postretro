@@ -458,6 +458,32 @@ fn main() -> anyhow::Result<()> {
         partition::log_stats(&result.tree, &result.faces);
     }
 
+    // Watertightness diagnostic. Surfaces holes in the static world geometry
+    // (faces the clipper dropped, or T-junction cracks) so they can be fixed.
+    // A warning, never a build failure: a compiler bug must not block a level
+    // designer, only become visible. Runs on the pre-exterior-cull face set.
+    let watertight = partition::check_watertight(&result.faces);
+    if watertight.open_edge_count > 0 {
+        log::warn!(
+            "[Compiler] Watertightness: {} open edge(s) in world geometry — possible holes \
+             you can see through. Diagnostic only; the build still succeeds. Sample locations \
+             (world-space meters, showing up to {}):",
+            watertight.open_edge_count,
+            watertight.samples.len(),
+        );
+        for edge in &watertight.samples {
+            log::warn!(
+                "[Compiler]   open edge near ({:.3}, {:.3}, {:.3}) — near brush {}",
+                edge.midpoint.x,
+                edge.midpoint.y,
+                edge.midpoint.z,
+                edge.brush_index,
+            );
+        }
+    } else if args.verbose {
+        log::info!("[Compiler] Watertightness: world geometry is closed (0 open edges)");
+    }
+
     progress.start_stage("Visibility computation...");
     let stage_start = Instant::now();
     // The exterior set is used by the BSP/leaf encoder to emit `face_count = 0`

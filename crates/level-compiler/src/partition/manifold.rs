@@ -194,7 +194,7 @@ pub fn check_watertight(faces: &[Face]) -> WatertightReport {
     }
 
     // Stable ordering so the sampled locations don't depend on HashMap order.
-    open.sort_by(|a, b| qv(a.midpoint, WELD_QUANTUM).cmp(&qv(b.midpoint, WELD_QUANTUM)));
+    open.sort_by_key(|edge| qv(edge.midpoint, WELD_QUANTUM));
     let open_edge_count = open.len();
     open.truncate(MAX_SAMPLES);
 

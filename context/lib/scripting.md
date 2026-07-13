@@ -393,7 +393,39 @@ Start the node set minimal: named-input leaves, arithmetic, `clamp`, `lerp`, `se
 
 ---
 
-## 12. Crate Architecture
+## 12. Reaction Dispatch Model (design intent)
+
+> **Design intent, not shipped.** Extends §10 (reactions) and §11 (typed command buffer) with how reactions are *addressed*, *fired*, and *parameterized* by dispatch sources. Today's surface ships the sourceless reaction (§10) and the single-slot `onStateCrossing` (§10.4); the parameterization, scope typing, occupancy exposure, and IR-predicate observer below are the target the E18 reaction adopters build toward. The `done/E18--trigger-event-fanout` script-syntax sample predates this model — it is illustrative pseudocode, not the shipped API.
+
+**A reaction is a named, sourceless, deferred effect bundle.** `defineReaction(name?, body)` returns frozen descriptor data (§10, §11); the bundle has no knowledge of what fires it. `name` is the bundle's **dispatch address** — the string a firing source names to run it — *not* the event it reacts to. Addressing is many-to-one: several reactions may share an address, and firing that address runs all of them (five `defineReaction("levelLoad", …)` in one script all fire at load). `"levelLoad"` is the world-sourced special case — a reserved address the engine auto-fires once after level install; it reads like "react to levelLoad" but means "everything addressed `levelLoad` runs now."
+
+**Explicit names are required only for out-of-script referrers.** When the only thing that fires a reaction lives in the same script, reference the const handle directly and let `defineReaction` auto-derive the id (`data_script` `autoReactionId`) — the const *is* the identity. An explicit string name is load-bearing exactly when a referrer cannot hold a reference: a map brush `on_fire`/`on_exit` KVP (a literal string authored across the FFI), or cross-runtime TS↔Luau agreement (the auto-id differs per runtime — §7). Pulling causality into script (binding via query + observer rather than a brush KVP) collapses the name to an internal implementation detail.
+
+**A dispatch source is a call site; the reaction is the callee.** Each event type publishes a typed **dispatch scope** — the ephemeral inputs that exist *because* this fire happened. A reaction that reads those inputs is *typed by the scope it requires*; a source accepts a reaction iff its scope satisfies the reaction's used inputs. This is the §11 `resolve_input` binding contract lifted into the SDK type system.
+
+| Event type | Source spelling | `param` type | Published inputs |
+|---|---|---|---|
+| **levelLoad** | engine auto-fire (`"levelLoad"` address) | *(none)* — `Reaction<{}>` | — |
+| **contact** | brush `on_fire`/`on_exit`, or `world.query(…).on("enter"\|"exit"\|"occupied", r)` | `ContactScope` | `activators: EntityRef[]`, `trigger: EntityRef`, `occupancy: number` |
+| **crossing** | `onStateCrossing(ref, cond, [r])` | `CrossingScope` | `crossed: number`, `value: number`, `direction: "rising"\|"falling"` |
+| **tick** *(accumulators only)* | `slot.integrate((t) => expr)` | `TickScope` | `dt: number` |
+
+**Two kinds of parameter, one spelling each.**
+
+- *Author-time* — a value the author picks before the customs-gate. A plain JS factory returning a descriptor: `const p = (side) => defineReaction(seq([…]))`. Baked to frozen literals; the engine never learns it was parameterized. **Not an engine concept** — adding one would violate §1's "closed vocabulary, not shipped code." Do not fold the factory into `defineReaction`.
+- *Dispatch-time* — a value known only when the reaction fires (activator, crossed value, `dt`). The body is an IR template with `input` holes (§11) that the firing source binds from its scope. Spelled as a typed `param` proxy: `defineReaction((on) => … on.crossed …)`. The arrow is an **author-time tracer** that runs once to build frozen IR — never a runtime callback; the VM still drops (§1, §2). `param`'s type *is* the reaction's required scope, so out-of-scope reads fail at compile time and IntelliSense lists the legal inputs (§7, "the typedef is the contract"). Because `param` leaves are IR nodes, operations on them are IR-builder ops, not plain arithmetic — the ergonomic tax of authoring IR in TS.
+
+**Ephemeral dispatch context vs. ambient refs.** `param` carries *only* the ephemeral inputs in the scope table. Persistent values — store slots, occupancy refs, `player.health` — are read through their own refs (§5) anywhere, never through `param`. This keeps scopes small and keeps zero-param reactions (`defineReaction(seq([…]))`, i.e. `Reaction<{}>`) fireable from any source, `levelLoad` included.
+
+**Occupancy is exposed count, in two aggregates.** Per-trigger occupancy is engine-tracked (`done/E18--trigger-event-fanout`) but not yet script-visible. The target exposes it as a live readonly numeric ref in two distinct aggregates: `occupiedCount()` — how many matched volumes have ≥1 occupant (a two-plate door fires at `occupiedCount == 2`) — and `occupants()` — total bodies in a volume (King-of-the-Hill scales drain by `occupants`). Two players on one plate make `occupants == 2` but `occupiedCount == 1`; each puzzle picks the aggregate it means.
+
+**The observer generalizes `onStateCrossing`.** Today it watches one Number slot for an `above`/`below` literal edge (§10.4). The target keeps its **free-function** shape (`onStateCrossing(ref, cond, [reactions])`, not a method chained onto the ref) and its edge-fire-once-then-rearm lifecycle, but takes an **IR predicate** over N slots as its condition, and its `CrossingScope` publishes `direction` so one reaction distinguishes the crossing sense (shields up on `falling`, all-clear on `rising`). "Both plates held" becomes `eq(occupiedCount, 2)` — the same spelling for 2 plates or 5.
+
+**Per-tick is accumulator-only.** There is no bare per-tick reaction source. The sole per-tick surface is `slot.integrate((t) => expr)` — a store slot accumulating an IR expression each tick, clamped to its declared range. `TickScope` (publishing `dt`) is *that accumulator's* param type, never a `defineReaction` param: a reaction is never tick-sourced. A bare `onTick` reaction is added only if a concrete case blocks on it.
+
+---
+
+## 13. Crate Architecture
 
 > Implemented by `plans/done/engine-data-floor/`. The boundary contracts below are durable.
 
@@ -413,7 +445,7 @@ The floor crates' default builds stay VM-free. The `postretro` binary still depe
 
 **Handler placement.** Script-callable handlers co-locate with the subsystem they expose. Distinguish two things. The **marshalling substrate** — the marshalling newtypes + their FFI impls, the registry types, the converters, the VM runtimes, the typedef generator — lives in the VM crate (`scripting-core`). The **handler wiring** — the `register_*` registrar functions + their per-primitive closures — co-locates with the owning subsystem module/crate, alongside the pure logic. If a subsystem has been extracted into a lower crate, its script-facing wiring may live there behind an off-by-default `script-ffi` feature. Reaction handlers (VM-free) relocate whole; primitive handlers relocate their pure logic **and** their wiring, leaving the marshalling newtypes + registry machinery in the substrate — the subsystem wiring decodes script args via those newtypes, calls same-crate subsystem fns with native Rust args (never VM types), and encodes the result via those newtypes. Shared world-query/type aggregation stays explicit at the runtime construction/aggregation site (no `inventory` / `linkme`); registrars are invoked from `Session::build` or the explicit aggregate registrar.
 
-## 13. Non-Goals
+## 14. Non-Goals
 
 - General-purpose scripting host (only explicitly registered Rust functions are callable)
 - Synchronous cross-VM communication (QuickJS and Luau are independent runtimes)

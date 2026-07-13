@@ -24,7 +24,7 @@ Make the classic co-op separation puzzle authorable and prove it end to end: sev
 ## Acceptance criteria
 
 - [ ] Fixture: three separated single-occupant `fire_mode = multiple` plates, each incrementing a shared counter on entry and decrementing on exit, fire the `solve` reaction once at the instant the third plate completes the set (the rising crossing edge); releasing any plate lowers the counter and does not fire `solve`; breaking and re-completing the set fires it again. The counter stays within `[0, N]`.
-- [ ] The crossing fires only at the full count: with `above: N-0.5, max: N`, the normalized threshold `(N-0.5)/N` fires at `N/N = 1.0` and not at `(N-1)/N` (for N=3: `above: 2.5, max: 3` → 0.833; fires at 3, not 2).
+- [ ] The crossing fires only at the full count: with `above: N-0.5, max: N`, the normalized threshold `(N-0.5)/N` fires at `N/N = 1.0` and not at `(N-1)/N` (for N=3: `above: 2.5, max: 3` → 0.833; fires at 3, not 2). E18-A crossings normalize as `raw/max` with no `min` term, so the counter's `[0, N]` range supplies the implicit 0 floor.
 - [ ] Two-endpoint test: the host's counter writes land in-tick; a connected client's slot table converges the counter via the P3.5 apply path; the `solve` mover fires host-side and the client observes the vault open via replicated mover phase. The client's own crossing also fires `solve` locally, but that fire is inert — clients reconcile replicated mover phase and never author movers — so the vault opens once, via replication. A late-joining client observes the current counter value (and re-fires its local `solve` harmlessly) without replaying every increment.
 - [ ] `fire_mode = multiple` on the plates is required and asserted: with `once` plates, a released-and-re-entered plate does not re-increment and the puzzle cannot re-arm.
 
@@ -32,14 +32,14 @@ Make the classic co-op separation puzzle authorable and prove it end to end: sev
 
 ### Task 1: Fixture, authoring pattern, and QA
 
-Author the cross-room puzzle and prove the channel; no engine code changes (all primitives come from `E18--state-delta-reactions` and E18-B). `setupLevel` uses `defineStore` to declare a shared-global numeric counter slot (schema range `0..=N`, `network: "shared"`), plus reactions `increment` (`[incrementState("puzzle.switchesHeld")]`), `decrement` (`[decrementState(...)]`), and `solve` (`world.query({component: "kinematic_mover", tag: "vault"}).start()`), and a crossing `{ slot, above: N-0.5, max: N, fire: ["solve"] }`. Map: N single-occupant `activation_policy = count`, `activation_count = 1`, `fire_mode = multiple` plates in separate rooms, each `on_fire = "increment"`, `on_exit = "decrement"`; `fire_mode = multiple` is required so re-entry re-increments after a decrement. `solve` fires host-side via the host's crossing detector and reaches clients through replicated mover phase. Headless test: drive N pawns onto the plates and assert `solve` fires once as the last plate completes and not on release, and that the counter clamps to `[0, N]`. Two-endpoint loopback test (E18-A net-QA precedent): assert the host counter writes land, the client converges the counter via `ClientStateApply::apply_snapshot_state` (`crates/postretro/src/netcode/state_slots.rs`), and the vault opens on the client through replicated mover phase; confirm the client's local `solve` fire is inert; a late-join client observes the current counter value without replaying increments. Document the pattern (plate KVPs + counter + crossing) as a reusable co-op recipe. **Held-gate variant (document, do not require):** add a paired `below` crossing firing a `reverse` reaction to auto-close the vault when the set breaks.
+Author the cross-room puzzle and prove the channel; no engine code changes (all primitives come from `E18--state-delta-reactions` and E18-B). the level module declares a shared-global numeric counter slot via a module-scope `defineStore` call (schema range `0..=N`, `network: "shared"`), and `setupLevel` returns reactions and a crossing referencing it: reactions `increment` (`[incrementState("puzzle.switchesHeld")]`), `decrement` (`[decrementState(...)]`) — the delta reactions import from `"postretro/ui"` — and `solve` (`world.query({component: "kinematic_mover", tag: "vault"}).flatMap((m) => m.start())`, where `start()` returns `SequenceStep[]` per mover, flattened across the queried movers), and a crossing `{ slot, above: N-0.5, max: N, fire: ["solve"] }`. Map: N single-occupant `activation_policy = count`, `activation_count = 1`, `fire_mode = multiple` plates in separate rooms, each `on_fire = "increment"`, `on_exit = "decrement"`; `fire_mode = multiple` is required so re-entry re-increments after a decrement. `solve` fires host-side via the host's crossing detector and reaches clients through replicated mover phase. Headless test: drive N pawns onto the plates and assert `solve` fires once as the last plate completes and not on release, and that the counter clamps to `[0, N]`. A companion headless assertion swaps one plate to `fire_mode = once` and confirms that after a decrement the released-and-re-entered plate does not re-increment, so the puzzle cannot re-arm (AC4). Two-endpoint loopback test (E18-A net-QA precedent): assert the host counter writes land, the client converges the counter via `ClientStateApply::apply_snapshot_state` (`crates/postretro/src/netcode/state_slots.rs`), and the vault opens on the client through replicated mover phase; confirm the client's local `solve` fire is inert; a late-join client observes the current counter value without replaying increments. Document the pattern (plate KVPs + counter + crossing) as a reusable co-op recipe. **Held-gate variant (document, do not require):** add a paired `below` crossing firing a `reverse` reaction to auto-close the vault when the set breaks.
 
 ## Script syntax examples
 
 ```ts
 // setupLevel — three separated plates AND together via a shared counter
-import { world, defineStore, defineReaction,
-         incrementState, decrementState } from "postretro";
+import { world, defineStore, defineReaction } from "postretro";
+import { incrementState, decrementState } from "postretro/ui";
 
 // shared-global counter, replicated to every client (exact defineStore shape
 // per the shipped store-declaration surface)
@@ -53,8 +53,8 @@ export function setupLevel(ctx) {
       // plates are activation_policy = count, activation_count = 1, fire_mode = multiple
       defineReaction("increment", () => [incrementState("puzzle.switchesHeld")]),
       defineReaction("decrement", () => [decrementState("puzzle.switchesHeld")]),
-      defineReaction("solve", () => [...world.query({ component: "kinematic_mover",
-                                                      tag: "vault" }).start()]),
+      defineReaction("solve", () => world.query({ component: "kinematic_mover",
+                                                  tag: "vault" }).flatMap((m) => m.start())),
     ],
     crossings: [
       // above 2.5 of max 3 (normalized 0.833) fires only when all three are held

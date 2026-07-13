@@ -10,7 +10,7 @@
 // Binding plan (forward, non-shadow):
 //   * group 0 = camera (shared renderer-owned camera uniform / bind group)
 //   * group 1 = material (the `build_material_bind_group` bind group — the SH-lit
-//               fragment samples diffuse + aniso sampler from this group)
+//               fragment samples diffuse + character-model sampler from this group)
 //   * group 2 = runtime direct lighting + shadow receipt (fully allocated b0–b8):
 //               b0 dynamic-tier records plus promoted static records, b1
 //               per-light influence volumes, b2

@@ -327,15 +327,15 @@ impl Renderer {
                 let key = parse_blake3_key(key_hex);
                 let tex = load_model_diffuse_texture(device, queue, key_hex, key, prm_cache_root);
 
-                let aniso_sampler = full
-                    .mip_count_aniso_samplers
+                let character_model_sampler = full
+                    .mip_count_character_model_samplers
                     .entry(tex.mip_count)
-                    .or_insert_with(|| create_mip_aniso_sampler(device, tex.mip_count));
+                    .or_insert_with(|| create_mip_character_model_sampler(device, tex.mip_count));
                 build_material_bind_group(
                     device,
                     &full.texture_bind_group_layout,
                     &tex,
-                    aniso_sampler,
+                    character_model_sampler,
                     Material::Default,
                     &format!("Skinned Model Material {key_hex}"),
                 )

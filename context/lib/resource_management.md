@@ -206,9 +206,9 @@ The renderer owns all GPU-side resources: wgpu buffers, textures, samplers. CPU-
 
 Resources are loaded once at level load and released on level unload. No incremental loading during gameplay. No reference counting — the level owns everything, and everything dies with the level.
 
-### 7.3 Anisotropic Sampler Pool
+### 7.3 Material Sampler Pools
 
-The renderer maintains a single anisotropic sampler pool: `mip_count_aniso_samplers: HashMap<u32, wgpu::Sampler>` — one sampler per distinct `mip_count` observed across loaded textures. Each sampler is identical except `lod_max_clamp = (mip_count - 1) as f32`. The pool is eagerly populated after `load_textures` returns, unconditionally including `{1}` for placeholders. Sampler lifetime is engine-lifetime; the pool accumulates new entries across level reloads but never shrinks. Material bind groups select the sampler whose key matches the texture's `mip_count`. A lookup miss is a logic error — eager population guarantees coverage.
+The renderer maintains two engine-lifetime sampler pools, each with one sampler per distinct `mip_count` and `lod_max_clamp = (mip_count - 1) as f32`. World and mover materials select from `mip_count_aniso_samplers: HashMap<u32, wgpu::Sampler>`: fully linear filtering with 16× anisotropy. It is eagerly populated after `load_textures` returns, unconditionally including `{1}` for placeholders; a lookup miss is a logic error. Skinned-model materials instead select from `mip_count_character_model_samplers: HashMap<u32, wgpu::Sampler>`, seeded with `{1}` and extended as model diffuse textures load. Its sampler uses nearest magnification, linear minification and mip filtering, and anisotropy `1`, keeping close character texels crisp while retaining mip-filtered distance stability. Both pools accumulate entries across level reloads but never shrink. Each material binds its selected sampler at the existing group-1 binding 5, so the separate pool does not consume another shader sampler binding.
 
 ### 7.4 Renderer Contract
 

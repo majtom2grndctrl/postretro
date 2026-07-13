@@ -504,9 +504,15 @@ pub(super) struct FullRenderer {
     /// `lod_max_clamp = (mip_count - 1) as f32`. Keyed by
     /// `LoadedTexture::mip_count`. Engine-lifetime — persists across level
     /// reloads so re-installing the same mip chain reuses the existing sampler.
-    /// Placeholders pick up the `1` entry seeded at construction. Every material
-    /// binds its matching sampler at group-1 binding 5.
+    /// Placeholders pick up the `1` entry seeded at construction. World and mover
+    /// material bind groups bind their matching sampler at group-1 binding 5.
     pub(super) mip_count_aniso_samplers: HashMap<u32, wgpu::Sampler>,
+    /// Character-model samplers, one per distinct uploaded `mip_count`. These
+    /// use nearest magnification with linear minification and mip filtering,
+    /// and disable anisotropy. Like the world sampler pool, descriptors differ
+    /// only in `lod_max_clamp` and entries persist across level reloads. Character
+    /// material bind groups bind their matching sampler at group-1 binding 5.
+    pub(super) mip_count_character_model_samplers: HashMap<u32, wgpu::Sampler>,
     /// Engine-lifetime owners of the loaded textures and views referenced by
     /// material bind groups. Replaced wholesale on every `install_textures`.
     /// Bind groups borrow these handles; dropping the vec invalidates them,

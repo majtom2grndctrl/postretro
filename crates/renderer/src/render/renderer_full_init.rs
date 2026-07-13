@@ -122,6 +122,8 @@ pub(crate) fn build_full_renderer(
     // the `1` entry; never miss this lookup.
     let mut mip_count_aniso_samplers: HashMap<u32, wgpu::Sampler> = HashMap::new();
     mip_count_aniso_samplers.insert(1, create_mip_aniso_sampler(device, 1));
+    let mut mip_count_character_model_samplers: HashMap<u32, wgpu::Sampler> = HashMap::new();
+    mip_count_character_model_samplers.insert(1, create_mip_character_model_sampler(device, 1));
 
     // Construct an initial placeholder bind group so the world pipeline
     // has a bind group bound even before a level loads. Replaced wholesale
@@ -682,6 +684,7 @@ pub(crate) fn build_full_renderer(
         texture_bind_group_layout,
         lighting_bind_group_layout,
         mip_count_aniso_samplers,
+        mip_count_character_model_samplers,
         loaded_textures,
         stored_texture_materials: Vec::new(),
         uniform_bind_group_layout,

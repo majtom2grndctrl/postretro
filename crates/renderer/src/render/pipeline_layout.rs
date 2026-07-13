@@ -227,9 +227,9 @@ pub(crate) fn uniform_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry
 }
 
 // Group 1: 0=diffuse(sRGB), 2=specular(R8), 3=shininess, 4=normal(Rgba8Unorm,
-// NOT sRGB; n = sample.rgb*2-1), 5=aniso_sampler (linear+anisotropic).
-// Binding 1 is intentionally vacated (former nearest sampler); the aniso sampler
-// stays at 5 — non-contiguous bindings are valid.
+// NOT sRGB; n = sample.rgb*2-1), 5=material sampler (filtering selected per material).
+// Binding 1 is intentionally vacated (former nearest sampler); the shared sampler
+// binding stays at 5 — non-contiguous bindings are valid.
 pub(crate) fn material_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 5] {
     [
         wgpu::BindGroupLayoutEntry {

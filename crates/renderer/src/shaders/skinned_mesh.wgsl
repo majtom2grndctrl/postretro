@@ -50,11 +50,12 @@ struct CameraUniforms {
 
 // --- Group 1: material -------------------------------------------------------
 // Same layout `build_material_bind_group` produces (bindings 0,2,3,4,5). The
-// SH-lit fragment samples only diffuse (binding 0) through the aniso sampler
-// (binding 5); SH irradiance comes from group 4. The other bindings are
-// declared for layout compatibility with the renderer's existing bind group.
+// SH-lit fragment samples only diffuse (binding 0) through the character-model
+// sampler (binding 5): nearest magnification, linear minification + mips, no
+// anisotropy. SH irradiance comes from group 4. The other bindings are declared
+// for layout compatibility with the renderer's existing bind group.
 @group(1) @binding(0) var base_texture: texture_2d<f32>;
-@group(1) @binding(5) var aniso_sampler: sampler;
+@group(1) @binding(5) var character_model_sampler: sampler;
 
 // --- Group 2: runtime direct lighting ----------------------------------------
 // Filled by the runtime-light upload. Binding map PINNED across both M10 mesh specs (the BGL
@@ -580,7 +581,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // multiply, via `accumulate_dynamic_direct`.
     // The skinned world normal drives the octahedral direction lookup and
     // (unused, backface rejection off) the geometric backface test.
-    let base_color = textureSample(base_texture, aniso_sampler, in.uv);
+    let base_color = textureSample(base_texture, character_model_sampler, in.uv);
     let n = normalize(in.world_normal);
     let indirect = sample_sh_indirect(in.world_position, n, n);
     // Baked static direct SH term, sampled with the same normal/grid as the

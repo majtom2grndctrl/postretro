@@ -542,9 +542,15 @@ pub(super) struct FullRenderer {
     /// forward pass uses that frame. The scripted-light animated curves the mesh
     /// dynamic loop evaluates depend on this phase coherence.
     pub(super) mesh_dynamic_time: f32,
-    /// Per-frame kinematic mover instances collected by the game layer from
-    /// stage-0-snapshotted registry transforms.
+    /// Camera-PVS-visible kinematic mover instances for the beauty pass.
     pub(super) kinematic_mover_draws: Vec<kinematic_brush::KinematicMoverInstance>,
+    /// Every present kinematic mover transform, including camera-PVS-culled
+    /// shadow casters.
+    pub(super) kinematic_mover_shadow_draws: Vec<kinematic_brush::KinematicMoverInstance>,
+    /// Conservative world AABBs for every present mover, keyed by authored
+    /// mover id. Static-light promotion and rigid shadow occluder recording
+    /// read this renderer-owned state.
+    pub(super) mover_occluder_aabbs: Vec<rigid_occluder_depth::MoverOccluderAabb>,
     pub(super) ambient_floor: f32,
     pub(super) indirect_scale: f32,
     /// DYNAMIC baked-static-direct SH scale (0..1). Debug instrument for the
@@ -675,6 +681,7 @@ pub(super) struct FullRenderer {
     /// 5's presence in the shared BGL.
     pub(super) cube_shadow_pool: Option<crate::lighting::cube_shadow::CubeShadowPool>,
     pub(super) kinematic_brush: kinematic_brush::KinematicBrushPass,
+    pub(super) rigid_occluder_depth: rigid_occluder_depth::RigidOccluderDepthPass,
     pub(super) promoted_static_states: Vec<PromotedStaticLightState>,
     pub(super) promoted_static_records: Vec<PromotedStaticLightRecord>,
     pub(super) promoted_static_weights: Vec<f32>,
@@ -860,27 +867,27 @@ pub(super) struct FullRenderer {
     /// drops the excess instances; the warning fires at most once per second.
     pub(super) mesh_overflow_last_warn: f32,
 
-    /// CPU-side count of skinned ENTITY occluder instances submitted into spot
-    /// shadow slots last frame, summed across slots (each instance counted once
-    /// per slot it casts into). Mirrors `shadow-cone-cull`'s submitted-instance
-    /// counter — no GPU readback. Verifies the "enemy outside the cone is not
-    /// drawn" acceptance criterion: an instance the per-light cone cull rejects
-    /// is never added here. Reset to 0 at the start of the spot-shadow depth loop.
+    /// CPU-side count of skinned and rigid ENTITY occluders submitted into spot
+    /// shadow slots last frame, summed across slots (each counted once per slot
+    /// it casts into). Mirrors `shadow-cone-cull`'s submitted-instance counter —
+    /// no GPU readback. Verifies the "enemy outside the cone is not drawn"
+    /// acceptance criterion: an occluder the per-light cone cull rejects is never
+    /// added here. Reset to 0 at the start of the spot-shadow depth loop.
     pub(super) spot_entity_occluders_submitted: u32,
 
-    /// CPU-side count of skinned ENTITY occluder instances submitted into CUBE
+    /// CPU-side count of skinned and rigid ENTITY occluders submitted into CUBE
     /// (point-light) shadow faces last frame, summed across all occupied slots ×
-    /// 6 faces (each instance counted once per face it casts into). Mirrors
-    /// `spot_entity_occluders_submitted` — no GPU readback. Verifies that
-    /// entity occluders render only for `entity_occluder_eligible` point lights
-    /// and only when their bound intersects a face frustum. Reset to 0 at the
-    /// start of the cube-shadow depth loop.
+    /// 6 faces (each counted once per face it casts into). Mirrors
+    /// `spot_entity_occluders_submitted` — no GPU readback. Verifies that entity
+    /// occluders render only for `entity_occluder_eligible` point lights and only
+    /// when their bound intersects a face frustum. Reset to 0 at the start of the
+    /// cube-shadow depth loop.
     pub(super) cube_entity_occluders_submitted: u32,
 
-    /// CPU-side count of skinned ENTITY occluder submissions into promoted
-    /// static-light shadow slots/faces last frame. This is a subset of the spot
-    /// and cube totals above, used to pin that warm promoted slots draw entities
-    /// only after the cached world depth copy.
+    /// CPU-side count of skinned and rigid ENTITY occluder submissions into
+    /// promoted static-light shadow slots/faces last frame. This is a subset of
+    /// the spot and cube totals above, used to pin that warm promoted slots draw
+    /// entities only after the cached world depth copy.
     pub(super) promoted_entity_occluders_submitted: u32,
 
     /// Instanced UI quad / 9-slice pass for panels and images plus glyphon text.

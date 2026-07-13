@@ -61,6 +61,25 @@
 ( 512 432 256 ) ( 0 432 272 ) ( 0 432 256 ) debug_ceiling_grey 0 0 0 1 1
 ( 3440 0 256 ) ( 3440 512 272 ) ( 3440 512 256 ) debug_ceiling_grey 0 0 0 1 1
 }
+// brush 6 -- static comparison wall for the concrete_stone_022 mover material.
+{
+( 128 368 0 ) ( 128 352 160 ) ( 128 352 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 128 352 0 ) ( 400 352 160 ) ( 400 352 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 128 352 0 ) ( 400 368 0 ) ( 128 368 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 128 368 160 ) ( 400 352 160 ) ( 128 352 160 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 400 368 0 ) ( 128 368 160 ) ( 128 368 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 400 352 0 ) ( 400 368 160 ) ( 400 368 0 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// brush 7 -- Metal promoted-static comparison wall. It stays inside the
+// mover-only spotlight cone without entering either mover's path.
+{
+( 1120 368 0 ) ( 1120 352 64 ) ( 1120 352 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1120 352 0 ) ( 1248 352 64 ) ( 1248 352 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1120 352 0 ) ( 1248 368 0 ) ( 1120 368 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1120 368 64 ) ( 1248 352 64 ) ( 1120 352 64 ) metal/metal_rough_046a 0 0 0 1 1
+( 1248 368 0 ) ( 1120 368 64 ) ( 1120 368 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 1248 352 0 ) ( 1248 368 64 ) ( 1248 368 0 ) metal/metal_rough_046a 0 0 0 1 1
+}
 }
 // entity 1
 {
@@ -304,4 +323,189 @@
 ( 80 304 0 ) ( 80 304 1 ) ( 81 304 0 ) debug_ceiling_grey 0 0 0 1 1
 ( 80 352 0 ) ( 81 352 0 ) ( 80 352 1 ) debug_ceiling_grey 0 0 0 1 1
 }
+}
+// entity 24 -- Dynamic point-shadow station. `_cast_entity_shadows` is authored
+// explicitly so both moving and docked movers can cast into the cube pool.
+{
+"classname" "light_dynamic"
+"origin" "512 0 192"
+"light" "600"
+"_color" "150 205 255"
+"_falloff_range" "650"
+"delay" "0"
+"_cast_entity_shadows" "1"
+"_tags" "kinematic_qa dynamic_point"
+}
+// entity 25 -- Dynamic spot-shadow station. The downward cone covers platform A
+// and the matching static wall, making mover-to-world shadow motion visible.
+{
+"classname" "light_dynamic_spot"
+"origin" "224 256 224"
+"light" "700"
+"_color" "255 205 150"
+"_falloff_range" "500"
+"delay" "0"
+"_cone" "24"
+"_cone2" "48"
+"angles" "-90 0 0"
+"_cast_entity_shadows" "1"
+"_tags" "kinematic_qa dynamic_spot"
+}
+// entity 26 -- Dynamic point-light receiver beside platform B.
+{
+"classname" "prop_mesh"
+"origin" "496 -240 16"
+"model" "models/decraniated_low_poly_retro_pixel/scene.gltf"
+"angles" "0 180 0"
+}
+// entity 27 -- Promoted-static station mover A. No prop_mesh belongs to this
+// station: the paired mover is the promoted-shadow receiver.
+{
+"classname" "kinematic_mover"
+"name" "promotion_pair_a"
+"path" "promotion_pair_a_start"
+"speed" "4"
+"wait_ms" "1000"
+"move_mode" "ping_pong"
+"start_on_spawn" "1"
+"_tags" "dev kinematic_qa promotion_pair"
+// brush 0
+{
+( 960 240 16 ) ( 960 176 64 ) ( 960 176 16 ) metal/metal_rough_046a 0 0 0 1 1
+( 960 176 16 ) ( 1088 176 64 ) ( 1088 176 16 ) metal/metal_rough_046a 0 0 0 1 1
+( 960 176 16 ) ( 1088 240 16 ) ( 960 240 16 ) metal/metal_rough_046a 0 0 0 1 1
+( 960 240 64 ) ( 1088 176 64 ) ( 960 176 64 ) metal/metal_rough_046a 0 0 0 1 1
+( 1088 240 16 ) ( 960 240 64 ) ( 960 240 16 ) metal/metal_rough_046a 0 0 0 1 1
+( 1088 176 16 ) ( 1088 240 64 ) ( 1088 240 16 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 28
+{
+"classname" "kinematic_waypoint"
+"name" "promotion_pair_a_start"
+"next" "promotion_pair_a_end"
+"origin" "1024 208 40"
+}
+// entity 29
+{
+"classname" "kinematic_waypoint"
+"name" "promotion_pair_a_end"
+"origin" "1504 208 40"
+}
+// entity 30 -- The paired mover starts opposite mover A and crosses it below
+// the static spotlight. It is the mover-only promoted-shadow receiver.
+{
+"classname" "kinematic_mover"
+"name" "promotion_pair_b"
+"path" "promotion_pair_b_start"
+"speed" "4"
+"wait_ms" "1000"
+"move_mode" "ping_pong"
+"start_on_spawn" "1"
+"_tags" "dev kinematic_qa promotion_pair"
+// brush 0
+{
+( 1440 336 16 ) ( 1440 272 64 ) ( 1440 272 16 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1440 272 16 ) ( 1568 272 64 ) ( 1568 272 16 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1440 272 16 ) ( 1568 336 16 ) ( 1440 336 16 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1440 336 64 ) ( 1568 272 64 ) ( 1440 272 64 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1568 336 16 ) ( 1440 336 64 ) ( 1440 336 16 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1568 272 16 ) ( 1568 336 64 ) ( 1568 336 16 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+}
+// entity 31
+{
+"classname" "kinematic_waypoint"
+"name" "promotion_pair_b_start"
+"next" "promotion_pair_b_end"
+"origin" "1504 304 40"
+}
+// entity 32
+{
+"classname" "kinematic_waypoint"
+"name" "promotion_pair_b_end"
+"origin" "1024 304 40"
+}
+// entity 33 -- Bright selected static spot. The two adjacent movers alone make
+// it promotion-relevant; the floor and static comparison wall remain non-receivers.
+{
+"classname" "light_spot"
+"origin" "1264 256 224"
+"light" "900"
+"_color" "255 238 210"
+"_falloff_range" "520"
+"_shadow_type" "static_light_map"
+"_cone" "24"
+"_cone2" "52"
+"angles" "-90 0 0"
+"_tags" "kinematic_qa promotion_static"
+}
+// entity 34 -- Mixed mover/mesh promotion-ranker station.
+{
+"classname" "kinematic_mover"
+"name" "ranker_mover"
+"path" "ranker_mover_start"
+"speed" "3"
+"wait_ms" "750"
+"move_mode" "ping_pong"
+"start_on_spawn" "1"
+"_tags" "dev kinematic_qa ranker"
+// brush 0
+{
+( 2040 288 16 ) ( 2040 224 64 ) ( 2040 224 16 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2040 224 16 ) ( 2168 224 64 ) ( 2168 224 16 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2040 224 16 ) ( 2168 288 16 ) ( 2040 288 16 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2040 288 64 ) ( 2168 224 64 ) ( 2040 224 64 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2168 288 16 ) ( 2040 288 64 ) ( 2040 288 16 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 2168 224 16 ) ( 2168 288 64 ) ( 2168 288 16 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+}
+// entity 35
+{
+"classname" "kinematic_waypoint"
+"name" "ranker_mover_start"
+"next" "ranker_mover_end"
+"origin" "2104 256 40"
+}
+// entity 36
+{
+"classname" "kinematic_waypoint"
+"name" "ranker_mover_end"
+"origin" "2464 256 40"
+}
+// entity 37 -- Skinned receiver sharing the competing static point lights.
+{
+"classname" "prop_mesh"
+"origin" "2312 256 16"
+"model" "models/decraniated_low_poly_retro_pixel/scene.gltf"
+"angles" "0 180 0"
+}
+// entities 38-40 -- Three eligible static point lights compete for the fixed
+// two promoted-cube slots while both a mover and skinned mesh are relevant.
+{
+"classname" "light"
+"origin" "2216 144 192"
+"light" "950"
+"_color" "255 180 150"
+"_falloff_range" "420"
+"_shadow_type" "static_light_map"
+"_tags" "kinematic_qa ranker_static"
+}
+{
+"classname" "light"
+"origin" "2216 256 224"
+"light" "925"
+"_color" "180 220 255"
+"_falloff_range" "420"
+"_shadow_type" "static_light_map"
+"_tags" "kinematic_qa ranker_static"
+}
+{
+"classname" "light"
+"origin" "2216 368 192"
+"light" "900"
+"_color" "210 180 255"
+"_falloff_range" "420"
+"_shadow_type" "static_light_map"
+"_tags" "kinematic_qa ranker_static"
 }

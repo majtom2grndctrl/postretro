@@ -99,6 +99,19 @@ fn count_submitted_candidates(
         .count() as u32
 }
 
+/// Adds actual entity-depth draws to the pool total and, for a promoted slot,
+/// to its promoted subset.
+fn tally_entity_occluder_submissions(
+    pool_total: &mut u32,
+    promoted_total: Option<&mut u32>,
+    submitted: u32,
+) {
+    *pool_total += submitted;
+    if let Some(promoted_total) = promoted_total {
+        *promoted_total += submitted;
+    }
+}
+
 impl Renderer {
     /// Refresh dev-tools camera-cull diagnostics from the current frame's CPU
     /// visibility inputs before the debug UI reads them. The tree-walk baseline
@@ -177,7 +190,7 @@ impl Renderer {
     }
 
     /// Spot-shadow depth loop: per occupied slot, render world geometry (indirect,
-    /// cone-culled) then skinned-entity occluders into that slot's depth map.
+    /// cone-culled) then entity occluders into that slot's depth map.
     /// Caller gates on `render_world`; this pass gates only world draws on
     /// geometry presence so promoted-static cache clears/copies and entity overlays
     /// still run on empty-world maps.
@@ -299,32 +312,32 @@ impl Renderer {
                     .expect("promoted spot plan implies cache allocated")
                     .copy_spot_to_pool(encoder, plan, &full.spot_shadow_pool.array_texture);
 
-                if let Some(mesh_plan) = &mesh_frame_plan {
-                    if full.spot_shadow_pool.slot_entity_eligible[slot as usize] {
-                        if let Some(cone_matrix) =
-                            full.spot_shadow_pool.slot_cone_matrices[slot as usize]
-                        {
-                            let cone_planes =
-                                postretro_render_data::cone_frustum::cone_frustum_planes(
-                                    &cone_matrix,
-                                );
-                            let view = &full.spot_shadow_pool.views[slot as usize];
-                            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                                label: Some("Promoted Spot Entity Shadow Depth Pass"),
-                                color_attachments: &[],
-                                depth_stencil_attachment: Some(
-                                    wgpu::RenderPassDepthStencilAttachment {
-                                        view,
-                                        depth_ops: Some(wgpu::Operations {
-                                            load: wgpu::LoadOp::Load,
-                                            store: wgpu::StoreOp::Store,
-                                        }),
-                                        stencil_ops: None,
-                                    },
-                                ),
-                                timestamp_writes: None,
-                                ..Default::default()
-                            });
+                if full.spot_shadow_pool.slot_entity_eligible[slot as usize]
+                    && (mesh_frame_plan.is_some() || !full.mover_occluder_aabbs.is_empty())
+                {
+                    if let Some(cone_matrix) =
+                        full.spot_shadow_pool.slot_cone_matrices[slot as usize]
+                    {
+                        let cone_planes =
+                            postretro_render_data::cone_frustum::cone_frustum_planes(&cone_matrix);
+                        let view = &full.spot_shadow_pool.views[slot as usize];
+                        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: Some("Promoted Spot Entity Shadow Depth Pass"),
+                            color_attachments: &[],
+                            depth_stencil_attachment: Some(
+                                wgpu::RenderPassDepthStencilAttachment {
+                                    view,
+                                    depth_ops: Some(wgpu::Operations {
+                                        load: wgpu::LoadOp::Load,
+                                        store: wgpu::StoreOp::Store,
+                                    }),
+                                    stencil_ops: None,
+                                },
+                            ),
+                            timestamp_writes: None,
+                            ..Default::default()
+                        });
+                        if let Some(mesh_plan) = &mesh_frame_plan {
                             let submitted = full.mesh_pass.record_skinned_depth(
                                 &mut pass,
                                 mesh_plan,
@@ -333,9 +346,25 @@ impl Renderer {
                                 slot * stride,
                                 &cone_planes,
                             );
-                            full.spot_entity_occluders_submitted += submitted;
-                            full.promoted_entity_occluders_submitted += submitted;
+                            tally_entity_occluder_submissions(
+                                &mut full.spot_entity_occluders_submitted,
+                                Some(&mut full.promoted_entity_occluders_submitted),
+                                submitted,
+                            );
                         }
+                        let submitted = full.rigid_occluder_depth.record_kinematic_movers(
+                            &mut pass,
+                            &full.kinematic_brush,
+                            &full.mover_occluder_aabbs,
+                            &full.shadow_vs_bind_group,
+                            slot * stride,
+                            &cone_planes,
+                        );
+                        tally_entity_occluder_submissions(
+                            &mut full.spot_entity_occluders_submitted,
+                            Some(&mut full.promoted_entity_occluders_submitted),
+                            submitted,
+                        );
                     }
                 }
                 continue;
@@ -373,41 +402,49 @@ impl Renderer {
                 }
             }
 
-            // Skinned ENTITY occluders into the SAME slot, through the
-            // parameterized depth-only path: target view = this slot's depth
-            // attachment (the `pass` above), light-space matrix = the
-            // per-slot `shadow_vs_bind_group` + dynamic offset. This proves
-            // the cube-ready contract — the pipeline takes the view + matrix
-            // as per-render parameters, with no slot-count or 2D-target
-            // assumption baked in. Reads the already-posed buffers from the
-            // hoist (no rewrite since), so the occluder pose matches the
-            // forward draw with no one-frame lag.
+            // Entity occluders into the SAME slot. The skinned and rigid
+            // depth paths share the slot's light-space bind group, dynamic
+            // offset, and CPU cone planes.
             //
             // TWO gates (kept separate from pool-slot eligibility):
             //   1. `slot_entity_eligible[slot]` — the slot's light passes
             //      `entity_occluder_eligible` (dynamic + toggle on). An
             //      ineligible slot keeps its world shadow (already drawn
             //      above) but draws ZERO entity occluders.
-            //   2. per-instance cone cull inside `record_skinned_depth` —
-            //      only instances whose transformed bound intersects this
+            //   2. per-occluder cone cull — only bounds intersecting this
             //      slot's cone are submitted.
-            if let Some(plan) = &mesh_frame_plan {
-                if full.spot_shadow_pool.slot_entity_eligible[slot as usize] {
-                    if let Some(cone_matrix) =
-                        full.spot_shadow_pool.slot_cone_matrices[slot as usize]
-                    {
-                        let cone_planes =
-                            postretro_render_data::cone_frustum::cone_frustum_planes(&cone_matrix);
-                        full.spot_entity_occluders_submitted +=
-                            full.mesh_pass.record_skinned_depth(
-                                &mut pass,
-                                plan,
-                                MeshDepthInstanceFilter::ForwardVisibleOnly,
-                                &full.shadow_vs_bind_group,
-                                slot * stride,
-                                &cone_planes,
-                            );
+            if full.spot_shadow_pool.slot_entity_eligible[slot as usize] {
+                if let Some(cone_matrix) = full.spot_shadow_pool.slot_cone_matrices[slot as usize] {
+                    let cone_planes =
+                        postretro_render_data::cone_frustum::cone_frustum_planes(&cone_matrix);
+                    if let Some(plan) = &mesh_frame_plan {
+                        let submitted = full.mesh_pass.record_skinned_depth(
+                            &mut pass,
+                            plan,
+                            MeshDepthInstanceFilter::ForwardVisibleOnly,
+                            &full.shadow_vs_bind_group,
+                            slot * stride,
+                            &cone_planes,
+                        );
+                        tally_entity_occluder_submissions(
+                            &mut full.spot_entity_occluders_submitted,
+                            None,
+                            submitted,
+                        );
                     }
+                    let submitted = full.rigid_occluder_depth.record_kinematic_movers(
+                        &mut pass,
+                        &full.kinematic_brush,
+                        &full.mover_occluder_aabbs,
+                        &full.shadow_vs_bind_group,
+                        slot * stride,
+                        &cone_planes,
+                    );
+                    tally_entity_occluder_submissions(
+                        &mut full.spot_entity_occluders_submitted,
+                        None,
+                        submitted,
+                    );
                 }
             }
         }
@@ -415,8 +452,8 @@ impl Renderer {
 
     /// Cube point-light shadow depth loop: clear every occupied face to the far
     /// plane, render cone-culled WORLD geometry into it (indirect, per-face
-    /// frustum — the cube counterpart of the spot depth pass), then skinned
-    /// ENTITY occluders when the slot's light is entity-eligible. Caller gates
+    /// frustum — the cube counterpart of the spot depth pass), then entity
+    /// occluders when the slot's light is entity-eligible. Caller gates
     /// on `render_world`.
     pub(super) fn record_cube_shadow_depth(
         &mut self,
@@ -539,29 +576,29 @@ impl Renderer {
                             layer as u32,
                         );
 
-                    if let Some(mesh_plan) = &mesh_frame_plan {
-                        if pool.slot_entity_eligible[slot] {
-                            let face_planes =
-                                postretro_render_data::cone_frustum::cone_frustum_planes(
-                                    &face_matrix,
-                                );
-                            let view = &pool.face_views[layer];
-                            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                                label: Some("Promoted Cube Entity Shadow Depth Pass"),
-                                color_attachments: &[],
-                                depth_stencil_attachment: Some(
-                                    wgpu::RenderPassDepthStencilAttachment {
-                                        view,
-                                        depth_ops: Some(wgpu::Operations {
-                                            load: wgpu::LoadOp::Load,
-                                            store: wgpu::StoreOp::Store,
-                                        }),
-                                        stencil_ops: None,
-                                    },
-                                ),
-                                timestamp_writes: None,
-                                ..Default::default()
-                            });
+                    if pool.slot_entity_eligible[slot]
+                        && (mesh_frame_plan.is_some() || !full.mover_occluder_aabbs.is_empty())
+                    {
+                        let face_planes =
+                            postretro_render_data::cone_frustum::cone_frustum_planes(&face_matrix);
+                        let view = &pool.face_views[layer];
+                        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: Some("Promoted Cube Entity Shadow Depth Pass"),
+                            color_attachments: &[],
+                            depth_stencil_attachment: Some(
+                                wgpu::RenderPassDepthStencilAttachment {
+                                    view,
+                                    depth_ops: Some(wgpu::Operations {
+                                        load: wgpu::LoadOp::Load,
+                                        store: wgpu::StoreOp::Store,
+                                    }),
+                                    stencil_ops: None,
+                                },
+                            ),
+                            timestamp_writes: None,
+                            ..Default::default()
+                        });
+                        if let Some(mesh_plan) = &mesh_frame_plan {
                             let submitted = full.mesh_pass.record_skinned_depth(
                                 &mut pass,
                                 mesh_plan,
@@ -570,9 +607,25 @@ impl Renderer {
                                 layer as u32 * stride,
                                 &face_planes,
                             );
-                            full.cube_entity_occluders_submitted += submitted;
-                            full.promoted_entity_occluders_submitted += submitted;
+                            tally_entity_occluder_submissions(
+                                &mut full.cube_entity_occluders_submitted,
+                                Some(&mut full.promoted_entity_occluders_submitted),
+                                submitted,
+                            );
                         }
+                        let submitted = full.rigid_occluder_depth.record_kinematic_movers(
+                            &mut pass,
+                            &full.kinematic_brush,
+                            &full.mover_occluder_aabbs,
+                            &full.cube_shadow_vs_bind_group,
+                            layer as u32 * stride,
+                            &face_planes,
+                        );
+                        tally_entity_occluder_submissions(
+                            &mut full.cube_entity_occluders_submitted,
+                            Some(&mut full.promoted_entity_occluders_submitted),
+                            submitted,
+                        );
                     }
                     continue;
                 }
@@ -616,29 +669,46 @@ impl Renderer {
                     }
                 }
 
-                // Skinned ENTITY occluders into the SAME face, gated on the
+                // Entity occluders into the SAME face, gated on the
                 // slot's entity eligibility (the per-light
                 // `casts_entity_shadows` toggle) — the same occluder split as
                 // the spot path: an ineligible slot keeps its world shadow but
                 // draws zero entity occluders. With neither draw the face still
                 // holds its Clear(1.0) baseline, so an occluder-free cube reads
                 // as fully lit (shadow factor 1.0).
-                if let Some(plan) = &mesh_frame_plan {
-                    if pool.slot_entity_eligible[slot] {
-                        // Face frustum planes from the same matrix uploaded to the cube
-                        // VS uniform buffer — one source of truth for cull + projection.
-                        let face_planes =
-                            postretro_render_data::cone_frustum::cone_frustum_planes(&face_matrix);
-                        full.cube_entity_occluders_submitted +=
-                            full.mesh_pass.record_skinned_depth(
-                                &mut pass,
-                                plan,
-                                MeshDepthInstanceFilter::ForwardVisibleOnly,
-                                &full.cube_shadow_vs_bind_group,
-                                layer as u32 * stride,
-                                &face_planes,
-                            );
+                if pool.slot_entity_eligible[slot] {
+                    // Face frustum planes from the same matrix uploaded to the cube
+                    // VS uniform buffer — one source of truth for cull + projection.
+                    let face_planes =
+                        postretro_render_data::cone_frustum::cone_frustum_planes(&face_matrix);
+                    if let Some(plan) = &mesh_frame_plan {
+                        let submitted = full.mesh_pass.record_skinned_depth(
+                            &mut pass,
+                            plan,
+                            MeshDepthInstanceFilter::ForwardVisibleOnly,
+                            &full.cube_shadow_vs_bind_group,
+                            layer as u32 * stride,
+                            &face_planes,
+                        );
+                        tally_entity_occluder_submissions(
+                            &mut full.cube_entity_occluders_submitted,
+                            None,
+                            submitted,
+                        );
                     }
+                    let submitted = full.rigid_occluder_depth.record_kinematic_movers(
+                        &mut pass,
+                        &full.kinematic_brush,
+                        &full.mover_occluder_aabbs,
+                        &full.cube_shadow_vs_bind_group,
+                        layer as u32 * stride,
+                        &face_planes,
+                    );
+                    tally_entity_occluder_submissions(
+                        &mut full.cube_entity_occluders_submitted,
+                        None,
+                        submitted,
+                    );
                 }
             }
         }
@@ -1089,6 +1159,28 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn entity_occluder_tally_counts_movers_in_dynamic_and_promoted_paths() {
+        let mut spot = 0;
+        let mut cube = 0;
+        let mut promoted = 0;
+
+        // Skinned submissions arrive first; mover recorder returns must join
+        // the same pool total and only promoted slots join the subset.
+        tally_entity_occluder_submissions(&mut spot, None, 2);
+        tally_entity_occluder_submissions(&mut spot, None, 3);
+        tally_entity_occluder_submissions(&mut spot, Some(&mut promoted), 5);
+        tally_entity_occluder_submissions(&mut spot, Some(&mut promoted), 7);
+        tally_entity_occluder_submissions(&mut cube, None, 11);
+        tally_entity_occluder_submissions(&mut cube, None, 13);
+        tally_entity_occluder_submissions(&mut cube, Some(&mut promoted), 17);
+        tally_entity_occluder_submissions(&mut cube, Some(&mut promoted), 19);
+
+        assert_eq!(spot, 17);
+        assert_eq!(cube, 60);
+        assert_eq!(promoted, 48);
+    }
 
     fn leaf(cell_id: u32) -> postretro_render_data::geometry::BvhLeaf {
         postretro_render_data::geometry::BvhLeaf {

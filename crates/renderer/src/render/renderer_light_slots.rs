@@ -98,13 +98,20 @@ impl Renderer {
                     .get(i)
                     .and_then(|selection| *selection)
                     .is_some()
-                    && !selected_static_light_has_shadow_entity(
+                {
+                    let has_shadow_mesh = selected_static_light_has_shadow_entity(
                         light,
                         full.shadow_candidate_influences.get(i),
                         promotion_mesh_frame_plan,
-                    )
-                {
-                    continue;
+                    );
+                    let has_shadow_mover = selected_static_light_has_mover_occluder(
+                        light,
+                        full.shadow_candidate_influences.get(i),
+                        &full.mover_occluder_aabbs,
+                    );
+                    if !has_shadow_mesh && !has_shadow_mover {
+                        continue;
+                    }
                 }
                 // Brightness suppression is indexed by `level_lights` (the
                 // forward / scripted-bridge index space). For candidates not in
@@ -321,7 +328,7 @@ impl Renderer {
             // cull frustum planes (one source of truth, no recomputation).
             full.spot_shadow_pool.slot_cone_matrices[slot as usize] = Some(m);
             // Record whether this slot's occupant renders entity occluders. The
-            // shadow-depth loop draws skinned occluders into the slot only when
+            // shadow-depth loop draws skinned meshes and rigid movers into the slot only when
             // this is set; an ineligible (e.g. toggle-off dynamic) slot keeps its
             // world shadow but draws none.
             let promoted_static = full
@@ -1084,24 +1091,54 @@ fn selected_static_light_has_shadow_entity(
     let Some(plan) = plan else {
         return false;
     };
-    let influence = influence.cloned().unwrap_or(LightInfluence {
+    let influence = selected_static_light_shadow_influence(light, influence);
+    plan.groups
+        .iter()
+        .flat_map(|group| group.instances.iter())
+        .any(|instance| {
+            let world = instance.bounds.transformed(&instance.transform);
+            static_light_influence_intersects_aabb(light, &influence, &world)
+        })
+}
+
+/// The mover counterpart to [`selected_static_light_has_shadow_entity`]. This
+/// stays separate from `MeshFramePlan`: movers have their own renderer-owned
+/// rigid-occluder data path and must share promotion capacity rather than mesh
+/// planning or palette budgets.
+fn selected_static_light_has_mover_occluder(
+    light: &MapLight,
+    influence: Option<&LightInfluence>,
+    movers: &[rigid_occluder_depth::MoverOccluderAabb],
+) -> bool {
+    let influence = selected_static_light_shadow_influence(light, influence);
+    movers
+        .iter()
+        .any(|mover| static_light_influence_intersects_aabb(light, &influence, &mover.world_aabb))
+}
+
+fn selected_static_light_shadow_influence(
+    light: &MapLight,
+    influence: Option<&LightInfluence>,
+) -> LightInfluence {
+    influence.cloned().unwrap_or(LightInfluence {
         center: Vec3::new(
             light.origin[0] as f32,
             light.origin[1] as f32,
             light.origin[2] as f32,
         ),
         radius: f32::MAX,
-    });
+    })
+}
+
+fn static_light_influence_intersects_aabb(
+    light: &MapLight,
+    influence: &LightInfluence,
+    world_aabb: &postretro_render_data::cone_frustum::Aabb,
+) -> bool {
     let center = influence.center;
     let radius_sq = influence.radius.max(light.falloff_range).max(0.0).powi(2);
-    plan.groups
-        .iter()
-        .flat_map(|group| group.instances.iter())
-        .any(|instance| {
-            let world = instance.bounds.transformed(&instance.transform);
-            let closest = center.clamp(world.min, world.max);
-            closest.distance_squared(center) <= radius_sq
-        })
+    let closest = center.clamp(world_aabb.min, world_aabb.max);
+    closest.distance_squared(center) <= radius_sq
 }
 
 fn build_count_split_light_upload(
@@ -1276,6 +1313,62 @@ mod tests {
         assert!(
             selected_static_light_has_shadow_entity(&light, Some(&influence), Some(&plan)),
             "planned shadow-only instances may promote selected static lights",
+        );
+    }
+
+    #[test]
+    fn selected_static_mover_gate_uses_active_mover_aabbs() {
+        use postretro_level_loader::{FalloffModel, LightType, MapLight, ShadowType};
+        use postretro_render_data::cone_frustum::Aabb;
+        use postretro_render_data::influence::LightInfluence;
+
+        let light = MapLight {
+            origin: [0.0, 0.0, 0.0],
+            light_type: LightType::Spot,
+            intensity: 1.0,
+            color: [1.0, 1.0, 1.0],
+            falloff_model: FalloffModel::Linear,
+            falloff_range: 4.0,
+            cone_angle_inner: 0.3,
+            cone_angle_outer: 0.4,
+            cone_direction: [0.0, 0.0, -1.0],
+            is_dynamic: false,
+            casts_entity_shadows: true,
+            animated_slot: None,
+            tags: vec![],
+            cell_index: 0,
+            shadow_type: ShadowType::StaticLightMap,
+        };
+        let influence = LightInfluence {
+            center: Vec3::ZERO,
+            radius: 4.0,
+        };
+        let inside = rigid_occluder_depth::MoverOccluderAabb {
+            mover_id: 7,
+            world_aabb: Aabb {
+                min: Vec3::new(3.5, -0.5, -0.5),
+                max: Vec3::new(4.5, 0.5, 0.5),
+            },
+        };
+        let outside = rigid_occluder_depth::MoverOccluderAabb {
+            mover_id: 8,
+            world_aabb: Aabb {
+                min: Vec3::new(5.0, -0.5, -0.5),
+                max: Vec3::new(6.0, 0.5, 0.5),
+            },
+        };
+
+        assert!(
+            !selected_static_light_has_mover_occluder(&light, Some(&influence), &[]),
+            "an empty per-frame mover set preserves the prior mesh-only result",
+        );
+        assert!(
+            !selected_static_light_has_mover_occluder(&light, Some(&influence), &[outside]),
+            "a mover beyond the influence radius cannot promote the static light",
+        );
+        assert!(
+            selected_static_light_has_mover_occluder(&light, Some(&influence), &[inside]),
+            "an active mover alone makes the static light promotion-relevant",
         );
     }
 }

@@ -4,6 +4,12 @@
 
 use super::*;
 
+// `material_shading.wgsl` owns world-material leaf helpers (`blinn_phong`,
+// `sample_normal`, `reconstruct_tbn_normal`). Its argument-only helpers are
+// reusable by any world-material pass; `sample_normal` resolves the consumer's
+// group-1 `aniso_sampler` and per-consumer `sample_post_retro` by lexical name.
+// Skinned meshes stay diffuse-only and deliberately do not append this snippet.
+//
 // `curve_eval.wgsl` reads `anim_samples`; `sh_sample.wgsl` reads
 // `sh_total_atlas`, `sh_depth_moments`, and `sh_grid`, all declared in
 // `forward.wgsl`. WGSL resolves module-scope names regardless of textual order,
@@ -44,6 +50,8 @@ use super::*;
 // declaration stays with the consumer in `forward.wgsl`.
 pub(crate) const SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/forward.wgsl"),
+    "\n",
+    include_str!("../shaders/material_shading.wgsl"),
     "\n",
     include_str!("../shaders/curve_eval.wgsl"),
     "\n",

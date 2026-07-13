@@ -21,8 +21,8 @@ pub use postretro_renderer::{
     CameraCullDiagnostics, CameraCullPath, CellOverlayState, ClearColor, DEFAULT_AMBIENT_FLOOR,
     DEFAULT_DYNAMIC_DIRECT_SCALE, DEFAULT_INDIRECT_SCALE, DynamicDirectIsolation,
     KinematicMoverInstance, LevelGeometry, LightingIsolation, LocatorDiagnostics,
-    PortalOverlayState, PresentHandle, Renderer, SdfShadowMode, SpatialCellSetDiagnostics,
-    SpatialDiagnostics, WorldWireframeMode, level_world_to_geometry,
+    MoverOccluderAabb, PortalOverlayState, PresentHandle, Renderer, SdfShadowMode,
+    SpatialCellSetDiagnostics, SpatialDiagnostics, WorldWireframeMode, level_world_to_geometry,
 };
 
 #[cfg(feature = "dev-tools")]

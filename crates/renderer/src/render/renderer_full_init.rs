@@ -453,6 +453,12 @@ pub(crate) fn build_full_renderer(
         &spot_shadow_pool.matrices_buffer,
         cube_shadow_pool.as_ref().map(|p| &p.sampling_view),
     );
+    let rigid_occluder_depth = rigid_occluder_depth::RigidOccluderDepthPass::new(
+        device,
+        crate::lighting::spot_shadow::SHADOW_DEPTH_FORMAT,
+        &shadow_vs_bgl,
+        kinematic_brush.instance_transform_bind_group_layout(),
+    );
 
     // UI quad / 9-slice + text pass — sibling to fog. Owns all UI GPU state
     // (quad pipeline, glyphon atlas/renderer, white texel). The splash phase
@@ -534,6 +540,8 @@ pub(crate) fn build_full_renderer(
         total_light_count: light_count,
         mesh_dynamic_time: 0.0,
         kinematic_mover_draws: Vec::new(),
+        kinematic_mover_shadow_draws: Vec::new(),
+        mover_occluder_aabbs: Vec::new(),
         ambient_floor,
         indirect_scale: DEFAULT_INDIRECT_SCALE,
         dynamic_direct_scale: DEFAULT_DYNAMIC_DIRECT_SCALE,
@@ -584,6 +592,7 @@ pub(crate) fn build_full_renderer(
         spot_shadow_pool,
         cube_shadow_pool,
         kinematic_brush,
+        rigid_occluder_depth,
         promoted_static_states: vec![
             PromotedStaticLightState::default();
             entity_shadow_indices.len()

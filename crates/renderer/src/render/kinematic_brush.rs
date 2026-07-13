@@ -8,6 +8,7 @@ use wgpu::util::DeviceExt;
 use super::*;
 
 const INSTANCE_ENTRY_SIZE: usize = 64;
+const KINEMATIC_LIGHT_PARAMS_SIZE: usize = 32;
 #[cfg(test)]
 const KINEMATIC_BIND_GROUP_COUNT: usize = 5;
 
@@ -24,6 +25,8 @@ struct KinematicLightParams {
     time: f32,
     lighting_isolation: u32,
     ambient_floor: f32,
+    dynamic_light_count: u32,
+    _pad: [u32; 3],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,10 +42,22 @@ struct UploadedMoverDraw {
     material_ranges: Vec<MaterialRange>,
 }
 
+/// Full shared-index-buffer span for one uploaded mover. Unlike the material
+/// ranges, this is a single draw range suitable for the depth-only path, which
+/// does not bind or batch by material.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ActiveMoverDraw {
-    mover_draw_index: usize,
-    instance_index: u32,
+pub(crate) struct MoverIndexRange {
+    pub(crate) index_start: u32,
+    pub(crate) index_count: u32,
+}
+
+/// One active mover's dense transform-buffer index. `mover_draw_index` is the
+/// stable key for geometry metadata; it deliberately is not the game-side
+/// mover id, which the depth recorder resolves through `KinematicBrushPass`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ActiveMoverDraw {
+    pub(crate) mover_draw_index: usize,
+    pub(crate) instance_index: u32,
 }
 
 pub(crate) struct KinematicBrushPass {
@@ -60,12 +75,19 @@ pub(crate) struct KinematicBrushPass {
     cube_array_supported: bool,
     movers: Vec<UploadedMoverDraw>,
     mover_lookup: HashMap<u32, usize>,
+    /// Every present mover transform, including camera-PVS-culled shadow casters.
     active_draws: Vec<ActiveMoverDraw>,
+    active_draw_lookup: HashMap<usize, ActiveMoverDraw>,
+    /// Camera-visible subset of `active_draws` for the beauty pass.
+    beauty_draws: Vec<ActiveMoverDraw>,
+    mover_index_ranges: Vec<MoverIndexRange>,
     instance_bytes: Vec<u8>,
 }
 
 const SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/kinematic_brush.wgsl"),
+    "\n",
+    include_str!("../shaders/material_shading.wgsl"),
     "\n",
     include_str!("../shaders/sh_sample.wgsl"),
     "\n",
@@ -93,12 +115,16 @@ fn build_instance_entry(model: glam::Mat4) -> [u8; INSTANCE_ENTRY_SIZE] {
     bytes
 }
 
-fn build_light_params_bytes(params: KinematicLightParams) -> [u8; 16] {
-    let mut bytes = [0u8; 16];
+/// Serialize the 32-byte uniform row shared with `KinematicLightParams` in
+/// `kinematic_brush.wgsl`. The dynamic-tier count sits at byte 16; the tail
+/// stays explicit padding so the next uniform row remains 16-byte aligned.
+fn build_light_params_bytes(params: KinematicLightParams) -> [u8; KINEMATIC_LIGHT_PARAMS_SIZE] {
+    let mut bytes = [0u8; KINEMATIC_LIGHT_PARAMS_SIZE];
     bytes[0..4].copy_from_slice(&params.light_count.to_ne_bytes());
     bytes[4..8].copy_from_slice(&params.time.to_ne_bytes());
     bytes[8..12].copy_from_slice(&params.lighting_isolation.to_ne_bytes());
     bytes[12..16].copy_from_slice(&params.ambient_floor.to_ne_bytes());
+    bytes[16..20].copy_from_slice(&params.dynamic_light_count.to_ne_bytes());
     bytes
 }
 
@@ -124,7 +150,7 @@ fn light_bind_group_layout_entries(cube_array_supported: bool) -> Vec<wgpu::Bind
             ty: wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Uniform,
                 has_dynamic_offset: false,
-                min_binding_size: None,
+                min_binding_size: std::num::NonZeroU64::new(KINEMATIC_LIGHT_PARAMS_SIZE as u64),
             },
             count: None,
         },
@@ -391,7 +417,7 @@ impl KinematicBrushPass {
         });
         let light_params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Kinematic Brush Light Params"),
-            size: 16,
+            size: KINEMATIC_LIGHT_PARAMS_SIZE as wgpu::BufferAddress,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -412,6 +438,9 @@ impl KinematicBrushPass {
             movers: Vec::new(),
             mover_lookup: HashMap::new(),
             active_draws: Vec::new(),
+            active_draw_lookup: HashMap::new(),
+            beauty_draws: Vec::new(),
+            mover_index_ranges: Vec::new(),
             instance_bytes: Vec::new(),
         }
     }
@@ -425,11 +454,18 @@ impl KinematicBrushPass {
         self.movers.clear();
         self.mover_lookup.clear();
         self.active_draws.clear();
+        self.active_draw_lookup.clear();
+        self.beauty_draws.clear();
+        self.mover_index_ranges.clear();
 
         let Some(geometry) = geometry else {
             self.install_empty_geometry(device);
             return;
         };
+        // This map is rebuilt every render collection; reserve at level install
+        // so shadow recording does not trigger a per-frame reallocation.
+        self.active_draw_lookup.reserve(geometry.movers.len());
+        self.beauty_draws.reserve(geometry.movers.len());
 
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
@@ -460,6 +496,10 @@ impl KinematicBrushPass {
             self.movers.push(UploadedMoverDraw {
                 mover_id: mover.mover_id,
                 material_ranges: ranges,
+            });
+            self.mover_index_ranges.push(MoverIndexRange {
+                index_start: index_base,
+                index_count: mover.indices.len() as u32,
             });
         }
 
@@ -495,6 +535,56 @@ impl KinematicBrushPass {
             usage: wgpu::BufferUsages::INDEX,
         });
         self.index_count = 0;
+    }
+
+    /// Shared position-bearing vertex buffer. The rigid depth path consumes
+    /// only location 0 while retaining this buffer's world-vertex stride.
+    pub(crate) fn shared_vertex_buffer(&self) -> &wgpu::Buffer {
+        &self.vertex_buffer
+    }
+
+    /// Shared geometry index buffer used by both mover beauty and depth draws.
+    pub(crate) fn shared_index_buffer(&self) -> &wgpu::Buffer {
+        &self.index_buffer
+    }
+
+    /// Layout for the uploaded per-instance model transforms. The rigid depth
+    /// pipeline keeps it at group 1, separate from the beauty path's group 3.
+    pub(crate) fn instance_transform_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.instance_bind_group_layout
+    }
+
+    /// Existing per-instance model-transform binding populated by
+    /// [`Self::upload_instances`] before shadow recording.
+    pub(crate) fn instance_transform_bind_group(&self) -> &wgpu::BindGroup {
+        &self.instance_bind_group
+    }
+
+    /// Dense all-present mover instances, keyed by `mover_draw_index` rather
+    /// than the game-side mover id. Shadow depth reads this list; beauty draws
+    /// use the camera-visible subset held separately.
+    pub(crate) fn active_draws(&self) -> &[ActiveMoverDraw] {
+        &self.active_draws
+    }
+
+    /// One full index span per uploaded mover, keyed by `mover_draw_index`.
+    pub(crate) fn mover_index_ranges(&self) -> &[MoverIndexRange] {
+        &self.mover_index_ranges
+    }
+
+    /// Resolve a game-side mover id through this pass's uploaded mover list to
+    /// the draw index that keys active instances and full index spans.
+    pub(crate) fn mover_draw_index_for_mover_id(&self, mover_id: u32) -> Option<usize> {
+        self.mover_lookup.get(&mover_id).copied()
+    }
+
+    /// Resolve an active transform-buffer record by its geometry draw index.
+    /// External mover ids must first pass through [`Self::mover_draw_index_for_mover_id`].
+    pub(crate) fn active_draw_for_mover_draw_index(
+        &self,
+        mover_draw_index: usize,
+    ) -> Option<ActiveMoverDraw> {
+        self.active_draw_lookup.get(&mover_draw_index).copied()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -566,22 +656,42 @@ impl KinematicBrushPass {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        instances: &[KinematicMoverInstance],
+        beauty_instances: &[KinematicMoverInstance],
+        shadow_instances: &[KinematicMoverInstance],
     ) {
         self.active_draws.clear();
+        self.active_draw_lookup.clear();
+        self.beauty_draws.clear();
         self.instance_bytes.clear();
 
-        for instance in instances {
+        for instance in shadow_instances {
             let Some(&mover_draw_index) = self.mover_lookup.get(&instance.mover_id) else {
                 continue;
             };
             let instance_index = (self.instance_bytes.len() / INSTANCE_ENTRY_SIZE) as u32;
             self.instance_bytes
                 .extend_from_slice(&build_instance_entry(instance.transform));
-            self.active_draws.push(ActiveMoverDraw {
+            let active_draw = ActiveMoverDraw {
                 mover_draw_index,
                 instance_index,
-            });
+            };
+            self.active_draws.push(active_draw);
+            // A mover id has one external AABB. Keep its first packed instance
+            // so the depth recorder preserves the former `iter().find()` behavior
+            // if malformed input ever duplicates that id.
+            self.active_draw_lookup
+                .entry(mover_draw_index)
+                .or_insert(active_draw);
+        }
+
+        for instance in beauty_instances {
+            let Some(&mover_draw_index) = self.mover_lookup.get(&instance.mover_id) else {
+                continue;
+            };
+            let Some(active_draw) = self.active_draw_lookup.get(&mover_draw_index) else {
+                continue;
+            };
+            self.beauty_draws.push(*active_draw);
         }
 
         if self.instance_bytes.is_empty() {
@@ -612,6 +722,7 @@ impl KinematicBrushPass {
         &self,
         queue: &wgpu::Queue,
         light_count: u32,
+        dynamic_light_count: u32,
         time: f32,
         lighting_isolation: u32,
         ambient_floor: f32,
@@ -621,15 +732,17 @@ impl KinematicBrushPass {
             0,
             &build_light_params_bytes(KinematicLightParams {
                 light_count,
+                dynamic_light_count,
                 time,
                 lighting_isolation,
                 ambient_floor,
+                _pad: [0; 3],
             }),
         );
     }
 
     pub fn has_draws(&self) -> bool {
-        self.index_count > 0 && !self.active_draws.is_empty()
+        self.index_count > 0 && !self.beauty_draws.is_empty()
     }
 
     pub fn record_draws(&self, pass: &mut wgpu::RenderPass<'_>, materials: &[GpuTexture]) {
@@ -646,7 +759,7 @@ impl KinematicBrushPass {
         pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 
-        for active in &self.active_draws {
+        for active in &self.beauty_draws {
             let mover = &self.movers[active.mover_draw_index];
             let instance_range = active.instance_index..active.instance_index + 1;
             for range in &mover.material_ranges {
@@ -943,6 +1056,126 @@ mod tests {
                 .iter()
                 .all(|entry| !entry.visibility.contains(wgpu::ShaderStages::VERTEX)),
             "runtime-light bindings must not spend vertex-stage storage budget",
+        );
+    }
+
+    #[test]
+    fn kinematic_light_layout_requires_32_byte_params_uniform() {
+        let entries = light_bind_group_layout_entries(true);
+        let params_entry = entries
+            .iter()
+            .find(|entry| entry.binding == 4)
+            .expect("kinematic light layout must bind params at binding 4");
+        let wgpu::BindingType::Buffer {
+            ty,
+            has_dynamic_offset,
+            min_binding_size,
+        } = params_entry.ty
+        else {
+            panic!("kinematic light binding 4 must be a uniform buffer");
+        };
+
+        assert_eq!(ty, wgpu::BufferBindingType::Uniform);
+        assert!(!has_dynamic_offset);
+        assert_eq!(
+            min_binding_size.map(std::num::NonZeroU64::get),
+            Some(KINEMATIC_LIGHT_PARAMS_SIZE as u64),
+        );
+    }
+
+    #[test]
+    fn kinematic_light_params_uploads_dynamic_tier_count_in_second_uniform_row() {
+        let bytes = build_light_params_bytes(KinematicLightParams {
+            light_count: 11,
+            time: 1.5,
+            lighting_isolation: 8,
+            ambient_floor: 0.375,
+            dynamic_light_count: 7,
+            _pad: [0; 3],
+        });
+
+        assert_eq!(bytes.len(), KINEMATIC_LIGHT_PARAMS_SIZE);
+        assert_eq!(bytes[0..4], 11u32.to_ne_bytes());
+        assert_eq!(bytes[4..8], 1.5f32.to_ne_bytes());
+        assert_eq!(bytes[8..12], 8u32.to_ne_bytes());
+        assert_eq!(bytes[12..16], 0.375f32.to_ne_bytes());
+        assert_eq!(bytes[16..20], 7u32.to_ne_bytes());
+        assert_eq!(bytes[20..], [0; 12]);
+    }
+
+    #[test]
+    fn kinematic_light_params_wgsl_layout_matches_rust_upload() {
+        let module = naga::front::wgsl::parse_str(SHADER_SOURCE)
+            .expect("composed kinematic brush shader should parse as WGSL");
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("composed kinematic brush shader should pass Naga validation");
+
+        let (span, members) = module
+            .types
+            .iter()
+            .find_map(|(_handle, ty)| match (&ty.name, &ty.inner) {
+                (Some(name), naga::TypeInner::Struct { span, members, .. })
+                    if name == "KinematicLightParams" =>
+                {
+                    Some((*span, members))
+                }
+                _ => None,
+            })
+            .expect("kinematic brush shader should declare KinematicLightParams");
+
+        assert_eq!(span as usize, KINEMATIC_LIGHT_PARAMS_SIZE);
+        assert_eq!(
+            members
+                .iter()
+                .map(|member| member.name.as_deref())
+                .collect::<Vec<_>>(),
+            vec![
+                Some("light_count"),
+                Some("time"),
+                Some("lighting_isolation"),
+                Some("ambient_floor"),
+                Some("dynamic_light_count"),
+                Some("_pad0"),
+                Some("_pad1"),
+                Some("_pad2"),
+            ],
+        );
+        assert_eq!(
+            members
+                .iter()
+                .map(|member| member.offset)
+                .collect::<Vec<_>>(),
+            vec![0, 4, 8, 12, 16, 20, 24, 28],
+        );
+    }
+
+    #[test]
+    fn kinematic_shader_uses_shared_material_helpers_for_promoted_static_specular() {
+        assert!(
+            SHADER_SOURCE.contains("fn blinn_phong(")
+                && SHADER_SOURCE.contains("fn sample_normal(")
+                && SHADER_SOURCE.contains("fn reconstruct_tbn_normal("),
+            "the composed mover shader must append the shared material shading snippet",
+        );
+
+        let dynamic_loop = extract_wgsl_fn(
+            include_str!("../shaders/kinematic_brush.wgsl"),
+            "accumulate_dynamic_direct",
+        );
+        assert!(
+            dynamic_loop
+                .contains("if i >= kinematic_light_params.dynamic_light_count && n_dot_l > 0.0"),
+            "only front-lit promoted records may add mover specular",
+        );
+        assert!(
+            dynamic_loop.contains(
+                "blinn_phong(L, V, n, effective_color, spec_exp, spec_int) * attenuation"
+            ),
+            "promoted mover specular must retain the runtime attenuation, cone, shadow, and promotion color factors",
         );
     }
 }

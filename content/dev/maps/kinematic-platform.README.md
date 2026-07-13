@@ -19,9 +19,9 @@ The fixture uses two complete world-material bundles:
 
 - `50-free-textures/concrete_stone_022` supplies the broad Concrete (shininess
   4) reference used at the west station and by promotion mover B.
-- `metal/metal_brushed_012` supplies the tight Metal (shininess 64) reference
+- `metal/metal_rough_046a` supplies the rough Metal (shininess 64) reference
   used by promotion mover A and its in-range static wall. Its reusable asset
-  provenance and generated sibling-map details live in
+  provenance and source-derived sibling-map details live in
   [`content/dev/textures/metal/SOURCE.md`](../textures/metal/SOURCE.md).
 
 ## Stations
@@ -33,7 +33,7 @@ The fixture uses two complete world-material bundles:
   orientation. The explicitly authored `light_dynamic_spot` and
   `light_dynamic` both set `_cast_entity_shadows 1`; the point light covers the
   two movers and the mesh beside platform B.
-- **Mover-only promotion station (x 960–1,568).** A Metal mover and a Concrete
+- **Mover-only promotion station (x 960–1,568).** A rough-Metal mover and a Concrete
   mover cross under one bright static spotlight. No skinned mesh is placed
   here. They make the light promotion-relevant, receive promoted-static
   specular, and cast onto each other. An in-range Metal static comparison wall
@@ -49,14 +49,14 @@ The fixture uses two complete world-material bundles:
 1. At the west station, compare a north-facing mover side and the north-facing
    static wall. Their concrete diffuse and bump response should agree under a
    comparable view and light angle.
-2. Under the mover-only station's promoted static spotlight, compare Metal
-   mover A's tight lobe with the in-range Metal static wall. It should match in
-   character, not pixel-for-pixel: the wall uses its baked static path while
-   the mover uses the promoted runtime record. Compare that lobe with Concrete
-   mover B's broader response under the same light. Move either platform until
-   it leaves the light's influence: its lobe must fade with de-promotion, not
-   pop. The floor and comparison wall must not receive that promoted-static
-   mover shadow.
+2. Under the mover-only station's promoted static spotlight, compare rough-Metal
+   mover A's subdued, tight material response with the in-range rough-Metal
+   static wall. It should match in character, not pixel-for-pixel: the wall
+   uses its baked static path while the mover uses the promoted runtime record.
+   Compare that response with Concrete mover B's broader one under the same
+   light. Move either platform until it leaves the light's influence: its lobe
+   must fade with de-promotion, not pop. The floor and comparison wall must not
+   receive that promoted-static mover shadow.
 3. At the west station, the dynamic spot and point lights may brighten movers
    and the wall diffusely, but must not create a specular glint. Watch a moving
    platform shadow sweep across the floor under both dynamic lights, and across

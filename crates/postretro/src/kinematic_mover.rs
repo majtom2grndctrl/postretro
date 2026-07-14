@@ -3,8 +3,9 @@
 //! The driver is intentionally a pure function of component phase, static path
 //! data, and fixed `dt`. It reads no clock, RNG, host role, or external state.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Mutex, OnceLock};
+use std::rc::Rc;
 
 use glam::Vec3;
 use postretro_entities::{
@@ -17,6 +18,35 @@ use postretro_scripting_core::sequence::{SequenceError, SequencedPrimitiveRegist
 use serde::Deserialize;
 
 use crate::collision::moving::{MoverPose, MoverPoseSource};
+
+/// Per-level warning deduplication shared by mover command routes whose
+/// registries survive level reloads.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct MoverCommandDiagnostics {
+    warned_non_mover_targets: Rc<RefCell<HashSet<EntityId>>>,
+    warned_non_trigger_targets: Rc<RefCell<HashSet<EntityId>>>,
+}
+
+impl MoverCommandDiagnostics {
+    pub(crate) fn clear(&self) {
+        self.warned_non_mover_targets.borrow_mut().clear();
+        self.warned_non_trigger_targets.borrow_mut().clear();
+    }
+
+    fn warn_non_mover_target_once(&self, entity: EntityId) {
+        if self.warned_non_mover_targets.borrow_mut().insert(entity) {
+            log::warn!("[Mover] command target {entity} has no KinematicMoverComponent; skipping");
+        }
+    }
+
+    pub(crate) fn warn_non_trigger_target_once(&self, entity: EntityId) {
+        if self.warned_non_trigger_targets.borrow_mut().insert(entity) {
+            log::warn!(
+                "[Trigger] arm/disarm target {entity} has no TriggerVolumeComponent; skipping"
+            );
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct MoverTickState {
@@ -214,13 +244,35 @@ pub(crate) fn apply_mover_command_to_targets(
     registry: &mut EntityRegistry,
     targets: &[EntityId],
     command: &MoverCommand,
+    diagnostics: &MoverCommandDiagnostics,
+) {
+    apply_mover_command_to_targets_inner(registry, targets, command, Some(diagnostics));
+}
+
+/// Apply a command to targets produced by a `KinematicMover` component query.
+/// Unlike authored mixed-tag routes, this path cannot encounter a non-mover.
+pub(crate) fn apply_mover_command_to_known_movers(
+    registry: &mut EntityRegistry,
+    targets: &[EntityId],
+    command: &MoverCommand,
+) {
+    apply_mover_command_to_targets_inner(registry, targets, command, None);
+}
+
+fn apply_mover_command_to_targets_inner(
+    registry: &mut EntityRegistry,
+    targets: &[EntityId],
+    command: &MoverCommand,
+    diagnostics: Option<&MoverCommandDiagnostics>,
 ) {
     for &entity in targets {
         let Ok(mut mover) = registry
             .get_component::<KinematicMoverComponent>(entity)
             .cloned()
         else {
-            warn_non_mover_target_once(entity);
+            if let Some(diagnostics) = diagnostics {
+                diagnostics.warn_non_mover_target_once(entity);
+            }
             continue;
         };
         apply_mover_command(&mut mover, command);
@@ -231,25 +283,41 @@ pub(crate) fn apply_mover_command_to_targets(
 /// Register the closed mover command vocabulary for named, tag-targeted
 /// reactions. Each route intentionally converges on the shared command applier
 /// used by KVP trigger dispatch.
-pub(crate) fn register_mover_reaction_primitives(registry: &mut ReactionPrimitiveRegistry) {
-    registry.register("moverStart", |registry, targets, _args| {
-        apply_mover_command_to_targets(registry, targets, &MoverCommand::Start);
+pub(crate) fn register_mover_reaction_primitives(
+    registry: &mut ReactionPrimitiveRegistry,
+    diagnostics: MoverCommandDiagnostics,
+) {
+    let start_diagnostics = diagnostics.clone();
+    registry.register("moverStart", move |registry, targets, _args| {
+        apply_mover_command_to_targets(registry, targets, &MoverCommand::Start, &start_diagnostics);
         Ok(())
     });
-    registry.register("moverStop", |registry, targets, _args| {
-        apply_mover_command_to_targets(registry, targets, &MoverCommand::Stop);
+    let stop_diagnostics = diagnostics.clone();
+    registry.register("moverStop", move |registry, targets, _args| {
+        apply_mover_command_to_targets(registry, targets, &MoverCommand::Stop, &stop_diagnostics);
         Ok(())
     });
-    registry.register("moverReverse", |registry, targets, _args| {
-        apply_mover_command_to_targets(registry, targets, &MoverCommand::Reverse);
+    let reverse_diagnostics = diagnostics.clone();
+    registry.register("moverReverse", move |registry, targets, _args| {
+        apply_mover_command_to_targets(
+            registry,
+            targets,
+            &MoverCommand::Reverse,
+            &reverse_diagnostics,
+        );
         Ok(())
     });
-    registry.register("moverGoToPathNode", |registry, targets, args| {
+    registry.register("moverGoToPathNode", move |registry, targets, args| {
         let args: MoverGoToPathNodeArgs =
             serde_json::from_value(args.clone()).map_err(|e| ReactionError::InvalidArgument {
                 reason: format!("moverGoToPathNode: failed to deserialize args: {e}"),
             })?;
-        apply_mover_command_to_targets(registry, targets, &MoverCommand::GoToPathNode(args.node));
+        apply_mover_command_to_targets(
+            registry,
+            targets,
+            &MoverCommand::GoToPathNode(args.node),
+            &diagnostics,
+        );
         Ok(())
     });
 }
@@ -260,10 +328,29 @@ pub(crate) fn register_mover_reaction_primitives(registry: &mut ReactionPrimitiv
 pub(crate) fn register_sequenced_mover_primitives(
     registry: &mut SequencedPrimitiveRegistry,
     ctx: postretro_entities::ScriptCtx,
+    diagnostics: MoverCommandDiagnostics,
 ) {
-    register_sequenced_mover_command(registry, ctx.clone(), "moverStart", MoverCommand::Start);
-    register_sequenced_mover_command(registry, ctx.clone(), "moverStop", MoverCommand::Stop);
-    register_sequenced_mover_command(registry, ctx.clone(), "moverReverse", MoverCommand::Reverse);
+    register_sequenced_mover_command(
+        registry,
+        ctx.clone(),
+        diagnostics.clone(),
+        "moverStart",
+        MoverCommand::Start,
+    );
+    register_sequenced_mover_command(
+        registry,
+        ctx.clone(),
+        diagnostics.clone(),
+        "moverStop",
+        MoverCommand::Stop,
+    );
+    register_sequenced_mover_command(
+        registry,
+        ctx.clone(),
+        diagnostics.clone(),
+        "moverReverse",
+        MoverCommand::Reverse,
+    );
     registry.register("moverGoToPathNode", move |id, args| {
         let args: MoverGoToPathNodeArgs =
             serde_json::from_value(args.clone()).map_err(|e| SequenceError::InvalidArgument {
@@ -274,6 +361,7 @@ pub(crate) fn register_sequenced_mover_primitives(
             &mut entities,
             &[id],
             &MoverCommand::GoToPathNode(args.node),
+            &diagnostics,
         );
         Ok(())
     });
@@ -282,12 +370,13 @@ pub(crate) fn register_sequenced_mover_primitives(
 fn register_sequenced_mover_command(
     registry: &mut SequencedPrimitiveRegistry,
     ctx: postretro_entities::ScriptCtx,
+    diagnostics: MoverCommandDiagnostics,
     name: &'static str,
     command: MoverCommand,
 ) {
     registry.register(name, move |id, _args| {
         let mut entities = ctx.registry.borrow_mut();
-        apply_mover_command_to_targets(&mut entities, &[id], &command);
+        apply_mover_command_to_targets(&mut entities, &[id], &command, &diagnostics);
         Ok(())
     });
 }
@@ -295,17 +384,6 @@ fn register_sequenced_mover_command(
 #[derive(Debug, Deserialize)]
 struct MoverGoToPathNodeArgs {
     node: String,
-}
-
-fn warn_non_mover_target_once(entity: EntityId) {
-    static WARNED_TARGETS: OnceLock<Mutex<HashSet<EntityId>>> = OnceLock::new();
-    let warned = WARNED_TARGETS.get_or_init(|| Mutex::new(HashSet::new()));
-    let Ok(mut warned) = warned.lock() else {
-        return;
-    };
-    if warned.insert(entity) {
-        log::warn!("[Mover] command target {entity} has no KinematicMoverComponent; skipping");
-    }
 }
 
 fn advance_mover(mover: &mut KinematicMoverComponent, tick_dt: f32) -> Vec3 {
@@ -538,6 +616,30 @@ mod tests {
     use glam::{Quat, Vec3};
 
     const EPS: f32 = 1.0e-5;
+
+    #[test]
+    fn command_diagnostics_deduplicate_within_a_level_and_reset_on_clear() {
+        let diagnostics = MoverCommandDiagnostics::default();
+        let shared_route = diagnostics.clone();
+        let entity = EntityId::from_raw(41);
+
+        diagnostics.warn_non_mover_target_once(entity);
+        shared_route.warn_non_mover_target_once(entity);
+        diagnostics.warn_non_trigger_target_once(entity);
+        shared_route.warn_non_trigger_target_once(entity);
+
+        assert_eq!(diagnostics.warned_non_mover_targets.borrow().len(), 1);
+        assert_eq!(diagnostics.warned_non_trigger_targets.borrow().len(), 1);
+
+        diagnostics.clear();
+        assert!(diagnostics.warned_non_mover_targets.borrow().is_empty());
+        assert!(diagnostics.warned_non_trigger_targets.borrow().is_empty());
+
+        shared_route.warn_non_mover_target_once(entity);
+        shared_route.warn_non_trigger_target_once(entity);
+        assert_eq!(diagnostics.warned_non_mover_targets.borrow().len(), 1);
+        assert_eq!(diagnostics.warned_non_trigger_targets.borrow().len(), 1);
+    }
 
     fn transform_at(position: Vec3) -> Transform {
         Transform {
@@ -810,6 +912,7 @@ mod tests {
             &mut registry,
             &[mover_entity, non_mover],
             &MoverCommand::Stop,
+            &MoverCommandDiagnostics::default(),
         );
 
         assert!(
@@ -848,7 +951,7 @@ mod tests {
             .set_component(kvp_target, sample_mover(KinematicMoverMode::PingPong, 0.0))
             .unwrap();
         let mut reactions = ReactionPrimitiveRegistry::new();
-        register_mover_reaction_primitives(&mut reactions);
+        register_mover_reaction_primitives(&mut reactions, Default::default());
         assert!(
             reactions
                 .dispatch(
@@ -863,6 +966,7 @@ mod tests {
             &mut kvp_registry,
             &[kvp_target],
             &MoverCommand::GoToPathNode("finish".to_string()),
+            &MoverCommandDiagnostics::default(),
         );
 
         assert_eq!(

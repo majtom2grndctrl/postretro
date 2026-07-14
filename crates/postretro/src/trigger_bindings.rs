@@ -23,7 +23,7 @@ use postretro_scripting_core::store_bridge::{
 use serde::Deserialize;
 
 use crate::health::reactions::{self as health_reactions, ApplyDamageArgs};
-use crate::kinematic_mover::apply_mover_command_to_targets;
+use crate::kinematic_mover::{MoverCommandDiagnostics, apply_mover_command_to_targets};
 use crate::scripting::reactions::animation::{self as animation_reactions, SetAnimationStateArgs};
 use crate::trigger_system::{TriggerEventEdge, arm_trigger_targets, disarm_trigger_targets};
 
@@ -59,6 +59,7 @@ impl TriggerResidual {
 pub(crate) struct TriggerBindingTable {
     bindings: HashMap<(EntityId, TriggerEventEdge), TriggerBinding>,
     residuals: Vec<TriggerResidual>,
+    command_diagnostics: MoverCommandDiagnostics,
 }
 
 #[derive(Debug)]
@@ -174,6 +175,7 @@ impl TriggerBindingTable {
     /// standalone table-only builder remains for literal-only test fixtures;
     /// real level installation must use this path so IR writes are validated
     /// against the live slot declarations once.
+    #[cfg(test)]
     pub(crate) fn build_with_script_ctx(
         registry: &EntityRegistry,
         data_registry: &DataRegistry,
@@ -181,6 +183,18 @@ impl TriggerBindingTable {
     ) -> Self {
         let slot_table = script_ctx.slot_table.borrow();
         Self::build_inner(registry, data_registry, &slot_table, Some(script_ctx))
+    }
+
+    pub(crate) fn build_with_script_ctx_and_diagnostics(
+        registry: &EntityRegistry,
+        data_registry: &DataRegistry,
+        script_ctx: &ScriptCtx,
+        command_diagnostics: MoverCommandDiagnostics,
+    ) -> Self {
+        let slot_table = script_ctx.slot_table.borrow();
+        let mut table = Self::build_inner(registry, data_registry, &slot_table, Some(script_ctx));
+        table.command_diagnostics = command_diagnostics;
+        table
     }
 
     fn build_inner(
@@ -286,7 +300,7 @@ impl TriggerBindingTable {
         #[cfg(test)]
         let mut commands = Vec::with_capacity(binding.commands.len());
         for command in &binding.commands {
-            command.execute(registry, slot_table);
+            command.execute(registry, slot_table, &self.command_diagnostics);
             #[cfg(test)]
             commands.push(command.kind());
         }
@@ -317,7 +331,7 @@ impl TriggerBindingTable {
         #[cfg(test)]
         let mut commands = Vec::with_capacity(binding.commands.len());
         for command in &binding.commands {
-            command.execute_with_script_ctx(registry, script_ctx);
+            command.execute_with_script_ctx(registry, script_ctx, &self.command_diagnostics);
             #[cfg(test)]
             commands.push(command.kind());
         }
@@ -346,7 +360,12 @@ impl TriggerBindingTable {
 }
 
 impl BoundTriggerCommand {
-    fn execute(&self, registry: &mut EntityRegistry, slot_table: &mut SlotTable) {
+    fn execute(
+        &self,
+        registry: &mut EntityRegistry,
+        slot_table: &mut SlotTable,
+        command_diagnostics: &MoverCommandDiagnostics,
+    ) {
         match self {
             Self::StoreSlot { slot, value } => {
                 let BoundStoreValue::Literal(value) = value else {
@@ -358,11 +377,16 @@ impl BoundTriggerCommand {
                     log::warn!("[Trigger] setState binding for `{slot}` failed: {error}");
                 }
             }
-            _ => self.execute_non_store(registry),
+            _ => self.execute_non_store(registry, command_diagnostics),
         }
     }
 
-    fn execute_with_script_ctx(&self, registry: &mut EntityRegistry, script_ctx: &ScriptCtx) {
+    fn execute_with_script_ctx(
+        &self,
+        registry: &mut EntityRegistry,
+        script_ctx: &ScriptCtx,
+        command_diagnostics: &MoverCommandDiagnostics,
+    ) {
         match self {
             Self::StoreSlot { slot, value } => match value {
                 BoundStoreValue::Literal(value) => {
@@ -378,14 +402,23 @@ impl BoundTriggerCommand {
                     eval_and_write(program, &mut scope);
                 }
             },
-            _ => self.execute_non_store(registry),
+            _ => self.execute_non_store(registry, command_diagnostics),
         }
     }
 
-    fn execute_non_store(&self, registry: &mut EntityRegistry) {
+    fn execute_non_store(
+        &self,
+        registry: &mut EntityRegistry,
+        command_diagnostics: &MoverCommandDiagnostics,
+    ) {
         match self {
             Self::Mover { target, command } => {
-                apply_mover_command_to_targets(registry, &target.resolve(registry), command);
+                apply_mover_command_to_targets(
+                    registry,
+                    &target.resolve(registry),
+                    command,
+                    command_diagnostics,
+                );
             }
             Self::Damage { target, amount } => {
                 let targets = target.resolve(registry);
@@ -397,9 +430,11 @@ impl BoundTriggerCommand {
                     log::warn!("[Trigger] applyDamage binding failed: {error}");
                 }
             }
-            Self::Arm { target } => arm_trigger_targets(registry, &target.resolve(registry)),
+            Self::Arm { target } => {
+                arm_trigger_targets(registry, &target.resolve(registry), command_diagnostics);
+            }
             Self::Disarm { target } => {
-                disarm_trigger_targets(registry, &target.resolve(registry));
+                disarm_trigger_targets(registry, &target.resolve(registry), command_diagnostics);
             }
             Self::AnimationState { target, state } => {
                 let targets = target.resolve(registry);

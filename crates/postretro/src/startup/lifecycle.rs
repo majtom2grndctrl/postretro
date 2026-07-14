@@ -82,6 +82,7 @@ impl App {
         // path (session may be absent if suspend arrives pre-install), so the
         // session-owned state clears are guarded — a no-op with no session yet.
         if let Some(session) = self.session.as_mut() {
+            session.scripting.command_diagnostics.clear();
             session.fog_volume_bridge.clear();
             session.trigger_volume_bridge.clear();
             session.trigger_system.clear();
@@ -333,7 +334,10 @@ impl App {
             let Some(session) = self.session.as_ref() else {
                 return;
             };
-            build_trigger_bindings(&session.scripting.script_ctx)
+            build_trigger_bindings(
+                &session.scripting.script_ctx,
+                session.scripting.command_diagnostics.clone(),
+            )
         };
         self.trigger_bindings = bindings;
     }
@@ -725,6 +729,7 @@ impl App {
                 .as_ref()
                 .expect("level installed before segment B"),
             script_ctx: &script_ctx,
+            command_diagnostics: session.scripting.command_diagnostics.clone(),
             content_root: install_content_root.as_path(),
             active_level_tags: &self.active_level_tags,
             nav_graph: self.nav_graph.as_ref(),
@@ -926,11 +931,15 @@ fn rebuild_reaction_subscribers(
     );
 }
 
-fn build_trigger_bindings(script_ctx: &postretro_entities::ScriptCtx) -> TriggerBindingTable {
-    TriggerBindingTable::build_with_script_ctx(
+fn build_trigger_bindings(
+    script_ctx: &postretro_entities::ScriptCtx,
+    command_diagnostics: crate::kinematic_mover::MoverCommandDiagnostics,
+) -> TriggerBindingTable {
+    TriggerBindingTable::build_with_script_ctx_and_diagnostics(
         &script_ctx.registry.borrow(),
         &script_ctx.data_registry.borrow(),
         script_ctx,
+        command_diagnostics,
     )
 }
 
@@ -973,6 +982,7 @@ pub(crate) struct WorldInstallProducts {
 pub(crate) struct WorldInstallHandles<'a> {
     pub(crate) world: &'a postretro_level_loader::LevelWorld,
     pub(crate) script_ctx: &'a postretro_entities::ScriptCtx,
+    pub(crate) command_diagnostics: crate::kinematic_mover::MoverCommandDiagnostics,
     pub(crate) content_root: &'a std::path::Path,
     pub(crate) active_level_tags: &'a [String],
     /// The nav graph produced by segment A; supplies the descriptor-spawn agent
@@ -1026,6 +1036,7 @@ pub(crate) fn install_world_cpu(
     let WorldInstallHandles {
         world,
         script_ctx,
+        command_diagnostics,
         content_root,
         active_level_tags,
         nav_graph,
@@ -1138,7 +1149,7 @@ pub(crate) fn install_world_cpu(
     }
     // Bind after subscriber rebuild: `populate_level` has committed the final
     // composed reaction set, so tick dispatch never re-matches a name later.
-    let trigger_bindings = build_trigger_bindings(script_ctx);
+    let trigger_bindings = build_trigger_bindings(script_ctx, command_diagnostics);
     timings.record("data_script");
 
     // Data-archetype sweep: materialize every matching map placement the built-in
@@ -1362,6 +1373,7 @@ mod tests {
                 modal_stack: postretro_ui::modal_stack::ModalStack::new(),
                 font_system: postretro_ui::text::build_font_system(),
                 scripting: crate::session::ScriptingCore {
+                    command_diagnostics: Default::default(),
                     script_runtime,
                     script_ctx: script_ctx.clone(),
                     sequence_registry: SequencedPrimitiveRegistry::new(),
@@ -2958,6 +2970,7 @@ mod tests {
         {
             let session = app.session.as_mut().expect("test app session installed");
             let handles = WorldInstallHandles {
+                command_diagnostics: Default::default(),
                 world: &world,
                 script_ctx: &ctx,
                 content_root: std::path::Path::new("content/dev"),

@@ -2,7 +2,7 @@
 
 ## Goal
 
-Let a reaction read the ephemeral inputs that exist *because* a particular fire happened — the crossing direction, the tick `dt` — through a typed `param` proxy, per the §12 Reaction Dispatch Model (`scripting.md`). Ships the shared dispatch-param mechanism (author-time tracer, reserved input names, a source-layered `BindingScope`) plus the two purely numeric scopes: `CrossingScope` and `TickScope` with the slot accumulator. Unblocks King-of-the-Hill (countdown drains per body on the hill) and direction-sensitive crossings (shields up on falling, all-clear on rising). The entity-bearing `ContactScope` is the sibling spec `E18--contact-dispatch-params`, which consumes this spec's mechanism.
+Let a reaction read the ephemeral inputs that exist *because* a particular fire happened — the crossing direction, the tick `dt` — through a typed `param` proxy, per the §12 Reaction Dispatch Model (`scripting.md`). Ships the shared dispatch-param mechanism (author-time tracer, reserved input names, a source-layered `BindingScope`) plus the two purely numeric scopes: `CrossingScope` and `TickScope` with the slot accumulator. Unblocks King-of-the-Hill (countdown drains per body on the hill) and direction-sensitive crossings (shields up on falling, all-clear on rising). The entity-bearing `TriggerEventScope` is the sibling spec `E18--trigger-event-params`, which consumes this spec's mechanism.
 
 ## Scope
 
@@ -21,7 +21,7 @@ Let a reaction read the ephemeral inputs that exist *because* a particular fire 
 
 ### Out of scope
 
-- **`ContactScope`** (`activators`, `trigger`, `occupancy`) and every entity-targeted dispatch surface — sibling spec `E18--contact-dispatch-params`.
+- **`TriggerEventScope`** (`activators`, `trigger`, `occupancy`) and every entity-targeted dispatch surface — sibling spec `E18--trigger-event-params`. (That spec also renames §12's "contact" event type to **trigger event**.)
 - **`crossed`/`value` on `CrossingScope`** — dropped for v1 (author-time constant / ambient read; see Rough sketch). Re-add only when a use case needs snapshot semantics.
 - **A bare per-tick reaction source.** Per §12, per-tick is accumulator-only; `TickScope` is the accumulator's param type, never a `defineReaction` param.
 - **New IR opcodes.** The shipped node set is the whole vocabulary. (No `neg` — spell negation `runtime.sub(0, x)`.)
@@ -74,7 +74,7 @@ Prove the surfaces end to end. Headless: direction crossing (`edge: "both"` + `s
 **Phase 2 (concurrent):** Task 2 (crossing engine path), Task 3 (SDK + typedefs), Task 4 (accumulator engine path) — disjoint files; Tasks 2/4 consume Task 1's scope, Task 3 authors against the wire pinned in the Boundary inventory.
 **Phase 3 (sequential):** Task 5 — tests/fixtures over the finished surfaces.
 
-This spec assumes `ready/E18--ir-valued-reactions` has landed (install-time `setState` bind pass, predicate crossings, `RuntimeValue` wire) and `ready/E18--coop-activation-policy` for the `occupants(tag)` refs the KoH fixture reads. The sibling `E18--contact-dispatch-params` consumes Task 1 and Task 3's params-object layout.
+This spec assumes `ready/E18--ir-valued-reactions` has landed (install-time `setState` bind pass, predicate crossings, `RuntimeValue` wire) and `ready/E18--coop-activation-policy` for the `occupants(tag)` refs the KoH fixture reads. The sibling `E18--trigger-event-params` consumes Task 1 and Task 3's params-object layout.
 
 ## Rough sketch
 

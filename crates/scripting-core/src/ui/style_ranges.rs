@@ -428,8 +428,8 @@ mod tests {
     fn styleranges_display_value_and_crossing_authoritative_slot_diverge_mid_tween() {
         use crate::state_crossings::CrossingDetector;
         use postretro_entities::{
-            CrossingCondition, CrossingDescriptor, DataRegistry, ReplicationScope, SlotOwnership,
-            SlotRecord, SlotSchema, SlotTable, SlotType, SlotValue,
+            CrossingCondition, CrossingDescriptor, DataRegistry, ReplicationScope, ScriptCtx,
+            SlotOwnership, SlotRecord, SlotSchema, SlotTable, SlotType, SlotValue,
         };
 
         // Health styleRanges: red ≤ 0.2 of max, default green above.
@@ -472,7 +472,7 @@ mod tests {
         data_registry.populate_level(
             Vec::new(),
             vec![CrossingDescriptor {
-                slot: "hud.health".to_string(),
+                slot: Some("hud.health".to_string()),
                 condition: CrossingCondition::Below { threshold: 0.2 },
                 max: 100.0,
                 fire: vec!["lowHealth".to_string()],
@@ -480,7 +480,8 @@ mod tests {
             &[],
         );
         let mut detector = CrossingDetector::new();
-        detector.initialize(&data_registry, &slot_table);
+        let script_ctx = ScriptCtx::new();
+        detector.initialize(&data_registry, &slot_table, &script_ctx);
 
         // Authoritative health drops below 20 this frame.
         slot_table.get_mut("hud.health").unwrap().value = Some(SlotValue::Number(15.0));

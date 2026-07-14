@@ -2,6 +2,7 @@
 // See: context/lib/scripting.md
 
 use crate::registry::EntityId;
+use postretro_foundation::ir::IrNode;
 
 /// Variants of a single reaction's behavior body. The `name` lives on the
 /// wrapping [`NamedReaction`]; this enum captures only the descriptor shape.
@@ -32,12 +33,14 @@ pub struct ProgressDescriptor {
     pub fire: String,
 }
 
-/// Primitive-action reaction. One descriptor shape, two execution arms (M13
+/// Primitive-action reaction. One descriptor shape, two targeting arms (M13
 /// HUD dynamics): when `tag` is `Some`, the primitive resolves the tag to
 /// entities and mutates the `EntityRegistry`; when `tag` is `None`, it is a
-/// **system reaction** — it targets no entities and instead enqueues a typed
-/// `SystemReactionCommand` for the app's per-frame drain. The two arms share
-/// one named-event namespace; the dispatcher picks the arm by `tag` presence.
+/// **system reaction** and targets no entities. Targeting and execution surface
+/// are separate: crossing-, named-event-, and level-fired system reactions
+/// enqueue commands for the app-side drain; trigger `on_fire`/`on_exit` store
+/// writes execute in the simulation tick. The two arms share one named-event
+/// namespace; the dispatcher picks the targeting arm by `tag` presence.
 ///
 /// `args` carries the primitive-specific payload (e.g. `{ "rate": 0.0 }` for
 /// `setEmitterRate`, `{ "sound": "alarm" }` for `playSound`). Defaults to an
@@ -59,32 +62,38 @@ pub struct NamedReaction {
     pub descriptor: ReactionDescriptor,
 }
 
-/// The condition half of a state-crossing watcher (M13 HUD dynamics). A
-/// crossing fires when the watched slot transitions across `threshold` in the
-/// declared direction. `threshold` is stored as a fraction of the
-/// registration's `max` (`raw_threshold / max`); the watcher compares it
-/// against the slot's `current / max`, so a registration with no `max`
-/// (default `1.0`) degrades to a raw-value comparison.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// The condition half of a state-crossing watcher. Threshold conditions fire
+/// when their watched slot crosses a normalized edge. IR predicates fire on
+/// false-to-true transitions. Thresholds are fractions of `max`; absent `max`
+/// defaults to `1.0` for a raw-value comparison. See: context/lib/scripting.md
+/// §12.
+#[derive(Debug, Clone, PartialEq)]
 pub enum CrossingCondition {
     /// Fires on a downward crossing: `prev >= threshold && cur < threshold`.
     Below { threshold: f32 },
     /// Fires on an upward crossing: `prev <= threshold && cur > threshold`.
     Above { threshold: f32 },
+    /// Fires when a StoreScope-bound predicate transitions from false to true.
+    /// The descriptor retains the raw foundation IR; scripting-core owns its
+    /// scope-specialized bound program at runtime.
+    Ir(IrNode),
 }
 
 /// A state-crossing watcher declared by `onStateCrossing` and carried back
 /// through `setupLevel`'s manifest (scripting.md §12 (Non-Goals): no
 /// side-effect FFI — cross-FFI values flow through setup-function returns).
-/// The detector watches `slot` after each frame's
-/// slot writes and, on a crossing in the condition's direction, dispatches
-/// every event in `fire` synchronously through the named-reaction vocabulary.
+/// After each frame's slot writes, the detector evaluates the condition and
+/// dispatches every event in `fire` on a threshold edge or predicate
+/// false-to-true edge through the named-reaction vocabulary.
 ///
-/// `max` is the registration's denominator: thresholds are fractions of it.
-/// It defaults to `1.0` (raw-value comparison) when the registration omits it.
+/// `max` is the threshold registration's denominator. It defaults to `1.0`
+/// (raw-value comparison) when the registration omits it; predicate watchers
+/// ignore it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CrossingDescriptor {
-    pub slot: String,
+    /// The slot watched by a threshold crossing. Predicate crossings have no
+    /// single meaningful slot and carry `None` here.
+    pub slot: Option<String>,
     pub condition: CrossingCondition,
     pub max: f32,
     pub fire: Vec<String>,

@@ -4,7 +4,7 @@
 -- through `setupLevel().crossings` or `ModManifest.crossings`. It never calls
 -- back into Rust -- the FFI boundary is the `return` statement of the script
 -- entry point.
--- See: context/lib/scripting.md §10.4
+-- See: context/lib/scripting.md §12
 
 --- Crossing condition: fires when the watched slot crosses the threshold in one
 --- direction. Exactly one of `below`/`above` is given. `max` is the denominator
@@ -14,19 +14,31 @@ export type CrossingCondition =
   { below: number, above: nil?, max: number? }
   | { below: nil?, above: number, max: number? }
 
---- A state-crossing watcher entry as it appears in `setupLevel().crossings` or
---- `ModManifest.crossings`. The condition fields are flattened in beside `slot`
---- and `fire`; `fire` is the list of named reactions dispatched when the
---- crossing occurs. `levels` scopes mod-global crossings by map-catalog tags;
---- omit it for every level.
-export type CrossingDescriptor = {
+--- A threshold-form state-crossing watcher. The condition fields are flattened
+--- in beside `slot` and `fire`.
+export type ThresholdCrossingDescriptor = {
   slot: string,
-  below: number?,
-  above: number?,
+  predicate: nil?,
   max: number?,
   fire: {string},
   levels: {string}?,
+} & (
+  { below: number, above: nil? }
+  | { below: nil?, above: number }
+)
+
+--- A predicate-form watcher. `predicate` is evaluated over live store slots.
+export type PredicateCrossingDescriptor = {
+  predicate: RuntimeValue,
+  slot: nil?,
+  below: nil?,
+  above: nil?,
+  max: nil?,
+  fire: {string},
+  levels: {string}?,
 }
+
+export type CrossingDescriptor = ThresholdCrossingDescriptor | PredicateCrossingDescriptor
 
 --- Primitive reaction body produced by the system-reaction constructors below.
 --- Mirrors `data_script.luau`'s `PrimitiveReactionDescriptor`; redeclared here
@@ -71,22 +83,29 @@ local function crossingThreshold(condition: any): (string, number, number?)
   return key, value, condition.max
 end
 
---- Build a state-crossing watcher. Pure: returns a plain table, does not
---- register anything in the engine. The engine consumes the table from
---- `setupLevel().crossings` or `ModManifest.crossings` with optional `levels`
---- scoping. On a crossing in the condition's direction the engine fires every
---- reaction in `fire` exactly once, re-arming only after a crossing back. A
---- registration against a non-Number slot warns and is skipped at load.
-function UiReactionsSdk.onStateCrossing(
-  ref: any,
-  condition: CrossingCondition,
-  fire: {any}
-): CrossingDescriptor
+local function crossingFireNames(fire: any): { string }
   if type(fire) ~= "table" then
-    error("onStateCrossing: `fire` must be an array of reaction handles or strings")
+    error("onStateCrossing: `fire` must be a dense array of reaction handles or strings")
   end
+
+  local count = 0
+  local maxIndex = 0
+  for key, _ in pairs(fire) do
+    if type(key) ~= "number" or not isFiniteNumber(key) or key < 1 or key % 1 ~= 0 then
+      error("onStateCrossing: `fire` must be a dense array without map keys")
+    end
+    count += 1
+    if key > maxIndex then
+      maxIndex = key
+    end
+  end
+  if maxIndex ~= count then
+    error("onStateCrossing: `fire` must be a dense array without holes")
+  end
+
   local fireNames: { string } = {}
-  for i, entry in ipairs(fire) do
+  for i = 1, count do
+    local entry = fire[i]
     if type(entry) == "string" then
       fireNames[i] = entry
     elseif type(entry) == "table" and type(entry.name) == "string" and #entry.name > 0 then
@@ -95,9 +114,35 @@ function UiReactionsSdk.onStateCrossing(
       error("onStateCrossing: `fire` entries must be reaction handles or strings")
     end
   end
-  local key, value, max = crossingThreshold(condition)
-  local descriptor: CrossingDescriptor = {
-    slot = stateSlot(ref, "onStateCrossing"),
+  return fireNames
+end
+
+--- Build a state-crossing watcher. Pure: returns a plain table, does not
+--- register anything in the engine. The engine consumes the table from
+--- `setupLevel().crossings` or `ModManifest.crossings` with optional `levels`
+--- scoping. On a crossing in the condition's direction the engine fires every
+--- reaction in `fire` exactly once, re-arming only after a crossing back. A
+--- registration against a non-Number slot warns and is skipped at load. The
+--- predicate overload takes `onStateCrossing(predicate, fire)` and fires on
+--- false-to-true edges, re-arming after it returns false. A predicate already
+--- true at registration only arms; it must return false, then true, to fire.
+function UiReactionsSdk.onStateCrossing(
+  refOrPredicate: any,
+  conditionOrFire: any,
+  maybeFire: {any}?
+): CrossingDescriptor
+  local predicateForm = maybeFire == nil
+  local fire = if predicateForm then conditionOrFire else maybeFire
+  local fireNames = crossingFireNames(fire)
+  if predicateForm then
+    return {
+      predicate = refOrPredicate,
+      fire = fireNames,
+    }
+  end
+  local key, value, max = crossingThreshold(conditionOrFire)
+  local descriptor: ThresholdCrossingDescriptor = {
+    slot = stateSlot(refOrPredicate, "onStateCrossing"),
     fire = fireNames,
   }
   descriptor[key] = value
@@ -257,9 +302,11 @@ end
 
 --- Write `value` to the writable state reference at the game-logic stage.
 --- Pure: returns the existing `setState` primitive reaction body, no engine
---- side effect. The write is readonly-gated at runtime: a readonly slot warns
---- and is left unchanged; an engine-owned writable slot is valid. `value` is
---- coerced to the slot's declared type by the write path.
+--- side effect. Literal values use the normal runtime readonly gate, coercion,
+--- and range path. A `RuntimeValue` binds once at level install through
+--- `StoreScope`. Known Number and Boolean slots, including readonly slots,
+--- project as inputs. The write target must be writable; unknown or
+--- nonprojectable inputs and readonly targets reject the IR before it can fire.
 function UiReactionsSdk.updateState(ref: any, value: any): PrimitiveReactionDescriptor
   return { primitive = "setState", args = { slot = stateSlot(ref, "updateState"), value = value } }
 end

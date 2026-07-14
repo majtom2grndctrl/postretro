@@ -986,12 +986,35 @@ export type CrossingCondition =
   { below: number, above: nil?, max: number? }
   | { below: nil?, above: number, max: number? }
 
+--- A threshold-form watcher. Its wire discriminator is the required `slot`;
+--- exactly one threshold field is present.
+export type ThresholdCrossingDescriptor = {
+  slot: string,
+  predicate: nil?,
+  max: number?,
+  fire: {string},
+  levels: {string}?,
+} & (
+  { below: number, above: nil? }
+  | { below: nil?, above: number }
+)
+
+--- A predicate-form watcher. Its wire discriminator is the required
+--- `predicate`; it has no threshold slot.
+export type PredicateCrossingDescriptor = {
+  predicate: RuntimeValue,
+  slot: nil?,
+  below: nil?,
+  above: nil?,
+  max: nil?,
+  fire: {string},
+  levels: {string}?,
+}
+
 --- A state-crossing watcher entry as it appears in `setupLevel().crossings` or
---- `ModManifest.crossings`. The condition fields are flattened in beside `slot`
---- and `fire`; `fire` lists the named reactions dispatched when the crossing
---- occurs. `levels` scopes mod-global crossings by map-catalog tags; omit it
---- for every level.
-export type CrossingDescriptor = { slot: string, below: number?, above: number?, max: number?, fire: {string}, levels: {string}? }
+--- `ModManifest.crossings`. Threshold and predicate forms are discriminated by
+--- `slot` versus `predicate`.
+export type CrossingDescriptor = ThresholdCrossingDescriptor | PredicateCrossingDescriptor
 
 --- Bundle returned from `setupLevel`. The engine deserializes
 --- this shape in one pass at level load.
@@ -1316,7 +1339,7 @@ export type LocalStateHandle<T> = {
 -- `name`, `value`) so builder output deserializes straight into `IrNode`.
 -- (Author surface is `runtime`/`RuntimeValue`; the Rust substrate and wire op
 -- tags keep the `ir` names — scripting.md §11, "Author-facing naming".)
--- Source of truth: crates/postretro/src/scripting/ir/mod.rs + sdk/lib/runtime.luau.
+-- Source of truth: crates/foundation/src/ir/ + sdk/lib/runtime.luau.
 -- Static block (not registry-emitted): `register_tagged_union` /
 -- `TypeShape::TaggedUnion` renders one payload type name per variant under a
 -- fixed tag key — it cannot express per-variant inline struct fields (e.g.
@@ -1462,8 +1485,9 @@ export type PostretroUiModule = {
   Switch: (cell: LocalStateHandle<string>, map: { [string]: WidgetDescriptor }) -> {WidgetDescriptor},
   defineTheme: (theme: ThemeDefinition) -> DefinedTheme,
   getDesignTokens: (theme: DefinedTheme) -> DesignTokens,
-  --- Build a numeric state-crossing watcher. `condition` gives exactly one finite `below` or `above`; optional `max` is a finite denominator.
-  onStateCrossing: (ref: ReadonlyStateRef<number>, condition: CrossingCondition, fire: {NamedReactionDescriptor | string}) -> CrossingDescriptor,
+  --- Build a state-crossing watcher: either a numeric threshold or a Bool runtime predicate over live store slots. A predicate already true at registration only arms; it must return false, then true, to fire.
+  onStateCrossing: ((ref: ReadonlyStateRef<number>, condition: CrossingCondition, fire: {NamedReactionDescriptor | string}) -> CrossingDescriptor)
+    & ((predicate: RuntimeValue, fire: {NamedReactionDescriptor | string}) -> CrossingDescriptor),
   --- Play `sound` on optional mixer `bus`; nil bus uses the engine default.
   playSound: (sound: string, bus: string?) -> PrimitiveReactionDescriptor,
   --- Trigger gamepad rumble. `strong` and optional `weak` are motor intensities in [0, 1]; `durationMs` is milliseconds.
@@ -1493,8 +1517,8 @@ export type PostretroUiModule = {
   EXIT_TO_DESKTOP_ACTION: "ui.exitToDesktop",
   --- Reserved button `onPress` action for returning to the frontend; same lifecycle path as `returnToFrontend()`.
   QUIT_TO_MENU_ACTION: "ui.quitToMenu",
-  --- Write `value` to a writable state ref at game-logic time; runtime validates type/range and rejects readonly slots.
-  updateState: <T>(ref: WritableStateRef<T>, value: T) -> PrimitiveReactionDescriptor,
+  --- Write a literal or runtime value at game-logic time. Runtime values may read known Number/Boolean slots, including readonly slots; unknown/nonprojectable inputs and readonly output targets reject.
+  updateState: <T>(ref: WritableStateRef<T>, value: T | RuntimeValue) -> PrimitiveReactionDescriptor,
   appendText: (ref: WritableStateRef<string>, text: string) -> PrimitiveReactionDescriptor,
   backspaceText: (ref: WritableStateRef<string>) -> PrimitiveReactionDescriptor,
   clearText: (ref: WritableStateRef<string>) -> PrimitiveReactionDescriptor,

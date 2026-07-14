@@ -240,12 +240,19 @@ A bare literal in the *field itself* is the same sugar: `boostSpeed: 22.0` is ju
 `boostSpeed: runtime.constant(22.0)`. Leave a field literal when it never needs to
 vary; reach for `runtime.*` only when the value depends on live state.
 
-### Where runtime values are accepted: dash fields
+### Where runtime values are accepted
 
-Today the runtime-value-capable fields all live on `components.movement.dash`. Each
-of the five scalar fields accepts `number | RuntimeValue`; `preserveVertical`
-accepts `boolean | RuntimeValue`. `airDashes` stays a plain integer (it is a
-structural budget, not a derived value).
+Runtime values can drive movement dash fields and values written through
+`updateState`. Each surface binds `runtime.read(...)` names against its own
+engine-provided namespace, so a dash expression reads movement inputs while a
+state reaction reads declared state slots.
+
+#### Dash fields
+
+On `components.movement.dash`, each of the five scalar fields accepts
+`number | RuntimeValue`; `preserveVertical` accepts `boolean | RuntimeValue`.
+`airDashes` stays a plain integer (it is a structural budget, not a derived
+value).
 
 ```typescript
 defineEntity({
@@ -272,6 +279,40 @@ defineEntity({
   },
 });
 ```
+
+#### Counters and derived state
+
+`updateState` accepts either a literal or a `RuntimeValue`. Literals keep the
+normal fire-time writable-slot check, coercion, and range validation. A runtime
+value binds once at level install against the store. It can read any known
+projectable Number or Boolean slot, including readonly slots. Its output target
+must be writable. Unknown or nonprojectable inputs, readonly targets, and
+type-mismatched IR are rejected before the reaction can fire. For counters, read
+the target slot in the expression and write the derived result back to its state
+reference. The engine evaluates the expression when that reaction writes, so
+sequential writes in one frame observe the preceding write.
+
+```typescript
+import { defineStore, runtime } from "postretro";
+import { updateState } from "postretro/ui";
+
+const puzzle = defineStore("puzzle", {
+  charge: { type: "number", default: 0, range: [0, 3] },
+});
+const ref = puzzle.state.charge;
+const slot = ref.slot;
+
+const increment = updateState(ref, runtime.add(runtime.read(slot), 1));
+const decrement = updateState(ref, runtime.sub(runtime.read(slot), 1));
+const keepInBounds = updateState(
+  ref,
+  runtime.clamp(runtime.add(runtime.read(slot), 1), 0, 3),
+);
+```
+
+Use `runtime.clamp` when the expression itself has a meaningful bound. The
+declared slot range remains the final guard: every `updateState` result is
+validated and clamped to that range before it is stored.
 
 ### `read` names available to dash fields
 
@@ -807,7 +848,7 @@ omitted from the emitted `args` entirely when not supplied — they are never se
 | `loadLevel(id)` | `{ primitive: "loadLevel", args: { map: id } }` | Queues a catalog map load by id. |
 | `restartLevel()` | `{ primitive: "restartLevel", args: {} }` | Requeues the currently-active level source. No-ops when no level is active. |
 | `returnToFrontend()` | `{ primitive: "returnToFrontend", args: {} }` | Queues a return to the frontend menu, including its optional background level. |
-| `updateState(ref, value)` | `{ primitive: "setState", args: { slot: ref.slot, value } }` | Writes `value` to a writable state reference at the game-logic stage. Readonly-gated at runtime. |
+| `updateState(ref, value)` | `{ primitive: "setState", args: { slot: ref.slot, value } }` | Writes at the game-logic stage. Literals use the normal readonly-gated coercion and range path. A `RuntimeValue` can read known projectable Number/Boolean slots, including readonly slots; its Number/Boolean output target must be writable. Unknown/nonprojectable inputs, readonly targets, and type-mismatched IR reject before firing. |
 | `appendText(ref, text)` | `{ primitive: "appendText", args: { slot: ref.slot, text } }` | Appends `text` to the current string value of a writable String state reference. |
 | `backspaceText(ref)` | `{ primitive: "backspaceText", args: { slot: ref.slot } }` | Removes the last character (one Unicode scalar value — never splits a UTF-8 sequence, but does not segment grapheme clusters). Empty is a silent no-op. |
 | `clearText(ref)` | `{ primitive: "clearText", args: { slot: ref.slot } }` | Empties a writable String state reference. |
@@ -856,6 +897,12 @@ non-Number slot warns and is skipped at load.
 The condition is `{ below: number, max?: number }` or `{ above: number, max?: number }`;
 `max` is the denominator the threshold is a fraction of (`threshold / max` vs
 `value / max`), defaulting to `1.0` for a raw comparison.
+
+For a derived condition over one or more slots, use the predicate overload
+`onStateCrossing(predicate, fire)`. Its `predicate` is a Bool-valued
+`RuntimeValue`; it fires on a false-to-true edge and re-arms when the predicate
+returns false. A non-Bool predicate is rejected when the level binds its state
+references.
 
 The canonical HUD-dynamics pattern — flash red when health drops below 20%:
 

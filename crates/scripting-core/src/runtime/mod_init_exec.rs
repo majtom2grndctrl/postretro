@@ -240,7 +240,7 @@ pub(super) fn run_mod_init_quickjs(
                 return;
             }
         };
-        let crossings = match drain_global_crossings_js(&obj, "default mod manifest export") {
+        let crossings = match drain_global_crossings_js(&ctx, &obj, "default mod manifest export") {
             Ok(c) => c,
             Err(e) => {
                 out = Err(ScriptError::InvalidArgument {

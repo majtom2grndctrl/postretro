@@ -13,9 +13,13 @@
 // key-order differences.
 
 use mlua::LuaSerdeExt as _;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::ir::IrNode;
-use crate::luau::{LuauConfig, LuauSubsystem, Which};
+use crate::luau::{LuauConfig, LuauSubsystem, Which, build_lua_state};
 use crate::primitives_registry::PrimitiveRegistry;
 use crate::quickjs::{QuickJsConfig, QuickJsSubsystem, run_script};
 
@@ -54,6 +58,85 @@ fn luau_canonical(expr_src: &str) -> String {
         .from_value(value)
         .expect("luau value -> IrNode");
     serde_json::to_string(&node).expect("canonicalize luau node")
+}
+
+/// A short-lived authored TypeScript fixture module. The compiler consumes a
+/// real file, just as `scripts-build` does for a mod entry, and the directory
+/// is removed when the fixture leaves scope.
+struct TypeScriptFixture {
+    directory: PathBuf,
+    entry: PathBuf,
+}
+
+impl TypeScriptFixture {
+    fn new(source: &str) -> Self {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos() as u64)
+            .unwrap_or(0);
+        let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let directory = std::env::temp_dir().join(format!(
+            "postretro-ir-parity-{nanos}-{counter}-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).expect("create TypeScript parity fixture directory");
+
+        let entry = directory.join("fixture.ts");
+        fs::write(&entry, source).expect("write TypeScript parity fixture");
+        let entry = fs::canonicalize(&entry).expect("canonicalize TypeScript parity fixture");
+
+        Self { directory, entry }
+    }
+
+    fn entry(&self) -> &Path {
+        &self.entry
+    }
+}
+
+impl Drop for TypeScriptFixture {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.directory);
+    }
+}
+
+/// Bundle and run one authored TypeScript fixture module through the production
+/// `scripts-build` library path, then return its descriptor-shaped JSON.
+/// Bare SDK imports are intentionally stripped by that compiler; the QuickJS
+/// SDK prelude installs their matching runtime bindings before the emitted JS
+/// runs.
+fn quickjs_fixture_value(source: &str) -> serde_json::Value {
+    let fixture = TypeScriptFixture::new(source);
+    let bundled = postretro_script_compiler::bundle_entry(fixture.entry())
+        .expect("TypeScript parity fixture bundles through scripts-build");
+
+    let registry = PrimitiveRegistry::new();
+    let subsys = QuickJsSubsystem::new(&registry, &QuickJsConfig::default()).unwrap();
+
+    let json = subsys.definition_ctx().with(|ctx| {
+        run_script::<String>(&ctx, &bundled, "increment-predicate.js")
+            .expect("quickjs fixture eval")
+    });
+
+    serde_json::from_str(&json).expect("quickjs fixture json")
+}
+
+/// Run one authored Luau fixture and bridge its descriptor-shaped return value
+/// through serde. The fixture uses the public `require("postretro/ui")`
+/// module, matching the Luau authoring surface rather than internal globals.
+fn luau_fixture_value(source: &str) -> serde_json::Value {
+    // A mod-rooted state installs the virtual `postretro/ui` module. The
+    // long-lived definition-only state deliberately leaves `require` absent.
+    let lua = build_lua_state(&[], None, Some(Path::new(env!("CARGO_MANIFEST_DIR"))))
+        .expect("build mod-rooted luau fixture state");
+    let value: mlua::Value = lua
+        .load(source)
+        .set_name("increment-predicate.luau")
+        .eval()
+        .expect("luau fixture eval");
+
+    lua.from_value(value).expect("luau fixture value -> json")
 }
 
 /// Asserts the TS and Luau spellings of the same expression canonicalize to
@@ -125,6 +208,147 @@ fn bare_literal_operands_canonicalize_to_explicit_constant_form() {
         luau_canonical(sugared_bool),
         "bare boolean sugar diverged from explicit `constant` form (Luau)"
     );
+}
+
+#[test]
+fn increment_and_predicate_crossing_fixtures_match_across_authoring_runtimes() {
+    // These fixtures deliberately use the public UI authoring surfaces. The
+    // TypeScript module imports the UI helpers before `scripts-build` strips
+    // those bare SDK imports; Luau reads the corresponding virtual module.
+    // Both author one increment reaction and one predicate crossing over the
+    // same slot, exercising updateState, onStateCrossing, and literal wrapping.
+    const TYPESCRIPT_FIXTURE: &str = r#"
+        import { runtime } from "postretro";
+        import { onStateCrossing, updateState } from "postretro/ui";
+
+        const ref = { slot: "counter.charge" };
+        const increment = updateState(
+          ref,
+          runtime.add(runtime.read(ref.slot), 1),
+        );
+        const crossing = onStateCrossing(
+          runtime.ge(runtime.read(ref.slot), 2),
+          ["chargeReady"],
+        );
+        JSON.stringify({ increment, crossing });
+    "#;
+    const LUAU_FIXTURE: &str = r#"
+        local Ui = require("postretro/ui")
+        local ref = { slot = "counter.charge" }
+        local increment = Ui.updateState(
+          ref,
+          runtime.add(runtime.read(ref.slot), 1)
+        )
+        local crossing = Ui.onStateCrossing(
+          runtime.ge(runtime.read(ref.slot), 2),
+          { "chargeReady" }
+        )
+        return { increment = increment, crossing = crossing }
+    "#;
+
+    let typescript = quickjs_fixture_value(TYPESCRIPT_FIXTURE);
+    let luau = luau_fixture_value(LUAU_FIXTURE);
+    assert_eq!(
+        typescript, luau,
+        "TS and Luau increment/predicate descriptors diverged"
+    );
+
+    let expected = serde_json::json!({
+        "increment": {
+            "primitive": "setState",
+            "args": {
+                "slot": "counter.charge",
+                "value": {
+                    "op": "add",
+                    "a": { "op": "input", "name": "counter.charge" },
+                    "b": { "op": "const", "value": 1 },
+                },
+            },
+        },
+        "crossing": {
+            "predicate": {
+                "op": "ge",
+                "a": { "op": "input", "name": "counter.charge" },
+                "b": { "op": "const", "value": 2 },
+            },
+            "fire": ["chargeReady"],
+        },
+    });
+    assert_eq!(
+        typescript, expected,
+        "fixture must emit the pinned setState/crossing wire shapes"
+    );
+}
+
+#[test]
+fn crossing_fire_rejects_map_shaped_and_sparse_sequences_across_runtimes() {
+    // Regression: the Luau SDK used `ipairs`, silently accepting map-shaped
+    // and sparse `fire` tables while the TypeScript SDK rejected non-arrays.
+    // Both authoring surfaces must reject malformed fire sequences before a
+    // crossing descriptor can be produced.
+    const TYPESCRIPT_FIXTURE: &str = r#"
+        import { runtime } from "postretro";
+        import { onStateCrossing } from "postretro/ui";
+
+        const ref = { slot: "counter.charge" };
+        const message = (call) => {
+          try { call(); return null; } catch (error) { return String(error); }
+        };
+        JSON.stringify({
+          predicateMap: message(() => onStateCrossing(runtime.constant(true), { ready: "chargeReady" })),
+          predicateSparse: message(() => onStateCrossing(runtime.constant(true), ["chargeReady", , "other"])),
+          thresholdMap: message(() => onStateCrossing(ref, { above: 2 }, { ready: "chargeReady" })),
+          thresholdSparse: message(() => onStateCrossing(ref, { above: 2 }, ["chargeReady", , "other"])),
+        });
+    "#;
+    const LUAU_FIXTURE: &str = r#"
+        local Ui = require("postretro/ui")
+        local ref = { slot = "counter.charge" }
+        local function message(call)
+          local ok, value = pcall(call)
+          if ok then
+            return nil
+          end
+          return tostring(value)
+        end
+        return {
+          predicateMap = message(function()
+            return Ui.onStateCrossing(runtime.constant(true), { ready = "chargeReady" })
+          end),
+          predicateSparse = message(function()
+            return Ui.onStateCrossing(runtime.constant(true), { "chargeReady", [3] = "other" })
+          end),
+          thresholdMap = message(function()
+            return Ui.onStateCrossing(ref, { above = 2 }, { ready = "chargeReady" })
+          end),
+          thresholdSparse = message(function()
+            return Ui.onStateCrossing(ref, { above = 2 }, { "chargeReady", [3] = "other" })
+          end),
+        }
+    "#;
+
+    for (runtime, values) in [
+        ("TypeScript", quickjs_fixture_value(TYPESCRIPT_FIXTURE)),
+        ("Luau", luau_fixture_value(LUAU_FIXTURE)),
+    ] {
+        for key in [
+            "predicateMap",
+            "predicateSparse",
+            "thresholdMap",
+            "thresholdSparse",
+        ] {
+            let message = values
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_else(|| {
+                    panic!("{runtime} accepted malformed crossing `fire` sequence: {key}")
+                });
+            assert!(
+                message.contains("onStateCrossing"),
+                "{runtime} rejected {key} unclearly: {message}"
+            );
+        }
+    }
 }
 
 #[test]

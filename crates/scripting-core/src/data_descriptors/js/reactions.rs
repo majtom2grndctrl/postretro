@@ -48,22 +48,15 @@ pub fn progress_descriptor_from_js<'js>(
     Ok(ProgressDescriptor { tag, at, fire })
 }
 
-/// Deserialize one crossing entry from a JS object. Shape:
-/// `{ slot: string, below?: number, above?: number, max?: number, fire: string[] }`.
-/// Exactly one of `below`/`above` is required; `max` defaults to `1.0` (raw
-/// comparison). Validation (single condition, finite bounds) is delegated to
-/// [`build_crossing`] so both FFI paths share identical rules.
+/// Deserialize one crossing entry from a JS object. The discriminator is
+/// presence of `predicate` (IR form) versus `slot` (threshold form).
 pub fn crossing_descriptor_from_js<'js>(
+    ctx: &Ctx<'js>,
     value: &JsValue<'js>,
 ) -> Result<CrossingDescriptor, DescriptorError> {
     let obj = Object::from_value(value.clone()).map_err(|_| DescriptorError::InvalidShape {
         reason: "crossing entry must be an object".to_string(),
     })?;
-    let slot = get_required_string_js(&obj, "slot")?;
-    let below = get_optional_f32_js(&obj, "below")?;
-    let above = get_optional_f32_js(&obj, "above")?;
-    let max = get_optional_f32_js(&obj, "max")?;
-
     let fire_arr: Array = obj.get("fire").map_err(|_| DescriptorError::InvalidShape {
         reason: "crossing entry `fire` must be an array of event names".to_string(),
     })?;
@@ -73,6 +66,19 @@ pub fn crossing_descriptor_from_js<'js>(
         fire.push(String::from_js_value_required(item, "fire")?);
     }
 
+    if obj.contains_key("predicate").map_err(js_err)? {
+        let raw: JsValue = obj.get("predicate").map_err(js_err)?;
+        let predicate = ir_node_from_json(
+            conv::js_to_json(ctx, raw).map_err(js_err)?,
+            "crossing entry `predicate`",
+        )?;
+        return Ok(build_predicate_crossing(predicate, fire));
+    }
+
+    let slot = get_required_string_js(&obj, "slot")?;
+    let below = get_optional_f32_js(&obj, "below")?;
+    let above = get_optional_f32_js(&obj, "above")?;
+    let max = get_optional_f32_js(&obj, "max")?;
     build_crossing(slot, below, above, max, fire)
 }
 

@@ -28,8 +28,10 @@ fn reaction_handle_authoring_types_widen_in_both_outputs() {
         "ts must expose reaction levels and scopeReactions:\n{ts}"
     );
     assert!(
-        ts.contains("fire: string[];\n    levels?: string[];"),
-        "ts must expose crossing levels for ModManifest.crossings:\n{ts}"
+        ts.contains(
+            "export type CrossingDescriptor = ThresholdCrossingDescriptor | PredicateCrossingDescriptor;"
+        ) && ts.matches("fire: string[];\n    levels?: string[];").count() == 2,
+        "ts must expose reaction-handle crossing fires and levels on both discriminated crossing forms:\n{ts}"
     );
     assert!(
         luau.contains("levels: {string}?")
@@ -38,8 +40,10 @@ fn reaction_handle_authoring_types_widen_in_both_outputs() {
         "luau must expose reaction levels and scopeReactions:\n{luau}"
     );
     assert!(
-        luau.contains("fire: {string}, levels: {string}?"),
-        "luau must expose crossing levels for ModManifest.crossings:\n{luau}"
+        luau.contains(
+            "export type CrossingDescriptor = ThresholdCrossingDescriptor | PredicateCrossingDescriptor"
+        ) && luau.matches("fire: {string},\n  levels: {string}?,").count() == 2,
+        "luau must expose reaction-handle crossing fires and levels on both discriminated crossing forms:\n{luau}"
     );
     // Widened reaction-reference props still appear in the Luau UI module
     // prop types. TypeScript root no longer exposes UI prop types in Task 1.
@@ -292,6 +296,50 @@ fn runtime_opcode_vocabulary_appears_in_both_type_outputs() {
     assert!(
         luau.contains("export type RuntimeValue ="),
         "luau missing RuntimeValue union"
+    );
+}
+
+/// The reaction-side IR adopter must be discoverable from the generated SDK
+/// declarations, not just accepted by the untyped SDK builders. The threshold
+/// and predicate crossing variants have mutually exclusive wire discriminants:
+/// `slot` versus `predicate`.
+#[test]
+fn ir_valued_state_reactions_are_emitted_in_both_sdk_surfaces() {
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
+
+    let mut registry = PrimitiveRegistry::new();
+    register_all(&mut registry, ScriptCtx::new());
+    let ts = generate_typescript(&registry);
+    let luau = generate_luau(&registry);
+    let ts_ui = ts_module_block(&ts, "postretro/ui");
+
+    assert!(
+        ts.contains("export function updateState<T>(ref: WritableStateRef<T>, value: T | RuntimeValue): PrimitiveReactionDescriptor;")
+            && ts.contains("export function onStateCrossing(predicate: RuntimeValue, fire: (NamedReactionDescriptor | string)[]): CrossingDescriptor;")
+            && ts.contains("export type PredicateCrossingDescriptor = {")
+            && ts.contains("predicate: RuntimeValue;")
+            && ts.contains("slot?: never;"),
+        "TypeScript typedefs must expose IR-valued state writes and predicate crossings:\n{ts}"
+    );
+    // `postretro/ui` names `RuntimeValue` in both overloads and `updateState`.
+    // Verify its declaration imports that root-module type so the generated
+    // module is consumable, not merely textually present in the combined file.
+    assert!(
+        ts_ui.contains("    RuntimeValue,\n  } from \"postretro\";")
+            && ts_ui.contains("onStateCrossing(predicate: RuntimeValue")
+            && ts_ui.contains("value: T | RuntimeValue"),
+        "TypeScript postretro/ui declaration must import RuntimeValue before using it:\n{ts_ui}"
+    );
+    assert!(
+        luau.contains("updateState: <T>(ref: WritableStateRef<T>, value: T | RuntimeValue) -> PrimitiveReactionDescriptor,")
+            && luau.contains("& ((predicate: RuntimeValue, fire: {NamedReactionDescriptor | string}) -> CrossingDescriptor)")
+            && luau.contains("export type PredicateCrossingDescriptor = {")
+            && luau.contains("predicate: RuntimeValue,")
+            && luau.contains("slot: nil?,")
+            && luau.contains("export type ThresholdCrossingDescriptor = {")
+            && luau.contains("} & (\n  { below: number, above: nil? }\n  | { below: nil?, above: number }\n)"),
+        "Luau typedefs must expose IR-valued state writes and predicate crossings:\n{luau}"
     );
 }
 

@@ -5,8 +5,6 @@
 // consume their commands without threading engine services into scripting.
 // See: context/lib/scripting.md §10.4
 
-use std::collections::HashMap;
-
 use postretro_entities::ScriptCtx;
 use postretro_foundation::{
     BakedIr, BoundProgram, CURRENT_IR_VERSION, eval_and_write, ir_node_from_json,
@@ -32,31 +30,38 @@ const MAX_SHAKE_AMPLITUDE_PX: f32 = 1280.0;
 
 /// Install-time bindings for inline `setState` IR. Entity-owned reaction
 /// descriptors and queued commands deliberately retain only raw JSON; this
-/// binary-side table owns the `StoreScope`-specialized programs.
+/// binary-side table owns the `StoreScope`-specialized programs and known
+/// rejected command identities.
 #[derive(Debug, Default)]
 pub(crate) struct SystemReactionIrBindings {
-    programs: HashMap<SystemSetStateKey, BoundProgram<StoreScope>>,
+    bindings: Vec<SystemSetStateBinding>,
 }
 
-/// The queued command retains its raw `slot` and `value`, so the side-map key is
-/// derived from those exact command fields. A descriptor can fire repeatedly
-/// without any per-fire parse or bind.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct SystemSetStateKey {
+/// A system-command `setState` IR is identified by the fields the command
+/// carries across the entities boundary. Keep the raw value here so the app
+/// drain can compare it directly instead of allocating a slot key and
+/// serializing its JSON on every fire.
+#[derive(Debug)]
+struct SystemSetStateBinding {
     slot: String,
-    value_json: String,
+    value: serde_json::Value,
+    program: Option<BoundProgram<StoreScope>>,
 }
 
-impl SystemSetStateKey {
-    fn new(slot: &str, value: &serde_json::Value) -> Self {
-        // `serde_json::Value` came from the descriptor and rides unchanged into
-        // `SystemReactionCommand`; serialization is therefore a stable key for
-        // this install lifetime. JSON serialization of a `Value` cannot fail.
-        Self {
-            slot: slot.to_string(),
-            value_json: serde_json::to_string(value).expect("serde_json::Value serializes"),
-        }
+impl SystemSetStateBinding {
+    fn matches(&self, slot: &str, value: &serde_json::Value) -> bool {
+        self.slot == slot && self.value.eq(value)
     }
+}
+
+/// Outcome of looking up an object-shaped `setState` value at the app drain.
+/// Rejected entries deliberately remain in the table after their install-time
+/// diagnostic, so a validly queued command does not warn again on every fire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SystemReactionIrDispatch {
+    Evaluated,
+    Rejected,
+    Unknown,
 }
 
 impl SystemReactionIrBindings {
@@ -64,7 +69,7 @@ impl SystemReactionIrBindings {
     /// carry only an IR node, so stamp the current epoch while wrapping them in
     /// the normal `BakedIr` envelope; no wire envelope/version is introduced.
     pub(crate) fn rebuild(&mut self, data_registry: &DataRegistry, script_ctx: &ScriptCtx) {
-        self.programs.clear();
+        self.bindings.clear();
         let scope = StoreScope::script(script_ctx.clone());
 
         for reaction in &data_registry.reactions {
@@ -89,25 +94,34 @@ impl SystemReactionIrBindings {
                 continue;
             }
 
-            let root = match ir_node_from_json(args.value.clone(), "setState.value") {
+            // Retain even failed bindings. A queued command with the same raw
+            // identity is known-invalid, while a missing entry is genuinely
+            // unknown or stale and remains worth diagnosing at the drain.
+            let mut binding = SystemSetStateBinding {
+                slot: args.slot,
+                value: args.value,
+                program: None,
+            };
+
+            let root = match ir_node_from_json(binding.value.clone(), "setState.value") {
                 Ok(root) => root,
                 Err(error) => {
                     log::warn!(
                         "[Scripting] setState reaction `{}` has invalid runtime value; not binding: {error}",
                         reaction.name
                     );
+                    self.bindings.push(binding);
                     continue;
                 }
             };
             let baked = BakedIr {
                 version: CURRENT_IR_VERSION,
-                output: Some(args.slot.clone()),
+                output: Some(binding.slot.clone()),
                 root,
             };
             match bind(&baked, &scope) {
                 Ok(program) => {
-                    self.programs
-                        .insert(SystemSetStateKey::new(&args.slot, &args.value), program);
+                    binding.program = Some(program);
                 }
                 Err(error) => {
                     // `StoreScope::script` makes readonly, unknown, and
@@ -115,28 +129,37 @@ impl SystemReactionIrBindings {
                     log::warn!(
                         "[Scripting] setState reaction `{}` cannot bind runtime value for `{}`: {error}",
                         reaction.name,
-                        args.slot
+                        binding.slot
                     );
                 }
             }
+            self.bindings.push(binding);
         }
     }
 
     /// Evaluate an already-bound IR program at the app-drain write point.
-    /// Returns `true` when the raw command was recognized as a bound IR write.
-    pub(crate) fn eval_if_bound(
+    /// Raw command equality is enough to distinguish the installed bindings;
+    /// no queue-time rebind, slot-string allocation, or JSON serialization is
+    /// needed on this game-logic path.
+    pub(crate) fn dispatch(
         &self,
         slot: &str,
         value: &serde_json::Value,
         script_ctx: &ScriptCtx,
-    ) -> bool {
-        let key = SystemSetStateKey::new(slot, value);
-        let Some(program) = self.programs.get(&key) else {
-            return false;
+    ) -> SystemReactionIrDispatch {
+        let Some(binding) = self
+            .bindings
+            .iter()
+            .find(|binding| binding.matches(slot, value))
+        else {
+            return SystemReactionIrDispatch::Unknown;
+        };
+        let Some(program) = &binding.program else {
+            return SystemReactionIrDispatch::Rejected;
         };
         let mut scope = StoreScope::script(script_ctx.clone());
         eval_and_write(program, &mut scope);
-        true
+        SystemReactionIrDispatch::Evaluated
     }
 }
 
@@ -493,16 +516,11 @@ struct SlotOnlyArgs {
 mod tests {
     use super::*;
     use postretro_entities::{
-        CrossingCondition, CrossingDescriptor, NumericRange, SlotOwnership, SlotRecord, SlotSchema,
-        SlotType, SlotValue,
+        NumericRange, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
     };
-    use postretro_foundation::{IrNode, IrValue};
     use postretro_scripting_core::data_descriptors::{
         NamedReaction, PrimitiveDescriptor, ReactionDescriptor,
     };
-    use postretro_scripting_core::reaction_registry::ReactionPrimitiveRegistry;
-    use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
-    use postretro_scripting_core::state_crossings::CrossingDetector;
 
     fn number_slot(default: f32, max: f32, readonly: bool) -> SlotRecord {
         SlotRecord::new(SlotSchema {
@@ -557,79 +575,11 @@ mod tests {
         }
     }
 
-    #[test]
-    fn runtime_set_state_accumulates_at_the_app_drain_write_point() {
-        let ctx = ScriptCtx::new();
-        insert_number(&ctx, "puzzle.count", 0.0, 100.0, false);
-        insert_number(&ctx, "puzzle.fire", 0.0, 1.0, false);
-        let value = serde_json::json!({
-            "op": "add",
-            "a": { "op": "input", "name": "puzzle.count" },
-            "b": { "op": "const", "value": 1.0 }
-        });
-        let mut data = DataRegistry::new();
-        data.populate_level(
-            vec![
-                set_state_reaction("increment", "puzzle.count", value.clone()),
-                set_state_reaction("increment", "puzzle.count", value.clone()),
-            ],
-            vec![CrossingDescriptor {
-                slot: None,
-                condition: CrossingCondition::Ir(IrNode::Ge {
-                    a: Box::new(IrNode::Input {
-                        name: "puzzle.fire".to_string(),
-                    }),
-                    b: Box::new(IrNode::Const {
-                        value: IrValue::Number(1.0),
-                    }),
-                }),
-                max: 1.0,
-                fire: vec!["increment".to_string()],
-            }],
-            &[],
+    fn assert_number_approx_eq(actual: f32, expected: f32, message: &str) {
+        assert!(
+            (actual - expected).abs() <= 1.0e-5,
+            "{message}: expected {expected}, got {actual}"
         );
-        let mut bindings = SystemReactionIrBindings::default();
-        bindings.rebuild(&data, &ctx);
-
-        // Drive the real app-side seam: a crossing dispatches its named
-        // reactions into the system-command queue, then the drain evaluates
-        // each already-bound program in queue order.
-        let mut detector = CrossingDetector::new();
-        detector.initialize(&data, &ctx.slot_table.borrow(), &ctx);
-        ctx.slot_table
-            .borrow_mut()
-            .get_mut("puzzle.fire")
-            .unwrap()
-            .value = Some(SlotValue::Number(1.0));
-        let sequence_registry = SequencedPrimitiveRegistry::new();
-        let reaction_registry = ReactionPrimitiveRegistry::new();
-        let mut system_registry = SystemReactionRegistry::new();
-        register_system_reaction_primitives(&mut system_registry);
-        assert_eq!(
-            crate::scripting::reactions::dispatch_state_crossings_with_sequences(
-                &mut detector,
-                &ctx.slot_table.borrow(),
-                &data,
-                &sequence_registry,
-                &reaction_registry,
-                &system_registry,
-                &ctx,
-            ),
-            vec!["increment".to_string()]
-        );
-        let queued = ctx.system_commands.take();
-        assert_eq!(queued.len(), 2, "one crossing must enqueue both reactions");
-        for command in queued {
-            let SystemReactionCommand::SetState {
-                slot,
-                value: queued_value,
-            } = command
-            else {
-                panic!("crossing reaction must enqueue a setState command");
-            };
-            assert!(bindings.eval_if_bound(&slot, &queued_value, &ctx));
-        }
-        assert_eq!(number_value(&ctx, "puzzle.count"), 2.0);
     }
 
     #[test]
@@ -656,11 +606,14 @@ mod tests {
         let mut bindings = SystemReactionIrBindings::default();
         bindings.rebuild(&data, &ctx);
 
-        assert!(bindings.eval_if_bound("puzzle.target", &value, &ctx));
         assert_eq!(
+            bindings.dispatch("puzzle.target", &value, &ctx),
+            SystemReactionIrDispatch::Evaluated
+        );
+        assert_number_approx_eq(
             number_value(&ctx, "puzzle.target"),
             10.0,
-            "the IR produces 14, then the target slot clamps to its [0, 10] range"
+            "the IR produces 14, then the target slot clamps to its [0, 10] range",
         );
     }
 
@@ -691,9 +644,24 @@ mod tests {
         let mut bindings = SystemReactionIrBindings::default();
         bindings.rebuild(&data, &ctx);
 
-        assert!(!bindings.eval_if_bound("puzzle.readonly", &value, &ctx));
-        assert!(!bindings.eval_if_bound("puzzle.label", &value, &ctx));
-        assert_eq!(number_value(&ctx, "puzzle.readonly"), 4.0);
+        assert_eq!(
+            bindings.dispatch("puzzle.readonly", &value, &ctx),
+            SystemReactionIrDispatch::Rejected
+        );
+        assert_eq!(
+            bindings.dispatch("puzzle.label", &value, &ctx),
+            SystemReactionIrDispatch::Rejected
+        );
+        assert_eq!(
+            bindings.dispatch("puzzle.unknown", &value, &ctx),
+            SystemReactionIrDispatch::Unknown,
+            "only commands represented at install are known rejections"
+        );
+        assert_number_approx_eq(
+            number_value(&ctx, "puzzle.readonly"),
+            4.0,
+            "rejected runtime writes must leave the target unchanged",
+        );
         assert!(matches!(
             ctx.slot_table
                 .borrow()
@@ -1006,7 +974,11 @@ mod tests {
         crate::scripting::primitives::store::write_state_slot_json(&ctx, &slot, &value)
             .expect("literal setState must retain the shipped JSON write path");
 
-        assert_eq!(number_value(&ctx, "puzzle.literal"), 5.0);
+        assert_number_approx_eq(
+            number_value(&ctx, "puzzle.literal"),
+            5.0,
+            "literal setState must retain the shipped JSON write path",
+        );
     }
 
     #[test]

@@ -502,9 +502,10 @@ declare function returnToFrontend(): PrimitiveReactionDescriptor
 
 --- System-reaction body (M13 Goal F): write a literal or runtime value at the
 --- game-logic stage. Literals use the normal readonly-gated coercion and range
---- path. Runtime values bind once at level install; only writable Number and
---- Boolean slots project into `StoreScope`. Readonly, unknown, and
---- nonprojectable targets reject the IR before the reaction can fire. Pure:
+--- path. Runtime values bind once at level install. Known Number and Boolean
+--- slots, including readonly slots, project as inputs. The output target must
+--- be writable; unknown or nonprojectable inputs and readonly targets reject
+--- the IR before the reaction can fire. Pure:
 --- returns a `PrimitiveReactionDescriptor`, no FFI.
 declare function updateState<T>(ref: WritableStateRef<T>, value: T | RuntimeValue): PrimitiveReactionDescriptor
 

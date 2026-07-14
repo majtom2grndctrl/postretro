@@ -83,6 +83,40 @@ local function crossingThreshold(condition: any): (string, number, number?)
   return key, value, condition.max
 end
 
+local function crossingFireNames(fire: any): { string }
+  if type(fire) ~= "table" then
+    error("onStateCrossing: `fire` must be a dense array of reaction handles or strings")
+  end
+
+  local count = 0
+  local maxIndex = 0
+  for key, _ in pairs(fire) do
+    if type(key) ~= "number" or not isFiniteNumber(key) or key < 1 or key % 1 ~= 0 then
+      error("onStateCrossing: `fire` must be a dense array without map keys")
+    end
+    count += 1
+    if key > maxIndex then
+      maxIndex = key
+    end
+  end
+  if maxIndex ~= count then
+    error("onStateCrossing: `fire` must be a dense array without holes")
+  end
+
+  local fireNames: { string } = {}
+  for i = 1, count do
+    local entry = fire[i]
+    if type(entry) == "string" then
+      fireNames[i] = entry
+    elseif type(entry) == "table" and type(entry.name) == "string" and #entry.name > 0 then
+      fireNames[i] = entry.name
+    else
+      error("onStateCrossing: `fire` entries must be reaction handles or strings")
+    end
+  end
+  return fireNames
+end
+
 --- Build a state-crossing watcher. Pure: returns a plain table, does not
 --- register anything in the engine. The engine consumes the table from
 --- `setupLevel().crossings` or `ModManifest.crossings` with optional `levels`
@@ -98,19 +132,7 @@ function UiReactionsSdk.onStateCrossing(
 ): CrossingDescriptor
   local predicateForm = maybeFire == nil
   local fire = if predicateForm then conditionOrFire else maybeFire
-  if type(fire) ~= "table" then
-    error("onStateCrossing: `fire` must be an array of reaction handles or strings")
-  end
-  local fireNames: { string } = {}
-  for i, entry in ipairs(fire) do
-    if type(entry) == "string" then
-      fireNames[i] = entry
-    elseif type(entry) == "table" and type(entry.name) == "string" and #entry.name > 0 then
-      fireNames[i] = entry.name
-    else
-      error("onStateCrossing: `fire` entries must be reaction handles or strings")
-    end
-  end
+  local fireNames = crossingFireNames(fire)
   if predicateForm then
     return {
       predicate = refOrPredicate,
@@ -281,9 +303,9 @@ end
 --- Pure: returns the existing `setState` primitive reaction body, no engine
 --- side effect. Literal values use the normal runtime readonly gate, coercion,
 --- and range path. A `RuntimeValue` binds once at level install through
---- `StoreScope`; only writable Number and Boolean slots project into that
---- scope. Readonly, unknown, and nonprojectable targets reject the IR before
---- the reaction can fire.
+--- `StoreScope`. Known Number and Boolean slots, including readonly slots,
+--- project as inputs. The write target must be writable; unknown or
+--- nonprojectable inputs and readonly targets reject the IR before it can fire.
 function UiReactionsSdk.updateState(ref: any, value: any): PrimitiveReactionDescriptor
   return { primitive = "setState", args = { slot = stateSlot(ref, "updateState"), value = value } }
 end

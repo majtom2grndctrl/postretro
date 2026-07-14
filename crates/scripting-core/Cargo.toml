@@ -23,3 +23,6 @@ postretro-level-format = { workspace = true }
 
 [build-dependencies]
 postretro-script-compiler = { path = "../script-compiler" }
+
+[dev-dependencies]
+postretro-script-compiler = { path = "../script-compiler" }

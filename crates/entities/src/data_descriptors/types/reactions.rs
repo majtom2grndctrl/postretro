@@ -33,12 +33,14 @@ pub struct ProgressDescriptor {
     pub fire: String,
 }
 
-/// Primitive-action reaction. One descriptor shape, two execution arms (M13
+/// Primitive-action reaction. One descriptor shape, two targeting arms (M13
 /// HUD dynamics): when `tag` is `Some`, the primitive resolves the tag to
 /// entities and mutates the `EntityRegistry`; when `tag` is `None`, it is a
-/// **system reaction** — it targets no entities and instead enqueues a typed
-/// `SystemReactionCommand` for the app's per-frame drain. The two arms share
-/// one named-event namespace; the dispatcher picks the arm by `tag` presence.
+/// **system reaction** and targets no entities. Targeting and execution surface
+/// are separate: crossing-, named-event-, and level-fired system reactions
+/// enqueue commands for the app-side drain; trigger `on_fire`/`on_exit` store
+/// writes execute in the simulation tick. The two arms share one named-event
+/// namespace; the dispatcher picks the targeting arm by `tag` presence.
 ///
 /// `args` carries the primitive-specific payload (e.g. `{ "rate": 0.0 }` for
 /// `setEmitterRate`, `{ "sound": "alarm" }` for `playSound`). Defaults to an

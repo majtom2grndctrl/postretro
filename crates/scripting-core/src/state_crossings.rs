@@ -133,10 +133,12 @@ impl CrossingDetector {
         }
     }
 
-    /// Compare each watched slot's current value to its previous value and
-    /// return the event names to fire (in watcher-declaration order, each
-    /// watcher's `fire` list in order). Advances every watcher's `previous` to
-    /// the value observed this call. The caller runs the returned names through
+    /// Compare each watcher's current condition result with its prior result
+    /// and return the event names to fire (in watcher-declaration order, each
+    /// watcher's `fire` list in order). Threshold watchers use normalized
+    /// values from one slot at their declared edge; predicate watchers evaluate
+    /// bound programs over live slots. Advances every watcher's `previous` to
+    /// this call's observation. The caller runs the returned names through
     /// [`super::reaction_dispatch::fire_named_event_with_sequences`].
     ///
     /// A watcher with no value yet (`previous == None`) arms on the first

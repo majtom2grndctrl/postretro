@@ -220,7 +220,8 @@ pub(crate) struct ScriptingCore {
 
     /// Install-time `StoreScope` bindings for system-targeted inline `setState`
     /// IR. Descriptors and queued commands retain raw JSON at the entities
-    /// boundary; this binary-side table owns the scope-specialized programs.
+    /// boundary; this binary-side table owns scope-specialized programs and
+    /// known rejected command identities for the active reaction set.
     pub(crate) system_reaction_ir_bindings:
         scripting_systems::system_reactions::SystemReactionIrBindings,
 

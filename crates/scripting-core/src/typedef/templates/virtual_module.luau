@@ -79,7 +79,7 @@ export type PostretroUiModule = {
   EXIT_TO_DESKTOP_ACTION: "ui.exitToDesktop",
   --- Reserved button `onPress` action for returning to the frontend; same lifecycle path as `returnToFrontend()`.
   QUIT_TO_MENU_ACTION: "ui.quitToMenu",
-  --- Write a literal or runtime value to a writable state ref at game-logic time; runtime validates type/range and rejects readonly slots.
+  --- Write a literal or runtime value at game-logic time. Runtime values may read known Number/Boolean slots, including readonly slots; unknown/nonprojectable inputs and readonly output targets reject.
   updateState: <T>(ref: WritableStateRef<T>, value: T | RuntimeValue) -> PrimitiveReactionDescriptor,
   appendText: (ref: WritableStateRef<string>, text: string) -> PrimitiveReactionDescriptor,
   backspaceText: (ref: WritableStateRef<string>) -> PrimitiveReactionDescriptor,

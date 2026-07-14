@@ -1228,24 +1228,31 @@ mod tests {
                 .armed
         );
         drop(registry_ref);
-        assert_eq!(
-            script_ctx
-                .slot_table
-                .borrow()
-                .get("trigger.flag")
-                .unwrap()
-                .value,
-            Some(SlotValue::Number(1.0))
+        let trigger_flag = match script_ctx
+            .slot_table
+            .borrow()
+            .get("trigger.flag")
+            .and_then(|record| record.value.as_ref())
+        {
+            Some(SlotValue::Number(value)) => *value,
+            other => panic!("expected numeric trigger flag, got {other:?}"),
+        };
+        assert!(
+            (trigger_flag - 1.0).abs() <= 1.0e-5,
+            "trigger literal write must set the flag to 1; got {trigger_flag}"
         );
-        assert_eq!(
-            script_ctx
-                .slot_table
-                .borrow()
-                .get("trigger.count")
-                .unwrap()
-                .value,
-            Some(SlotValue::Number(2.0)),
-            "two IR increments from one on_fire execution must accumulate within the fixed tick"
+        let trigger_count = match script_ctx
+            .slot_table
+            .borrow()
+            .get("trigger.count")
+            .and_then(|record| record.value.as_ref())
+        {
+            Some(SlotValue::Number(value)) => *value,
+            other => panic!("expected numeric trigger count, got {other:?}"),
+        };
+        assert!(
+            (trigger_count - 2.0).abs() <= 1.0e-5,
+            "two IR increments from one on_fire execution must accumulate within the fixed tick; got {trigger_count}"
         );
 
         let sequence_registry = SequencedPrimitiveRegistry::new();

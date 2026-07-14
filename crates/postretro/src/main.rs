@@ -100,6 +100,7 @@ use crate::input::{Action, ButtonState, DiagnosticAction, InputFocus};
 // See: context/lib/networking.md
 use crate::netcode::frame_order;
 use crate::render::Renderer;
+use crate::scripting::reactions::system_commands::SystemReactionIrDispatch;
 use crate::scripting::state_persistence::{
     STATE_FILE_PATH, collect_persisted_state, save_persisted_state,
 };
@@ -4132,20 +4133,31 @@ impl App {
                 }
                 SystemReactionCommand::SetState { slot, value } => {
                     if crate::scripting::reactions::system_commands::is_ir_node(&value) {
-                        let evaluated = self.session.as_ref().is_some_and(|session| {
-                            session.scripting.system_reaction_ir_bindings.eval_if_bound(
-                                &slot,
-                                &value,
-                                &script_ctx,
-                            )
-                        });
-                        if !evaluated {
-                            // A malformed, stale, readonly, or non-projectable
-                            // inline node is rejected at install and never falls
-                            // through to the literal path on a later fire.
-                            log::warn!(
-                                "[Scripting] setState runtime value for `{slot}` was not bound at level install; skipping"
-                            );
+                        let outcome = self.session.as_ref().map_or(
+                            SystemReactionIrDispatch::Unknown,
+                            |session| {
+                                session.scripting.system_reaction_ir_bindings.dispatch(
+                                    &slot,
+                                    &value,
+                                    &script_ctx,
+                                )
+                            },
+                        );
+                        match outcome {
+                            SystemReactionIrDispatch::Evaluated
+                            | SystemReactionIrDispatch::Rejected => {
+                                // Rejected IR was already diagnosed during install. It must
+                                // never fall through to the literal write path, but repeated
+                                // fires are a safe no-op rather than a per-dispatch warning.
+                            }
+                            SystemReactionIrDispatch::Unknown => {
+                                // This command is not from the current install table (for
+                                // example, a stale queue entry after a rebuild), so retain a
+                                // diagnostic instead of silently accepting an unbound write.
+                                log::warn!(
+                                    "[Scripting] setState runtime value for `{slot}` was not bound at level install; skipping"
+                                );
+                            }
                         }
                     } else if let Err(err) =
                         crate::scripting::primitives::store::write_state_slot_json(

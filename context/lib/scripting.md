@@ -310,15 +310,17 @@ Six tag-targeted reaction primitives operate on `FogVolumeComponent`: `setFogDen
 
 ### 10.4 System Reactions (no entity targets)
 
-One event namespace, two execution arms (E13 HUD dynamics): entity-targeted
+One event namespace, two targeting arms (E13 HUD dynamics): entity-targeted
 primitives resolve tags and mutate the `EntityRegistry`; **system reactions**
 (`playSound`, `rumble`, `flashScreen`, `showDialog` / `openMenu` /
 `closeDialog`, `setState`, the text-edit reactions, `vignette`,
 `screenShake`, and the game-flow verbs) carry no `tag` (the descriptor's
-`tag` is optional; absent = system-targeted) and push typed commands onto a
-queue drained once per frame by the app after the post-tick event drains —
-audio/input/UI/lifecycle subsystems consume their commands without threading
-engine services into scripting.
+`tag` is optional; absent = system-targeted). Targeting does not choose an
+execution surface. Crossing-, named-event-, and level-fired system reactions
+enqueue typed commands for the app-side drain after post-tick events;
+audio/input/UI/lifecycle subsystems consume them without threading engine
+services into scripting. Trigger `on_fire` / `on_exit` `setState` writes instead
+execute in the simulation tick against the tick-context slot table.
 
 Crossing watchers (`onStateCrossing`) may return through `setupLevel`'s
 manifest or through `ModManifest.crossings`. Mod-global watchers compose into

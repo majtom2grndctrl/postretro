@@ -66,6 +66,18 @@ function reactionName(entry: import("../data_script").NamedReactionDescriptor | 
   throw new Error("onStateCrossing: `fire` entries must be reaction handles or strings");
 }
 
+function crossingFireNames(fire: unknown): string[] {
+  if (!Array.isArray(fire)) {
+    throw new Error("onStateCrossing: `fire` must be a dense array of reaction handles or strings");
+  }
+  for (let i = 0; i < fire.length; i += 1) {
+    if (!Object.prototype.hasOwnProperty.call(fire, i)) {
+      throw new Error("onStateCrossing: `fire` must be a dense array without holes");
+    }
+  }
+  return fire.map(reactionName);
+}
+
 function crossingThreshold(condition: CrossingCondition): { key: "below" | "above"; value: number; max?: number } {
   if (condition === null || typeof condition !== "object") {
     throw new Error("onStateCrossing: `condition` must be an object");
@@ -111,22 +123,20 @@ export function onStateCrossing(
   conditionOrFire: CrossingCondition | (import("../data_script").NamedReactionDescriptor | string)[],
   maybeFire?: (import("../data_script").NamedReactionDescriptor | string)[],
 ): CrossingDescriptor {
-  if (Array.isArray(conditionOrFire)) {
-    if (maybeFire !== undefined) {
-      throw new Error("onStateCrossing: predicate form accepts exactly two arguments");
-    }
+  if (maybeFire === undefined) {
     return {
       predicate: refOrPredicate as RuntimeValue,
-      fire: conditionOrFire.map(reactionName),
+      fire: crossingFireNames(conditionOrFire),
     };
   }
-  if (!Array.isArray(maybeFire)) {
-    throw new Error("onStateCrossing: `fire` must be an array of reaction handles or strings");
+  if (Array.isArray(conditionOrFire)) {
+    throw new Error("onStateCrossing: predicate form accepts exactly two arguments");
   }
+  const fire = crossingFireNames(maybeFire);
   const threshold = crossingThreshold(conditionOrFire);
   const descriptor: ThresholdCrossingDescriptor = {
     slot: stateSlot(refOrPredicate as ReadonlyStateRef<number>, "onStateCrossing"),
-    fire: maybeFire.map(reactionName),
+    fire,
     [threshold.key]: threshold.value,
   } as ThresholdCrossingDescriptor;
   if (threshold.max !== undefined) {
@@ -343,9 +353,9 @@ export function returnToFrontend(): import("../data_script").PrimitiveReactionDe
  * Pure — returns the existing `setState` primitive reaction body, no engine
  * side effect. Literal values use the normal runtime readonly gate, coercion,
  * and range path. A `RuntimeValue` binds once at level install through
- * `StoreScope`; only writable Number and Boolean slots project into that
- * scope. Readonly, unknown, and nonprojectable targets reject the IR before
- * the reaction can fire.
+ * `StoreScope`. Known Number and Boolean slots, including readonly slots,
+ * project as inputs. The write target must be writable; unknown or
+ * nonprojectable inputs and readonly targets reject the IR before it can fire.
  */
 export function updateState<T extends number | boolean | string | ReadonlyArray<number>>(
   ref: WritableStateRef<T>,

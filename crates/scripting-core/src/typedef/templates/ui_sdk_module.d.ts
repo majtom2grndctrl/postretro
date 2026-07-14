@@ -204,7 +204,7 @@ declare module "postretro/ui" {
   export function restartLevel(): PrimitiveReactionDescriptor;
   /** Return to the frontend menu and reload its optional backdrop level. */
   export function returnToFrontend(): PrimitiveReactionDescriptor;
-  /** Write a literal or runtime value at game-logic time. Literals use the normal readonly-gated coercion and range path. Runtime values bind once at level install; only writable Number and Boolean slots project into StoreScope. */
+  /** Write a literal or runtime value at game-logic time. Literals use the normal readonly-gated coercion and range path. Runtime values bind once at level install: known Number and Boolean slots, including readonly slots, project as inputs; only a writable Number/Boolean output target is accepted. Unknown/nonprojectable inputs and readonly targets reject. */
   export function updateState<T>(ref: WritableStateRef<T>, value: T | RuntimeValue): PrimitiveReactionDescriptor;
   export function appendText(ref: WritableStateRef<string>, text: string): PrimitiveReactionDescriptor;
   export function backspaceText(ref: WritableStateRef<string>): PrimitiveReactionDescriptor;

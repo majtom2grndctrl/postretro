@@ -45,9 +45,9 @@ Commit the move.
 
 For each phase in the sequencing section:
 
-**Agent sizing:** Use `model: "gpt-5.6-terra"` for implementation agents. Start with `reasoning_effort: "medium"` for bounded tasks. Promote to `"max"` only when the task has real uncertainty or broad contracts.
+**Agent sizing:** Use `model: "gpt-5.6-terra"` for implementation agents. Start with `reasoning_effort: "medium"` for bounded tasks. Promote to `"xhigh"` only when the task has real uncertainty or broad contracts.
 
-Use `"max"` when the task touches any of:
+Use `"xhigh"` when the task touches any of:
 - GPU contracts, shader layouts, bind groups, or renderer scheduling
 - Persistent formats, cache keys, PRL sections, or migration behavior
 - Offset-sensitive layouts: wire headers, byte builders, std140 mirrors, shader structs, cache payloads
@@ -63,14 +63,14 @@ Use `"medium"` for:
 - Mechanical propagation across call sites
 - Small review fixes with low blast radius
 
-Do not use `"max"` just because a task is a build task. Use the smallest agent that can safely satisfy the task and its acceptance criteria.
+Do not use `"xhigh"` just because a task is a build task. Use the smallest agent that can safely satisfy the task and its acceptance criteria.
 
-**Max-effort briefing.** For persistent or mirrored layouts, name what stays fixed.
+**Extra-high-effort briefing.** For persistent or mirrored layouts, name what stays fixed.
 Include unchanged offsets, bindings, versions, cache epochs, and mirror structs.
 Require offset/layout assertions when layouts are hand-mirrored or stale input must be rejected.
 
 **Medium-effort boundary.** Use medium only when one local contract is enough.
-If another crate, runtime stage, shader, cache, or diagnostic path consumes the output, use max or split the task.
+If another crate, runtime stage, shader, cache, or diagnostic path consumes the output, use xhigh or split the task.
 
 **Sequential:** One `worker` agent at a time. Wait for completion before starting the next.
 

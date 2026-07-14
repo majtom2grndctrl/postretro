@@ -921,6 +921,7 @@ fn rebuild_reaction_subscribers(
     crossing_detector.initialize(
         &script_ctx.data_registry.borrow(),
         &script_ctx.slot_table.borrow(),
+        script_ctx,
     );
 }
 
@@ -1556,7 +1557,7 @@ mod tests {
     fn scoped_global_crossing(slot: &str, fire: &str) -> postretro_entities::ScopedCrossing {
         postretro_entities::ScopedCrossing {
             crossing: CrossingDescriptor {
-                slot: slot.to_string(),
+                slot: Some(slot.to_string()),
                 condition: CrossingCondition::Below { threshold: 0.5 },
                 max: 100.0,
                 fire: vec![fire.to_string()],

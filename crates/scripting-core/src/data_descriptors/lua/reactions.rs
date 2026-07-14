@@ -48,9 +48,8 @@ pub fn progress_descriptor_from_lua(table: &Table) -> Result<ProgressDescriptor,
     Ok(ProgressDescriptor { tag, at, fire })
 }
 
-/// Mirror of [`crossing_descriptor_from_js`] for Luau tables. Shape:
-/// `{ slot: string, below?: number, above?: number, max?: number, fire: {string} }`.
-/// Delegates validation to [`build_crossing`].
+/// Mirror of [`crossing_descriptor_from_js`] for Luau tables. The discriminator
+/// is presence of `predicate` (IR form) versus `slot` (threshold form).
 pub fn crossing_descriptor_from_lua(
     value: LuaValue,
 ) -> Result<CrossingDescriptor, DescriptorError> {
@@ -62,11 +61,6 @@ pub fn crossing_descriptor_from_lua(
             });
         }
     };
-    let slot = get_required_string_lua(&table, "slot")?;
-    let below = get_optional_f32_lua(&table, "below")?;
-    let above = get_optional_f32_lua(&table, "above")?;
-    let max = get_optional_f32_lua(&table, "max")?;
-
     let fire_arr: Table = table
         .get("fire")
         .map_err(|_| DescriptorError::InvalidShape {
@@ -89,6 +83,19 @@ pub fn crossing_descriptor_from_lua(
         }
     }
 
+    if table.contains_key("predicate").map_err(lua_err)? {
+        let raw: LuaValue = table.get("predicate").map_err(lua_err)?;
+        let predicate = ir_node_from_json(
+            conv::lua_to_json(raw).map_err(lua_err)?,
+            "crossing entry `predicate`",
+        )?;
+        return Ok(build_predicate_crossing(predicate, fire));
+    }
+
+    let slot = get_required_string_lua(&table, "slot")?;
+    let below = get_optional_f32_lua(&table, "below")?;
+    let above = get_optional_f32_lua(&table, "above")?;
+    let max = get_optional_f32_lua(&table, "max")?;
     build_crossing(slot, below, above, max, fire)
 }
 

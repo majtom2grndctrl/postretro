@@ -2,6 +2,7 @@
 // See: context/lib/scripting.md
 
 use crate::registry::EntityId;
+use postretro_foundation::ir::IrNode;
 
 /// Variants of a single reaction's behavior body. The `name` lives on the
 /// wrapping [`NamedReaction`]; this enum captures only the descriptor shape.
@@ -65,12 +66,16 @@ pub struct NamedReaction {
 /// registration's `max` (`raw_threshold / max`); the watcher compares it
 /// against the slot's `current / max`, so a registration with no `max`
 /// (default `1.0`) degrades to a raw-value comparison.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum CrossingCondition {
     /// Fires on a downward crossing: `prev >= threshold && cur < threshold`.
     Below { threshold: f32 },
     /// Fires on an upward crossing: `prev <= threshold && cur > threshold`.
     Above { threshold: f32 },
+    /// Fires when a StoreScope-bound predicate transitions from false to true.
+    /// The descriptor retains the raw foundation IR; scripting-core owns its
+    /// scope-specialized bound program at runtime.
+    Ir(IrNode),
 }
 
 /// A state-crossing watcher declared by `onStateCrossing` and carried back
@@ -84,7 +89,9 @@ pub enum CrossingCondition {
 /// It defaults to `1.0` (raw-value comparison) when the registration omits it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CrossingDescriptor {
-    pub slot: String,
+    /// The slot watched by a threshold crossing. Predicate crossings have no
+    /// single meaningful slot and carry `None` here.
+    pub slot: Option<String>,
     pub condition: CrossingCondition,
     pub max: f32,
     pub fire: Vec<String>,

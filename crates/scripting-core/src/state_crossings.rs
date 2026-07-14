@@ -6,8 +6,11 @@
 // named-reaction vocabulary (Task 2's `fire_named_event_with_sequences`).
 // See: context/lib/scripting.md §10.4
 
-use super::data_descriptors::{CrossingCondition, CrossingDescriptor};
+use super::ctx::ScriptCtx;
+use super::data_descriptors::CrossingCondition;
 use super::data_registry::DataRegistry;
+use super::ir::{BakedIr, BoundProgram, CURRENT_IR_VERSION, IrType, IrValue, bind, eval_value};
+use super::ir_scopes::StoreScope;
 use super::slot_table::{SlotTable, SlotValue};
 
 /// One active crossing watcher. The threshold is already a fraction of the
@@ -16,15 +19,27 @@ use super::slot_table::{SlotTable, SlotValue};
 /// fire on a fraction crossing. `previous` is the last observed normalized
 /// value — `None` until the first observation, which is when it arms (no fire
 /// on the first observed value).
-#[derive(Debug, Clone, PartialEq)]
-struct Watcher {
-    slot: String,
-    condition: CrossingCondition,
-    max: f32,
-    fire: Vec<String>,
-    /// Last observed normalized value (`raw / max`), or `None` before the first
-    /// observation. A watcher cannot fire until this is `Some`.
-    previous: Option<f32>,
+enum Watcher {
+    /// The shipped single-number-slot threshold watcher. Its data flow and
+    /// edge behavior deliberately remain unchanged.
+    Threshold {
+        slot: String,
+        condition: CrossingCondition,
+        max: f32,
+        fire: Vec<String>,
+        /// Last observed normalized value (`raw / max`), or `None` before the
+        /// first observation. A watcher cannot fire until this is `Some`.
+        previous: Option<f32>,
+    },
+    /// A predicate-form crossing owns the program bound once at installation.
+    /// `StoreScope` retains the live script context for eval without exposing
+    /// any VM-coupled state through the entities descriptor boundary.
+    Predicate {
+        program: BoundProgram<StoreScope>,
+        scope: StoreScope,
+        fire: Vec<String>,
+        previous: bool,
+    },
 }
 
 /// Active state-crossing watchers for the current level. Built from the data
@@ -32,7 +47,7 @@ struct Watcher {
 /// clears them; this rebuilds from the fresh registry). Mirrors
 /// [`super::reaction_dispatch::ProgressTracker`]'s "engine-side subscription
 /// tracker fed by the data registry" shape.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct CrossingDetector {
     watchers: Vec<Watcher>,
 }
@@ -45,25 +60,78 @@ impl CrossingDetector {
     /// Build watchers from the registry's crossing descriptors. Callers
     /// `clear()` first (or use a fresh detector) to avoid duplicate watchers.
     ///
-    /// A registration whose slot is not a `Number` slot (wrong type, or a slot
-    /// the table does not know) warns and is skipped here, at registration
-    /// time — it never enters the watch set. The previous value initializes to
-    /// the slot's value at level start so the initial state never fires; a slot
-    /// with no value yet stays unarmed (`previous = None`) until the first
-    /// observed value.
-    pub fn initialize(&mut self, data_registry: &DataRegistry, slot_table: &SlotTable) {
+    /// A threshold registration whose slot is not a `Number` slot (wrong type,
+    /// or a slot the table does not know) warns and is skipped here, at
+    /// registration time. An IR predicate is bound once against
+    /// [`StoreScope::script`]; invalid or non-Boolean roots likewise warn and
+    /// never enter the watch set. Initial state only arms a watcher — it never
+    /// fires an event.
+    pub fn initialize(
+        &mut self,
+        data_registry: &DataRegistry,
+        slot_table: &SlotTable,
+        script_ctx: &ScriptCtx,
+    ) {
         for crossing in &data_registry.crossings {
-            if !slot_is_number(slot_table, &crossing.slot) {
-                log::warn!(
-                    "[Scripting] onStateCrossing: slot `{}` is not a registered Number slot; \
-                     crossing watcher skipped",
-                    crossing.slot,
-                );
-                continue;
+            match &crossing.condition {
+                CrossingCondition::Below { .. } | CrossingCondition::Above { .. } => {
+                    let Some(slot) = crossing.slot.as_deref() else {
+                        log::warn!(
+                            "[Scripting] onStateCrossing: threshold crossing has no slot; \
+                             crossing watcher skipped"
+                        );
+                        continue;
+                    };
+                    if !slot_is_number(slot_table, slot) {
+                        log::warn!(
+                            "[Scripting] onStateCrossing: slot `{slot}` is not a registered Number slot; \
+                             crossing watcher skipped",
+                        );
+                        continue;
+                    }
+                    let previous = read_number(slot_table, slot).map(|raw| raw / crossing.max);
+                    self.watchers.push(Watcher::Threshold {
+                        slot: slot.to_string(),
+                        condition: crossing.condition.clone(),
+                        max: crossing.max,
+                        fire: crossing.fire.clone(),
+                        previous,
+                    });
+                }
+                CrossingCondition::Ir(root) => {
+                    let scope = StoreScope::script(script_ctx.clone());
+                    let baked = BakedIr {
+                        version: CURRENT_IR_VERSION,
+                        output: None,
+                        root: root.clone(),
+                    };
+                    let program = match bind(&baked, &scope) {
+                        Ok(program) if program.root_type == IrType::Bool => program,
+                        Ok(program) => {
+                            log::warn!(
+                                "[Scripting] onStateCrossing: predicate must produce Bool, but produces {}; \
+                                 crossing watcher skipped",
+                                ir_type_label(program.root_type),
+                            );
+                            continue;
+                        }
+                        Err(error) => {
+                            log::warn!(
+                                "[Scripting] onStateCrossing: predicate failed to bind ({error}); \
+                                 crossing watcher skipped"
+                            );
+                            continue;
+                        }
+                    };
+                    let previous = matches!(eval_value(&program, &scope), IrValue::Bool(true));
+                    self.watchers.push(Watcher::Predicate {
+                        program,
+                        scope,
+                        fire: crossing.fire.clone(),
+                        previous,
+                    });
+                }
             }
-            let previous = read_number(slot_table, &crossing.slot).map(|raw| raw / crossing.max);
-            self.watchers
-                .push(Watcher::from_descriptor(crossing, previous));
         }
     }
 
@@ -79,16 +147,40 @@ impl CrossingDetector {
     pub fn detect(&mut self, slot_table: &SlotTable) -> Vec<String> {
         let mut to_fire = Vec::new();
         for watcher in &mut self.watchers {
-            let current = read_number(slot_table, &watcher.slot).map(|raw| raw / watcher.max);
-            // A crossing needs both endpoints. When either is `None` (arming on
-            // the first observed value, or disarming when the value is gone) no
-            // edge exists, so nothing fires — only `previous` advances.
-            if let (Some(prev), Some(cur)) = (watcher.previous, current) {
-                if watcher.crosses(prev, cur) {
-                    to_fire.extend(watcher.fire.iter().cloned());
+            match watcher {
+                Watcher::Threshold {
+                    slot,
+                    condition,
+                    max,
+                    fire,
+                    previous,
+                } => {
+                    let current = read_number(slot_table, slot).map(|raw| raw / *max);
+                    // A crossing needs both endpoints. When either is `None`
+                    // (arming on the first observed value, or disarming when
+                    // the value is gone) no edge exists, so nothing fires.
+                    if let (Some(prev), Some(cur)) = (*previous, current) {
+                        if threshold_crosses(condition, prev, cur) {
+                            to_fire.extend(fire.iter().cloned());
+                        }
+                    }
+                    *previous = current;
+                }
+                Watcher::Predicate {
+                    program,
+                    scope,
+                    fire,
+                    previous,
+                } => {
+                    let current = matches!(eval_value(program, scope), IrValue::Bool(true));
+                    if !*previous && current {
+                        to_fire.extend(fire.iter().cloned());
+                    }
+                    // A true-to-false evaluation re-arms the next false-to-true
+                    // edge; no slot shortcut or stale value is retained.
+                    *previous = current;
                 }
             }
-            watcher.previous = current;
         }
         to_fire
     }
@@ -103,24 +195,20 @@ impl CrossingDetector {
     }
 }
 
-impl Watcher {
-    fn from_descriptor(crossing: &CrossingDescriptor, previous: Option<f32>) -> Self {
-        Self {
-            slot: crossing.slot.clone(),
-            condition: crossing.condition,
-            max: crossing.max,
-            fire: crossing.fire.clone(),
-            previous,
-        }
+/// Whether a threshold transition from `prev` to `cur` (both normalized
+/// fractions) crosses in its registered direction.
+fn threshold_crosses(condition: &CrossingCondition, prev: f32, cur: f32) -> bool {
+    match condition {
+        CrossingCondition::Below { threshold } => prev >= *threshold && cur < *threshold,
+        CrossingCondition::Above { threshold } => prev <= *threshold && cur > *threshold,
+        CrossingCondition::Ir(_) => false,
     }
+}
 
-    /// Whether a transition from `prev` to `cur` (both normalized fractions)
-    /// crosses this watcher's threshold in its direction.
-    fn crosses(&self, prev: f32, cur: f32) -> bool {
-        match self.condition {
-            CrossingCondition::Below { threshold } => prev >= threshold && cur < threshold,
-            CrossingCondition::Above { threshold } => prev <= threshold && cur > threshold,
-        }
+fn ir_type_label(ty: IrType) -> &'static str {
+    match ty {
+        IrType::Number => "Number",
+        IrType::Bool => "Bool",
     }
 }
 
@@ -149,6 +237,7 @@ fn read_number(slot_table: &SlotTable, name: &str) -> Option<f32> {
 mod tests {
     use super::*;
     use crate::data_descriptors::{CrossingCondition, CrossingDescriptor};
+    use crate::ir::IrNode;
     use crate::slot_table::{
         NumericRange, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
     };
@@ -191,7 +280,7 @@ mod tests {
         fire: &[&str],
     ) -> CrossingDescriptor {
         CrossingDescriptor {
-            slot: slot.to_string(),
+            slot: Some(slot.to_string()),
             condition: CrossingCondition::Below {
                 threshold: raw_threshold / max,
             },
@@ -207,13 +296,70 @@ mod tests {
         fire: &[&str],
     ) -> CrossingDescriptor {
         CrossingDescriptor {
-            slot: slot.to_string(),
+            slot: Some(slot.to_string()),
             condition: CrossingCondition::Above {
                 threshold: raw_threshold / max,
             },
             max,
             fire: fire.iter().map(|s| s.to_string()).collect(),
         }
+    }
+
+    fn predicate_crossing(predicate: IrNode, fire: &[&str]) -> CrossingDescriptor {
+        CrossingDescriptor {
+            slot: None,
+            condition: CrossingCondition::Ir(predicate),
+            max: 1.0,
+            fire: fire.iter().map(|event| (*event).to_string()).collect(),
+        }
+    }
+
+    fn number(value: f32) -> Box<IrNode> {
+        Box::new(IrNode::Const {
+            value: IrValue::Number(value),
+        })
+    }
+
+    fn input(name: &str) -> Box<IrNode> {
+        Box::new(IrNode::Input {
+            name: name.to_string(),
+        })
+    }
+
+    /// `a >= 2 && b >= 1` expressed with the shipped comparison and select
+    /// nodes: if `a` clears its comparison, return `b`'s comparison; otherwise
+    /// return false.
+    fn both_thresholds_predicate() -> IrNode {
+        IrNode::Select {
+            cond: Box::new(IrNode::Ge {
+                a: input("test.a"),
+                b: number(2.0),
+            }),
+            a: Box::new(IrNode::Ge {
+                a: input("test.b"),
+                b: number(1.0),
+            }),
+            b: Box::new(IrNode::Const {
+                value: IrValue::Bool(false),
+            }),
+        }
+    }
+
+    fn predicate_ctx(a: f32, b: f32) -> ScriptCtx {
+        let ctx = ScriptCtx::new();
+        let mut table = ctx.slot_table.borrow_mut();
+        table
+            .insert("test.a".to_string(), number_slot(Some(a)))
+            .expect("test.a should be vacant");
+        table
+            .insert("test.b".to_string(), number_slot(Some(b)))
+            .expect("test.b should be vacant");
+        drop(table);
+        ctx
+    }
+
+    fn set_ctx(ctx: &ScriptCtx, slot: &str, value: f32) {
+        ctx.slot_table.borrow_mut().get_mut(slot).unwrap().value = Some(SlotValue::Number(value));
     }
 
     fn registry_with(crossings: Vec<CrossingDescriptor>) -> DataRegistry {
@@ -234,7 +380,7 @@ mod tests {
             &["lowHealth"],
         )]);
         let mut detector = CrossingDetector::new();
-        detector.initialize(&reg, &table);
+        detector.initialize(&reg, &table, &ScriptCtx::new());
 
         // Still above threshold: no fire.
         set(&mut table, "test.health", 50.0);
@@ -259,7 +405,7 @@ mod tests {
             &["lowHealth"],
         )]);
         let mut detector = CrossingDetector::new();
-        detector.initialize(&reg, &table);
+        detector.initialize(&reg, &table, &ScriptCtx::new());
 
         set(&mut table, "test.health", 10.0);
         assert_eq!(detector.detect(&table), vec!["lowHealth".to_string()]);
@@ -286,7 +432,7 @@ mod tests {
             &["lowHealth"],
         )]);
         let mut detector = CrossingDetector::new();
-        detector.initialize(&reg, &table);
+        detector.initialize(&reg, &table, &ScriptCtx::new());
 
         // First detect at the same below-threshold value: prev == cur, no edge.
         assert!(detector.detect(&table).is_empty());
@@ -302,7 +448,7 @@ mod tests {
             &["shielded"],
         )]);
         let mut detector = CrossingDetector::new();
-        detector.initialize(&reg, &table);
+        detector.initialize(&reg, &table, &ScriptCtx::new());
 
         set(&mut table, "test.shield", 30.0);
         assert!(detector.detect(&table).is_empty());
@@ -321,7 +467,7 @@ mod tests {
             &["playAlarm", "flashRed"],
         )]);
         let mut detector = CrossingDetector::new();
-        detector.initialize(&reg, &table);
+        detector.initialize(&reg, &table, &ScriptCtx::new());
 
         set(&mut table, "test.health", 10.0);
         assert_eq!(
@@ -342,7 +488,7 @@ mod tests {
             &["lowCharges"],
         )]);
         let mut detector = CrossingDetector::new();
-        detector.initialize(&reg, &table);
+        detector.initialize(&reg, &table, &ScriptCtx::new());
 
         set(&mut table, "test.charges", 2.0);
         assert_eq!(detector.detect(&table), vec!["lowCharges".to_string()]);
@@ -368,7 +514,7 @@ mod tests {
             .unwrap();
         let reg = registry_with(vec![below_crossing("test.flag", 0.5, 1.0, &["never"])]);
         let mut detector = CrossingDetector::new();
-        detector.initialize(&reg, &table);
+        detector.initialize(&reg, &table, &ScriptCtx::new());
 
         assert_eq!(detector.watcher_count(), 0, "non-Number slot is skipped");
         assert!(detector.detect(&table).is_empty());
@@ -387,7 +533,7 @@ mod tests {
             &["lowHealth"],
         )]);
         let mut detector = CrossingDetector::new();
-        detector.initialize(&reg, &table);
+        detector.initialize(&reg, &table, &ScriptCtx::new());
 
         // First observed value is already below threshold: arming, no fire.
         set(&mut table, "test.health", 10.0);
@@ -398,6 +544,60 @@ mod tests {
         assert!(detector.detect(&table).is_empty());
         set(&mut table, "test.health", 5.0);
         assert_eq!(detector.detect(&table), vec!["lowHealth".to_string()]);
+    }
+
+    #[test]
+    fn predicate_uses_live_store_slots_and_rearms_after_false() {
+        let ctx = predicate_ctx(0.0, 0.0);
+        let reg = registry_with(vec![predicate_crossing(
+            both_thresholds_predicate(),
+            &["bothReady"],
+        )]);
+        let mut detector = CrossingDetector::new();
+        detector.initialize(&reg, &ctx.slot_table.borrow(), &ctx);
+        assert_eq!(detector.watcher_count(), 1);
+
+        // The first source alone does not satisfy the nested select's true arm.
+        set_ctx(&ctx, "test.a", 2.0);
+        assert!(detector.detect(&ctx.slot_table.borrow()).is_empty());
+
+        // The second live slot makes the full predicate false -> true.
+        set_ctx(&ctx, "test.b", 1.0);
+        assert_eq!(
+            detector.detect(&ctx.slot_table.borrow()),
+            vec!["bothReady".to_string()]
+        );
+        assert!(detector.detect(&ctx.slot_table.borrow()).is_empty());
+
+        // Returning false re-arms; the next true edge fires exactly once.
+        set_ctx(&ctx, "test.a", 0.0);
+        assert!(detector.detect(&ctx.slot_table.borrow()).is_empty());
+        set_ctx(&ctx, "test.a", 2.0);
+        assert_eq!(
+            detector.detect(&ctx.slot_table.borrow()),
+            vec!["bothReady".to_string()]
+        );
+    }
+
+    #[test]
+    fn non_boolean_predicate_is_rejected_at_bind() {
+        let ctx = predicate_ctx(0.0, 0.0);
+        let reg = registry_with(vec![predicate_crossing(
+            IrNode::Add {
+                a: number(1.0),
+                b: number(2.0),
+            },
+            &["never"],
+        )]);
+        let mut detector = CrossingDetector::new();
+        detector.initialize(&reg, &ctx.slot_table.borrow(), &ctx);
+
+        assert_eq!(
+            detector.watcher_count(),
+            0,
+            "Number-root predicates must be rejected rather than registered"
+        );
+        assert!(detector.detect(&ctx.slot_table.borrow()).is_empty());
     }
 
     // NOTE: the AC-3 contract test (styleRanges display value vs. crossing
@@ -415,7 +615,7 @@ mod tests {
             &["lowHealth"],
         )]);
         let mut detector = CrossingDetector::new();
-        detector.initialize(&reg, &table);
+        detector.initialize(&reg, &table, &ScriptCtx::new());
         assert_eq!(detector.watcher_count(), 1);
 
         detector.clear();

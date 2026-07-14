@@ -31,7 +31,7 @@ impl LevelManifest {
             let mut out = Vec::with_capacity(arr.len());
             for i in 0..arr.len() {
                 let item: JsValue = arr.get(i).map_err(js_err)?;
-                out.push(crossing_descriptor_from_js(&item)?);
+                out.push(crossing_descriptor_from_js(ctx, &item)?);
             }
             out
         } else {
@@ -310,6 +310,7 @@ pub fn drain_global_reactions_js<'js>(
 /// Missing/null `crossings` normalizes to empty; present entries use the same
 /// descriptor parser as level-local crossings plus an optional `levels` scope.
 pub fn drain_global_crossings_js<'js>(
+    ctx: &Ctx<'js>,
     obj: &Object<'js>,
     scope: &str,
 ) -> Result<Vec<ScopedCrossing>, DescriptorError> {
@@ -325,7 +326,7 @@ pub fn drain_global_crossings_js<'js>(
                 reason: "crossing entry must be an object".to_string(),
             })?;
         out.push(ScopedCrossing {
-            crossing: crossing_descriptor_from_js(&item)?,
+            crossing: crossing_descriptor_from_js(ctx, &item)?,
             levels: string_array_from_js(&item_obj, "levels")?,
         });
     }

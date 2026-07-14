@@ -14,12 +14,9 @@ export type CrossingCondition =
   { below: number, above: nil?, max: number? }
   | { below: nil?, above: number, max: number? }
 
---- A state-crossing watcher entry as it appears in `setupLevel().crossings` or
---- `ModManifest.crossings`. The condition fields are flattened in beside `slot`
---- and `fire`; `fire` is the list of named reactions dispatched when the
---- crossing occurs. `levels` scopes mod-global crossings by map-catalog tags;
---- omit it for every level.
-export type CrossingDescriptor = {
+--- A threshold-form state-crossing watcher. The condition fields are flattened
+--- in beside `slot` and `fire`.
+export type ThresholdCrossingDescriptor = {
   slot: string,
   below: number?,
   above: number?,
@@ -27,6 +24,15 @@ export type CrossingDescriptor = {
   fire: {string},
   levels: {string}?,
 }
+
+--- A predicate-form watcher. `predicate` is evaluated over live store slots.
+export type PredicateCrossingDescriptor = {
+  predicate: RuntimeValue,
+  fire: {string},
+  levels: {string}?,
+}
+
+export type CrossingDescriptor = ThresholdCrossingDescriptor | PredicateCrossingDescriptor
 
 --- Primitive reaction body produced by the system-reaction constructors below.
 --- Mirrors `data_script.luau`'s `PrimitiveReactionDescriptor`; redeclared here
@@ -76,12 +82,16 @@ end
 --- `setupLevel().crossings` or `ModManifest.crossings` with optional `levels`
 --- scoping. On a crossing in the condition's direction the engine fires every
 --- reaction in `fire` exactly once, re-arming only after a crossing back. A
---- registration against a non-Number slot warns and is skipped at load.
+--- registration against a non-Number slot warns and is skipped at load. The
+--- predicate overload takes `onStateCrossing(predicate, fire)` and fires on
+--- false-to-true edges, re-arming after it returns false.
 function UiReactionsSdk.onStateCrossing(
-  ref: any,
-  condition: CrossingCondition,
-  fire: {any}
+  refOrPredicate: any,
+  conditionOrFire: any,
+  maybeFire: {any}?
 ): CrossingDescriptor
+  local predicateForm = maybeFire == nil
+  local fire = if predicateForm then conditionOrFire else maybeFire
   if type(fire) ~= "table" then
     error("onStateCrossing: `fire` must be an array of reaction handles or strings")
   end
@@ -95,9 +105,15 @@ function UiReactionsSdk.onStateCrossing(
       error("onStateCrossing: `fire` entries must be reaction handles or strings")
     end
   end
-  local key, value, max = crossingThreshold(condition)
-  local descriptor: CrossingDescriptor = {
-    slot = stateSlot(ref, "onStateCrossing"),
+  if predicateForm then
+    return {
+      predicate = refOrPredicate,
+      fire = fireNames,
+    }
+  end
+  local key, value, max = crossingThreshold(conditionOrFire)
+  local descriptor: ThresholdCrossingDescriptor = {
+    slot = stateSlot(refOrPredicate, "onStateCrossing"),
     fire = fireNames,
   }
   descriptor[key] = value

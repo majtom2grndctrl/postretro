@@ -2,6 +2,7 @@
 
 use super::super::*;
 use super::common::*;
+use crate::ir::IrNode;
 
 #[test]
 fn js_manifest_parses_progress_and_primitive_reactions() {
@@ -426,8 +427,60 @@ fn lua_crossings_accept_dense_arrays() {
     let m = eval_lua(src, |v| LevelManifest::from_lua_value(v).unwrap());
 
     assert_eq!(m.crossings.len(), 2);
-    assert_eq!(m.crossings[0].slot, "player.health");
+    assert_eq!(m.crossings[0].slot.as_deref(), Some("player.health"));
     assert_eq!(m.crossings[0].fire, vec!["lowHealth".to_string()]);
+}
+
+#[test]
+fn js_predicate_crossing_uses_predicate_as_the_wire_discriminant() {
+    let src = r#"({
+        crossings: [{
+            // `slot` is deliberately present: predicate presence must select
+            // the IR form rather than attempting threshold validation.
+            slot: "ignored.by.predicate",
+            predicate: {
+                op: "ge",
+                a: { op: "input", name: "test.a" },
+                b: { op: "const", value: 2 }
+            },
+            fire: ["ready"]
+        }]
+    })"#;
+    let manifest = eval_js(src, |ctx, value| {
+        LevelManifest::from_js_value(ctx, value).unwrap()
+    });
+
+    let crossing = &manifest.crossings[0];
+    assert!(crossing.slot.is_none());
+    assert!(matches!(
+        crossing.condition,
+        CrossingCondition::Ir(IrNode::Ge { .. })
+    ));
+    assert_eq!(crossing.fire, vec!["ready".to_string()]);
+}
+
+#[test]
+fn lua_predicate_crossing_uses_predicate_as_the_wire_discriminant() {
+    let src = r#"return {
+        crossings = {{
+            slot = "ignored.by.predicate",
+            predicate = {
+                op = "ge",
+                a = { op = "input", name = "test.a" },
+                b = { op = "const", value = 2 },
+            },
+            fire = { "ready" },
+        }}
+    }"#;
+    let manifest = eval_lua(src, |value| LevelManifest::from_lua_value(value).unwrap());
+
+    let crossing = &manifest.crossings[0];
+    assert!(crossing.slot.is_none());
+    assert!(matches!(
+        crossing.condition,
+        CrossingCondition::Ir(IrNode::Ge { .. })
+    ));
+    assert_eq!(crossing.fire, vec!["ready".to_string()]);
 }
 
 #[test]

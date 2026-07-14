@@ -19,18 +19,27 @@ export type CrossingCondition =
   | { above: number; below?: never; max?: number };
 
 /**
- * A state-crossing watcher entry as it appears in `setupLevel().crossings` or
- * `ModManifest.crossings`. `slot` is the dotted state-slot name; the condition
- * is flattened in (`below`/`above` plus optional `max`); `fire` is the list of
- * named reactions dispatched when the crossing occurs. `levels` scopes
- * mod-global crossings by map-catalog tags; omit it for every level.
+ * A threshold-form state-crossing watcher. The condition is flattened in
+ * (`below`/`above` plus optional `max`).
  */
-export type CrossingDescriptor = {
+export type ThresholdCrossingDescriptor = {
   slot: string;
   max?: number;
   fire: string[];
   levels?: string[];
 } & ({ below: number } | { above: number });
+
+/** A predicate-form watcher. `predicate` is evaluated over live store slots. */
+export type PredicateCrossingDescriptor = {
+  predicate: RuntimeValue;
+  fire: string[];
+  levels?: string[];
+};
+
+/** A state-crossing watcher entry as it appears in `setupLevel().crossings` or
+ * `ModManifest.crossings`. Its wire form is discriminated by `predicate`
+ * (IR form) versus `slot` (threshold form). */
+export type CrossingDescriptor = ThresholdCrossingDescriptor | PredicateCrossingDescriptor;
 
 function stateSlot(ref: ReadonlyStateRef<unknown>, helper: string): string {
   if (ref === null || typeof ref !== "object" || typeof ref.slot !== "string" || ref.slot.length === 0) {
@@ -82,16 +91,36 @@ export function onStateCrossing(
   ref: ReadonlyStateRef<number>,
   condition: CrossingCondition,
   fire: (import("../data_script").NamedReactionDescriptor | string)[],
+): CrossingDescriptor;
+/** Build a crossing watcher from a Bool-valued runtime predicate over live
+ * store slots. It fires only on false-to-true edges and re-arms on false. */
+export function onStateCrossing(
+  predicate: RuntimeValue,
+  fire: (import("../data_script").NamedReactionDescriptor | string)[],
+): CrossingDescriptor;
+export function onStateCrossing(
+  refOrPredicate: ReadonlyStateRef<number> | RuntimeValue,
+  conditionOrFire: CrossingCondition | (import("../data_script").NamedReactionDescriptor | string)[],
+  maybeFire?: (import("../data_script").NamedReactionDescriptor | string)[],
 ): CrossingDescriptor {
-  if (!Array.isArray(fire)) {
+  if (Array.isArray(conditionOrFire)) {
+    if (maybeFire !== undefined) {
+      throw new Error("onStateCrossing: predicate form accepts exactly two arguments");
+    }
+    return {
+      predicate: refOrPredicate as RuntimeValue,
+      fire: conditionOrFire.map(reactionName),
+    };
+  }
+  if (!Array.isArray(maybeFire)) {
     throw new Error("onStateCrossing: `fire` must be an array of reaction handles or strings");
   }
-  const threshold = crossingThreshold(condition);
-  const descriptor: CrossingDescriptor = {
-    slot: stateSlot(ref, "onStateCrossing"),
-    fire: fire.map(reactionName),
+  const threshold = crossingThreshold(conditionOrFire);
+  const descriptor: ThresholdCrossingDescriptor = {
+    slot: stateSlot(refOrPredicate as ReadonlyStateRef<number>, "onStateCrossing"),
+    fire: maybeFire.map(reactionName),
     [threshold.key]: threshold.value,
-  } as CrossingDescriptor;
+  } as ThresholdCrossingDescriptor;
   if (threshold.max !== undefined) {
     descriptor.max = threshold.max;
   }

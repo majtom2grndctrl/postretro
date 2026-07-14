@@ -142,7 +142,7 @@ fn atmosphere_reactions() -> Vec<NamedReaction> {
 
 fn atmosphere_crossings() -> Vec<CrossingDescriptor> {
     vec![CrossingDescriptor {
-        slot: BLACKOUT_SLOT.to_string(),
+        slot: Some(BLACKOUT_SLOT.to_string()),
         condition: CrossingCondition::Above { threshold: 0.5 },
         max: 1.0,
         fire: vec![PRESENTATION_EVENT.to_string()],
@@ -384,6 +384,7 @@ impl PersistentAtmosphereHarness {
         self.client_crossing_detector.initialize(
             &self.client_ctx.data_registry.borrow(),
             &self.client_ctx.slot_table.borrow(),
+            &self.client_ctx,
         );
         self.client_fog = Some(fog);
         self.client_level_installed = true;

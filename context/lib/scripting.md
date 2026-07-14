@@ -310,19 +310,31 @@ Six tag-targeted reaction primitives operate on `FogVolumeComponent`: `setFogDen
 
 ### 10.4 System Reactions (no entity targets)
 
-One event namespace, two execution arms (E13 HUD dynamics): entity-targeted
+One event namespace, two targeting arms (E13 HUD dynamics): entity-targeted
 primitives resolve tags and mutate the `EntityRegistry`; **system reactions**
 (`playSound`, `rumble`, `flashScreen`, `showDialog` / `openMenu` /
 `closeDialog`, `setState`, the text-edit reactions, `vignette`,
 `screenShake`, and the game-flow verbs) carry no `tag` (the descriptor's
-`tag` is optional; absent = system-targeted) and push typed commands onto a
-queue drained once per frame by the app after the post-tick event drains —
-audio/input/UI/lifecycle subsystems consume their commands without threading
-engine services into scripting.
+`tag` is optional; absent = system-targeted). Targeting does not choose an
+execution surface. Crossing-, named-event-, and level-fired system reactions
+enqueue typed commands for the app-side drain after post-tick events;
+audio/input/UI/lifecycle subsystems consume them without threading engine
+services into scripting. Trigger `on_fire` / `on_exit` `setState` writes instead
+execute in the simulation tick against the tick-context slot table.
 
 Crossing watchers (`onStateCrossing`) may return through `setupLevel`'s
 manifest or through `ModManifest.crossings`. Mod-global watchers compose into
 the active level by the same `levels` selector as reactions.
+
+**State crossings are edge watchers.** The threshold form
+`onStateCrossing(ref, { above | below }, fire)` watches one Number slot. The
+predicate overload `onStateCrossing(predicate, fire)` watches a Bool
+`RuntimeValue` over live store slots. Both forms observe their initial state
+only to arm; an initially satisfied condition does not fire. Thereafter a
+predicate fires on a false-to-true transition and re-arms after returning
+false. A predicate that cannot bind or does not produce Bool warns and does
+not register a watcher. The threshold form retains its existing above/below
+edge behavior.
 
 Game-flow helpers are system reactions. `loadLevel(map)` carries a map catalog
 id and requests a lifecycle load. `restartLevel()` reloads the active map from
@@ -393,9 +405,15 @@ Start the node set minimal: named-input leaves, arithmetic, `clamp`, `lerp`, `se
 
 ---
 
-## 12. Reaction Dispatch Model (design intent)
+## 12. Reaction Dispatch Model (future design)
 
-> **Design intent, not shipped.** Extends §10 (reactions) and §11 (typed command buffer) with how reactions are *addressed*, *fired*, and *parameterized* by dispatch sources. Today's surface ships the sourceless reaction (§10) and the single-slot `onStateCrossing` (§10.4); the parameterization, scope typing, occupancy exposure, and IR-predicate observer below are the target the E18 reaction adopters build toward. The `done/E18--trigger-event-fanout` script-syntax sample predates this model — it is illustrative pseudocode, not the shipped API.
+> **Future design, not shipped.** Extends §10 (reactions) and §11 (typed
+> command buffer) with how reactions are *addressed*, *fired*, and
+> *parameterized* by dispatch sources. §10.4 documents the shipped sourceless
+> reactions and threshold/predicate state crossings. The parameterization,
+> scope typing, and occupancy exposure below remain future work. The
+> `done/E18--trigger-event-fanout` script-syntax sample predates this model —
+> it is illustrative pseudocode, not the shipped API.
 
 **A reaction is a named, sourceless, deferred effect bundle.** `defineReaction(name?, body)` returns frozen descriptor data (§10, §11); the bundle has no knowledge of what fires it. `name` is the bundle's **dispatch address** — the string a firing source names to run it — *not* the event it reacts to. Addressing is many-to-one: several reactions may share an address, and firing that address runs all of them (five `defineReaction("levelLoad", …)` in one script all fire at load). `"levelLoad"` is the world-sourced special case — a reserved address the engine auto-fires once after level install; it reads like "react to levelLoad" but means "everything addressed `levelLoad` runs now."
 
@@ -419,7 +437,12 @@ Start the node set minimal: named-input leaves, arithmetic, `clamp`, `lerp`, `se
 
 **Occupancy is exposed count, in two aggregates.** Per-trigger occupancy is engine-tracked (`done/E18--trigger-event-fanout`) and exposed to scripts by `ready/E18--coop-activation-policy`. Shape decided there: two per-tag ref builders, `occupiedCount(tag)` — how many matched volumes have ≥1 occupant (a two-plate door fires at `occupiedCount == 2`) — and `occupants(tag)` — total bodies across matched volumes (King-of-the-Hill scales drain by `occupants`). Two players on one plate make `occupants == 2` but `occupiedCount == 1`; each puzzle picks the aggregate it means. The refs read engine-owned, readonly, `SharedGlobal`-replicated Number slots under a reserved `trigger.<tag>.occupiedCount` / `trigger.<tag>.occupants` namespace, written each host tick from the *effective*-occupant set (spatial overlap ∧ alive — a corpse on a plate does not count). Co-op activation policy is authored entirely in script over these refs; no `activation_policy`-style brush KVP or component field is ever introduced.
 
-**The observer generalizes `onStateCrossing`.** Today it watches one Number slot for an `above`/`below` literal edge (§10.4). The target keeps the shipped shape and lifecycle: a **free function** (`onStateCrossing(ref, cond, [reactions])`, not a method chained onto the ref), fire-once on the edge, re-arm on cross-back. Two things generalize. The condition becomes an **IR predicate** over N slots, so "both plates held" is `eq(occupiedCount, 2)` — the same spelling for 2 plates or 5. This ships as a **predicate overload of the same builder** (`onStateCrossing(predicate, [reactions])`, one name — not a second `onCrossing`), the ref folding into the predicate via `runtime.read(slot)`; the shipped threshold form stays. The IR-predicate condition is owned by `ready/E18--ir-valued-reactions`. And `CrossingScope` publishes `direction`, so one reaction distinguishes the sense — shields up on `falling`, all-clear on `rising` — instead of two crossings.
+**The observer will gain dispatch context.** The shipped observer (§10.4) is a
+free function with threshold and Bool-IR predicate forms; its predicate reads
+N slots through `runtime.read(slot)`, while the threshold form remains
+available. The pending extension is `CrossingScope`, which publishes
+`direction` so one reaction can distinguish the sense — shields up on
+`falling`, all-clear on `rising` — instead of two crossings.
 
 **Per-tick is accumulator-only.** There is no bare per-tick reaction source. The sole per-tick surface is `slot.integrate((t) => expr)` — a store slot accumulating an IR expression each tick, clamped to its declared range. `TickScope` (publishing `dt`) is *that accumulator's* param type, never a `defineReaction` param: a reaction is never tick-sourced. A bare `onTick` reaction is added only if a concrete case blocks on it.
 

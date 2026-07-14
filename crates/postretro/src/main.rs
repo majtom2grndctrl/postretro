@@ -100,6 +100,7 @@ use crate::input::{Action, ButtonState, DiagnosticAction, InputFocus};
 // See: context/lib/networking.md
 use crate::netcode::frame_order;
 use crate::render::Renderer;
+use crate::scripting::reactions::system_commands::SystemReactionIrDispatch;
 use crate::scripting::state_persistence::{
     STATE_FILE_PATH, collect_persisted_state, save_persisted_state,
 };
@@ -1987,6 +1988,7 @@ impl ApplicationHandler for App {
                                 bridge: trigger_volume_bridge,
                                 bindings: trigger_bindings,
                                 slot_table: script_ctx.slot_table.clone(),
+                                script_ctx: Some(script_ctx.clone()),
                                 use_edges: &trigger_use_edges,
                             }),
                         );
@@ -3645,6 +3647,7 @@ impl App {
                         .recompose_active_sets(&self.active_level_tags);
                 }
                 self.rebuild_active_reaction_subscribers();
+                self.rebuild_active_system_reaction_bindings();
                 self.rebuild_active_trigger_bindings();
             }
             self.commit_staged_ui_manifest(&result, &outcome);
@@ -3998,8 +4001,10 @@ impl App {
     ///   `PushTree`'s name through the stack's registry (unknown name warns +
     ///   no-op, never a panic). The top tree's capture mode is reconciled with the
     ///   input seam + focus afterward by `reconcile_ui_focus`.
-    /// - `SetState` → readonly-gated JSON write to a writable store slot at the
-    ///   game-logic stage (readonly warns + no-ops; unknown/type-mismatch logs).
+    /// - `SetState` → a literal takes the existing readonly-gated JSON write;
+    ///   an install-bound runtime value evaluates against live slots at this
+    ///   game-logic write point (invalid/readonly/non-projectable IR warns and
+    ///   no-ops).
     /// - `AppendText` / `BackspaceText` / `ClearText` → readonly-gated text edits
     ///   to a writable String slot at the game-logic stage, through the same
     ///   writable-slot gate as `SetState` (readonly warns + no-ops; empty
@@ -4127,14 +4132,42 @@ impl App {
                     }
                 }
                 SystemReactionCommand::SetState { slot, value } => {
-                    // Readonly-gated JSON write at the game-logic stage: a readonly
-                    // slot warns and no-ops; an unknown slot or type mismatch logs
-                    // and is skipped — never a panic. NEVER the engine bypass.
-                    if let Err(err) = crate::scripting::primitives::store::write_state_slot_json(
-                        &script_ctx,
-                        &slot,
-                        &value,
-                    ) {
+                    if crate::scripting::reactions::system_commands::is_ir_node(&value) {
+                        let outcome = self.session.as_ref().map_or(
+                            SystemReactionIrDispatch::Unknown,
+                            |session| {
+                                session.scripting.system_reaction_ir_bindings.dispatch(
+                                    &slot,
+                                    &value,
+                                    &script_ctx,
+                                )
+                            },
+                        );
+                        match outcome {
+                            SystemReactionIrDispatch::Evaluated
+                            | SystemReactionIrDispatch::Rejected => {
+                                // Rejected IR was already diagnosed during install. It must
+                                // never fall through to the literal write path, but repeated
+                                // fires are a safe no-op rather than a per-dispatch warning.
+                            }
+                            SystemReactionIrDispatch::Unknown => {
+                                // This command is not from the current install table (for
+                                // example, a stale queue entry after a rebuild), so retain a
+                                // diagnostic instead of silently accepting an unbound write.
+                                log::warn!(
+                                    "[Scripting] setState runtime value for `{slot}` was not bound at level install; skipping"
+                                );
+                            }
+                        }
+                    } else if let Err(err) =
+                        crate::scripting::primitives::store::write_state_slot_json(
+                            &script_ctx,
+                            &slot,
+                            &value,
+                        )
+                    {
+                        // Literal behavior stays on the existing readonly-gated
+                        // JSON path, including target range validation/clamping.
                         log::warn!("[Scripting] setState write to `{slot}` failed: {err}");
                     }
                 }

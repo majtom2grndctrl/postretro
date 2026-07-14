@@ -310,6 +310,21 @@ impl App {
         );
     }
 
+    /// Rebind inline `setState` IR after the active reaction set changes. The
+    /// app-side command queue carries raw JSON across the entities boundary;
+    /// only this binary-side table holds `BoundProgram<StoreScope>` values and
+    /// known rejected command identities.
+    pub(crate) fn rebuild_active_system_reaction_bindings(&mut self) {
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        let script_ctx = session.scripting.script_ctx.clone();
+        session
+            .scripting
+            .system_reaction_ir_bindings
+            .rebuild(&script_ctx.data_registry.borrow(), &script_ctx);
+    }
+
     /// Rebind trigger events after staged mod-init recomposes the active reaction
     /// set. Tick dispatch holds bound commands, never reaction names, so it must
     /// be refreshed alongside the other active reaction consumers.
@@ -731,6 +746,12 @@ impl App {
         };
         let products = install_world_cpu(handles, &mut self.level_timings, upload_mesh_models);
 
+        // `levelLoad` may already have queued system commands during the CPU
+        // install. Bind the final composed reaction set before that queue is
+        // next drained, so an inline setState IR is evaluated rather than
+        // treated as a literal JSON value.
+        self.rebuild_active_system_reaction_bindings();
+
         self.kinematic_mover_colliders = products.mover_colliders;
         self.trigger_bindings = products.trigger_bindings;
         // Retain the spawn-point placements for the host's runtime net-slot accept
@@ -901,14 +922,15 @@ fn rebuild_reaction_subscribers(
     crossing_detector.initialize(
         &script_ctx.data_registry.borrow(),
         &script_ctx.slot_table.borrow(),
+        script_ctx,
     );
 }
 
 fn build_trigger_bindings(script_ctx: &postretro_entities::ScriptCtx) -> TriggerBindingTable {
-    TriggerBindingTable::build(
+    TriggerBindingTable::build_with_script_ctx(
         &script_ctx.registry.borrow(),
         &script_ctx.data_registry.borrow(),
-        &script_ctx.slot_table.borrow(),
+        script_ctx,
     )
 }
 
@@ -1277,6 +1299,7 @@ mod tests {
     use crate::scripting;
     use crate::scripting::primitives::register_all;
     use crate::{input, options, scripting_systems, view_feel};
+    use postretro_entities::SystemReactionCommand;
     use postretro_entities::{
         CrossingCondition, CrossingDescriptor, EntityTypeDescriptor, MoverCommand, NamedReaction,
         PrimitiveDescriptor, ProgressDescriptor, ReactionDescriptor, TriggerActivation,
@@ -1346,6 +1369,7 @@ mod tests {
                         scripting::reactions::registry::ReactionPrimitiveRegistry::new(),
                     system_registry:
                         scripting::reactions::system_commands::SystemReactionRegistry::new(),
+                    system_reaction_ir_bindings: Default::default(),
                     player_hud_state: scripting_systems::ui_proxy::PlayerHudStatePublisher::new(
                         script_ctx.clone(),
                     ),
@@ -1535,7 +1559,7 @@ mod tests {
     fn scoped_global_crossing(slot: &str, fire: &str) -> postretro_entities::ScopedCrossing {
         postretro_entities::ScopedCrossing {
             crossing: CrossingDescriptor {
-                slot: slot.to_string(),
+                slot: Some(slot.to_string()),
                 condition: CrossingCondition::Below { threshold: 0.5 },
                 max: 100.0,
                 fire: vec![fire.to_string()],
@@ -1556,6 +1580,63 @@ mod tests {
         });
         record.value = Some(SlotValue::Number(value));
         record
+    }
+
+    #[test]
+    fn app_system_command_drain_accumulates_bound_runtime_set_state_writes_in_queue_order() {
+        let mut app = test_app();
+        let ctx = script_ctx(&app);
+        ctx.slot_table
+            .borrow_mut()
+            .insert("puzzle.count".to_string(), number_slot(0.0))
+            .expect("fixture slot should be vacant");
+        let increment = serde_json::json!({
+            "op": "add",
+            "a": { "op": "input", "name": "puzzle.count" },
+            "b": { "op": "const", "value": 1.0 }
+        });
+        ctx.data_registry.borrow_mut().populate_level(
+            vec![NamedReaction {
+                name: "increment".to_string(),
+                descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                    primitive: "setState".to_string(),
+                    tag: None,
+                    on_complete: None,
+                    args: serde_json::json!({
+                        "slot": "puzzle.count",
+                        "value": increment.clone(),
+                    }),
+                }),
+            }],
+            Vec::new(),
+            &[],
+        );
+        app.rebuild_active_system_reaction_bindings();
+
+        // Exercise App::dispatch_system_commands, the production app-side
+        // drain. The session-owned table must evaluate both installed programs
+        // in FIFO order so the second read observes the first write.
+        for _ in 0..2 {
+            ctx.system_commands.push(SystemReactionCommand::SetState {
+                slot: "puzzle.count".to_string(),
+                value: increment.clone(),
+            });
+        }
+        app.dispatch_system_commands();
+
+        let count = match ctx
+            .slot_table
+            .borrow()
+            .get("puzzle.count")
+            .and_then(|record| record.value.as_ref())
+        {
+            Some(SlotValue::Number(value)) => *value,
+            other => panic!("expected numeric puzzle count, got {other:?}"),
+        };
+        assert!(
+            (count - 2.0).abs() <= 1.0e-5,
+            "two self-referential IR writes must accumulate at the app drain: got {count}"
+        );
     }
 
     fn catalog_map(id: &str, path: &str, name: &str, tags: &[&str]) -> ModMapEntry {

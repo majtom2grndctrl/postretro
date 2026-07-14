@@ -3,6 +3,7 @@
 // See: context/lib/scripting.md §12 (Crate Architecture)
 
 use super::super::{CrossingCondition, CrossingDescriptor, DescriptorError};
+use postretro_foundation::ir::IrNode;
 
 /// Build a [`CrossingDescriptor`] from the raw fields gathered by either FFI
 /// path. Shared so JS and Luau enforce identical rules.
@@ -49,9 +50,24 @@ pub fn build_crossing(
         (Some(_), Some(_)) => return Err(DescriptorError::CrossingCondition { count: 2 }),
     };
     Ok(CrossingDescriptor {
-        slot,
+        slot: Some(slot),
         condition,
         max,
         fire,
     })
+}
+
+/// Build a predicate-form crossing descriptor. Its raw IR is bound against the
+/// live store scope by scripting-core at install time, so this entities-layer
+/// builder deliberately performs no scope or type validation.
+pub fn build_predicate_crossing(predicate: IrNode, fire: Vec<String>) -> CrossingDescriptor {
+    CrossingDescriptor {
+        slot: None,
+        condition: CrossingCondition::Ir(predicate),
+        // Predicate crossings do not normalize a single numeric slot. Keep the
+        // existing field at its neutral threshold-form default so descriptor
+        // consumers retain a stable shape.
+        max: 1.0,
+        fire,
+    }
 }

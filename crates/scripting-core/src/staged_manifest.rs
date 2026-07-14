@@ -573,7 +573,7 @@ fn manifest_from_js_value<'js>(
             }
         })?;
     let crossings =
-        drain_global_crossings_js(&obj, "default mod manifest export").map_err(|e| {
+        drain_global_crossings_js(ctx, &obj, "default mod manifest export").map_err(|e| {
             ScriptError::InvalidArgument {
                 reason: format!(
                     "mod-init: `{source_path}` default mod manifest export `crossings` invalid: {e}"

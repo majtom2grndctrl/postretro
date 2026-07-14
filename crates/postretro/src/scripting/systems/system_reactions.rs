@@ -5,6 +5,14 @@
 // consume their commands without threading engine services into scripting.
 // See: context/lib/scripting.md §10.4
 
+use postretro_entities::ScriptCtx;
+use postretro_foundation::{
+    BakedIr, BoundProgram, CURRENT_IR_VERSION, eval_and_write, ir_node_from_json,
+};
+use postretro_scripting_core::data_descriptors::ReactionDescriptor;
+use postretro_scripting_core::data_registry::DataRegistry;
+use postretro_scripting_core::ir::bind;
+use postretro_scripting_core::ir_scopes::StoreScope;
 use postretro_scripting_core::reaction_registry::ReactionError;
 #[cfg(test)]
 pub(crate) use postretro_scripting_core::reaction_registry::SystemCommandQueue;
@@ -19,6 +27,148 @@ pub(crate) use postretro_scripting_core::reaction_registry::{
 /// Amplitudes beyond this produce UV offsets > 1.0 that cause whole-frame
 /// ClampToEdge edge-smear with no meaningful additional shake effect.
 const MAX_SHAKE_AMPLITUDE_PX: f32 = 1280.0;
+
+/// Install-time bindings for inline `setState` IR. Entity-owned reaction
+/// descriptors and queued commands deliberately retain only raw JSON; this
+/// binary-side table owns the `StoreScope`-specialized programs and known
+/// rejected command identities.
+#[derive(Debug, Default)]
+pub(crate) struct SystemReactionIrBindings {
+    bindings: Vec<SystemSetStateBinding>,
+}
+
+/// A system-command `setState` IR is identified by the fields the command
+/// carries across the entities boundary. Keep the raw value here so the app
+/// drain can compare it directly instead of allocating a slot key and
+/// serializing its JSON on every fire.
+#[derive(Debug)]
+struct SystemSetStateBinding {
+    slot: String,
+    value: serde_json::Value,
+    program: Option<BoundProgram<StoreScope>>,
+}
+
+impl SystemSetStateBinding {
+    fn matches(&self, slot: &str, value: &serde_json::Value) -> bool {
+        self.slot == slot && self.value.eq(value)
+    }
+}
+
+/// Outcome of looking up an object-shaped `setState` value at the app drain.
+/// Rejected entries deliberately remain in the table after their install-time
+/// diagnostic, so a validly queued command does not warn again on every fire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SystemReactionIrDispatch {
+    Evaluated,
+    Rejected,
+    Unknown,
+}
+
+impl SystemReactionIrBindings {
+    /// Rebuild bindings after the active reaction set is composed. Inline args
+    /// carry only an IR node, so stamp the current epoch while wrapping them in
+    /// the normal `BakedIr` envelope; no wire envelope/version is introduced.
+    pub(crate) fn rebuild(&mut self, data_registry: &DataRegistry, script_ctx: &ScriptCtx) {
+        self.bindings.clear();
+        let scope = StoreScope::script(script_ctx.clone());
+
+        for reaction in &data_registry.reactions {
+            let ReactionDescriptor::Primitive(primitive) = &reaction.descriptor else {
+                continue;
+            };
+            if primitive.primitive != "setState" || primitive.tag.is_some() {
+                continue;
+            }
+
+            let args: SetStateArgs = match serde_json::from_value(primitive.args.clone()) {
+                Ok(args) => args,
+                Err(error) => {
+                    log::warn!(
+                        "[Scripting] setState reaction `{}` has invalid args; not binding: {error}",
+                        reaction.name
+                    );
+                    continue;
+                }
+            };
+            if !is_ir_node(&args.value) {
+                continue;
+            }
+
+            // Retain even failed bindings. A queued command with the same raw
+            // identity is known-invalid, while a missing entry is genuinely
+            // unknown or stale and remains worth diagnosing at the drain.
+            let mut binding = SystemSetStateBinding {
+                slot: args.slot,
+                value: args.value,
+                program: None,
+            };
+
+            let root = match ir_node_from_json(binding.value.clone(), "setState.value") {
+                Ok(root) => root,
+                Err(error) => {
+                    log::warn!(
+                        "[Scripting] setState reaction `{}` has invalid runtime value; not binding: {error}",
+                        reaction.name
+                    );
+                    self.bindings.push(binding);
+                    continue;
+                }
+            };
+            let baked = BakedIr {
+                version: CURRENT_IR_VERSION,
+                output: Some(binding.slot.clone()),
+                root,
+            };
+            match bind(&baked, &scope) {
+                Ok(program) => {
+                    binding.program = Some(program);
+                }
+                Err(error) => {
+                    // `StoreScope::script` makes readonly, unknown, and
+                    // non-projectable targets bind failures before any fire.
+                    log::warn!(
+                        "[Scripting] setState reaction `{}` cannot bind runtime value for `{}`: {error}",
+                        reaction.name,
+                        binding.slot
+                    );
+                }
+            }
+            self.bindings.push(binding);
+        }
+    }
+
+    /// Evaluate an already-bound IR program at the app-drain write point.
+    /// `setState` queues the active descriptor's `slot` and raw `value`
+    /// unchanged, and binding is pure over that pair. New producers need a
+    /// stable key instead of relying on this JSON equality lookup.
+    pub(crate) fn dispatch(
+        &self,
+        slot: &str,
+        value: &serde_json::Value,
+        script_ctx: &ScriptCtx,
+    ) -> SystemReactionIrDispatch {
+        let Some(binding) = self
+            .bindings
+            .iter()
+            .find(|binding| binding.matches(slot, value))
+        else {
+            return SystemReactionIrDispatch::Unknown;
+        };
+        let Some(program) = &binding.program else {
+            return SystemReactionIrDispatch::Rejected;
+        };
+        let mut scope = StoreScope::script(script_ctx.clone());
+        eval_and_write(program, &mut scope);
+        SystemReactionIrDispatch::Evaluated
+    }
+}
+
+/// Runtime values are object-shaped IR nodes; all shipped literal store values
+/// are scalar JSON or arrays. An object-valued literal slot type must replace
+/// this discriminator, or its writes would be treated as malformed IR.
+pub(crate) fn is_ir_node(value: &serde_json::Value) -> bool {
+    value.is_object()
+}
 
 /// Register the system-reaction primitives onto `registry`:
 /// - Audio: `playSound`
@@ -365,6 +515,161 @@ struct SlotOnlyArgs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use postretro_entities::{
+        NumericRange, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
+    };
+    use postretro_scripting_core::data_descriptors::{
+        NamedReaction, PrimitiveDescriptor, ReactionDescriptor,
+    };
+
+    fn number_slot(default: f32, max: f32, readonly: bool) -> SlotRecord {
+        SlotRecord::new(SlotSchema {
+            slot_type: SlotType::Number,
+            default: Some(SlotValue::Number(default)),
+            range: Some(NumericRange { min: 0.0, max }),
+            persist: false,
+            readonly,
+            ownership: if readonly {
+                SlotOwnership::Engine
+            } else {
+                SlotOwnership::Mod
+            },
+            network: Default::default(),
+        })
+    }
+
+    fn insert_number(ctx: &ScriptCtx, name: &str, default: f32, max: f32, readonly: bool) {
+        ctx.slot_table
+            .borrow_mut()
+            .insert(name.to_string(), number_slot(default, max, readonly))
+            .expect("fixture slot should be vacant");
+    }
+
+    fn set_state_reaction(name: &str, slot: &str, value: serde_json::Value) -> NamedReaction {
+        NamedReaction {
+            name: name.to_string(),
+            descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                primitive: "setState".to_string(),
+                tag: None,
+                on_complete: None,
+                args: serde_json::json!({ "slot": slot, "value": value }),
+            }),
+        }
+    }
+
+    fn active_reactions(reactions: Vec<NamedReaction>) -> DataRegistry {
+        let mut data = DataRegistry::new();
+        data.populate_level(reactions, Vec::new(), &[]);
+        data
+    }
+
+    fn number_value(ctx: &ScriptCtx, name: &str) -> f32 {
+        match ctx
+            .slot_table
+            .borrow()
+            .get(name)
+            .and_then(|record| record.value.as_ref())
+        {
+            Some(SlotValue::Number(value)) => *value,
+            other => panic!("expected number for `{name}`, got {other:?}"),
+        }
+    }
+
+    fn assert_number_approx_eq(actual: f32, expected: f32, message: &str) {
+        assert!(
+            (actual - expected).abs() <= 1.0e-5,
+            "{message}: expected {expected}, got {actual}"
+        );
+    }
+
+    #[test]
+    fn runtime_set_state_uses_derived_value_then_target_range_validation() {
+        let ctx = ScriptCtx::new();
+        insert_number(&ctx, "puzzle.a", 17.0, 100.0, false);
+        insert_number(&ctx, "puzzle.b", 3.0, 100.0, false);
+        insert_number(&ctx, "puzzle.target", 0.0, 10.0, false);
+        let value = serde_json::json!({
+            "op": "clamp",
+            "x": {
+                "op": "sub",
+                "a": { "op": "input", "name": "puzzle.a" },
+                "b": { "op": "input", "name": "puzzle.b" }
+            },
+            "lo": { "op": "const", "value": 0.0 },
+            "hi": { "op": "const", "value": 100.0 }
+        });
+        let data = active_reactions(vec![set_state_reaction(
+            "derive",
+            "puzzle.target",
+            value.clone(),
+        )]);
+        let mut bindings = SystemReactionIrBindings::default();
+        bindings.rebuild(&data, &ctx);
+
+        assert_eq!(
+            bindings.dispatch("puzzle.target", &value, &ctx),
+            SystemReactionIrDispatch::Evaluated
+        );
+        assert_number_approx_eq(
+            number_value(&ctx, "puzzle.target"),
+            10.0,
+            "the IR produces 14, then the target slot clamps to its [0, 10] range",
+        );
+    }
+
+    #[test]
+    fn runtime_set_state_rejects_readonly_and_non_projectable_targets_at_bind() {
+        let ctx = ScriptCtx::new();
+        insert_number(&ctx, "puzzle.readonly", 4.0, 100.0, true);
+        ctx.slot_table
+            .borrow_mut()
+            .insert(
+                "puzzle.label".to_string(),
+                SlotRecord::new(SlotSchema {
+                    slot_type: SlotType::String,
+                    default: Some(SlotValue::String("unchanged".to_string())),
+                    range: None,
+                    persist: false,
+                    readonly: false,
+                    ownership: SlotOwnership::Mod,
+                    network: Default::default(),
+                }),
+            )
+            .expect("fixture label should be vacant");
+        let value = serde_json::json!({ "op": "const", "value": 9.0 });
+        let data = active_reactions(vec![
+            set_state_reaction("readonly", "puzzle.readonly", value.clone()),
+            set_state_reaction("string", "puzzle.label", value.clone()),
+        ]);
+        let mut bindings = SystemReactionIrBindings::default();
+        bindings.rebuild(&data, &ctx);
+
+        assert_eq!(
+            bindings.dispatch("puzzle.readonly", &value, &ctx),
+            SystemReactionIrDispatch::Rejected
+        );
+        assert_eq!(
+            bindings.dispatch("puzzle.label", &value, &ctx),
+            SystemReactionIrDispatch::Rejected
+        );
+        assert_eq!(
+            bindings.dispatch("puzzle.unknown", &value, &ctx),
+            SystemReactionIrDispatch::Unknown,
+            "only commands represented at install are known rejections"
+        );
+        assert_number_approx_eq(
+            number_value(&ctx, "puzzle.readonly"),
+            4.0,
+            "rejected runtime writes must leave the target unchanged",
+        );
+        assert!(matches!(
+            ctx.slot_table
+                .borrow()
+                .get("puzzle.label")
+                .and_then(|record| record.value.as_ref()),
+            Some(SlotValue::String(value)) if value == "unchanged"
+        ));
+    }
 
     #[test]
     fn registers_all_system_reaction_primitives_under_expected_names() {
@@ -643,6 +948,36 @@ mod tests {
                 slot: "audio.master".to_string(),
                 value: serde_json::json!(0.5),
             }]
+        );
+    }
+
+    #[test]
+    fn literal_set_state_keeps_the_existing_json_write_path() {
+        let ctx = ScriptCtx::new();
+        insert_number(&ctx, "puzzle.literal", 0.0, 10.0, false);
+        let mut registry = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut registry);
+        let queue = SystemCommandQueue::new();
+
+        registry
+            .dispatch(
+                "setState",
+                &serde_json::json!({ "slot": "puzzle.literal", "value": 5 }),
+                &queue,
+            )
+            .expect("literal setState must dispatch");
+        let command = queue.take().pop().expect("literal command must queue");
+        let SystemReactionCommand::SetState { slot, value } = command else {
+            panic!("literal setState must retain its system command shape");
+        };
+        assert!(!is_ir_node(&value), "a literal must not enter the IR path");
+        crate::scripting::primitives::store::write_state_slot_json(&ctx, &slot, &value)
+            .expect("literal setState must retain the shipped JSON write path");
+
+        assert_number_approx_eq(
+            number_value(&ctx, "puzzle.literal"),
+            5.0,
+            "literal setState must retain the shipped JSON write path",
         );
     }
 

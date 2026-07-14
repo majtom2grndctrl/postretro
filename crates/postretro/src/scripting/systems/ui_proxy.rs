@@ -572,7 +572,7 @@ mod tests {
         ctx.data_registry.borrow_mut().populate_level(
             Vec::new(),
             vec![CrossingDescriptor {
-                slot: "player.health".to_string(),
+                slot: Some("player.health".to_string()),
                 condition: CrossingCondition::Below { threshold: 0.2 },
                 max: 100.0,
                 fire: vec!["lowHealth".to_string()],
@@ -580,7 +580,7 @@ mod tests {
             &[],
         );
         let mut detector = CrossingDetector::new();
-        detector.initialize(&ctx.data_registry.borrow(), &ctx.slot_table.borrow());
+        detector.initialize(&ctx.data_registry.borrow(), &ctx.slot_table.borrow(), &ctx);
 
         {
             let mut registry = ctx.registry.borrow_mut();

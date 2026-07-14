@@ -899,13 +899,31 @@ declare module "postretro" {
     | { below: number; above?: never; max?: number }
     | { above: number; below?: never; max?: number };
 
-  /** A state-crossing watcher entry as it appears in `setupLevel().crossings` or `ModManifest.crossings`. The condition fields are flattened in beside `slot` and `fire`; `fire` lists the named reactions dispatched when the crossing occurs. `levels` scopes mod-global crossings by map-catalog tags; omit it for every level. */
-  export type CrossingDescriptor = {
+  /** A threshold-form watcher. Its wire discriminator is the required `slot`; exactly one threshold field is present. */
+  export type ThresholdCrossingDescriptor = {
     slot: string;
+    predicate?: never;
     max?: number;
     fire: string[];
     levels?: string[];
-  } & ({ below: number } | { above: number });
+  } & (
+    | { below: number; above?: never }
+    | { above: number; below?: never }
+  );
+
+  /** A predicate-form watcher. Its wire discriminator is the required `predicate`; it has no threshold slot. */
+  export type PredicateCrossingDescriptor = {
+    predicate: RuntimeValue;
+    slot?: never;
+    below?: never;
+    above?: never;
+    max?: never;
+    fire: string[];
+    levels?: string[];
+  };
+
+  /** A state-crossing watcher entry as it appears in `setupLevel().crossings` or `ModManifest.crossings`. Threshold and predicate forms are discriminated by `slot` versus `predicate`. */
+  export type CrossingDescriptor = ThresholdCrossingDescriptor | PredicateCrossingDescriptor;
 
   /** Bundle returned from `setupLevel`. The engine deserializes this shape in one pass at level load. */
   export type LevelManifest = {
@@ -1036,7 +1054,7 @@ declare module "postretro" {
   // `name`, `value`) so builder output deserializes straight into `IrNode`.
   // (Author surface is `runtime`/`RuntimeValue`; the Rust substrate and wire
   // op tags keep the `ir` names — scripting.md §11, "Author-facing naming".)
-  // Source of truth: crates/postretro/src/scripting/ir/mod.rs + sdk/lib/runtime.ts.
+  // Source of truth: crates/foundation/src/ir/ + sdk/lib/runtime.ts.
   // Static block (not registry-emitted): `register_tagged_union` /
   // `TypeShape::TaggedUnion` renders one payload *type name* per variant under
   // a fixed tag key — it cannot express per-variant inline struct fields (e.g.
@@ -1172,6 +1190,7 @@ declare module "postretro/ui" {
     NamedReactionDescriptor,
     CrossingCondition,
     CrossingDescriptor,
+    RuntimeValue,
   } from "postretro";
 
   /** Linear RGBA color token value. Components are in display-linear 0-1 space; alpha is the fourth element. */
@@ -1332,6 +1351,8 @@ declare module "postretro/ui" {
 
   /** Build a state-crossing watcher for numeric refs. `condition` gives exactly one finite `below` or `above` threshold; optional `max` is a finite denominator. `fire` accepts reaction handles or names. */
   export function onStateCrossing(ref: ReadonlyStateRef<number>, condition: CrossingCondition, fire: (NamedReactionDescriptor | string)[]): CrossingDescriptor;
+  /** Build a watcher from a Bool-valued runtime predicate over live store slots. It fires on false-to-true edges and re-arms after the predicate returns false. A predicate already true at registration only arms; it must later return false, then true, to fire. */
+  export function onStateCrossing(predicate: RuntimeValue, fire: (NamedReactionDescriptor | string)[]): CrossingDescriptor;
   /** Play `sound` on optional mixer `bus`; omitted/null bus uses the engine default. */
   export function playSound(sound: string, bus?: string | null): PrimitiveReactionDescriptor;
   /** Trigger gamepad rumble. `strong` and optional `weak` are motor intensities in [0, 1]; `durationMs` is milliseconds. */
@@ -1361,8 +1382,8 @@ declare module "postretro/ui" {
   export function restartLevel(): PrimitiveReactionDescriptor;
   /** Return to the frontend menu and reload its optional backdrop level. */
   export function returnToFrontend(): PrimitiveReactionDescriptor;
-  /** Write `value` to a writable state ref at game-logic time; runtime validates type/range and rejects readonly slots. */
-  export function updateState<T>(ref: WritableStateRef<T>, value: T): PrimitiveReactionDescriptor;
+  /** Write a literal or runtime value at game-logic time. Literals use the normal readonly-gated coercion and range path. Runtime values bind once at level install: known Number and Boolean slots, including readonly slots, project as inputs; only a writable Number/Boolean output target is accepted. Unknown/nonprojectable inputs and readonly targets reject. */
+  export function updateState<T>(ref: WritableStateRef<T>, value: T | RuntimeValue): PrimitiveReactionDescriptor;
   export function appendText(ref: WritableStateRef<string>, text: string): PrimitiveReactionDescriptor;
   export function backspaceText(ref: WritableStateRef<string>): PrimitiveReactionDescriptor;
   export function clearText(ref: WritableStateRef<string>): PrimitiveReactionDescriptor;

@@ -340,7 +340,7 @@ mod tests {
     fn sample_scoped_crossing(slot: &str, levels: &[&str]) -> ScopedCrossing {
         ScopedCrossing {
             crossing: CrossingDescriptor {
-                slot: slot.to_string(),
+                slot: Some(slot.to_string()),
                 condition: CrossingCondition::Below { threshold: 0.5 },
                 max: 1.0,
                 fire: vec!["lowHealth".to_string()],
@@ -365,7 +365,7 @@ mod tests {
         registry
             .crossings
             .iter()
-            .map(|crossing| crossing.slot.clone())
+            .map(|crossing| crossing.slot.clone().expect("sample crossings have slots"))
             .collect()
     }
 

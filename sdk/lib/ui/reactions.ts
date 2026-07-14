@@ -2,7 +2,9 @@
 // (M13 Goal E). `onStateCrossing` constructs a state-crossing watcher returned
 // through `setupLevel().crossings` or `ModManifest.crossings` — it never calls
 // back into Rust; the FFI boundary is the `return` statement.
-// See: context/lib/scripting.md §10.4
+// See: context/lib/scripting.md §12
+
+import type { RuntimeValue } from "postretro";
 
 import type { ReadonlyStateRef, WritableStateRef } from "./widgets";
 
@@ -17,18 +19,35 @@ export type CrossingCondition =
   | { above: number; below?: never; max?: number };
 
 /**
- * A state-crossing watcher entry as it appears in `setupLevel().crossings` or
- * `ModManifest.crossings`. `slot` is the dotted state-slot name; the condition
- * is flattened in (`below`/`above` plus optional `max`); `fire` is the list of
- * named reactions dispatched when the crossing occurs. `levels` scopes
- * mod-global crossings by map-catalog tags; omit it for every level.
+ * A threshold-form state-crossing watcher. The condition is flattened in
+ * (`below`/`above` plus optional `max`).
  */
-export type CrossingDescriptor = {
+export type ThresholdCrossingDescriptor = {
   slot: string;
+  predicate?: never;
   max?: number;
   fire: string[];
   levels?: string[];
-} & ({ below: number } | { above: number });
+} & (
+  | { below: number; above?: never }
+  | { above: number; below?: never }
+);
+
+/** A predicate-form watcher. `predicate` is evaluated over live store slots. */
+export type PredicateCrossingDescriptor = {
+  predicate: RuntimeValue;
+  slot?: never;
+  below?: never;
+  above?: never;
+  max?: never;
+  fire: string[];
+  levels?: string[];
+};
+
+/** A state-crossing watcher entry as it appears in `setupLevel().crossings` or
+ * `ModManifest.crossings`. Its wire form is discriminated by `predicate`
+ * (IR form) versus `slot` (threshold form). */
+export type CrossingDescriptor = ThresholdCrossingDescriptor | PredicateCrossingDescriptor;
 
 function stateSlot(ref: ReadonlyStateRef<unknown>, helper: string): string {
   if (ref === null || typeof ref !== "object" || typeof ref.slot !== "string" || ref.slot.length === 0) {
@@ -45,6 +64,18 @@ function reactionName(entry: import("../data_script").NamedReactionDescriptor | 
     return entry.name;
   }
   throw new Error("onStateCrossing: `fire` entries must be reaction handles or strings");
+}
+
+function crossingFireNames(fire: unknown): string[] {
+  if (!Array.isArray(fire)) {
+    throw new Error("onStateCrossing: `fire` must be a dense array of reaction handles or strings");
+  }
+  for (let i = 0; i < fire.length; i += 1) {
+    if (!Object.prototype.hasOwnProperty.call(fire, i)) {
+      throw new Error("onStateCrossing: `fire` must be a dense array without holes");
+    }
+  }
+  return fire.map(reactionName);
 }
 
 function crossingThreshold(condition: CrossingCondition): { key: "below" | "above"; value: number; max?: number } {
@@ -80,16 +111,36 @@ export function onStateCrossing(
   ref: ReadonlyStateRef<number>,
   condition: CrossingCondition,
   fire: (import("../data_script").NamedReactionDescriptor | string)[],
+): CrossingDescriptor;
+/** Build a crossing watcher from a Bool-valued runtime predicate over live
+ * store slots. It fires only on false-to-true edges and re-arms on false. A
+ * predicate already true at registration only arms; it must become false, then
+ * true, before it fires. */
+export function onStateCrossing(
+  predicate: RuntimeValue,
+  fire: (import("../data_script").NamedReactionDescriptor | string)[],
+): CrossingDescriptor;
+export function onStateCrossing(
+  refOrPredicate: ReadonlyStateRef<number> | RuntimeValue,
+  conditionOrFire: CrossingCondition | (import("../data_script").NamedReactionDescriptor | string)[],
+  maybeFire?: (import("../data_script").NamedReactionDescriptor | string)[],
 ): CrossingDescriptor {
-  if (!Array.isArray(fire)) {
-    throw new Error("onStateCrossing: `fire` must be an array of reaction handles or strings");
+  if (maybeFire === undefined) {
+    return {
+      predicate: refOrPredicate as RuntimeValue,
+      fire: crossingFireNames(conditionOrFire),
+    };
   }
-  const threshold = crossingThreshold(condition);
-  const descriptor: CrossingDescriptor = {
-    slot: stateSlot(ref, "onStateCrossing"),
-    fire: fire.map(reactionName),
+  if (Array.isArray(conditionOrFire)) {
+    throw new Error("onStateCrossing: predicate form accepts exactly two arguments");
+  }
+  const fire = crossingFireNames(maybeFire);
+  const threshold = crossingThreshold(conditionOrFire);
+  const descriptor: ThresholdCrossingDescriptor = {
+    slot: stateSlot(refOrPredicate as ReadonlyStateRef<number>, "onStateCrossing"),
+    fire,
     [threshold.key]: threshold.value,
-  } as CrossingDescriptor;
+  } as ThresholdCrossingDescriptor;
   if (threshold.max !== undefined) {
     descriptor.max = threshold.max;
   }
@@ -302,13 +353,15 @@ export function returnToFrontend(): import("../data_script").PrimitiveReactionDe
 /**
  * Write `value` to the writable state reference at the game-logic stage.
  * Pure — returns the existing `setState` primitive reaction body, no engine
- * side effect. The write is readonly-gated at runtime: a readonly slot warns
- * and is left unchanged; an engine-owned writable slot is a valid target.
- * `value` is coerced to the slot's declared type by the write path.
+ * side effect. Literal values use the normal runtime readonly gate, coercion,
+ * and range path. A `RuntimeValue` binds once at level install through
+ * `StoreScope`. Known Number and Boolean slots, including readonly slots,
+ * project as inputs. The write target must be writable; unknown or
+ * nonprojectable inputs and readonly targets reject the IR before it can fire.
  */
 export function updateState<T extends number | boolean | string | ReadonlyArray<number>>(
   ref: WritableStateRef<T>,
-  value: T,
+  value: T | RuntimeValue,
 ): import("../data_script").PrimitiveReactionDescriptor {
   return { primitive: "setState", args: { slot: stateSlot(ref, "updateState"), value } };
 }

@@ -493,11 +493,16 @@ struct SlotOnlyArgs {
 mod tests {
     use super::*;
     use postretro_entities::{
-        NumericRange, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
+        CrossingCondition, CrossingDescriptor, NumericRange, SlotOwnership, SlotRecord, SlotSchema,
+        SlotType, SlotValue,
     };
+    use postretro_foundation::{IrNode, IrValue};
     use postretro_scripting_core::data_descriptors::{
         NamedReaction, PrimitiveDescriptor, ReactionDescriptor,
     };
+    use postretro_scripting_core::reaction_registry::ReactionPrimitiveRegistry;
+    use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
+    use postretro_scripting_core::state_crossings::CrossingDetector;
 
     fn number_slot(default: f32, max: f32, readonly: bool) -> SlotRecord {
         SlotRecord::new(SlotSchema {
@@ -556,21 +561,74 @@ mod tests {
     fn runtime_set_state_accumulates_at_the_app_drain_write_point() {
         let ctx = ScriptCtx::new();
         insert_number(&ctx, "puzzle.count", 0.0, 100.0, false);
+        insert_number(&ctx, "puzzle.fire", 0.0, 1.0, false);
         let value = serde_json::json!({
             "op": "add",
             "a": { "op": "input", "name": "puzzle.count" },
             "b": { "op": "const", "value": 1.0 }
         });
-        let data = active_reactions(vec![set_state_reaction(
-            "increment",
-            "puzzle.count",
-            value.clone(),
-        )]);
+        let mut data = DataRegistry::new();
+        data.populate_level(
+            vec![
+                set_state_reaction("increment", "puzzle.count", value.clone()),
+                set_state_reaction("increment", "puzzle.count", value.clone()),
+            ],
+            vec![CrossingDescriptor {
+                slot: None,
+                condition: CrossingCondition::Ir(IrNode::Ge {
+                    a: Box::new(IrNode::Input {
+                        name: "puzzle.fire".to_string(),
+                    }),
+                    b: Box::new(IrNode::Const {
+                        value: IrValue::Number(1.0),
+                    }),
+                }),
+                max: 1.0,
+                fire: vec!["increment".to_string()],
+            }],
+            &[],
+        );
         let mut bindings = SystemReactionIrBindings::default();
         bindings.rebuild(&data, &ctx);
 
-        assert!(bindings.eval_if_bound("puzzle.count", &value, &ctx));
-        assert!(bindings.eval_if_bound("puzzle.count", &value, &ctx));
+        // Drive the real app-side seam: a crossing dispatches its named
+        // reactions into the system-command queue, then the drain evaluates
+        // each already-bound program in queue order.
+        let mut detector = CrossingDetector::new();
+        detector.initialize(&data, &ctx.slot_table.borrow(), &ctx);
+        ctx.slot_table
+            .borrow_mut()
+            .get_mut("puzzle.fire")
+            .unwrap()
+            .value = Some(SlotValue::Number(1.0));
+        let sequence_registry = SequencedPrimitiveRegistry::new();
+        let reaction_registry = ReactionPrimitiveRegistry::new();
+        let mut system_registry = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut system_registry);
+        assert_eq!(
+            crate::scripting::reactions::dispatch_state_crossings_with_sequences(
+                &mut detector,
+                &ctx.slot_table.borrow(),
+                &data,
+                &sequence_registry,
+                &reaction_registry,
+                &system_registry,
+                &ctx,
+            ),
+            vec!["increment".to_string()]
+        );
+        let queued = ctx.system_commands.take();
+        assert_eq!(queued.len(), 2, "one crossing must enqueue both reactions");
+        for command in queued {
+            let SystemReactionCommand::SetState {
+                slot,
+                value: queued_value,
+            } = command
+            else {
+                panic!("crossing reaction must enqueue a setState command");
+            };
+            assert!(bindings.eval_if_bound(&slot, &queued_value, &ctx));
+        }
         assert_eq!(number_value(&ctx, "puzzle.count"), 2.0);
     }
 
@@ -923,6 +981,32 @@ mod tests {
                 value: serde_json::json!(0.5),
             }]
         );
+    }
+
+    #[test]
+    fn literal_set_state_keeps_the_existing_json_write_path() {
+        let ctx = ScriptCtx::new();
+        insert_number(&ctx, "puzzle.literal", 0.0, 10.0, false);
+        let mut registry = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut registry);
+        let queue = SystemCommandQueue::new();
+
+        registry
+            .dispatch(
+                "setState",
+                &serde_json::json!({ "slot": "puzzle.literal", "value": 5 }),
+                &queue,
+            )
+            .expect("literal setState must dispatch");
+        let command = queue.take().pop().expect("literal command must queue");
+        let SystemReactionCommand::SetState { slot, value } = command else {
+            panic!("literal setState must retain its system command shape");
+        };
+        assert!(!is_ir_node(&value), "a literal must not enter the IR path");
+        crate::scripting::primitives::store::write_state_slot_json(&ctx, &slot, &value)
+            .expect("literal setState must retain the shipped JSON write path");
+
+        assert_eq!(number_value(&ctx, "puzzle.literal"), 5.0);
     }
 
     #[test]

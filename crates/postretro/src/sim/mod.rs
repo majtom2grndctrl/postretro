@@ -1000,6 +1000,25 @@ mod tests {
     fn trigger_consequences_run_in_tick_once_and_residual_reaches_app_drain() {
         let script_ctx = postretro_entities::ScriptCtx::new();
         *script_ctx.slot_table.borrow_mut() = trigger_slots();
+        script_ctx
+            .slot_table
+            .borrow_mut()
+            .insert(
+                "trigger.count".to_string(),
+                SlotRecord::new(SlotSchema {
+                    slot_type: SlotType::Number,
+                    default: Some(SlotValue::Number(0.0)),
+                    range: Some(NumericRange {
+                        min: 0.0,
+                        max: 100.0,
+                    }),
+                    persist: false,
+                    readonly: false,
+                    ownership: SlotOwnership::Mod,
+                    network: Default::default(),
+                }),
+            )
+            .expect("trigger count slot should be vacant");
         let registry = script_ctx.registry.clone();
         let (source_trigger, mover, animated_target, arm_target) = {
             let mut registry = registry.borrow_mut();
@@ -1088,6 +1107,30 @@ mod tests {
                     None,
                     serde_json::json!({ "slot": "trigger.flag", "value": 1 }),
                 ),
+                primitive(
+                    "setState",
+                    None,
+                    serde_json::json!({
+                        "slot": "trigger.count",
+                        "value": {
+                            "op": "add",
+                            "a": { "op": "input", "name": "trigger.count" },
+                            "b": { "op": "const", "value": 1.0 }
+                        }
+                    }),
+                ),
+                primitive(
+                    "setState",
+                    None,
+                    serde_json::json!({
+                        "slot": "trigger.count",
+                        "value": {
+                            "op": "add",
+                            "a": { "op": "input", "name": "trigger.count" },
+                            "b": { "op": "const", "value": 1.0 }
+                        }
+                    }),
+                ),
                 primitive("armTrigger", Some("rearm"), serde_json::json!({})),
                 primitive(
                     "flashScreen",
@@ -1099,7 +1142,7 @@ mod tests {
             &[],
         );
         let bindings =
-            TriggerBindingTable::build(&registry.borrow(), &data, &script_ctx.slot_table.borrow());
+            TriggerBindingTable::build_with_script_ctx(&registry.borrow(), &data, &script_ctx);
         let mut bridge = TriggerVolumeBridge::new();
         bridge.insert_for_test(source_trigger, Vec3::splat(-4.0), Vec3::splat(4.0));
         let mut trigger_system = TriggerSystem::default();
@@ -1148,6 +1191,8 @@ mod tests {
                 crate::trigger_bindings::BoundTriggerCommandKind::Damage,
                 crate::trigger_bindings::BoundTriggerCommandKind::AnimationState,
                 crate::trigger_bindings::BoundTriggerCommandKind::StoreSlot,
+                crate::trigger_bindings::BoundTriggerCommandKind::StoreSlot,
+                crate::trigger_bindings::BoundTriggerCommandKind::StoreSlot,
                 crate::trigger_bindings::BoundTriggerCommandKind::Arm,
             ],
             "each consequential command must cross the fixed-tick boundary once; final mover, arm, slot, and animation state alone are idempotent"
@@ -1191,6 +1236,16 @@ mod tests {
                 .unwrap()
                 .value,
             Some(SlotValue::Number(1.0))
+        );
+        assert_eq!(
+            script_ctx
+                .slot_table
+                .borrow()
+                .get("trigger.count")
+                .unwrap()
+                .value,
+            Some(SlotValue::Number(2.0)),
+            "two IR increments from one on_fire execution must accumulate within the fixed tick"
         );
 
         let sequence_registry = SequencedPrimitiveRegistry::new();

@@ -1,0 +1,283 @@
+//! Compiler progress reporting independent of terminal presentation.
+
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
+
+use crate::logger::{CapturedRecord, LogSink};
+use crate::pipeline::StageId;
+
+/// Shared, display-only progress state for one quantifiable stage.
+///
+/// A total of zero means indeterminate. This lets delta stages publish their
+/// total after building affinity data without a callback into the reporter.
+#[derive(Clone, Debug)]
+pub struct StageProgress {
+    completed: Arc<AtomicUsize>,
+    total: Arc<AtomicUsize>,
+}
+
+impl StageProgress {
+    pub fn indeterminate() -> Self {
+        Self {
+            completed: Arc::new(AtomicUsize::new(0)),
+            total: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    pub fn with_total(total: usize) -> Self {
+        let progress = Self::indeterminate();
+        progress.publish_total(total);
+        progress
+    }
+
+    pub fn completed_handle(&self) -> Arc<AtomicUsize> {
+        Arc::clone(&self.completed)
+    }
+
+    pub fn total_handle(&self) -> Arc<AtomicUsize> {
+        Arc::clone(&self.total)
+    }
+
+    pub fn publish_total(&self, total: usize) {
+        self.total.store(total, Ordering::Release);
+    }
+
+    pub fn completed(&self) -> usize {
+        self.completed.load(Ordering::Relaxed)
+    }
+
+    pub fn total(&self) -> Option<usize> {
+        match self.total.load(Ordering::Acquire) {
+            0 => None,
+            total => Some(total),
+        }
+    }
+}
+
+/// Presentation contract shared by plain and TUI compiler frontends.
+pub trait Reporter: Send + Sync {
+    fn begin_stage(&self, id: StageId, label: &'static str);
+    fn declare_progress(&self, id: StageId, progress: StageProgress);
+    fn finish_stage(&self, id: StageId);
+    fn skip_stage(&self, id: StageId);
+    fn record_warning(&self, warning: CapturedRecord);
+    fn finalize(&self, timings: &[(&'static str, Duration)], total: Duration);
+}
+
+struct Monitor {
+    stop: Arc<AtomicBool>,
+    thread: JoinHandle<()>,
+    label: &'static str,
+    progress: StageProgress,
+    started: Instant,
+}
+
+#[derive(Default)]
+struct PlainState {
+    active: Option<(StageId, Instant)>,
+    monitor: Option<Monitor>,
+}
+
+/// Line-oriented reporter suitable for CI, pipes, and `xtask` output.
+pub struct PlainReporter {
+    started: Instant,
+    logs: LogSink,
+    state: Mutex<PlainState>,
+}
+
+impl PlainReporter {
+    pub fn new(started: Instant, logs: LogSink) -> Self {
+        Self {
+            started,
+            logs,
+            state: Mutex::new(PlainState::default()),
+        }
+    }
+
+    fn drain_logs(&self) {
+        for record in self.logs.drain() {
+            eprintln!("{record}");
+        }
+    }
+
+    fn stop_monitor(state: &mut PlainState) {
+        if let Some(monitor) = state.monitor.take() {
+            monitor.stop.store(true, Ordering::Release);
+            monitor.thread.thread().unpark();
+            let _ = monitor.thread.join();
+            Self::print_progress(monitor.label, &monitor.progress, monitor.started.elapsed());
+        }
+    }
+
+    fn print_progress(label: &str, progress: &StageProgress, elapsed: Duration) {
+        let Some(total) = progress.total() else {
+            return;
+        };
+        let done = progress.completed().min(total);
+        let percent = done.saturating_mul(100) / total;
+        let eta = if done == 0 {
+            None
+        } else {
+            Some(elapsed.mul_f64((total - done) as f64 / done as f64))
+        };
+        match eta {
+            Some(eta) => eprintln!("  {label}: {percent:>3}%  ETA {:.1}s", eta.as_secs_f64()),
+            None => eprintln!("  {label}: {percent:>3}%  ETA --"),
+        }
+    }
+}
+
+impl Drop for PlainReporter {
+    fn drop(&mut self) {
+        let state = self
+            .state
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Self::stop_monitor(state);
+        self.drain_logs();
+    }
+}
+
+impl Reporter for PlainReporter {
+    fn begin_stage(&self, id: StageId, label: &'static str) {
+        self.drain_logs();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Self::stop_monitor(&mut state);
+        state.active = Some((id, Instant::now()));
+        eprintln!(
+            "{:>6.2}s  {}",
+            self.started.elapsed().as_secs_f32(),
+            id.spinner_label()
+        );
+        let _ = label;
+    }
+
+    fn declare_progress(&self, id: StageId, progress: StageProgress) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Self::stop_monitor(&mut state);
+        let Some((active_id, stage_started)) = state.active else {
+            return;
+        };
+        if active_id != id {
+            return;
+        }
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stop);
+        let label = id.label();
+        let worker_progress = progress.clone();
+        let logs = self.logs.clone();
+        state.monitor = Some(Monitor {
+            stop,
+            thread: thread::spawn(move || {
+                let mut previous = None;
+                while !worker_stop.load(Ordering::Acquire) {
+                    for record in logs.drain() {
+                        eprintln!("{record}");
+                    }
+                    let total = worker_progress.total();
+                    let done = worker_progress.completed();
+                    let snapshot = (done, total);
+                    if total.is_some() && previous != Some(snapshot) {
+                        Self::print_progress(label, &worker_progress, stage_started.elapsed());
+                        previous = Some(snapshot);
+                    }
+                    thread::park_timeout(Duration::from_millis(500));
+                }
+            }),
+            label,
+            progress,
+            started: stage_started,
+        });
+    }
+
+    fn finish_stage(&self, id: StageId) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.active.is_some_and(|(active, _)| active == id) {
+            Self::stop_monitor(&mut state);
+            state.active = None;
+        }
+        drop(state);
+        self.drain_logs();
+    }
+
+    fn skip_stage(&self, id: StageId) {
+        let was_active = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .active
+            .is_some_and(|(active, _)| active == id);
+        self.finish_stage(id);
+        if was_active {
+            eprintln!("  {}: skipped", id.label());
+        }
+    }
+
+    fn record_warning(&self, warning: CapturedRecord) {
+        self.logs.record(warning);
+        self.drain_logs();
+    }
+
+    fn finalize(&self, timings: &[(&'static str, Duration)], total: Duration) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Self::stop_monitor(&mut state);
+        drop(state);
+        self.drain_logs();
+
+        println!("\nBuild Summary:");
+        for (name, duration) in timings {
+            println!("  {: <15} {:>6.2}s", name, duration.as_secs_f32());
+        }
+        println!("  {: <15} {:>6.2}s", "Total", total.as_secs_f32());
+
+        let warnings = self.logs.warnings();
+        println!("\nWarnings: {}", self.logs.warning_count());
+        for warning in warnings {
+            println!("  {warning}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn progress_supports_late_total_publication() {
+        let progress = StageProgress::indeterminate();
+        assert_eq!(progress.total(), None);
+        progress.completed_handle().store(3, Ordering::Relaxed);
+        progress.publish_total(8);
+        assert_eq!(progress.completed(), 3);
+        assert_eq!(progress.total(), Some(8));
+    }
+
+    #[test]
+    fn skipped_stage_clears_active_state() {
+        let reporter = PlainReporter::new(Instant::now(), LogSink::default());
+        reporter.begin_stage(StageId::NavMesh, StageId::NavMesh.label());
+        reporter.skip_stage(StageId::NavMesh);
+        assert!(
+            reporter
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .active
+                .is_none()
+        );
+    }
+}

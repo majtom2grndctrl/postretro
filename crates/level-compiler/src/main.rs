@@ -20,10 +20,12 @@ pub mod fog_cell_masks;
 pub mod format;
 pub mod geometry;
 pub mod geometry_utils;
+pub mod governor;
 pub mod kinematic_geometry;
 pub mod light_namespaces;
 pub mod lightmap_bake;
 pub mod lightmap_layer;
+pub mod logger;
 pub mod map_data;
 pub mod map_format;
 pub mod navmesh_bake;
@@ -32,6 +34,7 @@ pub mod parse;
 pub mod partition;
 pub mod pipeline;
 pub mod portals;
+pub mod reporter;
 pub mod sdf_bake;
 pub mod sh_bake;
 pub mod sh_group;
@@ -321,8 +324,7 @@ fn main() -> anyhow::Result<()> {
     // wastes a multi-minute bake that only fails at the final write.
     precheck_output_dir(&args.output)?;
 
-    let log_level = if args.verbose { "info" } else { "warn" };
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(log_level)).init();
+    let log_sink = logger::install(args.verbose)?;
 
     if args.verbose {
         log::info!("Input: {}", args.input.display());
@@ -381,7 +383,13 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
-    pipeline::run(&args, stage_cache, started)
+    let reporter: std::sync::Arc<dyn reporter::Reporter> =
+        std::sync::Arc::new(reporter::PlainReporter::new(started, log_sink));
+    let permits = std::thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or(1);
+    let governor = std::sync::Arc::new(governor::Governor::new(permits, false));
+    pipeline::run(&args, stage_cache, started, reporter, governor)
 }
 
 #[derive(Debug)]

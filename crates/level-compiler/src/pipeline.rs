@@ -3,52 +3,30 @@
 //! Stage labels are part of the human-facing Build Summary contract. Keep them
 //! stable independently from the spinner text used while a stage is running.
 
-use std::time::Instant;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
+use crate::governor::Governor;
+use crate::reporter::{Reporter, StageProgress};
 use crate::*;
-use indicatif::{ProgressBar, ProgressStyle};
 
-struct BuildProgress {
-    started: Instant,
-    pb: Option<ProgressBar>,
-    verbose: bool,
+fn begin_stage(reporter: &dyn Reporter, id: StageId) -> Instant {
+    reporter.begin_stage(id, id.label());
+    Instant::now()
 }
 
-impl BuildProgress {
-    fn new(started: Instant, verbose: bool) -> Self {
-        Self {
-            started,
-            pb: None,
-            verbose,
-        }
-    }
-
-    fn start_stage(&mut self, msg: &str) {
-        if let Some(pb) = self.pb.take() {
-            pb.finish();
-        }
-
-        let elapsed = self.started.elapsed();
-
-        if !self.verbose {
-            let pb = ProgressBar::new_spinner();
-            pb.set_style(
-                ProgressStyle::default_spinner()
-                    .template("{elapsed:>4}  {spinner} {msg}")
-                    .unwrap(),
-            );
-            pb.set_message(msg.to_string());
-            pb.enable_steady_tick(std::time::Duration::from_millis(100));
-            self.pb = Some(pb);
-        } else {
-            eprintln!("{:>6.2}s  {}", elapsed.as_secs_f32(), msg);
-        }
-    }
-
-    fn finish(&mut self) {
-        if let Some(pb) = self.pb.take() {
-            pb.finish();
-        }
+fn finish_stage(
+    timings: &mut Vec<(&'static str, Duration)>,
+    reporter: &dyn Reporter,
+    id: StageId,
+    started: Instant,
+    produced_output: bool,
+) {
+    timings.push((id.label(), started.elapsed()));
+    if produced_output {
+        reporter.finish_stage(id);
+    } else {
+        reporter.skip_stage(id);
     }
 }
 
@@ -189,36 +167,57 @@ pub(crate) fn run(
     args: &Args,
     stage_cache: Option<cache::StageCache>,
     started: Instant,
+    reporter: Arc<dyn Reporter>,
+    _governor: Arc<Governor>,
 ) -> anyhow::Result<()> {
     let mut timings = Vec::new();
-    let mut progress = BuildProgress::new(started, args.verbose);
 
-    progress.start_stage(StageId::Parsing.spinner_label());
-    let stage_start = Instant::now();
+    let stage_start = begin_stage(reporter.as_ref(), StageId::Parsing);
     let map_data = parse::parse_map_file(&args.input, args.format)?;
-    timings.push((StageId::Parsing.label(), stage_start.elapsed()));
+    finish_stage(
+        &mut timings,
+        reporter.as_ref(),
+        StageId::Parsing,
+        stage_start,
+        true,
+    );
 
-    progress.start_stage(StageId::DataScript.spinner_label());
-    let stage_start = Instant::now();
+    let stage_start = begin_stage(reporter.as_ref(), StageId::DataScript);
     let data_script_section =
         compile_worldspawn_data_script(&args.input, map_data.data_script.as_deref())?;
-    timings.push((StageId::DataScript.label(), stage_start.elapsed()));
+    finish_stage(
+        &mut timings,
+        reporter.as_ref(),
+        StageId::DataScript,
+        stage_start,
+        data_script_section.is_some(),
+    );
 
-    progress.start_stage(StageId::TextureValidation.spinner_label());
-    let stage_start = Instant::now();
+    let stage_start = begin_stage(reporter.as_ref(), StageId::TextureValidation);
     let texture_root = resolve_texture_root(&args.input);
     texture_validation::validate_sibling_color_spaces(&texture_root)?;
-    timings.push((StageId::TextureValidation.label(), stage_start.elapsed()));
+    finish_stage(
+        &mut timings,
+        reporter.as_ref(),
+        StageId::TextureValidation,
+        stage_start,
+        true,
+    );
 
     let static_baked_lights = light_namespaces::StaticBakedLights::from_lights(&map_data.lights);
     let animated_baked_lights =
         light_namespaces::AnimatedBakedLights::from_lights(&map_data.lights);
     let alpha_lights_ns = light_namespaces::AlphaLightsNs::from_lights(&map_data.lights);
 
-    progress.start_stage(StageId::Partitioning.spinner_label());
-    let stage_start = Instant::now();
+    let stage_start = begin_stage(reporter.as_ref(), StageId::Partitioning);
     let result = partition::partition(&map_data.brush_volumes)?;
-    timings.push((StageId::Partitioning.label(), stage_start.elapsed()));
+    finish_stage(
+        &mut timings,
+        reporter.as_ref(),
+        StageId::Partitioning,
+        stage_start,
+        true,
+    );
     if args.verbose {
         partition::log_stats(&result.tree, &result.faces);
     }
@@ -249,8 +248,7 @@ pub(crate) fn run(
         log::info!("[Compiler] Watertightness: world geometry is closed (0 open edges)");
     }
 
-    progress.start_stage(StageId::Visibility.spinner_label());
-    let stage_start = Instant::now();
+    let stage_start = begin_stage(reporter.as_ref(), StageId::Visibility);
     // The exterior set is used by the BSP/leaf encoder to emit `face_count = 0`
     // for outside-the-map leaves in lockstep with the geometry section.
     let generated_portals = portals::generate_portals(&result.tree);
@@ -264,13 +262,18 @@ pub(crate) fn run(
     let exterior_leaves = visibility::find_exterior_leaves(&result.tree, &generated_portals);
 
     let vis_result = visibility::encode_vis(&result.tree, &exterior_leaves);
-    timings.push((StageId::Visibility.label(), stage_start.elapsed()));
+    finish_stage(
+        &mut timings,
+        reporter.as_ref(),
+        StageId::Visibility,
+        stage_start,
+        true,
+    );
     if args.verbose {
         visibility::log_stats(&vis_result, portal_count);
     }
 
-    progress.start_stage(StageId::Geometry.spinner_label());
-    let stage_start = Instant::now();
+    let stage_start = begin_stage(reporter.as_ref(), StageId::Geometry);
     let mut geo_result = geometry::extract_geometry(&result.faces, &result.tree, &exterior_leaves);
     let kinematic_geometry_section = kinematic_geometry::encode_kinematic_geometry_section(
         &map_data.kinematic_movers,
@@ -279,7 +282,13 @@ pub(crate) fn run(
     );
     let trigger_volumes_section =
         trigger_volumes::encode_trigger_volumes_section(&map_data.trigger_volumes);
-    timings.push((StageId::Geometry.label(), stage_start.elapsed()));
+    finish_stage(
+        &mut timings,
+        reporter.as_ref(),
+        StageId::Geometry,
+        stage_start,
+        true,
+    );
     if args.verbose {
         let empty_leaf_count = result
             .tree
@@ -291,11 +300,16 @@ pub(crate) fn run(
         geometry::log_stats(&geo_result, empty_leaf_count);
     }
 
-    progress.start_stage(StageId::BvhBuild.spinner_label());
-    let stage_start = Instant::now();
+    let stage_start = begin_stage(reporter.as_ref(), StageId::BvhBuild);
     let (bvh, bvh_primitives, bvh_section) =
         bvh_build::build_bvh(&geo_result).map_err(|e| anyhow::anyhow!("BVH build failed: {e}"))?;
-    timings.push((StageId::BvhBuild.label(), stage_start.elapsed()));
+    finish_stage(
+        &mut timings,
+        reporter.as_ref(),
+        StageId::BvhBuild,
+        stage_start,
+        true,
+    );
     if args.verbose {
         bvh_build::log_stats(&bvh_section);
     }
@@ -311,8 +325,7 @@ pub(crate) fn run(
     )
     .map(|section| section.to_bytes());
 
-    progress.start_stage(StageId::NavMesh.spinner_label());
-    let stage_start = Instant::now();
+    let stage_start = begin_stage(reporter.as_ref(), StageId::NavMesh);
     // Walkable navigation graph baked from the extracted geometry's triangles
     // (already filtered to empty, non-exterior leaf faces). `None` when no
     // walkable region survives — the section is then omitted and the build still
@@ -374,10 +387,17 @@ pub(crate) fn run(
             }
         }
     };
-    timings.push((StageId::NavMesh.label(), stage_start.elapsed()));
+    finish_stage(
+        &mut timings,
+        reporter.as_ref(),
+        StageId::NavMesh,
+        stage_start,
+        navmesh_section.is_some(),
+    );
 
-    progress.start_stage(StageId::LightmapBake.spinner_label());
-    let stage_start = Instant::now();
+    let stage_start = begin_stage(reporter.as_ref(), StageId::LightmapBake);
+    let lightmap_progress = StageProgress::indeterminate();
+    reporter.declare_progress(StageId::LightmapBake, lightmap_progress.clone());
     let static_light_count = map_data.lights.iter().filter(|l| !l.is_dynamic).count();
     let effective_lightmap_density =
         resolve_lightmap_density(args.lightmap_density, map_data.lightmap_density);
@@ -563,7 +583,6 @@ pub(crate) fn run(
         )
         .map_err(|e| anyhow::anyhow!("Lightmap bake failed: {e}"))?
     };
-    timings.push((StageId::LightmapBake.label(), stage_start.elapsed()));
     let lightmap_bake::LightmapBakeOutput {
         section: lightmap_section,
         charts: face_charts,
@@ -574,12 +593,20 @@ pub(crate) fn run(
         // on the section / per-chart placements, not needed here.
         layer_count: _,
     } = lightmap_bake_output;
+    finish_stage(
+        &mut timings,
+        reporter.as_ref(),
+        StageId::LightmapBake,
+        stage_start,
+        !static_baked_lights.is_empty() && !face_placements.is_empty(),
+    );
     if args.verbose {
         lightmap_bake::log_stats(&lightmap_section, static_light_count);
     }
 
-    progress.start_stage(StageId::ShBake.spinner_label());
-    let stage_start = Instant::now();
+    let stage_start = begin_stage(reporter.as_ref(), StageId::ShBake);
+    let sh_progress = StageProgress::indeterminate();
+    reporter.declare_progress(StageId::ShBake, sh_progress.clone());
     if let Err(msg) = sh_bake::validate_light_animations(&map_data.lights) {
         anyhow::bail!("light animation validation failed: {msg}");
     }
@@ -610,13 +637,20 @@ pub(crate) fn run(
         // shippable source of truth. No per-group reads/writes, no warning.
         sh_bake::bake_sh_volume(&sh_ctx, &sh_config)
     };
-    timings.push((StageId::ShBake.label(), stage_start.elapsed()));
+    finish_stage(
+        &mut timings,
+        reporter.as_ref(),
+        StageId::ShBake,
+        stage_start,
+        true,
+    );
     if args.verbose {
         sh_bake::log_stats(&sh_volume_section);
     }
 
-    progress.start_stage(StageId::DeltaShBake.spinner_label());
-    let stage_start = Instant::now();
+    let stage_start = begin_stage(reporter.as_ref(), StageId::DeltaShBake);
+    let delta_sh_progress = StageProgress::indeterminate();
+    reporter.declare_progress(StageId::DeltaShBake, delta_sh_progress.clone());
     let delta_sh_volumes_section = {
         let inputs = delta_sh_bake::DeltaBakeInputs {
             bvh: &bvh,
@@ -629,7 +663,13 @@ pub(crate) fn run(
         };
         delta_sh_bake::bake_delta_sh_volumes(&inputs, &sh_config)
     };
-    timings.push((StageId::DeltaShBake.label(), stage_start.elapsed()));
+    finish_stage(
+        &mut timings,
+        reporter.as_ref(),
+        StageId::DeltaShBake,
+        stage_start,
+        delta_sh_volumes_section.is_some(),
+    );
     if args.verbose {
         if let Some(ref section) = delta_sh_volumes_section {
             delta_sh_bake::log_stats(section);
@@ -638,8 +678,9 @@ pub(crate) fn run(
         }
     }
 
-    progress.start_stage(StageId::DirectShBake.spinner_label());
-    let stage_start = Instant::now();
+    let stage_start = begin_stage(reporter.as_ref(), StageId::DirectShBake);
+    let direct_sh_progress = StageProgress::indeterminate();
+    reporter.declare_progress(StageId::DirectShBake, direct_sh_progress.clone());
     // Baked static-direct octahedral SH for dynamic objects. Emitted IFF there are
     // static (baked) lights — a map whose only lights are animated produces NO
     // direct section (absence; the loader treats it as direct = 0), so animated
@@ -685,10 +726,15 @@ pub(crate) fn run(
         }
         Some(section)
     };
-    timings.push((StageId::DirectShBake.label(), stage_start.elapsed()));
+    finish_stage(
+        &mut timings,
+        reporter.as_ref(),
+        StageId::DirectShBake,
+        stage_start,
+        direct_sh_volume_section.is_some(),
+    );
 
-    progress.start_stage(StageId::EntityShadowLights.spinner_label());
-    let stage_start = Instant::now();
+    let stage_start = begin_stage(reporter.as_ref(), StageId::EntityShadowLights);
     let raw_entity_shadow_lights_section = direct_sh_volume_section.as_ref().and_then(|_| {
         let inputs = entity_shadow_select::EntityShadowSelectionInputs {
             bvh: &bvh,
@@ -705,7 +751,13 @@ pub(crate) fn run(
             Some(section)
         }
     });
-    timings.push((StageId::EntityShadowLights.label(), stage_start.elapsed()));
+    finish_stage(
+        &mut timings,
+        reporter.as_ref(),
+        StageId::EntityShadowLights,
+        stage_start,
+        raw_entity_shadow_lights_section.is_some(),
+    );
     if args.verbose {
         if let Some(ref section) = raw_entity_shadow_lights_section {
             log::info!(
@@ -717,8 +769,9 @@ pub(crate) fn run(
         }
     }
 
-    progress.start_stage(StageId::DirectShDeltaBake.spinner_label());
-    let stage_start = Instant::now();
+    let stage_start = begin_stage(reporter.as_ref(), StageId::DirectShDeltaBake);
+    let direct_sh_delta_progress = StageProgress::indeterminate();
+    reporter.declare_progress(StageId::DirectShDeltaBake, direct_sh_delta_progress.clone());
     let raw_direct_sh_delta_volumes_section =
         raw_entity_shadow_lights_section
             .as_ref()
@@ -734,7 +787,13 @@ pub(crate) fn run(
                     section,
                 )
             });
-    timings.push((StageId::DirectShDeltaBake.label(), stage_start.elapsed()));
+    finish_stage(
+        &mut timings,
+        reporter.as_ref(),
+        StageId::DirectShDeltaBake,
+        stage_start,
+        raw_direct_sh_delta_volumes_section.is_some(),
+    );
 
     let (entity_shadow_lights_section, direct_sh_delta_volumes_section) =
         match raw_entity_shadow_lights_section {
@@ -781,8 +840,7 @@ pub(crate) fn run(
         }
     }
 
-    progress.start_stage(StageId::ShadowmaskAtlas.spinner_label());
-    let stage_start = Instant::now();
+    let stage_start = begin_stage(reporter.as_ref(), StageId::ShadowmaskAtlas);
     let shadowmask_atlas_section = if entity_shadow_lights_section.is_some() {
         let shared = lightmap_layer::SharedAtlas {
             charts: &face_charts,
@@ -804,7 +862,13 @@ pub(crate) fn run(
     } else {
         None
     };
-    timings.push((StageId::ShadowmaskAtlas.label(), stage_start.elapsed()));
+    finish_stage(
+        &mut timings,
+        reporter.as_ref(),
+        StageId::ShadowmaskAtlas,
+        stage_start,
+        shadowmask_atlas_section.is_some(),
+    );
     if args.verbose {
         if let Some(ref section) = shadowmask_atlas_section {
             log::info!(
@@ -820,8 +884,7 @@ pub(crate) fn run(
         }
     }
 
-    progress.start_stage(StageId::ChunkLightList.spinner_label());
-    let stage_start = Instant::now();
+    let stage_start = begin_stage(reporter.as_ref(), StageId::ChunkLightList);
     let chunk_light_list_section = {
         let inputs = chunk_light_list_bake::ChunkLightListInputs {
             bvh: &bvh,
@@ -839,7 +902,13 @@ pub(crate) fn run(
         )
         .map_err(|e| anyhow::anyhow!("Chunk light list bake failed: {e}"))?
     };
-    timings.push((StageId::ChunkLightList.label(), stage_start.elapsed()));
+    finish_stage(
+        &mut timings,
+        reporter.as_ref(),
+        StageId::ChunkLightList,
+        stage_start,
+        true,
+    );
 
     let alpha_lights_section = pack::encode_alpha_lights(&alpha_lights_ns, &result.tree);
     let light_influence_section = pack::encode_light_influence(&alpha_lights_ns);
@@ -855,8 +924,7 @@ pub(crate) fn run(
 
     let (animated_chunk_lights, _) = animated_baked_lights.to_parallel_vecs();
 
-    progress.start_stage(StageId::AnimatedLightChunks.spinner_label());
-    let stage_start = Instant::now();
+    let stage_start = begin_stage(reporter.as_ref(), StageId::AnimatedLightChunks);
     // Returns a parallel chunk-range table indexed by BVH leaf slot; pack stamps
     // it onto the on-disk `BvhLeaf` records at serialization time. Empty section
     // signals no animated lights — no placeholder record is emitted.
@@ -868,10 +936,21 @@ pub(crate) fn run(
             &geo_result.face_index_ranges,
             final_lightmap_density,
         );
-    timings.push((StageId::AnimatedLightChunks.label(), stage_start.elapsed()));
+    finish_stage(
+        &mut timings,
+        reporter.as_ref(),
+        StageId::AnimatedLightChunks,
+        stage_start,
+        !animated_light_chunks_section.chunks.is_empty(),
+    );
 
-    progress.start_stage(StageId::AnimatedWeightMaps.spinner_label());
-    let stage_start = Instant::now();
+    let stage_start = begin_stage(reporter.as_ref(), StageId::AnimatedWeightMaps);
+    let animated_weight_progress =
+        StageProgress::with_total(animated_light_chunks_section.chunks.len());
+    reporter.declare_progress(
+        StageId::AnimatedWeightMaps,
+        animated_weight_progress.clone(),
+    );
     let animated_light_weight_maps_section = if animated_light_chunks_section.chunks.is_empty() {
         None
     } else {
@@ -943,7 +1022,13 @@ pub(crate) fn run(
             Some(section)
         }
     };
-    timings.push((StageId::AnimatedWeightMaps.label(), stage_start.elapsed()));
+    finish_stage(
+        &mut timings,
+        reporter.as_ref(),
+        StageId::AnimatedWeightMaps,
+        stage_start,
+        animated_light_weight_maps_section.is_some(),
+    );
 
     let animated_light_chunks_section = if animated_light_chunks_section.chunks.is_empty() {
         None
@@ -952,8 +1037,7 @@ pub(crate) fn run(
     };
 
     let sdf_atlas_section = if map_needs_sdf_atlas(&map_data.lights) {
-        progress.start_stage(StageId::SdfAtlasBake.spinner_label());
-        let stage_start = Instant::now();
+        let stage_start = begin_stage(reporter.as_ref(), StageId::SdfAtlasBake);
         let sdf_config = sdf_bake::SdfConfig {
             voxel_size_m: args.voxel_size,
             ..sdf_bake::SdfConfig::default()
@@ -999,26 +1083,37 @@ pub(crate) fn run(
                 section
             }
         };
-        timings.push((StageId::SdfAtlasBake.label(), stage_start.elapsed()));
+        finish_stage(
+            &mut timings,
+            reporter.as_ref(),
+            StageId::SdfAtlasBake,
+            stage_start,
+            true,
+        );
         if args.verbose {
             sdf_bake::log_stats(&section);
         }
         Some(section)
     } else {
+        reporter.skip_stage(StageId::SdfAtlasBake);
         None
     };
 
-    progress.start_stage(StageId::TextureMips.spinner_label());
-    let stage_start = Instant::now();
+    let stage_start = begin_stage(reporter.as_ref(), StageId::TextureMips);
     let prm_root = resolve_prm_root_via_cargo(&args.input);
     let name_to_key =
         texture_mips::bake_texture_mips(&geo_result.texture_names.names, &texture_root, &prm_root)?;
     let content_root = resolve_content_root(&args.input);
     bake_model_textures(&map_data.map_entities, &content_root, &prm_root);
-    timings.push((StageId::TextureMips.label(), stage_start.elapsed()));
+    finish_stage(
+        &mut timings,
+        reporter.as_ref(),
+        StageId::TextureMips,
+        stage_start,
+        true,
+    );
 
-    progress.start_stage(StageId::Packing.spinner_label());
-    let stage_start = Instant::now();
+    let stage_start = begin_stage(reporter.as_ref(), StageId::Packing);
 
     let portals_section = pack::encode_portals(&generated_portals);
     pack::pack_and_write_portals(
@@ -1054,19 +1149,15 @@ pub(crate) fn run(
         trigger_volumes_section.as_ref(),
         cell_draw_index_bytes,
     )?;
-    timings.push((StageId::Packing.label(), stage_start.elapsed()));
-
-    progress.finish();
-
-    println!("\nBuild Summary:");
-    for (name, duration) in &timings {
-        println!("  {: <15} {:>6.2}s", name, duration.as_secs_f32());
-    }
-    println!(
-        "  {: <15} {:>6.2}s",
-        "Total",
-        started.elapsed().as_secs_f32()
+    finish_stage(
+        &mut timings,
+        reporter.as_ref(),
+        StageId::Packing,
+        stage_start,
+        true,
     );
+
+    reporter.finalize(&timings, started.elapsed());
 
     Ok(())
 }

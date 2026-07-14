@@ -96,15 +96,13 @@ import { world, defineReaction, onStateCrossing, occupiedCount } from "postretro
 export function setupLevel() {
   const door = world.query({ component: "kinematic_mover", tag: "vault-door" });
 
-  // Sourceless payoff; referenced by the crossing. (`solve` is fired by name.)
-  const solve = defineReaction("solveVault", {
-    sequence: door.flatMap((d) => d.start()),
-  });
+  // Sourceless payoff, referenced only in-script — no name; the const is the identity.
+  const solveVault = defineReaction({ sequence: door.flatMap((d) => d.start()) });
 
   // occupiedCount rises 0→1→2 as plates fill; `above: 1` fires when the 2nd lands.
-  const crossings = [onStateCrossing(occupiedCount("vault-plates"), { above: 1 }, [solve])];
+  const crossings = [onStateCrossing(occupiedCount("vault-plates"), { above: 1 }, [solveVault])];
 
-  return { reactions: [solve], crossings };
+  return { reactions: [solveVault], crossings };
 }
 ```
 
@@ -113,14 +111,14 @@ export function setupLevel() {
 // Identical shape — only the threshold changes. occupiedCount counts covered plates,
 // not bodies, so one player cannot satisfy it by stepping across two plates in turn.
 const N = 3;
-const crossings = [onStateCrossing(occupiedCount("ritual-plates"), { above: N - 1 }, [solve])];
+const crossings = [onStateCrossing(occupiedCount("ritual-plates"), { above: N - 1 }, [solveVault])];
 ```
 
 ```luau
 -- Luau parity.
 local Postretro = require("postretro")
 local plates = Postretro.occupiedCount("vault-plates")
--- onStateCrossing(plates, { above = 1 }, { solve })
+-- onStateCrossing(plates, { above = 1 }, { solveVault })
 ```
 
 ## Open questions

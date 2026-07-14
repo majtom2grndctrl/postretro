@@ -28,8 +28,10 @@ fn reaction_handle_authoring_types_widen_in_both_outputs() {
         "ts must expose reaction levels and scopeReactions:\n{ts}"
     );
     assert!(
-        ts.contains("fire: string[];\n    levels?: string[];"),
-        "ts must expose crossing levels for ModManifest.crossings:\n{ts}"
+        ts.contains(
+            "export type CrossingDescriptor = ThresholdCrossingDescriptor | PredicateCrossingDescriptor;"
+        ) && ts.matches("fire: string[];\n    levels?: string[];").count() == 2,
+        "ts must expose reaction-handle crossing fires and levels on both discriminated crossing forms:\n{ts}"
     );
     assert!(
         luau.contains("levels: {string}?")
@@ -38,8 +40,10 @@ fn reaction_handle_authoring_types_widen_in_both_outputs() {
         "luau must expose reaction levels and scopeReactions:\n{luau}"
     );
     assert!(
-        luau.contains("fire: {string}, levels: {string}?"),
-        "luau must expose crossing levels for ModManifest.crossings:\n{luau}"
+        luau.contains(
+            "export type CrossingDescriptor = ThresholdCrossingDescriptor | PredicateCrossingDescriptor"
+        ) && luau.matches("fire: {string},\n  levels: {string}?,").count() == 2,
+        "luau must expose reaction-handle crossing fires and levels on both discriminated crossing forms:\n{luau}"
     );
     // Widened reaction-reference props still appear in the Luau UI module
     // prop types. TypeScript root no longer exposes UI prop types in Task 1.

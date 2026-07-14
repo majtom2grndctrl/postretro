@@ -398,7 +398,11 @@ impl SimHarness {
             &trigger_script_ctx,
         );
         let mut trigger_bridge = TriggerVolumeBridge::new();
-        trigger_bridge.insert_for_test(trigger_source, Vec3::splat(-4.0), Vec3::splat(4.0));
+        // Keep both pawns inside this harness-only trigger for the entire
+        // stream. The determinism gate should pin its initial same-tick IR
+        // accumulation, not introduce random-command-dependent re-entry
+        // writes after that first pair of activations.
+        trigger_bridge.insert_for_test(trigger_source, Vec3::splat(-1_000.0), Vec3::splat(1_000.0));
 
         let mut labels = HashMap::new();
         for (role, id) in &role_ids {

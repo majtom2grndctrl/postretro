@@ -310,6 +310,20 @@ impl App {
         );
     }
 
+    /// Rebind inline `setState` IR after the active reaction set changes. The
+    /// app-side command queue carries raw JSON across the entities boundary;
+    /// only this binary-side table holds `BoundProgram<StoreScope>` values.
+    pub(crate) fn rebuild_active_system_reaction_bindings(&mut self) {
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        let script_ctx = session.scripting.script_ctx.clone();
+        session
+            .scripting
+            .system_reaction_ir_bindings
+            .rebuild(&script_ctx.data_registry.borrow(), &script_ctx);
+    }
+
     /// Rebind trigger events after staged mod-init recomposes the active reaction
     /// set. Tick dispatch holds bound commands, never reaction names, so it must
     /// be refreshed alongside the other active reaction consumers.
@@ -731,6 +745,12 @@ impl App {
         };
         let products = install_world_cpu(handles, &mut self.level_timings, upload_mesh_models);
 
+        // `levelLoad` may already have queued system commands during the CPU
+        // install. Bind the final composed reaction set before that queue is
+        // next drained, so an inline setState IR is evaluated rather than
+        // treated as a literal JSON value.
+        self.rebuild_active_system_reaction_bindings();
+
         self.kinematic_mover_colliders = products.mover_colliders;
         self.trigger_bindings = products.trigger_bindings;
         // Retain the spawn-point placements for the host's runtime net-slot accept
@@ -905,10 +925,10 @@ fn rebuild_reaction_subscribers(
 }
 
 fn build_trigger_bindings(script_ctx: &postretro_entities::ScriptCtx) -> TriggerBindingTable {
-    TriggerBindingTable::build(
+    TriggerBindingTable::build_with_script_ctx(
         &script_ctx.registry.borrow(),
         &script_ctx.data_registry.borrow(),
-        &script_ctx.slot_table.borrow(),
+        script_ctx,
     )
 }
 
@@ -1346,6 +1366,7 @@ mod tests {
                         scripting::reactions::registry::ReactionPrimitiveRegistry::new(),
                     system_registry:
                         scripting::reactions::system_commands::SystemReactionRegistry::new(),
+                    system_reaction_ir_bindings: Default::default(),
                     player_hud_state: scripting_systems::ui_proxy::PlayerHudStatePublisher::new(
                         script_ctx.clone(),
                     ),

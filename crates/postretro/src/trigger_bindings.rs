@@ -4,13 +4,18 @@
 use std::collections::{HashMap, HashSet};
 
 use postretro_entities::{
-    ComponentKind, EntityId, EntityRegistry, MoverCommand, SlotTable, SlotValue,
+    ComponentKind, EntityId, EntityRegistry, MoverCommand, ScriptCtx, SlotTable, SlotValue,
     TriggerVolumeComponent,
+};
+use postretro_foundation::{
+    BakedIr, BoundProgram, CURRENT_IR_VERSION, eval_and_write, ir_node_from_json,
 };
 use postretro_scripting_core::data_descriptors::{
     NamedReaction, PrimitiveDescriptor, ProgressDescriptor, ReactionDescriptor, SequenceStep,
 };
 use postretro_scripting_core::data_registry::DataRegistry;
+use postretro_scripting_core::ir::bind;
+use postretro_scripting_core::ir_scopes::StoreScope;
 use postretro_scripting_core::reaction_dispatch::PrepartitionedReactionStep;
 use postretro_scripting_core::store_bridge::{
     apply_store_slot_batch, json_value_for_slot, validate_slot_value,
@@ -110,12 +115,21 @@ pub(crate) enum BoundTriggerCommand {
     },
     StoreSlot {
         slot: String,
-        value: SlotValue,
+        value: BoundStoreValue,
     },
     AnimationState {
         target: BoundTarget,
         state: String,
     },
+}
+
+/// The trigger-owned form of a `setState` value. Literal writes keep the
+/// pre-existing fast path; inline IR is bound once while the level installs and
+/// runs against the live store only at the tick write point.
+#[derive(Debug, Clone)]
+pub(crate) enum BoundStoreValue {
+    Literal(SlotValue),
+    Ir(BoundProgram<StoreScope>),
 }
 
 #[derive(Debug, Clone)]
@@ -147,10 +161,33 @@ impl TriggerBindingTable {
     /// Construct bindings after reaction composition has completed. Empty event
     /// names intentionally carry no binding; unknown names warn once per trigger
     /// edge and do not fall back to a later drain-time lookup.
+    #[cfg(test)]
     pub(crate) fn build(
         registry: &EntityRegistry,
         data_registry: &DataRegistry,
         slot_table: &SlotTable,
+    ) -> Self {
+        Self::build_inner(registry, data_registry, slot_table, None)
+    }
+
+    /// Bind against the script-capability `StoreScope` at level install. The
+    /// standalone table-only builder remains for literal-only test fixtures;
+    /// real level installation must use this path so IR writes are validated
+    /// against the live slot declarations once.
+    pub(crate) fn build_with_script_ctx(
+        registry: &EntityRegistry,
+        data_registry: &DataRegistry,
+        script_ctx: &ScriptCtx,
+    ) -> Self {
+        let slot_table = script_ctx.slot_table.borrow();
+        Self::build_inner(registry, data_registry, &slot_table, Some(script_ctx))
+    }
+
+    fn build_inner(
+        registry: &EntityRegistry,
+        data_registry: &DataRegistry,
+        slot_table: &SlotTable,
+        script_ctx: Option<&ScriptCtx>,
     ) -> Self {
         let mut trigger_ids: Vec<EntityId> = registry
             .iter_with_kind(ComponentKind::TriggerVolume)
@@ -172,6 +209,7 @@ impl TriggerBindingTable {
                 &component.on_fire,
                 data_registry,
                 slot_table,
+                script_ctx,
             );
             table.bind_event(
                 trigger,
@@ -179,6 +217,7 @@ impl TriggerBindingTable {
                 &component.on_exit,
                 data_registry,
                 slot_table,
+                script_ctx,
             );
         }
         table
@@ -191,6 +230,7 @@ impl TriggerBindingTable {
         event_name: &str,
         data_registry: &DataRegistry,
         slot_table: &SlotTable,
+        script_ctx: Option<&ScriptCtx>,
     ) {
         if event_name.is_empty() {
             return;
@@ -214,6 +254,7 @@ impl TriggerBindingTable {
                 reaction,
                 data_registry,
                 slot_table,
+                script_ctx,
                 &mut commands,
                 &mut steps,
             );
@@ -256,6 +297,37 @@ impl TriggerBindingTable {
         }
     }
 
+    /// Execute against the live script context. IR commands evaluate through a
+    /// fresh script-capability `StoreScope`, while literal writes borrow the
+    /// same slot table only for their existing validated batch operation.
+    pub(crate) fn execute_with_script_ctx(
+        &self,
+        trigger: EntityId,
+        edge: TriggerEventEdge,
+        registry: &mut EntityRegistry,
+        script_ctx: &ScriptCtx,
+    ) -> TriggerBindingExecution {
+        let Some(binding) = self.bindings.get(&(trigger, edge)) else {
+            return TriggerBindingExecution {
+                residual: None,
+                #[cfg(test)]
+                commands: Vec::new(),
+            };
+        };
+        #[cfg(test)]
+        let mut commands = Vec::with_capacity(binding.commands.len());
+        for command in &binding.commands {
+            command.execute_with_script_ctx(registry, script_ctx);
+            #[cfg(test)]
+            commands.push(command.kind());
+        }
+        TriggerBindingExecution {
+            residual: binding.residual,
+            #[cfg(test)]
+            commands,
+        }
+    }
+
     pub(crate) fn residual(&self, handle: TriggerResidualHandle) -> Option<&TriggerResidual> {
         self.residuals.get(handle.0)
     }
@@ -276,6 +348,45 @@ impl TriggerBindingTable {
 impl BoundTriggerCommand {
     fn execute(&self, registry: &mut EntityRegistry, slot_table: &mut SlotTable) {
         match self {
+            Self::StoreSlot { slot, value } => {
+                let BoundStoreValue::Literal(value) = value else {
+                    log::warn!(
+                        "[Trigger] runtime setState for `{slot}` needs a ScriptCtx execution path; skipping"
+                    );
+                    return;
+                };
+                if let Err(error) =
+                    apply_store_slot_batch(slot_table, &[(slot.clone(), value.clone())])
+                {
+                    log::warn!("[Trigger] setState binding for `{slot}` failed: {error}");
+                }
+            }
+            _ => self.execute_non_store(registry),
+        }
+    }
+
+    fn execute_with_script_ctx(&self, registry: &mut EntityRegistry, script_ctx: &ScriptCtx) {
+        match self {
+            Self::StoreSlot { slot, value } => match value {
+                BoundStoreValue::Literal(value) => {
+                    let mut slot_table = script_ctx.slot_table.borrow_mut();
+                    if let Err(error) =
+                        apply_store_slot_batch(&mut slot_table, &[(slot.clone(), value.clone())])
+                    {
+                        log::warn!("[Trigger] setState binding for `{slot}` failed: {error}");
+                    }
+                }
+                BoundStoreValue::Ir(program) => {
+                    let mut scope = StoreScope::script(script_ctx.clone());
+                    eval_and_write(program, &mut scope);
+                }
+            },
+            _ => self.execute_non_store(registry),
+        }
+    }
+
+    fn execute_non_store(&self, registry: &mut EntityRegistry) {
+        match self {
             Self::Mover { target, command } => {
                 apply_mover_command_to_targets(registry, &target.resolve(registry), command);
             }
@@ -293,13 +404,6 @@ impl BoundTriggerCommand {
             Self::Disarm { target } => {
                 disarm_trigger_targets(registry, &target.resolve(registry));
             }
-            Self::StoreSlot { slot, value } => {
-                if let Err(error) =
-                    apply_store_slot_batch(slot_table, &[(slot.clone(), value.clone())])
-                {
-                    log::warn!("[Trigger] setState binding for `{slot}` failed: {error}");
-                }
-            }
             Self::AnimationState { target, state } => {
                 let targets = target.resolve(registry);
                 if let Err(error) = animation_reactions::dispatch(
@@ -312,6 +416,7 @@ impl BoundTriggerCommand {
                     log::warn!("[Trigger] setAnimationState binding failed: {error}");
                 }
             }
+            Self::StoreSlot { .. } => unreachable!("store slots execute through their store path"),
         }
     }
 
@@ -356,6 +461,7 @@ fn partition_direct_reaction(
     reaction: &NamedReaction,
     data_registry: &DataRegistry,
     slot_table: &SlotTable,
+    script_ctx: Option<&ScriptCtx>,
     commands: &mut Vec<BoundTriggerCommand>,
     steps: &mut Vec<PrepartitionedReactionStep>,
 ) {
@@ -370,7 +476,7 @@ fn partition_direct_reaction(
         }
         ReactionDescriptor::Primitive(primitive) => {
             if classify(&primitive.primitive) == PrimitiveClass::Consequential {
-                if let Some(command) = bind_primitive(primitive, slot_table) {
+                if let Some(command) = bind_primitive(primitive, slot_table, script_ctx) {
                     commands.push(command);
                 }
                 if let Some(on_complete) = &primitive.on_complete {
@@ -392,7 +498,7 @@ fn partition_direct_reaction(
             let mut residual_steps = Vec::new();
             for step in sequence {
                 if classify(&step.primitive) == PrimitiveClass::Consequential {
-                    if let Some(command) = bind_sequence_step(step, slot_table) {
+                    if let Some(command) = bind_sequence_step(step, slot_table, script_ctx) {
                         commands.push(command);
                     }
                 } else {
@@ -507,6 +613,7 @@ fn classify(primitive: &str) -> PrimitiveClass {
 fn bind_primitive(
     primitive: &PrimitiveDescriptor,
     slot_table: &SlotTable,
+    script_ctx: Option<&ScriptCtx>,
 ) -> Option<BoundTriggerCommand> {
     if primitive.primitive == "setState" && primitive.tag.is_some() {
         log::warn!(
@@ -518,10 +625,20 @@ fn bind_primitive(
         .tag
         .as_deref()
         .map(|tag| BoundTarget::Tag(tag.to_string()));
-    bind_command(&primitive.primitive, target, &primitive.args, slot_table)
+    bind_command(
+        &primitive.primitive,
+        target,
+        &primitive.args,
+        slot_table,
+        script_ctx,
+    )
 }
 
-fn bind_sequence_step(step: &SequenceStep, slot_table: &SlotTable) -> Option<BoundTriggerCommand> {
+fn bind_sequence_step(
+    step: &SequenceStep,
+    slot_table: &SlotTable,
+    script_ctx: Option<&ScriptCtx>,
+) -> Option<BoundTriggerCommand> {
     if step.primitive == "setState" {
         log::warn!(
             "[Trigger] setState is system-targeted and cannot carry an entity target; not binding"
@@ -529,7 +646,7 @@ fn bind_sequence_step(step: &SequenceStep, slot_table: &SlotTable) -> Option<Bou
         return None;
     }
     let target = Some(BoundTarget::Entity(step.id));
-    bind_command(&step.primitive, target, &step.args, slot_table)
+    bind_command(&step.primitive, target, &step.args, slot_table, script_ctx)
 }
 
 fn bind_command(
@@ -537,6 +654,7 @@ fn bind_command(
     target: Option<BoundTarget>,
     args: &serde_json::Value,
     slot_table: &SlotTable,
+    script_ctx: Option<&ScriptCtx>,
 ) -> Option<BoundTriggerCommand> {
     let target = |name: &str| {
         target.clone().or_else(|| {
@@ -598,7 +716,7 @@ fn bind_command(
         "disarmTrigger" => Some(BoundTriggerCommand::Disarm {
             target: target(primitive)?,
         }),
-        "setState" => bind_store_slot(args, slot_table),
+        "setState" => bind_store_slot(args, slot_table, script_ctx),
         "setAnimationState" => {
             let args: SetAnimationStateArgs = match serde_json::from_value(args.clone()) {
                 Ok(args) => args,
@@ -621,6 +739,7 @@ fn bind_command(
 fn bind_store_slot(
     args: &serde_json::Value,
     slot_table: &SlotTable,
+    script_ctx: Option<&ScriptCtx>,
 ) -> Option<BoundTriggerCommand> {
     let args: SetStateArgs = match serde_json::from_value(args.clone()) {
         Ok(args) => args,
@@ -629,6 +748,46 @@ fn bind_store_slot(
             return None;
         }
     };
+    if crate::scripting::reactions::system_commands::is_ir_node(&args.value) {
+        let Some(script_ctx) = script_ctx else {
+            log::warn!(
+                "[Trigger] runtime setState for `{}` requires the install-time ScriptCtx; not binding",
+                args.slot
+            );
+            return None;
+        };
+        let root = match ir_node_from_json(args.value.clone(), "setState.value") {
+            Ok(root) => root,
+            Err(error) => {
+                log::warn!(
+                    "[Trigger] setState runtime value for `{}` is invalid; not binding: {error}",
+                    args.slot
+                );
+                return None;
+            }
+        };
+        let baked = BakedIr {
+            version: CURRENT_IR_VERSION,
+            output: Some(args.slot.clone()),
+            root,
+        };
+        let scope = StoreScope::script(script_ctx.clone());
+        let program = match bind(&baked, &scope) {
+            Ok(program) => program,
+            Err(error) => {
+                log::warn!(
+                    "[Trigger] setState runtime value for `{}` cannot bind; not binding: {error}",
+                    args.slot
+                );
+                return None;
+            }
+        };
+        return Some(BoundTriggerCommand::StoreSlot {
+            slot: args.slot,
+            value: BoundStoreValue::Ir(program),
+        });
+    }
+
     let Some(record) = slot_table.get(&args.slot) else {
         log::warn!(
             "[Trigger] setState references unknown slot `{}`; not binding",
@@ -657,7 +816,7 @@ fn bind_store_slot(
     };
     Some(BoundTriggerCommand::StoreSlot {
         slot: args.slot,
-        value,
+        value: BoundStoreValue::Literal(value),
     })
 }
 
@@ -727,6 +886,63 @@ mod tests {
             )
             .unwrap();
         slots
+    }
+
+    #[test]
+    fn runtime_set_state_accumulates_in_trigger_enqueue_order() {
+        let mut registry = EntityRegistry::new();
+        let trigger = spawn_trigger(&mut registry, "increment");
+        let ctx = ScriptCtx::new();
+        ctx.slot_table
+            .borrow_mut()
+            .insert(
+                "trigger.count".to_string(),
+                SlotRecord::new(SlotSchema {
+                    slot_type: SlotType::Number,
+                    default: Some(SlotValue::Number(0.0)),
+                    range: Some(NumericRange {
+                        min: 0.0,
+                        max: 100.0,
+                    }),
+                    persist: false,
+                    readonly: false,
+                    ownership: SlotOwnership::Mod,
+                    network: Default::default(),
+                }),
+            )
+            .unwrap();
+        let mut data = DataRegistry::new();
+        let increment = |name: &str| {
+            primitive(
+                name,
+                "setState",
+                None,
+                serde_json::json!({
+                    "slot": "trigger.count",
+                    "value": {
+                        "op": "add",
+                        "a": { "op": "input", "name": "trigger.count" },
+                        "b": { "op": "const", "value": 1.0 }
+                    }
+                }),
+                None,
+            )
+        };
+        data.populate_level(
+            vec![increment("increment"), increment("increment")],
+            Vec::new(),
+            &[],
+        );
+        let table = TriggerBindingTable::build_with_script_ctx(&registry, &data, &ctx);
+        table.execute_with_script_ctx(trigger, TriggerEventEdge::Enter, &mut registry, &ctx);
+        assert_eq!(
+            ctx.slot_table
+                .borrow()
+                .get("trigger.count")
+                .and_then(|record| record.value.as_ref()),
+            Some(&SlotValue::Number(2.0)),
+            "same-tick IR writes must evaluate and commit in trigger command order"
+        );
     }
 
     #[test]

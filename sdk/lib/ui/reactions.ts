@@ -4,6 +4,8 @@
 // back into Rust; the FFI boundary is the `return` statement.
 // See: context/lib/scripting.md §10.4
 
+import type { RuntimeValue } from "postretro";
+
 import type { ReadonlyStateRef, WritableStateRef } from "./widgets";
 
 /**
@@ -308,7 +310,7 @@ export function returnToFrontend(): import("../data_script").PrimitiveReactionDe
  */
 export function updateState<T extends number | boolean | string | ReadonlyArray<number>>(
   ref: WritableStateRef<T>,
-  value: T,
+  value: T | RuntimeValue,
 ): import("../data_script").PrimitiveReactionDescriptor {
   return { primitive: "setState", args: { slot: stateSlot(ref, "updateState"), value } };
 }

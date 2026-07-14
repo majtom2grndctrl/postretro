@@ -423,6 +423,7 @@ impl PersistentAtmosphereHarness {
                 bridge: &self.host_trigger_bridge,
                 bindings: &self.host_bindings,
                 slot_table: self.host_ctx.slot_table.clone(),
+                script_ctx: Some(self.host_ctx.clone()),
                 use_edges: &use_edges,
             }),
         )

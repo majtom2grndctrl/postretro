@@ -29,7 +29,7 @@ use postretro_entities::components::health::{
 };
 use postretro_entities::components::mesh::MeshComponent;
 use postretro_entities::components::weapon::{UNKNOWN_WEAPON_CREDIT_SOURCE, WeaponComponent};
-use postretro_entities::{ComponentKind, EntityId, EntityRegistry, SlotTable};
+use postretro_entities::{ComponentKind, EntityId, EntityRegistry, ScriptCtx, SlotTable};
 use postretro_scripting_core::reaction_dispatch::ProgressTracker;
 
 #[derive(Debug, Clone)]
@@ -68,6 +68,9 @@ pub(crate) struct TriggerTickContext<'a> {
     pub(crate) bridge: &'a TriggerVolumeBridge,
     pub(crate) bindings: &'a TriggerBindingTable,
     pub(crate) slot_table: Rc<RefCell<SlotTable>>,
+    /// Present for production level installs and IR-aware harnesses. Literal
+    /// fixtures may omit it and keep their direct table execution path.
+    pub(crate) script_ctx: Option<ScriptCtx>,
     pub(crate) use_edges: &'a HashMap<PlayerId, bool>,
 }
 
@@ -169,33 +172,62 @@ pub(crate) fn simulate_tick(
             players.push(AuthoritativePlayer { id, pawn });
         }
         let mut registry = registry.borrow_mut();
-        let mut slot_table = trigger_context.slot_table.borrow_mut();
-        let _report = trigger_context.system.run_authoritative_tick_with_dispatch(
-            &mut registry,
-            trigger_context.bridge,
-            &players,
-            trigger_context.use_edges,
-            tick_dt,
-            |event, registry| {
-                let execution = trigger_context.bindings.execute(
-                    event.fire.trigger,
-                    event.edge,
-                    registry,
-                    &mut slot_table,
-                );
-                #[cfg(test)]
-                {
-                    trigger_fires.push(event.clone());
-                    trigger_command_fires.push(TriggerCommandFire {
-                        event: event.clone(),
-                        commands: execution.commands.clone(),
-                    });
-                }
-                if let Some(handle) = execution.residual() {
-                    trigger_residuals.push(handle);
-                }
-            },
-        );
+        if let Some(script_ctx) = trigger_context.script_ctx.as_ref() {
+            let _report = trigger_context.system.run_authoritative_tick_with_dispatch(
+                &mut registry,
+                trigger_context.bridge,
+                &players,
+                trigger_context.use_edges,
+                tick_dt,
+                |event, registry| {
+                    let execution = trigger_context.bindings.execute_with_script_ctx(
+                        event.fire.trigger,
+                        event.edge,
+                        registry,
+                        script_ctx,
+                    );
+                    #[cfg(test)]
+                    {
+                        trigger_fires.push(event.clone());
+                        trigger_command_fires.push(TriggerCommandFire {
+                            event: event.clone(),
+                            commands: execution.commands.clone(),
+                        });
+                    }
+                    if let Some(handle) = execution.residual() {
+                        trigger_residuals.push(handle);
+                    }
+                },
+            );
+        } else {
+            let mut slot_table = trigger_context.slot_table.borrow_mut();
+            let _report = trigger_context.system.run_authoritative_tick_with_dispatch(
+                &mut registry,
+                trigger_context.bridge,
+                &players,
+                trigger_context.use_edges,
+                tick_dt,
+                |event, registry| {
+                    let execution = trigger_context.bindings.execute(
+                        event.fire.trigger,
+                        event.edge,
+                        registry,
+                        &mut slot_table,
+                    );
+                    #[cfg(test)]
+                    {
+                        trigger_fires.push(event.clone());
+                        trigger_command_fires.push(TriggerCommandFire {
+                            event: event.clone(),
+                            commands: execution.commands.clone(),
+                        });
+                    }
+                    if let Some(handle) = execution.residual() {
+                        trigger_residuals.push(handle);
+                    }
+                },
+            );
+        }
     }
     let ai = {
         let mut registry = registry.borrow_mut();
@@ -1102,6 +1134,7 @@ mod tests {
                 bridge: &bridge,
                 bindings: &bindings,
                 slot_table: script_ctx.slot_table.clone(),
+                script_ctx: Some(script_ctx.clone()),
                 use_edges: &use_edges,
             }),
         );
@@ -1201,6 +1234,7 @@ mod tests {
                 bridge: &bridge,
                 bindings: &bindings,
                 slot_table: script_ctx.slot_table.clone(),
+                script_ctx: Some(script_ctx.clone()),
                 use_edges: &use_edges,
             }),
         );
@@ -1335,6 +1369,7 @@ mod tests {
                     bridge: &bridge,
                     bindings: &bindings,
                     slot_table: script_ctx.slot_table.clone(),
+                    script_ctx: Some(script_ctx.clone()),
                     use_edges: &use_edges,
                 }),
             );

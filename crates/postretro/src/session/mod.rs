@@ -218,6 +218,12 @@ pub(crate) struct ScriptingCore {
     /// system-reaction arm. See: context/lib/scripting.md §10.4.
     pub(crate) system_registry: SystemReactionRegistry,
 
+    /// Install-time `StoreScope` bindings for system-targeted inline `setState`
+    /// IR. Descriptors and queued commands retain raw JSON at the entities
+    /// boundary; this binary-side table owns the scope-specialized programs.
+    pub(crate) system_reaction_ir_bindings:
+        scripting_systems::system_reactions::SystemReactionIrBindings,
+
     /// Publishes live pawn health, ammo, and reload state into HUD slots each frame.
     /// See: context/lib/scripting.md §5 for the store contract.
     pub(crate) player_hud_state: scripting_systems::ui_proxy::PlayerHudStatePublisher,
@@ -525,6 +531,7 @@ fn build_scripting_core(
         sequence_registry,
         reaction_registry,
         system_registry,
+        system_reaction_ir_bindings: Default::default(),
         player_hud_state,
         flash_decay,
         vignette_decay,

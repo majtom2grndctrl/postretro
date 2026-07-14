@@ -397,6 +397,7 @@ impl SimHarness {
                 bridge: &self.trigger_bridge,
                 bindings: &self.trigger_bindings,
                 slot_table: self.trigger_slots.clone(),
+                script_ctx: None,
                 use_edges: &trigger_use_edges,
             }),
         );

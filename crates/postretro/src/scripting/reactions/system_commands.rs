@@ -4,5 +4,6 @@
 #[cfg(test)]
 pub(crate) use crate::scripting_systems::system_reactions::SystemCommandQueue;
 pub(crate) use crate::scripting_systems::system_reactions::{
-    SystemReactionCommand, SystemReactionRegistry, register_system_reaction_primitives,
+    SystemReactionCommand, SystemReactionIrBindings, SystemReactionRegistry, is_ir_node,
+    register_system_reaction_primitives,
 };

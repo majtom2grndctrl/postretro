@@ -1,37 +1,45 @@
-# Code-grounding notes (2026-07)
+# E18-B research notes
 
-Source-verified facts behind the spec's decisions. Line refs are as-of drafting; treat as pointers, not contracts. Design rationale lives in `context/research/co-op-triggers-trap-pools.md` §4.3.
+Code-anchored facts behind the spec. Line refs are as-of drafting — pointers, not contracts; reconfirm before editing. Prior activation-gate/KVP/format anchors were dropped with the all-script rescope (see git history if the KVP direction ever returns). Design rationale: `context/research/co-op-triggers-trap-pools.md` §4.3.
 
-## Activation gate (the E18-B seam)
+## Trigger occupancy (shipped, E18 trigger-event-fanout)
 
-- `evaluate_trigger_activation(state: &TriggerVolumeComponent, activator: PlayerId) -> TriggerActivationDecision{Fire|Suppress}` — `crates/postretro/src/trigger_system.rs:456`. Currently ignores `activator` except a dev-tools/test log. Condition: `armed && !matches!(fire_mode, Once if latched) && rearm_remaining_ms <= 0.0`.
-- Called per-`(trigger, player)` enter edge at `trigger_system.rs:276`, inside the per-player loop (edges built 211–235, dispatched 238–310). This per-edge shape fits per-edge policies directly; threshold policies need a per-trigger transition instead.
-- `PlayerId{Local(EntityId), Remote(u64)}` at `:20`; `AuthoritativePlayer{id, pawn}` at `:26`. Per-trigger transient state on `TriggerSystem`: `occupants: BTreeMap<EntityId, BTreeSet<PlayerId>>`, `paired_enters: BTreeSet<(EntityId, PlayerId)>` (`:96–98`). The satisfaction latch (`satisfied: BTreeMap<EntityId, bool>`) is a third map of the same shape.
-- `occupancy(trigger) -> usize` at `:109` (`occupants[trigger].len()`). Overlap math `canonical_player_capsules` at `:317` reads only `Transform` + `PlayerMovementComponent` — **no health read today** (the corpse-on-a-plate gap).
+- `TriggerSystem::occupancy(&self, trigger: EntityId) -> usize` — `crates/postretro/src/trigger_system.rs:108`. `#[cfg(dev-tools)]`-gated, **no non-test caller**. Returns raw overlap count (`occupants[trigger].len()`), **not** effective — no alive filter.
+- Occupant map: `occupants: BTreeMap<EntityId, BTreeSet<PlayerId>>` on `TriggerSystem` (`:94-98`), private. Overlap math `canonical_player_capsules` (`~:317`) reads only `Transform` + `PlayerMovementComponent` — no health read today (the corpse-on-a-plate gap E18-B closes).
+- Fire stream: `TriggerFireReport { fires: Vec<TriggerEvent> }`; `TriggerEvent { fire: TriggerEventFire { trigger, player, event_name }, edge: TriggerEventEdge::{Enter,Exit} }` (`:41-90`). `enters()`/`exits()` are `#[cfg(test)]` only.
+- File is **1695 lines** → split-before-extend.
 
-## Host / local identity
+## Activator available but dropped (informs the deferred activators work, not E18-B)
 
-- `players` slice built in `crates/postretro/src/sim/mod.rs:156–170`: `PlayerId::Remote` from each `RemotePawnCommand::owner_client_id`, `PlayerId::Local` from `registry.local_player_movement_pawn()`. On a listen server (`NetRole::Host`) the local pawn is always the host's own; remote slot pawns are **never** marked local (`scripting/builtins/net_descriptor.rs:24`). A future dedicated server (E15 P4) attaches no local pawn — no `PlayerId::Local` — so `host_only` is inert there.
-- Trigger stage runs host/single-player only; the connected-client branch returns early at `main.rs` before `simulate_tick`. Clients observe consequences via replication.
+- Dispatch closure `crates/postretro/src/sim/mod.rs:179-197` has `event.fire.player: PlayerId` in scope but calls `TriggerBindingTable::execute(trigger, edge, registry, slot_table)` (`trigger_bindings.rs:231`) with no player. No `BoundTriggerCommand` carries an activator.
+- `PlayerId` (`trigger_system.rs:19-24`): `enum { Local(EntityId), Remote(u64) }`, derives `Ord + Hash + Copy`, `pub(crate)`. `Local` wraps the pawn `EntityId`; `Remote(client_id)` needs `AuthoritativePlayer { id, pawn }` (`:26-30`) to reach the pawn.
+- `players: Vec<AuthoritativePlayer>` built at `sim/mod.rs:156-170` (Remote from `RemotePawnCommand::owner_client_id`, Local from `registry.local_player_movement_pawn()`). This is the list the aggregation pass uses to map occupant `PlayerId`→pawn for the alive check.
 
-## Alive / health
+## Aliveness
 
-- `HealthComponent` at `crates/entities/src/components/health.rs`; dead ⇔ `current <= 0.0 || !current.is_finite()` (predicate used by `sweep_deaths`, `scripting/systems/health.rs`). Corpses persist (players never despawned); `death_handled` one-shot latch. Absent health component ⇒ treat as alive (movement-only test pawns). Readable in the tick via `registry.get_component::<HealthComponent>(pawn)`.
-- Player death fires `playerDied` (`health.rs` const `PLAYER_DIED_EVENT`) at end of `simulate_tick`; respawn/re-arm is E18-R's, not B's.
+- **No `is_alive`/`is_dead` helper exists.** Dead ⇔ `current <= 0.0 || !current.is_finite()` (the `sweep_deaths` predicate, `crates/postretro/src/scripting/systems/health.rs`). `HealthComponent` (`crates/entities/src/components/health.rs:230-252`) is `ComponentKind::Health = 10` (`registry.rs:107`); read via `registry.get_component::<HealthComponent>(pawn)`.
+- **Absent health component ⇒ treat as alive** (movement-only test pawns have no health). Corpses persist (players never despawn); `death_handled` is a one-shot latch.
+- `player.health` slot is a readonly local-pawn display slot, not a per-activator source.
 
-## Component / format / compiler / FGD chain (mirror E18-A)
+## State-crossing watcher (the observer E18-B rides — unchanged)
 
-- `TriggerVolumeComponent` + `TriggerActivation{Touch,Use}` / `TriggerFireMode{Once,Multiple}` at `crates/entities/src/components/trigger_volume.rs:6–37`; `new(...)` is 8 args (`:43`), `#[allow(clippy::too_many_arguments)]`. Runtime `new(...)` callers to update: bridge `populate_from_level`, and two `#[cfg(test)]` constructors in `trigger_system.rs` (`spawn_trigger` ~`:683`, sequenced test ~`:1644`).
-- Wire: `TriggerVolumeRecord` + `TRIGGER_VOLUMES_VERSION: u16 = 2` (SectionId 44), `crates/level-format/src/trigger_volumes.rs`. E18-A appended `on_fire`/`on_exit` in v2 with a `has_event_names` decode branch; range checks reject `activation > 1`, `command > 3`, `fire_mode > 1`. LE cursor codec, u32-length-prefixed strings, per-version trailing-bytes check.
-- Compiler: `resolve_trigger_volume` at `crates/level-compiler/src/trigger_volumes.rs:13` (string→u8 for `activation`/`command`/`fire_mode`, bail on unknown; `enabled_on_spawn` 0/1→bool at 75–85). `MapTriggerVolume` at `crates/level-compiler/src/map_data.rs:177` (field-for-field mirror of the record). `encode_trigger_volumes_section` at `:133`.
-- FGD `trigger_volume` at `sdk/TrenchBroom/postretro.fgd:318–351`; `enabled_on_spawn` default is a bare int `1`, other choices defaults are quoted strings.
-- Bridge `populate_from_level` at `crates/postretro/src/scripting/systems/trigger_volume_bridge.rs` maps record u8s → enums and calls `TriggerVolumeComponent::new(...)`.
+- `CrossingDetector` — `crates/scripting-core/src/state_crossings.rs:36` (file 425 lines). Private `Watcher { slot, condition: CrossingCondition::{Below,Above}{threshold}, max, fire, previous }`.
+- Reads the **`SlotTable` directly** via `read_number` (`:138`); type-guards Number slots at `initialize` (`:54`), warns+skips non-Number.
+- Edge test `Watcher::crosses` (`:119`): `Above` fires on `prev <= threshold && cur > threshold`, re-arms only after crossing back. `detect(&SlotTable) -> Vec<String>` returns fire names; driven by `dispatch_state_crossings_with_sequences` (`crates/postretro/src/scripting/reactions/mod.rs:32`) after the tick's slot writes.
+- **An integer occupancy count crossing N-1→N fires an `above: N-1` watcher — no IR predicate needed.** This is why E18-B is IR-free and self-contained.
 
-## Dev-tools
+## world.query trigger surface (additive; nothing to remove)
 
-- `collect_trigger_diagnostics_rows(registry, bridge, trigger_system, bindings)` at `crates/postretro/src/trigger_diagnostics.rs:21–59`; reads `trigger_system.occupancy(id)` at `:49`.
-- `TriggerDiagnosticsRow` at `crates/renderer/src/render/debug_ui/mod.rs:97–110`; `draw_triggers_tab` `num_columns(10)` at `:709`. Overlay label path `collect_trigger_overlay_labels` also reads occupancy.
+- `collect_trigger_volume_handles_json` (`crates/postretro/src/scripting/entity_world_primitives.rs:269-299`) emits `{id, position, tags}` only; test `:739` asserts no runtime state. `parse_query_filter` maps `"trigger_volume"→QueryFilter::TriggerVolume{tag}` (`:85`).
+- SDK `TriggerVolumeHandle` (`sdk/lib/entities/triggers.ts:12`) has `arm()`/`disarm()` only; `wrapTriggerVolumeEntity` (`:19`); `world.ts:105` delegates trigger snapshots.
+- `ReadonlyStateRef<T>` (`sdk/lib/ui/widgets.ts:46`): runtime shape exactly `{ slot: string }`; `stateSlot` (`sdk/lib/ui/reactions.ts:33`) extracts it into descriptors. `defineStore` builds state refs the same way (`sdk/lib/data_script.ts:280`, frozen `{ slot }`). No `ReadonlyStateRef` is produced by `world.query` today — occupancy refs are net-new.
 
-## Why the fire-model split is the real work
+## Engine-capability slot writes / typedefs
 
-The gate is per-`(trigger, player)`; `any`/`host_only` are per-edge filters that drop straight in. `count`/`all` are per-trigger rising/falling transitions over the effective-occupancy *set* — a different fire shape needing the satisfaction latch and a deterministic activator attribution (lowest occupant `PlayerId`). The unifying `effective occupant = overlap ∧ (alive ∨ occupancy_includes_dead)` predicate lets both paths share one occupancy computation and preserves E18-A's `(trigger, player)`-ordered stream and paired-exit invariants.
+- Engine writes bypass readonly with validation via `write_store_slot` / `apply_store_slot_batch` (`crates/scripting-core/src/store_bridge.rs`); `StoreCapability::Script` denies readonly at `crates/scripting-core/src/ir/scopes.rs:104`. E18-B occupancy slots are engine-written, script-readonly.
+- SDK helper signatures reach `sdk/types/postretro.d.ts` via typedef templates under `crates/scripting-core/src/typedef/templates/` (e.g. `onStateCrossing` at `ui_sdk_module.d.ts:174`), regenerated by `gen-script-types` with a `cargo test` drift check.
+
+## Dev-tools Triggers tab
+
+- `collect_trigger_diagnostics_rows(registry, bridge, trigger_system, bindings)` — `crates/postretro/src/trigger_diagnostics.rs:21-59`; already reads `trigger_system.occupancy(id)` at `:49`.
+- `TriggerDiagnosticsRow` — `crates/renderer/src/render/debug_ui/mod.rs:97-110`; `draw_triggers_tab` `num_columns(10)` at `:709`. Overlay label path `collect_trigger_overlay_labels` also reads occupancy.

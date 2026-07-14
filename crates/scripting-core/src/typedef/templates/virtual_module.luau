@@ -47,8 +47,9 @@ export type PostretroUiModule = {
   Switch: (cell: LocalStateHandle<string>, map: { [string]: WidgetDescriptor }) -> {WidgetDescriptor},
   defineTheme: (theme: ThemeDefinition) -> DefinedTheme,
   getDesignTokens: (theme: DefinedTheme) -> DesignTokens,
-  --- Build a numeric state-crossing watcher. `condition` gives exactly one finite `below` or `above`; optional `max` is a finite denominator.
-  onStateCrossing: (ref: ReadonlyStateRef<number>, condition: CrossingCondition, fire: {NamedReactionDescriptor | string}) -> CrossingDescriptor,
+  --- Build a state-crossing watcher: either a numeric threshold or a Bool runtime predicate over live store slots.
+  onStateCrossing: ((ref: ReadonlyStateRef<number>, condition: CrossingCondition, fire: {NamedReactionDescriptor | string}) -> CrossingDescriptor)
+    & ((predicate: RuntimeValue, fire: {NamedReactionDescriptor | string}) -> CrossingDescriptor),
   --- Play `sound` on optional mixer `bus`; nil bus uses the engine default.
   playSound: (sound: string, bus: string?) -> PrimitiveReactionDescriptor,
   --- Trigger gamepad rumble. `strong` and optional `weak` are motor intensities in [0, 1]; `durationMs` is milliseconds.
@@ -78,8 +79,8 @@ export type PostretroUiModule = {
   EXIT_TO_DESKTOP_ACTION: "ui.exitToDesktop",
   --- Reserved button `onPress` action for returning to the frontend; same lifecycle path as `returnToFrontend()`.
   QUIT_TO_MENU_ACTION: "ui.quitToMenu",
-  --- Write `value` to a writable state ref at game-logic time; runtime validates type/range and rejects readonly slots.
-  updateState: <T>(ref: WritableStateRef<T>, value: T) -> PrimitiveReactionDescriptor,
+  --- Write a literal or runtime value to a writable state ref at game-logic time; runtime validates type/range and rejects readonly slots.
+  updateState: <T>(ref: WritableStateRef<T>, value: T | RuntimeValue) -> PrimitiveReactionDescriptor,
   appendText: (ref: WritableStateRef<string>, text: string) -> PrimitiveReactionDescriptor,
   backspaceText: (ref: WritableStateRef<string>) -> PrimitiveReactionDescriptor,
   clearText: (ref: WritableStateRef<string>) -> PrimitiveReactionDescriptor,

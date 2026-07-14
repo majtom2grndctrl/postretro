@@ -325,12 +325,34 @@ export type CrossingCondition =
   { below: number, above: nil?, max: number? }
   | { below: nil?, above: number, max: number? }
 
+--- A threshold-form watcher. Its wire discriminator is the required `slot`;
+--- exactly one threshold field is present.
+export type ThresholdCrossingDescriptor = {
+  slot: string,
+  predicate: nil?,
+  below: number?,
+  above: number?,
+  max: number?,
+  fire: {string},
+  levels: {string}?,
+}
+
+--- A predicate-form watcher. Its wire discriminator is the required
+--- `predicate`; it has no threshold slot.
+export type PredicateCrossingDescriptor = {
+  predicate: RuntimeValue,
+  slot: nil?,
+  below: nil?,
+  above: nil?,
+  max: nil?,
+  fire: {string},
+  levels: {string}?,
+}
+
 --- A state-crossing watcher entry as it appears in `setupLevel().crossings` or
---- `ModManifest.crossings`. The condition fields are flattened in beside `slot`
---- and `fire`; `fire` lists the named reactions dispatched when the crossing
---- occurs. `levels` scopes mod-global crossings by map-catalog tags; omit it
---- for every level.
-export type CrossingDescriptor = { slot: string, below: number?, above: number?, max: number?, fire: {string}, levels: {string}? }
+--- `ModManifest.crossings`. Threshold and predicate forms are discriminated by
+--- `slot` versus `predicate`.
+export type CrossingDescriptor = ThresholdCrossingDescriptor | PredicateCrossingDescriptor
 
 --- Bundle returned from `setupLevel`. The engine deserializes
 --- this shape in one pass at level load.
@@ -372,20 +394,14 @@ declare function defineMod(config: ModManifest): ModManifest
 --- `levels` selectors.
 declare function defineMapCatalog(entries: {ModMapEntry}): {ModMapEntry}
 
---- Build a state-crossing watcher. Pure: returns a plain table, no FFI. Place
---- the result in `setupLevel().crossings` or `ModManifest.crossings` with
---- optional `levels` scoping. On a crossing in the condition's direction the
---- engine fires every reaction in `fire` exactly once, re-arming only after a
---- crossing back; a registration against a non-Number slot warns and is skipped
---- at load. Each `fire` entry is a
---- `defineReaction` handle (typed) or a bare reaction-name string (the shipped
---- path); handles are reduced to their `.name`, so the wire `CrossingDescriptor.fire`
---- stays a `{string}`.
-declare function onStateCrossing(
-  ref: ReadonlyStateRef<number>,
-  condition: CrossingCondition,
-  fire: {NamedReactionDescriptor | string}
-): CrossingDescriptor
+--- Build a state-crossing watcher. The threshold form watches a numeric slot;
+--- the predicate form fires on a Bool `RuntimeValue` false-to-true edge. Each
+--- `fire` entry is a `defineReaction` handle or a bare reaction name, reduced
+--- to its wire string.
+declare onStateCrossing: (
+  ((ref: ReadonlyStateRef<number>, condition: CrossingCondition, fire: {NamedReactionDescriptor | string}) -> CrossingDescriptor)
+  & ((predicate: RuntimeValue, fire: {NamedReactionDescriptor | string}) -> CrossingDescriptor)
+)
 
 --- System-reaction body: play `sound` through the M12 audio module on the
 --- optional named `bus` (omitted when nil -> engine default bus). Pure:
@@ -488,7 +504,7 @@ declare function returnToFrontend(): PrimitiveReactionDescriptor
 --- Readonly-gated at runtime -- a readonly slot warns and stays unchanged; an
 --- engine-owned writable slot is valid. `value` is coerced to the slot's
 --- declared type. Pure: returns a `PrimitiveReactionDescriptor`, no FFI.
-declare function updateState<T>(ref: WritableStateRef<T>, value: T): PrimitiveReactionDescriptor
+declare function updateState<T>(ref: WritableStateRef<T>, value: T | RuntimeValue): PrimitiveReactionDescriptor
 
 --- System-reaction body (M13 Text Entry): append `text` to the current string
 --- value of the writable String slot `slot` at the game-logic stage. Readonly-

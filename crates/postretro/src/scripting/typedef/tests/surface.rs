@@ -295,6 +295,38 @@ fn runtime_opcode_vocabulary_appears_in_both_type_outputs() {
     );
 }
 
+/// The reaction-side IR adopter must be discoverable from the generated SDK
+/// declarations, not just accepted by the untyped SDK builders. The threshold
+/// and predicate crossing variants have mutually exclusive wire discriminants:
+/// `slot` versus `predicate`.
+#[test]
+fn ir_valued_state_reactions_are_emitted_in_both_sdk_surfaces() {
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
+
+    let mut registry = PrimitiveRegistry::new();
+    register_all(&mut registry, ScriptCtx::new());
+    let ts = generate_typescript(&registry);
+    let luau = generate_luau(&registry);
+
+    assert!(
+        ts.contains("export function updateState<T>(ref: WritableStateRef<T>, value: T | RuntimeValue): PrimitiveReactionDescriptor;")
+            && ts.contains("export function onStateCrossing(predicate: RuntimeValue, fire: (NamedReactionDescriptor | string)[]): CrossingDescriptor;")
+            && ts.contains("export type PredicateCrossingDescriptor = {")
+            && ts.contains("predicate: RuntimeValue;")
+            && ts.contains("slot?: never;"),
+        "TypeScript typedefs must expose IR-valued state writes and predicate crossings:\n{ts}"
+    );
+    assert!(
+        luau.contains("updateState: <T>(ref: WritableStateRef<T>, value: T | RuntimeValue) -> PrimitiveReactionDescriptor,")
+            && luau.contains("& ((predicate: RuntimeValue, fire: {NamedReactionDescriptor | string}) -> CrossingDescriptor)")
+            && luau.contains("export type PredicateCrossingDescriptor = {")
+            && luau.contains("predicate: RuntimeValue,")
+            && luau.contains("slot: nil?,"),
+        "Luau typedefs must expose IR-valued state writes and predicate crossings:\n{luau}"
+    );
+}
+
 /// `WidgetAnchor` in both typedef outputs must enumerate EXACTLY the variants
 /// of `postretro_ui::layout::Anchor` — no more, no less.
 ///

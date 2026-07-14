@@ -172,6 +172,8 @@ declare module "postretro/ui" {
 
   /** Build a state-crossing watcher for numeric refs. `condition` gives exactly one finite `below` or `above` threshold; optional `max` is a finite denominator. `fire` accepts reaction handles or names. */
   export function onStateCrossing(ref: ReadonlyStateRef<number>, condition: CrossingCondition, fire: (NamedReactionDescriptor | string)[]): CrossingDescriptor;
+  /** Build a watcher from a Bool-valued runtime predicate over live store slots. It fires on false-to-true edges and re-arms after the predicate returns false. */
+  export function onStateCrossing(predicate: RuntimeValue, fire: (NamedReactionDescriptor | string)[]): CrossingDescriptor;
   /** Play `sound` on optional mixer `bus`; omitted/null bus uses the engine default. */
   export function playSound(sound: string, bus?: string | null): PrimitiveReactionDescriptor;
   /** Trigger gamepad rumble. `strong` and optional `weak` are motor intensities in [0, 1]; `durationMs` is milliseconds. */
@@ -201,8 +203,8 @@ declare module "postretro/ui" {
   export function restartLevel(): PrimitiveReactionDescriptor;
   /** Return to the frontend menu and reload its optional backdrop level. */
   export function returnToFrontend(): PrimitiveReactionDescriptor;
-  /** Write `value` to a writable state ref at game-logic time; runtime validates type/range and rejects readonly slots. */
-  export function updateState<T>(ref: WritableStateRef<T>, value: T): PrimitiveReactionDescriptor;
+  /** Write a literal or runtime value to a writable state ref at game-logic time; runtime validates type/range and rejects readonly slots. */
+  export function updateState<T>(ref: WritableStateRef<T>, value: T | RuntimeValue): PrimitiveReactionDescriptor;
   export function appendText(ref: WritableStateRef<string>, text: string): PrimitiveReactionDescriptor;
   export function backspaceText(ref: WritableStateRef<string>): PrimitiveReactionDescriptor;
   export function clearText(ref: WritableStateRef<string>): PrimitiveReactionDescriptor;

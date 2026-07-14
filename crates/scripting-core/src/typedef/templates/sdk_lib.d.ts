@@ -237,13 +237,31 @@
     | { below: number; above?: never; max?: number }
     | { above: number; below?: never; max?: number };
 
-  /** A state-crossing watcher entry as it appears in `setupLevel().crossings` or `ModManifest.crossings`. The condition fields are flattened in beside `slot` and `fire`; `fire` lists the named reactions dispatched when the crossing occurs. `levels` scopes mod-global crossings by map-catalog tags; omit it for every level. */
-  export type CrossingDescriptor = {
+  /** A threshold-form watcher. Its wire discriminator is the required `slot`; exactly one threshold field is present. */
+  export type ThresholdCrossingDescriptor = {
     slot: string;
+    predicate?: never;
     max?: number;
     fire: string[];
     levels?: string[];
-  } & ({ below: number } | { above: number });
+  } & (
+    | { below: number; above?: never }
+    | { above: number; below?: never }
+  );
+
+  /** A predicate-form watcher. Its wire discriminator is the required `predicate`; it has no threshold slot. */
+  export type PredicateCrossingDescriptor = {
+    predicate: RuntimeValue;
+    slot?: never;
+    below?: never;
+    above?: never;
+    max?: never;
+    fire: string[];
+    levels?: string[];
+  };
+
+  /** A state-crossing watcher entry as it appears in `setupLevel().crossings` or `ModManifest.crossings`. Threshold and predicate forms are discriminated by `slot` versus `predicate`. */
+  export type CrossingDescriptor = ThresholdCrossingDescriptor | PredicateCrossingDescriptor;
 
   /** Bundle returned from `setupLevel`. The engine deserializes this shape in one pass at level load. */
   export type LevelManifest = {

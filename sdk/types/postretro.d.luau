@@ -986,12 +986,34 @@ export type CrossingCondition =
   { below: number, above: nil?, max: number? }
   | { below: nil?, above: number, max: number? }
 
+--- A threshold-form watcher. Its wire discriminator is the required `slot`;
+--- exactly one threshold field is present.
+export type ThresholdCrossingDescriptor = {
+  slot: string,
+  predicate: nil?,
+  below: number?,
+  above: number?,
+  max: number?,
+  fire: {string},
+  levels: {string}?,
+}
+
+--- A predicate-form watcher. Its wire discriminator is the required
+--- `predicate`; it has no threshold slot.
+export type PredicateCrossingDescriptor = {
+  predicate: RuntimeValue,
+  slot: nil?,
+  below: nil?,
+  above: nil?,
+  max: nil?,
+  fire: {string},
+  levels: {string}?,
+}
+
 --- A state-crossing watcher entry as it appears in `setupLevel().crossings` or
---- `ModManifest.crossings`. The condition fields are flattened in beside `slot`
---- and `fire`; `fire` lists the named reactions dispatched when the crossing
---- occurs. `levels` scopes mod-global crossings by map-catalog tags; omit it
---- for every level.
-export type CrossingDescriptor = { slot: string, below: number?, above: number?, max: number?, fire: {string}, levels: {string}? }
+--- `ModManifest.crossings`. Threshold and predicate forms are discriminated by
+--- `slot` versus `predicate`.
+export type CrossingDescriptor = ThresholdCrossingDescriptor | PredicateCrossingDescriptor
 
 --- Bundle returned from `setupLevel`. The engine deserializes
 --- this shape in one pass at level load.
@@ -1462,8 +1484,9 @@ export type PostretroUiModule = {
   Switch: (cell: LocalStateHandle<string>, map: { [string]: WidgetDescriptor }) -> {WidgetDescriptor},
   defineTheme: (theme: ThemeDefinition) -> DefinedTheme,
   getDesignTokens: (theme: DefinedTheme) -> DesignTokens,
-  --- Build a numeric state-crossing watcher. `condition` gives exactly one finite `below` or `above`; optional `max` is a finite denominator.
-  onStateCrossing: (ref: ReadonlyStateRef<number>, condition: CrossingCondition, fire: {NamedReactionDescriptor | string}) -> CrossingDescriptor,
+  --- Build a state-crossing watcher: either a numeric threshold or a Bool runtime predicate over live store slots.
+  onStateCrossing: ((ref: ReadonlyStateRef<number>, condition: CrossingCondition, fire: {NamedReactionDescriptor | string}) -> CrossingDescriptor)
+    & ((predicate: RuntimeValue, fire: {NamedReactionDescriptor | string}) -> CrossingDescriptor),
   --- Play `sound` on optional mixer `bus`; nil bus uses the engine default.
   playSound: (sound: string, bus: string?) -> PrimitiveReactionDescriptor,
   --- Trigger gamepad rumble. `strong` and optional `weak` are motor intensities in [0, 1]; `durationMs` is milliseconds.
@@ -1493,8 +1516,8 @@ export type PostretroUiModule = {
   EXIT_TO_DESKTOP_ACTION: "ui.exitToDesktop",
   --- Reserved button `onPress` action for returning to the frontend; same lifecycle path as `returnToFrontend()`.
   QUIT_TO_MENU_ACTION: "ui.quitToMenu",
-  --- Write `value` to a writable state ref at game-logic time; runtime validates type/range and rejects readonly slots.
-  updateState: <T>(ref: WritableStateRef<T>, value: T) -> PrimitiveReactionDescriptor,
+  --- Write a literal or runtime value to a writable state ref at game-logic time; runtime validates type/range and rejects readonly slots.
+  updateState: <T>(ref: WritableStateRef<T>, value: T | RuntimeValue) -> PrimitiveReactionDescriptor,
   appendText: (ref: WritableStateRef<string>, text: string) -> PrimitiveReactionDescriptor,
   backspaceText: (ref: WritableStateRef<string>) -> PrimitiveReactionDescriptor,
   clearText: (ref: WritableStateRef<string>) -> PrimitiveReactionDescriptor,

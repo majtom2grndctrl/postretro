@@ -13,9 +13,10 @@
 // key-order differences.
 
 use mlua::LuaSerdeExt as _;
+use std::path::Path;
 
 use crate::ir::IrNode;
-use crate::luau::{LuauConfig, LuauSubsystem, Which};
+use crate::luau::{LuauConfig, LuauSubsystem, Which, build_lua_state};
 use crate::primitives_registry::PrimitiveRegistry;
 use crate::quickjs::{QuickJsConfig, QuickJsSubsystem, run_script};
 
@@ -54,6 +55,52 @@ fn luau_canonical(expr_src: &str) -> String {
         .from_value(value)
         .expect("luau value -> IrNode");
     serde_json::to_string(&node).expect("canonicalize luau node")
+}
+
+/// Run one authored TypeScript fixture after the SDK prelude has been bundled
+/// to JavaScript, then return its descriptor-shaped JSON. UI imports are
+/// stripped by `scripts-build`, leaving the prelude globals used here.
+fn quickjs_fixture_value(source: &str) -> serde_json::Value {
+    let registry = PrimitiveRegistry::new();
+    let subsys = QuickJsSubsystem::new(&registry, &QuickJsConfig::default()).unwrap();
+
+    let json = subsys.definition_ctx().with(|ctx| {
+        run_script::<String>(&ctx, source, "increment-predicate.ts").expect("quickjs fixture eval")
+    });
+
+    serde_json::from_str(&json).expect("quickjs fixture json")
+}
+
+/// Run one authored Luau fixture and bridge its descriptor-shaped return value
+/// through serde. The fixture uses the public `require("postretro/ui")`
+/// module, matching the Luau authoring surface rather than internal globals.
+fn luau_fixture_value(source: &str) -> serde_json::Value {
+    // A mod-rooted state installs the virtual `postretro/ui` module. The
+    // long-lived definition-only state deliberately leaves `require` absent.
+    let lua = build_lua_state(&[], None, Some(Path::new(env!("CARGO_MANIFEST_DIR"))))
+        .expect("build mod-rooted luau fixture state");
+    let value: mlua::Value = lua
+        .load(source)
+        .set_name("increment-predicate.luau")
+        .eval()
+        .expect("luau fixture eval");
+
+    lua.from_value(value).expect("luau fixture value -> json")
+}
+
+/// Canonicalize one RuntimeValue nested in a fixture descriptor through the
+/// Rust IR wire type. This is the byte-level parity contract: both author
+/// surfaces must emit the same canonical `IrNode` JSON, independent of their
+/// host runtimes' object/table iteration order.
+fn fixture_ir_canonical(value: &serde_json::Value, pointer: &str) -> String {
+    let node: IrNode = serde_json::from_value(
+        value
+            .pointer(pointer)
+            .unwrap_or_else(|| panic!("fixture missing RuntimeValue at {pointer}"))
+            .clone(),
+    )
+    .unwrap_or_else(|error| panic!("fixture RuntimeValue at {pointer} is invalid: {error}"));
+    serde_json::to_string(&node).expect("canonicalize fixture RuntimeValue")
 }
 
 /// Asserts the TS and Luau spellings of the same expression canonicalize to
@@ -125,6 +172,81 @@ fn bare_literal_operands_canonicalize_to_explicit_constant_form() {
         luau_canonical(sugared_bool),
         "bare boolean sugar diverged from explicit `constant` form (Luau)"
     );
+}
+
+#[test]
+fn increment_and_predicate_crossing_fixtures_match_across_authoring_runtimes() {
+    // These fixtures deliberately use the public UI authoring surfaces: the
+    // TypeScript fixture is the post-bundle form (its `postretro/ui` import is
+    // stripped), while Luau reads that same surface from the virtual module.
+    // Both author one increment reaction and one predicate crossing over the
+    // same slot, exercising updateState, onStateCrossing, and literal wrapping.
+    const TYPESCRIPT_FIXTURE: &str = r#"
+        const ref = { slot: "counter.charge" };
+        const increment = updateState(
+          ref,
+          runtime.add(runtime.read(ref.slot), 1),
+        );
+        const crossing = onStateCrossing(
+          runtime.ge(runtime.read(ref.slot), 2),
+          ["chargeReady"],
+        );
+        JSON.stringify({ increment, crossing });
+    "#;
+    const LUAU_FIXTURE: &str = r#"
+        local Ui = require("postretro/ui")
+        local ref = { slot = "counter.charge" }
+        local increment = Ui.updateState(
+          ref,
+          runtime.add(runtime.read(ref.slot), 1)
+        )
+        local crossing = Ui.onStateCrossing(
+          runtime.ge(runtime.read(ref.slot), 2),
+          { "chargeReady" }
+        )
+        return { increment = increment, crossing = crossing }
+    "#;
+
+    let typescript = quickjs_fixture_value(TYPESCRIPT_FIXTURE);
+    let luau = luau_fixture_value(LUAU_FIXTURE);
+    assert_eq!(
+        typescript, luau,
+        "TS and Luau increment/predicate descriptors diverged"
+    );
+
+    let expected = serde_json::json!({
+        "increment": {
+            "primitive": "setState",
+            "args": {
+                "slot": "counter.charge",
+                "value": {
+                    "op": "add",
+                    "a": { "op": "input", "name": "counter.charge" },
+                    "b": { "op": "const", "value": 1 },
+                },
+            },
+        },
+        "crossing": {
+            "predicate": {
+                "op": "ge",
+                "a": { "op": "input", "name": "counter.charge" },
+                "b": { "op": "const", "value": 2 },
+            },
+            "fire": ["chargeReady"],
+        },
+    });
+    assert_eq!(
+        typescript, expected,
+        "fixture must emit the pinned setState/crossing wire shapes"
+    );
+
+    for pointer in ["/increment/args/value", "/crossing/predicate"] {
+        assert_eq!(
+            fixture_ir_canonical(&typescript, pointer),
+            fixture_ir_canonical(&luau, pointer),
+            "RuntimeValue at {pointer} must be byte-identical after canonicalization"
+        );
+    }
 }
 
 #[test]

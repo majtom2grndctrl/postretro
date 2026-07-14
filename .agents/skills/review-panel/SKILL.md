@@ -84,8 +84,8 @@ Size each slice's panel from its triage:
 
 Launch a slice's agents in a single message. Slices and the seam pass can run concurrently — triage is done, so nothing blocks. No `isolation: "worktree"` needed — reviewers read code and report findings, they don't write files.
 
-- **Each depth agent:** a `worker` agent with `model: "gpt-5.5"` and the specified `reasoning_effort` (default: high). Pass the shared preamble (below), then its lens prompt, then the specific flow or surface from triage. The lens governs — depth agents do not run the general code-review checklist; that is the breadth pass's job.
-- **Hygiene + drift agent:** a `worker` agent with `model: "gpt-5.5"` and `reasoning_effort: "medium"`. Pass full content of `.Codex/skills/code-review/SKILL.md` (the breadth checklist), then the hygiene+drift prompt (below).
+- **Each depth agent:** a `worker` agent with `model: "gpt-5.6"` and the specified `reasoning_effort` (default: high). Pass the shared preamble (below), then its lens prompt, then the specific flow or surface from triage. The lens governs — depth agents do not run the general code-review checklist; that is the breadth pass's job.
+- **Hygiene + drift agent:** a `worker` agent with `model: "gpt-5.6"` and `reasoning_effort: "medium"`. Pass full content of `.Codex/skills/code-review/SKILL.md` (the breadth checklist), then the hygiene+drift prompt (below).
 
 Every agent reports findings **bucketed by lens** so coverage per lens stays visible at aggregation.
 

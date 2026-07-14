@@ -92,11 +92,15 @@ a spawned worker thread in TUI mode. Keep the current `BuildProgress` spinner an
 they are — this task adds NO new behavior, changes NO bake logic, and must produce byte-identical
 `.prl` output and a Build Summary with identical row set, order, labels, and format (per-stage elapsed timings
 naturally vary) for the same input. The extraction must expose a seam
-where each stage has a stable identifier and human label and where the orchestrator (not each inline
-block) decides ordering, so later tasks can attach a reporter and gate. The orchestrator must also
-expose, computable before stage execution, an ordered predicted-present descriptor list of
-`(stage_id, label, predicted_present)` — SDF predicted via `map_needs_sdf_atlas(&map_data.lights)`,
-which needs only the parsed lights — so Task 4 can render the up-front step column. Preserve the exact conditional
+where each stage has a stable identifier and a human label and where the orchestrator (not each inline
+block) decides ordering, so later tasks can attach a reporter and gate. The `label` is the Build Summary
+label (the `timings` string, e.g. `"SH Bake"`) that the byte-identity AC keys row identity to; the
+existing spinner message (e.g. `"SH volume bake..."`) is a separate string and need not equal the label.
+The orchestrator must also expose, computable before stage execution, an ordered predicted-present
+descriptor list of `(stage_id, label, predicted_present)` via a named accessor (e.g.
+`Pipeline::planned_stages() -> Vec<StageDescriptor>`) that Task 4 calls by name — SDF predicted via
+`map_needs_sdf_atlas(&map_data.lights)`, which needs only the parsed lights — so Task 4 can render the
+up-front step column. Preserve the exact conditional
 structure: the SDF stage row is emitted only when `map_needs_sdf_atlas` holds, and stages that compute
 `None`/placeholder output today keep doing so. Verify by compiling a map before and after and diffing
 the output bytes and the summary row structure (labels, order, format — not the per-stage
@@ -105,12 +109,18 @@ elapsed timings).
 ### Task 2: Reporter abstraction, Governor gate, collecting logger
 
 Introduce three foundations in new modules under `crates/level-compiler/src/`, then wire the Task 1
-orchestrator to them, retiring `BuildProgress`. (1) A `Reporter` trait with methods the orchestrator
+orchestrator to them, retiring `BuildProgress` (and removing the now-unused `indicatif` dep and import,
+since `BuildProgress` is its only user). (1) A `Reporter` trait with methods the orchestrator
 and stages call: begin a stage (by the stable id + label from Task 1), declare a stage's total work
 units plus a shared progress-counter handle (the orchestrator allocates one `Arc<AtomicUsize>` per
 quantifiable stage and clones it into both the stage `Ctx` and the reporter), mark a stage finished or
 skipped, record a warning, and finalize the build with the timing summary (the orchestrator calls skip
 when a stage's guard or `is_empty` check yields placeholder/`None` output, so AC4 renders it skipped).
+For stages whose total is known up front the orchestrator declares it before the stage call; for delta SH
+and direct-SH-delta the total (`affinity_lights.len()`) is only known mid-bake, after the affinity CSR is
+built, so thread a settable total handle the bake publishes from inside (a second `Arc<AtomicUsize>` the
+bake sets once, or a `set_total` call), and the reporter shows those two stages indeterminate until their
+total is published.
 Progress advance is via that shared `Arc<AtomicUsize>` — incremented inside the Task 3 work-item
 closures, read by the reporter for %/ETA — not a per-item trait method; plus a `PlainReporter` impl reproducing today's non-TTY behavior (timestamped
 stage lines or a simple progress line) plus per-stage percent and ETA emitted as discrete printed
@@ -122,17 +132,18 @@ poll that parks the caller while paused, for serial loops) and an RAII `enter()`
 paused, then acquires one of N permits, parking callers beyond N, releasing on drop, for parallel
 work-items). Back it with a `Mutex` + `Condvar` (or equivalent std primitives — no `unsafe`); a
 setter to change the permit count must wake parked threads, and clear-pause must wake all. Expose getters for the current permit count and paused flag
-(`permits()`/`is_paused()`) for the TUI's live readout. The rayon
+(`permits()`/`is_paused()`) for the TUI's live readout. `Governor::new` takes the starting permit count
+(and an initially-unpaused flag) as parameters so Task 5 can seed it from `-j`. The rayon
 global pool is left at all cores; the Governor caps concurrent active work-items, so excess parked
 worker threads are the accepted oversubscription cost. (3) A `log::Log` backend installed via
 `log::set_boxed_logger` that replaces the `env_logger::Builder...init()` call, preserves
 `RUST_LOG`/verbose filtering, tallies `warn`-and-above counts, and forwards each formatted record to a
-shared sink the active reporter drains (the existing `log::warn!` sites (~88) are NOT edited — the
+shared sink the active reporter drains (the existing `log::warn!`/`warn!` sites are NOT edited — the
 installed logger captures them automatically). The orchestrator owns the `Reporter` and `Governor` (behind shared handles — `Arc` for the
 Governor so worker threads and the input thread share it) and threads them toward the stages. Warnings
 currently written with `eprintln!` in compiler code should route through `log` so the tally captures
-them; converting those specific `eprintln!` sites to `log::warn!` is in scope only where needed for the
-tally to be complete. This task settles the `Reporter` + `Governor` API that Tasks 3 and 4 depend on.
+them; converting those specific `eprintln!` sites to `log::warn!` is in scope only where the site is a
+genuine warning the tally should include (not pure debug-diagnostic prints). This task settles the `Reporter` + `Governor` API that Tasks 3 and 4 depend on.
 
 ### Task 3: Instrument stages with checkpoints and progress counters
 
@@ -155,8 +166,12 @@ direct-SH-delta and delta-SH CSR sub-block bakes in `direct_sh_bake.rs` and `del
 `animated_light_weight_maps.rs` (`bake_one_chunk`, total `chunks.len()`). For the serial lightmap,
 thread the gate into `bake_monolithic_atlas` (cold) and `bake_light_layer` (warm) in
 `lightmap_bake.rs`/`lightmap_layer.rs` and call `governor.checkpoint()` inside the per-face `for` loop
-(total `placements.len()`) so pause halts it mid-stage — but do NOT add `enter()` permits there, since
-the stage is single-threaded and the throttle is a documented no-op for it. Pause only takes effect
+so pause halts it mid-stage — but do NOT add `enter()` permits there, since
+the stage is single-threaded and the throttle is a documented no-op for it. The cold single sweep in
+`bake_monolithic_atlas` counts per face with total `placements.len()`; the warm path calls
+`bake_light_layer` once per baked light-layer, each sweeping all `placements`, so a bare `placements.len()`
+total overshoots across the multi-layer loop — for the warm path either count per face with total
+`placements.len() × baked-layer-count` or advance once per completed layer with total = baked-layer-count. Pause only takes effect
 within these instrumented stages (lightmap, SH, direct SH, delta SH, direct-SH-delta, animated weight
 maps); during the fast non-instrumented stages (parse, BSP, geometry, packing) a pause request is a
 deferred no-op until the next instrumented stage begins, consistent with those stages being out of
@@ -164,7 +179,11 @@ pause/throttle scope. The gate/counter reach
 these functions by adding a field to each stage's existing `Ctx`/`Inputs` struct (`ShBakeCtx`,
 `DirectBakeInputs`, `DeltaBakeInputs`, `WeightMapInputs`, `LightmapBakeCtx`, and the warm lightmap layer
 call) or an added parameter, populated by the Task 1 orchestrator from the Task 2 handles; enumerate
-and update every call site in the orchestrator. A gate with all cores permitted and never paused must
+and update every call site in the orchestrator. Note `ShBakeCtx` is constructed once and shared by the
+cold and warm SH bakes AND borrowed by both direct stages via `DirectBakeInputs`, so the counter on
+`ShBakeCtx` is the indirect-SH counter ONLY; direct SH and direct-SH-delta each allocate their own
+counter (and total handle) on their freshly-built `DirectBakeInputs`, and their closures must never
+increment `sh_ctx`'s counter. A gate with all cores permitted and never paused must
 reproduce today's behavior and timing within noise. `governor.enter()` is acquired only at the
 outermost work-item boundary; a gated closure must not block on other gated work, which would deadlock
 at low permit counts (e.g. `-j 1`).
@@ -177,7 +196,9 @@ satisfies the Task 2 `Reporter` trait. Layout: a left column listing the map's p
 front such as SDF when the map has no SDF lights, and render stages that resolve to no-ops as skipped)
 with an in-progress animation on the active step; the active step's percent complete and a per-stage
 completion ETA shown at the foot of that column, computed from the Task 3 progress counter and the
-stage total (reliable — derived directly from a known total and counter); a whole-build ETA, if also
+stage total (reliable — derived directly from a known total and counter — except delta SH and
+direct-SH-delta, whose total is published mid-bake per Task 2, so their foot shows an indeterminate
+indicator until then); a whole-build ETA, if also
 shown, is a separately-labeled best-effort readout (elapsed/done extrapolation only), not the
 column-foot value;
 a bottom panel with a live core-count control (slider/±, range `1..=available_parallelism()` via

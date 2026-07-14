@@ -1,12 +1,13 @@
 # Research — level-compiler-tui
 
-Grounding notes for the `prl-build` UX overhaul. Verified against source on branch
-`claude/compiler-ux-improvements-905sxt`. All line numbers are `crates/level-compiler/src/` unless noted.
+Grounding notes for the `prl-build` UX overhaul. Originally verified against source on branch
+`claude/compiler-ux-improvements-905sxt`; line numbers re-anchored against the current branch
+(`claude/level-compiler-tui-spec-8ssfdz`). All line numbers are `crates/level-compiler/src/` unless noted.
 
 ## main.rs is oversized
 
-`main.rs` is **2616 lines** (`wc -l`). `fn main` (line 357) is one linear function spanning
-357–1270 — parse args, cache setup, then 21 hard-coded inline stages. Far past the ~800-line
+`main.rs` is **2653 lines** (`wc -l`). `fn main` (line 359) is one linear function spanning
+359–1307 — parse args, cache setup, then 21 hard-coded inline stages. Far past the ~800-line
 split threshold. Split-before-extend applies: extract the stage pipeline before adding the
 Reporter/Governor.
 
@@ -16,55 +17,57 @@ Reporter/Governor.
 
 | # | start_stage label | timings name | Line | Parallel? | Skip condition |
 |---|---|---|---|---|---|
-| 1 | Parsing map | Parsing | 429 | no | — |
-| 2 | Data script compilation | DataScript | 434 | no | no-op if no `data_script` |
-| 3 | Texture color-space validation | TexValidation | 440 | no | — |
-| 4 | BSP partitioning | Partitioning | 451 | no | — |
-| 5 | Visibility computation | Visibility | 459 | no | — |
-| 6 | Geometry extraction | Geometry | 479 | no | — |
-| 7 | BVH build | BVH Build | 494 | no | — |
-| 8 | NavMesh bake | NavMesh | 514 | no | early-out "no walkable region" |
-| 9 | Lightmap bake | Lightmap Bake | 579 | **SERIAL** | placeholder if no static lights |
-| 10 | SH volume bake | SH Bake | 781 | **par** | — |
-| 11 | Delta SH volume bake | Delta SH Bake | 818 | **par** | `None` if no animated lights |
-| 12 | Direct SH volume bake | Direct SH Bake | 841 | **par** | skipped if no static lights |
-| 13 | Entity shadow light selection | EntityShadowLights | 890 | no | `None` if no DirectShVolume |
-| 14 | Direct SH delta volume bake | Direct SH Delta Bake | 920 | **par** | `None` if no selection |
-| 15 | Shadowmask atlas bake | ShadowmaskAtlas | 984 | no | `None` if no selection |
-| 16 | Chunk light list bake | ChunkLightList | 1023 | no | — |
-| 17 | Animated light chunks | AnimLightChunks | 1058 | no | empty if no animated |
-| 18 | Animated light weight maps | AnimWeightMaps | 1073 | **par** | `None` if no animated chunks |
-| 19 | SDF atlas bake | SDF Atlas Bake | 1155 | no | **only present** when `map_needs_sdf_atlas` |
-| 20 | Texture mip bake | TextureMips | 1211 | no | — |
-| 21 | Packing and writing | Packing | 1220 | no | — |
+| 1 | Parsing map | Parsing | 431 | no | — |
+| 2 | Data script compilation | DataScript | 436 | no | no-op if no `data_script` |
+| 3 | Texture color-space validation | TexValidation | 442 | no | — |
+| 4 | BSP partitioning | Partitioning | 453 | no | — |
+| 5 | Visibility computation | Visibility | 487 | no | — |
+| 6 | Geometry extraction | Geometry | 507 | no | — |
+| 7 | BVH build | BVH Build | 529 | no | — |
+| 8 | NavMesh bake | NavMesh | 549 | no | early-out "no walkable region" |
+| 9 | Lightmap bake | Lightmap Bake | 614 | **SERIAL** | placeholder if no static lights |
+| 10 | SH volume bake | SH Bake | 816 | **par** | — |
+| 11 | Delta SH volume bake | Delta SH Bake | 853 | **par** | `None` if no animated lights |
+| 12 | Direct SH volume bake | Direct SH Bake | 876 | **par** | skipped if no static lights |
+| 13 | Entity shadow light selection | EntityShadowLights | 925 | no | `None` if no DirectShVolume |
+| 14 | Direct SH delta volume bake | Direct SH Delta Bake | 955 | **par** | `None` if no selection |
+| 15 | Shadowmask atlas bake | ShadowmaskAtlas | 1019 | no | `None` if no selection |
+| 16 | Chunk light list bake | ChunkLightList | 1058 | no | — |
+| 17 | Animated light chunks | AnimLightChunks | 1093 | no | empty if no animated |
+| 18 | Animated light weight maps | AnimWeightMaps | 1108 | **par** | `None` if no animated chunks |
+| 19 | SDF atlas bake | SDF Atlas Bake | 1190 | no | **only present** when `map_needs_sdf_atlas` |
+| 20 | Texture mip bake | TextureMips | 1246 | no | — |
+| 21 | Packing and writing | Packing | 1255 | no | — |
 
 Stage 19 (SDF) is the only `start_stage` inside an `if` (guarded by `map_needs_sdf_atlas(&map_data.lights)`,
-line 1154) — the only stage whose *row* is conditional. Every other stage always fires its
+line 1189) — the only stage whose *row* is conditional. Every other stage always fires its
 `start_stage`; several compute `None`/placeholder output and could render as "skipped." Most skip
 conditions are predictable up front from `map_data.lights` (static count, animated count,
 `map_needs_sdf_atlas`); NavMesh walkability and entity-shadow selection resolve mid-build.
 
 ## BuildProgress (current progress abstraction)
 
-`struct BuildProgress { started: Instant, pb: Option<ProgressBar>, verbose: bool }` at line 49.
-- `new(started, verbose)` — 56
-- `start_stage(&mut self, msg)` — 64. Non-verbose: one `indicatif` spinner, template
+`struct BuildProgress { started: Instant, pb: Option<ProgressBar>, verbose: bool }` at line 51.
+- `new(started, verbose)` — 58
+- `start_stage(&mut self, msg)` — 66. Non-verbose: one `indicatif` spinner, template
   `"{elapsed:>4}  {spinner} {msg}"`, 100 ms steady tick. Verbose: `eprintln!` timestamped line.
-- `finish(&mut self)` — 86.
-Constructed at 427; driven inline by `fn main`. Build Summary table `println!` at 1259–1267.
+- `finish(&mut self)` — 88.
+Constructed at 429; driven inline by `fn main`. Build Summary table `println!` at 1296–1304.
 
 ## Logging
 
-`env_logger::Builder::from_env(...default_filter_or(log_level)).init()` at line 367; `log_level` is
-`"info"` when `--verbose` else `"warn"` (366). **99 `log::warn!` / `warn!` / `eprintln!` sites across
-16 files** (`grep -rc` confirmed — matches brief). Warnings are fired-and-forgotten: nothing tallies
+`env_logger::Builder::from_env(...default_filter_or(log_level)).init()` at line 369; `log_level` is
+`"info"` when `--verbose` else `"warn"` (368). **Recount: ~88 `log::warn!` sites across 16
+files, plus 16 `eprintln!` sites across 3 files (17 files total) — ≈104 sites** (`grep -rc` recount;
+roughly matches brief, but the original "99 across 16 files" undercounted and mislabeled the
+`eprintln!` sites as `log::warn!`). Warnings are fired-and-forgotten: nothing tallies
 or collects them. Both env_logger and the indicatif spinner draw to stderr uncoordinated — that is
 the clobbering bug.
 
-**Plumbing consequence:** routing warnings through a Reporter by editing 99 call sites is the wrong
+**Plumbing consequence:** routing warnings through a Reporter by editing ~88 call sites is the wrong
 seam. Install a custom `log::Log` backend (`log::set_boxed_logger`) that forwards records to a shared
 sink the active Reporter drains, and tallies `warn`+ counts. Preserves `RUST_LOG`/verbose filtering
-without touching the 99 sites.
+without touching those sites.
 
 ## Concurrency
 
@@ -112,12 +115,12 @@ best-effort (optional per-stage-timing priors persisted dev-local).
 declared in this crate's `Cargo.toml`, so they cannot be `use`d without adding them. `console`,
 `is-terminal`, `number_prefix`, `termcolor` all appear in `Cargo.lock`; **`ratatui`, `crossterm`,
 `termion` do not** — the TUI stack must be added. `std::io::IsTerminal` is in std (no dep). main.rs
-uses only `std::io::stdin()` today (315, the `precheck_output_dir` prompt) — no TTY detection yet.
+uses only `std::io::stdin()` today (317, the `precheck_output_dir` prompt) — no TTY detection yet.
 
 ## TTY gating / fallback anchor
 
-`precheck_output_dir` (308–355) already models graceful non-TTY handling: reads stdin, treats EOF
-(read_line == 0, line 327) as "no answer → abort" rather than looping. The TUI must gate on
+`precheck_output_dir` (310–357) already models graceful non-TTY handling: reads stdin, treats EOF
+(read_line == 0, line 329) as "no answer → abort" rather than looping. The TUI must gate on
 `stdout().is_terminal() && stderr().is_terminal()` and fall back to the plain reporter for
 CI / xtask / pipes / non-TTY stdin.
 
@@ -125,9 +128,7 @@ CI / xtask / pipes / non-TTY stdin.
 
 - No GPU dep in this crate ("renderer owns GPU" does not apply). No `unsafe`. All changes confined to
   `crates/level-compiler/`.
-- Existing CLI flags parsed in `parse_args_from` (1360): `-o -v --format --sh-probe-spacing
+- Existing CLI flags parsed in `parse_args_from` (1397): `-o -v --format --sh-probe-spacing
   --lightmap-density --soft-shadow-samples --sdf-voxel-size --cache-dir --cache-max-size --no-cache
-  --release --uncompressed-irradiance`. `Args` struct at 1272. No `-j`/`--jobs`, no `--tui` yet.
-  `help_text()` (1322) is built from live default constants — new flags must extend it.
-</content>
-</invoke>
+  --release --uncompressed-irradiance`. `Args` struct at 1310. No `-j`/`--jobs`, no `--tui` yet.
+  `help_text()` (1359) is built from live default constants — new flags must extend it.

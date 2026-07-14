@@ -4,7 +4,7 @@ Code-anchored facts behind the spec. Line refs are as-of drafting — pointers, 
 
 ## Trigger occupancy (shipped, E18 trigger-event-fanout)
 
-- `TriggerSystem::occupancy(&self, trigger: EntityId) -> usize` — `crates/postretro/src/trigger_system.rs:108`. `#[cfg(dev-tools)]`-gated, **no non-test caller**. Returns raw overlap count (`occupants[trigger].len()`), **not** effective — no alive filter.
+- `TriggerSystem::occupancy(&self, trigger: EntityId) -> usize` — `crates/postretro/src/trigger_system.rs:109`. `#[cfg(dev-tools)]`-gated, **no non-test caller**. Returns raw overlap count (`occupants[trigger].len()`), **not** effective — no alive filter.
 - Occupant map: `occupants: BTreeMap<EntityId, BTreeSet<PlayerId>>` on `TriggerSystem` (`:94-98`), private. Overlap math `canonical_player_capsules` (`~:317`) reads only `Transform` + `PlayerMovementComponent` — no health read today (the corpse-on-a-plate gap E18-B closes).
 - Fire stream: `TriggerFireReport { fires: Vec<TriggerEvent> }`; `TriggerEvent { fire: TriggerEventFire { trigger, player, event_name }, edge: TriggerEventEdge::{Enter,Exit} }` (`:41-90`). `enters()`/`exits()` are `#[cfg(test)]` only.
 - File is **1695 lines** → split-before-extend.

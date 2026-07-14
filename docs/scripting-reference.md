@@ -282,7 +282,11 @@ defineEntity({
 
 #### Counters and derived state
 
-`updateState` accepts either a literal or a `RuntimeValue`. For counters, read
+`updateState` accepts either a literal or a `RuntimeValue`. Literals keep the
+normal fire-time writable-slot check, coercion, and range validation. A runtime
+value binds once at level install against the store: it can read and write only
+projectable Number and Boolean slots. Unknown, readonly, nonprojectable, or
+type-mismatched IR is rejected before its reaction can fire. For counters, read
 the target slot in the expression and write the derived result back to its state
 reference. The engine evaluates the expression when that reaction writes, so
 sequential writes in one frame observe the preceding write.
@@ -843,7 +847,7 @@ omitted from the emitted `args` entirely when not supplied — they are never se
 | `loadLevel(id)` | `{ primitive: "loadLevel", args: { map: id } }` | Queues a catalog map load by id. |
 | `restartLevel()` | `{ primitive: "restartLevel", args: {} }` | Requeues the currently-active level source. No-ops when no level is active. |
 | `returnToFrontend()` | `{ primitive: "returnToFrontend", args: {} }` | Queues a return to the frontend menu, including its optional background level. |
-| `updateState(ref, value)` | `{ primitive: "setState", args: { slot: ref.slot, value } }` | Writes `value` to a writable state reference at the game-logic stage. Readonly-gated at runtime. |
+| `updateState(ref, value)` | `{ primitive: "setState", args: { slot: ref.slot, value } }` | Writes at the game-logic stage. Literals use the normal readonly-gated coercion and range path. A `RuntimeValue` binds at level install and requires a writable Number or Boolean target; invalid IR targets are rejected before firing. |
 | `appendText(ref, text)` | `{ primitive: "appendText", args: { slot: ref.slot, text } }` | Appends `text` to the current string value of a writable String state reference. |
 | `backspaceText(ref)` | `{ primitive: "backspaceText", args: { slot: ref.slot } }` | Removes the last character (one Unicode scalar value — never splits a UTF-8 sequence, but does not segment grapheme clusters). Empty is a silent no-op. |
 | `clearText(ref)` | `{ primitive: "clearText", args: { slot: ref.slot } }` | Empties a writable String state reference. |

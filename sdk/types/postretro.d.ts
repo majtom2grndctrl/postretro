@@ -1054,7 +1054,7 @@ declare module "postretro" {
   // `name`, `value`) so builder output deserializes straight into `IrNode`.
   // (Author surface is `runtime`/`RuntimeValue`; the Rust substrate and wire
   // op tags keep the `ir` names — scripting.md §11, "Author-facing naming".)
-  // Source of truth: crates/postretro/src/scripting/ir/mod.rs + sdk/lib/runtime.ts.
+  // Source of truth: crates/foundation/src/ir/ + sdk/lib/runtime.ts.
   // Static block (not registry-emitted): `register_tagged_union` /
   // `TypeShape::TaggedUnion` renders one payload *type name* per variant under
   // a fixed tag key — it cannot express per-variant inline struct fields (e.g.
@@ -1190,6 +1190,7 @@ declare module "postretro/ui" {
     NamedReactionDescriptor,
     CrossingCondition,
     CrossingDescriptor,
+    RuntimeValue,
   } from "postretro";
 
   /** Linear RGBA color token value. Components are in display-linear 0-1 space; alpha is the fourth element. */
@@ -1381,7 +1382,7 @@ declare module "postretro/ui" {
   export function restartLevel(): PrimitiveReactionDescriptor;
   /** Return to the frontend menu and reload its optional backdrop level. */
   export function returnToFrontend(): PrimitiveReactionDescriptor;
-  /** Write a literal or runtime value to a writable state ref at game-logic time; runtime validates type/range and rejects readonly slots. */
+  /** Write a literal or runtime value at game-logic time. Literals use the normal readonly-gated coercion and range path. Runtime values bind once at level install; only writable Number and Boolean slots project into StoreScope. */
   export function updateState<T>(ref: WritableStateRef<T>, value: T | RuntimeValue): PrimitiveReactionDescriptor;
   export function appendText(ref: WritableStateRef<string>, text: string): PrimitiveReactionDescriptor;
   export function backspaceText(ref: WritableStateRef<string>): PrimitiveReactionDescriptor;

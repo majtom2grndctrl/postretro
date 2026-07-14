@@ -1,10 +1,10 @@
 // State-crossing detector (M13 HUD dynamics): engine-side watchers composed in
 // `DataRegistry` from matching mod-global crossings plus level-local
 // `setupLevel().crossings`, then checked against the authoritative slot table
-// after each frame's slot writes. On a threshold crossing in the declared
-// direction the detector fires a reaction list synchronously through the shared
-// named-reaction vocabulary (Task 2's `fire_named_event_with_sequences`).
-// See: context/lib/scripting.md §10.4
+// after each frame's slot writes. Threshold watchers fire on their declared
+// edge; IR predicates fire on false-to-true edges. Both dispatch a reaction list
+// synchronously through the shared named-reaction vocabulary.
+// See: context/lib/scripting.md §12
 
 use super::ctx::ScriptCtx;
 use super::data_descriptors::CrossingCondition;
@@ -13,12 +13,10 @@ use super::ir::{BakedIr, BoundProgram, CURRENT_IR_VERSION, IrType, IrValue, bind
 use super::ir_scopes::StoreScope;
 use super::slot_table::{SlotTable, SlotValue};
 
-/// One active crossing watcher. The threshold is already a fraction of the
-/// registration's `max` (computed at parse time); the watcher normalizes the
-/// observed slot value by the same `max` before comparing, so `below`/`above`
-/// fire on a fraction crossing. `previous` is the last observed normalized
-/// value — `None` until the first observation, which is when it arms (no fire
-/// on the first observed value).
+/// One active crossing watcher. A threshold watcher stores its condition as a
+/// fraction of `max` and arms from the first observed normalized value. A
+/// predicate watcher stores a StoreScope-bound Boolean program and arms after
+/// observing false. See: context/lib/scripting.md §12.
 enum Watcher {
     /// The shipped single-number-slot threshold watcher. Its data flow and
     /// edge behavior deliberately remain unchanged.

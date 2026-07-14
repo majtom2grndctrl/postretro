@@ -4,7 +4,7 @@
 -- through `setupLevel().crossings` or `ModManifest.crossings`. It never calls
 -- back into Rust -- the FFI boundary is the `return` statement of the script
 -- entry point.
--- See: context/lib/scripting.md §10.4
+-- See: context/lib/scripting.md §12
 
 --- Crossing condition: fires when the watched slot crosses the threshold in one
 --- direction. Exactly one of `below`/`above` is given. `max` is the denominator
@@ -18,16 +18,22 @@ export type CrossingCondition =
 --- in beside `slot` and `fire`.
 export type ThresholdCrossingDescriptor = {
   slot: string,
-  below: number?,
-  above: number?,
+  predicate: nil?,
   max: number?,
   fire: {string},
   levels: {string}?,
-}
+} & (
+  { below: number, above: nil? }
+  | { below: nil?, above: number }
+)
 
 --- A predicate-form watcher. `predicate` is evaluated over live store slots.
 export type PredicateCrossingDescriptor = {
   predicate: RuntimeValue,
+  slot: nil?,
+  below: nil?,
+  above: nil?,
+  max: nil?,
   fire: {string},
   levels: {string}?,
 }
@@ -273,9 +279,11 @@ end
 
 --- Write `value` to the writable state reference at the game-logic stage.
 --- Pure: returns the existing `setState` primitive reaction body, no engine
---- side effect. The write is readonly-gated at runtime: a readonly slot warns
---- and is left unchanged; an engine-owned writable slot is valid. `value` is
---- coerced to the slot's declared type by the write path.
+--- side effect. Literal values use the normal runtime readonly gate, coercion,
+--- and range path. A `RuntimeValue` binds once at level install through
+--- `StoreScope`; only writable Number and Boolean slots project into that
+--- scope. Readonly, unknown, and nonprojectable targets reject the IR before
+--- the reaction can fire.
 function UiReactionsSdk.updateState(ref: any, value: any): PrimitiveReactionDescriptor
   return { primitive = "setState", args = { slot = stateSlot(ref, "updateState"), value = value } }
 end

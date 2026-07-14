@@ -593,7 +593,7 @@
   // `name`, `value`) so builder output deserializes straight into `IrNode`.
   // (Author surface is `runtime`/`RuntimeValue`; the Rust substrate and wire
   // op tags keep the `ir` names — scripting.md §11, "Author-facing naming".)
-  // Source of truth: crates/postretro/src/scripting/ir/mod.rs + sdk/lib/runtime.ts.
+  // Source of truth: crates/foundation/src/ir/ + sdk/lib/runtime.ts.
   // Static block (not registry-emitted): `register_tagged_union` /
   // `TypeShape::TaggedUnion` renders one payload *type name* per variant under
   // a fixed tag key — it cannot express per-variant inline struct fields (e.g.

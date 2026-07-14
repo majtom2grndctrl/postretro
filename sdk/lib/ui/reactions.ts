@@ -2,7 +2,7 @@
 // (M13 Goal E). `onStateCrossing` constructs a state-crossing watcher returned
 // through `setupLevel().crossings` or `ModManifest.crossings` — it never calls
 // back into Rust; the FFI boundary is the `return` statement.
-// See: context/lib/scripting.md §10.4
+// See: context/lib/scripting.md §12
 
 import type { RuntimeValue } from "postretro";
 
@@ -24,14 +24,22 @@ export type CrossingCondition =
  */
 export type ThresholdCrossingDescriptor = {
   slot: string;
+  predicate?: never;
   max?: number;
   fire: string[];
   levels?: string[];
-} & ({ below: number } | { above: number });
+} & (
+  | { below: number; above?: never }
+  | { above: number; below?: never }
+);
 
 /** A predicate-form watcher. `predicate` is evaluated over live store slots. */
 export type PredicateCrossingDescriptor = {
   predicate: RuntimeValue;
+  slot?: never;
+  below?: never;
+  above?: never;
+  max?: never;
   fire: string[];
   levels?: string[];
 };
@@ -333,9 +341,11 @@ export function returnToFrontend(): import("../data_script").PrimitiveReactionDe
 /**
  * Write `value` to the writable state reference at the game-logic stage.
  * Pure — returns the existing `setState` primitive reaction body, no engine
- * side effect. The write is readonly-gated at runtime: a readonly slot warns
- * and is left unchanged; an engine-owned writable slot is a valid target.
- * `value` is coerced to the slot's declared type by the write path.
+ * side effect. Literal values use the normal runtime readonly gate, coercion,
+ * and range path. A `RuntimeValue` binds once at level install through
+ * `StoreScope`; only writable Number and Boolean slots project into that
+ * scope. Readonly, unknown, and nonprojectable targets reject the IR before
+ * the reaction can fire.
  */
 export function updateState<T extends number | boolean | string | ReadonlyArray<number>>(
   ref: WritableStateRef<T>,

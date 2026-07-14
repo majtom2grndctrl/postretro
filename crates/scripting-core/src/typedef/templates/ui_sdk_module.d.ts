@@ -12,6 +12,7 @@ declare module "postretro/ui" {
     NamedReactionDescriptor,
     CrossingCondition,
     CrossingDescriptor,
+    RuntimeValue,
   } from "postretro";
 
   /** Linear RGBA color token value. Components are in display-linear 0-1 space; alpha is the fourth element. */
@@ -203,7 +204,7 @@ declare module "postretro/ui" {
   export function restartLevel(): PrimitiveReactionDescriptor;
   /** Return to the frontend menu and reload its optional backdrop level. */
   export function returnToFrontend(): PrimitiveReactionDescriptor;
-  /** Write a literal or runtime value to a writable state ref at game-logic time; runtime validates type/range and rejects readonly slots. */
+  /** Write a literal or runtime value at game-logic time. Literals use the normal readonly-gated coercion and range path. Runtime values bind once at level install; only writable Number and Boolean slots project into StoreScope. */
   export function updateState<T>(ref: WritableStateRef<T>, value: T | RuntimeValue): PrimitiveReactionDescriptor;
   export function appendText(ref: WritableStateRef<string>, text: string): PrimitiveReactionDescriptor;
   export function backspaceText(ref: WritableStateRef<string>): PrimitiveReactionDescriptor;

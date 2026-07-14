@@ -60,12 +60,11 @@ pub struct NamedReaction {
     pub descriptor: ReactionDescriptor,
 }
 
-/// The condition half of a state-crossing watcher (M13 HUD dynamics). A
-/// crossing fires when the watched slot transitions across `threshold` in the
-/// declared direction. `threshold` is stored as a fraction of the
-/// registration's `max` (`raw_threshold / max`); the watcher compares it
-/// against the slot's `current / max`, so a registration with no `max`
-/// (default `1.0`) degrades to a raw-value comparison.
+/// The condition half of a state-crossing watcher. Threshold conditions fire
+/// when their watched slot crosses a normalized edge. IR predicates fire on
+/// false-to-true transitions. Thresholds are fractions of `max`; absent `max`
+/// defaults to `1.0` for a raw-value comparison. See: context/lib/scripting.md
+/// §12.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CrossingCondition {
     /// Fires on a downward crossing: `prev >= threshold && cur < threshold`.
@@ -81,12 +80,13 @@ pub enum CrossingCondition {
 /// A state-crossing watcher declared by `onStateCrossing` and carried back
 /// through `setupLevel`'s manifest (scripting.md §12 (Non-Goals): no
 /// side-effect FFI — cross-FFI values flow through setup-function returns).
-/// The detector watches `slot` after each frame's
-/// slot writes and, on a crossing in the condition's direction, dispatches
-/// every event in `fire` synchronously through the named-reaction vocabulary.
+/// After each frame's slot writes, the detector evaluates the condition and
+/// dispatches every event in `fire` on a threshold edge or predicate
+/// false-to-true edge through the named-reaction vocabulary.
 ///
-/// `max` is the registration's denominator: thresholds are fractions of it.
-/// It defaults to `1.0` (raw-value comparison) when the registration omits it.
+/// `max` is the threshold registration's denominator. It defaults to `1.0`
+/// (raw-value comparison) when the registration omits it; predicate watchers
+/// ignore it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CrossingDescriptor {
     /// The slot watched by a threshold crossing. Predicate crossings have no

@@ -312,6 +312,7 @@ fn ir_valued_state_reactions_are_emitted_in_both_sdk_surfaces() {
     register_all(&mut registry, ScriptCtx::new());
     let ts = generate_typescript(&registry);
     let luau = generate_luau(&registry);
+    let ts_ui = ts_module_block(&ts, "postretro/ui");
 
     assert!(
         ts.contains("export function updateState<T>(ref: WritableStateRef<T>, value: T | RuntimeValue): PrimitiveReactionDescriptor;")
@@ -321,12 +322,23 @@ fn ir_valued_state_reactions_are_emitted_in_both_sdk_surfaces() {
             && ts.contains("slot?: never;"),
         "TypeScript typedefs must expose IR-valued state writes and predicate crossings:\n{ts}"
     );
+    // `postretro/ui` names `RuntimeValue` in both overloads and `updateState`.
+    // Verify its declaration imports that root-module type so the generated
+    // module is consumable, not merely textually present in the combined file.
+    assert!(
+        ts_ui.contains("    RuntimeValue,\n  } from \"postretro\";")
+            && ts_ui.contains("onStateCrossing(predicate: RuntimeValue")
+            && ts_ui.contains("value: T | RuntimeValue"),
+        "TypeScript postretro/ui declaration must import RuntimeValue before using it:\n{ts_ui}"
+    );
     assert!(
         luau.contains("updateState: <T>(ref: WritableStateRef<T>, value: T | RuntimeValue) -> PrimitiveReactionDescriptor,")
             && luau.contains("& ((predicate: RuntimeValue, fire: {NamedReactionDescriptor | string}) -> CrossingDescriptor)")
             && luau.contains("export type PredicateCrossingDescriptor = {")
             && luau.contains("predicate: RuntimeValue,")
-            && luau.contains("slot: nil?,"),
+            && luau.contains("slot: nil?,")
+            && luau.contains("export type ThresholdCrossingDescriptor = {")
+            && luau.contains("} & (\n  { below: number, above: nil? }\n  | { below: nil?, above: number }\n)"),
         "Luau typedefs must expose IR-valued state writes and predicate crossings:\n{luau}"
     );
 }

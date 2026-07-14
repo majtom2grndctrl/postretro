@@ -330,12 +330,13 @@ export type CrossingCondition =
 export type ThresholdCrossingDescriptor = {
   slot: string,
   predicate: nil?,
-  below: number?,
-  above: number?,
   max: number?,
   fire: {string},
   levels: {string}?,
-}
+} & (
+  { below: number, above: nil? }
+  | { below: nil?, above: number }
+)
 
 --- A predicate-form watcher. Its wire discriminator is the required
 --- `predicate`; it has no threshold slot.
@@ -499,11 +500,12 @@ declare function restartLevel(): PrimitiveReactionDescriptor
 --- the same lifecycle path. Pure: returns a PrimitiveReactionDescriptor.
 declare function returnToFrontend(): PrimitiveReactionDescriptor
 
---- System-reaction body (M13 Goal F): write `value` to a writable state ref at
---- the game-logic stage. Emits the existing `setState` wire descriptor.
---- Readonly-gated at runtime -- a readonly slot warns and stays unchanged; an
---- engine-owned writable slot is valid. `value` is coerced to the slot's
---- declared type. Pure: returns a `PrimitiveReactionDescriptor`, no FFI.
+--- System-reaction body (M13 Goal F): write a literal or runtime value at the
+--- game-logic stage. Literals use the normal readonly-gated coercion and range
+--- path. Runtime values bind once at level install; only writable Number and
+--- Boolean slots project into `StoreScope`. Readonly, unknown, and
+--- nonprojectable targets reject the IR before the reaction can fire. Pure:
+--- returns a `PrimitiveReactionDescriptor`, no FFI.
 declare function updateState<T>(ref: WritableStateRef<T>, value: T | RuntimeValue): PrimitiveReactionDescriptor
 
 --- System-reaction body (M13 Text Entry): append `text` to the current string
@@ -850,7 +852,7 @@ declare ui: { createLocalState: (init: { [string]: any }) -> { scope: any, cells
 -- `name`, `value`) so builder output deserializes straight into `IrNode`.
 -- (Author surface is `runtime`/`RuntimeValue`; the Rust substrate and wire op
 -- tags keep the `ir` names — scripting.md §11, "Author-facing naming".)
--- Source of truth: crates/postretro/src/scripting/ir/mod.rs + sdk/lib/runtime.luau.
+-- Source of truth: crates/foundation/src/ir/ + sdk/lib/runtime.luau.
 -- Static block (not registry-emitted): `register_tagged_union` /
 -- `TypeShape::TaggedUnion` renders one payload type name per variant under a
 -- fixed tag key — it cannot express per-variant inline struct fields (e.g.

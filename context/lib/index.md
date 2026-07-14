@@ -23,6 +23,7 @@
 - **UI layer / HUD / widgets / theming / UI state binding** → `ui.md`
 - **Resource management / textures / materials** → `resource_management.md`
 - **Scripting / primitives / SDK types / scripting crate boundaries / VM compile firewall** → `scripting.md`
+- **Reaction dispatch model / event sources / dispatch scopes / reaction parameters / occupancy exposure** → `scripting.md` §12
 - **Netcode / multiplayer / co-op / replication / transport / wire format** → `networking.md`
 - **Game / mod author docs (human-facing, not agent context)** → `docs/`
 - **Collision (world/entity)** → `entity_model.md` §7

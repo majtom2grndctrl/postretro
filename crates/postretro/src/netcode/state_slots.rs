@@ -1139,16 +1139,20 @@ mod tests {
         (registry, owners, weapon_owners, pawn, weapon)
     }
 
-    fn add_owned_ammo_pawn(
-        registry: &mut EntityRegistry,
-        owners: &mut MovementOwners,
-        weapon_owners: &mut WeaponOwners,
+    struct OwnedAmmoPawnSpec<'a> {
         client: u64,
-        ammo_type: &str,
+        ammo_type: &'a str,
         magazine: u32,
         reserve: Option<u32>,
         reload_remaining_ms: u32,
         reload_total_ms: u32,
+    }
+
+    fn add_owned_ammo_pawn(
+        registry: &mut EntityRegistry,
+        owners: &mut MovementOwners,
+        weapon_owners: &mut WeaponOwners,
+        spec: OwnedAmmoPawnSpec<'_>,
     ) -> (EntityId, EntityId) {
         let pawn = registry.spawn(Transform::default());
         let weapon = registry.spawn(Transform::default());
@@ -1166,25 +1170,25 @@ mod tests {
                     reload_press_consumed: false,
                     credit_source: "weapon.test.ammo".to_string(),
                     ammo: Some(WeaponAmmoTuning {
-                        ammo_type: ammo_type.to_string(),
+                        ammo_type: spec.ammo_type.to_string(),
                         capacity: 12,
                         cost_per_shot: 1,
                         reload_ms: 500,
                     }),
-                    magazine,
-                    reload_remaining_ms,
-                    reload_total_ms,
+                    magazine: spec.magazine,
+                    reload_remaining_ms: spec.reload_remaining_ms,
+                    reload_total_ms: spec.reload_total_ms,
                     reload_elapsed_sub_ms: 0.0,
                     reload_feedback: None,
                 },
             )
             .unwrap();
-        if let Some(amount) = reserve {
+        if let Some(amount) = spec.reserve {
             let mut ammo_reserve = AmmoReserve::new();
-            ammo_reserve.credit(ammo_type, amount);
+            ammo_reserve.credit(spec.ammo_type, amount);
             registry.set_component(pawn, ammo_reserve).unwrap();
         }
-        owners.set(pawn, client);
+        owners.set(pawn, spec.client);
         weapon_owners.set(pawn, weapon);
         (pawn, weapon)
     }
@@ -1205,23 +1209,27 @@ mod tests {
             &mut registry,
             &mut owners,
             &mut weapon_owners,
-            CLIENT_A,
-            "cells",
-            3,
-            Some(11),
-            250,
-            500,
+            OwnedAmmoPawnSpec {
+                client: CLIENT_A,
+                ammo_type: "cells",
+                magazine: 3,
+                reserve: Some(11),
+                reload_remaining_ms: 250,
+                reload_total_ms: 500,
+            },
         );
         add_owned_ammo_pawn(
             &mut registry,
             &mut owners,
             &mut weapon_owners,
-            CLIENT_B,
-            "shells",
-            8,
-            None,
-            10,
-            0,
+            OwnedAmmoPawnSpec {
+                client: CLIENT_B,
+                ammo_type: "shells",
+                magazine: 8,
+                reserve: None,
+                reload_remaining_ms: 10,
+                reload_total_ms: 0,
+            },
         );
 
         let mut host = HostStateReplication::new();
@@ -1291,12 +1299,14 @@ mod tests {
             &mut registry,
             &mut owners,
             &mut weapon_owners,
-            CLIENT_A,
-            "cells",
-            3,
-            Some(11),
-            250,
-            500,
+            OwnedAmmoPawnSpec {
+                client: CLIENT_A,
+                ammo_type: "cells",
+                magazine: 3,
+                reserve: Some(11),
+                reload_remaining_ms: 250,
+                reload_total_ms: 500,
+            },
         );
 
         let mut weapon = registry

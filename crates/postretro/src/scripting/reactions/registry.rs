@@ -16,12 +16,18 @@ pub(crate) use crate::fx::fog_reactions::{
 pub(crate) use crate::kinematic_mover::register_sequenced_mover_primitives;
 pub(crate) use crate::trigger_system::register_sequenced_trigger_primitives;
 
-pub(crate) fn register_mover_reaction_primitives(registry: &mut ReactionPrimitiveRegistry) {
-    crate::kinematic_mover::register_mover_reaction_primitives(registry);
+pub(crate) fn register_mover_reaction_primitives(
+    registry: &mut ReactionPrimitiveRegistry,
+    diagnostics: crate::kinematic_mover::MoverCommandDiagnostics,
+) {
+    crate::kinematic_mover::register_mover_reaction_primitives(registry, diagnostics);
 }
 
-pub(crate) fn register_trigger_reaction_primitives(registry: &mut ReactionPrimitiveRegistry) {
-    crate::trigger_system::register_trigger_reaction_primitives(registry);
+pub(crate) fn register_trigger_reaction_primitives(
+    registry: &mut ReactionPrimitiveRegistry,
+    diagnostics: crate::kinematic_mover::MoverCommandDiagnostics,
+) {
+    crate::trigger_system::register_trigger_reaction_primitives(registry, diagnostics);
 }
 
 #[cfg(test)]
@@ -42,7 +48,7 @@ mod tests {
     #[test]
     fn mover_registrar_exposes_closed_command_vocabulary() {
         let mut r = ReactionPrimitiveRegistry::new();
-        register_mover_reaction_primitives(&mut r);
+        register_mover_reaction_primitives(&mut r, Default::default());
         for name in [
             "moverStart",
             "moverStop",
@@ -56,7 +62,7 @@ mod tests {
     #[test]
     fn trigger_registrar_exposes_arm_and_disarm() {
         let mut r = ReactionPrimitiveRegistry::new();
-        register_trigger_reaction_primitives(&mut r);
+        register_trigger_reaction_primitives(&mut r, Default::default());
         assert!(r.contains("armTrigger"));
         assert!(r.contains("disarmTrigger"));
     }

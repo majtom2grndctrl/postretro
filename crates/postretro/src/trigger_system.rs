@@ -2,6 +2,7 @@
 //! See: context/lib/entity_model.md §5 · context/lib/scripting.md §10
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+#[cfg(test)]
 use std::sync::{Mutex, OnceLock};
 
 use glam::Vec3;
@@ -13,7 +14,7 @@ use postretro_foundation::PlayerMovementComponent;
 use postretro_scripting_core::reaction_registry::ReactionPrimitiveRegistry;
 use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
 
-use crate::kinematic_mover::apply_mover_command_to_targets;
+use crate::kinematic_mover::{MoverCommandDiagnostics, apply_mover_command_to_known_movers};
 use crate::scripting_systems::trigger_volume_bridge::TriggerVolumeBridge;
 
 /// Stable player identity for per-player trigger state and event ordering.
@@ -95,12 +96,14 @@ impl TriggerFireReport {
 pub(crate) struct TriggerSystem {
     occupants: BTreeMap<EntityId, BTreeSet<PlayerId>>,
     paired_enters: BTreeSet<(EntityId, PlayerId)>,
+    warned_duplicate_players: HashSet<PlayerId>,
 }
 
 impl TriggerSystem {
     pub(crate) fn clear(&mut self) {
         self.occupants.clear();
         self.paired_enters.clear();
+        self.warned_duplicate_players.clear();
     }
 
     /// Number of players currently overlapping `trigger`, independently of
@@ -146,7 +149,8 @@ impl TriggerSystem {
         tick_dt: f32,
         mut dispatch: impl FnMut(&TriggerEvent, &mut EntityRegistry),
     ) -> TriggerFireReport {
-        let player_capsules = canonical_player_capsules(registry, players);
+        let player_capsules =
+            canonical_player_capsules(registry, players, &mut self.warned_duplicate_players);
 
         let mut trigger_ids: Vec<EntityId> = registry
             .iter_with_kind(ComponentKind::TriggerVolume)
@@ -287,7 +291,7 @@ impl TriggerSystem {
                             .map(|(id, _)| id)
                             .collect();
                         targets.sort_unstable();
-                        apply_mover_command_to_targets(registry, &targets, &trigger.command);
+                        apply_mover_command_to_known_movers(registry, &targets, &trigger.command);
                         update_after_fire(&mut trigger);
                         let event_name = trigger.on_fire.clone();
                         let _ = registry.set_component(trigger_id, trigger);
@@ -317,6 +321,7 @@ impl TriggerSystem {
 fn canonical_player_capsules(
     registry: &EntityRegistry,
     players: &[AuthoritativePlayer],
+    warned_duplicate_players: &mut HashSet<PlayerId>,
 ) -> BTreeMap<PlayerId, (EntityId, Vec3, f32, f32)> {
     let mut snapshots: BTreeMap<PlayerId, (EntityId, Vec3, f32, f32)> = BTreeMap::new();
     for player in players {
@@ -333,7 +338,7 @@ fn canonical_player_capsules(
             movement.capsule.half_height,
         );
         if let Some(existing) = snapshots.get_mut(&player.id) {
-            warn_duplicate_player_once(player.id);
+            warn_duplicate_player_once(warned_duplicate_players, player.id);
             if snapshot.0 < existing.0 {
                 *existing = snapshot;
             }
@@ -363,27 +368,36 @@ pub(crate) fn disarm_trigger(trigger: &mut TriggerVolumeComponent) {
 
 /// Apply arm to an already resolved target set. Mixed tags are valid: targets
 /// without trigger state are skipped rather than acquiring a component.
-pub(crate) fn arm_trigger_targets(registry: &mut EntityRegistry, targets: &[EntityId]) {
-    apply_trigger_mutation_to_targets(registry, targets, arm_trigger);
+pub(crate) fn arm_trigger_targets(
+    registry: &mut EntityRegistry,
+    targets: &[EntityId],
+    diagnostics: &MoverCommandDiagnostics,
+) {
+    apply_trigger_mutation_to_targets(registry, targets, arm_trigger, diagnostics);
 }
 
 /// Apply disarm to an already resolved target set. See [`arm_trigger_targets`]
 /// for the mixed-tag contract.
-pub(crate) fn disarm_trigger_targets(registry: &mut EntityRegistry, targets: &[EntityId]) {
-    apply_trigger_mutation_to_targets(registry, targets, disarm_trigger);
+pub(crate) fn disarm_trigger_targets(
+    registry: &mut EntityRegistry,
+    targets: &[EntityId],
+    diagnostics: &MoverCommandDiagnostics,
+) {
+    apply_trigger_mutation_to_targets(registry, targets, disarm_trigger, diagnostics);
 }
 
 fn apply_trigger_mutation_to_targets(
     registry: &mut EntityRegistry,
     targets: &[EntityId],
     mutate: impl Fn(&mut TriggerVolumeComponent),
+    diagnostics: &MoverCommandDiagnostics,
 ) {
     for &entity in targets {
         let Ok(mut trigger) = registry
             .get_component::<TriggerVolumeComponent>(entity)
             .cloned()
         else {
-            warn_non_trigger_target_once(entity);
+            diagnostics.warn_non_trigger_target_once(entity);
             continue;
         };
         mutate(&mut trigger);
@@ -393,13 +407,17 @@ fn apply_trigger_mutation_to_targets(
 
 /// Register tag-targeted trigger arm controls for named reactions. The
 /// descriptor dispatcher resolves tags before invoking these handlers.
-pub(crate) fn register_trigger_reaction_primitives(registry: &mut ReactionPrimitiveRegistry) {
-    registry.register("armTrigger", |registry, targets, _args| {
-        arm_trigger_targets(registry, targets);
+pub(crate) fn register_trigger_reaction_primitives(
+    registry: &mut ReactionPrimitiveRegistry,
+    diagnostics: MoverCommandDiagnostics,
+) {
+    let arm_diagnostics = diagnostics.clone();
+    registry.register("armTrigger", move |registry, targets, _args| {
+        arm_trigger_targets(registry, targets, &arm_diagnostics);
         Ok(())
     });
-    registry.register("disarmTrigger", |registry, targets, _args| {
-        disarm_trigger_targets(registry, targets);
+    registry.register("disarmTrigger", move |registry, targets, _args| {
+        disarm_trigger_targets(registry, targets, &diagnostics);
         Ok(())
     });
 }
@@ -410,42 +428,34 @@ pub(crate) fn register_trigger_reaction_primitives(registry: &mut ReactionPrimit
 pub(crate) fn register_sequenced_trigger_primitives(
     registry: &mut SequencedPrimitiveRegistry,
     ctx: postretro_entities::ScriptCtx,
+    diagnostics: MoverCommandDiagnostics,
 ) {
-    register_sequenced_trigger_command(registry, ctx.clone(), "armTrigger", arm_trigger_targets);
-    register_sequenced_trigger_command(registry, ctx, "disarmTrigger", disarm_trigger_targets);
+    register_sequenced_trigger_command(
+        registry,
+        ctx.clone(),
+        diagnostics.clone(),
+        "armTrigger",
+        arm_trigger,
+    );
+    register_sequenced_trigger_command(registry, ctx, diagnostics, "disarmTrigger", disarm_trigger);
 }
 
 fn register_sequenced_trigger_command(
     registry: &mut SequencedPrimitiveRegistry,
     ctx: postretro_entities::ScriptCtx,
+    diagnostics: MoverCommandDiagnostics,
     name: &'static str,
-    command: fn(&mut EntityRegistry, &[EntityId]),
+    command: fn(&mut TriggerVolumeComponent),
 ) {
     registry.register(name, move |id, _args| {
         let mut entities = ctx.registry.borrow_mut();
-        command(&mut entities, &[id]);
+        apply_trigger_mutation_to_targets(&mut entities, &[id], command, &diagnostics);
         Ok(())
     });
 }
 
-fn warn_non_trigger_target_once(entity: EntityId) {
-    static WARNED_TARGETS: OnceLock<Mutex<HashSet<EntityId>>> = OnceLock::new();
-    let warned = WARNED_TARGETS.get_or_init(|| Mutex::new(HashSet::new()));
-    let Ok(mut warned) = warned.lock() else {
-        return;
-    };
-    if warned.insert(entity) {
-        log::warn!("[Trigger] arm/disarm target {entity} has no TriggerVolumeComponent; skipping");
-    }
-}
-
-fn warn_duplicate_player_once(player: PlayerId) {
-    static WARNED_PLAYERS: OnceLock<Mutex<HashSet<PlayerId>>> = OnceLock::new();
-    let warned = WARNED_PLAYERS.get_or_init(|| Mutex::new(HashSet::new()));
-    let Ok(mut warned) = warned.lock() else {
-        return;
-    };
-    if warned.insert(player) {
+fn warn_duplicate_player_once(warned_players: &mut HashSet<PlayerId>, player: PlayerId) {
+    if warned_players.insert(player) {
         log::warn!(
             "[Trigger] duplicate authoritative snapshot for {player:?}; using the lowest entity ID"
         );
@@ -611,6 +621,22 @@ mod tests {
     };
 
     const DT: f32 = 0.05;
+
+    #[test]
+    fn duplicate_player_diagnostics_reset_with_trigger_system() {
+        let mut system = TriggerSystem::default();
+        let player = PlayerId::Remote(17);
+
+        warn_duplicate_player_once(&mut system.warned_duplicate_players, player);
+        warn_duplicate_player_once(&mut system.warned_duplicate_players, player);
+        assert_eq!(system.warned_duplicate_players.len(), 1);
+
+        system.clear();
+        assert!(system.warned_duplicate_players.is_empty());
+
+        warn_duplicate_player_once(&mut system.warned_duplicate_players, player);
+        assert_eq!(system.warned_duplicate_players.len(), 1);
+    }
 
     fn movement() -> PlayerMovementComponent {
         PlayerMovementComponent::from_descriptor(&PlayerMovementDescriptor {
@@ -1302,7 +1328,7 @@ mod tests {
                 .rearm_remaining_ms
                 > 0.0
         );
-        disarm_trigger_targets(&mut registry, &[disarmed]);
+        disarm_trigger_targets(&mut registry, &[disarmed], &Default::default());
 
         set_player_position(&mut registry, player, Vec3::new(4.0, 1.0, 0.0));
         let exited = tick(&mut system, &mut registry, &bridge, &players, &[]);
@@ -1352,7 +1378,7 @@ mod tests {
         }];
         let mut system = TriggerSystem::default();
         let mut reactions = ReactionPrimitiveRegistry::new();
-        register_trigger_reaction_primitives(&mut reactions);
+        register_trigger_reaction_primitives(&mut reactions, Default::default());
 
         let _ = tick(&mut system, &mut registry, &bridge, &players, &[]);
         set_player_position(&mut registry, player, Vec3::new(0.0, 1.0, 0.0));
@@ -1484,7 +1510,7 @@ mod tests {
         }];
         let mut system = TriggerSystem::default();
         let mut reactions = ReactionPrimitiveRegistry::new();
-        register_trigger_reaction_primitives(&mut reactions);
+        register_trigger_reaction_primitives(&mut reactions, Default::default());
 
         assert_eq!(
             tick(&mut system, &mut registry, &bridge, &players, &[]).enters(),
@@ -1553,7 +1579,7 @@ mod tests {
         }];
         let mut system = TriggerSystem::default();
         let mut reactions = ReactionPrimitiveRegistry::new();
-        register_trigger_reaction_primitives(&mut reactions);
+        register_trigger_reaction_primitives(&mut reactions, Default::default());
 
         assert!(
             tick(&mut system, &mut registry, &bridge, &players, &[])
@@ -1606,7 +1632,7 @@ mod tests {
         );
         let non_trigger = registry.spawn(Transform::default());
         let mut reactions = ReactionPrimitiveRegistry::new();
-        register_trigger_reaction_primitives(&mut reactions);
+        register_trigger_reaction_primitives(&mut reactions, Default::default());
 
         assert!(
             reactions
@@ -1656,7 +1682,7 @@ mod tests {
             id
         };
         let mut sequences = SequencedPrimitiveRegistry::new();
-        register_sequenced_trigger_primitives(&mut sequences, ctx.clone());
+        register_sequenced_trigger_primitives(&mut sequences, ctx.clone(), Default::default());
         assert!(sequences.contains("armTrigger"));
         assert!(sequences.contains("disarmTrigger"));
 

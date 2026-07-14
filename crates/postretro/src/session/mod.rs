@@ -197,6 +197,10 @@ pub(crate) struct Session {
 /// `Session::build`: `ScriptCtx` is `Clone` (`Rc`-backed), and all clones are
 /// distributed from that single construction site.
 pub(crate) struct ScriptingCore {
+    /// Per-level warning deduplication shared by mover and trigger command
+    /// routes. Registries retain clones across reloads; level unload clears it.
+    pub(crate) command_diagnostics: crate::kinematic_mover::MoverCommandDiagnostics,
+
     /// The script VM runtime. Constructed once here (post-first-pixel); never
     /// recreated. See: context/lib/scripting.md.
     pub(crate) script_runtime: ScriptRuntime,
@@ -472,6 +476,7 @@ fn build_scripting_core(
     timings: &mut StartupTimings,
 ) -> Result<(ScriptingCore, ClassnameDispatch)> {
     let script_ctx = ScriptCtx::new();
+    let command_diagnostics = crate::kinematic_mover::MoverCommandDiagnostics::default();
     let mut script_registry = PrimitiveRegistry::new();
     register_all(&mut script_registry, script_ctx.clone());
     let script_runtime = ScriptRuntime::new(
@@ -493,16 +498,24 @@ fn build_scripting_core(
     let mut sequence_registry = SequencedPrimitiveRegistry::new();
     register_sequenced_light_primitives(&mut sequence_registry, script_ctx.clone());
     register_sequenced_fog_primitives(&mut sequence_registry, script_ctx.clone());
-    register_sequenced_mover_primitives(&mut sequence_registry, script_ctx.clone());
-    register_sequenced_trigger_primitives(&mut sequence_registry, script_ctx.clone());
+    register_sequenced_mover_primitives(
+        &mut sequence_registry,
+        script_ctx.clone(),
+        command_diagnostics.clone(),
+    );
+    register_sequenced_trigger_primitives(
+        &mut sequence_registry,
+        script_ctx.clone(),
+        command_diagnostics.clone(),
+    );
 
     // Reaction-primitive handlers invoked by name when a `Primitive` reaction
     // fires. Populated once at startup; survives level reloads.
     let mut reaction_registry = ReactionPrimitiveRegistry::new();
     register_emitter_reaction_primitives(&mut reaction_registry);
     register_fog_reaction_primitives(&mut reaction_registry);
-    register_mover_reaction_primitives(&mut reaction_registry);
-    register_trigger_reaction_primitives(&mut reaction_registry);
+    register_mover_reaction_primitives(&mut reaction_registry, command_diagnostics.clone());
+    register_trigger_reaction_primitives(&mut reaction_registry, command_diagnostics.clone());
 
     // System-reaction handlers (no entity targets) — the second arm of the shared
     // named-reaction vocabulary. They enqueue typed commands onto
@@ -527,6 +540,7 @@ fn build_scripting_core(
         scripting_systems::input_mode::InputModeTracker::new(script_ctx.clone());
 
     let scripting = ScriptingCore {
+        command_diagnostics,
         script_runtime,
         script_ctx,
         sequence_registry,

@@ -138,9 +138,9 @@ impl SystemReactionIrBindings {
     }
 
     /// Evaluate an already-bound IR program at the app-drain write point.
-    /// Raw command equality is enough to distinguish the installed bindings;
-    /// no queue-time rebind, slot-string allocation, or JSON serialization is
-    /// needed on this game-logic path.
+    /// `setState` queues the active descriptor's `slot` and raw `value`
+    /// unchanged, and binding is pure over that pair. New producers need a
+    /// stable key instead of relying on this JSON equality lookup.
     pub(crate) fn dispatch(
         &self,
         slot: &str,
@@ -164,8 +164,8 @@ impl SystemReactionIrBindings {
 }
 
 /// Runtime values are object-shaped IR nodes; all shipped literal store values
-/// are scalar JSON or arrays. Treat an object as a candidate node so malformed
-/// nodes fail at install instead of falling through the literal write path.
+/// are scalar JSON or arrays. An object-valued literal slot type must replace
+/// this discriminator, or its writes would be treated as malformed IR.
 pub(crate) fn is_ir_node(value: &serde_json::Value) -> bool {
     value.is_object()
 }

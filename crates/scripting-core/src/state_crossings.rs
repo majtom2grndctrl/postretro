@@ -4,7 +4,7 @@
 // after each frame's slot writes. Threshold watchers fire on their declared
 // edge; IR predicates fire on false-to-true edges. Both dispatch a reaction list
 // synchronously through the shared named-reaction vocabulary.
-// See: context/lib/scripting.md §12
+// See: context/lib/scripting.md §10.4
 
 use super::ctx::ScriptCtx;
 use super::data_descriptors::CrossingCondition;
@@ -16,7 +16,7 @@ use super::slot_table::{SlotTable, SlotValue};
 /// One active crossing watcher. A threshold watcher stores its condition as a
 /// fraction of `max` and arms from the first observed normalized value. A
 /// predicate watcher stores a StoreScope-bound Boolean program and arms after
-/// observing false. See: context/lib/scripting.md §12.
+/// observing false. See: context/lib/scripting.md §10.4.
 enum Watcher {
     /// The shipped single-number-slot threshold watcher. Its data flow and
     /// edge behavior deliberately remain unchanged.
@@ -35,6 +35,8 @@ enum Watcher {
     Predicate {
         program: BoundProgram<StoreScope>,
         scope: StoreScope,
+        #[cfg(debug_assertions)]
+        script_ctx: ScriptCtx,
         fire: Vec<String>,
         previous: bool,
     },
@@ -62,8 +64,10 @@ impl CrossingDetector {
     /// or a slot the table does not know) warns and is skipped here, at
     /// registration time. An IR predicate is bound once against
     /// [`StoreScope::script`]; invalid or non-Boolean roots likewise warn and
-    /// never enter the watch set. Initial state only arms a watcher — it never
-    /// fires an event.
+    /// never enter the watch set. Predicate registrations must receive the
+    /// same slot table captured by `script_ctx`; debug builds assert that
+    /// identity here and at detection. Initial state only arms a watcher — it
+    /// never fires an event.
     pub fn initialize(
         &mut self,
         data_registry: &DataRegistry,
@@ -97,6 +101,11 @@ impl CrossingDetector {
                     });
                 }
                 CrossingCondition::Ir(root) => {
+                    #[cfg(debug_assertions)]
+                    debug_assert!(
+                        uses_script_ctx_slot_table(slot_table, script_ctx),
+                        "CrossingDetector predicate watchers must initialize against the ScriptCtx slot table"
+                    );
                     let scope = StoreScope::script(script_ctx.clone());
                     let baked = BakedIr {
                         version: CURRENT_IR_VERSION,
@@ -125,6 +134,8 @@ impl CrossingDetector {
                     self.watchers.push(Watcher::Predicate {
                         program,
                         scope,
+                        #[cfg(debug_assertions)]
+                        script_ctx: script_ctx.clone(),
                         fire: crossing.fire.clone(),
                         previous,
                     });
@@ -137,8 +148,9 @@ impl CrossingDetector {
     /// and return the event names to fire (in watcher-declaration order, each
     /// watcher's `fire` list in order). Threshold watchers use normalized
     /// values from one slot at their declared edge; predicate watchers evaluate
-    /// bound programs over live slots. Advances every watcher's `previous` to
-    /// this call's observation. The caller runs the returned names through
+    /// bound programs over the same authoritative table. Advances every
+    /// watcher's `previous` to this call's observation. The caller runs the
+    /// returned names through
     /// [`super::reaction_dispatch::fire_named_event_with_sequences`].
     ///
     /// A watcher with no value yet (`previous == None`) arms on the first
@@ -169,9 +181,16 @@ impl CrossingDetector {
                 Watcher::Predicate {
                     program,
                     scope,
+                    #[cfg(debug_assertions)]
+                    script_ctx,
                     fire,
                     previous,
                 } => {
+                    #[cfg(debug_assertions)]
+                    debug_assert!(
+                        uses_script_ctx_slot_table(slot_table, script_ctx),
+                        "CrossingDetector predicate watchers must detect against the ScriptCtx slot table"
+                    );
                     let current = matches!(eval_value(program, scope), IrValue::Bool(true));
                     if !*previous && current {
                         to_fire.extend(fire.iter().cloned());
@@ -193,6 +212,13 @@ impl CrossingDetector {
     fn watcher_count(&self) -> usize {
         self.watchers.len()
     }
+}
+
+/// Predicate programs retain `ScriptCtx`; threshold watchers receive a caller
+/// table. Checking identity prevents the two forms from observing divergence.
+#[cfg(debug_assertions)]
+fn uses_script_ctx_slot_table(slot_table: &SlotTable, script_ctx: &ScriptCtx) -> bool {
+    std::ptr::eq(slot_table, &*script_ctx.slot_table.borrow())
 }
 
 /// Whether a threshold transition from `prev` to `cur` (both normalized
@@ -577,6 +603,37 @@ mod tests {
             detector.detect(&ctx.slot_table.borrow()),
             vec!["bothReady".to_string()]
         );
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "initialize against the ScriptCtx slot table")]
+    fn predicate_rejects_initialize_against_a_different_slot_table() {
+        let ctx = predicate_ctx(0.0, 0.0);
+        let scratch_table = table_with("test.a", Some(0.0));
+        let reg = registry_with(vec![predicate_crossing(
+            both_thresholds_predicate(),
+            &["bothReady"],
+        )]);
+        let mut detector = CrossingDetector::new();
+
+        detector.initialize(&reg, &scratch_table, &ctx);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "detect against the ScriptCtx slot table")]
+    fn predicate_rejects_detect_against_a_different_slot_table() {
+        let ctx = predicate_ctx(0.0, 0.0);
+        let reg = registry_with(vec![predicate_crossing(
+            both_thresholds_predicate(),
+            &["bothReady"],
+        )]);
+        let mut detector = CrossingDetector::new();
+        detector.initialize(&reg, &ctx.slot_table.borrow(), &ctx);
+        let scratch_table = table_with("test.a", Some(0.0));
+
+        let _ = detector.detect(&scratch_table);
     }
 
     #[test]

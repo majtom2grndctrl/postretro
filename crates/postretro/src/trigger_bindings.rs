@@ -350,10 +350,7 @@ impl BoundTriggerCommand {
         match self {
             Self::StoreSlot { slot, value } => {
                 let BoundStoreValue::Literal(value) = value else {
-                    log::warn!(
-                        "[Trigger] runtime setState for `{slot}` needs a ScriptCtx execution path; skipping"
-                    );
-                    return;
+                    unreachable!("IR-valued trigger setState must execute with a ScriptCtx");
                 };
                 if let Err(error) =
                     apply_store_slot_batch(slot_table, &[(slot.clone(), value.clone())])
@@ -943,6 +940,52 @@ mod tests {
             Some(&SlotValue::Number(2.0)),
             "same-tick IR writes must evaluate and commit in trigger command order"
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "IR-valued trigger setState must execute with a ScriptCtx")]
+    fn execute_without_script_ctx_rejects_ir_set_state() {
+        let mut registry = EntityRegistry::new();
+        let trigger = spawn_trigger(&mut registry, "increment");
+        let ctx = ScriptCtx::new();
+        ctx.slot_table
+            .borrow_mut()
+            .insert(
+                "trigger.count".to_string(),
+                SlotRecord::new(SlotSchema {
+                    slot_type: SlotType::Number,
+                    default: Some(SlotValue::Number(0.0)),
+                    range: None,
+                    persist: false,
+                    readonly: false,
+                    ownership: SlotOwnership::Mod,
+                    network: Default::default(),
+                }),
+            )
+            .unwrap();
+        let mut data = DataRegistry::new();
+        data.populate_level(
+            vec![primitive(
+                "increment",
+                "setState",
+                None,
+                serde_json::json!({
+                    "slot": "trigger.count",
+                    "value": {
+                        "op": "add",
+                        "a": { "op": "input", "name": "trigger.count" },
+                        "b": { "op": "const", "value": 1.0 }
+                    }
+                }),
+                None,
+            )],
+            Vec::new(),
+            &[],
+        );
+        let table = TriggerBindingTable::build_with_script_ctx(&registry, &data, &ctx);
+        let mut slots = writable_slots();
+
+        table.execute(trigger, TriggerEventEdge::Enter, &mut registry, &mut slots);
     }
 
     #[test]

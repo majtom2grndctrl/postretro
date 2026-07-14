@@ -124,7 +124,8 @@ end
 --- reaction in `fire` exactly once, re-arming only after a crossing back. A
 --- registration against a non-Number slot warns and is skipped at load. The
 --- predicate overload takes `onStateCrossing(predicate, fire)` and fires on
---- false-to-true edges, re-arming after it returns false.
+--- false-to-true edges, re-arming after it returns false. A predicate already
+--- true at registration only arms; it must return false, then true, to fire.
 function UiReactionsSdk.onStateCrossing(
   refOrPredicate: any,
   conditionOrFire: any,

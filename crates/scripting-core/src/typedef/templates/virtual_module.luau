@@ -47,7 +47,7 @@ export type PostretroUiModule = {
   Switch: (cell: LocalStateHandle<string>, map: { [string]: WidgetDescriptor }) -> {WidgetDescriptor},
   defineTheme: (theme: ThemeDefinition) -> DefinedTheme,
   getDesignTokens: (theme: DefinedTheme) -> DesignTokens,
-  --- Build a state-crossing watcher: either a numeric threshold or a Bool runtime predicate over live store slots.
+  --- Build a state-crossing watcher: either a numeric threshold or a Bool runtime predicate over live store slots. A predicate already true at registration only arms; it must return false, then true, to fire.
   onStateCrossing: ((ref: ReadonlyStateRef<number>, condition: CrossingCondition, fire: {NamedReactionDescriptor | string}) -> CrossingDescriptor)
     & ((predicate: RuntimeValue, fire: {NamedReactionDescriptor | string}) -> CrossingDescriptor),
   --- Play `sound` on optional mixer `bus`; nil bus uses the engine default.

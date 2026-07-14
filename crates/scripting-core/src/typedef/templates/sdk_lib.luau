@@ -396,9 +396,10 @@ declare function defineMod(config: ModManifest): ModManifest
 declare function defineMapCatalog(entries: {ModMapEntry}): {ModMapEntry}
 
 --- Build a state-crossing watcher. The threshold form watches a numeric slot;
---- the predicate form fires on a Bool `RuntimeValue` false-to-true edge. Each
---- `fire` entry is a `defineReaction` handle or a bare reaction name, reduced
---- to its wire string.
+--- the predicate form fires on a Bool `RuntimeValue` false-to-true edge. A
+--- predicate already true at registration only arms; it must return false,
+--- then true, to fire. Each `fire` entry is a `defineReaction` handle or a
+--- bare reaction name, reduced to its wire string.
 declare onStateCrossing: (
   ((ref: ReadonlyStateRef<number>, condition: CrossingCondition, fire: {NamedReactionDescriptor | string}) -> CrossingDescriptor)
   & ((predicate: RuntimeValue, fire: {NamedReactionDescriptor | string}) -> CrossingDescriptor)

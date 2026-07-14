@@ -113,7 +113,9 @@ export function onStateCrossing(
   fire: (import("../data_script").NamedReactionDescriptor | string)[],
 ): CrossingDescriptor;
 /** Build a crossing watcher from a Bool-valued runtime predicate over live
- * store slots. It fires only on false-to-true edges and re-arms on false. */
+ * store slots. It fires only on false-to-true edges and re-arms on false. A
+ * predicate already true at registration only arms; it must become false, then
+ * true, before it fires. */
 export function onStateCrossing(
   predicate: RuntimeValue,
   fire: (import("../data_script").NamedReactionDescriptor | string)[],

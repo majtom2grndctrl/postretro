@@ -173,7 +173,7 @@ declare module "postretro/ui" {
 
   /** Build a state-crossing watcher for numeric refs. `condition` gives exactly one finite `below` or `above` threshold; optional `max` is a finite denominator. `fire` accepts reaction handles or names. */
   export function onStateCrossing(ref: ReadonlyStateRef<number>, condition: CrossingCondition, fire: (NamedReactionDescriptor | string)[]): CrossingDescriptor;
-  /** Build a watcher from a Bool-valued runtime predicate over live store slots. It fires on false-to-true edges and re-arms after the predicate returns false. */
+  /** Build a watcher from a Bool-valued runtime predicate over live store slots. It fires on false-to-true edges and re-arms after the predicate returns false. A predicate already true at registration only arms; it must later return false, then true, to fire. */
   export function onStateCrossing(predicate: RuntimeValue, fire: (NamedReactionDescriptor | string)[]): CrossingDescriptor;
   /** Play `sound` on optional mixer `bus`; omitted/null bus uses the engine default. */
   export function playSound(sound: string, bus?: string | null): PrimitiveReactionDescriptor;

@@ -52,6 +52,11 @@ regardless of pause/throttle.
 - [ ] The step column lists the steps planned for the map being compiled — content-dependent, e.g. no
       SDF row when the map has no SDF lights — with a visible in-progress animation on the active step,
       and steps that turn out to be no-ops render as skipped.
+- [ ] The TUI is legible in both light- and dark-themed terminals with no hardcoded colors or background
+      assumptions, and it redraws cleanly on terminal resize (no garbled frame).
+- [ ] When the planned-step list exceeds the viewport it scrolls with the active step kept visible, the
+      log region tails the newest records, and below a minimum usable size the TUI degrades to a compact
+      view rather than clipping.
 - [ ] A bottom panel exposes a live core-count control and a pause/resume toggle.
 - [ ] Changing the core-count control during a parallel stage changes how many work-items run
       concurrently within that same stage, without restarting the stage.
@@ -223,6 +228,25 @@ that spawns the bake worker thread and owns the render loop end-to-end; Task 5's
 selection only calls it, so Task 4 lands and compiles without depending on Task 5's gating logic. This
 task consumes the `Reporter` trait and `Governor` from Task 2 and displays counters populated by Task
 3, but edits disjoint files (tui module, Cargo.toml) from Task 3.
+
+**Presentation and layout behavior.** Constraints — finer visual polish (exact spinner glyphs, accent
+hues) is tuned hands-on post-build:
+- *Palette — theme-relative, never absolute.* Draw from the terminal's own palette (ANSI named colors /
+  default fg/bg) so the UI inherits the user's theme and reads correctly in both light and dark mode;
+  assume nothing about the background. Pick one primary and one secondary accent from that palette and
+  use them consistently (active/emphasis vs. secondary detail). No hardcoded RGB.
+- *Deliberate, quantized spacing.* Vertical rhythm: one blank row within a group, two between groups, to
+  signal hierarchy. Horizontal: 2, 4, or 6 empty columns — never arbitrary widths — for the same.
+- *Dividers.* A gray stroke separates the left step column from the main log area; a second gray stroke
+  sits above the bottom control panel.
+- *Spinners reflect liveness.* Animated spinners mark active processing, driven by real progress, so when
+  work stalls (pause, or a blocked stage) the spinner slows or halts rather than free-spinning — matching
+  today's behavior. The active-step animation follows the same rule.
+- *Resize.* Handle crossterm resize events and re-layout; never leave a garbled frame after a resize.
+- *Overflow.* When the planned-step list exceeds the viewport, scroll it and keep the active step
+  visible; the log region tails newest records with modest scrollback. Below a minimum usable size,
+  degrade to a compact single-region view rather than clipping.
+- *Tick.* Fixed render tick ~10–15 Hz.
 
 ### Task 5: CLI flags, TTY gating, integration verification
 

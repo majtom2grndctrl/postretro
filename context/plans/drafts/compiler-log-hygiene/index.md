@@ -1,6 +1,8 @@
 # Compiler Log Hygiene
 
-> **Dependencies (this backlog):** Independent of the SH and lightmap specs, with one coordination point — it shares the `pack.rs` section-size logging surface with `lighting-scale--sh-delta-footprint-instrumentation`. This spec downgrades the per-section byte breakdown to `debug!`; that spec adds new "SH-total vs non-SH" and indirect `DeltaShVolumes` size summary lines. Coordinate so this downgrade does not suppress those new summary lines (they stay at `info!`).
+> **Dependencies (this backlog):** Independent of the SH and lightmap specs, with two coordination points:
+> - **`level-compiler-tui` (in `ready/`, expected to land first).** It extracts `fn main`'s stage sequence into a new `pipeline.rs` and swaps `env_logger` init for a collecting `log::Log` backend. The `main.rs` anchors below drift — the per-stage cache hit/miss lines (lightmap, navmesh, weight-maps, sdf-atlas) and the warm-SH warn move into `pipeline.rs`. Re-baseline against the post-extraction tree: find each call by its message and level, not the cited line. The level-is-the-gate mechanism (`warn!` default, `info!` at `-v`, `debug!` at `RUST_LOG=debug`) is preserved, so the re-leveling is unchanged — only the anchors move. That backend also tallies `warn`+ for an end-of-run summary, so deleting benign warns shrinks the tally too; the changes are complementary.
+> - **`lighting-scale--sh-delta-footprint-instrumentation`.** Shares the `pack.rs` section-size logging surface. This spec downgrades the per-section byte breakdown to `debug!`; that spec adds new "SH-total vs non-SH" and indirect `DeltaShVolumes` size summary lines. Coordinate so this downgrade does not suppress those new summary lines (they stay at `info!`).
 
 ## Goal
 
@@ -51,7 +53,7 @@ Two `warn!` calls print at default verbosity on ordinary builds. In `crates/leve
 
 ## Rough sketch
 
-The logger has no per-call gate. `main.rs:366–367` sets the env_logger default filter to `warn`, raised to `info` by `-v` (`Args.verbose` field at 1276, parsed at 1390–1392). So level *is* the gate: `warn!` always prints, `info!` needs `-v`, `debug!` needs `RUST_LOG=debug`. The `log_stats` dumps are correctly double-gated (`if args.verbose { … info! }`); the offenders are unconditional `info!`/`warn!` that only the level filter suppresses. The fix is entirely re-leveling and deleting existing macro calls — no control-flow, no `.prl`, no new logs.
+The logger has no per-call gate. `main.rs:366–367` sets the env_logger default filter to `warn`, raised to `info` by `-v` (`Args.verbose` field at 1276, parsed at 1390–1392). If `level-compiler-tui` lands first, that init becomes a collecting `log::Log` backend wrapping an env-filter — identical level-gate semantics, only the init site changes. So level *is* the gate: `warn!` always prints, `info!` needs `-v`, `debug!` needs `RUST_LOG=debug`. The `log_stats` dumps are correctly double-gated (`if args.verbose { … info! }`); the offenders are unconditional `info!`/`warn!` that only the level filter suppresses. The fix is entirely re-leveling and deleting existing macro calls — no control-flow, no `.prl`, no new logs.
 
 Note the two verified line corrections: the `pack.rs` breakdown block ends at 928, not 951 (lines 947/951 belong to `write_and_validate_sections`, the file-write summary that stays `info!`); and the `main.rs` portal warn macro opens at 466 with its message on 467 — that one is a KEEP.
 

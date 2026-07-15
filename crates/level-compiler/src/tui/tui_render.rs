@@ -215,7 +215,12 @@ fn active_scroll_offset(total: usize, visible: usize, active: Option<usize>) -> 
     if visible == 0 || total <= visible {
         return 0;
     }
-    let active = active.unwrap_or(0);
+    let Some(active) = active else {
+        // No active step (e.g. all steps Done/Skipped): scroll to the bottom
+        // so the most recently completed steps stay visible instead of
+        // pinning to the top of the list.
+        return total.saturating_sub(visible);
+    };
     active
         .saturating_sub(visible / 2)
         .min(total.saturating_sub(visible))
@@ -675,6 +680,18 @@ mod tests {
         let offset = active_scroll_offset(21, 5, Some(12));
         assert!(offset <= 12 && 12 < offset + 5);
         assert_eq!(active_scroll_offset(21, 5, Some(20)), 16);
+    }
+
+    #[test]
+    fn no_active_step_scrolls_to_bottom_when_overflowing() {
+        // All steps Done/Skipped (active_index() is None) with more steps
+        // than fit the viewport should show the tail, not pin to the top.
+        assert_eq!(active_scroll_offset(21, 5, None), 16);
+        // Fits within the viewport: no scrolling needed.
+        assert_eq!(active_scroll_offset(5, 5, None), 0);
+        assert_eq!(active_scroll_offset(3, 5, None), 0);
+        // No visible rows: always zero.
+        assert_eq!(active_scroll_offset(21, 0, None), 0);
     }
 
     #[test]

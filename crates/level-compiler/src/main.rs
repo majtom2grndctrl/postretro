@@ -490,10 +490,12 @@ struct Args {
     verbose: bool,
     format: MapFormat,
     probe_spacing: f32,
-    /// Starting density in meters; baker retries at coarser densities on atlas
-    /// overflow. `None` means the flag was not passed — the effective bake
-    /// density falls through to the worldspawn `_lightmap_density` KVP, then
-    /// to `lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS`. Passing the flag
+    /// Fixed lightmap texel size in meters. The multi-bin packer opens new
+    /// array layers instead of failing on atlas area, so there is no
+    /// density-coarsening retry. `None` means the flag was not passed — the
+    /// effective bake density falls through to the worldspawn
+    /// `_lightmap_density` KVP, then to
+    /// `lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS`. Passing the flag
     /// overrides any KVP (`--lightmap-density` keeps its hard-reject posture
     /// on non-finite/≤0 values in the CLI parser).
     lightmap_density: Option<f32>,
@@ -555,7 +557,7 @@ fn help_text() -> String {
          -v, --verbose              Verbose stage logging to stderr (default: off)\n    \
          --format <FORMAT>          Map source format: idtech2 | idtech3 | idtech4 (default: idtech2)\n    \
          --sh-probe-spacing <METERS> SH irradiance probe spacing in meters, > 0 (default: {probe})\n    \
-         --lightmap-density <METERS> Starting lightmap texel size in meters, > 0 (default: {density})\n    \
+         --lightmap-density <METERS> Fixed lightmap texel size in meters, > 0 (default: {density})\n    \
          --soft-shadow-samples <N>  Soft-shadow penumbra area-sample count, >= {probe_floor} (default: {samples})\n    \
          --sdf-voxel-size <METERS>  SDF occluder-atlas voxel edge length in meters, > 0 (default: {voxel})\n    \
          --cache-dir <PATH>         Override the stage-cache directory (default: <workspace>/.build-caches/prl-cache)\n    \

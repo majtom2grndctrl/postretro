@@ -257,4 +257,109 @@ mod tests {
             .expect("entry worker did not wake after permit drop before timeout");
         worker.join().unwrap();
     }
+
+    #[test]
+    fn permit_is_released_when_a_gated_closure_panics() {
+        let governor = Arc::new(Governor::new(1, false));
+        let worker_governor = Arc::clone(&governor);
+        let worker = thread::spawn(move || {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _permit = worker_governor.enter();
+                panic!("intentional panic while holding a gated permit");
+            }));
+            assert!(result.is_err());
+        });
+        worker
+            .join()
+            .expect("worker thread should not propagate the panic (caught by catch_unwind)");
+
+        // If the permit leaked during unwind, this enter() would hang.
+        let _permit = governor.enter();
+    }
+
+    #[test]
+    fn clearing_pause_wakes_checkpoint_and_enter_waiters_together() {
+        let governor = Arc::new(Governor::new(1, true));
+
+        let (checkpoint_ready_tx, checkpoint_ready_rx) = mpsc::channel();
+        let (checkpoint_tx, checkpoint_rx) = mpsc::channel();
+        let checkpoint_governor = Arc::clone(&governor);
+        let checkpoint_worker = thread::spawn(move || {
+            checkpoint_ready_tx.send(()).unwrap();
+            checkpoint_governor.checkpoint();
+            checkpoint_tx.send(()).unwrap();
+        });
+
+        let (enter_ready_tx, enter_ready_rx) = mpsc::channel();
+        let (enter_tx, enter_rx) = mpsc::channel();
+        let enter_governor = Arc::clone(&governor);
+        let enter_worker = thread::spawn(move || {
+            enter_ready_tx.send(()).unwrap();
+            let _permit = enter_governor.enter();
+            enter_tx.send(()).unwrap();
+        });
+
+        checkpoint_ready_rx
+            .recv_timeout(TEST_TIMEOUT)
+            .expect("checkpoint worker did not become ready before timeout");
+        enter_ready_rx
+            .recv_timeout(TEST_TIMEOUT)
+            .expect("entry worker did not become ready before timeout");
+
+        let checkpoint_while_paused = checkpoint_rx.recv_timeout(BLOCKED_WINDOW);
+        let enter_while_paused = enter_rx.recv_timeout(BLOCKED_WINDOW);
+        assert!(
+            matches!(
+                checkpoint_while_paused,
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ),
+            "checkpoint worker made progress while paused: {checkpoint_while_paused:?}"
+        );
+        assert!(
+            matches!(enter_while_paused, Err(mpsc::RecvTimeoutError::Timeout)),
+            "entry worker made progress while paused: {enter_while_paused:?}"
+        );
+
+        governor.set_paused(false);
+
+        checkpoint_rx
+            .recv_timeout(TEST_TIMEOUT)
+            .expect("checkpoint worker did not wake after a single resume before timeout");
+        enter_rx
+            .recv_timeout(TEST_TIMEOUT)
+            .expect("entry worker did not wake after a single resume before timeout");
+
+        checkpoint_worker.join().unwrap();
+        enter_worker.join().unwrap();
+    }
+
+    #[test]
+    fn raising_permits_while_paused_does_not_admit_until_resumed() {
+        let governor = Arc::new(Governor::new(1, true));
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (admitted_tx, admitted_rx) = mpsc::channel();
+        let worker_governor = Arc::clone(&governor);
+        let worker = thread::spawn(move || {
+            ready_tx.send(()).unwrap();
+            let _permit = worker_governor.enter();
+            admitted_tx.send(()).unwrap();
+        });
+
+        ready_rx
+            .recv_timeout(TEST_TIMEOUT)
+            .expect("entry worker did not become ready before timeout");
+
+        governor.set_permits(4);
+        let while_paused = admitted_rx.recv_timeout(BLOCKED_WINDOW);
+        assert!(
+            matches!(while_paused, Err(mpsc::RecvTimeoutError::Timeout)),
+            "raising permits admitted a waiter while still paused: {while_paused:?}"
+        );
+
+        governor.set_paused(false);
+        admitted_rx
+            .recv_timeout(TEST_TIMEOUT)
+            .expect("entry worker was not admitted after resume before timeout");
+        worker.join().unwrap();
+    }
 }

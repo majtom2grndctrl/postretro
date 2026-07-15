@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crate::logger::{CapturedRecord, LogSink};
+use crate::logger::LogSink;
 use crate::pipeline::StageId;
 
 /// Shared, display-only progress state for one quantifiable stage.
@@ -76,18 +76,17 @@ pub trait Reporter: Send + Sync {
     fn declare_progress(&self, id: StageId, progress: StageProgress);
     fn finish_stage(&self, id: StageId);
     fn skip_stage(&self, id: StageId);
-    /// Records a warning that bypasses the `log` sink. Production warnings
-    /// arrive via the shared `LogSink` drain instead — a caller using this
-    /// method directly must not also emit the same warning through `log`,
-    /// or it will be reported twice.
-    fn record_warning(&self, warning: CapturedRecord);
     fn finalize(&self, timings: &[(&'static str, Duration)], total: Duration);
     fn finalize_failure(&self);
 }
 
+/// Last progress the monitor rendered: `(completed, total)`. Returned when the
+/// thread joins so `stop_monitor` can skip a redundant identical final line.
+type ProgressSnapshot = (usize, Option<usize>);
+
 struct Monitor {
     stop: Arc<AtomicBool>,
-    thread: JoinHandle<()>,
+    thread: JoinHandle<Option<ProgressSnapshot>>,
     label: &'static str,
     progress: StageProgress,
     started: Instant,
@@ -123,12 +122,59 @@ impl PlainReporter {
         }
     }
 
+    /// Spawn the per-stage drain thread. Runs for every stage: it periodically
+    /// drains the shared `LogSink` so records stay visible mid-stage, and
+    /// renders a progress line only once `progress` publishes a total. A
+    /// drain-only stage passes indeterminate progress and prints no percentage.
+    /// The thread returns its last rendered snapshot so `stop_monitor` can avoid
+    /// reprinting an identical final line.
+    fn start_monitor(
+        &self,
+        state: &mut PlainState,
+        label: &'static str,
+        progress: StageProgress,
+        started: Instant,
+    ) {
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stop);
+        let worker_progress = progress.clone();
+        let logs = self.logs.clone();
+        state.monitor = Some(Monitor {
+            stop,
+            thread: thread::spawn(move || {
+                let mut previous = None;
+                while !worker_stop.load(Ordering::Acquire) {
+                    for record in logs.drain() {
+                        eprintln!("{record}");
+                    }
+                    let total = worker_progress.total();
+                    let done = worker_progress.completed();
+                    let snapshot = (done, total);
+                    if total.is_some() && previous != Some(snapshot) {
+                        Self::print_progress(label, &worker_progress, started.elapsed());
+                        previous = Some(snapshot);
+                    }
+                    thread::park_timeout(Duration::from_millis(500));
+                }
+                previous
+            }),
+            label,
+            progress,
+            started,
+        });
+    }
+
     fn stop_monitor(state: &mut PlainState) {
         if let Some(monitor) = state.monitor.take() {
             monitor.stop.store(true, Ordering::Release);
             monitor.thread.thread().unpark();
-            let _ = monitor.thread.join();
-            Self::print_progress(monitor.label, &monitor.progress, monitor.started.elapsed());
+            let printed = monitor.thread.join().unwrap_or(None);
+            // Final line catches progress advanced since the last poll, but only
+            // when it differs from what the loop already rendered.
+            let snapshot = (monitor.progress.completed(), monitor.progress.total());
+            if snapshot.1.is_some() && printed != Some(snapshot) {
+                Self::print_progress(monitor.label, &monitor.progress, monitor.started.elapsed());
+            }
         }
     }
 
@@ -175,11 +221,21 @@ impl Reporter for PlainReporter {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         Self::stop_monitor(&mut state);
-        state.active = Some((id, Instant::now()));
+        let started = Instant::now();
+        state.active = Some((id, started));
         eprintln!(
             "{:>6.2}s  {}",
             self.started.elapsed().as_secs_f32(),
             id.progress_label()
+        );
+        // Always-on drain: every stage gets a thread so buffered records surface
+        // mid-stage, not only at the next stage boundary. Indeterminate progress
+        // means no percentage line until `declare_progress` publishes a total.
+        self.start_monitor(
+            &mut state,
+            id.label(),
+            StageProgress::indeterminate(),
+            started,
         );
     }
 
@@ -188,40 +244,15 @@ impl Reporter for PlainReporter {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        Self::stop_monitor(&mut state);
         let Some((active_id, stage_started)) = state.active else {
             return;
         };
         if active_id != id {
             return;
         }
-        let stop = Arc::new(AtomicBool::new(false));
-        let worker_stop = Arc::clone(&stop);
-        let label = id.label();
-        let worker_progress = progress.clone();
-        let logs = self.logs.clone();
-        state.monitor = Some(Monitor {
-            stop,
-            thread: thread::spawn(move || {
-                let mut previous = None;
-                while !worker_stop.load(Ordering::Acquire) {
-                    for record in logs.drain() {
-                        eprintln!("{record}");
-                    }
-                    let total = worker_progress.total();
-                    let done = worker_progress.completed();
-                    let snapshot = (done, total);
-                    if total.is_some() && previous != Some(snapshot) {
-                        Self::print_progress(label, &worker_progress, stage_started.elapsed());
-                        previous = Some(snapshot);
-                    }
-                    thread::park_timeout(Duration::from_millis(500));
-                }
-            }),
-            label,
-            progress,
-            started: stage_started,
-        });
+        // Swap the stage's drain-only monitor for one that also renders progress.
+        Self::stop_monitor(&mut state);
+        self.start_monitor(&mut state, id.label(), progress, stage_started);
     }
 
     fn finish_stage(&self, id: StageId) {
@@ -240,11 +271,6 @@ impl Reporter for PlainReporter {
     fn skip_stage(&self, id: StageId) {
         self.finish_stage(id);
         eprintln!("  {}: skipped", id.label());
-    }
-
-    fn record_warning(&self, warning: CapturedRecord) {
-        self.logs.record(warning);
-        self.drain_logs();
     }
 
     fn finalize(&self, timings: &[(&'static str, Duration)], total: Duration) {

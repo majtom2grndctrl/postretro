@@ -7,7 +7,18 @@ use std::time::{Duration, Instant};
 use crate::bake_control::BakeControl;
 use crate::governor::Governor;
 use crate::reporter::{Reporter, StageProgress};
-use crate::*;
+use crate::{
+    Args, bake_model_textures, compile_worldspawn_data_script, map_needs_sdf_atlas,
+    resolve_content_root, resolve_lightmap_density, resolve_prm_root_via_cargo,
+    resolve_texture_root,
+};
+use crate::{
+    animated_light_chunks, animated_light_weight_maps, bvh_build, cache, cell_draw_index_bake,
+    chunk_light_list_bake, delta_sh_bake, direct_sh_bake, entity_shadow_select, fog_cell_masks,
+    geometry, kinematic_geometry, light_namespaces, lightmap_bake, lightmap_layer, map_data,
+    navmesh_bake, pack, parse, partition, portals, sdf_bake, sh_bake, sh_group, shadowmask_bake,
+    texture_mips, texture_validation, trigger_volumes, visibility,
+};
 
 fn begin_stage(reporter: &dyn Reporter, id: StageId) -> Instant {
     reporter.begin_stage(id);
@@ -1185,7 +1196,6 @@ fn run_after_parsing(
         }
         Some(section)
     } else {
-        reporter.skip_stage(StageId::SdfAtlasBake);
         None
     };
 

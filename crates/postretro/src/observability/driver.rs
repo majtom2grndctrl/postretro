@@ -265,7 +265,6 @@ fn run_headless_inner(runspec_arg: Option<&str>) -> Result<String> {
         );
         crate::scripting_systems::slot_accumulators::evaluate_slot_accumulators(
             &mut session.scripting.slot_accumulator_bindings,
-            &script_ctx,
             TICK_DT,
         );
 

@@ -77,16 +77,46 @@ pub struct SlotSchema {
 }
 
 /// A declared slot and its current runtime value.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct SlotRecord {
     pub schema: SlotSchema,
     pub value: Option<SlotValue>,
+    write_generation: u64,
 }
 
 impl SlotRecord {
     pub fn new(schema: SlotSchema) -> Self {
         let value = schema.default.clone();
-        Self { schema, value }
+        Self {
+            schema,
+            value,
+            write_generation: 0,
+        }
+    }
+
+    /// Generation of the latest accepted authoritative write.
+    ///
+    /// Equal-value writes advance the generation. Runtime consumers can use it
+    /// as a write notification without changing the slot's visible value.
+    pub fn write_generation(&self) -> u64 {
+        self.write_generation
+    }
+
+    /// Replace the runtime value and notify generation-aware consumers.
+    pub fn write_value(&mut self, value: Option<SlotValue>) {
+        self.value = value;
+        // Equality checks only compare generations observed across adjacent
+        // ticks. Wrapping keeps notifications live indefinitely; aliasing would
+        // require 2^64 writes between two observations.
+        self.write_generation = self.write_generation.wrapping_add(1);
+    }
+}
+
+impl PartialEq for SlotRecord {
+    fn eq(&self, other: &Self) -> bool {
+        // Write generations are runtime notifications, not declaration or
+        // visible-value semantics.
+        self.schema == other.schema && self.value == other.value
     }
 }
 
@@ -324,7 +354,10 @@ impl SlotTable {
         // outside the freshly-installed bounds (e.g. an authored `max`
         // reduction on hot reload that drops below the live HP read last frame).
         if let Some(SlotValue::Number(value)) = record.value {
-            record.value = Some(SlotValue::Number(value.clamp(range.min, range.max)));
+            let clamped = value.clamp(range.min, range.max);
+            if clamped != value {
+                record.write_value(Some(SlotValue::Number(clamped)));
+            }
         }
         Ok(())
     }
@@ -452,6 +485,17 @@ mod tests {
             network: ReplicationScope::None,
             accumulate: None,
         })
+    }
+
+    #[test]
+    fn write_generation_advances_for_equal_values_without_affecting_equality() {
+        let mut written = number_slot(1.0);
+        let original = written.clone();
+
+        written.write_value(Some(SlotValue::Number(1.0)));
+
+        assert_eq!(written.write_generation(), 1);
+        assert_eq!(written, original);
     }
 
     #[test]

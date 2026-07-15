@@ -137,7 +137,7 @@ pub(crate) fn overlay_persisted_state(
 
         match restored_value(name, record, persisted_value) {
             Ok((value, warning)) => {
-                record.value = Some(value);
+                record.write_value(Some(value));
                 if let Some(warning) = warning {
                     warnings.push(warning);
                 }

@@ -388,7 +388,7 @@ declare defineReaction: (
 
 --- Stamp a shared map-tag scope onto each reaction in a plain list. `tags` are
 --- matched against `ModMapEntry.tags`; omit scoping for every level.
-declare function scopeReactions(tags: {string}, list: {NamedReactionDescriptor}): {NamedReactionDescriptor}
+declare function scopeReactions<S>(tags: {string}, list: {Reaction<S>}): {Reaction<S>}
 
 --- Pure identity builder for entity-type descriptors returned from
 --- `ModManifest.entities`. `descriptor` is the full archetype table: optional
@@ -556,7 +556,11 @@ export type WritableStateRef<T> = ReadonlyStateRef<T> & { __writableStateRefBran
 --- a finite-number array. `persist` saves on clean exit; `readonly` blocks
 --- script writes. `network = "shared"` replicates the slot to every connected
 --- client (server-authoritative); omitted means local-only.
-export type StoreSlotSchema = { type: string, readonly: boolean?, network: "shared"?, accumulate: ((TickParams) -> RuntimeValue)?, [string]: any }
+export type StoreSlotSchema = (
+  { type: "number", readonly: boolean?, network: "shared"?, accumulate: nil? }
+  | { type: "number", readonly: false?, network: "shared"?, accumulate: (TickParams) -> RuntimeValue }
+  | { type: "boolean" | "string" | "enum" | "array", readonly: boolean?, network: "shared"?, accumulate: nil? }
+) & { [string]: any }
 
 --- Plain declaration data returned through `ModManifest.stores`.
 export type StoreDeclaration = { namespace: string, schema: { [string]: StoreSlotSchema } }

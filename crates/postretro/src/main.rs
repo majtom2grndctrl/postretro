@@ -1994,7 +1994,6 @@ impl ApplicationHandler for App {
                         );
                         scripting_systems::slot_accumulators::evaluate_slot_accumulators(
                             &mut session.scripting.slot_accumulator_bindings,
-                            &script_ctx,
                             tick_dt,
                         );
                         self.host_record_authorized_shots(&tick_events.authorized_shots);
@@ -3819,6 +3818,7 @@ impl App {
                 .push(SystemReactionCommand::SetState {
                     slot,
                     value: serde_json::json!(next),
+                    dispatch_source: "ui.slider".to_string(),
                     dispatch_values: Vec::new(),
                 });
         }
@@ -4143,6 +4143,7 @@ impl App {
                 SystemReactionCommand::SetState {
                     slot,
                     value,
+                    dispatch_source,
                     dispatch_values,
                 } => {
                     if crate::scripting::reactions::system_commands::is_ir_node(&value) {
@@ -4152,6 +4153,7 @@ impl App {
                                 session.scripting.system_reaction_ir_bindings.dispatch(
                                     &slot,
                                     &value,
+                                    &dispatch_source,
                                     &dispatch_values,
                                     &script_ctx,
                                 )

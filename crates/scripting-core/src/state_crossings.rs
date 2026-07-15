@@ -1,10 +1,5 @@
-// State-crossing detector (M13 HUD dynamics): engine-side watchers composed in
-// `DataRegistry` from matching mod-global crossings plus level-local
-// `setupLevel().crossings`, then checked against the authoritative slot table
-// after each frame's slot writes. Threshold watchers fire on their declared
-// authored edge; optional `edge: "both"` adds the mirrored transition. Both
-// forms emit direction-bearing fire records through the named vocabulary.
-// See: context/lib/scripting.md §10.4
+// Installs and evaluates active state-crossing watchers, producing
+// direction-bearing reaction dispatch records. See: context/lib/scripting.md §§10–12.
 
 use super::ctx::ScriptCtx;
 use super::data_descriptors::CrossingCondition;
@@ -21,6 +16,7 @@ enum Watcher {
     /// The shipped single-number-slot threshold watcher. Its data flow and
     /// edge behavior deliberately remain unchanged.
     Threshold {
+        source_id: usize,
         slot: String,
         condition: CrossingCondition,
         max: f32,
@@ -34,6 +30,7 @@ enum Watcher {
     /// `StoreScope` retains the live script context for eval without exposing
     /// any VM-coupled state through the entities descriptor boundary.
     Predicate {
+        source_id: usize,
         program: BoundProgram<StoreScope>,
         scope: StoreScope,
         #[cfg(debug_assertions)]
@@ -76,7 +73,7 @@ impl CrossingDetector {
         slot_table: &SlotTable,
         script_ctx: &ScriptCtx,
     ) {
-        for crossing in &data_registry.crossings {
+        for (source_id, crossing) in data_registry.crossings.iter().enumerate() {
             match &crossing.condition {
                 CrossingCondition::Below { .. } | CrossingCondition::Above { .. } => {
                     let Some(slot) = crossing.slot.as_deref() else {
@@ -95,6 +92,7 @@ impl CrossingDetector {
                     }
                     let previous = read_number(slot_table, slot).map(|raw| raw / crossing.max);
                     self.watchers.push(Watcher::Threshold {
+                        source_id,
                         slot: slot.to_string(),
                         condition: crossing.condition.clone(),
                         max: crossing.max,
@@ -135,6 +133,7 @@ impl CrossingDetector {
                     };
                     let previous = matches!(eval_value(&program, &scope), IrValue::Bool(true));
                     self.watchers.push(Watcher::Predicate {
+                        source_id,
                         program,
                         scope,
                         #[cfg(debug_assertions)]
@@ -165,6 +164,7 @@ impl CrossingDetector {
         for watcher in &mut self.watchers {
             match watcher {
                 Watcher::Threshold {
+                    source_id,
                     slot,
                     condition,
                     max,
@@ -182,16 +182,17 @@ impl CrossingDetector {
                             *both_edges && threshold_crosses_mirrored(condition, prev, cur);
                         if authored_crossing || mirrored_crossing {
                             let rising = cur > prev;
-                            to_fire.extend(
-                                fire.iter()
-                                    .cloned()
-                                    .map(|reaction| CrossingFire { reaction, rising }),
-                            );
+                            to_fire.extend(fire.iter().cloned().map(|reaction| CrossingFire {
+                                reaction,
+                                rising,
+                                source_id: *source_id,
+                            }));
                         }
                     }
                     *previous = current;
                 }
                 Watcher::Predicate {
+                    source_id,
                     program,
                     scope,
                     #[cfg(debug_assertions)]
@@ -208,11 +209,11 @@ impl CrossingDetector {
                     let current = matches!(eval_value(program, scope), IrValue::Bool(true));
                     if (!*previous && current) || (*both_edges && *previous && !current) {
                         let rising = !*previous && current;
-                        to_fire.extend(
-                            fire.iter()
-                                .cloned()
-                                .map(|reaction| CrossingFire { reaction, rising }),
-                        );
+                        to_fire.extend(fire.iter().cloned().map(|reaction| CrossingFire {
+                            reaction,
+                            rising,
+                            source_id: *source_id,
+                        }));
                     }
                     // A true-to-false evaluation re-arms the next false-to-true
                     // edge; no slot shortcut or stale value is retained.
@@ -239,6 +240,8 @@ impl CrossingDetector {
 pub struct CrossingFire {
     pub reaction: String,
     pub rising: bool,
+    /// Stable index of the active crossing descriptor for source diagnostics.
+    pub source_id: usize,
 }
 
 impl PartialEq<String> for CrossingFire {
@@ -741,6 +744,7 @@ mod tests {
             vec![CrossingFire {
                 reaction: "toggle".to_string(),
                 rising: true,
+                source_id: 0,
             }]
         );
         set(&mut table, "test.shield", 40.0);
@@ -749,6 +753,7 @@ mod tests {
             vec![CrossingFire {
                 reaction: "toggle".to_string(),
                 rising: false,
+                source_id: 0,
             }]
         );
     }

@@ -1,14 +1,14 @@
-//! Install-time binding and authoritative per-tick evaluation for state-slot
-//! accumulators. Raw expressions remain on `SlotSchema`; this binary-side table
-//! owns the scope-specialized programs for the active level.
+//! Owns install-time accumulator bindings and authoritative post-tick
+//! evaluation. See `context/lib/scripting.md` §§11–12.
 
 use std::collections::BTreeMap;
 
 use postretro_entities::ScriptCtx;
 use postretro_foundation::{
-    BakedIr, BoundProgram, CURRENT_IR_VERSION, IrNode, IrType, IrValue, bind, eval_and_write,
+    BakedIr, BoundProgram, CURRENT_IR_VERSION, IrType, IrValue, bind, eval_value,
 };
 use postretro_scripting_core::ir_scopes::DispatchScope;
+use postretro_scripting_core::store_bridge::write_store_slot;
 
 const TICK_INPUTS: &[(&str, IrType)] = &[("@dt", IrType::Number)];
 
@@ -16,8 +16,15 @@ const TICK_INPUTS: &[(&str, IrType)] = &[("@dt", IrType::Number)];
 /// `BTreeMap` pins deterministic evaluation order without a per-tick sort.
 #[derive(Default)]
 pub(crate) struct SlotAccumulatorBindings {
-    programs: BTreeMap<String, BoundProgram<DispatchScope>>,
+    programs: BTreeMap<String, AccumulatorProgram>,
     scope: Option<DispatchScope>,
+    script_ctx: Option<ScriptCtx>,
+}
+
+struct AccumulatorProgram {
+    delta: BoundProgram<DispatchScope>,
+    precise_value: f64,
+    last_write_generation: u64,
 }
 
 impl SlotAccumulatorBindings {
@@ -25,34 +32,39 @@ impl SlotAccumulatorBindings {
     /// ambient slots. A rejected program is inert for this level; other slots
     /// remain bound and operational.
     pub(crate) fn rebuild(&mut self, script_ctx: &ScriptCtx) {
-        self.programs.clear();
-        self.scope = None;
+        self.clear();
         let declarations = script_ctx
             .slot_table
             .borrow()
             .iter()
             .filter_map(|(name, record)| {
-                record
-                    .schema
-                    .accumulate
-                    .clone()
-                    .map(|expr| (name.to_string(), expr))
+                record.schema.accumulate.clone().map(|expr| {
+                    let initial = match record.value.as_ref() {
+                        Some(postretro_entities::SlotValue::Number(value)) => *value,
+                        _ => 0.0,
+                    };
+                    (name.to_string(), expr, initial, record.write_generation())
+                })
             })
             .collect::<Vec<_>>();
 
         let scope = DispatchScope::script(script_ctx.clone(), TICK_INPUTS);
-        for (slot, delta) in declarations {
+        for (slot, delta, initial, write_generation) in declarations {
             let baked = BakedIr {
                 version: CURRENT_IR_VERSION,
                 output: Some(slot.clone()),
-                root: IrNode::Add {
-                    a: Box::new(IrNode::Input { name: slot.clone() }),
-                    b: Box::new(delta),
-                },
+                root: delta,
             };
             match bind(&baked, &scope) {
                 Ok(program) => {
-                    self.programs.insert(slot, program);
+                    self.programs.insert(
+                        slot,
+                        AccumulatorProgram {
+                            delta: program,
+                            precise_value: f64::from(initial),
+                            last_write_generation: write_generation,
+                        },
+                    );
                 }
                 Err(error) => log::warn!(
                     "[Scripting] slot accumulator `{slot}` is inert for this level: {error}"
@@ -60,31 +72,90 @@ impl SlotAccumulatorBindings {
             }
         }
         self.scope = Some(scope);
+        self.script_ctx = Some(script_ctx.clone());
+    }
+
+    /// Drop every binding derived from the active level.
+    pub(crate) fn clear(&mut self) {
+        self.programs.clear();
+        self.scope = None;
+        self.script_ctx = None;
     }
 
     #[cfg(test)]
     fn len(&self) -> usize {
         self.programs.len()
     }
+
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.programs.is_empty() && self.scope.is_none() && self.script_ctx.is_none()
+    }
 }
 
 /// Evaluate every active accumulator after one authoritative simulation tick.
 /// Callers own the authority guard; connected clients must never invoke this.
-pub(crate) fn evaluate_slot_accumulators(
-    bindings: &mut SlotAccumulatorBindings,
-    _script_ctx: &ScriptCtx,
-    tick_dt: f32,
-) {
-    let SlotAccumulatorBindings { programs, scope } = bindings;
-    let Some(scope) = scope.as_mut() else {
+pub(crate) fn evaluate_slot_accumulators(bindings: &mut SlotAccumulatorBindings, tick_dt: f32) {
+    let SlotAccumulatorBindings {
+        programs,
+        scope,
+        script_ctx,
+    } = bindings;
+    let (Some(scope), Some(script_ctx)) = (scope.as_mut(), script_ctx.as_ref()) else {
         return;
     };
     if let Err(error) = scope.seed("@dt", IrValue::Number(tick_dt)) {
         log::warn!("[Scripting] slot accumulator tick input was not seeded: {error:?}");
         return;
     }
-    for program in programs.values() {
-        eval_and_write(program, scope);
+    for (slot, accumulator) in programs {
+        let (current, current_generation) = match script_ctx_number(script_ctx, slot) {
+            Some(snapshot) => snapshot,
+            None => continue,
+        };
+        if current_generation != accumulator.last_write_generation {
+            accumulator.precise_value = f64::from(current);
+            accumulator.last_write_generation = current_generation;
+        }
+
+        let IrValue::Number(delta) = eval_value(&accumulator.delta, scope) else {
+            continue;
+        };
+        accumulator.precise_value += f64::from(delta);
+        let next = accumulator.precise_value as f32;
+
+        // Accumulate below f32 precision, then narrow once per tick. This keeps
+        // repeated fixed-tick deltas on their simulated-time boundary without
+        // moving any arbitrary value a delta early through an epsilon snap.
+        if write_store_slot(
+            script_ctx,
+            slot,
+            postretro_entities::SlotValue::Number(next),
+        )
+        .is_err()
+        {
+            // The store validator rejects non-finite results. Preserve the last
+            // accepted visible value and discard the unrepresentable f64 state
+            // so later finite deltas cannot teleport the slot from hidden state.
+            accumulator.precise_value = f64::from(current);
+            accumulator.last_write_generation = current_generation;
+            continue;
+        }
+        let (written, written_generation) =
+            script_ctx_number(script_ctx, slot).unwrap_or((next, current_generation));
+        accumulator.last_write_generation = written_generation;
+        if written != next {
+            accumulator.precise_value = f64::from(written);
+        }
+    }
+}
+
+fn script_ctx_number(script_ctx: &ScriptCtx, slot: &str) -> Option<(f32, u64)> {
+    let table = script_ctx.slot_table.borrow();
+    let record = table.get(slot)?;
+    match record.value.as_ref()? {
+        postretro_entities::SlotValue::Number(value) => Some((*value, record.write_generation())),
+        _ => None,
     }
 }
 
@@ -95,6 +166,7 @@ mod tests {
         CrossingCondition, CrossingDescriptor, DataRegistry, NumericRange, ReplicationScope,
         SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
     };
+    use postretro_foundation::IrNode;
     use postretro_scripting_core::state_crossings::CrossingDetector;
 
     fn number_slot(default: f32, range: Option<NumericRange>, accumulate: IrNode) -> SlotRecord {
@@ -132,7 +204,7 @@ mod tests {
         let mut bindings = SlotAccumulatorBindings::default();
         bindings.rebuild(&ctx);
 
-        evaluate_slot_accumulators(&mut bindings, &ctx, 1.0);
+        evaluate_slot_accumulators(&mut bindings, 1.0);
 
         assert_eq!(
             ctx.slot_table
@@ -191,13 +263,14 @@ mod tests {
         let mut bindings = SlotAccumulatorBindings::default();
         bindings.rebuild(&ctx);
 
-        for elapsed_seconds in 1..=60 {
+        let tick_dt = crate::frame_timing::TICK_DURATION.as_secs_f32();
+        for tick in 1..=3_600 {
             // Production order: authoritative simulation tick, accumulator write,
             // then the frame's settled-state crossing detection.
-            evaluate_slot_accumulators(&mut bindings, &ctx, 1.0);
+            evaluate_slot_accumulators(&mut bindings, tick_dt);
             let fires = detector.detect(&ctx.slot_table.borrow());
-            if elapsed_seconds < 60 {
-                assert!(fires.is_empty(), "crossed early at {elapsed_seconds}s");
+            if tick < 3_600 {
+                assert!(fires.is_empty(), "crossed early at tick {tick}");
             } else {
                 assert_eq!(fires.len(), 1);
                 assert_eq!(fires[0].reaction, "countdownComplete");
@@ -205,7 +278,7 @@ mod tests {
             }
         }
 
-        evaluate_slot_accumulators(&mut bindings, &ctx, 1.0);
+        evaluate_slot_accumulators(&mut bindings, tick_dt);
         assert_eq!(
             ctx.slot_table
                 .borrow()
@@ -248,7 +321,7 @@ mod tests {
         bindings.rebuild(&ctx);
         assert_eq!(bindings.len(), 1);
 
-        evaluate_slot_accumulators(&mut bindings, &ctx, 0.25);
+        evaluate_slot_accumulators(&mut bindings, 0.25);
         assert_eq!(
             ctx.slot_table.borrow().get("timer.good").unwrap().value,
             Some(SlotValue::Number(1.25))
@@ -285,7 +358,7 @@ mod tests {
         let mut bindings = SlotAccumulatorBindings::default();
         bindings.rebuild(&ctx);
 
-        evaluate_slot_accumulators(&mut bindings, &ctx, 1.0);
+        evaluate_slot_accumulators(&mut bindings, 1.0);
 
         assert_eq!(
             ctx.slot_table
@@ -300,6 +373,105 @@ mod tests {
             ctx.slot_table.borrow().get("order.z_source").unwrap().value,
             Some(SlotValue::Number(2.0))
         );
+    }
+
+    #[test]
+    fn equal_value_authoritative_write_resets_hidden_precision() {
+        let ctx = ScriptCtx::new();
+        let visible = 16_777_216.0;
+        ctx.slot_table
+            .borrow_mut()
+            .insert(
+                "counter.value".into(),
+                number_slot(
+                    visible,
+                    None,
+                    IrNode::Const {
+                        value: IrValue::Number(0.25),
+                    },
+                ),
+            )
+            .unwrap();
+        let mut bindings = SlotAccumulatorBindings::default();
+        bindings.rebuild(&ctx);
+
+        // Three deltas remain hidden below this f32 value's ULP.
+        for _ in 0..3 {
+            evaluate_slot_accumulators(&mut bindings, 1.0);
+        }
+        write_store_slot(&ctx, "counter.value", SlotValue::Number(visible)).unwrap();
+
+        // Regression: value comparison could not observe the equal-value write,
+        // so the old hidden 0.75 residue made the second tick jump by one ULP.
+        evaluate_slot_accumulators(&mut bindings, 1.0);
+        evaluate_slot_accumulators(&mut bindings, 1.0);
+        assert_eq!(
+            ctx.slot_table.borrow().get("counter.value").unwrap().value,
+            Some(SlotValue::Number(visible))
+        );
+    }
+
+    #[test]
+    fn different_value_authoritative_write_resets_hidden_precision() {
+        let ctx = ScriptCtx::new();
+        ctx.slot_table
+            .borrow_mut()
+            .insert(
+                "counter.value".into(),
+                number_slot(
+                    16_777_216.0,
+                    None,
+                    IrNode::Const {
+                        value: IrValue::Number(0.25),
+                    },
+                ),
+            )
+            .unwrap();
+        let mut bindings = SlotAccumulatorBindings::default();
+        bindings.rebuild(&ctx);
+        for _ in 0..3 {
+            evaluate_slot_accumulators(&mut bindings, 1.0);
+        }
+
+        write_store_slot(&ctx, "counter.value", SlotValue::Number(100.0)).unwrap();
+        evaluate_slot_accumulators(&mut bindings, 1.0);
+
+        assert_eq!(
+            ctx.slot_table.borrow().get("counter.value").unwrap().value,
+            Some(SlotValue::Number(100.25))
+        );
+    }
+
+    #[test]
+    fn non_finite_accumulator_results_preserve_last_valid_value() {
+        for delta in [f32::MAX, f32::INFINITY] {
+            let ctx = ScriptCtx::new();
+            ctx.slot_table
+                .borrow_mut()
+                .insert(
+                    "counter.value".into(),
+                    number_slot(
+                        f32::MAX,
+                        None,
+                        IrNode::Const {
+                            value: IrValue::Number(delta),
+                        },
+                    ),
+                )
+                .unwrap();
+            let mut bindings = SlotAccumulatorBindings::default();
+            bindings.rebuild(&ctx);
+
+            evaluate_slot_accumulators(&mut bindings, 1.0);
+            evaluate_slot_accumulators(&mut bindings, 1.0);
+
+            // Regression: rejected non-finite totals were replaced with zero,
+            // bypassing the store validator and discarding the valid value.
+            assert_eq!(
+                ctx.slot_table.borrow().get("counter.value").unwrap().value,
+                Some(SlotValue::Number(f32::MAX))
+            );
+        }
     }
 
     #[test]
@@ -369,7 +541,7 @@ mod tests {
                         .unwrap()
                         .value = Some(SlotValue::Number(-1.0));
                 }
-                evaluate_slot_accumulators(&mut bindings, &ctx, 1.0);
+                evaluate_slot_accumulators(&mut bindings, 1.0);
                 let value = match ctx
                     .slot_table
                     .borrow()

@@ -232,7 +232,9 @@ fn define_store_emits_returned_declaration_and_state_refs() {
         "ts StateValueForSlot must route through readonly-aware ref selection"
     );
     assert!(
-        ts.contains("accumulate?: (t: TickParams) => RuntimeValue")
+        ts.contains("accumulate: (t: TickParams) => RuntimeValue")
+            && ts.contains("type: \"number\"; readonly?: boolean;")
+            && ts.contains("readonly?: false; network?: \"shared\"; accumulate:")
             && ts.contains("export type TickParams = Readonly<{ dt: RuntimeRead }>")
             && ts.contains("read(name: string | ReadonlyStateRef<unknown>): RuntimeRead;"),
         "ts must expose accumulator tracing and state-ref runtime reads:\n{ts}"
@@ -258,7 +260,9 @@ fn define_store_emits_returned_declaration_and_state_refs() {
         "luau StoreDefinition must not type every store slot as writable:\n{luau}"
     );
     assert!(
-        luau.contains("accumulate: ((TickParams) -> RuntimeValue)?")
+        luau.contains("accumulate: (TickParams) -> RuntimeValue")
+            && luau.contains("type: \"number\", readonly: boolean?")
+            && luau.contains("readonly: false?, network: \"shared\"?, accumulate:")
             && luau.contains("export type TickParams = { dt: RuntimeRead }")
             && luau.contains("read: (name: string | ReadonlyStateRef<any>) -> RuntimeRead"),
         "luau must expose accumulator tracing and state-ref runtime reads:\n{luau}"

@@ -46,6 +46,9 @@ pub enum SystemReactionCommand {
     SetState {
         slot: String,
         value: serde_json::Value,
+        /// Stable identity of the firing source for once-per-source diagnostics.
+        /// It is runtime queue context only, never persistent or on the wire.
+        dispatch_source: String,
         /// Ephemeral values published by the firing source. They are not part
         /// of command selection or any persistent/wire format.
         dispatch_values: Vec<(String, IrValue)>,
@@ -71,7 +74,13 @@ pub enum SystemReactionCommand {
 #[derive(Clone, Default)]
 pub struct SystemCommandQueue {
     commands: Rc<RefCell<Vec<SystemReactionCommand>>>,
-    fire_context: Rc<RefCell<Vec<(String, IrValue)>>>,
+    fire_context: Rc<RefCell<SystemCommandFireContext>>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SystemCommandFireContext {
+    pub source: String,
+    pub values: Vec<(String, IrValue)>,
 }
 
 impl SystemCommandQueue {
@@ -86,11 +95,14 @@ impl SystemCommandQueue {
     /// Replace the active named-fire context, returning the prior context so a
     /// caller can restore it after dispatch. Registry handler signatures stay
     /// source-agnostic; only commands that need context snapshot it.
-    pub fn replace_fire_context(&self, values: Vec<(String, IrValue)>) -> Vec<(String, IrValue)> {
-        std::mem::replace(&mut *self.fire_context.borrow_mut(), values)
+    pub fn replace_fire_context(
+        &self,
+        context: SystemCommandFireContext,
+    ) -> SystemCommandFireContext {
+        std::mem::replace(&mut *self.fire_context.borrow_mut(), context)
     }
 
-    pub fn fire_context(&self) -> Vec<(String, IrValue)> {
+    pub fn fire_context(&self) -> SystemCommandFireContext {
         self.fire_context.borrow().clone()
     }
 

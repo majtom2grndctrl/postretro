@@ -23,8 +23,8 @@ fn reaction_handle_authoring_types_widen_in_both_outputs() {
     );
     assert!(
         ts.contains("levels?: string[]")
-            && ts.contains("export function scopeReactions(")
-            && ts.contains("list: NamedReactionDescriptor[]")
+            && ts.contains("export function scopeReactions<S>(")
+            && ts.contains("list: Reaction<S>[]")
             && ts.contains("export type Reaction<S = {}>")
             && ts.contains("readonly [reactionScopeBrand]?: (scope: S) => void")
             && ts.contains("export type CrossingParams = Readonly<{ rising: RuntimeRead }>")
@@ -39,7 +39,7 @@ fn reaction_handle_authoring_types_widen_in_both_outputs() {
     );
     assert!(
         luau.contains("levels: {string}?")
-            && luau.contains("declare function scopeReactions(tags: {string}, list: {NamedReactionDescriptor}): {NamedReactionDescriptor}")
+            && luau.contains("declare function scopeReactions<S>(tags: {string}, list: {Reaction<S>}): {Reaction<S>}")
             && luau.contains("scopeReactions: typeof(scopeReactions),"),
         "luau must expose reaction levels and scopeReactions:\n{luau}"
     );

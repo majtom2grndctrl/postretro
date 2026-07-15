@@ -103,7 +103,8 @@ export type LevelManifest = {
 
 /** One slot inside a `defineStore` schema. Every slot needs `default`. `type: "number"` accepts a finite numeric default plus optional inclusive `range: [min, max]`; `"boolean"` and `"string"` require matching defaults; `"enum"` requires non-empty `values` and a default in that list; `"array"` is a finite-number array. `persist` saves on clean exit; `readonly` blocks script writes. */
 export type StoreSlotSchema = (
-  | { type: "number"; readonly?: boolean; accumulate?: (t: TickParams) => import("postretro").RuntimeValue }
+  | { type: "number"; readonly?: boolean; accumulate?: never }
+  | { type: "number"; readonly?: false; accumulate: (t: TickParams) => import("postretro").RuntimeValue }
   | { type: "boolean" | "string" | "enum" | "array"; readonly?: boolean; accumulate?: never }
 ) & Record<string, unknown>;
 
@@ -225,10 +226,10 @@ export function defineReaction(
 }
 
 /** Stamp a shared map-tag scope onto each reaction in a plain list. `tags` are matched against `ModMapEntry.tags`; omit scoping for every level. */
-export function scopeReactions(
+export function scopeReactions<S>(
   tags: string[],
-  list: NamedReactionDescriptor[],
-): NamedReactionDescriptor[] {
+  list: Reaction<S>[],
+): Reaction<S>[] {
   return list.map((reaction) => ({ ...reaction, levels: tags }));
 }
 

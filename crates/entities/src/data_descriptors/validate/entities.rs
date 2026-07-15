@@ -1,6 +1,6 @@
 // Entity-side descriptor validators. These construct entity-resident
 // descriptor types and therefore stay above the foundation layer.
-// See: context/lib/scripting.md §12 (Crate Architecture)
+// See: context/lib/scripting.md §13 (Crate Architecture)
 
 use super::super::{CrossingCondition, CrossingDescriptor, DescriptorError};
 use postretro_foundation::ir::IrNode;

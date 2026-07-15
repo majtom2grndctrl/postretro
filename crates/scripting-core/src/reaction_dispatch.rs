@@ -145,11 +145,18 @@ pub fn fire_named_event_with_sequences(
     reaction_registry: &ReactionPrimitiveRegistry,
     system_registry: &SystemReactionRegistry,
     script_ctx: &ScriptCtx,
-    dispatch_values: Option<&[(String, IrValue)]>,
+    dispatch_context: Option<NamedEventDispatchContext<'_>>,
 ) -> Vec<String> {
+    let source = dispatch_context.as_ref().map_or_else(
+        || format!("named:{event_name}"),
+        |context| context.source.clone(),
+    );
+    let values = dispatch_context
+        .map(|context| context.values.to_vec())
+        .unwrap_or_default();
     let previous_context = script_ctx
         .system_commands
-        .replace_fire_context(dispatch_values.unwrap_or_default().to_vec());
+        .replace_fire_context(postretro_entities::SystemCommandFireContext { source, values });
     let mut chained = Vec::new();
     for named in &data_registry.reactions {
         if named.name != event_name {
@@ -172,6 +179,14 @@ pub fn fire_named_event_with_sequences(
         .system_commands
         .replace_fire_context(previous_context);
     chained
+}
+
+/// Explicit per-fire context for sources that publish ephemeral dispatch
+/// inputs. Ordinary named events derive their source identity from the event
+/// name and pass `None`.
+pub struct NamedEventDispatchContext<'a> {
+    pub source: String,
+    pub values: &'a [(String, IrValue)],
 }
 
 /// One ordered item in a trigger residual. A descriptor is already resolved and

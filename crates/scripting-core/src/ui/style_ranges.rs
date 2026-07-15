@@ -452,19 +452,16 @@ mod tests {
         slot_table
             .insert(
                 "hud.health".to_string(),
-                SlotRecord {
-                    schema: SlotSchema {
-                        slot_type: SlotType::Number,
-                        default: None,
-                        range: None,
-                        persist: false,
-                        readonly: false,
-                        ownership: SlotOwnership::Mod,
-                        network: ReplicationScope::None,
-                        accumulate: None,
-                    },
-                    value: Some(SlotValue::Number(100.0)),
-                },
+                SlotRecord::new(SlotSchema {
+                    slot_type: SlotType::Number,
+                    default: Some(SlotValue::Number(100.0)),
+                    range: None,
+                    persist: false,
+                    readonly: false,
+                    ownership: SlotOwnership::Mod,
+                    network: ReplicationScope::None,
+                    accumulate: None,
+                }),
             )
             .unwrap();
 

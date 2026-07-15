@@ -1,6 +1,5 @@
-// Concrete runtime `BindingScope` implementations: the store-backed adapter
-// the engine and scripts bind real behavior IR against.
-// See: context/lib/scripting.md §11 (IR substrate — pluggable scope abstraction)
+// Runtime `BindingScope` adapters for store-backed state and ephemeral dispatch inputs.
+// Governing contract: `context/lib/scripting.md` §§11–12.
 
 // `StoreScope` bridges the IR evaluator to the live `SlotTable` through a
 // captured `ScriptCtx`; it projects `Number`/`Boolean` slots into the IR value

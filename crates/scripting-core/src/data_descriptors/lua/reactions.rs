@@ -82,7 +82,7 @@ pub fn crossing_descriptor_from_lua(
             }
         }
     }
-    let edge = get_optional_string_lua(&table, "edge")?;
+    let edge = crossing_edge_from_lua(&table)?;
 
     if table.contains_key("predicate").map_err(lua_err)? {
         let raw: LuaValue = table.get("predicate").map_err(lua_err)?;
@@ -98,6 +98,19 @@ pub fn crossing_descriptor_from_lua(
     let above = get_optional_f32_lua(&table, "above")?;
     let max = get_optional_f32_lua(&table, "max")?;
     build_crossing(slot, below, above, max, edge, fire)
+}
+
+/// Luau twin of `crossing_edge_from_js`: present non-string values survive as
+/// an invalid spelling for shared descriptor normalization to warn and drop.
+fn crossing_edge_from_lua(table: &Table) -> Result<Option<String>, DescriptorError> {
+    if !table.contains_key("edge").map_err(lua_err)? {
+        return Ok(None);
+    }
+    let raw: LuaValue = table.get("edge").map_err(lua_err)?;
+    match raw {
+        LuaValue::String(value) => Ok(Some(value.to_str().map_err(lua_err)?.to_string())),
+        _ => Ok(Some("<non-string>".to_string())),
+    }
 }
 
 pub fn primitive_descriptor_from_lua(

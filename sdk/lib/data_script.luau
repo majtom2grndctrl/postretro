@@ -197,7 +197,11 @@ export type LevelManifest = {
 --- `"enum"` requires non-empty `values` and a default in that list; `"array"` is
 --- a finite-number array. `persist` saves on clean exit; `readonly` blocks
 --- script writes.
-export type StoreSlotSchema = { type: string, readonly: boolean?, [string]: any }
+export type StoreSlotSchema = (
+  { type: "number", readonly: boolean?, accumulate: nil? }
+  | { type: "number", readonly: false?, accumulate: (TickParams) -> RuntimeValue }
+  | { type: "boolean" | "string" | "enum" | "array", readonly: boolean?, accumulate: nil? }
+) & { [string]: any }
 export type StoreDeclaration = {
   namespace: string,
   schema: { [string]: StoreSlotSchema },
@@ -322,7 +326,7 @@ end
 
 --- Stamp a shared map-tag scope onto each reaction in a plain list. `tags` are
 --- matched against `ModMapEntry.tags`; omit scoping for every level.
-function DataScriptSdk.scopeReactions(tags: {string}, list: {NamedReactionDescriptor}): {NamedReactionDescriptor}
+function DataScriptSdk.scopeReactions<S>(tags: {string}, list: {Reaction<S>}): {Reaction<S>}
   local out = {}
   for i, reaction in ipairs(list) do
     local scoped: NamedReactionDescriptor = { name = reaction.name, levels = tags }

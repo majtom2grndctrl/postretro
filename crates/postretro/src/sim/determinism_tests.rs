@@ -19,6 +19,9 @@ use crate::movement::MovementInput;
 use crate::nav::NavGraph;
 use crate::netcode::ShotId;
 use crate::scripting_systems::hit_zones::HitZoneStore;
+use crate::scripting_systems::slot_accumulators::{
+    SlotAccumulatorBindings, evaluate_slot_accumulators,
+};
 use crate::scripting_systems::trigger_volume_bridge::TriggerVolumeBridge;
 use crate::trigger_bindings::{
     BoundTriggerCommandKind, TriggerBindingTable, TriggerResidualHandle,
@@ -198,7 +201,8 @@ struct RecordedTick {
     trigger_residuals: Vec<TriggerResidualHandle>,
     trigger_fires: Vec<RecordedTriggerFire>,
     trigger_command_fires: Vec<RecordedCommandFire>,
-    predicate_crossing_fires: Vec<String>,
+    predicate_crossing_fires: Vec<(String, bool)>,
+    accumulator_slot: Option<SlotValue>,
 }
 
 #[derive(Debug)]
@@ -210,7 +214,7 @@ struct SimRun {
     trigger_residual_counts: Vec<usize>,
     trigger_slot: Option<SlotValue>,
     ir_slot_timeline: Vec<Option<SlotValue>>,
-    predicate_crossing_sequence: Vec<Vec<String>>,
+    predicate_crossing_sequence: Vec<Vec<(String, bool)>>,
     trigger_arm_target_armed: bool,
 }
 
@@ -229,6 +233,8 @@ struct SimHarness {
     trigger_script_ctx: ScriptCtx,
     trigger_slots: Rc<RefCell<SlotTable>>,
     crossing_detector: CrossingDetector,
+    slot_accumulator_bindings: SlotAccumulatorBindings,
+    tick_index: usize,
     role_ids: Vec<(Role, EntityId)>,
     labels: HashMap<EntityId, EntityLabel>,
     selected_player: EntityId,
@@ -354,37 +360,46 @@ impl SimHarness {
                     serde_json::json!({ "color": [1.0, 0.0, 0.0, 1.0], "durationMs": 1.0 }),
                 ),
             ],
-            vec![CrossingDescriptor {
-                slot: None,
-                // `triggered >= 4 && enabled >= 1`, expressed using the
-                // shipped comparison/select vocabulary. Two activators each
-                // execute two IR increments on tick one, so this yields one
-                // false -> true observer edge per run.
-                condition: CrossingCondition::Ir(IrNode::Select {
-                    cond: Box::new(IrNode::Ge {
-                        a: Box::new(IrNode::Input {
-                            name: "determinism.triggered".to_string(),
+            vec![
+                CrossingDescriptor {
+                    slot: None,
+                    // `triggered >= 4 && enabled >= 1`, expressed using the
+                    // shipped comparison/select vocabulary. Two activators each
+                    // execute two IR increments on tick one, so this yields one
+                    // false -> true observer edge per run.
+                    condition: CrossingCondition::Ir(IrNode::Select {
+                        cond: Box::new(IrNode::Ge {
+                            a: Box::new(IrNode::Input {
+                                name: "determinism.triggered".to_string(),
+                            }),
+                            b: Box::new(IrNode::Const {
+                                value: IrValue::Number(4.0),
+                            }),
+                        }),
+                        a: Box::new(IrNode::Ge {
+                            a: Box::new(IrNode::Input {
+                                name: "determinism.enabled".to_string(),
+                            }),
+                            b: Box::new(IrNode::Const {
+                                value: IrValue::Number(1.0),
+                            }),
                         }),
                         b: Box::new(IrNode::Const {
-                            value: IrValue::Number(4.0),
+                            value: IrValue::Bool(false),
                         }),
                     }),
-                    a: Box::new(IrNode::Ge {
-                        a: Box::new(IrNode::Input {
-                            name: "determinism.enabled".to_string(),
-                        }),
-                        b: Box::new(IrNode::Const {
-                            value: IrValue::Number(1.0),
-                        }),
-                    }),
-                    b: Box::new(IrNode::Const {
-                        value: IrValue::Bool(false),
-                    }),
-                }),
-                max: 1.0,
-                edge: None,
-                fire: vec!["determinismReady".to_string()],
-            }],
+                    max: 1.0,
+                    edge: None,
+                    fire: vec!["determinismReady".to_string()],
+                },
+                CrossingDescriptor {
+                    slot: Some("determinism.accumulated".to_string()),
+                    condition: CrossingCondition::Above { threshold: 0.0 },
+                    max: 1.0,
+                    edge: Some("both".to_string()),
+                    fire: vec!["accumulatorEdge".to_string()],
+                },
+            ],
             &[],
         );
         let trigger_bindings = TriggerBindingTable::build_with_script_ctx(
@@ -398,6 +413,8 @@ impl SimHarness {
             &trigger_script_ctx.slot_table.borrow(),
             &trigger_script_ctx,
         );
+        let mut slot_accumulator_bindings = SlotAccumulatorBindings::default();
+        slot_accumulator_bindings.rebuild(&trigger_script_ctx);
         let mut trigger_bridge = TriggerVolumeBridge::new();
         // Keep both pawns inside this harness-only trigger for the entire
         // stream. The determinism gate should pin its initial same-tick IR
@@ -429,6 +446,8 @@ impl SimHarness {
             trigger_script_ctx,
             trigger_slots,
             crossing_detector,
+            slot_accumulator_bindings,
+            tick_index: 0,
             role_ids,
             labels,
             selected_player,
@@ -439,6 +458,14 @@ impl SimHarness {
     }
 
     fn tick(&mut self, command: RecordedCommand) -> RecordedTick {
+        self.tick_index += 1;
+        if self.tick_index == 301 {
+            self.trigger_slots
+                .borrow_mut()
+                .get_mut("determinism.rate")
+                .expect("determinism accumulator rate remains declared")
+                .value = Some(SlotValue::Number(-1.0));
+        }
         let sim_command = command.to_sim_command();
         let remote_pawn_commands = [RemotePawnCommand {
             pawn: self.remote_player,
@@ -475,17 +502,22 @@ impl SimHarness {
                 use_edges: &trigger_use_edges,
             }),
         );
+        evaluate_slot_accumulators(&mut self.slot_accumulator_bindings, DT);
         let predicate_crossing_fires = self
             .crossing_detector
             .detect(&self.trigger_slots.borrow())
             .into_iter()
-            .map(|fire| fire.reaction)
+            .map(|fire| (fire.reaction, fire.rising))
             .collect();
         self.record(events, predicate_crossing_fires)
     }
 
     /// Resolve every raw id a tick reports before it reaches the comparison.
-    fn record(&self, events: TickEvents, predicate_crossing_fires: Vec<String>) -> RecordedTick {
+    fn record(
+        &self,
+        events: TickEvents,
+        predicate_crossing_fires: Vec<(String, bool)>,
+    ) -> RecordedTick {
         RecordedTick {
             movement: events.movement,
             ai: events.ai,
@@ -529,6 +561,11 @@ impl SimHarness {
                 })
                 .collect(),
             predicate_crossing_fires,
+            accumulator_slot: self
+                .trigger_slots
+                .borrow()
+                .get("determinism.accumulated")
+                .and_then(|record| record.value.clone()),
         }
     }
 
@@ -636,6 +673,42 @@ fn determinism_trigger_slots() -> SlotTable {
                 ),
                 (
                     "enabled".to_string(),
+                    SlotRecord::new(SlotSchema {
+                        slot_type: SlotType::Number,
+                        default: Some(SlotValue::Number(1.0)),
+                        range: None,
+                        persist: false,
+                        readonly: false,
+                        ownership: SlotOwnership::Mod,
+                        network: ReplicationScope::None,
+                        accumulate: None,
+                    }),
+                ),
+                (
+                    "accumulated".to_string(),
+                    SlotRecord::new(SlotSchema {
+                        slot_type: SlotType::Number,
+                        default: Some(SlotValue::Number(-2.0)),
+                        range: Some(postretro_entities::NumericRange {
+                            min: -10.0,
+                            max: 10.0,
+                        }),
+                        persist: false,
+                        readonly: false,
+                        ownership: SlotOwnership::Mod,
+                        network: ReplicationScope::None,
+                        accumulate: Some(IrNode::Mul {
+                            a: Box::new(IrNode::Input {
+                                name: "@dt".to_string(),
+                            }),
+                            b: Box::new(IrNode::Input {
+                                name: "determinism.rate".to_string(),
+                            }),
+                        }),
+                    }),
+                ),
+                (
+                    "rate".to_string(),
                     SlotRecord::new(SlotSchema {
                         slot_type: SlotType::Number,
                         default: Some(SlotValue::Number(1.0)),
@@ -1206,15 +1279,28 @@ fn assert_trigger_positive_anchors(run: &SimRun) {
     );
     assert_eq!(
         run.predicate_crossing_sequence.first(),
-        Some(&vec!["determinismReady".to_string()]),
+        Some(&vec![("determinismReady".to_string(), true)]),
         "the IR predicate must fire once when the IR-written slots first satisfy it"
     );
-    assert!(
+    assert_eq!(
         run.predicate_crossing_sequence
             .iter()
             .skip(1)
-            .all(Vec::is_empty),
+            .flatten()
+            .filter(|(reaction, _)| reaction == "determinismReady")
+            .count(),
+        0,
         "the predicate remains true after tick one, so it must not re-fire without a false re-arm"
+    );
+    assert_eq!(
+        run.predicate_crossing_sequence
+            .iter()
+            .flatten()
+            .filter(|(reaction, _)| reaction == "accumulatorEdge")
+            .map(|(_, rising)| *rising)
+            .collect::<Vec<_>>(),
+        vec![true, false],
+        "the production post-tick accumulator seam must drive both crossing directions"
     );
     assert!(
         run.trigger_arm_target_armed,

@@ -313,10 +313,10 @@
   ): Reaction<CrossingParams>;
 
   /** Stamp a shared map-tag scope onto each reaction in a plain list. `tags` are matched against `ModMapEntry.tags`; omit scoping for every level. */
-  export function scopeReactions(
+  export function scopeReactions<S>(
     tags: string[],
-    list: NamedReactionDescriptor[],
-  ): NamedReactionDescriptor[];
+    list: Reaction<S>[],
+  ): Reaction<S>[];
 
   // -------------------------------------------------------------------------
   // State-store declarations. `defineStore` is special-cased in the typedef
@@ -334,7 +334,8 @@
 
   /** One slot inside a `defineStore` schema. Every slot needs `default`. `type: "number"` accepts a finite numeric default plus optional inclusive `range: [min, max]`; `"boolean"` and `"string"` require matching defaults; `"enum"` requires non-empty `values` and a default in that list; `"array"` is a finite-number array. `persist` saves on clean exit; `readonly` blocks script writes. `network: "shared"` replicates the slot to every connected client (server-authoritative); omitted means local-only. */
   export type StoreSlotSchema = (
-    | { type: "number"; readonly?: boolean; network?: "shared"; accumulate?: (t: TickParams) => RuntimeValue }
+    | { type: "number"; readonly?: boolean; network?: "shared"; accumulate?: never }
+    | { type: "number"; readonly?: false; network?: "shared"; accumulate: (t: TickParams) => RuntimeValue }
     | { type: "boolean" | "string" | "enum" | "array"; readonly?: boolean; network?: "shared"; accumulate?: never }
   ) & Record<string, unknown>;
 

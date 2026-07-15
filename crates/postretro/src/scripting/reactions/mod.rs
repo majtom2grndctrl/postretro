@@ -4,7 +4,9 @@
 
 use postretro_entities::{DataRegistry, ScriptCtx, SlotTable};
 use postretro_foundation::IrValue;
-use postretro_scripting_core::reaction_dispatch::fire_named_event_with_sequences;
+use postretro_scripting_core::reaction_dispatch::{
+    NamedEventDispatchContext, fire_named_event_with_sequences,
+};
 use postretro_scripting_core::reaction_registry::{
     ReactionPrimitiveRegistry, SystemReactionRegistry,
 };
@@ -49,7 +51,10 @@ pub(crate) fn dispatch_state_crossings_with_sequences(
             reaction_registry,
             system_registry,
             script_ctx,
-            Some(&dispatch_values),
+            Some(NamedEventDispatchContext {
+                source: format!("crossing:{}", fire.source_id),
+                values: &dispatch_values,
+            }),
         );
     }
     crossing_events
@@ -102,17 +107,26 @@ mod tests {
     fn drain_direction_write(
         ctx: &ScriptCtx,
         bindings: &SystemReactionIrBindings,
-    ) -> (SystemReactionIrDispatch, usize) {
+    ) -> (SystemReactionIrDispatch, usize, String) {
         let mut outcome = None;
         let mut unrelated_commands = 0;
+        let mut source = None;
         for command in ctx.system_commands.take() {
             match command {
                 SystemReactionCommand::SetState {
                     slot,
                     value,
+                    dispatch_source,
                     dispatch_values,
                 } => {
-                    outcome = Some(bindings.dispatch(&slot, &value, &dispatch_values, ctx));
+                    source = Some(dispatch_source.clone());
+                    outcome = Some(bindings.dispatch(
+                        &slot,
+                        &value,
+                        &dispatch_source,
+                        &dispatch_values,
+                        ctx,
+                    ));
                 }
                 SystemReactionCommand::PlaySound { .. } => unrelated_commands += 1,
                 other => panic!("unexpected command in crossing fixture: {other:?}"),
@@ -121,6 +135,7 @@ mod tests {
         (
             outcome.expect("direction reaction enqueues one setState"),
             unrelated_commands,
+            source.expect("setState carries a firing-source identity"),
         )
     }
 
@@ -190,7 +205,11 @@ mod tests {
         );
         assert_eq!(
             drain_direction_write(&ctx, &bindings),
-            (SystemReactionIrDispatch::Rejected, 1),
+            (
+                SystemReactionIrDispatch::Rejected,
+                1,
+                "named:levelLoad".to_string(),
+            ),
             "levelLoad publishes no @rising, but unrelated reactions still dispatch"
         );
         assert_eq!(
@@ -222,7 +241,11 @@ mod tests {
             );
             assert_eq!(
                 drain_direction_write(&ctx, &bindings),
-                (SystemReactionIrDispatch::Evaluated, 1)
+                (
+                    SystemReactionIrDispatch::Evaluated,
+                    1,
+                    "crossing:0".to_string(),
+                )
             );
             assert_eq!(
                 ctx.slot_table

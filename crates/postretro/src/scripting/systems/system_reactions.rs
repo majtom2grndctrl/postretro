@@ -35,7 +35,7 @@ const MAX_SHAKE_AMPLITUDE_PX: f32 = 1280.0;
 #[derive(Debug, Default)]
 pub(crate) struct SystemReactionIrBindings {
     bindings: Vec<SystemSetStateBinding>,
-    warned_missing_inputs: std::cell::RefCell<std::collections::HashSet<(usize, Vec<String>)>>,
+    warned_missing_inputs: std::cell::RefCell<std::collections::HashSet<(usize, String)>>,
 }
 
 const APP_DRAIN_DISPATCH_INPUTS: [(&str, IrType); 1] = [("@rising", IrType::Bool)];
@@ -152,6 +152,7 @@ impl SystemReactionIrBindings {
         &self,
         slot: &str,
         value: &serde_json::Value,
+        dispatch_source: &str,
         dispatch_values: &[(String, IrValue)],
         script_ctx: &ScriptCtx,
     ) -> SystemReactionIrDispatch {
@@ -166,19 +167,21 @@ impl SystemReactionIrBindings {
         let Some(program) = &binding.program else {
             return SystemReactionIrDispatch::Rejected;
         };
-        let carried_names: Vec<String> = dispatch_values
+        let mut carried_names: Vec<String> = dispatch_values
             .iter()
             .map(|(name, _)| name.clone())
             .collect();
+        carried_names.sort_unstable();
+        carried_names.dedup();
         if !binding
             .required_dispatch_inputs
             .iter()
             .all(|required| carried_names.contains(required))
         {
-            let warning_key = (binding_index, carried_names.clone());
+            let warning_key = (binding_index, dispatch_source.to_string());
             if self.warned_missing_inputs.borrow_mut().insert(warning_key) {
                 log::warn!(
-                    "[Scripting] setState runtime value for `{slot}` requires dispatch inputs {:?}, but this source carries {:?}; skipping",
+                    "[Scripting] setState runtime value for `{slot}` requires dispatch inputs {:?}, but source `{dispatch_source}` carries {:?}; skipping",
                     binding.required_dispatch_inputs,
                     carried_names,
                 );
@@ -395,10 +398,12 @@ pub(crate) fn register_system_reaction_primitives(registry: &mut SystemReactionR
             serde_json::from_value(args.clone()).map_err(|e| ReactionError::InvalidArgument {
                 reason: format!("setState: failed to deserialize args: {e}"),
             })?;
+        let fire_context = queue.fire_context();
         queue.push(SystemReactionCommand::SetState {
             slot: parsed.slot,
             value: parsed.value,
-            dispatch_values: queue.fire_context(),
+            dispatch_source: fire_context.source,
+            dispatch_values: fire_context.values,
         });
         Ok(())
     });
@@ -645,7 +650,7 @@ mod tests {
         bindings.rebuild(&data, &ctx);
 
         assert_eq!(
-            bindings.dispatch("puzzle.target", &value, &[], &ctx),
+            bindings.dispatch("puzzle.target", &value, "named:derive", &[], &ctx),
             SystemReactionIrDispatch::Evaluated
         );
         assert_number_approx_eq(
@@ -684,15 +689,15 @@ mod tests {
         bindings.rebuild(&data, &ctx);
 
         assert_eq!(
-            bindings.dispatch("puzzle.readonly", &value, &[], &ctx),
+            bindings.dispatch("puzzle.readonly", &value, "named:readonly", &[], &ctx),
             SystemReactionIrDispatch::Rejected
         );
         assert_eq!(
-            bindings.dispatch("puzzle.label", &value, &[], &ctx),
+            bindings.dispatch("puzzle.label", &value, "named:string", &[], &ctx),
             SystemReactionIrDispatch::Rejected
         );
         assert_eq!(
-            bindings.dispatch("puzzle.unknown", &value, &[], &ctx),
+            bindings.dispatch("puzzle.unknown", &value, "named:unknown", &[], &ctx),
             SystemReactionIrDispatch::Unknown,
             "only commands represented at install are known rejections"
         );
@@ -729,7 +734,7 @@ mod tests {
         bindings.rebuild(&data, &ctx);
 
         assert_eq!(
-            bindings.dispatch("puzzle.target", &value, &[], &ctx),
+            bindings.dispatch("puzzle.target", &value, "named:empty", &[], &ctx),
             SystemReactionIrDispatch::Rejected,
             "a source publishing no dispatch values must skip before eval"
         );
@@ -743,6 +748,7 @@ mod tests {
             bindings.dispatch(
                 "puzzle.target",
                 &value,
+                "crossing:0",
                 &[("@rising".to_string(), IrValue::Bool(true))],
                 &ctx,
             ),
@@ -758,6 +764,7 @@ mod tests {
             bindings.dispatch(
                 "puzzle.target",
                 &value,
+                "crossing:0",
                 &[("@rising".to_string(), IrValue::Bool(false))],
                 &ctx,
             ),
@@ -768,6 +775,52 @@ mod tests {
             0.0,
             "falling seed replaces prior value",
         );
+    }
+
+    #[test]
+    fn missing_dispatch_input_warnings_key_by_program_and_canonical_source() {
+        let ctx = ScriptCtx::new();
+        insert_number(&ctx, "puzzle.target", 7.0, 10.0, false);
+        let value = serde_json::json!({
+            "op": "select",
+            "cond": { "op": "input", "name": "@rising" },
+            "a": { "op": "const", "value": 1.0 },
+            "b": { "op": "const", "value": 0.0 }
+        });
+        let data = active_reactions(vec![set_state_reaction(
+            "direction",
+            "puzzle.target",
+            value.clone(),
+        )]);
+        let mut bindings = SystemReactionIrBindings::default();
+        bindings.rebuild(&data, &ctx);
+
+        for source in ["named:levelLoad", "named:doorOpened", "crossing:0"] {
+            assert_eq!(
+                bindings.dispatch("puzzle.target", &value, source, &[], &ctx),
+                SystemReactionIrDispatch::Rejected
+            );
+        }
+        assert_eq!(bindings.warned_missing_inputs.borrow().len(), 3);
+
+        // Published-input ordering is membership data, not source identity.
+        // Repeating one source with order variants must retain one warning key.
+        for values in [
+            vec![
+                ("@unused_b".to_string(), IrValue::Bool(false)),
+                ("@unused_a".to_string(), IrValue::Bool(false)),
+            ],
+            vec![
+                ("@unused_a".to_string(), IrValue::Bool(false)),
+                ("@unused_b".to_string(), IrValue::Bool(false)),
+            ],
+        ] {
+            assert_eq!(
+                bindings.dispatch("puzzle.target", &value, "named:doorOpened", &values, &ctx),
+                SystemReactionIrDispatch::Rejected
+            );
+        }
+        assert_eq!(bindings.warned_missing_inputs.borrow().len(), 3);
     }
 
     #[test]
@@ -1046,6 +1099,7 @@ mod tests {
             vec![SystemReactionCommand::SetState {
                 slot: "audio.master".to_string(),
                 value: serde_json::json!(0.5),
+                dispatch_source: String::new(),
                 dispatch_values: Vec::new(),
             }]
         );
@@ -1056,7 +1110,10 @@ mod tests {
         let mut registry = SystemReactionRegistry::new();
         register_system_reaction_primitives(&mut registry);
         let queue = SystemCommandQueue::new();
-        queue.replace_fire_context(vec![("@rising".to_string(), IrValue::Bool(true))]);
+        queue.replace_fire_context(postretro_entities::SystemCommandFireContext {
+            source: "crossing:7".to_string(),
+            values: vec![("@rising".to_string(), IrValue::Bool(true))],
+        });
 
         registry
             .dispatch(
@@ -1068,8 +1125,9 @@ mod tests {
 
         assert!(matches!(
             queue.take().as_slice(),
-            [SystemReactionCommand::SetState { dispatch_values, .. }]
-                if dispatch_values == &vec![("@rising".to_string(), IrValue::Bool(true))]
+            [SystemReactionCommand::SetState { dispatch_source, dispatch_values, .. }]
+                if dispatch_source == "crossing:7"
+                    && dispatch_values == &vec![("@rising".to_string(), IrValue::Bool(true))]
         ));
     }
 
@@ -1121,6 +1179,7 @@ mod tests {
             vec![SystemReactionCommand::SetState {
                 slot: "ui.label".to_string(),
                 value: serde_json::json!("hi"),
+                dispatch_source: String::new(),
                 dispatch_values: Vec::new(),
             }]
         );

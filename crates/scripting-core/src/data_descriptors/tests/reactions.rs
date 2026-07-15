@@ -432,6 +432,23 @@ fn lua_crossings_accept_dense_arrays() {
 }
 
 #[test]
+fn non_string_crossing_edges_degrade_identically_in_both_vms() {
+    // Regression: VM field readers rejected these descriptors before shared
+    // edge normalization could warn and preserve shipped single-edge behavior.
+    let js = eval_js(
+        r#"({ crossings: [{ slot: "test.value", above: 1, edge: 42, fire: ["go"] }] })"#,
+        |ctx, value| LevelManifest::from_js_value(ctx, value).unwrap(),
+    );
+    let lua = eval_lua(
+        r#"return { crossings = { { slot = "test.value", above = 1, edge = 42, fire = { "go" } } } }"#,
+        |value| LevelManifest::from_lua_value(value).unwrap(),
+    );
+
+    assert_eq!(js.crossings, lua.crossings);
+    assert_eq!(js.crossings[0].edge, None);
+}
+
+#[test]
 fn js_predicate_crossing_uses_predicate_as_the_wire_discriminant() {
     let src = r#"({
         crossings: [{

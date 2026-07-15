@@ -93,6 +93,8 @@ The state store has engine-global lifetime and is never cleared on level unload,
 
 `defineStore` is a pure SDK builder. It returns `declaration` data for `ModManifest.stores` and a `state` reference tree keyed by schema field. Calling it performs no FFI and changes no engine state. Unreturned declarations disappear when the short-lived setup VM drops.
 
+Names beginning with `@` are reserved for ephemeral dispatch inputs (§12). Store declarations reject a namespace or slot name beginning with `@`.
+
 Engine-owned slots may be readonly to scripts while remaining writable by engine systems. Engine writes bypass readonly but still apply declared type, enum, finite-number, and range validation. Mod-owned slots are script-writable unless declared otherwise. Scripts and engine systems address slots by dotted name so references remain valid after the authoring VM drops.
 
 Numeric slots use `f32` end to end. Integer-shaped producers remain exact only
@@ -399,52 +401,40 @@ Start the node set minimal: named-input leaves, arithmetic, `clamp`, `lerp`, `se
 
 **The typedef is the contract.** The generated `.d.ts` / `.d.luau` (§7) *is* the vocabulary — and therefore the documentation of its limits. If a node is not in the typedef the author cannot type it, so the boundary is clear by construction. No separate "what's allowed" list to drift out of sync.
 
-**Author-facing naming.** Scripts see the vocabulary as the `runtime` namespace — one builder per opcode, `read(name)` for the named-input leaf — and the emitted union type `RuntimeValue`. Builder arguments accept bare number/boolean literals, auto-wrapped into constant nodes. SDK naming rule: `State` in a name means stored (slots, `StateValue`); `Runtime` means computed by the engine, never stored. Rust internals keep the IR names (`IrNode`, `BakedIr`); the adopting plan's boundary inventory records the mapping.
+**Author-facing naming.** Scripts see the vocabulary as the `runtime` namespace — one builder per opcode, `read(name | ref)` for an input leaf — and the emitted union type `RuntimeValue`. Builder operands accept bare state references and number/boolean literals. State references auto-wrap into input nodes; literals auto-wrap into constant nodes. SDK naming rule: `State` in a name means stored (slots, `StateValue`); `Runtime` means computed by the engine, never stored. Rust internals keep the IR names (`IrNode`, `BakedIr`); the adopting plan's boundary inventory records the mapping.
 
 **Scope.** This is a cross-cutting engine pattern. Movement is the first adopter (E14 plan 3). Plans are sequential: substrate → movement adopter → consolidation (demand-driven). Each plan consumes the prior plan's settled output.
 
 ---
 
-## 12. Reaction Dispatch Model (future design)
+## 12. Reaction Dispatch Model
 
-> **Future design, not shipped.** Extends §10 (reactions) and §11 (typed
-> command buffer) with how reactions are *addressed*, *fired*, and
-> *parameterized* by dispatch sources. §10.4 documents the shipped sourceless
-> reactions and threshold/predicate state crossings. The parameterization,
-> scope typing, and occupancy exposure below remain future work. The
-> `done/E18--trigger-event-fanout` script-syntax sample predates this model —
-> it is illustrative pseudocode, not the shipped API.
-
-**A reaction is a named, sourceless, deferred effect bundle.** `defineReaction(name?, body)` returns frozen descriptor data (§10, §11); the bundle has no knowledge of what fires it. `name` is the bundle's **dispatch address** — the string a firing source names to run it — *not* the event it reacts to. Addressing is many-to-one: several reactions may share an address, and firing that address runs all of them (five `defineReaction("levelLoad", …)` in one script all fire at load). `"levelLoad"` is the world-sourced special case — a reserved address the engine auto-fires once after level install; it reads like "react to levelLoad" but means "everything addressed `levelLoad` runs now."
+**A reaction is a named, sourceless, deferred effect bundle.** `defineReaction(name?, body)` returns plain descriptor data (§10, §11); the bundle has no knowledge of what fires it. `name` is the bundle's **dispatch address** — the string a firing source names to run it — *not* the event it reacts to. Addressing is many-to-one: several reactions may share an address, and firing that address runs all of them (five `defineReaction("levelLoad", …)` in one script all fire at load). `"levelLoad"` is the world-sourced special case — a reserved address the engine auto-fires once after level install; it reads like "react to levelLoad" but means "everything addressed `levelLoad` runs now."
 
 **Explicit names are required only for out-of-script referrers.** When the only thing that fires a reaction lives in the same script, reference the const handle directly. Omit the name; `defineReaction` derives a body-hashed id, and the const *is* the identity. An explicit string name is load-bearing only when a referrer cannot hold a reference. Two cases: a map brush `on_fire`/`on_exit` KVP (a literal string authored across the FFI), and cross-runtime TS↔Luau agreement (the derived id differs per runtime — §7). Pulling causality into script — binding via query + observer rather than a brush KVP — collapses the name to an implementation detail.
 
 **A dispatch source is a call site; the reaction is the callee.** Each event type publishes a typed **dispatch scope** — the ephemeral inputs that exist *because* this fire happened. A reaction that reads those inputs is *typed by the scope it requires*; a source accepts a reaction iff its scope satisfies the reaction's used inputs. This is the §11 `resolve_input` binding contract lifted into the SDK type system.
 
-| Event type | Source spelling | `param` type | Published inputs |
+| Event type | Source spelling | Params type | Published inputs |
 |---|---|---|---|
 | **levelLoad** | engine auto-fire (`"levelLoad"` address) | *(none)* — `Reaction<{}>` | — |
-| **contact** | brush `on_fire`/`on_exit`, or `world.query(…).on("enter"\|"exit"\|"occupied", r)` | `ContactScope` | `activators: EntityRef[]`, `trigger: EntityRef`, `occupancy: number` |
-| **crossing** | `onStateCrossing(ref, cond, [r])` | `CrossingScope` | `crossed: number`, `value: number`, `direction: "rising"\|"falling"` |
-| **tick** *(accumulators only)* | `slot.integrate((t) => expr)` | `TickScope` | `dt: number` |
+| **crossing** | `onStateCrossing(ref, cond, [r])` | `CrossingParams` | `rising: Bool` |
+| **tick** *(accumulators only)* | number slot schema `accumulate` tracer | `TickParams` | `dt: Number` |
 
 **Two kinds of parameter, one spelling each.**
 
 - *Author-time* — a value the author picks before the customs-gate. A plain JS factory returning a descriptor: `const p = (side) => defineReaction(seq([…]))`. Baked to frozen literals; the engine never learns it was parameterized. **Not an engine concept** — adding one would violate §1's "closed vocabulary, not shipped code." Do not fold the factory into `defineReaction`.
-- *Dispatch-time* — a value known only when the reaction fires (activator, crossed value, `dt`). The body is an IR template with `input` holes (§11) that the firing source binds from its scope. Spelled as a typed `param` proxy: `defineReaction((on) => … on.crossed …)`. The arrow is an **author-time tracer** that runs once to build frozen IR — never a runtime callback; the VM still drops (§1, §2). `param`'s type *is* the reaction's required scope, so out-of-scope reads fail at compile time and IntelliSense lists the legal inputs (§7, "the typedef is the contract"). Because `param` leaves are IR nodes, operations on them are IR-builder ops, not plain arithmetic — the ergonomic tax of authoring IR in TS.
+- *Dispatch-time* — a value known only when a source fires. The body is an IR template with named input holes (§11) that the firing source fills. Spelled through an **author-time tracer** such as `defineReaction((on: CrossingParams) => … on.rising …)`. The tracer runs once while the script declares data; no callback survives and the VM still drops (§1, §2). Every tracer receives the same frozen merged params object. Exported params types narrow that object to the inputs legal for the authoring site. The values are IR nodes, so scripts compose them with runtime builders rather than plain arithmetic.
 
-**Ephemeral dispatch context vs. ambient refs.** `param` carries *only* the ephemeral inputs in the scope table. Persistent values — store slots, occupancy refs, `player.health` — are read through their own refs (§5) anywhere, never through `param`. This keeps scopes small and keeps zero-param reactions (`defineReaction(seq([…]))`, i.e. `Reaction<{}>`) fireable from any source, `levelLoad` included.
+**Ephemeral dispatch context vs. ambient refs.** Params carry only values that exist because this source fired. Persistent values — store slots, engine-owned readonly refs, and player state — remain ambient and are read through their own refs (§5). Ambient refs compose with ephemeral inputs but do not enlarge a reaction's dispatch scope. This keeps scopes small and keeps zero-param reactions (`Reaction<{}>`) fireable from every source, including `levelLoad`.
 
-**Occupancy is exposed count, in two aggregates.** Per-trigger occupancy is engine-tracked (`done/E18--trigger-event-fanout`) and exposed to scripts by `ready/E18--coop-activation-policy`. Shape decided there: two per-tag ref builders, `occupiedCount(tag)` — how many matched volumes have ≥1 occupant (a two-plate door fires at `occupiedCount == 2`) — and `occupants(tag)` — total bodies across matched volumes (King-of-the-Hill scales drain by `occupants`). Two players on one plate make `occupants == 2` but `occupiedCount == 1`; each puzzle picks the aggregate it means. The refs read engine-owned, readonly, `SharedGlobal`-replicated Number slots under a reserved `trigger.<tag>.occupiedCount` / `trigger.<tag>.occupants` namespace, written each host tick from the *effective*-occupant set (spatial overlap ∧ alive — a corpse on a plate does not count). Co-op activation policy is authored entirely in script over these refs; no `activation_policy`-style brush KVP or component field is ever introduced.
+**Scope enforcement has two gates.** Author-facing types prevent a scoped reaction from being treated as sourceless. At install, binding rejects input names outside that site's vocabulary. At dispatch sites shared by several sources, a source runs a reaction only when it publishes every ephemeral input the program reads. A mismatch skips that reaction and warns once for the program/source pair; it never evaluates with missing or stale values. Luau relies on these engine gates.
 
-**The observer will gain dispatch context.** The shipped observer (§10.4) is a
-free function with threshold and Bool-IR predicate forms; its predicate reads
-N slots through `runtime.read(slot)`, while the threshold form remains
-available. The pending extension is `CrossingScope`, which publishes
-`direction` so one reaction can distinguish the sense — shields up on
-`falling`, all-clear on `rising` — instead of two crossings.
+**Crossings publish direction as a boolean.** Threshold and Bool-IR predicate crossings publish `CrossingParams.rising`. Threshold form reports the watched value's direction; predicate form reports the condition transition (`false` to `true` is rising). A source with `edge: "both"` fires on both transitions and publishes the actual direction. A single-edge source still publishes its authored sense. Persistent watched values remain ambient refs; the crossing does not publish threshold or value snapshots.
 
-**Per-tick is accumulator-only.** There is no bare per-tick reaction source. The sole per-tick surface is `slot.integrate((t) => expr)` — a store slot accumulating an IR expression each tick, clamped to its declared range. `TickScope` (publishing `dt`) is *that accumulator's* param type, never a `defineReaction` param: a reaction is never tick-sourced. A bare `onTick` reaction is added only if a concrete case blocks on it.
+**Per-tick is accumulator-only.** There is no bare per-tick reaction source. A Number slot may declare `accumulate: (t: TickParams) => delta`; the engine adds that delta each authoritative tick and clamps the result to the slot's declared range. `TickParams.dt` is available only to this schema tracer, never to `defineReaction`. A bare `onTick` reaction is added only if a concrete case blocks on it.
+
+**Entity-bearing trigger-event params remain future work.** Trigger events already fire reaction addresses, but passing activator or trigger entity tokens through the params object belongs to the sibling trigger-event-scope work. Do not infer that surface from the numeric crossing and tick scopes.
 
 ---
 

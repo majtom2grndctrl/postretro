@@ -83,6 +83,7 @@ impl App {
         // session-owned state clears are guarded — a no-op with no session yet.
         if let Some(session) = self.session.as_mut() {
             session.scripting.command_diagnostics.clear();
+            session.scripting.slot_accumulator_bindings.clear();
             session.fog_volume_bridge.clear();
             session.trigger_volume_bridge.clear();
             session.trigger_system.clear();
@@ -107,7 +108,7 @@ impl App {
     /// | per-level GPU resources (textures, geometry) | `script_ctx`, `ScriptRuntime` |
     /// | light bridge, fog bridge, trigger-volume bridge, trigger system, trigger bindings, collision world | slot table (no clear method — engine-global) |
     /// | level sounds, sprite collections, `emitter_bridge`, `mesh_render`, `mesh_clip_tables`, `hit_zone_store` | entity-type registry (`data_registry.entities`), mod map catalog (`data_registry.maps`) |
-    /// | `data_registry` reactions + crossings, presentation cells | persisted-state save path |
+    /// | `data_registry` reactions + crossings, accumulator bindings, presentation cells | persisted-state save path |
     /// | level-scope UI trees (`modal_stack` `ScopeTier::Level`) | |
     /// | progress tracker, active wieldable, client weapon prediction state, camera pose | |
     pub(crate) fn unload_level(&mut self) {
@@ -1645,6 +1646,7 @@ mod tests {
             ctx.system_commands.push(SystemReactionCommand::SetState {
                 slot: "puzzle.count".to_string(),
                 value: increment.clone(),
+                dispatch_source: "test.levelLoad".to_string(),
                 dispatch_values: Vec::new(),
             });
         }
@@ -1830,6 +1832,12 @@ mod tests {
             Vec::new(),
             &[],
         );
+        app.session
+            .as_mut()
+            .expect("test app session installed")
+            .scripting
+            .slot_accumulator_bindings
+            .rebuild(&ctx);
 
         let lights = (0..fixture.light_count)
             .map(|i| map_light(fixture.light_tag, [i as f64, 2.0, 3.0]))
@@ -1870,7 +1878,9 @@ mod tests {
                         readonly: false,
                         ownership: SlotOwnership::Mod,
                         network: postretro_entities::ReplicationScope::None,
-                        accumulate: None,
+                        accumulate: Some(postretro_foundation::IrNode::Input {
+                            name: "@dt".to_string(),
+                        }),
                     }),
                 )],
             )
@@ -1911,6 +1921,15 @@ mod tests {
                 .snapshot()
                 .is_empty()
         );
+        assert!(
+            !app.session
+                .as_ref()
+                .expect("test app session installed")
+                .scripting
+                .slot_accumulator_bindings
+                .is_empty(),
+            "level install must bind the declared accumulator"
+        );
 
         let slots_before = slot_snapshot(&app);
         script_ctx(&app)
@@ -1939,6 +1958,15 @@ mod tests {
         assert_eq!(data_after, data_before);
         assert!(app.boot_state == BootState::Frontend);
         assert!(app.level.is_none());
+        assert!(
+            app.session
+                .as_ref()
+                .expect("test app session installed")
+                .scripting
+                .slot_accumulator_bindings
+                .is_empty(),
+            "level unload must drop every bound accumulator program"
+        );
         assert_eq!(app.script_time, 0.0);
         assert_eq!(app.anim_time, 0.0);
         assert!(

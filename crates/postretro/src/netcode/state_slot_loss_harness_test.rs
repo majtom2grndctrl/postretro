@@ -398,7 +398,7 @@ fn accumulated_shared_global_converges_without_client_side_evaluation() {
     );
 
     for _ in 0..10 {
-        evaluate_slot_accumulators(&mut bindings, &h.host_ctx, 0.5);
+        evaluate_slot_accumulators(&mut bindings, 0.5);
         h.step();
     }
     for _ in 0..4 {

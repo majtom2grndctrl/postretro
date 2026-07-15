@@ -65,7 +65,7 @@ pub fn crossing_descriptor_from_js<'js>(
         let item: JsValue = fire_arr.get(i).map_err(js_err)?;
         fire.push(String::from_js_value_required(item, "fire")?);
     }
-    let edge = get_optional_string_js(&obj, "edge")?;
+    let edge = crossing_edge_from_js(&obj)?;
 
     if obj.contains_key("predicate").map_err(js_err)? {
         let raw: JsValue = obj.get("predicate").map_err(js_err)?;
@@ -81,6 +81,20 @@ pub fn crossing_descriptor_from_js<'js>(
     let above = get_optional_f32_js(&obj, "above")?;
     let max = get_optional_f32_js(&obj, "max")?;
     build_crossing(slot, below, above, max, edge, fire)
+}
+
+/// Preserve every present edge value for the shared validator. A non-string
+/// marker is deliberately not a valid edge spelling, so both VM converters
+/// reach the same warn-and-degrade path instead of rejecting the descriptor.
+fn crossing_edge_from_js<'js>(obj: &Object<'js>) -> Result<Option<String>, DescriptorError> {
+    if !obj.contains_key("edge").map_err(js_err)? {
+        return Ok(None);
+    }
+    let raw: JsValue = obj.get("edge").map_err(js_err)?;
+    match raw.as_string() {
+        Some(value) => value.to_string().map(Some).map_err(js_err),
+        None => Ok(Some("<non-string>".to_string())),
+    }
 }
 
 pub fn primitive_descriptor_from_js<'js>(

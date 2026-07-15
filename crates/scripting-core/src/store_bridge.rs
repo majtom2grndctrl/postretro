@@ -45,7 +45,8 @@ pub fn write_store_slot(ctx: &ScriptCtx, name: &str, value: SlotValue) -> Result
     let slot = table
         .get_mut(name)
         .ok_or_else(|| unknown_slot("storeWrite", name))?;
-    slot.value = Some(validate_slot_value(name, &slot.schema, value)?);
+    let value = validate_slot_value(name, &slot.schema, value)?;
+    slot.write_value(Some(value));
     Ok(())
 }
 
@@ -76,7 +77,8 @@ pub fn write_script_store_slot(
     }
 
     let value = script_value_for_slot(name, &slot.schema.slot_type, value)?;
-    slot.value = Some(validate_slot_value(name, &slot.schema, value)?);
+    let value = validate_slot_value(name, &slot.schema, value)?;
+    slot.write_value(Some(value));
     Ok(())
 }
 
@@ -95,7 +97,7 @@ pub fn apply_store_slot_batch(
 
     for (name, value) in validated {
         if let Some(slot) = table.get_mut(name) {
-            slot.value = Some(value);
+            slot.write_value(Some(value));
         }
     }
     Ok(())
@@ -115,7 +117,8 @@ pub fn write_state_slot_json(
         return Ok(());
     }
     let coerced = json_value_for_slot(name, &slot.schema.slot_type, value)?;
-    slot.value = Some(validate_slot_value(name, &slot.schema, coerced)?);
+    let value = validate_slot_value(name, &slot.schema, coerced)?;
+    slot.write_value(Some(value));
     Ok(())
 }
 

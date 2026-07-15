@@ -25,10 +25,14 @@ use postretro_net::wire::{
 use super::state_slots::{ClientStateApply, HostStateReplication};
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::{
-    EntityRegistry, ReplicationScope, SlotOwnership, SlotRecord, SlotSchema, SlotTable, SlotType,
-    SlotValue, Transform,
+    EntityRegistry, ReplicationScope, ScriptCtx, SlotOwnership, SlotRecord, SlotSchema, SlotTable,
+    SlotType, SlotValue, Transform,
 };
-use postretro_foundation::HealthDescriptor;
+use postretro_foundation::{HealthDescriptor, IrNode};
+
+use crate::scripting_systems::slot_accumulators::{
+    SlotAccumulatorBindings, evaluate_slot_accumulators,
+};
 
 use super::command_queue::{MovementOwners, WeaponOwners};
 
@@ -63,7 +67,7 @@ fn heavy_loss_link(seed: u64) -> LinkConfig {
 }
 
 /// A mod slot record under a given replication scope (number type, default 0).
-fn replicated_number(scope: ReplicationScope) -> SlotRecord {
+fn replicated_number(scope: ReplicationScope, accumulate: Option<IrNode>) -> SlotRecord {
     SlotRecord::new(SlotSchema {
         slot_type: SlotType::Number,
         default: Some(SlotValue::Number(0.0)),
@@ -72,21 +76,21 @@ fn replicated_number(scope: ReplicationScope) -> SlotRecord {
         readonly: false,
         ownership: SlotOwnership::Mod,
         network: scope,
-        accumulate: None,
+        accumulate,
     })
 }
 
 /// Both peers build this identically: one shared mod slot (`net.objective`) and the
 /// engine's owner-private `player.health` / `player.maxHealth` (left at the Task 4
 /// catalog-flip scope). The matching slot set is what makes the fingerprints agree.
-fn harness_table() -> SlotTable {
+fn harness_table(accumulate: Option<IrNode>) -> SlotTable {
     let mut table = SlotTable::new();
     table
         .insert_namespace(
             "net",
             vec![(
                 "objective".to_string(),
-                replicated_number(ReplicationScope::SharedGlobal),
+                replicated_number(ReplicationScope::SharedGlobal, accumulate),
             )],
         )
         .unwrap();
@@ -120,7 +124,7 @@ fn spawn_owned_health(
 /// [`Self::step`].
 struct StateSlotHarness {
     host: HostStateReplication,
-    host_table: SlotTable,
+    host_ctx: ScriptCtx,
     registry: EntityRegistry,
     owners: MovementOwners,
     weapon_owners: WeaponOwners,
@@ -142,6 +146,15 @@ struct StateSlotHarness {
 
 impl StateSlotHarness {
     fn new(client_id: u64, to_client: LinkConfig, to_server: LinkConfig) -> Self {
+        Self::new_with_accumulator(client_id, to_client, to_server, None)
+    }
+
+    fn new_with_accumulator(
+        client_id: u64,
+        to_client: LinkConfig,
+        to_server: LinkConfig,
+        accumulate: Option<IrNode>,
+    ) -> Self {
         let mut registry = EntityRegistry::new();
         let mut owners = MovementOwners::new();
         // One owned pawn for this client so the owner-private health slots replicate.
@@ -149,19 +162,25 @@ impl StateSlotHarness {
 
         let mut host = HostStateReplication::new();
         host.register_client(client_id);
-        let mut host_table = harness_table();
-        host_table.get_mut("net.objective").unwrap().value = Some(SlotValue::Number(0.0));
-        let fingerprint = host.fingerprint(&host_table);
+        let host_ctx = ScriptCtx::new();
+        *host_ctx.slot_table.borrow_mut() = harness_table(accumulate.clone());
+        host_ctx
+            .slot_table
+            .borrow_mut()
+            .get_mut("net.objective")
+            .unwrap()
+            .value = Some(SlotValue::Number(0.0));
+        let fingerprint = host.fingerprint(&host_ctx.slot_table.borrow());
 
         Self {
             host,
-            host_table,
+            host_ctx,
             registry,
             owners,
             weapon_owners: WeaponOwners::new(),
             client_id,
             client: ClientStateApply::new(),
-            client_table: harness_table(),
+            client_table: harness_table(accumulate),
             fingerprint,
             to_client: PacketConditioner::new(to_client),
             to_server: PacketConditioner::new(to_server),
@@ -173,7 +192,12 @@ impl StateSlotHarness {
 
     /// Set the shared objective value the host will replicate next frame.
     fn set_objective(&mut self, value: f32) {
-        self.host_table.get_mut("net.objective").unwrap().value = Some(SlotValue::Number(value));
+        self.host_ctx
+            .slot_table
+            .borrow_mut()
+            .get_mut("net.objective")
+            .unwrap()
+            .value = Some(SlotValue::Number(value));
     }
 
     /// Set the owning pawn's current health on the host (mutating the live component,
@@ -204,7 +228,7 @@ impl StateSlotHarness {
         // Host: ingest this frame's authoritative values once, then produce this
         // client's records and wrap them in the real envelope.
         self.host.ingest_frame(
-            &self.host_table,
+            &self.host_ctx.slot_table.borrow(),
             &self.registry,
             &self.owners,
             &self.weapon_owners,
@@ -348,6 +372,53 @@ fn state_slots_converge_under_lossy_link() {
         ),
         other => panic!("player.health should be a number after convergence, got {other:?}"),
     }
+}
+
+#[test]
+fn accumulated_shared_global_converges_without_client_side_evaluation() {
+    let direct = LinkConfig {
+        delay: 0,
+        jitter: 0,
+        loss_probability: 0.0,
+        seed: 0x5418,
+    };
+    let accumulator = IrNode::Input {
+        name: "@dt".to_string(),
+    };
+    let mut h =
+        StateSlotHarness::new_with_accumulator(CLIENT_A, direct.clone(), direct, Some(accumulator));
+    let mut bindings = SlotAccumulatorBindings::default();
+    bindings.rebuild(&h.host_ctx);
+
+    h.step();
+    assert_eq!(
+        h.client_value("net.objective"),
+        Some(SlotValue::Number(0.0)),
+        "declaring accumulate in the shared schema does not execute it on the client"
+    );
+
+    for _ in 0..10 {
+        evaluate_slot_accumulators(&mut bindings, &h.host_ctx, 0.5);
+        h.step();
+    }
+    for _ in 0..4 {
+        h.step();
+    }
+
+    assert_eq!(
+        h.host_ctx
+            .slot_table
+            .borrow()
+            .get("net.objective")
+            .unwrap()
+            .value,
+        Some(SlotValue::Number(5.0))
+    );
+    assert_eq!(
+        h.client_value("net.objective"),
+        Some(SlotValue::Number(5.0)),
+        "the accumulated SharedGlobal value reaches the client through real state-slot replication"
+    );
 }
 
 // A dropped baseline forces a `StateBaselineRefresh` and the slot repairs WITHOUT

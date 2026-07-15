@@ -92,8 +92,10 @@ pub(crate) fn evaluate_slot_accumulators(
 mod tests {
     use super::*;
     use postretro_entities::{
-        NumericRange, ReplicationScope, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
+        CrossingCondition, CrossingDescriptor, DataRegistry, NumericRange, ReplicationScope,
+        SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
     };
+    use postretro_scripting_core::state_crossings::CrossingDetector;
 
     fn number_slot(default: f32, range: Option<NumericRange>, accumulate: IrNode) -> SlotRecord {
         SlotRecord::new(SlotSchema {
@@ -139,6 +141,83 @@ mod tests {
                 .unwrap()
                 .value,
             Some(SlotValue::Number(0.0))
+        );
+    }
+
+    #[test]
+    fn sixty_second_countdown_clamps_and_crosses_on_the_completion_tick() {
+        let ctx = ScriptCtx::new();
+        ctx.slot_table
+            .borrow_mut()
+            .insert(
+                "timer.remaining".into(),
+                number_slot(
+                    60.0,
+                    Some(NumericRange {
+                        min: 0.0,
+                        max: 60.0,
+                    }),
+                    IrNode::Mul {
+                        a: Box::new(IrNode::Input { name: "@dt".into() }),
+                        b: Box::new(IrNode::Const {
+                            value: IrValue::Number(-1.0),
+                        }),
+                    },
+                ),
+            )
+            .unwrap();
+
+        let mut data = DataRegistry::new();
+        data.populate_level(
+            Vec::new(),
+            vec![CrossingDescriptor {
+                slot: None,
+                condition: CrossingCondition::Ir(IrNode::Le {
+                    a: Box::new(IrNode::Input {
+                        name: "timer.remaining".into(),
+                    }),
+                    b: Box::new(IrNode::Const {
+                        value: IrValue::Number(0.0),
+                    }),
+                }),
+                max: 1.0,
+                edge: None,
+                fire: vec!["countdownComplete".into()],
+            }],
+            &[],
+        );
+        let mut detector = CrossingDetector::new();
+        detector.initialize(&data, &ctx.slot_table.borrow(), &ctx);
+        let mut bindings = SlotAccumulatorBindings::default();
+        bindings.rebuild(&ctx);
+
+        for elapsed_seconds in 1..=60 {
+            // Production order: authoritative simulation tick, accumulator write,
+            // then the frame's settled-state crossing detection.
+            evaluate_slot_accumulators(&mut bindings, &ctx, 1.0);
+            let fires = detector.detect(&ctx.slot_table.borrow());
+            if elapsed_seconds < 60 {
+                assert!(fires.is_empty(), "crossed early at {elapsed_seconds}s");
+            } else {
+                assert_eq!(fires.len(), 1);
+                assert_eq!(fires[0].reaction, "countdownComplete");
+                assert!(fires[0].rising, "predicate condition became true");
+            }
+        }
+
+        evaluate_slot_accumulators(&mut bindings, &ctx, 1.0);
+        assert_eq!(
+            ctx.slot_table
+                .borrow()
+                .get("timer.remaining")
+                .unwrap()
+                .value,
+            Some(SlotValue::Number(0.0)),
+            "the existing store write path clamps the countdown at its minimum"
+        );
+        assert!(
+            detector.detect(&ctx.slot_table.borrow()).is_empty(),
+            "remaining at the clamp is not another predicate edge"
         );
     }
 
@@ -221,5 +300,101 @@ mod tests {
             ctx.slot_table.borrow().get("order.z_source").unwrap().value,
             Some(SlotValue::Number(2.0))
         );
+    }
+
+    #[test]
+    fn accumulator_and_both_edge_timeline_is_deterministic_run_to_run() {
+        fn run() -> (Vec<f32>, Vec<(usize, bool)>) {
+            let ctx = ScriptCtx::new();
+            let mut table = ctx.slot_table.borrow_mut();
+            table
+                .insert(
+                    "determinism.value".into(),
+                    number_slot(
+                        -2.0,
+                        Some(NumericRange {
+                            min: -10.0,
+                            max: 10.0,
+                        }),
+                        IrNode::Mul {
+                            a: Box::new(IrNode::Input { name: "@dt".into() }),
+                            b: Box::new(IrNode::Input {
+                                name: "determinism.rate".into(),
+                            }),
+                        },
+                    ),
+                )
+                .unwrap();
+            table
+                .insert(
+                    "determinism.rate".into(),
+                    SlotRecord::new(SlotSchema {
+                        slot_type: SlotType::Number,
+                        default: Some(SlotValue::Number(1.0)),
+                        range: None,
+                        persist: false,
+                        readonly: false,
+                        ownership: SlotOwnership::Mod,
+                        network: ReplicationScope::None,
+                        accumulate: None,
+                    }),
+                )
+                .unwrap();
+            drop(table);
+
+            let mut data = DataRegistry::new();
+            data.populate_level(
+                Vec::new(),
+                vec![CrossingDescriptor {
+                    slot: Some("determinism.value".into()),
+                    condition: CrossingCondition::Above { threshold: 0.0 },
+                    max: 1.0,
+                    edge: Some("both".into()),
+                    fire: vec!["zeroEdge".into()],
+                }],
+                &[],
+            );
+            let mut detector = CrossingDetector::new();
+            detector.initialize(&data, &ctx.slot_table.borrow(), &ctx);
+            let mut bindings = SlotAccumulatorBindings::default();
+            bindings.rebuild(&ctx);
+            let mut timeline = Vec::new();
+            let mut fires = Vec::new();
+
+            for tick in 1..=6 {
+                if tick == 4 {
+                    ctx.slot_table
+                        .borrow_mut()
+                        .get_mut("determinism.rate")
+                        .unwrap()
+                        .value = Some(SlotValue::Number(-1.0));
+                }
+                evaluate_slot_accumulators(&mut bindings, &ctx, 1.0);
+                let value = match ctx
+                    .slot_table
+                    .borrow()
+                    .get("determinism.value")
+                    .unwrap()
+                    .value
+                    .as_ref()
+                {
+                    Some(SlotValue::Number(value)) => *value,
+                    other => panic!("expected deterministic number, got {other:?}"),
+                };
+                timeline.push(value);
+                fires.extend(
+                    detector
+                        .detect(&ctx.slot_table.borrow())
+                        .into_iter()
+                        .map(|fire| (tick, fire.rising)),
+                );
+            }
+            (timeline, fires)
+        }
+
+        let baseline = run();
+        assert_eq!(run(), baseline);
+        assert_eq!(baseline.0, vec![-1.0, 0.0, 1.0, 0.0, -1.0, -2.0]);
+        assert_eq!(baseline.1, vec![(3, true), (5, false)]);
     }
 }

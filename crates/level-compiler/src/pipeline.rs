@@ -151,6 +151,22 @@ pub fn planned_stages(lights: &[map_data::MapLight]) -> Vec<StageDescriptor> {
     planned_stages_for_sdf(map_needs_sdf_atlas(lights))
 }
 
+/// A map parsed once on the main thread so the TUI can derive its planned
+/// content-dependent stage list before starting the bake worker.
+pub(crate) struct PreparedMap {
+    pub(crate) map_data: map_data::MapData,
+    parsing_elapsed: Duration,
+}
+
+pub(crate) fn prepare(args: &Args) -> anyhow::Result<PreparedMap> {
+    let started = Instant::now();
+    let map_data = parse::parse_map_file(&args.input, args.format)?;
+    Ok(PreparedMap {
+        map_data,
+        parsing_elapsed: started.elapsed(),
+    })
+}
+
 fn planned_stages_for_sdf(needs_sdf: bool) -> Vec<StageDescriptor> {
     ORDERED_STAGES
         .iter()
@@ -171,17 +187,52 @@ pub(crate) fn run(
     reporter: Arc<dyn Reporter>,
     governor: Arc<Governor>,
 ) -> anyhow::Result<()> {
-    let mut timings = Vec::new();
-
     let stage_start = begin_stage(reporter.as_ref(), StageId::Parsing);
     let map_data = parse::parse_map_file(&args.input, args.format)?;
-    finish_stage(
-        &mut timings,
-        reporter.as_ref(),
-        StageId::Parsing,
-        stage_start,
-        true,
-    );
+    let parsing_elapsed = stage_start.elapsed();
+    run_after_parsing(
+        args,
+        stage_cache,
+        started,
+        reporter,
+        governor,
+        map_data,
+        parsing_elapsed,
+    )
+}
+
+pub(crate) fn run_prepared(
+    args: &Args,
+    stage_cache: Option<cache::StageCache>,
+    started: Instant,
+    reporter: Arc<dyn Reporter>,
+    governor: Arc<Governor>,
+    prepared: PreparedMap,
+) -> anyhow::Result<()> {
+    reporter.begin_stage(StageId::Parsing, StageId::Parsing.label());
+    run_after_parsing(
+        args,
+        stage_cache,
+        started,
+        reporter,
+        governor,
+        prepared.map_data,
+        prepared.parsing_elapsed,
+    )
+}
+
+fn run_after_parsing(
+    args: &Args,
+    stage_cache: Option<cache::StageCache>,
+    started: Instant,
+    reporter: Arc<dyn Reporter>,
+    governor: Arc<Governor>,
+    map_data: map_data::MapData,
+    parsing_elapsed: Duration,
+) -> anyhow::Result<()> {
+    let mut timings = Vec::new();
+    timings.push((StageId::Parsing.label(), parsing_elapsed));
+    reporter.finish_stage(StageId::Parsing);
 
     let stage_start = begin_stage(reporter.as_ref(), StageId::DataScript);
     let data_script_section =

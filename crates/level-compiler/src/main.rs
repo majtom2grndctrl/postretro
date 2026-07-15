@@ -48,6 +48,7 @@ pub mod visibility;
 
 use std::collections::HashSet;
 use std::fmt::Display;
+use std::io::IsTerminal as _;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -320,6 +321,14 @@ fn precheck_output_dir(output: &Path) -> anyhow::Result<()> {
 fn main() -> anyhow::Result<()> {
     let started = Instant::now();
     let args = parse_args()?;
+    let reporter_mode = select_reporter_mode(
+        args.tui,
+        TerminalStreams {
+            stdin: std::io::stdin().is_terminal(),
+            stdout: std::io::stdout().is_terminal(),
+            stderr: std::io::stderr().is_terminal(),
+        },
+    )?;
 
     // Fail fast: if the output directory is missing, prompt to create it now —
     // before parsing the map or running any bake — so a missing folder never
@@ -385,13 +394,75 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
-    let reporter: std::sync::Arc<dyn reporter::Reporter> =
-        std::sync::Arc::new(reporter::PlainReporter::new(started, log_sink));
-    let permits = std::thread::available_parallelism()
-        .map(std::num::NonZeroUsize::get)
-        .unwrap_or(1);
-    let governor = std::sync::Arc::new(governor::Governor::new(permits, false));
-    pipeline::run(&args, stage_cache, started, reporter, governor)
+    let governor = std::sync::Arc::new(governor::Governor::new(args.jobs, false));
+    match reporter_mode {
+        ReporterMode::Plain => {
+            let reporter: std::sync::Arc<dyn reporter::Reporter> =
+                std::sync::Arc::new(reporter::PlainReporter::new(started, log_sink));
+            pipeline::run(&args, stage_cache, started, reporter, governor)
+        }
+        ReporterMode::Tui => {
+            // The planned list is content-dependent. Parse once before entering
+            // the alternate screen, then pass that parsed map to the worker.
+            // Its measured duration remains the Parsing Build Summary row.
+            let prepared = pipeline::prepare(&args)?;
+            let planned = pipeline::planned_stages(&prepared.map_data.lights);
+            tui::run_tui(planned, log_sink, governor, move |reporter, governor| {
+                pipeline::run_prepared(&args, stage_cache, started, reporter, governor, prepared)
+            })
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TuiPreference {
+    Auto,
+    Force,
+    Disable,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReporterMode {
+    Plain,
+    Tui,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TerminalStreams {
+    stdin: bool,
+    stdout: bool,
+    stderr: bool,
+}
+
+fn select_reporter_mode(
+    preference: TuiPreference,
+    streams: TerminalStreams,
+) -> anyhow::Result<ReporterMode> {
+    let all_terminals = streams.stdin && streams.stdout && streams.stderr;
+    match (preference, all_terminals) {
+        (TuiPreference::Disable, _) => Ok(ReporterMode::Plain),
+        (TuiPreference::Force, true) | (TuiPreference::Auto, true) => Ok(ReporterMode::Tui),
+        (TuiPreference::Auto, false) => Ok(ReporterMode::Plain),
+        (TuiPreference::Force, false) => anyhow::bail!(
+            "--tui requires stdin, stdout, and stderr to all be attached to terminals"
+        ),
+    }
+}
+
+fn default_jobs_for(logical_cores: usize) -> usize {
+    match logical_cores {
+        0 | 1 => 1,
+        2..=8 => logical_cores - 1,
+        _ => logical_cores - 2,
+    }
+}
+
+fn default_jobs() -> usize {
+    default_jobs_for(
+        std::thread::available_parallelism()
+            .map(std::num::NonZeroUsize::get)
+            .unwrap_or(1),
+    )
 }
 
 #[derive(Debug)]
@@ -436,6 +507,10 @@ struct Args {
     /// on disk and in VRAM); the uncompressed form is larger and exists for
     /// debugging and quality comparison against the compressed path.
     uncompressed_irradiance: bool,
+    /// Maximum concurrent governed bake work items.
+    jobs: usize,
+    /// Interactive reporter selection policy.
+    tui: TuiPreference,
 }
 
 fn parse_args() -> anyhow::Result<Args> {
@@ -456,6 +531,9 @@ fn help_text() -> String {
          \n\
          OPTIONS:\n    \
          -o <output.prl>            Output PRL path (default: input path with a .prl extension)\n    \
+         -j, --jobs <N>             Initial compiler worker permits, >= 1 (default: {jobs})\n    \
+         --tui                      Force the interactive UI (requires terminal stdin/stdout/stderr)\n    \
+         --no-tui                   Disable the interactive UI and print line-oriented progress\n    \
          -v, --verbose              Verbose stage logging to stderr (default: off)\n    \
          --format <FORMAT>          Map source format: idtech2 | idtech3 | idtech4 (default: idtech2)\n    \
          --sh-probe-spacing <METERS> SH irradiance probe spacing in meters, > 0 (default: {probe})\n    \
@@ -474,6 +552,7 @@ fn help_text() -> String {
         probe_floor = lightmap_bake::SOFT_PROBE_SAMPLES,
         voxel = sdf_bake::DEFAULT_VOXEL_SIZE_METERS,
         cache_max = format_size_gib(cache::DEFAULT_MAX_BYTES),
+        jobs = default_jobs(),
     )
 }
 
@@ -499,6 +578,8 @@ where
     let mut no_cache = false;
     let mut release = false;
     let mut uncompressed_irradiance = false;
+    let mut jobs = default_jobs();
+    let mut tui = TuiPreference::Auto;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -511,6 +592,29 @@ where
                     .next()
                     .ok_or_else(|| anyhow::anyhow!("-o requires an output path"))?;
                 output = Some(PathBuf::from(path));
+            }
+            "-j" | "--jobs" => {
+                let jobs_str = args
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("{arg} requires a value"))?;
+                jobs = jobs_str
+                    .parse::<usize>()
+                    .map_err(|_| anyhow::anyhow!("{arg} must be an integer >= 1"))?;
+                if jobs == 0 {
+                    anyhow::bail!("{arg} must be an integer >= 1");
+                }
+            }
+            "--tui" => {
+                if tui == TuiPreference::Disable {
+                    anyhow::bail!("--tui and --no-tui are mutually exclusive");
+                }
+                tui = TuiPreference::Force;
+            }
+            "--no-tui" => {
+                if tui == TuiPreference::Force {
+                    anyhow::bail!("--tui and --no-tui are mutually exclusive");
+                }
+                tui = TuiPreference::Disable;
             }
             "-v" | "--verbose" => {
                 verbose = true;
@@ -629,6 +733,8 @@ where
         no_cache,
         release,
         uncompressed_irradiance,
+        jobs,
+        tui,
     })
 }
 
@@ -1178,6 +1284,113 @@ mod tests {
         assert_eq!(parsed.format, MapFormat::IdTech2);
         assert_eq!(parsed.probe_spacing, sh_bake::DEFAULT_PROBE_SPACING);
         assert_eq!(parsed.voxel_size, sdf_bake::DEFAULT_VOXEL_SIZE_METERS);
+        assert_eq!(parsed.jobs, default_jobs());
+        assert_eq!(parsed.tui, TuiPreference::Auto);
+    }
+
+    #[test]
+    fn default_jobs_leaves_headroom() {
+        assert_eq!(default_jobs_for(0), 1);
+        assert_eq!(default_jobs_for(1), 1);
+        assert_eq!(default_jobs_for(2), 1);
+        assert_eq!(default_jobs_for(8), 7);
+        assert_eq!(default_jobs_for(9), 7);
+        assert_eq!(default_jobs_for(16), 14);
+    }
+
+    #[test]
+    fn parse_args_jobs_accepts_both_spellings_and_rejects_invalid_values() {
+        let parsed =
+            parse_args_from(["input.map", "-j", "3"].into_iter().map(str::to_owned)).unwrap();
+        assert_eq!(parsed.jobs, 3);
+
+        let parsed =
+            parse_args_from(["input.map", "--jobs", "5"].into_iter().map(str::to_owned)).unwrap();
+        assert_eq!(parsed.jobs, 5);
+
+        for value in ["0", "-1", "many"] {
+            assert!(
+                parse_args_from(
+                    ["input.map", "--jobs", value]
+                        .into_iter()
+                        .map(str::to_owned)
+                )
+                .is_err()
+            );
+        }
+        assert!(parse_args_from(["input.map", "--jobs"].into_iter().map(str::to_owned)).is_err());
+    }
+
+    #[test]
+    fn parse_args_tui_preferences_are_mutually_exclusive() {
+        let forced =
+            parse_args_from(["input.map", "--tui"].into_iter().map(str::to_owned)).unwrap();
+        assert_eq!(forced.tui, TuiPreference::Force);
+
+        let disabled =
+            parse_args_from(["input.map", "--no-tui"].into_iter().map(str::to_owned)).unwrap();
+        assert_eq!(disabled.tui, TuiPreference::Disable);
+
+        for flags in [["--tui", "--no-tui"], ["--no-tui", "--tui"]] {
+            assert!(
+                parse_args_from(
+                    ["input.map", flags[0], flags[1]]
+                        .into_iter()
+                        .map(str::to_owned)
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn reporter_selection_uses_all_three_terminal_streams() {
+        let terminals = TerminalStreams {
+            stdin: true,
+            stdout: true,
+            stderr: true,
+        };
+        assert_eq!(
+            select_reporter_mode(TuiPreference::Auto, terminals).unwrap(),
+            ReporterMode::Tui
+        );
+        assert_eq!(
+            select_reporter_mode(TuiPreference::Disable, terminals).unwrap(),
+            ReporterMode::Plain
+        );
+
+        for streams in [
+            TerminalStreams {
+                stdin: false,
+                ..terminals
+            },
+            TerminalStreams {
+                stdout: false,
+                ..terminals
+            },
+            TerminalStreams {
+                stderr: false,
+                ..terminals
+            },
+        ] {
+            assert_eq!(
+                select_reporter_mode(TuiPreference::Auto, streams).unwrap(),
+                ReporterMode::Plain
+            );
+            assert_eq!(
+                select_reporter_mode(TuiPreference::Disable, streams).unwrap(),
+                ReporterMode::Plain
+            );
+            assert!(select_reporter_mode(TuiPreference::Force, streams).is_err());
+        }
+    }
+
+    #[test]
+    fn help_lists_jobs_and_tui_flags() {
+        let help = help_text();
+        assert!(help.contains("-j, --jobs <N>"));
+        assert!(help.contains("--tui"));
+        assert!(help.contains("--no-tui"));
     }
 
     #[test]

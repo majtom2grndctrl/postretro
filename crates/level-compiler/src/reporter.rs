@@ -76,10 +76,11 @@ pub trait Reporter: Send + Sync {
     fn declare_progress(&self, id: StageId, progress: StageProgress);
     fn finish_stage(&self, id: StageId);
     fn skip_stage(&self, id: StageId);
-    /// Records a warning that bypasses the `log` sink. Production warnings
-    /// arrive via the shared `LogSink` drain instead — a caller using this
-    /// method directly must not also emit the same warning through `log`,
-    /// or it will be reported twice.
+    /// Records a warning directly into the shared `LogSink`, bypassing the
+    /// `log` facade (`CollectingLogger`). Production warnings already reach
+    /// this sink via the `CollectingLogger` drain — a caller using this
+    /// method must not also emit the same warning through `log`, or it will
+    /// be tallied twice.
     fn record_warning(&self, warning: CapturedRecord);
     fn finalize(&self, timings: &[(&'static str, Duration)], total: Duration);
     fn finalize_failure(&self);

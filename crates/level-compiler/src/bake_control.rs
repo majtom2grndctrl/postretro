@@ -2,27 +2,30 @@
 //! See: `context/lib/build_pipeline.md`.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::governor::Governor;
 use crate::reporter::StageProgress;
 
-/// Shared handles carried to an outermost bake work-item boundary.
+/// Shared state carried to an outermost bake work-item boundary: the admission
+/// governor plus the stage's `StageProgress`. Holding the whole `StageProgress`
+/// (its Arcs shared by `Clone`) keeps `publish_total` delegating to the reporter,
+/// so the total/published store-ordering contract lives in exactly one place.
+/// `completed` is cached separately so the hot `advance` path is a lone
+/// `fetch_add` with no per-call Arc clone.
 #[derive(Clone, Debug)]
 pub struct BakeControl {
     governor: Arc<Governor>,
+    progress: StageProgress,
     completed: Arc<AtomicUsize>,
-    total: Arc<AtomicUsize>,
-    total_published: Arc<AtomicBool>,
 }
 
 impl BakeControl {
     pub fn new(governor: Arc<Governor>, progress: &StageProgress) -> Self {
         Self {
             governor,
+            progress: progress.clone(),
             completed: progress.completed_handle(),
-            total: progress.total_handle(),
-            total_published: progress.total_published_handle(),
         }
     }
 
@@ -38,8 +41,7 @@ impl BakeControl {
     }
 
     pub fn publish_total(&self, total: usize) {
-        self.total.store(total, Ordering::Release);
-        self.total_published.store(true, Ordering::Release);
+        self.progress.publish_total(total);
     }
 
     pub fn advance(&self, units: usize) {

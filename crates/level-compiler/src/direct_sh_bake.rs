@@ -675,7 +675,6 @@ pub fn bake_direct_sh_volume_cached_controlled(
         // Empty geometry: nothing to cache; the section is trivial.
         return empty_section();
     }
-    control.publish_total(layout.total_probes());
     let static_lights = static_light_refs(inputs.sh_ctx);
     let (direct_lights, global_indices) = static_direct_lights(&static_lights);
     let geom_hash = geometry_content_hash(inputs.sh_ctx.geometry);
@@ -692,6 +691,10 @@ pub fn bake_direct_sh_volume_cached_controlled(
         match DirectShVolumeSection::from_bytes(&bytes) {
             Ok(section) => {
                 log::info!("[cache] direct_sh_volume hit");
+                // Cache-hit path never reaches the controlled worker (which publishes
+                // the total on ~225), so publish it here — exactly once, matching the
+                // miss path's single publish inside `bake_direct_sh_volume_controlled`.
+                control.publish_total(layout.total_probes());
                 // Whole-section cache-hit fast-advance on the orchestrator thread:
                 // honor pause only, no permit (the per-probe parallel bake path is
                 // what needs a permit).

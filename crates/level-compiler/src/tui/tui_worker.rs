@@ -136,10 +136,24 @@ where
     let worker_outcome = if let Some(outcome) = completed_outcome {
         outcome
     } else {
-        // The interactive UI is gone but the worker is still baking. Announce the
-        // detach on the restored normal screen so the blocking join below does not
-        // read as a silent hang; cooked mode is back, so Ctrl-C aborts again.
-        println!("UI detached — bake continues in the background; press Ctrl-C to abort.");
+        // The interactive UI is gone but the worker is still baking. Announce why on
+        // the restored normal screen so the blocking join below does not read as a
+        // silent hang; cooked mode is back, so Ctrl-C aborts again. Only an
+        // operator-initiated leave is a true "detach" — a terminal error or a
+        // render-loop panic must not masquerade as one. Match by reference; the
+        // render outcome stays intact for finish_run, which re-raises any panic.
+        match &render_outcome {
+            // Operator quit (q/Esc/Ctrl-C): render_loop returned LeftEarly.
+            Ok(Ok(())) => {
+                println!("UI detached — bake continues in the background; press Ctrl-C to abort.")
+            }
+            // Terminal I/O error or render-loop panic: the UI crashed, it did not detach.
+            Ok(Err(_)) | Err(_) => println!(
+                "TUI stopped due to an error — bake continues in the background \
+                 (cooked mode restored, press Ctrl-C to abort); the error will be \
+                 reported once it finishes."
+            ),
+        }
         join_worker(worker.take().expect("worker is available"))
     };
     finish_run(worker_outcome, render_outcome, &reporter)

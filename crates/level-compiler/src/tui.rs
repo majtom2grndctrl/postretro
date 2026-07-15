@@ -316,14 +316,33 @@ impl Reporter for TuiReporter {
         }
         self.drain_logs();
         let mut state = self.lock();
-        if let Some(step) = state
-            .steps
-            .iter_mut()
-            .find(|step| step.status == StepStatus::Active)
-        {
-            step.status = StepStatus::Failed;
+        // Resolve every still-Active step so none render as a live spinner
+        // under a FAILED banner. `active_index()` picks the same
+        // most-recently-begun step the live foot-readout follows -- that's
+        // the stage that actually failed. Any other stage left Active (an
+        // outer stage still open around it) didn't complete either, so it
+        // is marked Failed too rather than left spinning.
+        if let Some(failing_index) = state.active_index() {
+            state.steps[failing_index].status = StepStatus::Failed;
+        }
+        for step in state.steps.iter_mut() {
+            if step.status == StepStatus::Active {
+                step.status = StepStatus::Failed;
+            }
         }
         state.final_summary = FinalSummary::default();
+    }
+}
+
+impl Drop for TuiReporter {
+    /// Backstop mirroring `PlainReporter`'s: if a panic or early return
+    /// unwinds past `run_tui_session` without ever reaching `finalize` /
+    /// `finalize_failure` + the worker's `print_final_summary()` call, make
+    /// sure the warning tally still gets printed. `print_final_summary`
+    /// self-guards on `summary_printed`, so this is a no-op on the normal
+    /// path where the summary was already printed.
+    fn drop(&mut self) {
+        self.print_final_summary();
     }
 }
 

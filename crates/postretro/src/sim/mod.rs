@@ -415,14 +415,23 @@ fn update_pose_inputs(registry: &mut EntityRegistry) {
             })
             .unwrap_or((0.0, heading_yaw));
 
-        let Ok(mut mesh) = registry.get_component::<MeshComponent>(id).cloned() else {
-            continue;
-        };
-        mesh.pose_inputs = Some(PoseInputs {
+        let new_pose_inputs = PoseInputs {
             aim_pitch,
             aim_yaw,
             heading_yaw,
-        });
+        };
+        // Single borrow serves both the change check and the clone source, so a
+        // stationary/idle crowd whose inputs haven't moved skips the write
+        // entirely — mirrors the discipline in
+        // `update_brain_animation_playback_rates` above.
+        let Ok(current) = registry.get_component::<MeshComponent>(id) else {
+            continue;
+        };
+        if current.pose_inputs == Some(new_pose_inputs) {
+            continue;
+        }
+        let mut mesh = current.clone();
+        mesh.pose_inputs = Some(new_pose_inputs);
         let _ = registry.set_component(id, mesh);
     }
 }

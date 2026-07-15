@@ -80,6 +80,9 @@ pub(crate) struct HitZoneStore {
     /// Handles whose independently loaded model carries a presentation pose
     /// stack. The collector uses this cache-side metadata to opt those models
     /// out of animation time-slicing without carrying the stack per instance.
+    /// Shares `models`' sweep lifecycle: populated during the same level-load
+    /// model sweep, reset together on `clear` — a model introduced only after
+    /// that sweep never enters this set (same limitation as `models`).
     pose_modified_models: HashSet<ModelHandle>,
 }
 
@@ -108,9 +111,11 @@ impl HitZoneStore {
     ///
     /// A failed/invalid load is non-fatal: it warns (naming the path) and installs
     /// nothing — mirroring `load_skinned_model`, so the sweep keeps going and the
-    /// model simply has no hit-zone entry. Idempotent re-install replaces the
-    /// entry. The derived bound is computed once, here, from the loaded skeleton
-    /// rest pose and clips.
+    /// model simply has no hit-zone entry, and no `pose_modified_models` membership
+    /// change either. Idempotent re-install replaces the entry AND refreshes the
+    /// model's `pose_modified_models` membership to match its reloaded pose stack
+    /// (the collector's time-slicing opt-out rides on that store). The derived
+    /// bound is computed once, here, from the loaded skeleton rest pose and clips.
     pub(crate) fn insert_from_load(&mut self, model_rel: &str, content_root: &Path) {
         let open_path = content_root.join(model_rel);
         let model = match gltf_loader::load_model(&open_path) {

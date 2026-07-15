@@ -767,6 +767,10 @@ fn build_pose_modifier_stack(
 
     if !masks.aim_spine.is_empty() {
         if let Some(chain) = ordered_aim_spine_chain(skeleton, masks.aim_spine) {
+            // `chain` is root->tip, parent-linked. `Skeleton::new` enforces
+            // parent index < child index, so for a connected chain this order
+            // equals ascending joint index — matching `AimPitchBend`'s
+            // mask-parallel (ascending-index) `bend_weights` contract.
             let bend_weights = chain
                 .iter()
                 .map(|&joint| aim_bend_weights.get(joint).copied().unwrap_or(1.0))

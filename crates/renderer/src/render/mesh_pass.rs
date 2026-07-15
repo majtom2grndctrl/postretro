@@ -659,9 +659,12 @@ struct InstancePoseSample<'a> {
 }
 
 /// Sample an active modified pose whose primary animation clip is unresolved.
-/// The skeleton rest pose becomes the entered endpoint, so clipless models can
-/// still consume presentation inputs and an in-flight fade retains its normal
-/// outgoing→incoming weight convention.
+/// The skeleton rest pose becomes the entered endpoint, so a model whose
+/// primary clip failed to resolve can still consume presentation inputs
+/// (in production `pose_inputs` is only produced for meshes with an
+/// animation block, so this is that block's clip going unresolved — not a
+/// model authored with no animation at all), and an in-flight fade retains
+/// its normal outgoing→incoming weight convention.
 fn sample_modified_rest_instance<'a>(
     instance: &InstancePoseSample<'_>,
     pose_inputs: &postretro_entities::PoseInputs,
@@ -712,8 +715,11 @@ fn sample_modified_rest_instance<'a>(
 /// covers the whole region.
 ///
 /// When the primary clip does not resolve, an active modifier stack samples the
-/// skeleton rest pose so clipless tagged models can still consume pose inputs.
-/// Otherwise `out` is filled with one identity (bind-pose) matrix per joint
+/// skeleton rest pose so a model whose primary clip is unresolved can still
+/// consume pose inputs (in production, only meshes with an animation block
+/// carry `pose_inputs`, so this covers that block's clip going unresolved, not
+/// a model authored with no animation at all). Otherwise `out` is filled with
+/// one identity (bind-pose) matrix per joint
 /// rather than left untouched. The exact identity fallback prevents an inactive
 /// unsampled run from inheriting another instance's densely repacked matrices.
 ///
@@ -732,10 +738,13 @@ fn sample_instance<'a>(
     let sample = instance.params;
     let pose_inputs = instance.pose_inputs;
     let seed = instance.seed;
-    // A clipless pose-tagged model can still consume external presentation
-    // inputs: modify its skeleton rest pose, retaining any outgoing fade source.
-    // Without both an active stack and inputs, preserve the historical exact
-    // identity fallback rather than composing the model's rest/inverse-bind data.
+    // A model whose primary clip is unresolved can still consume external
+    // presentation inputs: modify its skeleton rest pose, retaining any
+    // outgoing fade source. (In production, only meshes with an animation
+    // block carry pose_inputs, so this is that block's clip going unresolved,
+    // not a model authored with no animation at all.) Without both an active
+    // stack and inputs, preserve the historical exact identity fallback rather
+    // than composing the model's rest/inverse-bind data.
     let Some(primary) = clip_blend_source(&sample.primary, resolve_clip) else {
         if let Some(inputs) = pose_inputs.filter(|_| !pose_stack.is_empty()) {
             sample_modified_rest_instance(

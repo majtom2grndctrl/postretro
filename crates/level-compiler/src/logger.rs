@@ -120,7 +120,7 @@ impl CollectingLogger {
 
 impl Log for CollectingLogger {
     fn enabled(&self, metadata: &Metadata<'_>) -> bool {
-        metadata.level() <= self.filter.filter()
+        self.filter.enabled(metadata)
     }
 
     fn log(&self, record: &Record<'_>) {

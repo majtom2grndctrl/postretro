@@ -6,7 +6,7 @@ use std::io::{self, Stdout};
 use std::panic::{AssertUnwindSafe, PanicHookInfo};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::Terminal;
@@ -73,13 +73,29 @@ where
     drop(panic_hook);
     match outcome {
         Ok(result) => result,
-        Err(payload) => {
-            eprintln!(
-                "prl-build TUI panicked: {}",
-                panic_message(payload.as_ref())
-            );
-            std::panic::resume_unwind(payload)
-        }
+        // A panic reaches here re-raised from one of two origins. `finish_run`
+        // wraps a bake-worker payload in `WorkerPanicPayload`; a render/TUI
+        // panic is re-raised bare. Label each honestly, then resume with the
+        // original payload so the true panic still propagates. The terminal is
+        // already cooked (session dropped in `run_tui_session`), so printing on
+        // the normal screen here is safe.
+        Err(payload) => match payload.downcast::<WorkerPanicPayload>() {
+            Ok(worker) => {
+                let inner = worker.0;
+                eprintln!(
+                    "prl-build panicked during the bake: {}",
+                    panic_message(inner.as_ref())
+                );
+                std::panic::resume_unwind(inner)
+            }
+            Err(payload) => {
+                eprintln!(
+                    "prl-build panicked in the TUI: {}",
+                    panic_message(payload.as_ref())
+                );
+                std::panic::resume_unwind(payload)
+            }
+        },
     }
 }
 
@@ -92,6 +108,12 @@ fn run_tui_session<F>(
 where
     F: FnOnce(Arc<dyn Reporter>, Arc<Governor>) -> anyhow::Result<()> + Send + 'static,
 {
+    // The interactive reporter takes ownership of the sink; keep a clone so a
+    // post-detach fallback can drain the same shared queue. Capture the
+    // requested `-j` before the render loop clamps it, so a detach can restore
+    // the operator's throttle rather than leaving it at a UI-lowered count.
+    let detach_logs = logs.clone();
+    let requested_permits = governor.permits();
     let reporter = Arc::new(TuiReporter::new(&planned, logs));
     let mut session = TerminalSession::enter()?;
     let worker_reporter: Arc<dyn Reporter> = reporter.clone();
@@ -142,10 +164,22 @@ where
         // operator-initiated leave is a true "detach" — a terminal error or a
         // render-loop panic must not masquerade as one. Match by reference; the
         // render outcome stays intact for finish_run, which re-raises any panic.
+        let worker = worker.take().expect("worker is available");
         match &render_outcome {
-            // Operator quit (q/Esc/Ctrl-C): render_loop returned LeftEarly.
+            // Operator quit (q/Esc/Ctrl-C): render_loop returned LeftEarly. Restore
+            // the requested `-j` so the background bake is not stuck at a permit
+            // count the operator lowered in the UI, then report the honest core
+            // count instead of implying an unthrottled background run.
             Ok(Ok(())) => {
-                println!("UI detached — bake continues in the background; press Ctrl-C to abort.")
+                let max_permits = thread::available_parallelism()
+                    .map(std::num::NonZeroUsize::get)
+                    .unwrap_or(1);
+                let restored = requested_permits.clamp(1, max_permits);
+                governor.set_permits(restored);
+                println!(
+                    "UI detached — bake continues in the background at {restored} core \
+                     permit(s) (throttle restored to -j); press Ctrl-C to abort."
+                );
             }
             // Terminal I/O error or render-loop panic: the UI crashed, it did not detach.
             Ok(Err(_)) | Err(_) => println!(
@@ -154,7 +188,15 @@ where
                  reported once it finishes."
             ),
         }
-        join_worker(worker.take().expect("worker is available"))
+        // The interactive UI is gone, so nothing else drains the shared sink and
+        // the background bake would otherwise run silently until it joins. Degrade
+        // to PlainReporter-style discrete output: stream drained log records plus
+        // occasional progress/heartbeat lines to the cooked screen while the worker
+        // runs. Display-only — no counter feeds back into bake logic, so output
+        // stays byte-identical. The final warning tally and build summary remain
+        // owned by the finalize/Drop path; this only bridges detach to completion.
+        stream_detached_bake(&reporter, &detach_logs, &worker);
+        join_worker(worker)
     };
     finish_run(worker_outcome, render_outcome, &reporter)
 }
@@ -163,6 +205,11 @@ enum WorkerOutcome {
     Completed(anyhow::Result<()>),
     Panicked(Box<dyn Any + Send + 'static>),
 }
+
+/// Wraps a panic payload re-raised from the bake worker so the outer `run_tui`
+/// handler can label it a bake panic rather than a TUI panic. Only the worker
+/// re-raise path wraps; a render/TUI panic propagates bare.
+struct WorkerPanicPayload(Box<dyn Any + Send + 'static>);
 
 fn join_worker(worker: thread::JoinHandle<anyhow::Result<()>>) -> WorkerOutcome {
     match worker.join() {
@@ -209,7 +256,9 @@ fn finish_run(
         WorkerOutcome::Panicked(payload) => {
             reporter.finalize_failure();
             reporter.print_final_summary();
-            std::panic::resume_unwind(payload)
+            // Tag the origin so the outer handler labels this a bake panic, not a
+            // TUI panic, then resume with the original payload preserved inside.
+            std::panic::resume_unwind(Box::new(WorkerPanicPayload(payload)))
         }
     }
 }
@@ -222,6 +271,92 @@ fn panic_message(payload: &(dyn Any + Send)) -> &str {
     } else {
         "non-string panic payload"
     }
+}
+
+/// Discrete progress snapshot for detached streaming: stage label, completed
+/// count, and total once published.
+type DetachProgress = (&'static str, usize, Option<usize>);
+
+/// After an operator detach, stream the still-running bake to the restored
+/// cooked screen. Drain the shared log sink and emit occasional discrete
+/// progress lines so a long background bake is not silent, and so pending
+/// records are not lost to the sink's cap. Poll cadence mirrors
+/// `PlainReporter`'s progress monitor (500 ms) rather than busy-spinning.
+///
+/// Display-only: reads progress counters, never writes them, so bake output
+/// stays byte-identical. The warning tally and build summary stay owned by the
+/// finalize/Drop path; this only bridges detach to the worker join.
+fn stream_detached_bake(
+    reporter: &TuiReporter,
+    logs: &LogSink,
+    worker: &thread::JoinHandle<anyhow::Result<()>>,
+) {
+    const POLL: Duration = Duration::from_millis(500);
+    const HEARTBEAT: Duration = Duration::from_secs(10);
+
+    let mut last_progress: Option<DetachProgress> = None;
+    let mut last_output = Instant::now();
+    while !worker.is_finished() {
+        let mut printed = drain_detached_logs(logs);
+        let snapshot = detached_progress(reporter);
+        if snapshot != last_progress {
+            if let Some(line) = detached_progress_line(snapshot, false) {
+                eprintln!("{line}");
+                printed = true;
+            }
+            last_progress = snapshot;
+        } else if last_output.elapsed() >= HEARTBEAT {
+            if let Some(line) = detached_progress_line(snapshot, true) {
+                eprintln!("{line}");
+                printed = true;
+            }
+        }
+        if printed {
+            last_output = Instant::now();
+        }
+        thread::sleep(POLL);
+    }
+    // Flush records emitted between the final poll and worker exit before the
+    // finalize path prints the summary.
+    drain_detached_logs(logs);
+}
+
+/// Drain and print every pending record in the shared sink using the record's
+/// existing display format. Returns whether anything was printed.
+fn drain_detached_logs(logs: &LogSink) -> bool {
+    let mut printed = false;
+    for record in logs.drain() {
+        eprintln!("{record}");
+        printed = true;
+    }
+    printed
+}
+
+/// Snapshot the most-recently-begun active stage's progress for streaming.
+fn detached_progress(reporter: &TuiReporter) -> Option<DetachProgress> {
+    let state = reporter.lock();
+    let index = state.active_index()?;
+    let step = &state.steps[index];
+    let (completed, total) = match &step.progress {
+        Some(progress) => (progress.completed(), progress.total()),
+        None => (0, None),
+    };
+    Some((step.label, completed, total))
+}
+
+/// Format a discrete progress line. `heartbeat` marks an unchanged repeat so a
+/// silent stage still shows life.
+fn detached_progress_line(snapshot: Option<DetachProgress>, heartbeat: bool) -> Option<String> {
+    let (label, completed, total) = snapshot?;
+    let body = match total {
+        Some(total) => format!("  {label}: {completed}/{total}"),
+        None => format!("  {label}: {completed} done"),
+    };
+    Some(if heartbeat {
+        format!("{body}  (still working)")
+    } else {
+        body
+    })
 }
 
 fn render_loop(

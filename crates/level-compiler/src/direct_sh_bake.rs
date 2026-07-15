@@ -691,9 +691,9 @@ pub fn bake_direct_sh_volume_cached_controlled(
         match DirectShVolumeSection::from_bytes(&bytes) {
             Ok(section) => {
                 log::info!("[cache] direct_sh_volume hit");
-                // Cache-hit path never reaches the controlled worker (which publishes
-                // the total on ~225), so publish it here — exactly once, matching the
-                // miss path's single publish inside `bake_direct_sh_volume_controlled`.
+                // Cache-hit path never reaches the controlled worker, so publish the
+                // total here instead — exactly once, matching the miss path's single
+                // `publish_total` call inside `bake_direct_sh_volume_controlled`.
                 control.publish_total(layout.total_probes());
                 // Whole-section cache-hit fast-advance on the orchestrator thread:
                 // honor pause only, no permit (the per-probe parallel bake path is

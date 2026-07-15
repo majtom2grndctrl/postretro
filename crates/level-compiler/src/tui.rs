@@ -295,11 +295,6 @@ impl Reporter for TuiReporter {
         self.drain_logs();
     }
 
-    fn record_warning(&self, warning: CapturedRecord) {
-        self.logs.record(warning);
-        self.drain_logs();
-    }
-
     fn finalize(&self, timings: &[(&'static str, Duration)], total: Duration) {
         if self.finalized.swap(true, Ordering::AcqRel) {
             return;
@@ -317,14 +312,9 @@ impl Reporter for TuiReporter {
         self.drain_logs();
         let mut state = self.lock();
         // Resolve every still-Active step so none render as a live spinner
-        // under a FAILED banner. `active_index()` picks the same
-        // most-recently-begun step the live foot-readout follows -- that's
-        // the stage that actually failed. Any other stage left Active (an
-        // outer stage still open around it) didn't complete either, so it
-        // is marked Failed too rather than left spinning.
-        if let Some(failing_index) = state.active_index() {
-            state.steps[failing_index].status = StepStatus::Failed;
-        }
+        // under a FAILED banner. Any Active stage -- the one that actually
+        // failed, or an outer stage left open around it -- didn't complete,
+        // so all of them are marked Failed rather than left spinning.
         for step in state.steps.iter_mut() {
             if step.status == StepStatus::Active {
                 step.status = StepStatus::Failed;

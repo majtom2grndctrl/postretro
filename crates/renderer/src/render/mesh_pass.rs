@@ -400,6 +400,9 @@ struct UploadedModel {
     /// Skeleton for pose sampling. Joint count == `skeleton.joints.len()` is the
     /// per-instance palette run length.
     skeleton: Skeleton,
+    /// CPU-only presentation modifiers resolved beside the skeleton at palette
+    /// sampling time. Never copied into the per-instance payload.
+    pose_stack: postretro_model::pose_modifier::PoseModifierStack,
 }
 
 pub use postretro_render_cpu::mesh_pass::ClipMetadata;
@@ -665,6 +668,8 @@ fn clip_blend_source<'a>(
 fn sample_instance<'a>(
     sample: &MeshSampleParams,
     skeleton: &Skeleton,
+    pose_stack: &postretro_model::pose_modifier::PoseModifierStack,
+    pose_inputs: Option<&postretro_entities::PoseInputs>,
     store: &SnapshotStore,
     seed: u32,
     resolve_clip: &impl Fn(usize) -> Option<&'a AnimationClip>,
@@ -686,11 +691,13 @@ fn sample_instance<'a>(
 
     let Some(fade) = sample.fade else {
         // Steady state: single clip sample (the common, allocation-free path).
-        postretro_model::anim::sample_clip_looped(
+        postretro_model::anim::sample_clip_looped_modified(
             primary.clip,
             skeleton,
             primary.time,
             primary.loop_policy,
+            pose_stack,
+            pose_inputs,
             out,
         );
         return true;
@@ -704,31 +711,37 @@ fn sample_instance<'a>(
         FadeSource::Clip(leg) => {
             let Some(from) = clip_blend_source(&leg, resolve_clip) else {
                 // Outgoing clip gone: fall back to the primary alone.
-                postretro_model::anim::sample_clip_looped(
+                postretro_model::anim::sample_clip_looped_modified(
                     primary.clip,
                     skeleton,
                     primary.time,
                     primary.loop_policy,
+                    pose_stack,
+                    pose_inputs,
                     out,
                 );
                 return true;
             };
-            postretro_model::anim::sample_blended(
+            postretro_model::anim::sample_blended_modified(
                 &from.as_blend_source(),
                 &primary_src,
                 fade.weight,
                 skeleton,
+                pose_stack,
+                pose_inputs,
                 out,
             );
         }
         FadeSource::Snapshot { tag, fallback } => {
             match store.matching(seed, tag) {
                 Some(pose) => {
-                    postretro_model::anim::sample_blended(
+                    postretro_model::anim::sample_blended_modified(
                         &BlendSource::Snapshot(pose),
                         &primary_src,
                         fade.weight,
                         skeleton,
+                        pose_stack,
+                        pose_inputs,
                         out,
                     );
                 }
@@ -736,18 +749,22 @@ fn sample_instance<'a>(
                     // Store miss (capture frame culled): degrade to the fallback
                     // clip — a `"snap"`-equivalent blend the game layer never saw.
                     match clip_blend_source(&fallback, resolve_clip) {
-                        Some(from) => postretro_model::anim::sample_blended(
+                        Some(from) => postretro_model::anim::sample_blended_modified(
                             &from.as_blend_source(),
                             &primary_src,
                             fade.weight,
                             skeleton,
+                            pose_stack,
+                            pose_inputs,
                             out,
                         ),
-                        None => postretro_model::anim::sample_clip_looped(
+                        None => postretro_model::anim::sample_clip_looped_modified(
                             primary.clip,
                             skeleton,
                             primary.time,
                             primary.loop_policy,
+                            pose_stack,
+                            pose_inputs,
                             out,
                         ),
                     }
@@ -1446,6 +1463,7 @@ impl MeshPass {
         submeshes: Vec<(wgpu::BindGroup, std::ops::Range<u32>)>,
         skeleton: Skeleton,
         clips: Vec<AnimationClip>,
+        pose_stack: postretro_model::pose_modifier::PoseModifierStack,
     ) {
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Skinned Mesh Vertex Buffer"),
@@ -1471,6 +1489,7 @@ impl MeshPass {
                 index_buffer,
                 submeshes,
                 skeleton,
+                pose_stack,
             },
         );
     }
@@ -1674,6 +1693,8 @@ impl MeshPass {
                     let sampled = sample_instance(
                         &inst.sample,
                         &model.skeleton,
+                        &model.pose_stack,
+                        inst.pose_inputs.as_ref(),
                         snapshot_store,
                         inst.phase_seed,
                         &resolve_clip,
@@ -2058,6 +2079,7 @@ mod tests {
             phase_seed: 1,
             bounds: postretro_render_data::cone_frustum::Aabb::default(),
             sample: MeshSampleParams::stateless(0.0),
+            pose_inputs: None,
             capture: None,
             resample: true,
             forward_visible: true,
@@ -2779,7 +2801,7 @@ mod tests {
     // `CaptureInstruction`/`MeshSampleParams` contract and these tests prove the
     // renderer consumes it without exposing renderer internals across crates.
 
-    use glam::{Mat4, Quat};
+    use glam::{EulerRot, Mat4, Quat};
     use postretro_model::anim::Loop as AnimLoop;
     use postretro_model::sample_params::{
         CaptureInstruction, ClipSample, FadeSource, MeshFade, MeshSampleParams,
@@ -2837,12 +2859,99 @@ mod tests {
             fade: None,
         };
         let mut out = Vec::new();
-        let sampled = sample_instance(&params, &skel, &store, 1, &|i| clips.get(i), &mut out);
+        let sampled = sample_instance(
+            &params,
+            &skel,
+            &postretro_model::pose_modifier::PoseModifierStack::default(),
+            None,
+            &store,
+            1,
+            &|i| clips.get(i),
+            &mut out,
+        );
         assert!(sampled);
         assert!(
             (palette_x(&out) - 5.0).abs() < 1.0e-4,
             "single clip → primary pose"
         );
+    }
+
+    #[test]
+    fn sample_instance_applies_pose_stack_for_single_clip_and_all_fade_sources() {
+        use postretro_model::pose_modifier::{
+            JointMask, ModifierEntry, PoseModifier, PoseModifierStack,
+        };
+
+        let skel = one_joint_skeleton();
+        let clips = [const_x_clip("from", 0.0), const_x_clip("to", 10.0)];
+        let mut mask = JointMask::new();
+        assert!(mask.insert(0));
+        let stack = PoseModifierStack::new(vec![ModifierEntry {
+            mask,
+            modifier: PoseModifier::AimPitchBend {
+                bend_weights: vec![1.0],
+            },
+        }]);
+        let inputs = postretro_entities::PoseInputs {
+            aim_pitch: 0.4,
+            aim_yaw: 0.0,
+            heading_yaw: 0.0,
+        };
+        let mut store = SnapshotStore::default();
+        let tag = 42;
+        store.entries.insert(
+            7,
+            StoredSnapshot {
+                tag,
+                pose: vec![LocalTrs {
+                    translation: Vec3::ZERO,
+                    rotation: Quat::IDENTITY,
+                    scale: Vec3::ONE,
+                }],
+            },
+        );
+
+        let cases = [
+            MeshSampleParams {
+                primary: clip_leg(1, 0.0),
+                fade: None,
+            },
+            MeshSampleParams {
+                primary: clip_leg(1, 0.0),
+                fade: Some(MeshFade {
+                    from: FadeSource::Clip(clip_leg(0, 0.0)),
+                    weight: 0.5,
+                }),
+            },
+            MeshSampleParams {
+                primary: clip_leg(1, 0.0),
+                fade: Some(MeshFade {
+                    from: FadeSource::Snapshot {
+                        tag,
+                        fallback: clip_leg(0, 0.0),
+                    },
+                    weight: 0.5,
+                }),
+            },
+        ];
+
+        for params in cases {
+            let mut out = Vec::new();
+            sample_instance(
+                &params,
+                &skel,
+                &stack,
+                Some(&inputs),
+                &store,
+                7,
+                &|i| clips.get(i),
+                &mut out,
+            );
+            let (_, rotation, _) =
+                Mat4::from_cols_array_2d(&out[0].matrix).to_scale_rotation_translation();
+            let (pitch, _, _) = rotation.to_euler(EulerRot::XYZ);
+            assert!((pitch - inputs.aim_pitch).abs() <= 1.0e-5);
+        }
     }
 
     #[test]
@@ -2860,7 +2969,16 @@ mod tests {
         };
         // Pre-fill `out` with a stranger's stale pose to prove it is overwritten.
         let mut out = palette_run(99.0, 1);
-        let sampled = sample_instance(&params, &skel, &store, 1, &|i| clips.get(i), &mut out);
+        let sampled = sample_instance(
+            &params,
+            &skel,
+            &postretro_model::pose_modifier::PoseModifierStack::default(),
+            None,
+            &store,
+            1,
+            &|i| clips.get(i),
+            &mut out,
+        );
         assert!(
             sampled,
             "an unresolved primary still writes a (bind-pose) run"
@@ -2887,17 +3005,44 @@ mod tests {
             }),
         };
         // Weight 0 → all `from` (x=0); weight 1 → all primary (x=10); 0.5 → 5.
-        sample_instance(&make(0.0), &skel, &store, 1, &|i| clips.get(i), &mut out);
+        sample_instance(
+            &make(0.0),
+            &skel,
+            &postretro_model::pose_modifier::PoseModifierStack::default(),
+            None,
+            &store,
+            1,
+            &|i| clips.get(i),
+            &mut out,
+        );
         assert!(
             (palette_x(&out) - 0.0).abs() < 1.0e-4,
             "weight 0 = outgoing"
         );
-        sample_instance(&make(1.0), &skel, &store, 1, &|i| clips.get(i), &mut out);
+        sample_instance(
+            &make(1.0),
+            &skel,
+            &postretro_model::pose_modifier::PoseModifierStack::default(),
+            None,
+            &store,
+            1,
+            &|i| clips.get(i),
+            &mut out,
+        );
         assert!(
             (palette_x(&out) - 10.0).abs() < 1.0e-4,
             "weight 1 = primary"
         );
-        sample_instance(&make(0.5), &skel, &store, 1, &|i| clips.get(i), &mut out);
+        sample_instance(
+            &make(0.5),
+            &skel,
+            &postretro_model::pose_modifier::PoseModifierStack::default(),
+            None,
+            &store,
+            1,
+            &|i| clips.get(i),
+            &mut out,
+        );
         assert!(
             (palette_x(&out) - 5.0).abs() < 1.0e-4,
             "weight 0.5 = midpoint"
@@ -2938,7 +3083,16 @@ mod tests {
             }),
         };
         let mut out = Vec::new();
-        sample_instance(&params, &skel, &store, 7, &|i| clips.get(i), &mut out);
+        sample_instance(
+            &params,
+            &skel,
+            &postretro_model::pose_modifier::PoseModifierStack::default(),
+            None,
+            &store,
+            7,
+            &|i| clips.get(i),
+            &mut out,
+        );
         assert!(
             (palette_x(&out) - 4.0).abs() < 1.0e-4,
             "snapshot fade weight 0 reproduces the captured in-flight blend, got {}",
@@ -2987,13 +3141,31 @@ mod tests {
             }),
         };
         let mut out = Vec::new();
-        sample_instance(&sample(0.0), &skel, &store, 7, &|i| clips.get(i), &mut out);
+        sample_instance(
+            &sample(0.0),
+            &skel,
+            &postretro_model::pose_modifier::PoseModifierStack::default(),
+            None,
+            &store,
+            7,
+            &|i| clips.get(i),
+            &mut out,
+        );
         assert!(
             (palette_x(&out) - 5.0).abs() < 1.0e-4,
             "interrupt-instant sample starts from captured S"
         );
 
-        sample_instance(&sample(0.5), &skel, &store, 7, &|i| clips.get(i), &mut out);
+        sample_instance(
+            &sample(0.5),
+            &skel,
+            &postretro_model::pose_modifier::PoseModifierStack::default(),
+            None,
+            &store,
+            7,
+            &|i| clips.get(i),
+            &mut out,
+        );
         assert!(
             (palette_x(&out) - 52.5).abs() < 1.0e-4,
             "mid-fade sample eases from S=5 toward C=100"
@@ -3051,7 +3223,16 @@ mod tests {
             }),
         };
         let mut out = Vec::new();
-        sample_instance(&params, &skel, &store, 5, &|i| clips.get(i), &mut out);
+        sample_instance(
+            &params,
+            &skel,
+            &postretro_model::pose_modifier::PoseModifierStack::default(),
+            None,
+            &store,
+            5,
+            &|i| clips.get(i),
+            &mut out,
+        );
         // Blend fallback (x=2) → primary (x=10) at 0.5 = 6.0 (NOT the snapshot).
         assert!(
             (palette_x(&out) - 6.0).abs() < 1.0e-4,

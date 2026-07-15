@@ -195,7 +195,8 @@ impl MeshRenderCollector {
         );
     }
 
-    /// Production collect path. Models with precise skeletal hit zones force a
+    /// Production collect path. Models with precise skeletal hit zones or a
+    /// non-empty presentation pose stack force a
     /// palette resample every visible frame so hitscan capsules and the drawn
     /// pose share current-clock semantics instead of diverging on skipped
     /// time-slice frames.
@@ -219,7 +220,7 @@ impl MeshRenderCollector {
             anim_time,
             tables,
             camera_pos,
-            |handle| hit_zones.has_precise_zones(handle),
+            |handle| hit_zones.has_precise_zones(handle) || hit_zones.has_pose_modifiers(handle),
         );
     }
 
@@ -316,6 +317,7 @@ impl MeshRenderCollector {
                 ),
                 phase_seed: seed,
                 sample,
+                pose_inputs: mesh.pose_inputs,
                 capture,
                 resample,
                 forward_visible,
@@ -976,6 +978,7 @@ mod tests {
                 model: "grunt".into(),
                 animation: Some(MeshAnimation::new(states, "idle".into())),
                 origin_offset: Vec3::ZERO,
+                pose_inputs: None,
             },
         )
         .unwrap();
@@ -1072,6 +1075,34 @@ mod tests {
             1,
             "setAnimationState switch plays the new state's clip",
         );
+    }
+
+    #[test]
+    fn collector_carries_only_entity_pose_inputs() {
+        let mut reg = EntityRegistry::new();
+        let world = single_cell_world();
+        let mut collector = MeshRenderCollector::new();
+        let id = spawn_animated(&mut reg, Vec3::ZERO);
+        let expected = postretro_entities::PoseInputs {
+            aim_pitch: 0.2,
+            aim_yaw: 0.7,
+            heading_yaw: 0.4,
+        };
+        let mut mesh = reg.get_component::<MeshComponent>(id).unwrap().clone();
+        mesh.pose_inputs = Some(expected);
+        reg.set_component(id, mesh).unwrap();
+
+        collector.collect(
+            &reg,
+            &world,
+            &VisibleCells::DrawAll,
+            1.0,
+            0.0,
+            &grunt_tables(),
+            Vec3::ZERO,
+        );
+
+        assert_eq!(collector.instances()[0].pose_inputs, Some(expected));
     }
 
     #[test]
@@ -1276,6 +1307,31 @@ mod tests {
                 collector.instances()[0].resample,
                 "resample flag is forced for hit-zone-capable model",
             );
+        }
+    }
+
+    #[test]
+    fn pose_modified_model_forces_resample_despite_far_stride() {
+        let mut reg = EntityRegistry::new();
+        let world = single_cell_world();
+        let mut collector = MeshRenderCollector::new();
+        let mut metadata = HitZoneStore::new();
+        metadata.mark_pose_modified_for_test(ModelHandle::from("decraniated"));
+        spawn_mesh(&mut reg, "decraniated", Vec3::ZERO);
+
+        for _ in 0..(RESAMPLE_STRIDE_FAR * 2) {
+            collector.collect_with_hit_zones(
+                &reg,
+                &world,
+                &VisibleCells::DrawAll,
+                1.0,
+                0.0,
+                &MeshClipTables::new(),
+                far_camera(),
+                &metadata,
+            );
+            assert_eq!(collector.resample_count(), 1);
+            assert!(collector.instances()[0].resample);
         }
     }
 

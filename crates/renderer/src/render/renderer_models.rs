@@ -152,6 +152,7 @@ impl Renderer {
             skeleton,
             clips,
             tags,
+            pose_stack,
             ..
         } = model;
         let clip_count = clips.len();
@@ -181,8 +182,15 @@ impl Renderer {
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
-        full.mesh_pass
-            .insert_model(device, handle, &mesh, submesh_materials, skeleton, clips);
+        full.mesh_pass.insert_model(
+            device,
+            handle,
+            &mesh,
+            submesh_materials,
+            skeleton,
+            clips,
+            pose_stack,
+        );
 
         log::info!(
             "[Model] skinned model uploaded: {} clip(s) parsed, {} tag(s)",

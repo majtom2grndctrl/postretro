@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use glam::{Vec2, Vec3};
+use glam::{EulerRot, Vec2, Vec3};
 use parry3d::math::{Isometry, Point};
 use parry3d::shape::TriMesh;
 use postretro_level_format::navmesh::{NAVMESH_VERSION, NavMeshSection, NavRegion};
@@ -1192,6 +1192,7 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
         registry
             .get_component::<MeshComponent>(enemy)
             .expect("driven agent keeps mesh")
+            .animation
             .clone()
     };
     run_driven_agent_sim_tick(
@@ -1207,10 +1208,132 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
         registry
             .borrow()
             .get_component::<MeshComponent>(enemy)
-            .expect("driven agent keeps mesh"),
-        &before,
+            .expect("driven agent keeps mesh")
+            .animation
+            .as_ref(),
+        before.as_ref(),
         "a sub-epsilon post-steering rate change must leave rebase state untouched",
     );
+}
+
+#[test]
+fn simulate_tick_writes_target_aim_and_tick_end_heading_pose_inputs() {
+    let world = floor_world();
+    let nav_graph = open_floor_nav_graph();
+    let mut progress = ProgressTracker::new();
+    let mut ai_warned = HashSet::new();
+    let mut mover_states = MoverTickStateTable::default();
+    let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+    let (enemy, target) = {
+        let mut registry = registry.borrow_mut();
+        let target = spawn_player(&mut registry, Vec3::new(6.0, 1.21, 6.0));
+        let enemy = spawn_driven_agent(
+            &mut registry,
+            Vec3::new(5.0, 1.21, 5.0),
+            LogicalState::Attack,
+            "attack",
+        );
+        let mut brain = registry
+            .get_component::<BrainComponent>(enemy)
+            .unwrap()
+            .clone();
+        brain.acquired_target = Some(target);
+        registry.set_component(enemy, brain).unwrap();
+        (enemy, target)
+    };
+
+    run_driven_agent_sim_tick(
+        registry.clone(),
+        &world,
+        &nav_graph,
+        1.0,
+        &mut progress,
+        &mut ai_warned,
+        &mut mover_states,
+    );
+
+    let registry = registry.borrow();
+    let self_transform = *registry.get_component::<Transform>(enemy).unwrap();
+    let target_transform = *registry.get_component::<Transform>(target).unwrap();
+    let direction = target_transform.position - self_transform.position;
+    let horizontal = (direction.x * direction.x + direction.z * direction.z).sqrt();
+    let (heading_yaw, _, _) = self_transform.rotation.to_euler(EulerRot::YXZ);
+    let inputs = registry
+        .get_component::<MeshComponent>(enemy)
+        .unwrap()
+        .pose_inputs
+        .expect("animated AI receives same-tick pose inputs");
+
+    assert!((inputs.aim_yaw - direction.x.atan2(direction.z)).abs() <= 1.0e-6);
+    assert!((inputs.aim_pitch - direction.y.atan2(horizontal)).abs() <= 1.0e-6);
+    assert!((inputs.heading_yaw - heading_yaw).abs() <= 1.0e-6);
+}
+
+#[test]
+fn pose_inputs_fallbacks_and_vertical_targets_remain_finite() {
+    fn inputs_for(
+        target_offset: Option<Vec3>,
+        stale_target: bool,
+    ) -> postretro_entities::PoseInputs {
+        let mut registry = EntityRegistry::new();
+        let entity = registry.spawn(Transform {
+            rotation: glam::Quat::from_rotation_y(0.6),
+            ..Transform::default()
+        });
+        registry
+            .set_component(entity, driven_agent_mesh("attack"))
+            .unwrap();
+        let acquired_target = target_offset.map(|offset| {
+            let target = registry.spawn(Transform {
+                position: offset,
+                ..Transform::default()
+            });
+            if stale_target {
+                registry.despawn(target).unwrap();
+            }
+            target
+        });
+        let brain = BrainComponent {
+            state: LogicalState::Attack,
+            attack_cooldown_remaining_ms: 0.0,
+            think_stride_counter: 0,
+            death_despawn_remaining_ms: None,
+            locomotion_moving: false,
+            acquired_target,
+            combat_slot: None,
+            combat_slot_hold_ticks: 0,
+            tuning: driven_agent_tuning(),
+        };
+        registry.set_component(entity, brain).unwrap();
+
+        super::update_pose_inputs(&mut registry);
+        registry
+            .get_component::<MeshComponent>(entity)
+            .unwrap()
+            .pose_inputs
+            .unwrap()
+    }
+
+    let no_target = inputs_for(None, false);
+    let missing_target = inputs_for(Some(Vec3::X), true);
+    for fallback in [no_target, missing_target] {
+        assert!(fallback.aim_pitch.abs() <= 1.0e-6);
+        assert!((fallback.aim_yaw - 0.6).abs() <= 1.0e-6);
+        assert!((fallback.heading_yaw - 0.6).abs() <= 1.0e-6);
+    }
+
+    let coincident = inputs_for(Some(Vec3::ZERO), false);
+    let straight_up = inputs_for(Some(Vec3::Y), false);
+    let straight_down = inputs_for(Some(-Vec3::Y), false);
+    for inputs in [coincident, straight_up, straight_down] {
+        assert!(inputs.aim_pitch.is_finite());
+        assert!(inputs.aim_yaw.is_finite());
+        assert!(inputs.heading_yaw.is_finite());
+        assert!((inputs.aim_yaw - inputs.heading_yaw).abs() <= 1.0e-6);
+    }
+    assert!(coincident.aim_pitch.abs() <= 1.0e-6);
+    assert!((straight_up.aim_pitch - std::f32::consts::FRAC_PI_2).abs() <= 1.0e-6);
+    assert!((straight_down.aim_pitch + std::f32::consts::FRAC_PI_2).abs() <= 1.0e-6);
 }
 
 fn fixed_command_stream() -> Vec<RecordedCommand> {

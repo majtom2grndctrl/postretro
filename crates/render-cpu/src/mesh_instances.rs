@@ -3,6 +3,7 @@
 
 use glam::{Mat4, Vec4};
 
+use postretro_entities::PoseInputs;
 use postretro_model::ModelHandle;
 use postretro_render_data::cone_frustum::{Aabb, aabb_intersects_frustum};
 // The per-instance sample-parameter types (`ClipSample`, `MeshSampleParams`,
@@ -55,6 +56,8 @@ pub struct MeshInstanceInput {
     /// collector computes these from entity state + the clip table; for a
     /// stateless `prop_mesh` entity this is [`MeshSampleParams::stateless`].
     pub sample: MeshSampleParams,
+    /// Same-tick presentation inputs for the model's pose-modifier stack.
+    pub pose_inputs: Option<PoseInputs>,
     /// One-time `"smooth"`-interrupt snapshot-capture instruction for this frame,
     /// if the entity crossed an interrupt this frame. Evaluated by the pass into
     /// the per-entity snapshot store before sampling (idempotent by tag).
@@ -92,6 +95,8 @@ pub struct PlannedInstance {
     /// — the GPU layer feeds these to the pose sampler (single / blended /
     /// snapshot-blended), replacing the hardcoded first-clip-at-render-clock path.
     pub sample: MeshSampleParams,
+    /// Carried verbatim from [`MeshInstanceInput::pose_inputs`] for palette sampling.
+    pub pose_inputs: Option<PoseInputs>,
     /// One-time `"smooth"`-interrupt capture instruction for this frame, if any.
     /// The GPU layer evaluates it into the snapshot store (idempotent by tag)
     /// before sampling this frame's pose.
@@ -242,6 +247,7 @@ fn plan_ordered_mesh_frame<'a>(
             phase_seed: inst.phase_seed,
             bounds: joints.model_bounds(&inst.model),
             sample: inst.sample,
+            pose_inputs: inst.pose_inputs,
             capture: inst.capture,
             resample: inst.resample,
             forward_visible: inst.forward_visible,
@@ -329,6 +335,7 @@ mod tests {
             transform: Mat4::from_translation(Vec3::new(x, 0.0, 0.0)),
             phase_seed: seed,
             sample: MeshSampleParams::stateless(0.0),
+            pose_inputs: None,
             capture: None,
             resample: true,
             forward_visible: true,
@@ -348,6 +355,24 @@ mod tests {
         // Distinct transforms preserved per instance.
         assert_eq!(plan.groups[0].instances[0].transform.w_axis.x, 1.0);
         assert_eq!(plan.groups[0].instances[1].transform.w_axis.x, 2.0);
+    }
+
+    #[test]
+    fn planners_carry_pose_inputs_verbatim() {
+        let joints = joints(&[("grunt", 10)]);
+        let expected = PoseInputs {
+            aim_pitch: 0.25,
+            aim_yaw: -0.5,
+            heading_yaw: 1.0,
+        };
+        let mut input = instance("grunt", 1.0, 7);
+        input.pose_inputs = Some(expected);
+
+        let full = plan_mesh_frame(std::slice::from_ref(&input), &joints);
+        assert_eq!(full.groups[0].instances[0].pose_inputs, Some(expected));
+
+        let forward = plan_forward_visible_mesh_frame(&[input], &joints);
+        assert_eq!(forward.groups[0].instances[0].pose_inputs, Some(expected));
     }
 
     #[test]
@@ -578,6 +603,7 @@ mod tests {
             phase_seed: 0,
             bounds: local,
             sample: MeshSampleParams::stateless(0.0),
+            pose_inputs: None,
             capture: None,
             resample: true,
             forward_visible: true,
@@ -595,6 +621,7 @@ mod tests {
             phase_seed: 0,
             bounds: local,
             sample: MeshSampleParams::stateless(0.0),
+            pose_inputs: None,
             capture: None,
             resample: true,
             forward_visible: true,
@@ -650,6 +677,7 @@ mod tests {
             phase_seed: 0,
             bounds: bar,
             sample: MeshSampleParams::stateless(0.0),
+            pose_inputs: None,
             capture: None,
             resample: true,
             forward_visible: true,

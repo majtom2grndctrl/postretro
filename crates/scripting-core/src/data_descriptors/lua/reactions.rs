@@ -82,6 +82,7 @@ pub fn crossing_descriptor_from_lua(
             }
         }
     }
+    let edge = get_optional_string_lua(&table, "edge")?;
 
     if table.contains_key("predicate").map_err(lua_err)? {
         let raw: LuaValue = table.get("predicate").map_err(lua_err)?;
@@ -89,14 +90,14 @@ pub fn crossing_descriptor_from_lua(
             conv::lua_to_json(raw).map_err(lua_err)?,
             "crossing entry `predicate`",
         )?;
-        return Ok(build_predicate_crossing(predicate, fire));
+        return Ok(build_predicate_crossing(predicate, edge, fire));
     }
 
     let slot = get_required_string_lua(&table, "slot")?;
     let below = get_optional_f32_lua(&table, "below")?;
     let above = get_optional_f32_lua(&table, "above")?;
     let max = get_optional_f32_lua(&table, "max")?;
-    build_crossing(slot, below, above, max, fire)
+    build_crossing(slot, below, above, max, edge, fire)
 }
 
 pub fn primitive_descriptor_from_lua(

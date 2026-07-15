@@ -165,6 +165,57 @@ pub enum IrNode {
     },
 }
 
+impl IrNode {
+    /// Collect the distinct ephemeral dispatch inputs referenced by this tree,
+    /// preserving their first-seen order. The exhaustive walk is intentionally
+    /// colocated with the closed IR vocabulary: adding an opcode must update
+    /// this match instead of silently omitting its inputs.
+    pub fn dispatch_input_names(&self) -> Vec<String> {
+        fn walk(node: &IrNode, names: &mut Vec<String>) {
+            match node {
+                IrNode::Const { .. } => {}
+                IrNode::Input { name } => {
+                    if name.starts_with('@') && !names.contains(name) {
+                        names.push(name.clone());
+                    }
+                }
+                IrNode::Add { a, b }
+                | IrNode::Sub { a, b }
+                | IrNode::Mul { a, b }
+                | IrNode::Div { a, b }
+                | IrNode::Lt { a, b }
+                | IrNode::Le { a, b }
+                | IrNode::Gt { a, b }
+                | IrNode::Ge { a, b }
+                | IrNode::Eq { a, b }
+                | IrNode::Ne { a, b } => {
+                    walk(a, names);
+                    walk(b, names);
+                }
+                IrNode::Clamp { x, lo, hi } => {
+                    walk(x, names);
+                    walk(lo, names);
+                    walk(hi, names);
+                }
+                IrNode::Lerp { a, b, t } => {
+                    walk(a, names);
+                    walk(b, names);
+                    walk(t, names);
+                }
+                IrNode::Select { cond, a, b } => {
+                    walk(cond, names);
+                    walk(a, names);
+                    walk(b, names);
+                }
+            }
+        }
+
+        let mut names = Vec::new();
+        walk(self, &mut names);
+        names
+    }
+}
+
 /// The IR wire envelope. Carries a version stamp, an optional named output, and
 /// the program root.
 ///
@@ -235,6 +286,28 @@ mod wire_format_tests {
             },
             r#"{"op":"input","name":"speed"}"#,
         );
+    }
+
+    #[test]
+    fn dispatch_input_walk_is_exhaustive_nested_and_unique() {
+        let node = IrNode::Select {
+            cond: Box::new(IrNode::Input {
+                name: "@rising".to_string(),
+            }),
+            a: Box::new(IrNode::Add {
+                a: Box::new(IrNode::Input {
+                    name: "ambient.slot".to_string(),
+                }),
+                b: Box::new(IrNode::Input {
+                    name: "@dt".to_string(),
+                }),
+            }),
+            b: Box::new(IrNode::Input {
+                name: "@rising".to_string(),
+            }),
+        };
+
+        assert_eq!(node.dispatch_input_names(), vec!["@rising", "@dt"]);
     }
 
     #[test]

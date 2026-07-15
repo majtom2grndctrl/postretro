@@ -575,6 +575,7 @@ mod tests {
                 slot: Some("player.health".to_string()),
                 condition: CrossingCondition::Below { threshold: 0.2 },
                 max: 100.0,
+                edge: None,
                 fire: vec!["lowHealth".to_string()],
             }],
             &[],

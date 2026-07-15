@@ -145,6 +145,7 @@ fn atmosphere_crossings() -> Vec<CrossingDescriptor> {
         slot: Some(BLACKOUT_SLOT.to_string()),
         condition: CrossingCondition::Above { threshold: 0.5 },
         max: 1.0,
+        edge: None,
         fire: vec![PRESENTATION_EVENT.to_string()],
     }]
 }

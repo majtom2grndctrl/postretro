@@ -382,6 +382,7 @@ impl SimHarness {
                     }),
                 }),
                 max: 1.0,
+                edge: None,
                 fire: vec!["determinismReady".to_string()],
             }],
             &[],
@@ -474,7 +475,12 @@ impl SimHarness {
                 use_edges: &trigger_use_edges,
             }),
         );
-        let predicate_crossing_fires = self.crossing_detector.detect(&self.trigger_slots.borrow());
+        let predicate_crossing_fires = self
+            .crossing_detector
+            .detect(&self.trigger_slots.borrow())
+            .into_iter()
+            .map(|fire| fire.reaction)
+            .collect();
         self.record(events, predicate_crossing_fires)
     }
 

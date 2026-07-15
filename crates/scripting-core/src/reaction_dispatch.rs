@@ -11,6 +11,7 @@ use super::data_registry::{DataRegistry, ScopedReaction};
 use super::reaction_registry::{ReactionPrimitiveRegistry, SystemReactionRegistry};
 use super::registry::{ComponentKind, EntityId, EntityRegistry};
 use super::sequence::SequencedPrimitiveRegistry;
+use postretro_foundation::ir::IrValue;
 
 /// `total` is captured at level load; subsequent spawns do NOT raise it.
 /// Threshold compare: `killed/total >= at` (`at: 1.0` means "all dead").
@@ -144,7 +145,11 @@ pub fn fire_named_event_with_sequences(
     reaction_registry: &ReactionPrimitiveRegistry,
     system_registry: &SystemReactionRegistry,
     script_ctx: &ScriptCtx,
+    dispatch_values: Option<&[(String, IrValue)]>,
 ) -> Vec<String> {
+    let previous_context = script_ctx
+        .system_commands
+        .replace_fire_context(dispatch_values.unwrap_or_default().to_vec());
     let mut chained = Vec::new();
     for named in &data_registry.reactions {
         if named.name != event_name {
@@ -163,6 +168,9 @@ pub fn fire_named_event_with_sequences(
             }
         }
     }
+    script_ctx
+        .system_commands
+        .replace_fire_context(previous_context);
     chained
 }
 
@@ -288,6 +296,7 @@ fn dispatch_deferred_named_events_with_sequences_up_to(
             reaction_registry,
             system_registry,
             script_ctx,
+            None,
         ));
     }
     dispatched
@@ -1036,6 +1045,7 @@ mod tests {
             &reaction_reg,
             &system_reg,
             &script_ctx,
+            None,
         );
 
         assert_eq!(
@@ -1094,6 +1104,7 @@ mod tests {
             &reaction_reg,
             &system_reg,
             &script_ctx,
+            None,
         );
         assert!(chained.is_empty());
         let observed = calls.lock().unwrap().clone();
@@ -1155,6 +1166,7 @@ mod tests {
             &reaction_reg,
             &system_reg,
             &script_ctx,
+            None,
         );
         assert_eq!(count.load(Ordering::SeqCst), 2);
     }
@@ -1209,6 +1221,7 @@ mod tests {
             &reaction_reg,
             &system_reg,
             &script_ctx,
+            None,
         );
         assert_eq!(count.load(Ordering::SeqCst), 1);
     }

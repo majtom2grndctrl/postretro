@@ -4,6 +4,8 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use postretro_foundation::ir::IrValue;
+
 /// A single deferred system-reaction effect. Variants carry their full args so
 /// the drain seam is typed end to end.
 #[derive(Debug, Clone, PartialEq)]
@@ -44,6 +46,9 @@ pub enum SystemReactionCommand {
     SetState {
         slot: String,
         value: serde_json::Value,
+        /// Ephemeral values published by the firing source. They are not part
+        /// of command selection or any persistent/wire format.
+        dispatch_values: Vec<(String, IrValue)>,
     },
     CellWrite {
         scope: String,
@@ -66,6 +71,7 @@ pub enum SystemReactionCommand {
 #[derive(Clone, Default)]
 pub struct SystemCommandQueue {
     commands: Rc<RefCell<Vec<SystemReactionCommand>>>,
+    fire_context: Rc<RefCell<Vec<(String, IrValue)>>>,
 }
 
 impl SystemCommandQueue {
@@ -75,6 +81,17 @@ impl SystemCommandQueue {
 
     pub fn push(&self, command: SystemReactionCommand) {
         self.commands.borrow_mut().push(command);
+    }
+
+    /// Replace the active named-fire context, returning the prior context so a
+    /// caller can restore it after dispatch. Registry handler signatures stay
+    /// source-agnostic; only commands that need context snapshot it.
+    pub fn replace_fire_context(&self, values: Vec<(String, IrValue)>) -> Vec<(String, IrValue)> {
+        std::mem::replace(&mut *self.fire_context.borrow_mut(), values)
+    }
+
+    pub fn fire_context(&self) -> Vec<(String, IrValue)> {
+        self.fire_context.borrow().clone()
     }
 
     pub fn take(&self) -> Vec<SystemReactionCommand> {

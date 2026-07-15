@@ -43,6 +43,7 @@ pub mod shadowmask_bake;
 pub mod texture_mips;
 pub mod texture_validation;
 pub mod trigger_volumes;
+pub mod tui;
 pub mod visibility;
 
 use std::collections::HashSet;

@@ -16,8 +16,8 @@ reveal-flavor containment reuses the shipped arm/disarm surface a door-open alre
   `player_spawn`): a built-in classname handler, an engine-owned `SpawnerComponent`, an FGD
   entry. No new PRL section, no compiler branch, no loader change.
 - `spawnFromSpawner` consequential reaction primitive (tag-targeted), executed VM-free in the
-  fixed-tick seam. Spawns `count` enemies of a named archetype at the spawner origin; the
-  existing entity-entity separation pass nudges them apart.
+  fixed-tick seam. Spawns `count` enemies of a named archetype at the spawner origin, offset by a
+  fixed per-index delta so they do not overlap.
 - Spawn-time replication registration: a new `DescriptorSpawnPath::RuntimeSpawn`, a broadened
   networked-AI predicate, and a host-gated post-tick registration sweep so spawned enemies enter
   the `ReplicableSet` and stamp a `NetworkId`. Clients materialize them from the snapshot's

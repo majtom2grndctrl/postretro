@@ -77,6 +77,135 @@ impl StoreScope {
     }
 }
 
+/// A resolved input in a [`DispatchScope`]: either an index into its ephemeral
+/// value snapshot or a handle delegated to its ambient [`StoreScope`].
+#[derive(Clone, Debug)]
+pub enum DispatchInputHandle {
+    Dispatch(usize),
+    Store(StoreHandle),
+}
+
+/// Why an ephemeral dispatch input could not be seeded for an evaluation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DispatchSeedError {
+    /// The name is not part of this dispatch source's fixed vocabulary.
+    UnknownInput { name: String },
+    /// The runtime value disagrees with the type projected when the program was
+    /// bound. Callers should warn and skip evaluation rather than coercing it.
+    TypeMismatch {
+        name: &'static str,
+        expected: IrType,
+        actual: IrType,
+    },
+}
+
+/// Layers per-dispatch ephemeral inputs over the ambient store namespace.
+///
+/// The vocabulary is fixed for the scope's lifetime, so bound dispatch handles
+/// remain stable. Values are seeded in place before each evaluation; programs
+/// bind once and observe the refreshed snapshot on every fire.
+pub struct DispatchScope {
+    store: StoreScope,
+    inputs: &'static [(&'static str, IrType)],
+    values: Box<[IrValue]>,
+}
+
+impl DispatchScope {
+    /// An engine-policy dispatch scope whose delegated store writes bypass
+    /// readonly through the validated engine path.
+    pub fn engine(ctx: ScriptCtx, inputs: &'static [(&'static str, IrType)]) -> Self {
+        Self::new(StoreScope::engine(ctx), inputs)
+    }
+
+    /// A script-capability dispatch scope whose delegated store writes are
+    /// readonly-gated at bind.
+    pub fn script(ctx: ScriptCtx, inputs: &'static [(&'static str, IrType)]) -> Self {
+        Self::new(StoreScope::script(ctx), inputs)
+    }
+
+    fn new(store: StoreScope, inputs: &'static [(&'static str, IrType)]) -> Self {
+        let values = inputs
+            .iter()
+            .map(|(_, ir_type)| match ir_type {
+                IrType::Number => IrValue::Number(0.0),
+                IrType::Bool => IrValue::Bool(false),
+            })
+            .collect();
+        Self {
+            store,
+            inputs,
+            values,
+        }
+    }
+
+    /// Seed one ephemeral input for the next evaluation.
+    ///
+    /// A mismatched type or a name outside the fixed vocabulary is refused and
+    /// leaves the snapshot unchanged.
+    pub fn seed(&mut self, name: &str, value: IrValue) -> Result<(), DispatchSeedError> {
+        let Some(index) = self
+            .inputs
+            .iter()
+            .position(|(input_name, _)| *input_name == name)
+        else {
+            return Err(DispatchSeedError::UnknownInput {
+                name: name.to_string(),
+            });
+        };
+        let (input_name, expected) = self.inputs[index];
+        let actual = value.ir_type();
+        if actual != expected {
+            return Err(DispatchSeedError::TypeMismatch {
+                name: input_name,
+                expected,
+                actual,
+            });
+        }
+        self.values[index] = value;
+        Ok(())
+    }
+}
+
+impl BindingScope for DispatchScope {
+    type InputHandle = DispatchInputHandle;
+    type OutputHandle = StoreHandle;
+
+    fn resolve_input(&self, name: &str) -> Option<ResolvedInput<Self::InputHandle>> {
+        if name.starts_with('@') {
+            let handle = self
+                .inputs
+                .iter()
+                .position(|(input_name, _)| *input_name == name)?;
+            return Some(ResolvedInput {
+                handle: DispatchInputHandle::Dispatch(handle),
+                ir_type: self.inputs[handle].1,
+            });
+        }
+
+        self.store
+            .resolve_input(name)
+            .map(|resolved| ResolvedInput {
+                handle: DispatchInputHandle::Store(resolved.handle),
+                ir_type: resolved.ir_type,
+            })
+    }
+
+    fn resolve_output(&self, name: &str) -> Option<ResolvedOutput<Self::OutputHandle>> {
+        self.store.resolve_output(name)
+    }
+
+    fn read(&self, handle: &Self::InputHandle) -> IrValue {
+        match handle {
+            DispatchInputHandle::Dispatch(index) => self.values[*index],
+            DispatchInputHandle::Store(handle) => self.store.read(handle),
+        }
+    }
+
+    fn write(&mut self, handle: &Self::OutputHandle, value: IrValue) {
+        self.store.write(handle, value);
+    }
+}
+
 impl BindingScope for StoreScope {
     type InputHandle = StoreHandle;
     type OutputHandle = StoreHandle;
@@ -160,6 +289,8 @@ mod tests {
     };
 
     const EPSILON: f32 = 1e-6;
+    const TEST_DISPATCH_INPUTS: [(&str, IrType); 2] =
+        [("@rising", IrType::Bool), ("@dt", IrType::Number)];
 
     fn num(v: f32) -> Box<IrNode> {
         Box::new(IrNode::Const {
@@ -424,5 +555,83 @@ mod tests {
         scope.set_input("speed", IrValue::Number(9.0));
         let program = bind(&read_only(*input("speed")), &scope).expect("binds");
         assert_number(eval_value(&program, &scope), 9.0);
+    }
+
+    #[test]
+    fn dispatch_scope_binds_reserved_inputs_with_projected_types() {
+        let scope = DispatchScope::script(ScriptCtx::new(), &TEST_DISPATCH_INPUTS);
+
+        let rising = bind(&read_only(*input("@rising")), &scope).expect("bool input binds");
+        assert_eq!(rising.root_type, IrType::Bool);
+
+        let dt = bind(&read_only(*input("@dt")), &scope).expect("number input binds");
+        assert_eq!(dt.root_type, IrType::Number);
+    }
+
+    #[test]
+    fn dispatch_scope_rejects_unknown_reserved_input_at_bind() {
+        let scope = DispatchScope::script(ScriptCtx::new(), &TEST_DISPATCH_INPUTS);
+
+        assert_eq!(
+            bind(&read_only(*input("@missing")), &scope).unwrap_err(),
+            BindError::UnknownInput {
+                name: "@missing".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn dispatch_scope_delegates_ambient_store_reads_and_writes() {
+        let ctx = seeded_ctx();
+        let mut scope = DispatchScope::script(ctx.clone(), &TEST_DISPATCH_INPUTS);
+        scope.seed("@dt", IrValue::Number(2.0)).unwrap();
+        let baked = BakedIr {
+            version: CURRENT_IR_VERSION,
+            output: Some("test.number".to_string()),
+            root: IrNode::Add {
+                a: input("test.number"),
+                b: input("@dt"),
+            },
+        };
+
+        let program = bind(&baked, &scope).expect("dispatch and ambient inputs bind");
+        eval_and_write(&program, &mut scope);
+
+        assert_eq!(
+            ctx.slot_table
+                .borrow()
+                .get("test.number")
+                .and_then(|record| record.value.clone()),
+            Some(SlotValue::Number(27.0))
+        );
+    }
+
+    #[test]
+    fn dispatch_scope_seed_updates_are_observed_without_rebind() {
+        let mut scope = DispatchScope::script(ScriptCtx::new(), &TEST_DISPATCH_INPUTS);
+        let program = bind(&read_only(*input("@dt")), &scope).expect("binds once");
+
+        scope.seed("@dt", IrValue::Number(0.25)).unwrap();
+        assert_number(eval_value(&program, &scope), 0.25);
+
+        scope.seed("@dt", IrValue::Number(0.5)).unwrap();
+        assert_number(eval_value(&program, &scope), 0.5);
+    }
+
+    #[test]
+    fn dispatch_scope_refuses_mismatched_seed_type() {
+        let mut scope = DispatchScope::script(ScriptCtx::new(), &TEST_DISPATCH_INPUTS);
+        let program = bind(&read_only(*input("@dt")), &scope).expect("binds");
+        scope.seed("@dt", IrValue::Number(0.25)).unwrap();
+
+        assert_eq!(
+            scope.seed("@dt", IrValue::Bool(true)),
+            Err(DispatchSeedError::TypeMismatch {
+                name: "@dt",
+                expected: IrType::Number,
+                actual: IrType::Bool,
+            })
+        );
+        assert_number(eval_value(&program, &scope), 0.25);
     }
 }

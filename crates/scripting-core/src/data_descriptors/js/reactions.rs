@@ -65,6 +65,7 @@ pub fn crossing_descriptor_from_js<'js>(
         let item: JsValue = fire_arr.get(i).map_err(js_err)?;
         fire.push(String::from_js_value_required(item, "fire")?);
     }
+    let edge = get_optional_string_js(&obj, "edge")?;
 
     if obj.contains_key("predicate").map_err(js_err)? {
         let raw: JsValue = obj.get("predicate").map_err(js_err)?;
@@ -72,14 +73,14 @@ pub fn crossing_descriptor_from_js<'js>(
             conv::js_to_json(ctx, raw).map_err(js_err)?,
             "crossing entry `predicate`",
         )?;
-        return Ok(build_predicate_crossing(predicate, fire));
+        return Ok(build_predicate_crossing(predicate, edge, fire));
     }
 
     let slot = get_required_string_js(&obj, "slot")?;
     let below = get_optional_f32_js(&obj, "below")?;
     let above = get_optional_f32_js(&obj, "above")?;
     let max = get_optional_f32_js(&obj, "max")?;
-    build_crossing(slot, below, above, max, fire)
+    build_crossing(slot, below, above, max, edge, fire)
 }
 
 pub fn primitive_descriptor_from_js<'js>(

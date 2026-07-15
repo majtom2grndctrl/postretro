@@ -1285,6 +1285,7 @@ pub(crate) fn install_world_cpu(
         reaction_registry,
         system_registry,
         script_ctx,
+        None,
     );
     timings.record("level_load_event");
 
@@ -1574,6 +1575,7 @@ mod tests {
                 slot: Some(slot.to_string()),
                 condition: CrossingCondition::Below { threshold: 0.5 },
                 max: 100.0,
+                edge: None,
                 fire: vec![fire.to_string()],
             },
             levels: Vec::new(),
@@ -1632,6 +1634,7 @@ mod tests {
             ctx.system_commands.push(SystemReactionCommand::SetState {
                 slot: "puzzle.count".to_string(),
                 value: increment.clone(),
+                dispatch_values: Vec::new(),
             });
         }
         app.dispatch_system_commands();

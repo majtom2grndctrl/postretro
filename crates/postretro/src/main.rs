@@ -2064,6 +2064,7 @@ impl ApplicationHandler for App {
                             &session.scripting.reaction_registry,
                             &session.scripting.system_registry,
                             &script_ctx,
+                            None,
                         );
                     }
                     for handle in &pending_trigger_residuals {
@@ -3813,6 +3814,7 @@ impl App {
                 .push(SystemReactionCommand::SetState {
                     slot,
                     value: serde_json::json!(next),
+                    dispatch_values: Vec::new(),
                 });
         }
     }
@@ -3847,6 +3849,7 @@ impl App {
                             &session.scripting.reaction_registry,
                             &session.scripting.system_registry,
                             &session.scripting.script_ctx,
+                            None,
                         );
                     }
                 }
@@ -3968,6 +3971,7 @@ impl App {
                     &session.scripting.reaction_registry,
                     &session.scripting.system_registry,
                     &session.scripting.script_ctx,
+                    None,
                 );
             }
         }
@@ -4131,7 +4135,11 @@ impl App {
                         session.modal_stack.pop();
                     }
                 }
-                SystemReactionCommand::SetState { slot, value } => {
+                SystemReactionCommand::SetState {
+                    slot,
+                    value,
+                    dispatch_values,
+                } => {
                     if crate::scripting::reactions::system_commands::is_ir_node(&value) {
                         let outcome = self.session.as_ref().map_or(
                             SystemReactionIrDispatch::Unknown,
@@ -4139,6 +4147,7 @@ impl App {
                                 session.scripting.system_reaction_ir_bindings.dispatch(
                                     &slot,
                                     &value,
+                                    &dispatch_values,
                                     &script_ctx,
                                 )
                             },

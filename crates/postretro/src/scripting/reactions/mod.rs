@@ -3,6 +3,7 @@
 #![allow(unused_imports)]
 
 use postretro_entities::{DataRegistry, ScriptCtx, SlotTable};
+use postretro_foundation::IrValue;
 use postretro_scripting_core::reaction_dispatch::fire_named_event_with_sequences;
 use postretro_scripting_core::reaction_registry::{
     ReactionPrimitiveRegistry, SystemReactionRegistry,
@@ -39,15 +40,20 @@ pub(crate) fn dispatch_state_crossings_with_sequences(
     script_ctx: &ScriptCtx,
 ) -> Vec<String> {
     let crossing_events = crossing_detector.detect(slot_table);
-    for event_name in &crossing_events {
+    for fire in &crossing_events {
+        let dispatch_values = [("@rising".to_string(), IrValue::Bool(fire.rising))];
         let _ = fire_named_event_with_sequences(
-            event_name,
+            &fire.reaction,
             data_registry,
             sequence_registry,
             reaction_registry,
             system_registry,
             script_ctx,
+            Some(&dispatch_values),
         );
     }
     crossing_events
+        .into_iter()
+        .map(|fire| fire.reaction)
+        .collect()
 }

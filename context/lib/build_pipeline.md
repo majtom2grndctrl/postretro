@@ -136,6 +136,29 @@ parse .map → extract kinematic and trigger brush entities → BSP construction
 9. **Octahedral irradiance volume bake.** Bakes static-light indirect irradiance into octahedral atlas tiles and isotropic Chebyshev depth moments. When animated lights are present, also bakes the sparse indirect-only delta tile companion for runtime composition.
 10. **Pack.** Writes all sections to the `.prl` binary format.
 
+### Progress reporting, controls, and logging
+
+The stage sequence above is orchestrated by `pipeline.rs`, which is decoupled from how progress is
+presented. Presentation goes through a `Reporter` trait (`reporter.rs`) with two frontends: a
+`PlainReporter` for non-TTY runs (CI, pipes, `xtask`, redirected streams) that emits timestamped stage
+lines plus discrete percent/ETA lines, and a `TuiReporter` (`tui.rs` and its submodules) that drives a
+ratatui terminal UI when stdin, stdout, and stderr are all TTYs. The orchestrator calls the reporter
+per stage (begin → optionally declare a progress handle → finish or skip) and never assumes which
+frontend is active.
+
+- **Governor** (`governor.rs`) is the single cooperative gate for pause/resume and core-throttle. Serial
+  loops call `checkpoint()` (parks while paused); parallel work items call `enter()` exactly once at
+  their outermost boundary (parks while paused or at the permit cap). A permitted item must never wait
+  on another permitted item — that would deadlock at one permit. `BakeControl` (`bake_control.rs`)
+  carries the governor plus a stage's display-only progress counter to those work-item boundaries.
+- **Progress is display-only.** Counters (`StageProgress` in `reporter.rs`) feed percent/ETA and never
+  flow back into bake output, so pausing/throttling/the TUI cannot perturb the `.prl` — output stays
+  byte-identical to a straight-through build (the Determinism invariant under Build Cache).
+- **Logging** goes through a `CollectingLogger` (`logger.rs`) installed via `log::set_boxed_logger`,
+  preserving `RUST_LOG`/verbose filtering while tallying warn-and-above records into a shared sink the
+  active reporter drains. Every build ends with a warning tally (count plus the formatted records),
+  printed on the normal screen even for warnings that scrolled out of the live TUI region.
+
 ### PRL section IDs
 
 Version fields are exact-match format epochs unless a format explicitly adopts

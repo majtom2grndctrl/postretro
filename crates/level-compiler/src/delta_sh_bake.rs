@@ -141,9 +141,6 @@ pub fn bake_delta_sh_volumes_controlled(
     // --- CSR index: invert `per_light_cells` (light → cells) into cell → lights.
     let (affinity_offsets, affinity_lights) =
         build_csr(&decomposition.per_light_cells, affinity_cell_count);
-    if affinity_lights.is_empty() {
-        return None;
-    }
     control.publish_total(affinity_lights.len());
 
     // Bake-time invariants the loader also enforces.

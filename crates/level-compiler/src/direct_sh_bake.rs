@@ -692,7 +692,10 @@ pub fn bake_direct_sh_volume_cached_controlled(
         match DirectShVolumeSection::from_bytes(&bytes) {
             Ok(section) => {
                 log::info!("[cache] direct_sh_volume hit");
-                let _permit = control.governor().enter();
+                // Whole-section cache-hit fast-advance on the orchestrator thread:
+                // honor pause only, no permit (the per-probe parallel bake path is
+                // what needs a permit).
+                control.governor().checkpoint();
                 control.advance(layout.total_probes());
                 return section;
             }

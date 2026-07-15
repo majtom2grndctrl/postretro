@@ -1,5 +1,5 @@
-// Collecting logger for plain and interactive compiler reporters.
-// See: context/lib/build_pipeline.md
+//! Collecting log backend: warning sink for plain and interactive compiler reporters.
+//! See: `context/lib/build_pipeline.md`.
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -31,6 +31,8 @@ impl fmt::Display for CapturedRecord {
 #[derive(Debug, Default)]
 struct SinkState {
     pending: VecDeque<CapturedRecord>,
+    // Intentionally uncapped, unlike `pending`: the end-of-run tally must
+    // list every warning, so history can't be dropped under a warn-flood.
     warnings: Vec<CapturedRecord>,
 }
 

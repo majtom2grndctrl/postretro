@@ -67,14 +67,19 @@ impl StageProgress {
 
 /// Presentation contract shared by plain and TUI compiler frontends.
 ///
-/// Exactly one terminal method must win: `finalize` prints a complete success
-/// summary, while `finalize_failure` prints warnings without a partial success
-/// table. Implementations make repeated terminal calls no-ops.
+/// Exactly one terminal method must win: `finalize` commits/records a complete
+/// success summary for exactly-once presentation, while `finalize_failure`
+/// prints warnings without a partial success table. Implementations make
+/// repeated terminal calls no-ops.
 pub trait Reporter: Send + Sync {
-    fn begin_stage(&self, id: StageId, label: &'static str);
+    fn begin_stage(&self, id: StageId);
     fn declare_progress(&self, id: StageId, progress: StageProgress);
     fn finish_stage(&self, id: StageId);
     fn skip_stage(&self, id: StageId);
+    /// Records a warning that bypasses the `log` sink. Production warnings
+    /// arrive via the shared `LogSink` drain instead — a caller using this
+    /// method directly must not also emit the same warning through `log`,
+    /// or it will be reported twice.
     fn record_warning(&self, warning: CapturedRecord);
     fn finalize(&self, timings: &[(&'static str, Duration)], total: Duration);
     fn finalize_failure(&self);
@@ -163,7 +168,7 @@ impl Drop for PlainReporter {
 }
 
 impl Reporter for PlainReporter {
-    fn begin_stage(&self, id: StageId, label: &'static str) {
+    fn begin_stage(&self, id: StageId) {
         self.drain_logs();
         let mut state = self
             .state
@@ -176,7 +181,6 @@ impl Reporter for PlainReporter {
             self.started.elapsed().as_secs_f32(),
             id.progress_label()
         );
-        let _ = label;
     }
 
     fn declare_progress(&self, id: StageId, progress: StageProgress) {
@@ -234,16 +238,8 @@ impl Reporter for PlainReporter {
     }
 
     fn skip_stage(&self, id: StageId) {
-        let was_active = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .active
-            .is_some_and(|(active, _)| active == id);
         self.finish_stage(id);
-        if was_active {
-            eprintln!("  {}: skipped", id.label());
-        }
+        eprintln!("  {}: skipped", id.label());
     }
 
     fn record_warning(&self, warning: CapturedRecord) {
@@ -323,7 +319,7 @@ mod tests {
     #[test]
     fn skipped_stage_clears_active_state() {
         let reporter = PlainReporter::new(Instant::now(), LogSink::default());
-        reporter.begin_stage(StageId::NavMesh, StageId::NavMesh.label());
+        reporter.begin_stage(StageId::NavMesh);
         reporter.skip_stage(StageId::NavMesh);
         assert!(
             reporter

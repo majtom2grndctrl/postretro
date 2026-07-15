@@ -1,5 +1,5 @@
 //! Terminal-free formatting and timing for the active stage's progress footer.
-//! See: context/lib/build_pipeline.md
+//! See: `context/lib/build_pipeline.md`.
 
 use std::time::{Duration, Instant};
 
@@ -150,6 +150,16 @@ mod tests {
             progress_text(&step),
             ("working  --%".to_owned(), "Est. remaining  --".to_owned())
         );
+    }
+
+    #[test]
+    fn progress_is_indeterminate_until_late_total_arrives() {
+        let progress = StageProgress::indeterminate();
+        let step = step_with_progress(progress.clone(), Instant::now());
+        assert_eq!(progress_text(&step).0, "working  --%");
+        progress.completed_handle().store(2, Ordering::Relaxed);
+        progress.publish_total(8);
+        assert_eq!(progress_text(&step).0, "2/8   25%");
     }
 
     #[test]

@@ -68,14 +68,13 @@ pub const SH_REACH_CUTOFF_METERS: f32 = 16.0;
 /// near-black probes dominate the relative metric).
 ///
 /// A `max` metric is too sensitive over millions of real probes: on
-/// campaign-test (1.23M floored samples) the
-/// distribution is mean=0.0019, p99=0.043, p99.9=0.090, yet a SINGLE
-/// floor-boundary probe hits 0.356 — 80 samples (0.0065%) exceed 0.15. A `max`
-/// gate fails on that one probe while the channel is overwhelmingly faithful and
-/// strictly dimmer-or-equal (the bounded-reach benign-underestimate contract).
-/// p99.9 bounds the body of the distribution and is robust to the rare
-/// floor-boundary outlier. 0.15 keeps ~1.7x headroom over the observed p99.9
-/// (0.090).
+/// campaign-test (1.23M floored samples) the distribution is mean=0.0019,
+/// p99=0.043, p99.9=0.090, yet a SINGLE floor-boundary probe hits 0.356 — 80
+/// samples (0.0065%) exceed 0.15. A `max` gate fails on that one probe while
+/// the channel is overwhelmingly faithful and strictly dimmer-or-equal (the
+/// bounded-reach benign-underestimate contract). p99.9 bounds the body of the
+/// distribution and is robust to the rare floor-boundary outlier. 0.15 keeps
+/// ~1.7x headroom over the observed p99.9 (0.090).
 pub const WARM_SH_P999_REL_IRRADIANCE_ERROR: f32 = 0.15;
 
 /// Visibility floor (linear irradiance) for the warm-SH error metric: probes

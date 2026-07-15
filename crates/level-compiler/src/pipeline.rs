@@ -10,7 +10,7 @@ use crate::reporter::{Reporter, StageProgress};
 use crate::*;
 
 fn begin_stage(reporter: &dyn Reporter, id: StageId) -> Instant {
-    reporter.begin_stage(id, id.label());
+    reporter.begin_stage(id);
     Instant::now()
 }
 
@@ -207,7 +207,7 @@ pub(crate) fn run_prepared(
     governor: Arc<Governor>,
     prepared: PreparedMap,
 ) -> anyhow::Result<()> {
-    reporter.begin_stage(StageId::Parsing, StageId::Parsing.label());
+    reporter.begin_stage(StageId::Parsing);
     run_after_parsing(
         args,
         stage_cache,
@@ -749,6 +749,11 @@ fn run_after_parsing(
     // static (baked) lights — a map whose only lights are animated produces NO
     // direct section (absence; the loader treats it as direct = 0), so animated
     // direct never double-counts against animated-light weight maps.
+    // Display-only: the reporter renders DirectShBake as skipped for a degenerate
+    // (empty) probe grid, but the section is still produced unconditionally when
+    // static lights exist — preserving byte-identity with the baseline and keeping
+    // the downstream EntityShadowLights selection running exactly as before.
+    let mut direct_sh_present = false;
     let direct_sh_volume_section = if static_baked_lights.is_empty() {
         if args.verbose {
             log::info!("DirectShVolume: skipped (no static lights)");
@@ -772,35 +777,34 @@ fn run_after_parsing(
         if args.verbose {
             direct_sh_bake::log_cull_savings(&inputs, &sh_config);
         }
-        if raw.grid_dimensions == [0, 0, 0] {
-            None
-        } else {
-            // Re-encode the uncompressed RGBA16F bake output into the production
-            // BC6H section, honoring the lightmap path's debug bypass.
-            let section = direct_sh_bake::encode_direct_section_bc6h(
-                &raw,
-                lightmap_config.uncompressed_irradiance,
+        direct_sh_present = raw.grid_dimensions != [0, 0, 0];
+        // Re-encode the uncompressed RGBA16F bake output into the production
+        // BC6H section, honoring the lightmap path's debug bypass. Emitted
+        // unconditionally (matching baseline) even for a degenerate grid, where the
+        // encoder passes the empty section through unchanged.
+        let section = direct_sh_bake::encode_direct_section_bc6h(
+            &raw,
+            lightmap_config.uncompressed_irradiance,
+        );
+        if args.verbose {
+            // Report both footprints alongside indirect SH for comparison.
+            let post_compression = section.atlas.len();
+            let pre_compression = direct_sh_bake::direct_dense_atlas_byte_size(&raw);
+            let indirect_atlas = sh_volume_section.to_bytes().len();
+            log::info!(
+                "[Compiler] DirectShVolume atlas footprint: {post_compression} bytes BC6H \
+                 (pre-compression dense {pre_compression} bytes); indirect OctahedralShVolume \
+                 section {indirect_atlas} bytes",
             );
-            if args.verbose {
-                // Report both footprints alongside indirect SH for comparison.
-                let post_compression = section.atlas.len();
-                let pre_compression = direct_sh_bake::direct_dense_atlas_byte_size(&raw);
-                let indirect_atlas = sh_volume_section.to_bytes().len();
-                log::info!(
-                    "[Compiler] DirectShVolume atlas footprint: {post_compression} bytes BC6H \
-                     (pre-compression dense {pre_compression} bytes); indirect OctahedralShVolume \
-                     section {indirect_atlas} bytes",
-                );
-            }
-            Some(section)
         }
+        Some(section)
     };
     finish_stage(
         &mut timings,
         reporter.as_ref(),
         StageId::DirectShBake,
         stage_start,
-        direct_sh_volume_section.is_some(),
+        direct_sh_present,
     );
 
     let stage_start = begin_stage(reporter.as_ref(), StageId::EntityShadowLights);
@@ -1091,7 +1095,9 @@ fn run_after_parsing(
         if let Some(section) = cached_wm_section {
             log::info!("[cache] animated_lm_weight_maps hit");
             animated_weight_control.publish_total(animated_light_chunks_section.chunks.len());
-            let _permit = animated_weight_control.governor().enter();
+            // Cache-hit fast-advance on the orchestrator thread: honor pause only,
+            // no permit (the parallel bake path is what needs a permit).
+            animated_weight_control.governor().checkpoint();
             animated_weight_control.advance(animated_light_chunks_section.chunks.len());
             Some(section)
         } else {

@@ -68,6 +68,7 @@ impl EngineStateCatalogEntry<'_> {
             readonly: !self.capability.is_writable(),
             ownership: SlotOwnership::Engine,
             network: self.network,
+            accumulate: None,
         })
     }
 }

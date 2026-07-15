@@ -229,6 +229,10 @@ pub(crate) struct ScriptingCore {
     pub(crate) system_reaction_ir_bindings:
         scripting_systems::system_reactions::SystemReactionIrBindings,
 
+    /// Install-time bindings for script-authored numeric slot accumulators.
+    pub(crate) slot_accumulator_bindings:
+        scripting_systems::slot_accumulators::SlotAccumulatorBindings,
+
     /// Publishes live pawn health, ammo, and reload state into HUD slots each frame.
     /// See: context/lib/scripting.md §5 for the store contract.
     pub(crate) player_hud_state: scripting_systems::ui_proxy::PlayerHudStatePublisher,
@@ -547,6 +551,7 @@ fn build_scripting_core(
         reaction_registry,
         system_registry,
         system_reaction_ir_bindings: Default::default(),
+        slot_accumulator_bindings: Default::default(),
         player_hud_state,
         flash_decay,
         vignette_decay,

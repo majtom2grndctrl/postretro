@@ -913,6 +913,7 @@ mod tests {
                         readonly: false,
                         ownership: SlotOwnership::Mod,
                         network: Default::default(),
+                        accumulate: None,
                     }),
                 )],
             )
@@ -940,6 +941,7 @@ mod tests {
                     readonly: false,
                     ownership: SlotOwnership::Mod,
                     network: Default::default(),
+                    accumulate: None,
                 }),
             )
             .unwrap();
@@ -995,6 +997,7 @@ mod tests {
                     readonly: false,
                     ownership: SlotOwnership::Mod,
                     network: Default::default(),
+                    accumulate: None,
                 }),
             )
             .unwrap();

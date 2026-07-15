@@ -461,6 +461,7 @@ mod tests {
                         readonly: false,
                         ownership: SlotOwnership::Mod,
                         network: ReplicationScope::None,
+                        accumulate: None,
                     },
                     value: Some(SlotValue::Number(100.0)),
                 },

@@ -11,6 +11,9 @@ declare module "postretro/ui" {
     PrimitiveReactionDescriptor,
     NamedReactionDescriptor,
     CrossingCondition,
+    CrossingOptions,
+    CrossingParams,
+    Reaction,
     CrossingDescriptor,
     RuntimeValue,
   } from "postretro";
@@ -172,9 +175,9 @@ declare module "postretro/ui" {
   export function getGameState(): GameStateRefs;
 
   /** Build a state-crossing watcher for numeric refs. `condition` gives exactly one finite `below` or `above` threshold; optional `max` is a finite denominator. `fire` accepts reaction handles or names. */
-  export function onStateCrossing(ref: ReadonlyStateRef<number>, condition: CrossingCondition, fire: (NamedReactionDescriptor | string)[]): CrossingDescriptor;
+  export function onStateCrossing(ref: ReadonlyStateRef<number>, condition: CrossingCondition, fire: (Reaction<{}> | Reaction<CrossingParams> | string)[]): CrossingDescriptor;
   /** Build a watcher from a Bool-valued runtime predicate over live store slots. It fires on false-to-true edges and re-arms after the predicate returns false. A predicate already true at registration only arms; it must later return false, then true, to fire. */
-  export function onStateCrossing(predicate: RuntimeValue, fire: (NamedReactionDescriptor | string)[]): CrossingDescriptor;
+  export function onStateCrossing(predicate: RuntimeValue, fire: (Reaction<{}> | Reaction<CrossingParams> | string)[], options?: CrossingOptions): CrossingDescriptor;
   /** Play `sound` on optional mixer `bus`; omitted/null bus uses the engine default. */
   export function playSound(sound: string, bus?: string | null): PrimitiveReactionDescriptor;
   /** Trigger gamepad rumble. `strong` and optional `weak` are motor intensities in [0, 1]; `durationMs` is milliseconds. */

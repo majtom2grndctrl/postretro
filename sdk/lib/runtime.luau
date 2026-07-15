@@ -13,7 +13,7 @@
 
 -- A builder argument: either an already-built node or a bare literal that is
 -- auto-wrapped into a `const` node.
-type Operand = RuntimeValue | number | boolean
+type Operand = RuntimeValue | StateRef<any> | number | boolean
 
 -- Wrap a bare number/boolean literal into a `const` node; pass an existing node
 -- through unchanged. The wrapping rule is identical in `runtime.ts` so the two
@@ -21,6 +21,9 @@ type Operand = RuntimeValue | number | boolean
 local function wrap(value: Operand): RuntimeValue
   if type(value) == "number" or type(value) == "boolean" then
     return { op = "const", value = value }
+  end
+  if type(value) == "table" and type((value :: any).slot) == "string" then
+    return { op = "input", name = (value :: any).slot }
   end
   return value
 end
@@ -32,8 +35,8 @@ local runtime = {
     return { op = "const", value = value }
   end,
   --- Named-input leaf, bound to live state by name in the Rust evaluator.
-  read = function(name: string): RuntimeRead
-    return { op = "input", name = name }
+  read = function(name: string | StateRef<any>): RuntimeRead
+    return { op = "input", name = if type(name) == "string" then name else (name :: any).slot }
   end,
   --- `a + b` (number).
   add = function(a: Operand, b: Operand): RuntimeAdd

@@ -4,6 +4,16 @@
 
 import type { ReadonlyStateRef, WritableStateRef } from "./ui/widgets";
 
+/** Dispatch values published by a state-crossing fire. */
+export type CrossingParams = Readonly<{
+  rising: import("postretro").RuntimeRead;
+}>;
+
+/** Dispatch values published while a Number store slot accumulates. */
+export type TickParams = Readonly<{
+  dt: import("postretro").RuntimeRead;
+}>;
+
 /** Fires `fire` when entities tagged `tag` cross kill ratio `at` (0.0–1.0). */
 export type ProgressReactionDescriptor = {
   progress: { tag: string; at: number; fire: string };
@@ -92,7 +102,10 @@ export type LevelManifest = {
 };
 
 /** One slot inside a `defineStore` schema. Every slot needs `default`. `type: "number"` accepts a finite numeric default plus optional inclusive `range: [min, max]`; `"boolean"` and `"string"` require matching defaults; `"enum"` requires non-empty `values` and a default in that list; `"array"` is a finite-number array. `persist` saves on clean exit; `readonly` blocks script writes. */
-export type StoreSlotSchema = { type: "number" | "boolean" | "string" | "enum" | "array"; readonly?: boolean } & Record<string, unknown>;
+export type StoreSlotSchema = (
+  | { type: "number"; readonly?: boolean; accumulate?: (t: TickParams) => import("postretro").RuntimeValue }
+  | { type: "boolean" | "string" | "enum" | "array"; readonly?: boolean; accumulate?: never }
+) & Record<string, unknown>;
 
 export type StoreDeclaration = {
   namespace: string;
@@ -119,6 +132,22 @@ type ReactionBody =
   | ProgressReactionDescriptor
   | PrimitiveReactionDescriptor
   | SequenceReactionDescriptor;
+
+declare const reactionScopeBrand: unique symbol;
+
+/** A named reaction whose phantom dispatch scope is enforced only by TypeScript. */
+export type Reaction<S = {}> = NamedReactionDescriptor & {
+  readonly [reactionScopeBrand]?: (scope: S) => void;
+};
+
+type ReactionTracer<S> = (params: S) => ReactionBody;
+
+// This is deliberately one plain merged object rather than a Proxy. Sibling
+// dispatch specs may add opaque, non-IR leaves alongside these input nodes.
+const DISPATCH_PARAMS = Object.freeze({
+  rising: Object.freeze({ op: "input", name: "@rising" } as const),
+  dt: Object.freeze({ op: "input", name: "@dt" } as const),
+});
 
 /**
  * Deterministic, run-stable id derived from a reaction body. Content-derived
@@ -170,20 +199,29 @@ function stableStringify(value: unknown): string {
  * @param name Stable event/reaction name consumed by dispatch. Optional.
  * @param descriptor Reaction body data consumed later by Rust.
  */
-export function defineReaction(body: ReactionBody): NamedReactionDescriptor;
+export function defineReaction(body: ReactionBody): Reaction<{}>;
+export function defineReaction(tracer: ReactionTracer<CrossingParams>): Reaction<CrossingParams>;
 export function defineReaction(
   name: string,
   descriptor: ReactionBody,
-): NamedReactionDescriptor;
+): Reaction<{}>;
 export function defineReaction(
-  nameOrBody: string | ReactionBody,
-  descriptor?: ReactionBody,
-): NamedReactionDescriptor {
+  name: string,
+  tracer: ReactionTracer<CrossingParams>,
+): Reaction<CrossingParams>;
+export function defineReaction(
+  nameOrBody: string | ReactionBody | ReactionTracer<CrossingParams>,
+  descriptor?: ReactionBody | ReactionTracer<CrossingParams>,
+): Reaction<{}> | Reaction<CrossingParams> {
+  const authored = typeof nameOrBody === "string" ? descriptor : nameOrBody;
+  const tracedBody = typeof authored === "function"
+    ? authored(DISPATCH_PARAMS)
+    : authored as ReactionBody;
   const [name, body] =
     typeof nameOrBody === "string"
-      ? [nameOrBody, descriptor as ReactionBody]
-      : [autoReactionId(nameOrBody), nameOrBody];
-  return { name, ...body } as NamedReactionDescriptor;
+      ? [nameOrBody, tracedBody]
+      : [autoReactionId(tracedBody), tracedBody];
+  return { name, ...body } as Reaction<{}> | Reaction<CrossingParams>;
 }
 
 /** Stamp a shared map-tag scope onto each reaction in a plain list. `tags` are matched against `ModMapEntry.tags`; omit scoping for every level. */
@@ -274,7 +312,15 @@ export function defineStore<const S extends Record<string, StoreSlotSchema>>(
   namespace: string,
   schema: S,
 ): StoreDefinition<S> {
-  const frozenSchema = cloneAndFreeze(schema);
+  const tracedSchema: Record<string, StoreSlotSchema> = Object.create(null);
+  for (const [slot, input] of Object.entries(schema)) {
+    if (input !== null && typeof input === "object" && typeof input.accumulate === "function") {
+      tracedSchema[slot] = { ...input, accumulate: input.accumulate(DISPATCH_PARAMS) } as StoreSlotSchema;
+    } else {
+      tracedSchema[slot] = input;
+    }
+  }
+  const frozenSchema = cloneAndFreeze(tracedSchema) as S;
   const state: Record<string, StateRef> = Object.create(null);
   for (const slot of Object.keys(frozenSchema)) {
     state[slot] = Object.freeze({ slot: `${namespace}.${slot}` }) as StateRef;

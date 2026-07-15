@@ -11,8 +11,10 @@
 --- the threshold is a fraction of; omit it for a raw-value comparison (`max`
 --- defaults to `1.0`).
 export type CrossingCondition =
-  { below: number, above: nil?, max: number? }
-  | { below: nil?, above: number, max: number? }
+  { below: number, above: nil?, max: number?, edge: "both"? }
+  | { below: nil?, above: number, max: number?, edge: "both"? }
+
+export type CrossingOptions = { edge: "both"? }
 
 --- A threshold-form state-crossing watcher. The condition fields are flattened
 --- in beside `slot` and `fire`.
@@ -20,6 +22,7 @@ export type ThresholdCrossingDescriptor = {
   slot: string,
   predicate: nil?,
   max: number?,
+  edge: string?,
   fire: {string},
   levels: {string}?,
 } & (
@@ -34,6 +37,7 @@ export type PredicateCrossingDescriptor = {
   below: nil?,
   above: nil?,
   max: nil?,
+  edge: string?,
   fire: {string},
   levels: {string}?,
 }
@@ -63,7 +67,7 @@ local function isFiniteNumber(value: any): boolean
   return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge
 end
 
-local function crossingThreshold(condition: any): (string, number, number?)
+local function crossingThreshold(condition: any): (string, number, number?, any)
   if type(condition) ~= "table" then
     error("onStateCrossing: `condition` must be a table")
   end
@@ -80,7 +84,7 @@ local function crossingThreshold(condition: any): (string, number, number?)
   if condition.max ~= nil and not isFiniteNumber(condition.max) then
     error("onStateCrossing: `max` must be a finite number when provided")
   end
-  return key, value, condition.max
+  return key, value, condition.max, condition.edge
 end
 
 local function crossingFireNames(fire: any): { string }
@@ -131,16 +135,23 @@ function UiReactionsSdk.onStateCrossing(
   conditionOrFire: any,
   maybeFire: {any}?
 ): CrossingDescriptor
-  local predicateForm = maybeFire == nil
+  local predicateForm = type(refOrPredicate) == "table" and type(refOrPredicate.op) == "string"
   local fire = if predicateForm then conditionOrFire else maybeFire
   local fireNames = crossingFireNames(fire)
   if predicateForm then
-    return {
+    if maybeFire ~= nil and type(maybeFire) ~= "table" then
+      error("onStateCrossing: predicate options must be a table when provided")
+    end
+    local descriptor: PredicateCrossingDescriptor = {
       predicate = refOrPredicate,
       fire = fireNames,
     }
+    if maybeFire ~= nil and maybeFire.edge ~= nil then
+      descriptor.edge = maybeFire.edge
+    end
+    return descriptor
   end
-  local key, value, max = crossingThreshold(conditionOrFire)
+  local key, value, max, edge = crossingThreshold(conditionOrFire)
   local descriptor: ThresholdCrossingDescriptor = {
     slot = stateSlot(refOrPredicate, "onStateCrossing"),
     fire = fireNames,
@@ -148,6 +159,9 @@ function UiReactionsSdk.onStateCrossing(
   descriptor[key] = value
   if max ~= nil then
     descriptor.max = max
+  end
+  if edge ~= nil then
+    descriptor.edge = edge
   end
   return descriptor
 end

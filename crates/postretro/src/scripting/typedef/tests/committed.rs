@@ -231,6 +231,12 @@ fn define_store_emits_returned_declaration_and_state_refs() {
         ts.contains("Slot extends { type: \"number\" } ? StoreStateRefForSlot<Slot, number>"),
         "ts StateValueForSlot must route through readonly-aware ref selection"
     );
+    assert!(
+        ts.contains("accumulate?: (t: TickParams) => RuntimeValue")
+            && ts.contains("export type TickParams = Readonly<{ dt: RuntimeRead }>")
+            && ts.contains("read(name: string | ReadonlyStateRef<unknown>): RuntimeRead;"),
+        "ts must expose accumulator tracing and state-ref runtime reads:\n{ts}"
+    );
     // The old uniform registry-driven handle map must be gone.
     assert!(
         !ts.contains("export function defineStore(namespace: string, schema: unknown)"),
@@ -250,6 +256,12 @@ fn define_store_emits_returned_declaration_and_state_refs() {
         luau.contains("export type StoreStateRef<T> = ReadonlyStateRef<T> | WritableStateRef<T>")
             && luau.contains("state: { [string]: StoreStateRef<any> },"),
         "luau StoreDefinition must not type every store slot as writable:\n{luau}"
+    );
+    assert!(
+        luau.contains("accumulate: ((TickParams) -> RuntimeValue)?")
+            && luau.contains("export type TickParams = { dt: RuntimeRead }")
+            && luau.contains("read: (name: string | ReadonlyStateRef<any>) -> RuntimeRead"),
+        "luau must expose accumulator tracing and state-ref runtime reads:\n{luau}"
     );
 }
 

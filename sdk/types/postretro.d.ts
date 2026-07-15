@@ -894,16 +894,26 @@ declare module "postretro" {
     | SequenceReactionDescriptor
   );
 
+  /** Dispatch values published by a state-crossing fire. */
+  export type CrossingParams = Readonly<{ rising: RuntimeRead }>;
+  /** Dispatch values published while a Number store slot accumulates. */
+  export type TickParams = Readonly<{ dt: RuntimeRead }>;
+  declare const reactionScopeBrand: unique symbol;
+  /** Named reaction with a type-only, contravariant dispatch-scope marker. */
+  export type Reaction<S = {}> = NamedReactionDescriptor & { readonly [reactionScopeBrand]?: (scope: S) => void };
+
   /** Crossing condition: fires when the watched slot crosses the threshold in one direction. Exactly one of `below`/`above` is given. `max` is the denominator the threshold is a fraction of; omit it for a raw-value comparison (`max` defaults to `1.0`). */
   export type CrossingCondition =
-    | { below: number; above?: never; max?: number }
-    | { above: number; below?: never; max?: number };
+    | { below: number; above?: never; max?: number; edge?: "both" }
+    | { above: number; below?: never; max?: number; edge?: "both" };
+  export type CrossingOptions = { edge?: "both" };
 
   /** A threshold-form watcher. Its wire discriminator is the required `slot`; exactly one threshold field is present. */
   export type ThresholdCrossingDescriptor = {
     slot: string;
     predicate?: never;
     max?: number;
+    edge?: string;
     fire: string[];
     levels?: string[];
   } & (
@@ -918,6 +928,7 @@ declare module "postretro" {
     below?: never;
     above?: never;
     max?: never;
+    edge?: string;
     fire: string[];
     levels?: string[];
   };
@@ -947,14 +958,21 @@ declare module "postretro" {
       | ProgressReactionDescriptor
       | PrimitiveReactionDescriptor
       | SequenceReactionDescriptor,
-  ): NamedReactionDescriptor;
+  ): Reaction<{}>;
+  export function defineReaction(
+    tracer: (params: CrossingParams) => ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor,
+  ): Reaction<CrossingParams>;
   export function defineReaction(
     name: string,
     descriptor:
       | ProgressReactionDescriptor
       | PrimitiveReactionDescriptor
       | SequenceReactionDescriptor,
-  ): NamedReactionDescriptor;
+  ): Reaction<{}>;
+  export function defineReaction(
+    name: string,
+    tracer: (params: CrossingParams) => ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor,
+  ): Reaction<CrossingParams>;
 
   /** Stamp a shared map-tag scope onto each reaction in a plain list. `tags` are matched against `ModMapEntry.tags`; omit scoping for every level. */
   export function scopeReactions(
@@ -977,7 +995,10 @@ declare module "postretro" {
   export type WritableStateRef<T> = ReadonlyStateRef<T> & { readonly [writableStateRefBrand]: T };
 
   /** One slot inside a `defineStore` schema. Every slot needs `default`. `type: "number"` accepts a finite numeric default plus optional inclusive `range: [min, max]`; `"boolean"` and `"string"` require matching defaults; `"enum"` requires non-empty `values` and a default in that list; `"array"` is a finite-number array. `persist` saves on clean exit; `readonly` blocks script writes. `network: "shared"` replicates the slot to every connected client (server-authoritative); omitted means local-only. */
-  export type StoreSlotSchema = { type: "number" | "boolean" | "string" | "enum" | "array"; readonly?: boolean; network?: "shared" } & Record<string, unknown>;
+  export type StoreSlotSchema = (
+    | { type: "number"; readonly?: boolean; network?: "shared"; accumulate?: (t: TickParams) => RuntimeValue }
+    | { type: "boolean" | "string" | "enum" | "array"; readonly?: boolean; network?: "shared"; accumulate?: never }
+  ) & Record<string, unknown>;
 
   /** Plain declaration data returned through `ModManifest.stores`. */
   export type StoreDeclaration = { namespace: string; schema: Record<string, StoreSlotSchema> };
@@ -1114,7 +1135,7 @@ declare module "postretro" {
 
   /** A builder operand: an already-built node, or a bare `number`/`boolean`
    * literal that the builder auto-wraps into a `const` node. */
-  type RuntimeOperand = RuntimeValue | number | boolean;
+  type RuntimeOperand = RuntimeValue | ReadonlyStateRef<unknown> | number | boolean;
 
   /** Pure builder vocabulary for runtime values, installed as
    * `globalThis.runtime`. Every method returns a plain `RuntimeValue` object;
@@ -1125,7 +1146,7 @@ declare module "postretro" {
     /** Literal scalar leaf. `const` is reserved, so the builder is `constant`. */
     constant(value: number | boolean): RuntimeConst;
     /** Named-input leaf, bound to live state by name in the Rust evaluator. */
-    read(name: string): RuntimeRead;
+    read(name: string | ReadonlyStateRef<unknown>): RuntimeRead;
     /** `a + b` (number). */
     add(a: RuntimeOperand, b: RuntimeOperand): RuntimeAdd;
     /** `a - b` (number). */
@@ -1189,6 +1210,9 @@ declare module "postretro/ui" {
     PrimitiveReactionDescriptor,
     NamedReactionDescriptor,
     CrossingCondition,
+    CrossingOptions,
+    CrossingParams,
+    Reaction,
     CrossingDescriptor,
     RuntimeValue,
   } from "postretro";
@@ -1350,9 +1374,9 @@ declare module "postretro/ui" {
   export function getGameState(): GameStateRefs;
 
   /** Build a state-crossing watcher for numeric refs. `condition` gives exactly one finite `below` or `above` threshold; optional `max` is a finite denominator. `fire` accepts reaction handles or names. */
-  export function onStateCrossing(ref: ReadonlyStateRef<number>, condition: CrossingCondition, fire: (NamedReactionDescriptor | string)[]): CrossingDescriptor;
+  export function onStateCrossing(ref: ReadonlyStateRef<number>, condition: CrossingCondition, fire: (Reaction<{}> | Reaction<CrossingParams> | string)[]): CrossingDescriptor;
   /** Build a watcher from a Bool-valued runtime predicate over live store slots. It fires on false-to-true edges and re-arms after the predicate returns false. A predicate already true at registration only arms; it must later return false, then true, to fire. */
-  export function onStateCrossing(predicate: RuntimeValue, fire: (NamedReactionDescriptor | string)[]): CrossingDescriptor;
+  export function onStateCrossing(predicate: RuntimeValue, fire: (Reaction<{}> | Reaction<CrossingParams> | string)[], options?: CrossingOptions): CrossingDescriptor;
   /** Play `sound` on optional mixer `bus`; omitted/null bus uses the engine default. */
   export function playSound(sound: string, bus?: string | null): PrimitiveReactionDescriptor;
   /** Trigger gamepad rumble. `strong` and optional `weak` are motor intensities in [0, 1]; `durationMs` is milliseconds. */

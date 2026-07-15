@@ -281,6 +281,119 @@ fn increment_and_predicate_crossing_fixtures_match_across_authoring_runtimes() {
 }
 
 #[test]
+fn dispatch_tracers_accumulators_and_state_refs_match_across_runtimes() {
+    const TYPESCRIPT_FIXTURE: &str = r#"
+        import { defineReaction, defineStore, runtime } from "postretro";
+        import { onStateCrossing, updateState } from "postretro/ui";
+
+        const store = defineStore("dispatch", {
+          countdown: {
+            type: "number",
+            default: 60,
+            range: [0, 60],
+            accumulate: (t) => runtime.mul(t.dt, -1),
+          },
+          active: { type: "boolean", default: false },
+        });
+        const toggle = defineReaction("toggle", (on) =>
+          updateState(store.state.active, runtime.select(on.rising, true, false))
+        );
+        const crossing = onStateCrossing(
+          store.state.countdown,
+          { below: 0, edge: "both" },
+          [toggle],
+        );
+        const predicate = onStateCrossing(
+          runtime.le(store.state.countdown, 0),
+          [toggle],
+          { edge: "both" },
+        );
+        const unknownEdge = onStateCrossing(
+          store.state.countdown,
+          { above: 10, edge: "future-edge" },
+          [toggle],
+        );
+        const value = {
+          reaction: toggle,
+          crossing,
+          predicate,
+          unknownEdge,
+          schema: store.declaration.schema,
+          refRead: runtime.read(store.state.countdown),
+          bareRef: runtime.add(store.state.countdown, 1),
+        };
+        const roundTrip = JSON.parse(JSON.stringify(value));
+        JSON.stringify({ value, roundTrip, hasFunction: typeof toggle.tracer === "function" });
+    "#;
+    const LUAU_FIXTURE: &str = r#"
+        local Postretro = require("postretro")
+        local Ui = require("postretro/ui")
+        local store = Postretro.defineStore("dispatch", {
+          countdown = {
+            type = "number",
+            default = 60,
+            range = { 0, 60 },
+            accumulate = function(t)
+              return Postretro.runtime.mul(t.dt, -1)
+            end,
+          },
+          active = { type = "boolean", default = false },
+        })
+        local toggle = Postretro.defineReaction("toggle", function(on)
+          return Ui.updateState(store.state.active, Postretro.runtime.select(on.rising, true, false))
+        end)
+        local crossing = Ui.onStateCrossing(
+          store.state.countdown,
+          { below = 0, edge = "both" },
+          { toggle }
+        )
+        local predicate = Ui.onStateCrossing(
+          Postretro.runtime.le(store.state.countdown, 0),
+          { toggle },
+          { edge = "both" }
+        )
+        local unknownEdge = Ui.onStateCrossing(
+          store.state.countdown,
+          { above = 10, edge = "future-edge" },
+          { toggle }
+        )
+        local value = {
+          reaction = toggle,
+          crossing = crossing,
+          predicate = predicate,
+          unknownEdge = unknownEdge,
+          schema = store.declaration.schema,
+          refRead = Postretro.runtime.read(store.state.countdown),
+          bareRef = Postretro.runtime.add(store.state.countdown, 1),
+        }
+        return { value = value, roundTrip = value, hasFunction = false }
+    "#;
+
+    let typescript = quickjs_fixture_value(TYPESCRIPT_FIXTURE);
+    let luau = luau_fixture_value(LUAU_FIXTURE);
+    assert_eq!(typescript, luau, "dispatch authoring surfaces diverged");
+    assert_eq!(typescript["value"], typescript["roundTrip"]);
+    assert_eq!(typescript["hasFunction"], false);
+    assert_eq!(typescript["value"]["unknownEdge"]["edge"], "future-edge");
+    assert_eq!(
+        typescript["value"]["reaction"]["args"]["value"]["cond"],
+        serde_json::json!({ "op": "input", "name": "@rising" })
+    );
+    assert_eq!(
+        typescript["value"]["schema"]["countdown"]["accumulate"],
+        serde_json::json!({
+            "op": "mul",
+            "a": { "op": "input", "name": "@dt" },
+            "b": { "op": "const", "value": -1 },
+        })
+    );
+    assert_eq!(
+        typescript["value"]["refRead"],
+        typescript["value"]["bareRef"]["a"]
+    );
+}
+
+#[test]
 fn crossing_fire_rejects_map_shaped_and_sparse_sequences_across_runtimes() {
     // Regression: the Luau SDK used `ipairs`, silently accepting map-shaped
     // and sparse `fire` tables while the TypeScript SDK rejected non-arrays.

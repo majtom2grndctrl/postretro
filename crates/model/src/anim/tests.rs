@@ -1,5 +1,5 @@
 use super::*;
-use crate::pose_modifier::{ModifierEntry, PoseModifier, PoseModifierStack};
+use crate::pose_modifier::{JointMask, ModifierEntry, PoseModifier, PoseModifierStack};
 use crate::skeleton::Joint;
 use postretro_foundation::PoseInputs;
 
@@ -963,6 +963,11 @@ fn modified_samplers_fall_through_when_stack_or_inputs_are_absent() {
         &mut actual_clip,
     );
     assert_eq!(actual_clip, expected_clip);
+    assert_eq!(
+        bytemuck::cast_slice::<BonePaletteEntry, u8>(&actual_clip),
+        bytemuck::cast_slice::<BonePaletteEntry, u8>(&expected_clip),
+        "an empty stack is byte-identical to the unmodified palette"
+    );
 
     let stack = PoseModifierStack::new(vec![ModifierEntry {
         mask: Default::default(),
@@ -993,4 +998,395 @@ fn modified_samplers_fall_through_when_stack_or_inputs_are_absent() {
         &mut actual_blend,
     );
     assert_eq!(actual_blend, expected_blend);
+}
+
+fn mask(indices: &[usize]) -> JointMask {
+    let mut mask = JointMask::new();
+    for &index in indices {
+        assert!(mask.insert(index));
+    }
+    mask
+}
+
+fn rest_skeleton(parents: &[Option<usize>], rotations: &[Quat]) -> Skeleton {
+    assert_eq!(parents.len(), rotations.len());
+    Skeleton {
+        joints: parents
+            .iter()
+            .zip(rotations)
+            .map(|(&parent, &rotation)| {
+                joint(
+                    parent,
+                    Mat4::IDENTITY,
+                    RestLocal {
+                        rotation,
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect(),
+    }
+}
+
+fn rest_clip(joint_count: usize) -> AnimationClip {
+    translation_clip("rest", 1.0, vec![JointTracks::default(); joint_count])
+}
+
+fn palette_rotation(palette: &[BonePaletteEntry], joint_index: usize) -> Quat {
+    Mat4::from_cols_array_2d(&palette[joint_index].matrix)
+        .to_scale_rotation_translation()
+        .1
+}
+
+fn sample_modified_rest(
+    skeleton: &Skeleton,
+    stack: &PoseModifierStack,
+    inputs: &PoseInputs,
+) -> Vec<BonePaletteEntry> {
+    let clip = rest_clip(skeleton.joints.len());
+    let mut palette = Vec::new();
+    sample_clip_looped_modified(
+        &clip,
+        skeleton,
+        0.0,
+        Loop::Wrap,
+        stack,
+        Some(inputs),
+        &mut palette,
+    );
+    palette
+}
+
+#[test]
+fn aim_pitch_bend_reaches_chain_tip_and_leaves_off_chain_root_unchanged() {
+    let skeleton = rest_skeleton(
+        &[None, Some(0), None],
+        &[Quat::IDENTITY, Quat::IDENTITY, Quat::from_rotation_z(0.2)],
+    );
+    let pitch = 0.6;
+    let stack = PoseModifierStack::new(vec![ModifierEntry {
+        mask: mask(&[0, 1]),
+        modifier: PoseModifier::AimPitchBend {
+            bend_weights: Vec::new(),
+        },
+    }]);
+
+    let palette = sample_modified_rest(
+        &skeleton,
+        &stack,
+        &PoseInputs {
+            aim_pitch: pitch,
+            ..Default::default()
+        },
+    );
+
+    assert_quat_eq(
+        palette_rotation(&palette, 1),
+        Quat::from_rotation_x(pitch),
+        "equal bend shares sum to the requested tip pitch",
+    );
+    assert_quat_eq(
+        palette_rotation(&palette, 2),
+        Quat::from_rotation_z(0.2),
+        "off-chain root holds its sampled rotation",
+    );
+
+    let tip_forward = palette_rotation(&palette, 1) * -Vec3::Z;
+    assert!(
+        tip_forward.y > 0.0,
+        "positive aim pitch bends -Z forward upward"
+    );
+}
+
+#[test]
+fn weighted_aim_pitch_bend_preserves_ratio_and_total_tip_pitch() {
+    let skeleton = rest_skeleton(&[None, Some(0)], &[Quat::IDENTITY; 2]);
+    let pitch = 0.9;
+    let stack = PoseModifierStack::new(vec![ModifierEntry {
+        mask: mask(&[0, 1]),
+        modifier: PoseModifier::AimPitchBend {
+            bend_weights: vec![1.0, 2.0],
+        },
+    }]);
+    let palette = sample_modified_rest(
+        &skeleton,
+        &stack,
+        &PoseInputs {
+            aim_pitch: pitch,
+            ..Default::default()
+        },
+    );
+
+    let root = palette_rotation(&palette, 0);
+    let tip = palette_rotation(&palette, 1);
+    assert_quat_eq(
+        root,
+        Quat::from_rotation_x(pitch / 3.0),
+        "root gets weight 1",
+    );
+    assert_quat_eq(
+        root.inverse() * tip,
+        Quat::from_rotation_x(pitch * 2.0 / 3.0),
+        "child gets twice the root bend",
+    );
+    assert_quat_eq(
+        tip,
+        Quat::from_rotation_x(pitch),
+        "normalized weights preserve total tip pitch",
+    );
+}
+
+#[test]
+fn upper_lower_split_wraps_delta_and_twists_upper_with_half_seam() {
+    let skeleton = rest_skeleton(&[None, None, None, None], &[Quat::IDENTITY; 4]);
+    let stack = PoseModifierStack::new(vec![ModifierEntry {
+        mask: mask(&[1, 2]),
+        modifier: PoseModifier::UpperLowerSplit {
+            lower_body_mask: mask(&[0, 1]),
+        },
+    }]);
+    let delta = 20.0_f32.to_radians();
+    let palette = sample_modified_rest(
+        &skeleton,
+        &stack,
+        &PoseInputs {
+            aim_yaw: (-170.0_f32).to_radians(),
+            heading_yaw: 170.0_f32.to_radians(),
+            ..Default::default()
+        },
+    );
+
+    assert_quat_eq(
+        palette_rotation(&palette, 0),
+        Quat::IDENTITY,
+        "lower-only joint",
+    );
+    assert_quat_eq(
+        palette_rotation(&palette, 1),
+        Quat::from_rotation_y(delta * 0.5),
+        "upper/lower seam gets half the shortest yaw delta",
+    );
+    assert_quat_eq(
+        palette_rotation(&palette, 2),
+        Quat::from_rotation_y(delta),
+        "upper-only joint gets the shortest yaw delta",
+    );
+    assert_quat_eq(
+        palette_rotation(&palette, 3),
+        Quat::IDENTITY,
+        "unmasked joint",
+    );
+}
+
+#[test]
+fn overlapping_pose_modifiers_compose_in_stack_list_order() {
+    let skeleton = rest_skeleton(&[None], &[Quat::IDENTITY]);
+    let joint = mask(&[0]);
+    let split = ModifierEntry {
+        mask: joint,
+        modifier: PoseModifier::UpperLowerSplit {
+            lower_body_mask: JointMask::new(),
+        },
+    };
+    let bend = ModifierEntry {
+        mask: joint,
+        modifier: PoseModifier::AimPitchBend {
+            bend_weights: Vec::new(),
+        },
+    };
+    let inputs = PoseInputs {
+        aim_pitch: 0.4,
+        aim_yaw: 0.6,
+        heading_yaw: 0.0,
+    };
+
+    let split_then_bend = sample_modified_rest(
+        &skeleton,
+        &PoseModifierStack::new(vec![split.clone(), bend.clone()]),
+        &inputs,
+    );
+    let bend_then_split = sample_modified_rest(
+        &skeleton,
+        &PoseModifierStack::new(vec![bend, split]),
+        &inputs,
+    );
+
+    let first = palette_rotation(&split_then_bend, 0);
+    let second = palette_rotation(&bend_then_split, 0);
+    assert_quat_eq(
+        first,
+        Quat::from_rotation_y(0.6) * Quat::from_rotation_x(0.4),
+        "later bend observes and composes after split",
+    );
+    assert_quat_eq(
+        second,
+        Quat::from_rotation_x(0.4) * Quat::from_rotation_y(0.6),
+        "reversing entries reverses composition",
+    );
+    assert!(
+        first.dot(second).abs() < 0.999,
+        "noncommuting order is observable"
+    );
+}
+
+#[test]
+fn identical_pose_inputs_produce_byte_identical_palettes() {
+    let skeleton = rest_skeleton(&[None, Some(0)], &[Quat::IDENTITY; 2]);
+    let stack = PoseModifierStack::new(vec![ModifierEntry {
+        mask: mask(&[0, 1]),
+        modifier: PoseModifier::AimPitchBend {
+            bend_weights: vec![3.0, 1.0],
+        },
+    }]);
+    let inputs = PoseInputs {
+        aim_pitch: 0.37,
+        aim_yaw: -0.8,
+        heading_yaw: 0.2,
+    };
+
+    let first = sample_modified_rest(&skeleton, &stack, &inputs);
+    let second = sample_modified_rest(&skeleton, &stack, &inputs);
+    assert_eq!(
+        bytemuck::cast_slice::<BonePaletteEntry, u8>(&first),
+        bytemuck::cast_slice::<BonePaletteEntry, u8>(&second),
+    );
+}
+
+#[test]
+fn active_bend_does_not_modify_world_pose_samplers_used_by_hit_zones() {
+    let skeleton = rest_skeleton(&[None, Some(0)], &[Quat::IDENTITY; 2]);
+    let clip = rest_clip(2);
+    let stack = PoseModifierStack::new(vec![ModifierEntry {
+        mask: mask(&[0, 1]),
+        modifier: PoseModifier::AimPitchBend {
+            bend_weights: Vec::new(),
+        },
+    }]);
+    let inputs = PoseInputs {
+        aim_pitch: 0.5,
+        ..Default::default()
+    };
+
+    let mut expected_world = Vec::new();
+    sample_clip_looped_world(&clip, &skeleton, 0.0, Loop::Wrap, &mut expected_world);
+    let mut modified_palette = Vec::new();
+    sample_clip_looped_modified(
+        &clip,
+        &skeleton,
+        0.0,
+        Loop::Wrap,
+        &stack,
+        Some(&inputs),
+        &mut modified_palette,
+    );
+    let mut actual_world = Vec::new();
+    sample_clip_looped_world(&clip, &skeleton, 0.0, Loop::Wrap, &mut actual_world);
+
+    assert_eq!(
+        actual_world, expected_world,
+        "hit-zone sampler remains unmodified"
+    );
+    assert_ne!(
+        Mat4::from_cols_array_2d(&modified_palette[1].matrix),
+        actual_world[1],
+        "the active visual bend is observable only in the palette path"
+    );
+
+    let source_a = BlendSource::Clip {
+        clip: &clip,
+        time: 0.0,
+        loop_policy: Loop::Wrap,
+    };
+    let source_b = BlendSource::Clip {
+        clip: &clip,
+        time: 0.5,
+        loop_policy: Loop::Wrap,
+    };
+    let mut expected_blended_world = Vec::new();
+    sample_blended_world(
+        &source_a,
+        &source_b,
+        0.5,
+        &skeleton,
+        &mut expected_blended_world,
+    );
+    let mut modified_blended_palette = Vec::new();
+    sample_blended_modified(
+        &source_a,
+        &source_b,
+        0.5,
+        &skeleton,
+        &stack,
+        Some(&inputs),
+        &mut modified_blended_palette,
+    );
+    let mut actual_blended_world = Vec::new();
+    sample_blended_world(
+        &source_a,
+        &source_b,
+        0.5,
+        &skeleton,
+        &mut actual_blended_world,
+    );
+
+    assert_eq!(
+        actual_blended_world, expected_blended_world,
+        "blended hit-zone sampler remains unmodified"
+    );
+    assert_ne!(
+        Mat4::from_cols_array_2d(&modified_blended_palette[1].matrix),
+        actual_blended_world[1],
+        "active blended visual bend is absent from hit-zone output"
+    );
+}
+
+#[test]
+fn combined_split_and_bend_aims_torso_while_legs_keep_heading() {
+    let heading = 0.2;
+    let aim_yaw = 0.7;
+    let pitch = 0.3;
+    let skeleton = rest_skeleton(
+        &[None, Some(0), Some(0)],
+        &[
+            Quat::from_rotation_y(heading),
+            Quat::IDENTITY,
+            Quat::IDENTITY,
+        ],
+    );
+    let torso = mask(&[1]);
+    let lower = mask(&[0, 2]);
+    let stack = PoseModifierStack::new(vec![
+        ModifierEntry {
+            mask: torso,
+            modifier: PoseModifier::UpperLowerSplit {
+                lower_body_mask: lower,
+            },
+        },
+        ModifierEntry {
+            mask: torso,
+            modifier: PoseModifier::AimPitchBend {
+                bend_weights: Vec::new(),
+            },
+        },
+    ]);
+    let palette = sample_modified_rest(
+        &skeleton,
+        &stack,
+        &PoseInputs {
+            aim_pitch: pitch,
+            aim_yaw,
+            heading_yaw: heading,
+        },
+    );
+
+    assert_quat_eq(
+        palette_rotation(&palette, 1),
+        Quat::from_rotation_y(aim_yaw) * Quat::from_rotation_x(pitch),
+        "torso tracks scalar aim yaw and pitch",
+    );
+    assert_quat_eq(
+        palette_rotation(&palette, 2),
+        Quat::from_rotation_y(heading),
+        "leg keeps the sampled body heading",
+    );
 }

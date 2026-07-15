@@ -1,5 +1,6 @@
 //! Ordered, CPU-only skeletal pose-modifier stack primitives.
 
+use glam::Quat;
 use postretro_foundation::PoseInputs;
 
 use crate::anim::LocalTrs;
@@ -112,9 +113,6 @@ impl PoseModifierStack {
 
 /// Apply every entry in list order to one materialized local pose.
 ///
-/// Task 2 establishes the ordered dispatch seam. The rotation math for both
-/// initial variants lands in Task 3; the exhaustive arms below are explicit
-/// no-ops until then so enum entries are not bypassed by the sampler itself.
 pub(crate) fn apply_pose_modifier_stack(
     stack: &PoseModifierStack,
     inputs: &PoseInputs,
@@ -123,20 +121,94 @@ pub(crate) fn apply_pose_modifier_stack(
     for entry in stack.entries() {
         match &entry.modifier {
             PoseModifier::AimPitchBend { bend_weights } => {
-                let _ = (entry.mask, bend_weights, inputs, &mut *locals);
-                // Task 3: distribute pitch over the masked chain.
+                apply_aim_pitch_bend(entry.mask, bend_weights, inputs.aim_pitch, locals);
             }
             PoseModifier::UpperLowerSplit { lower_body_mask } => {
-                let _ = (entry.mask, lower_body_mask, inputs, &mut *locals);
-                // Task 3: apply upper/lower yaw split and seam weighting.
+                apply_upper_lower_split(
+                    entry.mask,
+                    *lower_body_mask,
+                    inputs.aim_yaw,
+                    inputs.heading_yaw,
+                    locals,
+                );
             }
         }
     }
 }
 
+fn apply_aim_pitch_bend(
+    mask: JointMask,
+    bend_weights: &[f32],
+    aim_pitch: f32,
+    locals: &mut [LocalTrs],
+) {
+    if mask.is_empty() || !aim_pitch.is_finite() {
+        return;
+    }
+
+    // Accumulate in f64 so every finite f32 weight and a chain at MAX_JOINTS
+    // still produce a finite normalization denominator. Invalid public values
+    // degrade to the same 1.0 default as an absent authored weight.
+    let total_weight = mask
+        .iter()
+        .enumerate()
+        .map(|(weight_index, _)| normalized_bend_weight(bend_weights.get(weight_index)) as f64)
+        .sum::<f64>();
+
+    for (weight_index, joint_index) in mask.iter().enumerate() {
+        let Some(local) = locals.get_mut(joint_index) else {
+            continue;
+        };
+        let weight = normalized_bend_weight(bend_weights.get(weight_index)) as f64;
+        let joint_pitch = (f64::from(aim_pitch) * weight / total_weight) as f32;
+        local.rotation *= Quat::from_rotation_x(joint_pitch);
+    }
+}
+
+fn normalized_bend_weight(weight: Option<&f32>) -> f32 {
+    match weight.copied() {
+        Some(weight) if weight.is_finite() && weight > 0.0 => weight,
+        _ => 1.0,
+    }
+}
+
+fn apply_upper_lower_split(
+    upper_body_mask: JointMask,
+    lower_body_mask: JointMask,
+    aim_yaw: f32,
+    heading_yaw: f32,
+    locals: &mut [LocalTrs],
+) {
+    if upper_body_mask.is_empty() || !aim_yaw.is_finite() || !heading_yaw.is_finite() {
+        return;
+    }
+
+    let yaw_delta = wrapped_angle_delta(aim_yaw, heading_yaw);
+    for joint_index in upper_body_mask.iter() {
+        let Some(local) = locals.get_mut(joint_index) else {
+            continue;
+        };
+        let seam_scale = if lower_body_mask.contains(joint_index) {
+            0.5
+        } else {
+            1.0
+        };
+        local.rotation *= Quat::from_rotation_y(yaw_delta * seam_scale);
+    }
+}
+
+fn wrapped_angle_delta(aim_yaw: f32, heading_yaw: f32) -> f32 {
+    // Subtract in f64 so opposite finite f32 extremes cannot overflow before
+    // wrapping. The result is the shortest signed turn in [-pi, pi).
+    let delta = f64::from(aim_yaw) - f64::from(heading_yaw);
+    let pi = std::f64::consts::PI;
+    ((delta + pi).rem_euclid(std::f64::consts::TAU) - pi) as f32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glam::Vec3;
 
     #[test]
     fn joint_mask_covers_full_joint_limit_in_topological_order() {
@@ -167,5 +239,46 @@ mod tests {
         };
         let stack = PoseModifierStack::new(vec![first.clone(), second.clone()]);
         assert_eq!(stack.entries(), &[first, second]);
+    }
+
+    #[test]
+    fn finite_extreme_inputs_and_weights_keep_local_rotations_finite() {
+        let mut all_joints = JointMask::new();
+        assert!(all_joints.insert(0));
+        assert!(all_joints.insert(1));
+        let stack = PoseModifierStack::new(vec![
+            ModifierEntry {
+                mask: all_joints,
+                modifier: PoseModifier::UpperLowerSplit {
+                    lower_body_mask: JointMask::new(),
+                },
+            },
+            ModifierEntry {
+                mask: all_joints,
+                modifier: PoseModifier::AimPitchBend {
+                    bend_weights: vec![f32::MAX, f32::MAX],
+                },
+            },
+        ]);
+        let mut locals = vec![
+            LocalTrs {
+                translation: Vec3::ZERO,
+                rotation: Quat::IDENTITY,
+                scale: Vec3::ONE,
+            };
+            2
+        ];
+
+        apply_pose_modifier_stack(
+            &stack,
+            &PoseInputs {
+                aim_pitch: f32::MAX,
+                aim_yaw: f32::MAX,
+                heading_yaw: -f32::MAX,
+            },
+            &mut locals,
+        );
+
+        assert!(locals.iter().all(|local| local.rotation.is_finite()));
     }
 }

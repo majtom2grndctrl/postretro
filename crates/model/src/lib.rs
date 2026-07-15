@@ -8,6 +8,7 @@
 pub mod anim;
 pub mod gltf_loader;
 pub mod mesh;
+pub mod pose_modifier;
 pub mod sample_params;
 pub mod skeleton;
 

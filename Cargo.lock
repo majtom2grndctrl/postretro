@@ -3791,6 +3791,7 @@ dependencies = [
  "glam",
  "gltf",
  "log",
+ "postretro-foundation",
  "postretro-level-format",
  "postretro-render-data",
  "serde",

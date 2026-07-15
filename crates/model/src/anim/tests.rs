@@ -1,5 +1,7 @@
 use super::*;
+use crate::pose_modifier::{ModifierEntry, PoseModifier, PoseModifierStack};
 use crate::skeleton::Joint;
+use postretro_foundation::PoseInputs;
 
 const EPS: f32 = 1.0e-5;
 
@@ -935,4 +937,60 @@ fn blended_sampling_reuses_scratch_steady_state() {
     );
     assert_eq!(out.len(), 1);
     assert_eq!(out[0], first, "blended reuse is deterministic");
+}
+
+#[test]
+fn modified_samplers_fall_through_when_stack_or_inputs_are_absent() {
+    let skeleton = single_root_skeleton();
+    let clip_a = constant_pose_clip("a", Vec3::new(1.0, 0.0, 0.0), Quat::IDENTITY, Vec3::ONE);
+    let clip_b = constant_pose_clip("b", Vec3::new(0.0, 1.0, 0.0), Quat::IDENTITY, Vec3::ONE);
+    let inputs = PoseInputs {
+        aim_pitch: 0.25,
+        aim_yaw: 0.5,
+        heading_yaw: 0.1,
+    };
+
+    let mut expected_clip = Vec::new();
+    sample_clip_looped(&clip_a, &skeleton, 0.0, Loop::Wrap, &mut expected_clip);
+    let mut actual_clip = Vec::new();
+    sample_clip_looped_modified(
+        &clip_a,
+        &skeleton,
+        0.0,
+        Loop::Wrap,
+        &PoseModifierStack::default(),
+        Some(&inputs),
+        &mut actual_clip,
+    );
+    assert_eq!(actual_clip, expected_clip);
+
+    let stack = PoseModifierStack::new(vec![ModifierEntry {
+        mask: Default::default(),
+        modifier: PoseModifier::AimPitchBend {
+            bend_weights: Vec::new(),
+        },
+    }]);
+    let source_a = BlendSource::Clip {
+        clip: &clip_a,
+        time: 0.0,
+        loop_policy: Loop::Wrap,
+    };
+    let source_b = BlendSource::Clip {
+        clip: &clip_b,
+        time: 0.0,
+        loop_policy: Loop::Wrap,
+    };
+    let mut expected_blend = Vec::new();
+    sample_blended(&source_a, &source_b, 0.4, &skeleton, &mut expected_blend);
+    let mut actual_blend = Vec::new();
+    sample_blended_modified(
+        &source_a,
+        &source_b,
+        0.4,
+        &skeleton,
+        &stack,
+        None,
+        &mut actual_blend,
+    );
+    assert_eq!(actual_blend, expected_blend);
 }

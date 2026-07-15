@@ -10,13 +10,15 @@ mod types;
 use std::cell::RefCell;
 
 use glam::Mat4;
+use postretro_foundation::PoseInputs;
 
 use crate::BonePaletteEntry;
+use crate::pose_modifier::{PoseModifierStack, apply_pose_modifier_stack};
 use crate::skeleton::{AnimationClip, Skeleton};
 
 use blend::resolve_blend_into;
 use compose::{compose_palette, compose_world_pose};
-use track::sample_local_pose;
+use track::{sample_local_pose, sample_local_trs};
 use types::resolve_time;
 
 pub use blend::capture_blend;
@@ -119,6 +121,66 @@ pub fn sample_blended(
     BLEND_LOCAL_SCRATCH.with(|cell| {
         let mut locals = cell.borrow_mut();
         resolve_blend_into(a, b, weight, skeleton, &mut locals);
+        compose_palette(skeleton, out, |i, _joint| locals[i].to_mat4());
+    });
+}
+
+/// Sample one clip, apply an ordered local-TRS modifier stack, then compose the
+/// skinning palette.
+///
+/// An empty `stack` or absent `inputs` immediately delegates to
+/// [`sample_clip_looped`], preserving the fused, allocation-free unmodified
+/// path. Only an active modified pose materializes one [`LocalTrs`] per joint.
+pub fn sample_clip_looped_modified(
+    clip: &AnimationClip,
+    skeleton: &Skeleton,
+    time: f32,
+    loop_policy: Loop,
+    stack: &PoseModifierStack,
+    inputs: Option<&PoseInputs>,
+    out: &mut Vec<BonePaletteEntry>,
+) {
+    let Some(inputs) = inputs.filter(|_| !stack.is_empty()) else {
+        sample_clip_looped(clip, skeleton, time, loop_policy, out);
+        return;
+    };
+
+    let t = resolve_time(clip.duration, time, loop_policy);
+    BLEND_LOCAL_SCRATCH.with(|cell| {
+        let mut locals = cell.borrow_mut();
+        locals.clear();
+        locals.reserve(skeleton.joints.len());
+        for (i, joint) in skeleton.joints.iter().enumerate() {
+            locals.push(sample_local_trs(clip.joints.get(i), &joint.rest_local, t));
+        }
+        apply_pose_modifier_stack(stack, inputs, &mut locals);
+        compose_palette(skeleton, out, |i, _joint| locals[i].to_mat4());
+    });
+}
+
+/// Blend two sources into local TRS, apply an ordered modifier stack, then
+/// compose the skinning palette.
+///
+/// An empty `stack` or absent `inputs` immediately delegates to
+/// [`sample_blended`], preserving its existing scratch/allocation behavior.
+pub fn sample_blended_modified(
+    a: &BlendSource,
+    b: &BlendSource,
+    weight: f32,
+    skeleton: &Skeleton,
+    stack: &PoseModifierStack,
+    inputs: Option<&PoseInputs>,
+    out: &mut Vec<BonePaletteEntry>,
+) {
+    let Some(inputs) = inputs.filter(|_| !stack.is_empty()) else {
+        sample_blended(a, b, weight, skeleton, out);
+        return;
+    };
+
+    BLEND_LOCAL_SCRATCH.with(|cell| {
+        let mut locals = cell.borrow_mut();
+        resolve_blend_into(a, b, weight, skeleton, &mut locals);
+        apply_pose_modifier_stack(stack, inputs, &mut locals);
         compose_palette(skeleton, out, |i, _joint| locals[i].to_mat4());
     });
 }

@@ -46,6 +46,8 @@ use postretro_level_format::octahedral::{
 };
 use rayon::prelude::*;
 
+use crate::bake_control::BakeControl;
+
 use crate::affinity_grid::{
     AFFINITY_FACTOR, AffinityInputs, build_csr, csr_entry_cells, decompose_affinity,
 };
@@ -100,6 +102,14 @@ pub fn bake_delta_sh_volumes(
     inputs: &DeltaBakeInputs<'_>,
     config: &crate::sh_bake::ShConfig,
 ) -> Option<DeltaShVolumesSection> {
+    bake_delta_sh_volumes_controlled(inputs, config, &BakeControl::unrestricted())
+}
+
+pub fn bake_delta_sh_volumes_controlled(
+    inputs: &DeltaBakeInputs<'_>,
+    config: &crate::sh_bake::ShConfig,
+    control: &BakeControl,
+) -> Option<DeltaShVolumesSection> {
     if inputs.animated_lights.is_empty() {
         return None;
     }
@@ -131,6 +141,7 @@ pub fn bake_delta_sh_volumes(
     // --- CSR index: invert `per_light_cells` (light → cells) into cell → lights.
     let (affinity_offsets, affinity_lights) =
         build_csr(&decomposition.per_light_cells, affinity_cell_count);
+    control.publish_total(affinity_lights.len());
 
     // Bake-time invariants the loader also enforces.
     assert_eq!(
@@ -168,15 +179,18 @@ pub fn bake_delta_sh_volumes(
         .par_iter()
         .zip(csr_cells.par_iter())
         .flat_map(|(&light_idx, &cell)| {
+            let _permit = control.governor().enter();
             let light = entries[light_idx as usize].light;
-            bake_subblock(
+            let subblock = bake_subblock(
                 inputs,
                 light,
                 cell,
                 affinity_dims,
                 base_origin,
                 probe_spacing,
-            )
+            );
+            control.advance(1);
+            subblock
         })
         .collect();
 
@@ -638,7 +652,7 @@ mod tests {
     }
 
     #[test]
-    fn delta_bake_repeats_byte_identically_for_same_inputs() {
+    fn controlled_delta_bake_reports_every_affinity_entry_and_is_deterministic() {
         let geo = cube_geometry();
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let tree = tree_all_empty();
@@ -656,9 +670,16 @@ mod tests {
         };
         let config = crate::sh_bake::ShConfig { probe_spacing: 1.0 };
 
-        let first = bake_delta_sh_volumes(&inputs, &config)
-            .expect("expected first deterministic delta section")
-            .to_bytes();
+        let progress = crate::reporter::StageProgress::indeterminate();
+        let control = BakeControl::new(
+            std::sync::Arc::new(crate::governor::Governor::new(2, false)),
+            &progress,
+        );
+        let first_section = bake_delta_sh_volumes_controlled(&inputs, &config, &control)
+            .expect("expected first deterministic delta section");
+        assert_eq!(progress.total(), Some(first_section.affinity_lights.len()));
+        assert_eq!(progress.completed(), first_section.affinity_lights.len());
+        let first = first_section.to_bytes();
         let second = bake_delta_sh_volumes(&inputs, &config)
             .expect("expected second deterministic delta section")
             .to_bytes();

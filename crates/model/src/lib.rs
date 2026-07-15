@@ -1,4 +1,4 @@
-// postretro-model crate: CPU-only mesh, skeleton, glTF load, animation sampling.
+// postretro-model: CPU-only model loading, animation sampling, and pose modification.
 // See: context/lib/rendering_pipeline.md §9
 //
 // This crate is CPU-only by contract: it must not import or depend on `wgpu`.

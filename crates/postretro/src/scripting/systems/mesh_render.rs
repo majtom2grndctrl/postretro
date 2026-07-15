@@ -195,11 +195,12 @@ impl MeshRenderCollector {
         );
     }
 
-    /// Production collect path. Models with precise skeletal hit zones or a
-    /// non-empty presentation pose stack force a
-    /// palette resample every visible frame so hitscan capsules and the drawn
-    /// pose share current-clock semantics instead of diverging on skipped
-    /// time-slice frames.
+    /// Production collect path. Precise skeletal hit zones force a palette
+    /// resample every visible frame to align presentation animation timing with
+    /// authoritative capsule samples. A non-empty pose stack also forces a
+    /// resample because its presentation inputs may change independently of
+    /// animation timing. Pose modifiers intentionally leave authoritative
+    /// capsules unmodified.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn collect_with_hit_zones(
         &mut self,

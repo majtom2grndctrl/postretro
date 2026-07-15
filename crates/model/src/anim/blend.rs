@@ -8,8 +8,9 @@ use super::types::{BlendSource, LocalTrs, resolve_time};
 
 impl BlendSource<'_> {
     /// Resolve this source's local TRS for joint `i` (parallel to the skeleton).
-    /// A clip samples its tracks (holding `rest` for absent channels); a snapshot
-    /// reads its buffer (holding `rest` past the buffer's end).
+    /// A clip samples its tracks (holding `rest` for absent channels), a snapshot
+    /// reads its buffer (holding `rest` past the buffer's end), and a rest source
+    /// returns `rest` directly.
     fn local_at(&self, i: usize, rest: &RestLocal) -> LocalTrs {
         match self {
             BlendSource::Clip {
@@ -25,6 +26,11 @@ impl BlendSource<'_> {
                 rotation: rest.rotation,
                 scale: rest.scale,
             }),
+            BlendSource::Rest => LocalTrs {
+                translation: rest.translation,
+                rotation: rest.rotation,
+                scale: rest.scale,
+            },
         }
     }
 }

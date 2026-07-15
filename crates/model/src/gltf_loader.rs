@@ -613,6 +613,9 @@ fn read_pose_masks(
         return metadata;
     };
     let Some(object) = value.as_object() else {
+        log::warn!(
+            "[Model] malformed pose metadata on joint node {node_index} in {path_str}; expected an object; ignoring"
+        );
         return metadata;
     };
     let Some(pose_mask) = object.get("poseMask") else {
@@ -3196,6 +3199,20 @@ mod tests {
     }
 
     #[test]
+    fn read_pose_masks_non_object_extras_degrade_to_no_membership() {
+        for raw in [r#"["aimSpine"]"#, r#""aimSpine""#, "42", "null"] {
+            assert_eq!(
+                read_pose_masks(&extras_from_raw(raw), 5, "model.gltf"),
+                JointPoseMetadata {
+                    aim_bend_weight: 1.0,
+                    ..JointPoseMetadata::default()
+                },
+                "non-object pose metadata {raw} degrades without failing the load",
+            );
+        }
+    }
+
+    #[test]
     fn pose_masks_follow_joint_topology_remap_with_parallel_weights() {
         // Source skin order is child, root, lower; topo order is root, child,
         // lower. Memberships and weights must follow the same remap as joints.
@@ -3439,28 +3456,32 @@ mod tests {
     fn joint_pose_masks_load_reindexed_and_build_fixed_order_stack() {
         let model = load_model(&joint_zones_fixture_path()).expect("pose-mask fixture loads");
         assert_eq!(
-            model.pose_masks.aim_spine.iter().collect::<Vec<_>>(),
-            vec![0, 2],
+            model.pose_masks,
+            PoseMaskSet {
+                aim_spine: mask(&[0, 2]),
+                upper_body: mask(&[0, 2]),
+                lower_body: mask(&[1]),
+            },
             "child-first source skin order is remapped to root-first topo indices",
         );
         assert_eq!(
-            model.pose_masks.upper_body.iter().collect::<Vec<_>>(),
-            vec![0, 2],
+            model.pose_stack,
+            PoseModifierStack::new(vec![
+                ModifierEntry {
+                    mask: mask(&[0, 2]),
+                    modifier: PoseModifier::UpperLowerSplit {
+                        lower_body_mask: mask(&[1]),
+                    },
+                },
+                ModifierEntry {
+                    mask: mask(&[0, 2]),
+                    modifier: PoseModifier::AimPitchBend {
+                        bend_weights: vec![0.25, 2.0],
+                    },
+                },
+            ]),
+            "loader pins split before bend and preserves topo-ordered weights",
         );
-        assert_eq!(
-            model.pose_masks.lower_body.iter().collect::<Vec<_>>(),
-            vec![1],
-        );
-        assert_eq!(model.pose_stack.entries().len(), 2);
-        assert!(matches!(
-            model.pose_stack.entries()[0].modifier,
-            PoseModifier::UpperLowerSplit { .. }
-        ));
-        assert!(matches!(
-            &model.pose_stack.entries()[1].modifier,
-            PoseModifier::AimPitchBend { bend_weights }
-                if bend_weights == &[0.25, 2.0]
-        ));
     }
 
     #[test]
@@ -3484,6 +3505,12 @@ mod tests {
                 serde_json::json!({ "poseMask": [42, "unknownMask"] }),
                 serde_json::json!({ "poseMask": { "bad": true } }),
             ),
+            (
+                "non_object_pose_metadata",
+                serde_json::json!(["aimSpine"]),
+                serde_json::json!("upperBody"),
+                serde_json::json!(42),
+            ),
         ];
 
         for (name, root, head, leaf) in cases {
@@ -3495,13 +3522,45 @@ mod tests {
             let model = load_model(&path).expect("invalid pose authoring never fails model load");
             let _ = std::fs::remove_file(path);
 
-            assert!(
-                model
-                    .pose_stack
-                    .entries()
-                    .iter()
-                    .all(|entry| !matches!(&entry.modifier, PoseModifier::AimPitchBend { .. })),
-                "{name} must not retain an aim bend",
+            let (expected_masks, expected_stack) = match name {
+                "branching_aim_spine" => {
+                    let masks = PoseMaskSet {
+                        aim_spine: mask(&[0, 1, 2]),
+                        upper_body: mask(&[0]),
+                        lower_body: mask(&[1]),
+                    };
+                    let stack = PoseModifierStack::new(vec![ModifierEntry {
+                        mask: masks.upper_body,
+                        modifier: PoseModifier::UpperLowerSplit {
+                            lower_body_mask: masks.lower_body,
+                        },
+                    }]);
+                    (masks, stack)
+                }
+                "disconnected_aim_spine" => {
+                    let masks = PoseMaskSet {
+                        aim_spine: mask(&[1, 2]),
+                        upper_body: mask(&[0]),
+                        lower_body: mask(&[1]),
+                    };
+                    let stack = PoseModifierStack::new(vec![ModifierEntry {
+                        mask: masks.upper_body,
+                        modifier: PoseModifier::UpperLowerSplit {
+                            lower_body_mask: masks.lower_body,
+                        },
+                    }]);
+                    (masks, stack)
+                }
+                "empty_malformed_pose_masks" | "non_object_pose_metadata" => {
+                    (PoseMaskSet::default(), PoseModifierStack::default())
+                }
+                _ => unreachable!("all malformed pose-mask cases have expectations"),
+            };
+
+            assert_eq!(model.pose_masks, expected_masks, "{name} exact masks");
+            assert_eq!(
+                model.pose_stack, expected_stack,
+                "{name} retains only the valid partial stack",
             );
         }
     }

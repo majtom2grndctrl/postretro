@@ -1,5 +1,4 @@
-// CPU pose-sampling library: single-clip and two-source blended sampling, loop
-// policies (wrap/clamp), snapshot capture, and animation clock helpers.
+// CPU animation pose seam: samples and blends clips, then applies pose modifiers.
 // See: context/lib/rendering_pipeline.md §9
 
 mod blend;
@@ -153,7 +152,34 @@ pub fn sample_clip_looped_modified(
         for (i, joint) in skeleton.joints.iter().enumerate() {
             locals.push(sample_local_trs(clip.joints.get(i), &joint.rest_local, t));
         }
-        apply_pose_modifier_stack(stack, inputs, &mut locals);
+        apply_pose_modifier_stack(stack, inputs, skeleton, &mut locals);
+        compose_palette(skeleton, out, |i, _joint| locals[i].to_mat4());
+    });
+}
+
+/// Apply an ordered modifier stack to the skeleton's rest-local pose, then
+/// compose the skinning palette.
+///
+/// This is the clipless counterpart to [`sample_clip_looped_modified`]. The
+/// caller deliberately selects it only when both a non-empty stack and pose
+/// inputs are present; animation-less models without active presentation
+/// modifiers retain the renderer's existing identity-palette fallback.
+pub fn sample_rest_pose_modified(
+    skeleton: &Skeleton,
+    stack: &PoseModifierStack,
+    inputs: &PoseInputs,
+    out: &mut Vec<BonePaletteEntry>,
+) {
+    BLEND_LOCAL_SCRATCH.with(|cell| {
+        let mut locals = cell.borrow_mut();
+        locals.clear();
+        locals.reserve(skeleton.joints.len());
+        locals.extend(skeleton.joints.iter().map(|joint| LocalTrs {
+            translation: joint.rest_local.translation,
+            rotation: joint.rest_local.rotation,
+            scale: joint.rest_local.scale,
+        }));
+        apply_pose_modifier_stack(stack, inputs, skeleton, &mut locals);
         compose_palette(skeleton, out, |i, _joint| locals[i].to_mat4());
     });
 }
@@ -180,7 +206,7 @@ pub fn sample_blended_modified(
     BLEND_LOCAL_SCRATCH.with(|cell| {
         let mut locals = cell.borrow_mut();
         resolve_blend_into(a, b, weight, skeleton, &mut locals);
-        apply_pose_modifier_stack(stack, inputs, &mut locals);
+        apply_pose_modifier_stack(stack, inputs, skeleton, &mut locals);
         compose_palette(skeleton, out, |i, _joint| locals[i].to_mat4());
     });
 }

@@ -1,4 +1,5 @@
-//! Per-frame inputs consumed by CPU-side skeletal pose modifiers.
+//! Foundation owns transient, VM-free inputs for CPU-side skeletal pose modifiers.
+//! See: context/lib/rendering_pipeline.md §9.
 
 /// Game-logic-authored inputs consumed while sampling a model pose.
 ///

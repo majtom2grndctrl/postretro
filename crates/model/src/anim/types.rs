@@ -47,8 +47,8 @@ impl LocalTrs {
     }
 }
 
-/// One side of a blend: either a clip to sample (with its time and loop policy)
-/// or a borrowed per-joint local-TRS snapshot.
+/// One side of a blend: a clip sample, a borrowed per-joint local-TRS snapshot,
+/// or the skeleton rest-local pose.
 ///
 /// The `Snapshot` arm is the "smooth" interrupt's captured pose — a static
 /// per-joint local TRS that re-feeds as a blend source so an interrupted fade
@@ -64,6 +64,12 @@ pub enum BlendSource<'a> {
     },
     /// Use this caller-provided per-joint local-TRS buffer directly.
     Snapshot(&'a [LocalTrs]),
+    /// Use each joint's skeleton rest-local TRS.
+    ///
+    /// This is the animation-less endpoint used when presentation modifiers
+    /// need to pose a model whose primary clip is absent. It remains a local
+    /// pose source so fades can still blend coherently before modifiers run.
+    Rest,
 }
 
 /// Map a raw clip time onto the clip's duration under `loop_policy`. A

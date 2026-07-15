@@ -1,10 +1,12 @@
-//! Ordered, CPU-only skeletal pose-modifier stack primitives.
+// CPU-only ordered skeletal pose modifiers over sampled local TRS.
+// See: context/lib/rendering_pipeline.md §9
 
 use glam::Quat;
 use postretro_foundation::PoseInputs;
 
 use crate::anim::LocalTrs;
 use crate::mesh::MAX_JOINTS;
+use crate::skeleton::Skeleton;
 
 const MASK_WORD_BITS: usize = u64::BITS as usize;
 const MASK_WORDS: usize = MAX_JOINTS.div_ceil(MASK_WORD_BITS);
@@ -70,17 +72,24 @@ impl JointMask {
 pub enum PoseModifier {
     /// Distribute `PoseInputs::aim_pitch` across `ModifierEntry::mask`.
     ///
-    /// Weights are parallel to `ModifierEntry::mask.iter()`. An absent weight
-    /// (including an empty vector) has weight `1.0`, giving unauthored chains a
-    /// uniform bend. The modifier implementation normalizes weights when it is
-    /// applied; stored weights are never pre-normalized.
+    /// Weights are parallel to `ModifierEntry::mask.iter()`. Missing, zero,
+    /// negative, or non-finite values default to `1.0`; surplus values are
+    /// ignored. This keeps the public representation flexible for unauthored or
+    /// partially authored chains. Application normalizes only weights aligned
+    /// with joints present in the sampled local pose; stored weights are never
+    /// pre-normalized.
     AimPitchBend { bend_weights: Vec<f32> },
-    /// Twist `ModifierEntry::mask` (the upper body) relative to the body heading,
-    /// using this second mask to identify lower-body and seam joints.
+    /// Twist the upper body relative to the body heading, using this second mask
+    /// to identify lower-only and seam joints. Application may compensate local
+    /// rotations in either mask to reach the requested composed hierarchy yaw;
+    /// joints in neither mask retain their sampled local transform.
     UpperLowerSplit { lower_body_mask: JointMask },
 }
 
-/// A modifier and the joints it is allowed to mutate.
+/// A modifier and its primary mask.
+///
+/// Most modifiers mutate only this mask. [`PoseModifier::UpperLowerSplit`] also
+/// uses and may compensate its `lower_body_mask` to preserve composed yaw.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModifierEntry {
     pub mask: JointMask,
@@ -112,10 +121,10 @@ impl PoseModifierStack {
 }
 
 /// Apply every entry in list order to one materialized local pose.
-///
 pub(crate) fn apply_pose_modifier_stack(
     stack: &PoseModifierStack,
     inputs: &PoseInputs,
+    skeleton: &Skeleton,
     locals: &mut [LocalTrs],
 ) {
     for entry in stack.entries() {
@@ -129,6 +138,7 @@ pub(crate) fn apply_pose_modifier_stack(
                     *lower_body_mask,
                     inputs.aim_yaw,
                     inputs.heading_yaw,
+                    skeleton,
                     locals,
                 );
             }
@@ -149,19 +159,25 @@ fn apply_aim_pitch_bend(
     // Accumulate in f64 so every finite f32 weight and a chain at MAX_JOINTS
     // still produce a finite normalization denominator. Invalid public values
     // degrade to the same 1.0 default as an absent authored weight.
+    let local_count = locals.len();
     let total_weight = mask
         .iter()
         .enumerate()
+        .filter(|(_, joint_index)| *joint_index < local_count)
         .map(|(weight_index, _)| normalized_bend_weight(bend_weights.get(weight_index)) as f64)
         .sum::<f64>();
 
-    for (weight_index, joint_index) in mask.iter().enumerate() {
-        let Some(local) = locals.get_mut(joint_index) else {
-            continue;
-        };
+    for (weight_index, joint_index) in mask
+        .iter()
+        .enumerate()
+        .filter(|(_, joint_index)| *joint_index < local_count)
+    {
+        let local = &mut locals[joint_index];
         let weight = normalized_bend_weight(bend_weights.get(weight_index)) as f64;
         let joint_pitch = (f64::from(aim_pitch) * weight / total_weight) as f32;
-        local.rotation *= Quat::from_rotation_x(joint_pitch);
+        // Model forward is +Z. In the engine's right-handed model space a
+        // negative X rotation raises +Z, matching positive simulation pitch.
+        local.rotation *= Quat::from_rotation_x(-joint_pitch);
     }
 }
 
@@ -177,6 +193,7 @@ fn apply_upper_lower_split(
     lower_body_mask: JointMask,
     aim_yaw: f32,
     heading_yaw: f32,
+    skeleton: &Skeleton,
     locals: &mut [LocalTrs],
 ) {
     if upper_body_mask.is_empty() || !aim_yaw.is_finite() || !heading_yaw.is_finite() {
@@ -184,16 +201,39 @@ fn apply_upper_lower_split(
     }
 
     let yaw_delta = wrapped_angle_delta(aim_yaw, heading_yaw);
-    for joint_index in upper_body_mask.iter() {
-        let Some(local) = locals.get_mut(joint_index) else {
+    let mut effective_factors = [0.0_f32; MAX_JOINTS];
+    for joint_index in 0..locals.len().min(skeleton.joints.len()).min(MAX_JOINTS) {
+        let parent_factor = skeleton.joints[joint_index]
+            .parent
+            .filter(|&parent| parent < joint_index && parent < locals.len())
+            .map(|parent| effective_factors[parent])
+            .unwrap_or(0.0);
+        let Some(target_factor) = split_world_factor(upper_body_mask, lower_body_mask, joint_index)
+        else {
+            // Neither-mask joints retain their sampled local transform. They
+            // naturally continue to follow any modified parent.
+            effective_factors[joint_index] = parent_factor;
             continue;
         };
-        let seam_scale = if lower_body_mask.contains(joint_index) {
-            0.5
-        } else {
-            1.0
-        };
-        local.rotation *= Quat::from_rotation_y(yaw_delta * seam_scale);
+        let local_delta = yaw_delta * (target_factor - parent_factor);
+        locals[joint_index].rotation *= Quat::from_rotation_y(local_delta);
+        effective_factors[joint_index] = target_factor;
+    }
+}
+
+fn split_world_factor(
+    upper_body_mask: JointMask,
+    lower_body_mask: JointMask,
+    joint_index: usize,
+) -> Option<f32> {
+    match (
+        upper_body_mask.contains(joint_index),
+        lower_body_mask.contains(joint_index),
+    ) {
+        (true, true) => Some(0.5),
+        (true, false) => Some(1.0),
+        (false, true) => Some(0.0),
+        (false, false) => None,
     }
 }
 
@@ -209,6 +249,8 @@ fn wrapped_angle_delta(aim_yaw: f32, heading_yaw: f32) -> f32 {
 mod tests {
     use super::*;
     use glam::Vec3;
+
+    use crate::skeleton::{Joint, RestLocal};
 
     #[test]
     fn joint_mask_covers_full_joint_limit_in_topological_order() {
@@ -268,6 +310,20 @@ mod tests {
             };
             2
         ];
+        let skeleton = Skeleton {
+            joints: vec![
+                Joint {
+                    parent: None,
+                    inverse_bind: glam::Mat4::IDENTITY.to_cols_array_2d(),
+                    rest_local: RestLocal::default(),
+                },
+                Joint {
+                    parent: Some(0),
+                    inverse_bind: glam::Mat4::IDENTITY.to_cols_array_2d(),
+                    rest_local: RestLocal::default(),
+                },
+            ],
+        };
 
         apply_pose_modifier_stack(
             &stack,
@@ -276,6 +332,57 @@ mod tests {
                 aim_yaw: f32::MAX,
                 heading_yaw: -f32::MAX,
             },
+            &skeleton,
+            &mut locals,
+        );
+
+        assert!(locals.iter().all(|local| local.rotation.is_finite()));
+    }
+
+    #[test]
+    fn malformed_and_misaligned_bend_weights_keep_valid_locals_finite() {
+        let mut joints = JointMask::new();
+        assert!(joints.insert(0));
+        assert!(joints.insert(1));
+        assert!(joints.insert(255));
+        let stack = PoseModifierStack::new(vec![ModifierEntry {
+            mask: joints,
+            modifier: PoseModifier::AimPitchBend {
+                // Zero and negative values default; the non-finite third value
+                // is aligned to an absent local and excluded from normalization.
+                bend_weights: vec![0.0, -1.0, f32::NAN, f32::MAX],
+            },
+        }]);
+        let skeleton = Skeleton {
+            joints: vec![
+                Joint {
+                    parent: None,
+                    inverse_bind: glam::Mat4::IDENTITY.to_cols_array_2d(),
+                    rest_local: RestLocal::default(),
+                },
+                Joint {
+                    parent: Some(0),
+                    inverse_bind: glam::Mat4::IDENTITY.to_cols_array_2d(),
+                    rest_local: RestLocal::default(),
+                },
+            ],
+        };
+        let mut locals = vec![
+            LocalTrs {
+                translation: Vec3::ZERO,
+                rotation: Quat::IDENTITY,
+                scale: Vec3::ONE,
+            };
+            2
+        ];
+
+        apply_pose_modifier_stack(
+            &stack,
+            &PoseInputs {
+                aim_pitch: f32::MAX,
+                ..Default::default()
+            },
+            &skeleton,
             &mut locals,
         );
 

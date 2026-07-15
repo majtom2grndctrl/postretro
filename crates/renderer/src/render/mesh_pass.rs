@@ -658,17 +658,64 @@ struct InstancePoseSample<'a> {
     seed: u32,
 }
 
+/// Sample an active modified pose whose primary animation clip is unresolved.
+/// The skeleton rest pose becomes the entered endpoint, so clipless models can
+/// still consume presentation inputs and an in-flight fade retains its normal
+/// outgoing→incoming weight convention.
+fn sample_modified_rest_instance<'a>(
+    instance: &InstancePoseSample<'_>,
+    pose_inputs: &postretro_entities::PoseInputs,
+    skeleton: &Skeleton,
+    pose_stack: &postretro_model::pose_modifier::PoseModifierStack,
+    store: &SnapshotStore,
+    resolve_clip: &impl Fn(usize) -> Option<&'a AnimationClip>,
+    out: &mut Vec<BonePaletteEntry>,
+) {
+    let sample = instance.params;
+    let rest = BlendSource::Rest;
+    let Some(fade) = sample.fade else {
+        postretro_model::anim::sample_rest_pose_modified(skeleton, pose_stack, pose_inputs, out);
+        return;
+    };
+
+    let outgoing = match fade.from {
+        FadeSource::Clip(leg) => {
+            clip_blend_source(&leg, resolve_clip).map(|source| source.as_blend_source())
+        }
+        FadeSource::Snapshot { tag, fallback } => store
+            .matching(instance.seed, tag)
+            .map(BlendSource::Snapshot)
+            .or_else(|| {
+                clip_blend_source(&fallback, resolve_clip).map(|source| source.as_blend_source())
+            }),
+    };
+
+    match outgoing {
+        Some(outgoing) => postretro_model::anim::sample_blended_modified(
+            &outgoing,
+            &rest,
+            fade.weight,
+            skeleton,
+            pose_stack,
+            Some(pose_inputs),
+            out,
+        ),
+        None => {
+            postretro_model::anim::sample_rest_pose_modified(skeleton, pose_stack, pose_inputs, out)
+        }
+    }
+}
+
 /// Sample one instance's pose into `out` per its resolved [`MeshSampleParams`]:
 /// a single clip (no fade), a clip→clip blend, or a snapshot→clip blend. Always
 /// writes a full run into `out` and returns `true`, so the caller's palette write
 /// covers the whole region.
 ///
-/// When the primary clip does not resolve there is no pose to sample, so `out` is
-/// filled with one identity (bind-pose) matrix per joint rather than left
-/// untouched. Leaving it untouched would let the caller skip the write and expose
-/// whatever matrices the densely-repacked palette region last held (another
-/// instance's pose) — the identity fill makes the unsampled run a clean bind pose
-/// instead of inheriting a stranger's matrices.
+/// When the primary clip does not resolve, an active modifier stack samples the
+/// skeleton rest pose so clipless tagged models can still consume pose inputs.
+/// Otherwise `out` is filled with one identity (bind-pose) matrix per joint
+/// rather than left untouched. The exact identity fallback prevents an inactive
+/// unsampled run from inheriting another instance's densely repacked matrices.
 ///
 /// Fade resolution mirrors the collector's intent but degrades safely at the GPU
 /// seam: a [`FadeSource::Snapshot`] whose store entry is missing (capture frame
@@ -682,15 +729,26 @@ fn sample_instance<'a>(
     resolve_clip: &impl Fn(usize) -> Option<&'a AnimationClip>,
     out: &mut Vec<BonePaletteEntry>,
 ) -> bool {
-    let InstancePoseSample {
-        params: sample,
-        pose_inputs,
-        seed,
-    } = instance;
-    // Primary clip must resolve; without it there is no pose to sample. Write an
-    // identity (bind-pose) run so the caller's palette write overwrites any stale
-    // matrices the dense repack left in this instance's region.
+    let sample = instance.params;
+    let pose_inputs = instance.pose_inputs;
+    let seed = instance.seed;
+    // A clipless pose-tagged model can still consume external presentation
+    // inputs: modify its skeleton rest pose, retaining any outgoing fade source.
+    // Without both an active stack and inputs, preserve the historical exact
+    // identity fallback rather than composing the model's rest/inverse-bind data.
     let Some(primary) = clip_blend_source(&sample.primary, resolve_clip) else {
+        if let Some(inputs) = pose_inputs.filter(|_| !pose_stack.is_empty()) {
+            sample_modified_rest_instance(
+                &instance,
+                inputs,
+                skeleton,
+                pose_stack,
+                store,
+                resolve_clip,
+                out,
+            );
+            return true;
+        }
         out.clear();
         out.resize(
             skeleton.joints.len(),
@@ -2992,7 +3050,7 @@ mod tests {
             let (_, rotation, _) =
                 Mat4::from_cols_array_2d(&out[0].matrix).to_scale_rotation_translation();
             let (pitch, _, _) = rotation.to_euler(EulerRot::XYZ);
-            assert!((pitch - inputs.aim_pitch).abs() <= 1.0e-5);
+            assert!((pitch + inputs.aim_pitch).abs() <= 1.0e-5);
         }
     }
 
@@ -3002,7 +3060,10 @@ mod tests {
         // palette write, leaving the densely-repacked run holding another
         // instance's stale matrices. It must now write a clean identity bind-pose
         // run (one per joint) and return true so the caller overwrites the region.
-        let skel = one_joint_skeleton();
+        let mut skel = one_joint_skeleton();
+        // Make the authored rest local visibly non-identity: the inactive path
+        // must preserve the historical exact identity fill, not compose rest.
+        skel.joints[0].rest_local.translation = Vec3::new(3.0, 0.0, 0.0);
         let clips: Vec<AnimationClip> = vec![]; // index 0 absent
         let store = SnapshotStore::default();
         let params = MeshSampleParams {
@@ -3023,6 +3084,151 @@ mod tests {
             out[0].matrix, identity,
             "the unsampled run is the identity bind pose, not stale matrices",
         );
+    }
+
+    #[test]
+    fn sample_instance_unresolved_primary_modifies_rest_pose_when_active() {
+        use postretro_model::pose_modifier::{
+            JointMask, ModifierEntry, PoseModifier, PoseModifierStack,
+        };
+
+        let skel = one_joint_skeleton();
+        let clips: Vec<AnimationClip> = vec![];
+        let store = SnapshotStore::default();
+        let params = MeshSampleParams {
+            primary: clip_leg(0, 0.0),
+            fade: None,
+        };
+        let mut mask = JointMask::new();
+        assert!(mask.insert(0));
+        let stack = PoseModifierStack::new(vec![
+            ModifierEntry {
+                mask,
+                modifier: PoseModifier::UpperLowerSplit {
+                    lower_body_mask: JointMask::new(),
+                },
+            },
+            ModifierEntry {
+                mask,
+                modifier: PoseModifier::AimPitchBend {
+                    bend_weights: vec![1.0],
+                },
+            },
+        ]);
+        let inputs = postretro_entities::PoseInputs {
+            aim_pitch: 0.25,
+            aim_yaw: 0.4,
+            heading_yaw: 0.0,
+        };
+        let mut out = Vec::new();
+
+        sample_instance(
+            InstancePoseSample {
+                params: &params,
+                pose_inputs: Some(&inputs),
+                seed: 1,
+            },
+            &skel,
+            &stack,
+            &store,
+            &|i| clips.get(i),
+            &mut out,
+        );
+
+        let (_, rotation, _) =
+            Mat4::from_cols_array_2d(&out[0].matrix).to_scale_rotation_translation();
+        let expected =
+            Quat::from_rotation_y(inputs.aim_yaw) * Quat::from_rotation_x(-inputs.aim_pitch);
+        assert!(
+            rotation.normalize().dot(expected.normalize()).abs() > 1.0 - 1.0e-5,
+            "unresolved primary samples and modifies the skeleton rest pose"
+        );
+    }
+
+    #[test]
+    fn unresolved_primary_fade_blends_outgoing_clip_toward_modified_rest() {
+        use postretro_model::pose_modifier::{
+            JointMask, ModifierEntry, PoseModifier, PoseModifierStack,
+        };
+
+        let skel = one_joint_skeleton();
+        let clips = [const_x_clip("outgoing", 4.0)];
+        let mut store = SnapshotStore::default();
+        store.entries.insert(
+            1,
+            StoredSnapshot {
+                tag: 7,
+                pose: vec![LocalTrs {
+                    translation: Vec3::new(6.0, 0.0, 0.0),
+                    rotation: Quat::IDENTITY,
+                    scale: Vec3::ONE,
+                }],
+            },
+        );
+        let mut mask = JointMask::new();
+        assert!(mask.insert(0));
+        let stack = PoseModifierStack::new(vec![ModifierEntry {
+            mask,
+            modifier: PoseModifier::AimPitchBend {
+                bend_weights: vec![1.0],
+            },
+        }]);
+        let inputs = postretro_entities::PoseInputs {
+            aim_pitch: 0.3,
+            ..Default::default()
+        };
+        let cases = [
+            ("clip", FadeSource::Clip(clip_leg(0, 0.0)), 2.0),
+            (
+                "snapshot hit",
+                FadeSource::Snapshot {
+                    tag: 7,
+                    fallback: clip_leg(0, 0.0),
+                },
+                3.0,
+            ),
+            (
+                "snapshot miss falls back to clip",
+                FadeSource::Snapshot {
+                    tag: 8,
+                    fallback: clip_leg(0, 0.0),
+                },
+                2.0,
+            ),
+        ];
+
+        for (case, from, expected_x) in cases {
+            let params = MeshSampleParams {
+                primary: clip_leg(9, 0.0),
+                fade: Some(MeshFade { from, weight: 0.5 }),
+            };
+            let mut out = Vec::new();
+            sample_instance(
+                InstancePoseSample {
+                    params: &params,
+                    pose_inputs: Some(&inputs),
+                    seed: 1,
+                },
+                &skel,
+                &stack,
+                &store,
+                &|i| clips.get(i),
+                &mut out,
+            );
+
+            let (scale, rotation, translation) =
+                Mat4::from_cols_array_2d(&out[0].matrix).to_scale_rotation_translation();
+            assert!(
+                (translation.x - expected_x).abs() < 1.0e-5,
+                "{case} keeps its outgoing endpoint"
+            );
+            assert!((scale - Vec3::ONE).length() < 1.0e-5);
+            let expected = Quat::from_rotation_x(-inputs.aim_pitch);
+            assert!(
+                rotation.normalize().dot(expected.normalize()).abs() > 1.0 - 1.0e-5,
+                "{case}: modifier applies after outgoing-to-rest blending"
+            );
+        }
     }
 
     #[test]

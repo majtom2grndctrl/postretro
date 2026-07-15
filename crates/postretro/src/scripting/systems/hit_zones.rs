@@ -1037,12 +1037,12 @@ fn resolve_animation_stamps_for_sampling(anim: &mut MeshAnimation, now: f64) {
 /// matrices (pre-inverse-bind), or `None` when the precise pose is UNAVAILABLE.
 ///
 /// Fail-available contract: `None` means the game side cannot reconstruct the
-/// exact pose the renderer draws — specifically a chained smooth-interrupt
-/// snapshot fade whose capture references renderer-only stored data (mirrors the
-/// same case on [`pose_from_params`]). The caller degrades to the coarse fallback
-/// rather than posing a wrong fallback-clip capsule; it never means "the ray
-/// missed". A model with no clips, or an unresolved state, still poses (rest or
-/// first clip) and returns `Some`.
+/// unmodified animation pose shared with rendering — specifically a chained
+/// smooth-interrupt snapshot fade whose capture references renderer-only stored
+/// data (mirrors the same case on [`pose_from_params`]). The caller degrades to
+/// the coarse fallback rather than posing a wrong fallback-clip capsule; it
+/// never means "the ray missed". A model with no clips, or an unresolved state,
+/// still poses (rest or first clip) and returns `Some`.
 ///
 /// When the entity carries an animation block, its current state resolves —
 /// through the SAME render-free [`mesh_anim::animate_entity`] the renderer's
@@ -1051,13 +1051,14 @@ fn resolve_animation_stamps_for_sampling(anim: &mut MeshAnimation, now: f64) {
 /// unresolved state, or a stateless / no-animation mesh, poses the model's first
 /// clip looped at the clock; a model with no clips poses each joint to rest.
 ///
-/// Phase de-sync is fed in at the SAME per-instance phase the renderer applies,
-/// so a capsule tracks the drawn pose rather than lagging a whole clip behind it.
-/// The phase is [`instance_phase`] of the entity's `EntityId` seed against the
-/// CURRENT state's clip duration (the stateless/default path uses the first
-/// clip's duration) — the exact seed + duration the renderer's collector uses, so
-/// the values match. `instance_phase`/`state_time` apply it ONLY to looping legs;
-/// one-shot states ignore it, matching the renderer.
+/// Phase de-sync uses the SAME per-instance phase as rendering, so authoritative
+/// capsules share its animation clock and sample parameters. Capsules use the
+/// unmodified world-joint pose. Presentation-only pose modifiers affect only the
+/// rendered palette. The phase is [`instance_phase`] of the entity's `EntityId`
+/// seed against the CURRENT state's clip duration (the stateless/default path
+/// uses the first clip's duration) — the exact seed + duration the renderer's
+/// collector uses, so the values match. `instance_phase`/`state_time` apply it
+/// ONLY to looping legs; one-shot states ignore it, matching the renderer.
 fn pose_world_joints(
     zones: &ModelHitZones,
     animation: Option<&MeshAnimation>,
@@ -1069,10 +1070,11 @@ fn pose_world_joints(
     let clips = zones.clips.as_ref();
 
     // Resolve the entity's current animation to render-free sample params via the
-    // shared resolver, feeding the SAME per-instance phase the renderer draws
-    // with so capsules track the drawn pose. `animate_entity` applies the phase
-    // only to looping legs; it returns `None` for an unresolved current state, so
-    // we fall through to the default pose.
+    // shared resolver, feeding the SAME per-instance phase as rendering. Capsules
+    // sample unmodified world-joint poses; presentation-only pose modifiers stay
+    // in the rendered palette. `animate_entity` applies the phase only to looping
+    // legs; it returns `None` for an unresolved current state, so we fall through
+    // to the default pose.
     if let Some(anim) = animation {
         let phase = current_state_phase(anim, clips, seed);
         if let Some(result) = super::mesh_anim::animate_entity(anim, anim_time, phase) {

@@ -113,7 +113,7 @@ impl Renderer {
     /// seam) or `None` on a load error, which also logs a `warn!` naming the path
     /// and leaves the entry uncached (that model renders nothing).
     ///
-    /// The renderer owns the GPU upload + the cached skeleton + first clip
+    /// The renderer owns the GPU upload, cached skeleton, and all animation clips
     /// (inside the mesh pass's model cache); the per-frame draw list
     /// (`mesh_draws`) is supplied each frame by the render-frame mesh collector
     /// via [`set_mesh_draws`], not seeded here.
@@ -158,8 +158,8 @@ impl Renderer {
         } = model;
         let clip_count = clips.len();
         // Name every parsed clip so a multi-clip asset surfaces its full set in
-        // the load log (the cache retains them all; the per-frame palette samples
-        // the first). Joined as "name (1.23s)" in glTF order.
+        // the load log. Per-instance sample parameters select cached clips.
+        // Joined as "name (1.23s)" in glTF order.
         if !clips.is_empty() {
             let clip_summary = clips
                 .iter()
@@ -176,7 +176,8 @@ impl Renderer {
 
         // `handle` (the verbatim cache key) was derived alongside the open path
         // by `resolve_model_open_path_and_handle` — see this method's doc. The
-        // FULL clip set is handed to the cache; clip selection is a sibling plan.
+        // Full clip set is handed to the cache; per-instance sample parameters
+        // select clips during palette sampling.
         // `resolve_skinned_model_material` (a `&mut self` helper) already ran
         // above into `submesh_materials`, so destructuring `self` here is safe.
         let Self { device, full, .. } = self;

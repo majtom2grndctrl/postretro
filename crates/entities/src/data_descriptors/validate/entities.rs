@@ -1,6 +1,6 @@
 // Entity-side descriptor validators. These construct entity-resident
 // descriptor types and therefore stay above the foundation layer.
-// See: context/lib/scripting.md §12 (Crate Architecture)
+// See: context/lib/scripting.md §13 (Crate Architecture)
 
 use super::super::{CrossingCondition, CrossingDescriptor, DescriptorError};
 use postretro_foundation::ir::IrNode;
@@ -12,6 +12,7 @@ pub fn build_crossing(
     below: Option<f32>,
     above: Option<f32>,
     max: Option<f32>,
+    edge: Option<String>,
     fire: Vec<String>,
 ) -> Result<CrossingDescriptor, DescriptorError> {
     if slot.is_empty() {
@@ -49,10 +50,12 @@ pub fn build_crossing(
         (None, None) => return Err(DescriptorError::CrossingCondition { count: 0 }),
         (Some(_), Some(_)) => return Err(DescriptorError::CrossingCondition { count: 2 }),
     };
+    let edge = normalize_crossing_edge(edge);
     Ok(CrossingDescriptor {
         slot: Some(slot),
         condition,
         max,
+        edge,
         fire,
     })
 }
@@ -60,7 +63,11 @@ pub fn build_crossing(
 /// Build a predicate-form crossing descriptor. Its raw IR is bound against the
 /// live store scope by scripting-core at install time, so this entities-layer
 /// builder deliberately performs no scope or type validation.
-pub fn build_predicate_crossing(predicate: IrNode, fire: Vec<String>) -> CrossingDescriptor {
+pub fn build_predicate_crossing(
+    predicate: IrNode,
+    edge: Option<String>,
+    fire: Vec<String>,
+) -> CrossingDescriptor {
     CrossingDescriptor {
         slot: None,
         condition: CrossingCondition::Ir(predicate),
@@ -68,6 +75,48 @@ pub fn build_predicate_crossing(predicate: IrNode, fire: Vec<String>) -> Crossin
         // existing field at its neutral threshold-form default so descriptor
         // consumers retain a stable shape.
         max: 1.0,
+        edge: normalize_crossing_edge(edge),
         fire,
+    }
+}
+
+fn normalize_crossing_edge(edge: Option<String>) -> Option<String> {
+    match edge.as_deref() {
+        None => None,
+        Some("both") => edge,
+        Some(unknown) => {
+            log::warn!(
+                "[Scripting] onStateCrossing: unknown edge `{unknown}`; using shipped single-edge behavior"
+            );
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unknown_edge_degrades_to_absent_for_both_crossing_forms() {
+        let threshold = build_crossing(
+            "test.value".to_string(),
+            None,
+            Some(1.0),
+            None,
+            Some("future".to_string()),
+            vec!["fire".to_string()],
+        )
+        .unwrap();
+        let predicate = build_predicate_crossing(
+            IrNode::Input {
+                name: "test.flag".to_string(),
+            },
+            Some("future".to_string()),
+            vec!["fire".to_string()],
+        );
+
+        assert_eq!(threshold.edge, None);
+        assert_eq!(predicate.edge, None);
     }
 }

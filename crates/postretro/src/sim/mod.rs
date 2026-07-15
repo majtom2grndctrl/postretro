@@ -903,6 +903,7 @@ mod tests {
                         readonly: false,
                         ownership: SlotOwnership::Mod,
                         network: Default::default(),
+                        accumulate: None,
                     }),
                 )],
             )
@@ -1016,6 +1017,7 @@ mod tests {
                     readonly: false,
                     ownership: SlotOwnership::Mod,
                     network: Default::default(),
+                    accumulate: None,
                 }),
             )
             .expect("trigger count slot should be vacant");

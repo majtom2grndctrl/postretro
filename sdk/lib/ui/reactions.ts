@@ -5,6 +5,7 @@
 // See: context/lib/scripting.md §12
 
 import type { RuntimeValue } from "postretro";
+import type { CrossingParams, Reaction } from "../data_script";
 
 import type { ReadonlyStateRef, WritableStateRef } from "./widgets";
 
@@ -15,8 +16,10 @@ import type { ReadonlyStateRef, WritableStateRef } from "./widgets";
  * for a raw-value comparison (`max` defaults to `1.0`).
  */
 export type CrossingCondition =
-  | { below: number; above?: never; max?: number }
-  | { above: number; below?: never; max?: number };
+  | { below: number; above?: never; max?: number; edge?: "both" }
+  | { above: number; below?: never; max?: number; edge?: "both" };
+
+export type CrossingOptions = { edge?: "both" };
 
 /**
  * A threshold-form state-crossing watcher. The condition is flattened in
@@ -26,6 +29,7 @@ export type ThresholdCrossingDescriptor = {
   slot: string;
   predicate?: never;
   max?: number;
+  edge?: string;
   fire: string[];
   levels?: string[];
 } & (
@@ -40,6 +44,7 @@ export type PredicateCrossingDescriptor = {
   below?: never;
   above?: never;
   max?: never;
+  edge?: string;
   fire: string[];
   levels?: string[];
 };
@@ -56,7 +61,9 @@ function stateSlot(ref: ReadonlyStateRef<unknown>, helper: string): string {
   return ref.slot;
 }
 
-function reactionName(entry: import("../data_script").NamedReactionDescriptor | string): string {
+type CrossingReaction = Reaction<{}> | Reaction<CrossingParams> | string;
+
+function reactionName(entry: CrossingReaction): string {
   if (typeof entry === "string") {
     return entry;
   }
@@ -78,7 +85,7 @@ function crossingFireNames(fire: unknown): string[] {
   return fire.map(reactionName);
 }
 
-function crossingThreshold(condition: CrossingCondition): { key: "below" | "above"; value: number; max?: number } {
+function crossingThreshold(condition: CrossingCondition): { key: "below" | "above"; value: number; max?: number; edge?: unknown } {
   if (condition === null || typeof condition !== "object") {
     throw new Error("onStateCrossing: `condition` must be an object");
   }
@@ -95,7 +102,10 @@ function crossingThreshold(condition: CrossingCondition): { key: "below" | "abov
   if (condition.max !== undefined && (typeof condition.max !== "number" || !Number.isFinite(condition.max))) {
     throw new Error("onStateCrossing: `max` must be a finite number when provided");
   }
-  return condition.max === undefined ? { key, value } : { key, value, max: condition.max };
+  const threshold: { key: "below" | "above"; value: number; max?: number; edge?: unknown } = { key, value };
+  if (condition.max !== undefined) threshold.max = condition.max;
+  if (Object.prototype.hasOwnProperty.call(condition, "edge")) threshold.edge = condition.edge;
+  return threshold;
 }
 
 /**
@@ -110,7 +120,7 @@ function crossingThreshold(condition: CrossingCondition): { key: "below" | "abov
 export function onStateCrossing(
   ref: ReadonlyStateRef<number>,
   condition: CrossingCondition,
-  fire: (import("../data_script").NamedReactionDescriptor | string)[],
+  fire: CrossingReaction[],
 ): CrossingDescriptor;
 /** Build a crossing watcher from a Bool-valued runtime predicate over live
  * store slots. It fires only on false-to-true edges and re-arms on false. A
@@ -118,23 +128,32 @@ export function onStateCrossing(
  * true, before it fires. */
 export function onStateCrossing(
   predicate: RuntimeValue,
-  fire: (import("../data_script").NamedReactionDescriptor | string)[],
+  fire: CrossingReaction[],
+  options?: CrossingOptions,
 ): CrossingDescriptor;
 export function onStateCrossing(
   refOrPredicate: ReadonlyStateRef<number> | RuntimeValue,
-  conditionOrFire: CrossingCondition | (import("../data_script").NamedReactionDescriptor | string)[],
-  maybeFire?: (import("../data_script").NamedReactionDescriptor | string)[],
+  conditionOrFire: CrossingCondition | CrossingReaction[],
+  fireOrOptions?: CrossingReaction[] | CrossingOptions,
 ): CrossingDescriptor {
-  if (maybeFire === undefined) {
-    return {
+  if (Array.isArray(conditionOrFire)) {
+    const descriptor: PredicateCrossingDescriptor = {
       predicate: refOrPredicate as RuntimeValue,
       fire: crossingFireNames(conditionOrFire),
     };
+    const options = fireOrOptions as CrossingOptions | undefined;
+    if (options !== undefined && (options === null || typeof options !== "object" || Array.isArray(options))) {
+      throw new Error("onStateCrossing: predicate options must be an object when provided");
+    }
+    if (options !== undefined && Object.prototype.hasOwnProperty.call(options, "edge")) {
+      descriptor.edge = options.edge as string;
+    }
+    return descriptor;
   }
-  if (Array.isArray(conditionOrFire)) {
-    throw new Error("onStateCrossing: predicate form accepts exactly two arguments");
+  if (!Array.isArray(fireOrOptions)) {
+    throw new Error("onStateCrossing: threshold form requires a fire array");
   }
-  const fire = crossingFireNames(maybeFire);
+  const fire = crossingFireNames(fireOrOptions);
   const threshold = crossingThreshold(conditionOrFire);
   const descriptor: ThresholdCrossingDescriptor = {
     slot: stateSlot(refOrPredicate as ReadonlyStateRef<number>, "onStateCrossing"),
@@ -143,6 +162,9 @@ export function onStateCrossing(
   } as ThresholdCrossingDescriptor;
   if (threshold.max !== undefined) {
     descriptor.max = threshold.max;
+  }
+  if (Object.prototype.hasOwnProperty.call(threshold, "edge")) {
+    descriptor.edge = threshold.edge as string;
   }
   return descriptor;
 }

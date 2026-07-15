@@ -1,10 +1,5 @@
-// State-crossing detector (M13 HUD dynamics): engine-side watchers composed in
-// `DataRegistry` from matching mod-global crossings plus level-local
-// `setupLevel().crossings`, then checked against the authoritative slot table
-// after each frame's slot writes. Threshold watchers fire on their declared
-// edge; IR predicates fire on false-to-true edges. Both dispatch a reaction list
-// synchronously through the shared named-reaction vocabulary.
-// See: context/lib/scripting.md §10.4
+// Installs and evaluates active state-crossing watchers, producing
+// direction-bearing reaction dispatch records. See: context/lib/scripting.md §§10–12.
 
 use super::ctx::ScriptCtx;
 use super::data_descriptors::CrossingCondition;
@@ -21,9 +16,11 @@ enum Watcher {
     /// The shipped single-number-slot threshold watcher. Its data flow and
     /// edge behavior deliberately remain unchanged.
     Threshold {
+        source_id: usize,
         slot: String,
         condition: CrossingCondition,
         max: f32,
+        both_edges: bool,
         fire: Vec<String>,
         /// Last observed normalized value (`raw / max`), or `None` before the
         /// first observation. A watcher cannot fire until this is `Some`.
@@ -33,11 +30,13 @@ enum Watcher {
     /// `StoreScope` retains the live script context for eval without exposing
     /// any VM-coupled state through the entities descriptor boundary.
     Predicate {
+        source_id: usize,
         program: BoundProgram<StoreScope>,
         scope: StoreScope,
         #[cfg(debug_assertions)]
         script_ctx: ScriptCtx,
         fire: Vec<String>,
+        both_edges: bool,
         previous: bool,
     },
 }
@@ -74,7 +73,7 @@ impl CrossingDetector {
         slot_table: &SlotTable,
         script_ctx: &ScriptCtx,
     ) {
-        for crossing in &data_registry.crossings {
+        for (source_id, crossing) in data_registry.crossings.iter().enumerate() {
             match &crossing.condition {
                 CrossingCondition::Below { .. } | CrossingCondition::Above { .. } => {
                     let Some(slot) = crossing.slot.as_deref() else {
@@ -93,9 +92,11 @@ impl CrossingDetector {
                     }
                     let previous = read_number(slot_table, slot).map(|raw| raw / crossing.max);
                     self.watchers.push(Watcher::Threshold {
+                        source_id,
                         slot: slot.to_string(),
                         condition: crossing.condition.clone(),
                         max: crossing.max,
+                        both_edges: crossing.edge.as_deref() == Some("both"),
                         fire: crossing.fire.clone(),
                         previous,
                     });
@@ -132,11 +133,13 @@ impl CrossingDetector {
                     };
                     let previous = matches!(eval_value(&program, &scope), IrValue::Bool(true));
                     self.watchers.push(Watcher::Predicate {
+                        source_id,
                         program,
                         scope,
                         #[cfg(debug_assertions)]
                         script_ctx: script_ctx.clone(),
                         fire: crossing.fire.clone(),
+                        both_edges: crossing.edge.as_deref() == Some("both"),
                         previous,
                     });
                 }
@@ -145,7 +148,7 @@ impl CrossingDetector {
     }
 
     /// Compare each watcher's current condition result with its prior result
-    /// and return the event names to fire (in watcher-declaration order, each
+    /// and return direction-bearing fires (in watcher-declaration order, each
     /// watcher's `fire` list in order). Threshold watchers use normalized
     /// values from one slot at their declared edge; predicate watchers evaluate
     /// bound programs over the same authoritative table. Advances every
@@ -156,14 +159,16 @@ impl CrossingDetector {
     /// A watcher with no value yet (`previous == None`) arms on the first
     /// observed value without firing. A slot that loses its value (back to
     /// `None`) disarms without firing.
-    pub fn detect(&mut self, slot_table: &SlotTable) -> Vec<String> {
+    pub fn detect(&mut self, slot_table: &SlotTable) -> Vec<CrossingFire> {
         let mut to_fire = Vec::new();
         for watcher in &mut self.watchers {
             match watcher {
                 Watcher::Threshold {
+                    source_id,
                     slot,
                     condition,
                     max,
+                    both_edges,
                     fire,
                     previous,
                 } => {
@@ -172,18 +177,28 @@ impl CrossingDetector {
                     // (arming on the first observed value, or disarming when
                     // the value is gone) no edge exists, so nothing fires.
                     if let (Some(prev), Some(cur)) = (*previous, current) {
-                        if threshold_crosses(condition, prev, cur) {
-                            to_fire.extend(fire.iter().cloned());
+                        let authored_crossing = threshold_crosses(condition, prev, cur);
+                        let mirrored_crossing =
+                            *both_edges && threshold_crosses_mirrored(condition, prev, cur);
+                        if authored_crossing || mirrored_crossing {
+                            let rising = cur > prev;
+                            to_fire.extend(fire.iter().cloned().map(|reaction| CrossingFire {
+                                reaction,
+                                rising,
+                                source_id: *source_id,
+                            }));
                         }
                     }
                     *previous = current;
                 }
                 Watcher::Predicate {
+                    source_id,
                     program,
                     scope,
                     #[cfg(debug_assertions)]
                     script_ctx,
                     fire,
+                    both_edges,
                     previous,
                 } => {
                     #[cfg(debug_assertions)]
@@ -192,8 +207,13 @@ impl CrossingDetector {
                         "CrossingDetector predicate watchers must detect against the ScriptCtx slot table"
                     );
                     let current = matches!(eval_value(program, scope), IrValue::Bool(true));
-                    if !*previous && current {
-                        to_fire.extend(fire.iter().cloned());
+                    if (!*previous && current) || (*both_edges && *previous && !current) {
+                        let rising = !*previous && current;
+                        to_fire.extend(fire.iter().cloned().map(|reaction| CrossingFire {
+                            reaction,
+                            rising,
+                            source_id: *source_id,
+                        }));
                     }
                     // A true-to-false evaluation re-arms the next false-to-true
                     // edge; no slot shortcut or stale value is retained.
@@ -214,6 +234,22 @@ impl CrossingDetector {
     }
 }
 
+/// One named reaction fire emitted by a crossing, carrying the watched
+/// signal's direction for the ephemeral `@rising` dispatch input.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CrossingFire {
+    pub reaction: String,
+    pub rising: bool,
+    /// Stable index of the active crossing descriptor for source diagnostics.
+    pub source_id: usize,
+}
+
+impl PartialEq<String> for CrossingFire {
+    fn eq(&self, other: &String) -> bool {
+        self.reaction == *other
+    }
+}
+
 /// Predicate programs retain `ScriptCtx`; threshold watchers receive a caller
 /// table. Checking identity prevents the two forms from observing divergence.
 #[cfg(debug_assertions)]
@@ -227,6 +263,14 @@ fn threshold_crosses(condition: &CrossingCondition, prev: f32, cur: f32) -> bool
     match condition {
         CrossingCondition::Below { threshold } => prev >= *threshold && cur < *threshold,
         CrossingCondition::Above { threshold } => prev <= *threshold && cur > *threshold,
+        CrossingCondition::Ir(_) => false,
+    }
+}
+
+fn threshold_crosses_mirrored(condition: &CrossingCondition, prev: f32, cur: f32) -> bool {
+    match condition {
+        CrossingCondition::Below { threshold } => prev <= *threshold && cur > *threshold,
+        CrossingCondition::Above { threshold } => prev >= *threshold && cur < *threshold,
         CrossingCondition::Ir(_) => false,
     }
 }
@@ -282,6 +326,7 @@ mod tests {
             readonly: false,
             ownership: SlotOwnership::Mod,
             network: crate::slot_table::ReplicationScope::None,
+            accumulate: None,
         });
         record.value = value.map(SlotValue::Number);
         record
@@ -311,6 +356,7 @@ mod tests {
                 threshold: raw_threshold / max,
             },
             max,
+            edge: None,
             fire: fire.iter().map(|s| s.to_string()).collect(),
         }
     }
@@ -327,6 +373,7 @@ mod tests {
                 threshold: raw_threshold / max,
             },
             max,
+            edge: None,
             fire: fire.iter().map(|s| s.to_string()).collect(),
         }
     }
@@ -336,6 +383,7 @@ mod tests {
             slot: None,
             condition: CrossingCondition::Ir(predicate),
             max: 1.0,
+            edge: None,
             fire: fire.iter().map(|event| (*event).to_string()).collect(),
         }
     }
@@ -535,6 +583,7 @@ mod tests {
                     readonly: false,
                     ownership: SlotOwnership::Mod,
                     network: crate::slot_table::ReplicationScope::None,
+                    accumulate: None,
                 }),
             )
             .unwrap();
@@ -677,6 +726,64 @@ mod tests {
 
         detector.clear();
         assert_eq!(detector.watcher_count(), 0);
+        assert!(detector.detect(&table).is_empty());
+    }
+
+    #[test]
+    fn threshold_both_edges_publish_value_direction() {
+        let mut table = table_with("test.shield", Some(0.0));
+        let mut crossing = above_crossing("test.shield", 50.0, 100.0, &["toggle"]);
+        crossing.edge = Some("both".to_string());
+        let reg = registry_with(vec![crossing]);
+        let mut detector = CrossingDetector::new();
+        detector.initialize(&reg, &table, &ScriptCtx::new());
+
+        set(&mut table, "test.shield", 60.0);
+        assert_eq!(
+            detector.detect(&table),
+            vec![CrossingFire {
+                reaction: "toggle".to_string(),
+                rising: true,
+                source_id: 0,
+            }]
+        );
+        set(&mut table, "test.shield", 40.0);
+        assert_eq!(
+            detector.detect(&table),
+            vec![CrossingFire {
+                reaction: "toggle".to_string(),
+                rising: false,
+                source_id: 0,
+            }]
+        );
+    }
+
+    #[test]
+    fn predicate_both_edges_publish_condition_direction() {
+        let ctx = predicate_ctx(0.0, 0.0);
+        let mut crossing = predicate_crossing(both_thresholds_predicate(), &["toggle"]);
+        crossing.edge = Some("both".to_string());
+        let reg = registry_with(vec![crossing]);
+        let mut detector = CrossingDetector::new();
+        detector.initialize(&reg, &ctx.slot_table.borrow(), &ctx);
+
+        set_ctx(&ctx, "test.a", 2.0);
+        set_ctx(&ctx, "test.b", 1.0);
+        assert!(detector.detect(&ctx.slot_table.borrow())[0].rising);
+        set_ctx(&ctx, "test.a", 0.0);
+        assert!(!detector.detect(&ctx.slot_table.borrow())[0].rising);
+    }
+
+    #[test]
+    fn single_edge_below_publishes_falling_and_does_not_fire_crossback() {
+        let mut table = table_with("test.health", Some(100.0));
+        let reg = registry_with(vec![below_crossing("test.health", 20.0, 100.0, &["low"])]);
+        let mut detector = CrossingDetector::new();
+        detector.initialize(&reg, &table, &ScriptCtx::new());
+
+        set(&mut table, "test.health", 10.0);
+        assert!(!detector.detect(&table)[0].rising);
+        set(&mut table, "test.health", 80.0);
         assert!(detector.detect(&table).is_empty());
     }
 }

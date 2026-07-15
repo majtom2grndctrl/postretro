@@ -7,12 +7,12 @@
 
 use postretro_entities::ScriptCtx;
 use postretro_foundation::{
-    BakedIr, BoundProgram, CURRENT_IR_VERSION, eval_and_write, ir_node_from_json,
+    BakedIr, BoundProgram, CURRENT_IR_VERSION, IrType, IrValue, eval_and_write, ir_node_from_json,
 };
 use postretro_scripting_core::data_descriptors::ReactionDescriptor;
 use postretro_scripting_core::data_registry::DataRegistry;
 use postretro_scripting_core::ir::bind;
-use postretro_scripting_core::ir_scopes::StoreScope;
+use postretro_scripting_core::ir_scopes::DispatchScope;
 use postretro_scripting_core::reaction_registry::ReactionError;
 #[cfg(test)]
 pub(crate) use postretro_scripting_core::reaction_registry::SystemCommandQueue;
@@ -30,12 +30,15 @@ const MAX_SHAKE_AMPLITUDE_PX: f32 = 1280.0;
 
 /// Install-time bindings for inline `setState` IR. Entity-owned reaction
 /// descriptors and queued commands deliberately retain only raw JSON; this
-/// binary-side table owns the `StoreScope`-specialized programs and known
+/// binary-side table owns the app-drain `DispatchScope`-specialized programs and known
 /// rejected command identities.
 #[derive(Debug, Default)]
 pub(crate) struct SystemReactionIrBindings {
     bindings: Vec<SystemSetStateBinding>,
+    warned_missing_inputs: std::cell::RefCell<std::collections::HashSet<(usize, String)>>,
 }
+
+const APP_DRAIN_DISPATCH_INPUTS: [(&str, IrType); 1] = [("@rising", IrType::Bool)];
 
 /// A system-command `setState` IR is identified by the fields the command
 /// carries across the entities boundary. Keep the raw value here so the app
@@ -45,7 +48,8 @@ pub(crate) struct SystemReactionIrBindings {
 struct SystemSetStateBinding {
     slot: String,
     value: serde_json::Value,
-    program: Option<BoundProgram<StoreScope>>,
+    program: Option<BoundProgram<DispatchScope>>,
+    required_dispatch_inputs: Vec<String>,
 }
 
 impl SystemSetStateBinding {
@@ -70,7 +74,8 @@ impl SystemReactionIrBindings {
     /// the normal `BakedIr` envelope; no wire envelope/version is introduced.
     pub(crate) fn rebuild(&mut self, data_registry: &DataRegistry, script_ctx: &ScriptCtx) {
         self.bindings.clear();
-        let scope = StoreScope::script(script_ctx.clone());
+        let scope = DispatchScope::script(script_ctx.clone(), &APP_DRAIN_DISPATCH_INPUTS);
+        self.warned_missing_inputs.borrow_mut().clear();
 
         for reaction in &data_registry.reactions {
             let ReactionDescriptor::Primitive(primitive) = &reaction.descriptor else {
@@ -101,6 +106,7 @@ impl SystemReactionIrBindings {
                 slot: args.slot,
                 value: args.value,
                 program: None,
+                required_dispatch_inputs: Vec::new(),
             };
 
             let root = match ir_node_from_json(binding.value.clone(), "setState.value") {
@@ -119,6 +125,7 @@ impl SystemReactionIrBindings {
                 output: Some(binding.slot.clone()),
                 root,
             };
+            binding.required_dispatch_inputs = baked.root.dispatch_input_names();
             match bind(&baked, &scope) {
                 Ok(program) => {
                     binding.program = Some(program);
@@ -145,19 +152,51 @@ impl SystemReactionIrBindings {
         &self,
         slot: &str,
         value: &serde_json::Value,
+        dispatch_source: &str,
+        dispatch_values: &[(String, IrValue)],
         script_ctx: &ScriptCtx,
     ) -> SystemReactionIrDispatch {
-        let Some(binding) = self
+        let Some((binding_index, binding)) = self
             .bindings
             .iter()
-            .find(|binding| binding.matches(slot, value))
+            .enumerate()
+            .find(|(_, binding)| binding.matches(slot, value))
         else {
             return SystemReactionIrDispatch::Unknown;
         };
         let Some(program) = &binding.program else {
             return SystemReactionIrDispatch::Rejected;
         };
-        let mut scope = StoreScope::script(script_ctx.clone());
+        let mut carried_names: Vec<String> = dispatch_values
+            .iter()
+            .map(|(name, _)| name.clone())
+            .collect();
+        carried_names.sort_unstable();
+        carried_names.dedup();
+        if !binding
+            .required_dispatch_inputs
+            .iter()
+            .all(|required| carried_names.contains(required))
+        {
+            let warning_key = (binding_index, dispatch_source.to_string());
+            if self.warned_missing_inputs.borrow_mut().insert(warning_key) {
+                log::warn!(
+                    "[Scripting] setState runtime value for `{slot}` requires dispatch inputs {:?}, but source `{dispatch_source}` carries {:?}; skipping",
+                    binding.required_dispatch_inputs,
+                    carried_names,
+                );
+            }
+            return SystemReactionIrDispatch::Rejected;
+        }
+        let mut scope = DispatchScope::script(script_ctx.clone(), &APP_DRAIN_DISPATCH_INPUTS);
+        for (name, value) in dispatch_values {
+            if let Err(error) = scope.seed(name, *value) {
+                log::warn!(
+                    "[Scripting] setState runtime value for `{slot}` received invalid dispatch input `{name}` ({error:?}); skipping"
+                );
+                return SystemReactionIrDispatch::Rejected;
+            }
+        }
         eval_and_write(program, &mut scope);
         SystemReactionIrDispatch::Evaluated
     }
@@ -359,9 +398,12 @@ pub(crate) fn register_system_reaction_primitives(registry: &mut SystemReactionR
             serde_json::from_value(args.clone()).map_err(|e| ReactionError::InvalidArgument {
                 reason: format!("setState: failed to deserialize args: {e}"),
             })?;
+        let fire_context = queue.fire_context();
         queue.push(SystemReactionCommand::SetState {
             slot: parsed.slot,
             value: parsed.value,
+            dispatch_source: fire_context.source,
+            dispatch_values: fire_context.values,
         });
         Ok(())
     });
@@ -535,6 +577,7 @@ mod tests {
                 SlotOwnership::Mod
             },
             network: Default::default(),
+            accumulate: None,
         })
     }
 
@@ -607,7 +650,7 @@ mod tests {
         bindings.rebuild(&data, &ctx);
 
         assert_eq!(
-            bindings.dispatch("puzzle.target", &value, &ctx),
+            bindings.dispatch("puzzle.target", &value, "named:derive", &[], &ctx),
             SystemReactionIrDispatch::Evaluated
         );
         assert_number_approx_eq(
@@ -633,6 +676,7 @@ mod tests {
                     readonly: false,
                     ownership: SlotOwnership::Mod,
                     network: Default::default(),
+                    accumulate: None,
                 }),
             )
             .expect("fixture label should be vacant");
@@ -645,15 +689,15 @@ mod tests {
         bindings.rebuild(&data, &ctx);
 
         assert_eq!(
-            bindings.dispatch("puzzle.readonly", &value, &ctx),
+            bindings.dispatch("puzzle.readonly", &value, "named:readonly", &[], &ctx),
             SystemReactionIrDispatch::Rejected
         );
         assert_eq!(
-            bindings.dispatch("puzzle.label", &value, &ctx),
+            bindings.dispatch("puzzle.label", &value, "named:string", &[], &ctx),
             SystemReactionIrDispatch::Rejected
         );
         assert_eq!(
-            bindings.dispatch("puzzle.unknown", &value, &ctx),
+            bindings.dispatch("puzzle.unknown", &value, "named:unknown", &[], &ctx),
             SystemReactionIrDispatch::Unknown,
             "only commands represented at install are known rejections"
         );
@@ -669,6 +713,114 @@ mod tests {
                 .and_then(|record| record.value.as_ref()),
             Some(SlotValue::String(value)) if value == "unchanged"
         ));
+    }
+
+    #[test]
+    fn dispatch_inputs_require_source_membership_and_seed_without_stale_reads() {
+        let ctx = ScriptCtx::new();
+        insert_number(&ctx, "puzzle.target", 7.0, 10.0, false);
+        let value = serde_json::json!({
+            "op": "select",
+            "cond": { "op": "input", "name": "@rising" },
+            "a": { "op": "const", "value": 1.0 },
+            "b": { "op": "const", "value": 0.0 }
+        });
+        let data = active_reactions(vec![set_state_reaction(
+            "direction",
+            "puzzle.target",
+            value.clone(),
+        )]);
+        let mut bindings = SystemReactionIrBindings::default();
+        bindings.rebuild(&data, &ctx);
+
+        assert_eq!(
+            bindings.dispatch("puzzle.target", &value, "named:empty", &[], &ctx),
+            SystemReactionIrDispatch::Rejected,
+            "a source publishing no dispatch values must skip before eval"
+        );
+        assert_number_approx_eq(
+            number_value(&ctx, "puzzle.target"),
+            7.0,
+            "skip leaves state untouched",
+        );
+
+        assert_eq!(
+            bindings.dispatch(
+                "puzzle.target",
+                &value,
+                "crossing:0",
+                &[("@rising".to_string(), IrValue::Bool(true))],
+                &ctx,
+            ),
+            SystemReactionIrDispatch::Evaluated
+        );
+        assert_number_approx_eq(
+            number_value(&ctx, "puzzle.target"),
+            1.0,
+            "rising seed is observed",
+        );
+
+        assert_eq!(
+            bindings.dispatch(
+                "puzzle.target",
+                &value,
+                "crossing:0",
+                &[("@rising".to_string(), IrValue::Bool(false))],
+                &ctx,
+            ),
+            SystemReactionIrDispatch::Evaluated
+        );
+        assert_number_approx_eq(
+            number_value(&ctx, "puzzle.target"),
+            0.0,
+            "falling seed replaces prior value",
+        );
+    }
+
+    #[test]
+    fn missing_dispatch_input_warnings_key_by_program_and_canonical_source() {
+        let ctx = ScriptCtx::new();
+        insert_number(&ctx, "puzzle.target", 7.0, 10.0, false);
+        let value = serde_json::json!({
+            "op": "select",
+            "cond": { "op": "input", "name": "@rising" },
+            "a": { "op": "const", "value": 1.0 },
+            "b": { "op": "const", "value": 0.0 }
+        });
+        let data = active_reactions(vec![set_state_reaction(
+            "direction",
+            "puzzle.target",
+            value.clone(),
+        )]);
+        let mut bindings = SystemReactionIrBindings::default();
+        bindings.rebuild(&data, &ctx);
+
+        for source in ["named:levelLoad", "named:doorOpened", "crossing:0"] {
+            assert_eq!(
+                bindings.dispatch("puzzle.target", &value, source, &[], &ctx),
+                SystemReactionIrDispatch::Rejected
+            );
+        }
+        assert_eq!(bindings.warned_missing_inputs.borrow().len(), 3);
+
+        // Published-input ordering is membership data, not source identity.
+        // Repeating one source with order variants must retain one warning key.
+        for values in [
+            vec![
+                ("@unused_b".to_string(), IrValue::Bool(false)),
+                ("@unused_a".to_string(), IrValue::Bool(false)),
+            ],
+            vec![
+                ("@unused_a".to_string(), IrValue::Bool(false)),
+                ("@unused_b".to_string(), IrValue::Bool(false)),
+            ],
+        ] {
+            assert_eq!(
+                bindings.dispatch("puzzle.target", &value, "named:doorOpened", &values, &ctx),
+                SystemReactionIrDispatch::Rejected
+            );
+        }
+        assert_eq!(bindings.warned_missing_inputs.borrow().len(), 3);
     }
 
     #[test]
@@ -947,8 +1099,36 @@ mod tests {
             vec![SystemReactionCommand::SetState {
                 slot: "audio.master".to_string(),
                 value: serde_json::json!(0.5),
+                dispatch_source: String::new(),
+                dispatch_values: Vec::new(),
             }]
         );
+    }
+
+    #[test]
+    fn set_state_stamps_active_fire_context_without_widening_handler() {
+        let mut registry = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut registry);
+        let queue = SystemCommandQueue::new();
+        queue.replace_fire_context(postretro_entities::SystemCommandFireContext {
+            source: "crossing:7".to_string(),
+            values: vec![("@rising".to_string(), IrValue::Bool(true))],
+        });
+
+        registry
+            .dispatch(
+                "setState",
+                &serde_json::json!({ "slot": "puzzle.direction", "value": { "op": "input", "name": "@rising" } }),
+                &queue,
+            )
+            .unwrap();
+
+        assert!(matches!(
+            queue.take().as_slice(),
+            [SystemReactionCommand::SetState { dispatch_source, dispatch_values, .. }]
+                if dispatch_source == "crossing:7"
+                    && dispatch_values == &vec![("@rising".to_string(), IrValue::Bool(true))]
+        ));
     }
 
     #[test]
@@ -967,7 +1147,7 @@ mod tests {
             )
             .expect("literal setState must dispatch");
         let command = queue.take().pop().expect("literal command must queue");
-        let SystemReactionCommand::SetState { slot, value } = command else {
+        let SystemReactionCommand::SetState { slot, value, .. } = command else {
             panic!("literal setState must retain its system command shape");
         };
         assert!(!is_ir_node(&value), "a literal must not enter the IR path");
@@ -999,6 +1179,8 @@ mod tests {
             vec![SystemReactionCommand::SetState {
                 slot: "ui.label".to_string(),
                 value: serde_json::json!("hi"),
+                dispatch_source: String::new(),
+                dispatch_values: Vec::new(),
             }]
         );
     }

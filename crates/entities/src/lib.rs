@@ -25,7 +25,9 @@ pub use data_descriptors::*;
 pub use data_registry::{DataRegistry, ScopedCrossing, ScopedReaction};
 pub use engine_state_catalog::*;
 pub use provenance::*;
-pub use reactions::system_commands::{SystemCommandQueue, SystemReactionCommand};
+pub use reactions::system_commands::{
+    SystemCommandFireContext, SystemCommandQueue, SystemReactionCommand,
+};
 pub use registry::{
     Component, ComponentKind, ComponentValue, EntityId, EntityRegistry, FogVolumeComponent,
     RegistryError, Transform,

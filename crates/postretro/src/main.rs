@@ -1992,6 +1992,10 @@ impl ApplicationHandler for App {
                                 use_edges: &trigger_use_edges,
                             }),
                         );
+                        scripting_systems::slot_accumulators::evaluate_slot_accumulators(
+                            &mut session.scripting.slot_accumulator_bindings,
+                            tick_dt,
+                        );
                         self.host_record_authorized_shots(&tick_events.authorized_shots);
                         if self.host_flush_pending_hit_declarations() {
                             pending_death_events.extend(self.host_run_remote_hit_death_sweep());
@@ -2064,6 +2068,7 @@ impl ApplicationHandler for App {
                             &session.scripting.reaction_registry,
                             &session.scripting.system_registry,
                             &script_ctx,
+                            None,
                         );
                     }
                     for handle in &pending_trigger_residuals {
@@ -3813,6 +3818,8 @@ impl App {
                 .push(SystemReactionCommand::SetState {
                     slot,
                     value: serde_json::json!(next),
+                    dispatch_source: "ui.slider".to_string(),
+                    dispatch_values: Vec::new(),
                 });
         }
     }
@@ -3847,6 +3854,7 @@ impl App {
                             &session.scripting.reaction_registry,
                             &session.scripting.system_registry,
                             &session.scripting.script_ctx,
+                            None,
                         );
                     }
                 }
@@ -3968,6 +3976,7 @@ impl App {
                     &session.scripting.reaction_registry,
                     &session.scripting.system_registry,
                     &session.scripting.script_ctx,
+                    None,
                 );
             }
         }
@@ -4131,7 +4140,12 @@ impl App {
                         session.modal_stack.pop();
                     }
                 }
-                SystemReactionCommand::SetState { slot, value } => {
+                SystemReactionCommand::SetState {
+                    slot,
+                    value,
+                    dispatch_source,
+                    dispatch_values,
+                } => {
                     if crate::scripting::reactions::system_commands::is_ir_node(&value) {
                         let outcome = self.session.as_ref().map_or(
                             SystemReactionIrDispatch::Unknown,
@@ -4139,6 +4153,8 @@ impl App {
                                 session.scripting.system_reaction_ir_bindings.dispatch(
                                     &slot,
                                     &value,
+                                    &dispatch_source,
+                                    &dispatch_values,
                                     &script_ctx,
                                 )
                             },

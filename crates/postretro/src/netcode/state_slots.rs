@@ -856,6 +856,7 @@ mod tests {
                 readonly: false,
                 ownership: SlotOwnership::Mod,
                 network: scope,
+                accumulate: None,
             }),
         )
     }
@@ -1010,6 +1011,7 @@ mod tests {
                         readonly: false,
                         ownership: SlotOwnership::Mod,
                         network: ReplicationScope::SharedGlobal,
+                        accumulate: None,
                     }),
                 )],
             )

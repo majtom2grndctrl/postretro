@@ -243,6 +243,7 @@ mod tests {
             &reaction_reg,
             &system_reg,
             &script_ctx,
+            None,
         );
 
         let after = script_ctx

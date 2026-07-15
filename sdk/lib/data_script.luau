@@ -170,6 +170,10 @@ export type NamedReactionDescriptor = {
   sequence: {SequenceStep}?,
 }
 
+export type CrossingParams = { rising: RuntimeRead }
+export type TickParams = { dt: RuntimeRead }
+export type Reaction<S> = NamedReactionDescriptor
+
 --- Bundle returned from `setupLevel`. The engine deserializes
 --- this shape in one pass at level load and drops the data-script VM
 --- context after the return.
@@ -193,7 +197,11 @@ export type LevelManifest = {
 --- `"enum"` requires non-empty `values` and a default in that list; `"array"` is
 --- a finite-number array. `persist` saves on clean exit; `readonly` blocks
 --- script writes.
-export type StoreSlotSchema = { type: string, readonly: boolean?, [string]: any }
+export type StoreSlotSchema = (
+  { type: "number", readonly: boolean?, accumulate: nil? }
+  | { type: "number", readonly: false?, accumulate: (TickParams) -> RuntimeValue }
+  | { type: "boolean" | "string" | "enum" | "array", readonly: boolean?, accumulate: nil? }
+) & { [string]: any }
 export type StoreDeclaration = {
   namespace: string,
   schema: { [string]: StoreSlotSchema },
@@ -207,6 +215,13 @@ export type StoreDefinition = {
 }
 
 local DataScriptSdk = {}
+
+-- One SDK-internal merged params table is shared by every author-time tracer.
+-- Its value shape stays open to sibling opaque target tokens.
+local DISPATCH_PARAMS = table.freeze({
+  rising = table.freeze({ op = "input", name = "@rising" }),
+  dt = table.freeze({ op = "input", name = "@dt" }),
+})
 
 -- Order-stable serialization of a reaction body: table keys are emitted sorted
 -- so two structurally identical bodies always serialize identically. Used only
@@ -272,16 +287,16 @@ end
 --- agree. The returned handle can be passed to button `onPress` or crossing
 --- `fire` entries.
 function DataScriptSdk.defineReaction(
-  nameOrBody: string | (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor),
-  descriptor: (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)?
+  nameOrBody: string | (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor) | ((CrossingParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)),
+  descriptor: (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ((CrossingParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)))?
 ): NamedReactionDescriptor
   local name: string
   local body: any
   if type(nameOrBody) == "string" then
     name = nameOrBody
-    body = descriptor
+    body = if type(descriptor) == "function" then (descriptor :: any)(DISPATCH_PARAMS) else descriptor
   else
-    body = nameOrBody
+    body = if type(nameOrBody) == "function" then (nameOrBody :: any)(DISPATCH_PARAMS) else nameOrBody
     name = autoReactionId(body)
   end
   local out: NamedReactionDescriptor = { name = name }
@@ -311,7 +326,7 @@ end
 
 --- Stamp a shared map-tag scope onto each reaction in a plain list. `tags` are
 --- matched against `ModMapEntry.tags`; omit scoping for every level.
-function DataScriptSdk.scopeReactions(tags: {string}, list: {NamedReactionDescriptor}): {NamedReactionDescriptor}
+function DataScriptSdk.scopeReactions<S>(tags: {string}, list: {Reaction<S>}): {Reaction<S>}
   local out = {}
   for i, reaction in ipairs(list) do
     local scoped: NamedReactionDescriptor = { name = reaction.name, levels = tags }
@@ -413,7 +428,20 @@ end
 --- The engine consumes `declaration` only when it is returned from the mod
 --- manifest's `stores`; unreturned declarations disappear with the setup VM.
 function DataScriptSdk.defineStore(namespace: string, schema: { [string]: StoreSlotSchema }): StoreDefinition
-  local frozenSchema = cloneAndFreeze(schema)
+  local tracedSchema = {}
+  for slotName, input in pairs(schema) do
+    if type(input) == "table" and type((input :: any).accumulate) == "function" then
+      local tracedInput = {}
+      for key, value in pairs(input :: any) do
+        tracedInput[key] = value
+      end
+      tracedInput.accumulate = (input :: any).accumulate(DISPATCH_PARAMS)
+      tracedSchema[slotName] = tracedInput
+    else
+      tracedSchema[slotName] = input
+    end
+  end
+  local frozenSchema = cloneAndFreeze(tracedSchema)
   local state = {}
   for slotName in pairs(frozenSchema) do
     state[slotName] = table.freeze({ slot = namespace .. "." .. slotName })

@@ -343,6 +343,7 @@ mod tests {
                 slot: Some(slot.to_string()),
                 condition: CrossingCondition::Below { threshold: 0.5 },
                 max: 1.0,
+                edge: None,
                 fire: vec!["lowHealth".to_string()],
             },
             levels: levels.iter().map(|level| level.to_string()).collect(),

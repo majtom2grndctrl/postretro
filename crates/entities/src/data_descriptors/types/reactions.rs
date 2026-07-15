@@ -83,8 +83,8 @@ pub enum CrossingCondition {
 /// through `setupLevel`'s manifest (scripting.md §12 (Non-Goals): no
 /// side-effect FFI — cross-FFI values flow through setup-function returns).
 /// After each frame's slot writes, the detector evaluates the condition and
-/// dispatches every event in `fire` on a threshold edge or predicate
-/// false-to-true edge through the named-reaction vocabulary.
+/// dispatches every event in `fire` on the authored threshold/predicate edge;
+/// optional `edge: "both"` also dispatches the mirrored transition.
 ///
 /// `max` is the threshold registration's denominator. It defaults to `1.0`
 /// (raw-value comparison) when the registration omits it; predicate watchers
@@ -96,5 +96,8 @@ pub struct CrossingDescriptor {
     pub slot: Option<String>,
     pub condition: CrossingCondition,
     pub max: f32,
+    /// Normalized optional edge mode. `Some("both")` fires both transitions;
+    /// absence preserves the shipped authored-edge lifecycle.
+    pub edge: Option<String>,
     pub fire: Vec<String>,
 }

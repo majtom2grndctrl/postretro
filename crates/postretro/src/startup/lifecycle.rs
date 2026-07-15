@@ -83,6 +83,7 @@ impl App {
         // session-owned state clears are guarded — a no-op with no session yet.
         if let Some(session) = self.session.as_mut() {
             session.scripting.command_diagnostics.clear();
+            session.scripting.slot_accumulator_bindings.clear();
             session.fog_volume_bridge.clear();
             session.trigger_volume_bridge.clear();
             session.trigger_system.clear();
@@ -107,7 +108,7 @@ impl App {
     /// | per-level GPU resources (textures, geometry) | `script_ctx`, `ScriptRuntime` |
     /// | light bridge, fog bridge, trigger-volume bridge, trigger system, trigger bindings, collision world | slot table (no clear method — engine-global) |
     /// | level sounds, sprite collections, `emitter_bridge`, `mesh_render`, `mesh_clip_tables`, `hit_zone_store` | entity-type registry (`data_registry.entities`), mod map catalog (`data_registry.maps`) |
-    /// | `data_registry` reactions + crossings, presentation cells | persisted-state save path |
+    /// | `data_registry` reactions + crossings, accumulator bindings, presentation cells | persisted-state save path |
     /// | level-scope UI trees (`modal_stack` `ScopeTier::Level`) | |
     /// | progress tracker, active wieldable, client weapon prediction state, camera pose | |
     pub(crate) fn unload_level(&mut self) {
@@ -309,6 +310,10 @@ impl App {
             &mut session.crossing_detector,
             &session.scripting.script_ctx,
         );
+        session
+            .scripting
+            .slot_accumulator_bindings
+            .rebuild(&session.scripting.script_ctx);
     }
 
     /// Rebind inline `setState` IR after the active reaction set changes. The
@@ -744,6 +749,7 @@ impl App {
             modal_stack: &mut session.modal_stack,
             progress_tracker: &mut session.progress_tracker,
             crossing_detector: &mut session.crossing_detector,
+            slot_accumulator_bindings: &mut session.scripting.slot_accumulator_bindings,
             mesh_clip_tables: &mut session.mesh_clip_tables,
             hit_zone_store: &mut session.hit_zone_store,
             suppress_ai_enemies: suppress,
@@ -1006,6 +1012,8 @@ pub(crate) struct WorldInstallHandles<'a> {
         &'a mut postretro_scripting_core::reaction_dispatch::ProgressTracker,
     pub(crate) crossing_detector:
         &'a mut postretro_scripting_core::state_crossings::CrossingDetector,
+    pub(crate) slot_accumulator_bindings:
+        &'a mut crate::scripting_systems::slot_accumulators::SlotAccumulatorBindings,
     pub(crate) mesh_clip_tables: &'a mut crate::scripting_systems::mesh_anim::MeshClipTables,
     pub(crate) hit_zone_store: &'a mut crate::scripting_systems::hit_zones::HitZoneStore,
     /// Connected-client suppression: skip local AI-enemy materialization / boot
@@ -1051,6 +1059,7 @@ pub(crate) fn install_world_cpu(
         modal_stack,
         progress_tracker,
         crossing_detector,
+        slot_accumulator_bindings,
         mesh_clip_tables,
         hit_zone_store,
         suppress_ai_enemies,
@@ -1146,6 +1155,7 @@ pub(crate) fn install_world_cpu(
         // crossing instead of silently arming at the already-replicated value.
         // Network baseline application begins only after world install returns.
         rebuild_reaction_subscribers(progress_tracker, crossing_detector, script_ctx);
+        slot_accumulator_bindings.rebuild(script_ctx);
     }
     // Bind after subscriber rebuild: `populate_level` has committed the final
     // composed reaction set, so tick dispatch never re-matches a name later.
@@ -1285,6 +1295,7 @@ pub(crate) fn install_world_cpu(
         reaction_registry,
         system_registry,
         script_ctx,
+        None,
     );
     timings.record("level_load_event");
 
@@ -1382,6 +1393,7 @@ mod tests {
                     system_registry:
                         scripting::reactions::system_commands::SystemReactionRegistry::new(),
                     system_reaction_ir_bindings: Default::default(),
+                    slot_accumulator_bindings: Default::default(),
                     player_hud_state: scripting_systems::ui_proxy::PlayerHudStatePublisher::new(
                         script_ctx.clone(),
                     ),
@@ -1574,6 +1586,7 @@ mod tests {
                 slot: Some(slot.to_string()),
                 condition: CrossingCondition::Below { threshold: 0.5 },
                 max: 100.0,
+                edge: None,
                 fire: vec![fire.to_string()],
             },
             levels: Vec::new(),
@@ -1589,6 +1602,7 @@ mod tests {
             readonly: false,
             ownership: SlotOwnership::Mod,
             network: postretro_entities::ReplicationScope::None,
+            accumulate: None,
         });
         record.value = Some(SlotValue::Number(value));
         record
@@ -1632,6 +1646,8 @@ mod tests {
             ctx.system_commands.push(SystemReactionCommand::SetState {
                 slot: "puzzle.count".to_string(),
                 value: increment.clone(),
+                dispatch_source: "test.levelLoad".to_string(),
+                dispatch_values: Vec::new(),
             });
         }
         app.dispatch_system_commands();
@@ -1816,6 +1832,12 @@ mod tests {
             Vec::new(),
             &[],
         );
+        app.session
+            .as_mut()
+            .expect("test app session installed")
+            .scripting
+            .slot_accumulator_bindings
+            .rebuild(&ctx);
 
         let lights = (0..fixture.light_count)
             .map(|i| map_light(fixture.light_tag, [i as f64, 2.0, 3.0]))
@@ -1856,6 +1878,9 @@ mod tests {
                         readonly: false,
                         ownership: SlotOwnership::Mod,
                         network: postretro_entities::ReplicationScope::None,
+                        accumulate: Some(postretro_foundation::IrNode::Input {
+                            name: "@dt".to_string(),
+                        }),
                     }),
                 )],
             )
@@ -1896,6 +1921,15 @@ mod tests {
                 .snapshot()
                 .is_empty()
         );
+        assert!(
+            !app.session
+                .as_ref()
+                .expect("test app session installed")
+                .scripting
+                .slot_accumulator_bindings
+                .is_empty(),
+            "level install must bind the declared accumulator"
+        );
 
         let slots_before = slot_snapshot(&app);
         script_ctx(&app)
@@ -1924,6 +1958,15 @@ mod tests {
         assert_eq!(data_after, data_before);
         assert!(app.boot_state == BootState::Frontend);
         assert!(app.level.is_none());
+        assert!(
+            app.session
+                .as_ref()
+                .expect("test app session installed")
+                .scripting
+                .slot_accumulator_bindings
+                .is_empty(),
+            "level unload must drop every bound accumulator program"
+        );
         assert_eq!(app.script_time, 0.0);
         assert_eq!(app.anim_time, 0.0);
         assert!(
@@ -2987,6 +3030,7 @@ mod tests {
                 modal_stack: &mut session.modal_stack,
                 progress_tracker: &mut session.progress_tracker,
                 crossing_detector: &mut session.crossing_detector,
+                slot_accumulator_bindings: &mut session.scripting.slot_accumulator_bindings,
                 mesh_clip_tables: &mut session.mesh_clip_tables,
                 hit_zone_store: &mut session.hit_zone_store,
                 suppress_ai_enemies: false,

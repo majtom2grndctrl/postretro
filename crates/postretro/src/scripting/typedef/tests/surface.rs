@@ -18,13 +18,17 @@ fn reaction_handle_authoring_types_widen_in_both_outputs() {
     // The name-optional `(body)` overload is present alongside `(name, body)`.
     assert_eq!(
         ts.matches("export function defineReaction(").count(),
-        2,
-        "ts must declare both defineReaction overloads"
+        4,
+        "ts must declare data and tracer defineReaction overloads"
     );
     assert!(
         ts.contains("levels?: string[]")
-            && ts.contains("export function scopeReactions(")
-            && ts.contains("list: NamedReactionDescriptor[]"),
+            && ts.contains("export function scopeReactions<S>(")
+            && ts.contains("list: Reaction<S>[]")
+            && ts.contains("export type Reaction<S = {}>")
+            && ts.contains("readonly [reactionScopeBrand]?: (scope: S) => void")
+            && ts.contains("export type CrossingParams = Readonly<{ rising: RuntimeRead }>")
+            && ts.contains("tracer: (params: CrossingParams)"),
         "ts must expose reaction levels and scopeReactions:\n{ts}"
     );
     assert!(
@@ -35,7 +39,7 @@ fn reaction_handle_authoring_types_widen_in_both_outputs() {
     );
     assert!(
         luau.contains("levels: {string}?")
-            && luau.contains("declare function scopeReactions(tags: {string}, list: {NamedReactionDescriptor}): {NamedReactionDescriptor}")
+            && luau.contains("declare function scopeReactions<S>(tags: {string}, list: {Reaction<S>}): {Reaction<S>}")
             && luau.contains("scopeReactions: typeof(scopeReactions),"),
         "luau must expose reaction levels and scopeReactions:\n{luau}"
     );
@@ -52,7 +56,7 @@ fn reaction_handle_authoring_types_widen_in_both_outputs() {
         "luau ButtonProps.onPress must accept a handle or string"
     );
     assert!(
-        luau.contains("fire: {NamedReactionDescriptor | string}"),
+        luau.contains("fire: {Reaction<any> | string}"),
         "luau onStateCrossing.fire must accept handles or strings"
     );
 }
@@ -316,7 +320,7 @@ fn ir_valued_state_reactions_are_emitted_in_both_sdk_surfaces() {
 
     assert!(
         ts.contains("export function updateState<T>(ref: WritableStateRef<T>, value: T | RuntimeValue): PrimitiveReactionDescriptor;")
-            && ts.contains("export function onStateCrossing(predicate: RuntimeValue, fire: (NamedReactionDescriptor | string)[]): CrossingDescriptor;")
+            && ts.contains("export function onStateCrossing(predicate: RuntimeValue, fire: (Reaction<{}> | Reaction<CrossingParams> | string)[], options?: CrossingOptions): CrossingDescriptor;")
             && ts.contains("export type PredicateCrossingDescriptor = {")
             && ts.contains("predicate: RuntimeValue;")
             && ts.contains("slot?: never;"),
@@ -326,14 +330,14 @@ fn ir_valued_state_reactions_are_emitted_in_both_sdk_surfaces() {
     // Verify its declaration imports that root-module type so the generated
     // module is consumable, not merely textually present in the combined file.
     assert!(
-        ts_ui.contains("    RuntimeValue,\n  } from \"postretro\";")
+        ts_ui.contains("    RuntimeValue,")
             && ts_ui.contains("onStateCrossing(predicate: RuntimeValue")
             && ts_ui.contains("value: T | RuntimeValue"),
         "TypeScript postretro/ui declaration must import RuntimeValue before using it:\n{ts_ui}"
     );
     assert!(
         luau.contains("updateState: <T>(ref: WritableStateRef<T>, value: T | RuntimeValue) -> PrimitiveReactionDescriptor,")
-            && luau.contains("& ((predicate: RuntimeValue, fire: {NamedReactionDescriptor | string}) -> CrossingDescriptor)")
+            && luau.contains("& ((predicate: RuntimeValue, fire: {Reaction<any> | string}, options: CrossingOptions?) -> CrossingDescriptor)")
             && luau.contains("export type PredicateCrossingDescriptor = {")
             && luau.contains("predicate: RuntimeValue,")
             && luau.contains("slot: nil?,")

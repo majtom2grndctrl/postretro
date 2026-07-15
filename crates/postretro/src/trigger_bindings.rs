@@ -913,6 +913,7 @@ mod tests {
                         readonly: false,
                         ownership: SlotOwnership::Mod,
                         network: Default::default(),
+                        accumulate: None,
                     }),
                 )],
             )
@@ -940,6 +941,7 @@ mod tests {
                     readonly: false,
                     ownership: SlotOwnership::Mod,
                     network: Default::default(),
+                    accumulate: None,
                 }),
             )
             .unwrap();
@@ -978,6 +980,100 @@ mod tests {
     }
 
     #[test]
+    fn trigger_bind_rejects_crossing_dispatch_input_without_blocking_other_work() {
+        let mut registry = EntityRegistry::new();
+        let trigger = spawn_trigger(&mut registry, "mixed");
+        let ctx = ScriptCtx::new();
+        ctx.slot_table
+            .borrow_mut()
+            .insert_namespace(
+                "trigger",
+                vec![
+                    (
+                        "direction".to_string(),
+                        SlotRecord::new(SlotSchema {
+                            slot_type: SlotType::Number,
+                            default: Some(SlotValue::Number(7.0)),
+                            range: None,
+                            persist: false,
+                            readonly: false,
+                            ownership: SlotOwnership::Mod,
+                            network: Default::default(),
+                            accumulate: None,
+                        }),
+                    ),
+                    (
+                        "unrelated".to_string(),
+                        SlotRecord::new(SlotSchema {
+                            slot_type: SlotType::Number,
+                            default: Some(SlotValue::Number(0.0)),
+                            range: None,
+                            persist: false,
+                            readonly: false,
+                            ownership: SlotOwnership::Mod,
+                            network: Default::default(),
+                            accumulate: None,
+                        }),
+                    ),
+                ],
+            )
+            .unwrap();
+        let mut data = DataRegistry::new();
+        data.populate_level(
+            vec![
+                primitive(
+                    "mixed",
+                    "setState",
+                    None,
+                    serde_json::json!({
+                        "slot": "trigger.direction",
+                        "value": {
+                            "op": "select",
+                            "cond": { "op": "input", "name": "@rising" },
+                            "a": { "op": "const", "value": 1 },
+                            "b": { "op": "const", "value": 0 }
+                        }
+                    }),
+                    None,
+                ),
+                primitive(
+                    "mixed",
+                    "setState",
+                    None,
+                    serde_json::json!({ "slot": "trigger.unrelated", "value": 1 }),
+                    None,
+                ),
+            ],
+            Vec::new(),
+            &[],
+        );
+
+        let table = TriggerBindingTable::build_with_script_ctx(&registry, &data, &ctx);
+        let execution =
+            table.execute_with_script_ctx(trigger, TriggerEventEdge::Enter, &mut registry, &ctx);
+
+        assert_eq!(execution.commands, vec![BoundTriggerCommandKind::StoreSlot]);
+        assert_eq!(
+            ctx.slot_table
+                .borrow()
+                .get("trigger.direction")
+                .unwrap()
+                .value,
+            Some(SlotValue::Number(7.0)),
+            "the trigger site has no @rising vocabulary, so its scoped write is rejected"
+        );
+        assert_eq!(
+            ctx.slot_table
+                .borrow()
+                .get("trigger.unrelated")
+                .unwrap()
+                .value,
+            Some(SlotValue::Number(1.0)),
+            "one rejected reaction must not suppress unrelated trigger work"
+        );
+    }
+
+    #[test]
     #[should_panic(expected = "IR-valued trigger setState must execute with a ScriptCtx")]
     fn execute_without_script_ctx_rejects_ir_set_state() {
         let mut registry = EntityRegistry::new();
@@ -995,6 +1091,7 @@ mod tests {
                     readonly: false,
                     ownership: SlotOwnership::Mod,
                     network: Default::default(),
+                    accumulate: None,
                 }),
             )
             .unwrap();

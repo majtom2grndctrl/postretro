@@ -72,6 +72,7 @@ fn replicated_number(scope: ReplicationScope) -> SlotRecord {
         readonly: false,
         ownership: SlotOwnership::Mod,
         network: scope,
+        accumulate: None,
     })
 }
 

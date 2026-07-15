@@ -309,6 +309,10 @@ impl App {
             &mut session.crossing_detector,
             &session.scripting.script_ctx,
         );
+        session
+            .scripting
+            .slot_accumulator_bindings
+            .rebuild(&session.scripting.script_ctx);
     }
 
     /// Rebind inline `setState` IR after the active reaction set changes. The
@@ -744,6 +748,7 @@ impl App {
             modal_stack: &mut session.modal_stack,
             progress_tracker: &mut session.progress_tracker,
             crossing_detector: &mut session.crossing_detector,
+            slot_accumulator_bindings: &mut session.scripting.slot_accumulator_bindings,
             mesh_clip_tables: &mut session.mesh_clip_tables,
             hit_zone_store: &mut session.hit_zone_store,
             suppress_ai_enemies: suppress,
@@ -1006,6 +1011,8 @@ pub(crate) struct WorldInstallHandles<'a> {
         &'a mut postretro_scripting_core::reaction_dispatch::ProgressTracker,
     pub(crate) crossing_detector:
         &'a mut postretro_scripting_core::state_crossings::CrossingDetector,
+    pub(crate) slot_accumulator_bindings:
+        &'a mut crate::scripting_systems::slot_accumulators::SlotAccumulatorBindings,
     pub(crate) mesh_clip_tables: &'a mut crate::scripting_systems::mesh_anim::MeshClipTables,
     pub(crate) hit_zone_store: &'a mut crate::scripting_systems::hit_zones::HitZoneStore,
     /// Connected-client suppression: skip local AI-enemy materialization / boot
@@ -1051,6 +1058,7 @@ pub(crate) fn install_world_cpu(
         modal_stack,
         progress_tracker,
         crossing_detector,
+        slot_accumulator_bindings,
         mesh_clip_tables,
         hit_zone_store,
         suppress_ai_enemies,
@@ -1146,6 +1154,7 @@ pub(crate) fn install_world_cpu(
         // crossing instead of silently arming at the already-replicated value.
         // Network baseline application begins only after world install returns.
         rebuild_reaction_subscribers(progress_tracker, crossing_detector, script_ctx);
+        slot_accumulator_bindings.rebuild(script_ctx);
     }
     // Bind after subscriber rebuild: `populate_level` has committed the final
     // composed reaction set, so tick dispatch never re-matches a name later.
@@ -1382,6 +1391,7 @@ mod tests {
                     system_registry:
                         scripting::reactions::system_commands::SystemReactionRegistry::new(),
                     system_reaction_ir_bindings: Default::default(),
+                    slot_accumulator_bindings: Default::default(),
                     player_hud_state: scripting_systems::ui_proxy::PlayerHudStatePublisher::new(
                         script_ctx.clone(),
                     ),
@@ -1589,6 +1599,7 @@ mod tests {
             readonly: false,
             ownership: SlotOwnership::Mod,
             network: postretro_entities::ReplicationScope::None,
+            accumulate: None,
         });
         record.value = Some(SlotValue::Number(value));
         record
@@ -1856,6 +1867,7 @@ mod tests {
                         readonly: false,
                         ownership: SlotOwnership::Mod,
                         network: postretro_entities::ReplicationScope::None,
+                        accumulate: None,
                     }),
                 )],
             )
@@ -2987,6 +2999,7 @@ mod tests {
                 modal_stack: &mut session.modal_stack,
                 progress_tracker: &mut session.progress_tracker,
                 crossing_detector: &mut session.crossing_detector,
+                slot_accumulator_bindings: &mut session.scripting.slot_accumulator_bindings,
                 mesh_clip_tables: &mut session.mesh_clip_tables,
                 hit_zone_store: &mut session.hit_zone_store,
                 suppress_ai_enemies: false,

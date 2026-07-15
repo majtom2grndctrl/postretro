@@ -4,6 +4,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::engine_state_catalog::engine_state_catalog;
+use postretro_foundation::IrNode;
 
 /// Runtime value stored in a state slot.
 #[derive(Clone, Debug, PartialEq)]
@@ -70,6 +71,9 @@ pub struct SlotSchema {
     /// Replication scope (M15 Phase 3.5). Defaults to `None` (local-only). Only
     /// `SharedGlobal`/`OwnerPrivatePlayer` slots enter the replicated-slot schema.
     pub network: ReplicationScope,
+    /// Optional script-authored per-tick delta expression. The binary binds it
+    /// once at level install; entities retains only the VM-free raw IR node.
+    pub accumulate: Option<IrNode>,
 }
 
 /// A declared slot and its current runtime value.
@@ -372,6 +376,11 @@ fn validate_namespace_records(
     if namespace.is_empty() {
         return Err(NamespaceInsertError::InvalidNamespace);
     }
+    if namespace.starts_with('@') {
+        return Err(NamespaceInsertError::ReservedNamespace {
+            namespace: namespace.to_string(),
+        });
+    }
 
     let mut pending = HashSet::with_capacity(records.len());
     for (slot_name, _) in records {
@@ -416,6 +425,8 @@ pub enum SlotRangeError {
 pub enum NamespaceInsertError {
     #[error("state-store namespace must not be empty")]
     InvalidNamespace,
+    #[error("state-store namespace `{namespace}` must not start with reserved `@`")]
+    ReservedNamespace { namespace: String },
     #[error("state-store slot name must not be empty")]
     InvalidSlotName,
     #[error("state-store namespace `{namespace}` collides with registered namespace `{existing}`")]
@@ -439,6 +450,7 @@ mod tests {
             readonly: false,
             ownership: SlotOwnership::Mod,
             network: ReplicationScope::None,
+            accumulate: None,
         })
     }
 
@@ -614,6 +626,21 @@ mod tests {
     }
 
     #[test]
+    fn namespace_insert_rejects_reserved_dispatch_prefix() {
+        let mut table = SlotTable::new();
+        let error = table
+            .insert_namespace("@tick", vec![("value".to_string(), number_slot(0.0))])
+            .unwrap_err();
+        assert_eq!(
+            error,
+            NamespaceInsertError::ReservedNamespace {
+                namespace: "@tick".to_string()
+            }
+        );
+        assert!(table.get("@tick.value").is_none());
+    }
+
+    #[test]
     fn reconcile_identical_schema_preserves_current_value() {
         let mut table = SlotTable::new();
         let declaration = StoreDeclaration {
@@ -706,6 +733,7 @@ mod tests {
                     readonly: true,
                     ownership: SlotOwnership::Engine,
                     network: ReplicationScope::None,
+                    accumulate: None,
                 }),
             )
             .unwrap();

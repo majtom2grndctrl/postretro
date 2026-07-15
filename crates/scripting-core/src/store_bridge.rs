@@ -36,6 +36,8 @@ struct SlotSchemaInput {
     values: Option<Value>,
     #[serde(default)]
     network: Option<String>,
+    #[serde(default)]
+    accumulate: Option<Value>,
 }
 
 pub fn write_store_slot(ctx: &ScriptCtx, name: &str, value: SlotValue) -> Result<(), ScriptError> {
@@ -363,7 +365,43 @@ fn validate_slot_schema(
         readonly,
         values,
         network,
+        accumulate,
     } = input;
+
+    if slot_name.starts_with('@') {
+        return Err(ScriptError::InvalidArgument {
+            reason: format!(
+                "defineStore: slot name `{slot_name}` must not start with reserved `@`"
+            ),
+        });
+    }
+    if accumulate.is_some() && slot_type != "number" {
+        return Err(ScriptError::InvalidArgument {
+            reason: format!(
+                "defineStore: slot `{slot_name}` may declare `accumulate` only when its type is `number`"
+            ),
+        });
+    }
+    if accumulate.is_some() && readonly {
+        return Err(ScriptError::InvalidArgument {
+            reason: format!(
+                "defineStore: slot `{slot_name}` may not declare `accumulate` when `readonly` is true"
+            ),
+        });
+    }
+    let accumulate = accumulate
+        .map(|value| {
+            postretro_foundation::ir_node_from_json(
+                value,
+                &format!("defineStore.{slot_name}.accumulate"),
+            )
+            .map_err(|error| ScriptError::InvalidArgument {
+                reason: format!(
+                    "defineStore: slot `{slot_name}` has invalid `accumulate`: {error}"
+                ),
+            })
+        })
+        .transpose()?;
 
     let network = replication_scope_for(slot_name, network.as_deref())?;
     let default = default.ok_or_else(|| ScriptError::InvalidArgument {
@@ -450,6 +488,7 @@ fn validate_slot_schema(
         readonly,
         ownership: SlotOwnership::Mod,
         network,
+        accumulate,
     }))
 }
 
@@ -732,5 +771,67 @@ fn slot_value_kind(value: &SlotValue) -> &'static str {
         SlotValue::String(_) => "string",
         SlotValue::Enum(_) => "enum",
         SlotValue::Array(_) => "array",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn store_declaration_parses_numeric_accumulator_ir() {
+        let declaration = store_declaration(
+            "timer",
+            serde_json::json!({
+                "remaining": {
+                    "type": "number",
+                    "default": 10.0,
+                    "accumulate": { "op": "input", "name": "@dt" }
+                }
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            declaration.records[0].1.schema.accumulate,
+            Some(postretro_foundation::IrNode::Input {
+                name: "@dt".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn store_declaration_rejects_accumulator_on_non_number_or_readonly_slot() {
+        for schema in [
+            serde_json::json!({
+                "bad": {
+                    "type": "boolean",
+                    "default": false,
+                    "accumulate": { "op": "input", "name": "@dt" }
+                }
+            }),
+            serde_json::json!({
+                "bad": {
+                    "type": "number",
+                    "default": 0.0,
+                    "readonly": true,
+                    "accumulate": { "op": "input", "name": "@dt" }
+                }
+            }),
+        ] {
+            assert!(matches!(
+                store_declaration("test", schema),
+                Err(ScriptError::InvalidArgument { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn store_declaration_rejects_reserved_slot_name() {
+        let error = store_declaration(
+            "test",
+            serde_json::json!({ "@dt": { "type": "number", "default": 0.0 } }),
+        )
+        .unwrap_err();
+        assert!(matches!(error, ScriptError::InvalidArgument { .. }));
     }
 }

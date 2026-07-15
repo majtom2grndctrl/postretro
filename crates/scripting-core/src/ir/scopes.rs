@@ -338,6 +338,7 @@ mod tests {
                 SlotOwnership::Mod
             },
             network: crate::slot_table::ReplicationScope::None,
+            accumulate: None,
         })
     }
 
@@ -350,6 +351,7 @@ mod tests {
             readonly: false,
             ownership: SlotOwnership::Mod,
             network: crate::slot_table::ReplicationScope::None,
+            accumulate: None,
         })
     }
 
@@ -362,6 +364,7 @@ mod tests {
             readonly: false,
             ownership: SlotOwnership::Mod,
             network: crate::slot_table::ReplicationScope::None,
+            accumulate: None,
         })
     }
 

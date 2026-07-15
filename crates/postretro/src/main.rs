@@ -1992,6 +1992,11 @@ impl ApplicationHandler for App {
                                 use_edges: &trigger_use_edges,
                             }),
                         );
+                        scripting_systems::slot_accumulators::evaluate_slot_accumulators(
+                            &mut session.scripting.slot_accumulator_bindings,
+                            &script_ctx,
+                            tick_dt,
+                        );
                         self.host_record_authorized_shots(&tick_events.authorized_shots);
                         if self.host_flush_pending_hit_declarations() {
                             pending_death_events.extend(self.host_run_remote_hit_death_sweep());

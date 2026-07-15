@@ -164,6 +164,7 @@ fn run_headless_inner(runspec_arg: Option<&str>) -> Result<String> {
             modal_stack: &mut modal_stack,
             progress_tracker: &mut progress_tracker,
             crossing_detector: &mut crossing_detector,
+            slot_accumulator_bindings: &mut session.scripting.slot_accumulator_bindings,
             mesh_clip_tables: &mut mesh_clip_tables,
             hit_zone_store: &mut hit_zone_store,
             suppress_ai_enemies: false,
@@ -261,6 +262,11 @@ fn run_headless_inner(runspec_arg: Option<&str>) -> Result<String> {
             // host-authoritative trigger stage is not driven (no use/overlap
             // routing), so triggers stay inert — declared out-of-frame in the dump.
             None,
+        );
+        crate::scripting_systems::slot_accumulators::evaluate_slot_accumulators(
+            &mut session.scripting.slot_accumulator_bindings,
+            &script_ctx,
+            TICK_DT,
         );
 
         // Skip building/pushing the owned-string record entirely when the dump

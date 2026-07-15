@@ -625,6 +625,7 @@ fn determinism_trigger_slots() -> SlotTable {
                         readonly: false,
                         ownership: SlotOwnership::Mod,
                         network: ReplicationScope::None,
+                        accumulate: None,
                     }),
                 ),
                 (
@@ -637,6 +638,7 @@ fn determinism_trigger_slots() -> SlotTable {
                         readonly: false,
                         ownership: SlotOwnership::Mod,
                         network: ReplicationScope::None,
+                        accumulate: None,
                     }),
                 ),
             ],

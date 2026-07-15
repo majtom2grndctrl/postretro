@@ -12,8 +12,8 @@
 // later *assembled* (pure byte-copy placement, no re-pack) into the
 // `OctahedralShVolume` section the runtime consumes. Assembly reproduces the
 // per-group bakes exactly; the warm volume only *approximates* the monolithic
-// `bake_sh_volume` (it drops past-cutoff far bounces). The cold `--no-cache`
-// path (Task 7) runs the exact whole-volume bake for shipping.
+// `bake_sh_volume` (it drops past-cutoff far bounces). The cold
+// `--release`/`--no-cache` path runs the exact whole-volume bake for shipping.
 
 use blake3::Hasher;
 use glam::DVec3;
@@ -44,19 +44,19 @@ pub const SH_GROUP_STAGE_ID: &str = "sh_group";
 pub const SH_GROUP_STAGE_VERSION: u32 = 1;
 
 /// Edge length of a probe group, in probes, per axis. 4³ aligns with the
-/// existing `affinity_grid::AFFINITY_FACTOR = 4` decomposition (Task 1 spike).
+/// existing `affinity_grid::AFFINITY_FACTOR = 4` decomposition.
 /// Edge groups at the grid boundary are partially filled and handled explicitly.
 pub const SH_GROUP_DIM: u32 = 4;
 
 /// Dilation added to each point/spot light's `falloff_range` when testing
-/// whether the light reaches a group (the bounded reach cutoff). Committed by the
-/// Task 1 spike: `falloff_range + 16 m` keeps warm-vs-cold error within
+/// whether the light reaches a group (the bounded reach cutoff).
+/// `falloff_range + 16 m` keeps warm-vs-cold error within
 /// `WARM_SH_P999_REL_IRRADIANCE_ERROR` while a single point/spot edit invalidates
 /// a bounded sub-whole-map share of groups. Directional lights ignore this and
 /// reach every group.
 pub const SH_REACH_CUTOFF_METERS: f32 = 16.0;
 
-/// Tolerated warm-vs-cold SH error for the Task 8 determinism gate (3).
+/// Tolerated warm-vs-cold SH error for incremental-bake validation.
 ///
 /// Metric: the **99.9th-percentile per-probe per-channel relative irradiance
 /// error, post-f16-encode** — both warm and cold octahedral-tile irradiance
@@ -67,15 +67,15 @@ pub const SH_REACH_CUTOFF_METERS: f32 = 16.0;
 /// floor are exempt (their absolute error is imperceptible, and without the floor
 /// near-black probes dominate the relative metric).
 ///
-/// The Task 1 spike committed a `max` metric at 0.15, but `max` is an artifact
-/// over millions of real probes: on campaign-test (1.23M floored samples) the
+/// A `max` metric is too sensitive over millions of real probes: on
+/// campaign-test (1.23M floored samples) the
 /// distribution is mean=0.0019, p99=0.043, p99.9=0.090, yet a SINGLE
 /// floor-boundary probe hits 0.356 — 80 samples (0.0065%) exceed 0.15. A `max`
 /// gate fails on that one probe while the channel is overwhelmingly faithful and
-/// strictly dimmer-or-equal (the plan's benign-underestimate contract). p99.9
-/// bounds the body of the distribution and is robust to the rare floor-boundary
-/// outlier. 0.15 keeps ~1.7x headroom over the observed p99.9 (0.090). See
-/// `research.md` Task 1 spike results, "Gate 3 follow-up".
+/// strictly dimmer-or-equal (the bounded-reach benign-underestimate contract).
+/// p99.9 bounds the body of the distribution and is robust to the rare
+/// floor-boundary outlier. 0.15 keeps ~1.7x headroom over the observed p99.9
+/// (0.090).
 pub const WARM_SH_P999_REL_IRRADIANCE_ERROR: f32 = 0.15;
 
 /// Visibility floor (linear irradiance) for the warm-SH error metric: probes
@@ -83,10 +83,10 @@ pub const WARM_SH_P999_REL_IRRADIANCE_ERROR: f32 = 0.15;
 pub const WARM_SH_VISIBILITY_FLOOR: f32 = 0.02;
 
 /// One-line warning emitted on the warm per-group SH path: warm indirect
-/// lighting is a bounded-reach approximation and a clean `--no-cache` bake is
-/// required before shipping a final map. Hoisted to a constant so Task 8 can
-/// assert the warm path carries the warning (a `log::warn!` macro call is not
-/// directly observable in a unit test).
+/// lighting is a bounded-reach approximation and a clean `--release` (or
+/// `--no-cache`) bake is required before shipping a final map. Hoisted to a
+/// constant so tests can assert the warm path carries the warning (a
+/// `log::warn!` macro call is not directly observable in a unit test).
 pub const WARM_SH_APPROX_WARNING: &str = "[prl-build] warm SH bake: indirect lighting is APPROXIMATE (bounded light reach). \
      This is a dev/iteration build — run a `--release` bake (or `--no-cache`) before shipping a final map.";
 
@@ -462,7 +462,7 @@ pub(crate) fn group_cache_key(
 }
 
 /// Whole-map `GeometryResult` content hash (postcard + blake3) — the unrestricted
-/// whole-stage hash the SH key folds. Convenience wrapper so Task 7 wiring and
+/// whole-stage hash the SH key folds. Convenience wrapper so callers and
 /// tests derive the identical fingerprint.
 pub(crate) fn geometry_content_hash(geometry: &crate::geometry::GeometryResult) -> [u8; 32] {
     let encoded = postcard::to_allocvec(geometry).expect("postcard serialize GeometryResult");
@@ -483,8 +483,8 @@ pub(crate) struct BakedGroup {
 /// Tries the cache first; a hit decodes the payload (a decode failure is treated
 /// as corruption → re-bake). On miss, bakes the group with its bounded reaching
 /// set and stores the payload. With `cache == None` (the `--no-cache`-bypassed
-/// caller, though Task 7 selects the exact whole-volume bake instead) it always
-/// bakes. Returns the records in ascending probe-index order.
+/// caller, though the compiler selects the exact whole-volume bake instead) it
+/// always bakes. Returns the records in ascending probe-index order.
 pub(crate) fn bake_or_load_group(
     inputs: &ShBakeCtx<'_>,
     layout: &ProbeGridLayout,
@@ -549,7 +549,7 @@ pub(crate) fn bake_or_load_group(
 ///
 /// `non_atlas` carries the section fields the per-group bake does not produce
 /// (animation descriptors + slot table), threaded through from the caller's
-/// whole-stage build (Task 7). They are written verbatim.
+/// whole-stage build. They are written verbatim.
 pub(crate) struct ShVolumeShell {
     pub(crate) animation_descriptors: Vec<postretro_level_format::sh_volume::AnimationDescriptor>,
     pub(crate) slot_for_map_light: Vec<u32>,
@@ -643,8 +643,8 @@ pub(crate) fn place_group(section: &mut OctahedralShVolumeSection, group: &Baked
 }
 
 /// End-to-end warm per-group SH bake: partition, bake/load each group, assemble.
-/// This is the warm path Task 7 wires in place of the whole-stage `sh_volume`
-/// get/insert (the cold `--no-cache` path still calls `bake_sh_volume`).
+/// This replaces whole-stage `sh_volume` caching on the warm path; the cold
+/// `--no-cache` path still calls `bake_sh_volume`.
 pub fn bake_sh_volume_grouped(
     inputs: &ShBakeCtx<'_>,
     config: &ShConfig,
@@ -1469,8 +1469,9 @@ mod tests {
     }
 
     /// `--no-cache` bypass (module-level): `bake_sh_volume_grouped(.., None)`
-    /// reads/writes no cache and equals a cached build's first pass. (Task 7's
-    /// `--no-cache` additionally selects the exact whole-volume `bake_sh_volume`;
+    /// reads/writes no cache and equals a cached build's first pass. The
+    /// compiler's `--no-cache` path additionally selects the exact whole-volume
+    /// `bake_sh_volume`;
     /// that exactness is the gate-2 `#[ignore]`d test. Here we only confirm the
     /// `None` path performs no I/O and is self-consistent.)
     #[test]

@@ -1,14 +1,42 @@
 //! Panic-safe ownership of crossterm's alternate-screen and raw-mode state.
 //! See: `context/lib/build_pipeline.md`.
 
-use std::io::{self, Stdout};
+use std::io::{self, Stdout, Write};
 
-use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
+use crossterm::{cursor, execute};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+
+fn restore_terminal(writer: &mut impl Write) {
+    let _ = execute!(writer, cursor::Show);
+    let _ = execute!(writer, LeaveAlternateScreen);
+    let _ = disable_raw_mode();
+}
+
+struct TerminalAcquisitionGuard {
+    armed: bool,
+}
+
+impl TerminalAcquisitionGuard {
+    fn new() -> Self {
+        Self { armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for TerminalAcquisitionGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            restore_terminal(&mut io::stdout());
+        }
+    }
+}
 
 pub(super) struct TerminalSession {
     pub(super) terminal: Terminal<CrosstermBackend<Stdout>>,
@@ -16,32 +44,19 @@ pub(super) struct TerminalSession {
 
 impl TerminalSession {
     pub(super) fn enter() -> io::Result<Self> {
+        let mut acquisition = TerminalAcquisitionGuard::new();
         enable_raw_mode()?;
         let mut stdout = io::stdout();
-        if let Err(error) = execute!(stdout, EnterAlternateScreen, crossterm::cursor::Hide) {
-            let _ = disable_raw_mode();
-            return Err(error);
-        }
-        match Terminal::new(CrosstermBackend::new(stdout)) {
-            Ok(terminal) => Ok(Self { terminal }),
-            Err(error) => {
-                let mut stdout = io::stdout();
-                let _ = execute!(stdout, LeaveAlternateScreen, crossterm::cursor::Show);
-                let _ = disable_raw_mode();
-                Err(error)
-            }
-        }
+        execute!(stdout, EnterAlternateScreen)?;
+        execute!(stdout, cursor::Hide)?;
+        let terminal = Terminal::new(CrosstermBackend::new(stdout))?;
+        acquisition.disarm();
+        Ok(Self { terminal })
     }
 }
 
 impl Drop for TerminalSession {
     fn drop(&mut self) {
-        let _ = self.terminal.show_cursor();
-        let _ = execute!(
-            self.terminal.backend_mut(),
-            LeaveAlternateScreen,
-            crossterm::cursor::Show
-        );
-        let _ = disable_raw_mode();
+        restore_terminal(self.terminal.backend_mut());
     }
 }

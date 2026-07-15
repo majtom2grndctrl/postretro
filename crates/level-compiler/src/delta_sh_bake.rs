@@ -141,6 +141,9 @@ pub fn bake_delta_sh_volumes_controlled(
     // --- CSR index: invert `per_light_cells` (light → cells) into cell → lights.
     let (affinity_offsets, affinity_lights) =
         build_csr(&decomposition.per_light_cells, affinity_cell_count);
+    if affinity_lights.is_empty() {
+        return None;
+    }
     control.publish_total(affinity_lights.len());
 
     // Bake-time invariants the loader also enforces.
@@ -652,7 +655,7 @@ mod tests {
     }
 
     #[test]
-    fn delta_bake_repeats_byte_identically_for_same_inputs() {
+    fn controlled_delta_bake_reports_every_affinity_entry_and_is_deterministic() {
         let geo = cube_geometry();
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let tree = tree_all_empty();
@@ -670,9 +673,16 @@ mod tests {
         };
         let config = crate::sh_bake::ShConfig { probe_spacing: 1.0 };
 
-        let first = bake_delta_sh_volumes(&inputs, &config)
-            .expect("expected first deterministic delta section")
-            .to_bytes();
+        let progress = crate::reporter::StageProgress::indeterminate();
+        let control = BakeControl::new(
+            std::sync::Arc::new(crate::governor::Governor::new(2, false)),
+            &progress,
+        );
+        let first_section = bake_delta_sh_volumes_controlled(&inputs, &config, &control)
+            .expect("expected first deterministic delta section");
+        assert_eq!(progress.total(), Some(first_section.affinity_lights.len()));
+        assert_eq!(progress.completed(), first_section.affinity_lights.len());
+        let first = first_section.to_bytes();
         let second = bake_delta_sh_volumes(&inputs, &config)
             .expect("expected second deterministic delta section")
             .to_bytes();

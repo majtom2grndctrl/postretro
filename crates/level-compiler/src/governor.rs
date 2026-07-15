@@ -113,6 +113,10 @@ mod tests {
     use std::sync::Arc;
     use std::sync::mpsc;
     use std::thread;
+    use std::time::Duration;
+
+    const BLOCKED_WINDOW: Duration = Duration::from_millis(50);
+    const TEST_TIMEOUT: Duration = Duration::from_secs(2);
 
     #[test]
     fn paused_checkpoint_wakes_on_resume() {
@@ -126,10 +130,40 @@ mod tests {
             tx.send(()).unwrap();
         });
 
-        ready_rx.recv().unwrap();
+        ready_rx
+            .recv_timeout(TEST_TIMEOUT)
+            .expect("checkpoint worker did not become ready before timeout");
         assert!(matches!(rx.try_recv(), Err(mpsc::TryRecvError::Empty)));
         governor.set_paused(false);
-        rx.recv().unwrap();
+        rx.recv_timeout(TEST_TIMEOUT)
+            .expect("checkpoint worker did not resume before timeout");
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn paused_enter_blocks_admission_until_resume() {
+        let governor = Arc::new(Governor::new(1, true));
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (admitted_tx, admitted_rx) = mpsc::channel();
+        let worker_governor = Arc::clone(&governor);
+        let worker = thread::spawn(move || {
+            ready_tx.send(()).unwrap();
+            let _permit = worker_governor.enter();
+            admitted_tx.send(()).unwrap();
+        });
+
+        ready_rx
+            .recv_timeout(TEST_TIMEOUT)
+            .expect("entry worker did not become ready before timeout");
+        let while_paused = admitted_rx.recv_timeout(BLOCKED_WINDOW);
+        governor.set_paused(false);
+        let after_resume = admitted_rx.recv_timeout(TEST_TIMEOUT);
+
+        assert!(
+            matches!(while_paused, Err(mpsc::RecvTimeoutError::Timeout)),
+            "paused governor admitted an entry: {while_paused:?}"
+        );
+        after_resume.expect("entry worker did not wake after resume before timeout");
         worker.join().unwrap();
     }
 
@@ -146,11 +180,58 @@ mod tests {
             tx.send(()).unwrap();
         });
 
-        ready_rx.recv().unwrap();
+        ready_rx
+            .recv_timeout(TEST_TIMEOUT)
+            .expect("entry worker did not become ready before timeout");
         assert!(matches!(rx.try_recv(), Err(mpsc::TryRecvError::Empty)));
         governor.set_permits(2);
-        rx.recv().unwrap();
+        rx.recv_timeout(TEST_TIMEOUT)
+            .expect("entry worker did not wake after permit increase before timeout");
         drop(held);
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn lowering_permits_blocks_new_admission_until_active_work_drains_below_target() {
+        let governor = Arc::new(Governor::new(3, false));
+        let first = governor.enter();
+        let second = governor.enter();
+        let third = governor.enter();
+        governor.set_permits(1);
+
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (admitted_tx, admitted_rx) = mpsc::channel();
+        let worker_governor = Arc::clone(&governor);
+        let worker = thread::spawn(move || {
+            ready_tx.send(()).unwrap();
+            let _permit = worker_governor.enter();
+            admitted_tx.send(()).unwrap();
+        });
+
+        ready_rx
+            .recv_timeout(TEST_TIMEOUT)
+            .expect("entry worker did not become ready before timeout");
+        let with_three_active = admitted_rx.recv_timeout(BLOCKED_WINDOW);
+        drop(first);
+        let with_two_active = admitted_rx.recv_timeout(BLOCKED_WINDOW);
+        drop(second);
+        let at_target = admitted_rx.recv_timeout(BLOCKED_WINDOW);
+        drop(third);
+        let below_target = admitted_rx.recv_timeout(TEST_TIMEOUT);
+
+        assert!(
+            matches!(with_three_active, Err(mpsc::RecvTimeoutError::Timeout)),
+            "permit reduction preempted active work or admitted new work: {with_three_active:?}"
+        );
+        assert!(
+            matches!(with_two_active, Err(mpsc::RecvTimeoutError::Timeout)),
+            "new work was admitted while active permits exceeded the target: {with_two_active:?}"
+        );
+        assert!(
+            matches!(at_target, Err(mpsc::RecvTimeoutError::Timeout)),
+            "new work was admitted before active permits fell below the target: {at_target:?}"
+        );
+        below_target.expect("entry worker was not admitted after active work drained below target");
         worker.join().unwrap();
     }
 
@@ -167,10 +248,13 @@ mod tests {
             tx.send(()).unwrap();
         });
 
-        ready_rx.recv().unwrap();
+        ready_rx
+            .recv_timeout(TEST_TIMEOUT)
+            .expect("entry worker did not become ready before timeout");
         assert!(matches!(rx.try_recv(), Err(mpsc::TryRecvError::Empty)));
         drop(held);
-        rx.recv().unwrap();
+        rx.recv_timeout(TEST_TIMEOUT)
+            .expect("entry worker did not wake after permit drop before timeout");
         worker.join().unwrap();
     }
 }

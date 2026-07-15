@@ -174,7 +174,7 @@ impl Reporter for PlainReporter {
         eprintln!(
             "{:>6.2}s  {}",
             self.started.elapsed().as_secs_f32(),
-            id.spinner_label()
+            id.progress_label()
         );
         let _ = label;
     }

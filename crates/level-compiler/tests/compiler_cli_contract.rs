@@ -1,8 +1,5 @@
-//! End-to-end regression coverage for the compiler's plain CLI contract.
-//!
-//! This suite shells out to the already-built `prl-build` test binary. The
-//! cold bake is intentionally ignored because it exercises the complete
-//! lightmap and SH pipelines twice; run it on demand with `-- --ignored`.
+// Compiler subprocess contracts for reporter selection, plain output, and deterministic bakes.
+// See: context/plans/in-progress/level-compiler-tui/index.md
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -77,6 +74,13 @@ fn compile_fixture(input: &Path, output: &Path, jobs: usize) -> Output {
         .expect("spawn prl-build")
 }
 
+fn run_compiler(args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_prl-build"))
+        .args(args)
+        .output()
+        .expect("spawn prl-build")
+}
+
 fn assert_success(output: &Output, jobs: usize) {
     assert!(
         output.status.success(),
@@ -93,11 +97,71 @@ fn assert_plain_bytes(stream_name: &str, bytes: &[u8]) {
         String::from_utf8_lossy(bytes),
     );
     assert!(
-        bytes
-            .iter()
-            .all(|byte| !byte.is_ascii_control() || matches!(byte, b'\n' | b'\r' | b'\t')),
+        bytes.iter().enumerate().all(|(index, byte)| {
+            !byte.is_ascii_control()
+                || matches!(byte, b'\n' | b'\t')
+                || (*byte == b'\r' && bytes.get(index + 1) == Some(&b'\n'))
+        }),
         "{stream_name} contains a terminal control byte: {:?}",
         String::from_utf8_lossy(bytes),
+    );
+}
+
+#[test]
+fn captured_streams_auto_select_plain_reporter_before_fast_pipeline_failure() {
+    let workspace = workspace_root();
+    let fixture =
+        std::fs::read_to_string(workspace.join("content/dev/maps/wedge-shared-plane.map"))
+            .expect("read tiny map fixture");
+    let fixture = fixture.replace(
+        "\"initialGravity\" \"-9.81\"",
+        "\"initialGravity\" \"-9.81\"\n\"data_script\" \"missing.luau\"",
+    );
+    assert!(
+        fixture.contains("\"data_script\" \"missing.luau\""),
+        "fast-failure fixture must carry its missing data-script precheck",
+    );
+    let temp = TempBuildDir::new();
+    let input = temp.0.join("missing-data-script.map");
+    let output_path = temp.0.join("unused.prl");
+    std::fs::write(&input, fixture).expect("write fast-failure map fixture");
+
+    let output = run_compiler(&[
+        input.to_str().expect("temporary input path must be UTF-8"),
+        "-o",
+        output_path
+            .to_str()
+            .expect("temporary output path must be UTF-8"),
+    ]);
+
+    assert!(!output.status.success(), "missing data script must fail");
+    assert_plain_bytes("auto stdout", &output.stdout);
+    assert_plain_bytes("auto stderr", &output.stderr);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Parsing map...") && stderr.contains("Data script compilation..."),
+        "captured streams must reach main's Auto TTY seam and select the line-oriented reporter:\n{stderr}",
+    );
+    assert!(
+        stderr.contains("data_script = missing.luau") && stderr.contains("does not exist"),
+        "fixture must fail at the intended cheap post-selection precheck:\n{stderr}",
+    );
+}
+
+#[test]
+fn captured_streams_reject_forced_tui_without_terminal_controls() {
+    let output = run_compiler(&["unused.map", "--tui"]);
+
+    assert!(
+        !output.status.success(),
+        "--tui on captured streams must fail"
+    );
+    assert_plain_bytes("forced TUI stdout", &output.stdout);
+    assert_plain_bytes("forced TUI stderr", &output.stderr);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--tui requires stdin, stdout, and stderr to all be attached to terminals"),
+        "forced TUI failure must explain the terminal requirement:\n{stderr}",
     );
 }
 

@@ -1,12 +1,14 @@
-//! Collecting logger used by both plain and interactive compiler reporters.
-//!
-//! See: `context/lib/build_pipeline.md`.
+// Collecting logger for plain and interactive compiler reporters.
+// See: context/lib/build_pipeline.md
 
+use std::collections::VecDeque;
 use std::fmt;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use log::{Level, Log, Metadata, Record};
+
+const MAX_PENDING_RECORDS: usize = 4_096;
 
 /// An owned log record safe to retain after `log::Log::log` returns.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -28,7 +30,7 @@ impl fmt::Display for CapturedRecord {
 
 #[derive(Debug, Default)]
 struct SinkState {
-    pending: Vec<CapturedRecord>,
+    pending: VecDeque<CapturedRecord>,
     warnings: Vec<CapturedRecord>,
 }
 
@@ -53,7 +55,10 @@ impl LogSink {
             self.warning_count.fetch_add(1, Ordering::Relaxed);
             state.warnings.push(record.clone());
         }
-        state.pending.push(record);
+        if state.pending.len() >= MAX_PENDING_RECORDS {
+            state.pending.pop_front();
+        }
+        state.pending.push_back(record);
     }
 
     /// Remove and return all live records collected since the previous drain.
@@ -62,7 +67,7 @@ impl LogSink {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        std::mem::take(&mut state.pending)
+        state.pending.drain(..).collect()
     }
 
     /// Return the number of warn-or-error records observed by the logger.
@@ -190,5 +195,54 @@ mod tests {
         let clone = sink.clone();
         clone.print_warning_summary();
         assert!(clone.summary_printed.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn live_pending_queue_caps_and_drops_oldest_records() {
+        let sink = LogSink::default();
+        for index in 0..MAX_PENDING_RECORDS + 2 {
+            sink.record(CapturedRecord {
+                level: Level::Info,
+                target: "compiler".to_owned(),
+                message: index.to_string(),
+            });
+        }
+
+        let drained = sink.drain();
+        assert_eq!(drained.len(), MAX_PENDING_RECORDS);
+        assert_eq!(drained.first().unwrap().message, "2");
+        assert_eq!(
+            drained.last().unwrap().message,
+            (MAX_PENDING_RECORDS + 1).to_string()
+        );
+        assert!(sink.drain().is_empty());
+    }
+
+    #[test]
+    fn warning_history_remains_complete_after_live_queue_overflow_and_drain() {
+        let sink = LogSink::default();
+        let warning_total = MAX_PENDING_RECORDS + 2;
+        for index in 0..warning_total {
+            sink.record(CapturedRecord {
+                level: Level::Warn,
+                target: "compiler".to_owned(),
+                message: index.to_string(),
+            });
+        }
+
+        let drained = sink.drain();
+        assert_eq!(drained.len(), MAX_PENDING_RECORDS);
+        assert_eq!(drained.first().unwrap().message, "2");
+
+        let warnings = sink.warnings();
+        assert_eq!(sink.warning_count(), warning_total);
+        assert_eq!(warnings.len(), warning_total);
+        assert_eq!(warnings.first().unwrap().message, "0");
+        assert_eq!(
+            warnings.last().unwrap().message,
+            (warning_total - 1).to_string()
+        );
+        assert!(sink.drain().is_empty());
+        assert_eq!(sink.warnings(), warnings);
     }
 }

@@ -692,6 +692,7 @@ pub fn bake_direct_sh_volume_cached_controlled(
         match DirectShVolumeSection::from_bytes(&bytes) {
             Ok(section) => {
                 log::info!("[cache] direct_sh_volume hit");
+                let _permit = control.governor().enter();
                 control.advance(layout.total_probes());
                 return section;
             }
@@ -1148,9 +1149,8 @@ mod tests {
         atlas
     }
 
-    /// AC 9: byte-identical output across two runs on identical inputs.
     #[test]
-    fn direct_sh_bake_produces_byte_identical_output_on_repeated_runs() {
+    fn controlled_direct_sh_reports_every_probe_and_is_deterministic() {
         let geo = floor_and_walls_geometry();
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
         let tree = tree_all_empty();
@@ -1177,7 +1177,14 @@ mod tests {
         };
         let config = ShConfig { probe_spacing: 1.0 };
 
-        let a = bake_direct_sh_volume(&inputs, &config).to_bytes();
+        let progress = crate::reporter::StageProgress::indeterminate();
+        let control = BakeControl::new(
+            std::sync::Arc::new(crate::governor::Governor::new(2, false)),
+            &progress,
+        );
+        let a = bake_direct_sh_volume_controlled(&inputs, &config, &control).to_bytes();
+        assert_eq!(progress.total(), Some(progress.completed()));
+        assert!(progress.completed() > 0);
         let b = bake_direct_sh_volume(&inputs, &config).to_bytes();
         assert_eq!(
             a, b,
@@ -1469,13 +1476,21 @@ mod tests {
             light_indices: vec![0, 2],
         };
 
-        let delta = bake_direct_sh_delta_volumes(
+        let progress = crate::reporter::StageProgress::indeterminate();
+        let control = BakeControl::new(
+            std::sync::Arc::new(crate::governor::Governor::new(2, false)),
+            &progress,
+        );
+        let delta = bake_direct_sh_delta_volumes_controlled(
             &inputs,
             &ShConfig { probe_spacing: 1.0 },
             &alpha_lights,
             &selected,
+            &control,
         )
         .expect("selected lights should produce direct deltas");
+        assert_eq!(progress.total(), Some(delta.affinity_lights.len()));
+        assert_eq!(progress.completed(), delta.affinity_lights.len());
 
         assert!(
             delta.affinity_lights.iter().all(|&index| index < 2),

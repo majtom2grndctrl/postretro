@@ -1,8 +1,5 @@
-//! Ordered level-compilation stage orchestration.
-//!
-//! Stage labels are part of the human-facing Build Summary contract. Keep them
-//! stable independently from the spinner text used while a stage is running.
-//! See: context/lib/build_pipeline.md
+//! Owns ordered level-compilation stage orchestration.
+//! Governing contracts: `context/lib/build_pipeline.md`.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -93,7 +90,7 @@ impl StageId {
         }
     }
 
-    pub const fn spinner_label(self) -> &'static str {
+    pub const fn progress_label(self) -> &'static str {
         match self {
             Self::Parsing => "Parsing map...",
             Self::DataScript => "Data script compilation...",
@@ -557,6 +554,9 @@ fn run_after_parsing(
             let section = match cached_section {
                 Some(section) => {
                     log::info!("[cache] lightmap_section hit");
+                    // Serial lightmap work ignores the core throttle, but every
+                    // cache unit still honors pause before reporting completion.
+                    lightmap_control.governor().checkpoint();
                     lightmap_control.advance(warm_lightmap_total);
                     section
                 }
@@ -576,6 +576,7 @@ fn run_after_parsing(
                         {
                             Some(layer) => {
                                 log::info!("[cache] lightmap_layer hit");
+                                lightmap_control.governor().checkpoint();
                                 lightmap_control.advance(prepared.placements.len());
                                 layer
                             }
@@ -685,7 +686,7 @@ fn run_after_parsing(
         total_light_count: map_data.lights.len(),
     };
     let sh_volume_section = if let Some(ref cache) = stage_cache {
-        // Warm path: per-probe-group SH (Task 7). Each group bakes/loads a cached
+        // Warm path: per-probe-group SH. Each group bakes/loads a cached
         // entry over its probe subset with a bounded reaching-light set, then the
         // groups assemble into the volume. This is a deliberate approximation —
         // lights past the reach cutoff drop, so far-bounce regions run slightly
@@ -703,7 +704,7 @@ fn run_after_parsing(
         reporter.as_ref(),
         StageId::ShBake,
         stage_start,
-        true,
+        sh_volume_section.grid_dimensions != [0, 0, 0],
     );
     if args.verbose {
         sh_bake::log_stats(&sh_volume_section);
@@ -747,7 +748,7 @@ fn run_after_parsing(
     // Baked static-direct octahedral SH for dynamic objects. Emitted IFF there are
     // static (baked) lights — a map whose only lights are animated produces NO
     // direct section (absence; the loader treats it as direct = 0), so animated
-    // direct never double-counts against `lm_anim` (AC 7).
+    // direct never double-counts against animated-light weight maps.
     let direct_sh_volume_section = if static_baked_lights.is_empty() {
         if args.verbose {
             log::info!("DirectShVolume: skipped (no static lights)");
@@ -771,27 +772,28 @@ fn run_after_parsing(
         if args.verbose {
             direct_sh_bake::log_cull_savings(&inputs, &sh_config);
         }
-        // BC6H-at-rest (D8): re-encode the uncompressed RGBA16F bake output into the
-        // production BC6H section, honoring the same `uncompressed_irradiance` debug
-        // bypass the lightmap path uses.
-        let section = direct_sh_bake::encode_direct_section_bc6h(
-            &raw,
-            lightmap_config.uncompressed_irradiance,
-        );
-        if args.verbose {
-            // AC 14: report the post-compression footprint and the pre-compression
-            // dense figure (the RGBA-f32 buffer fed to the encoder), alongside the
-            // indirect atlas size for comparison.
-            let post_compression = section.atlas.len();
-            let pre_compression = direct_sh_bake::direct_dense_atlas_byte_size(&raw);
-            let indirect_atlas = sh_volume_section.to_bytes().len();
-            log::info!(
-                "[Compiler] DirectShVolume atlas footprint: {post_compression} bytes BC6H \
-                 (pre-compression dense {pre_compression} bytes); indirect OctahedralShVolume \
-                 section {indirect_atlas} bytes",
+        if raw.grid_dimensions == [0, 0, 0] {
+            None
+        } else {
+            // Re-encode the uncompressed RGBA16F bake output into the production
+            // BC6H section, honoring the lightmap path's debug bypass.
+            let section = direct_sh_bake::encode_direct_section_bc6h(
+                &raw,
+                lightmap_config.uncompressed_irradiance,
             );
+            if args.verbose {
+                // Report both footprints alongside indirect SH for comparison.
+                let post_compression = section.atlas.len();
+                let pre_compression = direct_sh_bake::direct_dense_atlas_byte_size(&raw);
+                let indirect_atlas = sh_volume_section.to_bytes().len();
+                log::info!(
+                    "[Compiler] DirectShVolume atlas footprint: {post_compression} bytes BC6H \
+                     (pre-compression dense {pre_compression} bytes); indirect OctahedralShVolume \
+                     section {indirect_atlas} bytes",
+                );
+            }
+            Some(section)
         }
-        Some(section)
     };
     finish_stage(
         &mut timings,
@@ -818,13 +820,7 @@ fn run_after_parsing(
             Some(section)
         }
     });
-    finish_stage(
-        &mut timings,
-        reporter.as_ref(),
-        StageId::EntityShadowLights,
-        stage_start,
-        raw_entity_shadow_lights_section.is_some(),
-    );
+    let entity_shadow_lights_elapsed = stage_start.elapsed();
     if args.verbose {
         if let Some(ref section) = raw_entity_shadow_lights_section {
             log::info!(
@@ -857,13 +853,7 @@ fn run_after_parsing(
                     &direct_sh_delta_control,
                 )
             });
-    finish_stage(
-        &mut timings,
-        reporter.as_ref(),
-        StageId::DirectShDeltaBake,
-        stage_start,
-        raw_direct_sh_delta_volumes_section.is_some(),
-    );
+    let direct_sh_delta_elapsed = stage_start.elapsed();
 
     let (entity_shadow_lights_section, direct_sh_delta_volumes_section) =
         match raw_entity_shadow_lights_section {
@@ -896,6 +886,21 @@ fn run_after_parsing(
             },
             None => (None, None),
         };
+    timings.push((
+        StageId::EntityShadowLights.label(),
+        entity_shadow_lights_elapsed,
+    ));
+    if entity_shadow_lights_section.is_some() {
+        reporter.finish_stage(StageId::EntityShadowLights);
+    } else {
+        reporter.skip_stage(StageId::EntityShadowLights);
+    }
+    timings.push((StageId::DirectShDeltaBake.label(), direct_sh_delta_elapsed));
+    if direct_sh_delta_volumes_section.is_some() {
+        reporter.finish_stage(StageId::DirectShDeltaBake);
+    } else {
+        reporter.skip_stage(StageId::DirectShDeltaBake);
+    }
     if args.verbose {
         if let Some(ref section) = direct_sh_delta_volumes_section {
             log::info!(
@@ -1015,8 +1020,9 @@ fn run_after_parsing(
     );
 
     let stage_start = begin_stage(reporter.as_ref(), StageId::AnimatedWeightMaps);
-    let animated_weight_progress =
-        StageProgress::with_total(animated_light_chunks_section.chunks.len());
+    // Keep genuine no-op stages indeterminate: publishing a zero total would
+    // briefly present 100% before the stage is marked skipped.
+    let animated_weight_progress = StageProgress::indeterminate();
     reporter.declare_progress(
         StageId::AnimatedWeightMaps,
         animated_weight_progress.clone(),
@@ -1084,6 +1090,8 @@ fn run_after_parsing(
 
         if let Some(section) = cached_wm_section {
             log::info!("[cache] animated_lm_weight_maps hit");
+            animated_weight_control.publish_total(animated_light_chunks_section.chunks.len());
+            let _permit = animated_weight_control.governor().enter();
             animated_weight_control.advance(animated_light_chunks_section.chunks.len());
             Some(section)
         } else {

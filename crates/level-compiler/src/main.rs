@@ -321,6 +321,9 @@ fn precheck_output_dir(output: &Path) -> anyhow::Result<()> {
 fn main() -> anyhow::Result<()> {
     let started = Instant::now();
     let args = parse_args()?;
+    // Install capture immediately after argument parsing so every subsequent
+    // early exit can emit the same exactly-once warning summary as a bake.
+    let log_sink = logger::install(args.verbose)?;
     let reporter_mode = select_reporter_mode(
         args.tui,
         TerminalStreams {
@@ -328,14 +331,17 @@ fn main() -> anyhow::Result<()> {
             stdout: std::io::stdout().is_terminal(),
             stderr: std::io::stderr().is_terminal(),
         },
-    )?;
+    )
+    .inspect_err(|_| {
+        log_sink.print_warning_summary();
+    })?;
 
     // Fail fast: if the output directory is missing, prompt to create it now —
     // before parsing the map or running any bake — so a missing folder never
     // wastes a multi-minute bake that only fails at the final write.
-    precheck_output_dir(&args.output)?;
-
-    let log_sink = logger::install(args.verbose)?;
+    precheck_output_dir(&args.output).inspect_err(|_| {
+        log_sink.print_warning_summary();
+    })?;
 
     if args.verbose {
         log::info!("Input: {}", args.input.display());
@@ -352,9 +358,10 @@ fn main() -> anyhow::Result<()> {
     // --no-cache and --release both disable the cache entirely (no directory is
     // created), selecting the exact ship path (exact monolithic lightmap + exact
     // whole-volume SH). --release is the intent-named equivalent of the mechanical
-    // --no-cache; routing both to `None` means the warm/cold branches below need no
-    // change. --cache-dir <path> overrides the default location for warm builds;
-    // when --no-cache or --release is also supplied, the cache stays disabled.
+    // --no-cache; routing both to `None` means the warm/cold branches in the
+    // pipeline need no change. --cache-dir <path> overrides the default location
+    // for warm builds; when --no-cache or --release is also supplied, the cache
+    // stays disabled.
     let stage_cache: Option<cache::StageCache> = if args.release || args.no_cache {
         if args.release {
             log::info!("[prl-build] release bake: exact lighting, cache bypassed");

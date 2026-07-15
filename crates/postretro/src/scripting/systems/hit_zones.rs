@@ -2,7 +2,7 @@
 // weapon-agnostic entity ray hits against authored AABBs or trustworthy capsules.
 // See: context/lib/entity_model.md §7 · context/lib/rendering_pipeline.md §9
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -77,12 +77,17 @@ impl ModelHitZones {
 #[derive(Default)]
 pub(crate) struct HitZoneStore {
     models: HashMap<ModelHandle, ModelHitZones>,
+    /// Handles whose independently loaded model carries a presentation pose
+    /// stack. The collector uses this cache-side metadata to opt those models
+    /// out of animation time-slicing without carrying the stack per instance.
+    pose_modified_models: HashSet<ModelHandle>,
 }
 
 impl HitZoneStore {
     pub(crate) fn new() -> Self {
         Self {
             models: HashMap::new(),
+            pose_modified_models: HashSet::new(),
         }
     }
 
@@ -90,6 +95,7 @@ impl HitZoneStore {
     /// `MeshClipTables::clear` so a new level starts from an empty store.
     pub(crate) fn clear(&mut self) {
         self.models.clear();
+        self.pose_modified_models.clear();
     }
 
     /// Re-load a model game-side from its glTF and install its hit-zone entry.
@@ -122,6 +128,7 @@ impl HitZoneStore {
             skeleton,
             clips,
             joint_zones,
+            pose_stack,
             ..
         } = model;
 
@@ -136,6 +143,11 @@ impl HitZoneStore {
         };
 
         let handle = ModelHandle::from(model_rel.to_string());
+        if pose_stack.is_empty() {
+            self.pose_modified_models.remove(&handle);
+        } else {
+            self.pose_modified_models.insert(handle.clone());
+        }
         self.models.insert(
             handle,
             ModelHitZones {
@@ -163,12 +175,24 @@ impl HitZoneStore {
             .is_some_and(|entry| entry.derived_bound.is_some())
     }
 
+    /// True when the model carries any presentation pose modifier. Such models
+    /// must sample every visible frame because their same-tick target inputs can
+    /// change independently of animation time.
+    pub(crate) fn has_pose_modifiers(&self, handle: &ModelHandle) -> bool {
+        self.pose_modified_models.contains(handle)
+    }
+
     /// Install a pre-built model entry under `handle` for tests in OTHER modules
     /// (the weapon delegation tests) that cannot reach the private `models` map.
     /// Production installs go through [`insert_from_load`](Self::insert_from_load).
     #[cfg(test)]
     pub(crate) fn insert_for_test(&mut self, handle: ModelHandle, model: ModelHitZones) {
         self.models.insert(handle, model);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_pose_modified_for_test(&mut self, handle: ModelHandle) {
+        self.pose_modified_models.insert(handle);
     }
 }
 
@@ -2071,6 +2095,7 @@ mod tests {
                 model: "smooth".into(),
                 animation: Some(anim),
                 origin_offset: Vec3::ZERO,
+                pose_inputs: None,
             },
         )
         .unwrap();
@@ -2193,6 +2218,7 @@ mod tests {
                 model: "mob".into(),
                 animation: Some(anim),
                 origin_offset: Vec3::ZERO,
+                pose_inputs: None,
             },
         )
         .unwrap();
@@ -2275,6 +2301,7 @@ mod tests {
                 model: "smooth".into(),
                 animation: Some(anim),
                 origin_offset: Vec3::ZERO,
+                pose_inputs: None,
             },
         )
         .unwrap();
@@ -2343,6 +2370,7 @@ mod tests {
                 model: "smooth".into(),
                 animation: Some(anim),
                 origin_offset: Vec3::ZERO,
+                pose_inputs: None,
             },
         )
         .unwrap();
@@ -2431,6 +2459,7 @@ mod tests {
                 model: "smooth".into(),
                 animation: Some(anim),
                 origin_offset: Vec3::ZERO,
+                pose_inputs: None,
             },
         )
         .unwrap();
@@ -2540,6 +2569,7 @@ mod tests {
                 model: "smooth".into(),
                 animation: Some(anim),
                 origin_offset: Vec3::ZERO,
+                pose_inputs: None,
             },
         )
         .unwrap();
@@ -2808,6 +2838,7 @@ mod tests {
                 model: "mob".into(),
                 animation: Some(anim),
                 origin_offset: Vec3::ZERO,
+                pose_inputs: None,
             },
         )
         .unwrap();
@@ -2917,6 +2948,7 @@ mod tests {
                 model: "mob".into(),
                 animation: None,
                 origin_offset: Vec3::new(0.0, -0.8, 0.0),
+                pose_inputs: None,
             },
         )
         .unwrap();

@@ -731,6 +731,7 @@ mod tests {
                 model: "decraniated".into(),
                 animation: Some(two_state_animation()),
                 origin_offset: Vec3::ZERO,
+                pose_inputs: None,
             },
         )
         .unwrap();
@@ -763,6 +764,11 @@ mod tests {
             model: "decraniated".into(),
             animation: Some(two_state_animation()),
             origin_offset: Vec3::ZERO,
+            pose_inputs: Some(crate::PoseInputs {
+                aim_pitch: 0.25,
+                aim_yaw: 0.5,
+                heading_yaw: 0.75,
+            }),
         };
         let json = serde_json::to_value(&value).unwrap();
         // Serde renames: `loop`, `crossfadeMs`, `defaultState`.
@@ -774,6 +780,10 @@ mod tests {
         );
         assert_eq!(json["animation"]["defaultState"], "idle");
         assert_eq!(json["animation"]["current_state"], "idle");
+        assert!(
+            json.get("pose_inputs").is_none(),
+            "transient pose inputs must not enter the serialized component"
+        );
 
         // `clip_index` is `#[serde(skip)]` — runtime-resolved, never serialized.
         assert!(states["idle"].get("clip_index").is_none());
@@ -785,6 +795,7 @@ mod tests {
         for s in expected.animation.as_mut().unwrap().states.values_mut() {
             s.clip_index = None;
         }
+        expected.pose_inputs = None;
         assert_eq!(back, expected);
     }
 
@@ -1050,6 +1061,7 @@ mod tests {
                 model: "m".into(),
                 animation: Some(MeshAnimation::new(states, "idle".into())),
                 origin_offset: Vec3::ZERO,
+                pose_inputs: None,
             },
         )
         .unwrap();
@@ -1148,6 +1160,7 @@ mod tests {
                 model: "m".into(),
                 animation: Some(MeshAnimation::new(states, "idle".into())),
                 origin_offset: Vec3::ZERO,
+                pose_inputs: None,
             },
         )
         .unwrap();
@@ -1209,6 +1222,7 @@ mod tests {
                 model: "m".into(),
                 animation: Some(MeshAnimation::new(states, "idle".into())),
                 origin_offset: Vec3::ZERO,
+                pose_inputs: None,
             },
         )
         .unwrap();
@@ -1565,6 +1579,7 @@ mod tests {
                 model: "m".into(),
                 animation: Some(MeshAnimation::new(states, "idle".into())),
                 origin_offset: Vec3::ZERO,
+                pose_inputs: None,
             },
         )
         .unwrap();

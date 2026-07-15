@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use glam::Vec3;
+use glam::{EulerRot, Vec3};
 
 use crate::agent_steering;
 use crate::collision::CollisionWorld;
@@ -22,6 +22,7 @@ use crate::trigger_bindings::{TriggerBindingTable, TriggerResidualHandle};
 use crate::trigger_system::TriggerEvent;
 use crate::trigger_system::{AuthoritativePlayer, PlayerId, TriggerSystem};
 use crate::weapon::{self, FireButtonState, WeaponFireAuthorization, WeaponFireCommand};
+use postretro_entities::PoseInputs;
 use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::components::brain::{BrainComponent, LogicalState};
 use postretro_entities::components::health::{
@@ -247,6 +248,7 @@ pub(crate) fn simulate_tick(
         // AgentTickResult only carries a diagnostic `replans` counter, not observable sim state, so the return value is intentionally discarded.
         let _ = agent_steering::tick(&mut registry, collision_world, nav_graph, gravity, tick_dt);
         update_brain_animation_playback_rates(&mut registry, anim_time);
+        update_pose_inputs(&mut registry);
     }
 
     let (authorized_shots, mut reload_deliveries, remote_weapon_events) =
@@ -340,6 +342,87 @@ fn update_brain_animation_playback_rates(registry: &mut EntityRegistry, anim_tim
         };
 
         animation.update_playback_rate(rate_input, anim_time);
+        let _ = registry.set_component(id, mesh);
+    }
+}
+
+/// Write same-tick presentation inputs after AI and steering have settled the
+/// entity's target and body rotation. Every animated mesh receives a finite
+/// value; entities without a live acquired target hold their body heading with
+/// zero pitch, making pose modifiers a visual no-op.
+fn update_pose_inputs(registry: &mut EntityRegistry) {
+    const MIN_HORIZONTAL_LEN_SQ: f32 = 1e-8;
+
+    let animated: Vec<EntityId> = registry
+        .iter_with_kind(ComponentKind::Mesh)
+        .filter_map(|(id, _)| {
+            registry
+                .get_component::<MeshComponent>(id)
+                .ok()
+                .is_some_and(|mesh| mesh.animation.is_some())
+                .then_some(id)
+        })
+        .collect();
+
+    for id in animated {
+        let Ok(transform) = registry
+            .get_component::<postretro_entities::Transform>(id)
+            .copied()
+        else {
+            continue;
+        };
+        let (raw_heading, _, _) = transform.rotation.to_euler(EulerRot::YXZ);
+        let heading_yaw = if raw_heading.is_finite() {
+            raw_heading
+        } else {
+            0.0
+        };
+
+        let target_position = registry
+            .get_component::<BrainComponent>(id)
+            .ok()
+            .and_then(|brain| brain.acquired_target)
+            .and_then(|target| {
+                registry
+                    .get_component::<postretro_entities::Transform>(target)
+                    .ok()
+                    .map(|transform| transform.position)
+            });
+
+        let (aim_pitch, aim_yaw) = target_position
+            .map(|target| target - transform.position)
+            .filter(|direction| direction.is_finite())
+            .map(|direction| {
+                let horizontal_len_sq = direction.x * direction.x + direction.z * direction.z;
+                let aim_yaw = if horizontal_len_sq > MIN_HORIZONTAL_LEN_SQ {
+                    direction.x.atan2(direction.z)
+                } else {
+                    heading_yaw
+                };
+                let horizontal_len = horizontal_len_sq.max(0.0).sqrt();
+                let pitch = direction
+                    .y
+                    .atan2(horizontal_len)
+                    .clamp(-std::f32::consts::FRAC_PI_2, std::f32::consts::FRAC_PI_2);
+                (
+                    if pitch.is_finite() { pitch } else { 0.0 },
+                    if aim_yaw.is_finite() {
+                        aim_yaw
+                    } else {
+                        heading_yaw
+                    },
+                )
+            })
+            .unwrap_or((0.0, heading_yaw));
+
+        let Ok(mut mesh) = registry.get_component::<MeshComponent>(id).cloned() else {
+            continue;
+        };
+        mesh.pose_inputs = Some(PoseInputs {
+            aim_pitch,
+            aim_yaw,
+            heading_yaw,
+        });
         let _ = registry.set_component(id, mesh);
     }
 }

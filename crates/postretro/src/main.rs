@@ -7483,6 +7483,7 @@ mod tests {
                     model: "models/descriptor_mob/scene.gltf".to_string(),
                     animation: Some(MeshAnimation::new(states, "idle".to_string())),
                     origin_offset: glam::Vec3::ZERO,
+                    pose_inputs: None,
                 },
             )
             .expect("freshly spawned id is live");

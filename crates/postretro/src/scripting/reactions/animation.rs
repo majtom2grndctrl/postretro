@@ -114,6 +114,7 @@ mod tests {
                 model: "decraniated".into(),
                 animation: Some(two_state_animation()),
                 origin_offset: glam::Vec3::ZERO,
+                pose_inputs: None,
             },
         )
         .unwrap();

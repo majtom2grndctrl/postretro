@@ -4,6 +4,7 @@
 pub mod affinity_grid;
 pub mod animated_light_chunks;
 pub mod animated_light_weight_maps;
+pub mod bake_control;
 pub mod bc5;
 pub mod bc6h;
 pub mod bvh_build;
@@ -20,17 +21,21 @@ pub mod fog_cell_masks;
 pub mod format;
 pub mod geometry;
 pub mod geometry_utils;
+pub mod governor;
 pub mod kinematic_geometry;
 pub mod light_namespaces;
 pub mod lightmap_bake;
 pub mod lightmap_layer;
+pub mod logger;
 pub mod map_data;
 pub mod map_format;
 pub mod navmesh_bake;
 pub mod pack;
 pub mod parse;
 pub mod partition;
+pub mod pipeline;
 pub mod portals;
+pub mod reporter;
 pub mod sdf_bake;
 pub mod sh_bake;
 pub mod sh_group;
@@ -38,59 +43,16 @@ pub mod shadowmask_bake;
 pub mod texture_mips;
 pub mod texture_validation;
 pub mod trigger_volumes;
+pub mod tui;
 pub mod visibility;
 
 use std::collections::HashSet;
 use std::fmt::Display;
+use std::io::IsTerminal as _;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use indicatif::{ProgressBar, ProgressStyle};
 use map_format::{DEFAULT_MAP_FORMAT, MapFormat};
-
-struct BuildProgress {
-    started: Instant,
-    pb: Option<ProgressBar>,
-    verbose: bool,
-}
-
-impl BuildProgress {
-    fn new(started: Instant, verbose: bool) -> Self {
-        Self {
-            started,
-            pb: None,
-            verbose,
-        }
-    }
-
-    fn start_stage(&mut self, msg: &str) {
-        if let Some(pb) = self.pb.take() {
-            pb.finish();
-        }
-
-        let elapsed = self.started.elapsed();
-
-        if !self.verbose {
-            let pb = ProgressBar::new_spinner();
-            pb.set_style(
-                ProgressStyle::default_spinner()
-                    .template("{elapsed:>4}  {spinner} {msg}")
-                    .unwrap(),
-            );
-            pb.set_message(msg.to_string());
-            pb.enable_steady_tick(std::time::Duration::from_millis(100));
-            self.pb = Some(pb);
-        } else {
-            eprintln!("{:>6.2}s  {}", elapsed.as_secs_f32(), msg);
-        }
-    }
-
-    fn finish(&mut self) {
-        if let Some(pb) = self.pb.take() {
-            pb.finish();
-        }
-    }
-}
 
 /// Resolve the root used by content-relative model handles.
 ///
@@ -359,14 +321,27 @@ fn precheck_output_dir(output: &Path) -> anyhow::Result<()> {
 fn main() -> anyhow::Result<()> {
     let started = Instant::now();
     let args = parse_args()?;
+    // Install capture immediately after argument parsing so every subsequent
+    // early exit can emit the same exactly-once warning summary as a bake.
+    let log_sink = logger::install(args.verbose)?;
+    let reporter_mode = select_reporter_mode(
+        args.tui,
+        TerminalStreams {
+            stdin: std::io::stdin().is_terminal(),
+            stdout: std::io::stdout().is_terminal(),
+            stderr: std::io::stderr().is_terminal(),
+        },
+    )
+    .inspect_err(|_| {
+        log_sink.print_warning_summary();
+    })?;
 
     // Fail fast: if the output directory is missing, prompt to create it now —
     // before parsing the map or running any bake — so a missing folder never
     // wastes a multi-minute bake that only fails at the final write.
-    precheck_output_dir(&args.output)?;
-
-    let log_level = if args.verbose { "info" } else { "warn" };
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(log_level)).init();
+    precheck_output_dir(&args.output).inspect_err(|_| {
+        log_sink.print_warning_summary();
+    })?;
 
     if args.verbose {
         log::info!("Input: {}", args.input.display());
@@ -375,6 +350,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     if !args.format.is_supported() {
+        log_sink.print_warning_summary();
         anyhow::bail!("map format '{:?}' is not yet supported", args.format);
     }
 
@@ -382,9 +358,10 @@ fn main() -> anyhow::Result<()> {
     // --no-cache and --release both disable the cache entirely (no directory is
     // created), selecting the exact ship path (exact monolithic lightmap + exact
     // whole-volume SH). --release is the intent-named equivalent of the mechanical
-    // --no-cache; routing both to `None` means the warm/cold branches below need no
-    // change. --cache-dir <path> overrides the default location for warm builds;
-    // when --no-cache or --release is also supplied, the cache stays disabled.
+    // --no-cache; routing both to `None` means the warm/cold branches in the
+    // pipeline need no change. --cache-dir <path> overrides the default location
+    // for warm builds; when --no-cache or --release is also supplied, the cache
+    // stays disabled.
     let stage_cache: Option<cache::StageCache> = if args.release || args.no_cache {
         if args.release {
             log::info!("[prl-build] release bake: exact lighting, cache bypassed");
@@ -425,885 +402,85 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
-    let mut timings = Vec::new();
-    let mut progress = BuildProgress::new(started, args.verbose);
-
-    progress.start_stage("Parsing map...");
-    let stage_start = Instant::now();
-    let map_data = parse::parse_map_file(&args.input, args.format)?;
-    timings.push(("Parsing", stage_start.elapsed()));
-
-    progress.start_stage("Data script compilation...");
-    let stage_start = Instant::now();
-    let data_script_section =
-        compile_worldspawn_data_script(&args.input, map_data.data_script.as_deref())?;
-    timings.push(("DataScript", stage_start.elapsed()));
-
-    progress.start_stage("Texture color-space validation...");
-    let stage_start = Instant::now();
-    let texture_root = resolve_texture_root(&args.input);
-    texture_validation::validate_sibling_color_spaces(&texture_root)?;
-    timings.push(("TexValidation", stage_start.elapsed()));
-
-    let static_baked_lights = light_namespaces::StaticBakedLights::from_lights(&map_data.lights);
-    let animated_baked_lights =
-        light_namespaces::AnimatedBakedLights::from_lights(&map_data.lights);
-    let alpha_lights_ns = light_namespaces::AlphaLightsNs::from_lights(&map_data.lights);
-
-    progress.start_stage("BSP partitioning...");
-    let stage_start = Instant::now();
-    let result = partition::partition(&map_data.brush_volumes)?;
-    timings.push(("Partitioning", stage_start.elapsed()));
-    if args.verbose {
-        partition::log_stats(&result.tree, &result.faces);
-    }
-
-    // Watertightness diagnostic. Surfaces holes in the static world geometry
-    // (faces the clipper dropped, or T-junction cracks) so they can be fixed.
-    // A warning, never a build failure: a compiler bug must not block a level
-    // designer, only become visible. Runs on the pre-exterior-cull face set.
-    let watertight = partition::check_watertight(&result.faces);
-    if watertight.open_edge_count > 0 {
-        log::warn!(
-            "[Compiler] Watertightness: {} open edge(s) in world geometry — possible holes \
-             you can see through. Diagnostic only; the build still succeeds. Sample locations \
-             (world-space meters, showing up to {}):",
-            watertight.open_edge_count,
-            watertight.samples.len(),
-        );
-        for edge in &watertight.samples {
-            log::warn!(
-                "[Compiler]   open edge near ({:.3}, {:.3}, {:.3}) — near brush {}",
-                edge.midpoint.x,
-                edge.midpoint.y,
-                edge.midpoint.z,
-                edge.brush_index,
-            );
+    let governor = std::sync::Arc::new(governor::Governor::new(args.jobs, false));
+    match reporter_mode {
+        ReporterMode::Plain => {
+            let reporter = std::sync::Arc::new(reporter::PlainReporter::new(started, log_sink));
+            let pipeline_reporter: std::sync::Arc<dyn reporter::Reporter> = reporter.clone();
+            let result = pipeline::run(&args, stage_cache, started, pipeline_reporter, governor);
+            if result.is_err() {
+                reporter::Reporter::finalize_failure(reporter.as_ref());
+            }
+            result
         }
-    } else if args.verbose {
-        log::info!("[Compiler] Watertightness: world geometry is closed (0 open edges)");
+        ReporterMode::Tui => {
+            // The planned list is content-dependent. Parse once before entering
+            // the alternate screen, then pass that parsed map to the worker.
+            // Its measured duration remains the Parsing Build Summary row.
+            let prepared = match pipeline::prepare(&args) {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    log_sink.print_warning_summary();
+                    return Err(error);
+                }
+            };
+            let planned = pipeline::planned_stages(&prepared.map_data.lights);
+            tui::run_tui(planned, log_sink, governor, move |reporter, governor| {
+                pipeline::run_prepared(&args, stage_cache, started, reporter, governor, prepared)
+            })
+        }
     }
+}
 
-    progress.start_stage("Visibility computation...");
-    let stage_start = Instant::now();
-    // The exterior set is used by the BSP/leaf encoder to emit `face_count = 0`
-    // for outside-the-map leaves in lockstep with the geometry section.
-    let generated_portals = portals::generate_portals(&result.tree);
-    let portal_count = generated_portals.len();
-    if portal_count == 0 {
-        log::warn!(
-            "Portal generation produced 0 portals. Vis will treat all leaves as mutually visible."
-        );
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TuiPreference {
+    Auto,
+    Force,
+    Disable,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReporterMode {
+    Plain,
+    Tui,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TerminalStreams {
+    stdin: bool,
+    stdout: bool,
+    stderr: bool,
+}
+
+fn select_reporter_mode(
+    preference: TuiPreference,
+    streams: TerminalStreams,
+) -> anyhow::Result<ReporterMode> {
+    let all_terminals = streams.stdin && streams.stdout && streams.stderr;
+    match (preference, all_terminals) {
+        (TuiPreference::Disable, _) => Ok(ReporterMode::Plain),
+        (TuiPreference::Force, true) | (TuiPreference::Auto, true) => Ok(ReporterMode::Tui),
+        (TuiPreference::Auto, false) => Ok(ReporterMode::Plain),
+        (TuiPreference::Force, false) => anyhow::bail!(
+            "--tui requires stdin, stdout, and stderr to all be attached to terminals"
+        ),
     }
+}
 
-    let exterior_leaves = visibility::find_exterior_leaves(&result.tree, &generated_portals);
-
-    let vis_result = visibility::encode_vis(&result.tree, &exterior_leaves);
-    timings.push(("Visibility", stage_start.elapsed()));
-    if args.verbose {
-        visibility::log_stats(&vis_result, portal_count);
+fn default_jobs_for(logical_cores: usize) -> usize {
+    match logical_cores {
+        0 | 1 => 1,
+        2..=8 => logical_cores - 1,
+        _ => logical_cores - 2,
     }
+}
 
-    progress.start_stage("Geometry extraction...");
-    let stage_start = Instant::now();
-    let mut geo_result = geometry::extract_geometry(&result.faces, &result.tree, &exterior_leaves);
-    let kinematic_geometry_section = kinematic_geometry::encode_kinematic_geometry_section(
-        &map_data.kinematic_movers,
-        &map_data.kinematic_waypoints,
-        &mut geo_result.texture_names,
-    );
-    let trigger_volumes_section =
-        trigger_volumes::encode_trigger_volumes_section(&map_data.trigger_volumes);
-    timings.push(("Geometry", stage_start.elapsed()));
-    if args.verbose {
-        let empty_leaf_count = result
-            .tree
-            .leaves
-            .iter()
-            .enumerate()
-            .filter(|(idx, l)| !l.is_solid && !exterior_leaves.contains(idx))
-            .count();
-        geometry::log_stats(&geo_result, empty_leaf_count);
-    }
-
-    progress.start_stage("BVH build...");
-    let stage_start = Instant::now();
-    let (bvh, bvh_primitives, bvh_section) =
-        bvh_build::build_bvh(&geo_result).map_err(|e| anyhow::anyhow!("BVH build failed: {e}"))?;
-    timings.push(("BVH Build", stage_start.elapsed()));
-    if args.verbose {
-        bvh_build::log_stats(&bvh_section);
-    }
-
-    // Cell draw index (id 37): per-cell BVH-leaf spans for the runtime visible-cell
-    // candidate cull. Derived from the already-sorted flat BVH leaves joined into
-    // the encoded BSP leaf records (cell_id == BSP leaf index). Uncached — it is a
-    // cheap CSR pass over data the (uncached) BVH stage just produced. Omitted for
-    // zero-leaf maps; emission is independent of portal presence.
-    let cell_draw_index_bytes = cell_draw_index_bake::bake_cell_draw_index(
-        &bvh_section.leaves,
-        &vis_result.leaves_section.leaves,
+fn default_jobs() -> usize {
+    default_jobs_for(
+        std::thread::available_parallelism()
+            .map(std::num::NonZeroUsize::get)
+            .unwrap_or(1),
     )
-    .map(|section| section.to_bytes());
-
-    progress.start_stage("NavMesh bake...");
-    let stage_start = Instant::now();
-    // Walkable navigation graph baked from the extracted geometry's triangles
-    // (already filtered to empty, non-exterior leaf faces). `None` when no
-    // walkable region survives — the section is then omitted and the build still
-    // succeeds (SDF-atlas precedent). Cached on blake3(postcard(geo_result) ||
-    // postcard(nav params)), mirroring the SDF stage's `SdfInputs` hash.
-    let navmesh_section = {
-        let nav_input_hash = {
-            let mut buf =
-                postcard::to_allocvec(&geo_result).expect("postcard serialize geo_result");
-            buf.extend_from_slice(
-                &postcard::to_allocvec(&map_data.nav_params)
-                    .expect("postcard serialize nav params"),
-            );
-            *blake3::hash(&buf).as_bytes()
-        };
-        let nav_key = cache::CacheKey::new(
-            "navmesh",
-            navmesh_bake::NAVMESH_STAGE_VERSION,
-            &nav_input_hash,
-        );
-
-        // Cache stores the section's `to_bytes()`; an empty payload is the
-        // sentinel for a cached "no walkable region" result (no section).
-        let cached = stage_cache.as_ref().and_then(|c| c.get(&nav_key));
-        match cached {
-            Some(bytes) if bytes.is_empty() => {
-                log::info!("[cache] navmesh hit (no walkable region)");
-                None
-            }
-            Some(bytes) => {
-                match postretro_level_format::navmesh::NavMeshSection::from_bytes(&bytes) {
-                    Ok(section) => {
-                        log::info!("[cache] navmesh hit");
-                        Some(section)
-                    }
-                    Err(e) => {
-                        log::warn!("[cache] corrupt navmesh entry, re-baking: {e}");
-                        let section = navmesh_bake::bake_navmesh(&geo_result, &map_data.nav_params);
-                        if let Some(ref c) = stage_cache {
-                            c.put(
-                                &nav_key,
-                                &section.as_ref().map(|s| s.to_bytes()).unwrap_or_default(),
-                            );
-                        }
-                        section
-                    }
-                }
-            }
-            None => {
-                log::info!("[cache] navmesh miss");
-                let section = navmesh_bake::bake_navmesh(&geo_result, &map_data.nav_params);
-                if let Some(ref c) = stage_cache {
-                    c.put(
-                        &nav_key,
-                        &section.as_ref().map(|s| s.to_bytes()).unwrap_or_default(),
-                    );
-                }
-                section
-            }
-        }
-    };
-    timings.push(("NavMesh", stage_start.elapsed()));
-
-    progress.start_stage("Lightmap bake...");
-    let stage_start = Instant::now();
-    let static_light_count = map_data.lights.iter().filter(|l| !l.is_dynamic).count();
-    let effective_lightmap_density =
-        resolve_lightmap_density(args.lightmap_density, map_data.lightmap_density);
-    let lightmap_config = lightmap_bake::LightmapConfig {
-        lightmap_density: effective_lightmap_density,
-        area_sample_count: args.soft_shadow_samples,
-        uncompressed_irradiance: args.uncompressed_irradiance,
-    };
-    let final_lightmap_density;
-    let lightmap_bake_output = if let Some(ref cache) = stage_cache {
-        // Warm path: two-level lightmap cache. First checks a memoized composited
-        // `LightmapSection`; on a hit (no-edit rebuild) it skips the layer reads,
-        // composite, dilate, and BC6H encode entirely. On a section-cache miss it
-        // falls through to the per-light layer cache — each unchanged light's layer
-        // hits, only edited lights re-bake — then composites/dilates/encodes. Either
-        // way the composite equals the monolithic `bake_face_chart` output bit-for-bit,
-        // so the only difference from the cold path is cache reuse, not different output.
-        // The multi-bin packer opens new array layers instead of failing on
-        // atlas area, so there is no density-coarsening retry — prepare once at
-        // the fixed density.
-        let density = lightmap_config.lightmap_density;
-        let prepared = lightmap_bake::prepare_atlas(&mut geo_result, &static_baked_lights, density)
-            .map_err(|e| anyhow::anyhow!("Lightmap atlas prepare failed: {e}"))?;
-        final_lightmap_density = density;
-
-        // Mirror `bake_lightmap`'s placeholder branch: with no static lights or no
-        // packed placements there is nothing to composite, so emit a placeholder
-        // section while still returning the planned charts/placements for the
-        // downstream animated-light passes.
-        if static_baked_lights.is_empty() || prepared.placements.is_empty() {
-            lightmap_bake::LightmapBakeOutput {
-                section: postretro_level_format::lightmap::LightmapSection::placeholder(),
-                charts: prepared.charts,
-                placements: prepared.placements,
-                atlas_width: prepared.atlas_width,
-                atlas_height: prepared.atlas_height,
-                layer_count: prepared.layer_count,
-            }
-        } else {
-            let shared = lightmap_layer::SharedAtlas {
-                charts: &prepared.charts,
-                placements: &prepared.placements,
-                atlas_width: prepared.atlas_width,
-                atlas_height: prepared.atlas_height,
-            };
-            // Direct-lightmap light set: global `static_lights` order with `Sdf`
-            // shadow-type lights dropped, exactly as the monolithic `bake_lightmap`
-            // does — so the composited layer sum reproduces the cold bake.
-            let layer_lights: Vec<&map_data::MapLight> = static_baked_lights
-                .entries()
-                .iter()
-                .map(|e| e.light)
-                .filter(|l| l.shadow_type != map_data::ShadowType::Sdf)
-                .collect();
-
-            // Compute every light's layer input hash up front (cheap — no blob
-            // reads). These both fold into the second-level section key and feed
-            // the per-light layer keys on a section-cache miss.
-            let layer_input_hashes: Vec<[u8; 32]> = layer_lights
-                .iter()
-                .map(|light| {
-                    lightmap_layer::layer_input_hash(
-                        light,
-                        &shared,
-                        &bvh_primitives,
-                        &geo_result,
-                        density,
-                        args.soft_shadow_samples,
-                    )
-                })
-                .collect();
-
-            // Second-level cache: memoize the composited `LightmapSection` so a
-            // no-edit rebuild does one section decode and skips the layer reads,
-            // composite, dilate, and BC6H encode entirely. The section bytes are
-            // a pure function of the folded inputs (proven byte-identical by the
-            // existing determinism gate), so caching them cannot perturb output.
-            let section_input_hash = lightmap_layer::section_input_hash(
-                &layer_input_hashes,
-                density,
-                lightmap_config.uncompressed_irradiance,
-            );
-            let section_key = cache::CacheKey::new(
-                "lightmap_section",
-                lightmap_layer::LIGHTMAP_SECTION_VERSION,
-                &section_input_hash,
-            );
-
-            // A `from_bytes` failure on a present entry is treated as a miss
-            // (warn + recompose), mirroring the layer codec's corruption handling.
-            let cached_section = cache.get(&section_key).and_then(|bytes| {
-                match postretro_level_format::lightmap::LightmapSection::from_bytes(&bytes) {
-                    Ok(section) => Some(section),
-                    Err(err) => {
-                        log::warn!("[Compiler] corrupt lightmap section, recomposing: {err}");
-                        None
-                    }
-                }
-            });
-
-            let section = match cached_section {
-                Some(section) => {
-                    log::info!("[cache] lightmap_section hit");
-                    section
-                }
-                None => {
-                    log::info!("[cache] lightmap_section miss");
-                    let mut layers: Vec<lightmap_layer::LightmapLayer> =
-                        Vec::with_capacity(layer_lights.len());
-                    for (light, input_hash) in layer_lights.iter().zip(&layer_input_hashes) {
-                        let layer_key = cache::CacheKey::new(
-                            "lightmap_layer",
-                            lightmap_layer::LAYER_FORMAT_VERSION,
-                            input_hash,
-                        );
-                        let layer = match cache
-                            .get(&layer_key)
-                            .and_then(|bytes| lightmap_layer::LightmapLayer::from_bytes(&bytes))
-                        {
-                            Some(layer) => {
-                                log::info!("[cache] lightmap_layer hit");
-                                layer
-                            }
-                            None => {
-                                log::info!("[cache] lightmap_layer miss");
-                                let layer = lightmap_layer::bake_light_layer(
-                                    light,
-                                    &shared,
-                                    &bvh,
-                                    &bvh_primitives,
-                                    &geo_result,
-                                    args.soft_shadow_samples,
-                                );
-                                cache.put(&layer_key, &layer.to_bytes());
-                                layer
-                            }
-                        };
-                        layers.push(layer);
-                    }
-
-                    let mut composite = lightmap_layer::composite_layers(
-                        &layers,
-                        prepared.atlas_width,
-                        prepared.atlas_height,
-                    );
-                    composite.dilate();
-                    let section =
-                        composite.encode_section(density, lightmap_config.uncompressed_irradiance);
-                    cache.put(&section_key, &section.to_bytes());
-                    section
-                }
-            };
-
-            lightmap_bake::LightmapBakeOutput {
-                section,
-                charts: prepared.charts,
-                placements: prepared.placements,
-                atlas_width: prepared.atlas_width,
-                atlas_height: prepared.atlas_height,
-                layer_count: prepared.layer_count,
-            }
-        }
-    } else {
-        // Cold / exact path (`--no-cache`): the monolithic whole-atlas bake, the
-        // shippable source of truth. No layer reads/writes. The multi-bin packer
-        // opens new array layers instead of failing on atlas area, so there is no
-        // density-coarsening retry — bake once at the fixed density.
-        let density = lightmap_config.lightmap_density;
-        final_lightmap_density = density;
-        let mut lm_ctx = lightmap_bake::LightmapBakeCtx {
-            bvh: &bvh,
-            primitives: &bvh_primitives,
-            geometry: &mut geo_result,
-            lights: &static_baked_lights,
-        };
-        lightmap_bake::bake_lightmap(
-            &mut lm_ctx,
-            &lightmap_bake::LightmapConfig {
-                lightmap_density: density,
-                area_sample_count: args.soft_shadow_samples,
-                uncompressed_irradiance: args.uncompressed_irradiance,
-            },
-        )
-        .map_err(|e| anyhow::anyhow!("Lightmap bake failed: {e}"))?
-    };
-    timings.push(("Lightmap Bake", stage_start.elapsed()));
-    let lightmap_bake::LightmapBakeOutput {
-        section: lightmap_section,
-        charts: face_charts,
-        placements: face_placements,
-        atlas_width,
-        atlas_height,
-        // Animated weight maps are single-layer; the array layer count is carried
-        // on the section / per-chart placements, not needed here.
-        layer_count: _,
-    } = lightmap_bake_output;
-    if args.verbose {
-        lightmap_bake::log_stats(&lightmap_section, static_light_count);
-    }
-
-    progress.start_stage("SH volume bake...");
-    let stage_start = Instant::now();
-    if let Err(msg) = sh_bake::validate_light_animations(&map_data.lights) {
-        anyhow::bail!("light animation validation failed: {msg}");
-    }
-    let sh_config = sh_bake::ShConfig {
-        probe_spacing: args.probe_spacing,
-    };
-    let sh_ctx = sh_bake::ShBakeCtx {
-        bvh: &bvh,
-        primitives: &bvh_primitives,
-        geometry: &geo_result,
-        tree: &result.tree,
-        exterior_leaves: &exterior_leaves,
-        static_lights: &static_baked_lights,
-        animated_lights: &animated_baked_lights,
-        total_light_count: map_data.lights.len(),
-    };
-    let sh_volume_section = if let Some(ref cache) = stage_cache {
-        // Warm path: per-probe-group SH (Task 7). Each group bakes/loads a cached
-        // entry over its probe subset with a bounded reaching-light set, then the
-        // groups assemble into the volume. This is a deliberate approximation —
-        // lights past the reach cutoff drop, so far-bounce regions run slightly
-        // dim. Not byte-identical to the cold whole-volume bake; the cold
-        // `--no-cache` build is the exact ship source of truth.
-        log::warn!("{}", sh_group::WARM_SH_APPROX_WARNING);
-        sh_group::bake_sh_volume_grouped(&sh_ctx, &sh_config, Some(cache))
-    } else {
-        // Cold / exact path (`--no-cache`): the monolithic whole-volume bake, the
-        // shippable source of truth. No per-group reads/writes, no warning.
-        sh_bake::bake_sh_volume(&sh_ctx, &sh_config)
-    };
-    timings.push(("SH Bake", stage_start.elapsed()));
-    if args.verbose {
-        sh_bake::log_stats(&sh_volume_section);
-    }
-
-    progress.start_stage("Delta SH volume bake...");
-    let stage_start = Instant::now();
-    let delta_sh_volumes_section = {
-        let inputs = delta_sh_bake::DeltaBakeInputs {
-            bvh: &bvh,
-            primitives: &bvh_primitives,
-            geometry: &geo_result,
-            tree: &result.tree,
-            exterior_leaves: &exterior_leaves,
-            portals: &generated_portals,
-            animated_lights: &animated_baked_lights,
-        };
-        delta_sh_bake::bake_delta_sh_volumes(&inputs, &sh_config)
-    };
-    timings.push(("Delta SH Bake", stage_start.elapsed()));
-    if args.verbose {
-        if let Some(ref section) = delta_sh_volumes_section {
-            delta_sh_bake::log_stats(section);
-        } else {
-            log::info!("DeltaShVolumes: skipped (no animated lights)");
-        }
-    }
-
-    progress.start_stage("Direct SH volume bake...");
-    let stage_start = Instant::now();
-    // Baked static-direct octahedral SH for dynamic objects. Emitted IFF there are
-    // static (baked) lights — a map whose only lights are animated produces NO
-    // direct section (absence; the loader treats it as direct = 0), so animated
-    // direct never double-counts against `lm_anim` (AC 7).
-    let direct_sh_volume_section = if static_baked_lights.is_empty() {
-        if args.verbose {
-            log::info!("DirectShVolume: skipped (no static lights)");
-        }
-        None
-    } else {
-        let inputs = direct_sh_bake::DirectBakeInputs {
-            sh_ctx: &sh_ctx,
-            portals: &generated_portals,
-        };
-        // Warm path passes the shared `StageCache`; cold (`--no-cache`/`--release`)
-        // passes `None`. Unlike the indirect bake's warm bounded-light approximation,
-        // the direct bake uses a strict whole-section cache key with the provably-zero
-        // light-reach cull in both modes — output is byte-identical regardless of path.
-        let raw =
-            direct_sh_bake::bake_direct_sh_volume_cached(&inputs, &sh_config, stage_cache.as_ref());
-        if args.verbose {
-            direct_sh_bake::log_cull_savings(&inputs, &sh_config);
-        }
-        // BC6H-at-rest (D8): re-encode the uncompressed RGBA16F bake output into the
-        // production BC6H section, honoring the same `uncompressed_irradiance` debug
-        // bypass the lightmap path uses.
-        let section = direct_sh_bake::encode_direct_section_bc6h(
-            &raw,
-            lightmap_config.uncompressed_irradiance,
-        );
-        if args.verbose {
-            // AC 14: report the post-compression footprint and the pre-compression
-            // dense figure (the RGBA-f32 buffer fed to the encoder), alongside the
-            // indirect atlas size for comparison.
-            let post_compression = section.atlas.len();
-            let pre_compression = direct_sh_bake::direct_dense_atlas_byte_size(&raw);
-            let indirect_atlas = sh_volume_section.to_bytes().len();
-            log::info!(
-                "[Compiler] DirectShVolume atlas footprint: {post_compression} bytes BC6H \
-                 (pre-compression dense {pre_compression} bytes); indirect OctahedralShVolume \
-                 section {indirect_atlas} bytes",
-            );
-        }
-        Some(section)
-    };
-    timings.push(("Direct SH Bake", stage_start.elapsed()));
-
-    progress.start_stage("Entity shadow light selection...");
-    let stage_start = Instant::now();
-    let raw_entity_shadow_lights_section = direct_sh_volume_section.as_ref().and_then(|_| {
-        let inputs = entity_shadow_select::EntityShadowSelectionInputs {
-            bvh: &bvh,
-            primitives: &bvh_primitives,
-            geometry: &geo_result,
-            static_lights: &static_baked_lights,
-            alpha_lights: &alpha_lights_ns,
-            params: map_data.entity_shadow_params,
-        };
-        let section = entity_shadow_select::select_entity_shadow_lights(&inputs);
-        if section.light_indices.is_empty() {
-            None
-        } else {
-            Some(section)
-        }
-    });
-    timings.push(("EntityShadowLights", stage_start.elapsed()));
-    if args.verbose {
-        if let Some(ref section) = raw_entity_shadow_lights_section {
-            log::info!(
-                "EntityShadowLights: selected {} static light candidate(s)",
-                section.light_indices.len()
-            );
-        } else {
-            log::info!("EntityShadowLights: skipped (no DirectShVolume selection)");
-        }
-    }
-
-    progress.start_stage("Direct SH delta volume bake...");
-    let stage_start = Instant::now();
-    let raw_direct_sh_delta_volumes_section =
-        raw_entity_shadow_lights_section
-            .as_ref()
-            .and_then(|section| {
-                let inputs = direct_sh_bake::DirectBakeInputs {
-                    sh_ctx: &sh_ctx,
-                    portals: &generated_portals,
-                };
-                direct_sh_bake::bake_direct_sh_delta_volumes(
-                    &inputs,
-                    &sh_config,
-                    &alpha_lights_ns,
-                    section,
-                )
-            });
-    timings.push(("Direct SH Delta Bake", stage_start.elapsed()));
-
-    let (entity_shadow_lights_section, direct_sh_delta_volumes_section) =
-        match raw_entity_shadow_lights_section {
-            Some(selection) => match raw_direct_sh_delta_volumes_section {
-                Some(deltas)
-                    if direct_sh_volume_section.as_ref().is_some_and(|direct| {
-                        pack::direct_sh_delta_is_usable_for_selection(
-                            &deltas,
-                            direct,
-                            selection.light_indices.len(),
-                        )
-                    }) =>
-                {
-                    (Some(selection), Some(deltas))
-                }
-                Some(_) => {
-                    log::warn!(
-                        "EntityShadowLights: clearing {} selected static light candidate(s) because DirectShDeltaVolumes is unusable for the DirectShVolume base",
-                        selection.light_indices.len()
-                    );
-                    (None, None)
-                }
-                None => {
-                    log::warn!(
-                        "EntityShadowLights: clearing {} selected static light candidate(s) because DirectShDeltaVolumes is absent",
-                        selection.light_indices.len()
-                    );
-                    (None, None)
-                }
-            },
-            None => (None, None),
-        };
-    if args.verbose {
-        if let Some(ref section) = direct_sh_delta_volumes_section {
-            log::info!(
-                "DirectShDeltaVolumes: {} CSR entr(y/ies), affinity grid {}x{}x{}",
-                section.affinity_lights.len(),
-                section.affinity_dims[0],
-                section.affinity_dims[1],
-                section.affinity_dims[2],
-            );
-        } else {
-            log::info!("DirectShDeltaVolumes: skipped (no usable selected light deltas)");
-        }
-    }
-
-    progress.start_stage("Shadowmask atlas bake...");
-    let stage_start = Instant::now();
-    let shadowmask_atlas_section = if entity_shadow_lights_section.is_some() {
-        let shared = lightmap_layer::SharedAtlas {
-            charts: &face_charts,
-            placements: &face_placements,
-            atlas_width,
-            atlas_height,
-        };
-        shadowmask_bake::bake_shadowmask_atlas_cached(
-            entity_shadow_lights_section.as_ref(),
-            &alpha_lights_ns,
-            &shared,
-            &bvh,
-            &bvh_primitives,
-            &geo_result,
-            final_lightmap_density,
-            args.soft_shadow_samples,
-            stage_cache.as_ref(),
-        )
-    } else {
-        None
-    };
-    timings.push(("ShadowmaskAtlas", stage_start.elapsed()));
-    if args.verbose {
-        if let Some(ref section) = shadowmask_atlas_section {
-            log::info!(
-                "ShadowmaskAtlas: {}x{}x{}, {} selected channel entr(y/ies), {} bytes",
-                section.width,
-                section.height,
-                section.layer_count,
-                section.channels.len(),
-                section.data.len(),
-            );
-        } else {
-            log::info!("ShadowmaskAtlas: skipped (no selected static lights)");
-        }
-    }
-
-    progress.start_stage("Chunk light list bake...");
-    let stage_start = Instant::now();
-    let chunk_light_list_section = {
-        let inputs = chunk_light_list_bake::ChunkLightListInputs {
-            bvh: &bvh,
-            primitives: &bvh_primitives,
-            geometry: &geo_result,
-            lights: &alpha_lights_ns,
-            tree: &result.tree,
-            portals: &generated_portals,
-            exterior_leaves: &exterior_leaves,
-        };
-        chunk_light_list_bake::bake_chunk_light_list(
-            &inputs,
-            chunk_light_list_bake::DEFAULT_CELL_SIZE_METERS,
-            chunk_light_list_bake::DEFAULT_PER_CHUNK_LIGHT_CAP,
-        )
-        .map_err(|e| anyhow::anyhow!("Chunk light list bake failed: {e}"))?
-    };
-    timings.push(("ChunkLightList", stage_start.elapsed()));
-
-    let alpha_lights_section = pack::encode_alpha_lights(&alpha_lights_ns, &result.tree);
-    let light_influence_section = pack::encode_light_influence(&alpha_lights_ns);
-    let light_tags_section = pack::encode_light_tags(&alpha_lights_ns);
-    let map_entities_section = pack::encode_map_entities(&map_data.map_entities);
-    let fog_volumes_section = pack::encode_fog_volumes(
-        &map_data.fog_volumes,
-        map_data.fog_pixel_scale,
-        map_data.initial_gravity,
-    );
-    let fog_cell_masks_section =
-        fog_cell_masks::bake_fog_cell_masks(&result.tree, &map_data.fog_volumes);
-
-    let (animated_chunk_lights, _) = animated_baked_lights.to_parallel_vecs();
-
-    progress.start_stage("Animated light chunks...");
-    let stage_start = Instant::now();
-    // Returns a parallel chunk-range table indexed by BVH leaf slot; pack stamps
-    // it onto the on-disk `BvhLeaf` records at serialization time. Empty section
-    // signals no animated lights — no placeholder record is emitted.
-    let (animated_light_chunks_section, bvh_chunk_ranges) =
-        animated_light_chunks::build_animated_light_chunks(
-            &bvh_section,
-            &animated_baked_lights,
-            &face_charts,
-            &geo_result.face_index_ranges,
-            final_lightmap_density,
-        );
-    timings.push(("AnimLightChunks", stage_start.elapsed()));
-
-    progress.start_stage("Animated light weight maps...");
-    let stage_start = Instant::now();
-    let animated_light_weight_maps_section = if animated_light_chunks_section.chunks.is_empty() {
-        None
-    } else {
-        let wm_inputs = animated_light_weight_maps::WeightMapInputs {
-            bvh: &bvh,
-            primitives: &bvh_primitives,
-            geometry: &geo_result,
-            chunk_section: &animated_light_chunks_section,
-            lights: &animated_chunk_lights,
-            face_charts: &face_charts,
-            face_placements: &face_placements,
-            atlas_width,
-            atlas_height,
-            area_sample_count: args.soft_shadow_samples,
-        };
-
-        // Build the input hash from owned/serializable data. Charts, placements,
-        // and the chunk section don't derive `Serialize`, so the hash folds
-        // `animated_light_chunks_section.to_bytes()` as a proxy. That proxy is a
-        // valid fingerprint for charts AND placements because
-        // `build_animated_light_chunks` (and the upstream chart/placement
-        // construction) are deterministic given geometry + lights + density — the
-        // section bytes faithfully capture those derived inputs.
-        //
-        // Deliberate divergence from the lightmap/sh stages: those hash a
-        // pre-bake geometry clone, but this hashes the post-mutation `geo_result`.
-        // That's correct here — the weight-map bake consumes the mutated geometry,
-        // and the mutations (`split_shared_vertices`, UV assignment) are
-        // idempotent and deterministic, so post-mutation geometry is a stable
-        // function of the inputs. Do not "fix" this to a pre-bake clone; it would
-        // hash geometry the bake doesn't actually consume.
-        let wm_input_hash = {
-            let mut buf = postcard::to_allocvec(&animated_chunk_lights)
-                .expect("postcard serialize animated_chunk_lights");
-            buf.extend_from_slice(
-                &postcard::to_allocvec(&geo_result).expect("postcard serialize geo_result"),
-            );
-            buf.extend_from_slice(&final_lightmap_density.to_le_bytes());
-            buf.extend_from_slice(&atlas_width.to_le_bytes());
-            buf.extend_from_slice(&atlas_height.to_le_bytes());
-            buf.extend_from_slice(&animated_light_chunks_section.to_bytes());
-            buf.extend_from_slice(&args.soft_shadow_samples.to_le_bytes());
-            *blake3::hash(&buf).as_bytes()
-        };
-        let wm_key = cache::CacheKey::new(
-            "animated_lm_weight_maps",
-            animated_light_weight_maps::STAGE_VERSION,
-            &wm_input_hash,
-        );
-
-        let cached = stage_cache.as_ref().and_then(|c| c.get(&wm_key));
-        let cached_wm_section = cached.and_then(|bytes| {
-            postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection::from_bytes(&bytes)
-                .map_err(|e| {
-                    log::warn!("[cache] corrupt animated_lm_weight_maps entry, re-baking: {e}")
-                })
-                .ok()
-        });
-
-        if let Some(section) = cached_wm_section {
-            log::info!("[cache] animated_lm_weight_maps hit");
-            Some(section)
-        } else {
-            log::info!("[cache] animated_lm_weight_maps miss");
-            let section = animated_light_weight_maps::bake_animated_light_weight_maps(&wm_inputs);
-            if let Some(ref c) = stage_cache {
-                c.put(&wm_key, &section.to_bytes());
-            }
-            Some(section)
-        }
-    };
-    timings.push(("AnimWeightMaps", stage_start.elapsed()));
-
-    let animated_light_chunks_section = if animated_light_chunks_section.chunks.is_empty() {
-        None
-    } else {
-        Some(animated_light_chunks_section)
-    };
-
-    let sdf_atlas_section = if map_needs_sdf_atlas(&map_data.lights) {
-        progress.start_stage("SDF atlas bake...");
-        let stage_start = Instant::now();
-        let sdf_config = sdf_bake::SdfConfig {
-            voxel_size_m: args.voxel_size,
-            ..sdf_bake::SdfConfig::default()
-        };
-        let section = {
-            // Build serialisable inputs for the cache key. Geometry hash also
-            // captures triangle order, so a deterministic geometry result
-            // means a deterministic cache key.
-            let sdf_inputs = sdf_bake::SdfInputs {
-                geometry: geo_result.clone(),
-            };
-            let sdf_input_hash = {
-                let mut buf =
-                    postcard::to_allocvec(&sdf_inputs).expect("postcard serialize SdfInputs");
-                buf.extend_from_slice(
-                    &postcard::to_allocvec(&sdf_config).expect("postcard serialize SdfConfig"),
-                );
-                *blake3::hash(&buf).as_bytes()
-            };
-            let sdf_key =
-                cache::CacheKey::new("sdf_atlas", sdf_bake::STAGE_VERSION, &sdf_input_hash);
-
-            let cached = stage_cache.as_ref().and_then(|c| c.get(&sdf_key));
-            let cached_section = cached.and_then(|bytes| {
-                postretro_level_format::sdf_atlas::SdfAtlasSection::from_bytes(&bytes)
-                    .map_err(|e| log::warn!("[cache] corrupt sdf_atlas entry, re-baking: {e}"))
-                    .ok()
-            });
-
-            if let Some(section) = cached_section {
-                log::info!("[cache] sdf_atlas hit");
-                section
-            } else {
-                log::info!("[cache] sdf_atlas miss");
-                let ctx = sdf_bake::SdfBakeCtx {
-                    geometry: &geo_result,
-                    tree: &result.tree,
-                };
-                let section = sdf_bake::bake_sdf_atlas(&ctx, &sdf_config);
-                if let Some(ref c) = stage_cache {
-                    c.put(&sdf_key, &section.to_bytes());
-                }
-                section
-            }
-        };
-        timings.push(("SDF Atlas Bake", stage_start.elapsed()));
-        if args.verbose {
-            sdf_bake::log_stats(&section);
-        }
-        Some(section)
-    } else {
-        None
-    };
-
-    progress.start_stage("Texture mip bake...");
-    let stage_start = Instant::now();
-    let prm_root = resolve_prm_root_via_cargo(&args.input);
-    let name_to_key =
-        texture_mips::bake_texture_mips(&geo_result.texture_names.names, &texture_root, &prm_root)?;
-    let content_root = resolve_content_root(&args.input);
-    bake_model_textures(&map_data.map_entities, &content_root, &prm_root);
-    timings.push(("TextureMips", stage_start.elapsed()));
-
-    progress.start_stage("Packing and writing...");
-    let stage_start = Instant::now();
-
-    let portals_section = pack::encode_portals(&generated_portals);
-    pack::pack_and_write_portals(
-        &args.output,
-        &geo_result,
-        &name_to_key,
-        &vis_result.leaves_section,
-        &result.tree,
-        &portals_section,
-        &exterior_leaves,
-        &bvh_section,
-        &bvh_chunk_ranges,
-        &alpha_lights_section,
-        &light_influence_section,
-        &sh_volume_section,
-        direct_sh_volume_section.as_ref(),
-        entity_shadow_lights_section.as_ref(),
-        direct_sh_delta_volumes_section.as_ref(),
-        shadowmask_atlas_section.as_ref(),
-        &lightmap_section,
-        &chunk_light_list_section,
-        animated_light_chunks_section.as_ref(),
-        animated_light_weight_maps_section.as_ref(),
-        light_tags_section.as_ref(),
-        delta_sh_volumes_section.as_ref(),
-        data_script_section.as_ref(),
-        map_entities_section.as_ref(),
-        &fog_volumes_section,
-        fog_cell_masks_section.as_ref(),
-        sdf_atlas_section.as_ref(),
-        navmesh_section.as_ref(),
-        kinematic_geometry_section.as_ref(),
-        trigger_volumes_section.as_ref(),
-        cell_draw_index_bytes,
-    )?;
-    timings.push(("Packing", stage_start.elapsed()));
-
-    progress.finish();
-
-    println!("\nBuild Summary:");
-    for (name, duration) in &timings {
-        println!("  {: <15} {:>6.2}s", name, duration.as_secs_f32());
-    }
-    println!(
-        "  {: <15} {:>6.2}s",
-        "Total",
-        started.elapsed().as_secs_f32()
-    );
-
-    Ok(())
 }
 
 #[derive(Debug)]
@@ -1313,10 +490,12 @@ struct Args {
     verbose: bool,
     format: MapFormat,
     probe_spacing: f32,
-    /// Starting density in meters; baker retries at coarser densities on atlas
-    /// overflow. `None` means the flag was not passed — the effective bake
-    /// density falls through to the worldspawn `_lightmap_density` KVP, then
-    /// to `lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS`. Passing the flag
+    /// Fixed lightmap texel size in meters. The multi-bin packer opens new
+    /// array layers instead of failing on atlas area, so there is no
+    /// density-coarsening retry. `None` means the flag was not passed — the
+    /// effective bake density falls through to the worldspawn
+    /// `_lightmap_density` KVP, then to
+    /// `lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS`. Passing the flag
     /// overrides any KVP (`--lightmap-density` keeps its hard-reject posture
     /// on non-finite/≤0 values in the CLI parser).
     lightmap_density: Option<f32>,
@@ -1348,6 +527,10 @@ struct Args {
     /// on disk and in VRAM); the uncompressed form is larger and exists for
     /// debugging and quality comparison against the compressed path.
     uncompressed_irradiance: bool,
+    /// Maximum concurrent governed bake work items.
+    jobs: usize,
+    /// Interactive reporter selection policy.
+    tui: TuiPreference,
 }
 
 fn parse_args() -> anyhow::Result<Args> {
@@ -1368,10 +551,13 @@ fn help_text() -> String {
          \n\
          OPTIONS:\n    \
          -o <output.prl>            Output PRL path (default: input path with a .prl extension)\n    \
+         -j, --jobs <N>             Initial compiler worker permits, >= 1 (default: {jobs})\n    \
+         --tui                      Force the interactive UI (requires terminal stdin/stdout/stderr)\n    \
+         --no-tui                   Disable the interactive UI and print line-oriented progress\n    \
          -v, --verbose              Verbose stage logging to stderr (default: off)\n    \
          --format <FORMAT>          Map source format: idtech2 | idtech3 | idtech4 (default: idtech2)\n    \
          --sh-probe-spacing <METERS> SH irradiance probe spacing in meters, > 0 (default: {probe})\n    \
-         --lightmap-density <METERS> Starting lightmap texel size in meters, > 0 (default: {density})\n    \
+         --lightmap-density <METERS> Fixed lightmap texel size in meters, > 0 (default: {density})\n    \
          --soft-shadow-samples <N>  Soft-shadow penumbra area-sample count, >= {probe_floor} (default: {samples})\n    \
          --sdf-voxel-size <METERS>  SDF occluder-atlas voxel edge length in meters, > 0 (default: {voxel})\n    \
          --cache-dir <PATH>         Override the stage-cache directory (default: <workspace>/.build-caches/prl-cache)\n    \
@@ -1386,6 +572,7 @@ fn help_text() -> String {
         probe_floor = lightmap_bake::SOFT_PROBE_SAMPLES,
         voxel = sdf_bake::DEFAULT_VOXEL_SIZE_METERS,
         cache_max = format_size_gib(cache::DEFAULT_MAX_BYTES),
+        jobs = default_jobs(),
     )
 }
 
@@ -1411,6 +598,8 @@ where
     let mut no_cache = false;
     let mut release = false;
     let mut uncompressed_irradiance = false;
+    let mut jobs = default_jobs();
+    let mut tui = TuiPreference::Auto;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -1423,6 +612,29 @@ where
                     .next()
                     .ok_or_else(|| anyhow::anyhow!("-o requires an output path"))?;
                 output = Some(PathBuf::from(path));
+            }
+            "-j" | "--jobs" => {
+                let jobs_str = args
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("{arg} requires a value"))?;
+                jobs = jobs_str
+                    .parse::<usize>()
+                    .map_err(|_| anyhow::anyhow!("{arg} must be an integer >= 1"))?;
+                if jobs == 0 {
+                    anyhow::bail!("{arg} must be an integer >= 1");
+                }
+            }
+            "--tui" => {
+                if tui == TuiPreference::Disable {
+                    anyhow::bail!("--tui and --no-tui are mutually exclusive");
+                }
+                tui = TuiPreference::Force;
+            }
+            "--no-tui" => {
+                if tui == TuiPreference::Force {
+                    anyhow::bail!("--tui and --no-tui are mutually exclusive");
+                }
+                tui = TuiPreference::Disable;
             }
             "-v" | "--verbose" => {
                 verbose = true;
@@ -1541,6 +753,8 @@ where
         no_cache,
         release,
         uncompressed_irradiance,
+        jobs,
+        tui,
     })
 }
 
@@ -1782,10 +996,10 @@ fn compile_worldspawn_data_script(
                             let stderr = String::from_utf8_lossy(&out.stderr);
                             let stdout = String::from_utf8_lossy(&out.stdout);
                             if !stderr.trim().is_empty() {
-                                eprintln!("[prl-build] scripts-build stderr:\n{stderr}");
+                                log::error!("[prl-build] scripts-build stderr:\n{stderr}");
                             }
                             if !stdout.trim().is_empty() {
-                                eprintln!("[prl-build] scripts-build stdout:\n{stdout}");
+                                log::error!("[prl-build] scripts-build stdout:\n{stdout}");
                             }
                             anyhow::bail!(
                                 "[prl-build] scripts-build failed for data_script {}: exit status {}",
@@ -2090,6 +1304,113 @@ mod tests {
         assert_eq!(parsed.format, MapFormat::IdTech2);
         assert_eq!(parsed.probe_spacing, sh_bake::DEFAULT_PROBE_SPACING);
         assert_eq!(parsed.voxel_size, sdf_bake::DEFAULT_VOXEL_SIZE_METERS);
+        assert_eq!(parsed.jobs, default_jobs());
+        assert_eq!(parsed.tui, TuiPreference::Auto);
+    }
+
+    #[test]
+    fn default_jobs_leaves_headroom() {
+        assert_eq!(default_jobs_for(0), 1);
+        assert_eq!(default_jobs_for(1), 1);
+        assert_eq!(default_jobs_for(2), 1);
+        assert_eq!(default_jobs_for(8), 7);
+        assert_eq!(default_jobs_for(9), 7);
+        assert_eq!(default_jobs_for(16), 14);
+    }
+
+    #[test]
+    fn parse_args_jobs_accepts_both_spellings_and_rejects_invalid_values() {
+        let parsed =
+            parse_args_from(["input.map", "-j", "3"].into_iter().map(str::to_owned)).unwrap();
+        assert_eq!(parsed.jobs, 3);
+
+        let parsed =
+            parse_args_from(["input.map", "--jobs", "5"].into_iter().map(str::to_owned)).unwrap();
+        assert_eq!(parsed.jobs, 5);
+
+        for value in ["0", "-1", "many"] {
+            assert!(
+                parse_args_from(
+                    ["input.map", "--jobs", value]
+                        .into_iter()
+                        .map(str::to_owned)
+                )
+                .is_err()
+            );
+        }
+        assert!(parse_args_from(["input.map", "--jobs"].into_iter().map(str::to_owned)).is_err());
+    }
+
+    #[test]
+    fn parse_args_tui_preferences_are_mutually_exclusive() {
+        let forced =
+            parse_args_from(["input.map", "--tui"].into_iter().map(str::to_owned)).unwrap();
+        assert_eq!(forced.tui, TuiPreference::Force);
+
+        let disabled =
+            parse_args_from(["input.map", "--no-tui"].into_iter().map(str::to_owned)).unwrap();
+        assert_eq!(disabled.tui, TuiPreference::Disable);
+
+        for flags in [["--tui", "--no-tui"], ["--no-tui", "--tui"]] {
+            assert!(
+                parse_args_from(
+                    ["input.map", flags[0], flags[1]]
+                        .into_iter()
+                        .map(str::to_owned)
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn reporter_selection_uses_all_three_terminal_streams() {
+        let terminals = TerminalStreams {
+            stdin: true,
+            stdout: true,
+            stderr: true,
+        };
+        assert_eq!(
+            select_reporter_mode(TuiPreference::Auto, terminals).unwrap(),
+            ReporterMode::Tui
+        );
+        assert_eq!(
+            select_reporter_mode(TuiPreference::Disable, terminals).unwrap(),
+            ReporterMode::Plain
+        );
+
+        for streams in [
+            TerminalStreams {
+                stdin: false,
+                ..terminals
+            },
+            TerminalStreams {
+                stdout: false,
+                ..terminals
+            },
+            TerminalStreams {
+                stderr: false,
+                ..terminals
+            },
+        ] {
+            assert_eq!(
+                select_reporter_mode(TuiPreference::Auto, streams).unwrap(),
+                ReporterMode::Plain
+            );
+            assert_eq!(
+                select_reporter_mode(TuiPreference::Disable, streams).unwrap(),
+                ReporterMode::Plain
+            );
+            assert!(select_reporter_mode(TuiPreference::Force, streams).is_err());
+        }
+    }
+
+    #[test]
+    fn help_lists_jobs_and_tui_flags() {
+        let help = help_text();
+        assert!(help.contains("-j, --jobs <N>"));
+        assert!(help.contains("--tui"));
+        assert!(help.contains("--no-tui"));
     }
 
     #[test]

@@ -18,6 +18,8 @@ use postretro_level_format::sh_volume::{
     OctahedralShProbe, OctahedralShVolumeSection,
 };
 use rayon::prelude::*;
+
+use crate::bake_control::BakeControl;
 use thiserror::Error;
 
 use crate::bvh_build::BvhPrimitive;
@@ -206,6 +208,14 @@ pub(crate) fn static_light_refs<'a>(inputs: &ShBakeCtx<'a>) -> Vec<&'a MapLight>
 /// Returns an empty section (`grid_dimensions == [0,0,0]`) for empty geometry,
 /// matching the "no SH section" degradation path at runtime.
 pub fn bake_sh_volume(inputs: &ShBakeCtx<'_>, config: &ShConfig) -> OctahedralShVolumeSection {
+    bake_sh_volume_controlled(inputs, config, &BakeControl::unrestricted())
+}
+
+pub fn bake_sh_volume_controlled(
+    inputs: &ShBakeCtx<'_>,
+    config: &ShConfig,
+    control: &BakeControl,
+) -> OctahedralShVolumeSection {
     let probe_spacing_meters = config.probe_spacing;
     let layout = probe_grid_layout(inputs, config);
     if layout.is_empty() {
@@ -230,6 +240,7 @@ pub fn bake_sh_volume(inputs: &ShBakeCtx<'_>, config: &ShConfig) -> OctahedralSh
     let world_min = layout.world_min;
     let dims = layout.dims;
     let total = layout.total_probes();
+    control.publish_total(total);
     let cell_size = layout.cell_size;
     let far_sentinel = layout.far_sentinel;
 
@@ -244,7 +255,8 @@ pub fn bake_sh_volume(inputs: &ShBakeCtx<'_>, config: &ShConfig) -> OctahedralSh
     let baked_probes: Vec<BakedProbe> = (0..total)
         .into_par_iter()
         .map(|i| {
-            bake_probe(
+            let _permit = control.governor().enter();
+            let probe = bake_probe(
                 inputs,
                 vec3_from(layout.probe_positions[i]),
                 &static_lights,
@@ -253,7 +265,9 @@ pub fn bake_sh_volume(inputs: &ShBakeCtx<'_>, config: &ShConfig) -> OctahedralSh
                 far_sentinel,
                 layout.validity[i] != 0,
                 i as u64,
-            )
+            );
+            control.advance(1);
+            probe
         })
         .collect();
     let base_probes: Vec<OctahedralShProbe> = baked_probes.iter().map(|p| p.metadata).collect();

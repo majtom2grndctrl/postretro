@@ -11,6 +11,7 @@ use postretro_level_format::lightmap::{
     encode_direction_oct, f32_to_f16_bits,
 };
 
+use crate::bake_control::BakeControl;
 use crate::bc6h;
 use thiserror::Error;
 
@@ -357,6 +358,14 @@ pub fn bake_lightmap(
     inputs: &mut LightmapBakeCtx<'_>,
     config: &LightmapConfig,
 ) -> Result<LightmapBakeOutput, LightmapBakeError> {
+    bake_lightmap_controlled(inputs, config, &BakeControl::unrestricted())
+}
+
+pub fn bake_lightmap_controlled(
+    inputs: &mut LightmapBakeCtx<'_>,
+    config: &LightmapConfig,
+    control: &BakeControl,
+) -> Result<LightmapBakeOutput, LightmapBakeError> {
     let texel_density = config.lightmap_density;
     let area_sample_count = config.area_sample_count;
 
@@ -414,7 +423,8 @@ pub fn bake_lightmap(
     let atlas_h = prepared.atlas_height;
     let layer_count = prepared.layer_count;
 
-    let atlas = bake_monolithic_atlas(
+    control.publish_total(placements.len());
+    let atlas = bake_monolithic_atlas_controlled(
         inputs.bvh,
         inputs.primitives,
         inputs.geometry,
@@ -425,6 +435,7 @@ pub fn bake_lightmap(
         atlas_h,
         layer_count,
         area_sample_count,
+        control,
     );
 
     // Compress to BC6H by default — `Bc6hRgbUfloat` is ~8× smaller than RGBA16F
@@ -456,6 +467,7 @@ pub fn bake_lightmap(
 /// `pub(crate)` so the layer-cache exactness test can build the monolithic atlas
 /// directly (rather than re-deriving it from the encoded section).
 #[allow(clippy::too_many_arguments)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn bake_monolithic_atlas(
     bvh: &Bvh<f32, 3>,
     primitives: &[BvhPrimitive],
@@ -468,9 +480,39 @@ pub(crate) fn bake_monolithic_atlas(
     layer_count: u32,
     area_sample_count: u32,
 ) -> CompositedAtlas {
+    bake_monolithic_atlas_controlled(
+        bvh,
+        primitives,
+        geometry,
+        static_lights,
+        charts,
+        placements,
+        atlas_w,
+        atlas_h,
+        layer_count,
+        area_sample_count,
+        &BakeControl::unrestricted(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn bake_monolithic_atlas_controlled(
+    bvh: &Bvh<f32, 3>,
+    primitives: &[BvhPrimitive],
+    geometry: &GeometryResult,
+    static_lights: &[&MapLight],
+    charts: &[Chart],
+    placements: &[ChartPlacement],
+    atlas_w: u32,
+    atlas_h: u32,
+    layer_count: u32,
+    area_sample_count: u32,
+    control: &BakeControl,
+) -> CompositedAtlas {
     let mut atlas = CompositedAtlas::zeroed(atlas_w, atlas_h, layer_count);
 
     for (face_idx, placement) in placements.iter().enumerate() {
+        control.governor().checkpoint();
         bake_face_chart(
             bvh,
             primitives,
@@ -486,6 +528,7 @@ pub(crate) fn bake_monolithic_atlas(
             &mut atlas.direction,
             &mut atlas.coverage,
         );
+        control.advance(1);
     }
 
     atlas.dilate();

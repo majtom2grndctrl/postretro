@@ -9,6 +9,8 @@ use postretro_level_format::animated_light_weight_maps::{
 };
 use rayon::prelude::*;
 
+use crate::bake_control::BakeControl;
+
 use crate::bvh_build::BvhPrimitive;
 use crate::chart_raster::{
     CHART_PADDING_TEXELS, ChartPlacement, chart_interior_dims, chart_texel_world_position,
@@ -42,12 +44,11 @@ const WEIGHT_EPSILON: f32 = 1.0e-6;
 /// a strided emitter subset, shifting the soft weight for some probe geometry.
 /// Bumped for consistency with `lightmap_bake`/`sh_bake`.
 ///
-/// This stage is now cached: `main.rs` wraps the bake in a `StageCache`
-/// get/insert round-trip under the `animated_lm_weight_maps` cache key, which
-/// folds this `STAGE_VERSION` in alongside the input hash — the same per-stage
-/// version-constant pattern every cached stage uses. Bumping this constant
-/// invalidates every prior cache entry for the stage on the next build. The
-/// `CacheKey`/STAGE_VERSION contract is exercised by
+/// Pipeline orchestration caches this bake under the `animated_lm_weight_maps`
+/// key, which folds this `STAGE_VERSION` in alongside the input hash — the same
+/// per-stage version-constant pattern every cached stage uses. Bumping this
+/// constant invalidates every prior cache entry for the stage on the next
+/// build. The `CacheKey`/STAGE_VERSION contract is exercised by
 /// `stage_version_bump_misses_then_hits` and `stage_version_bump_changes_cache_key`
 /// in this module's test suite.
 pub const STAGE_VERSION: u32 = 5;
@@ -64,11 +65,10 @@ pub struct WeightMapInputs<'a> {
     pub face_placements: &'a [ChartPlacement],
     pub atlas_width: u32,
     pub atlas_height: u32,
-    /// Area-sample count for soft-shadow penumbra visibility (Task 6 knob).
-    /// Folded into the stage's `wm_input_hash` in `main.rs` (via
-    /// `args.soft_shadow_samples.to_le_bytes()`), so changing this value
-    /// produces a cache miss and triggers a full re-bake. Default
-    /// `lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT`.
+    /// Area-sample count for soft-shadow penumbra visibility.
+    /// `pipeline.rs` folds this value into the `animated_lm_weight_maps` cache
+    /// key's input hash, so changing it produces a cache miss and full re-bake.
+    /// Defaults to `lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT`.
     pub area_sample_count: u32,
 }
 
@@ -82,16 +82,29 @@ struct ChunkBakeResult {
 pub fn bake_animated_light_weight_maps(
     inputs: &WeightMapInputs<'_>,
 ) -> AnimatedLightWeightMapsSection {
+    bake_animated_light_weight_maps_controlled(inputs, &BakeControl::unrestricted())
+}
+
+pub fn bake_animated_light_weight_maps_controlled(
+    inputs: &WeightMapInputs<'_>,
+    control: &BakeControl,
+) -> AnimatedLightWeightMapsSection {
     if inputs.chunk_section.chunks.is_empty() {
         return AnimatedLightWeightMapsSection::empty();
     }
 
     let chunks = &inputs.chunk_section.chunks;
+    control.publish_total(chunks.len());
     let light_indices_pool = &inputs.chunk_section.light_indices;
 
     let per_chunk: Vec<ChunkBakeResult> = chunks
         .par_iter()
-        .map(|chunk| bake_one_chunk(inputs, chunk, light_indices_pool))
+        .map(|chunk| {
+            let _permit = control.governor().enter();
+            let result = bake_one_chunk(inputs, chunk, light_indices_pool);
+            control.advance(1);
+            result
+        })
         .collect();
 
     assert_no_overlapping_rects_per_face(chunks, &per_chunk);
@@ -810,7 +823,20 @@ mod tests {
             atlas_height: lm_output.atlas_height,
             area_sample_count,
         };
-        bake_animated_light_weight_maps(&inputs)
+        let progress = crate::reporter::StageProgress::indeterminate();
+        let control = BakeControl::new(
+            std::sync::Arc::new(crate::governor::Governor::new(2, false)),
+            &progress,
+        );
+        let section = bake_animated_light_weight_maps_controlled(&inputs, &control);
+        if chunk_section.chunks.is_empty() {
+            assert_eq!(progress.total(), None);
+            assert_eq!(progress.completed(), 0);
+        } else {
+            assert_eq!(progress.total(), Some(chunk_section.chunks.len()));
+            assert_eq!(progress.completed(), chunk_section.chunks.len());
+        }
+        section
     }
 
     fn full_face_chunk(
@@ -979,11 +1005,12 @@ mod tests {
         assert!(section.texel_lights.is_empty());
     }
 
-    /// Task 6: `area_sample_count` is folded into `wm_input_hash` in `main.rs`,
-    /// so changing it produces a cache miss and re-bake. This test verifies the
-    /// field actually reaches `soft_visibility` — raising it shifts penumbra
-    /// weights at the higher stratification resolution. The cache-miss contract
-    /// is covered separately by `stage_version_bump_misses_then_hits`.
+    /// The pipeline folds `area_sample_count` into the
+    /// `animated_lm_weight_maps` cache key's input hash, so changing it produces
+    /// a cache miss and re-bake. This test
+    /// verifies the field actually reaches `soft_visibility` — raising it shifts
+    /// penumbra weights at the higher stratification resolution. The cache-miss
+    /// contract is covered separately by `stage_version_bump_misses_then_hits`.
     #[test]
     fn area_sample_count_field_changes_penumbra_weights() {
         let low = bake_with_sample_count(
@@ -1187,8 +1214,8 @@ mod tests {
     }
 
     /// Anchors the cache-bump contract: bumping `STAGE_VERSION` invalidates
-    /// the prior `animated_lm_weight_maps` cache entry. Mirrors
-    /// `sh_volume_stage_version_bump_misses_then_hits` in `main.rs`.
+    /// the prior `animated_lm_weight_maps` cache entry. The companion round-trip
+    /// test below verifies that the new version then hits on a second read.
     #[test]
     fn stage_version_bump_changes_cache_key() {
         use crate::cache::CacheKey;

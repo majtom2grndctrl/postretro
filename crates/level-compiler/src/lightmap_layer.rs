@@ -5,6 +5,7 @@
 use glam::Vec3;
 
 use crate::affinity_grid::{AABB_PADDING_METERS, light_aabb};
+use crate::bake_control::BakeControl;
 use crate::bvh_build::BvhPrimitive;
 use crate::chart_raster::{ChartPlacement, chart_interior_dims, chart_texel_world_position};
 use crate::geometry::GeometryResult;
@@ -183,8 +184,8 @@ pub struct SharedAtlas<'a> {
     pub atlas_height: u32,
 }
 
-/// Influence AABB of a single light, used both as the cache key's geometry-slice
-/// bound and (by the wiring task) as a quick reject. Point/Spot → `falloff_range
+/// Influence AABB used to bound the geometry slice folded into a light's cache
+/// key. Point/Spot → `falloff_range
 /// + AABB_PADDING_METERS` cube; Directional → the whole-world AABB. Delegates to
 /// the authoritative `affinity_grid::light_aabb` (the f32-falloff copy).
 pub fn layer_influence_aabb(light: &MapLight, world_aabb: (DVec3, DVec3)) -> (DVec3, DVec3) {
@@ -210,6 +211,26 @@ pub fn bake_light_layer(
     geometry: &GeometryResult,
     area_sample_count: u32,
 ) -> LightmapLayer {
+    bake_light_layer_controlled(
+        light,
+        atlas,
+        bvh,
+        primitives,
+        geometry,
+        area_sample_count,
+        &BakeControl::unrestricted(),
+    )
+}
+
+pub fn bake_light_layer_controlled(
+    light: &MapLight,
+    atlas: &SharedAtlas<'_>,
+    bvh: &bvh::bvh::Bvh<f32, 3>,
+    primitives: &[BvhPrimitive],
+    geometry: &GeometryResult,
+    area_sample_count: u32,
+    control: &BakeControl,
+) -> LightmapLayer {
     let atlas_w = atlas.atlas_width;
     let mut texels: Vec<LayerTexel> = Vec::new();
 
@@ -224,8 +245,10 @@ pub fn bake_light_layer(
         .unwrap_or(1);
 
     for (face_idx, placement) in atlas.placements.iter().enumerate() {
+        control.governor().checkpoint();
         let chart = &atlas.charts[face_idx];
         if chart.uv_extent[0] <= 0.0 || chart.uv_extent[1] <= 0.0 {
+            control.advance(1);
             continue;
         }
         let padding = crate::chart_raster::CHART_PADDING_TEXELS as i32;
@@ -262,6 +285,7 @@ pub fn bake_light_layer(
                 });
             }
         }
+        control.advance(1);
     }
 
     LightmapLayer {
@@ -456,8 +480,8 @@ fn bytemuck_f32x3(v: &[f32; 3]) -> Vec<u8> {
 /// - `lightmap_density` + `area_sample_count`,
 /// - the atlas layout descriptor (dims + per-chart placements).
 ///
-/// The wiring task passes this to `CacheKey::new("lightmap_layer",
-/// LAYER_FORMAT_VERSION, &hash)`.
+/// Consumers pass this digest to `CacheKey::new("lightmap_layer",
+/// LAYER_FORMAT_VERSION, &hash)` so the layer stage owns invalidation.
 pub fn layer_input_hash(
     light: &MapLight,
     atlas: &SharedAtlas<'_>,
@@ -526,19 +550,24 @@ pub fn is_full_atlas_light(light: &MapLight) -> bool {
     matches!(light.light_type, LightType::Directional)
 }
 
-/// Padding constant re-exported so the wiring task can reason about influence
-/// bounds without reaching into `affinity_grid`.
+/// Padding applied by the per-light cache key's influence bound.
 pub const LAYER_AABB_PADDING_METERS: f32 = AABB_PADDING_METERS;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bake_control::BakeControl;
     use crate::bvh_build::build_bvh;
-    use crate::lightmap_bake::{bake_monolithic_atlas, prepare_atlas};
+    use crate::governor::Governor;
+    use crate::lightmap_bake::{
+        bake_monolithic_atlas, bake_monolithic_atlas_controlled, prepare_atlas,
+    };
     use crate::map_data::{FalloffModel, ShadowType};
+    use crate::reporter::StageProgress;
     use glam::DVec3;
     use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
     use postretro_level_format::texture_names::TextureNamesSection;
+    use std::sync::Arc;
 
     /// One per-texel contribution term for `expected_atlas_from_texels`:
     /// `(layer, within-layer idx, irradiance, weighted_dir, fallback_normal)`.
@@ -652,7 +681,9 @@ mod tests {
         // Monolithic path.
         let mono_prepared = prepare_atlas(&mut mono_geo, &static_lights, DENSITY).unwrap();
         let (mono_bvh, mono_prims, _) = build_bvh(&mono_geo).unwrap();
-        let mono_atlas = bake_monolithic_atlas(
+        let mono_progress = StageProgress::with_total(mono_prepared.placements.len());
+        let mono_control = BakeControl::new(Arc::new(Governor::new(1, false)), &mono_progress);
+        let mono_atlas = bake_monolithic_atlas_controlled(
             &mono_bvh,
             &mono_prims,
             &mono_geo,
@@ -663,7 +694,9 @@ mod tests {
             mono_prepared.atlas_height,
             mono_prepared.layer_count,
             AREA_SAMPLES,
+            &mono_control,
         );
+        assert_eq!(mono_progress.completed(), mono_prepared.placements.len());
 
         // Per-light layer path.
         let layer_prepared = prepare_atlas(&mut layer_geo, &static_lights, DENSITY).unwrap();
@@ -674,19 +707,25 @@ mod tests {
             atlas_width: layer_prepared.atlas_width,
             atlas_height: layer_prepared.atlas_height,
         };
+        let layer_total = layer_prepared.placements.len() * light_refs.len();
+        let layer_progress = StageProgress::with_total(layer_total);
+        let layer_control = BakeControl::new(Arc::new(Governor::new(1, false)), &layer_progress);
         let layers: Vec<LightmapLayer> = light_refs
             .iter()
             .map(|l| {
-                bake_light_layer(
+                bake_light_layer_controlled(
                     l,
                     &shared,
                     &layer_bvh,
                     &layer_prims,
                     &layer_geo,
                     AREA_SAMPLES,
+                    &layer_control,
                 )
             })
             .collect();
+        assert_eq!(layer_progress.total(), Some(layer_total));
+        assert_eq!(layer_progress.completed(), layer_total);
         let mut composite = composite_layers(&layers, shared.atlas_width, shared.atlas_height);
         composite.dilate();
 
@@ -945,7 +984,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Cache wiring behaviors at the module API seam and the full-fixture
+    // Cache-key behaviors at the module API seam and the full-fixture
     // determinism gate (1).
 
     use crate::cache::{CacheKey, StageCache};
@@ -962,8 +1001,8 @@ mod tests {
         dir
     }
 
-    /// Build one light's layer cache key the same way the `main.rs` wiring does,
-    /// so the locality/round-trip tests assert on the production key derivation.
+    /// Build one light's layer cache key the same way the production pipeline
+    /// does, so the locality/round-trip tests assert on its key derivation.
     fn layer_key(
         light: &MapLight,
         shared: &SharedAtlas<'_>,
@@ -1179,7 +1218,7 @@ mod tests {
             }
         }
 
-        // The cache rejects it (returns None), so the wiring re-bakes.
+        // The cache rejects it (returns None), so the pipeline re-bakes.
         let recovered = match cache
             .get(&key)
             .and_then(|bytes| LightmapLayer::from_bytes(&bytes))
@@ -1245,7 +1284,7 @@ mod tests {
 
         for &name in GATE_FIXTURES {
             let fx = load_fixture(name);
-            // Match the wiring's direct-lightmap light set: global static order,
+            // Match the pipeline's direct-lightmap light set: global static order,
             // Sdf-shadow lights dropped (their direct term resolves at runtime).
             let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&fx.lights);
             let layer_lights: Vec<&MapLight> = static_lights
@@ -1318,11 +1357,11 @@ mod tests {
     // Second-level "lightmap_section" cache behaviors, mirroring the layer
     // suite above. These protect the warm no-edit rebuild (section hit → one
     // decode, no layer reads / composite / encode) and the section-key
-    // invalidation coupling that the `main.rs` wiring relies on.
+    // invalidation coupling that the production pipeline relies on.
 
     use postretro_level_format::lightmap::LightmapSection;
 
-    /// Build the section cache key the same way the `main.rs` warm path does:
+    /// Build the section cache key the same way the `pipeline.rs` warm path does:
     /// fold the ordered per-light `layer_input_hash` set through
     /// `section_input_hash`, then `CacheKey::new("lightmap_section", ...)`.
     /// Mirrors the existing `layer_key` helper so the section tests assert on
@@ -1353,9 +1392,7 @@ mod tests {
         let mut composite = composite_layers(&layers, shared.atlas_width, shared.atlas_height);
         composite.dilate();
         // Uncompressed RGBA16F so the synthetic-atlas tests stay off the BC6H
-        // encoder; the cache behavior under test is format-agnostic and the
-        // `--no-cache`/BC6H combination is exercised by the CLI/byte-identity
-        // evidence in RESULTS.md.
+        // encoder; the cache behavior under test is format-agnostic.
         composite.encode_section(DENSITY, true)
     }
 
@@ -1492,10 +1529,10 @@ mod tests {
     /// Corruption recovery (section level): a present-but-undecodable
     /// `lightmap_section` entry — written through the cache so its length/hash
     /// check passes, but whose bytes `LightmapSection::from_bytes` rejects — is
-    /// treated as a miss, so the wiring recomposes. Asserts the recovered
+    /// treated as a miss, so the pipeline recomposes. Asserts the recovered
     /// section equals the originally-composited one. Mirror of
     /// `corrupt_layer_entry_is_discarded_and_rebaked`, exercising the
-    /// `get`-succeeds-but-`from_bytes`-fails branch the `main.rs` wiring guards.
+    /// `get`-succeeds-but-`from_bytes`-fails branch guarded by `pipeline.rs`.
     #[test]
     fn corrupt_section_entry_is_discarded_and_recomposed() {
         let mut geo = two_quad_geometry();
@@ -1522,7 +1559,7 @@ mod tests {
         let cache = StageCache::new(&dir).expect("cache dir");
         // Store a blob that PASSES the cache's length/hash check (it is `put`
         // through the cache) but is too short for `LightmapSection::from_bytes`
-        // to parse — the exact format-skew the wiring recovers from.
+        // to parse — the exact format skew the pipeline recovers from.
         cache.put(&key, b"not a valid lightmap section blob");
 
         let recovered = match cache
@@ -1578,12 +1615,11 @@ mod tests {
 
     /// `--no-cache` bypass (section level): the section key is only ever
     /// consulted when a `StageCache` exists. With no cache, the warm branch is
-    /// not entered at all (`main.rs` gates the whole section-cache block behind
+    /// not entered at all (`pipeline.rs` gates the section-cache block behind
     /// `if let Some(ref cache) = stage_cache`), so no section entry is created.
     /// A clean unit assertion for "no cache → no entry" is to open a cache dir,
     /// derive the key WITHOUT putting anything (modeling the no-cache control
     /// flow that never reaches `put`), and confirm the entry does not exist.
-    /// The end-to-end `--no-cache` CLI run is recorded in RESULTS.md.
     #[test]
     fn no_cache_path_writes_no_section_entry() {
         let mut geo = two_quad_geometry();

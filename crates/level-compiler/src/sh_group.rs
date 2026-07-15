@@ -26,6 +26,8 @@ use postretro_level_format::sh_volume::{
 };
 use rayon::prelude::*;
 
+use crate::bake_control::BakeControl;
+
 use crate::cache::{CacheKey, StageCache};
 use crate::map_data::{LightType, MapLight};
 use crate::sh_bake::{
@@ -648,6 +650,15 @@ pub fn bake_sh_volume_grouped(
     config: &ShConfig,
     cache: Option<&StageCache>,
 ) -> OctahedralShVolumeSection {
+    bake_sh_volume_grouped_controlled(inputs, config, cache, &BakeControl::unrestricted())
+}
+
+pub fn bake_sh_volume_grouped_controlled(
+    inputs: &ShBakeCtx<'_>,
+    config: &ShConfig,
+    cache: Option<&StageCache>,
+    control: &BakeControl,
+) -> OctahedralShVolumeSection {
     let layout = probe_grid_layout(inputs, config);
 
     // Animation descriptors + slot table are whole-stage data the runtime needs.
@@ -665,6 +676,7 @@ pub fn bake_sh_volume_grouped(
     let static_lights = static_light_refs(inputs);
     let geom_hash = geometry_content_hash(inputs.geometry);
     let groups = partition_groups(layout.dims);
+    control.publish_total(layout.total_probes());
 
     // Groups bake in parallel; placement stays serial. The order-preserving
     // `par_iter().map().collect()` keeps assembly byte-identical to a serial bake
@@ -673,7 +685,8 @@ pub fn bake_sh_volume_grouped(
     let baked_groups: Vec<BakedGroup> = groups
         .par_iter()
         .map(|group| {
-            bake_or_load_group(
+            let _permit = control.governor().enter();
+            let baked = bake_or_load_group(
                 inputs,
                 &layout,
                 group,
@@ -681,7 +694,9 @@ pub fn bake_sh_volume_grouped(
                 config.probe_spacing,
                 &geom_hash,
                 cache,
-            )
+            );
+            control.advance(group.probe_indices.len());
+            baked
         })
         .collect();
     for baked in &baked_groups {
@@ -721,14 +736,17 @@ mod tests {
     use super::*;
     use crate::bvh_build::build_bvh;
     use crate::geometry::{FaceIndexRange, GeometryResult};
+    use crate::governor::Governor;
     use crate::light_namespaces::{AnimatedBakedLights, StaticBakedLights};
     use crate::map_data::{FalloffModel, LightType, ShadowType};
     use crate::partition::{Aabb as CompilerAabb, BspLeaf, BspTree};
+    use crate::reporter::StageProgress;
     use crate::sh_bake::{bake_sh_volume, f16_bits_to_f32};
     use glam::DVec3;
     use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
     use postretro_level_format::texture_names::TextureNamesSection;
     use std::collections::HashSet;
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     fn tri_vertex(pos: [f32; 3]) -> Vertex {
@@ -1004,7 +1022,9 @@ mod tests {
         let config = ShConfig { probe_spacing: 1.0 };
 
         let monolithic = bake_sh_volume(&inputs, &config);
-        let grouped = bake_sh_volume_grouped(&inputs, &config, None);
+        let progress = StageProgress::indeterminate();
+        let control = BakeControl::new(Arc::new(Governor::new(1, false)), &progress);
+        let grouped = bake_sh_volume_grouped_controlled(&inputs, &config, None, &control);
 
         // Sanity: every group sees the full light set (no cutoff drop).
         let layout = probe_grid_layout(&inputs, &config);
@@ -1016,6 +1036,8 @@ mod tests {
                 "fixture must have every light reach every group for this test",
             );
         }
+        assert_eq!(progress.total(), Some(layout.total_probes()));
+        assert_eq!(progress.completed(), layout.total_probes());
 
         assert_eq!(
             grouped.to_bytes(),

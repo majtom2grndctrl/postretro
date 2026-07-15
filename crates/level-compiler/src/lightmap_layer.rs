@@ -5,6 +5,7 @@
 use glam::Vec3;
 
 use crate::affinity_grid::{AABB_PADDING_METERS, light_aabb};
+use crate::bake_control::BakeControl;
 use crate::bvh_build::BvhPrimitive;
 use crate::chart_raster::{ChartPlacement, chart_interior_dims, chart_texel_world_position};
 use crate::geometry::GeometryResult;
@@ -210,6 +211,26 @@ pub fn bake_light_layer(
     geometry: &GeometryResult,
     area_sample_count: u32,
 ) -> LightmapLayer {
+    bake_light_layer_controlled(
+        light,
+        atlas,
+        bvh,
+        primitives,
+        geometry,
+        area_sample_count,
+        &BakeControl::unrestricted(),
+    )
+}
+
+pub fn bake_light_layer_controlled(
+    light: &MapLight,
+    atlas: &SharedAtlas<'_>,
+    bvh: &bvh::bvh::Bvh<f32, 3>,
+    primitives: &[BvhPrimitive],
+    geometry: &GeometryResult,
+    area_sample_count: u32,
+    control: &BakeControl,
+) -> LightmapLayer {
     let atlas_w = atlas.atlas_width;
     let mut texels: Vec<LayerTexel> = Vec::new();
 
@@ -224,8 +245,10 @@ pub fn bake_light_layer(
         .unwrap_or(1);
 
     for (face_idx, placement) in atlas.placements.iter().enumerate() {
+        control.governor().checkpoint();
         let chart = &atlas.charts[face_idx];
         if chart.uv_extent[0] <= 0.0 || chart.uv_extent[1] <= 0.0 {
+            control.advance(1);
             continue;
         }
         let padding = crate::chart_raster::CHART_PADDING_TEXELS as i32;
@@ -262,6 +285,7 @@ pub fn bake_light_layer(
                 });
             }
         }
+        control.advance(1);
     }
 
     LightmapLayer {
@@ -533,12 +557,18 @@ pub const LAYER_AABB_PADDING_METERS: f32 = AABB_PADDING_METERS;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bake_control::BakeControl;
     use crate::bvh_build::build_bvh;
-    use crate::lightmap_bake::{bake_monolithic_atlas, prepare_atlas};
+    use crate::governor::Governor;
+    use crate::lightmap_bake::{
+        bake_monolithic_atlas, bake_monolithic_atlas_controlled, prepare_atlas,
+    };
     use crate::map_data::{FalloffModel, ShadowType};
+    use crate::reporter::StageProgress;
     use glam::DVec3;
     use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
     use postretro_level_format::texture_names::TextureNamesSection;
+    use std::sync::Arc;
 
     /// One per-texel contribution term for `expected_atlas_from_texels`:
     /// `(layer, within-layer idx, irradiance, weighted_dir, fallback_normal)`.
@@ -652,7 +682,9 @@ mod tests {
         // Monolithic path.
         let mono_prepared = prepare_atlas(&mut mono_geo, &static_lights, DENSITY).unwrap();
         let (mono_bvh, mono_prims, _) = build_bvh(&mono_geo).unwrap();
-        let mono_atlas = bake_monolithic_atlas(
+        let mono_progress = StageProgress::with_total(mono_prepared.placements.len());
+        let mono_control = BakeControl::new(Arc::new(Governor::new(1, false)), &mono_progress);
+        let mono_atlas = bake_monolithic_atlas_controlled(
             &mono_bvh,
             &mono_prims,
             &mono_geo,
@@ -663,7 +695,9 @@ mod tests {
             mono_prepared.atlas_height,
             mono_prepared.layer_count,
             AREA_SAMPLES,
+            &mono_control,
         );
+        assert_eq!(mono_progress.completed(), mono_prepared.placements.len());
 
         // Per-light layer path.
         let layer_prepared = prepare_atlas(&mut layer_geo, &static_lights, DENSITY).unwrap();
@@ -674,19 +708,25 @@ mod tests {
             atlas_width: layer_prepared.atlas_width,
             atlas_height: layer_prepared.atlas_height,
         };
+        let layer_total = layer_prepared.placements.len() * light_refs.len();
+        let layer_progress = StageProgress::with_total(layer_total);
+        let layer_control = BakeControl::new(Arc::new(Governor::new(1, false)), &layer_progress);
         let layers: Vec<LightmapLayer> = light_refs
             .iter()
             .map(|l| {
-                bake_light_layer(
+                bake_light_layer_controlled(
                     l,
                     &shared,
                     &layer_bvh,
                     &layer_prims,
                     &layer_geo,
                     AREA_SAMPLES,
+                    &layer_control,
                 )
             })
             .collect();
+        assert_eq!(layer_progress.total(), Some(layer_total));
+        assert_eq!(layer_progress.completed(), layer_total);
         let mut composite = composite_layers(&layers, shared.atlas_width, shared.atlas_height);
         composite.dilate();
 

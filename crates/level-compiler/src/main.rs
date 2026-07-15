@@ -4,6 +4,7 @@
 pub mod affinity_grid;
 pub mod animated_light_chunks;
 pub mod animated_light_weight_maps;
+pub mod bake_control;
 pub mod bc5;
 pub mod bc6h;
 pub mod bvh_build;

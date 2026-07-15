@@ -6,6 +6,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::bake_control::BakeControl;
 use crate::governor::Governor;
 use crate::reporter::{Reporter, StageProgress};
 use crate::*;
@@ -168,7 +169,7 @@ pub(crate) fn run(
     stage_cache: Option<cache::StageCache>,
     started: Instant,
     reporter: Arc<dyn Reporter>,
-    _governor: Arc<Governor>,
+    governor: Arc<Governor>,
 ) -> anyhow::Result<()> {
     let mut timings = Vec::new();
 
@@ -398,6 +399,7 @@ pub(crate) fn run(
     let stage_start = begin_stage(reporter.as_ref(), StageId::LightmapBake);
     let lightmap_progress = StageProgress::indeterminate();
     reporter.declare_progress(StageId::LightmapBake, lightmap_progress.clone());
+    let lightmap_control = BakeControl::new(Arc::clone(&governor), &lightmap_progress);
     let static_light_count = map_data.lights.iter().filter(|l| !l.is_dynamic).count();
     let effective_lightmap_density =
         resolve_lightmap_density(args.lightmap_density, map_data.lightmap_density);
@@ -452,6 +454,8 @@ pub(crate) fn run(
                 .map(|e| e.light)
                 .filter(|l| l.shadow_type != map_data::ShadowType::Sdf)
                 .collect();
+            let warm_lightmap_total = prepared.placements.len().saturating_mul(layer_lights.len());
+            lightmap_control.publish_total(warm_lightmap_total);
 
             // Compute every light's layer input hash up front (cheap — no blob
             // reads). These both fold into the second-level section key and feed
@@ -501,6 +505,7 @@ pub(crate) fn run(
             let section = match cached_section {
                 Some(section) => {
                     log::info!("[cache] lightmap_section hit");
+                    lightmap_control.advance(warm_lightmap_total);
                     section
                 }
                 None => {
@@ -519,17 +524,19 @@ pub(crate) fn run(
                         {
                             Some(layer) => {
                                 log::info!("[cache] lightmap_layer hit");
+                                lightmap_control.advance(prepared.placements.len());
                                 layer
                             }
                             None => {
                                 log::info!("[cache] lightmap_layer miss");
-                                let layer = lightmap_layer::bake_light_layer(
+                                let layer = lightmap_layer::bake_light_layer_controlled(
                                     light,
                                     &shared,
                                     &bvh,
                                     &bvh_primitives,
                                     &geo_result,
                                     args.soft_shadow_samples,
+                                    &lightmap_control,
                                 );
                                 cache.put(&layer_key, &layer.to_bytes());
                                 layer
@@ -573,13 +580,14 @@ pub(crate) fn run(
             geometry: &mut geo_result,
             lights: &static_baked_lights,
         };
-        lightmap_bake::bake_lightmap(
+        lightmap_bake::bake_lightmap_controlled(
             &mut lm_ctx,
             &lightmap_bake::LightmapConfig {
                 lightmap_density: density,
                 area_sample_count: args.soft_shadow_samples,
                 uncompressed_irradiance: args.uncompressed_irradiance,
             },
+            &lightmap_control,
         )
         .map_err(|e| anyhow::anyhow!("Lightmap bake failed: {e}"))?
     };
@@ -607,6 +615,7 @@ pub(crate) fn run(
     let stage_start = begin_stage(reporter.as_ref(), StageId::ShBake);
     let sh_progress = StageProgress::indeterminate();
     reporter.declare_progress(StageId::ShBake, sh_progress.clone());
+    let sh_control = BakeControl::new(Arc::clone(&governor), &sh_progress);
     if let Err(msg) = sh_bake::validate_light_animations(&map_data.lights) {
         anyhow::bail!("light animation validation failed: {msg}");
     }
@@ -631,11 +640,11 @@ pub(crate) fn run(
         // dim. Not byte-identical to the cold whole-volume bake; the cold
         // `--no-cache` build is the exact ship source of truth.
         log::warn!("{}", sh_group::WARM_SH_APPROX_WARNING);
-        sh_group::bake_sh_volume_grouped(&sh_ctx, &sh_config, Some(cache))
+        sh_group::bake_sh_volume_grouped_controlled(&sh_ctx, &sh_config, Some(cache), &sh_control)
     } else {
         // Cold / exact path (`--no-cache`): the monolithic whole-volume bake, the
         // shippable source of truth. No per-group reads/writes, no warning.
-        sh_bake::bake_sh_volume(&sh_ctx, &sh_config)
+        sh_bake::bake_sh_volume_controlled(&sh_ctx, &sh_config, &sh_control)
     };
     finish_stage(
         &mut timings,
@@ -651,6 +660,7 @@ pub(crate) fn run(
     let stage_start = begin_stage(reporter.as_ref(), StageId::DeltaShBake);
     let delta_sh_progress = StageProgress::indeterminate();
     reporter.declare_progress(StageId::DeltaShBake, delta_sh_progress.clone());
+    let delta_sh_control = BakeControl::new(Arc::clone(&governor), &delta_sh_progress);
     let delta_sh_volumes_section = {
         let inputs = delta_sh_bake::DeltaBakeInputs {
             bvh: &bvh,
@@ -661,7 +671,7 @@ pub(crate) fn run(
             portals: &generated_portals,
             animated_lights: &animated_baked_lights,
         };
-        delta_sh_bake::bake_delta_sh_volumes(&inputs, &sh_config)
+        delta_sh_bake::bake_delta_sh_volumes_controlled(&inputs, &sh_config, &delta_sh_control)
     };
     finish_stage(
         &mut timings,
@@ -681,6 +691,7 @@ pub(crate) fn run(
     let stage_start = begin_stage(reporter.as_ref(), StageId::DirectShBake);
     let direct_sh_progress = StageProgress::indeterminate();
     reporter.declare_progress(StageId::DirectShBake, direct_sh_progress.clone());
+    let direct_sh_control = BakeControl::new(Arc::clone(&governor), &direct_sh_progress);
     // Baked static-direct octahedral SH for dynamic objects. Emitted IFF there are
     // static (baked) lights — a map whose only lights are animated produces NO
     // direct section (absence; the loader treats it as direct = 0), so animated
@@ -699,8 +710,12 @@ pub(crate) fn run(
         // passes `None`. Unlike the indirect bake's warm bounded-light approximation,
         // the direct bake uses a strict whole-section cache key with the provably-zero
         // light-reach cull in both modes — output is byte-identical regardless of path.
-        let raw =
-            direct_sh_bake::bake_direct_sh_volume_cached(&inputs, &sh_config, stage_cache.as_ref());
+        let raw = direct_sh_bake::bake_direct_sh_volume_cached_controlled(
+            &inputs,
+            &sh_config,
+            stage_cache.as_ref(),
+            &direct_sh_control,
+        );
         if args.verbose {
             direct_sh_bake::log_cull_savings(&inputs, &sh_config);
         }
@@ -772,6 +787,8 @@ pub(crate) fn run(
     let stage_start = begin_stage(reporter.as_ref(), StageId::DirectShDeltaBake);
     let direct_sh_delta_progress = StageProgress::indeterminate();
     reporter.declare_progress(StageId::DirectShDeltaBake, direct_sh_delta_progress.clone());
+    let direct_sh_delta_control =
+        BakeControl::new(Arc::clone(&governor), &direct_sh_delta_progress);
     let raw_direct_sh_delta_volumes_section =
         raw_entity_shadow_lights_section
             .as_ref()
@@ -780,11 +797,12 @@ pub(crate) fn run(
                     sh_ctx: &sh_ctx,
                     portals: &generated_portals,
                 };
-                direct_sh_bake::bake_direct_sh_delta_volumes(
+                direct_sh_bake::bake_direct_sh_delta_volumes_controlled(
                     &inputs,
                     &sh_config,
                     &alpha_lights_ns,
                     section,
+                    &direct_sh_delta_control,
                 )
             });
     finish_stage(
@@ -951,6 +969,8 @@ pub(crate) fn run(
         StageId::AnimatedWeightMaps,
         animated_weight_progress.clone(),
     );
+    let animated_weight_control =
+        BakeControl::new(Arc::clone(&governor), &animated_weight_progress);
     let animated_light_weight_maps_section = if animated_light_chunks_section.chunks.is_empty() {
         None
     } else {
@@ -1012,10 +1032,14 @@ pub(crate) fn run(
 
         if let Some(section) = cached_wm_section {
             log::info!("[cache] animated_lm_weight_maps hit");
+            animated_weight_control.advance(animated_light_chunks_section.chunks.len());
             Some(section)
         } else {
             log::info!("[cache] animated_lm_weight_maps miss");
-            let section = animated_light_weight_maps::bake_animated_light_weight_maps(&wm_inputs);
+            let section = animated_light_weight_maps::bake_animated_light_weight_maps_controlled(
+                &wm_inputs,
+                &animated_weight_control,
+            );
             if let Some(ref c) = stage_cache {
                 c.put(&wm_key, &section.to_bytes());
             }

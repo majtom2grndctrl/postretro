@@ -32,6 +32,7 @@
 //
 // See: context/lib/build_pipeline.md, context/lib/rendering_pipeline.md §4
 
+use crate::bake_control::BakeControl;
 use postretro_level_format::delta_sh_volumes::{
     AFFINITY_FACTOR as FORMAT_AFFINITY_FACTOR,
     DEFAULT_DELTA_PROBE_F16_STRIDE as FORMAT_DEFAULT_DELTA_PROBE_F16_STRIDE,
@@ -202,6 +203,14 @@ pub fn bake_direct_sh_volume(
     inputs: &DirectBakeInputs<'_, '_>,
     config: &ShConfig,
 ) -> DirectShVolumeSection {
+    bake_direct_sh_volume_controlled(inputs, config, &BakeControl::unrestricted())
+}
+
+pub fn bake_direct_sh_volume_controlled(
+    inputs: &DirectBakeInputs<'_, '_>,
+    config: &ShConfig,
+    control: &BakeControl,
+) -> DirectShVolumeSection {
     let layout = probe_grid_layout(inputs.sh_ctx, config);
     if layout.is_empty() {
         return empty_section();
@@ -213,6 +222,7 @@ pub fn bake_direct_sh_volume(
 
     let dims = layout.dims;
     let total = layout.total_probes();
+    control.publish_total(total);
     let nx = dims[0] as usize;
     let ny = dims[1] as usize;
 
@@ -221,7 +231,8 @@ pub fn bake_direct_sh_volume(
     let tiles: Vec<Vec<OctahedralAtlasTexel>> = (0..total)
         .into_par_iter()
         .map(|probe_index| {
-            bake_probe_tile(
+            let _permit = control.governor().enter();
+            let tile = bake_probe_tile(
                 inputs,
                 &layout,
                 &direct_lights,
@@ -230,7 +241,9 @@ pub fn bake_direct_sh_volume(
                 probe_index,
                 nx,
                 ny,
-            )
+            );
+            control.advance(1);
+            tile
         })
         .collect();
 
@@ -265,6 +278,22 @@ pub fn bake_direct_sh_delta_volumes(
     config: &ShConfig,
     alpha_lights: &AlphaLightsNs<'_>,
     entity_shadow_lights: &EntityShadowLightsSection,
+) -> Option<DirectShDeltaVolumesSection> {
+    bake_direct_sh_delta_volumes_controlled(
+        inputs,
+        config,
+        alpha_lights,
+        entity_shadow_lights,
+        &BakeControl::unrestricted(),
+    )
+}
+
+pub fn bake_direct_sh_delta_volumes_controlled(
+    inputs: &DirectBakeInputs<'_, '_>,
+    config: &ShConfig,
+    alpha_lights: &AlphaLightsNs<'_>,
+    entity_shadow_lights: &EntityShadowLightsSection,
+    control: &BakeControl,
 ) -> Option<DirectShDeltaVolumesSection> {
     if entity_shadow_lights.light_indices.is_empty()
         || inputs.sh_ctx.geometry.geometry.vertices.is_empty()
@@ -306,14 +335,19 @@ pub fn bake_direct_sh_delta_volumes(
     if affinity_lights.is_empty() {
         return None;
     }
+    control.publish_total(affinity_lights.len());
 
     let csr_cells = csr_entry_cells(&affinity_offsets);
     let delta_subblocks: Vec<u16> = affinity_lights
         .par_iter()
         .zip(csr_cells.par_iter())
         .flat_map(|(&selection_index, &cell)| {
+            let _permit = control.governor().enter();
             let entry = selected[selection_index as usize];
-            bake_direct_delta_subblock(inputs, &layout, entry.light, entry.static_index, cell)
+            let subblock =
+                bake_direct_delta_subblock(inputs, &layout, entry.light, entry.static_index, cell);
+            control.advance(1);
+            subblock
         })
         .collect();
 
@@ -623,8 +657,17 @@ pub fn bake_direct_sh_volume_cached(
     config: &ShConfig,
     cache: Option<&StageCache>,
 ) -> DirectShVolumeSection {
+    bake_direct_sh_volume_cached_controlled(inputs, config, cache, &BakeControl::unrestricted())
+}
+
+pub fn bake_direct_sh_volume_cached_controlled(
+    inputs: &DirectBakeInputs<'_, '_>,
+    config: &ShConfig,
+    cache: Option<&StageCache>,
+    control: &BakeControl,
+) -> DirectShVolumeSection {
     let Some(cache) = cache else {
-        return bake_direct_sh_volume(inputs, config);
+        return bake_direct_sh_volume_controlled(inputs, config, control);
     };
 
     let layout = probe_grid_layout(inputs.sh_ctx, config);
@@ -632,6 +675,7 @@ pub fn bake_direct_sh_volume_cached(
         // Empty geometry: nothing to cache; the section is trivial.
         return empty_section();
     }
+    control.publish_total(layout.total_probes());
     let static_lights = static_light_refs(inputs.sh_ctx);
     let (direct_lights, global_indices) = static_direct_lights(&static_lights);
     let geom_hash = geometry_content_hash(inputs.sh_ctx.geometry);
@@ -648,6 +692,7 @@ pub fn bake_direct_sh_volume_cached(
         match DirectShVolumeSection::from_bytes(&bytes) {
             Ok(section) => {
                 log::info!("[cache] direct_sh_volume hit");
+                control.advance(layout.total_probes());
                 return section;
             }
             Err(e) => {
@@ -658,7 +703,7 @@ pub fn bake_direct_sh_volume_cached(
         log::info!("[cache] direct_sh_volume miss");
     }
 
-    let section = bake_direct_sh_volume(inputs, config);
+    let section = bake_direct_sh_volume_controlled(inputs, config, control);
     cache.put(&key, &section.to_bytes());
     section
 }

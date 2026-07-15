@@ -9,6 +9,8 @@ use postretro_level_format::animated_light_weight_maps::{
 };
 use rayon::prelude::*;
 
+use crate::bake_control::BakeControl;
+
 use crate::bvh_build::BvhPrimitive;
 use crate::chart_raster::{
     CHART_PADDING_TEXELS, ChartPlacement, chart_interior_dims, chart_texel_world_position,
@@ -82,16 +84,29 @@ struct ChunkBakeResult {
 pub fn bake_animated_light_weight_maps(
     inputs: &WeightMapInputs<'_>,
 ) -> AnimatedLightWeightMapsSection {
+    bake_animated_light_weight_maps_controlled(inputs, &BakeControl::unrestricted())
+}
+
+pub fn bake_animated_light_weight_maps_controlled(
+    inputs: &WeightMapInputs<'_>,
+    control: &BakeControl,
+) -> AnimatedLightWeightMapsSection {
     if inputs.chunk_section.chunks.is_empty() {
         return AnimatedLightWeightMapsSection::empty();
     }
 
     let chunks = &inputs.chunk_section.chunks;
+    control.publish_total(chunks.len());
     let light_indices_pool = &inputs.chunk_section.light_indices;
 
     let per_chunk: Vec<ChunkBakeResult> = chunks
         .par_iter()
-        .map(|chunk| bake_one_chunk(inputs, chunk, light_indices_pool))
+        .map(|chunk| {
+            let _permit = control.governor().enter();
+            let result = bake_one_chunk(inputs, chunk, light_indices_pool);
+            control.advance(1);
+            result
+        })
         .collect();
 
     assert_no_overlapping_rects_per_face(chunks, &per_chunk);

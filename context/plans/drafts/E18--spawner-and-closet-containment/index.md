@@ -22,15 +22,18 @@ reveal-flavor containment reuses the shipped arm/disarm surface a door-open alre
   networked-AI predicate, and a host-gated post-tick registration sweep so spawned enemies enter
   the `ReplicableSet` and stamp a `NetworkId`. Clients materialize them from the snapshot's
   `entity_class`.
+- Spawner-archetype presentation: an archetype referenced only by a spawner (no pre-placed
+  instance) has its mesh model uploaded and animation clips resolved on host and client, so a
+  spawned enemy renders as its model rather than a debug capsule.
 - Closet containment via an **aggro gate**: a Brain whose aggro gate is closed does not acquire
   targets, does not steer, and holds position. Authored closed with `enabled_on_spawn = false` on
   the enemy placement (the shipped arm/disarm input), reopened by `armTrigger` — the verb triggers
   already use, extended to enemy tags. The script-arm gate is one aggro condition among several;
   later perception/AI specs add more (LOS, sound) that compose with it, not replace it. A reveal
   reaction opens door and gate together: `[moverStart door, armTrigger closet]`.
-- Pre-attack windup: a spawned enemy cannot attack for a minimum window ≥ the netcode
-  interpolation clamp + the standard net profile's delivery budget, so it is visible on clients
-  before it can hit. The windup doubles as jump-scare animation time.
+- Pre-attack windup: a spawned enemy cannot attack until at least the netcode interpolation clamp
+  (≤ 250 ms) after it spawns, so it is delivered and drawn on remote clients before it can hit. The
+  windup doubles as jump-scare animation time.
 - Full primitive-contract surface for the one new verb `spawnFromSpawner` (SDK TS + Luau builders,
   typedef regeneration + drift snapshot + parity fixtures, validators), plus extending
   `armTrigger` / `disarmTrigger` targeting and validation to enemy aggro gates.
@@ -49,28 +52,34 @@ reveal-flavor containment reuses the shipped arm/disarm surface a door-open alre
   existing Transform; no new wire surface.
 - Spawn-at-activator targeting (`@activators`) — depends on the still-in-`ready/`
   `E18--trigger-event-params`; not required here.
+- A new `world.query` filter term for spawners or enemies — authoring does not need one in C.
 
 ## Acceptance criteria
 
 - [ ] An `entity_spawner` placed in a `.map` with an archetype name and count compiles and loads
-      with no new PRL section; the built map's binary layout is unchanged from a map without it.
+      adding no new PRL `SectionId`; it rides the existing map-entities section (section inventory
+      unchanged).
 - [ ] Firing a reaction containing `spawnFromSpawner` targeting the spawner's tag creates `count`
       live enemies of the named archetype at the spawner, on the host, inside the fixed tick.
 - [ ] A spawner referencing an unknown archetype name warns once at level install and spawns
       nothing at fire time (inert degradation); a spawner whose archetype is not an AI enemy
       warns and spawns nothing.
-- [ ] In a two-peer co-op session, a host-spawned enemy appears on the connected client and on a
-      client that joins after the spawn, driven by its replicated Transform.
-- [ ] A spawned enemy cannot deal damage until at least the interpolation-clamp + delivery-budget
-      window has elapsed since it spawned, asserted against the E15 reference `LinkConfig`.
+- [ ] In a two-peer co-op session, a host-spawned enemy appears and renders its mesh on the
+      connected client and on a client that joins after the spawn, driven by its replicated
+      Transform.
+- [ ] A spawner whose archetype has no pre-placed instance still renders its spawned enemies as
+      their model (mesh uploaded, clips resolved) on host and client — not a debug capsule.
+- [ ] A spawned enemy deals no damage for at least the interpolation clamp (≤ 250 ms) after spawn;
+      at the E15 reference `LinkConfig` (`mandated_link`) it is present and drawable on the remote
+      client before its first attack lands.
 - [ ] An enemy placed `enabled_on_spawn = false` does not acquire or move toward a player standing
       adjacent (including through a thin wall) and does not leave its start position.
 - [ ] A reaction containing `armTrigger` targeting that enemy's tag makes it acquire and pursue a
       player in range on the next think tick; the same reaction can also drive a mover.
 - [ ] A gated (un-armed) enemy still takes damage and can be killed; killing it fires no
       target-selection or steering behavior.
-- [ ] Killing a spawned enemy does not change any install-scoped kill-progress total (no
-      over-count, no underflow).
+- [ ] A spawned enemy carries no progress tags, so killing it changes no install-scoped
+      kill-progress total (no over-count, no underflow).
 - [ ] SDK TS and Luau emit byte-identical descriptors for `spawnFromSpawner`; the typedef drift
       check passes after regeneration.
 
@@ -82,35 +91,47 @@ Add a built-in classname handler for `entity_spawner` mirroring `prop_mesh`
 (`crates/postretro/src/scripting/builtins/prop_mesh.rs`): a `CLASSNAME` const, a handler
 registered into `ClassnameDispatch` via `register_builtins`, riding the generic
 `MapEntityRecord` point-entity path — **no** dedicated PRL section, compiler branch, or loader
-change. The handler reads KVPs for the enemy archetype `canonical_name` and integer `count`
-(absent/empty archetype → `[Loader]` warning, spawner spawns nothing; tags/KVPs are applied
-uniformly by `apply_classname_dispatch`, so the handler need not set them). Introduce an
-engine-owned `SpawnerComponent` (the component vocabulary is engine-closed — this is fine)
-carrying the resolved enemy archetype and count. Resolve the archetype name to an
-`EntityTypeDescriptor` at install via `find_descriptor` (matches `canonical_name`) and store what
-the in-tick spawn needs so the fixed-tick executor never touches the data registry or a
-`ScriptCtx` — carry the resolved descriptor (or an equivalent registry-reachable handle) on the
-component. Add the FGD `@PointClass` entry (`entity_spawner`, archetype + count keys). Enemy
-archetypes are any descriptor with an `ai` block; do not invent a modder-facing enemy component.
+change. The handler reads KVPs for the enemy archetype name and integer `count` (absent/empty
+archetype → `[Loader]` warning, spawner spawns nothing) and attaches an engine-owned
+`SpawnerComponent { archetype_name, count }`; it spawns via `try_spawn(transform, &entity.tags)`
+so the spawner carries its `_tags` (the KVP bag is applied uniformly by `apply_classname_dispatch`,
+but tags attach through `try_spawn`, exactly as `prop_mesh` does). `SpawnerComponent` is
+engine-owned (the component vocabulary is engine-closed — this is fine). Resolving the archetype
+name to an `EntityTypeDescriptor` cannot happen in the handler — `ClassnameHandler` is a bare
+`fn(&MapEntity, &mut EntityRegistry) -> Option<EntityId>` with no descriptor list in scope. Do it
+in a **separate post-dispatch install pass** where descriptors are in scope (alongside
+`apply_data_archetype_dispatch`): for each `SpawnerComponent`, `find_descriptor` its
+`archetype_name` (matches `canonical_name`), warn per AC 3 if missing or not an AI enemy
+(`descriptor_materializes_ai_enemy`), and fill the component with the resolved descriptor so the
+fixed-tick executor never touches the data registry or a `ScriptCtx`. `EntityTypeDescriptor`
+(`crates/entities/src/data_descriptors/types/entity.rs`) is carryable on the component. Add the
+FGD `@PointClass` entry (`entity_spawner`, archetype + count keys). Enemy archetypes are any
+descriptor with an `ai` block; do not invent a modder-facing enemy component.
 
 ### Task 2: `spawnFromSpawner` verb + in-tick spawn executor
 
 Add `spawnFromSpawner` to `CONSEQUENTIAL_PRIMITIVES` and a `Spawn { target: BoundTarget }`
 variant to `BoundTriggerCommand` (and the `#[cfg(test)] BoundTriggerCommandKind`) in
-`crates/postretro/src/trigger_bindings.rs`. Map the primitive in `partition_direct_reaction` and
-`bind_sequence_step`; the target is a `BoundTarget::Tag` (config lives on `SpawnerComponent`, no
-per-fire args). Put the spawn logic in a **new** `crates/postretro/src/spawner.rs` module (mirror
-`kinematic_mover.rs`'s `apply_mover_command_to_targets` + `register_mover_reaction_primitives`
-shape) so `trigger_bindings.rs` gains only the variant and a delegating match arm in
-`execute_non_store`. The executor resolves spawner entities by tag, and for each with a
-`SpawnerComponent` spawns `count` enemies through `registry.spawn(transform)` +
-`attach_descriptor_components`, stamping `DescriptorProvenance.spawn_path =
-DescriptorSpawnPath::RuntimeSpawn` (add this variant to
-`crates/entities/src/provenance.rs`). Enemies spawn at the spawner origin; the existing
-entity-entity separation pass resolves interpenetration. Spawn is host-side, in-tick, in
-deterministic order, with no RNG. Register the primitive through a
-`register_spawner_reaction_primitives` entry point (mirroring the mover registration call site in
-`session/mod.rs`) so the descriptor/validation path accepts the verb.
+`crates/postretro/src/trigger_bindings.rs`. The single primitive→command mapping point is
+`bind_command`'s match (`partition_direct_reaction` and `bind_sequence_step` route into it); add
+the `Spawn` arm there. The target is a `BoundTarget::Tag` (config lives on `SpawnerComponent`, no
+per-fire args). Also add `spawnFromSpawner` to `is_trigger_consequential_primitive`
+(`crates/scripting-core/src/reaction_dispatch.rs`), the hardcoded mirror of the fixed-tick command
+set that backs the double-execution debug asserts. Put the spawn logic in a **new**
+`crates/postretro/src/spawner.rs` module (mirror `kinematic_mover.rs`'s
+`apply_mover_command_to_targets` + `register_mover_reaction_primitives` shape) so
+`trigger_bindings.rs` gains only the variant and a delegating match arm in `execute_non_store`.
+The executor resolves spawner entities by tag, and for each with a `SpawnerComponent` spawns
+`count` enemies through `registry.spawn(transform)` + `attach_descriptor_components`
+(module-private today — bump to `pub(crate)`; it takes an `&MapEntity`, so synthesize a minimal
+one as the `defaultWeapon` literal path does), stamping `DescriptorProvenance.spawn_path =
+DescriptorSpawnPath::RuntimeSpawn` (add this variant to `crates/entities/src/provenance.rs`).
+Spawned enemies are **untagged** — this is deliberate (it keeps them out of tag-keyed kill-progress
+counting, Task 6). Place the `count` enemies at the spawner origin plus a fixed per-index offset
+so they do not perfectly overlap (do not rely on the steering separation pass, which may not run
+for idle agents). Spawn is host-side, in-tick, in deterministic order, with no RNG. Register the
+primitive through a `register_spawner_reaction_primitives` entry point (mirroring the mover
+registration call site in `session/mod.rs`) so the descriptor/validation path accepts the verb.
 
 ### Task 3: Spawn-time replication registration + client materialization
 
@@ -124,20 +145,30 @@ host-gated post-tick registration pass mirroring `host_register_map_enemies`
 (`crates/postretro/src/netcode/replication.rs:239`, idempotent — re-registration keeps the
 `NetworkId`): after the fixed tick, sweep for networked-AI enemies not yet in the `ReplicableSet`,
 `allocator.stamp` + `ReplicableSet::register` each, and track them in the same `map_enemies` set
-so level reload unregisters them. Gate the sweep on host/single-player role exactly as
-`host_register_map_enemies_after_install` does, and skip it when no spawn occurred that tick.
-Single-player spawns work with no registration (sweep is a no-op off-host).
+so level reload unregisters them. Run the sweep every tick — it is a full idempotent sweep with
+stale-prune (re-registration keeps the `NetworkId`), so an unconditional per-tick call is correct;
+a dirty-flag optimization is a later concern, not a correctness requirement, and no
+spawn-happened signal is threaded out of the executor today. Gate the sweep on host/single-player
+role exactly as `host_register_map_enemies_after_install` does. Single-player spawns work with no
+registration (sweep is a no-op off-host).
 
 ### Task 4: Enemy aggro gate + arm/disarm targeting
 
 Add an aggro gate to `BrainComponent` (`crates/entities/src/components/brain.rs`) — a boolean gate
 (working name `aggro_armed`, default open) that, while closed, blocks target acquisition. Seed it
-closed from `enabled_on_spawn = false` on an AI-enemy map placement, read where
-`attach_descriptor_components` applies placement overrides (the same KVP triggers already use for
-their arm state). In `run_ai_tick_with_navigation` (`crates/postretro/src/scripting/systems/ai.rs`),
-a gated brain does not run `evaluate_transition`, does not steer, and holds its spawn position and
-state — its Transform is untouched, so it replicates as a stationary Idle enemy. Damage, health,
-and death still process — a gated enemy can be killed. Extend the shipped `armTrigger` /
+closed from an `enabled_on_spawn = false` KVP on an AI-enemy map placement, read where
+`attach_descriptor_components` consumes placement KVPs. Note this is a **new** bare-KVP read: on a
+trigger volume `enabled_on_spawn` is a compiler-validated wire field, but on an enemy placement it
+is a plain KVP off `MapEntity.key_values` — parse it with `parse_bool` (absent or malformed → warn
+and default the gate open). This is a deliberate exception to the convention that bare (non-`initial_`)
+KVPs are not consumed by components; call it out in a comment. In `run_ai_tick_with_navigation`
+(`crates/postretro/src/scripting/systems/ai.rs`), a gated brain does not run `evaluate_transition`,
+does not steer, and holds its current position and state — its Transform is untouched, so it
+replicates as a stationary Idle enemy; ensure the O(n²) steering separation pass also skips a gated
+agent so it is not nudged. Damage, health, and death still process — a gated enemy can be killed.
+The gate seed is not a `DescriptorMapOverride` (that enum is closed to light/emitter), so ensure a
+descriptor hot-reload re-applies it, or document reload-reopens-the-gate as a dev-only limitation.
+Extend the shipped `armTrigger` /
 `disarmTrigger` verbs so that when their tag resolves to AI-enemy entities they open / close the
 aggro gate (alongside any same-tagged triggers): `arm_trigger_targets` / `disarm_trigger_targets`
 (`crates/postretro/src/trigger_system.rs`) gain the Brain-gate toggle. No new consequential verb —
@@ -155,25 +186,44 @@ commands). Extend the typedef templates (`crates/scripting-core/src/typedef/temp
 `postretro.d.ts` / `.d.luau`, update the drift snapshot, and add TS/Luau parity fixtures. Update the
 reaction-argument validators to accept `spawnFromSpawner` and reject malformed targets, matching the
 shipped per-primitive warn-skip. `armTrigger`/`disarmTrigger` already carry builders and typedefs —
-extend only their target-validation to admit enemy-tag targets. Extend the `world.query` filter
-vocabulary if a spawner/enemy filter term is needed for authoring.
+extend only their target-validation to admit enemy-tag targets. No `world.query` filter change (see
+out of scope).
 
-### Task 6: Pre-attack windup AC + kill-progress guard
+### Task 6: Pre-attack windup + kill-progress guard
 
-Enforce a minimum pre-attack windup on a spawned enemy: it cannot deal damage until at least the
-adaptive interpolation clamp (≤ 250 ms) plus the standard net profile's delivery budget has
-elapsed since spawn, so remote clients see it before it can hit. Harness-assert this at the E15
-reference `LinkConfig` (assert at the standard profile, not universally). Separately, guard
-kill-progress: a `RuntimeSpawn` enemy's death must not mutate any install-scoped `ProgressTracker`
-total (`crates/scripting-core/src/reaction_dispatch.rs` — totals are counted once at install).
-Exclude `RuntimeSpawn` enemies from that counting so spawned kills neither over-count a fixed
-total nor underflow. Do not build area-scoped progress here (deferred sibling spec).
+Enforce a minimum pre-attack windup on a spawned enemy by seeding its existing
+`attack_cooldown_remaining_ms` (`crates/entities/src/components/brain.rs`, counted down in `ai.rs`)
+at spawn time in `spawner.rs` to at least the adaptive interpolation clamp (≤ 250 ms), so a spawned
+enemy cannot land its first attack before it is delivered and drawn on remote clients. Harness-assert
+the property at the E15 reference `LinkConfig` (`mandated_link`): a freshly spawned enemy is present
+and drawable on the client before it deals damage — assert at that profile, not universally. There is
+no separate "delivery budget" constant; the interpolation clamp is the pinned floor and the harness
+observes the delivered-before-hit property. Kill-progress needs no counting change here: spawned
+enemies are untagged (Task 2), and `ProgressTracker::on_entity_killed` matches only by tag, so a
+spawned kill can never touch an install-scoped total — add a test asserting this and do not build
+area-scoped progress (deferred sibling spec).
+
+### Task 7: Spawner-archetype model upload + clip resolve (host + client)
+
+Runtime-spawned enemies must render, not fall back to a debug capsule. Today the renderer model
+cache and animation-clip indices are built by **level-load-only** passes scoped to the archetypes
+the map references *by placement*: the host model sweep (`distinct_mesh_models`,
+`crates/postretro/src/main.rs`) and clip resolve (`resolve_mesh_entity_clips`, same file), and on
+the connected client the suppressed-AI upload (`suppressed_ai_enemy_mesh_models`,
+`crates/postretro/src/scripting/builtins/data_archetype.rs`, scoped to classes the map references).
+An archetype referenced only by an `entity_spawner` KVP matches none of them, so its mesh never
+uploads and its clips never resolve. At install, collect every spawner-referenced archetype (from
+the resolved `SpawnerComponent`s of Task 1) and union its `mesh.model` handle into both upload
+sweeps (host and client) and resolve its clips, so a spawner-only archetype is drawable before its
+first spawn. The client already has a post-materialization resolve precedent for net-remote enemies
+(`materialize_net_remote_enemy_presentation` + clip resolve, `main.rs`); reuse its shape rather than
+inventing a per-spawn upload path.
 
 ## Sequencing
 
-**Phase 1 (sequential):** Task 1 — the spawner entity + component; everything spawns through it.
-**Phase 2 (sequential):** Task 2 — the verb, executor, and `RuntimeSpawn` provenance variant; consumes Task 1's component and edits `trigger_bindings.rs`.
-**Phase 3 (concurrent):** Task 3 (replication), Task 4 (aggro gate + arm/disarm), Task 6 (windup + progress) — disjoint files; 3 and 6 consume Task 2's spawn path, 4 is independent (it edits `ai.rs` / `brain.rs` / `trigger_system.rs`, not `trigger_bindings.rs`).
+**Phase 1 (sequential):** Task 1 — the spawner entity + component + install-time archetype resolution; everything spawns through it.
+**Phase 2 (sequential):** Task 2 — the verb, executor, and `RuntimeSpawn` provenance variant; consumes Task 1's resolved component and edits `trigger_bindings.rs`.
+**Phase 3 (concurrent):** Task 3 (replication), Task 4 (aggro gate + arm/disarm), Task 6 (windup + progress), Task 7 (presentation upload) — files are disjoint: 3 = netcode (`descriptor_class.rs`/`replication.rs`), 4 = `ai.rs`/`brain.rs`/`trigger_system.rs`, 6 = `spawner.rs` + harness, 7 = `main.rs` presentation sweeps + the client upload pass in `data_archetype.rs`. 3/6/7 consume Task 2's spawn path; 4 is independent.
 **Phase 4 (sequential):** Task 5 — SDK/typedef contract; consumes the final verb set from Tasks 2 and 4.
 
 ## Boundary inventory
@@ -192,16 +242,23 @@ total nor underflow. Do not build area-scoped progress here (deferred sibling sp
 ## Rough sketch
 
 - **Spawner entity (Task 1).** `prop_mesh.rs` is the exact template — `CLASSNAME`, a handler
-  returning a spawned id with a component attached, registered in `ClassnameDispatch::register_builtins`,
-  tags/KVPs applied by `apply_classname_dispatch`. `find_descriptor(descriptors, name)` resolves
-  the archetype at install; `descriptor_materializes_ai_enemy(d) == d.ai.is_some()` validates it
-  is an enemy.
-- **In-tick spawn (Task 2).** `execute_non_store` (`trigger_bindings.rs:409`) matches
-  `BoundTarget::Tag` via `resolve` (`:469`, `query_by_component_and_tag(Transform, tag)`); the
-  `Spawn` arm delegates to `spawner::spawn_from_spawner_targets`. Spawn = `registry.spawn(transform)`
-  (`registry.rs:744`) + `attach_descriptor_components` (`data_archetype.rs:389`) with `spawn_path =
-  RuntimeSpawn`. Keep the descriptor reachable without `ScriptCtx` (resolved onto `SpawnerComponent`
-  at install).
+  returning a spawned id with a component attached, registered in `ClassnameDispatch::register_builtins`;
+  KVPs applied by `apply_classname_dispatch`, tags via `try_spawn(transform, &entity.tags)`
+  (`prop_mesh.rs:65`). Archetype resolution is a post-dispatch install pass, not the handler:
+  `find_descriptor(descriptors, name)` (`data_archetype.rs:249`); `descriptor_materializes_ai_enemy(d)
+  == d.ai.is_some()` (`:293`) validates it is an enemy.
+- **In-tick spawn (Task 2).** `bind_command`'s match (`trigger_bindings.rs:697`) is the single
+  primitive→`BoundTriggerCommand` mapping point. `execute_non_store` (`:409`) matches `BoundTarget::Tag`
+  via `resolve` (`:469`, `query_by_component_and_tag(Transform, tag)`); the `Spawn` arm delegates to
+  `spawner::spawn_from_spawner_targets`. Spawn = `registry.spawn(transform)` (`registry.rs:744`) +
+  `attach_descriptor_components` (`data_archetype.rs:389`, bump to `pub(crate)`; synthesize its
+  `&MapEntity` as the `defaultWeapon` literal does, `:752`) with `spawn_path = RuntimeSpawn`, untagged.
+  Keep the descriptor reachable without `ScriptCtx` (resolved onto `SpawnerComponent` at install).
+- **Presentation (Task 7).** Model upload + clip resolve are level-load-only and placement-scoped
+  (`distinct_mesh_models` / `resolve_mesh_entity_clips` in `main.rs`; client
+  `suppressed_ai_enemy_mesh_models`, `data_archetype.rs:354`). Union spawner-referenced archetypes
+  into both, else the spawned enemy draws as a debug capsule (the E10 AC#3 regression documented at
+  `data_archetype.rs:343-349`).
 - **Replication (Task 3).** `is_networked_ai_map_enemy` (`descriptor_class.rs:31`) currently gates
   on `MapPlacement`; broaden to `{MapPlacement, RuntimeSpawn}` + rename → `descriptor_entity_class`
   (`:61`) then stamps the class for spawned enemies. Post-tick sweep mirrors

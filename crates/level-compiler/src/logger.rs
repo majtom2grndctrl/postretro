@@ -1,4 +1,6 @@
 //! Collecting logger used by both plain and interactive compiler reporters.
+//!
+//! See: `context/lib/build_pipeline.md`.
 
 use std::fmt;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -35,6 +37,7 @@ struct SinkState {
 pub struct LogSink {
     state: Arc<Mutex<SinkState>>,
     warning_count: Arc<AtomicUsize>,
+    summary_printed: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl LogSink {
@@ -74,6 +77,25 @@ impl LogSink {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .warnings
             .clone()
+    }
+
+    /// Print the retained warn-or-higher history once across all sink clones.
+    pub fn print_warning_summary(&self) {
+        if self
+            .summary_printed
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            return;
+        }
+        println!("\nWarnings: {}", self.warning_count());
+        for warning in self.warnings() {
+            println!("  {warning}");
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn summary_printed(&self) -> bool {
+        self.summary_printed.load(Ordering::Acquire)
     }
 }
 
@@ -157,5 +179,16 @@ mod tests {
         assert_eq!(sink.warnings().len(), 2);
         assert!(sink.drain().is_empty());
         assert_eq!(sink.warnings().len(), 2);
+    }
+
+    #[test]
+    fn warning_summary_claim_is_shared_by_sink_clones() {
+        let sink = LogSink::default();
+        assert!(!sink.summary_printed.load(Ordering::Acquire));
+        sink.print_warning_summary();
+        assert!(sink.summary_printed.load(Ordering::Acquire));
+        let clone = sink.clone();
+        clone.print_warning_summary();
+        assert!(clone.summary_printed.load(Ordering::Acquire));
     }
 }

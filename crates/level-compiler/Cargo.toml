@@ -27,7 +27,7 @@ blake3 = "1"
 bytemuck = { workspace = true }
 postcard = { version = "1", features = ["alloc"] }
 serde.workspace = true
-ratatui = { version = "0.28", default-features = false, features = ["crossterm"] }
+ratatui = { version = "0.28", default-features = false, features = ["crossterm", "unstable-rendered-line-info"] }
 crossterm = "0.28"
 
 [dev-dependencies]

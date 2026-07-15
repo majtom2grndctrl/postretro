@@ -1,4 +1,5 @@
 //! Panic-safe ownership of crossterm's alternate-screen and raw-mode state.
+//! See: `context/lib/build_pipeline.md`.
 
 use std::io::{self, Stdout};
 

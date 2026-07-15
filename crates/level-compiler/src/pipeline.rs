@@ -2,6 +2,7 @@
 //!
 //! Stage labels are part of the human-facing Build Summary contract. Keep them
 //! stable independently from the spinner text used while a stage is running.
+//! See: context/lib/build_pipeline.md
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};

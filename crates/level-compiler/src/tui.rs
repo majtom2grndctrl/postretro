@@ -1,6 +1,10 @@
 //! Interactive terminal presentation for compiler progress.
+//! See: context/lib/build_pipeline.md
 
+use std::any::Any;
 use std::io::{self, Stdout};
+use std::panic::AssertUnwindSafe;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -125,6 +129,8 @@ impl TuiState {
 pub struct TuiReporter {
     state: Mutex<TuiState>,
     logs: LogSink,
+    finalized: AtomicBool,
+    summary_printed: AtomicBool,
 }
 
 impl TuiReporter {
@@ -132,6 +138,8 @@ impl TuiReporter {
         Self {
             state: Mutex::new(TuiState::new(planned)),
             logs,
+            finalized: AtomicBool::new(false),
+            summary_printed: AtomicBool::new(false),
         }
     }
 
@@ -149,6 +157,9 @@ impl TuiReporter {
     }
 
     fn print_final_summary(&self) {
+        if self.summary_printed.swap(true, Ordering::AcqRel) {
+            return;
+        }
         self.drain_logs();
         let state = self.lock();
         if let Some(total) = state.final_summary.total {
@@ -160,11 +171,7 @@ impl TuiReporter {
         }
         drop(state);
 
-        let warnings = self.logs.warnings();
-        println!("\nWarnings: {}", self.logs.warning_count());
-        for warning in warnings {
-            println!("  {warning}");
-        }
+        self.logs.print_warning_summary();
     }
 }
 
@@ -206,19 +213,29 @@ impl Reporter for TuiReporter {
     }
 
     fn finalize(&self, timings: &[(&'static str, Duration)], total: Duration) {
+        if self.finalized.swap(true, Ordering::AcqRel) {
+            return;
+        }
         self.drain_logs();
         let mut state = self.lock();
         state.final_summary.timings = timings.to_vec();
         state.final_summary.total = Some(total);
+    }
+
+    fn finalize_failure(&self) {
+        if self.finalized.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        self.drain_logs();
     }
 }
 
 /// Run a compiler bake on a worker while the caller thread exclusively owns
 /// terminal input and rendering.
 ///
-/// Task 5 supplies reporter selection and the parsed map's planned stages. The
-/// closure keeps this entry point independent from CLI gating and argument
-/// ownership while still making the thread boundary explicit.
+/// The caller owns CLI gating and supplies the parsed map's planned stages.
+/// The closure keeps terminal orchestration independent from compile argument
+/// ownership while making the worker boundary explicit.
 pub fn run_tui<F>(
     planned: Vec<StageDescriptor>,
     logs: LogSink,
@@ -237,28 +254,74 @@ where
         Ok(session) => session,
         Err(error) => {
             governor.set_paused(false);
-            let bake_result = join_worker(worker);
-            reporter.print_final_summary();
+            let bake_result = finish_worker(worker, &reporter);
             bake_result?;
             return Err(error.into());
         }
     };
 
-    let render_result = render_loop(&mut session.terminal, &reporter, &governor, &worker);
+    let render_outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        render_loop(&mut session.terminal, &reporter, &governor, &worker)
+    }));
     // A quit or terminal error must never leave cooperative workers parked.
     governor.set_paused(false);
     drop(session);
 
-    let bake_result = join_worker(worker);
-    reporter.print_final_summary();
-    render_result?;
+    let bake_result = finish_worker(worker, &reporter);
+    match render_outcome {
+        Ok(render_result) => render_result?,
+        Err(payload) => {
+            eprintln!(
+                "TUI render loop panicked: {}",
+                panic_message(payload.as_ref())
+            );
+            std::panic::resume_unwind(payload);
+        }
+    }
     bake_result
 }
 
-fn join_worker(worker: thread::JoinHandle<anyhow::Result<()>>) -> anyhow::Result<()> {
+enum WorkerOutcome {
+    Completed(anyhow::Result<()>),
+    Panicked(Box<dyn Any + Send + 'static>),
+}
+
+fn join_worker(worker: thread::JoinHandle<anyhow::Result<()>>) -> WorkerOutcome {
     match worker.join() {
-        Ok(result) => result,
-        Err(payload) => std::panic::resume_unwind(payload),
+        Ok(result) => WorkerOutcome::Completed(result),
+        Err(payload) => WorkerOutcome::Panicked(payload),
+    }
+}
+
+/// Complete reporting only after the caller has restored the normal screen.
+fn finish_worker(
+    worker: thread::JoinHandle<anyhow::Result<()>>,
+    reporter: &TuiReporter,
+) -> anyhow::Result<()> {
+    match join_worker(worker) {
+        WorkerOutcome::Completed(result) => {
+            if result.is_err() {
+                reporter.finalize_failure();
+            }
+            reporter.print_final_summary();
+            result
+        }
+        WorkerOutcome::Panicked(payload) => {
+            reporter.finalize_failure();
+            reporter.print_final_summary();
+            eprintln!("Build worker panicked: {}", panic_message(payload.as_ref()));
+            std::panic::resume_unwind(payload)
+        }
+    }
+}
+
+fn panic_message(payload: &(dyn Any + Send)) -> &str {
+    if let Some(message) = payload.downcast_ref::<String>() {
+        message
+    } else if let Some(message) = payload.downcast_ref::<&'static str>() {
+        message
+    } else {
+        "non-string panic payload"
     }
 }
 
@@ -271,6 +334,7 @@ fn render_loop(
     let max_permits = thread::available_parallelism()
         .map(std::num::NonZeroUsize::get)
         .unwrap_or(1);
+    clamp_governor_permits(governor, max_permits);
 
     while !worker.is_finished() {
         reporter.drain_logs();
@@ -284,10 +348,10 @@ fn render_loop(
                         governor.set_paused(!governor.is_paused());
                     }
                     KeyCode::Char('+') | KeyCode::Char('=') | KeyCode::Right | KeyCode::Up => {
-                        governor.set_permits((governor.permits() + 1).min(max_permits));
+                        change_permits(governor, max_permits, PermitChange::Increase);
                     }
                     KeyCode::Char('-') | KeyCode::Left | KeyCode::Down => {
-                        governor.set_permits(governor.permits().saturating_sub(1).max(1));
+                        change_permits(governor, max_permits, PermitChange::Decrease);
                     }
                     _ => {}
                 },
@@ -299,6 +363,30 @@ fn render_loop(
     }
     reporter.drain_logs();
     Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum PermitChange {
+    Increase,
+    Decrease,
+}
+
+fn clamp_governor_permits(governor: &Governor, max_permits: usize) {
+    let permits = governor.permits();
+    let clamped = permits.clamp(1, max_permits.max(1));
+    if clamped != permits {
+        governor.set_permits(clamped);
+    }
+}
+
+fn change_permits(governor: &Governor, max_permits: usize, change: PermitChange) {
+    let max_permits = max_permits.max(1);
+    let current = governor.permits().clamp(1, max_permits);
+    let permits = match change {
+        PermitChange::Increase => current.saturating_add(1).min(max_permits),
+        PermitChange::Decrease => current.saturating_sub(1).max(1),
+    };
+    governor.set_permits(permits);
 }
 
 fn draw(
@@ -451,15 +539,9 @@ fn draw_logs(frame: &mut ratatui::Frame<'_>, area: Rect, state: &TuiState, warni
         ))
         .padding(Padding::horizontal(2));
     let log_inner = log_block.inner(regions[0]);
-    let height = log_inner.height as usize;
-    let lines = state
-        .logs
-        .iter()
-        .skip(state.logs.len().saturating_sub(height))
-        .map(log_line)
-        .collect::<Vec<_>>();
+    let lines = state.logs.iter().map(log_line).collect::<Vec<_>>();
     frame.render_widget(log_block, regions[0]);
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), log_inner);
+    frame.render_widget(bottom_aligned_paragraph(lines, log_inner), log_inner);
 
     let warning_block = Block::default()
         .title(Span::styled(
@@ -493,6 +575,15 @@ fn log_line(record: &CapturedRecord) -> Line<'static> {
         Style::default()
     };
     Line::from(Span::styled(record.to_string(), style))
+}
+
+fn bottom_aligned_paragraph(lines: Vec<Line<'static>>, area: Rect) -> Paragraph<'static> {
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: true });
+    let line_count = paragraph.line_count(area.width);
+    let scroll = line_count
+        .saturating_sub(area.height as usize)
+        .min(u16::MAX as usize) as u16;
+    paragraph.scroll((scroll, 0))
 }
 
 fn draw_controls(
@@ -572,25 +663,18 @@ fn draw_compact(
         lines.push(Line::from(format!("{progress}  {eta}")));
     }
     lines.push(Line::default());
-    let available = area.height.saturating_sub(lines.len() as u16 + 1) as usize;
-    lines.extend(
-        state
-            .logs
-            .iter()
-            .skip(state.logs.len().saturating_sub(available))
-            .map(log_line),
-    );
-    frame.render_widget(
-        Paragraph::new(lines)
-            .block(Block::default().padding(Padding::horizontal(2)))
-            .wrap(Wrap { trim: true }),
-        area,
-    );
+    lines.extend(state.logs.iter().map(log_line));
+    let block = Block::default().padding(Padding::horizontal(2));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    frame.render_widget(bottom_aligned_paragraph(lines, inner), inner);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
     use std::sync::atomic::Ordering;
 
     fn descriptor(id: StageId) -> StageDescriptor {
@@ -599,6 +683,24 @@ mod tests {
             label: id.label(),
             predicted_present: true,
         }
+    }
+
+    fn record(message: impl Into<String>) -> CapturedRecord {
+        CapturedRecord {
+            level: log::Level::Info,
+            target: "test".to_owned(),
+            message: message.into(),
+        }
+    }
+
+    fn buffer_text(terminal: &Terminal<TestBackend>) -> String {
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
     }
 
     #[test]
@@ -660,6 +762,49 @@ mod tests {
     }
 
     #[test]
+    fn core_controls_clamp_high_initial_permits_and_saturate_at_bounds() {
+        let governor = Governor::new(usize::MAX, false);
+        clamp_governor_permits(&governor, 8);
+        assert_eq!(governor.permits(), 8);
+
+        change_permits(&governor, 8, PermitChange::Increase);
+        assert_eq!(governor.permits(), 8);
+        change_permits(&governor, 8, PermitChange::Decrease);
+        assert_eq!(governor.permits(), 7);
+
+        governor.set_permits(1);
+        change_permits(&governor, 8, PermitChange::Decrease);
+        assert_eq!(governor.permits(), 1);
+        change_permits(&governor, 8, PermitChange::Increase);
+        assert_eq!(governor.permits(), 2);
+    }
+
+    #[test]
+    fn wrapped_log_tail_stays_visible_in_full_and_compact_layouts() {
+        let mut state = TuiState::new(&[]);
+        state
+            .logs
+            .extend((0..10).map(|index| record(format!("old-{index} {}", "x".repeat(90)))));
+        state.logs.push(record("NEWEST-LOG-RECORD"));
+        let governor = Governor::new(1, false);
+
+        let mut full = Terminal::new(TestBackend::new(80, 18)).unwrap();
+        full.draw(|frame| {
+            draw_full(frame, frame.area(), &state, 0, &governor, 8);
+        })
+        .unwrap();
+        assert!(buffer_text(&full).contains("NEWEST-LOG-RECORD"));
+
+        let mut compact = Terminal::new(TestBackend::new(30, 10)).unwrap();
+        compact
+            .draw(|frame| {
+                draw_compact(frame, frame.area(), &state, 0, &governor, 8);
+            })
+            .unwrap();
+        assert!(buffer_text(&compact).contains("NEWEST-LOG-RECORD"));
+    }
+
+    #[test]
     fn progress_is_indeterminate_until_late_total_arrives() {
         let progress = StageProgress::indeterminate();
         let mut step = StepState::new(descriptor(StageId::DeltaShBake));
@@ -669,5 +814,26 @@ mod tests {
         progress.completed_handle().store(2, Ordering::Relaxed);
         progress.publish_total(8);
         assert_eq!(progress_text(&step).0, "2/8   25%");
+    }
+
+    #[test]
+    fn failure_finalization_does_not_create_a_success_summary() {
+        let reporter = TuiReporter::new(&[], LogSink::default());
+        reporter.finalize_failure();
+        reporter.finalize_failure();
+
+        assert!(reporter.finalized.load(Ordering::Acquire));
+        assert!(reporter.lock().final_summary.total.is_none());
+    }
+
+    #[test]
+    fn panic_payload_is_available_for_normal_screen_diagnostics() {
+        let owned: Box<dyn Any + Send> = Box::new(String::from("worker failed"));
+        let borrowed: Box<dyn Any + Send> = Box::new("borrowed failure");
+        let opaque: Box<dyn Any + Send> = Box::new(7_u32);
+
+        assert_eq!(panic_message(owned.as_ref()), "worker failed");
+        assert_eq!(panic_message(borrowed.as_ref()), "borrowed failure");
+        assert_eq!(panic_message(opaque.as_ref()), "non-string panic payload");
     }
 }

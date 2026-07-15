@@ -344,6 +344,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     if !args.format.is_supported() {
+        log_sink.print_warning_summary();
         anyhow::bail!("map format '{:?}' is not yet supported", args.format);
     }
 
@@ -397,15 +398,25 @@ fn main() -> anyhow::Result<()> {
     let governor = std::sync::Arc::new(governor::Governor::new(args.jobs, false));
     match reporter_mode {
         ReporterMode::Plain => {
-            let reporter: std::sync::Arc<dyn reporter::Reporter> =
-                std::sync::Arc::new(reporter::PlainReporter::new(started, log_sink));
-            pipeline::run(&args, stage_cache, started, reporter, governor)
+            let reporter = std::sync::Arc::new(reporter::PlainReporter::new(started, log_sink));
+            let pipeline_reporter: std::sync::Arc<dyn reporter::Reporter> = reporter.clone();
+            let result = pipeline::run(&args, stage_cache, started, pipeline_reporter, governor);
+            if result.is_err() {
+                reporter::Reporter::finalize_failure(reporter.as_ref());
+            }
+            result
         }
         ReporterMode::Tui => {
             // The planned list is content-dependent. Parse once before entering
             // the alternate screen, then pass that parsed map to the worker.
             // Its measured duration remains the Parsing Build Summary row.
-            let prepared = pipeline::prepare(&args)?;
+            let prepared = match pipeline::prepare(&args) {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    log_sink.print_warning_summary();
+                    return Err(error);
+                }
+            };
             let planned = pipeline::planned_stages(&prepared.map_data.lights);
             tui::run_tui(planned, log_sink, governor, move |reporter, governor| {
                 pipeline::run_prepared(&args, stage_cache, started, reporter, governor, prepared)
@@ -976,10 +987,10 @@ fn compile_worldspawn_data_script(
                             let stderr = String::from_utf8_lossy(&out.stderr);
                             let stdout = String::from_utf8_lossy(&out.stdout);
                             if !stderr.trim().is_empty() {
-                                eprintln!("[prl-build] scripts-build stderr:\n{stderr}");
+                                log::error!("[prl-build] scripts-build stderr:\n{stderr}");
                             }
                             if !stdout.trim().is_empty() {
-                                eprintln!("[prl-build] scripts-build stdout:\n{stdout}");
+                                log::error!("[prl-build] scripts-build stdout:\n{stdout}");
                             }
                             anyhow::bail!(
                                 "[prl-build] scripts-build failed for data_script {}: exit status {}",

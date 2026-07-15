@@ -44,12 +44,11 @@ const WEIGHT_EPSILON: f32 = 1.0e-6;
 /// a strided emitter subset, shifting the soft weight for some probe geometry.
 /// Bumped for consistency with `lightmap_bake`/`sh_bake`.
 ///
-/// This stage is now cached: `main.rs` wraps the bake in a `StageCache`
-/// get/insert round-trip under the `animated_lm_weight_maps` cache key, which
-/// folds this `STAGE_VERSION` in alongside the input hash — the same per-stage
-/// version-constant pattern every cached stage uses. Bumping this constant
-/// invalidates every prior cache entry for the stage on the next build. The
-/// `CacheKey`/STAGE_VERSION contract is exercised by
+/// Pipeline orchestration caches this bake under the `animated_lm_weight_maps`
+/// key, which folds this `STAGE_VERSION` in alongside the input hash — the same
+/// per-stage version-constant pattern every cached stage uses. Bumping this
+/// constant invalidates every prior cache entry for the stage on the next
+/// build. The `CacheKey`/STAGE_VERSION contract is exercised by
 /// `stage_version_bump_misses_then_hits` and `stage_version_bump_changes_cache_key`
 /// in this module's test suite.
 pub const STAGE_VERSION: u32 = 5;
@@ -994,11 +993,11 @@ mod tests {
         assert!(section.texel_lights.is_empty());
     }
 
-    /// Task 6: `area_sample_count` is folded into `wm_input_hash` in `main.rs`,
-    /// so changing it produces a cache miss and re-bake. This test verifies the
-    /// field actually reaches `soft_visibility` — raising it shifts penumbra
-    /// weights at the higher stratification resolution. The cache-miss contract
-    /// is covered separately by `stage_version_bump_misses_then_hits`.
+    /// Task 6: the pipeline folds `area_sample_count` into the weight-map cache
+    /// input hash, so changing it produces a cache miss and re-bake. This test
+    /// verifies the field actually reaches `soft_visibility` — raising it shifts
+    /// penumbra weights at the higher stratification resolution. The cache-miss
+    /// contract is covered separately by `stage_version_bump_misses_then_hits`.
     #[test]
     fn area_sample_count_field_changes_penumbra_weights() {
         let low = bake_with_sample_count(

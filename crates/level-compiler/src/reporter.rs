@@ -1,4 +1,5 @@
 //! Compiler progress reporting independent of terminal presentation.
+//! See: `context/lib/build_pipeline.md`.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -10,12 +11,13 @@ use crate::pipeline::StageId;
 
 /// Shared, display-only progress state for one quantifiable stage.
 ///
-/// A total of zero means indeterminate. This lets delta stages publish their
-/// total after building affinity data without a callback into the reporter.
+/// Publication is tracked separately from the value, so a late-published zero
+/// means a present stage completed without work rather than indeterminate.
 #[derive(Clone, Debug)]
 pub struct StageProgress {
     completed: Arc<AtomicUsize>,
     total: Arc<AtomicUsize>,
+    total_published: Arc<AtomicBool>,
 }
 
 impl StageProgress {
@@ -23,6 +25,7 @@ impl StageProgress {
         Self {
             completed: Arc::new(AtomicUsize::new(0)),
             total: Arc::new(AtomicUsize::new(0)),
+            total_published: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -40,8 +43,13 @@ impl StageProgress {
         Arc::clone(&self.total)
     }
 
+    pub fn total_published_handle(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.total_published)
+    }
+
     pub fn publish_total(&self, total: usize) {
         self.total.store(total, Ordering::Release);
+        self.total_published.store(true, Ordering::Release);
     }
 
     pub fn completed(&self) -> usize {
@@ -49,14 +57,19 @@ impl StageProgress {
     }
 
     pub fn total(&self) -> Option<usize> {
-        match self.total.load(Ordering::Acquire) {
-            0 => None,
-            total => Some(total),
+        if self.total_published.load(Ordering::Acquire) {
+            Some(self.total.load(Ordering::Acquire))
+        } else {
+            None
         }
     }
 }
 
 /// Presentation contract shared by plain and TUI compiler frontends.
+///
+/// Exactly one terminal method must win: `finalize` prints a complete success
+/// summary, while `finalize_failure` prints warnings without a partial success
+/// table. Implementations make repeated terminal calls no-ops.
 pub trait Reporter: Send + Sync {
     fn begin_stage(&self, id: StageId, label: &'static str);
     fn declare_progress(&self, id: StageId, progress: StageProgress);
@@ -64,6 +77,7 @@ pub trait Reporter: Send + Sync {
     fn skip_stage(&self, id: StageId);
     fn record_warning(&self, warning: CapturedRecord);
     fn finalize(&self, timings: &[(&'static str, Duration)], total: Duration);
+    fn finalize_failure(&self);
 }
 
 struct Monitor {
@@ -85,6 +99,7 @@ pub struct PlainReporter {
     started: Instant,
     logs: LogSink,
     state: Mutex<PlainState>,
+    finalized: AtomicBool,
 }
 
 impl PlainReporter {
@@ -93,6 +108,7 @@ impl PlainReporter {
             started,
             logs,
             state: Mutex::new(PlainState::default()),
+            finalized: AtomicBool::new(false),
         }
     }
 
@@ -116,8 +132,10 @@ impl PlainReporter {
             return;
         };
         let done = progress.completed().min(total);
-        let percent = done.saturating_mul(100) / total;
-        let eta = if done == 0 {
+        let percent = done.saturating_mul(100).checked_div(total).unwrap_or(100);
+        let eta = if total == 0 {
+            Some(Duration::ZERO)
+        } else if done == 0 {
             None
         } else {
             Some(elapsed.mul_f64((total - done) as f64 / done as f64))
@@ -131,12 +149,16 @@ impl PlainReporter {
 
 impl Drop for PlainReporter {
     fn drop(&mut self) {
+        let needs_failure_summary = !self.finalized.swap(true, Ordering::AcqRel);
         let state = self
             .state
             .get_mut()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         Self::stop_monitor(state);
         self.drain_logs();
+        if needs_failure_summary {
+            self.logs.print_warning_summary();
+        }
     }
 }
 
@@ -230,6 +252,9 @@ impl Reporter for PlainReporter {
     }
 
     fn finalize(&self, timings: &[(&'static str, Duration)], total: Duration) {
+        if self.finalized.swap(true, Ordering::AcqRel) {
+            return;
+        }
         let mut state = self
             .state
             .lock()
@@ -244,11 +269,22 @@ impl Reporter for PlainReporter {
         }
         println!("  {: <15} {:>6.2}s", "Total", total.as_secs_f32());
 
-        let warnings = self.logs.warnings();
-        println!("\nWarnings: {}", self.logs.warning_count());
-        for warning in warnings {
-            println!("  {warning}");
+        self.logs.print_warning_summary();
+    }
+
+    fn finalize_failure(&self) {
+        if self.finalized.swap(true, Ordering::AcqRel) {
+            return;
         }
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Self::stop_monitor(&mut state);
+        state.active = None;
+        drop(state);
+        self.drain_logs();
+        self.logs.print_warning_summary();
     }
 }
 
@@ -264,6 +300,24 @@ mod tests {
         progress.publish_total(8);
         assert_eq!(progress.completed(), 3);
         assert_eq!(progress.total(), Some(8));
+    }
+
+    #[test]
+    fn progress_distinguishes_published_zero_from_indeterminate() {
+        let progress = StageProgress::indeterminate();
+        assert_eq!(progress.total(), None);
+        progress.publish_total(0);
+        assert_eq!(progress.total(), Some(0));
+    }
+
+    #[test]
+    fn failure_finalization_is_idempotent() {
+        let reporter = PlainReporter::new(Instant::now(), LogSink::default());
+        reporter.finalize_failure();
+        reporter.finalize_failure();
+
+        assert!(reporter.finalized.load(Ordering::Acquire));
+        assert!(reporter.logs.summary_printed());
     }
 
     #[test]

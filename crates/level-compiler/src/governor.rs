@@ -1,4 +1,5 @@
 //! Cooperative pause and parallel-work admission control for compiler bakes.
+//! See: `context/lib/build_pipeline.md`.
 
 use std::sync::{Condvar, Mutex, MutexGuard};
 

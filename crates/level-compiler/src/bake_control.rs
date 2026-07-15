@@ -1,7 +1,8 @@
 //! Display-only progress and cooperative admission state for instrumented bakes.
+//! See: `context/lib/build_pipeline.md`.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::governor::Governor;
 use crate::reporter::StageProgress;
@@ -12,6 +13,7 @@ pub struct BakeControl {
     governor: Arc<Governor>,
     completed: Arc<AtomicUsize>,
     total: Arc<AtomicUsize>,
+    total_published: Arc<AtomicBool>,
 }
 
 impl BakeControl {
@@ -20,6 +22,7 @@ impl BakeControl {
             governor,
             completed: progress.completed_handle(),
             total: progress.total_handle(),
+            total_published: progress.total_published_handle(),
         }
     }
 
@@ -36,6 +39,7 @@ impl BakeControl {
 
     pub fn publish_total(&self, total: usize) {
         self.total.store(total, Ordering::Release);
+        self.total_published.store(true, Ordering::Release);
     }
 
     pub fn advance(&self, units: usize) {
@@ -57,5 +61,15 @@ mod tests {
 
         assert_eq!(progress.total(), Some(7));
         assert_eq!(progress.completed(), 3);
+    }
+
+    #[test]
+    fn control_can_publish_zero_work() {
+        let progress = StageProgress::indeterminate();
+        let control = BakeControl::new(Arc::new(Governor::new(1, false)), &progress);
+
+        control.publish_total(0);
+
+        assert_eq!(progress.total(), Some(0));
     }
 }

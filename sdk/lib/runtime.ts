@@ -24,10 +24,11 @@ import type {
   RuntimeNe,
   RuntimeSelect,
 } from "postretro";
+import type { StateRef } from "./data_script";
 
 /** A builder argument: either an already-built node or a bare literal that is
  * auto-wrapped into a `const` node. */
-type Operand = RuntimeValue | number | boolean;
+type Operand = RuntimeValue | StateRef<unknown> | number | boolean;
 
 /** Wrap a bare `number`/`boolean` literal into a `const` node; pass an existing
  * node through unchanged. The wrapping rule is identical in `runtime.luau` so
@@ -35,6 +36,9 @@ type Operand = RuntimeValue | number | boolean;
 function wrap(value: Operand): RuntimeValue {
   if (typeof value === "number" || typeof value === "boolean") {
     return { op: "const", value };
+  }
+  if (value !== null && typeof value === "object" && "slot" in value && typeof value.slot === "string") {
+    return { op: "input", name: value.slot };
   }
   return value;
 }
@@ -47,8 +51,8 @@ export const runtime = {
     return { op: "const", value };
   },
   /** Named-input leaf, bound to live state by name in the Rust evaluator. */
-  read(name: string): RuntimeRead {
-    return { op: "input", name };
+  read(name: string | StateRef<unknown>): RuntimeRead {
+    return { op: "input", name: typeof name === "string" ? name : name.slot };
   },
   /** `a + b` (number). */
   add(a: Operand, b: Operand): RuntimeAdd {

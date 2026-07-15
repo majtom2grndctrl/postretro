@@ -619,38 +619,39 @@ fn read_pose_masks(
         return metadata;
     };
 
-    let mut read_name = |name: &str| match name {
-        "aimSpine" => metadata.aim_spine = true,
-        "upperBody" => metadata.upper_body = true,
-        "lowerBody" => metadata.lower_body = true,
-        unknown => log::warn!(
-            "[Model] unknown poseMask '{unknown}' on joint node {node_index} in {path_str}; ignoring"
-        ),
-    };
+    {
+        let mut read_name = |name: &str| match name {
+            "aimSpine" => metadata.aim_spine = true,
+            "upperBody" => metadata.upper_body = true,
+            "lowerBody" => metadata.lower_body = true,
+            unknown => log::warn!(
+                "[Model] unknown poseMask '{unknown}' on joint node {node_index} in {path_str}; ignoring"
+            ),
+        };
 
-    match pose_mask {
-        serde_json::Value::String(name) => read_name(name),
-        serde_json::Value::Array(names) => {
-            if names.is_empty() {
-                log::warn!(
-                    "[Model] empty poseMask array on joint node {node_index} in {path_str}; ignoring"
-                );
-            }
-            for name in names {
-                if let Some(name) = name.as_str() {
-                    read_name(name);
-                } else {
+        match pose_mask {
+            serde_json::Value::String(name) => read_name(name),
+            serde_json::Value::Array(names) => {
+                if names.is_empty() {
                     log::warn!(
-                        "[Model] non-string poseMask array value on joint node {node_index} in {path_str}; ignoring"
+                        "[Model] empty poseMask array on joint node {node_index} in {path_str}; ignoring"
                     );
                 }
+                for name in names {
+                    if let Some(name) = name.as_str() {
+                        read_name(name);
+                    } else {
+                        log::warn!(
+                            "[Model] non-string poseMask array value on joint node {node_index} in {path_str}; ignoring"
+                        );
+                    }
+                }
             }
+            _ => log::warn!(
+                "[Model] malformed poseMask on joint node {node_index} in {path_str}; expected string or string array; ignoring"
+            ),
         }
-        _ => log::warn!(
-            "[Model] malformed poseMask on joint node {node_index} in {path_str}; expected string or string array; ignoring"
-        ),
     }
-    drop(read_name);
 
     if metadata.aim_spine {
         if let Some(weight_value) = object.get("aimBendWeight") {

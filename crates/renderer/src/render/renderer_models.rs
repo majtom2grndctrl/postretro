@@ -2,6 +2,7 @@
 // loading, mesh draw submission, and UV normalization.
 // See: context/lib/resource_management.md
 
+use super::mesh_pass::ModelAnimationData;
 use super::*;
 
 impl Renderer {
@@ -187,9 +188,11 @@ impl Renderer {
             handle,
             &mesh,
             submesh_materials,
-            skeleton,
-            clips,
-            pose_stack,
+            ModelAnimationData {
+                skeleton,
+                clips,
+                pose_stack,
+            },
         );
 
         log::info!(

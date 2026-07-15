@@ -27,18 +27,23 @@
       "extras": {
         "hitZone": "torso",
         "hitZoneRadius": 0.5,
+        "poseMask": ["aimSpine", "upperBody"],
+        "aimBendWeight": 0.25,
         "ignored_extra_key": "the loader ignores unknown per-node extras keys"
       }
     },
     {
       "name": "joint_head_leaf",
       "extras": {
-        "hitZone": "head"
+        "hitZone": "head",
+        "poseMask": ["aimSpine", "upperBody"],
+        "aimBendWeight": 2.0
       }
     },
     {
       "name": "joint_untagged_leaf",
       "extras": {
+        "poseMask": "lowerBody",
         "someOtherTool": "metadata with no hitZone tag"
       }
     }

@@ -312,6 +312,36 @@ fn enemy_group_update_descriptors_match_across_authoring_runtimes() {
 }
 
 #[test]
+fn spawner_fire_descriptors_match_across_authoring_runtimes() {
+    // This fixture uses the public root module/bare-global surfaces. The
+    // Luau spelling proves `spawner` is lifted from data_script.luau and the
+    // byte comparison pins the exact no-args descriptor contract.
+    const TYPESCRIPT_FIXTURE: &str = r#"
+        import { spawner } from "postretro";
+        JSON.stringify(spawner({ tag: "closet_a" }).fire());
+    "#;
+    const LUAU_FIXTURE: &str = r#"
+        return spawner({ tag = "closet_a" }):fire()
+    "#;
+
+    let typescript = quickjs_fixture_value(TYPESCRIPT_FIXTURE);
+    let luau = luau_fixture_value(LUAU_FIXTURE);
+    assert_eq!(
+        serde_json::to_vec(&typescript).expect("serialize TypeScript descriptor"),
+        serde_json::to_vec(&luau).expect("serialize Luau descriptor"),
+        "TS and Luau spawner descriptors diverged"
+    );
+    assert_eq!(
+        typescript,
+        serde_json::json!({
+            "primitive": "spawnFromSpawner",
+            "tag": "closet_a",
+        }),
+        "spawner handle must be sugar for the raw primitive descriptor"
+    );
+}
+
+#[test]
 fn dispatch_tracers_accumulators_and_state_refs_match_across_runtimes() {
     const TYPESCRIPT_FIXTURE: &str = r#"
         import { defineReaction, defineStore, runtime } from "postretro";

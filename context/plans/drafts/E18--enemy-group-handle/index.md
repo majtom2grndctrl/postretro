@@ -45,10 +45,11 @@ holds), so there is no gate verb to name.
 ### In scope
 
 - **Aggro gate on `BrainComponent`** — a boolean gate (working name `aggro_armed`, default open).
-  While closed the brain is held at a fresh-Idle presentation: no acquisition, no steering, no
-  facing or animation write; `acquired_target` and the steering destination are cleared, so its
-  Transform is untouched and it replicates as a stationary Idle enemy. Damage, health, and death
-  still process — a gated enemy is killable.
+  Closing the gate runs the enemy's **disengage behavior**; v1 ships the single degenerate policy,
+  **hold**: clear `acquired_target`, clear the steering destination, drop to Idle animation, keep
+  current position and facing. A sealed-from-spawn enemy never acquired a target, so it simply holds
+  at its authored placement — Transform untouched, replicating as a stationary Idle enemy. Damage,
+  health, and death still process — a gated enemy is killable.
 - **Gate seeding** from an `enabled_on_spawn = false` KVP on an AI-enemy map placement, read where
   `attach_descriptor_components` consumes placement KVPs. This is a **new bare-KVP read**: on a
   trigger volume `enabled_on_spawn` is a compiler-validated wire field, but on an enemy placement it
@@ -88,6 +89,14 @@ holds), so there is no gate verb to name.
   the command face only.
 - **Additional aggro conditions** — LOS cone, sound gates. Later perception specs; they narrow
   acquisition (compose with the gate), never replace it. See `context/research/enemy-aggro-model.md`.
+- **Per-archetype disengage / leash policy** — what a class of enemy does on losing its target
+  (chase-last-known, return-to-start, seek-cover; v1 ships only `hold`). A **descriptor** axis
+  (`components.ai`), per `context/research/enemy-aggro-model.md` ("Memory & persistence") and the
+  roadmap's "Richer enemy/character behavior descriptors" bullet — not the runtime gate. Orthogonal
+  to and composing with the gate: gameplay target-loss (LOS/leash) and gate-close share the disengage
+  path, so gate-close inherits the spectrum for free when it lands. The gate stays the set-piece
+  switch; if a set-piece ever needs to *switch* a class's mode at runtime, that is an additive
+  `update({ onLoseTarget })` key, not part of this spec.
 - **A wire field for the gate** — a gated enemy replicates as a stationary Idle enemy via its
   existing Transform; no new wire surface. `aggro_armed` is host-authoritative sim state; its
   behavioral effect replicates through the motion clients already observe.
@@ -137,14 +146,17 @@ Add the gate field to `BrainComponent` (`crates/entities/src/components/brain.rs
 `BrainComponent` data still loads (mirror the `acquired_target` / `locomotion_moving` fields).
 
 **Closed-gate rule (one rule, in `run_ai_tick_with_navigation`,
-`crates/postretro/src/scripting/systems/ai.rs`).** A gated brain is reset to and held at a
-fresh-Idle presentation: `acquired_target` cleared, steering destination cleared via
-`SteeringIntent::Clear`, Idle animation and facing. While closed it skips `evaluate_transition` and
-steering and writes nothing to its Transform — so an enemy sealed pre-reveal and an enemy re-closed
-mid-chase both read as a stationary Idle enemy (AC3, AC10). The facing pass (`ai.rs`) and the
-animation-state write must honor the gate too, or a re-closed `Alert` enemy keeps
-rotating/animating. A destination-less agent takes the idle-settle early-continue in
-`agent_steering.rs` and gets no separation push, so no separation-pass edit is needed.
+`crates/postretro/src/scripting/systems/ai.rs`).** Closing the gate runs the enemy's disengage
+behavior. v1 has one policy — **hold**: clear `acquired_target`, clear the steering destination via
+`SteeringIntent::Clear`, drop to Idle animation, keep current position and facing. While closed the
+brain skips `evaluate_transition` and steering; the facing pass (`ai.rs`) and the animation-state
+write must honor the gate too, or a re-closed `Alert` enemy keeps rotating/animating. With no target
+and no destination, the agent takes the idle-settle early-continue in `agent_steering.rs` and gets no
+separation push, so no separation-pass edit is needed. A sealed-from-spawn enemy never acquired a
+target, so `hold` keeps it at its authored placement with its Transform untouched — a stationary Idle
+enemy (AC1, AC10); a re-closed mid-chase enemy stops in place (AC3). When per-archetype disengage
+policies land (see out of scope), gate-close routes through them — `hold` is their degenerate case,
+no rework.
 
 **Gate only this not-dead block** — the every-tick zero-HP → Death transition, death countdown, and
 despawn stay live, or a killed gated enemy never despawns. Damage, health, and death paths are

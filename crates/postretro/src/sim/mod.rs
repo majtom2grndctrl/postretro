@@ -854,6 +854,7 @@ mod tests {
     };
     use crate::scripting_systems::hit_zones::HitZoneStore;
     use crate::trigger_bindings::TriggerBindingTable;
+    use crate::trigger_system::TriggerEventEdge;
     use crate::weapon::FireButtonState;
     use glam::Vec2;
     use postretro_entities::components::mesh::{
@@ -875,6 +876,24 @@ mod tests {
     use postretro_scripting_core::reaction_dispatch::fire_prepartitioned_reactions_with_sequences;
     use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
     use std::collections::{HashMap, HashSet};
+
+    #[test]
+    fn disconnected_remote_fire_context_keeps_trigger_and_occupancy_but_has_no_activator() {
+        let trigger = EntityId::from_raw(0x0001_0000);
+        let event = TriggerEvent {
+            fire: crate::trigger_system::TriggerEventFire {
+                trigger,
+                player: PlayerId::Remote(77),
+                event_name: "left".into(),
+            },
+            edge: TriggerEventEdge::Exit,
+        };
+
+        let context = trigger_fire_context(&event, 3, &[]);
+        assert!(context.activators.is_empty());
+        assert_eq!(context.fired_trigger, Some(trigger));
+        assert_eq!(context.occupancy, 3);
+    }
 
     fn weapon_component(credit_source: &str) -> WeaponComponent {
         WeaponComponent::from_descriptor(&WeaponDescriptor {

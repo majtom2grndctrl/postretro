@@ -1,0 +1,46 @@
+// Game: Postretro
+// Format: Standard
+// E18 one-shot spike-trap fixture.
+// Compile: cargo run -p postretro-level-compiler -- content/dev/maps/trigger-event-spike-trap.map -o content/dev/maps/trigger-event-spike-trap.prl
+// Run: cargo run -p xtask -- run content/dev/maps/trigger-event-spike-trap.prl
+{
+"classname" "worldspawn"
+"initialGravity" "-9.81"
+"wad" ""
+"data_script" "../scripts/trigger-event-presser-fixture.ts"
+"_tb_mod" "dev"
+// floor
+{
+( 256 0 -16 ) ( 256 256 0 ) ( 256 256 -16 ) debug_ceiling_grey 0 0 0 1 1
+( 0 256 -16 ) ( 0 0 0 ) ( 0 0 -16 ) debug_ceiling_grey 0 0 0 1 1
+( 256 256 -16 ) ( 0 256 0 ) ( 0 256 -16 ) debug_ceiling_grey 0 0 0 1 1
+( 0 0 -16 ) ( 256 0 0 ) ( 256 0 -16 ) debug_ceiling_grey 0 0 0 1 1
+( 0 256 0 ) ( 256 0 0 ) ( 0 0 0 ) debug_ceiling_grey 0 0 0 1 1
+( 0 0 -16 ) ( 256 256 -16 ) ( 0 256 -16 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+{
+"classname" "player_spawn"
+"origin" "48 128 24"
+"angles" "0 0 0"
+}
+// Walk onto this plate: the script damages only the presser, then disarms this volume.
+{
+"classname" "trigger_volume"
+"name" "one_shot_spike_plate"
+"activation" "touch"
+"target_tag" "unused"
+"command" "start"
+"fire_mode" "multiple"
+"rearm_ms" "0"
+"enabled_on_spawn" "1"
+"_tags" "fixture_presser"
+{
+( 112 96 0 ) ( 113 96 0 ) ( 112 97 0 ) debug_ceiling_grey 0 0 0 1 1
+( 112 96 16 ) ( 112 97 16 ) ( 113 96 16 ) debug_ceiling_grey 0 0 0 1 1
+( 112 96 0 ) ( 112 97 0 ) ( 112 96 1 ) debug_ceiling_grey 0 0 0 1 1
+( 144 96 0 ) ( 144 96 1 ) ( 144 97 0 ) debug_ceiling_grey 0 0 0 1 1
+( 112 96 0 ) ( 112 96 1 ) ( 113 96 0 ) debug_ceiling_grey 0 0 0 1 1
+( 112 160 0 ) ( 113 160 0 ) ( 112 160 1 ) debug_ceiling_grey 0 0 0 1 1
+}
+}

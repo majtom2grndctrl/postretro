@@ -1205,6 +1205,73 @@ mod tests {
     }
 
     #[test]
+    fn effective_occupancy_excludes_corpses_and_exit_excludes_the_leaver() {
+        let _guard = gate_test_guard().lock().expect("gate test guard poisoned");
+        reset_gate_fires();
+        let mut registry = EntityRegistry::new();
+        let mut bridge = TriggerVolumeBridge::new();
+        let trigger = spawn_trigger(
+            &mut registry,
+            &mut bridge,
+            TriggerActivation::Touch,
+            TriggerFireMode::Multiple,
+            0.0,
+            true,
+        );
+        set_event_names(&mut registry, trigger, "entered", "left");
+        let live = spawn_player(&mut registry, Vec3::new(0.0, 1.0, 0.0));
+        let corpse = spawn_player(&mut registry, Vec3::new(0.0, 1.0, 0.0));
+        let live_id = PlayerId::Local(live);
+        let corpse_id = PlayerId::Remote(9);
+        let players = [
+            AuthoritativePlayer {
+                id: live_id,
+                pawn: live,
+            },
+            AuthoritativePlayer {
+                id: corpse_id,
+                pawn: corpse,
+            },
+        ];
+        let alive = HashSet::from([live_id]);
+        let mut system = TriggerSystem::default();
+        let mut observed = Vec::new();
+
+        system.run_authoritative_tick_with_dispatch(
+            &mut registry,
+            &bridge,
+            &players,
+            &HashMap::new(),
+            DT,
+            &alive,
+            &HashSet::new(),
+            |event, occupancy, _| observed.push((event.clone(), occupancy)),
+        );
+        assert_eq!(observed.len(), 2, "both physical entries still emit edges");
+        assert!(observed.iter().all(|(_, occupancy)| *occupancy == 1));
+
+        set_player_position(&mut registry, live, Vec3::new(4.0, 1.0, 0.0));
+        observed.clear();
+        system.run_authoritative_tick_with_dispatch(
+            &mut registry,
+            &bridge,
+            &players,
+            &HashMap::new(),
+            DT,
+            &alive,
+            &HashSet::new(),
+            |event, occupancy, _| observed.push((event.clone(), occupancy)),
+        );
+        assert_eq!(observed.len(), 1);
+        assert_eq!(observed[0].0.edge, TriggerEventEdge::Exit);
+        assert_eq!(observed[0].0.fire.player, live_id);
+        assert_eq!(
+            observed[0].1, 0,
+            "the exiting live pawn is removed before dispatch"
+        );
+    }
+
+    #[test]
     fn duplicate_player_ids_and_despawned_triggers_leave_no_stale_occupancy() {
         let _guard = gate_test_guard().lock().expect("gate test guard poisoned");
         reset_gate_fires();

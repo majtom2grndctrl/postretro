@@ -10,7 +10,7 @@ through closed doors before the reveal. Spawn-flavor is the capstone's critical 
 reveal-flavor containment is authoring over the foundation gate.
 
 **Depends on:** `context/plans/drafts/E18--enemy-group-handle/` (the `enemies({ tag })` handle,
-the `aggroGate` primitive, and the `BrainComponent` gate). E18-C is that foundation's first
+the `updateEnemyState` primitive, and the `BrainComponent` gate). E18-C is that foundation's first
 consumer; the two are co-designed.
 
 ## Scope
@@ -34,7 +34,7 @@ consumer; the two are co-designed.
   spawned enemy renders as its model rather than a debug capsule.
 - Closet containment by **consuming the foundation aggro gate**: reveal-closet enemies are authored
   gate-closed with `enabled_on_spawn = false` (the foundation reads the KVP), and a reveal releases
-  them via `enemies({ tag }).releaseAggro()`. The reveal composes at the trigger fan-out — an
+  them via `enemies({ tag }).update({ aggro: true })`. The reveal composes at the trigger fan-out — an
   `openDoor` mover reaction and a `releaseCloset` reaction fired together — **not** one reaction body
   (a body is a single primitive; tag-targeted primitives ride the Primitive path, never a
   `sequence`). Spawn-flavor enemies spawn with the gate open (the foundation default): they appear
@@ -97,7 +97,7 @@ consumer; the two are co-designed.
       `LinkConfig` (`mandated_link`) it is delivered to the remote client (present in its snapshot,
       its archetype in the upload set per the prior AC) before its first attack lands.
 - [ ] A reveal fan-out fires an `openDoor` mover reaction and a `releaseCloset`
-      (`enemies({ tag }).releaseAggro()`) reaction together, opening the door and releasing the
+      (`enemies({ tag }).update({ aggro: true })`) reaction together, opening the door and releasing the
       contained enemies on one plate edge. (Gate mechanics — containment, killable-while-gated,
       warn-skip, fire-time resolution — are the foundation's ACs; C asserts only the reveal
       composition and that spawn-flavor enemies arrive gate-open.)
@@ -210,13 +210,13 @@ registration (sweep is a no-op off-host).
 
 ### Task 4: Closet containment authoring (consumes the foundation aggro gate)
 
-No engine work — the gate, its FSM/steering guard, the `enabled_on_spawn` seed, and the `aggroGate`
+No engine work — the gate, its FSM/steering guard, the `enabled_on_spawn` seed, and the `updateEnemyState`
 primitive all land in the foundation (`E18--enemy-group-handle`). C is the consumer:
 
 - **Reveal-flavor containment.** Author reveal-closet enemies gate-closed with
   `enabled_on_spawn = false` (the foundation's Task 1 reads the KVP on the AI-enemy placement). A
   reveal opens the door and releases the enemies as a **trigger fan-out of two reactions** — an
-  `openDoor` mover reaction and a `releaseCloset` reaction (`enemies({ tag }).releaseAggro()`) — not
+  `openDoor` mover reaction and a `releaseCloset` reaction (`enemies({ tag }).update({ aggro: true })`) — not
   one reaction body: a body is a single primitive, and a tag-targeted primitive rides the Primitive
   path, so the two cannot share a `sequence`.
 - **Spawn-flavor.** Spawned enemies inherit the foundation gate default (open), so a
@@ -282,7 +282,7 @@ resolve); reuse its shape rather than inventing a per-spawn upload path.
 **Phase 4 (concurrent):** Task 5 (SDK `spawner({ tag }).fire()` handle + typedefs; consumes the verb from Task 2) and Task 7 (presentation upload) — disjoint files: 5 = `sdk/` + typedef templates, 7 = `main.rs` presentation sweeps + the client upload pass in `data_archetype.rs`.
 **Task 4 (containment authoring)** carries no engine files — map placements + reveal reactions gated on the foundation gate landing. It can land any time after the foundation, alongside Phase 4.
 
-**Prerequisite:** the foundation (`E18--enemy-group-handle`) — its `BrainComponent` gate, `aggroGate` primitive, and `enemies({ tag })` handle — lands before Task 4's containment authoring and before the capstone consumes the reveal loop.
+**Prerequisite:** the foundation (`E18--enemy-group-handle`) — its `BrainComponent` gate, `updateEnemyState` primitive, and `enemies({ tag })` handle — lands before Task 4's containment authoring and before the capstone consumes the reveal loop.
 
 ## Boundary inventory
 
@@ -292,7 +292,7 @@ resolve); reuse its shape rather than inventing a per-spawn upload path.
 | Spawn verb | `BoundTriggerCommand::Spawn` | reaction descriptor `"spawnFromSpawner"` | `spawner({ tag }).fire()` | same | n/a |
 | Spawner component | `SpawnerComponent` | not replicated (host-local) | n/a | n/a | n/a |
 | Runtime spawn path | `DescriptorSpawnPath::RuntimeSpawn` | `"runtime_spawn"` (serde, local only) | n/a | n/a | n/a |
-| Aggro gate (consumed) | foundation `BrainComponent` gate | not on the wire | `enemies({ tag }).releaseAggro()` | same | `enabled_on_spawn` (authored here, read by foundation) |
+| Aggro gate (consumed) | foundation `BrainComponent` gate | not on the wire | `enemies({ tag }).update({ aggro: true })` | same | `enabled_on_spawn` (authored here, read by foundation) |
 | Archetype ref | `SpawnerComponent` archetype | n/a | n/a | n/a | archetype `canonical_name` key |
 | Spawn count | `SpawnerComponent` count | n/a | n/a | n/a | integer `count` key |
 
@@ -328,12 +328,12 @@ resolve); reuse its shape rather than inventing a per-spawn upload path.
   Pawn-accept template: `on_slot_accepted` (`netcode/lifecycle.rs:132`).
 - **Containment (Task 4).** No engine work in C — the gate, its FSM guard
   (`run_ai_tick_with_navigation` before `evaluate_transition`), the `enabled_on_spawn` seed, and the
-  `aggroGate` primitive are the foundation's. C authors the closed placements and the `openDoor` +
+  `updateEnemyState` primitive are the foundation's. C authors the closed placements and the `openDoor` +
   `releaseCloset` fan-out.
 - **Contract tax.** One new verb, `spawnFromSpawner`, touches `CONSEQUENTIAL_PRIMITIVES`,
   `BoundTriggerCommand` (+Kind), `partition_direct_reaction`/`bind_sequence_step`, a
   `register_*_reaction_primitives` call, SDK TS+Luau (the `spawner({ tag }).fire()` handle), typedef
-  templates + drift + parity, validators. The `aggroGate` verb and `enemies({ tag })` handle carry
+  templates + drift + parity, validators. The `updateEnemyState` verb and `enemies({ tag })` handle carry
   their own tax in the foundation.
 - **Oversized-file note (soft):** `ai.rs`, `registry.rs`, `reaction_dispatch.rs` exceed ~800 lines.
   `trigger_bindings.rs` was already split by the merged `E18--trigger-event-params` work —
@@ -354,7 +354,7 @@ defineReaction("springAmbush", spawner({ tag: "closet_a" }).fire());
 export const openClosetDoor = defineReaction("openClosetDoor",
   { primitive: "moverStart", tag: "closet_door" });
 export const releaseCloset = defineReaction("releaseCloset",
-  enemies({ tag: "closet_a" }).releaseAggro());   // foundation handle
+  enemies({ tag: "closet_a" }).update({ aggro: true }));   // foundation handle
 
 onTriggerEvent({ tag: "reveal_plate" }, "enter", [openClosetDoor, releaseCloset]);
 ```

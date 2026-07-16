@@ -226,7 +226,10 @@ impl LightBridge {
     /// `populate_from_level` — typically by the data-archetype sweep, which
     /// runs after `App::resumed()` (where `populate_from_level` is called)
     /// during the first `RedrawRequested` once the data script has populated
-    /// the entity-type registry.
+    /// the entity-type registry. Also called every host fixed tick (`main.rs`)
+    /// to enroll descriptor lights carried by runtime spawner-spawned enemies;
+    /// that call is cheap on a no-op tick, since the scan below early-returns
+    /// without allocating once nothing new appears.
     ///
     /// Any `LightComponent` entity not already tracked in `self.entity_ids` is
     /// appended to the bridge's parallel arrays so its component participates

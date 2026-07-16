@@ -2,6 +2,8 @@
 //!
 //! The resolved descriptor deliberately lives outside the ECS component: every
 //! component value is serde-serializable while descriptors are runtime data.
+//!
+//! See: context/lib/entity_model.md §2 (engine components)
 
 use serde::{Deserialize, Serialize};
 

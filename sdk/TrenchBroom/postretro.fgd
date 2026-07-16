@@ -306,7 +306,7 @@
 [
     angles(angles) : "Facing (pitch yaw roll, degrees)" : "0 0 0"
     archetype(string) : "AI enemy archetype canonical name" : ""
-    count(integer) : "Enemies spawned per fire (0 disables)" : 1
+    count(integer) : "Enemies spawned per fire (0 disables)" : 0
 ]
 
 @SolidClass

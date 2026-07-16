@@ -1590,6 +1590,7 @@ mod tests {
     use postretro_scripting_core::staged_manifest::{
         StagedManifest, StagedManifestBuildResult, StagedManifestBuildStatus,
     };
+    use postretro_scripting_core::state_crossings::CrossingDetector;
 
     #[test]
     fn spawner_install_resolves_only_ai_descriptors_and_replaces_prior_level_data() {
@@ -1706,7 +1707,6 @@ mod tests {
         assert_eq!(models, vec!["models/spawner_only.gltf"]);
         assert!(crate::distinct_mesh_models(&registry).is_empty());
     }
-    use postretro_scripting_core::state_crossings::CrossingDetector;
 
     const FIXTURE_MAP_A: &str = "fixture_map_a_reactor_room";
     const FIXTURE_MAP_B: &str = "fixture_map_b_combat_lab";

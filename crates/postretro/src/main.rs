@@ -2051,6 +2051,12 @@ impl ApplicationHandler for App {
                         self.frame_timing
                             .push_state(InterpolableState::new(self.camera.position));
                         self.host_advance_fixed_sim_tick();
+                        // Unconditional per-tick sweep, not gated on "did a spawn happen this
+                        // tick": it must catch enemies materialized by any runtime
+                        // spawnFromSpawner before the post-loop serialize below, and threading
+                        // a spawn-happened signal through from SpawnContext isn't worth it when
+                        // the sweep is host-gated, idempotent, and a cheap empty collect() in
+                        // the common no-spawn case.
                         self.host_register_map_enemies_after_fixed_sim_tick();
                     }
                 }

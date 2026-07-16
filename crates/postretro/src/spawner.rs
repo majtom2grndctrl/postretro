@@ -193,7 +193,7 @@ fn spawn_resolved_spawners(
                 .cloned()
                 .map(|descriptor| (descriptor, state.agent_params))
         }) else {
-            log::warn!(
+            log::debug!(
                 "[Spawner] {spawner_id} resolved archetype `{}` is absent from this level cache; skipping",
                 spawner.archetype_name
             );
@@ -212,10 +212,16 @@ fn spawn_resolved_spawners(
         let origin_shift = ai_capsule_center_from_feet_offset(&descriptor, agent_params);
         let right = spawner_transform.rotation * Vec3::X;
         for index in 0..spawner.count {
+            // The spawner origin authors the enemy's feet; copies fan out along
+            // the `right` axis. This feet position is the synthetic MapEntity
+            // `origin` — the un-raised value — so descriptor components that stamp
+            // straight from `MapEntity.origin` (e.g. a `light` block) land at the
+            // feet, exactly as a map-placed instance does (`spawn_descriptor_instance`
+            // passes the raw feet origin while raising only the Transform). The
+            // Transform below is the raised capsule center.
+            let feet_position = spawner_transform.position + right * (index as f32 * 2.0 * radius);
             let transform = Transform {
-                position: spawner_transform.position
-                    + origin_shift
-                    + right * (index as f32 * 2.0 * radius),
+                position: feet_position + origin_shift,
                 rotation: spawner_transform.rotation,
                 scale: spawner_transform.scale,
             };
@@ -225,7 +231,7 @@ fn spawn_resolved_spawners(
             };
             let synthetic_map_entity = MapEntity {
                 classname: spawner.archetype_name.clone(),
-                origin: transform.position,
+                origin: feet_position,
                 angles: Vec3::ZERO,
                 key_values: [("enabled_on_spawn".to_string(), "true".to_string())]
                     .into_iter()
@@ -763,16 +769,15 @@ mod tests {
             .filter_map(|(id, _)| registry.get_component::<LightComponent>(id).ok())
             .collect();
         assert_eq!(lights.len(), 2);
-        // Each light rides its enemy's Transform, which is raised to the capsule
-        // center before the horizontal fan-out.
-        let shift = cultist_feet_to_center_shift();
+        // A descriptor light stamps from the synthetic `MapEntity.origin`, which
+        // mirrors map placement: the FEET position (no capsule-center raise), so
+        // a spawner-spawned light lands identically to a map-placed one of the
+        // same archetype. The capsule shift raises only the Transform, not the
+        // light. The horizontal `right`-axis fan-out spacing is preserved.
+        let right = transform.rotation * Vec3::X;
+        assert!((Vec3::from_array(lights[0].origin) - transform.position).length() < 1e-5);
         assert!(
-            (Vec3::from_array(lights[0].origin) - (transform.position + shift)).length() < 1e-5
-        );
-        assert!(
-            (Vec3::from_array(lights[1].origin)
-                - (transform.position + shift + transform.rotation * Vec3::X * 0.8))
-                .length()
+            (Vec3::from_array(lights[1].origin) - (transform.position + right * 0.8)).length()
                 < 1e-5
         );
     }

@@ -1,0 +1,11 @@
+Model Information:
+* title:	Rodin Sci-fi Trooper JJ-01 with Gun (animated)
+* source:	https://sketchfab.com/3d-models/rodin-sci-fi-trooper-jj-01-with-gun-animated-043f4dec01dc4f41a193d83df2ac516b
+* author:	Jungle Jim (https://sketchfab.com/jungle_jim)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Rodin Sci-fi Trooper JJ-01 with Gun (animated)" (https://sketchfab.com/3d-models/rodin-sci-fi-trooper-jj-01-with-gun-animated-043f4dec01dc4f41a193d83df2ac516b) by Jungle Jim (https://sketchfab.com/jungle_jim) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)

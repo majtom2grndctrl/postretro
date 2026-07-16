@@ -3,6 +3,8 @@ import { playerEntity } from "./scripts/player";
 import { referencePistolEntity } from "./scripts/reference-pistol";
 import { animDemoGruntEntity } from "./scripts/anim-demo-grunt";
 import { targetDummyEntity } from "./scripts/target-dummy";
+import { cyberpunkWarriorEntity } from "./scripts/cyberpunk-warrior";
+import { sciFiTrooperEntity } from "./scripts/sci-fi-trooper";
 import { referenceEntities } from "../../sdk/behaviors/reference/entities";
 import { hud, hudTheme, reloadMeterTree, reticle } from "./scripts/hud";
 import { pauseMenu } from "./scripts/pause-menu";
@@ -32,6 +34,11 @@ export default defineMod({
     // DEMO: M10 entity health + damage target. Map-placeable via
     // `"classname" "target_dummy"`; see content/dev/maps/combat-demo.map.
     targetDummyEntity,
+    // Character meshes for map-cast variety. Map-placeable via
+    // `"classname" "cyberpunk_warrior_f"` / `"sci_fi_trooper_m"`; see
+    // content/dev/maps/campaign-test.map.
+    cyberpunkWarriorEntity,
+    sciFiTrooperEntity,
     ...referenceEntities,
   ],
 });

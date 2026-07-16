@@ -242,10 +242,11 @@ commands). Extend the typedef templates (`crates/scripting-core/src/typedef/temp
 reaction-argument validators to accept `spawnFromSpawner` and reject malformed targets, matching the
 shipped per-primitive warn-skip. `armTrigger`/`disarmTrigger` already carry builders and typedefs,
 but the shipped builder is sentinel-only (`@trigger`, post trigger-event-params) with no
-tag-string form — so authoring the Task-4 reveal `armTrigger("closet_a")` by tag needs a
-tag-accepting form added to the builder and its `TriggerTarget` type (the engine already binds
-`Arm { Tag }`). Add the tag form, or author the reveal via the generic tag-carrying
-`PrimitiveReactionDescriptor` — decide here. No `world.query` filter change (see out of scope).
+tag-string form. **Do not add a tag form to it** — the reveal arms enemies by tag via the generic
+`PrimitiveReactionDescriptor` (`{ primitive: "armTrigger", tag: "closet_a" }`), the same tag-target
+path `damage(tag)` already uses (`{ primitive: "applyDamage", tag, args }`); the engine binds it to
+`Arm { Tag }`. So Task 5's arm/disarm work is only the engine-side Brain-target handling (Task 4);
+no SDK builder change. No `world.query` filter change (see out of scope).
 
 ### Task 6: Pre-attack windup + kill-progress guard
 
@@ -357,9 +358,11 @@ defineReaction("springAmbush", [
 ]);
 
 // Reveal-flavor closet: one reaction opens the door AND arms the pre-placed enemies.
+// Both are tag-targeted, authored via the generic PrimitiveReactionDescriptor
+// (the sentinel-only armTrigger builder has no tag form; this is the shipped tag path).
 defineReaction("revealCloset", [
-  moverStart("closet_door"),
-  armTrigger("closet_a"),         // opens the aggro gate on tagged brains
+  { primitive: "moverStart", tag: "closet_door" },
+  { primitive: "armTrigger", tag: "closet_a" },   // opens the aggro gate on tagged brains
 ]);
 ```
 

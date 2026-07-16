@@ -4,6 +4,14 @@
 use crate::registry::EntityId;
 use postretro_foundation::ir::IrNode;
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TriggerEventDescriptor {
+    pub tag: String,
+    pub event: String,
+    pub fire: Vec<String>,
+    pub levels: Vec<String>,
+}
+
 /// Variants of a single reaction's behavior body. The `name` lives on the
 /// wrapping [`NamedReaction`]; this enum captures only the descriptor shape.
 #[derive(Debug, Clone, PartialEq)]
@@ -19,9 +27,22 @@ pub enum ReactionDescriptor {
 /// One step in a `sequence` reaction.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SequenceStep {
-    pub id: EntityId,
+    pub id: SequenceTarget,
     pub primitive: String,
     pub args: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SequenceTarget {
+    Entity(EntityId),
+    Activators,
+    FiredTrigger,
+}
+
+impl From<EntityId> for SequenceTarget {
+    fn from(value: EntityId) -> Self {
+        Self::Entity(value)
+    }
 }
 
 /// Threshold reaction: counts kills against a tag and fires an event when the
@@ -49,6 +70,8 @@ pub struct ProgressDescriptor {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PrimitiveDescriptor {
     pub primitive: String,
+    /// Trigger-fire sentinel target. Mutually exclusive with `tag`.
+    pub target: Option<String>,
     /// Entity tag to target. `None` ⇒ system-targeted (no entities).
     pub tag: Option<String>,
     pub on_complete: Option<String>,

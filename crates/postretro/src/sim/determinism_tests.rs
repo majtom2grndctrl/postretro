@@ -216,6 +216,7 @@ struct SimRun {
     ir_slot_timeline: Vec<Option<SlotValue>>,
     predicate_crossing_sequence: Vec<Vec<(String, bool)>>,
     trigger_arm_target_armed: bool,
+    role_health_ledger: Vec<(Role, f32)>,
 }
 
 struct SimHarness {
@@ -349,6 +350,10 @@ impl SimHarness {
                         }
                     }),
                 ),
+                // Presser damage on the fire's activators. Both pawns stand in
+                // the volume, so each takes 25 HP on their tick-one enter; this
+                // is what the damage-ledger determinism test observes.
+                deterministic_trigger_activator_damage(25.0),
                 deterministic_trigger_primitive(
                     "armTrigger",
                     Some("determinism-arm-target"),
@@ -620,6 +625,26 @@ impl SimHarness {
         outcomes
     }
 
+    /// Per-pawn health after the run, keyed by stable test role. The damage
+    /// ledger the determinism gate compares: a spawn-order-independent view of
+    /// what the presser (and any other deterministic damage) left each pawn at.
+    fn role_health_ledger(&self) -> Vec<(Role, f32)> {
+        let registry = self.registry.borrow();
+        let mut ledger = self
+            .role_ids
+            .iter()
+            .map(|(role, id)| {
+                let health = registry
+                    .get_component::<HealthComponent>(*id)
+                    .expect("role entity must keep its health component")
+                    .current;
+                (*role, health)
+            })
+            .collect::<Vec<_>>();
+        ledger.sort_by_key(|(role, _)| *role);
+        ledger
+    }
+
     fn selected_player_health(&self) -> f32 {
         self.registry
             .borrow()
@@ -735,9 +760,26 @@ fn deterministic_trigger_primitive(
         name: "determinismTrigger".to_string(),
         descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
             primitive: primitive.to_string(),
+            target: None,
             tag: tag.map(str::to_string),
             on_complete: None,
             args,
+        }),
+    }
+}
+
+/// The presser half of the determinism trigger: `damage(on.activators, amount)`.
+/// Unlike the tag/system primitives above it targets the fire's activator pawns
+/// through the `@activators` sentinel, so both pressers take the hit each run.
+fn deterministic_trigger_activator_damage(amount: f32) -> NamedReaction {
+    NamedReaction {
+        name: "determinismTrigger".to_string(),
+        descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+            primitive: "applyDamage".to_string(),
+            target: Some("@activators".to_string()),
+            tag: None,
+            on_complete: None,
+            args: serde_json::json!({ "amount": amount }),
         }),
     }
 }
@@ -1385,6 +1427,7 @@ fn run_stream(commands: &[RecordedCommand], spawn_order: SpawnOrder) -> SimRun {
         ir_slot_timeline,
         predicate_crossing_sequence,
         trigger_arm_target_armed: harness.trigger_arm_target_armed(),
+        role_health_ledger: harness.role_health_ledger(),
         events,
     }
 }
@@ -1614,6 +1657,48 @@ fn trigger_events_keep_two_activator_order_across_spawn_reversal() {
     assert_eq!(
         beta_then_alpha.events[0].trigger_fires, alpha_then_beta.events[0].trigger_fires,
         "trigger event ordering must not depend on pawn spawn order"
+    );
+}
+
+#[test]
+fn trigger_events_keep_multi_pawn_damage_ledger_across_spawn_reversal() {
+    // AC 14: determinism of the damage EFFECT, not just fire order. The
+    // determinism trigger runs `damage(on.activators, 25)`, so both pressers
+    // take the hit on their tick-one enter. The resulting per-pawn health ledger
+    // must be identical run-to-run and across spawn-order reversal.
+    let commands = [RecordedCommand {
+        wish_dir: Vec2::ZERO,
+        jump_pressed: false,
+        dash_pressed: false,
+        running: false,
+        crouch_intent: false,
+        facing_yaw: 0.0,
+        fire_pressed: false,
+        fire_active: false,
+    }];
+    let baseline = run_stream(&commands, SpawnOrder::AlphaThenBeta);
+    let rerun = run_stream(&commands, SpawnOrder::AlphaThenBeta);
+    let reversed = run_stream(&commands, SpawnOrder::BetaThenAlpha);
+
+    // The presser landed on both activators: every pawn shows the 25-HP zap.
+    assert_eq!(
+        baseline.role_health_ledger.len(),
+        2,
+        "both pawns are ledgered"
+    );
+    for (role, health) in &baseline.role_health_ledger {
+        assert!(
+            *health <= 75.0,
+            "activator {role:?} must show the presser's 25-HP damage; health was {health}"
+        );
+    }
+    assert_eq!(
+        rerun.role_health_ledger, baseline.role_health_ledger,
+        "identical runs must produce an identical per-pawn damage ledger"
+    );
+    assert_eq!(
+        reversed.role_health_ledger, baseline.role_health_ledger,
+        "the damage ledger must not depend on pawn spawn order"
     );
 }
 

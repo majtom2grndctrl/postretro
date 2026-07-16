@@ -36,9 +36,8 @@ enum TriggerActivationDecision {
     Suppress,
 }
 
-/// A named trigger event that fired during an authoritative tick. Empty event
-/// names are omitted: they intentionally mean that the trigger has no event on
-/// that edge.
+/// A trigger event that fired during an authoritative tick. An empty event
+/// name is valid when a script binding owns the fired edge.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TriggerEventFire {
     pub(crate) trigger: EntityId,
@@ -46,7 +45,7 @@ pub(crate) struct TriggerEventFire {
     pub(crate) event_name: String,
 }
 
-/// Which edge produced a named trigger event. The trigger stage owns this
+/// Which edge produced a trigger event. The trigger stage owns this
 /// ordering so commands from one edge can affect a later enter gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum TriggerEventEdge {
@@ -54,7 +53,7 @@ pub(crate) enum TriggerEventEdge {
     Exit,
 }
 
-/// A named trigger fire together with its source edge. This is the canonical
+/// A trigger fire together with its source edge. This is the canonical
 /// fixed-tick event stream; it is ordered by `(trigger, player)`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TriggerEvent {
@@ -62,12 +61,26 @@ pub(crate) struct TriggerEvent {
     pub(crate) edge: TriggerEventEdge,
 }
 
-/// Named trigger events produced by one authoritative tick. Consumers must
-/// preserve `fires` order; paired exits are already authorized and therefore
-/// never need a second gate evaluation.
+/// Trigger events produced by one authoritative tick. Consumers must preserve
+/// `fires` order; a script-only edge may intentionally carry an empty event
+/// name. Paired exits are already authorized and never need a second gate
+/// evaluation.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct TriggerFireReport {
     pub(crate) fires: Vec<TriggerEvent>,
+}
+
+/// Read-only trigger binding state needed while dispatching one fixed tick.
+pub(crate) struct TriggerDispatchInputs<'a> {
+    pub(crate) alive_players: &'a HashSet<PlayerId>,
+    pub(crate) bound_edges: &'a HashSet<(EntityId, TriggerEventEdge)>,
+}
+
+/// Authoritative player state sampled for one fixed trigger tick.
+pub(crate) struct TriggerTickInputs<'a> {
+    pub(crate) players: &'a [AuthoritativePlayer],
+    pub(crate) use_pressed: &'a HashMap<PlayerId, bool>,
+    pub(crate) tick_dt: f32,
 }
 
 impl TriggerFireReport {
@@ -125,13 +138,21 @@ impl TriggerSystem {
         use_pressed: &HashMap<PlayerId, bool>,
         tick_dt: f32,
     ) -> TriggerFireReport {
+        let alive_players = players.iter().map(|player| player.id).collect();
+        let bound_edges = HashSet::new();
         self.run_authoritative_tick_with_dispatch(
             registry,
             bridge,
-            players,
-            use_pressed,
-            tick_dt,
-            |_, _| {},
+            TriggerTickInputs {
+                players,
+                use_pressed,
+                tick_dt,
+            },
+            TriggerDispatchInputs {
+                alive_players: &alive_players,
+                bound_edges: &bound_edges,
+            },
+            |_, _, _| {},
         )
     }
 
@@ -144,13 +165,15 @@ impl TriggerSystem {
         &mut self,
         registry: &mut EntityRegistry,
         bridge: &TriggerVolumeBridge,
-        players: &[AuthoritativePlayer],
-        use_pressed: &HashMap<PlayerId, bool>,
-        tick_dt: f32,
-        mut dispatch: impl FnMut(&TriggerEvent, &mut EntityRegistry),
+        tick_inputs: TriggerTickInputs<'_>,
+        dispatch_inputs: TriggerDispatchInputs<'_>,
+        mut dispatch: impl FnMut(&TriggerEvent, usize, &mut EntityRegistry),
     ) -> TriggerFireReport {
-        let player_capsules =
-            canonical_player_capsules(registry, players, &mut self.warned_duplicate_players);
+        let player_capsules = canonical_player_capsules(
+            registry,
+            tick_inputs.players,
+            &mut self.warned_duplicate_players,
+        );
 
         let mut trigger_ids: Vec<EntityId> = registry
             .iter_with_kind(ComponentKind::TriggerVolume)
@@ -184,7 +207,7 @@ impl TriggerSystem {
                 continue;
             };
 
-            decrement_rearm(&mut trigger, tick_dt);
+            decrement_rearm(&mut trigger, tick_inputs.tick_dt);
             let touch_reactivation_pending = trigger.activation == TriggerActivation::Touch
                 && trigger.touch_reactivation_pending;
             trigger.touch_reactivation_pending = false;
@@ -230,7 +253,12 @@ impl TriggerSystem {
                         entered || (touch_reactivation_pending && overlapping)
                     }
                     TriggerActivation::Use => {
-                        overlapping && use_pressed.get(&player_id).copied().unwrap_or(false)
+                        overlapping
+                            && tick_inputs
+                                .use_pressed
+                                .get(&player_id)
+                                .copied()
+                                .unwrap_or(false)
                     }
                 };
                 if activated {
@@ -252,7 +280,11 @@ impl TriggerSystem {
                         else {
                             continue;
                         };
-                        if trigger.on_exit.is_empty() {
+                        if trigger.on_exit.is_empty()
+                            && !dispatch_inputs
+                                .bound_edges
+                                .contains(&(trigger_id, TriggerEventEdge::Exit))
+                        {
                             continue;
                         }
                         let event = TriggerEvent {
@@ -263,7 +295,9 @@ impl TriggerSystem {
                             },
                             edge,
                         };
-                        dispatch(&event, registry);
+                        let occupancy =
+                            self.effective_occupancy(trigger_id, dispatch_inputs.alive_players);
+                        dispatch(&event, occupancy, registry);
                         report.fires.push(event);
                     }
                     TriggerEventEdge::Enter => {
@@ -296,7 +330,11 @@ impl TriggerSystem {
                         let event_name = trigger.on_fire.clone();
                         let _ = registry.set_component(trigger_id, trigger);
                         self.paired_enters.insert((trigger_id, player_id));
-                        if event_name.is_empty() {
+                        if event_name.is_empty()
+                            && !dispatch_inputs
+                                .bound_edges
+                                .contains(&(trigger_id, TriggerEventEdge::Enter))
+                        {
                             continue;
                         }
                         let event = TriggerEvent {
@@ -307,7 +345,9 @@ impl TriggerSystem {
                             },
                             edge,
                         };
-                        dispatch(&event, registry);
+                        let occupancy =
+                            self.effective_occupancy(trigger_id, dispatch_inputs.alive_players);
+                        dispatch(&event, occupancy, registry);
                         report.fires.push(event);
                     }
                 }
@@ -316,6 +356,15 @@ impl TriggerSystem {
 
         report
     }
+
+    fn effective_occupancy(&self, trigger: EntityId, alive_players: &HashSet<PlayerId>) -> usize {
+        self.occupants.get(&trigger).map_or(0, |occupants| {
+            occupants
+                .iter()
+                .filter(|player| alive_players.contains(player))
+                .count()
+        })
+    }
 }
 
 fn canonical_player_capsules(
@@ -323,30 +372,61 @@ fn canonical_player_capsules(
     players: &[AuthoritativePlayer],
     warned_duplicate_players: &mut HashSet<PlayerId>,
 ) -> BTreeMap<PlayerId, (EntityId, Vec3, f32, f32)> {
-    let mut snapshots: BTreeMap<PlayerId, (EntityId, Vec3, f32, f32)> = BTreeMap::new();
+    let canonical_pawns = canonical_player_pawns(registry, players);
+    let mut seen_players = HashSet::new();
     for player in players {
-        let Ok(transform) = registry.get_component::<Transform>(player.pawn) else {
+        if registry.get_component::<Transform>(player.pawn).is_err()
+            || registry
+                .get_component::<PlayerMovementComponent>(player.pawn)
+                .is_err()
+        {
             continue;
-        };
-        let Ok(movement) = registry.get_component::<PlayerMovementComponent>(player.pawn) else {
-            continue;
-        };
-        let snapshot = (
-            player.pawn,
-            transform.position,
-            movement.capsule.radius,
-            movement.capsule.half_height,
-        );
-        if let Some(existing) = snapshots.get_mut(&player.id) {
+        }
+        if !seen_players.insert(player.id) {
             warn_duplicate_player_once(warned_duplicate_players, player.id);
-            if snapshot.0 < existing.0 {
-                *existing = snapshot;
-            }
-        } else {
-            snapshots.insert(player.id, snapshot);
         }
     }
-    snapshots
+    canonical_pawns
+        .into_iter()
+        .filter_map(|(player_id, pawn)| {
+            let transform = registry.get_component::<Transform>(pawn).ok()?;
+            let movement = registry
+                .get_component::<PlayerMovementComponent>(pawn)
+                .ok()?;
+            Some((
+                player_id,
+                (
+                    pawn,
+                    transform.position,
+                    movement.capsule.radius,
+                    movement.capsule.half_height,
+                ),
+            ))
+        })
+        .collect()
+}
+
+/// Select the one pawn that represents each player identity this tick. Trigger
+/// collision and trigger-fire context resolution share this rule.
+pub(crate) fn canonical_player_pawns(
+    registry: &EntityRegistry,
+    players: &[AuthoritativePlayer],
+) -> BTreeMap<PlayerId, EntityId> {
+    let mut pawns: BTreeMap<PlayerId, EntityId> = BTreeMap::new();
+    for player in players {
+        if registry.get_component::<Transform>(player.pawn).is_err()
+            || registry
+                .get_component::<PlayerMovementComponent>(player.pawn)
+                .is_err()
+        {
+            continue;
+        }
+        pawns
+            .entry(player.id)
+            .and_modify(|canonical| *canonical = (*canonical).min(player.pawn))
+            .or_insert(player.pawn);
+    }
+    pawns
 }
 
 /// Fully re-arm a trigger. A fresh arm intentionally clears one-shot latching
@@ -636,6 +716,32 @@ mod tests {
 
         warn_duplicate_player_once(&mut system.warned_duplicate_players, player);
         assert_eq!(system.warned_duplicate_players.len(), 1);
+    }
+
+    #[test]
+    fn canonical_player_pawns_uses_lowest_valid_pawn_per_identity() {
+        let mut registry = EntityRegistry::new();
+        let first = spawn_player(&mut registry, Vec3::ZERO);
+        let second = spawn_player(&mut registry, Vec3::ZERO);
+        let remote = PlayerId::Remote(17);
+
+        assert_eq!(
+            canonical_player_pawns(
+                &registry,
+                &[
+                    AuthoritativePlayer {
+                        id: remote,
+                        pawn: second,
+                    },
+                    AuthoritativePlayer {
+                        id: remote,
+                        pawn: first,
+                    },
+                ],
+            )
+            .get(&remote),
+            Some(&first),
+        );
     }
 
     fn movement() -> PlayerMovementComponent {
@@ -1182,6 +1288,167 @@ mod tests {
         );
         assert_eq!(system.occupancy(trigger), 0);
         assert_eq!(recorded_paired_exits(), vec![player_id]);
+    }
+
+    #[test]
+    fn effective_occupancy_excludes_corpses_and_exit_excludes_the_leaver() {
+        let _guard = gate_test_guard().lock().expect("gate test guard poisoned");
+        reset_gate_fires();
+        let mut registry = EntityRegistry::new();
+        let mut bridge = TriggerVolumeBridge::new();
+        let trigger = spawn_trigger(
+            &mut registry,
+            &mut bridge,
+            TriggerActivation::Touch,
+            TriggerFireMode::Multiple,
+            0.0,
+            true,
+        );
+        set_event_names(&mut registry, trigger, "entered", "left");
+        let live = spawn_player(&mut registry, Vec3::new(0.0, 1.0, 0.0));
+        let corpse = spawn_player(&mut registry, Vec3::new(0.0, 1.0, 0.0));
+        let live_id = PlayerId::Local(live);
+        let corpse_id = PlayerId::Remote(9);
+        let players = [
+            AuthoritativePlayer {
+                id: live_id,
+                pawn: live,
+            },
+            AuthoritativePlayer {
+                id: corpse_id,
+                pawn: corpse,
+            },
+        ];
+        let alive = HashSet::from([live_id]);
+        let mut system = TriggerSystem::default();
+        let mut observed = Vec::new();
+
+        system.run_authoritative_tick_with_dispatch(
+            &mut registry,
+            &bridge,
+            TriggerTickInputs {
+                players: &players,
+                use_pressed: &HashMap::new(),
+                tick_dt: DT,
+            },
+            TriggerDispatchInputs {
+                alive_players: &alive,
+                bound_edges: &HashSet::new(),
+            },
+            |event, occupancy, _| observed.push((event.clone(), occupancy)),
+        );
+        assert_eq!(observed.len(), 2, "both physical entries still emit edges");
+        assert!(observed.iter().all(|(_, occupancy)| *occupancy == 1));
+
+        set_player_position(&mut registry, live, Vec3::new(4.0, 1.0, 0.0));
+        observed.clear();
+        system.run_authoritative_tick_with_dispatch(
+            &mut registry,
+            &bridge,
+            TriggerTickInputs {
+                players: &players,
+                use_pressed: &HashMap::new(),
+                tick_dt: DT,
+            },
+            TriggerDispatchInputs {
+                alive_players: &alive,
+                bound_edges: &HashSet::new(),
+            },
+            |event, occupancy, _| observed.push((event.clone(), occupancy)),
+        );
+        assert_eq!(observed.len(), 1);
+        assert_eq!(observed[0].0.edge, TriggerEventEdge::Exit);
+        assert_eq!(observed[0].0.fire.player, live_id);
+        assert_eq!(
+            observed[0].1, 0,
+            "the exiting live pawn is removed before dispatch"
+        );
+    }
+
+    #[test]
+    fn script_bound_edge_dispatches_enter_and_exit_with_no_kvp_event_name() {
+        // AC 6: a volume bound only through the script path (onTriggerEvent)
+        // carries no on_fire/on_exit KVP, yet the widened enter/exit dispatch
+        // gates must still fire because `bound_edges` holds its (volume, edge).
+        // The existing tests either name their events or pass an empty
+        // `bound_edges`, so this widened branch is otherwise unproven.
+        let _guard = gate_test_guard().lock().expect("gate test guard poisoned");
+        reset_gate_fires();
+        let mut registry = EntityRegistry::new();
+        let mut bridge = TriggerVolumeBridge::new();
+        // spawn_trigger leaves on_fire/on_exit empty — the KVP-less binding case.
+        let trigger = spawn_trigger(
+            &mut registry,
+            &mut bridge,
+            TriggerActivation::Touch,
+            TriggerFireMode::Multiple,
+            0.0,
+            true,
+        );
+        let player = spawn_player(&mut registry, Vec3::new(0.0, 1.0, 0.0));
+        let player_id = PlayerId::Local(player);
+        let players = [AuthoritativePlayer {
+            id: player_id,
+            pawn: player,
+        }];
+        let alive = HashSet::from([player_id]);
+        let bound_edges = HashSet::from([
+            (trigger, TriggerEventEdge::Enter),
+            (trigger, TriggerEventEdge::Exit),
+        ]);
+        let mut system = TriggerSystem::default();
+
+        // Enter: the player starts inside, so tick one produces the rising edge.
+        let mut observed = Vec::new();
+        system.run_authoritative_tick_with_dispatch(
+            &mut registry,
+            &bridge,
+            TriggerTickInputs {
+                players: &players,
+                use_pressed: &HashMap::new(),
+                tick_dt: DT,
+            },
+            TriggerDispatchInputs {
+                alive_players: &alive,
+                bound_edges: &bound_edges,
+            },
+            |event, _, _| observed.push(event.clone()),
+        );
+        assert_eq!(
+            observed.len(),
+            1,
+            "a script-bound edge dispatches even with no KVP event name"
+        );
+        assert_eq!(observed[0].edge, TriggerEventEdge::Enter);
+        assert_eq!(observed[0].fire.player, player_id);
+        assert!(
+            observed[0].fire.event_name.is_empty(),
+            "a script-only binding carries an empty event name"
+        );
+
+        // Exit: leaving fires the paired exit through the same widened gate.
+        set_player_position(&mut registry, player, Vec3::new(4.0, 1.0, 0.0));
+        observed.clear();
+        system.run_authoritative_tick_with_dispatch(
+            &mut registry,
+            &bridge,
+            TriggerTickInputs {
+                players: &players,
+                use_pressed: &HashMap::new(),
+                tick_dt: DT,
+            },
+            TriggerDispatchInputs {
+                alive_players: &alive,
+                bound_edges: &bound_edges,
+            },
+            |event, _, _| observed.push(event.clone()),
+        );
+        assert_eq!(observed.len(), 1, "the paired exit dispatches too");
+        assert_eq!(observed[0].edge, TriggerEventEdge::Exit);
+        assert!(
+            observed[0].fire.event_name.is_empty(),
+            "the script-bound exit also carries an empty event name"
+        );
     }
 
     #[test]

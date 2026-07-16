@@ -103,6 +103,40 @@ export type SpinAnimation = {
   rate_curve: {number},
 }
 
+--- Per-particle simulation state carried by each live particle entity as a `particle_state` component. The particle simulation reads and writes it each tick; `buoyancy` / `drag` are copied from the parent emitter at spawn.
+export type ParticleState = {
+  --- Current particle velocity in metres/sec.
+  velocity: {number},
+  --- Seconds elapsed since the particle spawned.
+  age: number,
+  --- Total particle lifetime in seconds; the particle despawns once `age` reaches it.
+  lifetime: number,
+  --- Unitless gravity multiplier copied from the parent emitter at spawn (`verticalAcceleration = worldGravity * -buoyancy`).
+  buoyancy: number,
+  --- Velocity damping coefficient in 1/sec, copied from the parent emitter at spawn.
+  drag: number,
+  --- Normalized-lifetime billboard size curve, sampled evenly from spawn to death.
+  size_curve: {number},
+  --- Normalized-lifetime opacity curve, sampled evenly from spawn to death.
+  opacity_curve: {number},
+  --- Back-reference to the parent emitter entity, consulted only for spin-rate lookup each tick. null once the emitter has despawned (orphaned particle).
+  emitter: EntityId?,
+}
+
+--- Per-frame visual state of a sprite as a `sprite_visual` component. Authored by the particle simulation each tick and consumed by the billboard render integration.
+export type SpriteVisual = {
+  --- Sprite/material identifier resolved by the billboard renderer.
+  sprite: string,
+  --- Billboard size multiplier for this frame.
+  size: number,
+  --- Billboard opacity for this frame, in [0, 1].
+  opacity: number,
+  --- Billboard rotation in radians for this frame.
+  rotation: number,
+  --- RGB tint applied to the sprite. CPU-side only at this stage; the GPU sprite instance layout has no color channel yet.
+  tint: {number},
+}
+
 --- Animation curves attached to a fog volume by the `setFogAnimation` reaction primitive. Four independent channels share `periodMs` / `phase` / `playCount`: `density` modulates volumetric density, `saturation` modulates SH-irradiance saturation, `minBrightness` modulates the scatter brightness floor, and `lightRange` scales how far lights reach inside the fog. At least one curve must be present when `playCount` is finite — otherwise the animation has nothing to settle to. `phase` is normalized into `[0, 1)`. `playCount = null` loops forever; finite counts have the bridge write back each channel's final keyframe as static state on completion. There is no `startActive` flag — fog has no GPU descriptor for the curve, so absence (`null`) is the only inactive state.
 export type FogAnimation = {
   --- Total period of the loop, in milliseconds.
@@ -455,7 +489,7 @@ export type ModMapEntry = {
   path: string,
   --- Display name shown to players in catalog-driven UI. Required.
   name: string,
-  --- Authoritative classification tags for filtering plus `levels` selection on mod-global reactions and crossings. Optional; missing/null normalizes to empty.
+  --- Authoritative classification tags for filtering plus `levels` selection on mod-global reactions, crossings, and trigger events. Optional; missing/null normalizes to empty.
   tags: {string}?,
 }
 
@@ -509,6 +543,8 @@ export type ModManifest = {
   reactions: {NamedReactionDescriptor}?,
   --- Engine-global state-crossing watchers. Optional; survive level unload and compose into active level behavior by `levels` tag selectors.
   crossings: {CrossingDescriptor}?,
+  --- Trigger-volume enter/exit observers. Optional; compose by level tags.
+  triggerEvents: {TriggerEventDescriptor}?,
   --- Engine-global state-store declarations returned by `defineStore(...).declaration`. Optional; commit atomically after the manifest validates and preserve existing values when the schema is identical.
   stores: {StoreDeclaration}?,
 }
@@ -854,6 +890,7 @@ export type ProgressReactionDescriptor = {
 export type PrimitiveReactionDescriptor = {
   primitive: string,
   tag: string?,
+  target: "@activators"?,
   args: { [string]: any }?,
   onComplete: string?,
 }
@@ -949,13 +986,13 @@ export type MoverGoToPathNodeStep = {
 }
 
 export type ArmTriggerStep = {
-  id: EntityId,
+  id: EntityId | "@trigger",
   primitive: "armTrigger",
   args: ArmTriggerArgs,
 }
 
 export type DisarmTriggerStep = {
-  id: EntityId,
+  id: EntityId | "@trigger",
   primitive: "disarmTrigger",
   args: DisarmTriggerArgs,
 }
@@ -974,11 +1011,14 @@ export type SequenceReactionDescriptor = {
 --- into the descriptor at the top level so the Rust deserializer reads
 --- both fields from one flat table.
 export type ProgressNamedReactionDescriptor = { name: string, levels: {string}?, progress: { tag: string, at: number, fire: string } }
-export type PrimitiveNamedReactionDescriptor = { name: string, levels: {string}?, primitive: string, tag: string?, args: { [string]: any }?, onComplete: string? }
+export type PrimitiveNamedReactionDescriptor = { name: string, levels: {string}?, primitive: string, tag: string?, target: "@activators"?, args: { [string]: any }?, onComplete: string? }
 export type SequenceNamedReactionDescriptor = { name: string, levels: {string}?, sequence: {SequenceStep} }
 export type NamedReactionDescriptor = ProgressNamedReactionDescriptor | PrimitiveNamedReactionDescriptor | SequenceNamedReactionDescriptor
 export type CrossingParams = { rising: RuntimeRead }
 export type TickParams = { dt: RuntimeRead }
+export type ActivatorsTarget = { __triggerActivatorsTarget: true }
+export type TriggerTarget = { __firedTriggerTarget: true }
+export type TriggerEventParams = { activators: ActivatorsTarget, trigger: TriggerTarget, occupancy: RuntimeRead }
 export type Reaction<S> = NamedReactionDescriptor
 
 --- Crossing condition: fires when the watched slot crosses the threshold in
@@ -1027,6 +1067,7 @@ export type CrossingDescriptor = ThresholdCrossingDescriptor | PredicateCrossing
 export type LevelManifest = {
   reactions: {NamedReactionDescriptor},
   crossings: {CrossingDescriptor}?,
+  triggerEvents: {TriggerEventDescriptor}?,
   --- Per-level UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; same shape
   --- as `ModManifest.uiTrees` but level-scoped (cleared on unload). Malformed
   --- entries are logged and skipped.
@@ -1045,7 +1086,16 @@ declare defineReaction: (
   & ((name: string, descriptor: ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor) -> NamedReactionDescriptor)
   & ((tracer: (CrossingParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)) -> Reaction<CrossingParams>)
   & ((name: string, tracer: (CrossingParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)) -> Reaction<CrossingParams>)
+  & ((tracer: (TriggerEventParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)) -> Reaction<TriggerEventParams>)
+  & ((name: string, tracer: (TriggerEventParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)) -> Reaction<TriggerEventParams>)
 )
+
+export type TriggerEventDescriptor = { tag: string, event: "enter" | "exit", fire: {string}, levels: {string}? }
+export type TriggerEventOptions = { levels: {string}? }
+declare function onTriggerEvent(filter: { tag: string }, event: "enter" | "exit", fire: {Reaction<any> | string}, options: TriggerEventOptions?): TriggerEventDescriptor
+declare function damage(target: ActivatorsTarget | string, amount: number): PrimitiveReactionDescriptor
+declare function armTrigger(target: TriggerTarget): {SequenceStep}
+declare function disarmTrigger(target: TriggerTarget): {SequenceStep}
 
 --- Stamp a shared map-tag scope onto each reaction in a plain list. `tags` are
 --- matched against `ModMapEntry.tags`; omit scoping for every level.
@@ -1057,7 +1107,7 @@ declare function scopeReactions<S>(tags: {string}, list: {Reaction<S>}): {Reacti
 declare function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor
 --- Pure identity builder for the mod manifest consumed from the chunk return.
 --- `config.name` is required; optional arrays include `entities`, `maps`,
---- `uiTrees`, `reactions`, `crossings`, and `stores`.
+--- `uiTrees`, `reactions`, `crossings`, `triggerEvents`, and `stores`.
 declare function defineMod(config: ModManifest): ModManifest
 --- Pure identity builder for a mod map catalog. Entries require `id`, `path`,
 --- and `name`; optional `tags` default to empty and drive filtering plus
@@ -1544,6 +1594,10 @@ export type PostretroModule = {
   sequence: typeof(sequence),
   --- Build a named reaction descriptor. Accepts `progress`, `primitive`, or `sequence` body data.
   defineReaction: typeof(defineReaction),
+  damage: typeof(damage),
+  armTrigger: typeof(armTrigger),
+  disarmTrigger: typeof(disarmTrigger),
+  onTriggerEvent: typeof(onTriggerEvent),
   --- Stamp a shared map-tag scope onto a reaction list.
   scopeReactions: typeof(scopeReactions),
   --- Pure identity builder for entity type descriptors returned from `ModManifest.entities`.

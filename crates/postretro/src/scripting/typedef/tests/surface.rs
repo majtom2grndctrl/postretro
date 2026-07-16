@@ -18,8 +18,8 @@ fn reaction_handle_authoring_types_widen_in_both_outputs() {
     // The name-optional `(body)` overload is present alongside `(name, body)`.
     assert_eq!(
         ts.matches("export function defineReaction(").count(),
-        4,
-        "ts must declare data and tracer defineReaction overloads"
+        6,
+        "ts must declare data and all dispatch-scope tracer defineReaction overloads"
     );
     assert!(
         ts.contains("levels?: string[]")

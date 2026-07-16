@@ -386,7 +386,7 @@ fn accumulated_shared_global_converges_without_client_side_evaluation() {
         name: "@dt".to_string(),
     };
     let mut h =
-        StateSlotHarness::new_with_accumulator(CLIENT_A, direct.clone(), direct, Some(accumulator));
+        StateSlotHarness::new_with_accumulator(CLIENT_A, direct, direct, Some(accumulator));
     let mut bindings = SlotAccumulatorBindings::default();
     bindings.rebuild(&h.host_ctx);
 

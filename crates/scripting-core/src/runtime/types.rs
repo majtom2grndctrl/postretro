@@ -13,7 +13,7 @@ use std::path::PathBuf;
 
 use crate::ctx::ScriptCtx;
 use crate::data_descriptors::{
-    EntityTypeDescriptor, ModFontAssets, ModThemeTokens, RegisteredUiTree,
+    EntityTypeDescriptor, ModFontAssets, ModThemeTokens, RegisteredUiTree, TriggerEventDescriptor,
 };
 use crate::data_registry::{ScopedCrossing, ScopedReaction};
 pub use crate::foundation_pods::ModMapEntry;
@@ -70,6 +70,7 @@ pub struct ModManifestResult {
     /// Engine-global crossing definitions from the mod manifest's `crossings`
     /// field. Empty when absent. Drained into `DataRegistry` by the boot caller.
     pub crossings: Vec<ScopedCrossing>,
+    pub trigger_events: Vec<TriggerEventDescriptor>,
     /// Validated state-store declarations collected during this mod-init
     /// attempt. This is engine metadata, not a `ModManifest` script field.
     pub store_declarations: StoreDeclarationSet,

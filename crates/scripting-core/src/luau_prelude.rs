@@ -126,6 +126,10 @@ const TRIGGERS_LUAU_FIELDS: &[&str] = &[];
 /// `data_script.luau`.
 const DATA_SCRIPT_FIELDS: &[&str] = &[
     "defineReaction",
+    "onTriggerEvent",
+    "damage",
+    "armTrigger",
+    "disarmTrigger",
     "scopeReactions",
     "defineEntity",
     "defineMod",
@@ -252,6 +256,10 @@ pub const POSTRETRO_ROOT_MODULE_EXPORTS: &[&str] = &[
     "timeline",
     "sequence",
     "defineReaction",
+    "onTriggerEvent",
+    "damage",
+    "armTrigger",
+    "disarmTrigger",
     "scopeReactions",
     "defineEntity",
     "defineMod",

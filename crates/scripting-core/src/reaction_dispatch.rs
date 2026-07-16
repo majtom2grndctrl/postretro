@@ -165,6 +165,12 @@ pub fn fire_named_event_with_sequences(
         match &named.descriptor {
             ReactionDescriptor::Progress(_) => {}
             ReactionDescriptor::Primitive(p) => {
+                if p.target.is_some() {
+                    log::warn!(
+                        "[Scripting] named dispatch `{event_name}` has no trigger fire context for sentinel target; skipping primitive"
+                    );
+                    continue;
+                }
                 dispatch_primitive(p, reaction_registry, system_registry, script_ctx);
                 if let Some(on_complete) = &p.on_complete {
                     chained.push(on_complete.clone());
@@ -420,10 +426,16 @@ fn dispatch_sequence(
     script_ctx: &ScriptCtx,
 ) {
     for (i, step) in steps.iter().enumerate() {
-        if !script_ctx.registry.borrow().exists(step.id) {
+        let postretro_entities::SequenceTarget::Entity(id) = step.id else {
+            log::warn!(
+                "[Scripting] sequence step {i}: sentinel target has no trigger fire context; skipping"
+            );
+            continue;
+        };
+        if !script_ctx.registry.borrow().exists(id) {
             log::warn!(
                 "[Scripting] sequence step {i}: entity {:?} not found, skipping",
-                step.id
+                id
             );
             continue;
         }
@@ -435,11 +447,11 @@ fn dispatch_sequence(
             );
             continue;
         };
-        if let Err(e) = handler(step.id, &step.args) {
+        if let Err(e) = handler(id, &step.args) {
             log::warn!(
                 "[Scripting] sequence step {i}: primitive '{}' on entity {:?} failed: {e}",
                 step.primitive,
-                step.id
+                id
             );
         }
     }
@@ -536,6 +548,7 @@ mod tests {
             name: name.to_string(),
             descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                 primitive: primitive.to_string(),
+                target: None,
                 tag: Some(tag.to_string()),
                 on_complete: on_complete.map(|s| s.to_string()),
                 args: serde_json::Value::Object(Default::default()),
@@ -832,6 +845,7 @@ mod tests {
                 name: "release".into(),
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "record".into(),
+                    target: None,
                     tag: None,
                     on_complete: None,
                     args: serde_json::json!({ "label": "release" }),
@@ -897,6 +911,7 @@ mod tests {
                     name: "release".into(),
                     descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                         primitive: "record".into(),
+                        target: None,
                         tag: None,
                         on_complete: None,
                         args: serde_json::json!({ "label": "release" }),
@@ -954,6 +969,7 @@ mod tests {
             name: name.into(),
             descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                 primitive: "record".into(),
+                target: None,
                 tag: None,
                 on_complete: on_complete.map(str::to_string),
                 args: serde_json::json!({ "label": name }),
@@ -1025,6 +1041,7 @@ mod tests {
                 name: "lowHealth".to_string(),
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "playSound".to_string(),
+                    target: None,
                     // No tag ⇒ system-targeted.
                     tag: None,
                     on_complete: None,
@@ -1095,12 +1112,12 @@ mod tests {
                 "go",
                 vec![
                     SequenceStep {
-                        id: id_a,
+                        id: id_a.into(),
                         primitive: "noteValue".into(),
                         args: serde_json::json!({ "v": 1 }),
                     },
                     SequenceStep {
-                        id: id_b,
+                        id: id_b.into(),
                         primitive: "noteValue".into(),
                         args: serde_json::json!({ "v": 2 }),
                     },
@@ -1124,6 +1141,139 @@ mod tests {
         assert!(chained.is_empty());
         let observed = calls.lock().unwrap().clone();
         assert_eq!(observed, vec![(id_a.to_raw(), 1), (id_b.to_raw(), 2)]);
+    }
+
+    // AC 10: a NAMED (non-trigger) dispatch has no fire context, so a primitive
+    // carrying a sentinel `target` cannot resolve — it warns and is skipped,
+    // while a sibling sentinel-free reaction on the same event name still runs.
+    #[test]
+    fn named_dispatch_skips_sentinel_target_primitive_but_runs_sentinel_free_command() {
+        use crate::reaction_registry::SystemReactionCommand;
+
+        let script_ctx = ScriptCtx::new();
+        let mut data = DataRegistry::new();
+        data.populate_level(
+            vec![
+                // Sentinel target with no trigger fire context: must warn-skip.
+                NamedReaction {
+                    name: "onPress".to_string(),
+                    descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                        primitive: "applyDamage".to_string(),
+                        target: Some("@activators".to_string()),
+                        tag: None,
+                        on_complete: None,
+                        args: serde_json::json!({ "amount": 25 }),
+                    }),
+                },
+                // Sentinel-free system reaction on the same event name: must run.
+                NamedReaction {
+                    name: "onPress".to_string(),
+                    descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                        primitive: "playSound".to_string(),
+                        target: None,
+                        tag: None,
+                        on_complete: None,
+                        args: serde_json::json!({ "sound": "beep", "bus": "sfx" }),
+                    }),
+                },
+            ],
+            Vec::new(),
+            &[],
+        );
+
+        let seq_reg = SequencedPrimitiveRegistry::new();
+        let reaction_reg = ReactionPrimitiveRegistry::new();
+        let mut system_reg = SystemReactionRegistry::new();
+        system_reg.register("playSound", |args, queue| {
+            let sound = args
+                .get("sound")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let bus = args
+                .get("bus")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+            queue.push(SystemReactionCommand::PlaySound { sound, bus });
+            Ok(())
+        });
+
+        fire_named_event_with_sequences(
+            "onPress",
+            &data,
+            &seq_reg,
+            &reaction_reg,
+            &system_reg,
+            &script_ctx,
+            None,
+        );
+
+        assert_eq!(
+            script_ctx.system_commands.take(),
+            vec![SystemReactionCommand::PlaySound {
+                sound: "beep".to_string(),
+                bus: Some("sfx".to_string()),
+            }],
+            "the sentinel-target primitive is skipped; only the sentinel-free command runs",
+        );
+    }
+
+    // AC 10: the symmetric sequence path — a named dispatch's sequence step
+    // carrying a sentinel `id` has no fire context to resolve, so it warns and
+    // is skipped, while the sequence's entity-targeted step still executes.
+    #[test]
+    fn named_dispatch_skips_sentinel_sequence_step_but_runs_entity_step() {
+        let script_ctx = ScriptCtx::new();
+        let id_entity = script_ctx.registry.borrow_mut().spawn(Transform::default());
+
+        let calls: Arc<std::sync::Mutex<Vec<(u32, i64)>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let calls_cl = Arc::clone(&calls);
+        let mut seq_reg = SequencedPrimitiveRegistry::new();
+        seq_reg.register("noteValue", move |id, args| {
+            let v = args["v"].as_i64().unwrap_or(-1);
+            calls_cl.lock().unwrap().push((id.to_raw(), v));
+            Ok(())
+        });
+
+        let mut data = DataRegistry::new();
+        data.populate_level(
+            vec![sequence_reaction(
+                "onComplete",
+                vec![
+                    SequenceStep {
+                        id: postretro_entities::SequenceTarget::Activators,
+                        primitive: "noteValue".into(),
+                        args: serde_json::json!({ "v": 1 }),
+                    },
+                    SequenceStep {
+                        id: id_entity.into(),
+                        primitive: "noteValue".into(),
+                        args: serde_json::json!({ "v": 2 }),
+                    },
+                ],
+            )],
+            Vec::new(),
+            &[],
+        );
+
+        let reaction_reg = ReactionPrimitiveRegistry::new();
+        let system_reg = SystemReactionRegistry::new();
+        fire_named_event_with_sequences(
+            "onComplete",
+            &data,
+            &seq_reg,
+            &reaction_reg,
+            &system_reg,
+            &script_ctx,
+            None,
+        );
+
+        assert_eq!(
+            calls.lock().unwrap().clone(),
+            vec![(id_entity.to_raw(), 2)],
+            "the sentinel step is skipped; the entity-targeted step still runs",
+        );
     }
 
     #[test]
@@ -1152,17 +1302,17 @@ mod tests {
                 "go",
                 vec![
                     SequenceStep {
-                        id: id_a,
+                        id: id_a.into(),
                         primitive: "tick".into(),
                         args: serde_json::Value::Null,
                     },
                     SequenceStep {
-                        id: id_dead,
+                        id: id_dead.into(),
                         primitive: "tick".into(),
                         args: serde_json::Value::Null,
                     },
                     SequenceStep {
-                        id: id_b,
+                        id: id_b.into(),
                         primitive: "tick".into(),
                         args: serde_json::Value::Null,
                     },
@@ -1212,12 +1362,12 @@ mod tests {
                 "go",
                 vec![
                     SequenceStep {
-                        id: id_a,
+                        id: id_a.into(),
                         primitive: "boom".into(),
                         args: serde_json::Value::Null,
                     },
                     SequenceStep {
-                        id: id_b,
+                        id: id_b.into(),
                         primitive: "ok".into(),
                         args: serde_json::Value::Null,
                     },
@@ -1251,7 +1401,7 @@ mod tests {
             sequence_reaction(
                 "valid",
                 vec![SequenceStep {
-                    id: bogus_id,
+                    id: bogus_id.into(),
                     primitive: "known".into(),
                     args: serde_json::Value::Null,
                 }],
@@ -1260,12 +1410,12 @@ mod tests {
                 "invalid",
                 vec![
                     SequenceStep {
-                        id: bogus_id,
+                        id: bogus_id.into(),
                         primitive: "known".into(),
                         args: serde_json::Value::Null,
                     },
                     SequenceStep {
-                        id: bogus_id,
+                        id: bogus_id.into(),
                         primitive: "ghost".into(),
                         args: serde_json::Value::Null,
                     },
@@ -1288,7 +1438,7 @@ mod tests {
             sequence_reaction(
                 "valid",
                 vec![SequenceStep {
-                    id: bogus_id,
+                    id: bogus_id.into(),
                     primitive: "known".into(),
                     args: serde_json::Value::Null,
                 }],
@@ -1297,12 +1447,12 @@ mod tests {
                 "invalid_at_zero",
                 vec![
                     SequenceStep {
-                        id: bogus_id,
+                        id: bogus_id.into(),
                         primitive: "ghost".into(),
                         args: serde_json::Value::Null,
                     },
                     SequenceStep {
-                        id: bogus_id,
+                        id: bogus_id.into(),
                         primitive: "known".into(),
                         args: serde_json::Value::Null,
                     },
@@ -1330,7 +1480,7 @@ mod tests {
                 reaction: sequence_reaction(
                     "valid_sequence",
                     vec![SequenceStep {
-                        id: bogus_id,
+                        id: bogus_id.into(),
                         primitive: "known".into(),
                         args: serde_json::Value::Null,
                     }],
@@ -1341,7 +1491,7 @@ mod tests {
                 reaction: sequence_reaction(
                     "invalid_sequence",
                     vec![SequenceStep {
-                        id: bogus_id,
+                        id: bogus_id.into(),
                         primitive: "ghost".into(),
                         args: serde_json::Value::Null,
                     }],

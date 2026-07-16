@@ -104,6 +104,40 @@ declare module "postretro" {
     rate_curve: ReadonlyArray<number>;
   };
 
+  /** Per-particle simulation state carried by each live particle entity as a `particle_state` component. The particle simulation reads and writes it each tick; `buoyancy` / `drag` are copied from the parent emitter at spawn. */
+  export type ParticleState = {
+    /** Current particle velocity in metres/sec. */
+    velocity: readonly [number, number, number];
+    /** Seconds elapsed since the particle spawned. */
+    age: number;
+    /** Total particle lifetime in seconds; the particle despawns once `age` reaches it. */
+    lifetime: number;
+    /** Unitless gravity multiplier copied from the parent emitter at spawn (`verticalAcceleration = worldGravity * -buoyancy`). */
+    buoyancy: number;
+    /** Velocity damping coefficient in 1/sec, copied from the parent emitter at spawn. */
+    drag: number;
+    /** Normalized-lifetime billboard size curve, sampled evenly from spawn to death. */
+    size_curve: ReadonlyArray<number>;
+    /** Normalized-lifetime opacity curve, sampled evenly from spawn to death. */
+    opacity_curve: ReadonlyArray<number>;
+    /** Back-reference to the parent emitter entity, consulted only for spin-rate lookup each tick. null once the emitter has despawned (orphaned particle). */
+    emitter: EntityId | null;
+  };
+
+  /** Per-frame visual state of a sprite as a `sprite_visual` component. Authored by the particle simulation each tick and consumed by the billboard render integration. */
+  export type SpriteVisual = {
+    /** Sprite/material identifier resolved by the billboard renderer. */
+    sprite: string;
+    /** Billboard size multiplier for this frame. */
+    size: number;
+    /** Billboard opacity for this frame, in [0, 1]. */
+    opacity: number;
+    /** Billboard rotation in radians for this frame. */
+    rotation: number;
+    /** RGB tint applied to the sprite. CPU-side only at this stage; the GPU sprite instance layout has no color channel yet. */
+    tint: readonly [number, number, number];
+  };
+
   /** Animation curves attached to a fog volume by the `setFogAnimation` reaction primitive. Four independent channels share `periodMs` / `phase` / `playCount`: `density` modulates volumetric density, `saturation` modulates SH-irradiance saturation, `minBrightness` modulates the scatter brightness floor, and `lightRange` scales how far lights reach inside the fog. At least one curve must be present when `playCount` is finite — otherwise the animation has nothing to settle to. `phase` is normalized into `[0, 1)`. `playCount = null` loops forever; finite counts have the bridge write back each channel's final keyframe as static state on completion. There is no `startActive` flag — fog has no GPU descriptor for the curve, so absence (`null`) is the only inactive state. */
   export type FogAnimation = {
     /** Total period of the loop, in milliseconds. */
@@ -456,7 +490,7 @@ declare module "postretro" {
     path: string;
     /** Display name shown to players in catalog-driven UI. Required. */
     name: string;
-    /** Authoritative classification tags for filtering plus `levels` selection on mod-global reactions and crossings. Optional; missing/null normalizes to empty. */
+    /** Authoritative classification tags for filtering plus `levels` selection on mod-global reactions, crossings, and trigger events. Optional; missing/null normalizes to empty. */
     tags?: ReadonlyArray<string>;
   };
 
@@ -510,6 +544,8 @@ declare module "postretro" {
     reactions?: ReadonlyArray<NamedReactionDescriptor>;
     /** Engine-global state-crossing watchers. Optional; survive level unload and compose into active level behavior by `levels` tag selectors. */
     crossings?: ReadonlyArray<CrossingDescriptor>;
+    /** Trigger-volume enter/exit observers. Optional; compose by level tags. */
+    triggerEvents?: ReadonlyArray<TriggerEventDescriptor>;
     /** Engine-global state-store declarations returned by `defineStore(...).declaration`. Optional; commit atomically after the manifest validates and preserve existing values when the schema is identical. */
     stores?: ReadonlyArray<StoreDeclaration>;
   };
@@ -780,6 +816,7 @@ declare module "postretro" {
   export type PrimitiveReactionDescriptor = {
     primitive: string;
     tag?: string;
+    target?: "@activators";
     args?: Record<string, unknown>;
     onComplete?: string;
   };
@@ -862,9 +899,9 @@ declare module "postretro" {
   export type MoverGoToPathNodeStep = { id: EntityId; primitive: "moverGoToPathNode"; args: { node: string } };
 
   /** Sequence step that arms one trigger volume. */
-  export type ArmTriggerStep = { id: EntityId; primitive: "armTrigger"; args: ArmTriggerArgs };
+  export type ArmTriggerStep = { id: EntityId | "@trigger"; primitive: "armTrigger"; args: ArmTriggerArgs };
   /** Sequence step that disarms one trigger volume. */
-  export type DisarmTriggerStep = { id: EntityId; primitive: "disarmTrigger"; args: DisarmTriggerArgs };
+  export type DisarmTriggerStep = { id: EntityId | "@trigger"; primitive: "disarmTrigger"; args: DisarmTriggerArgs };
 
   /** Union of every supported sequence step shape. New sequenced primitives extend this union. */
   export type SequenceStep =
@@ -898,7 +935,12 @@ declare module "postretro" {
   export type CrossingParams = Readonly<{ rising: RuntimeRead }>;
   /** Dispatch values published while a Number store slot accumulates. */
   export type TickParams = Readonly<{ dt: RuntimeRead }>;
-  declare const reactionScopeBrand: unique symbol;
+  const activatorsTargetBrand: unique symbol;
+  const triggerTargetBrand: unique symbol;
+  export type ActivatorsTarget = Readonly<{ readonly [activatorsTargetBrand]: true }>;
+  export type TriggerTarget = Readonly<{ readonly [triggerTargetBrand]: true }>;
+  export type TriggerEventParams = Readonly<{ activators: ActivatorsTarget; trigger: TriggerTarget; occupancy: RuntimeRead }>;
+  const reactionScopeBrand: unique symbol;
   /** Named reaction with a type-only, contravariant dispatch-scope marker. */
   export type Reaction<S = {}> = NamedReactionDescriptor & { readonly [reactionScopeBrand]?: (scope: S) => void };
 
@@ -940,6 +982,7 @@ declare module "postretro" {
   export type LevelManifest = {
     reactions: NamedReactionDescriptor[];
     crossings?: CrossingDescriptor[];
+    triggerEvents?: TriggerEventDescriptor[];
     /** Per-level UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; same shape as `ModManifest.uiTrees` but level-scoped (cleared on unload). Malformed entries are logged and skipped. */
     uiTrees?: ReadonlyArray<ModUiTree>;
   };
@@ -963,6 +1006,9 @@ declare module "postretro" {
     tracer: (params: CrossingParams) => ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor,
   ): Reaction<CrossingParams>;
   export function defineReaction(
+    tracer: (params: TriggerEventParams) => ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor,
+  ): Reaction<TriggerEventParams>;
+  export function defineReaction(
     name: string,
     descriptor:
       | ProgressReactionDescriptor
@@ -973,6 +1019,17 @@ declare module "postretro" {
     name: string,
     tracer: (params: CrossingParams) => ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor,
   ): Reaction<CrossingParams>;
+  export function defineReaction(
+    name: string,
+    tracer: (params: TriggerEventParams) => ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor,
+  ): Reaction<TriggerEventParams>;
+
+  export type TriggerEventDescriptor = { tag: string; event: "enter" | "exit"; fire: string[]; levels?: string[] };
+  export type TriggerEventOptions = { levels?: string[] };
+  export function onTriggerEvent(filter: { tag: string }, event: "enter" | "exit", fire: (Reaction<{}> | Reaction<TriggerEventParams> | string)[], options?: TriggerEventOptions): TriggerEventDescriptor;
+  export function damage(target: ActivatorsTarget | string, amount: number): PrimitiveReactionDescriptor;
+  export function armTrigger(target: TriggerTarget): SequenceStep[];
+  export function disarmTrigger(target: TriggerTarget): SequenceStep[];
 
   /** Stamp a shared map-tag scope onto each reaction in a plain list. `tags` are matched against `ModMapEntry.tags`; omit scoping for every level. */
   export function scopeReactions<S>(
@@ -987,8 +1044,8 @@ declare module "postretro" {
   // reference map is supplied by this hand-written generic instead of registry
   // emission.
 
-  declare const stateRefValueBrand: unique symbol;
-  declare const writableStateRefBrand: unique symbol;
+  const stateRefValueBrand: unique symbol;
+  const writableStateRefBrand: unique symbol;
   export type ScalarStateValue = number | boolean | string;
   export type NumericArrayStateValue = ReadonlyArray<number>;
   export type ReadonlyStateRef<T> = { readonly slot: string; readonly [stateRefValueBrand]: T };
@@ -1062,7 +1119,7 @@ declare module "postretro" {
   };
   /** Pure identity builder for entity-type descriptors. Returned from `ModManifest.entities`; `descriptor` is the full archetype object: optional `canonicalName`, optional `defaultWeapon`, and optional component presets. */
   export function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor;
-  /** Pure identity builder for the mod manifest consumed from the default export. `config.name` is required; optional arrays include `entities`, `maps`, `uiTrees`, `reactions`, `crossings`, and `stores`. */
+  /** Pure identity builder for the mod manifest consumed from the default export. `config.name` is required; optional arrays include `entities`, `maps`, `uiTrees`, `reactions`, `crossings`, `triggerEvents`, and `stores`. */
   export function defineMod(config: ModManifest): ModManifest;
   /** Pure identity builder for a mod map catalog. Entries require `id`, `path`, and `name`; optional `tags` default to empty and drive filtering plus `levels` selectors. */
   export function defineMapCatalog(entries: ModMapEntry[]): ModMapEntry[];
@@ -1220,7 +1277,7 @@ declare module "postretro/ui" {
 
   /** Linear RGBA color token value. Components are in display-linear 0-1 space; alpha is the fourth element. */
   export type ThemeColorValue = readonly [number, number, number, number];
-  declare const themeTokenBrand: unique symbol;
+  const themeTokenBrand: unique symbol;
   /** Runtime-authenticated SDK token record. Widget factories unwrap only records produced by `getDesignTokens(theme)`, not hand-built lookalikes. */
   export type ThemeToken<Category extends "color" | "font" | "spacing"> = Readonly<{
     __postretroToken: Category;
@@ -1258,7 +1315,7 @@ declare module "postretro/ui" {
     readonly font: DesignTokenGroup<T["font"], string, FontToken>;
     readonly spacing: DesignTokenGroup<T["spacing"], number, SpacingToken>;
   };
-  declare const definedThemeBrand: unique symbol;
+  const definedThemeBrand: unique symbol;
   /** Manifest-compatible flat theme maps returned from `defineTheme`. */
   export type DefinedTheme<T extends ThemeDefinition> = {
     readonly colors: FlatTokenMap<T["color"], ThemeColorValue, ThemeColorValue>;

@@ -593,6 +593,7 @@ mod tests {
             name: name.to_string(),
             descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                 primitive: "setState".to_string(),
+                target: None,
                 tag: None,
                 on_complete: None,
                 args: serde_json::json!({ "slot": slot, "value": value }),
@@ -713,6 +714,41 @@ mod tests {
                 .and_then(|record| record.value.as_ref()),
             Some(SlotValue::String(value)) if value == "unchanged"
         ));
+    }
+
+    #[test]
+    fn on_complete_named_dispatch_rejects_contextless_occupancy_without_slot_mutation() {
+        let ctx = ScriptCtx::new();
+        insert_number(&ctx, "trap.observedOccupancy", 7.0, 16.0, false);
+        let value = serde_json::json!({ "op": "input", "name": "@occupancy" });
+        let data = active_reactions(vec![set_state_reaction(
+            "afterPresentation",
+            "trap.observedOccupancy",
+            value.clone(),
+        )]);
+        let mut bindings = SystemReactionIrBindings::default();
+        bindings.rebuild(&data, &ctx);
+
+        assert_eq!(
+            bindings.dispatch(
+                "trap.observedOccupancy",
+                &value,
+                "named:afterPresentation",
+                &[],
+                &ctx,
+            ),
+            SystemReactionIrDispatch::Rejected,
+            "an onComplete/name-dispatch source publishes no trigger DispatchScope",
+        );
+        assert_number_approx_eq(
+            number_value(&ctx, "trap.observedOccupancy"),
+            7.0,
+            "contextless @occupancy must not mutate the destination slot",
+        );
+        assert!(
+            ctx.system_commands.is_empty(),
+            "a rejected contextless value must not leave a command side effect",
+        );
     }
 
     #[test]

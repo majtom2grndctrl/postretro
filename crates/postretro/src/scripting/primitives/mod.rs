@@ -156,6 +156,27 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         )
         .finish();
     registry
+        .register_type("ParticleState")
+        .doc("Per-particle simulation state carried by each live particle entity as a `particle_state` component. The particle simulation reads and writes it each tick; `buoyancy` / `drag` are copied from the parent emitter at spawn.")
+        .field("velocity", "[f32; 3]", "Current particle velocity in metres/sec.")
+        .field("age", "f32", "Seconds elapsed since the particle spawned.")
+        .field("lifetime", "f32", "Total particle lifetime in seconds; the particle despawns once `age` reaches it.")
+        .field("buoyancy", "f32", "Unitless gravity multiplier copied from the parent emitter at spawn (`verticalAcceleration = worldGravity * -buoyancy`).")
+        .field("drag", "f32", "Velocity damping coefficient in 1/sec, copied from the parent emitter at spawn.")
+        .field("size_curve", "Vec<f32>", "Normalized-lifetime billboard size curve, sampled evenly from spawn to death.")
+        .field("opacity_curve", "Vec<f32>", "Normalized-lifetime opacity curve, sampled evenly from spawn to death.")
+        .field("emitter", "Option<EntityId>", "Back-reference to the parent emitter entity, consulted only for spin-rate lookup each tick. null once the emitter has despawned (orphaned particle).")
+        .finish();
+    registry
+        .register_type("SpriteVisual")
+        .doc("Per-frame visual state of a sprite as a `sprite_visual` component. Authored by the particle simulation each tick and consumed by the billboard render integration.")
+        .field("sprite", "String", "Sprite/material identifier resolved by the billboard renderer.")
+        .field("size", "f32", "Billboard size multiplier for this frame.")
+        .field("opacity", "f32", "Billboard opacity for this frame, in [0, 1].")
+        .field("rotation", "f32", "Billboard rotation in radians for this frame.")
+        .field("tint", "[f32; 3]", "RGB tint applied to the sprite. CPU-side only at this stage; the GPU sprite instance layout has no color channel yet.")
+        .finish();
+    registry
         .register_type("FogAnimation")
         .doc("Animation curves attached to a fog volume by the `setFogAnimation` reaction primitive. Four independent channels share `periodMs` / `phase` / `playCount`: `density` modulates volumetric density, `saturation` modulates SH-irradiance saturation, `minBrightness` modulates the scatter brightness floor, and `lightRange` scales how far lights reach inside the fog. At least one curve must be present when `playCount` is finite — otherwise the animation has nothing to settle to. `phase` is normalized into `[0, 1)`. `playCount = null` loops forever; finite counts have the bridge write back each channel's final keyframe as static state on completion. There is no `startActive` flag — fog has no GPU descriptor for the curve, so absence (`null`) is the only inactive state.")
         .field("periodMs", "f32", "Total period of the loop, in milliseconds.")
@@ -466,7 +487,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field(
             "tags?",
             "Vec<String>",
-            "Authoritative classification tags for filtering plus `levels` selection on mod-global reactions and crossings. Optional; missing/null normalizes to empty.",
+            "Authoritative classification tags for filtering plus `levels` selection on mod-global reactions, crossings, and trigger events. Optional; missing/null normalizes to empty.",
         )
         .finish();
     registry
@@ -557,6 +578,11 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
             "crossings?",
             "Vec<CrossingDescriptor>",
             "Engine-global state-crossing watchers. Optional; survive level unload and compose into active level behavior by `levels` tag selectors.",
+        )
+        .field(
+            "triggerEvents?",
+            "Vec<TriggerEventDescriptor>",
+            "Trigger-volume enter/exit observers. Optional; compose by level tags.",
         )
         .field(
             "stores?",
@@ -658,6 +684,7 @@ mod tests {
             maps: Vec::new(),
             reactions: Vec::new(),
             crossings: Vec::new(),
+            trigger_events: Vec::new(),
             store_declarations: StoreDeclarationSet::default(),
         };
         let expected_fields: &[&str] = &[
@@ -670,6 +697,7 @@ mod tests {
             "maps",
             "reactions",
             "crossings",
+            "triggerEvents",
             "stores",
         ];
 

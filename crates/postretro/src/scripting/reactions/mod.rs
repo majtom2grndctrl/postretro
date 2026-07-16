@@ -97,6 +97,7 @@ mod tests {
             name: name.to_string(),
             descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                 primitive: primitive.to_string(),
+                target: None,
                 tag: None,
                 on_complete: None,
                 args,

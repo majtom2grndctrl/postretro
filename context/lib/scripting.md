@@ -437,6 +437,17 @@ Start the node set minimal: named-input leaves, arithmetic, `clamp`, `lerp`, `se
 
 **Trigger-event params have two channels.** `activators` and `trigger` are opaque command-target tokens. They are legal only in trigger-event command builders: `damage(on.activators, amount)` targets the fire's activators, while `armTrigger(on.trigger)` and `disarmTrigger(on.trigger)` target the firing volume. `occupancy` is a numeric runtime input: the effective occupant count at the enter or exit fire. It composes through `runtime` like other numeric inputs. Trigger events publish only `enter` and `exit`; occupancy-based conditions use crossings over ambient state.
 
+**Target resolution: setup-id vs. fire-time-tag.** A descriptor addresses entities by one of two
+models, fixed by its binding key. **Setup-id** — `world.query({ component, tag? })` resolves matching
+ids at level install and bakes each into a per-entity `SequenceStep`; a one-time filter over entities
+that exist at install (movers, triggers, lights, fog, emitters). **Fire-time-tag** — a tag-keyed
+`PrimitiveReactionDescriptor` (the `damage(tag)` shape) carries the tag and resolves it against the
+live tagged set at *each* fire. Required whenever the target set may not exist at install — a revealed
+or spawned entity has no id to bake — and the model for group effects and group-mutation handles. The
+two are not interchangeable: a fire-time-tag effect cannot be a `world.query` component (that returns
+per-entity id handles — the wrong cardinality and resolution time for a group that appears
+mid-session).
+
 ---
 
 ## 13. Crate Architecture

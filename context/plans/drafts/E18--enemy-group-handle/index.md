@@ -18,7 +18,7 @@ descriptor's binding-key slot; which key it fills implies when the engine resolv
 
 | Model | Selector | Resolves | Descriptor key | Members |
 |---|---|---|---|---|
-| **setup-id** | `world.query({ component, tag? })` | entity ids at level install | `id` (per-entity `SequenceStep`) | movers, triggers, lights, fog |
+| **setup-id** | `world.query({ component, tag? })` | entity ids at level install | `id` (per-entity `SequenceStep`) | movers, triggers, lights, fog, emitters |
 | **fire-time-tag** | `enemies({ tag })` | the live tagged set at each fire | `tag` (`PrimitiveReactionDescriptor`) | enemies (this spec); `damage(tag)`; spawner (E18-C) |
 
 Enemies are the fire-time-tag model's first typed handle. The model is forced, not chosen: a
@@ -60,8 +60,10 @@ additive and invisible to existing author code.
   `PrimitiveReactionDescriptor` (the `damage(tag)` shape; tag-targeted primitives ride the
   `Primitive` reaction path, never a `sequence`).
 - **Full primitive-contract surface** for the one new verb `aggroGate`: `CONSEQUENTIAL_PRIMITIVES`,
-  `BoundTriggerCommand` (+ `Kind`), the bind/partition arms, a `register_*_reaction_primitives`
-  call, SDK TS + Luau builders, typedef templates + drift snapshot + parity fixtures, validators.
+  `BoundTriggerCommand` (+ `Kind`), the `bind_command` arm, the `is_trigger_consequential_primitive`
+  mirror (`crates/scripting-core/src/reaction_dispatch.rs`, the hardcoded debug-assert twin of the
+  fixed-tick command set), a `register_*_reaction_primitives` call, SDK TS + Luau builders, typedef
+  templates + drift snapshot + parity fixtures, validators.
 
 ### Out of scope
 
@@ -78,7 +80,7 @@ additive and invisible to existing author code.
   existing Transform; no new wire surface. `aggro_armed` is host-authoritative sim state; its
   behavioral effect replicates through the motion clients already observe.
 - **Enemy id-addressed selection via `world.query`** — enemies are fire-time-tag by nature;
-  `world.query` stays the setup-id device model (movers/triggers/lights/fog/spawner).
+  `world.query` stays the setup-id device model (movers/triggers/lights/fog/emitters).
 - **The spawner entity, `spawnFromSpawner`, and the closet set-piece** — E18-C, the consumer. This
   spec is the enemy handle and its aggro gate only.
 
@@ -106,9 +108,9 @@ is a mechanical rename across this spec, the primitive stays `aggroGate` regardl
 - [ ] An `aggroGate` descriptor whose tag resolves to no Brain warn-skips once (asserted through its
       warn counter — no static validator), and coexists with other reactions fired by the same
       trigger fan-out (e.g. a `moverStart` reaction) without interference.
-- [ ] **Fire-time resolution:** an enemy created *after* install (via the `#[cfg(test)]` registry
-      seam) carrying the tag is affected by a later `aggroGate` fire — the property that
-      distinguishes fire-time-tag from setup-id resolution.
+- [ ] **Fire-time resolution:** an enemy created *after* install (spawned directly through the
+      registry in a headless test) carrying the tag is affected by a later `aggroGate` fire — the
+      property that distinguishes fire-time-tag from setup-id resolution.
 - [ ] A gated enemy is skipped by the separation pass — with a second agent placed inside
       `SEPARATION_RADIUS_FACTOR`, the gated agent's position is unchanged across ticks.
 - [ ] SDK TS and Luau emit byte-identical `aggroGate` descriptors; the typedef drift check passes
@@ -125,7 +127,9 @@ Add the gate field to `BrainComponent` (`crates/entities/src/components/brain.rs
 (working name `aggro_armed`, default open). In `run_ai_tick_with_navigation`
 (`crates/postretro/src/scripting/systems/ai.rs`), a gated brain does not run `evaluate_transition`,
 does not steer, and holds its current position and `LogicalState` (Idle/Alert/Attack/Death,
-`brain.rs`) — its Transform is untouched, so it replicates as a stationary Idle enemy. Ensure the
+`brain.rs`) — its Transform is untouched, so it replicates as a stationary Idle enemy. Gate only
+the not-dead FSM/steering block: the tick's every-tick zero-HP → Death transition, death countdown,
+and despawn stay live, or a killed gated enemy never despawns. Ensure the
 O(n²) steering separation pass (`crates/postretro/src/agent_steering.rs`, `SEPARATION_RADIUS_FACTOR`)
 also skips a gated agent so it is not nudged. Damage, health, and death paths are untouched — a
 gated enemy can be killed. Seed the gate closed from an `enabled_on_spawn = false` KVP on an
@@ -141,8 +145,12 @@ Add one consequential verb `aggroGate` carrying `{ open: bool }`. Register it in
 → a new `BoundTriggerCommand::AggroGate { open }` (`crates/postretro/src/trigger_commands.rs`). Its
 executor (`execute_non_store`) resolves `BoundTarget::Tag` against the live **Brain** set —
 `query_by_component_and_tag(Brain, tag)`, not `Transform` — and sets each matched brain's
-`aggro_armed` per `open`. A tag resolving to no Brain warn-skips once (reuse the shipped
-per-primitive warn-skip counter). This is a distinct Brain-targeted command, **not** an extension of
+`aggro_armed` per `open`. A tag resolving to no Brain warn-skips once — new warn-once state
+alongside `MoverCommandDiagnostics`'s shipped per-entity warned sets (nothing shipped warns on an
+empty tag resolution today; the app-drain path deliberately passes empty target sets through). Also
+add `aggroGate` to the `is_trigger_consequential_primitive` mirror
+(`crates/scripting-core/src/reaction_dispatch.rs`) backing the double-execution debug asserts.
+This is a distinct Brain-targeted command, **not** an extension of
 the trigger-mutation chokepoint (`apply_trigger_mutation_to_targets`) — enemy aggro and trigger
 arming are separate concerns that only look alike as booleans. No wire surface: the gate is
 host-side sim state; its effect reaches clients through the enemy's existing Transform replication.
@@ -183,10 +191,12 @@ regenerates typedefs from the verb Task 2 registers. Task 1 and Task 2 are engin
   (Idle→Alert is XZ-distance, no LOS — the reason a sealed enemy would otherwise aggro through
   walls). Seed where `attach_descriptor_components` reads placement KVPs.
 - **Verb (Task 2).** `bind_command`'s match is the single primitive→`BoundTriggerCommand` mapping
-  point; `execute_non_store` matches `BoundTarget::Tag` via `resolve`. The `AggroGate` arm resolves
-  Brains (not Transforms) by tag and flips `aggro_armed`. One new verb touches
-  `CONSEQUENTIAL_PRIMITIVES`, `BoundTriggerCommand` (+`Kind`), `partition_direct_reaction` /
-  `bind_sequence_step`, a `register_*_reaction_primitives` call, then the Task 3 SDK/typedef surface.
+  point (`partition_direct_reaction` / `bind_sequence_step` route into it unchanged);
+  `execute_non_store`'s existing arms resolve `BoundTarget::Tag` via `resolve` (Transform-keyed).
+  The `AggroGate` arm bypasses `resolve` and queries Brains by tag, flipping `aggro_armed`. One new
+  verb touches `CONSEQUENTIAL_PRIMITIVES`, `BoundTriggerCommand` (+`Kind`), `bind_command`'s match,
+  the `is_trigger_consequential_primitive` mirror, a `register_*_reaction_primitives` call, then the
+  Task 3 SDK/typedef surface.
 - **Handle (Task 3).** `damage()` (`data_script.ts:204`) is the template: a pure builder returning a
   tag-keyed `PrimitiveReactionDescriptor`. `enemies({ tag })` returns an object whose verbs bake the
   filter's tag into that descriptor. Object-filter selector, not a positional string, so the

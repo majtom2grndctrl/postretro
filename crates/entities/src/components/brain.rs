@@ -406,6 +406,7 @@ mod tests {
                 model: "grunt".into(),
                 animation: Some(MeshAnimation::new(states, "idle".into())),
                 origin_offset: glam::Vec3::ZERO,
+                pose_inputs: None,
             },
         )
         .unwrap();
@@ -438,6 +439,7 @@ mod tests {
                 model: "grunt".into(),
                 animation: Some(MeshAnimation::new(states, "idle".into())),
                 origin_offset: glam::Vec3::ZERO,
+                pose_inputs: None,
             },
         )
         .unwrap();

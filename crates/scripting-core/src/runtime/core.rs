@@ -196,6 +196,7 @@ impl ScriptRuntime {
                 next_maps,
                 next_global_reactions,
                 next_global_crossings,
+                next_global_trigger_events,
                 next_store_declarations,
                 next_dependencies,
                 descriptor_label,
@@ -222,6 +223,7 @@ impl ScriptRuntime {
                         manifest.maps.clone(),
                         manifest.reactions.clone(),
                         manifest.crossings.clone(),
+                        manifest.trigger_events.clone(),
                         manifest.store_declarations.clone(),
                         dependencies,
                         format!("mod `{}`", manifest.name),
@@ -244,6 +246,7 @@ impl ScriptRuntime {
                         }
                     };
                     (
+                        Vec::new(),
                         Vec::new(),
                         Vec::new(),
                         Vec::new(),
@@ -357,6 +360,9 @@ impl ScriptRuntime {
             ctx.data_registry
                 .borrow_mut()
                 .replace_global_crossings(next_global_crossings);
+            ctx.data_registry
+                .borrow_mut()
+                .replace_global_trigger_events(next_global_trigger_events);
             let dependency_count = next_dependencies.len();
             self.active_mod_init_dependencies = Some(next_dependencies);
             log::info!(

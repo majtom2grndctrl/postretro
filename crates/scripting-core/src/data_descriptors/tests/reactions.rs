@@ -84,75 +84,58 @@ fn js_primitive_without_tag_is_system_targeted() {
 }
 
 #[test]
-fn js_missing_required_field_reports_missing_field() {
-    // progress missing `fire`
+fn js_malformed_reaction_is_skipped() {
+    // A bad descriptor must not discard the rest of a valid setup manifest.
     let src = r#"({
         reactions: [{ name: "x", progress: { tag: "t", at: 0.5 } }]
     })"#;
-    let err = eval_js(src, |ctx, v| {
-        LevelManifest::from_js_value(ctx, v).unwrap_err()
-    });
-    assert_eq!(err, DescriptorError::MissingField { field: "fire" });
+    let manifest = eval_js(src, |ctx, v| LevelManifest::from_js_value(ctx, v).unwrap());
+    assert!(manifest.reactions.is_empty());
 }
 
 #[test]
-fn js_missing_name_field_reports_missing_field() {
+fn js_reaction_without_name_is_skipped() {
     let src = r#"({
         reactions: [{ progress: { tag: "t", at: 0.5, fire: "f" } }]
     })"#;
-    let err = eval_js(src, |ctx, v| {
-        LevelManifest::from_js_value(ctx, v).unwrap_err()
-    });
-    assert_eq!(err, DescriptorError::MissingField { field: "name" });
+    let manifest = eval_js(src, |ctx, v| LevelManifest::from_js_value(ctx, v).unwrap());
+    assert!(manifest.reactions.is_empty());
 }
 
 #[test]
-fn js_unknown_shape_reaction_is_rejected() {
+fn js_unknown_shape_reaction_is_skipped() {
     let src = r#"({
         reactions: [{ name: "x", tag: "t" }]
     })"#;
-    let err = eval_js(src, |ctx, v| {
-        LevelManifest::from_js_value(ctx, v).unwrap_err()
-    });
-    assert_eq!(err, DescriptorError::UnknownShape);
+    let manifest = eval_js(src, |ctx, v| LevelManifest::from_js_value(ctx, v).unwrap());
+    assert!(manifest.reactions.is_empty());
 }
 
 #[test]
-fn js_empty_primitive_name_is_rejected() {
+fn js_empty_primitive_name_is_skipped() {
     let src = r#"({
         reactions: [{ name: "x", primitive: "", tag: "t" }]
     })"#;
-    let err = eval_js(src, |ctx, v| {
-        LevelManifest::from_js_value(ctx, v).unwrap_err()
-    });
-    assert_eq!(err, DescriptorError::EmptyPrimitiveName);
+    let manifest = eval_js(src, |ctx, v| LevelManifest::from_js_value(ctx, v).unwrap());
+    assert!(manifest.reactions.is_empty());
 }
 
 #[test]
-fn js_at_out_of_range_high_is_rejected() {
+fn js_at_out_of_range_high_is_skipped() {
     let src = r#"({
         reactions: [{ name: "x", progress: { tag: "t", at: 1.5, fire: "f" } }]
     })"#;
-    let err = eval_js(src, |ctx, v| {
-        LevelManifest::from_js_value(ctx, v).unwrap_err()
-    });
-    assert_eq!(err, DescriptorError::AtThresholdOutOfRange { value: 1.5 });
+    let manifest = eval_js(src, |ctx, v| LevelManifest::from_js_value(ctx, v).unwrap());
+    assert!(manifest.reactions.is_empty());
 }
 
 #[test]
-fn js_at_out_of_range_negative_is_rejected() {
+fn js_at_out_of_range_negative_is_skipped() {
     let src = r#"({
         reactions: [{ name: "x", progress: { tag: "t", at: -0.1, fire: "f" } }]
     })"#;
-    let err = eval_js(src, |ctx, v| {
-        LevelManifest::from_js_value(ctx, v).unwrap_err()
-    });
-    match err {
-        DescriptorError::AtThresholdOutOfRange { value } => {
-            assert!((value + 0.1).abs() < 1e-6);
-        }
-        other => panic!("expected AtThresholdOutOfRange, got {other:?}"),
-    }
+    let manifest = eval_js(src, |ctx, v| LevelManifest::from_js_value(ctx, v).unwrap());
+    assert!(manifest.reactions.is_empty());
 }
 
 #[test]
@@ -170,10 +153,16 @@ fn js_sequence_reaction_deserializes() {
     match &m.reactions[0].descriptor {
         ReactionDescriptor::Sequence(steps) => {
             assert_eq!(steps.len(), 2);
-            assert_eq!(steps[0].id.to_raw(), 65536);
+            assert_eq!(
+                steps[0].id,
+                SequenceTarget::Entity(EntityId::from_raw(65536))
+            );
             assert_eq!(steps[0].primitive, "moveGeometry");
             assert_eq!(steps[0].args["duration"].as_f64(), Some(1.5));
-            assert_eq!(steps[1].id.to_raw(), 131072);
+            assert_eq!(
+                steps[1].id,
+                SequenceTarget::Entity(EntityId::from_raw(131072))
+            );
             assert_eq!(steps[1].primitive, "playSound");
             assert_eq!(steps[1].args["clip"], serde_json::json!("vault"));
         }
@@ -281,39 +270,39 @@ fn lua_primitive_without_tag_is_system_targeted() {
 }
 
 #[test]
-fn lua_missing_required_field_reports_missing_field() {
+fn lua_malformed_reaction_is_skipped() {
     let src = r#"return {
         reactions = { { name = "x", progress = { tag = "t", at = 0.5 } } }
     }"#;
-    let err = eval_lua(src, |v| LevelManifest::from_lua_value(v).unwrap_err());
-    assert_eq!(err, DescriptorError::MissingField { field: "fire" });
+    let manifest = eval_lua(src, |v| LevelManifest::from_lua_value(v).unwrap());
+    assert!(manifest.reactions.is_empty());
 }
 
 #[test]
-fn lua_unknown_shape_reaction_is_rejected() {
+fn lua_unknown_shape_reaction_is_skipped() {
     let src = r#"return {
         reactions = { { name = "x", tag = "t" } }
     }"#;
-    let err = eval_lua(src, |v| LevelManifest::from_lua_value(v).unwrap_err());
-    assert_eq!(err, DescriptorError::UnknownShape);
+    let manifest = eval_lua(src, |v| LevelManifest::from_lua_value(v).unwrap());
+    assert!(manifest.reactions.is_empty());
 }
 
 #[test]
-fn lua_empty_primitive_name_is_rejected() {
+fn lua_empty_primitive_name_is_skipped() {
     let src = r#"return {
         reactions = { { name = "x", primitive = "", tag = "t" } }
     }"#;
-    let err = eval_lua(src, |v| LevelManifest::from_lua_value(v).unwrap_err());
-    assert_eq!(err, DescriptorError::EmptyPrimitiveName);
+    let manifest = eval_lua(src, |v| LevelManifest::from_lua_value(v).unwrap());
+    assert!(manifest.reactions.is_empty());
 }
 
 #[test]
-fn lua_at_out_of_range_is_rejected() {
+fn lua_at_out_of_range_is_skipped() {
     let src = r#"return {
         reactions = { { name = "x", progress = { tag = "t", at = 1.5, fire = "f" } } }
     }"#;
-    let err = eval_lua(src, |v| LevelManifest::from_lua_value(v).unwrap_err());
-    assert_eq!(err, DescriptorError::AtThresholdOutOfRange { value: 1.5 });
+    let manifest = eval_lua(src, |v| LevelManifest::from_lua_value(v).unwrap());
+    assert!(manifest.reactions.is_empty());
 }
 
 #[test]
@@ -331,7 +320,10 @@ fn lua_sequence_reaction_deserializes() {
     match &m.reactions[0].descriptor {
         ReactionDescriptor::Sequence(steps) => {
             assert_eq!(steps.len(), 2);
-            assert_eq!(steps[0].id.to_raw(), 65536);
+            assert_eq!(
+                steps[0].id,
+                SequenceTarget::Entity(EntityId::from_raw(65536))
+            );
             assert_eq!(steps[0].primitive, "moveGeometry");
             assert_eq!(steps[1].primitive, "playSound");
         }
@@ -375,7 +367,7 @@ fn lua_reactions_reject_non_dense_tables() {
 }
 
 #[test]
-fn lua_sequence_rejects_non_dense_tables() {
+fn lua_malformed_sequences_skip_their_reaction() {
     // Regression: raw_len iteration silently accepted malformed sequence steps.
     let cases = [
         (
@@ -401,11 +393,8 @@ fn lua_sequence_rejects_non_dense_tables() {
     ];
 
     for (source, label) in cases {
-        let err = eval_lua(source, |v| LevelManifest::from_lua_value(v).unwrap_err());
-        assert!(
-            matches!(err, DescriptorError::InvalidSequenceShape { .. }),
-            "{label} produced unexpected error: {err}"
-        );
+        let manifest = eval_lua(source, |v| LevelManifest::from_lua_value(v).unwrap());
+        assert!(manifest.reactions.is_empty(), "{label} was not skipped");
     }
 }
 
@@ -429,6 +418,116 @@ fn lua_crossings_accept_dense_arrays() {
     assert_eq!(m.crossings.len(), 2);
     assert_eq!(m.crossings[0].slot.as_deref(), Some("player.health"));
     assert_eq!(m.crossings[0].fire, vec!["lowHealth".to_string()]);
+}
+
+#[test]
+fn trigger_event_manifests_parse_identically_and_drop_unknown_events() {
+    let js = eval_js(
+        r#"({ triggerEvents: [
+            { tag: "plate", event: "enter", fire: ["zap", "once"], levels: ["campaign"] },
+            { tag: "plate", event: "occupied", fire: ["bad"] }
+        ] })"#,
+        |ctx, value| LevelManifest::from_js_value(ctx, value).unwrap(),
+    );
+    let lua = eval_lua(
+        r#"return { triggerEvents = {
+            { tag = "plate", event = "enter", fire = { "zap", "once" }, levels = { "campaign" } },
+            { tag = "plate", event = "occupied", fire = { "bad" } }
+        } }"#,
+        |value| LevelManifest::from_lua_value(value).unwrap(),
+    );
+
+    assert_eq!(js.trigger_events, lua.trigger_events);
+    assert_eq!(js.trigger_events.len(), 1);
+    assert_eq!(js.trigger_events[0].fire, ["zap", "once"]);
+}
+
+#[test]
+fn malformed_reactions_do_not_discard_valid_manifest_siblings_in_either_vm() {
+    let cases = [
+        (
+            r#"({ reactions: [{ name: "bad", primitive: "applyDamage", target: "@trigger", args: { amount: 5 } }, { name: "good", primitive: "playSound" }], crossings: [{ slot: "test.value", above: 1, fire: ["good"] }], triggerEvents: [{ tag: "plate", event: "enter", fire: ["good"] }], uiTrees: [{ name: "good", tree: { anchor: "top", offset: [0, 0], root: { kind: "spacer", flexGrow: 1 } } }] })"#,
+            r#"return { reactions = { { name = "bad", primitive = "applyDamage", target = "@trigger", args = { amount = 5 } }, { name = "good", primitive = "playSound" } }, crossings = { { slot = "test.value", above = 1, fire = { "good" } } }, triggerEvents = { { tag = "plate", event = "enter", fire = { "good" } } }, uiTrees = { { name = "good", tree = { anchor = "top", offset = { 0, 0 }, root = { kind = "spacer", flexGrow = 1 } } } } }"#,
+        ),
+        (
+            r#"({ reactions: [{ name: "bad", primitive: "applyDamage", target: "@unknown", args: { amount: 5 } }, { name: "good", primitive: "playSound" }], crossings: [{ slot: "test.value", above: 1, fire: ["good"] }], triggerEvents: [{ tag: "plate", event: "enter", fire: ["good"] }], uiTrees: [{ name: "good", tree: { anchor: "top", offset: [0, 0], root: { kind: "spacer", flexGrow: 1 } } }] })"#,
+            r#"return { reactions = { { name = "bad", primitive = "applyDamage", target = "@unknown", args = { amount = 5 } }, { name = "good", primitive = "playSound" } }, crossings = { { slot = "test.value", above = 1, fire = { "good" } } }, triggerEvents = { { tag = "plate", event = "enter", fire = { "good" } } }, uiTrees = { { name = "good", tree = { anchor = "top", offset = { 0, 0 }, root = { kind = "spacer", flexGrow = 1 } } } } }"#,
+        ),
+        (
+            r#"({ reactions: [{ name: "bad", primitive: "applyDamage", target: "@activators", tag: "enemy", args: { amount: 5 } }, { name: "good", primitive: "playSound" }], crossings: [{ slot: "test.value", above: 1, fire: ["good"] }], triggerEvents: [{ tag: "plate", event: "enter", fire: ["good"] }], uiTrees: [{ name: "good", tree: { anchor: "top", offset: [0, 0], root: { kind: "spacer", flexGrow: 1 } } }] })"#,
+            r#"return { reactions = { { name = "bad", primitive = "applyDamage", target = "@activators", tag = "enemy", args = { amount = 5 } }, { name = "good", primitive = "playSound" } }, crossings = { { slot = "test.value", above = 1, fire = { "good" } } }, triggerEvents = { { tag = "plate", event = "enter", fire = { "good" } } }, uiTrees = { { name = "good", tree = { anchor = "top", offset = { 0, 0 }, root = { kind = "spacer", flexGrow = 1 } } } } }"#,
+        ),
+        (
+            r#"({ reactions: [{ name: "bad", sequence: [{ id: "@occupancy", primitive: "armTrigger", args: {} }] }, { name: "good", primitive: "playSound" }], crossings: [{ slot: "test.value", above: 1, fire: ["good"] }], triggerEvents: [{ tag: "plate", event: "enter", fire: ["good"] }], uiTrees: [{ name: "good", tree: { anchor: "top", offset: [0, 0], root: { kind: "spacer", flexGrow: 1 } } }] })"#,
+            r#"return { reactions = { { name = "bad", sequence = { { id = "@occupancy", primitive = "armTrigger", args = {} } } }, { name = "good", primitive = "playSound" } }, crossings = { { slot = "test.value", above = 1, fire = { "good" } } }, triggerEvents = { { tag = "plate", event = "enter", fire = { "good" } } }, uiTrees = { { name = "good", tree = { anchor = "top", offset = { 0, 0 }, root = { kind = "spacer", flexGrow = 1 } } } } }"#,
+        ),
+    ];
+
+    for (js_source, lua_source) in cases {
+        let js = eval_js(js_source, |ctx, value| {
+            LevelManifest::from_js_value(ctx, value).unwrap()
+        });
+        let lua = eval_lua(lua_source, |value| {
+            LevelManifest::from_lua_value(value).unwrap()
+        });
+        assert_eq!(js, lua, "both runtimes must retain the same valid siblings");
+        assert_eq!(
+            js.reactions
+                .iter()
+                .map(|reaction| reaction.name.as_str())
+                .collect::<Vec<_>>(),
+            ["good"]
+        );
+        assert_eq!(js.crossings.len(), 1);
+        assert_eq!(js.trigger_events.len(), 1);
+        assert_eq!(js.ui_trees.len(), 1);
+    }
+}
+
+#[test]
+fn luau_trigger_target_tokens_preserve_wrong_builder_tokens_for_validation() {
+    const DATA_SCRIPT_LUAU: &str = include_str!("../../../../../sdk/lib/data_script.luau");
+
+    let lua = mlua::Lua::new();
+    let sdk: mlua::Table = lua
+        .load(DATA_SCRIPT_LUAU)
+        .set_name("data_script.luau")
+        .eval()
+        .expect("data-script SDK must load");
+    lua.globals().set("Postretro", sdk).unwrap();
+    let value: LuaValue = lua
+        .load(
+            r#"
+            return { reactions = {
+                Postretro.defineReaction("wrongDamage", function(on)
+                    return Postretro.damage(on.trigger, 5)
+                end),
+                Postretro.defineReaction("rightDamage", function(on)
+                    return Postretro.damage(on.activators, 5)
+                end),
+                Postretro.defineReaction("wrongArm", function(on)
+                    return { sequence = Postretro.armTrigger(on.activators) }
+                end),
+            } }
+            "#,
+        )
+        .eval()
+        .expect("Luau SDK must build descriptors");
+
+    let manifest = LevelManifest::from_lua_value(value).expect("malformed siblings degrade");
+    assert_eq!(
+        manifest
+            .reactions
+            .iter()
+            .map(|reaction| reaction.name.as_str())
+            .collect::<Vec<_>>(),
+        ["rightDamage"],
+        "wrong opaque target tokens must reach the descriptor validator instead of lowering as valid targets"
+    );
+    let ReactionDescriptor::Primitive(primitive) = &manifest.reactions[0].descriptor else {
+        panic!("remaining descriptor must be the valid damage reaction");
+    };
+    assert_eq!(primitive.target.as_deref(), Some("@activators"));
 }
 
 #[test]

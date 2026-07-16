@@ -592,6 +592,7 @@ impl ScriptingCore {
         );
         data_registry.replace_global_reactions(global_reactions);
         data_registry.replace_global_crossings(std::mem::take(&mut manifest.crossings));
+        data_registry.replace_global_trigger_events(std::mem::take(&mut manifest.trigger_events));
     }
 }
 

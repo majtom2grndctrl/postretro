@@ -14,6 +14,21 @@ export type TickParams = Readonly<{
   dt: import("postretro").RuntimeRead;
 }>;
 
+declare const activatorsTargetBrand: unique symbol;
+declare const triggerTargetBrand: unique symbol;
+
+/** Opaque target for the pawns that caused the current trigger edge. */
+export type ActivatorsTarget = Readonly<{ readonly [activatorsTargetBrand]: true }>;
+/** Opaque target for the trigger volume that fired the current edge. */
+export type TriggerTarget = Readonly<{ readonly [triggerTargetBrand]: true }>;
+
+/** Dispatch values published by an enter/exit trigger event. */
+export type TriggerEventParams = Readonly<{
+  activators: ActivatorsTarget;
+  trigger: TriggerTarget;
+  occupancy: import("postretro").RuntimeRead;
+}>;
+
 /** Fires `fire` when entities tagged `tag` cross kill ratio `at` (0.0–1.0). */
 export type ProgressReactionDescriptor = {
   progress: { tag: string; at: number; fire: string };
@@ -23,6 +38,7 @@ export type ProgressReactionDescriptor = {
 export type PrimitiveReactionDescriptor = {
   primitive: string;
   tag?: string;
+  target?: "@activators";
   args?: Record<string, unknown>;
   onComplete?: string;
 };
@@ -95,6 +111,7 @@ export type LevelManifest = {
   reactions: NamedReactionDescriptor[];
   /** State-crossing watchers (HUD dynamics). See `onStateCrossing`. */
   crossings?: import("./ui/reactions").CrossingDescriptor[];
+  triggerEvents?: TriggerEventDescriptor[];
   /** Per-level UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; same
    * shape as `ModManifest.uiTrees` but level-scoped (cleared on unload).
    * Malformed entries are logged and skipped. */
@@ -145,10 +162,64 @@ type ReactionTracer<S> = (params: S) => ReactionBody;
 
 // This is deliberately one plain merged object rather than a Proxy. Sibling
 // dispatch specs may add opaque, non-IR leaves alongside these input nodes.
+const ACTIVATORS_TARGET = Object.freeze({}) as ActivatorsTarget;
+const TRIGGER_TARGET = Object.freeze({}) as TriggerTarget;
+
 const DISPATCH_PARAMS = Object.freeze({
   rising: Object.freeze({ op: "input", name: "@rising" } as const),
   dt: Object.freeze({ op: "input", name: "@dt" } as const),
+  activators: ACTIVATORS_TARGET,
+  trigger: TRIGGER_TARGET,
+  occupancy: Object.freeze({ op: "input", name: "@occupancy" } as const),
 });
+
+export type TriggerEventDescriptor = {
+  tag: string;
+  event: "enter" | "exit";
+  fire: string[];
+  levels?: string[];
+};
+
+export type TriggerEventOptions = { levels?: string[] };
+
+type TriggerEventReaction = Reaction<{}> | Reaction<TriggerEventParams> | string;
+
+/** Build a trigger-event observer descriptor, lowering reaction handles to names. */
+export function onTriggerEvent(
+  filter: { tag: string },
+  event: "enter" | "exit",
+  fire: TriggerEventReaction[],
+  options?: TriggerEventOptions,
+): TriggerEventDescriptor {
+  const descriptor: TriggerEventDescriptor = {
+    tag: filter.tag,
+    event,
+    fire: fire.map((reaction) => typeof reaction === "string" ? reaction : reaction.name),
+  };
+  if (options?.levels !== undefined) descriptor.levels = options.levels;
+  return descriptor;
+}
+
+/** Apply damage to the current trigger activators or every entity with a tag. */
+export function damage(target: ActivatorsTarget | string, amount: number): PrimitiveReactionDescriptor {
+  if (typeof target === "string") {
+    return { primitive: "applyDamage", tag: target, args: { amount } };
+  }
+  const wireTarget = target === ACTIVATORS_TARGET ? "@activators" : "@invalid";
+  return { primitive: "applyDamage", target: wireTarget, args: { amount } } as PrimitiveReactionDescriptor;
+}
+
+/** Arm the trigger volume that fired the current event. */
+export function armTrigger(target: TriggerTarget): SequenceStep[] {
+  const wireTarget = target === TRIGGER_TARGET ? "@trigger" : "@invalid";
+  return [{ id: wireTarget, primitive: "armTrigger", args: {} } as SequenceStep];
+}
+
+/** Disarm the trigger volume that fired the current event. */
+export function disarmTrigger(target: TriggerTarget): SequenceStep[] {
+  const wireTarget = target === TRIGGER_TARGET ? "@trigger" : "@invalid";
+  return [{ id: wireTarget, primitive: "disarmTrigger", args: {} } as SequenceStep];
+}
 
 /**
  * Deterministic, run-stable id derived from a reaction body. Content-derived
@@ -202,6 +273,7 @@ function stableStringify(value: unknown): string {
  */
 export function defineReaction(body: ReactionBody): Reaction<{}>;
 export function defineReaction(tracer: ReactionTracer<CrossingParams>): Reaction<CrossingParams>;
+export function defineReaction(tracer: ReactionTracer<TriggerEventParams>): Reaction<TriggerEventParams>;
 export function defineReaction(
   name: string,
   descriptor: ReactionBody,
@@ -211,9 +283,13 @@ export function defineReaction(
   tracer: ReactionTracer<CrossingParams>,
 ): Reaction<CrossingParams>;
 export function defineReaction(
-  nameOrBody: string | ReactionBody | ReactionTracer<CrossingParams>,
-  descriptor?: ReactionBody | ReactionTracer<CrossingParams>,
-): Reaction<{}> | Reaction<CrossingParams> {
+  name: string,
+  tracer: ReactionTracer<TriggerEventParams>,
+): Reaction<TriggerEventParams>;
+export function defineReaction(
+  nameOrBody: string | ReactionBody | ReactionTracer<CrossingParams | TriggerEventParams>,
+  descriptor?: ReactionBody | ReactionTracer<CrossingParams | TriggerEventParams>,
+): Reaction<{}> | Reaction<CrossingParams> | Reaction<TriggerEventParams> {
   const authored = typeof nameOrBody === "string" ? descriptor : nameOrBody;
   const tracedBody = typeof authored === "function"
     ? authored(DISPATCH_PARAMS)
@@ -222,7 +298,7 @@ export function defineReaction(
     typeof nameOrBody === "string"
       ? [nameOrBody, tracedBody]
       : [autoReactionId(tracedBody), tracedBody];
-  return { name, ...body } as Reaction<{}> | Reaction<CrossingParams>;
+  return { name, ...body } as Reaction<{}> | Reaction<CrossingParams> | Reaction<TriggerEventParams>;
 }
 
 /** Stamp a shared map-tag scope onto each reaction in a plain list. `tags` are matched against `ModMapEntry.tags`; omit scoping for every level. */
@@ -240,7 +316,7 @@ export function defineEntity(
   return descriptor;
 }
 
-/** Identity builder for the mod manifest consumed from the default export. `config.name` is required; optional arrays include `entities`, `maps`, `uiTrees`, `reactions`, `crossings`, and `stores`. Pure: no engine side effects until the manifest is returned and validated. */
+/** Identity builder for the mod manifest consumed from the default export. `config.name` is required; optional arrays include `entities`, `maps`, `uiTrees`, `reactions`, `crossings`, `triggerEvents`, and `stores`. Pure: no engine side effects until the manifest is returned and validated. */
 export function defineMod(
   config: import("postretro").ModManifest,
 ): import("postretro").ModManifest {

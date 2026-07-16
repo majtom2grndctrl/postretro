@@ -511,6 +511,7 @@ mod tests {
             name: name.to_string(),
             descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                 primitive: primitive.to_string(),
+                target: None,
                 tag: Some("fixture_tripwire".to_string()),
                 on_complete: None,
                 args: json!({}),
@@ -519,7 +520,7 @@ mod tests {
         let by_id = |name: &str, primitive: &str| NamedReaction {
             name: format!("{name}.{}", trigger.to_raw()),
             descriptor: ReactionDescriptor::Sequence(vec![SequenceStep {
-                id: trigger,
+                id: trigger.into(),
                 primitive: primitive.to_string(),
                 args: json!({}),
             }]),
@@ -816,6 +817,42 @@ mod tests {
         assert_eq!(
             ts, luau,
             "both authoring runtimes register the same trigger control contract"
+        );
+    }
+
+    #[test]
+    fn trigger_event_presser_fixtures_produce_identical_wire_in_both_runtimes() {
+        let ctx = ScriptCtx::new();
+        let primitives = registry_for(ctx.clone());
+        let runtime = ScriptRuntime::new(&primitives, &ScriptRuntimeConfig::default(), &ctx)
+            .expect("fixture runtime constructs");
+        let ts_fixture = dev_script_fixture("trigger-event-presser-fixture.ts");
+        let luau_fixture = dev_script_fixture("trigger-event-presser-fixture.luau");
+        let fixture_root = ts_fixture.parent().expect("fixture has a parent");
+        let ts_section = DataScriptSection {
+            compiled_bytes: postretro_script_compiler::bundle_entry(&ts_fixture)
+                .expect("TypeScript presser fixture bundles through scripts-build")
+                .into_bytes(),
+            source_path: ts_fixture.to_string_lossy().into_owned(),
+        };
+        let luau_section = DataScriptSection {
+            compiled_bytes: std::fs::read(&luau_fixture).expect("Luau fixture reads"),
+            source_path: luau_fixture.to_string_lossy().into_owned(),
+        };
+
+        let ts = runtime.run_data_script(&ts_section, fixture_root);
+        let luau = runtime.run_data_script(&luau_section, fixture_root);
+
+        assert_eq!(
+            ts, luau,
+            "TS and Luau must emit byte-equivalent descriptor data"
+        );
+        assert_eq!(ts.trigger_events.len(), 1);
+        assert_eq!(ts.trigger_events[0].tag, "fixture_presser");
+        assert_eq!(ts.trigger_events[0].event, "enter");
+        assert_eq!(
+            ts.trigger_events[0].fire,
+            ["fixture.presser.damage", "fixture.presser.disarm"]
         );
     }
 

@@ -456,7 +456,7 @@ declare module "postretro" {
     path: string;
     /** Display name shown to players in catalog-driven UI. Required. */
     name: string;
-    /** Authoritative classification tags for filtering plus `levels` selection on mod-global reactions and crossings. Optional; missing/null normalizes to empty. */
+    /** Authoritative classification tags for filtering plus `levels` selection on mod-global reactions, crossings, and trigger events. Optional; missing/null normalizes to empty. */
     tags?: ReadonlyArray<string>;
   };
 
@@ -490,6 +490,18 @@ declare module "postretro" {
     spacing?: { readonly [token: string]: number };
   };
 
+  /** A trigger-volume enter/exit observer installed by tag. */
+  export type TriggerEventDescriptor = {
+    /** Trigger-volume tag selector. */
+    tag: string;
+    /** Either `enter` or `exit`. */
+    event: string;
+    /** Reaction addresses fired in declaration order. */
+    fire: ReadonlyArray<string>;
+    /** Optional active-level tag selector. */
+    levels?: ReadonlyArray<string>;
+  };
+
   /** Mod manifest consumed from `start-script.ts`'s default export or `start-script.luau`'s chunk return. `defineMod(config)` is a pure typed identity helper for this object; the engine commits its data only after manifest validation succeeds. */
   export type ModManifest = {
     /** Human-readable mod name used for diagnostics and UI. Required. */
@@ -510,6 +522,8 @@ declare module "postretro" {
     reactions?: ReadonlyArray<NamedReactionDescriptor>;
     /** Engine-global state-crossing watchers. Optional; survive level unload and compose into active level behavior by `levels` tag selectors. */
     crossings?: ReadonlyArray<CrossingDescriptor>;
+    /** Trigger-volume enter/exit observers. Optional; compose by level tags. */
+    triggerEvents?: ReadonlyArray<TriggerEventDescriptor>;
     /** Engine-global state-store declarations returned by `defineStore(...).declaration`. Optional; commit atomically after the manifest validates and preserve existing values when the schema is identical. */
     stores?: ReadonlyArray<StoreDeclaration>;
   };
@@ -780,6 +794,7 @@ declare module "postretro" {
   export type PrimitiveReactionDescriptor = {
     primitive: string;
     tag?: string;
+    target?: "@activators";
     args?: Record<string, unknown>;
     onComplete?: string;
   };
@@ -862,9 +877,9 @@ declare module "postretro" {
   export type MoverGoToPathNodeStep = { id: EntityId; primitive: "moverGoToPathNode"; args: { node: string } };
 
   /** Sequence step that arms one trigger volume. */
-  export type ArmTriggerStep = { id: EntityId; primitive: "armTrigger"; args: ArmTriggerArgs };
+  export type ArmTriggerStep = { id: EntityId | "@trigger"; primitive: "armTrigger"; args: ArmTriggerArgs };
   /** Sequence step that disarms one trigger volume. */
-  export type DisarmTriggerStep = { id: EntityId; primitive: "disarmTrigger"; args: DisarmTriggerArgs };
+  export type DisarmTriggerStep = { id: EntityId | "@trigger"; primitive: "disarmTrigger"; args: DisarmTriggerArgs };
 
   /** Union of every supported sequence step shape. New sequenced primitives extend this union. */
   export type SequenceStep =
@@ -898,6 +913,11 @@ declare module "postretro" {
   export type CrossingParams = Readonly<{ rising: RuntimeRead }>;
   /** Dispatch values published while a Number store slot accumulates. */
   export type TickParams = Readonly<{ dt: RuntimeRead }>;
+  declare const activatorsTargetBrand: unique symbol;
+  declare const triggerTargetBrand: unique symbol;
+  export type ActivatorsTarget = Readonly<{ readonly [activatorsTargetBrand]: true }>;
+  export type TriggerTarget = Readonly<{ readonly [triggerTargetBrand]: true }>;
+  export type TriggerEventParams = Readonly<{ activators: ActivatorsTarget; trigger: TriggerTarget; occupancy: RuntimeRead }>;
   declare const reactionScopeBrand: unique symbol;
   /** Named reaction with a type-only, contravariant dispatch-scope marker. */
   export type Reaction<S = {}> = NamedReactionDescriptor & { readonly [reactionScopeBrand]?: (scope: S) => void };
@@ -940,6 +960,7 @@ declare module "postretro" {
   export type LevelManifest = {
     reactions: NamedReactionDescriptor[];
     crossings?: CrossingDescriptor[];
+    triggerEvents?: TriggerEventDescriptor[];
     /** Per-level UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; same shape as `ModManifest.uiTrees` but level-scoped (cleared on unload). Malformed entries are logged and skipped. */
     uiTrees?: ReadonlyArray<ModUiTree>;
   };
@@ -963,6 +984,9 @@ declare module "postretro" {
     tracer: (params: CrossingParams) => ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor,
   ): Reaction<CrossingParams>;
   export function defineReaction(
+    tracer: (params: TriggerEventParams) => ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor,
+  ): Reaction<TriggerEventParams>;
+  export function defineReaction(
     name: string,
     descriptor:
       | ProgressReactionDescriptor
@@ -973,6 +997,17 @@ declare module "postretro" {
     name: string,
     tracer: (params: CrossingParams) => ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor,
   ): Reaction<CrossingParams>;
+  export function defineReaction(
+    name: string,
+    tracer: (params: TriggerEventParams) => ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor,
+  ): Reaction<TriggerEventParams>;
+
+  export type TriggerEventDescriptor = { tag: string; event: "enter" | "exit"; fire: string[]; levels?: string[] };
+  export type TriggerEventOptions = { levels?: string[] };
+  export function onTriggerEvent(filter: { tag: string }, event: "enter" | "exit", fire: (Reaction<{}> | Reaction<TriggerEventParams> | string)[], options?: TriggerEventOptions): TriggerEventDescriptor;
+  export function damage(target: ActivatorsTarget | string, amount: number): PrimitiveReactionDescriptor;
+  export function armTrigger(target: TriggerTarget): SequenceStep[];
+  export function disarmTrigger(target: TriggerTarget): SequenceStep[];
 
   /** Stamp a shared map-tag scope onto each reaction in a plain list. `tags` are matched against `ModMapEntry.tags`; omit scoping for every level. */
   export function scopeReactions<S>(
@@ -1062,7 +1097,7 @@ declare module "postretro" {
   };
   /** Pure identity builder for entity-type descriptors. Returned from `ModManifest.entities`; `descriptor` is the full archetype object: optional `canonicalName`, optional `defaultWeapon`, and optional component presets. */
   export function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor;
-  /** Pure identity builder for the mod manifest consumed from the default export. `config.name` is required; optional arrays include `entities`, `maps`, `uiTrees`, `reactions`, `crossings`, and `stores`. */
+  /** Pure identity builder for the mod manifest consumed from the default export. `config.name` is required; optional arrays include `entities`, `maps`, `uiTrees`, `reactions`, `crossings`, `triggerEvents`, and `stores`. */
   export function defineMod(config: ModManifest): ModManifest;
   /** Pure identity builder for a mod map catalog. Entries require `id`, `path`, and `name`; optional `tags` default to empty and drive filtering plus `levels` selectors. */
   export function defineMapCatalog(entries: ModMapEntry[]): ModMapEntry[];

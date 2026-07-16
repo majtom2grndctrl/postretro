@@ -106,11 +106,12 @@ import { world, defineReaction, onTriggerEvent, damage, disarmTrigger, type Trig
 // is the identity (name-as-address), so onTriggerEvent holds the reference directly.
 const zap = defineReaction((on: TriggerEventParams) => damage(on.activators, 25));
 const oneShot = defineReaction((on: TriggerEventParams) => ({ sequence: disarmTrigger(on.trigger) }));
+const trapTrigger = onTriggerEvent({ tag: "trap" }, "enter", [zap, oneShot]);
 
 export function setupLevel() {
   return {
     reactions: [zap, oneShot],
-    triggerEvents: [onTriggerEvent({ tag: "trap" }, "enter", [zap, oneShot])],
+    triggerEvents: [trapTrigger],
   };
 }
 ```

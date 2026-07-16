@@ -10,7 +10,8 @@ use crate::data_descriptors::{
     EntityTypeDescriptor, drain_fonts_js, drain_fonts_lua, drain_frontend_js, drain_frontend_lua,
     drain_global_crossings_js, drain_global_crossings_lua, drain_global_reactions_js,
     drain_global_reactions_lua, drain_maps_js, drain_maps_lua, drain_theme_js, drain_theme_lua,
-    drain_ui_trees_js, drain_ui_trees_lua, entity_descriptor_from_js, entity_descriptor_from_lua,
+    drain_trigger_events_js, drain_trigger_events_lua, drain_ui_trees_js, drain_ui_trees_lua,
+    entity_descriptor_from_js, entity_descriptor_from_lua,
 };
 use crate::error::ScriptError;
 use crate::primitives_registry::ScriptPrimitive;
@@ -258,6 +259,13 @@ pub(super) fn run_mod_init_quickjs(
                 return;
             }
         };
+        let trigger_events = match drain_trigger_events_js(&obj, "default mod manifest export") {
+            Ok(v) => v,
+            Err(e) => {
+                out = Err(ScriptError::InvalidArgument { reason: format!("mod-init: `{source_path}` triggerEvents invalid: {e}") });
+                return;
+            }
+        };
 
         out = Ok(ModManifestResult {
             name,
@@ -269,6 +277,7 @@ pub(super) fn run_mod_init_quickjs(
             maps,
             reactions,
             crossings,
+            trigger_events,
             store_declarations,
         });
     });
@@ -429,6 +438,12 @@ pub(super) fn run_mod_init_luau(
                 "mod-init: `{source_path}` returned mod manifest `stores` invalid: {e}"
             ),
         })?;
+    let trigger_events =
+        drain_trigger_events_lua(&table, "returned mod manifest").map_err(|e| {
+            ScriptError::InvalidArgument {
+                reason: format!("mod-init: `{source_path}` returned triggerEvents invalid: {e}"),
+            }
+        })?;
 
     Ok(ModManifestResult {
         name,
@@ -440,6 +455,7 @@ pub(super) fn run_mod_init_luau(
         maps,
         reactions,
         crossings,
+        trigger_events,
         store_declarations,
     })
 }

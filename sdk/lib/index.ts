@@ -52,6 +52,11 @@ export type {
   DisarmTriggerStep,
   CrossingParams,
   TickParams,
+  TriggerEventParams,
+  TriggerEventDescriptor,
+  TriggerEventOptions,
+  ActivatorsTarget,
+  TriggerTarget,
   Reaction,
   StateRef,
   StoreDeclaration,
@@ -65,6 +70,10 @@ export {
   defineMod,
   defineMapCatalog,
   defineStore,
+  damage,
+  armTrigger,
+  disarmTrigger,
+  onTriggerEvent,
 } from "./data_script";
 
 export type {

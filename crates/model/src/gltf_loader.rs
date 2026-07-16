@@ -12,6 +12,7 @@ use serde::Deserialize;
 use thiserror::Error;
 
 use super::mesh::{SkinnedMesh, SkinnedVertex};
+use super::pose_modifier::{JointMask, ModifierEntry, PoseModifier, PoseModifierStack};
 use super::skeleton::{
     AnimationClip, Interp, Joint, JointTracks, RestLocal, Skeleton, SkeletonBuildError, Track,
 };
@@ -51,6 +52,17 @@ pub struct JointZone {
     pub radius: Option<f32>,
 }
 
+/// Convention-named skeletal pose masks authored on glTF joint nodes.
+///
+/// Every mask contains indices into the model's topologically ordered
+/// [`Skeleton::joints`] array. A joint may belong to more than one mask.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PoseMaskSet {
+    pub aim_spine: JointMask,
+    pub upper_body: JointMask,
+    pub lower_body: JointMask,
+}
+
 /// A model loaded from glTF: one skinned mesh, its skeleton, its animation
 /// clips, the per-primitive submeshes (material key + index range), and the
 /// author-supplied entity tags read from the document's top-level `extras`.
@@ -82,6 +94,12 @@ pub struct LoadedModel {
     /// load error. Static/no-skin models carry one identity-joint entry, using
     /// the first authored static node zone when present.
     pub joint_zones: Vec<Option<JointZone>>,
+    /// Convention-named pose masks, reindexed to the same topological joint
+    /// order as `skeleton` and `joint_zones`.
+    pub pose_masks: PoseMaskSet,
+    /// Ordered modifier stack derived from `pose_masks` at load time. The
+    /// upper/lower split precedes the aim-pitch bend when both are authored.
+    pub pose_stack: PoseModifierStack,
 }
 
 /// Errors surfaced while loading required glTF model structure. Optional authored
@@ -562,6 +580,215 @@ fn valid_hit_zone_radius(value: Option<&serde_json::Value>) -> Option<f32> {
     (radius.is_finite() && radius > 0.0).then_some(radius)
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct JointPoseMetadata {
+    aim_spine: bool,
+    upper_body: bool,
+    lower_body: bool,
+    aim_bend_weight: f32,
+}
+
+/// Read convention-named pose metadata from one joint node's `extras`.
+///
+/// `poseMask` accepts either one string or an array of strings. Invalid array
+/// members and unknown names are diagnosed independently, allowing valid
+/// memberships in the same array to survive. Optional metadata never fails the
+/// model load.
+fn read_pose_masks(
+    extras: &gltf::json::Extras,
+    node_index: usize,
+    path_str: &str,
+) -> JointPoseMetadata {
+    let mut metadata = JointPoseMetadata {
+        aim_bend_weight: 1.0,
+        ..JointPoseMetadata::default()
+    };
+    let Some(raw) = extras.as_ref() else {
+        return metadata;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw.get()) else {
+        log::warn!(
+            "[Model] malformed pose metadata on joint node {node_index} in {path_str}; ignoring"
+        );
+        return metadata;
+    };
+    let Some(object) = value.as_object() else {
+        log::warn!(
+            "[Model] malformed pose metadata on joint node {node_index} in {path_str}; expected an object; ignoring"
+        );
+        return metadata;
+    };
+    let Some(pose_mask) = object.get("poseMask") else {
+        return metadata;
+    };
+
+    {
+        let mut read_name = |name: &str| match name {
+            "aimSpine" => metadata.aim_spine = true,
+            "upperBody" => metadata.upper_body = true,
+            "lowerBody" => metadata.lower_body = true,
+            unknown => log::warn!(
+                "[Model] unknown poseMask '{unknown}' on joint node {node_index} in {path_str}; ignoring"
+            ),
+        };
+
+        match pose_mask {
+            serde_json::Value::String(name) => read_name(name),
+            serde_json::Value::Array(names) => {
+                if names.is_empty() {
+                    log::warn!(
+                        "[Model] empty poseMask array on joint node {node_index} in {path_str}; ignoring"
+                    );
+                }
+                for name in names {
+                    if let Some(name) = name.as_str() {
+                        read_name(name);
+                    } else {
+                        log::warn!(
+                            "[Model] non-string poseMask array value on joint node {node_index} in {path_str}; ignoring"
+                        );
+                    }
+                }
+            }
+            _ => log::warn!(
+                "[Model] malformed poseMask on joint node {node_index} in {path_str}; expected string or string array; ignoring"
+            ),
+        }
+    }
+
+    if metadata.aim_spine {
+        if let Some(weight_value) = object.get("aimBendWeight") {
+            let valid_weight = weight_value.as_f64().and_then(|weight| {
+                let weight = weight as f32;
+                (weight.is_finite() && weight > 0.0).then_some(weight)
+            });
+            if let Some(weight) = valid_weight {
+                metadata.aim_bend_weight = weight;
+            } else {
+                log::warn!(
+                    "[Model] invalid aimBendWeight on joint node {node_index} in {path_str}; using 1.0"
+                );
+            }
+        }
+    }
+
+    metadata
+}
+
+fn pose_masks_from_topo_metadata(
+    topo_order: &[usize],
+    rest_pose_metadata: &[JointPoseMetadata],
+) -> (PoseMaskSet, Vec<f32>) {
+    let mut masks = PoseMaskSet::default();
+    let mut aim_bend_weights = vec![1.0; topo_order.len()];
+
+    for (topo_idx, &skin_idx) in topo_order.iter().enumerate() {
+        let metadata = rest_pose_metadata
+            .get(skin_idx)
+            .copied()
+            .unwrap_or(JointPoseMetadata {
+                aim_bend_weight: 1.0,
+                ..JointPoseMetadata::default()
+            });
+        if metadata.aim_spine {
+            let _ = masks.aim_spine.insert(topo_idx);
+            aim_bend_weights[topo_idx] = metadata.aim_bend_weight;
+        }
+        if metadata.upper_body {
+            let _ = masks.upper_body.insert(topo_idx);
+        }
+        if metadata.lower_body {
+            let _ = masks.lower_body.insert(topo_idx);
+        }
+    }
+
+    (masks, aim_bend_weights)
+}
+
+fn ordered_aim_spine_chain(skeleton: &Skeleton, mask: JointMask) -> Option<Vec<usize>> {
+    let joints: Vec<usize> = mask
+        .iter()
+        .filter(|&joint| joint < skeleton.joints.len())
+        .collect();
+    if joints.is_empty() {
+        return None;
+    }
+
+    let roots: Vec<usize> = joints
+        .iter()
+        .copied()
+        .filter(|&joint| {
+            skeleton.joints[joint]
+                .parent
+                .is_none_or(|parent| !mask.contains(parent))
+        })
+        .collect();
+    if roots.len() != 1 {
+        return None;
+    }
+
+    let mut children = vec![Vec::new(); skeleton.joints.len()];
+    for &joint in &joints {
+        if let Some(parent) = skeleton.joints[joint].parent {
+            if mask.contains(parent) {
+                children[parent].push(joint);
+            }
+        }
+    }
+    if joints.iter().any(|&joint| children[joint].len() > 1) {
+        return None;
+    }
+
+    let mut ordered = Vec::with_capacity(joints.len());
+    let mut current = Some(roots[0]);
+    while let Some(joint) = current {
+        ordered.push(joint);
+        current = children[joint].first().copied();
+    }
+    (ordered.len() == joints.len()).then_some(ordered)
+}
+
+fn build_pose_modifier_stack(
+    skeleton: &Skeleton,
+    masks: PoseMaskSet,
+    aim_bend_weights: &[f32],
+    path_str: &str,
+) -> PoseModifierStack {
+    let mut stack = PoseModifierStack::default();
+
+    if !masks.upper_body.is_empty() && !masks.lower_body.is_empty() {
+        stack.push(ModifierEntry {
+            mask: masks.upper_body,
+            modifier: PoseModifier::UpperLowerSplit {
+                lower_body_mask: masks.lower_body,
+            },
+        });
+    }
+
+    if !masks.aim_spine.is_empty() {
+        if let Some(chain) = ordered_aim_spine_chain(skeleton, masks.aim_spine) {
+            // `chain` is root->tip, parent-linked. `Skeleton::new` enforces
+            // parent index < child index, so for a connected chain this order
+            // equals ascending joint index — matching `AimPitchBend`'s
+            // mask-parallel (ascending-index) `bend_weights` contract.
+            let bend_weights = chain
+                .iter()
+                .map(|&joint| aim_bend_weights.get(joint).copied().unwrap_or(1.0))
+                .collect();
+            stack.push(ModifierEntry {
+                mask: masks.aim_spine,
+                modifier: PoseModifier::AimPitchBend { bend_weights },
+            });
+        } else {
+            log::warn!(
+                "[Model] aimSpine pose mask in {path_str} is not one connected parent-linked chain; dropping aim-pitch bend"
+            );
+        }
+    }
+
+    stack
+}
+
 fn identity_skeleton() -> Skeleton {
     Skeleton {
         joints: vec![Joint {
@@ -648,15 +875,19 @@ pub fn load_model(path: &Path) -> Result<LoadedModel, ModelLoadError> {
     // `skin_joint_to_topo` reindexes mesh `JOINTS_0` (skin-joint indices) into
     // topo order; `node_to_topo` reindexes animation channel targets (node
     // indices) into the same topo order.
-    let (skeleton, joint_zones, skin_joint_to_topo, node_to_topo) = match skin.as_ref() {
-        Some(skin) => build_skeleton(skin, &buffers, &path_str)?,
-        None => (
-            identity_skeleton(),
-            static_identity_joint_zones(&document, mesh.index()),
-            HashMap::new(),
-            HashMap::new(),
-        ),
-    };
+    let (skeleton, joint_zones, pose_masks, aim_bend_weights, skin_joint_to_topo, node_to_topo) =
+        match skin.as_ref() {
+            Some(skin) => build_skeleton(skin, &buffers, &path_str)?,
+            None => (
+                identity_skeleton(),
+                static_identity_joint_zones(&document, mesh.index()),
+                PoseMaskSet::default(),
+                vec![1.0],
+                HashMap::new(),
+                HashMap::new(),
+            ),
+        };
+    let pose_stack = build_pose_modifier_stack(&skeleton, pose_masks, &aim_bend_weights, &path_str);
 
     // --- Mesh -------------------------------------------------------------
     let (skinned_mesh, submeshes) =
@@ -689,6 +920,8 @@ pub fn load_model(path: &Path) -> Result<LoadedModel, ModelLoadError> {
         submeshes,
         tags,
         joint_zones,
+        pose_masks,
+        pose_stack,
     })
 }
 
@@ -699,6 +932,8 @@ pub fn load_model(path: &Path) -> Result<LoadedModel, ModelLoadError> {
 type SkeletonMaps = (
     Skeleton,
     Vec<Option<JointZone>>,
+    PoseMaskSet,
+    Vec<f32>,
     HashMap<usize, usize>,
     HashMap<usize, usize>,
 );
@@ -748,6 +983,14 @@ fn build_skeleton(
     let rest_zones: Vec<Option<JointZone>> = skin
         .joints()
         .map(|node| read_joint_zone(node.extras()))
+        .collect();
+
+    // Pose metadata follows the same skin-order capture and topo remap as hit
+    // zones. Keeping the weight parallel here prevents authored child-first
+    // skin arrays from silently attaching falloff to the wrong joint.
+    let rest_pose_metadata: Vec<JointPoseMetadata> = skin
+        .joints()
+        .map(|node| read_pose_masks(node.extras(), node.index(), path_str))
         .collect();
 
     // Parent map among joint nodes: walk every joint node's children; any child
@@ -868,10 +1111,19 @@ fn build_skeleton(
         .iter()
         .map(|&skin_idx| rest_zones.get(skin_idx).cloned().flatten())
         .collect();
+    let (pose_masks, aim_bend_weights) =
+        pose_masks_from_topo_metadata(&topo_order, &rest_pose_metadata);
 
     let skeleton = Skeleton::new(joints).map_err(|error| skeleton_build_error(path_str, error))?;
 
-    Ok((skeleton, joint_zones, skin_joint_to_topo, node_to_topo))
+    Ok((
+        skeleton,
+        joint_zones,
+        pose_masks,
+        aim_bend_weights,
+        skin_joint_to_topo,
+        node_to_topo,
+    ))
 }
 
 /// Load every primitive of `mesh` into one merged interleaved stream, remapping
@@ -2900,6 +3152,196 @@ mod tests {
         assert!(read_joint_zone(&extras).is_none());
     }
 
+    // --- Per-node extras -> pose masks and stack --------------------------
+
+    #[test]
+    fn read_pose_masks_accepts_string_array_and_multi_membership() {
+        let array = extras_from_raw(
+            r#"{ "poseMask": ["aimSpine", "upperBody", "lowerBody"], "aimBendWeight": 2.5 }"#,
+        );
+        let metadata = read_pose_masks(&array, 7, "model.gltf");
+        assert!(metadata.aim_spine);
+        assert!(metadata.upper_body);
+        assert!(metadata.lower_body);
+        assert_eq!(metadata.aim_bend_weight, 2.5);
+
+        let string = extras_from_raw(r#"{ "poseMask": "upperBody" }"#);
+        let metadata = read_pose_masks(&string, 8, "model.gltf");
+        assert!(!metadata.aim_spine);
+        assert!(metadata.upper_body);
+        assert!(!metadata.lower_body);
+    }
+
+    #[test]
+    fn read_pose_masks_defaults_invalid_aim_weight_and_ignores_bad_values() {
+        for raw in [
+            r#"{ "poseMask": "aimSpine" }"#,
+            r#"{ "poseMask": "aimSpine", "aimBendWeight": 0.0 }"#,
+            r#"{ "poseMask": "aimSpine", "aimBendWeight": -2.0 }"#,
+            r#"{ "poseMask": "aimSpine", "aimBendWeight": "heavy" }"#,
+        ] {
+            let metadata = read_pose_masks(&extras_from_raw(raw), 3, "model.gltf");
+            assert!(metadata.aim_spine, "valid membership survives {raw}");
+            assert_eq!(metadata.aim_bend_weight, 1.0, "default weight for {raw}");
+        }
+
+        for raw in [
+            r#"{ "poseMask": "unknownMask" }"#,
+            r#"{ "poseMask": 42 }"#,
+            r#"{ "poseMask": [false, "unknownMask"] }"#,
+        ] {
+            let metadata = read_pose_masks(&extras_from_raw(raw), 4, "model.gltf");
+            assert_eq!(
+                metadata,
+                JointPoseMetadata {
+                    aim_bend_weight: 1.0,
+                    ..JointPoseMetadata::default()
+                },
+                "unknown or malformed poseMask degrades to no membership for {raw}",
+            );
+        }
+    }
+
+    #[test]
+    fn read_pose_masks_non_object_extras_degrade_to_no_membership() {
+        for raw in [r#"["aimSpine"]"#, r#""aimSpine""#, "42", "null"] {
+            assert_eq!(
+                read_pose_masks(&extras_from_raw(raw), 5, "model.gltf"),
+                JointPoseMetadata {
+                    aim_bend_weight: 1.0,
+                    ..JointPoseMetadata::default()
+                },
+                "non-object pose metadata {raw} degrades without failing the load",
+            );
+        }
+    }
+
+    #[test]
+    fn pose_masks_follow_joint_topology_remap_with_parallel_weights() {
+        // Source skin order is child, root, lower; topo order is root, child,
+        // lower. Memberships and weights must follow the same remap as joints.
+        let source = vec![
+            JointPoseMetadata {
+                aim_spine: true,
+                upper_body: true,
+                aim_bend_weight: 2.0,
+                ..JointPoseMetadata::default()
+            },
+            JointPoseMetadata {
+                aim_spine: true,
+                upper_body: true,
+                aim_bend_weight: 0.25,
+                ..JointPoseMetadata::default()
+            },
+            JointPoseMetadata {
+                lower_body: true,
+                aim_bend_weight: 1.0,
+                ..JointPoseMetadata::default()
+            },
+        ];
+        let (masks, weights) = pose_masks_from_topo_metadata(&[1, 0, 2], &source);
+        assert_eq!(masks.aim_spine.iter().collect::<Vec<_>>(), vec![0, 1]);
+        assert_eq!(masks.upper_body.iter().collect::<Vec<_>>(), vec![0, 1]);
+        assert_eq!(masks.lower_body.iter().collect::<Vec<_>>(), vec![2]);
+        assert_eq!(weights, vec![0.25, 2.0, 1.0]);
+    }
+
+    fn test_skeleton(parents: &[Option<usize>]) -> Skeleton {
+        Skeleton::new(
+            parents
+                .iter()
+                .copied()
+                .map(|parent| Joint {
+                    parent,
+                    inverse_bind: Mat4::IDENTITY.to_cols_array_2d(),
+                    rest_local: RestLocal::default(),
+                })
+                .collect(),
+        )
+        .expect("test skeleton is parent-before-child")
+    }
+
+    fn mask(indices: &[usize]) -> JointMask {
+        let mut mask = JointMask::new();
+        for &index in indices {
+            assert!(mask.insert(index));
+        }
+        mask
+    }
+
+    #[test]
+    fn aim_spine_chain_validation_orders_root_to_tip_and_rejects_invalid_sets() {
+        let chain = test_skeleton(&[None, Some(0), Some(1), Some(0), None]);
+        assert_eq!(
+            ordered_aim_spine_chain(&chain, mask(&[0, 1, 2])),
+            Some(vec![0, 1, 2]),
+        );
+        assert_eq!(
+            ordered_aim_spine_chain(&chain, mask(&[0, 1, 3])),
+            None,
+            "branching set is rejected",
+        );
+        assert_eq!(
+            ordered_aim_spine_chain(&chain, mask(&[0, 2])),
+            None,
+            "set disconnected by an unmasked parent is rejected",
+        );
+        assert_eq!(
+            ordered_aim_spine_chain(&chain, mask(&[0, 4])),
+            None,
+            "multiple hierarchy roots are rejected",
+        );
+        assert_eq!(
+            ordered_aim_spine_chain(&chain, JointMask::new()),
+            None,
+            "empty set is rejected",
+        );
+    }
+
+    #[test]
+    fn pose_stack_uses_fixed_split_then_pitch_order_and_topo_weights() {
+        let skeleton = test_skeleton(&[None, Some(0), Some(1), Some(0)]);
+        let masks = PoseMaskSet {
+            aim_spine: mask(&[0, 1, 2]),
+            upper_body: mask(&[0, 1, 2]),
+            lower_body: mask(&[3]),
+        };
+        let stack = build_pose_modifier_stack(&skeleton, masks, &[0.25, 1.0, 2.0, 1.0], "x");
+        assert_eq!(stack.entries().len(), 2);
+        assert!(matches!(
+            stack.entries()[0].modifier,
+            PoseModifier::UpperLowerSplit { .. }
+        ));
+        assert!(matches!(
+            &stack.entries()[1].modifier,
+            PoseModifier::AimPitchBend { bend_weights }
+                if bend_weights == &[0.25, 1.0, 2.0]
+        ));
+    }
+
+    #[test]
+    fn absent_masks_build_empty_stack_and_partial_masks_build_partial_stack() {
+        let skeleton = test_skeleton(&[None, Some(0)]);
+        assert!(build_pose_modifier_stack(&skeleton, PoseMaskSet::default(), &[], "x").is_empty());
+
+        let aim_only = PoseMaskSet {
+            aim_spine: mask(&[0, 1]),
+            ..PoseMaskSet::default()
+        };
+        let stack = build_pose_modifier_stack(&skeleton, aim_only, &[1.0, 1.0], "x");
+        assert_eq!(stack.entries().len(), 1);
+        assert!(matches!(
+            stack.entries()[0].modifier,
+            PoseModifier::AimPitchBend { .. }
+        ));
+
+        let upper_only = PoseMaskSet {
+            upper_body: mask(&[0]),
+            ..PoseMaskSet::default()
+        };
+        assert!(build_pose_modifier_stack(&skeleton, upper_only, &[], "x").is_empty());
+    }
+
     #[test]
     fn identity_joint_zone_preserves_first_static_zone() {
         let zones = vec![
@@ -3015,6 +3457,119 @@ mod tests {
     }
 
     #[test]
+    fn joint_pose_masks_load_reindexed_and_build_fixed_order_stack() {
+        let model = load_model(&joint_zones_fixture_path()).expect("pose-mask fixture loads");
+        assert_eq!(
+            model.pose_masks,
+            PoseMaskSet {
+                aim_spine: mask(&[0, 2]),
+                upper_body: mask(&[0, 2]),
+                lower_body: mask(&[1]),
+            },
+            "child-first source skin order is remapped to root-first topo indices",
+        );
+        assert_eq!(
+            model.pose_stack,
+            PoseModifierStack::new(vec![
+                ModifierEntry {
+                    mask: mask(&[0, 2]),
+                    modifier: PoseModifier::UpperLowerSplit {
+                        lower_body_mask: mask(&[1]),
+                    },
+                },
+                ModifierEntry {
+                    mask: mask(&[0, 2]),
+                    modifier: PoseModifier::AimPitchBend {
+                        bend_weights: vec![0.25, 2.0],
+                    },
+                },
+            ]),
+            "loader pins split before bend and preserves topo-ordered weights",
+        );
+    }
+
+    #[test]
+    fn malformed_or_non_chain_pose_masks_load_with_empty_or_partial_stack() {
+        let cases = [
+            (
+                "branching_aim_spine",
+                serde_json::json!({ "poseMask": ["aimSpine", "upperBody"] }),
+                serde_json::json!({ "poseMask": "aimSpine" }),
+                serde_json::json!({ "poseMask": ["aimSpine", "lowerBody"] }),
+            ),
+            (
+                "disconnected_aim_spine",
+                serde_json::json!({ "poseMask": "upperBody" }),
+                serde_json::json!({ "poseMask": "aimSpine" }),
+                serde_json::json!({ "poseMask": ["aimSpine", "lowerBody"] }),
+            ),
+            (
+                "empty_malformed_pose_masks",
+                serde_json::json!({ "poseMask": [] }),
+                serde_json::json!({ "poseMask": [42, "unknownMask"] }),
+                serde_json::json!({ "poseMask": { "bad": true } }),
+            ),
+            (
+                "non_object_pose_metadata",
+                serde_json::json!(["aimSpine"]),
+                serde_json::json!("upperBody"),
+                serde_json::json!(42),
+            ),
+        ];
+
+        for (name, root, head, leaf) in cases {
+            let mut json = fixture_json(&joint_zones_fixture_path());
+            json["nodes"][1]["extras"] = root;
+            json["nodes"][2]["extras"] = head;
+            json["nodes"][3]["extras"] = leaf;
+            let path = write_temp_fixture(name, &json);
+            let model = load_model(&path).expect("invalid pose authoring never fails model load");
+            let _ = std::fs::remove_file(path);
+
+            let (expected_masks, expected_stack) = match name {
+                "branching_aim_spine" => {
+                    let masks = PoseMaskSet {
+                        aim_spine: mask(&[0, 1, 2]),
+                        upper_body: mask(&[0]),
+                        lower_body: mask(&[1]),
+                    };
+                    let stack = PoseModifierStack::new(vec![ModifierEntry {
+                        mask: masks.upper_body,
+                        modifier: PoseModifier::UpperLowerSplit {
+                            lower_body_mask: masks.lower_body,
+                        },
+                    }]);
+                    (masks, stack)
+                }
+                "disconnected_aim_spine" => {
+                    let masks = PoseMaskSet {
+                        aim_spine: mask(&[1, 2]),
+                        upper_body: mask(&[0]),
+                        lower_body: mask(&[1]),
+                    };
+                    let stack = PoseModifierStack::new(vec![ModifierEntry {
+                        mask: masks.upper_body,
+                        modifier: PoseModifier::UpperLowerSplit {
+                            lower_body_mask: masks.lower_body,
+                        },
+                    }]);
+                    (masks, stack)
+                }
+                "empty_malformed_pose_masks" | "non_object_pose_metadata" => {
+                    (PoseMaskSet::default(), PoseModifierStack::default())
+                }
+                _ => unreachable!("all malformed pose-mask cases have expectations"),
+            };
+
+            assert_eq!(model.pose_masks, expected_masks, "{name} exact masks");
+            assert_eq!(
+                model.pose_stack, expected_stack,
+                "{name} retains only the valid partial stack",
+            );
+        }
+    }
+
+    #[test]
     fn static_fixture_loads_with_identity_skeleton_for_rigid_joint_zero() {
         let model = load_model(&multi_primitive_fixture_path())
             .expect("synthetic static multi-primitive fixture loads");
@@ -3035,6 +3590,8 @@ mod tests {
             })],
             "static node hitZone extras map to the identity joint",
         );
+        assert_eq!(model.pose_masks, PoseMaskSet::default());
+        assert!(model.pose_stack.is_empty());
         assert!(
             model
                 .mesh

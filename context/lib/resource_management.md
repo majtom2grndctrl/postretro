@@ -185,18 +185,32 @@ Sprite lighting is per-sprite, not per-pixel. Lighting behavior and fallback pat
 
 ---
 
-## 7. Resource Ownership
+## 7. Model Geometry
+
+Skinned or static 3D models are the character/prop alternative to billboard sprites (§6). Authored as external glTF under `content/<mod>/models/<name>/` (`.gltf` + `.bin` + sibling textures), referenced by a `MeshComponent` model path (`entity_model.md`). Model glTF loader: `crates/model`.
+
+**Geometry renders at its authored glTF scale.** The loader consumes vertex POSITION as world-space geometry — no node-transform bake into vertices, no import-time normalization or fit-to-size. World units are meters (idTech2 map geometry converts at 1 unit = 0.0254 m; models are authored directly in meters). Author characters at final size (~2 m tall) with the origin between the feet (`y = 0`) — the standing foot-level pivot the reference enemy fixture uses. Skinned meshes render their rest (bind) pose at raw POSITION too, so bind-pose geometry must already be final-scale; a model left in a large export coordinate space renders at that raw scale until baked down.
+
+**One mesh node per model.** The loader loads a single glTF mesh — sibling mesh nodes are ignored, so a multi-mesh export renders only its first chunk. Multiple primitives within that mesh are supported: each becomes a submesh drawn with its own material (the reference models pack several). Exports that split geometry across mesh nodes — one per material, common from Sketchfab/Rodin — must be merged into one mesh whose primitives carry the per-material split. TANGENT is optional and strictly validated: one degenerate tangent rejects the whole model, so omit tangents rather than ship near-degenerate ones (only base color is consumed regardless).
+
+**Materials must be metallic-roughness glTF.** Model loading consumes the diffuse slot only (§1.2, §8.1). The loader rejects any glTF that lists an unsupported extension in `extensionsRequired` — notably `KHR_materials_pbrSpecularGlossiness` (common in Sketchfab exports). Convert spec-gloss materials to metallic-roughness (base color = diffuse) before import.
+
+Placed mesh entities carry `Transform.scale = 1`; no FGD or descriptor scale override exists (`entity_model.md` §4). On-screen size is entirely the authored geometry.
+
+---
+
+## 8. Resource Ownership
 
 The renderer owns all GPU-side resources: wgpu buffers, textures, samplers. CPU-side decoded data (UI textures) lives outside the renderer. At level load, baked `.prm` bytes are parsed and uploaded to the GPU; the renderer returns opaque handles. Other subsystems borrow these handles — they never call wgpu directly.
 
-### 7.1 Texture Types
+### 8.1 Texture Types
 
 | Type | Location | Description |
 |------|----------|-------------|
 | `postretro_ui::UiTexture` | `crates/ui/src/ui_texture.rs` (`postretro-ui`) | CPU-side `{ data, width, height }`. RGBA8 decoded from PNG. Used for splash and HUD blits. No wgpu handles. |
 | `LoadedTexture` | `crates/renderer/src/render/loaded_texture.rs` | World- and model-material GPU resources: wgpu handles for diffuse, specular, and normal slots plus `mip_count`. World loading consumes all available slots; model loading consumes diffuse only. Lives inside the renderer module to preserve the "Renderer owns GPU" invariant. |
 
-### 7.2 Lifecycle
+### 8.2 Lifecycle
 
 | Phase | Action |
 |-------|--------|
@@ -206,11 +220,11 @@ The renderer owns all GPU-side resources: wgpu buffers, textures, samplers. CPU-
 
 Resources are loaded once at level load and released on level unload. No incremental loading during gameplay. No reference counting — the level owns everything, and everything dies with the level.
 
-### 7.3 Material Sampler Pools
+### 8.3 Material Sampler Pools
 
 The renderer maintains two engine-lifetime sampler pools, each with one sampler per distinct `mip_count` and `lod_max_clamp = (mip_count - 1) as f32`. World and mover materials select from `mip_count_aniso_samplers: HashMap<u32, wgpu::Sampler>`: fully linear filtering with 16× anisotropy. It is eagerly populated after `load_textures` returns, unconditionally including `{1}` for placeholders; a lookup miss is a logic error. Skinned-model materials instead select from `mip_count_character_model_samplers: HashMap<u32, wgpu::Sampler>`, seeded with `{1}` and extended as model diffuse textures load. Its sampler uses nearest magnification, linear minification and mip filtering, and anisotropy `1`, keeping close character texels crisp while retaining mip-filtered distance stability. Both pools accumulate entries across level reloads but never shrink. Each material binds its selected sampler at the existing group-1 binding 5, so the separate pool does not consume another shader sampler binding.
 
-### 7.4 Renderer Contract
+### 8.4 Renderer Contract
 
 CPU asset and decoded pixel data may live outside renderer. GPU resources do not. Renderer creates and owns textures, samplers, bind groups, and buffers, then returns opaque handles for other subsystems to store. Other subsystems never call wgpu or inspect GPU resources.
 
@@ -218,8 +232,9 @@ Renderer uses handles to bind textures and buffers during draw calls. If a handl
 
 ---
 
-## 8. Non-Goals
+## 9. Non-Goals
 
+- **Import-time model normalization.** Models render at their authored glTF scale — no fit-to-size, unit conversion, or auto-rescale at load. Author geometry at final world size (§7).
 - **WAD file support.** All textures are PNGs. No Quake/Half-Life WAD import or export.
 - **Runtime texture generation.** No render-to-texture for mirrors, portals, or security cameras.
 - **Hot-reload.** Textures are loaded once per level. No file-watching or live refresh during gameplay.

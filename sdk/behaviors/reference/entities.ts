@@ -16,6 +16,9 @@ export const DAMAGE_SOURCE_CLASSNAME = "game_damage_source";
 /** Classname for the map-placeable reference enemy (`health` + `mesh` + `ai`). */
 export const REFERENCE_ENEMY_CLASSNAME = "reference_enemy";
 
+/** Classname for the minimal E21 pose-modifier fixture enemy. */
+export const POSE_FIXTURE_ENEMY_CLASSNAME = "pose_fixture_enemy";
+
 /**
  * The map-placeable reference enemy: a full health + animated-mesh + AI-brain
  * archetype that exercises the M10 enemy loop end to end. It is directly
@@ -97,6 +100,54 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
 });
 
 /**
+ * A deliberately minimal AI fixture for E21 pose-modifier verification. Its
+ * model is the content-facing copy of the model crate's three-joint
+ * `joint_zones` test fixture, with a no-op clip so target acquisition supplies
+ * the animated mesh's pose inputs. This is a triangle marker, not production
+ * character art.
+ */
+export const poseFixtureEnemyEntity: EntityTypeDescriptor = defineEntity({
+  canonicalName: POSE_FIXTURE_ENEMY_CLASSNAME,
+  components: {
+    health: {
+      max: 60,
+      hitbox: {
+        halfExtents: [0.4, 0.9, 0.4],
+        offset: [0, 0.9, 0],
+      },
+      zoneMultipliers: {
+        head: 2.5,
+      },
+    },
+    mesh: {
+      model: "models/pose-modifier-fixture/joint_zones.gltf",
+      animations: {
+        idle: { clip: "Rest", loop: true },
+        walk: { clip: "Rest", loop: true },
+        attack: { clip: "Rest", loop: true },
+        death: { clip: "Rest", loop: true },
+      },
+      defaultState: "idle",
+    },
+    ai: {
+      detectionRange: 16,
+      attackRange: 2,
+      leashRange: 50,
+      attackDamage: 8,
+      attackCooldownMs: 1200,
+      moveSpeed: 3,
+      deathDespawnMs: 4000,
+      states: {
+        idle: "idle",
+        alert: "walk",
+        attack: "attack",
+        death: "death",
+      },
+    },
+  },
+});
+
+/**
  * Data-archetype entries used by the reference behaviors. The rotator and
  * damage-source entries are pure tag/transform carriers; the behaviors locate
  * their work via `worldQuery` filters on tags authored on the placement. The
@@ -115,4 +166,5 @@ export const referenceEntities: EntityTypeDescriptor[] = [
     components: { light: null, emitter: null },
   }),
   referenceEnemyEntity,
+  poseFixtureEnemyEntity,
 ];

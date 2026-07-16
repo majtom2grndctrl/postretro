@@ -55,6 +55,7 @@ mod session;
 mod sim;
 mod startup;
 mod trigger_bindings;
+mod trigger_commands;
 #[cfg(feature = "dev-tools")]
 mod trigger_diagnostics;
 mod trigger_system;
@@ -7054,6 +7055,7 @@ mod tests {
                     maps: Vec::new(),
                     reactions: Vec::new(),
                     crossings: Vec::new(),
+                    trigger_events: Vec::new(),
                     ui_trees: vec![staged_tree("hud")],
                     theme: ModThemeTokens {
                         colors: HashMap::from([("critical".to_string(), [0.25, 0.5, 0.75, 1.0])]),
@@ -7483,6 +7485,7 @@ mod tests {
                     model: "models/descriptor_mob/scene.gltf".to_string(),
                     animation: Some(MeshAnimation::new(states, "idle".to_string())),
                     origin_offset: glam::Vec3::ZERO,
+                    pose_inputs: None,
                 },
             )
             .expect("freshly spawned id is live");

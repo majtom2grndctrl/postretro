@@ -14,8 +14,8 @@ use super::data_descriptors::{
     EntityTypeDescriptor, ModThemeTokens, RegisteredUiTree, drain_fonts_js, drain_fonts_lua,
     drain_frontend_js, drain_frontend_lua, drain_global_crossings_js, drain_global_crossings_lua,
     drain_global_reactions_js, drain_global_reactions_lua, drain_maps_js, drain_maps_lua,
-    drain_theme_js, drain_theme_lua, drain_ui_trees_js, drain_ui_trees_lua,
-    entity_descriptor_from_js,
+    drain_theme_js, drain_theme_lua, drain_trigger_events_js, drain_trigger_events_lua,
+    drain_ui_trees_js, drain_ui_trees_lua, entity_descriptor_from_js,
 };
 use super::data_registry::{ScopedCrossing, ScopedReaction};
 use super::error::ScriptError;
@@ -61,6 +61,7 @@ pub struct StagedManifest {
     pub maps: Vec<ModMapEntry>,
     pub reactions: Vec<ScopedReaction>,
     pub crossings: Vec<ScopedCrossing>,
+    pub trigger_events: Vec<super::data_descriptors::TriggerEventDescriptor>,
     pub ui_trees: Vec<RegisteredUiTree>,
     pub theme: ModThemeTokens,
     pub frontend: Option<Frontend>,
@@ -381,6 +382,7 @@ fn run_staged_manifest_build(
         maps: manifest.maps,
         reactions: manifest.reactions,
         crossings: manifest.crossings,
+        trigger_events: manifest.trigger_events,
         ui_trees: manifest.ui_trees,
         theme: manifest.theme,
         frontend: manifest.frontend,
@@ -586,6 +588,12 @@ fn manifest_from_js_value<'js>(
                 "mod-init: `{source_path}` default mod manifest export `stores` invalid: {e}"
             ),
         })?;
+    let trigger_events =
+        drain_trigger_events_js(&obj, "default mod manifest export").map_err(|e| {
+            ScriptError::InvalidArgument {
+                reason: format!("mod-init: `{source_path}` triggerEvents invalid: {e}"),
+            }
+        })?;
 
     Ok(ModManifestResult {
         name,
@@ -597,6 +605,7 @@ fn manifest_from_js_value<'js>(
         maps,
         reactions,
         crossings,
+        trigger_events,
         store_declarations,
     })
 }
@@ -754,6 +763,12 @@ fn run_staged_mod_init_luau(
                 "mod-init: `{source_path}` returned mod manifest `stores` invalid: {e}"
             ),
         })?;
+    let trigger_events =
+        drain_trigger_events_lua(&table, "returned mod manifest").map_err(|e| {
+            ScriptError::InvalidArgument {
+                reason: format!("mod-init: `{source_path}` triggerEvents invalid: {e}"),
+            }
+        })?;
 
     Ok(ModManifestResult {
         name,
@@ -765,6 +780,7 @@ fn run_staged_mod_init_luau(
         maps,
         reactions,
         crossings,
+        trigger_events,
         store_declarations,
     })
 }

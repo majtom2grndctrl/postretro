@@ -1287,6 +1287,7 @@ mod tests {
                 max: Vec3::splat(0.5),
             },
             sample: MeshSampleParams::stateless(0.0),
+            pose_inputs: None,
             capture: None,
             resample: true,
             forward_visible: false,

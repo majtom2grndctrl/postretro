@@ -2,10 +2,10 @@
 // See: context/lib/entity_model.md §5 · context/lib/networking.md
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 
-use glam::Vec3;
+use glam::{EulerRot, Vec3};
 
 use crate::agent_steering;
 use crate::collision::CollisionWorld;
@@ -18,10 +18,12 @@ use crate::scripting_systems;
 use crate::scripting_systems::hit_zones::HitZoneStore;
 use crate::scripting_systems::trigger_volume_bridge::TriggerVolumeBridge;
 use crate::trigger_bindings::{TriggerBindingTable, TriggerResidualHandle};
+use crate::trigger_commands::TriggerFireContext;
 #[cfg(test)]
 use crate::trigger_system::TriggerEvent;
 use crate::trigger_system::{AuthoritativePlayer, PlayerId, TriggerSystem};
 use crate::weapon::{self, FireButtonState, WeaponFireAuthorization, WeaponFireCommand};
+use postretro_entities::PoseInputs;
 use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::components::brain::{BrainComponent, LogicalState};
 use postretro_entities::components::health::{
@@ -171,20 +173,47 @@ pub(crate) fn simulate_tick(
             let id = PlayerId::Local(pawn);
             players.push(AuthoritativePlayer { id, pawn });
         }
+        let canonical_player_pawns = {
+            let registry = registry.borrow();
+            crate::trigger_system::canonical_player_pawns(&registry, &players)
+        };
+        let alive_players: HashSet<PlayerId> = {
+            let registry = registry.borrow();
+            players
+                .iter()
+                .filter(|player| {
+                    registry
+                        .get_component::<HealthComponent>(player.pawn)
+                        .map_or(true, |health| health.current > 0.0)
+                })
+                .map(|player| player.id)
+                .collect()
+        };
         let mut registry = registry.borrow_mut();
+        let bound_edges = trigger_context.bindings.bound_edges();
         if let Some(script_ctx) = trigger_context.script_ctx.as_ref() {
+            let dispatch_inputs = crate::trigger_system::TriggerDispatchInputs {
+                alive_players: &alive_players,
+                bound_edges,
+            };
             let _report = trigger_context.system.run_authoritative_tick_with_dispatch(
                 &mut registry,
                 trigger_context.bridge,
-                &players,
-                trigger_context.use_edges,
-                tick_dt,
-                |event, registry| {
+                crate::trigger_system::TriggerTickInputs {
+                    players: &players,
+                    use_pressed: trigger_context.use_edges,
+                    tick_dt,
+                },
+                dispatch_inputs,
+                |event, occupancy, registry| {
+                    let fire_context =
+                        trigger_fire_context(event, occupancy, &canonical_player_pawns);
                     let execution = trigger_context.bindings.execute_with_script_ctx(
                         event.fire.trigger,
                         event.edge,
                         registry,
                         script_ctx,
+                        &fire_context,
                     );
                     #[cfg(test)]
                     {
@@ -201,18 +230,27 @@ pub(crate) fn simulate_tick(
             );
         } else {
             let mut slot_table = trigger_context.slot_table.borrow_mut();
+            let dispatch_inputs = crate::trigger_system::TriggerDispatchInputs {
+                alive_players: &alive_players,
+                bound_edges,
+            };
             let _report = trigger_context.system.run_authoritative_tick_with_dispatch(
                 &mut registry,
                 trigger_context.bridge,
-                &players,
-                trigger_context.use_edges,
-                tick_dt,
-                |event, registry| {
+                crate::trigger_system::TriggerTickInputs {
+                    players: &players,
+                    use_pressed: trigger_context.use_edges,
+                    tick_dt,
+                },
+                dispatch_inputs,
+                |event, _occupancy, registry| {
+                    let fire_context = TriggerFireContext::default();
                     let execution = trigger_context.bindings.execute(
                         event.fire.trigger,
                         event.edge,
                         registry,
                         &mut slot_table,
+                        &fire_context,
                     );
                     #[cfg(test)]
                     {
@@ -247,6 +285,7 @@ pub(crate) fn simulate_tick(
         // AgentTickResult only carries a diagnostic `replans` counter, not observable sim state, so the return value is intentionally discarded.
         let _ = agent_steering::tick(&mut registry, collision_world, nav_graph, gravity, tick_dt);
         update_brain_animation_playback_rates(&mut registry, anim_time);
+        update_pose_inputs(&mut registry);
     }
 
     let (authorized_shots, mut reload_deliveries, remote_weapon_events) =
@@ -283,6 +322,28 @@ pub(crate) fn simulate_tick(
         trigger_fires,
         #[cfg(test)]
         trigger_command_fires,
+    }
+}
+
+fn trigger_fire_context(
+    event: &crate::trigger_system::TriggerEvent,
+    occupancy: usize,
+    canonical_player_pawns: &BTreeMap<PlayerId, EntityId>,
+) -> TriggerFireContext {
+    let activator = match event.fire.player {
+        PlayerId::Local(pawn) => Some(pawn),
+        PlayerId::Remote(_) => canonical_player_pawns.get(&event.fire.player).copied(),
+    };
+    if activator.is_none() && matches!(event.fire.player, PlayerId::Remote(_)) {
+        log::warn!(
+            "[Trigger] remote activator {:?} is absent from this tick; @activators is empty",
+            event.fire.player
+        );
+    }
+    TriggerFireContext {
+        fired_trigger: Some(event.fire.trigger),
+        activator,
+        occupancy,
     }
 }
 
@@ -340,6 +401,96 @@ fn update_brain_animation_playback_rates(registry: &mut EntityRegistry, anim_tim
         };
 
         animation.update_playback_rate(rate_input, anim_time);
+        let _ = registry.set_component(id, mesh);
+    }
+}
+
+/// Write same-tick presentation inputs after AI and steering have settled the
+/// entity's target and body rotation. Every animated mesh receives a finite
+/// value; entities without a live acquired target hold their body heading with
+/// zero pitch, making pose modifiers a visual no-op.
+fn update_pose_inputs(registry: &mut EntityRegistry) {
+    const MIN_HORIZONTAL_LEN_SQ: f32 = 1e-8;
+
+    let animated: Vec<EntityId> = registry
+        .iter_with_kind(ComponentKind::Mesh)
+        .filter_map(|(id, _)| {
+            registry
+                .get_component::<MeshComponent>(id)
+                .ok()
+                .is_some_and(|mesh| mesh.animation.is_some())
+                .then_some(id)
+        })
+        .collect();
+
+    for id in animated {
+        let Ok(transform) = registry
+            .get_component::<postretro_entities::Transform>(id)
+            .copied()
+        else {
+            continue;
+        };
+        let (raw_heading, _, _) = transform.rotation.to_euler(EulerRot::YXZ);
+        let heading_yaw = if raw_heading.is_finite() {
+            raw_heading
+        } else {
+            0.0
+        };
+
+        let target_position = registry
+            .get_component::<BrainComponent>(id)
+            .ok()
+            .and_then(|brain| brain.acquired_target)
+            .and_then(|target| {
+                registry
+                    .get_component::<postretro_entities::Transform>(target)
+                    .ok()
+                    .map(|transform| transform.position)
+            });
+
+        let (aim_pitch, aim_yaw) = target_position
+            .map(|target| target - transform.position)
+            .filter(|direction| direction.is_finite())
+            .map(|direction| {
+                let horizontal_len_sq = direction.x * direction.x + direction.z * direction.z;
+                let aim_yaw = if horizontal_len_sq > MIN_HORIZONTAL_LEN_SQ {
+                    direction.x.atan2(direction.z)
+                } else {
+                    heading_yaw
+                };
+                let horizontal_len = horizontal_len_sq.max(0.0).sqrt();
+                let pitch = direction
+                    .y
+                    .atan2(horizontal_len)
+                    .clamp(-std::f32::consts::FRAC_PI_2, std::f32::consts::FRAC_PI_2);
+                (
+                    if pitch.is_finite() { pitch } else { 0.0 },
+                    if aim_yaw.is_finite() {
+                        aim_yaw
+                    } else {
+                        heading_yaw
+                    },
+                )
+            })
+            .unwrap_or((0.0, heading_yaw));
+
+        let new_pose_inputs = PoseInputs {
+            aim_pitch,
+            aim_yaw,
+            heading_yaw,
+        };
+        // Single borrow serves both the change check and the clone source, so a
+        // stationary/idle crowd whose inputs haven't moved skips the write
+        // entirely — mirrors the discipline in
+        // `update_brain_animation_playback_rates` above.
+        let Ok(current) = registry.get_component::<MeshComponent>(id) else {
+            continue;
+        };
+        if current.pose_inputs == Some(new_pose_inputs) {
+            continue;
+        }
+        let mut mesh = current.clone();
+        mesh.pose_inputs = Some(new_pose_inputs);
         let _ = registry.set_component(id, mesh);
     }
 }
@@ -715,6 +866,7 @@ mod tests {
     };
     use crate::scripting_systems::hit_zones::HitZoneStore;
     use crate::trigger_bindings::TriggerBindingTable;
+    use crate::trigger_system::TriggerEventEdge;
     use crate::weapon::FireButtonState;
     use glam::Vec2;
     use postretro_entities::components::mesh::{
@@ -735,7 +887,65 @@ mod tests {
     use postretro_net::wire::NetworkId;
     use postretro_scripting_core::reaction_dispatch::fire_prepartitioned_reactions_with_sequences;
     use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
-    use std::collections::{HashMap, HashSet};
+    use std::collections::{BTreeMap, HashMap, HashSet};
+
+    #[test]
+    fn disconnected_remote_fire_context_keeps_trigger_and_occupancy_but_has_no_activator() {
+        let trigger = EntityId::from_raw(0x0001_0000);
+        let event = TriggerEvent {
+            fire: crate::trigger_system::TriggerEventFire {
+                trigger,
+                player: PlayerId::Remote(77),
+                event_name: "left".into(),
+            },
+            edge: TriggerEventEdge::Exit,
+        };
+
+        let context = trigger_fire_context(&event, 3, &BTreeMap::new());
+        assert!(context.activator.is_none());
+        assert_eq!(context.fired_trigger, Some(trigger));
+        assert_eq!(context.occupancy, 3);
+    }
+
+    // Regression: the fire context scanned every matching remote command and
+    // broadcast one trigger event to duplicate remote pawns.
+    #[test]
+    fn remote_fire_context_uses_the_collision_canonical_pawn() {
+        let trigger = EntityId::from_raw(0x0001_0000);
+        let canonical_pawn = EntityId::from_raw(0x0001_0001);
+        let duplicate_pawn = EntityId::from_raw(0x0001_0002);
+        let event = TriggerEvent {
+            fire: crate::trigger_system::TriggerEventFire {
+                trigger,
+                player: PlayerId::Remote(77),
+                event_name: "pressed".into(),
+            },
+            edge: TriggerEventEdge::Enter,
+        };
+        let canonical_players = BTreeMap::from([(PlayerId::Remote(77), canonical_pawn)]);
+
+        let context = trigger_fire_context(&event, 1, &canonical_players);
+        assert_eq!(context.activator, Some(canonical_pawn));
+        assert_ne!(context.activator, Some(duplicate_pawn));
+    }
+
+    #[test]
+    fn local_fire_context_resolves_the_local_entity_without_player_list_entry() {
+        let local_pawn = EntityId::from_raw(0x0001_0001);
+        let event = TriggerEvent {
+            fire: crate::trigger_system::TriggerEventFire {
+                trigger: EntityId::from_raw(0x0001_0000),
+                player: PlayerId::Local(local_pawn),
+                event_name: "pressed".into(),
+            },
+            edge: TriggerEventEdge::Enter,
+        };
+
+        assert_eq!(
+            trigger_fire_context(&event, 1, &BTreeMap::new()).activator,
+            Some(local_pawn),
+        );
+    }
 
     fn weapon_component(credit_source: &str) -> WeaponComponent {
         WeaponComponent::from_descriptor(&WeaponDescriptor {
@@ -1086,6 +1296,7 @@ mod tests {
                 name: "triggered".into(),
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: primitive.into(),
+                    target: None,
                     tag: tag.map(str::to_string),
                     on_complete: None,
                     args,
@@ -1376,6 +1587,7 @@ mod tests {
                         name: "first".into(),
                         descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                             primitive: command.into(),
+                            target: None,
                             tag: Some("second-trigger".into()),
                             on_complete: None,
                             args: serde_json::json!({}),
@@ -1385,6 +1597,7 @@ mod tests {
                         name: "second".into(),
                         descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                             primitive: "applyDamage".into(),
+                            target: None,
                             tag: Some("damage-target".into()),
                             on_complete: None,
                             args: serde_json::json!({ "amount": 5 }),
@@ -1394,11 +1607,8 @@ mod tests {
                 Vec::new(),
                 &[],
             );
-            let bindings = TriggerBindingTable::build(
-                &registry.borrow(),
-                &data,
-                &script_ctx.slot_table.borrow(),
-            );
+            let bindings =
+                TriggerBindingTable::build_with_script_ctx(&registry.borrow(), &data, &script_ctx);
             let mut bridge = TriggerVolumeBridge::new();
             for trigger in [first, second] {
                 bridge.insert_for_test(trigger, Vec3::splat(-4.0), Vec3::splat(4.0));

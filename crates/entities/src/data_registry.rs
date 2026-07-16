@@ -1,5 +1,6 @@
 // Data-script registries: active level definitions plus engine-global entity,
-// map, reaction, and crossing snapshots used by startup and staged reloads.
+// map, reaction, crossing, and trigger-event snapshots used by startup and
+// staged reloads.
 // See: context/lib/scripting.md §2 (Data context lifecycle)
 //
 // Held inside `ScriptCtx` (not directly on `App`) so primitive closures can
@@ -7,7 +8,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::data_descriptors::{CrossingDescriptor, EntityTypeDescriptor, NamedReaction};
+use super::data_descriptors::{
+    CrossingDescriptor, EntityTypeDescriptor, NamedReaction, TriggerEventDescriptor,
+};
 use postretro_foundation::ModMapEntry;
 
 /// Engine-global reaction definition plus its optional level-tag scope.
@@ -26,9 +29,12 @@ pub struct ScopedCrossing {
     pub levels: Vec<String>,
 }
 
+pub type ScopedTriggerEvent = TriggerEventDescriptor;
+
 /// Data registries collected from script execution.
-/// `reactions` and `crossings` are per-level and cleared on unload; entity,
-/// map, and global reaction/crossing definitions survive level unload.
+/// `reactions`, `crossings`, and `trigger_events` are per-level and cleared on
+/// unload; entity, map, and global reaction/crossing/trigger-event definitions
+/// survive level unload.
 #[derive(Debug, Default)]
 pub struct DataRegistry {
     /// Active reactions for this level after composing matching mod-global
@@ -38,12 +44,14 @@ pub struct DataRegistry {
     /// dynamics). Per-level — cleared on unload with `reactions`. The crossing
     /// detector reads these to know which slots to watch.
     pub crossings: Vec<CrossingDescriptor>,
+    pub trigger_events: Vec<TriggerEventDescriptor>,
     /// Engine-global reaction definitions from `ModManifest.reactions`.
     /// These are durable definitions, not the currently active per-level set.
     pub global_reactions: Vec<ScopedReaction>,
     /// Engine-global crossing definitions from `ModManifest.crossings`.
     /// These are durable definitions, not the currently active per-level set.
     pub global_crossings: Vec<ScopedCrossing>,
+    pub global_trigger_events: Vec<ScopedTriggerEvent>,
     /// Level-local reaction definitions from `setupLevel()`. Retained so a
     /// staged mod-init reload can recompose active globals without rerunning the
     /// level data script.
@@ -51,6 +59,7 @@ pub struct DataRegistry {
     /// Level-local crossing definitions from `setupLevel()`. Retained for the
     /// same staged-reload recomposition path as [`Self::level_reactions`].
     level_crossings: Vec<CrossingDescriptor>,
+    level_trigger_events: Vec<TriggerEventDescriptor>,
     /// Entity-type descriptors. Engine-global — survive level unload.
     /// Populated by the boot caller after `run_mod_init`: it drains the
     /// `entities` field of the validated mod manifest into here
@@ -70,7 +79,7 @@ impl DataRegistry {
     }
 
     /// Append level-local definitions, then recompose the active per-level
-    /// reaction/crossing sets from matching globals plus locals.
+    /// reaction/crossing/trigger-event sets from matching globals plus locals.
     /// Existing level-local definitions are preserved — call [`Self::clear`]
     /// first for a fresh population. Entity-type descriptors arrive separately
     /// via `ModManifest.entities` (they outlive level unload). UI trees are
@@ -81,8 +90,19 @@ impl DataRegistry {
         crossings: Vec<CrossingDescriptor>,
         tags: &[String],
     ) {
+        self.populate_level_with_trigger_events(reactions, crossings, Vec::new(), tags);
+    }
+
+    pub fn populate_level_with_trigger_events(
+        &mut self,
+        reactions: Vec<NamedReaction>,
+        crossings: Vec<CrossingDescriptor>,
+        trigger_events: Vec<TriggerEventDescriptor>,
+        tags: &[String],
+    ) {
         self.set_level_reactions(reactions);
         self.set_level_crossings(crossings);
+        self.level_trigger_events.extend(trigger_events);
         self.recompose(tags);
     }
 
@@ -123,8 +143,29 @@ impl DataRegistry {
             .collect();
         crossings.extend(self.level_crossings.iter().cloned());
 
+        let mut trigger_events: Vec<TriggerEventDescriptor> = self
+            .global_trigger_events
+            .iter()
+            .filter(|descriptor| Self::levels_match(&descriptor.levels, tags))
+            .cloned()
+            .collect();
+        trigger_events.extend(
+            self.level_trigger_events
+                .iter()
+                .filter(|descriptor| Self::levels_match(&descriptor.levels, tags))
+                .cloned(),
+        );
+        let mut seen = HashSet::new();
+        trigger_events.retain(|descriptor| {
+            if seen.insert(descriptor.clone()) { true } else {
+                log::warn!("[Loader] duplicate trigger-event descriptor for tag `{}` event `{}`; ignoring duplicate", descriptor.tag, descriptor.event);
+                false
+            }
+        });
+
         self.reactions = reactions;
         self.crossings = crossings;
+        self.trigger_events = trigger_events;
     }
 
     fn levels_match(levels: &[String], tags: &[String]) -> bool {
@@ -236,28 +277,38 @@ impl DataRegistry {
         self.global_crossings = crossings;
     }
 
-    /// Drop every active per-level reaction/crossing. Engine-global entity,
-    /// map, and global reaction/crossing definitions outlive the clear. Called
-    /// on level unload.
+    pub fn replace_global_trigger_events(&mut self, events: Vec<ScopedTriggerEvent>) {
+        self.global_trigger_events = events;
+    }
+
+    /// Drop every active per-level reaction/crossing/trigger-event definition.
+    /// Engine-global entity, map, and global reaction/crossing/trigger-event
+    /// definitions outlive the clear. Called on level unload.
     /// See [`Self::upsert_entity_type`].
     pub fn clear(&mut self) {
         self.reactions.clear();
         self.crossings.clear();
+        self.trigger_events.clear();
         self.level_reactions.clear();
         self.level_crossings.clear();
+        self.level_trigger_events.clear();
     }
 
-    /// Returns `true` only when both collections are empty. After level unload,
-    /// `entities` or `maps` may still be populated, so this returns `false` —
-    /// production code should use `reactions.is_empty()` for level-unload checks.
+    /// Returns `true` only when every registry collection is empty. After level
+    /// unload, engine-global definitions, `entities`, or `maps` may still be
+    /// populated, so this returns `false` — production code should use
+    /// `reactions.is_empty()` for level-unload checks.
     #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.reactions.is_empty()
             && self.crossings.is_empty()
+            && self.trigger_events.is_empty()
             && self.global_reactions.is_empty()
             && self.global_crossings.is_empty()
+            && self.global_trigger_events.is_empty()
             && self.level_reactions.is_empty()
             && self.level_crossings.is_empty()
+            && self.level_trigger_events.is_empty()
             && self.entities.is_empty()
             && self.maps.is_empty()
     }
@@ -276,6 +327,7 @@ mod tests {
             name: "wave1Complete".to_string(),
             descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                 primitive: "moveGeometry".to_string(),
+                target: None,
                 tag: Some("reactorChambers".to_string()),
                 on_complete: None,
                 args: serde_json::Value::Object(Default::default()),
@@ -306,6 +358,15 @@ mod tests {
         }
     }
 
+    fn sample_trigger_event() -> TriggerEventDescriptor {
+        TriggerEventDescriptor {
+            tag: "airlock".to_string(),
+            event: "enter".to_string(),
+            fire: vec!["openAirlock".to_string()],
+            levels: Vec::new(),
+        }
+    }
+
     fn sample_global_reaction(name: &str) -> ScopedReaction {
         sample_scoped_reaction(name, &["campaign"])
     }
@@ -324,6 +385,7 @@ mod tests {
                 name: name.to_string(),
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "moveGeometry".to_string(),
+                    target: None,
                     tag: Some("reactorChambers".to_string()),
                     on_complete: on_complete.map(str::to_string),
                     args: serde_json::Value::Object(Default::default()),
@@ -382,6 +444,23 @@ mod tests {
         r.populate_level(sample_level_reactions(), Vec::new(), &[]);
         assert_eq!(r.reactions.len(), 1);
         assert!(!r.is_empty());
+    }
+
+    #[test]
+    fn trigger_event_collections_make_registry_nonempty() {
+        let trigger_event = sample_trigger_event();
+
+        let mut registry = DataRegistry::new();
+        registry.trigger_events.push(trigger_event.clone());
+        assert!(!registry.is_empty());
+
+        let mut registry = DataRegistry::new();
+        registry.global_trigger_events.push(trigger_event.clone());
+        assert!(!registry.is_empty());
+
+        let mut registry = DataRegistry::new();
+        registry.level_trigger_events.push(trigger_event);
+        assert!(!registry.is_empty());
     }
 
     #[test]
@@ -454,6 +533,7 @@ mod tests {
                 name: "levelLoad".to_string(),
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "activateGroup".to_string(),
+                    target: None,
                     tag: Some("local".to_string()),
                     on_complete: None,
                     args: serde_json::Value::Object(Default::default()),

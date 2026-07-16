@@ -4,8 +4,8 @@
 use super::super::*;
 
 impl LevelManifest {
-    /// Deserialize a top-level `{ reactions, crossings }` object returned from
-    /// a QuickJS `setupLevel()` call. `crossings` is optional.
+    /// Deserialize a top-level `{ reactions, crossings, triggerEvents, uiTrees }`
+    /// object returned from a QuickJS `setupLevel()` call. Each array field is optional.
     pub fn from_js_value<'js>(
         ctx: &Ctx<'js>,
         value: JsValue<'js>,
@@ -19,7 +19,12 @@ impl LevelManifest {
             let mut out = Vec::with_capacity(arr.len());
             for i in 0..arr.len() {
                 let item: JsValue = arr.get(i).map_err(js_err)?;
-                out.push(named_reaction_from_js(ctx, item)?);
+                match named_reaction_from_js(ctx, item) {
+                    Ok(reaction) => out.push(reaction),
+                    Err(error) => log::warn!(
+                        "[Scripting] setupLevel: reactions[{i}] is malformed and was skipped: {error}"
+                    ),
+                }
             }
             out
         } else {
@@ -37,15 +42,47 @@ impl LevelManifest {
         } else {
             Vec::new()
         };
+        let trigger_events = drain_trigger_events_js(&obj, "setupLevel")?;
 
         let ui_trees = drain_ui_trees_js(ctx, &obj, "setupLevel")?;
 
         Ok(Self {
             reactions,
             crossings,
+            trigger_events,
             ui_trees,
         })
     }
+}
+
+pub fn drain_trigger_events_js<'js>(
+    obj: &Object<'js>,
+    scope: &str,
+) -> Result<Vec<TriggerEventDescriptor>, DescriptorError> {
+    let Some(arr) = optional_manifest_array_js(obj, "triggerEvents", scope)? else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::with_capacity(arr.len());
+    for i in 0..arr.len() {
+        let value: JsValue = arr.get(i).map_err(js_err)?;
+        let item = Object::from_value(value).map_err(|_| DescriptorError::InvalidShape {
+            reason: "trigger-event entry must be an object".into(),
+        })?;
+        let event = get_required_string_js(&item, "event")?;
+        if !matches!(event.as_str(), "enter" | "exit") {
+            log::warn!(
+                "[Scripting] {scope}: triggerEvents[{i}] has unknown event `{event}` and was skipped"
+            );
+            continue;
+        }
+        out.push(TriggerEventDescriptor {
+            tag: get_required_string_js(&item, "tag")?,
+            event,
+            fire: string_array_from_js(&item, "fire")?,
+            levels: string_array_from_js(&item, "levels")?,
+        });
+    }
+    Ok(out)
 }
 
 // ===========================================================================

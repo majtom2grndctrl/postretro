@@ -466,7 +466,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field(
             "tags?",
             "Vec<String>",
-            "Authoritative classification tags for filtering plus `levels` selection on mod-global reactions and crossings. Optional; missing/null normalizes to empty.",
+            "Authoritative classification tags for filtering plus `levels` selection on mod-global reactions, crossings, and trigger events. Optional; missing/null normalizes to empty.",
         )
         .finish();
     registry
@@ -515,6 +515,22 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         )
         .finish();
     registry
+        .register_type("TriggerEventDescriptor")
+        .doc("A trigger-volume enter/exit observer installed by tag.")
+        .field("tag", "String", "Trigger-volume tag selector.")
+        .field("event", "String", "Either `enter` or `exit`.")
+        .field(
+            "fire",
+            "Vec<String>",
+            "Reaction addresses fired in declaration order.",
+        )
+        .field(
+            "levels?",
+            "Vec<String>",
+            "Optional active-level tag selector.",
+        )
+        .finish();
+    registry
         .register_type("ModManifest")
         .doc("Mod manifest consumed from `start-script.ts`'s default export or `start-script.luau`'s chunk return. `defineMod(config)` is a pure typed identity helper for this object; the engine commits its data only after manifest validation succeeds.")
         .field("name", "String", "Human-readable mod name used for diagnostics and UI. Required.")
@@ -557,6 +573,11 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
             "crossings?",
             "Vec<CrossingDescriptor>",
             "Engine-global state-crossing watchers. Optional; survive level unload and compose into active level behavior by `levels` tag selectors.",
+        )
+        .field(
+            "triggerEvents?",
+            "Vec<TriggerEventDescriptor>",
+            "Trigger-volume enter/exit observers. Optional; compose by level tags.",
         )
         .field(
             "stores?",
@@ -658,6 +679,7 @@ mod tests {
             maps: Vec::new(),
             reactions: Vec::new(),
             crossings: Vec::new(),
+            trigger_events: Vec::new(),
             store_declarations: StoreDeclarationSet::default(),
         };
         let expected_fields: &[&str] = &[
@@ -670,6 +692,7 @@ mod tests {
             "maps",
             "reactions",
             "crossings",
+            "triggerEvents",
             "stores",
         ];
 

@@ -133,6 +133,32 @@ pub fn primitive_descriptor_from_lua(
     } else {
         None
     };
+    let target = if table.contains_key("target").map_err(lua_err)? {
+        match table.get("target").map_err(lua_err)? {
+            LuaValue::Nil => None,
+            LuaValue::String(s) => Some(s.to_str().map_err(lua_err)?.to_string()),
+            other => {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!("'target' must be a string, got {}", other.type_name()),
+                });
+            }
+        }
+    } else {
+        None
+    };
+    if target.is_some() && tag.is_some() {
+        return Err(DescriptorError::InvalidShape {
+            reason: "primitive reaction cannot carry both `target` and `tag`".to_string(),
+        });
+    }
+    if target
+        .as_deref()
+        .is_some_and(|target| target != "@activators")
+    {
+        return Err(DescriptorError::InvalidShape {
+            reason: "primitive `target` must be `@activators`".to_string(),
+        });
+    }
 
     let on_complete = if table.contains_key("onComplete").map_err(lua_err)? {
         let raw: LuaValue = table.get("onComplete").map_err(lua_err)?;
@@ -163,6 +189,7 @@ pub fn primitive_descriptor_from_lua(
 
     Ok(PrimitiveDescriptor {
         primitive,
+        target,
         tag,
         on_complete,
         args,
@@ -186,9 +213,31 @@ pub fn sequence_steps_from_lua(arr: &Table) -> Result<Vec<SequenceStep>, Descrip
                 });
             }
         };
-        let id_raw = get_required_u32_lua(&step_table, "id")?;
+        let id = match step_table.get("id").map_err(lua_err)? {
+            LuaValue::String(value) => match value.to_str().map_err(lua_err)?.as_ref() {
+                "@activators" => SequenceTarget::Activators,
+                "@trigger" => SequenceTarget::FiredTrigger,
+                spelling => {
+                    return Err(DescriptorError::InvalidSequenceShape {
+                        reason: format!("step {i} has illegal sentinel `{spelling}`"),
+                    });
+                }
+            },
+            _ => {
+                SequenceTarget::Entity(EntityId::from_raw(get_required_u32_lua(&step_table, "id")?))
+            }
+        };
         let primitive = get_required_string_lua(&step_table, "primitive")?;
         let primitive = validate_primitive_name(primitive)?;
+        if matches!(id, SequenceTarget::Activators)
+            && matches!(primitive.as_str(), "armTrigger" | "disarmTrigger")
+        {
+            return Err(DescriptorError::InvalidSequenceShape {
+                reason: format!(
+                    "step {i} primitive `{primitive}` requires an entity id or `@trigger`, not `@activators`"
+                ),
+            });
+        }
         let args = if step_table.contains_key("args").map_err(lua_err)? {
             let raw: LuaValue = step_table.get("args").map_err(lua_err)?;
             conv::lua_to_json(raw).map_err(lua_err)?
@@ -196,7 +245,7 @@ pub fn sequence_steps_from_lua(arr: &Table) -> Result<Vec<SequenceStep>, Descrip
             serde_json::Value::Null
         };
         out.push(SequenceStep {
-            id: EntityId::from_raw(id_raw),
+            id,
             primitive,
             args,
         });

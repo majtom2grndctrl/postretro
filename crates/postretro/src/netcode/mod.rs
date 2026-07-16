@@ -63,7 +63,7 @@ pub(crate) use command_queue::{
 };
 // `ResolvedCommand` / `ResolutionSource` are produced by the command queue and consumed
 // via the submodule path only; not re-exported here.
-pub(crate) use interpolation::{DemoMover, InterpolationDelayState};
+pub(crate) use interpolation::{DemoMover, InterpolationDelayState, MAX_DELAY_MICROS};
 pub(crate) use lifecycle::{SlotPawnSource, SlotPawns, on_slot_accepted, on_slot_closed};
 pub(crate) use prediction::ClientPrediction;
 // Correction-classification API + thresholds and the reconcile entry point.
@@ -310,8 +310,8 @@ pub(crate) enum NetEndpoint {
         /// local-player marker exists; the host pawn stays the host's own
         /// `local_player_pawn` registry-side and is replicated outbound, that is all.
         host_pawn: Option<EntityId>,
-        /// E10 Task 4: the set of map-placed AI enemy `EntityId`s the host has registered
-        /// for outbound replication this level. The single owner of that id set so a level
+        /// E10 Task 4: the set of map-placed or runtime-spawned AI enemy `EntityId`s the host
+        /// has registered for outbound replication this level. The single owner of that id set so a level
         /// reload has one place to clean up: `host_register_map_enemies` unregisters every
         /// stale id here before registering the freshly-spawned level's enemies (the
         /// registry bumps generations on despawn, so a reloaded enemy is a distinct
@@ -796,6 +796,7 @@ pub(crate) fn component_kind_discriminant(kind: ComponentKind) -> u16 {
         ComponentKind::KinematicMover => 13,
         ComponentKind::TriggerVolume => 14,
         ComponentKind::AmmoReserve => 15,
+        ComponentKind::Spawner => 16,
     }
 }
 
@@ -2169,8 +2170,8 @@ pub(crate) const REMOTE_CAPSULE_HALF_HEIGHT: f32 = 0.8;
 /// about it; see `movement/substrate.rs`).
 ///
 /// The overlay draws replicated gameplay entities, not only players: mapped
-/// client remotes and host `ReplicableSet` entries can include map-placed AI
-/// enemies, pawns, movers, and other networked gameplay objects. The debug
+/// client remotes and host `ReplicableSet` entries can include map-placed or runtime-spawned
+/// AI enemies, pawns, movers, and other networked gameplay objects. The debug
 /// marker still uses standing-player capsule dimensions, so non-player enemies
 /// get an approximate marker until a later debug shape path specializes them.
 ///
@@ -2915,7 +2916,8 @@ mod tests {
                 ComponentKind::Brain => Some(ComponentKind::KinematicMover),
                 ComponentKind::KinematicMover => Some(ComponentKind::TriggerVolume),
                 ComponentKind::TriggerVolume => Some(ComponentKind::AmmoReserve),
-                ComponentKind::AmmoReserve => None,
+                ComponentKind::AmmoReserve => Some(ComponentKind::Spawner),
+                ComponentKind::Spawner => None,
             }
         }
 

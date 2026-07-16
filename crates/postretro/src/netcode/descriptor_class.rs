@@ -1,4 +1,4 @@
-// Descriptor-class metadata derivation and networked AI map-enemy classification.
+// Descriptor-class metadata derivation and networked AI-enemy classification.
 // See: context/lib/networking.md
 
 use postretro_net::wire::ComponentPayload;
@@ -6,12 +6,12 @@ use postretro_net::wire::ComponentPayload;
 use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
 use postretro_entities::{ComponentKind, EntityId, EntityRegistry};
 
-/// Shared predicate: is `id` a map-placed descriptor AI enemy that the host owns as an
+/// Shared predicate: is `id` a descriptor AI enemy that the host owns as an
 /// authoritative networked entity (E10 — networked enemy authority)?
 ///
 /// True iff the entity is alive and:
-/// - its `DescriptorProvenance.spawn_path == DescriptorSpawnPath::MapPlacement` (a
-///   map-authored placement, not a player-start / net-slot / default-weapon spawn), AND
+/// - its `DescriptorProvenance.spawn_path` is `MapPlacement` or `RuntimeSpawn` (not a
+///   player-start / net-slot / default-weapon spawn), AND
 /// - its **live** registry columns carry BOTH `ComponentKind::Brain` AND
 ///   `ComponentKind::Agent` (the engine-owned AI brain + navigation agent an `ai`
 ///   descriptor block materializes together — see `data_archetype::attach_descriptor_components`).
@@ -28,11 +28,14 @@ use postretro_entities::{ComponentKind, EntityId, EntityRegistry};
 ///   below) reach it via the direct submodule path, not a re-export.
 ///
 /// A stale/despawned id (`get_component` errors) returns `false`.
-pub(crate) fn is_networked_ai_map_enemy(registry: &EntityRegistry, id: EntityId) -> bool {
+pub(crate) fn is_networked_ai_enemy(registry: &EntityRegistry, id: EntityId) -> bool {
     let Ok(provenance) = registry.get_component::<DescriptorProvenance>(id) else {
         return false;
     };
-    if provenance.spawn_path != DescriptorSpawnPath::MapPlacement {
+    if !matches!(
+        provenance.spawn_path,
+        DescriptorSpawnPath::MapPlacement | DescriptorSpawnPath::RuntimeSpawn
+    ) {
         return false;
     }
     matches!(
@@ -51,7 +54,7 @@ pub(crate) fn is_networked_ai_map_enemy(registry: &EntityRegistry, id: EntityId)
 /// - a **movement pawn** (carries a `PlayerMovementState` wire payload) spawned through
 ///   the net-slot descriptor path (`DescriptorSpawnPath::NetworkSlot`) — its
 ///   `canonical_name` is the resolved `entity_class` (default `"player"`); or
-/// - a **map-placed AI enemy** ([`is_networked_ai_map_enemy`]) — its `canonical_name` is
+/// - a **networked AI enemy** ([`is_networked_ai_enemy`]) — its `canonical_name` is
 ///   the descriptor class the host registered it under.
 ///
 /// The wire allows `entity_class` on any non-despawn finite-`Transform` record (E10
@@ -74,9 +77,10 @@ pub(super) fn descriptor_entity_class(
         return Some(provenance.canonical_name.clone());
     }
 
-    // A map-placed AI enemy (Brain + Agent, MapPlacement): stamp its descriptor class so
-    // the client materializes the remote-enemy presentation from a Transform-only record.
-    if is_networked_ai_map_enemy(registry, id) {
+    // A map-placed or runtime-spawned AI enemy (Brain + Agent): stamp its descriptor
+    // class so the client materializes the remote-enemy presentation from a
+    // Transform-only record.
+    if is_networked_ai_enemy(registry, id) {
         return Some(provenance.canonical_name.clone());
     }
 
@@ -87,6 +91,9 @@ pub(super) fn descriptor_entity_class(
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    use postretro_entities::components::agent::AgentComponent;
+    use postretro_net::wire::WireTransform;
 
     use crate::scripting::builtins::data_archetype::{
         apply_data_archetype_dispatch, descriptor_materializes_ai_enemy, find_descriptor,
@@ -99,7 +106,7 @@ mod tests {
     fn classifier_agrees_with_live_predicate_one_source_of_truth() {
         // One source of truth: the pre-materialization descriptor classifier
         // (`descriptor_materializes_ai_enemy`, used to FILTER on the client) must
-        // agree with the live-component predicate (`is_networked_ai_map_enemy`,
+        // agree with the live-component predicate (`is_networked_ai_enemy`,
         // used to REGISTER on the host) for a `MapPlacement` spawn. Materialize
         // an AI enemy and a non-AI prop and assert each side agrees per entity.
         //
@@ -123,10 +130,89 @@ mod tests {
                 .expect("descriptor for materialized entity");
             assert_eq!(
                 descriptor_materializes_ai_enemy(descriptor),
-                is_networked_ai_map_enemy(&reg, id),
+                is_networked_ai_enemy(&reg, id),
                 "pre-materialization classifier and live predicate must agree for `{}`",
                 provenance.canonical_name,
             );
         }
+    }
+
+    #[test]
+    fn runtime_spawn_requires_the_same_live_ai_pair_and_stamps_its_class() {
+        let descriptors = vec![
+            ai_enemy_descriptor("grunt"),
+            mesh_descriptor("crate", false),
+        ];
+        let placements = vec![placement("grunt", &[]), placement("crate", &[])];
+        let mut reg = EntityRegistry::new();
+        apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg, None);
+
+        let grunt = reg
+            .iter_with_kind(ComponentKind::Brain)
+            .next()
+            .expect("AI descriptor materializes a Brain")
+            .0;
+        let mut runtime_provenance = reg
+            .get_component::<DescriptorProvenance>(grunt)
+            .expect("AI descriptor has provenance")
+            .clone();
+        runtime_provenance.spawn_path = DescriptorSpawnPath::RuntimeSpawn;
+        reg.set_component(grunt, runtime_provenance)
+            .expect("live entity accepts updated provenance");
+
+        assert!(is_networked_ai_enemy(&reg, grunt));
+        assert_eq!(
+            descriptor_entity_class(
+                &reg,
+                grunt,
+                &[ComponentPayload::Transform(WireTransform {
+                    position: [0.0, 0.0, 0.0],
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    scale: [1.0, 1.0, 1.0],
+                })],
+            ),
+            Some("grunt".to_string()),
+            "a Transform-only runtime-spawn snapshot carries the canonical descriptor class"
+        );
+
+        let crate_id = reg
+            .iter_with_kind(ComponentKind::Mesh)
+            .find(|(id, _)| {
+                reg.get_component::<DescriptorProvenance>(*id)
+                    .is_ok_and(|provenance| provenance.canonical_name == "crate")
+            })
+            .expect("non-AI prop materializes")
+            .0;
+        let mut prop_provenance = reg
+            .get_component::<DescriptorProvenance>(crate_id)
+            .expect("prop has provenance")
+            .clone();
+        prop_provenance.spawn_path = DescriptorSpawnPath::RuntimeSpawn;
+        reg.set_component(crate_id, prop_provenance)
+            .expect("live entity accepts updated provenance");
+        assert!(
+            !is_networked_ai_enemy(&reg, crate_id),
+            "RuntimeSpawn alone never makes a non-AI descriptor networked"
+        );
+
+        let agent = reg
+            .get_component::<AgentComponent>(grunt)
+            .expect("AI descriptor materializes an Agent")
+            .clone();
+        reg.remove_component_kind(grunt, ComponentKind::Agent)
+            .expect("remove Agent from live AI fixture");
+        assert!(
+            !is_networked_ai_enemy(&reg, grunt),
+            "RuntimeSpawn with a missing Agent is not a networked AI enemy"
+        );
+
+        reg.set_component(grunt, agent)
+            .expect("restore Agent to live AI fixture");
+        reg.remove_component_kind(grunt, ComponentKind::Brain)
+            .expect("remove Brain from live AI fixture");
+        assert!(
+            !is_networked_ai_enemy(&reg, grunt),
+            "RuntimeSpawn with a missing Brain is not a networked AI enemy"
+        );
     }
 }

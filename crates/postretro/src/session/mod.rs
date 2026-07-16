@@ -27,7 +27,7 @@ use crate::scripting::reactions::registry::{
     register_enemy_state_reaction_primitives, register_fog_reaction_primitives,
     register_mover_reaction_primitives, register_sequenced_fog_primitives,
     register_sequenced_mover_primitives, register_sequenced_trigger_primitives,
-    register_trigger_reaction_primitives,
+    register_spawner_reaction_primitives, register_trigger_reaction_primitives,
 };
 use crate::scripting::reactions::system_commands::{
     SystemReactionRegistry, register_system_reaction_primitives,
@@ -201,6 +201,10 @@ pub(crate) struct ScriptingCore {
     /// Per-level warning deduplication shared by mover and trigger command
     /// routes. Registries retain clones across reloads; level unload clears it.
     pub(crate) command_diagnostics: crate::kinematic_mover::MoverCommandDiagnostics,
+
+    /// Per-level resolved enemy descriptors and nav-agent bake for the
+    /// VM-free fixed-tick spawner executor.
+    pub(crate) spawn_context: crate::spawner::SpawnContext,
 
     /// The script VM runtime. Constructed once here (post-first-pixel); never
     /// recreated. See: context/lib/scripting.md.
@@ -420,6 +424,12 @@ impl Session {
                 None
             }
         };
+        scripting
+            .spawn_context
+            .set_runtime_spawn_authority(!matches!(
+                &net_endpoint,
+                Some(netcode::NetEndpoint::Client { .. })
+            ));
         boot_timings.record("net_endpoint_complete");
 
         Ok(Self {
@@ -482,6 +492,7 @@ fn build_scripting_core(
 ) -> Result<(ScriptingCore, ClassnameDispatch)> {
     let script_ctx = ScriptCtx::new();
     let command_diagnostics = crate::kinematic_mover::MoverCommandDiagnostics::default();
+    let spawn_context = crate::spawner::SpawnContext::default();
     let mut script_registry = PrimitiveRegistry::new();
     register_all(&mut script_registry, script_ctx.clone());
     let script_runtime = ScriptRuntime::new(
@@ -521,6 +532,7 @@ fn build_scripting_core(
     register_enemy_state_reaction_primitives(&mut reaction_registry);
     register_fog_reaction_primitives(&mut reaction_registry);
     register_mover_reaction_primitives(&mut reaction_registry, command_diagnostics.clone());
+    register_spawner_reaction_primitives(&mut reaction_registry, spawn_context.clone());
     register_trigger_reaction_primitives(&mut reaction_registry, command_diagnostics.clone());
 
     // System-reaction handlers (no entity targets) — the second arm of the shared
@@ -547,6 +559,7 @@ fn build_scripting_core(
 
     let scripting = ScriptingCore {
         command_diagnostics,
+        spawn_context,
         script_runtime,
         script_ctx,
         sequence_registry,

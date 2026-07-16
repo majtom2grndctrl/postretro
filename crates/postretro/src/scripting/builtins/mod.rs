@@ -8,6 +8,7 @@ use postretro_entities::registry::EntityRegistry;
 
 pub(crate) mod billboard_emitter;
 pub(crate) mod data_archetype;
+pub(crate) mod entity_spawner;
 pub(crate) mod net_descriptor;
 pub(crate) mod prop_mesh;
 
@@ -94,6 +95,10 @@ pub(crate) fn register_builtins(dispatch: &mut ClassnameDispatch) {
         billboard_emitter::handle as ClassnameHandler,
     );
     dispatch.register(prop_mesh::CLASSNAME, prop_mesh::handle as ClassnameHandler);
+    dispatch.register(
+        entity_spawner::CLASSNAME,
+        entity_spawner::handle as ClassnameHandler,
+    );
 }
 
 /// Walk `entities` and dispatch each one through the built-in classname
@@ -169,9 +174,13 @@ mod tests {
             dispatch.lookup("prop_mesh").is_some(),
             "prop_mesh should be registered"
         );
+        assert!(
+            dispatch.lookup("entity_spawner").is_some(),
+            "entity_spawner should be registered"
+        );
         // Lock the count so adding a new built-in is a deliberate, reviewed
         // change rather than an accidental fall-through.
-        assert_eq!(dispatch.len(), 2);
+        assert_eq!(dispatch.len(), 3);
     }
 
     #[test]

@@ -114,7 +114,7 @@
     progress: { tag: string; at: number; fire: string };
   };
 
-  /** Primitive reaction body: invokes the named Rust primitive. With `tag`, it targets entities carrying that tag and mutates them. Tag-targeted primitives include emitter/fog/mover commands, `applyDamage`, `setAnimationState`, `updateEnemyState`, `armTrigger`, and `disarmTrigger`; arm/disarm use their empty typed args below. Without `tag`, it is a system reaction (no entities) that enqueues a typed engine command — `playSound`, `rumble`, `flashScreen`, the UI-stack reactions. `args` carries the primitive's typed payload (e.g. `{ rate: 0 }` for `setEmitterRate`, `{ sound: "alarm" }` for `playSound`). */
+  /** Primitive reaction body: invokes the named Rust primitive. With `tag`, it targets entities carrying that tag and mutates them. Tag-targeted primitives include emitter/fog/mover commands, `applyDamage`, `setAnimationState`, `updateEnemyState`, `spawnFromSpawner`, `armTrigger`, and `disarmTrigger`; arm/disarm use their empty typed args below. Without `tag`, it is a system reaction (no entities) that enqueues a typed engine command — `playSound`, `rumble`, `flashScreen`, the UI-stack reactions. `args` carries the primitive's typed payload (e.g. `{ rate: 0 }` for `setEmitterRate`, `{ sound: "alarm" }` for `playSound`). */
   export type PrimitiveReactionDescriptor = {
     primitive: string;
     tag?: string;
@@ -339,6 +339,13 @@
     update(fields: EnemyStateUpdateArgs): PrimitiveReactionDescriptor;
   }
   export function enemies(filter: EnemyGroupFilter): EnemyGroup;
+  /** Selects a live spawner group by tag. Its tag resolves at reaction fire time. */
+  export type SpawnerFilter = { tag: string };
+  /** Fire-time-tag spawner handle. `fire` emits one primitive descriptor. */
+  export interface SpawnerHandle {
+    fire(): PrimitiveReactionDescriptor;
+  }
+  export function spawner(filter: SpawnerFilter): SpawnerHandle;
   export function armTrigger(target: TriggerTarget): SequenceStep[];
   export function disarmTrigger(target: TriggerTarget): SequenceStep[];
 

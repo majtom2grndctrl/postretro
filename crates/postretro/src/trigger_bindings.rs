@@ -46,6 +46,7 @@ const CONSEQUENTIAL_PRIMITIVES: &[&str] = &[
     "setState",
     "setAnimationState",
     "updateEnemyState",
+    "spawnFromSpawner",
 ];
 
 const LIFECYCLE_PRIMITIVES: &[&str] = &["loadLevel", "restartLevel", "returnToFrontend"];
@@ -77,6 +78,7 @@ pub(crate) struct TriggerBindingTable {
     dispatch_scope: Option<RefCell<DispatchScope>>,
     residuals: Vec<TriggerResidual>,
     command_diagnostics: MoverCommandDiagnostics,
+    spawn_context: crate::spawner::SpawnContext,
 }
 
 impl fmt::Debug for TriggerBindingTable {
@@ -91,6 +93,7 @@ impl fmt::Debug for TriggerBindingTable {
             )
             .field("residuals", &self.residuals)
             .field("command_diagnostics", &self.command_diagnostics)
+            .field("spawn_context", &self.spawn_context)
             .finish()
     }
 }
@@ -169,10 +172,12 @@ impl TriggerBindingTable {
         data_registry: &DataRegistry,
         script_ctx: &ScriptCtx,
         command_diagnostics: MoverCommandDiagnostics,
+        spawn_context: crate::spawner::SpawnContext,
     ) -> Self {
         let slot_table = script_ctx.slot_table.borrow();
         let mut table = Self::build_inner(registry, data_registry, &slot_table, Some(script_ctx));
         table.command_diagnostics = command_diagnostics;
+        table.spawn_context = spawn_context;
         table
     }
 
@@ -372,6 +377,7 @@ impl TriggerBindingTable {
                 registry,
                 slot_table,
                 &self.command_diagnostics,
+                &self.spawn_context,
                 fire_context,
             );
             #[cfg(test)]
@@ -421,6 +427,7 @@ impl TriggerBindingTable {
                 script_ctx,
                 &mut dispatch_scope,
                 &self.command_diagnostics,
+                &self.spawn_context,
                 fire_context,
             );
             #[cfg(test)]
@@ -777,6 +784,23 @@ fn bind_command(
                 aggro: args.aggro,
             })
         }
+        "spawnFromSpawner" => {
+            let Some(BoundTarget::Tag(tag)) = target_from_context.as_ref() else {
+                log::warn!(
+                    "[Trigger] spawnFromSpawner requires a fire-time tag target; not binding"
+                );
+                return None;
+            };
+            if tag.is_empty() {
+                log::warn!(
+                    "[Trigger] spawnFromSpawner requires a non-empty fire-time tag target; not binding"
+                );
+                return None;
+            }
+            Some(BoundTriggerCommand::Spawn {
+                target: target_from_context.expect("tag target checked above"),
+            })
+        }
         _ => None,
     }
 }
@@ -964,6 +988,33 @@ mod tests {
     }
 
     #[test]
+    fn spawn_from_spawner_requires_a_tag_target_at_binding() {
+        let args = serde_json::json!({});
+        let slots = SlotTable::new();
+
+        let command = bind_command(
+            "spawnFromSpawner",
+            Some(BoundTarget::Tag("closet".into())),
+            &args,
+            &slots,
+            None,
+        )
+        .expect("tag-targeted spawner command binds");
+        assert_eq!(command.kind(), BoundTriggerCommandKind::Spawn);
+
+        for target in [
+            None,
+            Some(BoundTarget::Activators),
+            Some(BoundTarget::FiredTrigger),
+        ] {
+            assert!(
+                bind_command("spawnFromSpawner", target, &args, &slots, None).is_none(),
+                "spawnFromSpawner must reject an absent or special target"
+            );
+        }
+    }
+
+    #[test]
     fn update_enemy_state_resolves_later_added_brains_at_fire_time() {
         let mut registry = EntityRegistry::new();
         let trigger = spawn_trigger(&mut registry, "release");
@@ -1070,6 +1121,7 @@ mod tests {
             command.execute(
                 &mut registry,
                 &mut SlotTable::new(),
+                &Default::default(),
                 &Default::default(),
                 &TriggerFireContext {
                     activator: Some(enemy),

@@ -8,6 +8,9 @@ license.workspace = true
 
 [features]
 script-ffi = ["dep:rquickjs", "dep:mlua", "postretro-foundation/script-ffi"]
+# Test-only low-capacity registry seam used by higher-level spawn behavior
+# tests. It is never enabled by production dependencies.
+test-support = []
 
 [dependencies]
 glam.workspace = true

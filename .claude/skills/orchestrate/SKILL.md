@@ -33,13 +33,20 @@ Understand:
 - Each task's description and acceptance criteria
 - Sequencing: phases, concurrency, and dependencies
 
-### 2. Move to in-progress
+### 2. Prepare main and start feature branch
+
+Start on `main`. Switch if needed. Sync with remote. Move the requested plan. Commit and push that move on `main` before creating the feature branch.
 
 ```bash
+git switch main
+git pull --ff-only
 git mv context/plans/ready/<plan-name> context/plans/in-progress/<plan-name>
+git commit -m "Move <plan-name> to in-progress"
+git push origin main
+git switch -c feature/<plan-name>
 ```
 
-Commit the move.
+Use `feature/<plan-name>` as the integration branch for all implementation work.
 
 ### 3. Execute phases in order
 
@@ -50,6 +57,8 @@ For each phase in the sequencing section:
 **Concurrent:** Spawn all phase Opus agents simultaneously via multiple Agent tool calls in one message.
 
 > **Cargo under concurrency.** Run concurrent agents in isolated worktrees — separate `target/` dirs, cap 3 (see `development_guide.md`). Separate target dirs have no shared build lock, so each agent runs `cargo check` and focused tests freely. Agents sharing one `target/` must not: they serialize on cargo's build lock and churn the incremental cache. Defer their compile/test to one post-phase pass, as `/fix-review-findings` does.
+
+Create agent worktrees from `feature/<plan-name>`. Integrate completed work back there.
 
 **For each agent, provide:**
 1. The plan's **Goal** section (one orienting paragraph)
@@ -70,7 +79,7 @@ After each phase:
 - Review what agents produced
 - Verify acceptance criteria are met
 - If a task completed partially or blocked, surface to the user with context
-- If using worktrees, merge completed work back to the main branch
+- If using worktrees, merge completed work back to `feature/<plan-name>`
 
 Between phases, check that prerequisites for the next phase are satisfied.
 
@@ -86,8 +95,9 @@ When all phases are done:
 When the user says "land the plane":
 - Move the plan to done: `git mv context/plans/in-progress/<plan-name> context/plans/done/<plan-name>`
 - If the plan is an item on `roadmap.md`, mark it as done
-- Clean up worktrees from the session
-- Commit & push
+- Remove session worktrees, their dedicated target dirs, and session-owned temporary files
+- Reclaim integration target space: run `cargo clean -p <crate>` for crates with significant session churn. Never run bare `cargo clean`.
+- Commit & push `feature/<plan-name>`
 
 ### Error handling
 

@@ -692,13 +692,18 @@ fn recorded_paired_exits() -> Vec<PlayerId> {
 mod tests {
     use super::*;
     use glam::Quat;
+    use postretro_entities::components::brain::{BrainComponent, attach_brain};
     use postretro_entities::{
         KinematicMoverComponent, KinematicMoverMode, MoverCommand, ScriptCtx,
     };
     use postretro_foundation::{
-        AirParams, CapsuleParams, FallParams, GroundParams, PlayerMovementComponent,
-        PlayerMovementDescriptor, SpeedParams,
+        AiDescriptor, AiStateNames, AirParams, CapsuleParams, FallParams, GroundParams,
+        PlayerMovementComponent, PlayerMovementDescriptor, SpeedParams,
     };
+    use postretro_scripting_core::data_descriptors::{
+        NamedReaction, PrimitiveDescriptor, ReactionDescriptor, TriggerEventDescriptor,
+    };
+    use postretro_scripting_core::data_registry::DataRegistry;
 
     const DT: f32 = 0.05;
 
@@ -1448,6 +1453,162 @@ mod tests {
         assert!(
             observed[0].fire.event_name.is_empty(),
             "the script-bound exit also carries an empty event name"
+        );
+    }
+
+    #[test]
+    fn closet_reveal_enter_edge_dispatches_door_and_enemy_release_reactions() {
+        // E18-C containment is authored as an onTriggerEvent fan-out. One
+        // script-bound enter edge must dispatch both named reaction bodies;
+        // neither is nested in the other as a sequence step.
+        let _guard = gate_test_guard().lock().expect("gate test guard poisoned");
+        reset_gate_fires();
+        let mut registry = EntityRegistry::new();
+        let mut bridge = TriggerVolumeBridge::new();
+        let trigger = spawn_trigger(
+            &mut registry,
+            &mut bridge,
+            TriggerActivation::Touch,
+            TriggerFireMode::Once,
+            0.0,
+            true,
+        );
+        registry
+            .set_tags(trigger, vec!["closet_reveal_plate".into()])
+            .expect("tag reveal plate");
+        let mover = spawn_mover(&mut registry);
+        registry
+            .set_tags(mover, vec!["closet_door".into()])
+            .expect("tag closet door");
+        let enemy = registry.spawn(Transform::default());
+        registry
+            .set_tags(enemy, vec!["closet_enemies".into()])
+            .expect("tag closet enemy");
+        attach_brain(
+            &mut registry,
+            enemy,
+            &AiDescriptor {
+                detection_range: 16.0,
+                attack_range: 2.0,
+                leash_range: 50.0,
+                attack_damage: 8.0,
+                attack_cooldown_ms: 1200.0,
+                move_speed: 3.0,
+                death_despawn_ms: 4000.0,
+                states: AiStateNames {
+                    idle: "idle".into(),
+                    alert: "alert".into(),
+                    attack: "attack".into(),
+                    death: "death".into(),
+                },
+            },
+        )
+        .expect("attach closed closet brain");
+        let mut brain = registry
+            .get_component::<BrainComponent>(enemy)
+            .expect("closet brain attached")
+            .clone();
+        brain.aggro_armed = false;
+        registry
+            .set_component(enemy, brain)
+            .expect("close closet aggro gate");
+
+        let mut data = DataRegistry::new();
+        data.populate_level_with_trigger_events(
+            vec![
+                NamedReaction {
+                    name: "closet.openDoor".into(),
+                    descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                        primitive: "moverStart".into(),
+                        target: None,
+                        tag: Some("closet_door".into()),
+                        args: serde_json::json!({}),
+                        on_complete: None,
+                    }),
+                },
+                NamedReaction {
+                    name: "closet.releaseCloset".into(),
+                    descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                        primitive: "updateEnemyState".into(),
+                        target: None,
+                        tag: Some("closet_enemies".into()),
+                        args: serde_json::json!({ "aggro": true }),
+                        on_complete: None,
+                    }),
+                },
+            ],
+            Vec::new(),
+            vec![TriggerEventDescriptor {
+                tag: "closet_reveal_plate".into(),
+                event: "enter".into(),
+                fire: vec!["closet.openDoor".into(), "closet.releaseCloset".into()],
+                levels: Vec::new(),
+            }],
+            &[],
+        );
+        let script_ctx = ScriptCtx::new();
+        let mut bindings = crate::trigger_bindings::TriggerBindingTable::build_with_script_ctx(
+            &registry,
+            &data,
+            &script_ctx,
+        );
+        bindings.install_manifest_events(&registry, &data, &script_ctx);
+        let player = spawn_player(&mut registry, Vec3::new(0.0, 1.0, 0.0));
+        let player_id = PlayerId::Local(player);
+        let players = [AuthoritativePlayer {
+            id: player_id,
+            pawn: player,
+        }];
+        let alive = HashSet::from([player_id]);
+        let bound_edges = bindings.bound_edges().clone();
+        let mut system = TriggerSystem::default();
+        let mut dispatched = Vec::new();
+
+        system.run_authoritative_tick_with_dispatch(
+            &mut registry,
+            &bridge,
+            TriggerTickInputs {
+                players: &players,
+                use_pressed: &HashMap::new(),
+                tick_dt: DT,
+            },
+            TriggerDispatchInputs {
+                alive_players: &alive,
+                bound_edges: &bound_edges,
+            },
+            |event, _, registry| {
+                let execution = bindings.execute_with_script_ctx(
+                    event.fire.trigger,
+                    event.edge,
+                    registry,
+                    &script_ctx,
+                    &crate::trigger_commands::TriggerFireContext::default(),
+                );
+                dispatched.extend(execution.commands);
+            },
+        );
+
+        assert_eq!(
+            dispatched,
+            vec![
+                crate::trigger_bindings::BoundTriggerCommandKind::Mover,
+                crate::trigger_bindings::BoundTriggerCommandKind::UpdateEnemyState,
+            ],
+            "one reveal enter edge fans out to the door and aggro-release reactions"
+        );
+        assert!(
+            registry
+                .get_component::<KinematicMoverComponent>(mover)
+                .expect("closet door mover attached")
+                .started,
+            "openDoor dispatch starts the closet door"
+        );
+        assert!(
+            registry
+                .get_component::<BrainComponent>(enemy)
+                .expect("closet brain attached")
+                .aggro_armed,
+            "releaseCloset dispatch opens the foundation-owned aggro gate"
         );
     }
 

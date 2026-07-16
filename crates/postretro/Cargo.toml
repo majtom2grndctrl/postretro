@@ -99,6 +99,7 @@ observability = []
 postretro-script-compiler = { path = "../script-compiler" }
 
 [dev-dependencies]
+postretro-entities = { workspace = true, features = ["script-ffi", "test-support"] }
 postretro-ui = { workspace = true, features = ["test-fixtures"] }
 # Exercise shipped TypeScript data scripts through the same SWC bundler used by
 # `scripts-build`, without spawning the sidecar process during unit tests.

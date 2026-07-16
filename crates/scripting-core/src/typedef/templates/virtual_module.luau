@@ -96,6 +96,7 @@ export type PostretroModule = {
   defineReaction: typeof(defineReaction),
   damage: typeof(damage),
   enemies: typeof(enemies),
+  spawner: typeof(spawner),
   armTrigger: typeof(armTrigger),
   disarmTrigger: typeof(disarmTrigger),
   onTriggerEvent: typeof(onTriggerEvent),

@@ -296,6 +296,19 @@
     entity_class(string) : "Registered classname to spawn" : "player"
 ]
 
+// Stateless enemy spawn point. The named archetype is resolved at level load;
+// only descriptors carrying an AI block are valid. Each fire creates `count`
+// enemies, so one-shot behavior belongs to the firing trigger.
+@PointClass base(EntitySpawn)
+    color(220 100 100)
+    size(-8 -8 -8, 8 8 8)
+    = entity_spawner : "Enemy Spawner"
+[
+    angles(angles) : "Facing (pitch yaw roll, degrees)" : "0 0 0"
+    archetype(string) : "AI enemy archetype canonical name" : ""
+    count(integer) : "Enemies spawned per fire (0 disables)" : 0
+]
+
 @SolidClass
     color(220 180 60)
     = kinematic_mover : "Kinematic moving brush"

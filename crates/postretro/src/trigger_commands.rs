@@ -14,6 +14,7 @@ use crate::scripting::reactions::animation::{self as animation_reactions, SetAni
 use crate::scripting::reactions::enemy_state::{
     UpdateEnemyStateArgs, apply_update_enemy_state_to_brain,
 };
+use crate::spawner::{SpawnContext, spawn_from_spawner_tag};
 use crate::trigger_system::{arm_trigger_targets, disarm_trigger_targets};
 
 /// The closed set of trigger work allowed in the VM-free fixed-tick seam.
@@ -46,6 +47,9 @@ pub(crate) enum BoundTriggerCommand {
     UpdateEnemyState {
         target: BoundTarget,
         aggro: Option<bool>,
+    },
+    Spawn {
+        target: BoundTarget,
     },
 }
 
@@ -102,6 +106,7 @@ pub(crate) enum BoundTriggerCommandKind {
     StoreSlot,
     AnimationState,
     UpdateEnemyState,
+    Spawn,
 }
 
 impl BoundTriggerCommand {
@@ -110,6 +115,7 @@ impl BoundTriggerCommand {
         registry: &mut EntityRegistry,
         slot_table: &mut SlotTable,
         command_diagnostics: &MoverCommandDiagnostics,
+        spawn_context: &SpawnContext,
         fire_context: &TriggerFireContext,
     ) {
         match self {
@@ -123,7 +129,7 @@ impl BoundTriggerCommand {
                     log::warn!("[Trigger] setState binding for `{slot}` failed: {error}");
                 }
             }
-            _ => self.execute_non_store(registry, command_diagnostics, fire_context),
+            _ => self.execute_non_store(registry, command_diagnostics, spawn_context, fire_context),
         }
     }
 
@@ -133,6 +139,7 @@ impl BoundTriggerCommand {
         script_ctx: &ScriptCtx,
         dispatch_scope: &mut DispatchScope,
         command_diagnostics: &MoverCommandDiagnostics,
+        spawn_context: &SpawnContext,
         fire_context: &TriggerFireContext,
     ) {
         match self {
@@ -155,7 +162,7 @@ impl BoundTriggerCommand {
                     eval_and_write(program, dispatch_scope);
                 }
             },
-            _ => self.execute_non_store(registry, command_diagnostics, fire_context),
+            _ => self.execute_non_store(registry, command_diagnostics, spawn_context, fire_context),
         }
     }
 
@@ -163,6 +170,7 @@ impl BoundTriggerCommand {
         &self,
         registry: &mut EntityRegistry,
         command_diagnostics: &MoverCommandDiagnostics,
+        spawn_context: &SpawnContext,
         fire_context: &TriggerFireContext,
     ) {
         match self {
@@ -224,6 +232,15 @@ impl BoundTriggerCommand {
                     apply_update_enemy_state_to_brain(registry, entity, &args);
                 }
             }
+            Self::Spawn { target } => {
+                let BoundTarget::Tag(tag) = target else {
+                    log::warn!(
+                        "[Trigger] spawnFromSpawner requires a fire-time tag target; special target is invalid; skipping"
+                    );
+                    return;
+                };
+                spawn_from_spawner_tag(registry, tag, spawn_context);
+            }
             Self::StoreSlot { .. } => unreachable!("store slots execute through their store path"),
         }
     }
@@ -238,6 +255,7 @@ impl BoundTriggerCommand {
             Self::StoreSlot { .. } => BoundTriggerCommandKind::StoreSlot,
             Self::AnimationState { .. } => BoundTriggerCommandKind::AnimationState,
             Self::UpdateEnemyState { .. } => BoundTriggerCommandKind::UpdateEnemyState,
+            Self::Spawn { .. } => BoundTriggerCommandKind::Spawn,
         }
     }
 }

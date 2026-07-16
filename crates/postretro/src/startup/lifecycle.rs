@@ -339,10 +339,20 @@ impl App {
             let Some(session) = self.session.as_ref() else {
                 return;
             };
-            build_trigger_bindings(
+            let mut bindings = build_trigger_bindings(
                 &session.scripting.script_ctx,
                 session.scripting.command_diagnostics.clone(),
-            )
+            );
+            {
+                let registry = session.scripting.script_ctx.registry.borrow();
+                let data_registry = session.scripting.script_ctx.data_registry.borrow();
+                bindings.install_manifest_events(
+                    &registry,
+                    &data_registry,
+                    &session.scripting.script_ctx,
+                );
+            }
+            bindings
         };
         self.trigger_bindings = bindings;
     }
@@ -932,17 +942,17 @@ fn rebuild_reaction_subscribers(
             .filter(|reaction| reaction_uses_trigger_sentinel(reaction))
             .map(|reaction| reaction.name.clone())
             .collect();
-        data_registry.crossings.retain(|crossing| {
-            let compatible = crossing
+        data_registry.crossings.retain_mut(|crossing| {
+            let original_len = crossing.fire.len();
+            crossing
                 .fire
-                .iter()
-                .all(|event| !sentinel_names.contains(event));
-            if !compatible {
+                .retain(|event| !sentinel_names.contains(event));
+            if crossing.fire.len() != original_len {
                 log::warn!(
-                    "[Scripting] crossing subscription references a trigger-sentinel reaction; skipping subscription"
+                    "[Scripting] crossing subscription references trigger-sentinel work; skipping incompatible reaction"
                 );
             }
-            compatible
+            !crossing.fire.is_empty()
         });
         if sentinel_names.contains("levelLoad") {
             log::warn!(
@@ -1374,7 +1384,7 @@ mod tests {
     use postretro_entities::{
         CrossingCondition, CrossingDescriptor, EntityTypeDescriptor, MoverCommand, NamedReaction,
         PrimitiveDescriptor, ProgressDescriptor, ReactionDescriptor, TriggerActivation,
-        TriggerFireMode, TriggerVolumeComponent,
+        TriggerEventDescriptor, TriggerFireMode, TriggerVolumeComponent,
     };
     use postretro_entities::{
         ScriptCtx, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue, Transform,
@@ -2830,9 +2840,10 @@ mod tests {
         );
     }
 
-    // Regression: staged global reaction reload left trigger bindings pointing at the prior active set.
+    // Regression: staged mod-init reload omitted manifest trigger events, leaving
+    // script-authored bindings absent while brush KVP bindings were restored.
     #[test]
-    fn staged_recomposition_rebinds_trigger_commands_to_the_committed_reactions() {
+    fn staged_recomposition_rebuilds_brush_and_manifest_trigger_bindings() {
         let mut app = test_app();
         app.level = Some(level_world("trigger_reload_level", 1));
         let trigger = {
@@ -2854,6 +2865,9 @@ mod tests {
                     ),
                 )
                 .expect("trigger component attaches");
+            entities
+                .set_tags(id, vec!["trap".to_string()])
+                .expect("trigger tags attach");
             id
         };
         script_ctx(&app)
@@ -2865,7 +2879,19 @@ mod tests {
         script_ctx(&app)
             .data_registry
             .borrow_mut()
-            .replace_global_reactions(vec![scoped_global_set_state("plate_pressed", 1.0)]);
+            .replace_global_reactions(vec![
+                scoped_global_set_state("plate_pressed", 1.0),
+                scoped_global_set_state("script_pressed", 10.0),
+            ]);
+        script_ctx(&app)
+            .data_registry
+            .borrow_mut()
+            .replace_global_trigger_events(vec![TriggerEventDescriptor {
+                tag: "trap".to_string(),
+                event: "enter".to_string(),
+                fire: vec!["script_pressed".to_string()],
+                levels: Vec::new(),
+            }]);
         script_ctx(&app)
             .data_registry
             .borrow_mut()
@@ -2887,7 +2913,7 @@ mod tests {
                     )
                     .residual()
                     .is_none(),
-                "the setState-only binding has no app-side residual"
+                "the direct bindings have no app-side residual"
             );
         }
         assert_eq!(
@@ -2896,13 +2922,17 @@ mod tests {
                 .borrow()
                 .get("trigger.flag")
                 .and_then(|record| record.value.clone()),
-            Some(SlotValue::Number(1.0)),
+            Some(SlotValue::Number(10.0)),
+            "brush KVP binding runs before the appended manifest binding",
         );
 
         script_ctx(&app)
             .data_registry
             .borrow_mut()
-            .replace_global_reactions(vec![scoped_global_set_state("plate_pressed", 2.0)]);
+            .replace_global_reactions(vec![
+                scoped_global_set_state("plate_pressed", 2.0),
+                scoped_global_set_state("script_pressed", 20.0),
+            ]);
         script_ctx(&app)
             .data_registry
             .borrow_mut()
@@ -2924,7 +2954,7 @@ mod tests {
                     )
                     .residual()
                     .is_none(),
-                "the replacement setState-only binding has no app-side residual"
+                "the replacement direct bindings have no app-side residual"
             );
         }
         assert_eq!(
@@ -2933,8 +2963,77 @@ mod tests {
                 .borrow()
                 .get("trigger.flag")
                 .and_then(|record| record.value.clone()),
-            Some(SlotValue::Number(2.0)),
-            "the post-reload binding must not retain the old command",
+            Some(SlotValue::Number(20.0)),
+            "the post-reload binding must retain both the KVP and manifest commands",
+        );
+    }
+
+    // Regression: filtering a trigger-scoped reaction from a crossing used to
+    // discard all of the crossing's compatible reactions.
+    #[test]
+    fn crossing_filter_preserves_compatible_reactions_in_original_order() {
+        let mut app = test_app();
+        script_ctx(&app)
+            .slot_table
+            .borrow_mut()
+            .insert("test.health".to_string(), number_slot(75.0))
+            .expect("test slot should be vacant");
+        script_ctx(&app)
+            .data_registry
+            .borrow_mut()
+            .replace_global_reactions(vec![
+                postretro_entities::ScopedReaction {
+                    reaction: NamedReaction {
+                        name: "trigger_only".to_string(),
+                        descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                            primitive: "applyDamage".to_string(),
+                            target: Some("@activators".to_string()),
+                            tag: None,
+                            on_complete: None,
+                            args: serde_json::json!({ "amount": 10.0 }),
+                        }),
+                    },
+                    levels: Vec::new(),
+                },
+                scoped_global_set_state("ordinary", 1.0),
+            ]);
+        script_ctx(&app)
+            .data_registry
+            .borrow_mut()
+            .replace_global_crossings(vec![postretro_entities::ScopedCrossing {
+                crossing: CrossingDescriptor {
+                    slot: Some("test.health".to_string()),
+                    condition: CrossingCondition::Below { threshold: 0.5 },
+                    max: 100.0,
+                    edge: None,
+                    fire: vec!["trigger_only".to_string(), "ordinary".to_string()],
+                },
+                levels: Vec::new(),
+            }]);
+        script_ctx(&app)
+            .data_registry
+            .borrow_mut()
+            .recompose_active_sets(&[]);
+        app.rebuild_active_reaction_subscribers();
+
+        assert_eq!(
+            script_ctx(&app).data_registry.borrow().crossings[0].fire,
+            vec!["ordinary".to_string()],
+        );
+        script_ctx(&app)
+            .slot_table
+            .borrow_mut()
+            .get_mut("test.health")
+            .expect("test slot remains installed")
+            .value = Some(SlotValue::Number(25.0));
+        let ctx = script_ctx(&app);
+        assert_eq!(
+            app.session
+                .as_mut()
+                .expect("test app session installed")
+                .crossing_detector
+                .detect(&ctx.slot_table.borrow()),
+            vec!["ordinary".to_string()],
         );
     }
 

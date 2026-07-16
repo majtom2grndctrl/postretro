@@ -139,13 +139,13 @@ export type MoverGoToPathNodeStep = {
 }
 
 export type ArmTriggerStep = {
-  id: number,
+  id: number | "@activators" | "@trigger",
   primitive: "armTrigger",
   args: {},
 }
 
 export type DisarmTriggerStep = {
-  id: number,
+  id: number | "@activators" | "@trigger",
   primitive: "disarmTrigger",
   args: {},
 }
@@ -226,13 +226,19 @@ export type StoreDefinition = {
 
 local DataScriptSdk = {}
 
+-- Opaque target tokens are distinct frozen tables. Builders compare identity
+-- to lower the matching token and leave a mismatched sentinel visible for Rust
+-- validation. The empty tables never enter returned descriptors.
+local ACTIVATORS_TARGET = table.freeze({})
+local TRIGGER_TARGET = table.freeze({})
+
 -- One SDK-internal merged params table is shared by every author-time tracer.
 -- Its value shape stays open to sibling opaque target tokens.
 local DISPATCH_PARAMS = table.freeze({
   rising = table.freeze({ op = "input", name = "@rising" }),
   dt = table.freeze({ op = "input", name = "@dt" }),
-  activators = table.freeze({}),
-  trigger = table.freeze({}),
+  activators = ACTIVATORS_TARGET,
+  trigger = TRIGGER_TARGET,
   occupancy = table.freeze({ op = "input", name = "@occupancy" }),
 })
 
@@ -266,15 +272,18 @@ function DataScriptSdk.damage(target: ActivatorsTarget | string, amount: number)
   if type(target) == "string" then
     return { primitive = "applyDamage", tag = target, args = { amount = amount } }
   end
-  return { primitive = "applyDamage", target = "@activators", args = { amount = amount } }
+  local wireTarget: any = if target == ACTIVATORS_TARGET then "@activators" elseif target == TRIGGER_TARGET then "@trigger" else "@invalid"
+  return { primitive = "applyDamage", target = wireTarget, args = { amount = amount } }
 end
 
-function DataScriptSdk.armTrigger(_target: TriggerTarget): {SequenceStep}
-  return { { id = "@trigger", primitive = "armTrigger", args = {} } :: any }
+function DataScriptSdk.armTrigger(target: TriggerTarget): {SequenceStep}
+  local wireTarget: any = if target == TRIGGER_TARGET then "@trigger" elseif target == ACTIVATORS_TARGET then "@activators" else "@invalid"
+  return { { id = wireTarget, primitive = "armTrigger", args = {} } :: any }
 end
 
-function DataScriptSdk.disarmTrigger(_target: TriggerTarget): {SequenceStep}
-  return { { id = "@trigger", primitive = "disarmTrigger", args = {} } :: any }
+function DataScriptSdk.disarmTrigger(target: TriggerTarget): {SequenceStep}
+  local wireTarget: any = if target == TRIGGER_TARGET then "@trigger" elseif target == ACTIVATORS_TARGET then "@activators" else "@invalid"
+  return { { id = wireTarget, primitive = "disarmTrigger", args = {} } :: any }
 end
 
 -- Order-stable serialization of a reaction body: table keys are emitted sorted

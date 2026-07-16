@@ -1,5 +1,6 @@
 // Data-script registries: active level definitions plus engine-global entity,
-// map, reaction, and crossing snapshots used by startup and staged reloads.
+// map, reaction, crossing, and trigger-event snapshots used by startup and
+// staged reloads.
 // See: context/lib/scripting.md §2 (Data context lifecycle)
 //
 // Held inside `ScriptCtx` (not directly on `App`) so primitive closures can
@@ -31,8 +32,9 @@ pub struct ScopedCrossing {
 pub type ScopedTriggerEvent = TriggerEventDescriptor;
 
 /// Data registries collected from script execution.
-/// `reactions` and `crossings` are per-level and cleared on unload; entity,
-/// map, and global reaction/crossing definitions survive level unload.
+/// `reactions`, `crossings`, and `trigger_events` are per-level and cleared on
+/// unload; entity, map, and global reaction/crossing/trigger-event definitions
+/// survive level unload.
 #[derive(Debug, Default)]
 pub struct DataRegistry {
     /// Active reactions for this level after composing matching mod-global
@@ -77,7 +79,7 @@ impl DataRegistry {
     }
 
     /// Append level-local definitions, then recompose the active per-level
-    /// reaction/crossing sets from matching globals plus locals.
+    /// reaction/crossing/trigger-event sets from matching globals plus locals.
     /// Existing level-local definitions are preserved — call [`Self::clear`]
     /// first for a fresh population. Entity-type descriptors arrive separately
     /// via `ModManifest.entities` (they outlive level unload). UI trees are
@@ -279,9 +281,9 @@ impl DataRegistry {
         self.global_trigger_events = events;
     }
 
-    /// Drop every active per-level reaction/crossing. Engine-global entity,
-    /// map, and global reaction/crossing definitions outlive the clear. Called
-    /// on level unload.
+    /// Drop every active per-level reaction/crossing/trigger-event definition.
+    /// Engine-global entity, map, and global reaction/crossing/trigger-event
+    /// definitions outlive the clear. Called on level unload.
     /// See [`Self::upsert_entity_type`].
     pub fn clear(&mut self) {
         self.reactions.clear();
@@ -292,17 +294,21 @@ impl DataRegistry {
         self.level_trigger_events.clear();
     }
 
-    /// Returns `true` only when both collections are empty. After level unload,
-    /// `entities` or `maps` may still be populated, so this returns `false` —
-    /// production code should use `reactions.is_empty()` for level-unload checks.
+    /// Returns `true` only when every registry collection is empty. After level
+    /// unload, engine-global definitions, `entities`, or `maps` may still be
+    /// populated, so this returns `false` — production code should use
+    /// `reactions.is_empty()` for level-unload checks.
     #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.reactions.is_empty()
             && self.crossings.is_empty()
+            && self.trigger_events.is_empty()
             && self.global_reactions.is_empty()
             && self.global_crossings.is_empty()
+            && self.global_trigger_events.is_empty()
             && self.level_reactions.is_empty()
             && self.level_crossings.is_empty()
+            && self.level_trigger_events.is_empty()
             && self.entities.is_empty()
             && self.maps.is_empty()
     }
@@ -349,6 +355,15 @@ mod tests {
             path: format!("maps/{id}.prl"),
             name: id.to_string(),
             tags: vec!["campaign".to_string()],
+        }
+    }
+
+    fn sample_trigger_event() -> TriggerEventDescriptor {
+        TriggerEventDescriptor {
+            tag: "airlock".to_string(),
+            event: "enter".to_string(),
+            fire: vec!["openAirlock".to_string()],
+            levels: Vec::new(),
         }
     }
 
@@ -429,6 +444,23 @@ mod tests {
         r.populate_level(sample_level_reactions(), Vec::new(), &[]);
         assert_eq!(r.reactions.len(), 1);
         assert!(!r.is_empty());
+    }
+
+    #[test]
+    fn trigger_event_collections_make_registry_nonempty() {
+        let trigger_event = sample_trigger_event();
+
+        let mut registry = DataRegistry::new();
+        registry.trigger_events.push(trigger_event.clone());
+        assert!(!registry.is_empty());
+
+        let mut registry = DataRegistry::new();
+        registry.global_trigger_events.push(trigger_event.clone());
+        assert!(!registry.is_empty());
+
+        let mut registry = DataRegistry::new();
+        registry.level_trigger_events.push(trigger_event);
+        assert!(!registry.is_empty());
     }
 
     #[test]

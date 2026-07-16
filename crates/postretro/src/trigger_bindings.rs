@@ -109,9 +109,10 @@ struct MoverGoToPathNodeArgs {
 }
 
 impl TriggerBindingTable {
-    /// Construct bindings after reaction composition has completed. Empty event
-    /// names intentionally carry no binding; unknown names warn once per trigger
-    /// edge and do not fall back to a later drain-time lookup.
+    /// Construct brush-authored bindings after reaction composition. Empty brush
+    /// event names add no binding here; manifest trigger events may still bind
+    /// the edge. Unknown names warn once per trigger edge and do not fall back
+    /// to a later drain-time lookup.
     #[cfg(test)]
     pub(crate) fn build(
         registry: &EntityRegistry,
@@ -376,8 +377,8 @@ impl TriggerBindingTable {
         self.residuals.get(handle.0)
     }
 
-    /// Whether the authored event name for this trigger edge resolved against
-    /// the active composed reaction set at level install.
+    /// Whether this trigger edge has an active binding from its brush event or
+    /// a composed manifest trigger event.
     #[cfg(feature = "dev-tools")]
     pub(crate) fn is_bound(&self, trigger: EntityId, edge: TriggerEventEdge) -> bool {
         self.bindings.contains_key(&(trigger, edge))

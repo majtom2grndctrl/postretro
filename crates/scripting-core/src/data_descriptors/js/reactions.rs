@@ -197,6 +197,15 @@ pub fn sequence_steps_from_js<'js>(
         };
         let primitive = get_required_string_js(&obj, "primitive")?;
         let primitive = validate_primitive_name(primitive)?;
+        if matches!(id, SequenceTarget::Activators)
+            && matches!(primitive.as_str(), "armTrigger" | "disarmTrigger")
+        {
+            return Err(DescriptorError::InvalidSequenceShape {
+                reason: format!(
+                    "step {i} primitive `{primitive}` requires an entity id or `@trigger`, not `@activators`"
+                ),
+            });
+        }
         let args = if obj.contains_key("args").map_err(js_err)? {
             let raw: JsValue = obj.get("args").map_err(js_err)?;
             conv::js_to_json(ctx, raw).map_err(js_err)?

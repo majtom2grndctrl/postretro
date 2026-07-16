@@ -36,9 +36,8 @@ enum TriggerActivationDecision {
     Suppress,
 }
 
-/// A named trigger event that fired during an authoritative tick. Empty event
-/// names are omitted: they intentionally mean that the trigger has no event on
-/// that edge.
+/// A trigger event that fired during an authoritative tick. An empty event
+/// name is valid when a script binding owns the fired edge.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TriggerEventFire {
     pub(crate) trigger: EntityId,
@@ -46,7 +45,7 @@ pub(crate) struct TriggerEventFire {
     pub(crate) event_name: String,
 }
 
-/// Which edge produced a named trigger event. The trigger stage owns this
+/// Which edge produced a trigger event. The trigger stage owns this
 /// ordering so commands from one edge can affect a later enter gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum TriggerEventEdge {
@@ -54,7 +53,7 @@ pub(crate) enum TriggerEventEdge {
     Exit,
 }
 
-/// A named trigger fire together with its source edge. This is the canonical
+/// A trigger fire together with its source edge. This is the canonical
 /// fixed-tick event stream; it is ordered by `(trigger, player)`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TriggerEvent {
@@ -372,30 +371,61 @@ fn canonical_player_capsules(
     players: &[AuthoritativePlayer],
     warned_duplicate_players: &mut HashSet<PlayerId>,
 ) -> BTreeMap<PlayerId, (EntityId, Vec3, f32, f32)> {
-    let mut snapshots: BTreeMap<PlayerId, (EntityId, Vec3, f32, f32)> = BTreeMap::new();
+    let canonical_pawns = canonical_player_pawns(registry, players);
+    let mut seen_players = HashSet::new();
     for player in players {
-        let Ok(transform) = registry.get_component::<Transform>(player.pawn) else {
+        if registry.get_component::<Transform>(player.pawn).is_err()
+            || registry
+                .get_component::<PlayerMovementComponent>(player.pawn)
+                .is_err()
+        {
             continue;
-        };
-        let Ok(movement) = registry.get_component::<PlayerMovementComponent>(player.pawn) else {
-            continue;
-        };
-        let snapshot = (
-            player.pawn,
-            transform.position,
-            movement.capsule.radius,
-            movement.capsule.half_height,
-        );
-        if let Some(existing) = snapshots.get_mut(&player.id) {
+        }
+        if !seen_players.insert(player.id) {
             warn_duplicate_player_once(warned_duplicate_players, player.id);
-            if snapshot.0 < existing.0 {
-                *existing = snapshot;
-            }
-        } else {
-            snapshots.insert(player.id, snapshot);
         }
     }
-    snapshots
+    canonical_pawns
+        .into_iter()
+        .filter_map(|(player_id, pawn)| {
+            let transform = registry.get_component::<Transform>(pawn).ok()?;
+            let movement = registry
+                .get_component::<PlayerMovementComponent>(pawn)
+                .ok()?;
+            Some((
+                player_id,
+                (
+                    pawn,
+                    transform.position,
+                    movement.capsule.radius,
+                    movement.capsule.half_height,
+                ),
+            ))
+        })
+        .collect()
+}
+
+/// Select the one pawn that represents each player identity this tick. Trigger
+/// collision and trigger-fire context resolution share this rule.
+pub(crate) fn canonical_player_pawns(
+    registry: &EntityRegistry,
+    players: &[AuthoritativePlayer],
+) -> BTreeMap<PlayerId, EntityId> {
+    let mut pawns: BTreeMap<PlayerId, EntityId> = BTreeMap::new();
+    for player in players {
+        if registry.get_component::<Transform>(player.pawn).is_err()
+            || registry
+                .get_component::<PlayerMovementComponent>(player.pawn)
+                .is_err()
+        {
+            continue;
+        }
+        pawns
+            .entry(player.id)
+            .and_modify(|canonical| *canonical = (*canonical).min(player.pawn))
+            .or_insert(player.pawn);
+    }
+    pawns
 }
 
 /// Fully re-arm a trigger. A fresh arm intentionally clears one-shot latching
@@ -685,6 +715,32 @@ mod tests {
 
         warn_duplicate_player_once(&mut system.warned_duplicate_players, player);
         assert_eq!(system.warned_duplicate_players.len(), 1);
+    }
+
+    #[test]
+    fn canonical_player_pawns_uses_lowest_valid_pawn_per_identity() {
+        let mut registry = EntityRegistry::new();
+        let first = spawn_player(&mut registry, Vec3::ZERO);
+        let second = spawn_player(&mut registry, Vec3::ZERO);
+        let remote = PlayerId::Remote(17);
+
+        assert_eq!(
+            canonical_player_pawns(
+                &registry,
+                &[
+                    AuthoritativePlayer {
+                        id: remote,
+                        pawn: second,
+                    },
+                    AuthoritativePlayer {
+                        id: remote,
+                        pawn: first,
+                    },
+                ],
+            )
+            .get(&remote),
+            Some(&first),
+        );
     }
 
     fn movement() -> PlayerMovementComponent {

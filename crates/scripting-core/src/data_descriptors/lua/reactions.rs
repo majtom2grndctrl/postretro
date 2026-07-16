@@ -229,6 +229,15 @@ pub fn sequence_steps_from_lua(arr: &Table) -> Result<Vec<SequenceStep>, Descrip
         };
         let primitive = get_required_string_lua(&step_table, "primitive")?;
         let primitive = validate_primitive_name(primitive)?;
+        if matches!(id, SequenceTarget::Activators)
+            && matches!(primitive.as_str(), "armTrigger" | "disarmTrigger")
+        {
+            return Err(DescriptorError::InvalidSequenceShape {
+                reason: format!(
+                    "step {i} primitive `{primitive}` requires an entity id or `@trigger`, not `@activators`"
+                ),
+            });
+        }
         let args = if step_table.contains_key("args").map_err(lua_err)? {
             let raw: LuaValue = step_table.get("args").map_err(lua_err)?;
             conv::lua_to_json(raw).map_err(lua_err)?

@@ -22,7 +22,12 @@ impl LevelManifest {
             let mut out = Vec::with_capacity(len);
             for i in 1..=(len as i64) {
                 let item: LuaValue = arr.get(i).map_err(lua_err)?;
-                out.push(named_reaction_from_lua(item)?);
+                match named_reaction_from_lua(item) {
+                    Ok(reaction) => out.push(reaction),
+                    Err(error) => log::warn!(
+                        "[Scripting] setupLevel: reactions[{i}] is malformed and was skipped: {error}"
+                    ),
+                }
             }
             out
         } else {

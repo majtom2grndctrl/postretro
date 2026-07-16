@@ -19,7 +19,12 @@ impl LevelManifest {
             let mut out = Vec::with_capacity(arr.len());
             for i in 0..arr.len() {
                 let item: JsValue = arr.get(i).map_err(js_err)?;
-                out.push(named_reaction_from_js(ctx, item)?);
+                match named_reaction_from_js(ctx, item) {
+                    Ok(reaction) => out.push(reaction),
+                    Err(error) => log::warn!(
+                        "[Scripting] setupLevel: reactions[{i}] is malformed and was skipped: {error}"
+                    ),
+                }
             }
             out
         } else {

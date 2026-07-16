@@ -1,4 +1,5 @@
 //! Bound trigger commands and their fixed-tick execution.
+//! Governing context: `context/lib/development_guide.md` §4.3; `context/lib/scripting.md` §12.
 
 use postretro_entities::{
     ComponentKind, EntityId, EntityRegistry, MoverCommand, ScriptCtx, SlotTable, SlotValue,

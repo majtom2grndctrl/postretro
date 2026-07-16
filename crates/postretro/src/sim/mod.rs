@@ -2,7 +2,7 @@
 // See: context/lib/entity_model.md §5 · context/lib/networking.md
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 
 use glam::{EulerRot, Vec3};
@@ -173,6 +173,10 @@ pub(crate) fn simulate_tick(
             let id = PlayerId::Local(pawn);
             players.push(AuthoritativePlayer { id, pawn });
         }
+        let canonical_player_pawns = {
+            let registry = registry.borrow();
+            crate::trigger_system::canonical_player_pawns(&registry, &players)
+        };
         let alive_players: HashSet<PlayerId> = {
             let registry = registry.borrow();
             players
@@ -202,7 +206,8 @@ pub(crate) fn simulate_tick(
                 },
                 dispatch_inputs,
                 |event, occupancy, registry| {
-                    let fire_context = trigger_fire_context(event, occupancy, &players);
+                    let fire_context =
+                        trigger_fire_context(event, occupancy, &canonical_player_pawns);
                     let execution = trigger_context.bindings.execute_with_script_ctx(
                         event.fire.trigger,
                         event.edge,
@@ -323,15 +328,16 @@ pub(crate) fn simulate_tick(
 fn trigger_fire_context(
     event: &crate::trigger_system::TriggerEvent,
     occupancy: usize,
-    players: &[AuthoritativePlayer],
+    canonical_player_pawns: &BTreeMap<PlayerId, EntityId>,
 ) -> TriggerFireContext {
-    let mut activators: Vec<EntityId> = players
-        .iter()
-        .filter(|player| player.id == event.fire.player)
-        .map(|player| player.pawn)
-        .collect();
-    activators.sort_unstable();
-    activators.dedup();
+    let activators = match event.fire.player {
+        PlayerId::Local(pawn) => vec![pawn],
+        PlayerId::Remote(_) => canonical_player_pawns
+            .get(&event.fire.player)
+            .copied()
+            .into_iter()
+            .collect(),
+    };
     if activators.is_empty() && matches!(event.fire.player, PlayerId::Remote(_)) {
         log::warn!(
             "[Trigger] remote activator {:?} is absent from this tick; @activators is empty",
@@ -885,7 +891,7 @@ mod tests {
     use postretro_net::wire::NetworkId;
     use postretro_scripting_core::reaction_dispatch::fire_prepartitioned_reactions_with_sequences;
     use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
-    use std::collections::{HashMap, HashSet};
+    use std::collections::{BTreeMap, HashMap, HashSet};
 
     #[test]
     fn disconnected_remote_fire_context_keeps_trigger_and_occupancy_but_has_no_activator() {
@@ -899,10 +905,50 @@ mod tests {
             edge: TriggerEventEdge::Exit,
         };
 
-        let context = trigger_fire_context(&event, 3, &[]);
+        let context = trigger_fire_context(&event, 3, &BTreeMap::new());
         assert!(context.activators.is_empty());
         assert_eq!(context.fired_trigger, Some(trigger));
         assert_eq!(context.occupancy, 3);
+    }
+
+    // Regression: the fire context scanned every matching remote command and
+    // broadcast one trigger event to duplicate remote pawns.
+    #[test]
+    fn remote_fire_context_uses_the_collision_canonical_pawn() {
+        let trigger = EntityId::from_raw(0x0001_0000);
+        let canonical_pawn = EntityId::from_raw(0x0001_0001);
+        let duplicate_pawn = EntityId::from_raw(0x0001_0002);
+        let event = TriggerEvent {
+            fire: crate::trigger_system::TriggerEventFire {
+                trigger,
+                player: PlayerId::Remote(77),
+                event_name: "pressed".into(),
+            },
+            edge: TriggerEventEdge::Enter,
+        };
+        let canonical_players = BTreeMap::from([(PlayerId::Remote(77), canonical_pawn)]);
+
+        let context = trigger_fire_context(&event, 1, &canonical_players);
+        assert_eq!(context.activators, [canonical_pawn]);
+        assert_ne!(context.activators, [duplicate_pawn]);
+    }
+
+    #[test]
+    fn local_fire_context_resolves_the_local_entity_without_player_list_entry() {
+        let local_pawn = EntityId::from_raw(0x0001_0001);
+        let event = TriggerEvent {
+            fire: crate::trigger_system::TriggerEventFire {
+                trigger: EntityId::from_raw(0x0001_0000),
+                player: PlayerId::Local(local_pawn),
+                event_name: "pressed".into(),
+            },
+            edge: TriggerEventEdge::Enter,
+        };
+
+        assert_eq!(
+            trigger_fire_context(&event, 1, &BTreeMap::new()).activators,
+            [local_pawn],
+        );
     }
 
     fn weapon_component(credit_source: &str) -> WeaponComponent {

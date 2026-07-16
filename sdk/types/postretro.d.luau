@@ -964,13 +964,13 @@ export type MoverGoToPathNodeStep = {
 }
 
 export type ArmTriggerStep = {
-  id: EntityId,
+  id: EntityId | "@activators" | "@trigger",
   primitive: "armTrigger",
   args: ArmTriggerArgs,
 }
 
 export type DisarmTriggerStep = {
-  id: EntityId,
+  id: EntityId | "@activators" | "@trigger",
   primitive: "disarmTrigger",
   args: DisarmTriggerArgs,
 }

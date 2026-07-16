@@ -796,6 +796,7 @@ pub(crate) fn component_kind_discriminant(kind: ComponentKind) -> u16 {
         ComponentKind::KinematicMover => 13,
         ComponentKind::TriggerVolume => 14,
         ComponentKind::AmmoReserve => 15,
+        ComponentKind::Spawner => 16,
     }
 }
 
@@ -2915,7 +2916,8 @@ mod tests {
                 ComponentKind::Brain => Some(ComponentKind::KinematicMover),
                 ComponentKind::KinematicMover => Some(ComponentKind::TriggerVolume),
                 ComponentKind::TriggerVolume => Some(ComponentKind::AmmoReserve),
-                ComponentKind::AmmoReserve => None,
+                ComponentKind::AmmoReserve => Some(ComponentKind::Spawner),
+                ComponentKind::Spawner => None,
             }
         }
 

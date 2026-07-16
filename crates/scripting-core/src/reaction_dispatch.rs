@@ -341,6 +341,7 @@ fn is_trigger_consequential_primitive(primitive: &str) -> bool {
             | "setState"
             | "setAnimationState"
             | "updateEnemyState"
+            | "spawnFromSpawner"
     )
 }
 
@@ -567,6 +568,12 @@ mod tests {
     #[test]
     fn update_enemy_state_stays_in_trigger_consequential_mirror() {
         assert!(is_trigger_consequential_primitive("updateEnemyState"));
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn spawn_from_spawner_stays_in_trigger_consequential_mirror() {
+        assert!(is_trigger_consequential_primitive("spawnFromSpawner"));
     }
 
     #[test]

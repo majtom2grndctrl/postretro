@@ -602,6 +602,10 @@ pub struct EntityRegistry {
     /// Phase 0 sim command. Not script-visible and not a tag/KVP, so it cannot
     /// affect world queries or authored entity properties.
     local_player_pawn: Option<EntityId>,
+    /// A test-only artificial slot ceiling. Production still has exactly the
+    /// `u16::MAX` registry capacity promised by `try_spawn`.
+    #[cfg(any(test, feature = "test-support"))]
+    test_capacity_limit: Option<usize>,
 }
 
 impl EntityRegistry {
@@ -614,7 +618,16 @@ impl EntityRegistry {
             tags: Vec::new(),
             kvp_table: HashMap::new(),
             local_player_pawn: None,
+            #[cfg(any(test, feature = "test-support"))]
+            test_capacity_limit: None,
         }
+    }
+
+    /// Artificially cap fresh slots for a focused exhaustion test. Reused
+    /// free-list slots remain valid capacity, matching the real registry.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_test_capacity_limit(&mut self, limit: usize) {
+        self.test_capacity_limit = Some(limit);
     }
 
     /// Mark the pawn driven by the single local Phase 0 sim command. Systems
@@ -752,6 +765,14 @@ impl EntityRegistry {
     /// KVPs from a source `MapEntity` must be written separately via
     /// `set_map_kvps` after spawn — `try_spawn` does not accept them.
     pub fn try_spawn(&mut self, transform: Transform, tags: &[String]) -> Option<EntityId> {
+        #[cfg(any(test, feature = "test-support"))]
+        if self.free_list.is_empty()
+            && self
+                .test_capacity_limit
+                .is_some_and(|limit| self.slots.len() >= limit)
+        {
+            return None;
+        }
         if self.free_list.is_empty() && self.slots.len() >= u16::MAX as usize {
             return None;
         }

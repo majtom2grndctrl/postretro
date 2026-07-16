@@ -344,6 +344,7 @@ impl App {
             let mut bindings = build_trigger_bindings(
                 &session.scripting.script_ctx,
                 session.scripting.command_diagnostics.clone(),
+                session.scripting.spawn_context.clone(),
             );
             {
                 let registry = session.scripting.script_ctx.registry.borrow();
@@ -1022,12 +1023,14 @@ fn reaction_uses_trigger_sentinel(
 fn build_trigger_bindings(
     script_ctx: &postretro_entities::ScriptCtx,
     command_diagnostics: crate::kinematic_mover::MoverCommandDiagnostics,
+    spawn_context: crate::spawner::SpawnContext,
 ) -> TriggerBindingTable {
     TriggerBindingTable::build_with_script_ctx_and_diagnostics(
         &script_ctx.registry.borrow(),
         &script_ctx.data_registry.borrow(),
         script_ctx,
         command_diagnostics,
+        spawn_context,
     )
 }
 
@@ -1325,7 +1328,8 @@ pub(crate) fn install_world_cpu(
     }
     // Bind after subscriber rebuild: `populate_level` has committed the final
     // composed reaction set, so tick dispatch never re-matches a name later.
-    let mut trigger_bindings = build_trigger_bindings(script_ctx, command_diagnostics);
+    let mut trigger_bindings =
+        build_trigger_bindings(script_ctx, command_diagnostics, spawn_context.clone());
     {
         let registry = script_ctx.registry.borrow();
         let data_registry = script_ctx.data_registry.borrow();

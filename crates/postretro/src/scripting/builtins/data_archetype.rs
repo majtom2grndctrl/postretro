@@ -386,7 +386,7 @@ pub(crate) fn suppressed_ai_enemy_mesh_models(
 /// `is_dynamic` field (baked indirect lighting is not supported for
 /// descriptor-spawned lights), with a `warn!` if the descriptor had it set to
 /// `false`.
-fn attach_descriptor_components(
+pub(crate) fn attach_descriptor_components(
     registry: &mut EntityRegistry,
     id: EntityId,
     descriptor: &EntityTypeDescriptor,

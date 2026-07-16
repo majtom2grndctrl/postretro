@@ -54,6 +54,10 @@ impl DescriptorComponentKind {
 #[serde(rename_all = "snake_case")]
 pub enum DescriptorSpawnPath {
     MapPlacement,
+    /// An engine-owned `entity_spawner` materialized this descriptor during a
+    /// fixed tick. Runtime spawns remain local until the replication layer
+    /// explicitly registers them.
+    RuntimeSpawn,
     PlayerSpawn,
     DefaultWeapon,
     /// A networked co-op slot pawn materialized on client accept (M15 Phase 3).

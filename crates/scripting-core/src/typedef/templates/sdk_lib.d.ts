@@ -237,12 +237,12 @@
   export type CrossingParams = Readonly<{ rising: RuntimeRead }>;
   /** Dispatch values published while a Number store slot accumulates. */
   export type TickParams = Readonly<{ dt: RuntimeRead }>;
-  declare const activatorsTargetBrand: unique symbol;
-  declare const triggerTargetBrand: unique symbol;
+  const activatorsTargetBrand: unique symbol;
+  const triggerTargetBrand: unique symbol;
   export type ActivatorsTarget = Readonly<{ readonly [activatorsTargetBrand]: true }>;
   export type TriggerTarget = Readonly<{ readonly [triggerTargetBrand]: true }>;
   export type TriggerEventParams = Readonly<{ activators: ActivatorsTarget; trigger: TriggerTarget; occupancy: RuntimeRead }>;
-  declare const reactionScopeBrand: unique symbol;
+  const reactionScopeBrand: unique symbol;
   /** Named reaction with a type-only, contravariant dispatch-scope marker. */
   export type Reaction<S = {}> = NamedReactionDescriptor & { readonly [reactionScopeBrand]?: (scope: S) => void };
 
@@ -346,8 +346,8 @@
   // reference map is supplied by this hand-written generic instead of registry
   // emission.
 
-  declare const stateRefValueBrand: unique symbol;
-  declare const writableStateRefBrand: unique symbol;
+  const stateRefValueBrand: unique symbol;
+  const writableStateRefBrand: unique symbol;
   export type ScalarStateValue = number | boolean | string;
   export type NumericArrayStateValue = ReadonlyArray<number>;
   export type ReadonlyStateRef<T> = { readonly slot: string; readonly [stateRefValueBrand]: T };
@@ -397,7 +397,7 @@
 
   /** Linear RGBA color token value. Components are in display-linear 0-1 space; alpha is the fourth element. */
   export type ThemeColorValue = readonly [number, number, number, number];
-  declare const themeTokenBrand: unique symbol;
+  const themeTokenBrand: unique symbol;
   /** Runtime-authenticated SDK token record. Widget factories unwrap only records produced by `getDesignTokens(theme)`, not hand-built lookalikes. */
   export type ThemeToken<Category extends "color" | "font" | "spacing"> = Readonly<{
     __postretroToken: Category;
@@ -437,7 +437,7 @@
     readonly font: ThemeDesignTokenGroup<T["font"], string, FontToken>;
     readonly spacing: ThemeDesignTokenGroup<T["spacing"], number, SpacingToken>;
   };
-  declare const definedThemeBrand: unique symbol;
+  const definedThemeBrand: unique symbol;
   /** A theme returned by `defineTheme`: enumerable flat manifest maps plus SDK metadata for `getDesignTokens`. Pass this object directly as `ModManifest.theme`. */
   export type DefinedTheme<T extends ThemeDefinition> = {
     readonly colors: ThemeFlatTokenMap<T["color"], ThemeColorValue, ThemeColorValue>;

@@ -103,6 +103,40 @@ export type SpinAnimation = {
   rate_curve: {number},
 }
 
+--- Per-particle simulation state carried by each live particle entity as a `particle_state` component. The particle simulation reads and writes it each tick; `buoyancy` / `drag` are copied from the parent emitter at spawn.
+export type ParticleState = {
+  --- Current particle velocity in metres/sec.
+  velocity: {number},
+  --- Seconds elapsed since the particle spawned.
+  age: number,
+  --- Total particle lifetime in seconds; the particle despawns once `age` reaches it.
+  lifetime: number,
+  --- Unitless gravity multiplier copied from the parent emitter at spawn (`verticalAcceleration = worldGravity * -buoyancy`).
+  buoyancy: number,
+  --- Velocity damping coefficient in 1/sec, copied from the parent emitter at spawn.
+  drag: number,
+  --- Normalized-lifetime billboard size curve, sampled evenly from spawn to death.
+  size_curve: {number},
+  --- Normalized-lifetime opacity curve, sampled evenly from spawn to death.
+  opacity_curve: {number},
+  --- Back-reference to the parent emitter entity, consulted only for spin-rate lookup each tick. null once the emitter has despawned (orphaned particle).
+  emitter: EntityId?,
+}
+
+--- Per-frame visual state of a sprite as a `sprite_visual` component. Authored by the particle simulation each tick and consumed by the billboard render integration.
+export type SpriteVisual = {
+  --- Sprite/material identifier resolved by the billboard renderer.
+  sprite: string,
+  --- Billboard size multiplier for this frame.
+  size: number,
+  --- Billboard opacity for this frame, in [0, 1].
+  opacity: number,
+  --- Billboard rotation in radians for this frame.
+  rotation: number,
+  --- RGB tint applied to the sprite. CPU-side only at this stage; the GPU sprite instance layout has no color channel yet.
+  tint: {number},
+}
+
 --- Animation curves attached to a fog volume by the `setFogAnimation` reaction primitive. Four independent channels share `periodMs` / `phase` / `playCount`: `density` modulates volumetric density, `saturation` modulates SH-irradiance saturation, `minBrightness` modulates the scatter brightness floor, and `lightRange` scales how far lights reach inside the fog. At least one curve must be present when `playCount` is finite — otherwise the animation has nothing to settle to. `phase` is normalized into `[0, 1)`. `playCount = null` loops forever; finite counts have the bridge write back each channel's final keyframe as static state on completion. There is no `startActive` flag — fog has no GPU descriptor for the curve, so absence (`null`) is the only inactive state.
 export type FogAnimation = {
   --- Total period of the loop, in milliseconds.

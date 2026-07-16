@@ -20,7 +20,7 @@ declare module "postretro/ui" {
 
   /** Linear RGBA color token value. Components are in display-linear 0-1 space; alpha is the fourth element. */
   export type ThemeColorValue = readonly [number, number, number, number];
-  declare const themeTokenBrand: unique symbol;
+  const themeTokenBrand: unique symbol;
   /** Runtime-authenticated SDK token record. Widget factories unwrap only records produced by `getDesignTokens(theme)`, not hand-built lookalikes. */
   export type ThemeToken<Category extends "color" | "font" | "spacing"> = Readonly<{
     __postretroToken: Category;
@@ -58,7 +58,7 @@ declare module "postretro/ui" {
     readonly font: DesignTokenGroup<T["font"], string, FontToken>;
     readonly spacing: DesignTokenGroup<T["spacing"], number, SpacingToken>;
   };
-  declare const definedThemeBrand: unique symbol;
+  const definedThemeBrand: unique symbol;
   /** Manifest-compatible flat theme maps returned from `defineTheme`. */
   export type DefinedTheme<T extends ThemeDefinition> = {
     readonly colors: FlatTokenMap<T["color"], ThemeColorValue, ThemeColorValue>;

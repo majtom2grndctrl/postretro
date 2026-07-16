@@ -1184,11 +1184,15 @@ pub(crate) fn install_world_cpu(
                 postretro_ui::modal_stack::ScopeTier::Level,
             );
         }
-        script_ctx.data_registry.borrow_mut().populate_level(
-            manifest.reactions,
-            manifest.crossings,
-            active_level_tags,
-        );
+        script_ctx
+            .data_registry
+            .borrow_mut()
+            .populate_level_with_trigger_events(
+                manifest.reactions,
+                manifest.crossings,
+                manifest.trigger_events,
+                active_level_tags,
+            );
         // CROSSING-CHANNEL INSTALL ORDER (E18): the detector must capture this
         // level's local slot defaults before any connected-client network baseline is
         // applied. A late join then observes the host's persistent state as one real
@@ -1199,7 +1203,12 @@ pub(crate) fn install_world_cpu(
     }
     // Bind after subscriber rebuild: `populate_level` has committed the final
     // composed reaction set, so tick dispatch never re-matches a name later.
-    let trigger_bindings = build_trigger_bindings(script_ctx, command_diagnostics);
+    let mut trigger_bindings = build_trigger_bindings(script_ctx, command_diagnostics);
+    {
+        let registry = script_ctx.registry.borrow();
+        let data_registry = script_ctx.data_registry.borrow();
+        trigger_bindings.install_manifest_events(&registry, &data_registry, script_ctx);
+    }
     timings.record("data_script");
 
     // Data-archetype sweep: materialize every matching map placement the built-in
@@ -2387,6 +2396,7 @@ mod tests {
                 maps: Vec::new(),
                 reactions: Vec::new(),
                 crossings: Vec::new(),
+                trigger_events: Vec::new(),
                 ui_trees: vec![RegisteredUiTree {
                     name: "newMenu".to_string(),
                     tree: postretro_ui::demo::build_frontend_menu_descriptor(),

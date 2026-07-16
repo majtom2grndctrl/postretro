@@ -133,6 +133,7 @@ impl TriggerSystem {
             use_pressed,
             tick_dt,
             &alive_players,
+            &HashSet::new(),
             |_, _, _| {},
         )
     }
@@ -150,6 +151,7 @@ impl TriggerSystem {
         use_pressed: &HashMap<PlayerId, bool>,
         tick_dt: f32,
         alive_players: &HashSet<PlayerId>,
+        bound_edges: &HashSet<(EntityId, TriggerEventEdge)>,
         mut dispatch: impl FnMut(&TriggerEvent, usize, &mut EntityRegistry),
     ) -> TriggerFireReport {
         let player_capsules =
@@ -255,7 +257,9 @@ impl TriggerSystem {
                         else {
                             continue;
                         };
-                        if trigger.on_exit.is_empty() {
+                        if trigger.on_exit.is_empty()
+                            && !bound_edges.contains(&(trigger_id, TriggerEventEdge::Exit))
+                        {
                             continue;
                         }
                         let event = TriggerEvent {
@@ -300,7 +304,9 @@ impl TriggerSystem {
                         let event_name = trigger.on_fire.clone();
                         let _ = registry.set_component(trigger_id, trigger);
                         self.paired_enters.insert((trigger_id, player_id));
-                        if event_name.is_empty() {
+                        if event_name.is_empty()
+                            && !bound_edges.contains(&(trigger_id, TriggerEventEdge::Enter))
+                        {
                             continue;
                         }
                         let event = TriggerEvent {

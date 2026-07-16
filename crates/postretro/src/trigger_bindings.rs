@@ -224,6 +224,29 @@ impl TriggerBindingTable {
             );
         }
 
+        self.append_binding(trigger, edge, commands, steps);
+    }
+
+    fn append_binding(
+        &mut self,
+        trigger: EntityId,
+        edge: TriggerEventEdge,
+        commands: Vec<BoundTriggerCommand>,
+        steps: Vec<PrepartitionedReactionStep>,
+    ) {
+        if let Some(binding) = self.bindings.get_mut(&(trigger, edge)) {
+            binding.commands.extend(commands);
+            if !steps.is_empty() {
+                if let Some(handle) = binding.residual {
+                    self.residuals[handle.0].steps.extend(steps);
+                } else {
+                    let handle = TriggerResidualHandle(self.residuals.len());
+                    self.residuals.push(TriggerResidual { steps });
+                    binding.residual = Some(handle);
+                }
+            }
+            return;
+        }
         let residual = (!steps.is_empty()).then(|| {
             let handle = TriggerResidualHandle(self.residuals.len());
             self.residuals.push(TriggerResidual { steps });
@@ -231,6 +254,51 @@ impl TriggerBindingTable {
         });
         self.bindings
             .insert((trigger, edge), TriggerBinding { commands, residual });
+    }
+
+    pub(crate) fn install_manifest_events(
+        &mut self,
+        registry: &EntityRegistry,
+        data_registry: &DataRegistry,
+        script_ctx: &ScriptCtx,
+    ) {
+        let descriptors = data_registry.trigger_events.clone();
+        let slots = script_ctx.slot_table.borrow();
+        for descriptor in descriptors {
+            let edge = match descriptor.event.as_str() {
+                "enter" => TriggerEventEdge::Enter,
+                "exit" => TriggerEventEdge::Exit,
+                _ => continue,
+            };
+            let mut triggers: Vec<_> = registry
+                .query_by_component_and_tag(ComponentKind::TriggerVolume, Some(&descriptor.tag))
+                .map(|(id, _)| id)
+                .collect();
+            triggers.sort_unstable();
+            if triggers.is_empty() {
+                log::warn!(
+                    "[Trigger] trigger-event tag `{}` matched no trigger volumes; descriptor is inert",
+                    descriptor.tag
+                );
+                continue;
+            }
+            for event_name in descriptor.fire {
+                for &trigger in &triggers {
+                    self.bind_event(
+                        trigger,
+                        edge,
+                        &event_name,
+                        data_registry,
+                        &slots,
+                        Some(script_ctx),
+                    );
+                }
+            }
+        }
+    }
+
+    pub(crate) fn bound_edges(&self) -> HashSet<(EntityId, TriggerEventEdge)> {
+        self.bindings.keys().copied().collect()
     }
 
     pub(crate) fn execute(
@@ -783,6 +851,85 @@ mod tests {
             )
             .unwrap();
         slots
+    }
+
+    #[test]
+    fn manifest_trigger_events_append_after_brush_bindings() {
+        let mut registry = EntityRegistry::new();
+        let trigger = spawn_trigger(&mut registry, "brush");
+        registry.set_tags(trigger, vec!["plate".into()]).unwrap();
+        let ctx = ScriptCtx::new();
+        let mut data = DataRegistry::new();
+        data.populate_level_with_trigger_events(
+            vec![
+                primitive(
+                    "brush",
+                    "setState",
+                    None,
+                    serde_json::json!({"slot":"trigger.flag","value":0.0}),
+                    None,
+                ),
+                primitive(
+                    "script",
+                    "setState",
+                    None,
+                    serde_json::json!({"slot":"trigger.flag","value":1.0}),
+                    None,
+                ),
+            ],
+            Vec::new(),
+            vec![
+                postretro_scripting_core::data_descriptors::TriggerEventDescriptor {
+                    tag: "plate".into(),
+                    event: "enter".into(),
+                    fire: vec!["script".into()],
+                    levels: Vec::new(),
+                },
+            ],
+            &[],
+        );
+        ctx.slot_table
+            .borrow_mut()
+            .insert_namespace(
+                "trigger",
+                vec![(
+                    "flag".into(),
+                    SlotRecord::new(SlotSchema {
+                        slot_type: SlotType::Number,
+                        default: Some(SlotValue::Number(0.0)),
+                        range: Some(NumericRange { min: 0.0, max: 1.0 }),
+                        persist: false,
+                        readonly: false,
+                        ownership: SlotOwnership::Mod,
+                        network: Default::default(),
+                        accumulate: None,
+                    }),
+                )],
+            )
+            .unwrap();
+        let mut table = TriggerBindingTable::build_with_script_ctx(&registry, &data, &ctx);
+        table.install_manifest_events(&registry, &data, &ctx);
+
+        let execution = table.execute_with_script_ctx(
+            trigger,
+            TriggerEventEdge::Enter,
+            &mut registry,
+            &ctx,
+            &TriggerFireContext::default(),
+        );
+        assert_eq!(execution.commands.len(), 2);
+        assert_eq!(
+            ctx.slot_table
+                .borrow()
+                .get("trigger.flag")
+                .and_then(|r| r.value.as_ref()),
+            Some(&SlotValue::Number(1.0))
+        );
+        assert!(
+            table
+                .bound_edges()
+                .contains(&(trigger, TriggerEventEdge::Enter))
+        );
     }
 
     #[test]

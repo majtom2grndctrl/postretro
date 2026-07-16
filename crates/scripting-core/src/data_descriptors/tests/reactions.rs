@@ -170,10 +170,16 @@ fn js_sequence_reaction_deserializes() {
     match &m.reactions[0].descriptor {
         ReactionDescriptor::Sequence(steps) => {
             assert_eq!(steps.len(), 2);
-            assert_eq!(steps[0].id.to_raw(), 65536);
+            assert_eq!(
+                steps[0].id,
+                SequenceTarget::Entity(EntityId::from_raw(65536))
+            );
             assert_eq!(steps[0].primitive, "moveGeometry");
             assert_eq!(steps[0].args["duration"].as_f64(), Some(1.5));
-            assert_eq!(steps[1].id.to_raw(), 131072);
+            assert_eq!(
+                steps[1].id,
+                SequenceTarget::Entity(EntityId::from_raw(131072))
+            );
             assert_eq!(steps[1].primitive, "playSound");
             assert_eq!(steps[1].args["clip"], serde_json::json!("vault"));
         }
@@ -331,7 +337,10 @@ fn lua_sequence_reaction_deserializes() {
     match &m.reactions[0].descriptor {
         ReactionDescriptor::Sequence(steps) => {
             assert_eq!(steps.len(), 2);
-            assert_eq!(steps[0].id.to_raw(), 65536);
+            assert_eq!(
+                steps[0].id,
+                SequenceTarget::Entity(EntityId::from_raw(65536))
+            );
             assert_eq!(steps[0].primitive, "moveGeometry");
             assert_eq!(steps[1].primitive, "playSound");
         }
@@ -429,6 +438,28 @@ fn lua_crossings_accept_dense_arrays() {
     assert_eq!(m.crossings.len(), 2);
     assert_eq!(m.crossings[0].slot.as_deref(), Some("player.health"));
     assert_eq!(m.crossings[0].fire, vec!["lowHealth".to_string()]);
+}
+
+#[test]
+fn trigger_event_manifests_parse_identically_and_drop_unknown_events() {
+    let js = eval_js(
+        r#"({ triggerEvents: [
+            { tag: "plate", event: "enter", fire: ["zap", "once"], levels: ["campaign"] },
+            { tag: "plate", event: "occupied", fire: ["bad"] }
+        ] })"#,
+        |ctx, value| LevelManifest::from_js_value(ctx, value).unwrap(),
+    );
+    let lua = eval_lua(
+        r#"return { triggerEvents = {
+            { tag = "plate", event = "enter", fire = { "zap", "once" }, levels = { "campaign" } },
+            { tag = "plate", event = "occupied", fire = { "bad" } }
+        } }"#,
+        |value| LevelManifest::from_lua_value(value).unwrap(),
+    );
+
+    assert_eq!(js.trigger_events, lua.trigger_events);
+    assert_eq!(js.trigger_events.len(), 1);
+    assert_eq!(js.trigger_events[0].fire, ["zap", "once"]);
 }
 
 #[test]

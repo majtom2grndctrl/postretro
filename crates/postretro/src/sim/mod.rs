@@ -186,6 +186,7 @@ pub(crate) fn simulate_tick(
                 .collect()
         };
         let mut registry = registry.borrow_mut();
+        let bound_edges = trigger_context.bindings.bound_edges();
         if let Some(script_ctx) = trigger_context.script_ctx.as_ref() {
             let _report = trigger_context.system.run_authoritative_tick_with_dispatch(
                 &mut registry,
@@ -194,6 +195,7 @@ pub(crate) fn simulate_tick(
                 trigger_context.use_edges,
                 tick_dt,
                 &alive_players,
+                &bound_edges,
                 |event, occupancy, registry| {
                     let fire_context = trigger_fire_context(event, occupancy, &players);
                     let execution = trigger_context.bindings.execute_with_script_ctx(
@@ -225,6 +227,7 @@ pub(crate) fn simulate_tick(
                 trigger_context.use_edges,
                 tick_dt,
                 &alive_players,
+                &bound_edges,
                 |event, _occupancy, registry| {
                     let fire_context = TriggerFireContext::default();
                     let execution = trigger_context.bindings.execute(

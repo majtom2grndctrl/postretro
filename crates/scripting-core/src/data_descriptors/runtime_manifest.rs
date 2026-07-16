@@ -3,7 +3,7 @@
 
 use crate::ui::descriptor::AnchoredTree;
 
-use super::{CrossingDescriptor, NamedReaction};
+use super::{CrossingDescriptor, NamedReaction, TriggerEventDescriptor};
 
 /// A script-registered UI tree: a named [`AnchoredTree`] plus the `alwaysOn`
 /// registration attribute. Drained from `ModManifest.uiTrees` (mod scope) and
@@ -27,6 +27,7 @@ pub struct LevelManifest {
     /// from the widened `{ reactions, crossings }` setup-manifest return and
     /// drained into the per-level `DataRegistry`; cleared on level unload.
     pub crossings: Vec<CrossingDescriptor>,
+    pub trigger_events: Vec<TriggerEventDescriptor>,
     /// Per-level UI trees declared via the `uiTrees` field. A malformed entry is
     /// logged and skipped rather than aborting level load (`ui.md` §1.1).
     pub ui_trees: Vec<RegisteredUiTree>,

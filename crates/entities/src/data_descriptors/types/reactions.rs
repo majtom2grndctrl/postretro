@@ -4,6 +4,14 @@
 use crate::registry::EntityId;
 use postretro_foundation::ir::IrNode;
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TriggerEventDescriptor {
+    pub tag: String,
+    pub event: String,
+    pub fire: Vec<String>,
+    pub levels: Vec<String>,
+}
+
 /// Variants of a single reaction's behavior body. The `name` lives on the
 /// wrapping [`NamedReaction`]; this enum captures only the descriptor shape.
 #[derive(Debug, Clone, PartialEq)]

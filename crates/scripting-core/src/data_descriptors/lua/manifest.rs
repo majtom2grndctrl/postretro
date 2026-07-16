@@ -41,15 +41,45 @@ impl LevelManifest {
         } else {
             Vec::new()
         };
+        let trigger_events = drain_trigger_events_lua(&table, "setupLevel")?;
 
         let ui_trees = drain_ui_trees_lua(&table, "setupLevel")?;
 
         Ok(Self {
             reactions,
             crossings,
+            trigger_events,
             ui_trees,
         })
     }
+}
+
+pub fn drain_trigger_events_lua(
+    table: &Table,
+    scope: &str,
+) -> Result<Vec<TriggerEventDescriptor>, DescriptorError> {
+    let Some(arr) = optional_manifest_array_lua(table, "triggerEvents", scope)? else {
+        return Ok(Vec::new());
+    };
+    let len = validate_dense_lua_array(&arr, "`triggerEvents` field")?;
+    let mut out = Vec::with_capacity(len);
+    for i in 1..=(len as i64) {
+        let item = lua_table(arr.get(i).map_err(lua_err)?, "trigger-event entry")?;
+        let event = get_required_string_lua(&item, "event")?;
+        if !matches!(event.as_str(), "enter" | "exit") {
+            log::warn!(
+                "[Scripting] {scope}: triggerEvents[{i}] has unknown event `{event}` and was skipped"
+            );
+            continue;
+        }
+        out.push(TriggerEventDescriptor {
+            tag: get_required_string_lua(&item, "tag")?,
+            event,
+            fire: string_array_from_lua(&item, "fire")?,
+            levels: string_array_from_lua(&item, "levels")?,
+        });
+    }
+    Ok(out)
 }
 
 /// Drain the `uiTrees` array from a Luau manifest table. Mirrors

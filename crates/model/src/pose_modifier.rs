@@ -1,7 +1,7 @@
 // CPU-only ordered skeletal pose modifiers over sampled local TRS.
 // See: context/lib/rendering_pipeline.md §9
 
-use glam::Quat;
+use glam::{Mat4, Quat, Vec3};
 use postretro_foundation::PoseInputs;
 
 use crate::anim::LocalTrs;
@@ -84,6 +84,34 @@ pub enum PoseModifier {
     /// rotations in either mask to reach the requested composed hierarchy yaw;
     /// joints in neither mask retain their sampled local transform.
     UpperLowerSplit { lower_body_mask: JointMask },
+    /// Plant each leg's foot on its per-foot ground probe with an analytic
+    /// two-bone (hip → knee → ankle) solve.
+    ///
+    /// The `legs` set is an ordered, N-leg-ready list: leg `i` consumes
+    /// `PoseInputs::feet[i]`, so a biped runs two solves and a hexapod six from
+    /// one loop. Each leg is independent — a probe miss, an out-of-reach target,
+    /// or a clip-lifted (swing) foot ramps that leg to its clip pose without
+    /// touching the others. The variant's own leg masks drive it; the enclosing
+    /// [`ModifierEntry::mask`] is unused for this arm.
+    FootIk { legs: Vec<LegChain> },
+}
+
+/// One leg's joint set and foot joint for the [`PoseModifier::FootIk`] solver.
+///
+/// `chain_mask` names the joints of this leg's two-bone chain (hip, knee, and
+/// the ankle/foot). It is a mask, not a fixed pair, so the same solver drives
+/// any number of legs. `foot_joint` is the ankle/end-effector: its model-space
+/// position is what the solve drives onto the ground probe, and its orientation
+/// is aligned to the probed ground normal. The hip and knee are recovered by
+/// walking the skeleton parent links up from `foot_joint`, keeping to joints
+/// present in `chain_mask`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LegChain {
+    /// Joints belonging to this leg's chain (hip, knee, ankle/foot).
+    pub chain_mask: JointMask,
+    /// The ankle/foot joint: the solve's end effector and the joint oriented to
+    /// the ground normal.
+    pub foot_joint: usize,
 }
 
 /// A modifier and its primary mask.
@@ -141,6 +169,9 @@ pub(crate) fn apply_pose_modifier_stack(
                     skeleton,
                     locals,
                 );
+            }
+            PoseModifier::FootIk { legs } => {
+                apply_foot_ik(legs, inputs, skeleton, locals);
             }
         }
     }
@@ -245,12 +276,526 @@ fn wrapped_angle_delta(aim_yaw: f32, heading_yaw: f32) -> f32 {
     ((delta + pi).rem_euclid(std::f64::consts::TAU) - pi) as f32
 }
 
+/// Model-space clip lift (in model units) over which a foot fades from fully
+/// planted to fully clip-driven. A foot at or below its probed surface plants
+/// fully; once the clip lifts it this far above the surface it keeps its clip
+/// lift entirely. Sized for the roughly unit-tall models the loader ships.
+const PLANT_BLEND_BAND: f32 = 0.15;
+
+/// Angular cap (radians, ~34°) on how far the foot may tilt to meet the probed
+/// ground normal, so a steep normal never wrenches the ankle past a plausible
+/// pose.
+const MAX_FOOT_ALIGN: f32 = 0.6;
+
+/// Numerical floor for bone lengths, reach clamping, and degenerate-axis guards.
+const IK_EPS: f32 = 1e-4;
+
+/// Solve and plant every leg in `legs`, each against its own foot probe.
+///
+/// Leg `i` reads `inputs.feet[i]` (only the first `foot_count` are live). A
+/// missing or non-hit probe leaves that leg on its clip pose; every leg is
+/// solved independently over the full local buffer so a leg's ancestors compose
+/// to model space (the `UpperLowerSplit` parent walk is the precedent).
+fn apply_foot_ik(
+    legs: &[LegChain],
+    inputs: &PoseInputs,
+    skeleton: &Skeleton,
+    locals: &mut [LocalTrs],
+) {
+    let live_feet = (inputs.foot_count as usize).min(inputs.feet.len());
+    for (leg_index, leg) in legs.iter().enumerate() {
+        if leg_index >= live_feet {
+            continue;
+        }
+        let probe = inputs.feet[leg_index];
+        // Miss: this leg keeps its clip pose, untouched.
+        if !probe.hit {
+            continue;
+        }
+        solve_and_plant_leg(leg, &probe, skeleton, locals);
+    }
+}
+
+/// Resolve one leg's hip/knee/ankle, run the analytic two-bone solve onto its
+/// probe, orient the foot to the ground normal, and blend the result against the
+/// clip pose by the plant weight.
+fn solve_and_plant_leg(
+    leg: &LegChain,
+    probe: &postretro_foundation::pose::FootProbe,
+    skeleton: &Skeleton,
+    locals: &mut [LocalTrs],
+) {
+    let joint_count = locals.len().min(skeleton.joints.len());
+    let ankle = leg.foot_joint;
+    if ankle >= joint_count || !leg.chain_mask.contains(ankle) {
+        return;
+    }
+    let Some(knee) = chain_parent(skeleton, leg.chain_mask, ankle, joint_count) else {
+        return;
+    };
+    let Some(hip) = chain_parent(skeleton, leg.chain_mask, knee, joint_count) else {
+        return;
+    };
+    if !probe.contact_height.is_finite() {
+        return;
+    }
+
+    // Forward-compute the pre-solve model-space transforms of the chain.
+    let (hip_pos, hip_rot) = joint_model_transform(skeleton, locals, hip);
+    let (knee_pos, knee_rot) = joint_model_transform(skeleton, locals, knee);
+    let (ankle_pos, _) = joint_model_transform(skeleton, locals, ankle);
+
+    // Plant weight from where the clip foot sits relative to the probed surface:
+    // at or below → full plant; lifted past the blend band → fully clip (swing).
+    let weight = plant_weight(ankle_pos.y - probe.contact_height);
+    if weight <= 0.0 {
+        return;
+    }
+
+    // Target keeps the clip foot's model-space XZ and drops to the ground height.
+    let target = Vec3::new(ankle_pos.x, probe.contact_height, ankle_pos.z);
+
+    let hip_clip = locals[hip].rotation;
+    let knee_clip = locals[knee].rotation;
+    let foot_clip = locals[ankle].rotation;
+
+    let (hip_solved, knee_solved) = solve_two_bone(
+        hip_pos, knee_pos, ankle_pos, target, hip_rot, knee_rot, hip_clip, knee_clip,
+    );
+    locals[hip].rotation = hip_solved;
+    locals[knee].rotation = knee_solved;
+
+    // Orient the foot toward the ground normal using its post-solve model frame.
+    let foot_model_rot = joint_model_transform(skeleton, locals, ankle).1;
+    let foot_parent_rot = match skeleton.joints[ankle].parent {
+        Some(parent) if parent < joint_count => joint_model_transform(skeleton, locals, parent).1,
+        _ => Quat::IDENTITY,
+    };
+    locals[ankle].rotation =
+        orient_foot_local(foot_model_rot, foot_parent_rot, foot_clip, probe.normal);
+
+    // Ramp the whole solved leg toward the clip by the plant weight, so a
+    // partially lifted foot keeps a proportional share of its clip lift.
+    locals[hip].rotation = hip_clip.slerp(locals[hip].rotation, weight).normalize();
+    locals[knee].rotation = knee_clip.slerp(locals[knee].rotation, weight).normalize();
+    locals[ankle].rotation = foot_clip.slerp(locals[ankle].rotation, weight).normalize();
+}
+
+/// Fraction of the solved plant applied, from the clip foot's lift above the
+/// probed surface: `1.0` at or below the surface, ramping to `0.0` once lifted
+/// past [`PLANT_BLEND_BAND`].
+fn plant_weight(lift: f32) -> f32 {
+    if !lift.is_finite() {
+        return 0.0;
+    }
+    if lift <= 0.0 {
+        1.0
+    } else if lift >= PLANT_BLEND_BAND {
+        0.0
+    } else {
+        1.0 - lift / PLANT_BLEND_BAND
+    }
+}
+
+/// Nearest ancestor of `joint` (walking skeleton parent links) that is present
+/// in `mask`. Used to recover the knee from the ankle and the hip from the knee.
+fn chain_parent(
+    skeleton: &Skeleton,
+    mask: JointMask,
+    joint: usize,
+    joint_count: usize,
+) -> Option<usize> {
+    let mut parent = skeleton.joints[joint].parent;
+    while let Some(candidate) = parent {
+        if candidate >= joint_count {
+            return None;
+        }
+        if mask.contains(candidate) {
+            return Some(candidate);
+        }
+        parent = skeleton.joints[candidate].parent;
+    }
+    None
+}
+
+/// Compose `joint`'s model-space position and rotation by walking its local
+/// transform up through its ancestors' locals. No allocation — bones are short
+/// chains, and the walk left-multiplies each parent's local in turn.
+fn joint_model_transform(skeleton: &Skeleton, locals: &[LocalTrs], joint: usize) -> (Vec3, Quat) {
+    let mut mat = local_matrix(locals[joint]);
+    let mut rot = locals[joint].rotation;
+    let mut parent = skeleton.joints[joint].parent;
+    while let Some(p) = parent {
+        if p >= locals.len() {
+            break;
+        }
+        mat = local_matrix(locals[p]) * mat;
+        rot = locals[p].rotation * rot;
+        parent = skeleton.joints[p].parent;
+    }
+    (mat.w_axis.truncate(), rot.normalize())
+}
+
+fn local_matrix(local: LocalTrs) -> Mat4 {
+    Mat4::from_scale_rotation_translation(local.scale, local.rotation, local.translation)
+}
+
+/// Analytic two-bone IK (hip → knee → ankle), after Ryan Juckett's / Daniel
+/// Holden's closed-form "two joint" solve.
+///
+/// Given the chain's current model-space joint positions, the desired `target`
+/// ankle position, and the model-space and local rotations of the hip and knee,
+/// returns the hip and knee **local** rotations that place the ankle on the
+/// target. The reach `|target - hip|` is clamped to the leg's segment sum, so an
+/// out-of-reach target straightens the leg to its natural length without
+/// hyperextending. Pure and side-effect free for direct unit testing.
+#[allow(clippy::too_many_arguments)]
+fn solve_two_bone(
+    hip: Vec3,
+    knee: Vec3,
+    ankle: Vec3,
+    target: Vec3,
+    hip_model_rot: Quat,
+    knee_model_rot: Quat,
+    hip_local: Quat,
+    knee_local: Quat,
+) -> (Quat, Quat) {
+    let lab = (knee - hip).length();
+    let lcb = (ankle - knee).length();
+    if lab < IK_EPS || lcb < IK_EPS {
+        // Degenerate bone lengths — nothing sound to solve; keep the clip pose.
+        return (hip_local, knee_local);
+    }
+    // Clamp reach so the leg never hyperextends past its segment sum.
+    let lat = (target - hip).length().clamp(IK_EPS, lab + lcb - IK_EPS);
+
+    let ca = (ankle - hip).normalize_or_zero();
+    let ba = (knee - hip).normalize_or_zero();
+    let ab = (hip - knee).normalize_or_zero();
+    let cb = (ankle - knee).normalize_or_zero();
+    let ta = (target - hip).normalize_or_zero();
+
+    // Current interior angles at the hip and knee, plus the swing needed to aim
+    // the current ankle direction at the target.
+    let ac_ab_0 = ca.dot(ba).clamp(-1.0, 1.0).acos();
+    let ba_bc_0 = ab.dot(cb).clamp(-1.0, 1.0).acos();
+    let ac_at_0 = ca.dot(ta).clamp(-1.0, 1.0).acos();
+
+    // Desired interior angles from the law of cosines at the clamped reach.
+    let ac_ab_1 = ((lab * lab + lat * lat - lcb * lcb) / (2.0 * lab * lat))
+        .clamp(-1.0, 1.0)
+        .acos();
+    let ba_bc_1 = ((lab * lab + lcb * lcb - lat * lat) / (2.0 * lab * lcb))
+        .clamp(-1.0, 1.0)
+        .acos();
+
+    // Bend-plane normal (axis0) and swing axis (axis1), in model space.
+    let axis0 = (ankle - hip).cross(knee - hip).normalize_or_zero();
+    let axis1 = (ankle - hip).cross(target - hip).normalize_or_zero();
+
+    // Swing that aims the current ankle direction at the target, applied to the
+    // hip. Well defined even for a straight leg.
+    let hip_swing = if axis1 == Vec3::ZERO {
+        Quat::IDENTITY
+    } else {
+        Quat::from_axis_angle(hip_model_rot.inverse() * axis1, ac_at_0)
+    };
+
+    if axis0 == Vec3::ZERO {
+        // Straight leg: the bend plane is undefined, so only swing toward target
+        // (and let the reach clamp keep it from hyperextending).
+        let hip_out = (hip_local * hip_swing).normalize();
+        return (hip_out, knee_local);
+    }
+
+    let hip_bend = Quat::from_axis_angle(hip_model_rot.inverse() * axis0, ac_ab_1 - ac_ab_0);
+    let knee_bend = Quat::from_axis_angle(knee_model_rot.inverse() * axis0, ba_bc_1 - ba_bc_0);
+
+    let hip_out = (hip_local * (hip_bend * hip_swing)).normalize();
+    let knee_out = (knee_local * knee_bend).normalize();
+    (hip_out, knee_out)
+}
+
+/// Foot local rotation that tilts the sole (the foot's model-space +Y) toward
+/// `normal`, capped at [`MAX_FOOT_ALIGN`]. Returns the input `foot_local`
+/// unchanged when the normal or the foot frame is degenerate.
+fn orient_foot_local(
+    foot_model_rot: Quat,
+    parent_model_rot: Quat,
+    foot_local: Quat,
+    normal: Vec3,
+) -> Quat {
+    let n = normal.normalize_or_zero();
+    if n == Vec3::ZERO {
+        return foot_local;
+    }
+    let foot_up = (foot_model_rot * Vec3::Y).normalize_or_zero();
+    if foot_up == Vec3::ZERO {
+        return foot_local;
+    }
+    let (axis, angle) = Quat::from_rotation_arc(foot_up, n).to_axis_angle();
+    let align = Quat::from_axis_angle(axis, angle.min(MAX_FOOT_ALIGN));
+    let new_model = align * foot_model_rot;
+    (parent_model_rot.inverse() * new_model).normalize()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use glam::Vec3;
+    use postretro_foundation::pose::FootProbe;
 
     use crate::skeleton::{Joint, RestLocal};
+
+    // ---- Foot-IK fixtures --------------------------------------------------
+
+    fn skeleton_from_parents(parents: &[Option<usize>]) -> Skeleton {
+        Skeleton {
+            joints: parents
+                .iter()
+                .map(|&parent| Joint {
+                    parent,
+                    inverse_bind: glam::Mat4::IDENTITY.to_cols_array_2d(),
+                    rest_local: RestLocal::default(),
+                })
+                .collect(),
+        }
+    }
+
+    fn local_at(translation: Vec3) -> LocalTrs {
+        LocalTrs {
+            translation,
+            rotation: Quat::IDENTITY,
+            scale: Vec3::ONE,
+        }
+    }
+
+    fn leg_mask(joints: [usize; 3]) -> JointMask {
+        let mut mask = JointMask::new();
+        for j in joints {
+            assert!(mask.insert(j));
+        }
+        mask
+    }
+
+    /// A single hip→knee→ankle chain (joints 0,1,2) with a slight forward knee
+    /// bend so the bend plane is well defined. Model-space ankle rests at
+    /// `(0, -2, 0)`.
+    fn single_leg() -> (Skeleton, Vec<LocalTrs>) {
+        let skeleton = skeleton_from_parents(&[None, Some(0), Some(1)]);
+        let locals = vec![
+            local_at(Vec3::ZERO),
+            local_at(Vec3::new(0.0, -1.0, 0.2)),
+            local_at(Vec3::new(0.0, -1.0, -0.2)),
+        ];
+        (skeleton, locals)
+    }
+
+    fn foot_ik_stack(legs: Vec<LegChain>) -> PoseModifierStack {
+        PoseModifierStack::new(vec![ModifierEntry {
+            mask: JointMask::new(),
+            modifier: PoseModifier::FootIk { legs },
+        }])
+    }
+
+    fn inputs_with_feet(feet: &[FootProbe]) -> PoseInputs {
+        let mut inputs = PoseInputs::default();
+        for (i, probe) in feet.iter().enumerate() {
+            inputs.feet[i] = *probe;
+        }
+        inputs.foot_count = feet.len() as u8;
+        inputs
+    }
+
+    fn model_pos(skeleton: &Skeleton, locals: &[LocalTrs], joint: usize) -> Vec3 {
+        joint_model_transform(skeleton, locals, joint).0
+    }
+
+    #[test]
+    fn foot_ik_plants_ankle_at_flat_contact_height() {
+        let (skeleton, mut locals) = single_leg();
+        // Clip ankle rests at y = -2; ground sits at -1.8, so the foot is planted
+        // and must lift to the surface.
+        let stack = foot_ik_stack(vec![LegChain {
+            chain_mask: leg_mask([0, 1, 2]),
+            foot_joint: 2,
+        }]);
+        let inputs = inputs_with_feet(&[FootProbe {
+            contact_height: -1.8,
+            normal: Vec3::Y,
+            hit: true,
+        }]);
+
+        apply_pose_modifier_stack(&stack, &inputs, &skeleton, &mut locals);
+
+        let ankle = model_pos(&skeleton, &locals, 2);
+        assert!((ankle.y - -1.8).abs() < 1e-3, "ankle y = {}", ankle.y);
+        assert!(ankle.x.abs() < 1e-3 && ankle.z.abs() < 1e-3, "ankle xz = {ankle:?}");
+    }
+
+    #[test]
+    fn foot_ik_orients_foot_toward_sloped_ground_normal() {
+        let (skeleton, mut locals) = single_leg();
+        // A ~16° slope normal, comfortably inside the foot-align cap.
+        let normal = Vec3::new(0.3, 1.0, 0.0).normalize();
+        let stack = foot_ik_stack(vec![LegChain {
+            chain_mask: leg_mask([0, 1, 2]),
+            foot_joint: 2,
+        }]);
+        let inputs = inputs_with_feet(&[FootProbe {
+            contact_height: -1.8,
+            normal,
+            hit: true,
+        }]);
+
+        apply_pose_modifier_stack(&stack, &inputs, &skeleton, &mut locals);
+
+        // Planted at the sloped contact height...
+        let ankle = model_pos(&skeleton, &locals, 2);
+        assert!((ankle.y - -1.8).abs() < 1e-3, "ankle y = {}", ankle.y);
+        // ...with the sole (foot model +Y) aligned to the ground normal.
+        let foot_rot = joint_model_transform(&skeleton, &locals, 2).1;
+        let foot_up = foot_rot * Vec3::Y;
+        assert!(foot_up.dot(normal) > 0.999, "foot_up = {foot_up:?}, normal = {normal:?}");
+    }
+
+    #[test]
+    fn two_bone_solve_clamps_out_of_reach_without_hyperextension() {
+        // Reach the ankle at a target far below the leg's segment sum. The solve
+        // must straighten the leg to its natural length, never past it.
+        let hip = Vec3::ZERO;
+        let knee_offset = Vec3::new(0.0, -1.0, 0.2);
+        let ankle_offset = Vec3::new(0.0, -1.0, -0.2);
+        let knee = hip + knee_offset;
+        let ankle = knee + ankle_offset;
+        let segment_sum = knee_offset.length() + ankle_offset.length();
+        let target = Vec3::new(0.0, -5.0, 0.0); // |target - hip| = 5 >> segment_sum
+
+        let (hip_rot, knee_rot) = solve_two_bone(
+            hip,
+            knee,
+            ankle,
+            target,
+            Quat::IDENTITY,
+            Quat::IDENTITY,
+            Quat::IDENTITY,
+            Quat::IDENTITY,
+        );
+
+        // Forward-compose the solved local rotations back to model positions.
+        let knee_solved = hip + hip_rot * knee_offset;
+        let ankle_solved = knee_solved + (hip_rot * knee_rot) * ankle_offset;
+
+        let reach = (ankle_solved - hip).length();
+        // Reached its full length, but not hyperextended past the segment sum.
+        assert!(reach <= segment_sum + 1e-3, "reach {reach} > segment sum {segment_sum}");
+        assert!((reach - segment_sum).abs() < 1e-2, "leg did not extend: reach {reach}");
+        // And nowhere near the unreachable target height.
+        assert!(ankle_solved.y > -3.0, "ankle overshot toward target: {ankle_solved:?}");
+        // Knee interior angle is straight (hip and ankle directions opposed).
+        let to_hip = (hip - knee_solved).normalize();
+        let to_ankle = (ankle_solved - knee_solved).normalize();
+        assert!(to_hip.dot(to_ankle) < -0.999, "knee not straightened: {}", to_hip.dot(to_ankle));
+    }
+
+    #[test]
+    fn foot_ik_miss_keeps_leg_on_clip_pose() {
+        let (skeleton, mut locals) = single_leg();
+        let before = locals.clone();
+        let stack = foot_ik_stack(vec![LegChain {
+            chain_mask: leg_mask([0, 1, 2]),
+            foot_joint: 2,
+        }]);
+        // Probe reports no ground: the leg must stay exactly on its clip pose.
+        let inputs = inputs_with_feet(&[FootProbe {
+            contact_height: -1.8,
+            normal: Vec3::Y,
+            hit: false,
+        }]);
+
+        apply_pose_modifier_stack(&stack, &inputs, &skeleton, &mut locals);
+
+        assert_eq!(locals, before);
+    }
+
+    #[test]
+    fn foot_ik_swing_foot_keeps_clip_lift() {
+        let (skeleton, mut locals) = single_leg();
+        let before = locals.clone();
+        let stack = foot_ik_stack(vec![LegChain {
+            chain_mask: leg_mask([0, 1, 2]),
+            foot_joint: 2,
+        }]);
+        // Ground sits at -2.5, well below the clip ankle at -2: the clip is
+        // lifting the foot in swing, so the plant weight ramps fully to clip.
+        let inputs = inputs_with_feet(&[FootProbe {
+            contact_height: -2.5,
+            normal: Vec3::Y,
+            hit: true,
+        }]);
+
+        apply_pose_modifier_stack(&stack, &inputs, &skeleton, &mut locals);
+
+        // Clip lift preserved: nothing pulled the swinging foot down to ground.
+        assert_eq!(locals, before);
+        assert!((model_pos(&skeleton, &locals, 2).y - -2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn foot_ik_solves_each_of_more_than_two_legs_independently() {
+        // A root with three legs (not biped-hardcoded): one two-bone solve per
+        // leg, each driven by its own probe.
+        let skeleton = skeleton_from_parents(&[
+            None,     // 0 root
+            Some(0),  // 1 hip A
+            Some(1),  // 2 knee A
+            Some(2),  // 3 ankle A
+            Some(0),  // 4 hip B
+            Some(4),  // 5 knee B
+            Some(5),  // 6 ankle B
+            Some(0),  // 7 hip C
+            Some(7),  // 8 knee C
+            Some(8),  // 9 ankle C
+        ]);
+        let knee_offset = Vec3::new(0.0, -1.0, 0.2);
+        let ankle_offset = Vec3::new(0.0, -1.0, -0.2);
+        let mut locals = vec![local_at(Vec3::ZERO); 10];
+        for (hip, x) in [(1usize, -1.0), (4, 0.0), (7, 1.0)] {
+            locals[hip] = local_at(Vec3::new(x, 0.0, 0.0));
+            locals[hip + 1] = local_at(knee_offset);
+            locals[hip + 2] = local_at(ankle_offset);
+        }
+
+        let stack = foot_ik_stack(vec![
+            LegChain {
+                chain_mask: leg_mask([1, 2, 3]),
+                foot_joint: 3,
+            },
+            LegChain {
+                chain_mask: leg_mask([4, 5, 6]),
+                foot_joint: 6,
+            },
+            LegChain {
+                chain_mask: leg_mask([7, 8, 9]),
+                foot_joint: 9,
+            },
+        ]);
+        // Distinct ground heights per leg prove independence.
+        let inputs = inputs_with_feet(&[
+            FootProbe { contact_height: -1.9, normal: Vec3::Y, hit: true },
+            FootProbe { contact_height: -1.7, normal: Vec3::Y, hit: true },
+            FootProbe { contact_height: -1.5, normal: Vec3::Y, hit: true },
+        ]);
+
+        apply_pose_modifier_stack(&stack, &inputs, &skeleton, &mut locals);
+
+        for (ankle, expected_y, expected_x) in [(3usize, -1.9, -1.0), (6, -1.7, 0.0), (9, -1.5, 1.0)] {
+            let pos = model_pos(&skeleton, &locals, ankle);
+            assert!((pos.y - expected_y).abs() < 1e-3, "ankle {ankle} y = {}", pos.y);
+            assert!((pos.x - expected_x).abs() < 1e-3, "ankle {ankle} x = {}", pos.x);
+            assert!(pos.z.abs() < 1e-3, "ankle {ankle} z = {}", pos.z);
+        }
+    }
 
     #[test]
     fn joint_mask_covers_full_joint_limit_in_topological_order() {

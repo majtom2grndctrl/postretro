@@ -645,7 +645,12 @@ fn conditioned_link_delivers_and_materializes_enemy_before_spawn_windup_expires(
         let mut link = mandated_link();
         link.seed = 0xE18C_0000 + seed_offset;
         let mut h = EnemyReplicationHarness::new(link);
-        let enemy = spawn_host_ai_enemy(&mut h.host_registry, ENEMY_CLASS, Vec3::ZERO);
+        let enemy = spawn_host_ai_enemy(
+            &mut h.host_registry,
+            ENEMY_CLASS,
+            Vec3::ZERO,
+            DescriptorSpawnPath::RuntimeSpawn,
+        );
         h.host_register_enemies();
         let net_id = h.enemy_network_id(enemy);
 

@@ -996,7 +996,11 @@ mod tests {
         .expect("tag-targeted spawner command binds");
         assert_eq!(command.kind(), BoundTriggerCommandKind::Spawn);
 
-        for target in [None, Some(BoundTarget::Activators), Some(BoundTarget::FiredTrigger)] {
+        for target in [
+            None,
+            Some(BoundTarget::Activators),
+            Some(BoundTarget::FiredTrigger),
+        ] {
             assert!(
                 bind_command("spawnFromSpawner", target, &args, &slots, None).is_none(),
                 "spawnFromSpawner must reject an absent or special target"

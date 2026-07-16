@@ -235,7 +235,26 @@ fn resolve_mesh_entity_clips(
         })
         .collect();
 
-    for id in animated {
+    resolve_mesh_entity_clips_for_entities(registry, tables, animated);
+}
+
+/// Resolve clip indices for a known set of newly materialized mesh entities.
+/// Runtime spawners call this through their session-owned pending-id queue after
+/// descriptor attachment; their models were already uploaded at level install.
+fn resolve_mesh_entity_clips_for_entities(
+    registry: &mut postretro_entities::EntityRegistry,
+    tables: &scripting_systems::mesh_anim::MeshClipTables,
+    entity_ids: impl IntoIterator<Item = postretro_entities::EntityId>,
+) {
+    use postretro_entities::ComponentKind;
+
+    for id in entity_ids {
+        if !matches!(
+            registry.has_component_kind(id, ComponentKind::Mesh),
+            Ok(true)
+        ) {
+            continue;
+        }
         let Ok(mut component) = registry
             .get_component::<postretro_entities::components::mesh::MeshComponent>(id)
             .cloned()
@@ -1993,6 +2012,20 @@ impl ApplicationHandler for App {
                                 script_ctx: Some(script_ctx.clone()),
                                 use_edges: &trigger_use_edges,
                             }),
+                        );
+                        // A runtime-spawned host enemy receives a mesh only
+                        // after the install-time whole-registry clip resolve.
+                        // Drain its one-shot queue now: its archetype model and
+                        // clip table were preloaded from the map spawner, so this
+                        // is solely an animation-index fill, never a GPU upload.
+                        let spawned_meshes = session
+                            .scripting
+                            .spawn_context
+                            .take_pending_mesh_clip_resolves();
+                        resolve_mesh_entity_clips_for_entities(
+                            &mut script_ctx.registry.borrow_mut(),
+                            &session.mesh_clip_tables,
+                            spawned_meshes,
                         );
                         scripting_systems::slot_accumulators::evaluate_slot_accumulators(
                             &mut session.scripting.slot_accumulator_bindings,
@@ -7541,6 +7574,84 @@ mod tests {
             .expect("animation block present");
         assert_eq!(anim.states.get("idle").unwrap().clip_index, Some(0));
         assert_eq!(anim.states.get("attack").unwrap().clip_index, Some(1));
+    }
+
+    #[test]
+    fn spawner_only_archetype_is_preuploaded_for_both_roles_and_host_spawn_resolves_clips() {
+        use crate::scripting::builtins::data_archetype_test_fixtures::ai_enemy_descriptor;
+        use postretro_entities::components::mesh::MeshComponent;
+        use postretro_entities::components::spawner::SpawnerComponent;
+        use postretro_entities::{ComponentKind, EntityRegistry, Transform};
+
+        let mut descriptor = ai_enemy_descriptor("spawner_only");
+        descriptor.mesh.as_mut().unwrap().model = "models/spawner_only.gltf".to_string();
+        let descriptors = vec![descriptor.clone()];
+
+        // There is no pre-placed enemy mesh: both role-specific upload sets must
+        // discover this model through the resolved map spawner alone.
+        let mut registry = EntityRegistry::new();
+        let spawner = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                spawner,
+                SpawnerComponent {
+                    archetype_name: "spawner_only".to_string(),
+                    count: 1,
+                    resolved: true,
+                },
+            )
+            .unwrap();
+        assert!(distinct_mesh_models(&registry).is_empty());
+        let spawner_models =
+            crate::startup::lifecycle::resolved_spawner_mesh_models(&registry, &descriptors);
+        let host_upload_models = spawner_models.clone();
+        let client_upload_models = spawner_models;
+        assert_eq!(host_upload_models, vec!["models/spawner_only.gltf"]);
+        assert_eq!(client_upload_models, host_upload_models);
+
+        // This stands in for the renderer install hook: the shared upload union
+        // builds the clip table before either host spawn or client remote
+        // materialization can attach the mesh.
+        let mut tables = scripting_systems::mesh_anim::MeshClipTables::new();
+        tables.insert_with_bounds(
+            postretro_model::ModelHandle::from("models/spawner_only.gltf"),
+            &[
+                postretro_render_cpu::mesh_pass::ClipMetadata {
+                    name: "idle_clip".to_string(),
+                    duration: 2.0,
+                },
+                postretro_render_cpu::mesh_pass::ClipMetadata {
+                    name: "attack_clip".to_string(),
+                    duration: 0.8,
+                },
+            ],
+            postretro_render_data::cone_frustum::Aabb::default(),
+        );
+
+        let context = crate::spawner::SpawnContext::default();
+        context.replace_level_data(
+            [("spawner_only".to_string(), descriptor)]
+                .into_iter()
+                .collect(),
+            None,
+        );
+        crate::spawner::spawn_from_spawner_targets(&mut registry, &[spawner], &context);
+
+        let spawned = registry
+            .iter_with_kind(ComponentKind::Mesh)
+            .map(|(id, _)| id)
+            .collect::<Vec<_>>();
+        assert_eq!(spawned.len(), 1);
+        resolve_mesh_entity_clips_for_entities(
+            &mut registry,
+            &tables,
+            context.take_pending_mesh_clip_resolves(),
+        );
+
+        let mesh = registry.get_component::<MeshComponent>(spawned[0]).unwrap();
+        let animation = mesh.animation.as_ref().unwrap();
+        assert_eq!(animation.states["idle"].clip_index, Some(0));
+        assert_eq!(animation.states["attack"].clip_index, Some(1));
     }
 
     #[test]

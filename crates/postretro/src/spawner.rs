@@ -28,6 +28,9 @@ pub(crate) struct SpawnContextState {
     pub(crate) agent_params: Option<NavAgentParams>,
     /// Task 2 uses this for one warning per missing spawner tag per level.
     pub(crate) warned_zero_match_tags: HashSet<String>,
+    /// Runtime-spawned mesh entities awaiting their already-built install-time
+    /// clip table. Drained once by the host after attachment.
+    pending_mesh_clip_resolves: Vec<EntityId>,
     warned_capacity_exhaustion: bool,
 }
 
@@ -49,6 +52,7 @@ impl SpawnContext {
             resolved_enemy_descriptors,
             agent_params,
             warned_zero_match_tags: HashSet::new(),
+            pending_mesh_clip_resolves: Vec::new(),
             warned_capacity_exhaustion: false,
         };
     }
@@ -59,6 +63,14 @@ impl SpawnContext {
 
     pub(crate) fn state(&self) -> std::cell::Ref<'_, SpawnContextState> {
         self.state.borrow()
+    }
+
+    pub(crate) fn take_pending_mesh_clip_resolves(&self) -> Vec<EntityId> {
+        std::mem::take(&mut self.state.borrow_mut().pending_mesh_clip_resolves)
+    }
+
+    fn queue_mesh_clip_resolve(&self, id: EntityId) {
+        self.state.borrow_mut().pending_mesh_clip_resolves.push(id);
     }
 
     fn warn_zero_match_tag_once(&self, tag: &str) {
@@ -175,6 +187,16 @@ fn spawn_resolved_spawners(
                 DescriptorSpawnPath::RuntimeSpawn,
                 agent_params,
             );
+            if matches!(
+                registry.has_component_kind(enemy, ComponentKind::Mesh),
+                Ok(true)
+            ) {
+                // The model was uploaded and its clip table was built during
+                // level install from the resolved spawner archetype. Queue only
+                // this new entity for a host-side index fill; never upload in
+                // the fixed-tick path.
+                context.queue_mesh_clip_resolve(enemy);
+            }
             // `attach_brain` initializes this timer to zero. Seed only after the
             // descriptor has attached its components so a newly spawned enemy
             // cannot attack before remote interpolation's maximum delay has

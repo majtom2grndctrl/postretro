@@ -45,9 +45,10 @@ holds), so there is no gate verb to name.
 ### In scope
 
 - **Aggro gate on `BrainComponent`** — a boolean gate (working name `aggro_armed`, default open).
-  While closed: no target acquisition, no steering, holds current position and `LogicalState`;
-  Transform untouched, so it replicates as a stationary Idle enemy. Damage, health, and death still
-  process — a gated enemy is killable.
+  While closed the brain is held at a fresh-Idle presentation: no acquisition, no steering, no
+  facing or animation write; `acquired_target` and the steering destination are cleared, so its
+  Transform is untouched and it replicates as a stationary Idle enemy. Damage, health, and death
+  still process — a gated enemy is killable.
 - **Gate seeding** from an `enabled_on_spawn = false` KVP on an AI-enemy map placement, read where
   `attach_descriptor_components` consumes placement KVPs. This is a **new bare-KVP read**: on a
   trigger volume `enabled_on_spawn` is a compiler-validated wire field, but on an enemy placement it
@@ -121,63 +122,84 @@ holds), so there is no gate verb to name.
       idle-settle path exempts a destination-less agent from separation.
 - [ ] SDK TS and Luau emit byte-identical `updateEnemyState` descriptors; the typedef drift check
       passes after regeneration.
-- [ ] No new wire surface: a gated enemy's snapshot carries no gate field; it replicates via its
-      existing Transform as a stationary Idle enemy (snapshot shape unchanged from a non-gated
-      stationary enemy).
+- [ ] No new wire surface: a gated enemy's snapshot carries no gate field (a grep/review gate over
+      the wire structs, not a runnable test — `BrainComponent` is engine-internal, never serialized
+      into a snapshot); it replicates via its existing Transform as a stationary Idle enemy — the
+      "snapshot shape unchanged from a non-gated stationary enemy" half is runnable and depends on the
+      Task 1 closed-gate rule holding (no facing/animation write while gated).
 
 ## Tasks
 
 ### Task 1: Aggro gate on `BrainComponent` + FSM / steering gating + seeding
 
 Add the gate field to `BrainComponent` (`crates/entities/src/components/brain.rs`) — a boolean
-(working name `aggro_armed`, default open). In `run_ai_tick_with_navigation`
-(`crates/postretro/src/scripting/systems/ai.rs`), a gated brain does not run `evaluate_transition`,
-does not steer, and holds its current position and `LogicalState` (Idle/Alert/Attack/Death,
-`brain.rs`) — its Transform is untouched, so it replicates as a stationary Idle enemy. Gate only
-the not-dead FSM/steering block: the tick's every-tick zero-HP → Death transition, death countdown,
-and despawn stay live, or a killed gated enemy never despawns. Closing the gate clears the agent's
-steering destination (the `SteeringIntent::Clear` path): a destination-less agent takes the
-idle-settle early-continue in `agent_steering.rs` and receives no separation push, so no separate
-separation-pass guard is needed — and a re-closed mid-chase enemy stops rather than coasting to a
-stale destination. Damage, health, and death paths are untouched — a gated enemy can be killed.
+(working name `aggro_armed`), `#[serde(default)]` returning `true` (open) so existing serialized
+`BrainComponent` data still loads (mirror the `acquired_target` / `locomotion_moving` fields).
+
+**Closed-gate rule (one rule, in `run_ai_tick_with_navigation`,
+`crates/postretro/src/scripting/systems/ai.rs`).** A gated brain is reset to and held at a
+fresh-Idle presentation: `acquired_target` cleared, steering destination cleared via
+`SteeringIntent::Clear`, Idle animation and facing. While closed it skips `evaluate_transition` and
+steering and writes nothing to its Transform — so an enemy sealed pre-reveal and an enemy re-closed
+mid-chase both read as a stationary Idle enemy (AC3, AC10). The facing pass (`ai.rs`) and the
+animation-state write must honor the gate too, or a re-closed `Alert` enemy keeps
+rotating/animating. A destination-less agent takes the idle-settle early-continue in
+`agent_steering.rs` and gets no separation push, so no separation-pass edit is needed.
+
+**Gate only this not-dead block** — the every-tick zero-HP → Death transition, death countdown, and
+despawn stay live, or a killed gated enemy never despawns. Damage, health, and death paths are
+untouched: a gated enemy can be killed.
+
 Seed the gate closed from an `enabled_on_spawn = false` KVP on an AI-enemy placement, read where
 `attach_descriptor_components` (`data_archetype.rs`) consumes placement KVPs; `parse_bool`, bare-KVP
-exception comment, absent/malformed → warn and default open. The seed is not a
-`DescriptorMapOverride` (that enum is closed to light/emitter), so ensure a descriptor hot-reload
-re-applies it, or document reload-reopens-the-gate as a dev-only limitation.
+exception comment, absent/malformed → warn and default open. Add the `enabled_on_spawn` bool to the
+AI-enemy classes in the hand-authored FGD (`sdk/TrenchBroom/postretro.fgd`) so it is authorable. The
+seed is not a `DescriptorMapOverride` (that enum is closed to light/emitter), so ensure a descriptor
+hot-reload re-applies it, or document reload-reopens-the-gate as a dev-only limitation.
 
 ### Task 2: `updateEnemyState` consequential primitive + Brain-tag executor
 
 Add one consequential verb `updateEnemyState` carrying a typed partial `{ aggro?: bool }` (one key
-today; the args type grows by key). Register it in `CONSEQUENTIAL_PRIMITIVES`, add a `bind_command`
-arm (`crates/postretro/src/trigger_bindings.rs`) → `BoundTriggerCommand::UpdateEnemyState { aggro:
-Option<bool> }` (`crates/postretro/src/trigger_commands.rs`), and add it to the
-`is_trigger_consequential_primitive` mirror (`crates/scripting-core/src/reaction_dispatch.rs`)
-backing the double-execution debug asserts. The fixed-tick executor (`execute_non_store`) resolves
-the tag against the live **Brain** set — `query_by_component_and_tag(Brain, tag)`, not the
-Transform-keyed `BoundTarget::resolve` — and applies each present field to the matched brains
-(`aggro` → `aggro_armed`). The app-drain arm (`register_*_reaction_primitives`) receives targets
-pre-resolved by Transform (`reaction_dispatch.rs`), so its handler filters to Brain-bearing
-entities. An empty tag resolution is a `debug`-logged no-op, not a warn — for fire-time-tag an empty
-match is legitimate (the group may be unspawned or fully killed); matches the shipped `applyDamage`
-empty-set behavior. A distinct Brain-targeted command, **not** an extension of the trigger-mutation
-chokepoint (`apply_trigger_mutation_to_targets`) — enemy state and trigger arming are separate
-concerns. No wire surface: the fields are host-side sim state; their effect reaches clients through
-the enemy's existing Transform replication.
+today; the args type grows by key) — with `#[serde(deny_unknown_fields)]` on the args struct so an
+unknown key is rejected at parse, not silently dropped. Register it in `CONSEQUENTIAL_PRIMITIVES`,
+add a `bind_command` arm (`crates/postretro/src/trigger_bindings.rs`) →
+`BoundTriggerCommand::UpdateEnemyState { target: BoundTarget, aggro: Option<bool> }` — carry the
+bound target like the sibling consequential commands (`crates/postretro/src/trigger_commands.rs`), or
+the variant is un-resolvable at fire time. Add it to the `is_trigger_consequential_primitive` mirror
+(`crates/scripting-core/src/reaction_dispatch.rs`) too; the two lists must stay in sync or the
+double-execution debug assert fires. `bind_command`'s target helper already warn-skips a tag-less
+binding, so a tag-less `updateEnemyState` never binds (decision: reject tag-less). The fixed-tick
+executor (`execute_non_store`) acts only on `BoundTarget::Tag` — it resolves the tag against the live
+**Brain** set, `query_by_component_and_tag(ComponentKind::Brain, tag)` (not the Transform-keyed
+`BoundTarget::resolve`) — and logs+skips any other target kind (`@activators` / `@trigger` are
+nonsensical for an enemy group). Applying a partial to a matched brain (`aggro` → `aggro_armed`) is
+one shared per-brain helper both dispatch arms call. The app-drain arm
+(`register_*_reaction_primitives`) receives targets pre-resolved by Transform (`reaction_dispatch.rs`),
+so it filters to Brain-bearing entities before that helper. An empty tag resolution is a
+`debug`-logged no-op, not a warn — for fire-time-tag an empty match is legitimate (the group may be
+unspawned or fully killed); matches the shipped `applyDamage` empty-set behavior. A distinct
+Brain-targeted command, **not** an extension of the trigger-mutation chokepoint
+(`apply_trigger_mutation_to_targets`) — enemy state and trigger arming are separate concerns. No wire
+surface: the fields are host-side sim state; their effect reaches clients through the enemy's existing
+Transform replication.
 
 ### Task 3: SDK `enemies({ tag }).update({ ... })` handle + typedefs + validators + parity
 
 Add the enemy-group selector and handle under `sdk/lib/` — a new `sdk/lib/entities/enemies.ts`
 exporting `enemies(filter: { tag?: string }): EnemyGroup`, wrapped into the SDK surface
-(`sdk/lib/index.ts` / `prelude.ts` alongside `damage`). `EnemyGroup` carries one method,
-`update(fields: { aggro?: boolean })`, returning a single `PrimitiveReactionDescriptor`
-(`{ primitive: "updateEnemyState", tag, args: fields }`) — the `damage(tag)` builder is the template
-(`sdk/lib/data_script.ts:204`). Mirror in Luau. Extend the typedef templates
-(`crates/scripting-core/src/typedef/templates/`) with the `update`-args type, regenerate
-`postretro.d.ts` / `.d.luau`, update the drift snapshot, add TS/Luau parity fixtures. Validators
-accept `updateEnemyState`, reject an unknown key or a mistyped field, reject a descriptor with no
-`tag` (the filter's `tag` is optional in the type only so future filter keys can join it — a
-tag-less selector has nothing to resolve today), and treat an empty partial as a no-op. No `world.query` filter change — the enemy selector is its own fire-time-tag path.
+(`sdk/lib/index.ts` / `prelude.ts` alongside `damage`) **and added to the Rust-side Luau global
+allowlist `DATA_SCRIPT_FIELDS` (`luau_prelude.rs`)** — an unlisted global is never lifted after the
+Luau data script evaluates, so the parity fixture would fail on an undefined `enemies`. `EnemyGroup`
+carries one method, `update(fields: { aggro?: boolean })`, returning a single
+`PrimitiveReactionDescriptor` (`{ primitive: "updateEnemyState", tag, args: fields }`) — the
+`damage(tag)` builder is the template (`sdk/lib/data_script.ts:204`). Mirror in Luau. Extend the
+typedef templates (`crates/scripting-core/src/typedef/templates/`) with the `update`-args type,
+regenerate `postretro.d.ts` / `.d.luau`, update the drift snapshot, add TS/Luau parity fixtures.
+The rejection surface is not a standalone parse-time validator (the descriptor parser passes `args`
+through opaque, per primitive): **unknown-key / mistyped-field** rejection is the TS/Luau
+`update({ aggro?: boolean })` method type plus Task 2's `#[serde(deny_unknown_fields)]` args struct;
+**tag-less** rejection is Task 2's bind-time target helper; an **empty partial** is a no-op. No
+`world.query` filter change — the enemy selector is its own fire-time-tag path.
 
 ## Sequencing
 
@@ -192,7 +214,7 @@ Task 3 regenerates typedefs from the verb Task 2 registers. Task 1 and Task 2 ar
 | Name | Rust | Wire / serde | JS / TS | Luau | FGD KVP |
 |---|---|---|---|---|---|
 | Aggro gate | `BrainComponent` `aggro_armed` | not on the wire | n/a | n/a | `enabled_on_spawn` (bool, enemy placement) |
-| Enemy update verb | `BoundTriggerCommand::UpdateEnemyState { aggro: Option<bool> }` | reaction descriptor `"updateEnemyState"` | `"updateEnemyState"` | same | n/a |
+| Enemy update verb | `BoundTriggerCommand::UpdateEnemyState { target: BoundTarget, aggro: Option<bool> }` | reaction descriptor `"updateEnemyState"` | `"updateEnemyState"` | same | n/a |
 | Enemy selector | `query_by_component_and_tag(Brain, tag)` | n/a | `enemies({ tag })` | same | n/a |
 | Enemy handle | n/a | n/a | `EnemyGroup.update({ aggro })` | same | n/a |
 

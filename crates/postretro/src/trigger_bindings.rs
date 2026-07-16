@@ -786,6 +786,7 @@ fn bind_store_slot(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use postretro_entities::components::health::HealthComponent;
     use postretro_entities::{
         NumericRange, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue, Transform,
         TriggerActivation, TriggerFireMode,
@@ -930,6 +931,219 @@ mod tests {
                 .bound_edges()
                 .contains(&(trigger, TriggerEventEdge::Enter))
         );
+    }
+
+    fn health(registry: &mut EntityRegistry) -> EntityId {
+        let id = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                id,
+                HealthComponent {
+                    max: 100.0,
+                    current: 100.0,
+                    hitbox: None,
+                    death_handled: false,
+                    zone_multipliers: Default::default(),
+                    contributor_ledger: Default::default(),
+                },
+            )
+            .unwrap();
+        id
+    }
+
+    #[test]
+    fn activator_target_damages_each_edge_presser_once_and_leaves_bystander_untouched() {
+        let mut registry = EntityRegistry::new();
+        let trigger = spawn_trigger(&mut registry, "presser");
+        let first = health(&mut registry);
+        let second = health(&mut registry);
+        let bystander = health(&mut registry);
+        let mut data = DataRegistry::new();
+        data.populate_level(
+            vec![NamedReaction {
+                name: "presser".into(),
+                descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                    primitive: "applyDamage".into(),
+                    target: Some("@activators".into()),
+                    tag: None,
+                    on_complete: None,
+                    args: serde_json::json!({"amount": 25}),
+                }),
+            }],
+            Vec::new(),
+            &[],
+        );
+        let table = TriggerBindingTable::build(&registry, &data, &SlotTable::new());
+
+        for entrant in [first, second] {
+            table.execute(
+                trigger,
+                TriggerEventEdge::Enter,
+                &mut registry,
+                &mut SlotTable::new(),
+                &TriggerFireContext {
+                    fired_trigger: Some(trigger),
+                    activators: vec![entrant],
+                    occupancy: 2,
+                },
+            );
+        }
+
+        assert_eq!(
+            registry
+                .get_component::<HealthComponent>(first)
+                .unwrap()
+                .current,
+            75.0
+        );
+        assert_eq!(
+            registry
+                .get_component::<HealthComponent>(second)
+                .unwrap()
+                .current,
+            75.0
+        );
+        assert_eq!(
+            registry
+                .get_component::<HealthComponent>(bystander)
+                .unwrap()
+                .current,
+            100.0
+        );
+    }
+
+    #[test]
+    fn fired_trigger_target_disarms_only_its_plate_and_can_rearm_it() {
+        let mut registry = EntityRegistry::new();
+        let first = spawn_trigger(&mut registry, "shared");
+        let second = spawn_trigger(&mut registry, "shared");
+        let mut data = DataRegistry::new();
+        data.populate_level(
+            vec![NamedReaction {
+                name: "shared".into(),
+                descriptor: ReactionDescriptor::Sequence(vec![SequenceStep {
+                    id: SequenceTarget::FiredTrigger,
+                    primitive: "disarmTrigger".into(),
+                    args: serde_json::json!({}),
+                }]),
+            }],
+            Vec::new(),
+            &[],
+        );
+        let disarm = TriggerBindingTable::build(&registry, &data, &SlotTable::new());
+        disarm.execute(
+            first,
+            TriggerEventEdge::Enter,
+            &mut registry,
+            &mut SlotTable::new(),
+            &TriggerFireContext {
+                fired_trigger: Some(first),
+                ..Default::default()
+            },
+        );
+        assert!(
+            !registry
+                .get_component::<TriggerVolumeComponent>(first)
+                .unwrap()
+                .armed
+        );
+        assert!(
+            registry
+                .get_component::<TriggerVolumeComponent>(second)
+                .unwrap()
+                .armed
+        );
+
+        let mut arm_data = DataRegistry::new();
+        arm_data.populate_level(
+            vec![NamedReaction {
+                name: "shared".into(),
+                descriptor: ReactionDescriptor::Sequence(vec![SequenceStep {
+                    id: SequenceTarget::FiredTrigger,
+                    primitive: "armTrigger".into(),
+                    args: serde_json::json!({}),
+                }]),
+            }],
+            Vec::new(),
+            &[],
+        );
+        let arm = TriggerBindingTable::build(&registry, &arm_data, &SlotTable::new());
+        arm.execute(
+            first,
+            TriggerEventEdge::Enter,
+            &mut registry,
+            &mut SlotTable::new(),
+            &TriggerFireContext {
+                fired_trigger: Some(first),
+                ..Default::default()
+            },
+        );
+        assert!(
+            registry
+                .get_component::<TriggerVolumeComponent>(first)
+                .unwrap()
+                .armed
+        );
+    }
+
+    #[test]
+    fn occupancy_input_records_enter_and_exit_effective_counts() {
+        let mut registry = EntityRegistry::new();
+        let trigger = spawn_trigger(&mut registry, "occupancy");
+        let ctx = ScriptCtx::new();
+        ctx.slot_table
+            .borrow_mut()
+            .insert(
+                "trigger.occupancy".into(),
+                SlotRecord::new(SlotSchema {
+                    slot_type: SlotType::Number,
+                    default: Some(SlotValue::Number(0.0)),
+                    range: None,
+                    persist: false,
+                    readonly: false,
+                    ownership: SlotOwnership::Mod,
+                    network: Default::default(),
+                    accumulate: None,
+                }),
+            )
+            .unwrap();
+        let mut data = DataRegistry::new();
+        data.populate_level(
+            vec![primitive(
+                "occupancy",
+                "setState",
+                None,
+                serde_json::json!({
+                    "slot": "trigger.occupancy",
+                    "value": {"op":"input", "name":"@occupancy"}
+                }),
+                None,
+            )],
+            Vec::new(),
+            &[],
+        );
+        let table = TriggerBindingTable::build_with_script_ctx(&registry, &data, &ctx);
+        for count in [2, 1] {
+            table.execute_with_script_ctx(
+                trigger,
+                TriggerEventEdge::Enter,
+                &mut registry,
+                &ctx,
+                &TriggerFireContext {
+                    fired_trigger: Some(trigger),
+                    occupancy: count,
+                    ..Default::default()
+                },
+            );
+            assert_eq!(
+                ctx.slot_table
+                    .borrow()
+                    .get("trigger.occupancy")
+                    .unwrap()
+                    .value,
+                Some(SlotValue::Number(count as f32))
+            );
+        }
     }
 
     #[test]

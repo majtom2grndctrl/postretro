@@ -126,6 +126,10 @@ const TRIGGERS_LUAU_FIELDS: &[&str] = &[];
 /// `data_script.luau`.
 const DATA_SCRIPT_FIELDS: &[&str] = &[
     "defineReaction",
+    "onTriggerEvent",
+    "damage",
+    "armTrigger",
+    "disarmTrigger",
     "scopeReactions",
     "defineEntity",
     "defineMod",

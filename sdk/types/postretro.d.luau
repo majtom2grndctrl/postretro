@@ -489,6 +489,18 @@ export type ThemeTokens = {
   spacing: { [string]: number }?,
 }
 
+--- A trigger-volume enter/exit observer installed by tag.
+export type TriggerEventDescriptor = {
+  --- Trigger-volume tag selector.
+  tag: string,
+  --- Either `enter` or `exit`.
+  event: string,
+  --- Reaction addresses fired in declaration order.
+  fire: {string},
+  --- Optional active-level tag selector.
+  levels: {string}?,
+}
+
 --- Mod manifest consumed from `start-script.ts`'s default export or `start-script.luau`'s chunk return. `defineMod(config)` is a pure typed identity helper for this object; the engine commits its data only after manifest validation succeeds.
 export type ModManifest = {
   --- Human-readable mod name used for diagnostics and UI. Required.
@@ -509,6 +521,8 @@ export type ModManifest = {
   reactions: {NamedReactionDescriptor}?,
   --- Engine-global state-crossing watchers. Optional; survive level unload and compose into active level behavior by `levels` tag selectors.
   crossings: {CrossingDescriptor}?,
+  --- Trigger-volume enter/exit observers. Optional; compose by level tags.
+  triggerEvents: {TriggerEventDescriptor}?,
   --- Engine-global state-store declarations returned by `defineStore(...).declaration`. Optional; commit atomically after the manifest validates and preserve existing values when the schema is identical.
   stores: {StoreDeclaration}?,
 }

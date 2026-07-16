@@ -13,7 +13,7 @@ use postretro_entities::{
 };
 use postretro_foundation::PlayerMovementComponent;
 
-use super::descriptor_class::{descriptor_entity_class, is_networked_ai_map_enemy};
+use super::descriptor_class::{descriptor_entity_class, is_networked_ai_enemy};
 use super::movement_state::movement_state_to_wire;
 use super::{
     HostCommandQueues, MovementOwners, NetworkIdAllocator, component_kind_discriminant,
@@ -22,8 +22,9 @@ use super::{
 
 /// The Phase 2 replicable set: entities `crate::netcode` has explicitly registered
 /// as authoritative networked gameplay objects — slot-owned movement pawns, the
-/// host's own pawn, and map-placed AI enemies (Brain + Agent from a `MapPlacement`
-/// descriptor spawn). This set is the registration mechanism the predicate consults.
+/// host's own pawn, and networked AI enemies (Brain + Agent from a `MapPlacement` or
+/// `RuntimeSpawn` descriptor spawn). This set is the registration mechanism the predicate
+/// consults.
 ///
 /// Membership is by `EntityId`. The predicate ([`is_replicable`]) is the authority
 /// on what crosses the wire — this set is its allow-list, layered over the
@@ -42,7 +43,7 @@ impl ReplicableSet {
     // The register/unregister/contains surface is the registration mechanism for
     // authoritative networked entities: the lifecycle glue registers slot-owned
     // movement pawns and the host's own pawn, and the enemy sweep registers
-    // map-placed AI enemies.
+    // networked AI enemies.
     /// Register an entity as an authoritative networked gameplay object. Idempotent.
     pub(crate) fn register(&mut self, id: EntityId) {
         self.registered.insert(id);
@@ -69,7 +70,7 @@ impl ReplicableSet {
 
 /// Phase 2 replicable-set predicate. An entity replicates iff it is explicitly
 /// registered in [`ReplicableSet`] (slot-owned movement pawns, the host's own pawn,
-/// and map-placed AI enemies — the authoritative networked gameplay objects
+/// and networked AI enemies — the authoritative networked gameplay objects
 /// `crate::netcode` registers). The Phase 1 all-`Transform` walk is deliberately
 /// *not* reused.
 ///
@@ -123,7 +124,7 @@ pub(crate) fn produce_owned_snapshots(
         // Task 4), so the recipient can materialize the matching descriptor-backed
         // component locally. Read from the entity's own `DescriptorProvenance`: a net-slot
         // movement pawn stamps `canonical_name` (the resolved `entity_class`, default
-        // `"player"`); a map-placed AI enemy stamps its descriptor class on any record
+        // `"player"`); a networked AI enemy stamps its descriptor class on any record
         // carrying finite `Transform` data. A non-descriptor entity stays `None`.
         let entity_class = descriptor_entity_class(registry, id, &components);
         snapshots.push(EntitySnapshot {
@@ -219,11 +220,11 @@ pub(crate) fn kinematic_mover_state_to_wire(
     }
 }
 
-/// Register the host's map-placed AI enemies for outbound replication (E10 Task 4):
-/// every entity carrying `Brain` + `Agent` from a `MapPlacement` descriptor spawn
-/// ([`is_networked_ai_map_enemy`]) enters the [`ReplicableSet`] and is stamped a stable
-/// `NetworkId`, so its authoritative `Transform` replicates to clients. Static descriptor
-/// props (a light/mesh/health placement without AI) stay unregistered.
+/// Register the host's networked AI enemies for outbound replication (E10 Task 4): every
+/// entity carrying `Brain` + `Agent` from a `MapPlacement` or `RuntimeSpawn` descriptor spawn
+/// ([`is_networked_ai_enemy`]) enters the [`ReplicableSet`] and is stamped a stable `NetworkId`,
+/// so its authoritative `Transform` replicates to clients. Static descriptor props (a
+/// light/mesh/health placement without AI) stay unregistered.
 ///
 /// Reload-safe and idempotent. `tracked` is the host endpoint's owning set of the
 /// previously-registered enemy ids: on a level reload the freshly-spawned enemies are
@@ -245,7 +246,7 @@ pub(crate) fn host_register_map_enemies(
     let stale_ids: Vec<EntityId> = tracked
         .iter()
         .copied()
-        .filter(|&id| !is_networked_ai_map_enemy(registry, id))
+        .filter(|&id| !is_networked_ai_enemy(registry, id))
         .collect();
     for stale in stale_ids {
         tracked.remove(&stale);
@@ -258,7 +259,7 @@ pub(crate) fn host_register_map_enemies(
 
     let mut count = 0usize;
     for (id, _) in registry.iter_with_kind(ComponentKind::Brain) {
-        if !is_networked_ai_map_enemy(registry, id) {
+        if !is_networked_ai_enemy(registry, id) {
             continue;
         }
         // Stamp the stable session-monotonic NetworkId and register for replication.
@@ -272,7 +273,7 @@ pub(crate) fn host_register_map_enemies(
         }
     }
     if count > 0 {
-        log::info!("[Net] host registered {count} map-placed AI enemy/enemies for replication");
+        log::info!("[Net] host registered {count} networked AI enemy/enemies for replication");
     }
 }
 

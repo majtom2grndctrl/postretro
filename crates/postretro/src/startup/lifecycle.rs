@@ -1078,10 +1078,15 @@ pub(crate) fn resolve_spawners_for_level(
             &spawner.archetype_name,
         ) else {
             diagnostics.missing_archetype += 1;
-            log::warn!(
-                "[Loader] entity_spawner {id}: unknown archetype `{}`; it will spawn nothing",
-                spawner.archetype_name
-            );
+            // Empty archetype_name already warned (absent/empty key) when the
+            // spawner was parsed; don't repeat it as a confusing empty-name
+            // "unknown archetype" here.
+            if !spawner.archetype_name.is_empty() {
+                log::warn!(
+                    "[Loader] entity_spawner {id}: unknown archetype `{}`; it will spawn nothing",
+                    spawner.archetype_name
+                );
+            }
             spawner.resolved = false;
             let _ = registry.set_component(id, spawner);
             continue;

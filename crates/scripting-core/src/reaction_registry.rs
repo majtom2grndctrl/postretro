@@ -41,7 +41,7 @@ impl ReactionPrimitiveRegistry {
             + 'static,
     {
         let name = name.into();
-        if self.handlers.contains_key(&name) {
+        if self.handlers.contains_key(&name) || self.tagged_handlers.contains_key(&name) {
             debug_assert!(false, "duplicate reaction primitive registration: {name}");
             log::warn!(
                 "[Scripting] ReactionPrimitiveRegistry: overwriting existing handler for '{name}'"

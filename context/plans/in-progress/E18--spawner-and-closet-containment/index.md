@@ -285,14 +285,17 @@ replace, it).
 
 ### Task 5: SDK `spawner({ tag }).fire()` handle, typedefs, validators
 
-Add the spawner selector and handle under `sdk/lib/` — `spawner(filter: { tag?: string })` returning
+Add the spawner selector and handle under `sdk/lib/` — `spawner(filter: { tag: string })` returning
 a handle whose `fire()` emits a single `PrimitiveReactionDescriptor`
-(`{ primitive: "spawnFromSpawner", tag }`, no args — `count` lives on the spawner component). This is
+(`{ primitive: "spawnFromSpawner", tag }`, no args — `count` lives on the spawner component). `tag` is
+required: a missing or empty tag is a compile-time/validation error, not a runtime drop — the SDK
+typedefs and the JS/Lua reaction-argument validators reject it. This is
 the fire-time-tag handle family the foundation establishes with `enemies({ tag })`: object-filter
 selector, tag-keyed descriptor, `damage(tag)` builder template (`sdk/lib/data_script.ts:204`). Mirror
 in Luau. Extend the typedef templates (`crates/scripting-core/src/typedef/templates/`), regenerate
 `postretro.d.ts` / `.d.luau`, update the drift snapshot, add TS/Luau parity fixtures. Update the
-reaction-argument validators to accept `spawnFromSpawner` and reject a malformed target. (The
+reaction-argument validators to accept `spawnFromSpawner` and reject a malformed target — including a
+missing or empty `tag`. (The
 fire-time zero-match warn-once — a pre-placed spawner's empty tag is a likely typo, distinct from
 the foundation's fire-time-tag enemy `debug` no-op — is the executor's, specified in Task 2.) No
 arm/disarm SDK work — enemy aggro authoring is the foundation's `enemies({ tag })` handle. No

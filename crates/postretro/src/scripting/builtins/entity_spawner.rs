@@ -1,4 +1,5 @@
 //! Built-in classname handler for `entity_spawner` map entities.
+//! See: context/lib/build_pipeline.md §Built-in Classname Routing
 //!
 //! Descriptor validation happens after all classname dispatch, once the active
 //! level descriptor table is available. This handler only preserves authored

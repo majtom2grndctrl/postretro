@@ -263,7 +263,7 @@ fn is_directly_map_placeable(descriptor: &EntityTypeDescriptor) -> bool {
         || descriptor.health.is_some()
 }
 
-fn ai_capsule_center_from_feet_offset(
+pub(crate) fn ai_capsule_center_from_feet_offset(
     descriptor: &EntityTypeDescriptor,
     agent_params: Option<NavAgentParams>,
 ) -> Vec3 {

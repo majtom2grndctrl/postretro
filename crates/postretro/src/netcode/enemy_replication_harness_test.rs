@@ -631,10 +631,12 @@ fn connected_client_has_exactly_one_remote_enemy_and_no_local_authoritative_copy
 }
 
 // A runtime-spawned enemy uses the same host snapshot → client materialization
-// seam once the host registration sweep has assigned it a NetworkId. Task 3 owns
-// that RuntimeSpawn classifier expansion; this test pins the shared transport and
-// presentation budget against the E15 mandated conditioned-link envelope. The
-// spawner behavior test proves the host cannot attack before this timer expires.
+// seam once the host registration sweep has assigned it a NetworkId: the
+// RuntimeSpawn classifier (descriptor_class::is_networked_ai_enemy) treats
+// MapPlacement and RuntimeSpawn provenance identically, so this test pins the
+// shared transport and presentation budget against the E15 mandated
+// conditioned-link envelope. The spawner behavior test proves the host cannot
+// attack before this timer expires.
 #[test]
 fn conditioned_link_delivers_and_materializes_enemy_before_spawn_windup_expires() {
     let windup_ms = (MAX_DELAY_MICROS / 1000) as VirtualMillis;

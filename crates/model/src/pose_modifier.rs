@@ -331,6 +331,7 @@ mod tests {
                 aim_pitch: f32::MAX,
                 aim_yaw: f32::MAX,
                 heading_yaw: -f32::MAX,
+                ..Default::default()
             },
             &skeleton,
             &mut locals,

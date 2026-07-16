@@ -478,6 +478,7 @@ fn update_pose_inputs(registry: &mut EntityRegistry) {
             aim_pitch,
             aim_yaw,
             heading_yaw,
+            ..Default::default()
         };
         // Single borrow serves both the change check and the clone source, so a
         // stationary/idle crowd whose inputs haven't moved skips the write

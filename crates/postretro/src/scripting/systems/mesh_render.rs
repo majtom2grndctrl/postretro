@@ -1088,6 +1088,7 @@ mod tests {
             aim_pitch: 0.2,
             aim_yaw: 0.7,
             heading_yaw: 0.4,
+            ..Default::default()
         };
         let mut mesh = reg.get_component::<MeshComponent>(id).unwrap().clone();
         mesh.pose_inputs = Some(expected);

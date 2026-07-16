@@ -293,6 +293,10 @@ impl TriggerBindingTable {
             .insert((trigger, edge), TriggerBinding { commands, residual });
     }
 
+    /// Bind manifest-declared trigger events (tag + edge → fired reaction names)
+    /// after brush-authored bindings are built. Manifest events append to any
+    /// existing binding for the same trigger edge — brush KVP bindings always
+    /// run first, manifest events after.
     pub(crate) fn install_manifest_events(
         &mut self,
         registry: &EntityRegistry,
@@ -305,7 +309,13 @@ impl TriggerBindingTable {
             let edge = match descriptor.event.as_str() {
                 "enter" => TriggerEventEdge::Enter,
                 "exit" => TriggerEventEdge::Exit,
-                _ => continue,
+                other => {
+                    log::warn!(
+                        "[Trigger] unknown trigger-event `{other}` on tag `{}`; descriptor is inert",
+                        descriptor.tag
+                    );
+                    continue;
+                }
             };
             let mut triggers: Vec<_> = registry
                 .query_by_component_and_tag(ComponentKind::TriggerVolume, Some(&descriptor.tag))
@@ -472,7 +482,7 @@ fn partition_direct_reaction(
             } else {
                 if primitive.target.is_some() {
                     log::warn!(
-                        "[Trigger] sentinel target on presentation primitive `{}` cannot drain app-side; not binding",
+                        "[Trigger] sentinel target on non-consequential primitive `{}` cannot drain app-side; not binding",
                         primitive.primitive
                     );
                     return;

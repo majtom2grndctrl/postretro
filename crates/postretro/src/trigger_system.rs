@@ -1366,6 +1366,92 @@ mod tests {
     }
 
     #[test]
+    fn script_bound_edge_dispatches_enter_and_exit_with_no_kvp_event_name() {
+        // AC 6: a volume bound only through the script path (onTriggerEvent)
+        // carries no on_fire/on_exit KVP, yet the widened enter/exit dispatch
+        // gates must still fire because `bound_edges` holds its (volume, edge).
+        // The existing tests either name their events or pass an empty
+        // `bound_edges`, so this widened branch is otherwise unproven.
+        let _guard = gate_test_guard().lock().expect("gate test guard poisoned");
+        reset_gate_fires();
+        let mut registry = EntityRegistry::new();
+        let mut bridge = TriggerVolumeBridge::new();
+        // spawn_trigger leaves on_fire/on_exit empty — the KVP-less binding case.
+        let trigger = spawn_trigger(
+            &mut registry,
+            &mut bridge,
+            TriggerActivation::Touch,
+            TriggerFireMode::Multiple,
+            0.0,
+            true,
+        );
+        let player = spawn_player(&mut registry, Vec3::new(0.0, 1.0, 0.0));
+        let player_id = PlayerId::Local(player);
+        let players = [AuthoritativePlayer {
+            id: player_id,
+            pawn: player,
+        }];
+        let alive = HashSet::from([player_id]);
+        let bound_edges = HashSet::from([
+            (trigger, TriggerEventEdge::Enter),
+            (trigger, TriggerEventEdge::Exit),
+        ]);
+        let mut system = TriggerSystem::default();
+
+        // Enter: the player starts inside, so tick one produces the rising edge.
+        let mut observed = Vec::new();
+        system.run_authoritative_tick_with_dispatch(
+            &mut registry,
+            &bridge,
+            TriggerTickInputs {
+                players: &players,
+                use_pressed: &HashMap::new(),
+                tick_dt: DT,
+            },
+            TriggerDispatchInputs {
+                alive_players: &alive,
+                bound_edges: &bound_edges,
+            },
+            |event, _, _| observed.push(event.clone()),
+        );
+        assert_eq!(
+            observed.len(),
+            1,
+            "a script-bound edge dispatches even with no KVP event name"
+        );
+        assert_eq!(observed[0].edge, TriggerEventEdge::Enter);
+        assert_eq!(observed[0].fire.player, player_id);
+        assert!(
+            observed[0].fire.event_name.is_empty(),
+            "a script-only binding carries an empty event name"
+        );
+
+        // Exit: leaving fires the paired exit through the same widened gate.
+        set_player_position(&mut registry, player, Vec3::new(4.0, 1.0, 0.0));
+        observed.clear();
+        system.run_authoritative_tick_with_dispatch(
+            &mut registry,
+            &bridge,
+            TriggerTickInputs {
+                players: &players,
+                use_pressed: &HashMap::new(),
+                tick_dt: DT,
+            },
+            TriggerDispatchInputs {
+                alive_players: &alive,
+                bound_edges: &bound_edges,
+            },
+            |event, _, _| observed.push(event.clone()),
+        );
+        assert_eq!(observed.len(), 1, "the paired exit dispatches too");
+        assert_eq!(observed[0].edge, TriggerEventEdge::Exit);
+        assert!(
+            observed[0].fire.event_name.is_empty(),
+            "the script-bound exit also carries an empty event name"
+        );
+    }
+
+    #[test]
     fn duplicate_player_ids_and_despawned_triggers_leave_no_stale_occupancy() {
         let _guard = gate_test_guard().lock().expect("gate test guard poisoned");
         reset_gate_fires();

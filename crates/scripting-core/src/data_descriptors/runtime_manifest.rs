@@ -27,6 +27,9 @@ pub struct LevelManifest {
     /// from the widened `{ reactions, crossings, triggerEvents }` setup-manifest return and
     /// drained into the per-level `DataRegistry`; cleared on level unload.
     pub crossings: Vec<CrossingDescriptor>,
+    /// Trigger-volume enter/exit watchers declared via the `triggerEvents`
+    /// field. Composes with mod-global `ModManifest.triggerEvents` entries
+    /// matched by the `levels` tag selector; per-level and cleared on unload.
     pub trigger_events: Vec<TriggerEventDescriptor>,
     /// Per-level UI trees declared via the `uiTrees` field. A malformed entry is
     /// logged and skipped rather than aborting level load (`ui.md` §1.1).

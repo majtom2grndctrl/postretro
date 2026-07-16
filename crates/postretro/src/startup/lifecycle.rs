@@ -936,25 +936,54 @@ fn rebuild_reaction_subscribers(
 ) {
     {
         let mut data_registry = script_ctx.data_registry.borrow_mut();
-        let sentinel_names: std::collections::HashSet<String> = data_registry
-            .reactions
-            .iter()
-            .filter(|reaction| reaction_uses_trigger_sentinel(reaction))
-            .map(|reaction| reaction.name.clone())
-            .collect();
-        data_registry.crossings.retain_mut(|crossing| {
-            let original_len = crossing.fire.len();
-            crossing
-                .fire
-                .retain(|event| !sentinel_names.contains(event));
-            if crossing.fire.len() != original_len {
-                log::warn!(
-                    "[Scripting] crossing subscription references trigger-sentinel work; skipping incompatible reaction"
-                );
+        // Group reactions by dispatch address (name). Addressing is many-to-one
+        // (scripting.md §12): one address may hold several reactions, and firing
+        // it runs all of them. An address is incompatible with crossing dispatch
+        // only when EVERY reaction there needs trigger-fire context; if one
+        // sibling is sentinel-free, the runtime dispatch path skips just the
+        // incompatible commands, so the compatible reactions must keep their
+        // crossing subscription. Stripping the whole address by name would
+        // silence those benign siblings.
+        let (fully_sentinel_bound, level_load_has_sentinel): (
+            std::collections::HashSet<String>,
+            bool,
+        ) = {
+            // Per address: (any reaction sentinel-bound, all reactions sentinel-bound).
+            let mut per_address: std::collections::HashMap<&str, (bool, bool)> =
+                std::collections::HashMap::new();
+            for reaction in &data_registry.reactions {
+                let uses_sentinel = reaction_uses_trigger_sentinel(reaction);
+                let (any, all) = per_address
+                    .entry(reaction.name.as_str())
+                    .or_insert((false, true));
+                *any |= uses_sentinel;
+                *all &= uses_sentinel;
             }
+            let level_load_has_sentinel = per_address.get("levelLoad").is_some_and(|(any, _)| *any);
+            // A name is strippable only when every reaction registered there is
+            // sentinel-bound (each map key has at least one reaction, so the
+            // non-empty requirement holds by construction).
+            let fully_sentinel_bound = per_address
+                .into_iter()
+                .filter(|(_, (_, all))| *all)
+                .map(|(name, _)| name.to_string())
+                .collect();
+            (fully_sentinel_bound, level_load_has_sentinel)
+        };
+        data_registry.crossings.retain_mut(|crossing| {
+            let crossing_id = crossing.slot.as_deref().unwrap_or("<predicate>");
+            crossing.fire.retain(|address| {
+                let strip = fully_sentinel_bound.contains(address);
+                if strip {
+                    log::warn!(
+                        "[Scripting] crossing on `{crossing_id}` drops address `{address}`: every reaction at that address needs trigger-fire context, incompatible with crossing dispatch"
+                    );
+                }
+                !strip
+            });
             !crossing.fire.is_empty()
         });
-        if sentinel_names.contains("levelLoad") {
+        if level_load_has_sentinel {
             log::warn!(
                 "[Scripting] levelLoad references trigger-sentinel work; incompatible commands will be skipped"
             );

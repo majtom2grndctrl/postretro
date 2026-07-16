@@ -233,7 +233,8 @@ local ACTIVATORS_TARGET = table.freeze({})
 local TRIGGER_TARGET = table.freeze({})
 
 -- One SDK-internal merged params table is shared by every author-time tracer.
--- Its value shape stays open to sibling opaque target tokens.
+-- Its value shape includes sibling opaque target tokens (activators, trigger)
+-- alongside the input nodes.
 local DISPATCH_PARAMS = table.freeze({
   rising = table.freeze({ op = "input", name = "@rising" }),
   dt = table.freeze({ op = "input", name = "@dt" }),
@@ -272,7 +273,7 @@ function DataScriptSdk.damage(target: ActivatorsTarget | string, amount: number)
   if type(target) == "string" then
     return { primitive = "applyDamage", tag = target, args = { amount = amount } }
   end
-  local wireTarget: any = if target == ACTIVATORS_TARGET then "@activators" elseif target == TRIGGER_TARGET then "@trigger" else "@invalid"
+  local wireTarget: any = if target == ACTIVATORS_TARGET then "@activators" else "@invalid"
   return { primitive = "applyDamage", target = wireTarget, args = { amount = amount } }
 end
 

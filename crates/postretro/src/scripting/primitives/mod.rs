@@ -515,22 +515,6 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         )
         .finish();
     registry
-        .register_type("TriggerEventDescriptor")
-        .doc("A trigger-volume enter/exit observer installed by tag.")
-        .field("tag", "String", "Trigger-volume tag selector.")
-        .field("event", "String", "Either `enter` or `exit`.")
-        .field(
-            "fire",
-            "Vec<String>",
-            "Reaction addresses fired in declaration order.",
-        )
-        .field(
-            "levels?",
-            "Vec<String>",
-            "Optional active-level tag selector.",
-        )
-        .finish();
-    registry
         .register_type("ModManifest")
         .doc("Mod manifest consumed from `start-script.ts`'s default export or `start-script.luau`'s chunk return. `defineMod(config)` is a pure typed identity helper for this object; the engine commits its data only after manifest validation succeeds.")
         .field("name", "String", "Human-readable mod name used for diagnostics and UI. Required.")

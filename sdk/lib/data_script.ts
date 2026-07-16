@@ -161,7 +161,8 @@ export type Reaction<S = {}> = NamedReactionDescriptor & {
 type ReactionTracer<S> = (params: S) => ReactionBody;
 
 // This is deliberately one plain merged object rather than a Proxy. Sibling
-// dispatch specs may add opaque, non-IR leaves alongside these input nodes.
+// dispatch specs add opaque, non-IR leaves (activators, trigger) alongside
+// these input nodes.
 const ACTIVATORS_TARGET = Object.freeze({}) as ActivatorsTarget;
 const TRIGGER_TARGET = Object.freeze({}) as TriggerTarget;
 

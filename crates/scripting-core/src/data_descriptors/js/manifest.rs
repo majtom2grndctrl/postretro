@@ -55,6 +55,10 @@ impl LevelManifest {
     }
 }
 
+/// Drain the `triggerEvents` array from a QuickJS manifest object. Mirrors
+/// [`drain_ui_trees_js`]: a malformed entry (non-object, or missing/invalid
+/// `tag`/`fire`/`levels`) is logged and skipped rather than aborting the whole
+/// manifest; an unknown `event` value is likewise logged and skipped.
 pub fn drain_trigger_events_js<'js>(
     obj: &Object<'js>,
     scope: &str,
@@ -65,24 +69,42 @@ pub fn drain_trigger_events_js<'js>(
     let mut out = Vec::with_capacity(arr.len());
     for i in 0..arr.len() {
         let value: JsValue = arr.get(i).map_err(js_err)?;
-        let item = Object::from_value(value).map_err(|_| DescriptorError::InvalidShape {
-            reason: "trigger-event entry must be an object".into(),
-        })?;
-        let event = get_required_string_js(&item, "event")?;
-        if !matches!(event.as_str(), "enter" | "exit") {
-            log::warn!(
-                "[Scripting] {scope}: triggerEvents[{i}] has unknown event `{event}` and was skipped"
-            );
-            continue;
+        match trigger_event_from_js(value, i, scope) {
+            Ok(Some(descriptor)) => out.push(descriptor),
+            Ok(None) => {}
+            Err(e) => log::warn!(
+                "[Scripting] {scope}: triggerEvents[{i}] is malformed and was skipped: {e}"
+            ),
         }
-        out.push(TriggerEventDescriptor {
-            tag: get_required_string_js(&item, "tag")?,
-            event,
-            fire: string_array_from_js(&item, "fire")?,
-            levels: string_array_from_js(&item, "levels")?,
-        });
     }
     Ok(out)
+}
+
+/// Parse a single `triggerEvents` entry (`{ event, tag, fire, levels? }`) from
+/// JS. `Ok(None)` means the entry parsed but its `event` is unrecognized (the
+/// caller has already logged the reason); a genuinely malformed entry returns
+/// `Err` for the caller to log and skip.
+fn trigger_event_from_js<'js>(
+    value: JsValue<'js>,
+    i: usize,
+    scope: &str,
+) -> Result<Option<TriggerEventDescriptor>, DescriptorError> {
+    let item = Object::from_value(value).map_err(|_| DescriptorError::InvalidShape {
+        reason: "trigger-event entry must be an object".into(),
+    })?;
+    let event = get_required_string_js(&item, "event")?;
+    if !matches!(event.as_str(), "enter" | "exit") {
+        log::warn!(
+            "[Scripting] {scope}: triggerEvents[{i}] has unknown event `{event}` and was skipped"
+        );
+        return Ok(None);
+    }
+    Ok(Some(TriggerEventDescriptor {
+        tag: get_required_string_js(&item, "tag")?,
+        event,
+        fire: string_array_from_js(&item, "fire")?,
+        levels: string_array_from_js(&item, "levels")?,
+    }))
 }
 
 // ===========================================================================

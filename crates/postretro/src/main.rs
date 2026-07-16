@@ -55,6 +55,7 @@ mod session;
 mod sim;
 mod startup;
 mod trigger_bindings;
+mod trigger_commands;
 #[cfg(feature = "dev-tools")]
 mod trigger_diagnostics;
 mod trigger_system;

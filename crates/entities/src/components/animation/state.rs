@@ -148,6 +148,7 @@ mod tests {
                 aim_pitch: 0.25,
                 aim_yaw: 0.5,
                 heading_yaw: 0.75,
+                ..Default::default()
             }),
         };
         let json = serde_json::to_value(&value).unwrap();

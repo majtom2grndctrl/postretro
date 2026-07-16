@@ -73,7 +73,7 @@ foundation's first consumer; the two are co-designed.
 
 - [ ] An `entity_spawner` placed in a `.map` with an archetype name and count compiles and loads
       adding no new PRL `SectionId`; it rides the existing map-entities section (section inventory
-      unchanged).
+      unchanged — this clause is a grep/review gate, not a runnable test).
 - [ ] Firing a reaction containing `spawnFromSpawner` targeting the spawner's tag creates `count`
       live enemies of the named archetype at the spawner, on the host, inside the fixed tick.
 - [ ] A spawner with an absent/empty archetype KVP, an unknown archetype name, or an archetype
@@ -84,11 +84,14 @@ foundation's first consumer; the two are co-designed.
 - [ ] Firing `spawnFromSpawner` with a tag matching no `entity_spawner` warns once (asserted through
       its warn counter) and spawns nothing — a pre-placed spawner's zero-match tag is an authoring
       typo, distinct from the foundation's fire-time-tag empty-match `debug` no-op.
-- [ ] Spawned enemies face the spawner's authored `angles` direction.
-- [ ] A `count` of 0 (or malformed) spawns nothing and warns (asserted directly). Registry
-      exhaustion mid-batch spawns what fits, warns, and does not panic — asserted via a
-      low-capacity `#[cfg(test)]` registry seam that forces `try_spawn` to return `None`, since
-      filling to `u16::MAX` is impractical.
+- [ ] Spawned enemies face the spawner's authored `angles` direction (asserted at the spawn instant,
+      before the AI FSM may reorient).
+- [ ] A `count` of 0 (or malformed) spawns nothing — the directly-assertable fact (no entities
+      created); it also warns at load (a `log::warn!`, so the assertion is the spawns-nothing
+      outcome, not the log line). Registry exhaustion mid-batch spawns what fits, warns, and does not
+      panic — asserted via a new low-capacity `#[cfg(test)]` registry seam (Task 2 adds it to the
+      `entities` crate) that forces `try_spawn` to return `None`, since filling to `u16::MAX` is
+      impractical.
 - [ ] In a two-peer co-op session, a host-spawned enemy appears and renders its mesh on the
       connected client and on a client that joins after the spawn, driven by its replicated
       Transform.
@@ -137,16 +140,19 @@ Resolution cannot happen in the handler — `ClassnameHandler` is a bare
 a **separate post-dispatch install pass** in `crates/postretro/src/startup/lifecycle.rs` (~`:1256`,
 where `descriptors` and the baked `agent_params` are in scope). For each `SpawnerComponent`,
 `find_descriptor` its `archetype_name` (matches `canonical_name`); warn via the pass's diagnostics
-tally (AC 3) and set `resolved = false` if the archetype is missing or not an AI enemy
-(`descriptor_materializes_ai_enemy`), else `resolved = true`. Populate the **spawn context** — a
-session-built, interior-mutable shared handle (mirror `MoverCommandDiagnostics`'s
+tally — a test-observable count or returned struct AC 3 asserts on (none exists yet; build it) — and
+set `resolved = false` if the archetype is missing or not an AI enemy
+(`descriptor_materializes_ai_enemy`), else `resolved = true`. Populate the **spawn context**
+(`SpawnContext`) — a session-built, interior-mutable shared handle (mirror `MoverCommandDiagnostics`'s
 `Rc<RefCell<…>>` shape, `crates/postretro/src/kinematic_mover.rs:24-28`; NOT an ECS component, so no
 serde constraint) — whose interior holds the resolved enemy descriptors keyed by `canonical_name`
 plus the level's baked `NavAgentParams` (`nav_graph.map(|g| g.agent_params())`,
-`lifecycle.rs:1260`). The handle is created at session build and `.clone()`d into the executor
-paths (Task 2); the install pass fills its interior each level (replacing the prior level's on
-reload) so the fixed-tick executor resolves the descriptor VM-free without touching the data
-registry or a `ScriptCtx`. Add the
+`lifecycle.rs:1260`). Thread the handle exactly as `command_diagnostics` rides: create it at session
+build (`session/mod.rs:~484`, beside `command_diagnostics`), store it on `ScriptingCore`, and pass it
+through `build_trigger_bindings` (`lifecycle.rs:1019`) into the trigger table (Task 2 makes it a table
+field). It is also `.clone()`d into the executor paths (Task 2); this install pass fills its interior
+each level (replacing the prior level's on reload) so the fixed-tick executor resolves the descriptor
+VM-free without touching the data registry or a `ScriptCtx`. Add the
 FGD `@PointClass` entry (`entity_spawner`, archetype + count keys, plus the standard `angles` key
 for facing). Enemy archetypes are any descriptor with an `ai` block; do not invent a modder-facing
 enemy component.
@@ -165,11 +171,13 @@ per-fire args). Also add `spawnFromSpawner` to `is_trigger_consequential_primiti
 set that backs the double-execution debug asserts. Put the spawn logic in a **new**
 `crates/postretro/src/spawner.rs` module (mirror `kinematic_mover.rs`'s
 `apply_mover_command_to_targets` + `register_mover_reaction_primitives` shape). The spawn context
-is threaded exactly as `MoverCommandDiagnostics` is: it is the session-built shared handle from
-Task 1, so `execute`/`execute_with_script_ctx`/`execute_non_store` (`trigger_commands.rs:108/130/162`)
-each gain a `&SpawnContext` parameter alongside the existing `command_diagnostics: &MoverCommandDiagnostics`,
-and every call site that passes `command_diagnostics` (in `trigger_bindings.rs` and `lifecycle.rs`)
-passes the context too. `trigger_commands.rs` therefore gains the `Spawn` variant, a delegating
+is threaded exactly as `MoverCommandDiagnostics` is — and the load-bearing half is that it is a
+**field** on `TriggerBindingTable` (`trigger_bindings.rs:79`, beside `command_diagnostics`), set by
+`TriggerBindingTable::build_with_script_ctx_and_diagnostics` (`:171`) which `build_trigger_bindings`
+(`lifecycle.rs:1019`) feeds from Task 1's session handle. So `execute`/`execute_with_script_ctx`/`execute_non_store`
+(`trigger_commands.rs:108/130/162`) each gain a `&SpawnContext` parameter alongside the existing
+`command_diagnostics: &MoverCommandDiagnostics`, and the internal `command.execute(...)` sites
+(`trigger_bindings.rs:371/423`) pass `&self.spawn_context` just as they pass `&self.command_diagnostics`. `trigger_commands.rs` therefore gains the `Spawn` variant, a delegating
 match arm in `execute_non_store`, **and** this threaded parameter (a mechanical threading edit, not
 new logic); `trigger_bindings.rs` gains the `CONSEQUENTIAL_PRIMITIVES` entry and the `bind_command`
 arm. Because the same handle is `.clone()`d into the `register_spawner_reaction_primitives` closure,
@@ -210,7 +218,11 @@ that springs once) is owned by the firing trigger's `once`/rearm policy, not the
 enemies take the spawner entity's Transform rotation (its authored `angles`, via `rotation_quat()`)
 so they face as placed. Degrade gracefully, matching `prop_mesh`: a `count` of 0 (parsed and defaulted at load, Task 1)
 spawns nothing; if `try_spawn` returns `None` mid-batch (the registry at `u16::MAX`), spawn what
-fits, warn once, and stop — never panic. Do not validate spawn
+fits, warn once, and stop — never panic. Testing that exhaustion path needs a seam that does not
+exist yet: add a `#[cfg(test)]` capacity cap to `crates/entities/src/registry.rs` (the existing
+`#[cfg(test)]` block at `:1046` manipulates generation, not slot count, and `try_spawn` (`:732`)
+otherwise only returns `None` at `slots.len() >= u16::MAX`) — a test-only cap so `try_spawn` returns
+`None` at a low bound. This is a cross-crate `entities` edit this task owns (AC 7). Do not validate spawn
 positions against geometry or the navmesh — a spawner inside a wall is an authoring bug for
 playtest/dev-overlay, consistent with map-placed enemies. Because the trigger system runs between
 movement and AI in the tick, a spawned enemy exists before this tick's AI pass and may take its
@@ -222,10 +234,11 @@ step.
 In `crates/postretro/src/netcode/descriptor_class.rs`, broaden `is_networked_ai_map_enemy` to
 accept `spawn_path ∈ {MapPlacement, RuntimeSpawn}` (Brain+Agent still required) and rename it to
 `is_networked_ai_enemy`, updating both call sites (`descriptor_entity_class` and the host
-registration sweep in `replication.rs:248/261`), the **netcode-side** classifier agreement test
-(`classifier_agrees_with_live_predicate_one_source_of_truth` in `descriptor_class.rs`), and the
-remaining doc/reference sites the rename touches (`replication.rs:16/224`,
-`enemy_replication_harness_test.rs:196`). This makes
+registration sweep in `replication.rs:248/261`) and the **netcode-side** classifier agreement test
+(`classifier_agrees_with_live_predicate_one_source_of_truth` in `descriptor_class.rs`). The rename
+is **grep-complete** — do not trust an enumerated list; sweep every reference including non-code doc
+comments (`replication.rs:16/224`, `enemy_replication_harness_test.rs:196`, and
+`data_archetype.rs:280/2387`, which the build will not catch). This makes
 `descriptor_entity_class` stamp a spawned enemy's `canonical_name` so the client materializes its
 presentation from a Transform-only record (else it is an invisible/untyped ghost). **Re-invoke** the (now broadened)
 `host_register_map_enemies` sweep post-tick — it is already a full idempotent stale-prune+register
@@ -243,8 +256,14 @@ off-host).
 
 ### Task 4: Closet containment authoring (consumes the foundation aggro gate)
 
-No engine work — the gate, its FSM/steering guard, the `enabled_on_spawn` seed, and the `updateEnemyState`
-primitive all land in the foundation (`E18--enemy-group-handle`). C is the consumer:
+Nearly no engine work — the gate, its FSM/steering guard, the `enabled_on_spawn` seed, and the
+`updateEnemyState` primitive all land in the foundation (`E18--enemy-group-handle`). C is the
+consumer. Author the set-piece into a **new dev map** `content/dev/maps/closet-reveal.map` (follow
+the `content/dev/maps/trigger-event-spike-trap.map` set-piece precedent from the merged
+`E18--trigger-event-params` work) plus its companion reaction script. The one engine artifact is AC
+10's composition assertion — it lives as a test in `crates/postretro/src/trigger_system.rs`, where
+trigger fan-out / `onTriggerEvent` dispatch tests already live, asserting the `openDoor` and
+`releaseCloset` reactions dispatch together on one `enter` edge.
 
 - **Reveal-flavor containment.** Author reveal-closet enemies gate-closed with
   `enabled_on_spawn = false` (the foundation's Task 1 reads the KVP on the AI-enemy placement). A
@@ -279,8 +298,9 @@ arm/disarm SDK work — enemy aggro authoring is the foundation's `enemies({ tag
 
 Enforce a minimum pre-attack windup on a spawned enemy by seeding its existing
 `attack_cooldown_remaining_ms` (`crates/entities/src/components/brain.rs`, an `f32` in
-**milliseconds**, counted down in `ai.rs`) at spawn time in `spawner.rs` to at least the delay
-clamp `MAX_DELAY_MICROS` (`crates/postretro/src/netcode/interpolation.rs`, currently module-private
+**milliseconds**, counted down in `ai.rs`) at spawn time in `spawner.rs` — **after**
+`attach_descriptor_components` runs, since `attach_brain` inits the field to `0.0` and would
+overwrite an earlier seed — to at least the delay clamp `MAX_DELAY_MICROS` (`crates/postretro/src/netcode/interpolation.rs`, currently module-private
 — bump to `pub(crate)`; it is `250_000` **microseconds**, so convert ÷1000 to the ms field, never a
 hardcoded literal) — the seed floor for the windup, not a ceiling on it — so a spawned enemy cannot
 land its first attack before it is delivered and drawn on remote clients. Harness-assert
@@ -304,7 +324,14 @@ An archetype referenced only by an `entity_spawner` KVP matches none of them, so
 uploads and its clips never resolve. At install, collect every spawner-referenced archetype (from
 the resolved `SpawnerComponent`s of Task 1) and union its `mesh.model` handle into both upload
 sweeps (host and client) and resolve its clips, so a spawner-only archetype is drawable before its
-first spawn. The client **has** `SpawnerComponent`s to read: the `entity_spawner` classname handler
+first spawn. The install-time model union satisfies AC 8's capsule-vs-model proxy (a debug capsule
+appears only when the model is absent from the cache), but the **host** clip *indices* need a second
+step: `distinct_mesh_models`/`resolve_mesh_entity_clips` iterate already-spawned `Mesh` components at
+load, so a host enemy spawned after install keeps pending clip indices and would animate as a static
+first frame. Give host-spawned enemies a per-spawn clip resolve (mirror the client's
+`materialize_net_remote_enemy_presentation` clip-resolve shape, host-side, at spawn or in the
+post-tick sweep) so they animate — the archetype's clip table is already built by the install union,
+so this is an index fill-in, not a rebuild. The client **has** `SpawnerComponent`s to read: the `entity_spawner` classname handler
 runs on the shared install path (`apply_classname_dispatch`, `lifecycle.rs:1195`) *before* the
 AI-enemy filter (`filter_out_client_ai_enemies`, `lifecycle.rs:1275`), and a spawner is not an AI
 enemy, so it survives on the client — the client runs the same archetype-collection over its

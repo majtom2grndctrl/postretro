@@ -81,6 +81,9 @@ consumer; the two are co-designed.
       its diagnostics tally) and spawns nothing at fire time.
 - [ ] Firing `spawnFromSpawner` against the same spawner twice spawns `2 × count` enemies — the
       spawner is stateless and never self-exhausts.
+- [ ] Firing `spawnFromSpawner` with a tag matching no `entity_spawner` warns once (asserted through
+      its warn counter) and spawns nothing — a pre-placed spawner's zero-match tag is an authoring
+      typo, distinct from the foundation's fire-time-tag empty-match `debug` no-op.
 - [ ] Spawned enemies face the spawner's authored `angles` direction.
 - [ ] A `count` of 0 (or malformed) spawns nothing and warns (asserted directly). Registry
       exhaustion mid-batch spawns what fits, warns, and does not panic — asserted via a
@@ -236,8 +239,11 @@ the fire-time-tag handle family the foundation establishes with `enemies({ tag }
 selector, tag-keyed descriptor, `damage(tag)` builder template (`sdk/lib/data_script.ts:204`). Mirror
 in Luau. Extend the typedef templates (`crates/scripting-core/src/typedef/templates/`), regenerate
 `postretro.d.ts` / `.d.luau`, update the drift snapshot, add TS/Luau parity fixtures. Update the
-reaction-argument validators to accept `spawnFromSpawner` and reject a malformed target, matching the
-shipped per-primitive warn-skip. No arm/disarm SDK work — enemy aggro authoring is the foundation's
+reaction-argument validators to accept `spawnFromSpawner` and reject a malformed target. At fire
+time, a `spawnFromSpawner` whose tag matches no `entity_spawner` **warns once** — unlike the
+foundation's fire-time-tag enemy case (a `debug` no-op, since an enemy group is legitimately empty
+when unspawned or fully killed), a spawner is pre-placed, so a zero-match tag is a likely authoring
+typo worth surfacing. No arm/disarm SDK work — enemy aggro authoring is the foundation's
 `enemies({ tag })` handle. No `world.query` filter change (see out of scope).
 
 ### Task 6: Pre-attack windup + kill-progress guard

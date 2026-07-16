@@ -73,7 +73,7 @@ use postretro_net::wire::{
 };
 
 use super::client::{ClientReplication, RemoteEnemyMaterialize};
-use super::interpolation::PoseSource;
+use super::interpolation::{MAX_DELAY_MICROS, PoseSource};
 use super::remote_materialize::materialize_armed_remote_enemy;
 use super::replication::{ReplicableSet, host_register_map_enemies, produce_owned_snapshots};
 use crate::netcode::{HostCommandQueues, MovementOwners, NetworkIdAllocator};
@@ -611,6 +611,44 @@ fn connected_client_has_exactly_one_remote_enemy_and_no_local_authoritative_copy
         !descriptor_materializes_ai_enemy(&prop_descriptor("crate")),
         "the prop descriptor is NOT an AI enemy (kept on the client)"
     );
+}
+
+// A runtime-spawned enemy uses the same host snapshot → client materialization
+// seam once the host registration sweep has assigned it a NetworkId. Task 3 owns
+// that RuntimeSpawn classifier expansion; this test pins the shared transport and
+// presentation budget against the E15 mandated conditioned-link envelope. The
+// spawner behavior test proves the host cannot attack before this timer expires.
+#[test]
+fn conditioned_link_delivers_and_materializes_enemy_before_spawn_windup_expires() {
+    let windup_ms = (MAX_DELAY_MICROS / 1000) as VirtualMillis;
+
+    // Vary the conditioner seed to cover the configured jitter/loss envelope,
+    // rather than accepting a single fortunate packet schedule.
+    for seed_offset in 0..64 {
+        let mut link = mandated_link();
+        link.seed = 0xE18C_0000 + seed_offset;
+        let mut h = EnemyReplicationHarness::new(link);
+        let enemy = spawn_host_ai_enemy(&mut h.host_registry, ENEMY_CLASS, Vec3::ZERO);
+        h.host_register_enemies();
+        let net_id = h.enemy_network_id(enemy);
+
+        while h.virtual_ms < windup_ms && h.client_mapped_entity(net_id).is_none() {
+            h.step();
+        }
+
+        let remote = h.client_mapped_entity(net_id).unwrap_or_else(|| {
+            panic!(
+                "conditioned-link seed {seed_offset:#x} did not deliver the enemy before the \
+                 {windup_ms} ms interpolation windup expired"
+            )
+        });
+        assert!(
+            h.client_registry
+                .has_component_kind(remote, ComponentKind::Mesh)
+                == Ok(true),
+            "conditioned-link seed {seed_offset:#x} delivered a baseline but not a drawable mesh"
+        );
+    }
 }
 
 // Regression: the harness materializes remote enemies directly, so it must replay the

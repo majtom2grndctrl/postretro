@@ -63,7 +63,7 @@ pub(crate) use command_queue::{
 };
 // `ResolvedCommand` / `ResolutionSource` are produced by the command queue and consumed
 // via the submodule path only; not re-exported here.
-pub(crate) use interpolation::{DemoMover, InterpolationDelayState};
+pub(crate) use interpolation::{DemoMover, InterpolationDelayState, MAX_DELAY_MICROS};
 pub(crate) use lifecycle::{SlotPawnSource, SlotPawns, on_slot_accepted, on_slot_closed};
 pub(crate) use prediction::ClientPrediction;
 // Correction-classification API + thresholds and the reconcile entry point.

@@ -24,9 +24,10 @@ use crate::scripting::primitives::light::register_sequenced_light_primitives;
 use crate::scripting::primitives::register_all;
 use crate::scripting::reactions::registry::{
     ReactionPrimitiveRegistry, register_emitter_reaction_primitives,
-    register_fog_reaction_primitives, register_mover_reaction_primitives,
-    register_sequenced_fog_primitives, register_sequenced_mover_primitives,
-    register_sequenced_trigger_primitives, register_trigger_reaction_primitives,
+    register_enemy_state_reaction_primitives, register_fog_reaction_primitives,
+    register_mover_reaction_primitives, register_sequenced_fog_primitives,
+    register_sequenced_mover_primitives, register_sequenced_trigger_primitives,
+    register_trigger_reaction_primitives,
 };
 use crate::scripting::reactions::system_commands::{
     SystemReactionRegistry, register_system_reaction_primitives,
@@ -517,6 +518,7 @@ fn build_scripting_core(
     // fires. Populated once at startup; survives level reloads.
     let mut reaction_registry = ReactionPrimitiveRegistry::new();
     register_emitter_reaction_primitives(&mut reaction_registry);
+    register_enemy_state_reaction_primitives(&mut reaction_registry);
     register_fog_reaction_primitives(&mut reaction_registry);
     register_mover_reaction_primitives(&mut reaction_registry, command_diagnostics.clone());
     register_trigger_reaction_primitives(&mut reaction_registry, command_diagnostics.clone());

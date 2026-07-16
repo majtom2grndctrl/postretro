@@ -531,54 +531,60 @@ pub(crate) fn run_ai_tick_with_navigation(
     for snap in &snapshots {
         let mut brain = snap.brain.clone();
         let prior_state = brain.state;
-        let retained_target = matches!(brain.state, LogicalState::Alert | LogicalState::Attack)
-            .then_some(brain.acquired_target)
-            .flatten();
-        let retained = retained_target
-            .and_then(|entity| target_candidate(registry, entity, snap.position, None));
-        let nearest = retained
-            .is_none()
-            .then(|| select_target(registry, snap.position, None, false, None))
-            .flatten();
-        let current_target = retained.map(|candidate| candidate.target).or(nearest);
-        let current_distance = current_target.map(|target| target_distance(target, snap.position));
-        let evaluate_acquisition = acquisition_due(&brain, current_distance);
+        let (target, evaluate_acquisition) = if brain.aggro_armed {
+            let retained_target = matches!(brain.state, LogicalState::Alert | LogicalState::Attack)
+                .then_some(brain.acquired_target)
+                .flatten();
+            let retained = retained_target
+                .and_then(|entity| target_candidate(registry, entity, snap.position, None));
+            let nearest = retained
+                .is_none()
+                .then(|| select_target(registry, snap.position, None, false, None))
+                .flatten();
+            let current_target = retained.map(|candidate| candidate.target).or(nearest);
+            let current_distance =
+                current_target.map(|target| target_distance(target, snap.position));
+            let evaluate_acquisition = acquisition_due(&brain, current_distance);
 
-        let retained_outside_leash =
-            retained.is_some_and(|retained| retained.distance > brain.tuning.leash_range);
-        let target = if retained_outside_leash {
-            // Leash escape for the already-retained target is cheap because the
-            // retained pawn has already been read. Clear immediately instead of
-            // continuing to chase stale destinations between acquisition ticks.
-            // Replacement search still stays acquisition-strided.
-            if evaluate_acquisition {
-                select_target(
-                    registry,
-                    snap.position,
-                    retained.map(|retained| retained.target.entity),
-                    true,
-                    None,
-                )
-                .filter(|target| {
-                    target_distance(*target, snap.position) <= brain.tuning.leash_range
-                })
+            let retained_outside_leash =
+                retained.is_some_and(|retained| retained.distance > brain.tuning.leash_range);
+            let target = if retained_outside_leash {
+                // Leash escape for the already-retained target is cheap because the
+                // retained pawn has already been read. Clear immediately instead of
+                // continuing to chase stale destinations between acquisition ticks.
+                // Replacement search still stays acquisition-strided.
+                if evaluate_acquisition {
+                    select_target(
+                        registry,
+                        snap.position,
+                        retained.map(|retained| retained.target.entity),
+                        true,
+                        None,
+                    )
+                    .filter(|target| {
+                        target_distance(*target, snap.position) <= brain.tuning.leash_range
+                    })
+                } else {
+                    None
+                }
+            } else if evaluate_acquisition {
+                if let Some(retained) = retained {
+                    select_target(
+                        registry,
+                        snap.position,
+                        Some(retained.target.entity),
+                        false,
+                        None,
+                    )
+                } else {
+                    select_target(registry, snap.position, retained_target, false, None)
+                }
             } else {
-                None
-            }
-        } else if evaluate_acquisition {
-            if let Some(retained) = retained {
-                select_target(
-                    registry,
-                    snap.position,
-                    Some(retained.target.entity),
-                    false,
-                    None,
-                )
-            } else {
-                select_target(registry, snap.position, retained_target, false, None)
-            }
+                current_target
+            };
+            (target, evaluate_acquisition)
         } else {
-            current_target
+            (None, false)
         };
 
         // (1) Cooldown ticks down every tick.
@@ -644,7 +650,17 @@ pub(crate) fn run_ai_tick_with_navigation(
                 brain.death_despawn_remaining_ms = None;
             }
 
-            if let Some(target) = target {
+            if !brain.aggro_armed {
+                // The aggro gate's v1 disengage policy is hold. This deliberately
+                // runs after the death/recovery handling above: sealed enemies
+                // remain damageable and still enter Death/despawn. A closed brain
+                // neither consults target selection nor evaluates FSM transitions;
+                // clearing its destination sends the agent through steering's
+                // destination-less idle-settle path, which has no separation push.
+                brain.state = LogicalState::Idle;
+                brain.acquired_target = None;
+                steering = SteeringIntent::Clear;
+            } else if let Some(target) = target {
                 // The think stride is derived from the CURRENT player distance;
                 // the gate fires when the per-enemy counter aligns with the
                 // band's divisor. Acquisition (detection/leash) is evaluated only
@@ -717,10 +733,14 @@ pub(crate) fn run_ai_tick_with_navigation(
         let _ = registry.set_component(outcome.id, outcome.brain.clone());
 
         let path_state = agent_steering::path_state(registry, outcome.id);
-        let locomotion_intent = path_state
-            .as_ref()
-            .map(|path| LocomotionIntent::from_velocity(path.velocity))
-            .unwrap_or(LocomotionIntent::STOPPED);
+        let locomotion_intent = if outcome.brain.aggro_armed {
+            path_state
+                .as_ref()
+                .map(|path| LocomotionIntent::from_velocity(path.velocity))
+                .unwrap_or(LocomotionIntent::STOPPED)
+        } else {
+            LocomotionIntent::STOPPED
+        };
 
         // Steering: chase sets the destination to a selected combat slot when
         // one is available, otherwise to the raw target position. Clear stands
@@ -773,10 +793,12 @@ pub(crate) fn run_ai_tick_with_navigation(
         //   - `Idle` (no target) and `Death`: leave facing untouched.
         // Yaw only (model stays upright); a zero-length direction yields `None` and
         // writes nothing (never a NaN yaw).
-        if matches!(
-            outcome.brain.state,
-            LogicalState::Alert | LogicalState::Attack
-        ) {
+        if outcome.brain.aggro_armed
+            && matches!(
+                outcome.brain.state,
+                LogicalState::Alert | LogicalState::Attack
+            )
+        {
             if let Some(path) = path_state.as_ref() {
                 let facing =
                     if locomotion_intent.speed_xz_sq > MOVE_SPEED_EPSILON * MOVE_SPEED_EPSILON {

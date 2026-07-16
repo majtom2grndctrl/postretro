@@ -11,6 +11,9 @@ use postretro_scripting_core::store_bridge::apply_store_slot_batch;
 use crate::health::reactions::{self as health_reactions, ApplyDamageArgs};
 use crate::kinematic_mover::{MoverCommandDiagnostics, apply_mover_command_to_targets};
 use crate::scripting::reactions::animation::{self as animation_reactions, SetAnimationStateArgs};
+use crate::scripting::reactions::enemy_state::{
+    UpdateEnemyStateArgs, apply_update_enemy_state_to_brain,
+};
 use crate::trigger_system::{arm_trigger_targets, disarm_trigger_targets};
 
 /// The closed set of trigger work allowed in the VM-free fixed-tick seam.
@@ -39,6 +42,10 @@ pub(crate) enum BoundTriggerCommand {
     AnimationState {
         target: BoundTarget,
         state: String,
+    },
+    UpdateEnemyState {
+        target: BoundTarget,
+        aggro: Option<bool>,
     },
 }
 
@@ -94,6 +101,7 @@ pub(crate) enum BoundTriggerCommandKind {
     Disarm,
     StoreSlot,
     AnimationState,
+    UpdateEnemyState,
 }
 
 impl BoundTriggerCommand {
@@ -196,6 +204,26 @@ impl BoundTriggerCommand {
                     log::warn!("[Trigger] setAnimationState binding failed: {error}");
                 }
             }
+            Self::UpdateEnemyState { target, aggro } => {
+                let BoundTarget::Tag(tag) = target else {
+                    log::warn!(
+                        "[Trigger] updateEnemyState requires a tag target; special target is invalid; skipping"
+                    );
+                    return;
+                };
+                let targets: Vec<_> = registry
+                    .query_by_component_and_tag(ComponentKind::Brain, Some(tag))
+                    .map(|(entity, _)| entity)
+                    .collect();
+                if targets.is_empty() {
+                    log::debug!("[Trigger] updateEnemyState: empty Brain tag match, no-op");
+                    return;
+                }
+                let args = UpdateEnemyStateArgs { aggro: *aggro };
+                for entity in targets {
+                    apply_update_enemy_state_to_brain(registry, entity, &args);
+                }
+            }
             Self::StoreSlot { .. } => unreachable!("store slots execute through their store path"),
         }
     }
@@ -209,6 +237,7 @@ impl BoundTriggerCommand {
             Self::Disarm { .. } => BoundTriggerCommandKind::Disarm,
             Self::StoreSlot { .. } => BoundTriggerCommandKind::StoreSlot,
             Self::AnimationState { .. } => BoundTriggerCommandKind::AnimationState,
+            Self::UpdateEnemyState { .. } => BoundTriggerCommandKind::UpdateEnemyState,
         }
     }
 }

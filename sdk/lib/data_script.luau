@@ -49,8 +49,8 @@ export type ProgressReactionDescriptor = {
 
 --- Primitive reaction body: invokes the named Rust primitive. With `tag`, it
 --- targets entities carrying that tag and mutates them. Tag-targeted primitives
---- include emitter/fog/mover commands, `applyDamage`, `setAnimationState`,
---- `armTrigger`, and `disarmTrigger`; arm/disarm use empty args. Without `tag`,
+-- include emitter/fog/mover commands, `applyDamage`, `setAnimationState`,
+-- `updateEnemyState`, `armTrigger`, and `disarmTrigger`; arm/disarm use empty args. Without `tag`,
 --- it is a system reaction (no entities) that enqueues a typed engine command
 --- — `playSound`, `rumble`, `flashScreen`, the UI-stack reactions. `args`
 --- carries the primitive's typed payload (e.g. `{ rate = 0 }` for
@@ -275,6 +275,26 @@ function DataScriptSdk.damage(target: ActivatorsTarget | string, amount: number)
   end
   local wireTarget: any = if target == ACTIVATORS_TARGET then "@activators" else "@invalid"
   return { primitive = "applyDamage", target = wireTarget, args = { amount = amount } }
+end
+
+--- Selects a live enemy group addressed when a reaction fires.
+export type EnemyGroupFilter = { tag: string? }
+
+--- Typed, additive partial for consequential enemy-state updates.
+export type EnemyStateUpdateArgs = { aggro: boolean? }
+
+--- Fire-time-tag enemy handle. `update` emits one primitive descriptor.
+export type EnemyGroup = {
+  update: (self: EnemyGroup, fields: EnemyStateUpdateArgs) -> PrimitiveReactionDescriptor,
+}
+
+--- Select a live enemy group by tag. The tag resolves when the reaction fires.
+function DataScriptSdk.enemies(filter: EnemyGroupFilter): EnemyGroup
+  return {
+    update = function(_self: EnemyGroup, fields: EnemyStateUpdateArgs): PrimitiveReactionDescriptor
+      return { primitive = "updateEnemyState", tag = filter.tag, args = fields }
+    end,
+  }
 end
 
 function DataScriptSdk.armTrigger(target: TriggerTarget): {SequenceStep}

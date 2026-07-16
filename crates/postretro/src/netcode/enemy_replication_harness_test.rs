@@ -132,6 +132,7 @@ fn brain() -> BrainComponent {
         think_stride_counter: 0,
         death_despawn_remaining_ms: None,
         locomotion_moving: false,
+        aggro_armed: true,
         acquired_target: None,
         combat_slot: None,
         combat_slot_hold_ticks: 0,

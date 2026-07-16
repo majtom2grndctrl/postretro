@@ -281,6 +281,37 @@ fn increment_and_predicate_crossing_fixtures_match_across_authoring_runtimes() {
 }
 
 #[test]
+fn enemy_group_update_descriptors_match_across_authoring_runtimes() {
+    // This fixture intentionally uses the public root module/bare-global
+    // surfaces. In particular, the Luau spelling proves `enemies` is present
+    // in DATA_SCRIPT_FIELDS and therefore lifted from data_script.luau.
+    const TYPESCRIPT_FIXTURE: &str = r#"
+        import { enemies } from "postretro";
+        JSON.stringify(enemies({ tag: "closet_a" }).update({ aggro: true }));
+    "#;
+    const LUAU_FIXTURE: &str = r#"
+        return enemies({ tag = "closet_a" }):update({ aggro = true })
+    "#;
+
+    let typescript = quickjs_fixture_value(TYPESCRIPT_FIXTURE);
+    let luau = luau_fixture_value(LUAU_FIXTURE);
+    assert_eq!(
+        serde_json::to_vec(&typescript).expect("serialize TypeScript descriptor"),
+        serde_json::to_vec(&luau).expect("serialize Luau descriptor"),
+        "TS and Luau enemy-group descriptors diverged"
+    );
+    assert_eq!(
+        typescript,
+        serde_json::json!({
+            "primitive": "updateEnemyState",
+            "tag": "closet_a",
+            "args": { "aggro": true },
+        }),
+        "enemy-group handle must be sugar for the raw primitive descriptor"
+    );
+}
+
+#[test]
 fn dispatch_tracers_accumulators_and_state_refs_match_across_runtimes() {
     const TYPESCRIPT_FIXTURE: &str = r#"
         import { defineReaction, defineStore, runtime } from "postretro";

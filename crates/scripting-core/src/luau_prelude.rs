@@ -49,9 +49,9 @@ const MOVERS_LUAU_SRC: &str = include_str!("../../../sdk/lib/entities/movers.lua
 /// globals are exposed.
 const TRIGGERS_LUAU_SRC: &str = include_str!("../../../sdk/lib/entities/triggers.luau");
 
-/// SDK library prelude — `data_script.luau` returns a table whose fields
-/// (`defineReaction`, `defineEntity`, `defineMod`, `defineMapCatalog`, `defineStore`)
-/// are destructured into globals so data-script authors call them by bare name.
+/// SDK library prelude — `data_script.luau` returns a table of public
+/// descriptor builders that are destructured into globals so data-script authors
+/// call them by bare name.
 /// Pure descriptor builders; no FFI happens until the mod manifest or `setupLevel`
 /// returns.
 const DATA_SCRIPT_LUAU_SRC: &str = include_str!("../../../sdk/lib/data_script.luau");
@@ -128,6 +128,7 @@ const DATA_SCRIPT_FIELDS: &[&str] = &[
     "defineReaction",
     "onTriggerEvent",
     "damage",
+    "enemies",
     "armTrigger",
     "disarmTrigger",
     "scopeReactions",
@@ -258,6 +259,7 @@ pub const POSTRETRO_ROOT_MODULE_EXPORTS: &[&str] = &[
     "defineReaction",
     "onTriggerEvent",
     "damage",
+    "enemies",
     "armTrigger",
     "disarmTrigger",
     "scopeReactions",
@@ -278,8 +280,7 @@ pub const POSTRETRO_ROOT_MODULE_EXPORTS: &[&str] = &[
 /// primitives like `worldQuery` and `setLightAnimation`. The mover wrapper
 /// is also embedded before `world.luau` captures it.
 /// `data_script.luau` is also evaluated as a prelude step but has no
-/// primitive dependencies; it's pure data builders (`defineReaction`,
-/// `defineEntity`).
+/// primitive dependencies; its exported builders are pure data assembly.
 /// The prelude source uses type annotations declared in postretro.d.luau (luau-lsp only); the runtime evaluates the .luau source without loading the declaration file.
 pub fn evaluate_prelude(
     lua: &Lua,

@@ -27,6 +27,13 @@ export type { MoverEntityHandle } from "./entities/movers";
 
 export type { TriggerVolumeHandle } from "./entities/triggers";
 
+export type {
+  EnemyGroup,
+  EnemyGroupFilter,
+  EnemyStateUpdateArgs,
+} from "./entities/enemies";
+export { enemies } from "./entities/enemies";
+
 export type { Keyframe } from "./util/keyframes";
 export { timeline, sequence } from "./util/keyframes";
 

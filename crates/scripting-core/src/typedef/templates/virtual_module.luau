@@ -95,6 +95,7 @@ export type PostretroModule = {
   --- Build a named reaction descriptor. Accepts `progress`, `primitive`, or `sequence` body data.
   defineReaction: typeof(defineReaction),
   damage: typeof(damage),
+  enemies: typeof(enemies),
   armTrigger: typeof(armTrigger),
   disarmTrigger: typeof(disarmTrigger),
   onTriggerEvent: typeof(onTriggerEvent),

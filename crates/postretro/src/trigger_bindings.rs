@@ -24,6 +24,7 @@ use serde::Deserialize;
 use crate::health::reactions::ApplyDamageArgs;
 use crate::kinematic_mover::MoverCommandDiagnostics;
 use crate::scripting::reactions::animation::SetAnimationStateArgs;
+use crate::scripting::reactions::enemy_state::UpdateEnemyStateArgs;
 #[cfg(test)]
 pub(crate) use crate::trigger_commands::BoundTriggerCommandKind;
 use crate::trigger_commands::{
@@ -44,6 +45,7 @@ const CONSEQUENTIAL_PRIMITIVES: &[&str] = &[
     "disarmTrigger",
     "setState",
     "setAnimationState",
+    "updateEnemyState",
 ];
 
 const LIFECYCLE_PRIMITIVES: &[&str] = &["loadLevel", "restartLevel", "returnToFrontend"];
@@ -679,8 +681,9 @@ fn bind_command(
     slot_table: &SlotTable,
     script_ctx: Option<&ScriptCtx>,
 ) -> Option<BoundTriggerCommand> {
+    let target_from_context = target;
     let target = |name: &str| {
-        target.clone().or_else(|| {
+        target_from_context.clone().or_else(|| {
             log::warn!("[Trigger] consequential primitive `{name}` has no target tag; not binding");
             None
         })
@@ -753,6 +756,25 @@ fn bind_command(
             Some(BoundTriggerCommand::AnimationState {
                 target: target(primitive)?,
                 state: args.state,
+            })
+        }
+        "updateEnemyState" => {
+            let Some(target) = target_from_context else {
+                log::warn!(
+                    "[Trigger] updateEnemyState requires a fire-time tag target; not binding"
+                );
+                return None;
+            };
+            let args: UpdateEnemyStateArgs = match serde_json::from_value(args.clone()) {
+                Ok(args) => args,
+                Err(error) => {
+                    log::warn!("[Trigger] updateEnemyState has invalid args; not binding: {error}");
+                    return None;
+                }
+            };
+            Some(BoundTriggerCommand::UpdateEnemyState {
+                target,
+                aggro: args.aggro,
             })
         }
         _ => None,
@@ -846,6 +868,7 @@ fn bind_store_slot(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use postretro_entities::components::brain::{BrainComponent, attach_brain};
     use postretro_entities::components::health::HealthComponent;
     use postretro_entities::{
         NumericRange, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue, Transform,
@@ -889,6 +912,180 @@ mod tests {
             )
             .unwrap();
         id
+    }
+
+    fn ai_descriptor() -> postretro_foundation::AiDescriptor {
+        postretro_foundation::AiDescriptor {
+            detection_range: 18.0,
+            attack_range: 2.0,
+            leash_range: 26.0,
+            attack_damage: 8.0,
+            attack_cooldown_ms: 1000.0,
+            move_speed: 3.5,
+            death_despawn_ms: 1500.0,
+            states: postretro_foundation::AiStateNames {
+                idle: "idle".into(),
+                alert: "walk".into(),
+                attack: "attack".into(),
+                death: "die".into(),
+            },
+        }
+    }
+
+    fn spawn_brain(registry: &mut EntityRegistry, tag: &str) -> EntityId {
+        let entity = registry.spawn(Transform::default());
+        registry.set_tags(entity, vec![tag.into()]).unwrap();
+        attach_brain(registry, entity, &ai_descriptor()).unwrap();
+        entity
+    }
+
+    #[test]
+    fn update_enemy_state_rejects_tagless_and_unknown_key_bindings() {
+        assert!(
+            bind_command(
+                "updateEnemyState",
+                None,
+                &serde_json::json!({ "aggro": true }),
+                &SlotTable::new(),
+                None,
+            )
+            .is_none()
+        );
+        assert!(
+            bind_command(
+                "updateEnemyState",
+                Some(BoundTarget::Tag("closet".into())),
+                &serde_json::json!({ "unknown": true }),
+                &SlotTable::new(),
+                None,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn update_enemy_state_resolves_later_added_brains_at_fire_time() {
+        let mut registry = EntityRegistry::new();
+        let trigger = spawn_trigger(&mut registry, "release");
+        let mut data = DataRegistry::new();
+        data.populate_level(
+            vec![primitive(
+                "release",
+                "updateEnemyState",
+                Some("closet"),
+                serde_json::json!({ "aggro": false }),
+                None,
+            )],
+            Vec::new(),
+            &[],
+        );
+        let table = TriggerBindingTable::build(&registry, &data, &SlotTable::new());
+        let enemy = spawn_brain(&mut registry, "closet");
+
+        let execution = table.execute(
+            trigger,
+            TriggerEventEdge::Enter,
+            &mut registry,
+            &mut SlotTable::new(),
+            &TriggerFireContext::default(),
+        );
+
+        assert_eq!(
+            execution.commands,
+            vec![BoundTriggerCommandKind::UpdateEnemyState]
+        );
+        assert!(
+            !registry
+                .get_component::<BrainComponent>(enemy)
+                .unwrap()
+                .aggro_armed
+        );
+    }
+
+    #[test]
+    fn update_enemy_state_empty_tag_is_debug_noop_and_keeps_fanout_work() {
+        let mut registry = EntityRegistry::new();
+        let trigger = spawn_trigger(&mut registry, "fanout");
+        let mut data = DataRegistry::new();
+        data.populate_level(
+            vec![
+                primitive(
+                    "fanout",
+                    "updateEnemyState",
+                    Some("unspawned"),
+                    serde_json::json!({ "aggro": true }),
+                    None,
+                ),
+                primitive(
+                    "fanout",
+                    "setState",
+                    None,
+                    serde_json::json!({ "slot": "trigger.flag", "value": 1.0 }),
+                    None,
+                ),
+            ],
+            Vec::new(),
+            &[],
+        );
+        let table = TriggerBindingTable::build(&registry, &data, &writable_slots());
+        let mut slots = writable_slots();
+        let captured = crate::scripting::reactions::log_capture::capture(|| {
+            let execution = table.execute(
+                trigger,
+                TriggerEventEdge::Enter,
+                &mut registry,
+                &mut slots,
+                &TriggerFireContext::default(),
+            );
+            assert_eq!(
+                execution.commands,
+                vec![
+                    BoundTriggerCommandKind::UpdateEnemyState,
+                    BoundTriggerCommandKind::StoreSlot,
+                ]
+            );
+        });
+        assert_eq!(
+            slots.get("trigger.flag").unwrap().value,
+            Some(SlotValue::Number(1.0)),
+        );
+        assert!(captured.iter().any(|(level, message)| {
+            *level == log::Level::Debug && message.contains("empty Brain tag match")
+        }));
+    }
+
+    #[test]
+    fn update_enemy_state_special_target_logs_and_skips() {
+        let command = bind_command(
+            "updateEnemyState",
+            Some(BoundTarget::Activators),
+            &serde_json::json!({ "aggro": false }),
+            &SlotTable::new(),
+            None,
+        )
+        .expect("special target remains bound so the fixed-tick executor can reject it");
+        let mut registry = EntityRegistry::new();
+        let enemy = spawn_brain(&mut registry, "closet");
+        let captured = crate::scripting::reactions::log_capture::capture(|| {
+            command.execute(
+                &mut registry,
+                &mut SlotTable::new(),
+                &Default::default(),
+                &TriggerFireContext {
+                    activator: Some(enemy),
+                    ..Default::default()
+                },
+            );
+        });
+        assert!(
+            registry
+                .get_component::<BrainComponent>(enemy)
+                .unwrap()
+                .aggro_armed
+        );
+        assert!(captured.iter().any(|(level, message)| {
+            *level == log::Level::Warn && message.contains("requires a tag target")
+        }));
     }
 
     fn writable_slots() -> SlotTable {

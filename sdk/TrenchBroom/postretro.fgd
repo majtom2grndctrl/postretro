@@ -46,6 +46,18 @@
     _tags(string) : "Space-delimited tags for script queries" : ""
 ]
 
+// Descriptor-backed enemy classes are mod-defined, so this base owns their
+// shared authoring surface. Every concrete AI-enemy FGD class must inherit
+// `AiEnemy`; no engine-provided enemy archetype is implied here.
+@BaseClass = AiEnemy
+[
+    enabled_on_spawn(choices) : "Enabled on spawn" : 1 =
+    [
+        0 : "Off (hold aggro)"
+        1 : "On"
+    ]
+]
+
 @BaseClass = Light
 [
     light(integer) : "Intensity" : 300

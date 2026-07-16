@@ -34,7 +34,7 @@ export type ProgressReactionDescriptor = {
   progress: { tag: string; at: number; fire: string };
 };
 
-/** Invokes a named Rust primitive. With `tag`, it targets entities carrying that tag and mutates them. Tag-targeted primitives include emitter/fog/mover commands, `applyDamage`, `setAnimationState`, `armTrigger`, and `disarmTrigger`; arm/disarm use empty args. Without `tag`, it is a system reaction (no entities) that enqueues a typed engine command — `playSound`, `rumble`, `flashScreen`, the UI-stack reactions. `args` carries the primitive's typed payload. */
+/** Invokes a named Rust primitive. With `tag`, it targets entities carrying that tag and mutates them. Tag-targeted primitives include emitter/fog/mover commands, `applyDamage`, `setAnimationState`, `updateEnemyState`, `armTrigger`, and `disarmTrigger`; arm/disarm use empty args. Without `tag`, it is a system reaction (no entities) that enqueues a typed engine command — `playSound`, `rumble`, `flashScreen`, the UI-stack reactions. `args` carries the primitive's typed payload. */
 export type PrimitiveReactionDescriptor = {
   primitive: string;
   tag?: string;

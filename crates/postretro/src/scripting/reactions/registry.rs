@@ -9,6 +9,10 @@ pub(crate) fn register_emitter_reaction_primitives(registry: &mut ReactionPrimit
     crate::health::reactions::register_health_reaction_primitives(registry);
 }
 
+pub(crate) fn register_enemy_state_reaction_primitives(registry: &mut ReactionPrimitiveRegistry) {
+    crate::scripting::reactions::enemy_state::register_enemy_state_reaction_primitives(registry);
+}
+
 pub(crate) use crate::fx::fog_reactions::{
     register_fog_reaction_primitives, register_sequenced_fog_primitives,
 };
@@ -65,5 +69,12 @@ mod tests {
         register_trigger_reaction_primitives(&mut r, Default::default());
         assert!(r.contains("armTrigger"));
         assert!(r.contains("disarmTrigger"));
+    }
+
+    #[test]
+    fn enemy_state_registrar_exposes_update_enemy_state() {
+        let mut r = ReactionPrimitiveRegistry::new();
+        register_enemy_state_reaction_primitives(&mut r);
+        assert!(r.contains("updateEnemyState"));
     }
 }

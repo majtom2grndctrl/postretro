@@ -153,6 +153,13 @@ pub struct BrainComponent {
     /// instead of re-requesting the same animation every tick.
     #[serde(default)]
     pub locomotion_moving: bool,
+    /// Whether this brain may acquire and pursue a target. This is
+    /// host-authoritative simulation state: it deliberately has no snapshot
+    /// field, because a closed brain's stationary Idle transform is already the
+    /// client-visible result. Old serialized component data predates the gate,
+    /// so absent values default open.
+    #[serde(default = "default_aggro_armed")]
+    pub aggro_armed: bool,
     /// Currently acquired player pawn. This is retained only while the FSM is
     /// engaged (`Alert`/`Attack`) so near-equidistant co-op players do not cause
     /// per-think target churn. Cleared when aggro drops.
@@ -182,12 +189,17 @@ impl BrainComponent {
             think_stride_counter: 0,
             death_despawn_remaining_ms: None,
             locomotion_moving: false,
+            aggro_armed: true,
             acquired_target: None,
             combat_slot: None,
             combat_slot_hold_ticks: 0,
             tuning: AiTuning::from_descriptor(desc),
         }
     }
+}
+
+const fn default_aggro_armed() -> bool {
+    true
 }
 
 /// Public spawn seam: insert a [`BrainComponent`] on an existing entity from the
@@ -300,6 +312,7 @@ mod tests {
         assert_eq!(brain.think_stride_counter, 0);
         assert_eq!(brain.death_despawn_remaining_ms, None);
         assert!(!brain.locomotion_moving);
+        assert!(brain.aggro_armed);
         assert_eq!(brain.acquired_target, None);
         assert_eq!(brain.combat_slot, None);
         assert_eq!(brain.combat_slot_hold_ticks, 0);
@@ -355,6 +368,22 @@ mod tests {
             panic!("expected brain component");
         };
         assert!(!back.locomotion_moving);
+    }
+
+    #[test]
+    fn brain_serde_defaults_missing_aggro_gate_open() {
+        use crate::registry::ComponentValue;
+        let value = ComponentValue::Brain(BrainComponent::from_descriptor(&sample_descriptor()));
+        let mut json = serde_json::to_value(&value).unwrap();
+        json.as_object_mut().unwrap().remove("aggro_armed");
+
+        let ComponentValue::Brain(back) = serde_json::from_value(json).unwrap() else {
+            panic!("expected brain component");
+        };
+        assert!(
+            back.aggro_armed,
+            "older brain data must retain existing open-agro behavior"
+        );
     }
 
     #[test]

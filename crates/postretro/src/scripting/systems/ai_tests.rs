@@ -68,6 +68,7 @@ fn brain_with(tuning: AiTuning, state: LogicalState) -> BrainComponent {
         think_stride_counter: 0,
         death_despawn_remaining_ms: None,
         locomotion_moving: false,
+        aggro_armed: true,
         acquired_target: None,
         combat_slot: None,
         combat_slot_hold_ticks: 0,
@@ -266,6 +267,12 @@ fn enemy_acquired_target(reg: &EntityRegistry, enemy: EntityId) -> Option<Entity
     reg.get_component::<BrainComponent>(enemy)
         .unwrap()
         .acquired_target
+}
+
+fn set_enemy_aggro_armed(reg: &mut EntityRegistry, enemy: EntityId, aggro_armed: bool) {
+    let mut brain = reg.get_component::<BrainComponent>(enemy).unwrap().clone();
+    brain.aggro_armed = aggro_armed;
+    reg.set_component(enemy, brain).unwrap();
 }
 
 /// The enemy MESH's yaw-only VISUAL forward vector in the XZ plane, derived from
@@ -715,6 +722,138 @@ fn detection_sets_agent_destination_and_leash_clears_it() {
             .expect("agent present")
             .has_destination,
         "leaving leash must clear the destination",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Acceptance: host-authoritative aggro gate holds an enemy in place.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn sealed_enemy_does_not_acquire_adjacent_player_or_write_transform() {
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+    let start = Transform {
+        position: Vec3::ZERO,
+        rotation: glam::Quat::from_rotation_y(0.7),
+        ..Transform::default()
+    };
+    let mut brain = brain_with(tuning(), LogicalState::Idle);
+    brain.aggro_armed = false;
+    let enemy = spawn_enemy(&mut reg, start.position, brain, 50.0);
+    reg.set_component(enemy, start).unwrap();
+    spawn_player(&mut reg, Vec3::new(1.0, 0.0, 0.0));
+
+    // Detection does not currently require line of sight. Keeping the player
+    // adjacent here proves the sealed gate also prevents the thin-wall case.
+    run_ai_tick(&mut reg, &mut warned, 0.016);
+
+    assert_eq!(enemy_state(&reg, enemy), LogicalState::Idle);
+    assert_eq!(enemy_acquired_target(&reg, enemy), None);
+    assert!(
+        !agent_steering::path_state(&reg, enemy)
+            .expect("agent present")
+            .has_destination,
+        "a sealed brain must not issue a chase destination",
+    );
+    assert_eq!(
+        *reg.get_component::<Transform>(enemy).unwrap(),
+        start,
+        "the AI tick must preserve a sealed enemy's placement and facing",
+    );
+    assert_eq!(enemy_animation(&reg, enemy), "idle");
+}
+
+#[test]
+fn opening_sealed_enemy_allows_pursuit_on_next_think_tick() {
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+    let mut brain = brain_with(tuning(), LogicalState::Idle);
+    brain.aggro_armed = false;
+    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 50.0);
+    let pawn = spawn_player(&mut reg, Vec3::new(5.0, 0.0, 0.0));
+
+    run_ai_tick(&mut reg, &mut warned, 0.016);
+    set_enemy_aggro_armed(&mut reg, enemy, true);
+    run_ai_tick(&mut reg, &mut warned, 0.016);
+
+    assert_eq!(enemy_state(&reg, enemy), LogicalState::Alert);
+    assert_eq!(enemy_acquired_target(&reg, enemy), Some(pawn));
+    assert!(
+        agent_steering::path_state(&reg, enemy)
+            .expect("agent present")
+            .has_destination,
+        "opening the gate should let the next normal think issue pursuit",
+    );
+}
+
+#[test]
+fn closing_mid_chase_clears_steering_and_holds_idempotently() {
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+    let enemy = spawn_enemy(
+        &mut reg,
+        Vec3::ZERO,
+        brain_with(tuning(), LogicalState::Idle),
+        50.0,
+    );
+    spawn_player(&mut reg, Vec3::new(5.0, 0.0, 0.0));
+    run_ai_tick(&mut reg, &mut warned, 0.016);
+    set_enemy_yaw(&mut reg, enemy, 0.9);
+    set_agent_velocity(&mut reg, enemy, Vec3::X);
+    let held_transform = *reg.get_component::<Transform>(enemy).unwrap();
+
+    set_enemy_aggro_armed(&mut reg, enemy, false);
+    run_ai_tick(&mut reg, &mut warned, 0.016);
+    let first_closed_animation = reg.get_component::<MeshComponent>(enemy).unwrap().clone();
+
+    assert_eq!(enemy_state(&reg, enemy), LogicalState::Idle);
+    assert_eq!(enemy_acquired_target(&reg, enemy), None);
+    assert!(
+        !agent_steering::path_state(&reg, enemy)
+            .expect("agent present")
+            .has_destination,
+    );
+    assert_eq!(enemy_animation(&reg, enemy), "idle");
+    assert_eq!(
+        *reg.get_component::<Transform>(enemy).unwrap(),
+        held_transform
+    );
+
+    run_ai_tick(&mut reg, &mut warned, 0.016);
+    assert_eq!(
+        reg.get_component::<MeshComponent>(enemy).unwrap(),
+        &first_closed_animation,
+        "a repeatedly closed gate must not keep re-writing Idle animation state",
+    );
+    assert_eq!(
+        *reg.get_component::<Transform>(enemy).unwrap(),
+        held_transform
+    );
+}
+
+#[test]
+fn gated_enemy_still_enters_death_and_despawns() {
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+    let mut brain = brain_with(tuning(), LogicalState::Idle);
+    brain.aggro_armed = false;
+    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 0.0);
+    spawn_player(&mut reg, Vec3::new(1.0, 0.0, 0.0));
+
+    run_ai_tick(&mut reg, &mut warned, 1.0);
+    assert_eq!(enemy_state(&reg, enemy), LogicalState::Death);
+    assert_eq!(enemy_acquired_target(&reg, enemy), None);
+    assert!(
+        !agent_steering::path_state(&reg, enemy)
+            .expect("agent present")
+            .has_destination,
+    );
+    run_ai_tick(&mut reg, &mut warned, 1.0);
+    run_ai_tick(&mut reg, &mut warned, 1.0);
+    assert!(
+        !reg.exists(enemy),
+        "death/despawn remains live while gate is closed"
     );
 }
 
@@ -1774,6 +1913,50 @@ fn assert_approx_distance(actual: f32, expected: f32, message: &str) {
     assert!(
         (actual - expected).abs() <= 1.0e-4,
         "{message}: expected {expected}, got {actual}"
+    );
+}
+
+#[test]
+fn closed_enemy_with_no_destination_is_not_separation_nudged() {
+    let floor = OpenFloor::new();
+    let world = floor.collision_world();
+    let graph = floor.nav_graph();
+    let mut reg = EntityRegistry::new();
+
+    let mut sealed_brain = brain_with(tuning(), LogicalState::Idle);
+    sealed_brain.aggro_armed = false;
+    let sealed = spawn_enemy(
+        &mut reg,
+        Vec3::new(8.0, chaser_rest_y(), 8.0),
+        sealed_brain,
+        50.0,
+    );
+    // The second agent overlaps the sealed enemy and has a destination, so its
+    // own steering executes the normal separation path. The sealed enemy must
+    // still take the destination-less idle-settle early continue.
+    let moving = spawn_enemy(
+        &mut reg,
+        Vec3::new(8.1, chaser_rest_y(), 8.0),
+        brain_with(tuning(), LogicalState::Idle),
+        50.0,
+    );
+    agent_steering::set_destination(&mut reg, moving, Vec3::new(16.0, chaser_rest_y(), 8.0));
+    let start = *reg.get_component::<Transform>(sealed).unwrap();
+
+    agent_steering::tick(&mut reg, &world, Some(&graph), STEER_GRAVITY, STEER_DT);
+
+    let end = reg.get_component::<Transform>(sealed).unwrap();
+    assert!(
+        (end.position.x - start.position.x).abs() <= EPS
+            && (end.position.z - start.position.z).abs() <= EPS,
+        "a closed brain's cleared destination exempts it from separation movement; \
+         start={:?}, end={:?}",
+        start.position,
+        end.position,
+    );
+    assert_eq!(
+        end.rotation, start.rotation,
+        "steering must not change facing"
     );
 }
 

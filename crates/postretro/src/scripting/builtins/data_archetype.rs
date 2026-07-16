@@ -490,6 +490,14 @@ fn attach_descriptor_components(
     if let Some(ai_desc) = descriptor.ai.as_ref() {
         // `set_component`/`attach_*` only fail on a stale id — just returned.
         let _ = attach_brain(registry, id, ai_desc);
+        let aggro_armed = ai_aggro_armed_on_spawn(entity);
+        if let Ok(mut brain) = registry
+            .get_component::<postretro_entities::components::brain::BrainComponent>(id)
+            .cloned()
+        {
+            brain.aggro_armed = aggro_armed;
+            let _ = registry.set_component(id, brain);
+        }
 
         let params = agent_params.unwrap_or(DEFAULT_AGENT_PARAMS);
         let _ = attach_agent(registry, id, &params, ai_desc.move_speed);
@@ -520,6 +528,34 @@ fn attach_descriptor_components(
             spawn_path,
         };
         let _ = registry.set_component(id, provenance);
+    }
+}
+
+/// Seed an AI brain's aggro gate from a map placement.
+///
+/// This deliberately consumes the bare `enabled_on_spawn` KVP instead of the
+/// usual `initial_*` descriptor-override namespace: it is a set-piece gate,
+/// not descriptor-owned gameplay tuning. The descriptor refresh planner does
+/// not replace `BrainComponent`, so a hot descriptor reload preserves this
+/// placement-seeded host state rather than reopening a sealed enemy.
+fn ai_aggro_armed_on_spawn(entity: &MapEntity) -> bool {
+    let Some(raw) = entity.key_values.get("enabled_on_spawn") else {
+        log::warn!(
+            "[Loader] {}: AI enemy has no `enabled_on_spawn`; defaulting aggro gate open",
+            entity.diagnostic_origin(),
+        );
+        return true;
+    };
+    match parse_bool(raw) {
+        Some(value) => value,
+        None => {
+            log::warn!(
+                "[Loader] {}: AI enemy `enabled_on_spawn` value `{raw}` is not boolean; \
+                 defaulting aggro gate open",
+                entity.diagnostic_origin(),
+            );
+            true
+        }
     }
 }
 
@@ -2364,6 +2400,44 @@ mod tests {
             matches!(reg.has_component_kind(id, ComponentKind::Agent), Ok(true)),
             "ai descriptor materializes an Agent alongside the Brain"
         );
+    }
+
+    #[test]
+    fn ai_enemy_enabled_on_spawn_false_seeds_closed_aggro_gate() {
+        use postretro_entities::components::brain::BrainComponent;
+
+        let descriptors = vec![ai_enemy_descriptor("sealed_grunt")];
+        let placements = vec![placement("sealed_grunt", &[("enabled_on_spawn", "false")])];
+        let mut reg = EntityRegistry::new();
+        apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg, None);
+
+        let (id, _) = reg
+            .iter_with_kind(ComponentKind::Brain)
+            .next()
+            .expect("AI enemy should materialize a brain");
+        assert!(
+            !reg.get_component::<BrainComponent>(id).unwrap().aggro_armed,
+            "the bare placement KVP closes the host-only aggro gate"
+        );
+    }
+
+    #[test]
+    fn ai_enemy_missing_or_malformed_enabled_on_spawn_defaults_gate_open() {
+        use postretro_entities::components::brain::BrainComponent;
+
+        let descriptors = vec![ai_enemy_descriptor("grunt")];
+        let placements = vec![
+            placement("grunt", &[]),
+            placement("grunt", &[("enabled_on_spawn", "not-a-bool")]),
+        ];
+        let mut reg = EntityRegistry::new();
+        apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg, None);
+
+        let gates: Vec<bool> = reg
+            .iter_with_kind(ComponentKind::Brain)
+            .map(|(id, _)| reg.get_component::<BrainComponent>(id).unwrap().aggro_armed)
+            .collect();
+        assert_eq!(gates, vec![true, true]);
     }
 
     #[test]

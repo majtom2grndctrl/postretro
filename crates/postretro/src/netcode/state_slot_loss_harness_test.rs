@@ -385,8 +385,7 @@ fn accumulated_shared_global_converges_without_client_side_evaluation() {
     let accumulator = IrNode::Input {
         name: "@dt".to_string(),
     };
-    let mut h =
-        StateSlotHarness::new_with_accumulator(CLIENT_A, direct, direct, Some(accumulator));
+    let mut h = StateSlotHarness::new_with_accumulator(CLIENT_A, direct, direct, Some(accumulator));
     let mut bindings = SlotAccumulatorBindings::default();
     bindings.rebuild(&h.host_ctx);
 

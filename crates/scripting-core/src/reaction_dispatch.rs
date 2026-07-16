@@ -340,6 +340,7 @@ fn is_trigger_consequential_primitive(primitive: &str) -> bool {
             | "disarmTrigger"
             | "setState"
             | "setAnimationState"
+            | "updateEnemyState"
     )
 }
 
@@ -560,6 +561,12 @@ mod tests {
         let id = reg.spawn(Transform::default());
         let owned: Vec<String> = tags.iter().map(|s| s.to_string()).collect();
         reg.set_tags(id, owned).unwrap();
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn update_enemy_state_stays_in_trigger_consequential_mirror() {
+        assert!(is_trigger_consequential_primitive("updateEnemyState"));
     }
 
     #[test]

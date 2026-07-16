@@ -181,28 +181,44 @@ fn materialize_remote_enemy_presentation(
     }
 }
 
-fn map_placement_provenance(class: &str) -> DescriptorProvenance {
+fn ai_enemy_provenance(class: &str, spawn_path: DescriptorSpawnPath) -> DescriptorProvenance {
     DescriptorProvenance {
         canonical_name: class.to_string(),
         owned_components: std::iter::once(DescriptorComponentKind::Health).collect(),
         map_overrides: Default::default(),
-        spawn_path: DescriptorSpawnPath::MapPlacement,
+        spawn_path,
     }
 }
 
-/// Spawn a map-placed AI enemy the way `apply_data_archetype_dispatch` does on the
-/// HOST: a Transform, `Brain` + `Agent` from the `ai` block, and a `MapPlacement`
-/// `DescriptorProvenance` naming the descriptor class. This is exactly the shape
-/// `is_networked_ai_map_enemy` keys on, so `host_register_map_enemies` registers it.
-fn spawn_host_ai_enemy(registry: &mut EntityRegistry, class: &str, position: Vec3) -> EntityId {
+/// Spawn an AI enemy in one of the two eligible descriptor paths: map placement or a
+/// fixed-tick runtime spawner. Both carry the same live `Brain` + `Agent` pair and are
+/// therefore registered by the production networked-AI sweep.
+fn spawn_host_ai_enemy(
+    registry: &mut EntityRegistry,
+    class: &str,
+    position: Vec3,
+    spawn_path: DescriptorSpawnPath,
+) -> EntityId {
     let id = registry.spawn(Transform {
         position,
         ..Transform::default()
     });
     let _ = registry.set_component_value(id, ComponentValue::Brain(brain()));
     let _ = registry.set_component_value(id, ComponentValue::Agent(agent()));
-    let _ = registry.set_component(id, map_placement_provenance(class));
+    let _ = registry.set_component(id, ai_enemy_provenance(class, spawn_path));
     id
+}
+
+fn spawn_host_map_ai_enemy(registry: &mut EntityRegistry, class: &str, position: Vec3) -> EntityId {
+    spawn_host_ai_enemy(registry, class, position, DescriptorSpawnPath::MapPlacement)
+}
+
+fn spawn_host_runtime_ai_enemy(
+    registry: &mut EntityRegistry,
+    class: &str,
+    position: Vec3,
+) -> EntityId {
+    spawn_host_ai_enemy(registry, class, position, DescriptorSpawnPath::RuntimeSpawn)
 }
 
 /// The shared descriptor table both peers load (same content on both ends). The enemy
@@ -320,7 +336,7 @@ fn prop_descriptor(class: &str) -> EntityTypeDescriptor {
 // --- The two-sided enemy-replication harness --------------------------------
 
 /// Drives the genuine host-produce → wire → conditioner → client-apply path for
-/// host-registered map AI enemies. One conditioner per direction on a caller-advanced
+/// host-registered AI enemies. One conditioner per direction on a caller-advanced
 /// virtual clock (no wall-clock read). The client side runs the REAL
 /// `ClientReplication::apply_snapshot` + Task 6 remote-enemy materialization seam.
 struct EnemyReplicationHarness {
@@ -364,7 +380,7 @@ impl EnemyReplicationHarness {
         }
     }
 
-    /// Register the host's map-placed AI enemies for replication (the real Task 4
+    /// Register the host's eligible AI enemies for replication (the production
     /// sweep) into the `ReplicableSet`, stamping NetworkIds and tracking ids in
     /// `map_enemies`.
     fn host_register_enemies(&mut self) {
@@ -539,7 +555,8 @@ fn connected_client_has_exactly_one_remote_enemy_and_no_local_authoritative_copy
     let mut h = EnemyReplicationHarness::new(perfect_link());
 
     // Host: one map-placed AI enemy, registered for replication.
-    let enemy = spawn_host_ai_enemy(&mut h.host_registry, ENEMY_CLASS, Vec3::new(3.0, 0.0, 0.0));
+    let enemy =
+        spawn_host_map_ai_enemy(&mut h.host_registry, ENEMY_CLASS, Vec3::new(3.0, 0.0, 0.0));
     h.host_register_enemies();
     let net_id = h.enemy_network_id(enemy);
 
@@ -651,6 +668,42 @@ fn conditioned_link_delivers_and_materializes_enemy_before_spawn_windup_expires(
     }
 }
 
+// A fixed-tick spawner creates this entity after level installation, so the host's
+// post-tick re-sweep is the only production path that can register it. Once registered,
+// its Transform-only baseline must carry the descriptor class and materialize the same
+// remote presentation as a map placement.
+#[test]
+fn runtime_spawned_enemy_registers_and_materializes_on_connected_client() {
+    let mut h = EnemyReplicationHarness::new(perfect_link());
+    let enemy =
+        spawn_host_runtime_ai_enemy(&mut h.host_registry, ENEMY_CLASS, Vec3::new(7.0, 0.0, -2.0));
+
+    h.host_register_enemies();
+    assert!(
+        h.replicable.contains(enemy),
+        "runtime spawn enters ReplicableSet"
+    );
+    assert!(
+        h.map_enemies.contains(&enemy),
+        "runtime spawn is reload-tracked"
+    );
+    let net_id = h.enemy_network_id(enemy);
+
+    assert!(
+        h.step_until_client_maps(net_id, 16) > 0,
+        "connected client receives the runtime-spawn baseline"
+    );
+    let remote = h
+        .client_mapped_entity(net_id)
+        .expect("connected client materializes the runtime spawn");
+    assert!(
+        h.client_registry
+            .get_component::<MeshComponent>(remote)
+            .is_ok(),
+        "Transform-only runtime-spawn snapshot carries its canonical class for presentation"
+    );
+}
+
 // Regression: the harness materializes remote enemies directly, so it must replay the
 // spawn baseline's mesh-animation state just like `client_receive_and_apply`.
 #[test]
@@ -714,7 +767,7 @@ fn remote_enemy_spawn_baseline_applies_initial_mesh_animation_state() {
 fn remote_enemy_pose_comes_from_interpolation_under_conditioned_link() {
     let mut h = EnemyReplicationHarness::new(mandated_link());
 
-    let enemy = spawn_host_ai_enemy(&mut h.host_registry, ENEMY_CLASS, Vec3::ZERO);
+    let enemy = spawn_host_map_ai_enemy(&mut h.host_registry, ENEMY_CLASS, Vec3::ZERO);
     h.host_register_enemies();
     let net_id = h.enemy_network_id(enemy);
 
@@ -819,7 +872,7 @@ fn remote_enemy_pose_comes_from_interpolation_under_conditioned_link() {
 fn remote_enemy_interpolation_is_deterministic_under_seed_0x1502() {
     fn run() -> (u64, usize) {
         let mut h = EnemyReplicationHarness::new(mandated_link());
-        let enemy = spawn_host_ai_enemy(&mut h.host_registry, ENEMY_CLASS, Vec3::ZERO);
+        let enemy = spawn_host_map_ai_enemy(&mut h.host_registry, ENEMY_CLASS, Vec3::ZERO);
         h.host_register_enemies();
         let net_id = h.enemy_network_id(enemy);
         let mut x = 0.0_f32;
@@ -857,7 +910,8 @@ fn remote_enemy_interpolation_is_deterministic_under_seed_0x1502() {
 fn host_despawned_enemy_is_removed_and_interp_forgotten_on_client() {
     let mut h = EnemyReplicationHarness::new(perfect_link());
 
-    let enemy = spawn_host_ai_enemy(&mut h.host_registry, ENEMY_CLASS, Vec3::new(2.0, 0.0, 0.0));
+    let enemy =
+        spawn_host_map_ai_enemy(&mut h.host_registry, ENEMY_CLASS, Vec3::new(2.0, 0.0, 0.0));
     h.host_register_enemies();
     let net_id = h.enemy_network_id(enemy);
 
@@ -918,7 +972,7 @@ fn host_despawned_enemy_is_removed_and_interp_forgotten_on_client() {
 fn host_map_enemies_does_not_leak_or_re_register_a_dead_enemy() {
     let mut h = EnemyReplicationHarness::new(perfect_link());
 
-    let enemy = spawn_host_ai_enemy(&mut h.host_registry, ENEMY_CLASS, Vec3::ZERO);
+    let enemy = spawn_host_map_ai_enemy(&mut h.host_registry, ENEMY_CLASS, Vec3::ZERO);
     h.host_register_enemies();
     assert!(
         h.map_enemies.contains(&enemy),
@@ -961,22 +1015,25 @@ fn host_map_enemies_does_not_leak_or_re_register_a_dead_enemy() {
 // 4. Late join: a client that joins after enemies exist receives only the LIVE set.
 // ---------------------------------------------------------------------------
 
-// A client that joins after enemies have spawned and one has despawned receives, via
+// A client that joins after a runtime-spawned enemy exists and a map enemy has despawned receives, via
 // full baselines, only the currently-LIVE registered enemy set — never a despawned one.
 // The net tracker recycles no ids and a late joiner's first snapshot is the live set
 // only (a despawn it never knew about is not replayed to it).
 #[test]
-fn late_joining_client_receives_only_live_enemies() {
-    // The host runs alone first: two enemies spawn, then one dies BEFORE any client
-    // connects. Build the host with NO registered client so its first batch is unsent.
+fn late_joining_client_receives_only_live_enemies_including_runtime_spawn() {
+    // The host runs alone first: a runtime spawn and a map enemy exist, then the map
+    // enemy dies BEFORE any client connects. Build the host with NO registered client so
+    // its first batch is unsent.
     let mut server_replication = ServerReplication::new();
     let mut host_registry = EntityRegistry::new();
     let mut allocator = NetworkIdAllocator::new();
     let mut replicable = ReplicableSet::new();
     let mut map_enemies: HashSet<EntityId> = HashSet::new();
 
-    let enemy_a = spawn_host_ai_enemy(&mut host_registry, ENEMY_CLASS, Vec3::new(1.0, 0.0, 0.0));
-    let enemy_b = spawn_host_ai_enemy(&mut host_registry, ENEMY_CLASS, Vec3::new(9.0, 0.0, 0.0));
+    let enemy_a =
+        spawn_host_runtime_ai_enemy(&mut host_registry, ENEMY_CLASS, Vec3::new(1.0, 0.0, 0.0));
+    let enemy_b =
+        spawn_host_map_ai_enemy(&mut host_registry, ENEMY_CLASS, Vec3::new(9.0, 0.0, 0.0));
     host_register_map_enemies(
         &host_registry,
         &mut allocator,
@@ -1067,10 +1124,11 @@ fn late_joining_client_receives_only_live_enemies() {
         }
     }
 
-    // The late joiner mapped ONLY the live enemy A — never the despawned enemy B.
+    // The late joiner mapped ONLY the live runtime-spawned enemy A — never the despawned
+    // map enemy B.
     assert!(
         client_replication.map().contains_key(&net_a),
-        "the late joiner received the live enemy A"
+        "the late joiner received the live runtime-spawned enemy A"
     );
     assert!(
         !client_replication.map().contains_key(&net_b),
@@ -1104,7 +1162,8 @@ fn remote_enemy_rebaseline_does_not_resurface_materialize_or_reset_animation() {
     let mut h = EnemyReplicationHarness::new(perfect_link());
 
     // Host: one map-placed AI enemy registered for replication.
-    let enemy = spawn_host_ai_enemy(&mut h.host_registry, ENEMY_CLASS, Vec3::new(5.0, 0.0, 0.0));
+    let enemy =
+        spawn_host_map_ai_enemy(&mut h.host_registry, ENEMY_CLASS, Vec3::new(5.0, 0.0, 0.0));
     h.host_register_enemies();
     let net_id = h.enemy_network_id(enemy);
 
@@ -1247,7 +1306,7 @@ fn despawn_for_unmapped_network_id_is_a_clean_noop() {
 
     // Optionally establish one live enemy so we can prove the despawn leaves it intact.
     let live_enemy =
-        spawn_host_ai_enemy(&mut h.host_registry, ENEMY_CLASS, Vec3::new(1.0, 0.0, 0.0));
+        spawn_host_map_ai_enemy(&mut h.host_registry, ENEMY_CLASS, Vec3::new(1.0, 0.0, 0.0));
     h.host_register_enemies();
     let live_net_id = h.enemy_network_id(live_enemy);
     h.step_until_client_maps(live_net_id, 16);

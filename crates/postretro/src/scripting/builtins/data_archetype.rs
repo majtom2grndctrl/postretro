@@ -277,11 +277,11 @@ fn ai_capsule_center_from_feet_offset(
 /// Whether materializing this descriptor would attach the engine-owned AI pair
 /// (`ComponentKind::Brain` + `ComponentKind::Agent`) — i.e. whether the
 /// descriptor carries an `ai` block. This is the *pre-materialization* mirror of
-/// the live-component predicate `crate::netcode::is_networked_ai_map_enemy`,
+/// the live-component predicate `crate::netcode::is_networked_ai_enemy`,
 /// which can only inspect those components AFTER an entity exists: the `ai`
 /// block is the sole thing `attach_descriptor_components` keys the `Brain` +
 /// `Agent` attachment on, so `descriptor.ai.is_some()` holds exactly when that
-/// predicate would later return `true` for a `MapPlacement` spawn of this
+/// predicate would later return `true` for an eligible descriptor spawn of this
 /// descriptor.
 ///
 /// Used by the connected-client install path (E10 Task 5) to drop AI-enemy map
@@ -2384,7 +2384,7 @@ mod tests {
     fn ai_descriptor_materialization_yields_live_brain_and_agent() {
         // Invariant the suppression mechanism rests on: an `ai` descriptor
         // materialization attaches BOTH live `Brain` and `Agent` columns. Without
-        // this, `is_networked_ai_map_enemy` (which reads those live columns) and
+        // this, `is_networked_ai_enemy` (which reads those live columns) and
         // the pre-materialization `descriptor_materializes_ai_enemy` could
         // disagree.
         let descriptors = vec![ai_enemy_descriptor("grunt")];

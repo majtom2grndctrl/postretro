@@ -785,12 +785,18 @@ fn bind_command(
             })
         }
         "spawnFromSpawner" => {
-            let Some(BoundTarget::Tag(_)) = target_from_context.as_ref() else {
+            let Some(BoundTarget::Tag(tag)) = target_from_context.as_ref() else {
                 log::warn!(
                     "[Trigger] spawnFromSpawner requires a fire-time tag target; not binding"
                 );
                 return None;
             };
+            if tag.is_empty() {
+                log::warn!(
+                    "[Trigger] spawnFromSpawner requires a non-empty fire-time tag target; not binding"
+                );
+                return None;
+            }
             Some(BoundTriggerCommand::Spawn {
                 target: target_from_context.expect("tag target checked above"),
             })

@@ -6,7 +6,7 @@ import type { PrimitiveReactionDescriptor } from "../data_script";
 
 /** Selects the live spawner group addressed when a reaction fires. */
 export type SpawnerFilter = {
-  tag?: string;
+  tag: string;
 };
 
 /** Fire-time-tag spawner handle. Methods emit one primitive reaction descriptor. */

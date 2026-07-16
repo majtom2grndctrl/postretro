@@ -2027,6 +2027,12 @@ impl ApplicationHandler for App {
                             &session.mesh_clip_tables,
                             spawned_meshes,
                         );
+                        // Runtime descriptor spawns can carry dynamic lights.
+                        // Enroll them after the fixed tick; the renderer still
+                        // receives only the bridge's CPU-packed update.
+                        session
+                            .light_bridge
+                            .absorb_dynamic_lights(&script_ctx.registry.borrow());
                         scripting_systems::slot_accumulators::evaluate_slot_accumulators(
                             &mut session.scripting.slot_accumulator_bindings,
                             tick_dt,

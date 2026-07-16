@@ -22,7 +22,7 @@ use crate::netcode::MAX_DELAY_MICROS;
 use crate::scripting::builtins::data_archetype::attach_descriptor_components;
 use crate::scripting::map_entity::MapEntity;
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct SpawnContextState {
     pub(crate) resolved_enemy_descriptors: HashMap<String, EntityTypeDescriptor>,
     pub(crate) agent_params: Option<NavAgentParams>,
@@ -32,6 +32,23 @@ pub(crate) struct SpawnContextState {
     /// clip table. Drained once by the host after attachment.
     pending_mesh_clip_resolves: Vec<EntityId>,
     warned_capacity_exhaustion: bool,
+    /// Connected clients keep their local spawner context for map preload, but
+    /// must materialize runtime enemies only from host snapshots.
+    can_materialize_runtime_spawns: bool,
+}
+
+impl Default for SpawnContextState {
+    fn default() -> Self {
+        Self {
+            resolved_enemy_descriptors: HashMap::new(),
+            agent_params: None,
+            warned_zero_match_tags: HashSet::new(),
+            pending_mesh_clip_resolves: Vec::new(),
+            warned_capacity_exhaustion: false,
+            // Outside a connected-client session, spawning is authoritative.
+            can_materialize_runtime_spawns: true,
+        }
+    }
 }
 
 /// Session-built shared handle supplied to both trigger and app-side command
@@ -48,17 +65,27 @@ impl SpawnContext {
         resolved_enemy_descriptors: HashMap<String, EntityTypeDescriptor>,
         agent_params: Option<NavAgentParams>,
     ) {
+        let can_materialize_runtime_spawns = self.state.borrow().can_materialize_runtime_spawns;
         *self.state.borrow_mut() = SpawnContextState {
             resolved_enemy_descriptors,
             agent_params,
             warned_zero_match_tags: HashSet::new(),
             pending_mesh_clip_resolves: Vec::new(),
             warned_capacity_exhaustion: false,
+            can_materialize_runtime_spawns,
         };
     }
 
     pub(crate) fn clear(&self) {
-        *self.state.borrow_mut() = SpawnContextState::default();
+        let can_materialize_runtime_spawns = self.state.borrow().can_materialize_runtime_spawns;
+        *self.state.borrow_mut() = SpawnContextState {
+            can_materialize_runtime_spawns,
+            ..Default::default()
+        };
+    }
+
+    pub(crate) fn set_runtime_spawn_authority(&self, enabled: bool) {
+        self.state.borrow_mut().can_materialize_runtime_spawns = enabled;
     }
 
     pub(crate) fn state(&self) -> std::cell::Ref<'_, SpawnContextState> {
@@ -91,6 +118,10 @@ impl SpawnContext {
             log::warn!("[Spawner] entity registry exhausted while spawning; stopping batch");
         }
     }
+
+    fn can_materialize_runtime_spawns(&self) -> bool {
+        self.state.borrow().can_materialize_runtime_spawns
+    }
 }
 
 /// Trigger tags resolve only against the Spawner column: an unrelated entity
@@ -100,6 +131,13 @@ pub(crate) fn spawn_from_spawner_tag(
     tag: &str,
     context: &SpawnContext,
 ) {
+    if tag.is_empty() {
+        log::warn!("[Spawner] spawnFromSpawner requires a non-empty fire-time tag; skipping");
+        return;
+    }
+    if !context.can_materialize_runtime_spawns() {
+        return;
+    }
     let targets: Vec<_> = registry
         .query_by_component_and_tag(ComponentKind::Spawner, Some(tag))
         .map(|(id, _)| id)
@@ -118,6 +156,9 @@ pub(crate) fn spawn_from_spawner_targets(
     targets: &[EntityId],
     context: &SpawnContext,
 ) {
+    if !context.can_materialize_runtime_spawns() {
+        return;
+    }
     let spawners: Vec<_> = targets
         .iter()
         .copied()
@@ -158,16 +199,6 @@ fn spawn_resolved_spawners(
             .unwrap_or(crate::scripting::builtins::data_archetype::DEFAULT_AGENT_PARAMS)
             .radius;
         let right = spawner_transform.rotation * Vec3::X;
-        let synthetic_map_entity = MapEntity {
-            classname: spawner.archetype_name.clone(),
-            origin: spawner_transform.position,
-            angles: Vec3::ZERO,
-            key_values: [("enabled_on_spawn".to_string(), "true".to_string())]
-                .into_iter()
-                .collect(),
-            tags: Vec::new(),
-        };
-
         for index in 0..spawner.count {
             let transform = Transform {
                 position: spawner_transform.position + right * (index as f32 * 2.0 * radius),
@@ -177,6 +208,15 @@ fn spawn_resolved_spawners(
             let Some(enemy) = registry.try_spawn(transform, &[]) else {
                 context.warn_capacity_exhaustion_once();
                 return;
+            };
+            let synthetic_map_entity = MapEntity {
+                classname: spawner.archetype_name.clone(),
+                origin: transform.position,
+                angles: Vec3::ZERO,
+                key_values: [("enabled_on_spawn".to_string(), "true".to_string())]
+                    .into_iter()
+                    .collect(),
+                tags: Vec::new(),
             };
             attach_descriptor_components(
                 registry,
@@ -215,8 +255,23 @@ pub(crate) fn register_spawner_reaction_primitives(
     registry: &mut ReactionPrimitiveRegistry,
     context: SpawnContext,
 ) {
-    registry.register("spawnFromSpawner", move |registry, targets, _args| {
-        spawn_from_spawner_targets(registry, targets, &context);
+    registry.register_tagged("spawnFromSpawner", move |registry, tag, targets, _args| {
+        if tag.is_empty() {
+            log::warn!("[Spawner] spawnFromSpawner requires a non-empty fire-time tag; skipping");
+            return Ok(());
+        }
+        if targets.iter().any(|id| {
+            registry
+                .has_component_kind(*id, ComponentKind::Spawner)
+                .unwrap_or(false)
+        }) {
+            spawn_from_spawner_targets(registry, targets, &context);
+        } else {
+            // The generic app-side dispatcher resolves Transform targets. Use the
+            // authored tag to retain zero-match diagnostics when those targets
+            // are absent or all belong to non-spawner entities.
+            spawn_from_spawner_tag(registry, tag, &context);
+        }
         Ok(())
     });
 }
@@ -229,11 +284,13 @@ mod tests {
     use postretro_entities::components::agent::AgentComponent;
     use postretro_entities::components::brain::BrainComponent;
     use postretro_entities::components::health::HealthComponent;
+    use postretro_entities::components::light::LightComponent;
     use postretro_entities::components::player_movement::PlayerMovementComponent;
     use postretro_entities::provenance::DescriptorProvenance;
     use postretro_scripting_core::data_descriptors::{
-        AirParams, CapsuleParams, FallParams, GroundParams, NamedReaction,
-        PlayerMovementDescriptor, ProgressDescriptor, ReactionDescriptor, SpeedParams,
+        AirParams, CapsuleParams, EntityTypeDescriptor, FallParams, GroundParams, LightDescriptor,
+        NamedReaction, PlayerMovementDescriptor, ProgressDescriptor, ReactionDescriptor,
+        SpeedParams,
     };
     use postretro_scripting_core::data_registry::DataRegistry;
     use postretro_scripting_core::reaction_dispatch::ProgressTracker;
@@ -244,11 +301,13 @@ mod tests {
     const TAG: &str = "closet";
 
     fn context() -> SpawnContext {
+        context_with_descriptor(ai_enemy_descriptor("cultist"))
+    }
+
+    fn context_with_descriptor(descriptor: EntityTypeDescriptor) -> SpawnContext {
         let context = SpawnContext::default();
         context.replace_level_data(
-            [("cultist".to_string(), ai_enemy_descriptor("cultist"))]
-                .into_iter()
-                .collect(),
+            [("cultist".to_string(), descriptor)].into_iter().collect(),
             Some(NavAgentParams {
                 radius: 0.4,
                 height: 1.8,
@@ -547,14 +606,94 @@ mod tests {
 
         assert!(
             reactions
-                .dispatch(
+                .dispatch_tagged(
                     "spawnFromSpawner",
                     &mut registry,
+                    TAG,
                     &[spawner],
                     &serde_json::json!({})
                 )
                 .unwrap()
         );
         assert_eq!(spawned(&registry).len(), 1);
+    }
+
+    #[test]
+    fn app_drain_zero_or_non_spawner_matches_warn_once_by_authored_tag() {
+        let mut registry = EntityRegistry::new();
+        let non_spawner = registry
+            .try_spawn(Transform::default(), &[TAG.to_string()])
+            .unwrap();
+        let context = context();
+        let mut reactions = ReactionPrimitiveRegistry::new();
+        register_spawner_reaction_primitives(&mut reactions, context.clone());
+        let no_targets = [];
+        let non_spawner_targets = [non_spawner];
+
+        for targets in [&no_targets[..], &non_spawner_targets[..]] {
+            assert!(
+                reactions
+                    .dispatch_tagged(
+                        "spawnFromSpawner",
+                        &mut registry,
+                        TAG,
+                        targets,
+                        &serde_json::json!({}),
+                    )
+                    .unwrap()
+            );
+        }
+
+        assert!(spawned(&registry).is_empty());
+        assert_eq!(
+            context.state().warned_zero_match_tags,
+            [TAG.to_string()].into()
+        );
+    }
+
+    #[test]
+    fn client_authority_gate_keeps_spawners_without_materializing_enemies() {
+        let mut registry = EntityRegistry::new();
+        add_spawner(&mut registry, TAG, 1, true, Transform::default());
+        let context = context();
+        context.set_runtime_spawn_authority(false);
+
+        spawn_from_spawner_tag(&mut registry, TAG, &context);
+
+        assert!(spawned(&registry).is_empty());
+    }
+
+    #[test]
+    fn descriptor_lights_follow_each_offset_runtime_spawn() {
+        let mut descriptor = ai_enemy_descriptor("cultist");
+        descriptor.light = Some(LightDescriptor {
+            color: [1.0, 0.5, 0.25],
+            intensity: 3.0,
+            range: 12.0,
+            is_dynamic: true,
+        });
+        let context = context_with_descriptor(descriptor);
+        let mut registry = EntityRegistry::new();
+        let transform = Transform {
+            position: Vec3::new(4.0, 2.0, -1.0),
+            rotation: Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+            scale: Vec3::ONE,
+        };
+        add_spawner(&mut registry, TAG, 2, true, transform);
+
+        spawn_from_spawner_tag(&mut registry, TAG, &context);
+
+        let lights: Vec<_> = registry
+            .iter_with_kind(ComponentKind::Light)
+            .filter_map(|(id, _)| registry.get_component::<LightComponent>(id).ok())
+            .collect();
+        assert_eq!(lights.len(), 2);
+        assert!((Vec3::from_array(lights[0].origin) - transform.position).length() < 1e-5);
+        assert!(
+            (Vec3::from_array(lights[1].origin)
+                - (transform.position + transform.rotation * Vec3::X * 0.8))
+                .length()
+                < 1e-5
+        );
     }
 }

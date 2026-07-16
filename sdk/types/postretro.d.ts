@@ -1038,7 +1038,7 @@ declare module "postretro" {
   }
   export function enemies(filter: EnemyGroupFilter): EnemyGroup;
   /** Selects a live spawner group by tag. Its tag resolves at reaction fire time. */
-  export type SpawnerFilter = { tag?: string };
+  export type SpawnerFilter = { tag: string };
   /** Fire-time-tag spawner handle. `fire` emits one primitive descriptor. */
   export interface SpawnerHandle {
     fire(): PrimitiveReactionDescriptor;

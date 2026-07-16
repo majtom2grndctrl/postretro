@@ -298,7 +298,7 @@ function DataScriptSdk.enemies(filter: EnemyGroupFilter): EnemyGroup
 end
 
 --- Selects the live spawner group addressed when a reaction fires.
-export type SpawnerFilter = { tag: string? }
+export type SpawnerFilter = { tag: string }
 
 --- Fire-time-tag spawner handle. `fire` emits one primitive descriptor.
 export type SpawnerHandle = {

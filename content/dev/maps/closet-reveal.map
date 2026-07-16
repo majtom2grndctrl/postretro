@@ -75,7 +75,7 @@
 "origin" "168 208 48"
 }
 // These enemies are present from level load but cannot acquire or chase until
-// closet.releaseCloset sets their foundation-owned aggro gate open.
+// closet.releaseCloset opens their engine-owned Brain aggro gate.
 {
 "classname" "reference_enemy"
 "origin" "224 104 16"

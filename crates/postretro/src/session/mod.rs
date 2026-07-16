@@ -424,6 +424,12 @@ impl Session {
                 None
             }
         };
+        scripting
+            .spawn_context
+            .set_runtime_spawn_authority(!matches!(
+                &net_endpoint,
+                Some(netcode::NetEndpoint::Client { .. })
+            ));
         boot_timings.record("net_endpoint_complete");
 
         Ok(Self {

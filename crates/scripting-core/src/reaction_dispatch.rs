@@ -380,7 +380,13 @@ fn dispatch_primitive(
     );
 
     let mut reg = script_ctx.registry.borrow_mut();
-    match reaction_registry.dispatch(&descriptor.primitive, &mut reg, &targets, &descriptor.args) {
+    match reaction_registry.dispatch_tagged(
+        &descriptor.primitive,
+        &mut reg,
+        tag,
+        &targets,
+        &descriptor.args,
+    ) {
         Ok(true) => {}
         Ok(false) => log::warn!(
             "[Scripting] primitive '{}' is not registered; reaction had no effect",

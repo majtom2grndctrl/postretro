@@ -53,6 +53,7 @@ mod scripting;
 // See: context/lib/boot_sequence.md §1
 mod session;
 mod sim;
+mod spawner;
 mod startup;
 mod trigger_bindings;
 mod trigger_commands;

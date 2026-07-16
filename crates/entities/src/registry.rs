@@ -19,6 +19,7 @@ use crate::components::light::LightComponent;
 use crate::components::mesh::MeshComponent;
 use crate::components::particle::ParticleState;
 use crate::components::player_movement::PlayerMovementComponent;
+use crate::components::spawner::SpawnerComponent;
 use crate::components::sprite_visual::SpriteVisual;
 use crate::components::trigger_volume::TriggerVolumeComponent;
 use crate::components::weapon::WeaponComponent;
@@ -119,6 +120,9 @@ pub enum ComponentKind {
     TriggerVolume = 14,
     /// Pawn-owned ammunition balances pooled by authored ammo type.
     AmmoReserve = 15,
+    /// Map-authored, fixed-tick enemy-spawn configuration. The resolved
+    /// descriptor remains in the session spawn context, not this serde value.
+    Spawner = 16,
 }
 
 impl ComponentKind {
@@ -144,6 +148,7 @@ impl ComponentKind {
             ComponentKind::KinematicMover,
             ComponentKind::TriggerVolume,
             ComponentKind::AmmoReserve,
+            ComponentKind::Spawner,
         ];
         VARIANTS.len()
     };
@@ -200,6 +205,7 @@ pub enum ComponentValue {
     KinematicMover(KinematicMoverComponent),
     TriggerVolume(TriggerVolumeComponent),
     AmmoReserve(AmmoReserve),
+    Spawner(SpawnerComponent),
 }
 
 impl ComponentValue {
@@ -221,6 +227,7 @@ impl ComponentValue {
             ComponentValue::KinematicMover(_) => ComponentKind::KinematicMover,
             ComponentValue::TriggerVolume(_) => ComponentKind::TriggerVolume,
             ComponentValue::AmmoReserve(_) => ComponentKind::AmmoReserve,
+            ComponentValue::Spawner(_) => ComponentKind::Spawner,
         }
     }
 }
@@ -529,6 +536,21 @@ impl Component for AmmoReserve {
     }
     fn into_value(self) -> ComponentValue {
         ComponentValue::AmmoReserve(self)
+    }
+}
+
+impl Component for SpawnerComponent {
+    const KIND: ComponentKind = ComponentKind::Spawner;
+
+    fn from_value(value: &ComponentValue) -> Option<&Self> {
+        match value {
+            ComponentValue::Spawner(spawner) => Some(spawner),
+            _ => None,
+        }
+    }
+
+    fn into_value(self) -> ComponentValue {
+        ComponentValue::Spawner(self)
     }
 }
 

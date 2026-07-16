@@ -12,7 +12,8 @@ use crate::frame_timing::InterpolableState;
 use crate::render;
 use crate::scripting::builtins::{
     PLAYER_START_CLASSNAME, apply_classname_dispatch, apply_data_archetype_dispatch,
-    filter_out_client_ai_enemies, spawn_from_player_starts, suppressed_ai_enemy_mesh_models,
+    descriptor_materializes_ai_enemy, filter_out_client_ai_enemies, spawn_from_player_starts,
+    suppressed_ai_enemy_mesh_models,
 };
 use crate::startup::{
     BootState, InFlightLevelLoad, LevelLoadEntry, LevelRequest, LevelSource, LoadOutcome,
@@ -83,6 +84,7 @@ impl App {
         // session-owned state clears are guarded — a no-op with no session yet.
         if let Some(session) = self.session.as_mut() {
             session.scripting.command_diagnostics.clear();
+            session.scripting.spawn_context.clear();
             session.scripting.slot_accumulator_bindings.clear();
             session.fog_volume_bridge.clear();
             session.trigger_volume_bridge.clear();
@@ -745,6 +747,7 @@ impl App {
                 .expect("level installed before segment B"),
             script_ctx: &script_ctx,
             command_diagnostics: session.scripting.command_diagnostics.clone(),
+            spawn_context: session.scripting.spawn_context.clone(),
             content_root: install_content_root.as_path(),
             active_level_tags: &self.active_level_tags,
             nav_graph: self.nav_graph.as_ref(),
@@ -1028,6 +1031,83 @@ fn build_trigger_bindings(
     )
 }
 
+/// Test-observable outcome of validating map-authored spawners after classname
+/// dispatch. Bad authoring never aborts a level install; it leaves the spawner
+/// unresolved, so the fixed-tick executor will skip it.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SpawnerInstallDiagnostics {
+    pub(crate) missing_archetype: usize,
+    pub(crate) non_ai_archetype: usize,
+}
+
+impl SpawnerInstallDiagnostics {
+    pub(crate) fn invalid_total(self) -> usize {
+        self.missing_archetype + self.non_ai_archetype
+    }
+}
+
+/// Resolve every map spawner against this level's descriptor registry and
+/// replace the session's fixed-tick spawn cache. The cache contains only AI
+/// descriptors, keyed by canonical name, and carries the nav bake that later
+/// runtime spawns must use for their agent capsule.
+pub(crate) fn resolve_spawners_for_level(
+    registry: &mut postretro_entities::EntityRegistry,
+    descriptors: &[postretro_scripting_core::data_descriptors::EntityTypeDescriptor],
+    agent_params: Option<postretro_foundation::NavAgentParams>,
+    spawn_context: &crate::spawner::SpawnContext,
+) -> SpawnerInstallDiagnostics {
+    use postretro_entities::components::spawner::SpawnerComponent;
+
+    let mut diagnostics = SpawnerInstallDiagnostics::default();
+    let mut resolved_descriptors = std::collections::HashMap::new();
+    let spawners: Vec<_> = registry
+        .iter_with_kind(postretro_entities::ComponentKind::Spawner)
+        .map(|(id, _)| id)
+        .collect();
+
+    for id in spawners {
+        let mut spawner = registry
+            .get_component::<SpawnerComponent>(id)
+            .expect("iter_with_kind(ComponentKind::Spawner) must yield SpawnerComponent")
+            .clone();
+        let Some(descriptor) = crate::scripting::builtins::data_archetype::find_descriptor(
+            descriptors,
+            &spawner.archetype_name,
+        ) else {
+            diagnostics.missing_archetype += 1;
+            log::warn!(
+                "[Loader] entity_spawner {id}: unknown archetype `{}`; it will spawn nothing",
+                spawner.archetype_name
+            );
+            spawner.resolved = false;
+            let _ = registry.set_component(id, spawner);
+            continue;
+        };
+        if !descriptor_materializes_ai_enemy(descriptor) {
+            diagnostics.non_ai_archetype += 1;
+            log::warn!(
+                "[Loader] entity_spawner {id}: archetype `{}` is not an AI enemy; it will spawn nothing",
+                spawner.archetype_name
+            );
+            spawner.resolved = false;
+            let _ = registry.set_component(id, spawner);
+            continue;
+        }
+
+        let canonical_name = descriptor
+            .canonical_name
+            .as_ref()
+            .expect("find_descriptor matches only descriptors with canonical names")
+            .clone();
+        resolved_descriptors.insert(canonical_name, descriptor.clone());
+        spawner.resolved = true;
+        let _ = registry.set_component(id, spawner);
+    }
+
+    spawn_context.replace_level_data(resolved_descriptors, agent_params);
+    diagnostics
+}
+
 /// CPU world-install products the tick loop consumes. [`install_world_cpu`]
 /// fills these from a level payload without touching the renderer, so a headless
 /// caller assembles `simulate_tick`'s arguments from the return value plus the
@@ -1068,6 +1148,8 @@ pub(crate) struct WorldInstallHandles<'a> {
     pub(crate) world: &'a postretro_level_loader::LevelWorld,
     pub(crate) script_ctx: &'a postretro_entities::ScriptCtx,
     pub(crate) command_diagnostics: crate::kinematic_mover::MoverCommandDiagnostics,
+    /// Session-owned VM-free resolved descriptor cache for entity spawners.
+    pub(crate) spawn_context: crate::spawner::SpawnContext,
     pub(crate) content_root: &'a std::path::Path,
     pub(crate) active_level_tags: &'a [String],
     /// The nav graph produced by segment A; supplies the descriptor-spawn agent
@@ -1124,6 +1206,7 @@ pub(crate) fn install_world_cpu(
         world,
         script_ctx,
         command_diagnostics,
+        spawn_context,
         content_root,
         active_level_tags,
         nav_graph,
@@ -1335,6 +1418,16 @@ pub(crate) fn install_world_cpu(
 
         (active_wieldable, active_wieldable_descriptor, first_spawn)
     };
+    let spawner_diagnostics = {
+        let mut registry = script_ctx.registry.borrow_mut();
+        resolve_spawners_for_level(&mut registry, &descriptors, agent_params, &spawn_context)
+    };
+    if spawner_diagnostics.invalid_total() > 0 {
+        log::warn!(
+            "[Loader] {} entity_spawner placement(s) remain unresolved",
+            spawner_diagnostics.invalid_total()
+        );
+    }
     timings.record("archetype_sweep");
 
     // Mesh model sweep, CPU half. Runs AFTER both dispatch sweeps so it sees every
@@ -1429,6 +1522,86 @@ mod tests {
     use postretro_scripting_core::staged_manifest::{
         StagedManifest, StagedManifestBuildResult, StagedManifestBuildStatus,
     };
+
+    #[test]
+    fn spawner_install_resolves_only_ai_descriptors_and_replaces_prior_level_data() {
+        use crate::scripting::builtins::data_archetype_test_fixtures::{
+            ai_enemy_descriptor, mesh_descriptor,
+        };
+        use crate::scripting::builtins::entity_spawner;
+        use crate::scripting::map_entity::MapEntity;
+        use postretro_entities::components::spawner::SpawnerComponent;
+
+        let mut registry = postretro_entities::EntityRegistry::new();
+        let map_entity = |archetype: &str| MapEntity {
+            classname: entity_spawner::CLASSNAME.to_string(),
+            origin: Vec3::ZERO,
+            angles: Vec3::ZERO,
+            key_values: [
+                ("archetype".to_string(), archetype.to_string()),
+                ("count".to_string(), "2".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+            tags: vec![],
+        };
+        let enemy = entity_spawner::handle(&map_entity("cultist"), &mut registry).unwrap();
+        let non_ai = entity_spawner::handle(&map_entity("crate"), &mut registry).unwrap();
+        let missing = entity_spawner::handle(&map_entity("absent"), &mut registry).unwrap();
+        let context = crate::spawner::SpawnContext::default();
+        context.replace_level_data(std::collections::HashMap::new(), None);
+
+        let params = postretro_foundation::NavAgentParams {
+            radius: 0.4,
+            height: 2.0,
+            step_height: 0.45,
+            max_slope_deg: 50.0,
+        };
+        let diagnostics = resolve_spawners_for_level(
+            &mut registry,
+            &[
+                ai_enemy_descriptor("cultist"),
+                mesh_descriptor("crate", false),
+            ],
+            Some(params),
+            &context,
+        );
+
+        assert!(
+            registry
+                .get_component::<SpawnerComponent>(enemy)
+                .unwrap()
+                .resolved
+        );
+        assert!(
+            !registry
+                .get_component::<SpawnerComponent>(non_ai)
+                .unwrap()
+                .resolved
+        );
+        assert!(
+            !registry
+                .get_component::<SpawnerComponent>(missing)
+                .unwrap()
+                .resolved
+        );
+        assert_eq!(
+            diagnostics,
+            SpawnerInstallDiagnostics {
+                missing_archetype: 1,
+                non_ai_archetype: 1,
+            }
+        );
+        let state = context.state();
+        assert_eq!(state.resolved_enemy_descriptors.len(), 1);
+        assert!(state.resolved_enemy_descriptors.contains_key("cultist"));
+        assert_eq!(state.agent_params, Some(params));
+        drop(state);
+
+        // A new level drops stale descriptor entries and warning dedup state.
+        resolve_spawners_for_level(&mut registry, &[], None, &context);
+        assert!(context.state().resolved_enemy_descriptors.is_empty());
+    }
     use postretro_scripting_core::state_crossings::CrossingDetector;
 
     const FIXTURE_MAP_A: &str = "fixture_map_a_reactor_room";
@@ -1473,6 +1646,7 @@ mod tests {
                 font_system: postretro_ui::text::build_font_system(),
                 scripting: crate::session::ScriptingCore {
                     command_diagnostics: Default::default(),
+                    spawn_context: Default::default(),
                     script_runtime,
                     script_ctx: script_ctx.clone(),
                     sequence_registry: SequencedPrimitiveRegistry::new(),
@@ -3198,6 +3372,7 @@ mod tests {
             let session = app.session.as_mut().expect("test app session installed");
             let handles = WorldInstallHandles {
                 command_diagnostics: Default::default(),
+                spawn_context: Default::default(),
                 world: &world,
                 script_ctx: &ctx,
                 content_root: std::path::Path::new("content/dev"),

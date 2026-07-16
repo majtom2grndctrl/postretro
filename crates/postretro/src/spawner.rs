@@ -192,6 +192,7 @@ mod tests {
     use super::*;
 
     use glam::Quat;
+    use postretro_entities::components::agent::AgentComponent;
     use postretro_entities::components::brain::BrainComponent;
     use postretro_entities::provenance::DescriptorProvenance;
 

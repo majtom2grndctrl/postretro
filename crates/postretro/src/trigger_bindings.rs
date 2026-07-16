@@ -982,6 +982,29 @@ mod tests {
     }
 
     #[test]
+    fn spawn_from_spawner_requires_a_tag_target_at_binding() {
+        let args = serde_json::json!({});
+        let slots = SlotTable::new();
+
+        let command = bind_command(
+            "spawnFromSpawner",
+            Some(BoundTarget::Tag("closet".into())),
+            &args,
+            &slots,
+            None,
+        )
+        .expect("tag-targeted spawner command binds");
+        assert_eq!(command.kind(), BoundTriggerCommandKind::Spawn);
+
+        for target in [None, Some(BoundTarget::Activators), Some(BoundTarget::FiredTrigger)] {
+            assert!(
+                bind_command("spawnFromSpawner", target, &args, &slots, None).is_none(),
+                "spawnFromSpawner must reject an absent or special target"
+            );
+        }
+    }
+
+    #[test]
     fn update_enemy_state_resolves_later_added_brains_at_fire_time() {
         let mut registry = EntityRegistry::new();
         let trigger = spawn_trigger(&mut registry, "release");

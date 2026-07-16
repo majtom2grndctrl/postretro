@@ -34,6 +34,9 @@ export type {
 } from "./entities/enemies";
 export { enemies } from "./entities/enemies";
 
+export type { SpawnerFilter, SpawnerHandle } from "./entities/spawners";
+export { spawner } from "./entities/spawners";
+
 export type { Keyframe } from "./util/keyframes";
 export { timeline, sequence } from "./util/keyframes";
 

@@ -53,15 +53,20 @@ use crate::scripting::reactions::system_commands::{
 };
 use crate::scripting_systems::hit_zones::HitZoneStore;
 use crate::scripting_systems::trigger_volume_bridge::TriggerVolumeBridge;
-use crate::sim::{PostMovementCommand, SimCommand, TickEvents, TriggerTickContext, simulate_tick};
+use crate::sim::{
+    PostMovementCommand, RemotePawnCommand, SimCommand, TickEvents, TriggerTickContext,
+    simulate_tick,
+};
 use crate::trigger_bindings::TriggerBindingTable;
 use crate::trigger_system::TriggerSystem;
 use crate::weapon::FireButtonState;
+use postretro_entities::components::health::HealthComponent;
 use postretro_entities::{
     EntityId, FogVolumeComponent, MoverCommand, ReplicationScope, ScriptCtx, SlotOwnership,
     SlotRecord, SlotSchema, SlotTable, SlotType, SlotValue, Transform, TriggerActivation,
     TriggerFireMode, TriggerVolumeComponent,
 };
+use postretro_foundation::HealthDescriptor;
 use postretro_scripting_core::data_descriptors::{
     CrossingCondition, CrossingDescriptor, NamedReaction, PrimitiveDescriptor, ReactionDescriptor,
 };
@@ -120,6 +125,16 @@ fn atmosphere_slots() -> SlotTable {
 /// separate crossing reaction after replicated-state convergence.
 fn atmosphere_reactions() -> Vec<NamedReaction> {
     vec![
+        NamedReaction {
+            name: TRIGGER_EVENT.to_string(),
+            descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                primitive: "applyDamage".to_string(),
+                target: Some("@activators".to_string()),
+                tag: None,
+                on_complete: None,
+                args: serde_json::json!({ "amount": 25 }),
+            }),
+        },
         primitive(
             TRIGGER_EVENT,
             "setState",
@@ -222,6 +237,9 @@ struct PersistentAtmosphereHarness {
     host_trigger_bridge: TriggerVolumeBridge,
     host_bindings: TriggerBindingTable,
     host_state: HostStateReplication,
+    host_remote_pawn: EntityId,
+    host_local_pawn: EntityId,
+    host_owners: MovementOwners,
 
     server: NetServer,
     client: NetClient,
@@ -275,17 +293,45 @@ impl PersistentAtmosphereHarness {
         let host_ctx = ScriptCtx::new();
         install_fixture_level_script(&host_ctx);
 
-        let (_host_trigger, host_bindings, host_trigger_bridge) = {
+        let (_host_trigger, host_bindings, host_trigger_bridge, host_remote_pawn, host_local_pawn) = {
             let mut registry = host_ctx.registry.borrow_mut();
-            let pawn = registry.spawn(Transform {
+            let remote_pawn = registry.spawn(Transform {
                 position: Vec3::new(0.0, 1.0, 0.0),
                 ..Transform::default()
             });
             registry
-                .set_component(pawn, player_component())
+                .set_component(remote_pawn, player_component())
                 .expect("fixture pawn accepts movement");
             registry
-                .mark_local_player_pawn(pawn)
+                .set_component(
+                    remote_pawn,
+                    HealthComponent::from_descriptor(&HealthDescriptor {
+                        max: 100.0,
+                        hitbox: None,
+                        zone_multipliers: HashMap::new(),
+                    }),
+                )
+                .expect("fixture remote pawn accepts health");
+
+            let local_pawn = registry.spawn(Transform {
+                position: Vec3::new(20.0, 1.0, 0.0),
+                ..Transform::default()
+            });
+            registry
+                .set_component(local_pawn, player_component())
+                .expect("fixture local pawn accepts movement");
+            registry
+                .set_component(
+                    local_pawn,
+                    HealthComponent::from_descriptor(&HealthDescriptor {
+                        max: 100.0,
+                        hitbox: None,
+                        zone_multipliers: HashMap::new(),
+                    }),
+                )
+                .expect("fixture local pawn accepts health");
+            registry
+                .mark_local_player_pawn(local_pawn)
                 .expect("fixture pawn becomes the host-local player");
 
             let trigger = registry.spawn(Transform::default());
@@ -312,8 +358,10 @@ impl PersistentAtmosphereHarness {
             );
             let mut bridge = TriggerVolumeBridge::new();
             bridge.insert_for_test(trigger, Vec3::splat(-4.0), Vec3::splat(4.0));
-            (trigger, bindings, bridge)
+            (trigger, bindings, bridge, remote_pawn, local_pawn)
         };
+        let mut host_owners = MovementOwners::new();
+        host_owners.set(host_remote_pawn, CLIENT_ID);
 
         let mut client_reaction_registry = ReactionPrimitiveRegistry::new();
         register_fog_reaction_primitives(&mut client_reaction_registry);
@@ -327,6 +375,9 @@ impl PersistentAtmosphereHarness {
             host_trigger_bridge,
             host_bindings,
             host_state: HostStateReplication::new(),
+            host_remote_pawn,
+            host_local_pawn,
+            host_owners,
             server,
             client,
             client_ctx: ScriptCtx::new(),
@@ -415,7 +466,15 @@ impl PersistentAtmosphereHarness {
             &mut ai_warned,
             &[],
             &mut mover_states,
-            &[],
+            &[RemotePawnCommand {
+                pawn: self.host_remote_pawn,
+                owner_client_id: CLIENT_ID,
+                weapon: None,
+                shot_id: None,
+                fire_tick: 0,
+                client_tick: 0,
+                command: idle_command(),
+            }],
             &idle_command(),
             |_| PostMovementCommand {
                 aim_origin: Vec3::ZERO,
@@ -448,12 +507,11 @@ impl PersistentAtmosphereHarness {
         let sequence = self.sequence;
         self.sequence = self.sequence.wrapping_add(1);
 
-        let owners = MovementOwners::new();
         let weapon_owners = WeaponOwners::new();
         let slots = self.host_ctx.slot_table.borrow();
         let registry = self.host_ctx.registry.borrow();
         self.host_state
-            .ingest_frame(&slots, &registry, &owners, &weapon_owners);
+            .ingest_frame(&slots, &registry, &self.host_owners, &weapon_owners);
         let fingerprint = self.host_state.fingerprint(&slots);
         let records = self
             .host_state
@@ -541,6 +599,23 @@ impl PersistentAtmosphereHarness {
             .slot_table
             .borrow()
             .get(BLACKOUT_SLOT)
+            .and_then(|record| record.value.clone())
+    }
+
+    fn host_pawn_health(&self, pawn: EntityId) -> f32 {
+        self.host_ctx
+            .registry
+            .borrow()
+            .get_component::<HealthComponent>(pawn)
+            .expect("fixture pawn keeps health")
+            .current
+    }
+
+    fn client_health(&self) -> Option<SlotValue> {
+        self.client_ctx
+            .slot_table
+            .borrow()
+            .get("player.health")
             .and_then(|record| record.value.clone())
     }
 
@@ -698,6 +773,8 @@ fn persistent_atmosphere_trigger_replication_drives_client_local_presentation() 
     harness.connect_client();
 
     let host_events = harness.fire_host_trigger();
+    assert!((harness.host_pawn_health(harness.host_remote_pawn) - 75.0).abs() <= 1e-6);
+    assert!((harness.host_pawn_health(harness.host_local_pawn) - 100.0).abs() <= 1e-6);
     assert_number_slot_near(
         harness.host_blackout(),
         1.0,
@@ -729,6 +806,11 @@ fn persistent_atmosphere_trigger_replication_drives_client_local_presentation() 
         harness.client_blackout(),
         1.0,
         "the client converges to the host's persistent shared state",
+    );
+    assert_number_slot_near(
+        harness.client_health(),
+        75.0,
+        "owner-private health converges from the trigger-damaged remote pawn",
     );
     assert_eq!(
         client_crossings,

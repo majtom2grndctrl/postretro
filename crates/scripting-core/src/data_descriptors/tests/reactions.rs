@@ -463,6 +463,42 @@ fn trigger_event_manifests_parse_identically_and_drop_unknown_events() {
 }
 
 #[test]
+fn trigger_event_invalid_target_shapes_degrade_identically_in_both_vms() {
+    let cases = [
+        (
+            r#"({ reactions: [{ name: "bad", primitive: "applyDamage", target: "@trigger", args: { amount: 5 } }] })"#,
+            r#"return { reactions = { { name = "bad", primitive = "applyDamage", target = "@trigger", args = { amount = 5 } } } }"#,
+        ),
+        (
+            r#"({ reactions: [{ name: "bad", primitive: "applyDamage", target: "@unknown", args: { amount: 5 } }] })"#,
+            r#"return { reactions = { { name = "bad", primitive = "applyDamage", target = "@unknown", args = { amount = 5 } } } }"#,
+        ),
+        (
+            r#"({ reactions: [{ name: "bad", primitive: "applyDamage", target: "@activators", tag: "enemy", args: { amount: 5 } }] })"#,
+            r#"return { reactions = { { name = "bad", primitive = "applyDamage", target = "@activators", tag = "enemy", args = { amount = 5 } } } }"#,
+        ),
+        (
+            r#"({ reactions: [{ name: "bad", sequence: [{ id: "@occupancy", primitive: "armTrigger", args: {} }] }] })"#,
+            r#"return { reactions = { { name = "bad", sequence = { { id = "@occupancy", primitive = "armTrigger", args = {} } } } } }"#,
+        ),
+    ];
+
+    for (js_source, lua_source) in cases {
+        let js = eval_js(js_source, |ctx, value| {
+            LevelManifest::from_js_value(ctx, value).unwrap_err()
+        });
+        let lua = eval_lua(lua_source, |value| {
+            LevelManifest::from_lua_value(value).unwrap_err()
+        });
+        assert_eq!(
+            std::mem::discriminant(&js),
+            std::mem::discriminant(&lua),
+            "both runtimes must reject the same invalid descriptor class: JS={js:?}, Luau={lua:?}",
+        );
+    }
+}
+
+#[test]
 fn non_string_crossing_edges_degrade_identically_in_both_vms() {
     // Regression: VM field readers rejected these descriptors before shared
     // edge normalization could warn and preserve shipped single-edge behavior.

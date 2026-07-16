@@ -22,6 +22,7 @@
 - **Player options / settings persistence / mouse sensitivity / invert-Y / view_feel_scale** → `player_options.md`
 - **UI layer / HUD / widgets / theming / UI state binding** → `ui.md`
 - **Resource management / textures / materials** → `resource_management.md`
+- **3D model / glTF import (scale, pivot, material format)** → `resource_management.md` §7
 - **Scripting / primitives / SDK types / scripting crate boundaries / VM compile firewall** → `scripting.md`
 - **Reaction dispatch model / event sources / dispatch scopes / reaction parameters / occupancy exposure** → `scripting.md` §12
 - **Netcode / multiplayer / co-op / replication / transport / wire format** → `networking.md`

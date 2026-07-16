@@ -16,6 +16,29 @@ build pipeline.
 Helper for producing normal maps from height/source data. Run with `python3
 tools/gen_normal.py --help` for usage.
 
+### `blender_model_rebake.py`
+
+Turns a downloaded high-poly source glTF (Sketchfab, Rodin, etc.) into an
+engine-ready low-poly character/prop with a freshly baked texture atlas: joins
+all mesh nodes into one, welds and Collapse-decimates to a target triangle
+count, re-unwraps, and Cycles-bakes the diffuse albedo onto a single atlas. The
+output satisfies the model loader's constraints (one mesh node, one material,
+feet-at-origin, base-color-only — see `context/lib/resource_management.md` §7).
+
+Requires Blender 4.5 LTS (headless). Run from the source glTF's own directory so
+its `textures/` resolve:
+
+```sh
+blender --background --python tools/blender_model_rebake.py -- \
+    <source.gltf> <out_atlas.png> <out.gltf> <atlas_res> <target_tris>
+```
+
+Then bake the atlas into the runtime `.prm` cache:
+
+```sh
+cargo run -p xtask -- bake-model-textures <out.gltf>
+```
+
 ### `scripts/`
 
 Placeholder for future automation scripts (e.g. `new-mod.sh`, `new-level.sh`). See

@@ -933,6 +933,93 @@ mod tests {
         );
     }
 
+    #[test]
+    fn manifest_trigger_event_with_zero_tag_matches_is_inert() {
+        let mut registry = EntityRegistry::new();
+        let unrelated = spawn_trigger(&mut registry, "");
+        registry
+            .set_tags(unrelated, vec!["other-plate".into()])
+            .unwrap();
+        let ctx = ScriptCtx::new();
+        let mut data = DataRegistry::new();
+        data.populate_level_with_trigger_events(
+            vec![primitive(
+                "never",
+                "setState",
+                None,
+                serde_json::json!({"slot":"trigger.flag","value":1.0}),
+                None,
+            )],
+            Vec::new(),
+            vec![
+                postretro_scripting_core::data_descriptors::TriggerEventDescriptor {
+                    tag: "missing-plate".into(),
+                    event: "enter".into(),
+                    fire: vec!["never".into()],
+                    levels: Vec::new(),
+                },
+            ],
+            &[],
+        );
+        *ctx.slot_table.borrow_mut() = writable_slots();
+        let mut table = TriggerBindingTable::build_with_script_ctx(&registry, &data, &ctx);
+        table.install_manifest_events(&registry, &data, &ctx);
+
+        assert!(table.bound_edges().is_empty());
+        let execution = table.execute_with_script_ctx(
+            unrelated,
+            TriggerEventEdge::Enter,
+            &mut registry,
+            &ctx,
+            &TriggerFireContext::default(),
+        );
+        assert!(execution.commands.is_empty());
+        assert!(execution.residual().is_none());
+        assert_eq!(
+            ctx.slot_table.borrow().get("trigger.flag").unwrap().value,
+            Some(SlotValue::Number(0.0)),
+        );
+    }
+
+    #[test]
+    fn presentation_sequence_step_with_sentinel_target_rejects_without_residual() {
+        let mut registry = EntityRegistry::new();
+        let trigger = spawn_trigger(&mut registry, "bad-presentation");
+        let mut data = DataRegistry::new();
+        data.populate_level(
+            vec![NamedReaction {
+                name: "bad-presentation".into(),
+                descriptor: ReactionDescriptor::Sequence(vec![SequenceStep {
+                    id: SequenceTarget::Activators,
+                    primitive: "flashScreen".into(),
+                    args: serde_json::json!({"color":[1,0,0],"durationMs":20}),
+                }]),
+            }],
+            Vec::new(),
+            &[],
+        );
+        let table = TriggerBindingTable::build(&registry, &data, &SlotTable::new());
+        let binding = table
+            .binding(trigger, TriggerEventEdge::Enter)
+            .expect("the named edge remains observable after its invalid step is rejected");
+
+        assert!(binding.commands.is_empty());
+        assert!(binding.residual.is_none());
+        let execution = table.execute(
+            trigger,
+            TriggerEventEdge::Enter,
+            &mut registry,
+            &mut SlotTable::new(),
+            &TriggerFireContext {
+                fired_trigger: Some(trigger),
+                activators: vec![trigger],
+                occupancy: 1,
+            },
+        );
+        assert!(execution.commands.is_empty());
+        assert!(execution.residual().is_none());
+    }
+
     fn health(registry: &mut EntityRegistry) -> EntityId {
         let id = registry.spawn(Transform::default());
         registry

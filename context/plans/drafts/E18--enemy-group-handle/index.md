@@ -175,14 +175,15 @@ exporting `enemies(filter: { tag?: string }): EnemyGroup`, wrapped into the SDK 
 (`sdk/lib/data_script.ts:204`). Mirror in Luau. Extend the typedef templates
 (`crates/scripting-core/src/typedef/templates/`) with the `update`-args type, regenerate
 `postretro.d.ts` / `.d.luau`, update the drift snapshot, add TS/Luau parity fixtures. Validators
-accept `updateEnemyState`, reject an unknown key or a mistyped field, and treat an empty partial as
-a no-op. No `world.query` filter change — the enemy selector is its own fire-time-tag path.
+accept `updateEnemyState`, reject an unknown key or a mistyped field, reject a descriptor with no
+`tag` (the filter's `tag` is optional in the type only so future filter keys can join it — a
+tag-less selector has nothing to resolve today), and treat an empty partial as a no-op. No `world.query` filter change — the enemy selector is its own fire-time-tag path.
 
 ## Sequencing
 
 **Task 1 → Task 2 → Task 3**, sequential. Task 2 mutates the `aggro_armed` field Task 1 defines;
 Task 3 regenerates typedefs from the verb Task 2 registers. Task 1 and Task 2 are engine
-(`brain.rs`/`ai.rs`/`agent_steering.rs`/`data_archetype.rs`, then
+(`brain.rs`/`ai.rs`/`data_archetype.rs`, then
 `trigger_bindings.rs`/`trigger_commands.rs`); Task 3 is `sdk/` + typedef templates — disjoint from
 1–2, but ordered after 2 for the verb contract.
 

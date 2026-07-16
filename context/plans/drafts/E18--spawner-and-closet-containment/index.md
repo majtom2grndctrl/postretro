@@ -99,7 +99,7 @@ consumer; the two are co-designed.
 - [ ] A reveal fan-out fires an `openDoor` mover reaction and a `releaseCloset`
       (`enemies({ tag }).update({ aggro: true })`) reaction together, opening the door and releasing the
       contained enemies on one plate edge. (Gate mechanics — containment, killable-while-gated,
-      warn-skip, fire-time resolution — are the foundation's ACs; C asserts only the reveal
+      empty-resolution no-op, fire-time resolution — are the foundation's ACs; C asserts only the reveal
       composition and that spawn-flavor enemies arrive gate-open.)
 - [ ] A spawned enemy carries no progress tags, so killing it changes no install-scoped
       kill-progress total (no over-count, no underflow).

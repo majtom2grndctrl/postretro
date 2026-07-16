@@ -854,6 +854,7 @@ export type ProgressReactionDescriptor = {
 export type PrimitiveReactionDescriptor = {
   primitive: string,
   tag: string?,
+  target: "@activators"?,
   args: { [string]: any }?,
   onComplete: string?,
 }
@@ -974,11 +975,14 @@ export type SequenceReactionDescriptor = {
 --- into the descriptor at the top level so the Rust deserializer reads
 --- both fields from one flat table.
 export type ProgressNamedReactionDescriptor = { name: string, levels: {string}?, progress: { tag: string, at: number, fire: string } }
-export type PrimitiveNamedReactionDescriptor = { name: string, levels: {string}?, primitive: string, tag: string?, args: { [string]: any }?, onComplete: string? }
+export type PrimitiveNamedReactionDescriptor = { name: string, levels: {string}?, primitive: string, tag: string?, target: "@activators"?, args: { [string]: any }?, onComplete: string? }
 export type SequenceNamedReactionDescriptor = { name: string, levels: {string}?, sequence: {SequenceStep} }
 export type NamedReactionDescriptor = ProgressNamedReactionDescriptor | PrimitiveNamedReactionDescriptor | SequenceNamedReactionDescriptor
 export type CrossingParams = { rising: RuntimeRead }
 export type TickParams = { dt: RuntimeRead }
+export type ActivatorsTarget = { __triggerActivatorsTarget: true }
+export type TriggerTarget = { __firedTriggerTarget: true }
+export type TriggerEventParams = { activators: ActivatorsTarget, trigger: TriggerTarget, occupancy: RuntimeRead }
 export type Reaction<S> = NamedReactionDescriptor
 
 --- Crossing condition: fires when the watched slot crosses the threshold in
@@ -1027,6 +1031,7 @@ export type CrossingDescriptor = ThresholdCrossingDescriptor | PredicateCrossing
 export type LevelManifest = {
   reactions: {NamedReactionDescriptor},
   crossings: {CrossingDescriptor}?,
+  triggerEvents: {TriggerEventDescriptor}?,
   --- Per-level UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; same shape
   --- as `ModManifest.uiTrees` but level-scoped (cleared on unload). Malformed
   --- entries are logged and skipped.
@@ -1045,7 +1050,16 @@ declare defineReaction: (
   & ((name: string, descriptor: ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor) -> NamedReactionDescriptor)
   & ((tracer: (CrossingParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)) -> Reaction<CrossingParams>)
   & ((name: string, tracer: (CrossingParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)) -> Reaction<CrossingParams>)
+  & ((tracer: (TriggerEventParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)) -> Reaction<TriggerEventParams>)
+  & ((name: string, tracer: (TriggerEventParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)) -> Reaction<TriggerEventParams>)
 )
+
+export type TriggerEventDescriptor = { tag: string, event: "enter" | "exit", fire: {string}, levels: {string}? }
+export type TriggerEventOptions = { levels: {string}? }
+declare function onTriggerEvent(filter: { tag: string }, event: "enter" | "exit", fire: {Reaction<any> | string}, options: TriggerEventOptions?): TriggerEventDescriptor
+declare function damage(target: ActivatorsTarget | string, amount: number): PrimitiveReactionDescriptor
+declare function armTrigger(target: TriggerTarget): {SequenceStep}
+declare function disarmTrigger(target: TriggerTarget): {SequenceStep}
 
 --- Stamp a shared map-tag scope onto each reaction in a plain list. `tags` are
 --- matched against `ModMapEntry.tags`; omit scoping for every level.
@@ -1544,6 +1558,10 @@ export type PostretroModule = {
   sequence: typeof(sequence),
   --- Build a named reaction descriptor. Accepts `progress`, `primitive`, or `sequence` body data.
   defineReaction: typeof(defineReaction),
+  damage: typeof(damage),
+  armTrigger: typeof(armTrigger),
+  disarmTrigger: typeof(disarmTrigger),
+  onTriggerEvent: typeof(onTriggerEvent),
   --- Stamp a shared map-tag scope onto a reaction list.
   scopeReactions: typeof(scopeReactions),
   --- Pure identity builder for entity type descriptors returned from `ModManifest.entities`.

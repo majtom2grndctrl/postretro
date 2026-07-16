@@ -94,6 +94,10 @@ export type PostretroModule = {
   sequence: typeof(sequence),
   --- Build a named reaction descriptor. Accepts `progress`, `primitive`, or `sequence` body data.
   defineReaction: typeof(defineReaction),
+  damage: typeof(damage),
+  armTrigger: typeof(armTrigger),
+  disarmTrigger: typeof(disarmTrigger),
+  onTriggerEvent: typeof(onTriggerEvent),
   --- Stamp a shared map-tag scope onto a reaction list.
   scopeReactions: typeof(scopeReactions),
   --- Pure identity builder for entity type descriptors returned from `ModManifest.entities`.

@@ -780,6 +780,7 @@ declare module "postretro" {
   export type PrimitiveReactionDescriptor = {
     primitive: string;
     tag?: string;
+    target?: "@activators";
     args?: Record<string, unknown>;
     onComplete?: string;
   };
@@ -862,9 +863,9 @@ declare module "postretro" {
   export type MoverGoToPathNodeStep = { id: EntityId; primitive: "moverGoToPathNode"; args: { node: string } };
 
   /** Sequence step that arms one trigger volume. */
-  export type ArmTriggerStep = { id: EntityId; primitive: "armTrigger"; args: ArmTriggerArgs };
+  export type ArmTriggerStep = { id: EntityId | "@trigger"; primitive: "armTrigger"; args: ArmTriggerArgs };
   /** Sequence step that disarms one trigger volume. */
-  export type DisarmTriggerStep = { id: EntityId; primitive: "disarmTrigger"; args: DisarmTriggerArgs };
+  export type DisarmTriggerStep = { id: EntityId | "@trigger"; primitive: "disarmTrigger"; args: DisarmTriggerArgs };
 
   /** Union of every supported sequence step shape. New sequenced primitives extend this union. */
   export type SequenceStep =
@@ -898,6 +899,11 @@ declare module "postretro" {
   export type CrossingParams = Readonly<{ rising: RuntimeRead }>;
   /** Dispatch values published while a Number store slot accumulates. */
   export type TickParams = Readonly<{ dt: RuntimeRead }>;
+  declare const activatorsTargetBrand: unique symbol;
+  declare const triggerTargetBrand: unique symbol;
+  export type ActivatorsTarget = Readonly<{ readonly [activatorsTargetBrand]: true }>;
+  export type TriggerTarget = Readonly<{ readonly [triggerTargetBrand]: true }>;
+  export type TriggerEventParams = Readonly<{ activators: ActivatorsTarget; trigger: TriggerTarget; occupancy: RuntimeRead }>;
   declare const reactionScopeBrand: unique symbol;
   /** Named reaction with a type-only, contravariant dispatch-scope marker. */
   export type Reaction<S = {}> = NamedReactionDescriptor & { readonly [reactionScopeBrand]?: (scope: S) => void };
@@ -940,6 +946,7 @@ declare module "postretro" {
   export type LevelManifest = {
     reactions: NamedReactionDescriptor[];
     crossings?: CrossingDescriptor[];
+    triggerEvents?: TriggerEventDescriptor[];
     /** Per-level UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; same shape as `ModManifest.uiTrees` but level-scoped (cleared on unload). Malformed entries are logged and skipped. */
     uiTrees?: ReadonlyArray<ModUiTree>;
   };
@@ -963,6 +970,9 @@ declare module "postretro" {
     tracer: (params: CrossingParams) => ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor,
   ): Reaction<CrossingParams>;
   export function defineReaction(
+    tracer: (params: TriggerEventParams) => ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor,
+  ): Reaction<TriggerEventParams>;
+  export function defineReaction(
     name: string,
     descriptor:
       | ProgressReactionDescriptor
@@ -973,6 +983,17 @@ declare module "postretro" {
     name: string,
     tracer: (params: CrossingParams) => ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor,
   ): Reaction<CrossingParams>;
+  export function defineReaction(
+    name: string,
+    tracer: (params: TriggerEventParams) => ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor,
+  ): Reaction<TriggerEventParams>;
+
+  export type TriggerEventDescriptor = { tag: string; event: "enter" | "exit"; fire: string[]; levels?: string[] };
+  export type TriggerEventOptions = { levels?: string[] };
+  export function onTriggerEvent(filter: { tag: string }, event: "enter" | "exit", fire: (Reaction<{}> | Reaction<TriggerEventParams> | string)[], options?: TriggerEventOptions): TriggerEventDescriptor;
+  export function damage(target: ActivatorsTarget | string, amount: number): PrimitiveReactionDescriptor;
+  export function armTrigger(target: TriggerTarget): SequenceStep[];
+  export function disarmTrigger(target: TriggerTarget): SequenceStep[];
 
   /** Stamp a shared map-tag scope onto each reaction in a plain list. `tags` are matched against `ModMapEntry.tags`; omit scoping for every level. */
   export function scopeReactions<S>(

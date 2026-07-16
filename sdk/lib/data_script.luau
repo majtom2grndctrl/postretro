@@ -58,6 +58,7 @@ export type ProgressReactionDescriptor = {
 export type PrimitiveReactionDescriptor = {
   primitive: string,
   tag: string?,
+  target: "@activators"?,
   args: { [string]: any }?,
   onComplete: string?,
 }
@@ -164,6 +165,7 @@ export type NamedReactionDescriptor = {
   -- primitive shape
   primitive: string?,
   tag: string?,
+  target: "@activators"?,
   args: { [string]: any }?,
   onComplete: string?,
   -- sequence shape
@@ -172,6 +174,13 @@ export type NamedReactionDescriptor = {
 
 export type CrossingParams = { rising: RuntimeRead }
 export type TickParams = { dt: RuntimeRead }
+export type ActivatorsTarget = { __triggerActivatorsTarget: true }
+export type TriggerTarget = { __firedTriggerTarget: true }
+export type TriggerEventParams = {
+  activators: ActivatorsTarget,
+  trigger: TriggerTarget,
+  occupancy: RuntimeRead,
+}
 export type Reaction<S> = NamedReactionDescriptor
 
 --- Bundle returned from `setupLevel`. The engine deserializes
@@ -185,6 +194,7 @@ export type LevelManifest = {
   -- in postretro.d.luau (the generated SDK-lib type block). See
   -- `onStateCrossing`.
   crossings: {CrossingDescriptor}?,
+  triggerEvents: {TriggerEventDescriptor}?,
   -- Per-level UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; same shape
   -- as `ModManifest.uiTrees` but level-scoped (cleared on unload). Malformed
   -- entries are logged and skipped.
@@ -221,7 +231,51 @@ local DataScriptSdk = {}
 local DISPATCH_PARAMS = table.freeze({
   rising = table.freeze({ op = "input", name = "@rising" }),
   dt = table.freeze({ op = "input", name = "@dt" }),
+  activators = table.freeze({}),
+  trigger = table.freeze({}),
+  occupancy = table.freeze({ op = "input", name = "@occupancy" }),
 })
+
+export type TriggerEventDescriptor = {
+  tag: string,
+  event: "enter" | "exit",
+  fire: {string},
+  levels: {string}?,
+}
+
+export type TriggerEventOptions = { levels: {string}? }
+
+function DataScriptSdk.onTriggerEvent(
+  filter: { tag: string },
+  event: "enter" | "exit",
+  fire: {Reaction<any> | string},
+  options: TriggerEventOptions?
+): TriggerEventDescriptor
+  local names = {}
+  for i, reaction in ipairs(fire) do
+    names[i] = if type(reaction) == "string" then reaction else (reaction :: Reaction<any>).name
+  end
+  local out: TriggerEventDescriptor = { tag = filter.tag, event = event, fire = names }
+  if options ~= nil and options.levels ~= nil then
+    out.levels = options.levels
+  end
+  return out
+end
+
+function DataScriptSdk.damage(target: ActivatorsTarget | string, amount: number): PrimitiveReactionDescriptor
+  if type(target) == "string" then
+    return { primitive = "applyDamage", tag = target, args = { amount = amount } }
+  end
+  return { primitive = "applyDamage", target = "@activators", args = { amount = amount } }
+end
+
+function DataScriptSdk.armTrigger(_target: TriggerTarget): {SequenceStep}
+  return { { id = "@trigger", primitive = "armTrigger", args = {} } :: any }
+end
+
+function DataScriptSdk.disarmTrigger(_target: TriggerTarget): {SequenceStep}
+  return { { id = "@trigger", primitive = "disarmTrigger", args = {} } :: any }
+end
 
 -- Order-stable serialization of a reaction body: table keys are emitted sorted
 -- so two structurally identical bodies always serialize identically. Used only
@@ -312,6 +366,9 @@ function DataScriptSdk.defineReaction(
   if d.tag ~= nil then
     out.tag = d.tag
   end
+  if d.target ~= nil then
+    out.target = d.target
+  end
   if d.args ~= nil then
     out.args = d.args
   end
@@ -338,6 +395,9 @@ function DataScriptSdk.scopeReactions<S>(tags: {string}, list: {Reaction<S>}): {
     end
     if reaction.tag ~= nil then
       scoped.tag = reaction.tag
+    end
+    if reaction.target ~= nil then
+      scoped.target = reaction.target
     end
     if reaction.args ~= nil then
       scoped.args = reaction.args

@@ -2,6 +2,11 @@ import {
   type CrossingParams,
   type Reaction,
   type TickParams,
+  type TriggerEventParams,
+  armTrigger,
+  damage,
+  defineReaction,
+  onTriggerEvent,
   runtime,
   scopeReactions,
 } from "postretro";
@@ -37,6 +42,21 @@ const invalidReadonlyAccumulator: import("postretro").StoreSlotSchema = { type: 
 // @ts-expect-error non-Number slots cannot accumulate.
 const invalidBooleanAccumulator: import("postretro").StoreSlotSchema = { type: "boolean", default: false, accumulate: (t: TickParams) => t.dt };
 
+const triggerScoped = defineReaction((on: TriggerEventParams) => damage(on.activators, 25));
+const triggerSequence = defineReaction((on: TriggerEventParams) => ({ sequence: armTrigger(on.trigger) }));
+onTriggerEvent({ tag: "plate" }, "enter", [unscoped, triggerScoped, triggerSequence]);
+
+// @ts-expect-error Trigger-scoped reactions cannot be fired by a state crossing.
+onStateCrossing(runtime.constant(true), [triggerScoped]);
+
+defineReaction((on: TriggerEventParams) => {
+  // @ts-expect-error The fired trigger token is not a damage target.
+  const wrongTarget = damage(on.trigger, 5);
+  // @ts-expect-error Opaque entity targets are not runtime IR operands.
+  const wrongOperand = runtime.add(on.activators, 1);
+  return wrongTarget;
+});
+
 void invalidTickRead;
 void invalidCrossingRead;
 void invalidScopeErasure;
@@ -44,3 +64,5 @@ void invalidScopedHelperErasure;
 void legalAccumulator;
 void invalidReadonlyAccumulator;
 void invalidBooleanAccumulator;
+void triggerScoped;
+void triggerSequence;

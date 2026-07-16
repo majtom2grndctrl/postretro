@@ -20,6 +20,13 @@ pub(crate) use crate::fx::fog_reactions::{
 pub(crate) use crate::kinematic_mover::register_sequenced_mover_primitives;
 pub(crate) use crate::trigger_system::register_sequenced_trigger_primitives;
 
+pub(crate) fn register_spawner_reaction_primitives(
+    registry: &mut ReactionPrimitiveRegistry,
+    context: crate::spawner::SpawnContext,
+) {
+    crate::spawner::register_spawner_reaction_primitives(registry, context);
+}
+
 pub(crate) fn register_mover_reaction_primitives(
     registry: &mut ReactionPrimitiveRegistry,
     diagnostics: crate::kinematic_mover::MoverCommandDiagnostics,

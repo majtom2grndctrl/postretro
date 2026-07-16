@@ -174,6 +174,7 @@ fn component_kind_name(k: ComponentKind) -> &'static str {
         ComponentKind::KinematicMover => "kinematic_mover",
         ComponentKind::TriggerVolume => "trigger_volume",
         ComponentKind::AmmoReserve => "ammo_reserve",
+        ComponentKind::Spawner => "spawner",
     }
 }
 
@@ -351,6 +352,10 @@ impl<'js> IntoJs<'js> for ComponentValue {
                 ctx,
                 "AmmoReserve component is engine-managed and not exposed to scripts",
             )),
+            ComponentValue::Spawner(_) => Err(rquickjs::Exception::throw_type(
+                ctx,
+                "Spawner component is engine-managed and not exposed to scripts",
+            )),
         }
     }
 }
@@ -496,6 +501,9 @@ impl IntoLua for ComponentValue {
             )),
             ComponentValue::AmmoReserve(_) => Err(mlua::Error::RuntimeError(
                 "AmmoReserve component is engine-managed and not exposed to scripts".to_string(),
+            )),
+            ComponentValue::Spawner(_) => Err(mlua::Error::RuntimeError(
+                "Spawner component is engine-managed and not exposed to scripts".to_string(),
             )),
         }
     }

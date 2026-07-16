@@ -2,6 +2,7 @@
 // See: context/lib/scripting.md §10.3 (Mesh Animation)
 
 use glam::Vec3;
+use postretro_foundation::PoseInputs;
 use serde::{Deserialize, Serialize};
 
 pub use super::animation::{
@@ -31,6 +32,10 @@ pub struct MeshComponent {
     pub animation: Option<MeshAnimation>,
     #[serde(default, skip_serializing_if = "vec3_is_zero")]
     pub origin_offset: Vec3,
+    /// Same-tick presentation inputs for the model's pose-modifier stack.
+    /// Gameplay and persistence intentionally ignore this transient value.
+    #[serde(skip)]
+    pub pose_inputs: Option<PoseInputs>,
 }
 
 impl MeshComponent {
@@ -41,6 +46,7 @@ impl MeshComponent {
             model,
             animation: None,
             origin_offset: Vec3::ZERO,
+            pose_inputs: None,
         }
     }
 
@@ -49,6 +55,7 @@ impl MeshComponent {
             model,
             animation: Some(animation),
             origin_offset: Vec3::ZERO,
+            pose_inputs: None,
         }
     }
 

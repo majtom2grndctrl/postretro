@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+postretro-foundation = { workspace = true }
 postretro-render-data = { workspace = true }
 postretro-level-format = { workspace = true, features = ["gltf-resolve"] }
 

@@ -781,6 +781,14 @@
 }
 // entity 31
 {
+"classname" "pose_fixture_enemy"
+"origin" "216 900 192"
+"angles" "0 270 0"
+"_tags" "enemy pose_fixture"
+"_tb_group" "9"
+}
+// entity 32
+{
 "classname" "func_group"
 "_tb_type" "_tb_group"
 "_tb_name" "pink_ambient_lights"
@@ -788,7 +796,7 @@
 "_tb_linked_group_id" "75079b20-ed10-40e0-805e-23199c6180c6"
 "_tb_transformation" "0.49999999999999933 0.866025403784439 0 -22.27687752661231 -0.866025403784439 0.49999999999999933 0 179.13843876330617 0 0 1 -112 0 0 0 1"
 }
-// entity 32
+// entity 33
 {
 "classname" "light"
 "origin" "-33.2051 182.067 296"
@@ -799,7 +807,7 @@
 "_color" "245 119 255"
 "_tb_group" "10"
 }
-// entity 33
+// entity 34
 {
 "classname" "light"
 "origin" "1309.6 -95.7466 120"
@@ -810,7 +818,7 @@
 "_color" "245 119 255"
 "_tb_group" "10"
 }
-// entity 34
+// entity 35
 {
 "classname" "light"
 "origin" "380.034 1418.31 120"
@@ -821,7 +829,7 @@
 "_color" "245 119 255"
 "_tb_group" "10"
 }
-// entity 35
+// entity 36
 {
 "classname" "light"
 "origin" "-864.323 533.605 120"
@@ -832,7 +840,7 @@
 "_color" "245 119 255"
 "_tb_group" "10"
 }
-// entity 36
+// entity 37
 {
 "classname" "light"
 "origin" "-118.179 -790.752 216"
@@ -843,7 +851,7 @@
 "_color" "245 119 255"
 "_tb_group" "10"
 }
-// entity 37
+// entity 38
 {
 "classname" "func_group"
 "_tb_type" "_tb_group"
@@ -852,7 +860,7 @@
 "_tb_linked_group_id" "fe86ea2f-3a7c-4741-96c2-01cb97d197cb"
 "_tb_transformation" "-0.8660254037844393 0.49999999999999895 0 -54.697348592673336 -0.49999999999999895 -0.8660254037844393 0 486.6973485926736 0 0 1 -112 0 0 0 1"
 }
-// entity 38
+// entity 39
 {
 "classname" "light"
 "origin" "-51.7688 497.625 264"
@@ -863,7 +871,7 @@
 "_color" "126 241 255"
 "_tb_group" "11"
 }
-// entity 39
+// entity 40
 {
 "classname" "light"
 "origin" "-329.582 -845.182 120"
@@ -874,7 +882,7 @@
 "_color" "126 241 255"
 "_tb_group" "11"
 }
-// entity 40
+// entity 41
 {
 "classname" "light"
 "origin" "1184.47 84.3864 184"
@@ -885,7 +893,7 @@
 "_color" "126 241 255"
 "_tb_group" "11"
 }
-// entity 41
+// entity 42
 {
 "classname" "light"
 "origin" "299.769 1328.74 120"
@@ -896,7 +904,7 @@
 "_color" "126 241 255"
 "_tb_group" "11"
 }
-// entity 42
+// entity 43
 {
 "classname" "light"
 "origin" "-1024.59 582.599 120"

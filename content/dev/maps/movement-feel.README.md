@@ -13,7 +13,8 @@ Do not commit the built `.prl` unless a later workflow explicitly asks for compi
 - **Pillar wedge**: west-side pillar and offset cheek walls. Use for stuck-recovery and tangent-recovery repros around concave approaches.
 - **Corridor corners**: south-side 90-degree obstacle run. Use for waypoint snap, bounded turn-rate, and lookahead evaluation.
 - **Straight run**: east-side long lane with low side rails. Use for acceleration/deceleration and walk-cycle reading.
-- **Arena ring**: north-side open area with the `player_spawn` centered and 8 `reference_enemy` spawns on a 432 Quake-unit rim. At 1 Quake unit = 0.0254 m, that is about 10.97 m, inside the reference enemy 16 m detection range, so the wave should actively chase and produce path, velocity, and destination overlay data.
+- **Arena ring**: north-side open area with the `player_spawn` centered and 4 `reference_enemy` spawns on a 432 Quake-unit rim. At 1 Quake unit = 0.0254 m, that is about 10.97 m, inside the reference enemy 16 m detection range, so the wave should actively chase and produce path, velocity, and destination overlay data.
+- **Pose fixture enemy**: a `pose_fixture_enemy` beside the player start. It uses the content-facing copy of the model crate's three-joint `joint_zones` test fixture. Its no-op animation clip lets its AI target acquisition drive E21 aim pose inputs and the fixture's `poseMask`/`aimBendWeight` extras. It is a deliberately tiny triangle marker, not final character art.
 - **Narrow doorway**: northeast barrier with a 35 Quake-unit opening. That is about 0.89 m, just over the default 0.8 m nav-agent diameter.
 
 ## Diagnostics Check

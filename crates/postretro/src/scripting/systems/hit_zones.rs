@@ -2,7 +2,7 @@
 // weapon-agnostic entity ray hits against authored AABBs or trustworthy capsules.
 // See: context/lib/entity_model.md §7 · context/lib/rendering_pipeline.md §9
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -77,12 +77,20 @@ impl ModelHitZones {
 #[derive(Default)]
 pub(crate) struct HitZoneStore {
     models: HashMap<ModelHandle, ModelHitZones>,
+    /// Handles whose independently loaded model carries a presentation pose
+    /// stack. The collector uses this cache-side metadata to opt those models
+    /// out of animation time-slicing without carrying the stack per instance.
+    /// Shares `models`' sweep lifecycle: populated during the same level-load
+    /// model sweep, reset together on `clear` — a model introduced only after
+    /// that sweep never enters this set (same limitation as `models`).
+    pose_modified_models: HashSet<ModelHandle>,
 }
 
 impl HitZoneStore {
     pub(crate) fn new() -> Self {
         Self {
             models: HashMap::new(),
+            pose_modified_models: HashSet::new(),
         }
     }
 
@@ -90,6 +98,7 @@ impl HitZoneStore {
     /// `MeshClipTables::clear` so a new level starts from an empty store.
     pub(crate) fn clear(&mut self) {
         self.models.clear();
+        self.pose_modified_models.clear();
     }
 
     /// Re-load a model game-side from its glTF and install its hit-zone entry.
@@ -102,9 +111,11 @@ impl HitZoneStore {
     ///
     /// A failed/invalid load is non-fatal: it warns (naming the path) and installs
     /// nothing — mirroring `load_skinned_model`, so the sweep keeps going and the
-    /// model simply has no hit-zone entry. Idempotent re-install replaces the
-    /// entry. The derived bound is computed once, here, from the loaded skeleton
-    /// rest pose and clips.
+    /// model simply has no hit-zone entry, and no `pose_modified_models` membership
+    /// change either. Idempotent re-install replaces the entry AND refreshes the
+    /// model's `pose_modified_models` membership to match its reloaded pose stack
+    /// (the collector's time-slicing opt-out rides on that store). The derived
+    /// bound is computed once, here, from the loaded skeleton rest pose and clips.
     pub(crate) fn insert_from_load(&mut self, model_rel: &str, content_root: &Path) {
         let open_path = content_root.join(model_rel);
         let model = match gltf_loader::load_model(&open_path) {
@@ -122,6 +133,7 @@ impl HitZoneStore {
             skeleton,
             clips,
             joint_zones,
+            pose_stack,
             ..
         } = model;
 
@@ -136,6 +148,11 @@ impl HitZoneStore {
         };
 
         let handle = ModelHandle::from(model_rel.to_string());
+        if pose_stack.is_empty() {
+            self.pose_modified_models.remove(&handle);
+        } else {
+            self.pose_modified_models.insert(handle.clone());
+        }
         self.models.insert(
             handle,
             ModelHitZones {
@@ -163,12 +180,24 @@ impl HitZoneStore {
             .is_some_and(|entry| entry.derived_bound.is_some())
     }
 
+    /// True when the model carries any presentation pose modifier. Such models
+    /// must sample every visible frame because their same-tick target inputs can
+    /// change independently of animation time.
+    pub(crate) fn has_pose_modifiers(&self, handle: &ModelHandle) -> bool {
+        self.pose_modified_models.contains(handle)
+    }
+
     /// Install a pre-built model entry under `handle` for tests in OTHER modules
     /// (the weapon delegation tests) that cannot reach the private `models` map.
     /// Production installs go through [`insert_from_load`](Self::insert_from_load).
     #[cfg(test)]
     pub(crate) fn insert_for_test(&mut self, handle: ModelHandle, model: ModelHitZones) {
         self.models.insert(handle, model);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_pose_modified_for_test(&mut self, handle: ModelHandle) {
+        self.pose_modified_models.insert(handle);
     }
 }
 
@@ -1013,12 +1042,12 @@ fn resolve_animation_stamps_for_sampling(anim: &mut MeshAnimation, now: f64) {
 /// matrices (pre-inverse-bind), or `None` when the precise pose is UNAVAILABLE.
 ///
 /// Fail-available contract: `None` means the game side cannot reconstruct the
-/// exact pose the renderer draws — specifically a chained smooth-interrupt
-/// snapshot fade whose capture references renderer-only stored data (mirrors the
-/// same case on [`pose_from_params`]). The caller degrades to the coarse fallback
-/// rather than posing a wrong fallback-clip capsule; it never means "the ray
-/// missed". A model with no clips, or an unresolved state, still poses (rest or
-/// first clip) and returns `Some`.
+/// unmodified animation pose shared with rendering — specifically a chained
+/// smooth-interrupt snapshot fade whose capture references renderer-only stored
+/// data (mirrors the same case on [`pose_from_params`]). The caller degrades to
+/// the coarse fallback rather than posing a wrong fallback-clip capsule; it
+/// never means "the ray missed". A model with no clips, or an unresolved state,
+/// still poses (rest or first clip) and returns `Some`.
 ///
 /// When the entity carries an animation block, its current state resolves —
 /// through the SAME render-free [`mesh_anim::animate_entity`] the renderer's
@@ -1027,13 +1056,14 @@ fn resolve_animation_stamps_for_sampling(anim: &mut MeshAnimation, now: f64) {
 /// unresolved state, or a stateless / no-animation mesh, poses the model's first
 /// clip looped at the clock; a model with no clips poses each joint to rest.
 ///
-/// Phase de-sync is fed in at the SAME per-instance phase the renderer applies,
-/// so a capsule tracks the drawn pose rather than lagging a whole clip behind it.
-/// The phase is [`instance_phase`] of the entity's `EntityId` seed against the
-/// CURRENT state's clip duration (the stateless/default path uses the first
-/// clip's duration) — the exact seed + duration the renderer's collector uses, so
-/// the values match. `instance_phase`/`state_time` apply it ONLY to looping legs;
-/// one-shot states ignore it, matching the renderer.
+/// Phase de-sync uses the SAME per-instance phase as rendering, so authoritative
+/// capsules share its animation clock and sample parameters. Capsules use the
+/// unmodified world-joint pose. Presentation-only pose modifiers affect only the
+/// rendered palette. The phase is [`instance_phase`] of the entity's `EntityId`
+/// seed against the CURRENT state's clip duration (the stateless/default path
+/// uses the first clip's duration) — the exact seed + duration the renderer's
+/// collector uses, so the values match. `instance_phase`/`state_time` apply it
+/// ONLY to looping legs; one-shot states ignore it, matching the renderer.
 fn pose_world_joints(
     zones: &ModelHitZones,
     animation: Option<&MeshAnimation>,
@@ -1045,10 +1075,11 @@ fn pose_world_joints(
     let clips = zones.clips.as_ref();
 
     // Resolve the entity's current animation to render-free sample params via the
-    // shared resolver, feeding the SAME per-instance phase the renderer draws
-    // with so capsules track the drawn pose. `animate_entity` applies the phase
-    // only to looping legs; it returns `None` for an unresolved current state, so
-    // we fall through to the default pose.
+    // shared resolver, feeding the SAME per-instance phase as rendering. Capsules
+    // sample unmodified world-joint poses; presentation-only pose modifiers stay
+    // in the rendered palette. `animate_entity` applies the phase only to looping
+    // legs; it returns `None` for an unresolved current state, so we fall through
+    // to the default pose.
     if let Some(anim) = animation {
         let phase = current_state_phase(anim, clips, seed);
         if let Some(result) = super::mesh_anim::animate_entity(anim, anim_time, phase) {
@@ -2071,6 +2102,7 @@ mod tests {
                 model: "smooth".into(),
                 animation: Some(anim),
                 origin_offset: Vec3::ZERO,
+                pose_inputs: None,
             },
         )
         .unwrap();
@@ -2193,6 +2225,7 @@ mod tests {
                 model: "mob".into(),
                 animation: Some(anim),
                 origin_offset: Vec3::ZERO,
+                pose_inputs: None,
             },
         )
         .unwrap();
@@ -2275,6 +2308,7 @@ mod tests {
                 model: "smooth".into(),
                 animation: Some(anim),
                 origin_offset: Vec3::ZERO,
+                pose_inputs: None,
             },
         )
         .unwrap();
@@ -2343,6 +2377,7 @@ mod tests {
                 model: "smooth".into(),
                 animation: Some(anim),
                 origin_offset: Vec3::ZERO,
+                pose_inputs: None,
             },
         )
         .unwrap();
@@ -2431,6 +2466,7 @@ mod tests {
                 model: "smooth".into(),
                 animation: Some(anim),
                 origin_offset: Vec3::ZERO,
+                pose_inputs: None,
             },
         )
         .unwrap();
@@ -2540,6 +2576,7 @@ mod tests {
                 model: "smooth".into(),
                 animation: Some(anim),
                 origin_offset: Vec3::ZERO,
+                pose_inputs: None,
             },
         )
         .unwrap();
@@ -2808,6 +2845,7 @@ mod tests {
                 model: "mob".into(),
                 animation: Some(anim),
                 origin_offset: Vec3::ZERO,
+                pose_inputs: None,
             },
         )
         .unwrap();
@@ -2917,6 +2955,7 @@ mod tests {
                 model: "mob".into(),
                 animation: None,
                 origin_offset: Vec3::new(0.0, -0.8, 0.0),
+                pose_inputs: None,
             },
         )
         .unwrap();

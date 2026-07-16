@@ -1636,6 +1636,7 @@ mod tests {
             model: "decraniated".into(),
             animation: Some(live_anim),
             origin_offset: glam::Vec3::ZERO,
+            pose_inputs: None,
         };
         registry.set_component(id, live).unwrap();
         registry

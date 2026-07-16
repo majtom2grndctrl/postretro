@@ -202,6 +202,10 @@ pub(crate) struct ScriptingCore {
     /// routes. Registries retain clones across reloads; level unload clears it.
     pub(crate) command_diagnostics: crate::kinematic_mover::MoverCommandDiagnostics,
 
+    /// Per-level resolved enemy descriptors and nav-agent bake for the
+    /// VM-free fixed-tick spawner executor.
+    pub(crate) spawn_context: crate::spawner::SpawnContext,
+
     /// The script VM runtime. Constructed once here (post-first-pixel); never
     /// recreated. See: context/lib/scripting.md.
     pub(crate) script_runtime: ScriptRuntime,
@@ -482,6 +486,7 @@ fn build_scripting_core(
 ) -> Result<(ScriptingCore, ClassnameDispatch)> {
     let script_ctx = ScriptCtx::new();
     let command_diagnostics = crate::kinematic_mover::MoverCommandDiagnostics::default();
+    let spawn_context = crate::spawner::SpawnContext::default();
     let mut script_registry = PrimitiveRegistry::new();
     register_all(&mut script_registry, script_ctx.clone());
     let script_runtime = ScriptRuntime::new(
@@ -547,6 +552,7 @@ fn build_scripting_core(
 
     let scripting = ScriptingCore {
         command_diagnostics,
+        spawn_context,
         script_runtime,
         script_ctx,
         sequence_registry,

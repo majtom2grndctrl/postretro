@@ -13,6 +13,7 @@ pub mod light;
 pub mod mesh;
 pub mod particle;
 pub mod player_movement;
+pub mod spawner;
 pub mod sprite_visual;
 pub mod trigger_volume;
 pub mod weapon;

@@ -10,6 +10,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use glam::Vec3;
+use postretro_entities::components::brain::BrainComponent;
 use postretro_entities::components::spawner::SpawnerComponent;
 use postretro_entities::provenance::DescriptorSpawnPath;
 use postretro_entities::{ComponentKind, EntityId, EntityRegistry, Transform};
@@ -17,6 +18,7 @@ use postretro_foundation::NavAgentParams;
 use postretro_scripting_core::data_descriptors::EntityTypeDescriptor;
 use postretro_scripting_core::reaction_registry::ReactionPrimitiveRegistry;
 
+use crate::netcode::MAX_DELAY_MICROS;
 use crate::scripting::builtins::data_archetype::attach_descriptor_components;
 use crate::scripting::map_entity::MapEntity;
 
@@ -173,6 +175,16 @@ fn spawn_resolved_spawners(
                 DescriptorSpawnPath::RuntimeSpawn,
                 agent_params,
             );
+            // `attach_brain` initializes this timer to zero. Seed only after the
+            // descriptor has attached its components so a newly spawned enemy
+            // cannot attack before remote interpolation's maximum delay has
+            // elapsed and the remote presentation has had time to arrive.
+            if let Ok(mut brain) = registry.get_component::<BrainComponent>(enemy).cloned() {
+                brain.attack_cooldown_remaining_ms = brain
+                    .attack_cooldown_remaining_ms
+                    .max(MAX_DELAY_MICROS as f32 / 1000.0);
+                let _ = registry.set_component(enemy, brain);
+            }
         }
     }
 }
@@ -193,9 +205,18 @@ mod tests {
 
     use glam::Quat;
     use postretro_entities::components::brain::BrainComponent;
+    use postretro_entities::components::health::HealthComponent;
+    use postretro_entities::components::player_movement::PlayerMovementComponent;
     use postretro_entities::provenance::DescriptorProvenance;
+    use postretro_scripting_core::data_descriptors::{
+        AirParams, CapsuleParams, FallParams, GroundParams, NamedReaction,
+        PlayerMovementDescriptor, ProgressDescriptor, ReactionDescriptor, SpeedParams,
+    };
+    use postretro_scripting_core::data_registry::DataRegistry;
+    use postretro_scripting_core::reaction_dispatch::ProgressTracker;
 
     use crate::scripting::builtins::data_archetype::data_archetype_test_fixtures::ai_enemy_descriptor;
+    use crate::scripting::systems::ai::{ENEMY_ATTACK_EVENT, run_ai_tick};
 
     const TAG: &str = "closet";
 
@@ -243,6 +264,66 @@ mod tests {
             .collect()
     }
 
+    fn player_movement() -> PlayerMovementComponent {
+        PlayerMovementComponent::from_descriptor(&PlayerMovementDescriptor {
+            capsule: CapsuleParams {
+                radius: 0.4,
+                half_height: 0.8,
+                eye_height: 0.5,
+            },
+            ground: GroundParams {
+                speed: SpeedParams {
+                    walk: 7.0,
+                    run: 11.0,
+                    crouch: 3.0,
+                },
+                accel: 10.0,
+                step_height: 0.3,
+                max_slope: 45.0,
+            },
+            air: AirParams {
+                forward_steer: 0.0,
+                accel: 0.7,
+                max_control_speed: 0.5,
+                bunny_hop: false,
+                jumps: 0,
+                jump_velocity: 5.5,
+                jump_ceiling: 0.0,
+            },
+            fall: FallParams {
+                terminal_velocity: 40.0,
+            },
+            stuck_stop_enabled: PlayerMovementDescriptor::DEFAULT_STUCK_STOP_ENABLED,
+            stuck_stop_threshold: PlayerMovementDescriptor::DEFAULT_STUCK_STOP_THRESHOLD,
+            dash: None,
+            forgiveness: None,
+            crouch: None,
+            view_feel: None,
+        })
+    }
+
+    fn spawn_attackable_player(registry: &mut EntityRegistry) -> EntityId {
+        let player = registry.spawn(Transform {
+            position: Vec3::X,
+            ..Transform::default()
+        });
+        registry.set_component(player, player_movement()).unwrap();
+        registry
+            .set_component(
+                player,
+                HealthComponent {
+                    max: 100.0,
+                    current: 100.0,
+                    hitbox: None,
+                    death_handled: false,
+                    zone_multipliers: Default::default(),
+                    contributor_ledger: Default::default(),
+                },
+            )
+            .unwrap();
+        player
+    }
+
     #[test]
     fn repeated_fire_is_stateless_and_spawns_untagged_runtime_enemies() {
         let mut registry = EntityRegistry::new();
@@ -265,6 +346,102 @@ mod tests {
             );
             assert!(registry.get_component::<AgentComponent>(enemy).is_ok());
         }
+    }
+
+    #[test]
+    fn spawned_enemy_cannot_attack_before_interpolation_windup_expires() {
+        let mut registry = EntityRegistry::new();
+        add_spawner(&mut registry, TAG, 1, true, Transform::default());
+        let context = context();
+        let player = spawn_attackable_player(&mut registry);
+
+        spawn_from_spawner_tag(&mut registry, TAG, &context);
+        let enemy = spawned(&registry).pop().expect("one spawned enemy");
+        let seed = MAX_DELAY_MICROS as f32 / 1000.0;
+        assert!(
+            registry
+                .get_component::<BrainComponent>(enemy)
+                .unwrap()
+                .attack_cooldown_remaining_ms
+                >= seed,
+            "the descriptor attachment must not overwrite the interpolation windup"
+        );
+
+        let mut warned = HashSet::new();
+        let dt_secs = 0.05;
+        for _ in 0..4 {
+            assert!(
+                run_ai_tick(&mut registry, &mut warned, dt_secs).is_empty(),
+                "no attack may land before the {} ms windup floor",
+                seed
+            );
+        }
+        assert_eq!(
+            registry
+                .get_component::<HealthComponent>(player)
+                .unwrap()
+                .current,
+            100.0,
+            "the player remains unharmed before the windup expires"
+        );
+
+        assert_eq!(
+            run_ai_tick(&mut registry, &mut warned, dt_secs),
+            vec![ENEMY_ATTACK_EVENT],
+            "the enemy attacks once exactly when the seeded windup reaches zero"
+        );
+        assert!(
+            registry
+                .get_component::<HealthComponent>(player)
+                .unwrap()
+                .current
+                < 100.0,
+            "the final tick proves the test exercised attack behavior rather than merely no target"
+        );
+    }
+
+    #[test]
+    fn runtime_spawn_kill_cannot_advance_install_scoped_tag_progress() {
+        let mut registry = EntityRegistry::new();
+        registry
+            .try_spawn(Transform::default(), &["wave".to_string()])
+            .unwrap();
+        add_spawner(&mut registry, TAG, 1, true, Transform::default());
+        let context = context();
+
+        let mut data = DataRegistry::new();
+        data.reactions.push(NamedReaction {
+            name: "waveProgress".to_string(),
+            descriptor: ReactionDescriptor::Progress(ProgressDescriptor {
+                tag: "wave".to_string(),
+                at: 1.0,
+                fire: "release".to_string(),
+            }),
+        });
+        let mut progress = ProgressTracker::new();
+        progress.initialize(&data, &registry);
+
+        spawn_from_spawner_tag(&mut registry, TAG, &context);
+        let enemy = spawned(&registry).pop().expect("one runtime-spawned enemy");
+        assert_eq!(
+            registry
+                .get_component::<DescriptorProvenance>(enemy)
+                .unwrap()
+                .spawn_path,
+            DescriptorSpawnPath::RuntimeSpawn
+        );
+        assert!(registry.get_tags(enemy).unwrap().is_empty());
+        assert!(
+            progress
+                .on_entity_killed(registry.get_tags(enemy).unwrap())
+                .is_empty(),
+            "an untagged runtime-spawn kill cannot decrement a tag-keyed progress total"
+        );
+        assert_eq!(
+            progress.on_entity_killed(&["wave".to_string()]),
+            vec!["release".to_string()],
+            "the install-scoped total still requires the original tagged entity kill"
+        );
     }
 
     #[test]

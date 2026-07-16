@@ -89,9 +89,9 @@ foundation's first consumer; the two are co-designed.
 - [ ] A `count` of 0 (or malformed) spawns nothing — the directly-assertable fact (no entities
       created); it also warns at load (a `log::warn!`, so the assertion is the spawns-nothing
       outcome, not the log line). Registry exhaustion mid-batch spawns what fits, warns, and does not
-      panic — asserted via a new low-capacity `#[cfg(test)]` registry seam (Task 2 adds it to the
-      `entities` crate) that forces `try_spawn` to return `None`, since filling to `u16::MAX` is
-      impractical.
+      panic — asserted via a new low-capacity `#[cfg(any(test, feature = "test-support"))]` registry seam
+      (Task 2 adds it to the `entities` crate) that forces `try_spawn` to return `None`, since
+      filling to `u16::MAX` is impractical.
 - [ ] In a two-peer co-op session, a host-spawned enemy appears and renders its mesh on the
       connected client and on a client that joins after the spawn, driven by its replicated
       Transform.
@@ -222,8 +222,9 @@ enemies take the spawner entity's Transform rotation (its authored `angles`, via
 so they face as placed. Degrade gracefully, matching `prop_mesh`: a `count` of 0 (parsed and defaulted at load, Task 1)
 spawns nothing; if `try_spawn` returns `None` mid-batch (the registry at `u16::MAX`), spawn what
 fits, warn once, and stop — never panic. Testing that exhaustion path needs a seam that does not
-exist yet: add a `#[cfg(test)]` capacity cap to `crates/entities/src/registry.rs` (the existing
-`#[cfg(test)]` block at `:1046` manipulates generation, not slot count, and `try_spawn` (`:732`)
+exist yet: add a `#[cfg(any(test, feature = "test-support"))]` capacity cap to
+`crates/entities/src/registry.rs` (the existing `#[cfg(test)]` block at `:1046` manipulates
+generation, not slot count, and `try_spawn` (`:732`)
 otherwise only returns `None` at `slots.len() >= u16::MAX`) — a test-only cap so `try_spawn` returns
 `None` at a low bound. This is a cross-crate `entities` edit this task owns (AC 7). Do not validate spawn
 positions against geometry or the navmesh — a spawner inside a wall is an authoring bug for

@@ -165,6 +165,12 @@ pub fn fire_named_event_with_sequences(
         match &named.descriptor {
             ReactionDescriptor::Progress(_) => {}
             ReactionDescriptor::Primitive(p) => {
+                if p.target.is_some() {
+                    log::warn!(
+                        "[Scripting] named dispatch `{event_name}` has no trigger fire context for sentinel target; skipping primitive"
+                    );
+                    continue;
+                }
                 dispatch_primitive(p, reaction_registry, system_registry, script_ctx);
                 if let Some(on_complete) = &p.on_complete {
                     chained.push(on_complete.clone());
@@ -420,10 +426,16 @@ fn dispatch_sequence(
     script_ctx: &ScriptCtx,
 ) {
     for (i, step) in steps.iter().enumerate() {
-        if !script_ctx.registry.borrow().exists(step.id) {
+        let postretro_entities::SequenceTarget::Entity(id) = step.id else {
+            log::warn!(
+                "[Scripting] sequence step {i}: sentinel target has no trigger fire context; skipping"
+            );
+            continue;
+        };
+        if !script_ctx.registry.borrow().exists(id) {
             log::warn!(
                 "[Scripting] sequence step {i}: entity {:?} not found, skipping",
-                step.id
+                id
             );
             continue;
         }
@@ -435,11 +447,11 @@ fn dispatch_sequence(
             );
             continue;
         };
-        if let Err(e) = handler(step.id, &step.args) {
+        if let Err(e) = handler(id, &step.args) {
             log::warn!(
                 "[Scripting] sequence step {i}: primitive '{}' on entity {:?} failed: {e}",
                 step.primitive,
-                step.id
+                id
             );
         }
     }
@@ -536,6 +548,7 @@ mod tests {
             name: name.to_string(),
             descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                 primitive: primitive.to_string(),
+                target: None,
                 tag: Some(tag.to_string()),
                 on_complete: on_complete.map(|s| s.to_string()),
                 args: serde_json::Value::Object(Default::default()),
@@ -832,6 +845,7 @@ mod tests {
                 name: "release".into(),
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "record".into(),
+                    target: None,
                     tag: None,
                     on_complete: None,
                     args: serde_json::json!({ "label": "release" }),
@@ -897,6 +911,7 @@ mod tests {
                     name: "release".into(),
                     descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                         primitive: "record".into(),
+                        target: None,
                         tag: None,
                         on_complete: None,
                         args: serde_json::json!({ "label": "release" }),
@@ -954,6 +969,7 @@ mod tests {
             name: name.into(),
             descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                 primitive: "record".into(),
+                target: None,
                 tag: None,
                 on_complete: on_complete.map(str::to_string),
                 args: serde_json::json!({ "label": name }),
@@ -1025,6 +1041,7 @@ mod tests {
                 name: "lowHealth".to_string(),
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "playSound".to_string(),
+                    target: None,
                     // No tag ⇒ system-targeted.
                     tag: None,
                     on_complete: None,
@@ -1095,12 +1112,12 @@ mod tests {
                 "go",
                 vec![
                     SequenceStep {
-                        id: id_a,
+                        id: id_a.into(),
                         primitive: "noteValue".into(),
                         args: serde_json::json!({ "v": 1 }),
                     },
                     SequenceStep {
-                        id: id_b,
+                        id: id_b.into(),
                         primitive: "noteValue".into(),
                         args: serde_json::json!({ "v": 2 }),
                     },
@@ -1152,17 +1169,17 @@ mod tests {
                 "go",
                 vec![
                     SequenceStep {
-                        id: id_a,
+                        id: id_a.into(),
                         primitive: "tick".into(),
                         args: serde_json::Value::Null,
                     },
                     SequenceStep {
-                        id: id_dead,
+                        id: id_dead.into(),
                         primitive: "tick".into(),
                         args: serde_json::Value::Null,
                     },
                     SequenceStep {
-                        id: id_b,
+                        id: id_b.into(),
                         primitive: "tick".into(),
                         args: serde_json::Value::Null,
                     },
@@ -1212,12 +1229,12 @@ mod tests {
                 "go",
                 vec![
                     SequenceStep {
-                        id: id_a,
+                        id: id_a.into(),
                         primitive: "boom".into(),
                         args: serde_json::Value::Null,
                     },
                     SequenceStep {
-                        id: id_b,
+                        id: id_b.into(),
                         primitive: "ok".into(),
                         args: serde_json::Value::Null,
                     },
@@ -1251,7 +1268,7 @@ mod tests {
             sequence_reaction(
                 "valid",
                 vec![SequenceStep {
-                    id: bogus_id,
+                    id: bogus_id.into(),
                     primitive: "known".into(),
                     args: serde_json::Value::Null,
                 }],
@@ -1260,12 +1277,12 @@ mod tests {
                 "invalid",
                 vec![
                     SequenceStep {
-                        id: bogus_id,
+                        id: bogus_id.into(),
                         primitive: "known".into(),
                         args: serde_json::Value::Null,
                     },
                     SequenceStep {
-                        id: bogus_id,
+                        id: bogus_id.into(),
                         primitive: "ghost".into(),
                         args: serde_json::Value::Null,
                     },
@@ -1288,7 +1305,7 @@ mod tests {
             sequence_reaction(
                 "valid",
                 vec![SequenceStep {
-                    id: bogus_id,
+                    id: bogus_id.into(),
                     primitive: "known".into(),
                     args: serde_json::Value::Null,
                 }],
@@ -1297,12 +1314,12 @@ mod tests {
                 "invalid_at_zero",
                 vec![
                     SequenceStep {
-                        id: bogus_id,
+                        id: bogus_id.into(),
                         primitive: "ghost".into(),
                         args: serde_json::Value::Null,
                     },
                     SequenceStep {
-                        id: bogus_id,
+                        id: bogus_id.into(),
                         primitive: "known".into(),
                         args: serde_json::Value::Null,
                     },
@@ -1330,7 +1347,7 @@ mod tests {
                 reaction: sequence_reaction(
                     "valid_sequence",
                     vec![SequenceStep {
-                        id: bogus_id,
+                        id: bogus_id.into(),
                         primitive: "known".into(),
                         args: serde_json::Value::Null,
                     }],
@@ -1341,7 +1358,7 @@ mod tests {
                 reaction: sequence_reaction(
                     "invalid_sequence",
                     vec![SequenceStep {
-                        id: bogus_id,
+                        id: bogus_id.into(),
                         primitive: "ghost".into(),
                         args: serde_json::Value::Null,
                     }],

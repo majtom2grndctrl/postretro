@@ -511,6 +511,7 @@ mod tests {
             name: name.to_string(),
             descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                 primitive: primitive.to_string(),
+                target: None,
                 tag: Some("fixture_tripwire".to_string()),
                 on_complete: None,
                 args: json!({}),
@@ -519,7 +520,7 @@ mod tests {
         let by_id = |name: &str, primitive: &str| NamedReaction {
             name: format!("{name}.{}", trigger.to_raw()),
             descriptor: ReactionDescriptor::Sequence(vec![SequenceStep {
-                id: trigger,
+                id: trigger.into(),
                 primitive: primitive.to_string(),
                 args: json!({}),
             }]),

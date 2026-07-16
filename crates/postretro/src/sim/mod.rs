@@ -18,6 +18,7 @@ use crate::scripting_systems;
 use crate::scripting_systems::hit_zones::HitZoneStore;
 use crate::scripting_systems::trigger_volume_bridge::TriggerVolumeBridge;
 use crate::trigger_bindings::{TriggerBindingTable, TriggerResidualHandle};
+use crate::trigger_commands::TriggerFireContext;
 #[cfg(test)]
 use crate::trigger_system::TriggerEvent;
 use crate::trigger_system::{AuthoritativePlayer, PlayerId, TriggerSystem};
@@ -172,6 +173,18 @@ pub(crate) fn simulate_tick(
             let id = PlayerId::Local(pawn);
             players.push(AuthoritativePlayer { id, pawn });
         }
+        let alive_players: HashSet<PlayerId> = {
+            let registry = registry.borrow();
+            players
+                .iter()
+                .filter(|player| {
+                    registry
+                        .get_component::<HealthComponent>(player.pawn)
+                        .map_or(true, |health| health.current > 0.0)
+                })
+                .map(|player| player.id)
+                .collect()
+        };
         let mut registry = registry.borrow_mut();
         if let Some(script_ctx) = trigger_context.script_ctx.as_ref() {
             let _report = trigger_context.system.run_authoritative_tick_with_dispatch(
@@ -180,12 +193,15 @@ pub(crate) fn simulate_tick(
                 &players,
                 trigger_context.use_edges,
                 tick_dt,
-                |event, registry| {
+                &alive_players,
+                |event, occupancy, registry| {
+                    let fire_context = trigger_fire_context(event, occupancy, &players);
                     let execution = trigger_context.bindings.execute_with_script_ctx(
                         event.fire.trigger,
                         event.edge,
                         registry,
                         script_ctx,
+                        &fire_context,
                     );
                     #[cfg(test)]
                     {
@@ -208,12 +224,15 @@ pub(crate) fn simulate_tick(
                 &players,
                 trigger_context.use_edges,
                 tick_dt,
-                |event, registry| {
+                &alive_players,
+                |event, _occupancy, registry| {
+                    let fire_context = TriggerFireContext::default();
                     let execution = trigger_context.bindings.execute(
                         event.fire.trigger,
                         event.edge,
                         registry,
                         &mut slot_table,
+                        &fire_context,
                     );
                     #[cfg(test)]
                     {
@@ -285,6 +304,31 @@ pub(crate) fn simulate_tick(
         trigger_fires,
         #[cfg(test)]
         trigger_command_fires,
+    }
+}
+
+fn trigger_fire_context(
+    event: &crate::trigger_system::TriggerEvent,
+    occupancy: usize,
+    players: &[AuthoritativePlayer],
+) -> TriggerFireContext {
+    let mut activators: Vec<EntityId> = players
+        .iter()
+        .filter(|player| player.id == event.fire.player)
+        .map(|player| player.pawn)
+        .collect();
+    activators.sort_unstable();
+    activators.dedup();
+    if activators.is_empty() && matches!(event.fire.player, PlayerId::Remote(_)) {
+        log::warn!(
+            "[Trigger] remote activator {:?} is absent from this tick; @activators is empty",
+            event.fire.player
+        );
+    }
+    TriggerFireContext {
+        fired_trigger: Some(event.fire.trigger),
+        activators,
+        occupancy,
     }
 }
 
@@ -1178,6 +1222,7 @@ mod tests {
                 name: "triggered".into(),
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: primitive.into(),
+                    target: None,
                     tag: tag.map(str::to_string),
                     on_complete: None,
                     args,
@@ -1468,6 +1513,7 @@ mod tests {
                         name: "first".into(),
                         descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                             primitive: command.into(),
+                            target: None,
                             tag: Some("second-trigger".into()),
                             on_complete: None,
                             args: serde_json::json!({}),
@@ -1477,6 +1523,7 @@ mod tests {
                         name: "second".into(),
                         descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                             primitive: "applyDamage".into(),
+                            target: None,
                             tag: Some("damage-target".into()),
                             on_complete: None,
                             args: serde_json::json!({ "amount": 5 }),

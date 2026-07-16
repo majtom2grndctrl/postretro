@@ -212,12 +212,12 @@ mod tests {
             name: "levelLoad".to_string(),
             descriptor: ReactionDescriptor::Sequence(vec![
                 SequenceStep {
-                    id,
+                    id: id.into(),
                     primitive: "setFogDensity".to_string(),
                     args: serde_json::json!({ "density": 0.9 }),
                 },
                 SequenceStep {
-                    id,
+                    id: id.into(),
                     primitive: "setFogParams".to_string(),
                     args: serde_json::json!({
                         "glow": 0.4,

@@ -114,6 +114,29 @@ pub fn primitive_descriptor_from_js<'js>(
     } else {
         None
     };
+    let target = if obj.contains_key("target").map_err(js_err)? {
+        let raw: JsValue = obj.get("target").map_err(js_err)?;
+        if raw.is_null() || raw.is_undefined() {
+            None
+        } else {
+            Some(String::from_js_value_required(raw, "target")?)
+        }
+    } else {
+        None
+    };
+    if target.is_some() && tag.is_some() {
+        return Err(DescriptorError::InvalidShape {
+            reason: "primitive reaction cannot carry both `target` and `tag`".to_string(),
+        });
+    }
+    if target
+        .as_deref()
+        .is_some_and(|target| target != "@activators")
+    {
+        return Err(DescriptorError::InvalidShape {
+            reason: "primitive `target` must be `@activators`".to_string(),
+        });
+    }
 
     let on_complete = if obj.contains_key("onComplete").map_err(js_err)? {
         let raw: JsValue = obj.get("onComplete").map_err(js_err)?;
@@ -141,6 +164,7 @@ pub fn primitive_descriptor_from_js<'js>(
 
     Ok(PrimitiveDescriptor {
         primitive,
+        target,
         tag,
         on_complete,
         args,
@@ -157,7 +181,20 @@ pub fn sequence_steps_from_js<'js>(
         let obj = Object::from_value(item).map_err(|_| DescriptorError::InvalidSequenceShape {
             reason: format!("step {i} must be an object"),
         })?;
-        let id_raw: u32 = get_required_u32_js(&obj, "id")?;
+        let id_value: JsValue = obj.get("id").map_err(js_err)?;
+        let id = if let Some(value) = id_value.as_string() {
+            match value.to_string().map_err(js_err)?.as_str() {
+                "@activators" => SequenceTarget::Activators,
+                "@trigger" => SequenceTarget::FiredTrigger,
+                spelling => {
+                    return Err(DescriptorError::InvalidSequenceShape {
+                        reason: format!("step {i} has illegal sentinel `{spelling}`"),
+                    });
+                }
+            }
+        } else {
+            SequenceTarget::Entity(EntityId::from_raw(get_required_u32_js(&obj, "id")?))
+        };
         let primitive = get_required_string_js(&obj, "primitive")?;
         let primitive = validate_primitive_name(primitive)?;
         let args = if obj.contains_key("args").map_err(js_err)? {
@@ -167,7 +204,7 @@ pub fn sequence_steps_from_js<'js>(
             serde_json::Value::Null
         };
         out.push(SequenceStep {
-            id: EntityId::from_raw(id_raw),
+            id,
             primitive,
             args,
         });

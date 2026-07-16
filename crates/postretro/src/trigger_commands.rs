@@ -4,13 +4,16 @@ use postretro_entities::{
     ComponentKind, EntityId, EntityRegistry, MoverCommand, ScriptCtx, SlotTable, SlotValue,
 };
 use postretro_foundation::{BoundProgram, eval_and_write};
-use postretro_scripting_core::ir_scopes::StoreScope;
+use postretro_scripting_core::ir_scopes::DispatchScope;
 use postretro_scripting_core::store_bridge::apply_store_slot_batch;
 
 use crate::health::reactions::{self as health_reactions, ApplyDamageArgs};
 use crate::kinematic_mover::{MoverCommandDiagnostics, apply_mover_command_to_targets};
 use crate::scripting::reactions::animation::{self as animation_reactions, SetAnimationStateArgs};
 use crate::trigger_system::{arm_trigger_targets, disarm_trigger_targets};
+
+const TRIGGER_EVENT_INPUTS: &[(&str, postretro_foundation::IrType)] =
+    &[("@occupancy", postretro_foundation::IrType::Number)];
 
 /// The closed set of trigger work allowed in the VM-free fixed-tick seam.
 /// `Tag` targets mirror named primitive dispatch; `Entity` targets preserve a
@@ -47,13 +50,22 @@ pub(crate) enum BoundTriggerCommand {
 #[derive(Debug, Clone)]
 pub(crate) enum BoundStoreValue {
     Literal(SlotValue),
-    Ir(BoundProgram<StoreScope>),
+    Ir(BoundProgram<DispatchScope>),
 }
 
 #[derive(Debug, Clone)]
 pub(crate) enum BoundTarget {
     Tag(String),
     Entity(EntityId),
+    Activators,
+    FiredTrigger,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct TriggerFireContext {
+    pub(crate) fired_trigger: Option<EntityId>,
+    pub(crate) activators: Vec<EntityId>,
+    pub(crate) occupancy: usize,
 }
 
 #[cfg(test)]
@@ -73,6 +85,7 @@ impl BoundTriggerCommand {
         registry: &mut EntityRegistry,
         slot_table: &mut SlotTable,
         command_diagnostics: &MoverCommandDiagnostics,
+        fire_context: &TriggerFireContext,
     ) {
         match self {
             Self::StoreSlot { slot, value } => {
@@ -85,7 +98,7 @@ impl BoundTriggerCommand {
                     log::warn!("[Trigger] setState binding for `{slot}` failed: {error}");
                 }
             }
-            _ => self.execute_non_store(registry, command_diagnostics),
+            _ => self.execute_non_store(registry, command_diagnostics, fire_context),
         }
     }
 
@@ -94,6 +107,7 @@ impl BoundTriggerCommand {
         registry: &mut EntityRegistry,
         script_ctx: &ScriptCtx,
         command_diagnostics: &MoverCommandDiagnostics,
+        fire_context: &TriggerFireContext,
     ) {
         match self {
             Self::StoreSlot { slot, value } => match value {
@@ -106,11 +120,18 @@ impl BoundTriggerCommand {
                     }
                 }
                 BoundStoreValue::Ir(program) => {
-                    let mut scope = StoreScope::script(script_ctx.clone());
+                    let mut scope = DispatchScope::script(script_ctx.clone(), TRIGGER_EVENT_INPUTS);
+                    if let Err(error) = scope.seed(
+                        "@occupancy",
+                        postretro_foundation::IrValue::Number(fire_context.occupancy as f32),
+                    ) {
+                        log::warn!("[Trigger] failed to seed @occupancy: {error:?}");
+                        return;
+                    }
                     eval_and_write(program, &mut scope);
                 }
             },
-            _ => self.execute_non_store(registry, command_diagnostics),
+            _ => self.execute_non_store(registry, command_diagnostics, fire_context),
         }
     }
 
@@ -118,16 +139,17 @@ impl BoundTriggerCommand {
         &self,
         registry: &mut EntityRegistry,
         command_diagnostics: &MoverCommandDiagnostics,
+        fire_context: &TriggerFireContext,
     ) {
         match self {
             Self::Mover { target, command } => apply_mover_command_to_targets(
                 registry,
-                &target.resolve(registry),
+                &target.resolve(registry, fire_context),
                 command,
                 command_diagnostics,
             ),
             Self::Damage { target, amount } => {
-                let targets = target.resolve(registry);
+                let targets = target.resolve(registry, fire_context);
                 if let Err(error) = health_reactions::dispatch(
                     registry,
                     &targets,
@@ -136,14 +158,18 @@ impl BoundTriggerCommand {
                     log::warn!("[Trigger] applyDamage binding failed: {error}");
                 }
             }
-            Self::Arm { target } => {
-                arm_trigger_targets(registry, &target.resolve(registry), command_diagnostics)
-            }
-            Self::Disarm { target } => {
-                disarm_trigger_targets(registry, &target.resolve(registry), command_diagnostics)
-            }
+            Self::Arm { target } => arm_trigger_targets(
+                registry,
+                &target.resolve(registry, fire_context),
+                command_diagnostics,
+            ),
+            Self::Disarm { target } => disarm_trigger_targets(
+                registry,
+                &target.resolve(registry, fire_context),
+                command_diagnostics,
+            ),
             Self::AnimationState { target, state } => {
-                let targets = target.resolve(registry);
+                let targets = target.resolve(registry, fire_context);
                 if let Err(error) = animation_reactions::dispatch(
                     registry,
                     &targets,
@@ -172,7 +198,11 @@ impl BoundTriggerCommand {
 }
 
 impl BoundTarget {
-    pub(crate) fn resolve(&self, registry: &EntityRegistry) -> Vec<EntityId> {
+    pub(crate) fn resolve(
+        &self,
+        registry: &EntityRegistry,
+        fire_context: &TriggerFireContext,
+    ) -> Vec<EntityId> {
         match self {
             Self::Tag(tag) => registry
                 .query_by_component_and_tag(ComponentKind::Transform, Some(tag))
@@ -188,6 +218,8 @@ impl BoundTarget {
                     Vec::new()
                 }
             }
+            Self::Activators => fire_context.activators.clone(),
+            Self::FiredTrigger => fire_context.fired_trigger.into_iter().collect(),
         }
     }
 }

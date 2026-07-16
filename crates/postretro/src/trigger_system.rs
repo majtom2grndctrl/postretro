@@ -125,13 +125,15 @@ impl TriggerSystem {
         use_pressed: &HashMap<PlayerId, bool>,
         tick_dt: f32,
     ) -> TriggerFireReport {
+        let alive_players = players.iter().map(|player| player.id).collect();
         self.run_authoritative_tick_with_dispatch(
             registry,
             bridge,
             players,
             use_pressed,
             tick_dt,
-            |_, _| {},
+            &alive_players,
+            |_, _, _| {},
         )
     }
 
@@ -147,7 +149,8 @@ impl TriggerSystem {
         players: &[AuthoritativePlayer],
         use_pressed: &HashMap<PlayerId, bool>,
         tick_dt: f32,
-        mut dispatch: impl FnMut(&TriggerEvent, &mut EntityRegistry),
+        alive_players: &HashSet<PlayerId>,
+        mut dispatch: impl FnMut(&TriggerEvent, usize, &mut EntityRegistry),
     ) -> TriggerFireReport {
         let player_capsules =
             canonical_player_capsules(registry, players, &mut self.warned_duplicate_players);
@@ -263,7 +266,8 @@ impl TriggerSystem {
                             },
                             edge,
                         };
-                        dispatch(&event, registry);
+                        let occupancy = self.effective_occupancy(trigger_id, alive_players);
+                        dispatch(&event, occupancy, registry);
                         report.fires.push(event);
                     }
                     TriggerEventEdge::Enter => {
@@ -307,7 +311,8 @@ impl TriggerSystem {
                             },
                             edge,
                         };
-                        dispatch(&event, registry);
+                        let occupancy = self.effective_occupancy(trigger_id, alive_players);
+                        dispatch(&event, occupancy, registry);
                         report.fires.push(event);
                     }
                 }
@@ -315,6 +320,15 @@ impl TriggerSystem {
         }
 
         report
+    }
+
+    fn effective_occupancy(&self, trigger: EntityId, alive_players: &HashSet<PlayerId>) -> usize {
+        self.occupants.get(&trigger).map_or(0, |occupants| {
+            occupants
+                .iter()
+                .filter(|player| alive_players.contains(player))
+                .count()
+        })
     }
 }
 

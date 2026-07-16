@@ -276,6 +276,7 @@ mod tests {
             name: "wave1Complete".to_string(),
             descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                 primitive: "moveGeometry".to_string(),
+                target: None,
                 tag: Some("reactorChambers".to_string()),
                 on_complete: None,
                 args: serde_json::Value::Object(Default::default()),
@@ -324,6 +325,7 @@ mod tests {
                 name: name.to_string(),
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "moveGeometry".to_string(),
+                    target: None,
                     tag: Some("reactorChambers".to_string()),
                     on_complete: on_complete.map(str::to_string),
                     args: serde_json::Value::Object(Default::default()),
@@ -454,6 +456,7 @@ mod tests {
                 name: "levelLoad".to_string(),
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "activateGroup".to_string(),
+                    target: None,
                     tag: Some("local".to_string()),
                     on_complete: None,
                     args: serde_json::Value::Object(Default::default()),

@@ -593,6 +593,7 @@ mod tests {
             name: name.to_string(),
             descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                 primitive: "setState".to_string(),
+                target: None,
                 tag: None,
                 on_complete: None,
                 args: serde_json::json!({ "slot": slot, "value": value }),

@@ -924,6 +924,32 @@ fn rebuild_reaction_subscribers(
     crossing_detector: &mut postretro_scripting_core::state_crossings::CrossingDetector,
     script_ctx: &postretro_entities::ScriptCtx,
 ) {
+    {
+        let mut data_registry = script_ctx.data_registry.borrow_mut();
+        let sentinel_names: std::collections::HashSet<String> = data_registry
+            .reactions
+            .iter()
+            .filter(|reaction| reaction_uses_trigger_sentinel(reaction))
+            .map(|reaction| reaction.name.clone())
+            .collect();
+        data_registry.crossings.retain(|crossing| {
+            let compatible = crossing
+                .fire
+                .iter()
+                .all(|event| !sentinel_names.contains(event));
+            if !compatible {
+                log::warn!(
+                    "[Scripting] crossing subscription references a trigger-sentinel reaction; skipping subscription"
+                );
+            }
+            compatible
+        });
+        if sentinel_names.contains("levelLoad") {
+            log::warn!(
+                "[Scripting] levelLoad references trigger-sentinel work; incompatible commands will be skipped"
+            );
+        }
+    }
     progress_tracker.clear();
     progress_tracker.initialize(
         &script_ctx.data_registry.borrow(),
@@ -935,6 +961,20 @@ fn rebuild_reaction_subscribers(
         &script_ctx.slot_table.borrow(),
         script_ctx,
     );
+}
+
+fn reaction_uses_trigger_sentinel(
+    reaction: &postretro_scripting_core::data_descriptors::NamedReaction,
+) -> bool {
+    use postretro_scripting_core::data_descriptors::{ReactionDescriptor, SequenceTarget};
+
+    match &reaction.descriptor {
+        ReactionDescriptor::Primitive(primitive) => primitive.target.is_some(),
+        ReactionDescriptor::Sequence(steps) => steps
+            .iter()
+            .any(|step| !matches!(step.id, SequenceTarget::Entity(_))),
+        ReactionDescriptor::Progress(_) => false,
+    }
 }
 
 fn build_trigger_bindings(
@@ -1536,6 +1576,7 @@ mod tests {
             name: name.to_string(),
             descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                 primitive: "testPrimitive".to_string(),
+                target: None,
                 tag: None,
                 on_complete: None,
                 args: serde_json::Value::Object(Default::default()),
@@ -1571,6 +1612,7 @@ mod tests {
                 name: name.to_string(),
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "setState".to_string(),
+                    target: None,
                     tag: None,
                     on_complete: None,
                     args: serde_json::json!({ "slot": "trigger.flag", "value": value }),
@@ -1626,6 +1668,7 @@ mod tests {
                 name: "increment".to_string(),
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "setState".to_string(),
+                    target: None,
                     tag: None,
                     on_complete: None,
                     args: serde_json::json!({
@@ -2451,6 +2494,7 @@ mod tests {
                 name: "startCampaign".to_string(),
                 descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                     primitive: "loadLevel".to_string(),
+                    target: None,
                     tag: None,
                     args: serde_json::json!({ "map": "e1m1" }),
                     on_complete: None,
@@ -2829,6 +2873,7 @@ mod tests {
                         crate::trigger_system::TriggerEventEdge::Enter,
                         &mut entities,
                         &mut slots,
+                        &crate::trigger_commands::TriggerFireContext::default(),
                     )
                     .residual()
                     .is_none(),
@@ -2865,6 +2910,7 @@ mod tests {
                         crate::trigger_system::TriggerEventEdge::Enter,
                         &mut entities,
                         &mut slots,
+                        &crate::trigger_commands::TriggerFireContext::default(),
                     )
                     .residual()
                     .is_none(),

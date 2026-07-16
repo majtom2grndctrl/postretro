@@ -735,6 +735,7 @@ fn deterministic_trigger_primitive(
         name: "determinismTrigger".to_string(),
         descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
             primitive: primitive.to_string(),
+            target: None,
             tag: tag.map(str::to_string),
             on_complete: None,
             args,

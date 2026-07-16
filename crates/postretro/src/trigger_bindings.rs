@@ -10,10 +10,11 @@ use postretro_entities::{
 use postretro_foundation::{BakedIr, CURRENT_IR_VERSION, ir_node_from_json};
 use postretro_scripting_core::data_descriptors::{
     NamedReaction, PrimitiveDescriptor, ProgressDescriptor, ReactionDescriptor, SequenceStep,
+    SequenceTarget,
 };
 use postretro_scripting_core::data_registry::DataRegistry;
 use postretro_scripting_core::ir::bind;
-use postretro_scripting_core::ir_scopes::StoreScope;
+use postretro_scripting_core::ir_scopes::DispatchScope;
 use postretro_scripting_core::reaction_dispatch::PrepartitionedReactionStep;
 use postretro_scripting_core::store_bridge::{json_value_for_slot, validate_slot_value};
 use serde::Deserialize;
@@ -23,8 +24,13 @@ use crate::kinematic_mover::MoverCommandDiagnostics;
 use crate::scripting::reactions::animation::SetAnimationStateArgs;
 #[cfg(test)]
 pub(crate) use crate::trigger_commands::BoundTriggerCommandKind;
-use crate::trigger_commands::{BoundStoreValue, BoundTarget, BoundTriggerCommand};
+use crate::trigger_commands::{
+    BoundStoreValue, BoundTarget, BoundTriggerCommand, TriggerFireContext,
+};
 use crate::trigger_system::TriggerEventEdge;
+
+const TRIGGER_EVENT_INPUTS: &[(&str, postretro_foundation::IrType)] =
+    &[("@occupancy", postretro_foundation::IrType::Number)];
 
 const CONSEQUENTIAL_PRIMITIVES: &[&str] = &[
     "moverStart",
@@ -233,6 +239,7 @@ impl TriggerBindingTable {
         edge: TriggerEventEdge,
         registry: &mut EntityRegistry,
         slot_table: &mut SlotTable,
+        fire_context: &TriggerFireContext,
     ) -> TriggerBindingExecution {
         let Some(binding) = self.bindings.get(&(trigger, edge)) else {
             return TriggerBindingExecution {
@@ -244,7 +251,12 @@ impl TriggerBindingTable {
         #[cfg(test)]
         let mut commands = Vec::with_capacity(binding.commands.len());
         for command in &binding.commands {
-            command.execute(registry, slot_table, &self.command_diagnostics);
+            command.execute(
+                registry,
+                slot_table,
+                &self.command_diagnostics,
+                fire_context,
+            );
             #[cfg(test)]
             commands.push(command.kind());
         }
@@ -264,6 +276,7 @@ impl TriggerBindingTable {
         edge: TriggerEventEdge,
         registry: &mut EntityRegistry,
         script_ctx: &ScriptCtx,
+        fire_context: &TriggerFireContext,
     ) -> TriggerBindingExecution {
         let Some(binding) = self.bindings.get(&(trigger, edge)) else {
             return TriggerBindingExecution {
@@ -275,7 +288,12 @@ impl TriggerBindingTable {
         #[cfg(test)]
         let mut commands = Vec::with_capacity(binding.commands.len());
         for command in &binding.commands {
-            command.execute_with_script_ctx(registry, script_ctx, &self.command_diagnostics);
+            command.execute_with_script_ctx(
+                registry,
+                script_ctx,
+                &self.command_diagnostics,
+                fire_context,
+            );
             #[cfg(test)]
             commands.push(command.kind());
         }
@@ -335,6 +353,13 @@ fn partition_direct_reaction(
                     ));
                 }
             } else {
+                if primitive.target.is_some() {
+                    log::warn!(
+                        "[Trigger] sentinel target on presentation primitive `{}` cannot drain app-side; not binding",
+                        primitive.primitive
+                    );
+                    return;
+                }
                 if let Some(on_complete) = &primitive.on_complete {
                     warn_for_deferred_event(&reaction.name, on_complete, data_registry);
                 }
@@ -351,6 +376,13 @@ fn partition_direct_reaction(
                         commands.push(command);
                     }
                 } else {
+                    if !matches!(step.id, SequenceTarget::Entity(_)) {
+                        log::warn!(
+                            "[Trigger] sentinel target on presentation sequence step `{}` cannot drain app-side; not binding",
+                            step.primitive
+                        );
+                        continue;
+                    }
                     residual_steps.push(step.clone());
                 }
             }
@@ -470,10 +502,20 @@ fn bind_primitive(
         );
         return None;
     }
-    let target = primitive
-        .tag
-        .as_deref()
-        .map(|tag| BoundTarget::Tag(tag.to_string()));
+    let target = if let Some(sentinel) = primitive.target.as_deref() {
+        match sentinel {
+            "@activators" => Some(BoundTarget::Activators),
+            spelling => {
+                log::warn!("[Trigger] illegal primitive target sentinel `{spelling}`; not binding");
+                return None;
+            }
+        }
+    } else {
+        primitive
+            .tag
+            .as_deref()
+            .map(|tag| BoundTarget::Tag(tag.to_string()))
+    };
     bind_command(
         &primitive.primitive,
         target,
@@ -494,7 +536,11 @@ fn bind_sequence_step(
         );
         return None;
     }
-    let target = Some(BoundTarget::Entity(step.id));
+    let target = Some(match step.id {
+        SequenceTarget::Entity(id) => BoundTarget::Entity(id),
+        SequenceTarget::Activators => BoundTarget::Activators,
+        SequenceTarget::FiredTrigger => BoundTarget::FiredTrigger,
+    });
     bind_command(&step.primitive, target, &step.args, slot_table, script_ctx)
 }
 
@@ -620,7 +666,7 @@ fn bind_store_slot(
             output: Some(args.slot.clone()),
             root,
         };
-        let scope = StoreScope::script(script_ctx.clone());
+        let scope = DispatchScope::script(script_ctx.clone(), TRIGGER_EVENT_INPUTS);
         let program = match bind(&baked, &scope) {
             Ok(program) => program,
             Err(error) => {
@@ -688,6 +734,7 @@ mod tests {
             name: name.to_string(),
             descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
                 primitive: primitive.to_string(),
+                target: None,
                 tag: tag.map(str::to_string),
                 on_complete: on_complete.map(str::to_string),
                 args,
@@ -785,7 +832,13 @@ mod tests {
             &[],
         );
         let table = TriggerBindingTable::build_with_script_ctx(&registry, &data, &ctx);
-        table.execute_with_script_ctx(trigger, TriggerEventEdge::Enter, &mut registry, &ctx);
+        table.execute_with_script_ctx(
+            trigger,
+            TriggerEventEdge::Enter,
+            &mut registry,
+            &ctx,
+            &TriggerFireContext::default(),
+        );
         assert_eq!(
             ctx.slot_table
                 .borrow()
@@ -866,8 +919,13 @@ mod tests {
         );
 
         let table = TriggerBindingTable::build_with_script_ctx(&registry, &data, &ctx);
-        let execution =
-            table.execute_with_script_ctx(trigger, TriggerEventEdge::Enter, &mut registry, &ctx);
+        let execution = table.execute_with_script_ctx(
+            trigger,
+            TriggerEventEdge::Enter,
+            &mut registry,
+            &ctx,
+            &TriggerFireContext::default(),
+        );
 
         assert_eq!(execution.commands, vec![BoundTriggerCommandKind::StoreSlot]);
         assert_eq!(
@@ -934,7 +992,13 @@ mod tests {
         let table = TriggerBindingTable::build_with_script_ctx(&registry, &data, &ctx);
         let mut slots = writable_slots();
 
-        table.execute(trigger, TriggerEventEdge::Enter, &mut registry, &mut slots);
+        table.execute(
+            trigger,
+            TriggerEventEdge::Enter,
+            &mut registry,
+            &mut slots,
+            &TriggerFireContext::default(),
+        );
     }
 
     #[test]
@@ -1090,7 +1154,13 @@ mod tests {
 
         assert!(
             table
-                .execute(trigger, TriggerEventEdge::Enter, &mut registry, &mut slots,)
+                .execute(
+                    trigger,
+                    TriggerEventEdge::Enter,
+                    &mut registry,
+                    &mut slots,
+                    &TriggerFireContext::default(),
+                )
                 .residual()
                 .is_none(),
             "a rejected tagged setState must not leave residual work"
@@ -1115,7 +1185,7 @@ mod tests {
             vec![NamedReaction {
                 name: "set_sequence_tagged".to_string(),
                 descriptor: ReactionDescriptor::Sequence(vec![SequenceStep {
-                    id: trigger,
+                    id: trigger.into(),
                     primitive: "setState".to_string(),
                     args: serde_json::json!({ "slot": "trigger.flag", "value": 1 }),
                 }]),
@@ -1134,7 +1204,13 @@ mod tests {
 
         assert!(
             table
-                .execute(trigger, TriggerEventEdge::Enter, &mut registry, &mut slots,)
+                .execute(
+                    trigger,
+                    TriggerEventEdge::Enter,
+                    &mut registry,
+                    &mut slots,
+                    &TriggerFireContext::default(),
+                )
                 .residual()
                 .is_none(),
             "a rejected sequence setState must not leave residual work"

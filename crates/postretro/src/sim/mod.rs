@@ -194,7 +194,7 @@ pub(crate) fn simulate_tick(
         if let Some(script_ctx) = trigger_context.script_ctx.as_ref() {
             let dispatch_inputs = crate::trigger_system::TriggerDispatchInputs {
                 alive_players: &alive_players,
-                bound_edges: &bound_edges,
+                bound_edges,
             };
             let _report = trigger_context.system.run_authoritative_tick_with_dispatch(
                 &mut registry,
@@ -232,7 +232,7 @@ pub(crate) fn simulate_tick(
             let mut slot_table = trigger_context.slot_table.borrow_mut();
             let dispatch_inputs = crate::trigger_system::TriggerDispatchInputs {
                 alive_players: &alive_players,
-                bound_edges: &bound_edges,
+                bound_edges,
             };
             let _report = trigger_context.system.run_authoritative_tick_with_dispatch(
                 &mut registry,
@@ -330,15 +330,11 @@ fn trigger_fire_context(
     occupancy: usize,
     canonical_player_pawns: &BTreeMap<PlayerId, EntityId>,
 ) -> TriggerFireContext {
-    let activators = match event.fire.player {
-        PlayerId::Local(pawn) => vec![pawn],
-        PlayerId::Remote(_) => canonical_player_pawns
-            .get(&event.fire.player)
-            .copied()
-            .into_iter()
-            .collect(),
+    let activator = match event.fire.player {
+        PlayerId::Local(pawn) => Some(pawn),
+        PlayerId::Remote(_) => canonical_player_pawns.get(&event.fire.player).copied(),
     };
-    if activators.is_empty() && matches!(event.fire.player, PlayerId::Remote(_)) {
+    if activator.is_none() && matches!(event.fire.player, PlayerId::Remote(_)) {
         log::warn!(
             "[Trigger] remote activator {:?} is absent from this tick; @activators is empty",
             event.fire.player
@@ -346,7 +342,7 @@ fn trigger_fire_context(
     }
     TriggerFireContext {
         fired_trigger: Some(event.fire.trigger),
-        activators,
+        activator,
         occupancy,
     }
 }
@@ -906,7 +902,7 @@ mod tests {
         };
 
         let context = trigger_fire_context(&event, 3, &BTreeMap::new());
-        assert!(context.activators.is_empty());
+        assert!(context.activator.is_none());
         assert_eq!(context.fired_trigger, Some(trigger));
         assert_eq!(context.occupancy, 3);
     }
@@ -929,8 +925,8 @@ mod tests {
         let canonical_players = BTreeMap::from([(PlayerId::Remote(77), canonical_pawn)]);
 
         let context = trigger_fire_context(&event, 1, &canonical_players);
-        assert_eq!(context.activators, [canonical_pawn]);
-        assert_ne!(context.activators, [duplicate_pawn]);
+        assert_eq!(context.activator, Some(canonical_pawn));
+        assert_ne!(context.activator, Some(duplicate_pawn));
     }
 
     #[test]
@@ -946,8 +942,8 @@ mod tests {
         };
 
         assert_eq!(
-            trigger_fire_context(&event, 1, &BTreeMap::new()).activators,
-            [local_pawn],
+            trigger_fire_context(&event, 1, &BTreeMap::new()).activator,
+            Some(local_pawn),
         );
     }
 
@@ -1611,11 +1607,8 @@ mod tests {
                 Vec::new(),
                 &[],
             );
-            let bindings = TriggerBindingTable::build(
-                &registry.borrow(),
-                &data,
-                &script_ctx.slot_table.borrow(),
-            );
+            let bindings =
+                TriggerBindingTable::build_with_script_ctx(&registry.borrow(), &data, &script_ctx);
             let mut bridge = TriggerVolumeBridge::new();
             for trigger in [first, second] {
                 bridge.insert_for_test(trigger, Vec3::splat(-4.0), Vec3::splat(4.0));

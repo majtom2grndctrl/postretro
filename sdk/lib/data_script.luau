@@ -139,13 +139,13 @@ export type MoverGoToPathNodeStep = {
 }
 
 export type ArmTriggerStep = {
-  id: number | "@activators" | "@trigger",
+  id: number | "@trigger",
   primitive: "armTrigger",
   args: {},
 }
 
 export type DisarmTriggerStep = {
-  id: number | "@activators" | "@trigger",
+  id: number | "@trigger",
   primitive: "disarmTrigger",
   args: {},
 }
@@ -277,12 +277,12 @@ function DataScriptSdk.damage(target: ActivatorsTarget | string, amount: number)
 end
 
 function DataScriptSdk.armTrigger(target: TriggerTarget): {SequenceStep}
-  local wireTarget: any = if target == TRIGGER_TARGET then "@trigger" elseif target == ACTIVATORS_TARGET then "@activators" else "@invalid"
+  local wireTarget: any = if target == TRIGGER_TARGET then "@trigger" else "@invalid"
   return { { id = wireTarget, primitive = "armTrigger", args = {} } :: any }
 end
 
 function DataScriptSdk.disarmTrigger(target: TriggerTarget): {SequenceStep}
-  local wireTarget: any = if target == TRIGGER_TARGET then "@trigger" elseif target == ACTIVATORS_TARGET then "@activators" else "@invalid"
+  local wireTarget: any = if target == TRIGGER_TARGET then "@trigger" else "@invalid"
   return { { id = wireTarget, primitive = "disarmTrigger", args = {} } :: any }
 end
 
@@ -432,8 +432,8 @@ end
 
 --- Identity builder for the mod manifest consumed from the chunk return.
 --- `config.name` is required; optional arrays include `entities`, `maps`,
---- `uiTrees`, `reactions`, `crossings`, and `stores`. Pure: no engine side
---- effects until the manifest is returned and validated.
+--- `uiTrees`, `reactions`, `crossings`, `triggerEvents`, and `stores`. Pure:
+--- no engine side effects until the manifest is returned and validated.
 function DataScriptSdk.defineMod(config: ModManifest): ModManifest
   return config
 end

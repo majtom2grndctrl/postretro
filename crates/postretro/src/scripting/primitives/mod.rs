@@ -466,7 +466,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field(
             "tags?",
             "Vec<String>",
-            "Authoritative classification tags for filtering plus `levels` selection on mod-global reactions and crossings. Optional; missing/null normalizes to empty.",
+            "Authoritative classification tags for filtering plus `levels` selection on mod-global reactions, crossings, and trigger events. Optional; missing/null normalizes to empty.",
         )
         .finish();
     registry

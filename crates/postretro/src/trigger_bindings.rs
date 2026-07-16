@@ -1,7 +1,9 @@
 //! Bind trigger event reactions at level install and execute their fixed-tick work.
-//! See: context/lib/entity_model.md §5 · context/lib/scripting.md §10
+//! See: context/lib/entity_model.md §5 · context/lib/scripting.md §12
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 
 use postretro_entities::{
     ComponentKind, EntityId, EntityRegistry, MoverCommand, ScriptCtx, SlotTable,
@@ -60,11 +62,35 @@ impl TriggerResidual {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub(crate) struct TriggerBindingTable {
     bindings: HashMap<(EntityId, TriggerEventEdge), TriggerBinding>,
+    /// The fixed set of script-owned edges is built at level install and
+    /// reused by every tick. Rebuilding this from `bindings` in the tick loop
+    /// needlessly allocated a hash set each frame.
+    bound_edges: HashSet<(EntityId, TriggerEventEdge)>,
+    /// Trigger-event programs bind once and share this sequential dispatch
+    /// scope. Fixed-tick fires never overlap, so reseeding it per evaluation
+    /// preserves isolation without allocating a boxed input array per command.
+    dispatch_scope: Option<RefCell<DispatchScope>>,
     residuals: Vec<TriggerResidual>,
     command_diagnostics: MoverCommandDiagnostics,
+}
+
+impl fmt::Debug for TriggerBindingTable {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TriggerBindingTable")
+            .field("bindings", &self.bindings)
+            .field("bound_edges", &self.bound_edges)
+            .field(
+                "dispatch_scope",
+                &self.dispatch_scope.as_ref().map(|_| "install-owned"),
+            )
+            .field("residuals", &self.residuals)
+            .field("command_diagnostics", &self.command_diagnostics)
+            .finish()
+    }
 }
 
 #[derive(Debug)]
@@ -185,6 +211,12 @@ impl TriggerBindingTable {
                 script_ctx,
             );
         }
+        table.dispatch_scope = script_ctx.map(|script_ctx| {
+            RefCell::new(DispatchScope::script(
+                script_ctx.clone(),
+                TRIGGER_EVENT_INPUTS,
+            ))
+        });
         table
     }
 
@@ -225,6 +257,9 @@ impl TriggerBindingTable {
             );
         }
 
+        if commands.is_empty() && steps.is_empty() {
+            return;
+        }
         self.append_binding(trigger, edge, commands, steps);
     }
 
@@ -235,6 +270,7 @@ impl TriggerBindingTable {
         commands: Vec<BoundTriggerCommand>,
         steps: Vec<PrepartitionedReactionStep>,
     ) {
+        self.bound_edges.insert((trigger, edge));
         if let Some(binding) = self.bindings.get_mut(&(trigger, edge)) {
             binding.commands.extend(commands);
             if !steps.is_empty() {
@@ -298,8 +334,8 @@ impl TriggerBindingTable {
         }
     }
 
-    pub(crate) fn bound_edges(&self) -> HashSet<(EntityId, TriggerEventEdge)> {
-        self.bindings.keys().copied().collect()
+    pub(crate) fn bound_edges(&self) -> &HashSet<(EntityId, TriggerEventEdge)> {
+        &self.bound_edges
     }
 
     pub(crate) fn execute(
@@ -336,9 +372,9 @@ impl TriggerBindingTable {
         }
     }
 
-    /// Execute against the live script context. IR commands evaluate through a
-    /// fresh script-capability `StoreScope`, while literal writes borrow the
-    /// same slot table only for their existing validated batch operation.
+    /// Execute against the live script context. IR commands reuse the
+    /// install-owned script-capability `DispatchScope`, reseeded for each
+    /// command; literal writes retain their validated batch operation.
     pub(crate) fn execute_with_script_ctx(
         &self,
         trigger: EntityId,
@@ -354,12 +390,24 @@ impl TriggerBindingTable {
                 commands: Vec::new(),
             };
         };
+        let Some(dispatch_scope) = self.dispatch_scope.as_ref() else {
+            log::warn!(
+                "[Trigger] live script dispatch was requested without an install-owned dispatch scope"
+            );
+            return TriggerBindingExecution {
+                residual: binding.residual,
+                #[cfg(test)]
+                commands: Vec::new(),
+            };
+        };
+        let mut dispatch_scope = dispatch_scope.borrow_mut();
         #[cfg(test)]
         let mut commands = Vec::with_capacity(binding.commands.len());
         for command in &binding.commands {
             command.execute_with_script_ctx(
                 registry,
                 script_ctx,
+                &mut dispatch_scope,
                 &self.command_diagnostics,
                 fire_context,
             );
@@ -565,9 +613,10 @@ fn bind_primitive(
     slot_table: &SlotTable,
     script_ctx: Option<&ScriptCtx>,
 ) -> Option<BoundTriggerCommand> {
-    if primitive.primitive == "setState" && primitive.tag.is_some() {
+    if primitive.primitive == "setState" && (primitive.tag.is_some() || primitive.target.is_some())
+    {
         log::warn!(
-            "[Trigger] setState is system-targeted and cannot carry a target tag; not binding"
+            "[Trigger] setState is system-targeted and cannot carry a target tag or sentinel; not binding"
         );
         return None;
     }
@@ -1000,12 +1049,16 @@ mod tests {
             &[],
         );
         let table = TriggerBindingTable::build(&registry, &data, &SlotTable::new());
-        let binding = table
-            .binding(trigger, TriggerEventEdge::Enter)
-            .expect("the named edge remains observable after its invalid step is rejected");
-
-        assert!(binding.commands.is_empty());
-        assert!(binding.residual.is_none());
+        assert!(
+            table.binding(trigger, TriggerEventEdge::Enter).is_none(),
+            "a presentation-only sentinel step must leave the edge inert"
+        );
+        assert!(
+            !table
+                .bound_edges()
+                .contains(&(trigger, TriggerEventEdge::Enter)),
+            "a rejected presentation-only binding must not turn a nameless edge into a script-owned edge"
+        );
         let execution = table.execute(
             trigger,
             TriggerEventEdge::Enter,
@@ -1013,7 +1066,7 @@ mod tests {
             &mut SlotTable::new(),
             &TriggerFireContext {
                 fired_trigger: Some(trigger),
-                activators: vec![trigger],
+                activator: Some(trigger),
                 occupancy: 1,
             },
         );
@@ -1071,7 +1124,7 @@ mod tests {
                 &mut SlotTable::new(),
                 &TriggerFireContext {
                     fired_trigger: Some(trigger),
-                    activators: vec![entrant],
+                    activator: Some(entrant),
                     occupancy: 2,
                 },
             );
@@ -1568,11 +1621,10 @@ mod tests {
         );
 
         let table = TriggerBindingTable::build(&registry, &data, &SlotTable::new());
-        let binding = table
-            .binding(trigger, TriggerEventEdge::Enter)
-            .expect("the known event is recorded even when it has no executable work");
-        assert!(binding.commands.is_empty());
-        assert!(binding.residual.is_none());
+        assert!(
+            table.binding(trigger, TriggerEventEdge::Enter).is_none(),
+            "rejected work must not bind the trigger edge"
+        );
     }
 
     // Regression: tagged setState bypassed the normal system-only dispatch contract.
@@ -1595,11 +1647,10 @@ mod tests {
         let mut slots = writable_slots();
 
         let table = TriggerBindingTable::build(&registry, &data, &slots);
-        let binding = table
-            .binding(trigger, TriggerEventEdge::Enter)
-            .expect("the known event is recorded even when its invalid step is rejected");
-        assert!(binding.commands.is_empty());
-        assert!(binding.residual.is_none());
+        assert!(
+            table.binding(trigger, TriggerEventEdge::Enter).is_none(),
+            "rejected work must not bind the trigger edge"
+        );
 
         assert!(
             table
@@ -1619,7 +1670,52 @@ mod tests {
                 .get("trigger.flag")
                 .and_then(|record| record.value.as_ref()),
             Some(&SlotValue::Number(0.0)),
-            "tagged setState must retain the normal entity-targeted no-op contract"
+            "tagged setState must not perform an in-tick write"
+        );
+    }
+
+    // Regression: a sentinel target bypassed the tag-only validation and was
+    // discarded by bind_command while still allowing the system write.
+    #[test]
+    fn bind_rejects_sentinel_targeted_set_state_without_an_in_tick_write() {
+        let mut registry = EntityRegistry::new();
+        let trigger = spawn_trigger(&mut registry, "set_sentinel_targeted");
+        let mut data = DataRegistry::new();
+        data.populate_level(
+            vec![NamedReaction {
+                name: "set_sentinel_targeted".to_string(),
+                descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                    primitive: "setState".to_string(),
+                    target: Some("@activators".to_string()),
+                    tag: None,
+                    on_complete: None,
+                    args: serde_json::json!({ "slot": "trigger.flag", "value": 1 }),
+                }),
+            }],
+            Vec::new(),
+            &[],
+        );
+        let mut slots = writable_slots();
+
+        let table = TriggerBindingTable::build(&registry, &data, &slots);
+        assert!(
+            table.binding(trigger, TriggerEventEdge::Enter).is_none(),
+            "rejected work must not bind the trigger edge"
+        );
+
+        table.execute(
+            trigger,
+            TriggerEventEdge::Enter,
+            &mut registry,
+            &mut slots,
+            &TriggerFireContext::default(),
+        );
+        assert_eq!(
+            slots
+                .get("trigger.flag")
+                .and_then(|record| record.value.as_ref()),
+            Some(&SlotValue::Number(0.0)),
+            "sentinel-targeted setState must not perform an in-tick write"
         );
     }
 
@@ -1645,11 +1741,10 @@ mod tests {
         let mut slots = writable_slots();
 
         let table = TriggerBindingTable::build(&registry, &data, &slots);
-        let binding = table
-            .binding(trigger, TriggerEventEdge::Enter)
-            .expect("the known event is recorded even when its invalid step is rejected");
-        assert!(binding.commands.is_empty());
-        assert!(binding.residual.is_none());
+        assert!(
+            table.binding(trigger, TriggerEventEdge::Enter).is_none(),
+            "rejected work must not bind the trigger edge"
+        );
 
         assert!(
             table
@@ -1704,16 +1799,9 @@ mod tests {
         );
 
         let table = TriggerBindingTable::build(&registry, &data, &writable_slots());
-        let binding = table
-            .binding(trigger, TriggerEventEdge::Enter)
-            .expect("the known event is recorded even when it has no executable work");
         assert!(
-            binding.commands.is_empty(),
-            "a Progress reaction owns no in-tick trigger work"
-        );
-        assert!(
-            binding.residual.is_none(),
-            "ProgressTracker owns the progress target; the residual must not fire it too"
+            table.binding(trigger, TriggerEventEdge::Enter).is_none(),
+            "ProgressTracker owns the progress target, so it must not bind the trigger edge"
         );
     }
 }

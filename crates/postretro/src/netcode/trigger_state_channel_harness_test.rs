@@ -351,10 +351,13 @@ impl PersistentAtmosphereHarness {
                 )
                 .expect("fixture trigger accepts its component");
 
-            let bindings = TriggerBindingTable::build(
+            // This harness drives the live-script simulation path below, so
+            // bindings must own the reusable dispatch scope too. The literal-only
+            // table builder intentionally has no scope for that execution mode.
+            let bindings = TriggerBindingTable::build_with_script_ctx(
                 &registry,
                 &host_ctx.data_registry.borrow(),
-                &host_ctx.slot_table.borrow(),
+                &host_ctx,
             );
             let mut bridge = TriggerVolumeBridge::new();
             bridge.insert_for_test(trigger, Vec3::splat(-4.0), Vec3::splat(4.0));

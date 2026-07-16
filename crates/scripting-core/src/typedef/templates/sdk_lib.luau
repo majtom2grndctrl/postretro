@@ -289,13 +289,13 @@ export type MoverGoToPathNodeStep = {
 }
 
 export type ArmTriggerStep = {
-  id: EntityId | "@activators" | "@trigger",
+  id: EntityId | "@trigger",
   primitive: "armTrigger",
   args: ArmTriggerArgs,
 }
 
 export type DisarmTriggerStep = {
-  id: EntityId | "@activators" | "@trigger",
+  id: EntityId | "@trigger",
   primitive: "disarmTrigger",
   args: DisarmTriggerArgs,
 }
@@ -410,7 +410,7 @@ declare function scopeReactions<S>(tags: {string}, list: {Reaction<S>}): {Reacti
 declare function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor
 --- Pure identity builder for the mod manifest consumed from the chunk return.
 --- `config.name` is required; optional arrays include `entities`, `maps`,
---- `uiTrees`, `reactions`, `crossings`, and `stores`.
+--- `uiTrees`, `reactions`, `crossings`, `triggerEvents`, and `stores`.
 declare function defineMod(config: ModManifest): ModManifest
 --- Pure identity builder for a mod map catalog. Entries require `id`, `path`,
 --- and `name`; optional `tags` default to empty and drive filtering plus

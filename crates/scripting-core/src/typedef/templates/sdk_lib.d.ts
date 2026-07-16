@@ -622,7 +622,7 @@
 
   /** Pure identity builder for entity-type descriptors. Returned from `ModManifest.entities`; `descriptor` is the full archetype object: optional `canonicalName`, optional `defaultWeapon`, and optional component presets. */
   export function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor;
-  /** Pure identity builder for the mod manifest consumed from the default export. `config.name` is required; optional arrays include `entities`, `maps`, `uiTrees`, `reactions`, `crossings`, and `stores`. */
+  /** Pure identity builder for the mod manifest consumed from the default export. `config.name` is required; optional arrays include `entities`, `maps`, `uiTrees`, `reactions`, `crossings`, `triggerEvents`, and `stores`. */
   export function defineMod(config: ModManifest): ModManifest;
   /** Pure identity builder for a mod map catalog. Entries require `id`, `path`, and `name`; optional `tags` default to empty and drive filtering plus `levels` selectors. */
   export function defineMapCatalog(entries: ModMapEntry[]): ModMapEntry[];

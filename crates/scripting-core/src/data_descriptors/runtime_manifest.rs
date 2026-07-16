@@ -1,5 +1,5 @@
 // Runtime-side manifest types that embed render::ui descriptor data.
-// See: context/lib/scripting.md §12 (Crate Architecture)
+// See: context/lib/scripting.md §13 (Crate Architecture)
 
 use crate::ui::descriptor::AnchoredTree;
 
@@ -24,7 +24,7 @@ pub struct RegisteredUiTree {
 pub struct LevelManifest {
     pub reactions: Vec<NamedReaction>,
     /// State-crossing watchers (M13 HUD dynamics). Parsed alongside `reactions`
-    /// from the widened `{ reactions, crossings }` setup-manifest return and
+    /// from the widened `{ reactions, crossings, triggerEvents }` setup-manifest return and
     /// drained into the per-level `DataRegistry`; cleared on level unload.
     pub crossings: Vec<CrossingDescriptor>,
     pub trigger_events: Vec<TriggerEventDescriptor>,

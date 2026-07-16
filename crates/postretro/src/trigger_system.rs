@@ -61,9 +61,10 @@ pub(crate) struct TriggerEvent {
     pub(crate) edge: TriggerEventEdge,
 }
 
-/// Named trigger events produced by one authoritative tick. Consumers must
-/// preserve `fires` order; paired exits are already authorized and therefore
-/// never need a second gate evaluation.
+/// Trigger events produced by one authoritative tick. Consumers must preserve
+/// `fires` order; a script-only edge may intentionally carry an empty event
+/// name. Paired exits are already authorized and never need a second gate
+/// evaluation.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct TriggerFireReport {
     pub(crate) fires: Vec<TriggerEvent>,

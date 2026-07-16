@@ -162,11 +162,14 @@ type ReactionTracer<S> = (params: S) => ReactionBody;
 
 // This is deliberately one plain merged object rather than a Proxy. Sibling
 // dispatch specs may add opaque, non-IR leaves alongside these input nodes.
+const ACTIVATORS_TARGET = Object.freeze({}) as ActivatorsTarget;
+const TRIGGER_TARGET = Object.freeze({}) as TriggerTarget;
+
 const DISPATCH_PARAMS = Object.freeze({
   rising: Object.freeze({ op: "input", name: "@rising" } as const),
   dt: Object.freeze({ op: "input", name: "@dt" } as const),
-  activators: Object.freeze({}) as ActivatorsTarget,
-  trigger: Object.freeze({}) as TriggerTarget,
+  activators: ACTIVATORS_TARGET,
+  trigger: TRIGGER_TARGET,
   occupancy: Object.freeze({ op: "input", name: "@occupancy" } as const),
 });
 
@@ -199,19 +202,23 @@ export function onTriggerEvent(
 
 /** Apply damage to the current trigger activators or every entity with a tag. */
 export function damage(target: ActivatorsTarget | string, amount: number): PrimitiveReactionDescriptor {
-  return typeof target === "string"
-    ? { primitive: "applyDamage", tag: target, args: { amount } }
-    : { primitive: "applyDamage", target: "@activators", args: { amount } };
+  if (typeof target === "string") {
+    return { primitive: "applyDamage", tag: target, args: { amount } };
+  }
+  const wireTarget = target === ACTIVATORS_TARGET ? "@activators" : "@invalid";
+  return { primitive: "applyDamage", target: wireTarget, args: { amount } } as PrimitiveReactionDescriptor;
 }
 
 /** Arm the trigger volume that fired the current event. */
-export function armTrigger(_target: TriggerTarget): SequenceStep[] {
-  return [{ id: "@trigger", primitive: "armTrigger", args: {} } as SequenceStep];
+export function armTrigger(target: TriggerTarget): SequenceStep[] {
+  const wireTarget = target === TRIGGER_TARGET ? "@trigger" : "@invalid";
+  return [{ id: wireTarget, primitive: "armTrigger", args: {} } as SequenceStep];
 }
 
 /** Disarm the trigger volume that fired the current event. */
-export function disarmTrigger(_target: TriggerTarget): SequenceStep[] {
-  return [{ id: "@trigger", primitive: "disarmTrigger", args: {} } as SequenceStep];
+export function disarmTrigger(target: TriggerTarget): SequenceStep[] {
+  const wireTarget = target === TRIGGER_TARGET ? "@trigger" : "@invalid";
+  return [{ id: wireTarget, primitive: "disarmTrigger", args: {} } as SequenceStep];
 }
 
 /**
@@ -309,7 +316,7 @@ export function defineEntity(
   return descriptor;
 }
 
-/** Identity builder for the mod manifest consumed from the default export. `config.name` is required; optional arrays include `entities`, `maps`, `uiTrees`, `reactions`, `crossings`, and `stores`. Pure: no engine side effects until the manifest is returned and validated. */
+/** Identity builder for the mod manifest consumed from the default export. `config.name` is required; optional arrays include `entities`, `maps`, `uiTrees`, `reactions`, `crossings`, `triggerEvents`, and `stores`. Pure: no engine side effects until the manifest is returned and validated. */
 export function defineMod(
   config: import("postretro").ModManifest,
 ): import("postretro").ModManifest {

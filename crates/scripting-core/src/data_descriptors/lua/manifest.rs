@@ -4,8 +4,8 @@
 use super::super::*;
 
 impl LevelManifest {
-    /// Deserialize a top-level `{ reactions, crossings }` table returned from a
-    /// Luau `setupLevel()` call. `crossings` is optional.
+    /// Deserialize a top-level table returned from a Luau `setupLevel()` call.
+    /// Its `reactions`, `crossings`, `triggerEvents`, and `uiTrees` arrays are optional.
     pub fn from_lua_value(value: LuaValue) -> Result<Self, DescriptorError> {
         let table = match value {
             LuaValue::Table(t) => t,

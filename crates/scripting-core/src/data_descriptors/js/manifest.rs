@@ -4,8 +4,8 @@
 use super::super::*;
 
 impl LevelManifest {
-    /// Deserialize a top-level `{ reactions, crossings }` object returned from
-    /// a QuickJS `setupLevel()` call. `crossings` is optional.
+    /// Deserialize a top-level `{ reactions, crossings, triggerEvents, uiTrees }`
+    /// object returned from a QuickJS `setupLevel()` call. Each array field is optional.
     pub fn from_js_value<'js>(
         ctx: &Ctx<'js>,
         value: JsValue<'js>,

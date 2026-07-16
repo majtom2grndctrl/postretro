@@ -4,9 +4,14 @@
 
 Give co-op set-pieces the monster-closet payload: an engine-owned `entity_spawner` that a
 trigger reaction fires to spawn enemies mid-session, replicated to clients including late
-joiners. Add an aggro gate so pre-placed reveal-closet enemies do not aggro through walls or
-path through closed doors before the reveal. Spawn-flavor is the capstone's critical path;
-reveal-flavor containment reuses the shipped arm/disarm surface a door-open already rides.
+joiners. Reveal-closet containment consumes the **enemy aggro gate** from the co-designed
+foundation (`E18--enemy-group-handle`) so pre-placed enemies do not aggro through walls or path
+through closed doors before the reveal. Spawn-flavor is the capstone's critical path;
+reveal-flavor containment is authoring over the foundation gate.
+
+**Depends on:** `context/plans/drafts/E18--enemy-group-handle/` (the `enemies({ tag })` handle,
+the `aggroGate` primitive, and the `BrainComponent` gate). E18-C is that foundation's first
+consumer; the two are co-designed.
 
 ## Scope
 
@@ -27,19 +32,22 @@ reveal-flavor containment reuses the shipped arm/disarm surface a door-open alre
 - Spawner-archetype presentation: an archetype referenced only by a spawner (no pre-placed
   instance) has its mesh model uploaded and animation clips resolved on host and client, so a
   spawned enemy renders as its model rather than a debug capsule.
-- Closet containment via an **aggro gate**: a Brain whose aggro gate is closed does not acquire
-  targets, does not steer, and holds position. Authored closed with `enabled_on_spawn = false` on
-  the enemy placement (the shipped arm/disarm input), reopened by `armTrigger` — the verb triggers
-  already use, extended to enemy tags. The script-arm gate is one aggro condition among several;
-  later perception/AI specs add more (LOS, sound) that compose with it, not replace it. A reveal
-  reaction opens door and gate together: `[moverStart door, armTrigger closet]`.
+- Closet containment by **consuming the foundation aggro gate**: reveal-closet enemies are authored
+  gate-closed with `enabled_on_spawn = false` (the foundation reads the KVP), and a reveal releases
+  them via `enemies({ tag }).releaseAggro()`. The reveal composes at the trigger fan-out — an
+  `openDoor` mover reaction and a `releaseCloset` reaction fired together — **not** one reaction body
+  (a body is a single primitive; tag-targeted primitives ride the Primitive path, never a
+  `sequence`). Spawn-flavor enemies spawn with the gate open (the foundation default): they appear
+  after the reveal, already able to aggro.
 - Pre-attack windup: a spawned enemy cannot attack until the netcode interpolation clamp has
   elapsed since it spawned — the clamp is the seed floor for the windup, and its known magnitude
   under jitter is ≤ 250 ms — so it is delivered and drawn on remote clients before it can hit. The
   windup doubles as jump-scare animation time.
 - Full primitive-contract surface for the one new verb `spawnFromSpawner` (SDK TS + Luau builders,
-  typedef regeneration + drift snapshot + parity fixtures, validators), plus extending
-  `armTrigger` / `disarmTrigger` targeting and validation to enemy aggro gates.
+  typedef regeneration + drift snapshot + parity fixtures, validators), authored through a
+  `spawner({ tag }).fire()` handle — an object-filter selector in the foundation's fire-time-tag
+  handle family, sibling to `enemies({ tag })`. No arm/disarm SDK work: enemy aggro authoring is the
+  foundation's `enemies({ tag })` handle.
 
 ### Out of scope
 
@@ -55,7 +63,8 @@ reveal-flavor containment reuses the shipped arm/disarm surface a door-open alre
   existing Transform; no new wire surface.
 - Spawn-at-activator targeting (`@activators`) — not needed in C. The `@activators` sentinel
   exists now (`E18--trigger-event-params` landed); E18-C just does not use it.
-- A new `world.query` filter term for spawners or enemies — authoring does not need one in C.
+- A new `world.query` filter term for spawners or enemies — both authoring handles are in the
+  fire-time-tag family (`spawner({ tag })`, `enemies({ tag })`), not the setup-id `world.query` path.
 - Runtime spawn-point validation (clear-of-geometry, on-navmesh) — spawn validity is an authoring
   responsibility, exactly as for map-placed enemies; the runtime trusts the authored placement. A
   spawner in a wall is an authoring bug for playtest and the dev overlay, not a runtime guard.
@@ -87,19 +96,15 @@ reveal-flavor containment reuses the shipped arm/disarm surface a door-open alre
       floor, magnitude ≤ 250 ms under jitter — has elapsed after spawn; at the E15 reference
       `LinkConfig` (`mandated_link`) it is delivered to the remote client (present in its snapshot,
       its archetype in the upload set per the prior AC) before its first attack lands.
-- [ ] An enemy placed `enabled_on_spawn = false` does not acquire or move toward a player standing
-      adjacent (including through a thin wall) and does not leave its start position.
-- [ ] A reaction containing `armTrigger` targeting that enemy's tag makes it acquire and pursue a
-      player in range on the next think tick; the same reaction can also drive a mover.
-- [ ] A gated (un-armed) enemy still takes damage and can be killed; killing it fires no
-      target-selection or steering behavior.
+- [ ] A reveal fan-out fires an `openDoor` mover reaction and a `releaseCloset`
+      (`enemies({ tag }).releaseAggro()`) reaction together, opening the door and releasing the
+      contained enemies on one plate edge. (Gate mechanics — containment, killable-while-gated,
+      warn-skip, fire-time resolution — are the foundation's ACs; C asserts only the reveal
+      composition and that spawn-flavor enemies arrive gate-open.)
 - [ ] A spawned enemy carries no progress tags, so killing it changes no install-scoped
       kill-progress total (no over-count, no underflow).
-- [ ] SDK TS and Luau emit byte-identical descriptors for `spawnFromSpawner`; the typedef drift
-      check passes after regeneration.
-- [ ] `armTrigger`/`disarmTrigger` targeting an enemy tag toggles the Brain gate; a tag resolving
-      to neither a trigger nor a Brain warn-skips once (`warn_non_trigger_target_once`), asserted
-      through its warn counter — there is no static validator.
+- [ ] SDK TS and Luau emit byte-identical descriptors for `spawnFromSpawner`, authored via
+      `spawner({ tag }).fire()`; the typedef drift check passes after regeneration.
 
 ## Tasks
 
@@ -203,50 +208,37 @@ role exactly as `host_register_map_enemies_after_install` does, and call it afte
 the host loop (`main.rs`, next to that after-install site). Single-player spawns work with no
 registration (sweep is a no-op off-host).
 
-### Task 4: Enemy aggro gate + arm/disarm targeting
+### Task 4: Closet containment authoring (consumes the foundation aggro gate)
 
-Add an aggro gate to `BrainComponent` (`crates/entities/src/components/brain.rs`) — a boolean gate
-(working name `aggro_armed`, default open) that, while closed, blocks target acquisition. Seed it
-closed from an `enabled_on_spawn = false` KVP on an AI-enemy map placement, read where
-`attach_descriptor_components` consumes placement KVPs. Note this is a **new** bare-KVP read: on a
-trigger volume `enabled_on_spawn` is a compiler-validated wire field, but on an enemy placement it
-is a plain KVP off `MapEntity.key_values` — parse it with `parse_bool` (absent or malformed → warn
-and default the gate open). This is a deliberate exception to the convention that bare (non-`initial_`)
-KVPs are not consumed by components; call it out in a comment. In `run_ai_tick_with_navigation`
-(`crates/postretro/src/scripting/systems/ai.rs`), a gated brain does not run `evaluate_transition`,
-does not steer, and holds its current position and state — its Transform is untouched, so it
-replicates as a stationary Idle enemy; ensure the O(n²) steering separation pass
-(`crates/postretro/src/agent_steering.rs`, `SEPARATION_RADIUS_FACTOR`) also skips a gated agent so
-it is not nudged. Damage, health, and death still process — a gated enemy can be killed. The gate
-seed is not a `DescriptorMapOverride` (that enum is closed to light/emitter), so ensure a descriptor
-hot-reload re-applies it, or document reload-reopens-the-gate as a dev-only limitation. Extend the
-shipped `armTrigger` / `disarmTrigger` verbs so that when their tag resolves to AI-enemy entities
-they open / close the aggro gate (alongside any same-tagged triggers). Their shared chokepoint
-`apply_trigger_mutation_to_targets` (`crates/postretro/src/trigger_system.rs:469`) today takes
-`mutate: impl Fn(&mut TriggerVolumeComponent)` and warns-once on any non-trigger target
-(`warn_non_trigger_target_once`); extend it to handle a Brain target — set `aggro_armed` per the
-arm-vs-disarm direction (arm = open, disarm = close), which means threading the direction through
-the helper, not just adding a closure. A tag resolving to neither a trigger nor a Brain still
-warn-skips once (AC 15). No new consequential verb — this reuses their shipped dispatch, so a reveal
-reaction composes `[moverStart door, armTrigger closet]` to open the door and the gate in one fire. The aggro gate is one condition among several:
-later perception/AI specs add LOS and sound gates that compose additively (acquisition requires the
-gate open; new conditions narrow, never replace, it). Spawn-flavor enemies spawn with the gate open
-— they appear after the reveal.
+No engine work — the gate, its FSM/steering guard, the `enabled_on_spawn` seed, and the `aggroGate`
+primitive all land in the foundation (`E18--enemy-group-handle`). C is the consumer:
 
-### Task 5: SDK builder, typedefs, validators
+- **Reveal-flavor containment.** Author reveal-closet enemies gate-closed with
+  `enabled_on_spawn = false` (the foundation's Task 1 reads the KVP on the AI-enemy placement). A
+  reveal opens the door and releases the enemies as a **trigger fan-out of two reactions** — an
+  `openDoor` mover reaction and a `releaseCloset` reaction (`enemies({ tag }).releaseAggro()`) — not
+  one reaction body: a body is a single primitive, and a tag-targeted primitive rides the Primitive
+  path, so the two cannot share a `sequence`.
+- **Spawn-flavor.** Spawned enemies inherit the foundation gate default (open), so a
+  `spawnFromSpawner` fire produces enemies that appear and immediately aggro — no gating step. The
+  windup (Task 6), not the gate, holds their first attack.
 
-Add TS and Luau builders for `spawnFromSpawner(tag)` under `sdk/lib/`, emitting byte-identical wire
-descriptors (follow the shipped consequential-verb builders — `armTrigger`/`disarmTrigger`/mover
-commands). Extend the typedef templates (`crates/scripting-core/src/typedef/templates/`), regenerate
-`postretro.d.ts` / `.d.luau`, update the drift snapshot, and add TS/Luau parity fixtures. Update the
-reaction-argument validators to accept `spawnFromSpawner` and reject malformed targets, matching the
-shipped per-primitive warn-skip. `armTrigger`/`disarmTrigger` already carry builders and typedefs,
-but the shipped builder is sentinel-only (`@trigger`, post trigger-event-params) with no
-tag-string form. **Do not add a tag form to it** — the reveal arms enemies by tag via the generic
-`PrimitiveReactionDescriptor` (`{ primitive: "armTrigger", tag: "closet_a" }`), the same tag-target
-path `damage(tag)` already uses (`{ primitive: "applyDamage", tag, args }`); the engine binds it to
-`Arm { Tag }`. So Task 5's arm/disarm work is only the engine-side Brain-target handling (Task 4);
-no SDK builder change. No `world.query` filter change (see out of scope).
+The foundation gate is one aggro condition among several; later perception specs add LOS and sound
+gates that compose additively (acquisition requires the gate open; new conditions narrow, never
+replace, it).
+
+### Task 5: SDK `spawner({ tag }).fire()` handle, typedefs, validators
+
+Add the spawner selector and handle under `sdk/lib/` — `spawner(filter: { tag?: string })` returning
+a handle whose `fire()` emits a single `PrimitiveReactionDescriptor`
+(`{ primitive: "spawnFromSpawner", tag }`, no args — `count` lives on the spawner component). This is
+the fire-time-tag handle family the foundation establishes with `enemies({ tag })`: object-filter
+selector, tag-keyed descriptor, `damage(tag)` builder template (`sdk/lib/data_script.ts:204`). Mirror
+in Luau. Extend the typedef templates (`crates/scripting-core/src/typedef/templates/`), regenerate
+`postretro.d.ts` / `.d.luau`, update the drift snapshot, add TS/Luau parity fixtures. Update the
+reaction-argument validators to accept `spawnFromSpawner` and reject a malformed target, matching the
+shipped per-primitive warn-skip. No arm/disarm SDK work — enemy aggro authoring is the foundation's
+`enemies({ tag })` handle. No `world.query` filter change (see out of scope).
 
 ### Task 6: Pre-attack windup + kill-progress guard
 
@@ -286,19 +278,21 @@ resolve); reuse its shape rather than inventing a per-spawn upload path.
 
 **Phase 1 (sequential):** Task 1 — the spawner entity + component + install-time archetype resolution; everything spawns through it.
 **Phase 2 (sequential):** Task 2 — the verb, executor, and `RuntimeSpawn` provenance variant; consumes Task 1's resolved component and edits `trigger_bindings.rs`.
-**Phase 3 (concurrent):** Task 3 (replication), Task 4 (aggro gate + arm/disarm), Task 6 (windup + progress) — files are disjoint: 3 = netcode (`descriptor_class.rs`/`replication.rs`), 4 = `ai.rs`/`brain.rs`/`trigger_system.rs`/`data_archetype.rs` (seeds the gate where `attach_descriptor_components` runs), 6 = `spawner.rs` + harness. 3/6 consume Task 2's spawn path; 4 is independent.
-**Phase 4 (concurrent):** Task 5 (SDK/typedef contract; consumes the final verb set from Tasks 2 and 4) and Task 7 (presentation upload) — disjoint files: 5 = `sdk/` + typedef templates, 7 = `main.rs` presentation sweeps + the client upload pass in `data_archetype.rs`. Task 4 finishes in Phase 3 before Phase 4 starts, so no 4/7 collision.
+**Phase 3 (concurrent):** Task 3 (replication) and Task 6 (windup + progress) — disjoint files: 3 = netcode (`descriptor_class.rs`/`replication.rs`), 6 = `spawner.rs` + harness; both consume Task 2's spawn path.
+**Phase 4 (concurrent):** Task 5 (SDK `spawner({ tag }).fire()` handle + typedefs; consumes the verb from Task 2) and Task 7 (presentation upload) — disjoint files: 5 = `sdk/` + typedef templates, 7 = `main.rs` presentation sweeps + the client upload pass in `data_archetype.rs`.
+**Task 4 (containment authoring)** carries no engine files — map placements + reveal reactions gated on the foundation gate landing. It can land any time after the foundation, alongside Phase 4.
+
+**Prerequisite:** the foundation (`E18--enemy-group-handle`) — its `BrainComponent` gate, `aggroGate` primitive, and `enemies({ tag })` handle — lands before Task 4's containment authoring and before the capstone consumes the reveal loop.
 
 ## Boundary inventory
 
 | Name | Rust | Wire / serde | JS / TS | Luau | FGD KVP |
 |---|---|---|---|---|---|
 | Spawner class | `entity_spawner` handler | n/a (no PRL section) | n/a | n/a | `entity_spawner` (`@PointClass`) |
-| Spawn verb | `BoundTriggerCommand::Spawn` | reaction descriptor `"spawnFromSpawner"` | `"spawnFromSpawner"` | `"spawnFromSpawner"` | n/a |
+| Spawn verb | `BoundTriggerCommand::Spawn` | reaction descriptor `"spawnFromSpawner"` | `spawner({ tag }).fire()` | same | n/a |
 | Spawner component | `SpawnerComponent` | not replicated (host-local) | n/a | n/a | n/a |
 | Runtime spawn path | `DescriptorSpawnPath::RuntimeSpawn` | `"runtime_spawn"` (serde, local only) | n/a | n/a | n/a |
-| Aggro gate | `BrainComponent` aggro gate | not on the wire | n/a | n/a | `enabled_on_spawn` (bool, enemy placement) |
-| Aggro arm/disarm | `armTrigger` / `disarmTrigger` (extended to Brain tags) | shipped descriptors | shipped | shipped | n/a |
+| Aggro gate (consumed) | foundation `BrainComponent` gate | not on the wire | `enemies({ tag }).releaseAggro()` | same | `enabled_on_spawn` (authored here, read by foundation) |
 | Archetype ref | `SpawnerComponent` archetype | n/a | n/a | n/a | archetype `canonical_name` key |
 | Spawn count | `SpawnerComponent` count | n/a | n/a | n/a | integer `count` key |
 
@@ -332,38 +326,37 @@ resolve); reuse its shape rather than inventing a per-spawn upload path.
   `host_register_map_enemies` (`replication.rs:239`), which is idempotent
   (`replication.rs:487-493`); register via `ReplicableSet::register` (`:47`) + `allocator.stamp`.
   Pawn-accept template: `on_slot_accepted` (`netcode/lifecycle.rs:132`).
-- **Aggro gate (Task 4).** Gate in `run_ai_tick_with_navigation` (`ai.rs:504`) before
-  `evaluate_transition` (`ai.rs:248`, Idle→Alert at `:258-270` is XZ-distance, no LOS — the reason
-  a sealed enemy aggros through walls). `armTrigger`/`disarmTrigger` extend
-  `arm_trigger_targets`/`disarm_trigger_targets` (`trigger_system.rs`) with a Brain-gate branch.
-  `LogicalState` is Idle/Alert/Attack/Death (`brain.rs:29`).
+- **Containment (Task 4).** No engine work in C — the gate, its FSM guard
+  (`run_ai_tick_with_navigation` before `evaluate_transition`), the `enabled_on_spawn` seed, and the
+  `aggroGate` primitive are the foundation's. C authors the closed placements and the `openDoor` +
+  `releaseCloset` fan-out.
 - **Contract tax.** One new verb, `spawnFromSpawner`, touches `CONSEQUENTIAL_PRIMITIVES`,
   `BoundTriggerCommand` (+Kind), `partition_direct_reaction`/`bind_sequence_step`, a
-  `register_*_reaction_primitives` call, SDK TS+Luau, typedef templates + drift + parity,
-  validators. `armTrigger`/`disarmTrigger` are already all of that — Task 4 only adds a Brain-gate
-  branch to their runtime target resolution.
+  `register_*_reaction_primitives` call, SDK TS+Luau (the `spawner({ tag }).fire()` handle), typedef
+  templates + drift + parity, validators. The `aggroGate` verb and `enemies({ tag })` handle carry
+  their own tax in the foundation.
 - **Oversized-file note (soft):** `ai.rs`, `registry.rs`, `reaction_dispatch.rs` exceed ~800 lines.
   `trigger_bindings.rs` was already split by the merged `E18--trigger-event-params` work —
   trigger-command types and execution now live in `crates/postretro/src/trigger_commands.rs`. E18-C's
-  additions are localized: the `Spawn` variant + execution arm in `trigger_commands.rs`, the
-  `CONSEQUENTIAL_PRIMITIVES` entry + `bind_command` arm in `trigger_bindings.rs`, and one Brain
-  field + one tick guard for the aggro gate. Spawn logic lands in a new `spawner.rs`.
+  additions are localized: the `Spawn` variant + execution arm in `trigger_commands.rs`, and the
+  `CONSEQUENTIAL_PRIMITIVES` entry + `bind_command` arm in `trigger_bindings.rs`. Spawn logic lands
+  in a new `spawner.rs`. (The Brain gate field + tick guard are the foundation's, not C's.)
 
 ## Script syntax examples
 
 ```ts
 // Spawn-flavor closet: a plate fires a reaction that spawns the ambush.
-defineReaction("springAmbush", [
-  spawnFromSpawner("closet_a"),   // tag on the entity_spawner(s)
-]);
+// A reaction body is ONE primitive; the spawner handle emits it.
+defineReaction("springAmbush", spawner({ tag: "closet_a" }).fire());
 
-// Reveal-flavor closet: one reaction opens the door AND arms the pre-placed enemies.
-// Both are tag-targeted, authored via the generic PrimitiveReactionDescriptor
-// (the sentinel-only armTrigger builder has no tag form; this is the shipped tag path).
-defineReaction("revealCloset", [
-  { primitive: "moverStart", tag: "closet_door" },
-  { primitive: "armTrigger", tag: "closet_a" },   // opens the aggro gate on tagged brains
-]);
+// Reveal-flavor closet: a body holds one primitive, so the door and the enemy
+// release are two reactions, fired together by the trigger fan-out.
+export const openClosetDoor = defineReaction("openClosetDoor",
+  { primitive: "moverStart", tag: "closet_door" });
+export const releaseCloset = defineReaction("releaseCloset",
+  enemies({ tag: "closet_a" }).releaseAggro());   // foundation handle
+
+onTriggerEvent({ tag: "reveal_plate" }, "enter", [openClosetDoor, releaseCloset]);
 ```
 
 ```

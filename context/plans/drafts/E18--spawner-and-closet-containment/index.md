@@ -81,9 +81,9 @@ foundation's first consumer; the two are co-designed.
       its diagnostics tally) and spawns nothing at fire time.
 - [ ] Firing `spawnFromSpawner` against the same spawner twice spawns `2 × count` enemies — the
       spawner is stateless and never self-exhausts.
-- [ ] Firing `spawnFromSpawner` with a tag matching no `entity_spawner` warns once (asserted through
-      its warn counter) and spawns nothing — a pre-placed spawner's zero-match tag is an authoring
-      typo, distinct from the foundation's fire-time-tag empty-match `debug` no-op.
+- [ ] Firing `spawnFromSpawner` with a tag matching no `entity_spawner` spawns nothing and warns,
+      deduped per distinct tag for the level (asserted via the warn set on the spawn-context handle;
+      Task 2 owns the semantics and rationale).
 - [ ] Spawned enemies face the spawner's authored `angles` direction (asserted at the spawn instant,
       before the AI FSM may reorient).
 - [ ] A `count` of 0 (or malformed) spawns nothing — the directly-assertable fact (no entities
@@ -98,10 +98,11 @@ foundation's first consumer; the two are co-designed.
 - [ ] A spawner-only archetype (no pre-placed instance) has its `mesh.model` in both the host and
       client upload sets and its clips resolved before the first spawn — the observable proxy for
       "renders as its model, not a debug capsule" (headless; no pixel check).
-- [ ] A spawned enemy deals no damage until at least the interpolation clamp — the windup's seed
-      floor, magnitude ≤ 250 ms under jitter — has elapsed after spawn; at the E15 reference
-      `LinkConfig` (`mandated_link`) it is delivered to the remote client (present in its snapshot,
-      its archetype in the upload set per the prior AC) before its first attack lands.
+- [ ] A spawned enemy deals no damage until the windup floor (≤ 250 ms) has elapsed after spawn; at
+      the E15 reference `LinkConfig` (`mandated_link`) it is delivered to the remote client (present
+      in its snapshot, its archetype in the upload set per the prior AC) before its first attack
+      lands. The harness asserts this delivered-before-hit property robustly (across the jitter
+      envelope, not one lucky seed), so an insufficient floor fails rather than passing by chance.
 - [ ] A reveal fan-out fires an `openDoor` mover reaction and a `releaseCloset`
       (`enemies({ tag }).update({ aggro: true })`) reaction together, opening the door and releasing the
       contained enemies on one plate edge. (Gate mechanics — containment, killable-while-gated,
@@ -190,8 +191,10 @@ The executor resolves spawner entities by a `ComponentKind::Spawner` query (mirr
 Transform `resolve` — a non-spawner sharing the tag must never be treated as a spawn target); the
 app-drain path filters its Transform-resolved targets to `SpawnerComponent`-bearing the same way
 `register_enemy_state_reaction_primitives` filters to Brain-bearing. A tag matching **no** spawner
-**warns once** (asserted via a warn counter) and spawns nothing — a pre-placed spawner's zero-match
-tag is a likely authoring typo, distinct from the foundation's fire-time-tag enemy case (a `debug`
+**warns**, deduped per distinct zero-match tag for the level — its dedup set lives on the
+`SpawnContext` handle (mirror `MoverCommandDiagnostics.warn_*_once`, cleared on the per-level
+interior refill), which AC 5 asserts on — and spawns nothing. A pre-placed spawner's zero-match tag
+is a likely authoring typo, distinct from the foundation's fire-time-tag enemy case (a `debug`
 no-op, since an enemy group is legitimately empty when unspawned or killed). It skips any spawner
 with `resolved == false` (spawns nothing), and for each resolved spawner spawns `count` enemies via
 `try_spawn(transform, &[])` (empty tags — spawned enemies are untagged; `registry.rs:732`, returns
@@ -233,7 +236,7 @@ step.
 
 In `crates/postretro/src/netcode/descriptor_class.rs`, broaden `is_networked_ai_map_enemy` to
 accept `spawn_path ∈ {MapPlacement, RuntimeSpawn}` (Brain+Agent still required) and rename it to
-`is_networked_ai_enemy`, updating both call sites (`descriptor_entity_class` and the host
+`is_networked_ai_enemy`, updating the call sites (`descriptor_entity_class` and the host
 registration sweep in `replication.rs:248/261`) and the **netcode-side** classifier agreement test
 (`classifier_agrees_with_live_predicate_one_source_of_truth` in `descriptor_class.rs`). The rename
 is **grep-complete** — do not trust an enumerated list; sweep every reference including non-code doc
@@ -307,10 +310,17 @@ land its first attack before it is delivered and drawn on remote clients. Harnes
 the property at the E15 reference `LinkConfig` (`mandated_link`): a freshly spawned enemy is present
 and drawable on the client before it deals damage — assert at that profile, not universally. There is
 no separate "delivery budget" constant; the interpolation clamp is the pinned floor and the harness
-observes the delivered-before-hit property. Kill-progress needs no counting change here: spawned
+observes the delivered-before-hit property. Observe it robustly (across the jitter envelope, not one
+seed): delivery-to-drawable is `link_delay + interp_delay`, so if the property fails at
+`mandated_link` the clamp alone is short by the one-way link term and the floor must rise to cover
+it — an impl-time observation the harness surfaces, consistent with the clamp being the pinned floor.
+Kill-progress needs no counting change here: spawned
 enemies are untagged (Task 2), and `ProgressTracker::on_entity_killed` matches only by tag, so a
 spawned kill can never touch an install-scoped total — add a test asserting this and do not build
-area-scoped progress (deferred sibling spec).
+area-scoped progress (deferred sibling spec). (The spawner *entity* itself, like any tagged non-enemy
+such as a `prop_mesh`, is counted by `count_entities_with_tag` if it shares a `progress`-tracked tag
+— a pre-existing authoring concern, not a spawned-kill path: keep a spawner's fire tag distinct from
+any progress tag.)
 
 ### Task 7: Spawner-archetype model upload + clip resolve (host + client)
 
@@ -393,8 +403,8 @@ path.
   into both, else the spawned enemy draws as a debug capsule (the E10 AC#3 regression documented at
   `data_archetype.rs:343-349`).
 - **Replication (Task 3).** `is_networked_ai_map_enemy` (`descriptor_class.rs:31`) currently gates
-  on `MapPlacement`; broaden to `{MapPlacement, RuntimeSpawn}` + rename → `descriptor_entity_class`
-  (`:61`) then stamps the class for spawned enemies. Post-tick sweep mirrors
+  on `MapPlacement`; broaden to `{MapPlacement, RuntimeSpawn}` + rename to `is_networked_ai_enemy`;
+  its caller `descriptor_entity_class` (`:61`) then stamps the class for spawned enemies. Post-tick sweep mirrors
   `host_register_map_enemies` (`replication.rs:239`), which is idempotent
   (`replication.rs:487-493`); register via `ReplicableSet::register` (`:47`) + `allocator.stamp`.
   Pawn-accept template: `on_slot_accepted` (`netcode/lifecycle.rs:132`).

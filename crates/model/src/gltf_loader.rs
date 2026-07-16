@@ -19,6 +19,15 @@ use super::skeleton::{
 
 const MIN_PACKED_DIRECTION_LENGTH_SQUARED: f32 = 1.0e-12;
 
+/// Minimum net horizontal (XZ) root-motion displacement, in ground units, for a
+/// clip to report an authored travel speed. Below this a clip counts as
+/// in-place (an idle, turn, or strafe with no forward travel): deriving a speed
+/// from sub-millimeter drift would make a later locomotion-calibration step
+/// divide the stride rate by ≈0, so such clips yield `None` instead and fall
+/// back to a degenerate reference. One millimeter is far below any authored
+/// stride yet safely above float round-off in a static root track.
+const MIN_TRAVEL_XZ_DISPLACEMENT: f32 = 1.0e-3;
+
 /// One drawable run of the merged mesh: the triangles of a single primitive,
 /// paired with the material that draws them.
 ///
@@ -1775,17 +1784,88 @@ fn load_clip(
         }
     }
 
+    let travel_speed = derive_travel_speed(&joints, duration);
+
     AnimationClip {
         name,
         duration,
         joints,
+        travel_speed,
     }
+}
+
+/// Derive a clip's authored ground travel speed from its root-motion track.
+///
+/// The root joint (topo index 0) carries the clip's whole-body translation. We
+/// measure the horizontal (XZ) displacement between its first and last
+/// translation keyframes and divide by the clip `duration` → ground units per
+/// animated second. A clip with no root translation track, a non-positive
+/// duration, or a net XZ displacement below [`MIN_TRAVEL_XZ_DISPLACEMENT`] (a
+/// near-in-place turn/strafe/idle) yields `None` so downstream calibration
+/// substitutes a degenerate reference rather than dividing by a speed of ≈0.
+/// Vertical (Y) motion is intentionally excluded — only ground travel counts.
+fn derive_travel_speed(joints: &[JointTracks], duration: f32) -> Option<f32> {
+    let values = joints.first()?.translation.values();
+    let first = values.first()?;
+    let last = values.last()?;
+    let dx = last.x - first.x;
+    let dz = last.z - first.z;
+    let displacement = (dx * dx + dz * dz).sqrt();
+    if duration <= 0.0 || displacement < MIN_TRAVEL_XZ_DISPLACEMENT {
+        return None;
+    }
+    Some(displacement / duration)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    // --- Root-motion travel-speed derivation --------------------------------
+
+    #[test]
+    fn derive_travel_speed_measures_xz_root_motion_over_duration() {
+        // Root travels 3 units on X and 4 on Z (5-unit XZ displacement) across a
+        // 2s clip → 2.5 ground units per animated second. The Y component is
+        // deliberately non-zero to prove vertical motion is excluded.
+        let translation = Track::new(
+            vec![0.0, 2.0],
+            vec![Vec3::ZERO, Vec3::new(3.0, 1.0, 4.0)],
+            Interp::Linear,
+        )
+        .expect("valid translation track");
+        let joints = vec![JointTracks {
+            translation,
+            ..JointTracks::default()
+        }];
+        let speed = derive_travel_speed(&joints, 2.0).expect("root motion yields a speed");
+        assert!((speed - 2.5).abs() < 1.0e-6, "expected 2.5, got {speed}");
+    }
+
+    #[test]
+    fn derive_travel_speed_is_none_without_root_translation_track() {
+        // An in-place clip's root joint has an empty translation track.
+        let joints = vec![JointTracks::default()];
+        assert_eq!(derive_travel_speed(&joints, 1.0), None);
+    }
+
+    #[test]
+    fn derive_travel_speed_is_none_for_near_in_place_root_motion() {
+        // Sub-millimeter XZ drift (a near-in-place turn) sits below the epsilon,
+        // so it yields None rather than a divide-by-≈0 stride rate downstream.
+        let translation = Track::new(
+            vec![0.0, 1.0],
+            vec![Vec3::ZERO, Vec3::new(0.0001, 5.0, 0.0001)],
+            Interp::Linear,
+        )
+        .expect("valid translation track");
+        let joints = vec![JointTracks {
+            translation,
+            ..JointTracks::default()
+        }];
+        assert_eq!(derive_travel_speed(&joints, 1.0), None);
+    }
 
     // --- Pure mapping helpers (the seam: glTF values → engine encodings) ---
 

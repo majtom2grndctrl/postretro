@@ -51,6 +51,7 @@ fn translation_clip(name: &str, duration: f32, joints: Vec<JointTracks>) -> Anim
         name: name.to_string(),
         duration,
         joints,
+        travel_speed: None,
     }
 }
 
@@ -470,6 +471,7 @@ fn constant_pose_clip(name: &str, t: Vec3, r: Quat, s: Vec3) -> AnimationClip {
         name: name.to_string(),
         duration: 1.0,
         joints: vec![tracks],
+        travel_speed: None,
     }
 }
 

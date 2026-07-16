@@ -1247,6 +1247,7 @@ fn pose_rest(skeleton: &Skeleton, out: &mut Vec<Mat4>) {
         name: String::new(),
         duration: 0.0,
         joints: Vec::new(),
+        travel_speed: None,
     };
     sample_clip_looped_world(&rest_clip, skeleton, 0.0, Loop::Clamp, out);
 }
@@ -1406,6 +1407,7 @@ mod tests {
             name: "swing".into(),
             duration: 1.0,
             joints: vec![JointTracks::default(), child_tracks],
+            travel_speed: None,
         };
         // Zone on the child with an explicit radius; root has none (default).
         let child_radius = 0.5;
@@ -1462,6 +1464,7 @@ mod tests {
             name: "snap".into(),
             duration: 1.0,
             joints: vec![tracks],
+            travel_speed: None,
         };
         let joint_zones = vec![zone("head", Some(0.1))];
 
@@ -1488,6 +1491,7 @@ mod tests {
             name: "rest".into(),
             duration: 1.0,
             joints: vec![JointTracks::default()],
+            travel_speed: None,
         };
         // Zone present, radius omitted → default applies.
         let joint_zones = vec![zone("torso", None)];
@@ -1520,6 +1524,7 @@ mod tests {
             name: "rest".into(),
             duration: 0.0,
             joints: vec![JointTracks::default()],
+            travel_speed: None,
         };
         let joint_zones = vec![zone("torso", Some(f32::NAN))];
 
@@ -1656,6 +1661,7 @@ mod tests {
                 scale_track(3.0),
                 JointTracks::default(),
             ],
+            travel_speed: None,
         };
         let clip_b = AnimationClip {
             name: "b".into(),
@@ -1665,6 +1671,7 @@ mod tests {
                 JointTracks::default(),
                 JointTracks::default(),
             ],
+            travel_speed: None,
         };
         let joint_zones = vec![None, None, zone("tip", Some(0.1))];
 
@@ -1729,6 +1736,7 @@ mod tests {
             name: "idle".into(),
             duration: 1.0,
             joints: vec![JointTracks::default()],
+            travel_speed: None,
         }];
         let joint_zones = vec![zone("head", Some(0.2))];
 
@@ -1811,6 +1819,7 @@ mod tests {
             name: "swing".into(),
             duration: 2.0,
             joints: vec![JointTracks::default(), child_tracks],
+            travel_speed: None,
         };
         // Root untagged; child tagged leaf with an explicit radius.
         let joint_zones = vec![None, zone("hand", Some(0.3))];
@@ -1836,6 +1845,7 @@ mod tests {
                 .expect("valid const translation track"),
                 ..Default::default()
             }],
+            travel_speed: None,
         }
     }
 
@@ -2511,6 +2521,7 @@ mod tests {
             name: "noop".into(),
             duration: 0.0,
             joints: vec![JointTracks::default()],
+            travel_speed: None,
         }
     }
 

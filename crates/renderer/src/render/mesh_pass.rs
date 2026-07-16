@@ -2728,6 +2728,7 @@ mod tests {
             name: name.to_string(),
             duration,
             joints: Vec::new(),
+            travel_speed: None,
         }
     }
 
@@ -2927,6 +2928,7 @@ mod tests {
                 scale: Track::new(vec![0.0], vec![Vec3::ONE], Interp::Linear)
                     .expect("valid constant scale track"),
             }],
+            travel_speed: None,
         }
     }
 

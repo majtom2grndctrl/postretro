@@ -70,6 +70,19 @@ pub(crate) struct TriggerFireReport {
     pub(crate) fires: Vec<TriggerEvent>,
 }
 
+/// Read-only trigger binding state needed while dispatching one fixed tick.
+pub(crate) struct TriggerDispatchInputs<'a> {
+    pub(crate) alive_players: &'a HashSet<PlayerId>,
+    pub(crate) bound_edges: &'a HashSet<(EntityId, TriggerEventEdge)>,
+}
+
+/// Authoritative player state sampled for one fixed trigger tick.
+pub(crate) struct TriggerTickInputs<'a> {
+    pub(crate) players: &'a [AuthoritativePlayer],
+    pub(crate) use_pressed: &'a HashMap<PlayerId, bool>,
+    pub(crate) tick_dt: f32,
+}
+
 impl TriggerFireReport {
     #[cfg(test)]
     fn enters(&self) -> Vec<TriggerEventFire> {
@@ -126,14 +139,19 @@ impl TriggerSystem {
         tick_dt: f32,
     ) -> TriggerFireReport {
         let alive_players = players.iter().map(|player| player.id).collect();
+        let bound_edges = HashSet::new();
         self.run_authoritative_tick_with_dispatch(
             registry,
             bridge,
-            players,
-            use_pressed,
-            tick_dt,
-            &alive_players,
-            &HashSet::new(),
+            TriggerTickInputs {
+                players,
+                use_pressed,
+                tick_dt,
+            },
+            TriggerDispatchInputs {
+                alive_players: &alive_players,
+                bound_edges: &bound_edges,
+            },
             |_, _, _| {},
         )
     }
@@ -147,15 +165,15 @@ impl TriggerSystem {
         &mut self,
         registry: &mut EntityRegistry,
         bridge: &TriggerVolumeBridge,
-        players: &[AuthoritativePlayer],
-        use_pressed: &HashMap<PlayerId, bool>,
-        tick_dt: f32,
-        alive_players: &HashSet<PlayerId>,
-        bound_edges: &HashSet<(EntityId, TriggerEventEdge)>,
+        tick_inputs: TriggerTickInputs<'_>,
+        dispatch_inputs: TriggerDispatchInputs<'_>,
         mut dispatch: impl FnMut(&TriggerEvent, usize, &mut EntityRegistry),
     ) -> TriggerFireReport {
-        let player_capsules =
-            canonical_player_capsules(registry, players, &mut self.warned_duplicate_players);
+        let player_capsules = canonical_player_capsules(
+            registry,
+            tick_inputs.players,
+            &mut self.warned_duplicate_players,
+        );
 
         let mut trigger_ids: Vec<EntityId> = registry
             .iter_with_kind(ComponentKind::TriggerVolume)
@@ -189,7 +207,7 @@ impl TriggerSystem {
                 continue;
             };
 
-            decrement_rearm(&mut trigger, tick_dt);
+            decrement_rearm(&mut trigger, tick_inputs.tick_dt);
             let touch_reactivation_pending = trigger.activation == TriggerActivation::Touch
                 && trigger.touch_reactivation_pending;
             trigger.touch_reactivation_pending = false;
@@ -235,7 +253,12 @@ impl TriggerSystem {
                         entered || (touch_reactivation_pending && overlapping)
                     }
                     TriggerActivation::Use => {
-                        overlapping && use_pressed.get(&player_id).copied().unwrap_or(false)
+                        overlapping
+                            && tick_inputs
+                                .use_pressed
+                                .get(&player_id)
+                                .copied()
+                                .unwrap_or(false)
                     }
                 };
                 if activated {
@@ -258,7 +281,9 @@ impl TriggerSystem {
                             continue;
                         };
                         if trigger.on_exit.is_empty()
-                            && !bound_edges.contains(&(trigger_id, TriggerEventEdge::Exit))
+                            && !dispatch_inputs
+                                .bound_edges
+                                .contains(&(trigger_id, TriggerEventEdge::Exit))
                         {
                             continue;
                         }
@@ -270,7 +295,8 @@ impl TriggerSystem {
                             },
                             edge,
                         };
-                        let occupancy = self.effective_occupancy(trigger_id, alive_players);
+                        let occupancy =
+                            self.effective_occupancy(trigger_id, dispatch_inputs.alive_players);
                         dispatch(&event, occupancy, registry);
                         report.fires.push(event);
                     }
@@ -305,7 +331,9 @@ impl TriggerSystem {
                         let _ = registry.set_component(trigger_id, trigger);
                         self.paired_enters.insert((trigger_id, player_id));
                         if event_name.is_empty()
-                            && !bound_edges.contains(&(trigger_id, TriggerEventEdge::Enter))
+                            && !dispatch_inputs
+                                .bound_edges
+                                .contains(&(trigger_id, TriggerEventEdge::Enter))
                         {
                             continue;
                         }
@@ -317,7 +345,8 @@ impl TriggerSystem {
                             },
                             edge,
                         };
-                        let occupancy = self.effective_occupancy(trigger_id, alive_players);
+                        let occupancy =
+                            self.effective_occupancy(trigger_id, dispatch_inputs.alive_players);
                         dispatch(&event, occupancy, registry);
                         report.fires.push(event);
                     }
@@ -1240,11 +1269,15 @@ mod tests {
         system.run_authoritative_tick_with_dispatch(
             &mut registry,
             &bridge,
-            &players,
-            &HashMap::new(),
-            DT,
-            &alive,
-            &HashSet::new(),
+            TriggerTickInputs {
+                players: &players,
+                use_pressed: &HashMap::new(),
+                tick_dt: DT,
+            },
+            TriggerDispatchInputs {
+                alive_players: &alive,
+                bound_edges: &HashSet::new(),
+            },
             |event, occupancy, _| observed.push((event.clone(), occupancy)),
         );
         assert_eq!(observed.len(), 2, "both physical entries still emit edges");
@@ -1255,11 +1288,15 @@ mod tests {
         system.run_authoritative_tick_with_dispatch(
             &mut registry,
             &bridge,
-            &players,
-            &HashMap::new(),
-            DT,
-            &alive,
-            &HashSet::new(),
+            TriggerTickInputs {
+                players: &players,
+                use_pressed: &HashMap::new(),
+                tick_dt: DT,
+            },
+            TriggerDispatchInputs {
+                alive_players: &alive,
+                bound_edges: &HashSet::new(),
+            },
             |event, occupancy, _| observed.push((event.clone(), occupancy)),
         );
         assert_eq!(observed.len(), 1);

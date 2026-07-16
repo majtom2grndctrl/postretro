@@ -188,14 +188,19 @@ pub(crate) fn simulate_tick(
         let mut registry = registry.borrow_mut();
         let bound_edges = trigger_context.bindings.bound_edges();
         if let Some(script_ctx) = trigger_context.script_ctx.as_ref() {
+            let dispatch_inputs = crate::trigger_system::TriggerDispatchInputs {
+                alive_players: &alive_players,
+                bound_edges: &bound_edges,
+            };
             let _report = trigger_context.system.run_authoritative_tick_with_dispatch(
                 &mut registry,
                 trigger_context.bridge,
-                &players,
-                trigger_context.use_edges,
-                tick_dt,
-                &alive_players,
-                &bound_edges,
+                crate::trigger_system::TriggerTickInputs {
+                    players: &players,
+                    use_pressed: trigger_context.use_edges,
+                    tick_dt,
+                },
+                dispatch_inputs,
                 |event, occupancy, registry| {
                     let fire_context = trigger_fire_context(event, occupancy, &players);
                     let execution = trigger_context.bindings.execute_with_script_ctx(
@@ -220,14 +225,19 @@ pub(crate) fn simulate_tick(
             );
         } else {
             let mut slot_table = trigger_context.slot_table.borrow_mut();
+            let dispatch_inputs = crate::trigger_system::TriggerDispatchInputs {
+                alive_players: &alive_players,
+                bound_edges: &bound_edges,
+            };
             let _report = trigger_context.system.run_authoritative_tick_with_dispatch(
                 &mut registry,
                 trigger_context.bridge,
-                &players,
-                trigger_context.use_edges,
-                tick_dt,
-                &alive_players,
-                &bound_edges,
+                crate::trigger_system::TriggerTickInputs {
+                    players: &players,
+                    use_pressed: trigger_context.use_edges,
+                    tick_dt,
+                },
+                dispatch_inputs,
                 |event, _occupancy, registry| {
                     let fire_context = TriggerFireContext::default();
                     let execution = trigger_context.bindings.execute(

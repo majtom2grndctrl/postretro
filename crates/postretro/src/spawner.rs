@@ -216,8 +216,8 @@ mod tests {
     use postretro_scripting_core::data_registry::DataRegistry;
     use postretro_scripting_core::reaction_dispatch::ProgressTracker;
 
-    use crate::scripting::builtins::data_archetype::data_archetype_test_fixtures::ai_enemy_descriptor;
-    use crate::scripting::systems::ai::{ENEMY_ATTACK_EVENT, run_ai_tick};
+    use crate::scripting::builtins::data_archetype_test_fixtures::ai_enemy_descriptor;
+    use crate::scripting_systems::ai::{ENEMY_ATTACK_EVENT, run_ai_tick};
 
     const TAG: &str = "closet";
 

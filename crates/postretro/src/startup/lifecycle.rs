@@ -1111,6 +1111,42 @@ pub(crate) fn resolve_spawners_for_level(
     diagnostics
 }
 
+/// Collect renderable mesh handles referenced by successfully resolved map
+/// spawners. Spawner-only archetypes do not materialize a `MeshComponent` until
+/// a reaction fires, so the normal registry sweep cannot discover their models.
+/// Keep this tied to the resolved component rather than every descriptor: only
+/// archetypes this map can actually spawn consume the level's upload budget.
+pub(crate) fn resolved_spawner_mesh_models(
+    registry: &postretro_entities::EntityRegistry,
+    descriptors: &[postretro_scripting_core::data_descriptors::EntityTypeDescriptor],
+) -> Vec<String> {
+    use postretro_entities::components::spawner::SpawnerComponent;
+
+    let mut seen = std::collections::HashSet::new();
+    let mut models = Vec::new();
+    for (id, _) in registry.iter_with_kind(postretro_entities::ComponentKind::Spawner) {
+        let Ok(spawner) = registry.get_component::<SpawnerComponent>(id) else {
+            continue;
+        };
+        if !spawner.resolved {
+            continue;
+        }
+        let Some(descriptor) = crate::scripting::builtins::data_archetype::find_descriptor(
+            descriptors,
+            &spawner.archetype_name,
+        ) else {
+            continue;
+        };
+        let Some(mesh) = descriptor.mesh.as_ref() else {
+            continue;
+        };
+        if !mesh.model.is_empty() && seen.insert(mesh.model.clone()) {
+            models.push(mesh.model.clone());
+        }
+    }
+    models
+}
+
 /// CPU world-install products the tick loop consumes. [`install_world_cpu`]
 /// fills these from a level payload without touching the renderer, so a headless
 /// caller assembles `simulate_tick`'s arguments from the return value plus the
@@ -1432,6 +1468,15 @@ pub(crate) fn install_world_cpu(
             spawner_diagnostics.invalid_total()
         );
     }
+    // An `entity_spawner` itself has no mesh. Its resolved archetype can still
+    // be the only reference to an enemy model in this level, on either the host
+    // or a connected client (spawners survive the client AI-placement filter).
+    // Feed those handles into the same install-time upload/clip-table sweep as
+    // ordinary and client-suppressed placements; no runtime GPU upload exists.
+    let spawner_models = {
+        let registry = script_ctx.registry.borrow();
+        resolved_spawner_mesh_models(&registry, &descriptors)
+    };
     timings.record("archetype_sweep");
 
     // Mesh model sweep, CPU half. Runs AFTER both dispatch sweeps so it sees every
@@ -1446,6 +1491,11 @@ pub(crate) fn install_world_cpu(
         let mut models = crate::distinct_mesh_models(&registry);
         let mut seen: std::collections::HashSet<String> = models.iter().cloned().collect();
         for model in &suppressed_enemy_models {
+            if seen.insert(model.clone()) {
+                models.push(model.clone());
+            }
+        }
+        for model in &spawner_models {
             if seen.insert(model.clone()) {
                 models.push(model.clone());
             }
@@ -1481,6 +1531,15 @@ pub(crate) fn install_world_cpu(
         system_registry,
         script_ctx,
         None,
+    );
+    // `levelLoad` may itself fire a spawner reaction after the install sweep.
+    // Its archetype's table already exists above; fill only the newly attached
+    // meshes before the first render rather than rebuilding or uploading.
+    let spawned_meshes = spawn_context.take_pending_mesh_clip_resolves();
+    crate::resolve_mesh_entity_clips_for_entities(
+        &mut script_ctx.registry.borrow_mut(),
+        mesh_clip_tables,
+        spawned_meshes,
     );
     timings.record("level_load_event");
 
@@ -1605,6 +1664,42 @@ mod tests {
         // A new level drops stale descriptor entries and warning dedup state.
         resolve_spawners_for_level(&mut registry, &[], None, &context);
         assert!(context.state().resolved_enemy_descriptors.is_empty());
+    }
+
+    #[test]
+    fn resolved_spawner_mesh_models_include_only_renderable_resolved_archetypes() {
+        use crate::scripting::builtins::data_archetype_test_fixtures::ai_enemy_descriptor;
+        use postretro_entities::components::spawner::SpawnerComponent;
+
+        let mut registry = postretro_entities::EntityRegistry::new();
+        let add_spawner =
+            |registry: &mut postretro_entities::EntityRegistry, archetype: &str, resolved: bool| {
+                let id = registry.spawn(Transform::default());
+                registry
+                    .set_component(
+                        id,
+                        SpawnerComponent {
+                            archetype_name: archetype.to_string(),
+                            count: 1,
+                            resolved,
+                        },
+                    )
+                    .unwrap();
+            };
+        add_spawner(&mut registry, "spawner_only", true);
+        add_spawner(&mut registry, "spawner_only", true);
+        add_spawner(&mut registry, "unresolved", false);
+        add_spawner(&mut registry, "non_mesh", true);
+        add_spawner(&mut registry, "absent", true);
+
+        let mut spawner_only = ai_enemy_descriptor("spawner_only");
+        spawner_only.mesh.as_mut().unwrap().model = "models/spawner_only.gltf".to_string();
+        let mut non_mesh = ai_enemy_descriptor("non_mesh");
+        non_mesh.mesh = None;
+
+        let models = resolved_spawner_mesh_models(&registry, &[spawner_only, non_mesh]);
+        assert_eq!(models, vec!["models/spawner_only.gltf"]);
+        assert!(crate::distinct_mesh_models(&registry).is_empty());
     }
     use postretro_scripting_core::state_crossings::CrossingDetector;
 

@@ -16,8 +16,10 @@ reveal-flavor containment reuses the shipped arm/disarm surface a door-open alre
   `player_spawn`): a built-in classname handler, an engine-owned `SpawnerComponent`, an FGD
   entry. No new PRL section, no compiler branch, no loader change.
 - `spawnFromSpawner` consequential reaction primitive (tag-targeted), executed VM-free in the
-  fixed-tick seam. Spawns `count` enemies of a named archetype at the spawner origin, offset by a
-  fixed per-index delta so they do not overlap.
+  fixed-tick seam. Each fire spawns `count` enemies of a named archetype at the spawner origin,
+  facing the spawner's authored `angles`, offset by a fixed per-index delta so they do not overlap.
+  The spawner is stateless — it never self-re-triggers; repeated spawns come only from repeated
+  firing events, and one-shot behavior is owned by the firing trigger's policy.
 - Spawn-time replication registration: a new `DescriptorSpawnPath::RuntimeSpawn`, a broadened
   networked-AI predicate, and a host-gated post-tick registration sweep so spawned enemies enter
   the `ReplicableSet` and stamp a `NetworkId`. Clients materialize them from the snapshot's
@@ -53,6 +55,9 @@ reveal-flavor containment reuses the shipped arm/disarm surface a door-open alre
 - Spawn-at-activator targeting (`@activators`) — depends on the still-in-`ready/`
   `E18--trigger-event-params`; not required here.
 - A new `world.query` filter term for spawners or enemies — authoring does not need one in C.
+- Runtime spawn-point validation (clear-of-geometry, on-navmesh) — spawn validity is an authoring
+  responsibility, exactly as for map-placed enemies; the runtime trusts the authored placement. A
+  spawner in a wall is an authoring bug for playtest and the dev overlay, not a runtime guard.
 
 ## Acceptance criteria
 
@@ -64,6 +69,11 @@ reveal-flavor containment reuses the shipped arm/disarm surface a door-open alre
 - [ ] A spawner referencing an unknown archetype name warns once at level install and spawns
       nothing at fire time (inert degradation); a spawner whose archetype is not an AI enemy
       warns and spawns nothing.
+- [ ] Firing `spawnFromSpawner` against the same spawner twice spawns `2 × count` enemies — the
+      spawner is stateless and never self-exhausts.
+- [ ] Spawned enemies face the spawner's authored `angles` direction.
+- [ ] A `count` of 0 (or a malformed value) spawns nothing and warns; registry exhaustion
+      mid-batch spawns what fits and warns, without panicking.
 - [ ] In a two-peer co-op session, a host-spawned enemy appears and renders its mesh on the
       connected client and on a client that joins after the spawn, driven by its replicated
       Transform.
@@ -105,8 +115,9 @@ in a **separate post-dispatch install pass** where descriptors are in scope (alo
 (`descriptor_materializes_ai_enemy`), and fill the component with the resolved descriptor so the
 fixed-tick executor never touches the data registry or a `ScriptCtx`. `EntityTypeDescriptor`
 (`crates/entities/src/data_descriptors/types/entity.rs`) is carryable on the component. Add the
-FGD `@PointClass` entry (`entity_spawner`, archetype + count keys). Enemy archetypes are any
-descriptor with an `ai` block; do not invent a modder-facing enemy component.
+FGD `@PointClass` entry (`entity_spawner`, archetype + count keys, plus the standard `angles` key
+for facing). Enemy archetypes are any descriptor with an `ai` block; do not invent a modder-facing
+enemy component.
 
 ### Task 2: `spawnFromSpawner` verb + in-tick spawn executor
 
@@ -132,6 +143,19 @@ so they do not perfectly overlap (do not rely on the steering separation pass, w
 for idle agents). Spawn is host-side, in-tick, in deterministic order, with no RNG. Register the
 primitive through a `register_spawner_reaction_primitives` entry point (mirroring the mover
 registration call site in `session/mod.rs`) so the descriptor/validation path accepts the verb.
+
+The spawner is **stateless**: each fire spawns `count`, it holds no fired/exhausted flag, and it
+never re-triggers itself — re-firing is an ordinary event outcome, and one-shot behavior (a closet
+that springs once) is owned by the firing trigger's `once`/rearm policy, not the spawner. Spawned
+enemies take the spawner entity's Transform rotation (its authored `angles`, via `rotation_quat()`)
+so they face as placed. Degrade gracefully, matching `prop_mesh`: parse `count` with
+warn-and-default-0 on a missing or malformed value; if `try_spawn` returns `None` mid-batch (the
+registry at `u16::MAX`), spawn what fits, warn once, and stop — never panic. Do not validate spawn
+positions against geometry or the navmesh — a spawner inside a wall is an authoring bug for
+playtest/dev-overlay, consistent with map-placed enemies. Because the trigger system runs between
+movement and AI in the tick, a spawned enemy exists before this tick's AI pass and may take its
+first steering step the frame it appears; the windup gates only its first attack, not its first
+step.
 
 ### Task 3: Spawn-time replication registration + client materialization
 

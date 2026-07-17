@@ -179,6 +179,12 @@ impl ScreenEffectsPass {
         &self.color_view
     }
 
+    /// The renderer-owned pre-resolve scene target. Offscreen capture reads this
+    /// texture directly so transient resolve effects are excluded.
+    pub(super) fn scene_color_texture(&self) -> &wgpu::Texture {
+        &self.color_texture
+    }
+
     /// Recreate `scene_color` at the new surface size and rebuild the resolve
     /// bind group. Called alongside the depth-target recreation on resize.
     pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
@@ -238,7 +244,8 @@ impl ScreenEffectsPass {
 
 /// Allocate the `scene_color` target: surface format (sRGB), surface size,
 /// single-sample. `RENDER_ATTACHMENT` (scene/UI passes draw into it) +
-/// `TEXTURE_BINDING` (the resolve samples it). `0` dims clamp to `1` to keep
+/// `TEXTURE_BINDING` (the resolve samples it) + `COPY_SRC` (offscreen capture
+/// reads it back). `0` dims clamp to `1` to keep
 /// texture creation valid during transient zero-size resize events (mirrors the
 /// depth target's `prepass_attachment_extent`).
 fn create_scene_color(
@@ -258,7 +265,9 @@ fn create_scene_color(
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());

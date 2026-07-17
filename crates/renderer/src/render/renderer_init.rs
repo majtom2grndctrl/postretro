@@ -4,6 +4,8 @@
 
 use super::*;
 
+const MAX_OFFSCREEN_CAPTURE_DIMENSION: u32 = 8192;
+
 impl Renderer {
     /// Boot phase: build only the minimal GPU state needed to present the boot
     /// splash — instance, surface, adapter, device, queue, surface configuration,
@@ -40,49 +42,8 @@ impl Renderer {
         }))
         .context("no suitable GPU adapter found")?;
 
-        log::info!("[Renderer] GPU adapter: {}", adapter.get_info().name);
-
-        let downlevel = adapter.get_downlevel_capabilities();
-        let has_multi_draw_indirect = downlevel
-            .flags
-            .contains(wgpu::DownlevelFlags::INDIRECT_EXECUTION);
-        if has_multi_draw_indirect {
-            log::info!("[Renderer] Indirect execution supported (multi_draw_indexed_indirect)");
-        } else {
-            log::info!(
-                "[Renderer] Indirect execution not supported — using singular draw_indexed_indirect fallback"
-            );
-        }
-
-        // Cube-array support gates the dynamic point-light shadow pool. Absent →
-        // the cube pool is disabled (None) and point shadows are cleanly off; the
-        // spot path is entirely unaffected (no panic, no validation error).
-        let cube_array_supported = downlevel
-            .flags
-            .contains(wgpu::DownlevelFlags::CUBE_ARRAY_TEXTURES);
-        if cube_array_supported {
-            log::info!("[Renderer] Cube-array textures supported (dynamic point shadows enabled)");
-        } else {
-            log::info!(
-                "[Renderer] Cube-array textures unsupported — dynamic point-light shadows disabled"
-            );
-        }
-
-        // FrameTiming=None → zero runtime cost when timing isn't requested or supported.
-        let adapter_features = adapter.features();
-        let gpu_timing_requested =
-            std::env::var("POSTRETRO_GPU_TIMING").ok().as_deref() == Some("1");
-        let gpu_timing_supported = adapter_features.contains(wgpu::Features::TIMESTAMP_QUERY);
-        let enable_gpu_timing = gpu_timing_requested && gpu_timing_supported;
-        // BC5-compressed normal maps are a hard requirement (not optional like
-        // GPU timing): the .prm baker emits BC5 normal slots unconditionally.
-        let (device, queue) = request_renderer_device(
-            &adapter,
-            cube_array_supported,
-            enable_gpu_timing,
-            gpu_timing_requested,
-            gpu_timing_supported,
-        )?;
+        let (device, queue, has_multi_draw_indirect, cube_array_supported) =
+            request_renderer_device_with_capabilities(&adapter)?;
         let surface_caps = surface.get_capabilities(&adapter);
         let surface_format = surface_caps
             .formats
@@ -111,16 +72,72 @@ impl Renderer {
         Ok(Self {
             device,
             queue,
-            surface,
+            surface: Some(surface),
             surface_config,
             is_surface_configured: true,
             surface_reconfigure_pending: false,
             has_multi_draw_indirect,
             cube_array_supported,
-            boot_splash,
+            boot_splash: Some(boot_splash),
             // Full renderer is built on the first `finish_full_init` /
             // `ensure_full_ready`, after the boot splash has presented.
             full: None,
+        })
+    }
+
+    /// Build a full-ready renderer for deterministic offscreen capture. This
+    /// path deliberately creates neither a window nor a `wgpu::Surface`; the
+    /// scene target is the capture output and no present path is available.
+    pub fn new_offscreen(capture_width: u32, capture_height: u32) -> Result<Self> {
+        validate_offscreen_capture_dimensions(capture_width, capture_height)?;
+
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::PRIMARY,
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
+        });
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::default(),
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        }))
+        .context("frame capture requires a GPU adapter")?;
+        let (device, queue, has_multi_draw_indirect, cube_array_supported) =
+            request_renderer_device_with_capabilities(&adapter)?;
+
+        // This fixed target format makes capture bytes independent of whichever
+        // swapchain formats a windowed surface happens to advertise.
+        let capture_format = wgpu::TextureFormat::Rgba8UnormSrgb;
+        let full = build_full_renderer(
+            &device,
+            &queue,
+            capture_format,
+            capture_width,
+            capture_height,
+            has_multi_draw_indirect,
+            cube_array_supported,
+        )?;
+        Ok(Self {
+            device,
+            queue,
+            surface: None,
+            // Retained as the renderer's common target dimensions/format store.
+            // Offscreen construction never configures or accesses a surface.
+            surface_config: wgpu::SurfaceConfiguration {
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                format: capture_format,
+                width: capture_width,
+                height: capture_height,
+                present_mode: wgpu::PresentMode::AutoVsync,
+                alpha_mode: wgpu::CompositeAlphaMode::Opaque,
+                desired_maximum_frame_latency: 2,
+                view_formats: vec![],
+            },
+            is_surface_configured: false,
+            surface_reconfigure_pending: false,
+            has_multi_draw_indirect,
+            cube_array_supported,
+            boot_splash: None,
+            full: Some(Box::new(full)),
         })
     }
 
@@ -157,5 +174,108 @@ impl Renderer {
             self.finish_full_init()?;
         }
         Ok(())
+    }
+}
+
+fn validate_offscreen_capture_dimensions(capture_width: u32, capture_height: u32) -> Result<()> {
+    if capture_width == 0 || capture_height == 0 {
+        anyhow::bail!("offscreen capture dimensions must be non-zero");
+    }
+    if capture_width > MAX_OFFSCREEN_CAPTURE_DIMENSION
+        || capture_height > MAX_OFFSCREEN_CAPTURE_DIMENSION
+    {
+        anyhow::bail!(
+            "offscreen capture dimensions must not exceed {MAX_OFFSCREEN_CAPTURE_DIMENSION}"
+        );
+    }
+    Ok(())
+}
+
+/// Request the renderer's complete device feature/limit set and derive the
+/// adapter capabilities that full initialization needs. Both windowed and
+/// surfaceless construction use this path so capture cannot accidentally get a
+/// reduced device contract.
+fn request_renderer_device_with_capabilities(
+    adapter: &wgpu::Adapter,
+) -> Result<(wgpu::Device, wgpu::Queue, bool, bool)> {
+    log::info!("[Renderer] GPU adapter: {}", adapter.get_info().name);
+
+    let downlevel = adapter.get_downlevel_capabilities();
+    let has_multi_draw_indirect = downlevel
+        .flags
+        .contains(wgpu::DownlevelFlags::INDIRECT_EXECUTION);
+    if has_multi_draw_indirect {
+        log::info!("[Renderer] Indirect execution supported (multi_draw_indexed_indirect)");
+    } else {
+        log::info!(
+            "[Renderer] Indirect execution not supported — using singular draw_indexed_indirect fallback"
+        );
+    }
+
+    // Cube-array support gates the dynamic point-light shadow pool. Absent →
+    // the cube pool is disabled (None) and point shadows are cleanly off; the
+    // spot path is entirely unaffected (no panic, no validation error).
+    let cube_array_supported = downlevel
+        .flags
+        .contains(wgpu::DownlevelFlags::CUBE_ARRAY_TEXTURES);
+    if cube_array_supported {
+        log::info!("[Renderer] Cube-array textures supported (dynamic point shadows enabled)");
+    } else {
+        log::info!(
+            "[Renderer] Cube-array textures unsupported — dynamic point-light shadows disabled"
+        );
+    }
+
+    // FrameTiming=None → zero runtime cost when timing isn't requested or supported.
+    let adapter_features = adapter.features();
+    let gpu_timing_requested = std::env::var("POSTRETRO_GPU_TIMING").ok().as_deref() == Some("1");
+    let gpu_timing_supported = adapter_features.contains(wgpu::Features::TIMESTAMP_QUERY);
+    let enable_gpu_timing = gpu_timing_requested && gpu_timing_supported;
+    // BC5-compressed normal maps are a hard requirement (not optional like
+    // GPU timing): the .prm baker emits BC5 normal slots unconditionally.
+    let (device, queue) = request_renderer_device(
+        adapter,
+        cube_array_supported,
+        enable_gpu_timing,
+        gpu_timing_requested,
+        gpu_timing_supported,
+    )?;
+
+    Ok((device, queue, has_multi_draw_indirect, cube_array_supported))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn offscreen_capture_dimensions_require_non_zero_sizes_within_the_texture_limit() {
+        assert!(validate_offscreen_capture_dimensions(1, 1).is_ok());
+        assert!(
+            validate_offscreen_capture_dimensions(
+                MAX_OFFSCREEN_CAPTURE_DIMENSION,
+                MAX_OFFSCREEN_CAPTURE_DIMENSION,
+            )
+            .is_ok()
+        );
+
+        assert_eq!(
+            validate_offscreen_capture_dimensions(0, 1)
+                .unwrap_err()
+                .to_string(),
+            "offscreen capture dimensions must be non-zero"
+        );
+        assert_eq!(
+            validate_offscreen_capture_dimensions(MAX_OFFSCREEN_CAPTURE_DIMENSION + 1, 1)
+                .unwrap_err()
+                .to_string(),
+            "offscreen capture dimensions must not exceed 8192"
+        );
+        assert_eq!(
+            validate_offscreen_capture_dimensions(1, MAX_OFFSCREEN_CAPTURE_DIMENSION + 1)
+                .unwrap_err()
+                .to_string(),
+            "offscreen capture dimensions must not exceed 8192"
+        );
     }
 }

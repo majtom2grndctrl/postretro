@@ -21,6 +21,8 @@ impl Renderer {
     /// for boot logging.
     pub fn install_splash_pixels(&mut self, loaded: &postretro_ui::UiTexture) -> [u32; 2] {
         self.boot_splash
+            .as_mut()
+            .expect("splash pixels require a windowed renderer")
             .install_logo(&self.device, &self.queue, loaded)
     }
 
@@ -47,6 +49,8 @@ impl Renderer {
 
         let viewport = [self.surface_config.width, self.surface_config.height];
         self.boot_splash
+            .as_ref()
+            .expect("splash rendering requires a windowed renderer")
             .encode(&self.queue, &mut encoder, &view, viewport);
 
         self.queue.submit(std::iter::once(encoder.finish()));
@@ -56,7 +60,9 @@ impl Renderer {
     /// Drop the uploaded boot-splash logo so post-handoff frames record nothing.
     /// Called on the boot→content transition and on suspend.
     pub fn clear_splash(&mut self) {
-        self.boot_splash.clear();
+        if let Some(boot_splash) = self.boot_splash.as_mut() {
+            boot_splash.clear();
+        }
     }
 
     /// Store the once-per-frame read snapshot. The App calls this just before each

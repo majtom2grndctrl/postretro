@@ -100,6 +100,24 @@ pub(crate) fn build_session() -> Result<BootSession> {
     // parsed here — it defers into `PendingSessionInit`.
     let args: Vec<String> = std::env::args().collect();
 
+    // Static frame capture terminates the process instead of returning a
+    // `BootSession`, so no event loop, window, or session is ever created. As
+    // with `--headless`, detection remains outside its feature gate so a stock
+    // binary can explain how to launch the mode.
+    if let Some(scene_arg) = capture_arg(&args) {
+        #[cfg(feature = "capture")]
+        crate::capture::run_capture(scene_arg);
+        #[cfg(not(feature = "capture"))]
+        {
+            let _ = scene_arg;
+            eprintln!(
+                "[Capture] `--capture` requires the `capture` feature; \\
+                 launch via `cargo run -p xtask -- capture <scene.json>`"
+            );
+            std::process::exit(1);
+        }
+    }
+
     // Headless observability batch mode terminates the process (exit code)
     // instead of returning a `BootSession`, so `main` never drives a windowless
     // event loop. Arg detection sits OUTSIDE the feature gate: the driver body is
@@ -244,6 +262,25 @@ fn headless_arg(args: &[String]) -> Option<Option<&str>> {
             return Some(value);
         }
         if let Some(value) = arg.strip_prefix("--headless=") {
+            return Some((!value.is_empty()).then_some(value));
+        }
+    }
+    None
+}
+
+/// Detect the static offscreen frame-capture flag. Like `headless_arg`, the
+/// nested `Option` distinguishes absence from a flag with no scene argument so
+/// the capture driver can issue the user-facing diagnostic.
+fn capture_arg(args: &[String]) -> Option<Option<&str>> {
+    let mut iter = args.iter().skip(1).peekable();
+    while let Some(arg) = iter.next() {
+        if arg == "--capture" {
+            let value = iter
+                .next_if(|value| !value.starts_with("--"))
+                .map(String::as_str);
+            return Some(value);
+        }
+        if let Some(value) = arg.strip_prefix("--capture=") {
             return Some((!value.is_empty()).then_some(value));
         }
     }
@@ -498,6 +535,41 @@ mod tests {
     fn headless_arg_accepts_equals_form() {
         let args = vec!["postretro".to_string(), "--headless=run.json".to_string()];
         assert_eq!(headless_arg(&args), Some(Some("run.json")));
+    }
+
+    #[test]
+    fn capture_arg_absent_returns_none() {
+        let args = vec!["postretro".to_string()];
+        assert_eq!(capture_arg(&args), None);
+    }
+
+    #[test]
+    fn capture_arg_captures_following_scene_path() {
+        let args = vec![
+            "postretro".to_string(),
+            "--capture".to_string(),
+            "scene.json".to_string(),
+        ];
+        assert_eq!(capture_arg(&args), Some(Some("scene.json")));
+    }
+
+    #[test]
+    fn capture_arg_present_without_value_is_some_none() {
+        let args = vec!["postretro".to_string(), "--capture".to_string()];
+        assert_eq!(capture_arg(&args), Some(None));
+
+        let args = vec![
+            "postretro".to_string(),
+            "--capture".to_string(),
+            "--content-root".to_string(),
+        ];
+        assert_eq!(capture_arg(&args), Some(None));
+    }
+
+    #[test]
+    fn capture_arg_accepts_equals_form() {
+        let args = vec!["postretro".to_string(), "--capture=scene.json".to_string()];
+        assert_eq!(capture_arg(&args), Some(Some("scene.json")));
     }
 
     #[test]

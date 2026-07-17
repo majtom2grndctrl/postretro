@@ -94,6 +94,9 @@ dev-tools = [
 # no optional deps, no egui, independent of dev-tools.
 # See: context/plans/done/agentic-observability
 observability = []
+# Static offscreen frame capture for content CI. Gates binary-only modules and
+# adds no dependencies or UI surface.
+capture = []
 
 [build-dependencies]
 postretro-script-compiler = { path = "../script-compiler" }

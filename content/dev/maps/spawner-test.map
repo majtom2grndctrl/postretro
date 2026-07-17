@@ -1,10 +1,12 @@
 // Game: Postretro
 // Format: Standard
-// E18 runtime-spawner test set piece. Same sealed room as closet-reveal, but
-// the closet holds an entity_spawner instead of pre-placed enemies: the plate
-// fires spawnFromSpawner to materialize fresh AI enemies at runtime (the path
-// the round-1 feet-to-center fix touched). Watch that spawned enemies stand
-// on the floor, not sunk into it, and walk out through the doorway.
+// E18 runtime-spawner test set piece, and the scripts-first complement to
+// closet-reveal. Same sealed room and closet nook, but here the map carries the
+// bare minimum: the trigger and mover hold only the KVPs that have no scripting
+// equivalent, and every reaction lives in spawner-test.ts. The plate fires
+// spawnFromSpawner to materialize fresh AI enemies at runtime (the path the
+// round-1 feet-to-center fix touched). Watch that spawned enemies stand on the
+// floor, not sunk into it, and walk out through the doorway.
 // Compile: cargo run -p postretro-level-compiler -- content/dev/maps/spawner-test.map -o content/dev/maps/spawner-test.prl
 // Run: cargo run -p xtask -- run content/dev/maps/spawner-test.prl
 // Sealed room, interior 288 x 256 x 128 units, wall thickness 16, with a
@@ -16,6 +18,10 @@
 // south, north walls, east block south of nook, east block north of nook,
 // closet back wall, closet lintel. Every brush is an axis-aligned box wound
 // normal-inward, so there are no degenerate duplicate-point faces.
+// Scripts-first authoring: the trigger names no reaction and commands no mover,
+// so prl-build prints a benign [inert trigger] note. That is a static-view
+// false positive; the compiler cannot see the onTriggerEvent binding in
+// spawner-test.ts that owns the plate enter edge.
 // NOTE: keep map comments free of braces and quotes; the .map parser does not
 // fully strip // comments and those characters break the parse.
 // entity 0
@@ -124,15 +130,12 @@
 "angles" "0 0 0"
 }
 // entity 2
+// Scripts-first trigger: it carries only its _tags handle. spawner-test.ts
+// binds onTriggerEvent by this tag and fans out the door, spawn, and alarm
+// reactions on the enter edge. No target_tag/command/on_fire KVP, so prl-build
+// prints a benign [inert trigger] note it cannot resolve to the script observer.
 {
 "classname" "trigger_volume"
-"name" "closet_reveal_plate"
-"activation" "touch"
-"target_tag" ""
-"command" "start"
-"fire_mode" "once"
-"rearm_ms" "0"
-"enabled_on_spawn" "1"
 "_tags" "closet_reveal_plate"
 // brush 0
 {
@@ -145,13 +148,15 @@
 }
 }
 // entity 3
+// Scripts-first mover: only the KVPs with no scripting equivalent remain. path
+// names the waypoint chain that is the motion geometry, speed tunes the slide
+// (the mover command vocabulary carries no speed verb), and start_on_spawn 0
+// holds the door shut until the script fires moverStart by _tags. The mover
+// name is dropped; the script targets the door by tag, not by name.
 {
 "classname" "kinematic_mover"
-"name" "closet_door"
 "path" "closet_door_closed"
 "speed" "4"
-"wait_ms" "0"
-"move_mode" "once"
 "start_on_spawn" "0"
 "_tags" "closet_door"
 // brush 0
@@ -192,7 +197,7 @@
 "count" "3"
 "_tags" "closet_spawner"
 }
-// entity 8
+// entity 7
 {
 "classname" "light_spot"
 "origin" "24 -216 104"

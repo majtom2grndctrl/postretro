@@ -1510,6 +1510,161 @@ fn pose_inputs_fallbacks_and_vertical_targets_remain_finite() {
     assert!((straight_down.aim_pitch + std::f32::consts::FRAC_PI_2).abs() <= 1.0e-6);
 }
 
+/// One leg model: hip → knee → ankle, composed ankle resting at model (0,-0.7,0),
+/// with one looping idle clip (no joint tracks, so the pose falls back to the
+/// rest hierarchy the ground probe reads). Leg `0` drives foot probe `0`.
+fn leg_model() -> crate::scripting_systems::hit_zones::ModelHitZones {
+    use postretro_model::pose_modifier::{JointMask, LegChain};
+    use postretro_model::skeleton::{AnimationClip, Joint, RestLocal, Skeleton};
+
+    let joint = |parent, ty: f32| Joint {
+        parent,
+        inverse_bind: glam::Mat4::IDENTITY.to_cols_array_2d(),
+        rest_local: RestLocal {
+            translation: Vec3::new(0.0, ty, 0.0),
+            rotation: glam::Quat::IDENTITY,
+            scale: Vec3::ONE,
+        },
+    };
+    let skeleton = Skeleton {
+        joints: vec![joint(None, 0.0), joint(Some(0), -0.35), joint(Some(1), -0.35)],
+    };
+    let clips = vec![AnimationClip {
+        name: "idle".to_string(),
+        duration: 1.0,
+        joints: Vec::new(),
+        travel_speed: None,
+    }];
+    let mut chain_mask = JointMask::new();
+    for j in [0usize, 1, 2] {
+        assert!(chain_mask.insert(j));
+    }
+    crate::scripting_systems::hit_zones::ModelHitZones {
+        skeleton: std::sync::Arc::new(skeleton),
+        clips: std::sync::Arc::new(clips),
+        joint_zones: vec![None, None, None],
+        derived_bound: None,
+        legs: vec![LegChain {
+            chain_mask,
+            foot_joint: 2,
+        }],
+    }
+}
+
+/// Spawn one leg-tagged animated entity at `position`/`yaw`, run the production
+/// tick-end pose order (aim/heading, then the ground probe) against a flat floor,
+/// and return the resulting `PoseInputs`.
+fn probe_leg_entity(position: Vec3, yaw: f32) -> postretro_entities::PoseInputs {
+    let mut registry = EntityRegistry::new();
+    let mut states = std::collections::HashMap::new();
+    states.insert(
+        "idle".to_string(),
+        AnimationState {
+            clip: "idle".into(),
+            looping: true,
+            crossfade_ms: 0.0,
+            interrupt: InterruptPolicy::Smooth,
+            travel_speed: None,
+            clip_index: Some(0),
+        },
+    );
+    let entity = registry.spawn(Transform {
+        position,
+        rotation: glam::Quat::from_rotation_y(yaw),
+        scale: Vec3::ONE,
+    });
+    registry
+        .set_component(
+            entity,
+            MeshComponent {
+                model: "legwalker".into(),
+                animation: Some(MeshAnimation::new(states, "idle".into())),
+                origin_offset: Vec3::ZERO,
+                pose_inputs: None,
+            },
+        )
+        .expect("leg entity mesh should attach");
+
+    let world = floor_world();
+    let mut store = HitZoneStore::new();
+    store.insert_for_test(
+        postretro_model::ModelHandle::from("legwalker".to_string()),
+        leg_model(),
+    );
+    let mover_colliders: Vec<MoverCollider> = Vec::new();
+    let mover_states = MoverTickStateTable::default();
+
+    super::update_pose_inputs(&mut registry);
+    super::update_foot_ground_probes(
+        &mut registry,
+        &world,
+        &mover_colliders,
+        &mover_states,
+        &store,
+        0.0,
+    );
+
+    registry
+        .get_component::<MeshComponent>(entity)
+        .unwrap()
+        .pose_inputs
+        .expect("leg entity receives pose inputs")
+}
+
+#[test]
+fn foot_ground_probes_are_deterministic_and_carry_forward_aim() {
+    let position = Vec3::new(0.0, 1.0, 0.0);
+    let yaw = 0.4;
+
+    let first = probe_leg_entity(position, yaw);
+    let second = probe_leg_entity(position, yaw);
+
+    // Determinism: repeated headless runs of the same tick state are identical.
+    assert_eq!(
+        first.feet, second.feet,
+        "probe feet must be bit-identical run-to-run"
+    );
+    assert_eq!(first.foot_count, second.foot_count);
+
+    // foot_count equals the entity's leg-set length.
+    assert_eq!(first.foot_count, 1);
+
+    // Flat ground under the foot: contact, upward model-space normal, height.
+    let foot = first.feet[0];
+    assert!(foot.hit, "foot over flat floor finds ground");
+    assert!(
+        (foot.normal - Vec3::Y).length() < 1.0e-4,
+        "upward model-space normal, got {:?}",
+        foot.normal
+    );
+    // Entity origin sits 1.0 above the floor, so the model-space ground height
+    // under the foot is -1.0.
+    assert!(
+        (foot.contact_height + 1.0).abs() < 1.0e-3,
+        "contact_height = {}",
+        foot.contact_height
+    );
+
+    // Aim/heading fields authored by update_pose_inputs survive the probe write.
+    assert!(
+        (first.heading_yaw - yaw).abs() < 1.0e-5,
+        "heading preserved through the probe RMW, got {}",
+        first.heading_yaw
+    );
+    assert!((first.aim_yaw - yaw).abs() < 1.0e-5);
+    assert!(first.aim_pitch.abs() < 1.0e-6);
+
+    // A foot with no ground within the planting reach reports a miss, yet
+    // foot_count still equals the leg-set length and the aim fields stand.
+    let high = probe_leg_entity(Vec3::new(0.0, 10.0, 0.0), yaw);
+    assert_eq!(high.foot_count, 1);
+    assert!(
+        !high.feet[0].hit,
+        "no ground within the planting reach is a miss"
+    );
+    assert!((high.heading_yaw - yaw).abs() < 1.0e-5);
+}
+
 fn fixed_command_stream() -> Vec<RecordedCommand> {
     (0..TICK_COUNT)
         .map(|tick| {

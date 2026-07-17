@@ -1078,10 +1078,15 @@ pub(crate) fn resolve_spawners_for_level(
             &spawner.archetype_name,
         ) else {
             diagnostics.missing_archetype += 1;
-            log::warn!(
-                "[Loader] entity_spawner {id}: unknown archetype `{}`; it will spawn nothing",
-                spawner.archetype_name
-            );
+            // Empty archetype_name already warned (absent/empty key) when the
+            // spawner was parsed; don't repeat it as a confusing empty-name
+            // "unknown archetype" here.
+            if !spawner.archetype_name.is_empty() {
+                log::warn!(
+                    "[Loader] entity_spawner {id}: unknown archetype `{}`; it will spawn nothing",
+                    spawner.archetype_name
+                );
+            }
             spawner.resolved = false;
             let _ = registry.set_component(id, spawner);
             continue;
@@ -1585,6 +1590,7 @@ mod tests {
     use postretro_scripting_core::staged_manifest::{
         StagedManifest, StagedManifestBuildResult, StagedManifestBuildStatus,
     };
+    use postretro_scripting_core::state_crossings::CrossingDetector;
 
     #[test]
     fn spawner_install_resolves_only_ai_descriptors_and_replaces_prior_level_data() {
@@ -1701,7 +1707,6 @@ mod tests {
         assert_eq!(models, vec!["models/spawner_only.gltf"]);
         assert!(crate::distinct_mesh_models(&registry).is_empty());
     }
-    use postretro_scripting_core::state_crossings::CrossingDetector;
 
     const FIXTURE_MAP_A: &str = "fixture_map_a_reactor_room";
     const FIXTURE_MAP_B: &str = "fixture_map_b_combat_lab";

@@ -89,9 +89,9 @@ foundation's first consumer; the two are co-designed.
 - [ ] A `count` of 0 (or malformed) spawns nothing — the directly-assertable fact (no entities
       created); it also warns at load (a `log::warn!`, so the assertion is the spawns-nothing
       outcome, not the log line). Registry exhaustion mid-batch spawns what fits, warns, and does not
-      panic — asserted via a new low-capacity `#[cfg(test)]` registry seam (Task 2 adds it to the
-      `entities` crate) that forces `try_spawn` to return `None`, since filling to `u16::MAX` is
-      impractical.
+      panic — asserted via a new low-capacity `#[cfg(any(test, feature = "test-support"))]` registry seam
+      (Task 2 adds it to the `entities` crate) that forces `try_spawn` to return `None`, since
+      filling to `u16::MAX` is impractical.
 - [ ] In a two-peer co-op session, a host-spawned enemy appears and renders its mesh on the
       connected client and on a client that joins after the spawn, driven by its replicated
       Transform.
@@ -222,8 +222,9 @@ enemies take the spawner entity's Transform rotation (its authored `angles`, via
 so they face as placed. Degrade gracefully, matching `prop_mesh`: a `count` of 0 (parsed and defaulted at load, Task 1)
 spawns nothing; if `try_spawn` returns `None` mid-batch (the registry at `u16::MAX`), spawn what
 fits, warn once, and stop — never panic. Testing that exhaustion path needs a seam that does not
-exist yet: add a `#[cfg(test)]` capacity cap to `crates/entities/src/registry.rs` (the existing
-`#[cfg(test)]` block at `:1046` manipulates generation, not slot count, and `try_spawn` (`:732`)
+exist yet: add a `#[cfg(any(test, feature = "test-support"))]` capacity cap to
+`crates/entities/src/registry.rs` (the existing `#[cfg(test)]` block at `:1046` manipulates
+generation, not slot count, and `try_spawn` (`:732`)
 otherwise only returns `None` at `slots.len() >= u16::MAX`) — a test-only cap so `try_spawn` returns
 `None` at a low bound. This is a cross-crate `entities` edit this task owns (AC 7). Do not validate spawn
 positions against geometry or the navmesh — a spawner inside a wall is an authoring bug for
@@ -284,14 +285,17 @@ replace, it).
 
 ### Task 5: SDK `spawner({ tag }).fire()` handle, typedefs, validators
 
-Add the spawner selector and handle under `sdk/lib/` — `spawner(filter: { tag?: string })` returning
+Add the spawner selector and handle under `sdk/lib/` — `spawner(filter: { tag: string })` returning
 a handle whose `fire()` emits a single `PrimitiveReactionDescriptor`
-(`{ primitive: "spawnFromSpawner", tag }`, no args — `count` lives on the spawner component). This is
+(`{ primitive: "spawnFromSpawner", tag }`, no args — `count` lives on the spawner component). `tag` is
+required: a missing or empty tag is a compile-time/validation error, not a runtime drop — the SDK
+typedefs and the JS/Lua reaction-argument validators reject it. This is
 the fire-time-tag handle family the foundation establishes with `enemies({ tag })`: object-filter
 selector, tag-keyed descriptor, `damage(tag)` builder template (`sdk/lib/data_script.ts:204`). Mirror
 in Luau. Extend the typedef templates (`crates/scripting-core/src/typedef/templates/`), regenerate
 `postretro.d.ts` / `.d.luau`, update the drift snapshot, add TS/Luau parity fixtures. Update the
-reaction-argument validators to accept `spawnFromSpawner` and reject a malformed target. (The
+reaction-argument validators to accept `spawnFromSpawner` and reject a malformed target — including a
+missing or empty `tag`. (The
 fire-time zero-match warn-once — a pre-placed spawner's empty tag is a likely typo, distinct from
 the foundation's fire-time-tag enemy `debug` no-op — is the executor's, specified in Task 2.) No
 arm/disarm SDK work — enemy aggro authoring is the foundation's `enemies({ tag })` handle. No

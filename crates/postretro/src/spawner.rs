@@ -4,6 +4,9 @@
 //! across level reloads. Its per-level interior is replaced atomically during
 //! lifecycle install, leaving the later fixed-tick executor no reason to enter
 //! a script context or data registry.
+//!
+//! See: context/lib/scripting.md §12 (reaction dispatch — `spawnFromSpawner`);
+//!      context/lib/entity_model.md (entity materialization)
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -19,14 +22,16 @@ use postretro_scripting_core::data_descriptors::EntityTypeDescriptor;
 use postretro_scripting_core::reaction_registry::ReactionPrimitiveRegistry;
 
 use crate::netcode::MAX_DELAY_MICROS;
-use crate::scripting::builtins::data_archetype::attach_descriptor_components;
+use crate::scripting::builtins::data_archetype::{
+    ai_capsule_center_from_feet_offset, attach_descriptor_components,
+};
 use crate::scripting::map_entity::MapEntity;
 
 #[derive(Debug)]
 pub(crate) struct SpawnContextState {
     pub(crate) resolved_enemy_descriptors: HashMap<String, EntityTypeDescriptor>,
     pub(crate) agent_params: Option<NavAgentParams>,
-    /// Task 2 uses this for one warning per missing spawner tag per level.
+    /// One zero-match warn per distinct tag per level; cleared on level refill.
     pub(crate) warned_zero_match_tags: HashSet<String>,
     /// Runtime-spawned mesh entities awaiting their already-built install-time
     /// clip table. Drained once by the host after attachment.
@@ -188,7 +193,7 @@ fn spawn_resolved_spawners(
                 .cloned()
                 .map(|descriptor| (descriptor, state.agent_params))
         }) else {
-            log::warn!(
+            log::debug!(
                 "[Spawner] {spawner_id} resolved archetype `{}` is absent from this level cache; skipping",
                 spawner.archetype_name
             );
@@ -198,10 +203,25 @@ fn spawn_resolved_spawners(
         let radius = agent_params
             .unwrap_or(crate::scripting::builtins::data_archetype::DEFAULT_AGENT_PARAMS)
             .radius;
+        // The spawner origin authors the enemy's feet, matching the map-placement
+        // path (`spawn_descriptor_instance`). Raise the base to the AI capsule
+        // center so the shared `attach_descriptor_components` mesh offset and
+        // hitbox rebase — both of which assume a center-origin Transform — land a
+        // spawner-spawned enemy identically to a map-placed one of the same
+        // archetype (otherwise it sinks ~half a capsule into the floor).
+        let origin_shift = ai_capsule_center_from_feet_offset(&descriptor, agent_params);
         let right = spawner_transform.rotation * Vec3::X;
         for index in 0..spawner.count {
+            // The spawner origin authors the enemy's feet; copies fan out along
+            // the `right` axis. This feet position is the synthetic MapEntity
+            // `origin` — the un-raised value — so descriptor components that stamp
+            // straight from `MapEntity.origin` (e.g. a `light` block) land at the
+            // feet, exactly as a map-placed instance does (`spawn_descriptor_instance`
+            // passes the raw feet origin while raising only the Transform). The
+            // Transform below is the raised capsule center.
+            let feet_position = spawner_transform.position + right * (index as f32 * 2.0 * radius);
             let transform = Transform {
-                position: spawner_transform.position + right * (index as f32 * 2.0 * radius),
+                position: feet_position + origin_shift,
                 rotation: spawner_transform.rotation,
                 scale: spawner_transform.scale,
             };
@@ -211,7 +231,7 @@ fn spawn_resolved_spawners(
             };
             let synthetic_map_entity = MapEntity {
                 classname: spawner.archetype_name.clone(),
-                origin: transform.position,
+                origin: feet_position,
                 angles: Vec3::ZERO,
                 key_values: [("enabled_on_spawn".to_string(), "true".to_string())]
                     .into_iter()
@@ -304,16 +324,31 @@ mod tests {
         context_with_descriptor(ai_enemy_descriptor("cultist"))
     }
 
+    fn test_agent_params() -> NavAgentParams {
+        NavAgentParams {
+            radius: 0.4,
+            height: 1.8,
+            step_height: 0.4,
+            max_slope_deg: 45.0,
+        }
+    }
+
+    /// The feet→center raise the materialization path applies to the `cultist`
+    /// AI archetype under the shared test agent params. Computed via the same
+    /// offset helper the production path uses so these assertions track any
+    /// params change rather than hard-coding the raise.
+    fn cultist_feet_to_center_shift() -> Vec3 {
+        ai_capsule_center_from_feet_offset(
+            &ai_enemy_descriptor("cultist"),
+            Some(test_agent_params()),
+        )
+    }
+
     fn context_with_descriptor(descriptor: EntityTypeDescriptor) -> SpawnContext {
         let context = SpawnContext::default();
         context.replace_level_data(
             [("cultist".to_string(), descriptor)].into_iter().collect(),
-            Some(NavAgentParams {
-                radius: 0.4,
-                height: 1.8,
-                step_height: 0.4,
-                max_slope_deg: 45.0,
-            }),
+            Some(test_agent_params()),
         );
         context
     }
@@ -563,10 +598,56 @@ mod tests {
         let second = registry.get_component::<Transform>(enemies[1]).unwrap();
         assert_eq!(first.rotation, transform.rotation);
         assert_eq!(second.rotation, transform.rotation);
-        assert!((first.position - transform.position).length() < 1e-5);
+        // The base sits at the AI capsule center (feet→center raise); the
+        // horizontal `right`-axis fan-out spacing is unchanged.
+        let shift = cultist_feet_to_center_shift();
+        assert!((first.position - (transform.position + shift)).length() < 1e-5);
         assert!(
-            (second.position - (transform.position + transform.rotation * Vec3::X * 0.8)).length()
+            (second.position - (transform.position + shift + transform.rotation * Vec3::X * 0.8))
+                .length()
                 < 1e-5
+        );
+    }
+
+    #[test]
+    fn spawn_raises_feet_origin_to_ai_capsule_center() {
+        // A spawner authors its origin at the enemy's feet; materialization must
+        // raise the Transform to the capsule center so the shared
+        // `attach_descriptor_components` mesh offset and hitbox rebase (both of
+        // which assume a center-origin Transform) land a spawner-spawned enemy
+        // identically to a map-placed one. Without the raise the enemy sinks
+        // ~half a capsule into the floor. Asserting against the same offset
+        // helper the production path uses keeps this honest if params change.
+        let mut registry = EntityRegistry::new();
+        let origin = Vec3::new(5.0, 1.0, -2.0);
+        add_spawner(
+            &mut registry,
+            TAG,
+            1,
+            true,
+            Transform {
+                position: origin,
+                ..Transform::default()
+            },
+        );
+        let context = context();
+
+        spawn_from_spawner_tag(&mut registry, TAG, &context);
+
+        let enemy = spawned(&registry).pop().expect("one spawned enemy");
+        let position = registry.get_component::<Transform>(enemy).unwrap().position;
+        let shift = cultist_feet_to_center_shift();
+        assert!(
+            shift.length() > 1e-5,
+            "an `ai` archetype must raise off its feet — a zero shift would make this test vacuous"
+        );
+        assert!(
+            (position - (origin + shift)).length() < 1e-5,
+            "the spawned Transform sits at the capsule center, not the raw feet origin"
+        );
+        assert!(
+            (position - origin).length() > 1e-5,
+            "the raw spawner origin would sink the enemy ~half a capsule into the floor"
         );
     }
 
@@ -688,11 +769,15 @@ mod tests {
             .filter_map(|(id, _)| registry.get_component::<LightComponent>(id).ok())
             .collect();
         assert_eq!(lights.len(), 2);
+        // A descriptor light stamps from the synthetic `MapEntity.origin`, which
+        // mirrors map placement: the FEET position (no capsule-center raise), so
+        // a spawner-spawned light lands identically to a map-placed one of the
+        // same archetype. The capsule shift raises only the Transform, not the
+        // light. The horizontal `right`-axis fan-out spacing is preserved.
+        let right = transform.rotation * Vec3::X;
         assert!((Vec3::from_array(lights[0].origin) - transform.position).length() < 1e-5);
         assert!(
-            (Vec3::from_array(lights[1].origin)
-                - (transform.position + transform.rotation * Vec3::X * 0.8))
-                .length()
+            (Vec3::from_array(lights[1].origin) - (transform.position + right * 0.8)).length()
                 < 1e-5
         );
     }

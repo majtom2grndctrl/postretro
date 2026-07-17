@@ -674,11 +674,22 @@ fn probe_foot(
     let down = Vector::new(0.0, -1.0, 0.0);
     // Static-only fast path; fold movers in only when present.
     let hit = if mover_colliders.is_empty() {
-        cast_ray(collision_world, origin, down, reach)
-            .map(|h| (h.time_of_impact, Vec3::new(h.normal.x, h.normal.y, h.normal.z)))
+        cast_ray(collision_world, origin, down, reach).map(|h| {
+            (
+                h.time_of_impact,
+                Vec3::new(h.normal.x, h.normal.y, h.normal.z),
+            )
+        })
     } else {
-        cast_ray_combined(collision_world, mover_colliders, mover_poses, origin, down, reach)
-            .map(|h| (h.time_of_impact, h.normal))
+        cast_ray_combined(
+            collision_world,
+            mover_colliders,
+            mover_poses,
+            origin,
+            down,
+            reach,
+        )
+        .map(|h| (h.time_of_impact, h.normal))
     };
     let Some((toi, normal_world)) = hit else {
         return miss;

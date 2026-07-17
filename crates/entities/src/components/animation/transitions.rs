@@ -273,11 +273,11 @@ pub fn restart_animation_clip(
 
 #[cfg(test)]
 mod tests {
-    use super::{restart_animation_clip, switch_animation_state, RestartResult, SwitchResult};
+    use super::{RestartResult, SwitchResult, restart_animation_clip, switch_animation_state};
     use crate::components::animation::test_support::{spawn_animated, usable_state};
     use crate::components::animation::{
-        resolve_pending_animation_stamps, AnimationState, FadeSourceKind, InterruptPolicy,
-        InterruptedOutgoing, MeshAnimation, DEFAULT_CROSSFADE_MS,
+        AnimationState, DEFAULT_CROSSFADE_MS, FadeSourceKind, InterruptPolicy, InterruptedOutgoing,
+        MeshAnimation, resolve_pending_animation_stamps,
     };
     use crate::components::mesh::MeshComponent;
     use crate::registry::{EntityRegistry, Transform};

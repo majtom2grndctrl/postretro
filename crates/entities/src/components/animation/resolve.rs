@@ -155,7 +155,7 @@ pub fn resolve_pending_animation_stamps(registry: &mut EntityRegistry, now: f64)
 mod tests {
     use super::resolve_pending_animation_stamps;
     use crate::components::animation::test_support::{spawn_animated, two_state_animation};
-    use crate::components::animation::{switch_animation_state, FadeSourceKind};
+    use crate::components::animation::{FadeSourceKind, switch_animation_state};
     use crate::components::mesh::MeshComponent;
     use crate::registry::{EntityRegistry, Transform};
 

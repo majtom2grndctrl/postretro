@@ -1294,7 +1294,8 @@ fn hit_zone_store_with_clip_travel_speed(
     use postretro_model::skeleton::{AnimationClip, Skeleton};
     use std::sync::Arc;
 
-    let mut clips: Vec<AnimationClip> = (0..=clip_index).map(|_| AnimationClip::default()).collect();
+    let mut clips: Vec<AnimationClip> =
+        (0..=clip_index).map(|_| AnimationClip::default()).collect();
     clips[clip_index].travel_speed = travel_speed;
     let mut store = HitZoneStore::new();
     store.insert_for_test(
@@ -1354,7 +1355,10 @@ fn update_brain_playback_rate_scales_from_clip_travel_speed() {
         (rate - degenerate).abs() > 1.0e-3,
         "travel-speed calibration must differ from the move_speed fallback",
     );
-    assert!(rate > 1.0, "moving faster than the authored stride plays faster");
+    assert!(
+        rate > 1.0,
+        "moving faster than the authored stride plays faster"
+    );
 }
 
 // `speedScale: false` disables rate-scaling entirely: even with a calibrated

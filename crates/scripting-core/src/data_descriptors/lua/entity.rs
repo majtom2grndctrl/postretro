@@ -256,8 +256,7 @@ pub fn mesh_descriptor_from_lua(table: &Table) -> Result<MeshDescriptor, Descrip
         match raw {
             LuaValue::Nil => None,
             LuaValue::Table(loco_table) => {
-                let speed_scale =
-                    get_optional_bool_lua(&loco_table, "speedScale")?.unwrap_or(true);
+                let speed_scale = get_optional_bool_lua(&loco_table, "speedScale")?.unwrap_or(true);
                 Some(LocomotionDescriptor { speed_scale })
             }
             other => {

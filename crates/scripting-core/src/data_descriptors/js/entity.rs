@@ -206,10 +206,9 @@ pub fn mesh_descriptor_from_js<'js>(obj: &Object<'js>) -> Result<MeshDescriptor,
         if raw.is_null() || raw.is_undefined() {
             None
         } else {
-            let loco_obj =
-                Object::from_value(raw).map_err(|_| DescriptorError::InvalidShape {
-                    reason: "`components.mesh.locomotion` must be an object".to_string(),
-                })?;
+            let loco_obj = Object::from_value(raw).map_err(|_| DescriptorError::InvalidShape {
+                reason: "`components.mesh.locomotion` must be an object".to_string(),
+            })?;
             let speed_scale = get_optional_bool_js(&loco_obj, "speedScale")?.unwrap_or(true);
             Some(LocomotionDescriptor { speed_scale })
         }

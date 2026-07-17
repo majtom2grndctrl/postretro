@@ -630,7 +630,10 @@ mod tests {
 
         let ankle = model_pos(&skeleton, &locals, 2);
         assert!((ankle.y - -1.8).abs() < 1e-3, "ankle y = {}", ankle.y);
-        assert!(ankle.x.abs() < 1e-3 && ankle.z.abs() < 1e-3, "ankle xz = {ankle:?}");
+        assert!(
+            ankle.x.abs() < 1e-3 && ankle.z.abs() < 1e-3,
+            "ankle xz = {ankle:?}"
+        );
     }
 
     #[test]
@@ -656,7 +659,10 @@ mod tests {
         // ...with the sole (foot model +Y) aligned to the ground normal.
         let foot_rot = joint_model_transform(&skeleton, &locals, 2).1;
         let foot_up = foot_rot * Vec3::Y;
-        assert!(foot_up.dot(normal) > 0.999, "foot_up = {foot_up:?}, normal = {normal:?}");
+        assert!(
+            foot_up.dot(normal) > 0.999,
+            "foot_up = {foot_up:?}, normal = {normal:?}"
+        );
     }
 
     #[test]
@@ -688,14 +694,27 @@ mod tests {
 
         let reach = (ankle_solved - hip).length();
         // Reached its full length, but not hyperextended past the segment sum.
-        assert!(reach <= segment_sum + 1e-3, "reach {reach} > segment sum {segment_sum}");
-        assert!((reach - segment_sum).abs() < 1e-2, "leg did not extend: reach {reach}");
+        assert!(
+            reach <= segment_sum + 1e-3,
+            "reach {reach} > segment sum {segment_sum}"
+        );
+        assert!(
+            (reach - segment_sum).abs() < 1e-2,
+            "leg did not extend: reach {reach}"
+        );
         // And nowhere near the unreachable target height.
-        assert!(ankle_solved.y > -3.0, "ankle overshot toward target: {ankle_solved:?}");
+        assert!(
+            ankle_solved.y > -3.0,
+            "ankle overshot toward target: {ankle_solved:?}"
+        );
         // Knee interior angle is straight (hip and ankle directions opposed).
         let to_hip = (hip - knee_solved).normalize();
         let to_ankle = (ankle_solved - knee_solved).normalize();
-        assert!(to_hip.dot(to_ankle) < -0.999, "knee not straightened: {}", to_hip.dot(to_ankle));
+        assert!(
+            to_hip.dot(to_ankle) < -0.999,
+            "knee not straightened: {}",
+            to_hip.dot(to_ankle)
+        );
     }
 
     #[test]
@@ -746,16 +765,16 @@ mod tests {
         // A root with three legs (not biped-hardcoded): one two-bone solve per
         // leg, each driven by its own probe.
         let skeleton = skeleton_from_parents(&[
-            None,     // 0 root
-            Some(0),  // 1 hip A
-            Some(1),  // 2 knee A
-            Some(2),  // 3 ankle A
-            Some(0),  // 4 hip B
-            Some(4),  // 5 knee B
-            Some(5),  // 6 ankle B
-            Some(0),  // 7 hip C
-            Some(7),  // 8 knee C
-            Some(8),  // 9 ankle C
+            None,    // 0 root
+            Some(0), // 1 hip A
+            Some(1), // 2 knee A
+            Some(2), // 3 ankle A
+            Some(0), // 4 hip B
+            Some(4), // 5 knee B
+            Some(5), // 6 ankle B
+            Some(0), // 7 hip C
+            Some(7), // 8 knee C
+            Some(8), // 9 ankle C
         ]);
         let knee_offset = Vec3::new(0.0, -1.0, 0.2);
         let ankle_offset = Vec3::new(0.0, -1.0, -0.2);
@@ -782,17 +801,39 @@ mod tests {
         ]);
         // Distinct ground heights per leg prove independence.
         let inputs = inputs_with_feet(&[
-            FootProbe { contact_height: -1.9, normal: Vec3::Y, hit: true },
-            FootProbe { contact_height: -1.7, normal: Vec3::Y, hit: true },
-            FootProbe { contact_height: -1.5, normal: Vec3::Y, hit: true },
+            FootProbe {
+                contact_height: -1.9,
+                normal: Vec3::Y,
+                hit: true,
+            },
+            FootProbe {
+                contact_height: -1.7,
+                normal: Vec3::Y,
+                hit: true,
+            },
+            FootProbe {
+                contact_height: -1.5,
+                normal: Vec3::Y,
+                hit: true,
+            },
         ]);
 
         apply_pose_modifier_stack(&stack, &inputs, &skeleton, &mut locals);
 
-        for (ankle, expected_y, expected_x) in [(3usize, -1.9, -1.0), (6, -1.7, 0.0), (9, -1.5, 1.0)] {
+        for (ankle, expected_y, expected_x) in
+            [(3usize, -1.9, -1.0), (6, -1.7, 0.0), (9, -1.5, 1.0)]
+        {
             let pos = model_pos(&skeleton, &locals, ankle);
-            assert!((pos.y - expected_y).abs() < 1e-3, "ankle {ankle} y = {}", pos.y);
-            assert!((pos.x - expected_x).abs() < 1e-3, "ankle {ankle} x = {}", pos.x);
+            assert!(
+                (pos.y - expected_y).abs() < 1e-3,
+                "ankle {ankle} y = {}",
+                pos.y
+            );
+            assert!(
+                (pos.x - expected_x).abs() < 1e-3,
+                "ankle {ankle} x = {}",
+                pos.x
+            );
             assert!(pos.z.abs() < 1e-3, "ankle {ankle} z = {}", pos.z);
         }
     }

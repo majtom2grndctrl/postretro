@@ -160,11 +160,7 @@ mod tests {
         // override on `attack` must serialize while `idle`'s absent override
         // stays off the wire.
         animation.speed_scale = false;
-        animation
-            .states
-            .get_mut("attack")
-            .unwrap()
-            .travel_speed = Some(3.5);
+        animation.states.get_mut("attack").unwrap().travel_speed = Some(3.5);
         let value = MeshComponent {
             model: "decraniated".into(),
             animation: Some(animation),

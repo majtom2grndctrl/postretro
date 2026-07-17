@@ -2,7 +2,7 @@
 // for `MeshAnimation`.
 // See: context/lib/scripting.md §10.3 (Mesh Animation)
 
-use super::{default_playback_rate, MeshAnimation};
+use super::{MeshAnimation, default_playback_rate};
 
 /// Lowest locomotion playback-rate multiplier. The animation-rate producers
 /// pass their raw `speed_xz / move_speed` ratio through
@@ -176,9 +176,7 @@ mod tests {
         assert!(
             (MeshAnimation::locomotion_rate_ratio(4.0, Some(0.0), 5.0) - 1.0).abs() < f32::EPSILON,
         );
-        assert!(
-            (MeshAnimation::locomotion_rate_ratio(4.0, None, 0.0) - 1.0).abs() < f32::EPSILON,
-        );
+        assert!((MeshAnimation::locomotion_rate_ratio(4.0, None, 0.0) - 1.0).abs() < f32::EPSILON,);
     }
 
     #[test]

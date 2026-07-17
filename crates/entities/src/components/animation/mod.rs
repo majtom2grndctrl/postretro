@@ -19,7 +19,7 @@ pub use state::{
     InterruptedOutgoing,
 };
 pub use transitions::{
-    restart_animation_clip, switch_animation_state, RestartResult, SwitchResult,
+    RestartResult, SwitchResult, restart_animation_clip, switch_animation_state,
 };
 
 /// The authored playback rate a state samples at before any locomotion scaling.

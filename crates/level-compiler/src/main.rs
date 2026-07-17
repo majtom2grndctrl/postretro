@@ -842,6 +842,28 @@ fn is_compiler_stale(binary_path: &Path) -> bool {
     }
 }
 
+/// Return the non-empty streams captured from a child process.
+fn captured_command_output(stdout: &[u8], stderr: &[u8]) -> Vec<(&'static str, String)> {
+    [("stdout", stdout), ("stderr", stderr)]
+        .into_iter()
+        .filter_map(|(stream, bytes)| {
+            let output = String::from_utf8_lossy(bytes);
+            (!output.trim().is_empty()).then(|| (stream, output.into_owned()))
+        })
+        .collect()
+}
+
+/// Send captured child-process streams through the compiler logger.
+///
+/// A data-script sidecar rebuild may run while the TUI owns the alternate
+/// screen. Child processes must therefore never inherit the terminal: their
+/// output is captured, then the active reporter renders it in its log pane.
+fn log_captured_command_output(label: &str, stdout: &[u8], stderr: &[u8], level: log::Level) {
+    for (stream, output) in captured_command_output(stdout, stderr) {
+        log::log!(level, "[prl-build] {label} {stream}:\n{output}");
+    }
+}
+
 fn find_scripts_build() -> Option<PathBuf> {
     let exe_dir = std::env::current_exe()
         .ok()
@@ -887,8 +909,14 @@ fn find_scripts_build() -> Option<PathBuf> {
         if !cfg!(debug_assertions) {
             cmd.arg("--release");
         }
-        match cmd.status() {
-            Ok(status) if status.success() => {
+        match cmd.output() {
+            Ok(output) if output.status.success() => {
+                log_captured_command_output(
+                    "cargo build",
+                    &output.stdout,
+                    &output.stderr,
+                    log::Level::Info,
+                );
                 log::info!("[prl-build] scripts-build compiled successfully.");
                 if let Some(ref dir) = exe_dir {
                     let candidate = dir.join(name);
@@ -897,10 +925,16 @@ fn find_scripts_build() -> Option<PathBuf> {
                     }
                 }
             }
-            Ok(status) => {
+            Ok(output) => {
                 log::error!(
                     "[prl-build] Failed to compile scripts-build: exit code {}",
-                    status
+                    output.status
+                );
+                log_captured_command_output(
+                    "cargo build",
+                    &output.stdout,
+                    &output.stderr,
+                    log::Level::Error,
                 );
             }
             Err(err) => {
@@ -1076,6 +1110,25 @@ fn js_is_fresh(ts_path: &std::path::Path, js_path: &std::path::Path) -> Option<b
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn captured_command_output_preserves_both_streams_without_terminal_writes() {
+        // Regression: Cargo inherited stdout/stderr while the TUI owned the
+        // alternate screen, corrupting the rendered interface.
+        let output = captured_command_output(b"build note\n", b"build warning\n");
+        assert_eq!(
+            output,
+            vec![
+                ("stdout", "build note\n".to_owned()),
+                ("stderr", "build warning\n".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn captured_command_output_omits_blank_streams() {
+        assert!(captured_command_output(b"  \n", b"").is_empty());
+    }
 
     fn unique_temp_dir(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!(

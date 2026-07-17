@@ -200,4 +200,5 @@
 "_falloff_range" "400"
 "light" "350"
 "style" ""
+"_tags" "alarm_light"
 }

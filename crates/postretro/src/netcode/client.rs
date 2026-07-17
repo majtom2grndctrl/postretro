@@ -38,7 +38,9 @@ use postretro_net::wire::{
     WireKinematicMoverState, WirePlayerMovementState,
 };
 
-use postretro_entities::components::mesh::{MeshComponent, SwitchResult, switch_animation_state};
+use postretro_entities::components::mesh::{
+    MeshAnimation, MeshComponent, SwitchResult, switch_animation_state,
+};
 use postretro_entities::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, KinematicMoverComponent,
     KinematicMoverMode, Transform,
@@ -82,6 +84,9 @@ const REPAIR_RESEND_INTERVAL_MS: f32 = 200.0;
 struct RemoteEnemyWalkPlayback {
     move_speed: f32,
     walk_state: String,
+    /// Load-derived speed for the alert state's clip. The runtime state applies
+    /// its authored `travelSpeed` override before this value.
+    derived_travel_speed: Option<f32>,
 }
 
 /// A wire payload the client received but deliberately did not apply, recorded as a
@@ -1334,15 +1339,16 @@ impl ClientReplication {
     pub(crate) fn cache_remote_enemy_walk_playback(
         &mut self,
         network_id: NetworkId,
-        reference: Option<(f32, String)>,
+        reference: Option<(f32, String, Option<f32>)>,
     ) {
         match reference {
-            Some((move_speed, walk_state)) => {
+            Some((move_speed, walk_state, derived_travel_speed)) => {
                 self.remote_enemy_walk_playback.insert(
                     network_id,
                     RemoteEnemyWalkPlayback {
                         move_speed,
                         walk_state,
+                        derived_travel_speed,
                     },
                 );
             }
@@ -1370,12 +1376,17 @@ impl ClientReplication {
             .get_component::<MeshComponent>(entity_id)
             .ok()
             .and_then(|mesh| mesh.animation.as_ref())
-            .map(|animation| {
-                if animation.current_state == reference.walk_state && reference.move_speed > 0.0 {
-                    speed_xz / reference.move_speed
-                } else {
-                    1.0
+            .and_then(|animation| {
+                if animation.current_state != reference.walk_state || !animation.speed_scale {
+                    return Some(1.0);
                 }
+                let state = animation.states.get(&animation.current_state)?;
+                let effective = state.effective_travel_speed(reference.derived_travel_speed);
+                Some(MeshAnimation::locomotion_rate_ratio(
+                    speed_xz,
+                    effective,
+                    reference.move_speed,
+                ))
             });
         let Some(raw_ratio) = raw_ratio else {
             return;
@@ -1809,6 +1820,7 @@ mod tests {
             looping: true,
             crossfade_ms: DEFAULT_CROSSFADE_MS,
             interrupt: InterruptPolicy::Smooth,
+            travel_speed: None,
             clip_index: None,
         };
         let mut states = HashMap::new();
@@ -2836,7 +2848,10 @@ mod tests {
         resolve_pending_animation_stamps(&mut registry, 0.0);
         // 60 m/s is the reference speed: the first presented segment is half-speed
         // (5 m over 10 server ticks), then the next is full speed (10 m).
-        client.cache_remote_enemy_walk_playback(NetworkId(7), Some((60.0, "locomotion".into())));
+        client.cache_remote_enemy_walk_playback(
+            NetworkId(7),
+            Some((60.0, "locomotion".into(), None)),
+        );
 
         client.apply_snapshot(
             &mut registry,
@@ -2881,6 +2896,94 @@ mod tests {
     }
 
     #[test]
+    fn remote_locomotion_rate_precedence_matrix_is_override_then_derived_then_fallback() {
+        struct Case {
+            label: &'static str,
+            override_speed: Option<f32>,
+            derived_speed: Option<f32>,
+            speed_scale: bool,
+            expected: f32,
+        }
+        let measured = 3.0_f32;
+        let move_speed = 3.5_f32;
+        let cases = [
+            Case {
+                label: "override wins over derived",
+                override_speed: Some(4.0),
+                derived_speed: Some(2.5),
+                speed_scale: true,
+                expected: measured / 4.0,
+            },
+            Case {
+                label: "derived clip speed",
+                override_speed: None,
+                derived_speed: Some(2.5),
+                speed_scale: true,
+                expected: measured / 2.5,
+            },
+            Case {
+                label: "E10 move-speed fallback",
+                override_speed: None,
+                derived_speed: None,
+                speed_scale: true,
+                expected: measured / move_speed,
+            },
+            Case {
+                label: "speedScale false",
+                override_speed: Some(4.0),
+                derived_speed: Some(2.5),
+                speed_scale: false,
+                expected: 1.0,
+            },
+        ];
+
+        for case in cases {
+            let mut registry = EntityRegistry::new();
+            let mut client = ClientReplication::new();
+            client.apply_snapshot(
+                &mut registry,
+                &snapshot(
+                    0,
+                    100,
+                    vec![full_baseline(7, 1, vec![transform_payload(0.0)])],
+                ),
+            );
+            let id = *client.map().get(&NetworkId(7)).expect("remote is mapped");
+            let mut mesh = unresolved_mesh();
+            let animation = mesh.animation.as_mut().unwrap();
+            animation.current_state = "locomotion".to_string();
+            animation.speed_scale = case.speed_scale;
+            animation.states.get_mut("locomotion").unwrap().travel_speed = case.override_speed;
+            registry.set_component(id, mesh).unwrap();
+            client.cache_remote_enemy_walk_playback(
+                NetworkId(7),
+                Some((move_speed, "locomotion".to_string(), case.derived_speed)),
+            );
+
+            client.update_remote_enemy_walk_playback_rate(
+                &mut registry,
+                NetworkId(7),
+                id,
+                measured,
+                1.0,
+            );
+            let actual = registry
+                .get_component::<MeshComponent>(id)
+                .unwrap()
+                .animation
+                .as_ref()
+                .unwrap()
+                .rate;
+            let expected = case.expected.clamp(RATE_MIN, RATE_MAX);
+            assert!(
+                (actual - expected).abs() <= EPSILON,
+                "{}: expected {expected}, got {actual}",
+                case.label
+            );
+        }
+    }
+
+    #[test]
     fn remote_non_walk_state_leaves_animation_component_unchanged() {
         let mut registry = EntityRegistry::new();
         let mut client = ClientReplication::new();
@@ -2904,7 +3007,10 @@ mod tests {
             .current_state = "attack".into();
         registry.set_component(id, mesh).expect("attach mesh");
         resolve_pending_animation_stamps(&mut registry, 0.0);
-        client.cache_remote_enemy_walk_playback(NetworkId(7), Some((60.0, "locomotion".into())));
+        client.cache_remote_enemy_walk_playback(
+            NetworkId(7),
+            Some((60.0, "locomotion".into(), None)),
+        );
 
         let before = registry
             .get_component::<MeshComponent>(id)

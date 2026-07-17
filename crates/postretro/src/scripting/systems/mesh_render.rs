@@ -945,6 +945,7 @@ mod tests {
             looping,
             crossfade_ms,
             interrupt: InterruptPolicy::Smooth,
+            travel_speed: None,
             clip_index: idx,
         }
     }
@@ -1088,6 +1089,7 @@ mod tests {
             aim_pitch: 0.2,
             aim_yaw: 0.7,
             heading_yaw: 0.4,
+            ..Default::default()
         };
         let mut mesh = reg.get_component::<MeshComponent>(id).unwrap().clone();
         mesh.pose_inputs = Some(expected);
@@ -1182,6 +1184,7 @@ mod tests {
                     radius: Some(0.25),
                 })],
                 derived_bound: Some(Aabb::default()),
+                legs: Vec::new(),
             },
         );
         store

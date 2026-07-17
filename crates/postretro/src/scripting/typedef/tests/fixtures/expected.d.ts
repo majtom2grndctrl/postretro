@@ -42,6 +42,8 @@ declare module "postretro" {
     loop?: boolean;
     /** Crossfade duration into this state, in milliseconds. Optional; must be finite and >= 0. Defaults to 150 ms. */
     crossfadeMs?: number;
+    /** Per-state locomotion travel-speed override, in ground units per animated second. Optional; must be finite and > 0. When present it replaces this clip's load-derived travel speed; omit to use the derived value. V1 consumes this calibration only when the state is the AI alert-mapped locomotion state. */
+    travelSpeed?: number;
     /** How a fade into this state takes over an in-flight fade. Optional; defaults to "smooth". */
     interrupt?: InterruptPolicy;
   };
@@ -54,6 +56,14 @@ declare module "postretro" {
     animations?: { readonly [state: string]: AnimationStateDescriptor };
     /** The state entered at spawn. Required exactly when `animations` is present; must name a declared state. */
     defaultState?: string;
+    /** Optional locomotion calibration block. Carries the `speedScale` rate-scaling toggle; omit for the default (rate-scaled) behavior. */
+    locomotion?: LocomotionDescriptor;
+  };
+
+  /** Authored per-archetype locomotion calibration attached to `MeshDescriptor.locomotion`. Sibling to the per-state `travelSpeed` override. */
+  export type LocomotionDescriptor = {
+    /** Whether V1 rate-scales this archetype's AI alert-mapped locomotion state. Other animation states are never rate-scaled. Optional; defaults to true. Set false to play the authored cadence unscaled. */
+    speedScale?: boolean;
   };
 
   /** Entity archetype registered through `ModManifest.entities`. `defineEntity()` is a typed identity helper for constructing this object. The descriptor is engine-global and survives level unloads. */
@@ -552,4 +562,820 @@ declare module "postretro" {
 
   /** Returns true if the entity id refers to a live entity. */
   export function entityExists(id: EntityId): boolean;
+  /** Generated engine-owned state reference tree returned by `getGameState()`. */
+  export type GameStateRefs = {
+    readonly input: {
+      readonly mode: ReadonlyStateRef<"pointer" | "focus">;
+    };
+    readonly player: {
+      readonly ammo: ReadonlyStateRef<number>;
+      readonly ammoReserve: ReadonlyStateRef<number>;
+      readonly health: ReadonlyStateRef<number>;
+      readonly maxHealth: ReadonlyStateRef<number>;
+      readonly reloadActive: ReadonlyStateRef<boolean>;
+      readonly reloadProgress: ReadonlyStateRef<number>;
+      readonly weaponCooldownMs: ReadonlyStateRef<number>;
+    };
+    readonly screen: {
+      readonly flash: ReadonlyStateRef<ReadonlyArray<number>>;
+      readonly shake: ReadonlyStateRef<ReadonlyArray<number>>;
+      readonly vignette: ReadonlyStateRef<ReadonlyArray<number>>;
+    };
+    readonly ui: {
+      readonly textEntry: WritableStateRef<string>;
+    };
+  };
+
+  /** Return immutable engine-state reference descriptors. Pure; no live state read. */
+  export function getGameState(): GameStateRefs;
+
+
+  // -------------------------------------------------------------------------
+  // SDK library — globals installed by the runtime prelude. Import by bare specifier; the bundler strips the import at compile time.
+
+  /** Capability for entities with a scalar animation channel (brightness, density, etc.). `Channel` is type-level documentation — the handle's implementation closure knows which descriptor channel to drive. */
+  export interface AnimatableScalar<Channel extends string> {
+    /** Sine pulse oscillating between `min` and `max` over `periodMs`. Loops forever. */
+    pulse(opts: { min: number; max: number; periodMs: number }): SequenceStep[];
+    /** One-shot linear ramp from `from` to `to` over `periodMs`. Plays exactly once. */
+    fade(opts: { from: number; to: number; periodMs: number }): SequenceStep[];
+    /** Irregular flicker between `min` and `max` at `rate` Hz. Loops forever. */
+    flicker(opts: { min: number; max: number; rate: number }): SequenceStep[];
+    readonly __channel?: Channel;
+  }
+
+  /** Capability for entities with a vec3 animation channel. */
+  export interface AnimatableVec3<Channel extends string> {
+    /** Uniform cycle through the given vectors over `periodMs`. */
+    cycle(opts: { values: Vec3[]; periodMs: number }): SequenceStep[];
+    readonly __channel?: Channel;
+  }
+
+  /** Typed light handle returned by `world.query({ component: "light" })`. Composes the brightness scalar capability with vec3 channels declared directly (TypeScript collapses duplicate method names, so secondary vec3 channels are not pulled in via `AnimatableVec3` extension). */
+  export interface LightEntityHandle extends LightEntity, AnimatableScalar<"brightness"> {
+    /** Cycle through RGB colors over `periodMs`. Works on dynamic and authored static lights. */
+    colorShift(opts: { values: Vec3[]; periodMs: number }): SequenceStep[];
+    /** Sweep the `direction` channel through unit vectors over `periodMs`. */
+    sweep(opts: { values: Vec3[]; periodMs: number }): SequenceStep[];
+  }
+
+  /** Typed fog-volume handle returned by `world.query({ component: "fog_volume" })`. Composes the density scalar capability with secondary saturation methods declared directly. */
+  export interface FogVolumeHandle extends FogVolumeEntity, AnimatableScalar<"density"> {
+    /** Looping sine pulse on the `saturation` channel. */
+    pulseSaturation(opts: { min: number; max: number; periodMs: number }): SequenceStep[];
+    /** One-shot linear ramp on the `saturation` channel. */
+    fadeSaturation(opts: { from: number; to: number; periodMs: number }): SequenceStep[];
+  }
+
+  /** Typed mover handle returned by `world.query({ component: "kinematic_mover" })`. Raw mover phase is engine-managed; methods build closed command steps. */
+  export interface MoverEntityHandle extends MoverEntity {
+    start(): SequenceStep[];
+    stop(): SequenceStep[];
+    reverse(): SequenceStep[];
+    goToPathNode(node: string): SequenceStep[];
+  }
+
+  /** Typed trigger handle returned by `world.query({ component: "trigger_volume" })`. Arming state remains engine-owned; methods build closed command steps. */
+  export interface TriggerVolumeHandle extends TriggerVolumeEntity {
+    arm(): SequenceStep[];
+    disarm(): SequenceStep[];
+  }
+
+  /** Maps a component-name literal to the rich `world.query` handle type. `"light"`
+   * yields `LightEntityHandle` (capability methods); `"emitter"` yields
+   * `EmitterEntity` (id, position, tags, plus the full `BillboardEmitterComponent`
+   * snapshot under `component`); `"fog_volume"` yields `FogVolumeHandle`; and
+   * `"kinematic_mover"` yields `MoverEntityHandle`; `"trigger_volume"`
+   * yields `TriggerVolumeHandle`.
+   * Other component names fall back to the bare `Entity` shape (`id`,
+   * `position`, `tags`). */
+  export type EntityForComponent<T extends WorldQueryComponent> =
+    T extends "light" ? LightEntityHandle :
+    T extends "emitter" ? EmitterEntity :
+    T extends "fog_volume" ? FogVolumeHandle :
+    T extends "kinematic_mover" ? MoverEntityHandle :
+    T extends "trigger_volume" ? TriggerVolumeHandle :
+    Entity;
+
+  /** Maps a component-name literal to the unwrapped `worldQuery` snapshot
+   * type. `world.query` applies the capability and command-builder wrappers
+   * represented by `EntityForComponent` above. */
+  export type RawEntityForComponent<T extends WorldQueryComponent> =
+    T extends "light" ? LightEntity :
+    T extends "emitter" ? EmitterEntity :
+    T extends "fog_volume" ? FogVolumeEntity :
+    T extends "kinematic_mover" ? MoverEntity :
+    T extends "trigger_volume" ? TriggerVolumeEntity :
+    Entity;
+
+  /** Vocabulary object installed as `globalThis.world`. */
+  export interface World {
+    query<T extends WorldQueryComponent>(filter: {
+      component: T;
+      tag?: string | null;
+    }): EntityForComponent<T>[];
+    /** Current world gravity in m/s² (negative = downward; positive = upward). Seeded from the worldspawn `initialGravity` KVP at level load and persists until the next level load or `setGravity` call. */
+    getGravity(): number;
+    /** Set world gravity in m/s² (negative = downward; positive = upward). NaN and non-finite values are silently ignored with a warning logged. Effect is immediate and persists until the next level load or another `setGravity` call. */
+    setGravity(value: number): void;
+  }
+
+  /** `world` vocabulary global. Wraps `worldQuery` with a typed handle. */
+  export const world: World;
+
+  /** Per-channel keyframe accepted by `timeline` / `sequence`. */
+  export type Keyframe<T extends number[]> = [number, ...T];
+
+  /** Validate `[absolute_ms, ...value]` keyframes; pass-through on success. */
+  export function timeline<T extends number[]>(
+    keyframes: [number, ...T][],
+  ): [number, ...T][];
+
+  /** Convert `[delta_ms, ...value]` keyframes to absolute-time form. */
+  export function sequence<T extends number[]>(
+    keyframes: [number, ...T][],
+  ): [number, ...T][];
+
+  // -------------------------------------------------------------------------
+  // Data script vocabulary — pure descriptor builders consumed by the engine
+  // when `setupLevel` returns. See: context/lib/scripting.md §2.
+
+  /** Progress-subscription reaction body: fires `fire` when entities tagged `tag` cross kill ratio `at` (0.0–1.0). */
+  export type ProgressReactionDescriptor = {
+    progress: { tag: string; at: number; fire: string };
+  };
+
+  /** Primitive reaction body: invokes the named Rust primitive. With `tag`, it targets entities carrying that tag and mutates them. Tag-targeted primitives include emitter/fog/mover commands, `applyDamage`, `setAnimationState`, `updateEnemyState`, `spawnFromSpawner`, `armTrigger`, and `disarmTrigger`; arm/disarm use their empty typed args below. Without `tag`, it is a system reaction (no entities) that enqueues a typed engine command — `playSound`, `rumble`, `flashScreen`, the UI-stack reactions. `args` carries the primitive's typed payload (e.g. `{ rate: 0 }` for `setEmitterRate`, `{ sound: "alarm" }` for `playSound`). */
+  export type PrimitiveReactionDescriptor = {
+    primitive: string;
+    tag?: string;
+    target?: "@activators";
+    args?: Record<string, unknown>;
+    onComplete?: string;
+  };
+
+  /** Tag-targeted trigger primitive `armTrigger` takes no payload; its target comes from `PrimitiveReactionDescriptor.tag`. */
+  export interface ArmTriggerArgs {
+    readonly [key: string]: never;
+  }
+
+  /** Tag-targeted trigger primitive `disarmTrigger` takes no payload; its target comes from `PrimitiveReactionDescriptor.tag`. */
+  export interface DisarmTriggerArgs {
+    readonly [key: string]: never;
+  }
+
+  /** One step in a `sequence` reaction body: invokes the named sequenced primitive against the given entity with `args`. Sequence steps target a single `EntityId`; tag-targeted primitives belong on the `Primitive` reaction path. */
+  export type SetLightAnimationStep = {
+    id: EntityId;
+    primitive: "setLightAnimation";
+    args: LightAnimation;
+  };
+
+  /** Sequence step targeting a single fog volume's `density`. Use directly for a one-shot density change. */
+  export type SetFogDensityStep = {
+    id: EntityId;
+    primitive: "setFogDensity";
+    args: { density: number };
+  };
+
+  /** Sequence step targeting a single fog volume's `glow`. */
+  export type SetFogGlowStep = {
+    id: EntityId;
+    primitive: "setFogGlow";
+    args: { glow: number };
+  };
+
+  /** Sequence step targeting a single fog volume's `edgeSoftness`. */
+  export type SetFogEdgeSoftnessStep = {
+    id: EntityId;
+    primitive: "setFogEdgeSoftness";
+    args: { edgeSoftness: number };
+  };
+
+  /** Sequence step targeting a single fog volume's `falloff`. */
+  export type SetFogFalloffStep = {
+    id: EntityId;
+    primitive: "setFogFalloff";
+    args: { falloff: number };
+  };
+
+  /** Sequence step that updates any subset of `{density, glow, edgeSoftness, falloff, tint, saturation, minBrightness, lightRange}` on a single fog volume in one component write. */
+  export type SetFogParamsStep = {
+    id: EntityId;
+    primitive: "setFogParams";
+    args: {
+      density?: number;
+      glow?: number;
+      edgeSoftness?: number;
+      falloff?: number;
+      tint?: readonly [number, number, number];
+      saturation?: number;
+      minBrightness?: number;
+      lightRange?: number;
+    };
+  };
+
+  /** Sequence step that installs (or clears, when `args` is `null`) a fog animation carrying any combination of density, saturation, minBrightness, and lightRange curves on a single fog volume. Current `FogVolumeHandle` helper methods emit density and saturation steps. */
+  export type SetFogAnimationStep = {
+    id: EntityId;
+    primitive: "setFogAnimation";
+    args: FogAnimation | null;
+  };
+
+  /** Sequence step that resumes a kinematic mover. */
+  export type MoverStartStep = { id: EntityId; primitive: "moverStart"; args: Record<string, never> };
+  /** Sequence step that stops a kinematic mover. */
+  export type MoverStopStep = { id: EntityId; primitive: "moverStop"; args: Record<string, never> };
+  /** Sequence step that reverses a kinematic mover. */
+  export type MoverReverseStep = { id: EntityId; primitive: "moverReverse"; args: Record<string, never> };
+  /** Sequence step that moves a kinematic mover to a named path node. */
+  export type MoverGoToPathNodeStep = { id: EntityId; primitive: "moverGoToPathNode"; args: { node: string } };
+
+  /** Sequence step that arms one trigger volume. */
+  export type ArmTriggerStep = { id: EntityId | "@trigger"; primitive: "armTrigger"; args: ArmTriggerArgs };
+  /** Sequence step that disarms one trigger volume. */
+  export type DisarmTriggerStep = { id: EntityId | "@trigger"; primitive: "disarmTrigger"; args: DisarmTriggerArgs };
+
+  /** Union of every supported sequence step shape. New sequenced primitives extend this union. */
+  export type SequenceStep =
+    | SetLightAnimationStep
+    | SetFogDensityStep
+    | SetFogGlowStep
+    | SetFogEdgeSoftnessStep
+    | SetFogFalloffStep
+    | SetFogParamsStep
+    | SetFogAnimationStep
+    | MoverStartStep
+    | MoverStopStep
+    | MoverReverseStep
+    | MoverGoToPathNodeStep
+    | ArmTriggerStep
+    | DisarmTriggerStep;
+
+  /** Sequence reaction body: ordered per-entity primitive invocations. Steps run in array order at dispatch. */
+  export type SequenceReactionDescriptor = {
+    sequence: SequenceStep[];
+  };
+
+  /** Descriptor produced by `defineReaction`. The `name` field is merged into the descriptor at the top level so the Rust deserializer reads both fields from one flat object. */
+  export type NamedReactionDescriptor = { name: string; levels?: string[] } & (
+    | ProgressReactionDescriptor
+    | PrimitiveReactionDescriptor
+    | SequenceReactionDescriptor
+  );
+
+  /** Dispatch values published by a state-crossing fire. */
+  export type CrossingParams = Readonly<{ rising: RuntimeRead }>;
+  /** Dispatch values published while a Number store slot accumulates. */
+  export type TickParams = Readonly<{ dt: RuntimeRead }>;
+  const activatorsTargetBrand: unique symbol;
+  const triggerTargetBrand: unique symbol;
+  export type ActivatorsTarget = Readonly<{ readonly [activatorsTargetBrand]: true }>;
+  export type TriggerTarget = Readonly<{ readonly [triggerTargetBrand]: true }>;
+  export type TriggerEventParams = Readonly<{ activators: ActivatorsTarget; trigger: TriggerTarget; occupancy: RuntimeRead }>;
+  const reactionScopeBrand: unique symbol;
+  /** Named reaction with a type-only, contravariant dispatch-scope marker. */
+  export type Reaction<S = {}> = NamedReactionDescriptor & { readonly [reactionScopeBrand]?: (scope: S) => void };
+
+  /** Crossing condition: fires when the watched slot crosses the threshold in one direction. Exactly one of `below`/`above` is given. `max` is the denominator the threshold is a fraction of; omit it for a raw-value comparison (`max` defaults to `1.0`). */
+  export type CrossingCondition =
+    | { below: number; above?: never; max?: number; edge?: "both" }
+    | { above: number; below?: never; max?: number; edge?: "both" };
+  export type CrossingOptions = { edge?: "both" };
+
+  /** A threshold-form watcher. Its wire discriminator is the required `slot`; exactly one threshold field is present. */
+  export type ThresholdCrossingDescriptor = {
+    slot: string;
+    predicate?: never;
+    max?: number;
+    edge?: string;
+    fire: string[];
+    levels?: string[];
+  } & (
+    | { below: number; above?: never }
+    | { above: number; below?: never }
+  );
+
+  /** A predicate-form watcher. Its wire discriminator is the required `predicate`; it has no threshold slot. */
+  export type PredicateCrossingDescriptor = {
+    predicate: RuntimeValue;
+    slot?: never;
+    below?: never;
+    above?: never;
+    max?: never;
+    edge?: string;
+    fire: string[];
+    levels?: string[];
+  };
+
+  /** A state-crossing watcher entry as it appears in `setupLevel().crossings` or `ModManifest.crossings`. Threshold and predicate forms are discriminated by `slot` versus `predicate`. */
+  export type CrossingDescriptor = ThresholdCrossingDescriptor | PredicateCrossingDescriptor;
+
+  /** Bundle returned from `setupLevel`. The engine deserializes this shape in one pass at level load. */
+  export type LevelManifest = {
+    reactions: NamedReactionDescriptor[];
+    crossings?: CrossingDescriptor[];
+    triggerEvents?: TriggerEventDescriptor[];
+    /** Per-level UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; same shape as `ModManifest.uiTrees` but level-scoped (cleared on unload). Malformed entries are logged and skipped. */
+    uiTrees?: ReadonlyArray<ModUiTree>;
+  };
+
+  /** Build a named reaction descriptor. Pure: returns a plain object, no FFI.
+   * `descriptor` accepts exactly one body shape: `progress` (kill-ratio trigger),
+   * `primitive` (named Rust primitive with optional entity `tag` and typed
+   * `args`), or `sequence` (ordered per-entity steps). `name` is optional; when
+   * omitted a deterministic, run-stable id is derived from the body. Use explicit
+   * names when TS and Luau scripts must agree. The returned handle can be passed
+   * to `Button.onPress` or crossing `fire` entries.
+   * @param name Stable event/reaction name consumed by dispatch. Optional.
+   * @param descriptor Reaction body data consumed later by Rust. */
+  export function defineReaction(
+    descriptor:
+      | ProgressReactionDescriptor
+      | PrimitiveReactionDescriptor
+      | SequenceReactionDescriptor,
+  ): Reaction<{}>;
+  export function defineReaction(
+    tracer: (params: CrossingParams) => ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor,
+  ): Reaction<CrossingParams>;
+  export function defineReaction(
+    tracer: (params: TriggerEventParams) => ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor,
+  ): Reaction<TriggerEventParams>;
+  export function defineReaction(
+    name: string,
+    descriptor:
+      | ProgressReactionDescriptor
+      | PrimitiveReactionDescriptor
+      | SequenceReactionDescriptor,
+  ): Reaction<{}>;
+  export function defineReaction(
+    name: string,
+    tracer: (params: CrossingParams) => ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor,
+  ): Reaction<CrossingParams>;
+  export function defineReaction(
+    name: string,
+    tracer: (params: TriggerEventParams) => ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor,
+  ): Reaction<TriggerEventParams>;
+
+  export type TriggerEventDescriptor = { tag: string; event: "enter" | "exit"; fire: string[]; levels?: string[] };
+  export type TriggerEventOptions = { levels?: string[] };
+  export function onTriggerEvent(filter: { tag: string }, event: "enter" | "exit", fire: (Reaction<{}> | Reaction<TriggerEventParams> | string)[], options?: TriggerEventOptions): TriggerEventDescriptor;
+  export function damage(target: ActivatorsTarget | string, amount: number): PrimitiveReactionDescriptor;
+  /** Select a live enemy group by tag. Its tag resolves at reaction fire time. */
+  export type EnemyGroupFilter = { tag?: string };
+  /** Typed, additive partial for consequential enemy-state updates. */
+  export type EnemyStateUpdateArgs = { aggro?: boolean };
+  /** Fire-time-tag enemy handle. `update` emits one primitive descriptor. */
+  export interface EnemyGroup {
+    update(fields: EnemyStateUpdateArgs): PrimitiveReactionDescriptor;
+  }
+  export function enemies(filter: EnemyGroupFilter): EnemyGroup;
+  /** Selects a live spawner group by tag. Its tag resolves at reaction fire time. */
+  export type SpawnerFilter = { tag: string };
+  /** Fire-time-tag spawner handle. `fire` emits one primitive descriptor. */
+  export interface SpawnerHandle {
+    fire(): PrimitiveReactionDescriptor;
+  }
+  export function spawner(filter: SpawnerFilter): SpawnerHandle;
+  export function armTrigger(target: TriggerTarget): SequenceStep[];
+  export function disarmTrigger(target: TriggerTarget): SequenceStep[];
+
+  /** Stamp a shared map-tag scope onto each reaction in a plain list. `tags` are matched against `ModMapEntry.tags`; omit scoping for every level. */
+  export function scopeReactions<S>(
+    tags: string[],
+    list: Reaction<S>[],
+  ): Reaction<S>[];
+
+  // -------------------------------------------------------------------------
+  // State-store declarations. `defineStore` is special-cased in the typedef
+  // generator (mirroring `worldQuery`): per-slot value types live only in the
+  // runtime `schema` argument, absent at typedef emission, so the typed state
+  // reference map is supplied by this hand-written generic instead of registry
+  // emission.
+
+  const stateRefValueBrand: unique symbol;
+  const writableStateRefBrand: unique symbol;
+  export type ScalarStateValue = number | boolean | string;
+  export type NumericArrayStateValue = ReadonlyArray<number>;
+  export type ReadonlyStateRef<T> = { readonly slot: string; readonly [stateRefValueBrand]: T };
+  export type WritableStateRef<T> = ReadonlyStateRef<T> & { readonly [writableStateRefBrand]: T };
+
+  /** One slot inside a `defineStore` schema. Every slot needs `default`. `type: "number"` accepts a finite numeric default plus optional inclusive `range: [min, max]`; `"boolean"` and `"string"` require matching defaults; `"enum"` requires non-empty `values` and a default in that list; `"array"` is a finite-number array. `persist` saves on clean exit; `readonly` blocks script writes. `network: "shared"` replicates the slot to every connected client (server-authoritative); omitted means local-only. */
+  export type StoreSlotSchema = (
+    | { type: "number"; readonly?: boolean; network?: "shared"; accumulate?: never }
+    | { type: "number"; readonly?: false; network?: "shared"; accumulate: (t: TickParams) => RuntimeValue }
+    | { type: "boolean" | "string" | "enum" | "array"; readonly?: boolean; network?: "shared"; accumulate?: never }
+  ) & Record<string, unknown>;
+
+  /** Plain declaration data returned through `ModManifest.stores`. */
+  export type StoreDeclaration = { namespace: string; schema: Record<string, StoreSlotSchema> };
+
+  /** Maps one schema slot's `type` discriminant to its handle value type:
+   * `{type:"number"}` → number ref, `{type:"boolean"}` →
+   * boolean ref, `array` → numeric-array ref, and `string`/`enum` →
+   * string ref. Slots with `readonly: true` produce `ReadonlyStateRef<T>`;
+   * all other slots produce `WritableStateRef<T>`. */
+  export type StoreStateRefForSlot<Slot, T> =
+    Slot extends { readonly: true } ? ReadonlyStateRef<T> : WritableStateRef<T>;
+
+  export type StateValueForSlot<Slot> =
+    Slot extends { type: "number" } ? StoreStateRefForSlot<Slot, number> :
+    Slot extends { type: "boolean" } ? StoreStateRefForSlot<Slot, boolean> :
+    Slot extends { type: "array" } ? StoreStateRefForSlot<Slot, ReadonlyArray<number>> :
+    StoreStateRefForSlot<Slot, string>;
+
+  /** Result of a pure `defineStore` call. Return `declaration` from `ModManifest.stores`; use `state` references in descriptors. */
+  export type StoreDefinition<S extends Record<string, StoreSlotSchema>> = {
+    readonly declaration: StoreDeclaration;
+    readonly state: { readonly [K in keyof S]: StateValueForSlot<S[K]> };
+  };
+
+  /** Build a state-store declaration. Pure: calling it performs no FFI and changes no engine state. `namespace` prefixes returned refs as `namespace.slotName`; `schema` declares slot names and validation rules. Returned declarations commit atomically only after the mod manifest succeeds. */
+  export function defineStore<const S extends Record<string, StoreSlotSchema>>(
+    namespace: string,
+    schema: S,
+  ): StoreDefinition<S>;
+
+
+  // -------------------------------------------------------------------------
+  // UI manifest wire types used by `ModManifest.uiTrees` / `LevelManifest.uiTrees`.
+  //
+  // Root `postretro` intentionally exposes only data shapes needed by manifest
+  // declarations. UI authoring factories, layout helpers, state helpers,
+  // reactions, and theme helpers are excluded from this root module; they live
+  // behind the `postretro/ui` surface. The QuickJS prelude still installs
+  // UI globals from `sdk/lib/prelude.ts` as temporary implementation plumbing
+  // while import stripping lacks alias rewriting.
+
+  /** The flat `kind`-tagged descriptor retained by Rust after setup. */
+  export type WidgetDescriptor = { kind: string; [field: string]: unknown };
+  /** Accessibility role override carried on widget and tree descriptors. */
+  export type WidgetRole = "tab" | "tablist" | "checkbox" | "radio" | "listitem" | "button" | "slider" | "progressbar" | "image" | "group" | "none";
+  /** Tree viewport anchor. */
+  export type WidgetAnchor = "topLeft" | "top" | "topRight" | "left" | "center" | "right" | "bottomLeft" | "bottom" | "bottomRight";
+  /** Tree input behavior. */
+  export type WidgetCaptureMode = "capture" | "passthrough";
+  /** Flat `AnchoredTree` manifest envelope stored in UI registries. */
+  export type AnchoredTreeDescriptor = {
+    anchor: WidgetAnchor;
+    offset: [number, number];
+    root: WidgetDescriptor;
+    captureMode?: WidgetCaptureMode;
+    initialFocus?: string;
+    textEntryTarget?: string;
+    accessibleName?: string;
+    role?: WidgetRole;
+  };
+  /** Pure identity builder for entity-type descriptors. Returned from `ModManifest.entities`; `descriptor` is the full archetype object: optional `canonicalName`, optional `defaultWeapon`, and optional component presets. */
+  export function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor;
+  /** Pure identity builder for the mod manifest consumed from the default export. `config.name` is required; optional arrays include `entities`, `maps`, `uiTrees`, `reactions`, `crossings`, `triggerEvents`, and `stores`. */
+  export function defineMod(config: ModManifest): ModManifest;
+  /** Pure identity builder for a mod map catalog. Entries require `id`, `path`, and `name`; optional `tags` default to empty and drive filtering plus `levels` selectors. */
+  export function defineMapCatalog(entries: ModMapEntry[]): ModMapEntry[];
+
+  // -------------------------------------------------------------------------
+  // Runtime-value vocabulary — the typed command buffer (scripting.md §11). The
+  // `runtime.*` builders assemble these node objects as plain data; constructing
+  // a node has no FFI side effect. The union below is the *closure* of the
+  // vocabulary: an author cannot name an op outside it. Field names match the
+  // Rust `IrNode` wire format byte-for-byte (`a`/`b`, `x`/`lo`/`hi`, `cond`,
+  // `name`, `value`) so builder output deserializes straight into `IrNode`.
+  // (Author surface is `runtime`/`RuntimeValue`; the Rust substrate and wire
+  // op tags keep the `ir` names — scripting.md §11, "Author-facing naming".)
+  // Source of truth: crates/foundation/src/ir/ + sdk/lib/runtime.ts.
+  // Static block (not registry-emitted): `register_tagged_union` /
+  // `TypeShape::TaggedUnion` renders one payload *type name* per variant under
+  // a fixed tag key — it cannot express per-variant inline struct fields (e.g.
+  // `value`, `a`/`b`, `cond`) or the recursive `RuntimeValue` self-reference
+  // that every non-leaf variant requires.
+
+  /** Literal scalar leaf: `{ op: "const", value }`. `value` is a number or boolean. */
+  export type RuntimeConst = { op: "const"; value: number | boolean };
+  /** Named-input leaf: `{ op: "input", name }`. Bound to live state by the Rust evaluator. */
+  export type RuntimeRead = { op: "input"; name: string };
+  /** Addition: `a + b` (number). */
+  export type RuntimeAdd = { op: "add"; a: RuntimeValue; b: RuntimeValue };
+  /** Subtraction: `a - b` (number). */
+  export type RuntimeSub = { op: "sub"; a: RuntimeValue; b: RuntimeValue };
+  /** Multiplication: `a * b` (number). */
+  export type RuntimeMul = { op: "mul"; a: RuntimeValue; b: RuntimeValue };
+  /** Division: `a / b` (number). */
+  export type RuntimeDiv = { op: "div"; a: RuntimeValue; b: RuntimeValue };
+  /** Clamp `x` to `[lo, hi]` (number). */
+  export type RuntimeClamp = { op: "clamp"; x: RuntimeValue; lo: RuntimeValue; hi: RuntimeValue };
+  /** Linear interpolation between `a` and `b` by `t` (number). */
+  export type RuntimeLerp = { op: "lerp"; a: RuntimeValue; b: RuntimeValue; t: RuntimeValue };
+  /** Less-than comparison (boolean). */
+  export type RuntimeLt = { op: "lt"; a: RuntimeValue; b: RuntimeValue };
+  /** Less-than-or-equal comparison (boolean). */
+  export type RuntimeLe = { op: "le"; a: RuntimeValue; b: RuntimeValue };
+  /** Greater-than comparison (boolean). */
+  export type RuntimeGt = { op: "gt"; a: RuntimeValue; b: RuntimeValue };
+  /** Greater-than-or-equal comparison (boolean). */
+  export type RuntimeGe = { op: "ge"; a: RuntimeValue; b: RuntimeValue };
+  /** Equality comparison (boolean). */
+  export type RuntimeEq = { op: "eq"; a: RuntimeValue; b: RuntimeValue };
+  /** Inequality comparison (boolean). */
+  export type RuntimeNe = { op: "ne"; a: RuntimeValue; b: RuntimeValue };
+  /** Branchless select: `cond ? a : b`. `a` and `b` share a type. */
+  export type RuntimeSelect = { op: "select"; cond: RuntimeValue; a: RuntimeValue; b: RuntimeValue };
+
+  /** A node in the authored runtime-value tree. Closed vocabulary: every node
+   * the evaluator accepts is one of these variants. New opcodes extend this
+   * union in lockstep with the Rust `IrNode` enum. */
+  export type RuntimeValue =
+    | RuntimeConst
+    | RuntimeRead
+    | RuntimeAdd
+    | RuntimeSub
+    | RuntimeMul
+    | RuntimeDiv
+    | RuntimeClamp
+    | RuntimeLerp
+    | RuntimeLt
+    | RuntimeLe
+    | RuntimeGt
+    | RuntimeGe
+    | RuntimeEq
+    | RuntimeNe
+    | RuntimeSelect;
+
+  /** A builder operand: an already-built node, or a bare `number`/`boolean`
+   * literal that the builder auto-wraps into a `const` node. */
+  type RuntimeOperand = RuntimeValue | ReadonlyStateRef<unknown> | number | boolean;
+
+  /** Pure builder vocabulary for runtime values, installed as
+   * `globalThis.runtime`. Every method returns a plain `RuntimeValue` object;
+   * constructing a node has no FFI side effect. Bare `number`/`boolean`
+   * operands are auto-wrapped into `const` nodes. Import via
+   * `import { runtime } from "postretro"`. */
+  export interface Runtime {
+    /** Literal scalar leaf. `const` is reserved, so the builder is `constant`. */
+    constant(value: number | boolean): RuntimeConst;
+    /** Named-input leaf, bound to live state by name in the Rust evaluator. */
+    read(name: string | ReadonlyStateRef<unknown>): RuntimeRead;
+    /** `a + b` (number). */
+    add(a: RuntimeOperand, b: RuntimeOperand): RuntimeAdd;
+    /** `a - b` (number). */
+    sub(a: RuntimeOperand, b: RuntimeOperand): RuntimeSub;
+    /** `a * b` (number). */
+    mul(a: RuntimeOperand, b: RuntimeOperand): RuntimeMul;
+    /** `a / b` (number). */
+    div(a: RuntimeOperand, b: RuntimeOperand): RuntimeDiv;
+    /** Clamp `x` to `[lo, hi]` (number). */
+    clamp(x: RuntimeOperand, lo: RuntimeOperand, hi: RuntimeOperand): RuntimeClamp;
+    /** Linear interpolation between `a` and `b` by `t` (number). */
+    lerp(a: RuntimeOperand, b: RuntimeOperand, t: RuntimeOperand): RuntimeLerp;
+    /** `a < b` (boolean). */
+    lt(a: RuntimeOperand, b: RuntimeOperand): RuntimeLt;
+    /** `a <= b` (boolean). */
+    le(a: RuntimeOperand, b: RuntimeOperand): RuntimeLe;
+    /** `a > b` (boolean). */
+    gt(a: RuntimeOperand, b: RuntimeOperand): RuntimeGt;
+    /** `a >= b` (boolean). */
+    ge(a: RuntimeOperand, b: RuntimeOperand): RuntimeGe;
+    /** `a == b` (boolean). */
+    eq(a: RuntimeOperand, b: RuntimeOperand): RuntimeEq;
+    /** `a != b` (boolean). */
+    ne(a: RuntimeOperand, b: RuntimeOperand): RuntimeNe;
+    /** Branchless select: `cond ? a : b`. `a` and `b` share a type. */
+    select(cond: RuntimeOperand, a: RuntimeOperand, b: RuntimeOperand): RuntimeSelect;
+  }
+
+  /** Runtime-value builder vocabulary global. */
+  export const runtime: Runtime;
+
+  // -------------------------------------------------------------------------
+  // UI navigation intents — the closed gamepad-first nav vocabulary the input
+  // stage produces (keyboard arrows/enter/escape, D-pad, stick edges) and that
+  // UI authors reference in `capturesNav` and focus policy. Wire names mirror
+  // the Rust `NavIntent` enum (input/ui_nav.rs). Template-literal-typed so a
+  // typo in a `"nav.*"` string is a compile error.
+  // See: context/research/ui-layer.md §16.
+
+  /** The bare nav-intent names without the `nav.` prefix. */
+  export type NavIntentName =
+    | "up" | "down" | "left" | "right"
+    | "next" | "prev"
+    | "confirm" | "cancel"
+    | "menu" | "options";
+
+  /** A UI navigation intent wire name. Template-literal type over the closed
+   * `NavIntentName` set, so only `"nav.up"` … `"nav.options"` type-check. */
+  export type NavIntent = `nav.${NavIntentName}`;
+}
+
+
+declare module "postretro/ui" {
+  import type {
+    ReadonlyStateRef,
+    WritableStateRef,
+    ScalarStateValue,
+    NumericArrayStateValue,
+    GameStateRefs,
+    ModUiTree,
+    PrimitiveReactionDescriptor,
+    NamedReactionDescriptor,
+    CrossingCondition,
+    CrossingOptions,
+    CrossingParams,
+    Reaction,
+    CrossingDescriptor,
+    RuntimeValue,
+  } from "postretro";
+
+  /** Linear RGBA color token value. Components are in display-linear 0-1 space; alpha is the fourth element. */
+  export type ThemeColorValue = readonly [number, number, number, number];
+  const themeTokenBrand: unique symbol;
+  /** Runtime-authenticated SDK token record. Widget factories unwrap only records produced by `getDesignTokens(theme)`, not hand-built lookalikes. */
+  export type ThemeToken<Category extends "color" | "font" | "spacing"> = Readonly<{
+    __postretroToken: Category;
+    token: string;
+    readonly [themeTokenBrand]: Category;
+  }>;
+  export type ColorToken = ThemeToken<"color">;
+  export type FontToken = ThemeToken<"font">;
+  export type SpacingToken = ThemeToken<"spacing">;
+  export type ThemeTokenTree<Leaf> = { readonly [key: string]: Leaf | ThemeTokenTree<Leaf> };
+  /** Nested singular token groups accepted by `defineTheme`. */
+  export type ThemeDefinition = {
+    readonly color?: ThemeTokenTree<ThemeColorValue>;
+    readonly font?: ThemeTokenTree<string>;
+    readonly spacing?: ThemeTokenTree<number>;
+    readonly colors?: never;
+    readonly fonts?: never;
+    readonly tokens?: never;
+  };
+  export type JoinThemePath<Prefix extends string, Key extends string> = Prefix extends "" ? Key : `${Prefix}.${Key}`;
+  export type FlattenTokenKeys<Tree, Leaf, Prefix extends string = ""> = Tree extends Leaf
+    ? Prefix
+    : Tree extends Readonly<Record<string, unknown>>
+      ? { [K in Extract<keyof Tree, string>]: FlattenTokenKeys<Tree[K], Leaf, JoinThemePath<Prefix, K>> }[Extract<keyof Tree, string>]
+      : never;
+  export type FlatTokenMap<Tree, Leaf, Value> = Record<FlattenTokenKeys<NonNullable<Tree>, Leaf>, Value>;
+  export type DesignTokenTree<Tree, Leaf, Token, Prefix extends string = ""> = Tree extends Leaf
+    ? Token
+    : Tree extends Readonly<Record<string, unknown>>
+      ? { readonly [K in Extract<keyof Tree, string>]: DesignTokenTree<Tree[K], Leaf, Token, JoinThemePath<Prefix, K>> }
+      : never;
+  export type DesignTokenGroup<Tree, Leaf, Token> = [Tree] extends [undefined] ? {} : DesignTokenTree<NonNullable<Tree>, Leaf, Token>;
+  export type DesignTokens<T extends ThemeDefinition> = {
+    readonly color: DesignTokenGroup<T["color"], ThemeColorValue, ColorToken>;
+    readonly font: DesignTokenGroup<T["font"], string, FontToken>;
+    readonly spacing: DesignTokenGroup<T["spacing"], number, SpacingToken>;
+  };
+  const definedThemeBrand: unique symbol;
+  /** Manifest-compatible flat theme maps returned from `defineTheme`. */
+  export type DefinedTheme<T extends ThemeDefinition> = {
+    readonly colors: FlatTokenMap<T["color"], ThemeColorValue, ThemeColorValue>;
+    readonly fonts: FlatTokenMap<T["font"], string, string>;
+    readonly spacing: FlatTokenMap<T["spacing"], number, number>;
+    readonly [definedThemeBrand]: T;
+  };
+  export function defineTheme<const T extends ThemeDefinition>(theme: T): DefinedTheme<T>;
+  export function getDesignTokens<const T extends ThemeDefinition>(theme: DefinedTheme<T>): DesignTokens<T>;
+
+  export type LocalizedText = string;
+  export type WidgetColor = [number, number, number, number] | ColorToken;
+  export type WidgetSpacing = number | SpacingToken;
+  export type WidgetAlign = "start" | "center" | "end" | "stretch";
+  export type WidgetEasing = "linear" | "easeIn" | "easeOut" | "easeInOut";
+  export type NumberTween = { durationMs: number; easing: WidgetEasing; from?: number };
+  export type ColorTween = { durationMs: number; easing: WidgetEasing; from?: [number, number, number, number] };
+  export type LocalBindRef = { local: string };
+  export type PredicateValue = number | boolean | string;
+  export type Predicate = ((ReadonlyStateRef<PredicateValue> & { local?: never }) | LocalBindRef) & { equals?: PredicateValue };
+  export type WidgetRole = "tab" | "tablist" | "checkbox" | "radio" | "listitem" | "button" | "slider" | "progressbar" | "image" | "group" | "none";
+  export type AnnouncePriority = "polite" | "assertive";
+  export type TextBindProp = ((ReadonlyStateRef<ScalarStateValue> & { local?: never }) | LocalBindRef) & { format?: string; tween?: NumberTween };
+  export type PanelBindProp = ((ReadonlyStateRef<NumericArrayStateValue> & { local?: never; format?: never }) | LocalBindRef) & { tween?: ColorTween };
+  export type SliderBindProp = ((WritableStateRef<number> & { local?: never; format?: never }) | LocalBindRef) & { tween?: NumberTween };
+  export type BarBindProp = ((ReadonlyStateRef<number> & { local?: never; format?: never }) | LocalBindRef) & { tween?: NumberTween };
+  export type BarMaxProp = number | ReadonlyStateRef<number>;
+  export type StyleRangeEntry = { upTo?: number; color?: WidgetColor; pulse?: { periodMs: number }; flash?: { durationMs: number } };
+  export type StyleRangesProp = { max: number; entries: StyleRangeEntry[] };
+  export type BorderProp = { texture: string; slice: [number, number, number, number]; tint: WidgetColor };
+  export type FocusNeighborsProp = { up?: string; down?: string; left?: string; right?: string };
+  export type RepeatPolicyProp = { initialDelayMs: number; intervalMs: number };
+  export type ReactionHandleRef = { name: string };
+  export type WidgetDescriptor = { kind: string; [field: string]: unknown };
+
+  /** Props for `Text`. `content` is the fallback/display string; `fontSize` is a finite logical-px number defaulting to 12; `color` is an RGBA tuple or color token defaulting to white. `bind` may replace rendered content from state; `styleRanges` recolors by normalized value. */
+  export type TextProps = { content: LocalizedText; fontSize?: number; color?: WidgetColor; font?: FontToken; bind?: TextBindProp; styleRanges?: StyleRangesProp; id?: string; focusNeighbors?: FocusNeighborsProp; visibleWhen?: Predicate; role?: WidgetRole };
+  /** Build a `text` widget descriptor. Pure: returns data retained by Rust after manifest/setup load. */
+  export function Text(props: TextProps): WidgetDescriptor;
+  /** Props for `Panel`. `fill` is required RGBA/token color; `border` is optional 9-slice data; `bind` may replace fill from a numeric RGBA state value. */
+  export type PanelProps = { fill: WidgetColor; border?: BorderProp; bind?: PanelBindProp; styleRanges?: StyleRangesProp; id?: string; focusNeighbors?: FocusNeighborsProp; visibleWhen?: Predicate; role?: WidgetRole };
+  /** Build a solid panel widget descriptor. Pure; no engine side effect. */
+  export function Panel(props: PanelProps): WidgetDescriptor;
+  /** Props for `Image`. `asset` is a UI texture key. Exactly one accessible-name path is required: `label` for meaningful images or `decorative: true` for ignored imagery. */
+  export type ImageProps = { asset: string; id?: string; focusNeighbors?: FocusNeighborsProp; visibleWhen?: Predicate; role?: WidgetRole } & ({ label: string; decorative?: never } | { decorative: true; label?: never });
+  /** Build an image widget descriptor sized from the texture asset's natural dimensions. */
+  export function Image(props: ImageProps): WidgetDescriptor;
+  /** Props for `Spacer`. `flexGrow` is a finite proportional share of leftover space; defaults to 1. */
+  export type SpacerProps = { flexGrow?: number; id?: string; visibleWhen?: Predicate; role?: WidgetRole };
+  /** Build a spacer widget descriptor. */
+  export function Spacer(props?: SpacerProps): WidgetDescriptor;
+  /** Props for `Button`. `id` is required for focus/activation. `onPress` accepts a `defineReaction` handle, bare reaction name, or reserved `ui.*` action. Exactly one of `label` or `labelledBy` is required. */
+  export type ButtonProps = { id: string; onPress: ReactionHandleRef | string; repeatOnHold?: RepeatPolicyProp; focusNeighbors?: FocusNeighborsProp; selected?: Predicate; checked?: Predicate; bind?: Predicate; styleRanges?: StyleRangesProp; disabled?: boolean; visibleWhen?: Predicate; role?: WidgetRole } & ({ label: LocalizedText; labelledBy?: never } | { labelledBy: string; label?: never });
+  /** Build an interactive button descriptor. Pure; activation is resolved by the app at runtime. */
+  export function Button(props: ButtonProps): WidgetDescriptor;
+  /** Props for `Slider`. `bind` must be writable numeric state/local cell. `min`, `max`, and `step` are finite numbers; navigation clamps writes into `[min, max]`. Exactly one of `label` or `labelledBy` is required. */
+  export type SliderProps = { id: string; bind: SliderBindProp; min: number; max: number; step: number; capturesNav?: string[]; focusNeighbors?: FocusNeighborsProp; disabled?: boolean; visibleWhen?: Predicate; role?: WidgetRole } & ({ label: LocalizedText; labelledBy?: never } | { labelledBy: string; label?: never });
+  /** Build an interactive slider descriptor. */
+  export function Slider(props: SliderProps): WidgetDescriptor;
+  /** Linear retained-UI exit fade for a `Bar` with `visibleWhen`. */
+  export type BarExitFade = { durationMs: number };
+  /** Props for `Bar`. `width`/`height` are positive logical-reference px; `exitFade` requires `visibleWhen` and fades the retained terminal image linearly. */
+  export type BarProps = { bind: BarBindProp; max: BarMaxProp; fill: WidgetColor; background: WidgetColor; width?: number; height?: number; styleRanges?: StyleRangesProp; id?: string; visibleWhen?: Predicate; exitFade?: BarExitFade; role?: WidgetRole };
+  /** Build a passive bar descriptor. Displayed fill is `value / max` clamped to `[0, 1]`. */
+  export function Bar(props: BarProps): WidgetDescriptor;
+  /** Props for `Announce`. `priority` defaults to `"polite"`; `visibleWhen` gates whether the live-region message is active. */
+  export type AnnounceProps = { priority?: AnnouncePriority; visibleWhen?: Predicate };
+  /** Build a non-visual live-region announcement. `text` is positional display text. */
+  export function Announce(props: AnnounceProps, text: LocalizedText): WidgetDescriptor;
+
+  export type FocusKind = "linear" | "spatial";
+  export type FocusPolicyProp = FocusKind | { policy: FocusKind; wrap?: boolean; repeat?: RepeatPolicyProp };
+  /** Props for `VStack`/`HStack`. `gap`/`padding` default to 0, `align` defaults to `"start"`, and optional `localState` declares presentation-only cells scoped to this container. */
+  export type StackProps = { gap?: WidgetSpacing; padding?: WidgetSpacing; align?: WidgetAlign; id?: string; focusNeighbors?: FocusNeighborsProp; focus?: FocusPolicyProp; restoreOnReturn?: boolean; fill?: WidgetColor; border?: BorderProp; localState?: { scope: string; cells: Record<string, CellInit> }; visibleWhen?: Predicate; role?: WidgetRole };
+  /** Props for `Grid`. `cols` is required and must be an integer >= 1; children flow row-major. */
+  export type GridProps = { gap?: WidgetSpacing; padding?: WidgetSpacing; align?: WidgetAlign; id?: string; focusNeighbors?: FocusNeighborsProp; focus?: FocusPolicyProp; restoreOnReturn?: boolean; cols: number; visibleWhen?: Predicate; role?: WidgetRole };
+  /** Build a vertical stack descriptor. `children` is positional, not a prop. */
+  export function VStack(props?: StackProps, children?: WidgetDescriptor[]): WidgetDescriptor;
+  /** Build a horizontal stack descriptor. `children` is positional, not a prop. */
+  export function HStack(props?: StackProps, children?: WidgetDescriptor[]): WidgetDescriptor;
+  /** Build a grid descriptor. `children` is positional, not a prop. */
+  export function Grid(props: GridProps, children?: WidgetDescriptor[]): WidgetDescriptor;
+
+  export type WidgetAnchor = "topLeft" | "top" | "topRight" | "left" | "center" | "right" | "bottomLeft" | "bottom" | "bottomRight";
+  export type WidgetCaptureMode = "capture" | "passthrough";
+  /** Props for `Tree`. `anchor` and `offset` place the root in 1280x720 logical UI space. `captureMode` defaults to `"passthrough"`; `initialFocus` names a widget id; `textEntryTarget` is a writable string state ref. */
+  export type TreeProps = { anchor: WidgetAnchor; offset: [number, number]; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: WritableStateRef<string>; accessibleName?: string; role?: WidgetRole };
+  export type AnchoredTreeDescriptor = { anchor: WidgetAnchor; offset: [number, number]; root: WidgetDescriptor; captureMode?: WidgetCaptureMode; initialFocus?: string; textEntryTarget?: string; accessibleName?: string; role?: WidgetRole };
+  /** Wrap a root widget in an anchored tree placement envelope. Pure; registration happens through `defineUiTree` and manifest data. */
+  export function Tree(props: TreeProps, root: WidgetDescriptor): AnchoredTreeDescriptor;
+  /** Props accepted by `defineUiTree`. `name` is the registry key; `tree` is from `Tree`; `alwaysOn` renders as a base layer such as HUD. */
+  export type UiTreeRegistrationProps<Name extends string = string> = { name: Name; tree: AnchoredTreeDescriptor; alwaysOn?: boolean };
+  export type UiTreeRegistration<Name extends string = string> = ModUiTree & { readonly name: Name };
+  /** Build a UI-tree registration object. Pure; include the result in `ModManifest.uiTrees` or `setupLevel().uiTrees` to register it. */
+  export function defineUiTree<const Name extends string>(registration: UiTreeRegistrationProps<Name>): UiTreeRegistration<Name>;
+
+  export type StateBindOptionsFor<T> =
+    T extends number ? { format?: string; tween?: NumberTween; slot?: never; local?: never } :
+    T extends NumericArrayStateValue ? { tween?: ColorTween; slot?: never; local?: never } :
+    T extends ScalarStateValue ? { format?: string; slot?: never; local?: never } :
+    never;
+  /** Compose bind-only options onto a state ref. Pure; it emits `{ slot, ...options }` for widget props and never reads live state. */
+  export function bindState<T>(ref: ReadonlyStateRef<T>): ReadonlyStateRef<T>;
+  export function bindState<T, Options extends StateBindOptionsFor<T>>(ref: ReadonlyStateRef<T>, options: Options): ReadonlyStateRef<T> & Omit<Options, "slot" | "local">;
+  /** Build a scalar equality predicate for `visibleWhen`, `selected`, or `checked`. */
+  export function stateEquals<T extends PredicateValue>(ref: ReadonlyStateRef<T>, value: T): Predicate;
+  type CellInit = number | boolean | string | [number, number, number, number];
+  export type LocalStateHandle<T extends CellInit> = { get(): LocalBindRef; set(value: T): PrimitiveReactionDescriptor; is(value: T): Predicate };
+  export type LocalStateBundle<I extends Record<string, CellInit>> = { scope: { scope: string; cells: I }; cells: { [K in keyof I]: LocalStateHandle<I[K]> } };
+  /** Declare presentation-local cells. `init` keys are cell names; values may be number, boolean, string, or RGBA tuple. Pure; cells live only inside the nearest container using the returned `scope`. */
+  export function createLocalState<I extends Record<string, CellInit>>(init: I): LocalStateBundle<I>;
+  export function Switch(cell: LocalStateHandle<string>, map: Record<string, WidgetDescriptor>): WidgetDescriptor[];
+  export const ui: { createLocalState: typeof createLocalState };
+  export function getGameState(): GameStateRefs;
+
+  /** Build a state-crossing watcher for numeric refs. `condition` gives exactly one finite `below` or `above` threshold; optional `max` is a finite denominator. `fire` accepts reaction handles or names. */
+  export function onStateCrossing(ref: ReadonlyStateRef<number>, condition: CrossingCondition, fire: (Reaction<{}> | Reaction<CrossingParams> | string)[]): CrossingDescriptor;
+  /** Build a watcher from a Bool-valued runtime predicate over live store slots. It fires on false-to-true edges and re-arms after the predicate returns false. A predicate already true at registration only arms; it must later return false, then true, to fire. */
+  export function onStateCrossing(predicate: RuntimeValue, fire: (Reaction<{}> | Reaction<CrossingParams> | string)[], options?: CrossingOptions): CrossingDescriptor;
+  /** Play `sound` on optional mixer `bus`; omitted/null bus uses the engine default. */
+  export function playSound(sound: string, bus?: string | null): PrimitiveReactionDescriptor;
+  /** Trigger gamepad rumble. `strong` and optional `weak` are motor intensities in [0, 1]; `durationMs` is milliseconds. */
+  export function rumble(strong: number, durationMs: number, weak?: number | null): PrimitiveReactionDescriptor;
+  /** Flash the screen with linear RGBA `color`; `durationMs` is the decay time in milliseconds. */
+  export function flashScreen(color: [number, number, number, number], durationMs: number): PrimitiveReactionDescriptor;
+  /** Apply a screen-edge vignette. `strength` is the peak amount, `durationMs` is total rise+decay time, and optional `color` is linear RGB. */
+  export function vignette(strength: number, durationMs: number, color?: [number, number, number] | null): PrimitiveReactionDescriptor;
+  /** Shake the screen. `amplitude` is logical-reference px, `durationMs` is milliseconds, and optional `frequency` is Hz. */
+  export function screenShake(amplitude: number, durationMs: number, frequency?: number | null): PrimitiveReactionDescriptor;
+  /** Push UI tree `tree` as a modal; optional `onCommit` names a reaction fired on commit. Unknown tree names warn and no-op. */
+  export function showDialog(tree: string, onCommit?: string | null): PrimitiveReactionDescriptor;
+  export const KEYBOARD_TREE: "keyboard";
+  export const CLOSE_DIALOG_ACTION: "ui.closeDialog";
+  export const EXIT_TO_DESKTOP_ACTION: "ui.exitToDesktop";
+  /** Reserved `Button.onPress` action for returning to the frontend; same lifecycle path as `returnToFrontend()`. */
+  export const QUIT_TO_MENU_ACTION: "ui.quitToMenu";
+  /** Open the engine keyboard modal. Optional `onCommit` names a reaction fired when text entry commits. */
+  export function openTextEntry(onCommit?: string | null): PrimitiveReactionDescriptor;
+  /** Push a menu tree by registry name. Unknown tree names warn and no-op. */
+  export function openMenu(tree: string): PrimitiveReactionDescriptor;
+  /** Pop the active modal. Empty stack warns and no-ops. */
+  export function closeDialog(): PrimitiveReactionDescriptor;
+  /** Queue a catalog map load. `id` must match a committed `ModMapEntry.id`; unknown ids warn and no-op. */
+  export function loadLevel(id: string): PrimitiveReactionDescriptor;
+  /** Reload the active level from retained catalog id or raw dev path. No active level means no-op. */
+  export function restartLevel(): PrimitiveReactionDescriptor;
+  /** Return to the frontend menu and reload its optional backdrop level. */
+  export function returnToFrontend(): PrimitiveReactionDescriptor;
+  /** Write a literal or runtime value at game-logic time. Literals use the normal readonly-gated coercion and range path. Runtime values bind once at level install: known Number and Boolean slots, including readonly slots, project as inputs; only a writable Number/Boolean output target is accepted. Unknown/nonprojectable inputs and readonly targets reject. */
+  export function updateState<T>(ref: WritableStateRef<T>, value: T | RuntimeValue): PrimitiveReactionDescriptor;
+  export function appendText(ref: WritableStateRef<string>, text: string): PrimitiveReactionDescriptor;
+  export function backspaceText(ref: WritableStateRef<string>): PrimitiveReactionDescriptor;
+  export function clearText(ref: WritableStateRef<string>): PrimitiveReactionDescriptor;
 }

@@ -51,6 +51,7 @@ fn translation_clip(name: &str, duration: f32, joints: Vec<JointTracks>) -> Anim
         name: name.to_string(),
         duration,
         joints,
+        travel_speed: None,
     }
 }
 
@@ -470,6 +471,7 @@ fn constant_pose_clip(name: &str, t: Vec3, r: Quat, s: Vec3) -> AnimationClip {
         name: name.to_string(),
         duration: 1.0,
         joints: vec![tracks],
+        travel_speed: None,
     }
 }
 
@@ -951,6 +953,7 @@ fn modified_samplers_fall_through_when_stack_or_inputs_are_absent() {
         aim_pitch: 0.25,
         aim_yaw: 0.5,
         heading_yaw: 0.1,
+        ..Default::default()
     };
 
     let mut expected_clip = Vec::new();
@@ -1046,6 +1049,7 @@ fn modified_rest_sampler_applies_split_then_pitch_without_a_clip() {
         aim_pitch: 0.25,
         aim_yaw: 0.4,
         heading_yaw: 0.0,
+        ..Default::default()
     };
 
     let mut palette = Vec::new();
@@ -1382,6 +1386,7 @@ fn overlapping_pose_modifiers_compose_in_stack_list_order() {
         aim_pitch: 0.4,
         aim_yaw: 0.6,
         heading_yaw: 0.0,
+        ..Default::default()
     };
 
     let split_then_bend = sample_modified_rest(
@@ -1426,6 +1431,7 @@ fn identical_pose_inputs_produce_byte_identical_palettes() {
         aim_pitch: 0.37,
         aim_yaw: -0.8,
         heading_yaw: 0.2,
+        ..Default::default()
     };
 
     let first = sample_modified_rest(&skeleton, &stack, &inputs);
@@ -1560,6 +1566,7 @@ fn combined_split_and_bend_aims_torso_while_legs_keep_heading() {
             aim_pitch: pitch,
             aim_yaw,
             heading_yaw: heading,
+            ..Default::default()
         },
     );
 

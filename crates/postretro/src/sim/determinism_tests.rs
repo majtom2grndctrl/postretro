@@ -3,7 +3,9 @@
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use glam::{EulerRot, Vec2, Vec3};
 use parry3d::math::{Isometry, Point};
@@ -18,7 +20,7 @@ use crate::kinematic_mover::MoverTickStateTable;
 use crate::movement::MovementInput;
 use crate::nav::NavGraph;
 use crate::netcode::ShotId;
-use crate::scripting_systems::hit_zones::HitZoneStore;
+use crate::scripting_systems::hit_zones::{HitZoneStore, model_matrix};
 use crate::scripting_systems::slot_accumulators::{
     SlotAccumulatorBindings, evaluate_slot_accumulators,
 };
@@ -42,6 +44,7 @@ use postretro_entities::{
     SlotOwnership, SlotRecord, SlotSchema, SlotTable, SlotType, SlotValue, Transform,
     TriggerActivation, TriggerFireMode, TriggerVolumeComponent,
 };
+use postretro_foundation::pose::{FootProbe, MAX_FEET};
 use postretro_foundation::{
     AirParams, CapsuleParams, FallParams, FireMode, ForgivenessParams, GroundParams, IrNode,
     IrValue, PlayerMovementComponent, PlayerMovementDescriptor, ResolutionMode, SpeedParams,
@@ -954,11 +957,21 @@ fn player_descriptor() -> PlayerMovementDescriptor {
 }
 
 fn floor_world() -> CollisionWorld {
+    sloped_floor_world(0.0)
+}
+
+/// A large ground plane tilted about the world Z axis: surface height `y =
+/// slope * x`. `slope == 0.0` is the flat [`floor_world`]. The triangle winding
+/// matches `floor_world`, so the upward-facing normal is `(-slope, 1, 0)`
+/// normalized — a non-`Vec3::Y` tilt for any non-zero slope, staying walkable
+/// while `1/sqrt(1 + slope^2) >= COS_WALKABLE`.
+fn sloped_floor_world(slope: f32) -> CollisionWorld {
+    let y = |x: f32| slope * x;
     let points = vec![
-        Point::new(-500.0, 0.0, -500.0),
-        Point::new(500.0, 0.0, -500.0),
-        Point::new(500.0, 0.0, 500.0),
-        Point::new(-500.0, 0.0, 500.0),
+        Point::new(-500.0, y(-500.0), -500.0),
+        Point::new(500.0, y(500.0), -500.0),
+        Point::new(500.0, y(500.0), 500.0),
+        Point::new(-500.0, y(-500.0), 500.0),
     ];
     let triangles = vec![[0, 2, 1], [0, 3, 2]];
     CollisionWorld {
@@ -1014,6 +1027,7 @@ fn driven_agent_mesh(current_state: &str) -> MeshComponent {
         looping: true,
         crossfade_ms: 0.0,
         interrupt: InterruptPolicy::Smooth,
+        travel_speed: None,
         clip_index: Some(clip_index),
     };
     let mut states = std::collections::HashMap::new();
@@ -1068,6 +1082,7 @@ fn spawn_driven_agent(
 fn run_driven_agent_sim_tick(
     registry: Rc<RefCell<EntityRegistry>>,
     world: &CollisionWorld,
+    hit_zones: &HitZoneStore,
     nav_graph: &NavGraph,
     anim_time: f64,
     progress: &mut ProgressTracker,
@@ -1094,7 +1109,7 @@ fn run_driven_agent_sim_tick(
     let _ = simulate_tick(
         registry,
         world,
-        &HitZoneStore::new(),
+        hit_zones,
         Some(nav_graph),
         GRAVITY,
         None,
@@ -1114,6 +1129,43 @@ fn run_driven_agent_sim_tick(
     );
 }
 
+fn reference_enemy_walking_hit_zones() -> Option<(String, usize, HitZoneStore)> {
+    use crate::scripting_systems::hit_zones::ModelHitZones;
+    use postretro_model::ModelHandle;
+
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../content/dev/models/reference_enemy_kaykit_knight/scene.gltf");
+    if !path.exists() {
+        eprintln!("skipping: model asset not present at {}", path.display());
+        return None;
+    }
+    let model = postretro_model::gltf_loader::load_model(&path)
+        .expect("shipped reference enemy model loads");
+    let walking_index = model
+        .clips
+        .iter()
+        .position(|clip| clip.name == "Walking_A")
+        .expect("reference enemy declares Walking_A");
+    assert_eq!(
+        model.clips[walking_index].travel_speed, None,
+        "E10 fallback is justified only when the shipped Walking_A clip derives no travel speed",
+    );
+
+    let model_key = path.to_string_lossy().into_owned();
+    let mut store = HitZoneStore::new();
+    store.insert_for_test(
+        ModelHandle::from(model_key.clone()),
+        ModelHitZones {
+            skeleton: Arc::new(model.skeleton),
+            clips: Arc::new(model.clips),
+            joint_zones: model.joint_zones,
+            derived_bound: None,
+            legs: model.legs,
+        },
+    );
+    Some((model_key, walking_index, store))
+}
+
 #[test]
 fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsilon_writes() {
     let world = floor_world();
@@ -1121,6 +1173,7 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
     let mut progress = ProgressTracker::new();
     let mut ai_warned = HashSet::new();
     let mut mover_states = MoverTickStateTable::default();
+    let empty_hit_zones = HitZoneStore::new();
 
     // Attack is not the alert-mapped locomotion state, so the sim-tick path
     // must restore its previously scaled playback rate to one.
@@ -1147,6 +1200,7 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
     run_driven_agent_sim_tick(
         non_walk_registry.clone(),
         &world,
+        &empty_hit_zones,
         &nav_graph,
         1.0,
         &mut progress,
@@ -1166,16 +1220,38 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
         "non-walk states rest at the authored playback rate",
     );
 
+    let Some((reference_model, walking_index, hit_zones)) = reference_enemy_walking_hit_zones()
+    else {
+        return;
+    };
     let registry = Rc::new(RefCell::new(EntityRegistry::new()));
     let enemy = {
         let mut registry = registry.borrow_mut();
         spawn_player(&mut registry, Vec3::new(30.0, 1.21, 5.0));
-        spawn_driven_agent(
+        let enemy = spawn_driven_agent(
             &mut registry,
             Vec3::new(5.0, 1.21, 5.0),
             LogicalState::Alert,
             "locomotion",
-        )
+        );
+        let mut mesh = registry
+            .get_component::<MeshComponent>(enemy)
+            .expect("driven agent keeps mesh")
+            .clone();
+        mesh.model = reference_model;
+        let locomotion = mesh
+            .animation
+            .as_mut()
+            .expect("driven agent keeps animation")
+            .states
+            .get_mut("locomotion")
+            .expect("driven agent declares locomotion state");
+        locomotion.clip = "Walking_A".to_string();
+        locomotion.clip_index = Some(walking_index);
+        registry
+            .set_component(enemy, mesh)
+            .expect("reference enemy walk mesh should update");
+        enemy
     };
 
     // The first tick builds the route and drives actual steering. The second
@@ -1183,6 +1259,7 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
     run_driven_agent_sim_tick(
         registry.clone(),
         &world,
+        &hit_zones,
         &nav_graph,
         1.0,
         &mut progress,
@@ -1192,6 +1269,7 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
     run_driven_agent_sim_tick(
         registry.clone(),
         &world,
+        &hit_zones,
         &nav_graph,
         2.0,
         &mut progress,
@@ -1204,13 +1282,19 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
         let agent = registry
             .get_component::<AgentComponent>(enemy)
             .expect("driven agent keeps steering state");
-        let animation = registry
+        let mesh = registry
             .get_component::<MeshComponent>(enemy)
-            .unwrap()
-            .animation
-            .as_ref()
-            .unwrap();
+            .expect("driven agent keeps mesh");
+        let animation = mesh.animation.as_ref().unwrap();
         let speed_xz = Vec3::new(agent.velocity.x, 0.0, agent.velocity.z).length();
+        // E10 premise: the shipped Walking_A clip is authored in-place, so Task
+        // 2 derives no travel speed and this state declares no override. This
+        // uses the actual shipped model store rather than an empty-store stand-in.
+        assert_eq!(
+            super::effective_travel_speed(animation, mesh, &hit_zones),
+            None,
+            "in-place E10 walk resolves to no effective travel speed (degenerate fallback)",
+        );
         let expected_rate = (speed_xz / agent.move_speed).clamp(RATE_MIN, RATE_MAX);
         assert_eq!(animation.current_state, "locomotion");
         assert!(speed_xz > 0.0, "scenario must be driven by steering");
@@ -1242,6 +1326,7 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
     run_driven_agent_sim_tick(
         registry.clone(),
         &world,
+        &hit_zones,
         &nav_graph,
         3.0,
         &mut progress,
@@ -1260,6 +1345,312 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
     );
 }
 
+/// Build a hit-zone store whose `model` entry carries `clip_index + 1` clips,
+/// with the clip at `clip_index` stamped with `travel_speed` — standing in for a
+/// model whose walk clip did (or did not) derive a stride from root motion at
+/// load. The skeleton/zones are empty: the sim tick never raycasts this store,
+/// it only reads the clip's derived travel speed.
+fn hit_zone_store_with_clip_travel_speed(
+    model: &str,
+    clip_index: usize,
+    travel_speed: Option<f32>,
+) -> HitZoneStore {
+    use crate::scripting_systems::hit_zones::ModelHitZones;
+    use postretro_model::skeleton::{AnimationClip, Skeleton};
+    use std::sync::Arc;
+
+    let mut clips: Vec<AnimationClip> =
+        (0..=clip_index).map(|_| AnimationClip::default()).collect();
+    clips[clip_index].travel_speed = travel_speed;
+    let mut store = HitZoneStore::new();
+    store.insert_for_test(
+        postretro_model::ModelHandle::from(model.to_string()),
+        ModelHitZones {
+            skeleton: Arc::new(Skeleton::default()),
+            clips: Arc::new(clips),
+            joint_zones: Vec::new(),
+            derived_bound: None,
+            legs: Vec::new(),
+        },
+    );
+    store
+}
+
+// A locomotion state whose clip carries a load-derived travel speed calibrates
+// playback to `measured_ground_speed / travel_speed`, not `speed_xz / move_speed`
+// — moving faster than the authored stride plays it proportionally faster.
+#[test]
+fn update_brain_playback_rate_scales_from_clip_travel_speed() {
+    let mut registry = EntityRegistry::new();
+    let enemy = spawn_driven_agent(
+        &mut registry,
+        Vec3::new(5.0, 1.21, 5.0),
+        LogicalState::Alert,
+        "locomotion",
+    );
+    // Force a known post-steering velocity; the producer reads
+    // `path_state().velocity` directly, so no steering run is needed here.
+    let mut agent = registry
+        .get_component::<AgentComponent>(enemy)
+        .unwrap()
+        .clone();
+    agent.velocity = Vec3::new(3.0, 0.0, 0.0);
+    registry.set_component(enemy, agent).unwrap();
+
+    // Walk clip index 1 (the "locomotion" state's clip) authors a 2.5 u/s stride.
+    let store = hit_zone_store_with_clip_travel_speed("driven-agent", 1, Some(2.5));
+    super::update_brain_animation_playback_rates(&mut registry, &store, 1.0);
+
+    let rate = registry
+        .get_component::<MeshComponent>(enemy)
+        .unwrap()
+        .animation
+        .as_ref()
+        .unwrap()
+        .rate;
+    let expected = (3.0f32 / 2.5).clamp(RATE_MIN, RATE_MAX);
+    assert!(
+        (rate - expected).abs() <= 1.0e-6,
+        "rate must calibrate to measured/travel_speed ({expected}), got {rate}",
+    );
+    // Distinct from the degenerate move_speed reference (3.0 / 3.5 ≈ 0.857),
+    // proving the clip stride — not `move_speed` — drove the calibration.
+    let degenerate = (3.0f32 / 3.5).clamp(RATE_MIN, RATE_MAX);
+    assert!(
+        (rate - degenerate).abs() > 1.0e-3,
+        "travel-speed calibration must differ from the move_speed fallback",
+    );
+    assert!(
+        rate > 1.0,
+        "moving faster than the authored stride plays faster"
+    );
+}
+
+// `speedScale: false` disables rate-scaling entirely: even with a calibrated
+// clip stride and a nonzero measured speed, the rate holds at the authored 1.0.
+#[test]
+fn update_brain_playback_rate_skips_scaling_when_speed_scale_off() {
+    let mut registry = EntityRegistry::new();
+    let enemy = spawn_driven_agent(
+        &mut registry,
+        Vec3::new(5.0, 1.21, 5.0),
+        LogicalState::Alert,
+        "locomotion",
+    );
+    let mut mesh = registry
+        .get_component::<MeshComponent>(enemy)
+        .unwrap()
+        .clone();
+    mesh.animation = mesh.animation.map(|anim| anim.with_speed_scale(false));
+    registry.set_component(enemy, mesh).unwrap();
+    let mut agent = registry
+        .get_component::<AgentComponent>(enemy)
+        .unwrap()
+        .clone();
+    agent.velocity = Vec3::new(3.0, 0.0, 0.0);
+    registry.set_component(enemy, agent).unwrap();
+
+    // A calibrated stride that would otherwise scale to 1.2 — the assertion that
+    // the rate stays 1.0 catches a producer that ignores `speed_scale`.
+    let store = hit_zone_store_with_clip_travel_speed("driven-agent", 1, Some(2.5));
+    super::update_brain_animation_playback_rates(&mut registry, &store, 1.0);
+
+    let rate = registry
+        .get_component::<MeshComponent>(enemy)
+        .unwrap()
+        .animation
+        .as_ref()
+        .unwrap()
+        .rate;
+    assert!(
+        (rate - 1.0).abs() <= 1.0e-6,
+        "speedScale: false must hold the authored rate, got {rate}",
+    );
+}
+
+#[test]
+fn local_locomotion_rate_precedence_matrix_is_override_then_derived_then_fallback() {
+    struct Case {
+        label: &'static str,
+        override_speed: Option<f32>,
+        derived_speed: Option<f32>,
+        speed_scale: bool,
+        expected: f32,
+    }
+    let measured = 3.0_f32;
+    let move_speed = 3.5_f32;
+    let cases = [
+        Case {
+            label: "override wins over derived",
+            override_speed: Some(4.0),
+            derived_speed: Some(2.5),
+            speed_scale: true,
+            expected: measured / 4.0,
+        },
+        Case {
+            label: "derived clip speed",
+            override_speed: None,
+            derived_speed: Some(2.5),
+            speed_scale: true,
+            expected: measured / 2.5,
+        },
+        Case {
+            label: "E10 move-speed fallback",
+            override_speed: None,
+            derived_speed: None,
+            speed_scale: true,
+            expected: measured / move_speed,
+        },
+        Case {
+            label: "speedScale false",
+            override_speed: Some(4.0),
+            derived_speed: Some(2.5),
+            speed_scale: false,
+            expected: 1.0,
+        },
+    ];
+
+    for case in cases {
+        let mut registry = EntityRegistry::new();
+        let enemy = spawn_driven_agent(
+            &mut registry,
+            Vec3::new(5.0, 1.21, 5.0),
+            LogicalState::Alert,
+            "locomotion",
+        );
+        let mut mesh = registry
+            .get_component::<MeshComponent>(enemy)
+            .unwrap()
+            .clone();
+        let animation = mesh.animation.as_mut().unwrap();
+        animation.speed_scale = case.speed_scale;
+        animation.states.get_mut("locomotion").unwrap().travel_speed = case.override_speed;
+        registry.set_component(enemy, mesh).unwrap();
+        let mut agent = registry
+            .get_component::<AgentComponent>(enemy)
+            .unwrap()
+            .clone();
+        agent.velocity = Vec3::new(measured, 0.0, 0.0);
+        registry.set_component(enemy, agent).unwrap();
+
+        let store = hit_zone_store_with_clip_travel_speed("driven-agent", 1, case.derived_speed);
+        super::update_brain_animation_playback_rates(&mut registry, &store, 1.0);
+        let actual = registry
+            .get_component::<MeshComponent>(enemy)
+            .unwrap()
+            .animation
+            .as_ref()
+            .unwrap()
+            .rate;
+        let expected = case.expected.clamp(RATE_MIN, RATE_MAX);
+        assert!(
+            (actual - expected).abs() <= 1.0e-6,
+            "{}: expected {expected}, got {actual}",
+            case.label
+        );
+    }
+}
+
+// Regression: runtime-spawned host enemies enter the first rate pass before
+// the outer app loop drains their clip-index resolve queue.
+#[test]
+fn spawner_path_first_rate_pass_uses_derived_clip_calibration_before_index_resolve() {
+    use crate::scripting::builtins::data_archetype_test_fixtures::ai_enemy_descriptor;
+    use crate::spawner::SpawnContext;
+    use postretro_entities::components::spawner::SpawnerComponent;
+    use postretro_model::skeleton::{AnimationClip, Skeleton};
+
+    let mut descriptor = ai_enemy_descriptor("runtime_enemy");
+    let mesh_desc = descriptor.mesh.as_mut().unwrap();
+    mesh_desc.animations.insert(
+        "walk".to_string(),
+        AnimationState {
+            clip: "walk_clip".to_string(),
+            looping: true,
+            crossfade_ms: 0.0,
+            interrupt: InterruptPolicy::Smooth,
+            travel_speed: None,
+            clip_index: None,
+        },
+    );
+    mesh_desc.default_state = Some("walk".to_string());
+
+    let context = SpawnContext::default();
+    context.replace_level_data(
+        [("runtime_enemy".to_string(), descriptor)]
+            .into_iter()
+            .collect(),
+        None,
+    );
+    let mut registry = EntityRegistry::new();
+    let spawner = registry.spawn(Transform::default());
+    registry
+        .set_component(
+            spawner,
+            SpawnerComponent {
+                archetype_name: "runtime_enemy".to_string(),
+                count: 1,
+                resolved: true,
+            },
+        )
+        .unwrap();
+    crate::spawner::spawn_from_spawner_targets(&mut registry, &[spawner], &context);
+    let enemy = registry
+        .iter_with_kind(postretro_entities::ComponentKind::Brain)
+        .map(|(id, _)| id)
+        .next()
+        .expect("spawner path materializes one AI enemy");
+    assert_eq!(
+        registry
+            .get_component::<MeshComponent>(enemy)
+            .unwrap()
+            .animation
+            .as_ref()
+            .unwrap()
+            .states["walk"]
+            .clip_index,
+        None,
+        "first rate pass occurs before the queued index fill",
+    );
+    let mut agent = registry
+        .get_component::<AgentComponent>(enemy)
+        .unwrap()
+        .clone();
+    agent.velocity = Vec3::new(3.0, 0.0, 0.0);
+    registry.set_component(enemy, agent).unwrap();
+
+    let mut store = HitZoneStore::new();
+    store.insert_for_test(
+        postretro_model::ModelHandle::from("decraniated"),
+        crate::scripting_systems::hit_zones::ModelHitZones {
+            skeleton: Arc::new(Skeleton::default()),
+            clips: Arc::new(vec![AnimationClip {
+                name: "walk_clip".to_string(),
+                duration: 1.0,
+                joints: Vec::new(),
+                travel_speed: Some(2.0),
+            }]),
+            joint_zones: Vec::new(),
+            derived_bound: None,
+            legs: Vec::new(),
+        },
+    );
+
+    super::update_brain_animation_playback_rates(&mut registry, &store, 1.0);
+    let rate = registry
+        .get_component::<MeshComponent>(enemy)
+        .unwrap()
+        .animation
+        .as_ref()
+        .unwrap()
+        .rate;
+    assert!(
+        (rate - 1.5).abs() <= 1.0e-6,
+        "derived first-tick rate = {rate}"
+    );
+    assert_eq!(context.take_pending_mesh_clip_resolves(), vec![enemy]);
+}
+
 #[test]
 fn simulate_tick_writes_target_aim_and_tick_end_heading_pose_inputs() {
     let world = floor_world();
@@ -1267,6 +1658,7 @@ fn simulate_tick_writes_target_aim_and_tick_end_heading_pose_inputs() {
     let mut progress = ProgressTracker::new();
     let mut ai_warned = HashSet::new();
     let mut mover_states = MoverTickStateTable::default();
+    let hit_zones = HitZoneStore::new();
     let registry = Rc::new(RefCell::new(EntityRegistry::new()));
     let (enemy, target) = {
         let mut registry = registry.borrow_mut();
@@ -1289,6 +1681,7 @@ fn simulate_tick_writes_target_aim_and_tick_end_heading_pose_inputs() {
     run_driven_agent_sim_tick(
         registry.clone(),
         &world,
+        &hit_zones,
         &nav_graph,
         1.0,
         &mut progress,
@@ -1379,6 +1772,464 @@ fn pose_inputs_fallbacks_and_vertical_targets_remain_finite() {
     assert!(coincident.aim_pitch.abs() <= 1.0e-6);
     assert!((straight_up.aim_pitch - std::f32::consts::FRAC_PI_2).abs() <= 1.0e-6);
     assert!((straight_down.aim_pitch + std::f32::consts::FRAC_PI_2).abs() <= 1.0e-6);
+}
+
+/// One leg model: hip → knee → ankle, composed ankle resting at model (0,-0.7,0),
+/// with one looping idle clip (no joint tracks, so the pose falls back to the
+/// rest hierarchy the ground probe reads). Leg `0` drives foot probe `0`.
+///
+/// The knee carries a small forward (+Z) offset that the ankle segment cancels,
+/// so the composed ankle stays at exactly (0,-0.7,0) — the ground probe reads
+/// only the ankle, so its contact/normal are unchanged — while giving the
+/// two-bone IK a well-defined bend plane (a perfectly straight leg has none and
+/// cannot be re-solved). Segment sum 2·√(0.35²+0.12²) ≈ 0.740.
+fn leg_model() -> crate::scripting_systems::hit_zones::ModelHitZones {
+    use postretro_model::pose_modifier::{JointMask, LegChain};
+    use postretro_model::skeleton::{AnimationClip, Joint, RestLocal, Skeleton};
+
+    let joint = |parent, offset: Vec3| Joint {
+        parent,
+        inverse_bind: glam::Mat4::IDENTITY.to_cols_array_2d(),
+        rest_local: RestLocal {
+            translation: offset,
+            rotation: glam::Quat::IDENTITY,
+            scale: Vec3::ONE,
+        },
+    };
+    let skeleton = Skeleton {
+        joints: vec![
+            joint(None, Vec3::ZERO),
+            joint(Some(0), Vec3::new(0.0, -0.35, 0.12)),
+            joint(Some(1), Vec3::new(0.0, -0.35, -0.12)),
+        ],
+    };
+    let clips = vec![AnimationClip {
+        name: "idle".to_string(),
+        duration: 1.0,
+        joints: Vec::new(),
+        travel_speed: None,
+    }];
+    let mut chain_mask = JointMask::new();
+    for j in [0usize, 1, 2] {
+        assert!(chain_mask.insert(j));
+    }
+    crate::scripting_systems::hit_zones::ModelHitZones {
+        skeleton: std::sync::Arc::new(skeleton),
+        clips: std::sync::Arc::new(clips),
+        joint_zones: vec![None, None, None],
+        derived_bound: None,
+        legs: vec![LegChain {
+            chain_mask,
+            foot_joint: 2,
+        }],
+    }
+}
+
+/// Spawn one leg-tagged animated entity at `position`/`yaw`, run the production
+/// tick-end pose order (aim/heading, then the ground probe) against a flat floor,
+/// and return the resulting `PoseInputs`.
+fn probe_leg_entity(position: Vec3, yaw: f32) -> postretro_entities::PoseInputs {
+    probe_leg_entity_in(&floor_world(), position, yaw)
+}
+
+/// Same production tick-end pose order as [`probe_leg_entity`], but against a
+/// caller-supplied collision world so a slope fixture can drive the probe.
+fn probe_leg_entity_in(
+    world: &CollisionWorld,
+    position: Vec3,
+    yaw: f32,
+) -> postretro_entities::PoseInputs {
+    let (mut registry, entity, store) = leg_probe_fixture(position, yaw);
+    let mover_colliders: Vec<MoverCollider> = Vec::new();
+    let mover_states = MoverTickStateTable::default();
+
+    super::update_presentation_pose_inputs(
+        &mut registry,
+        world,
+        &mover_colliders,
+        &mover_states,
+        &store,
+        0.0,
+    );
+
+    registry
+        .get_component::<MeshComponent>(entity)
+        .unwrap()
+        .pose_inputs
+        .expect("leg entity receives pose inputs")
+}
+
+fn leg_probe_fixture(position: Vec3, yaw: f32) -> (EntityRegistry, EntityId, HitZoneStore) {
+    let mut registry = EntityRegistry::new();
+    let mut states = std::collections::HashMap::new();
+    states.insert(
+        "idle".to_string(),
+        AnimationState {
+            clip: "idle".into(),
+            looping: true,
+            crossfade_ms: 0.0,
+            interrupt: InterruptPolicy::Smooth,
+            travel_speed: None,
+            clip_index: Some(0),
+        },
+    );
+    let entity = registry.spawn(Transform {
+        position,
+        rotation: glam::Quat::from_rotation_y(yaw),
+        scale: Vec3::ONE,
+    });
+    registry
+        .set_component(
+            entity,
+            MeshComponent {
+                model: "legwalker".into(),
+                animation: Some(MeshAnimation::new(states, "idle".into())),
+                origin_offset: Vec3::ZERO,
+                pose_inputs: None,
+            },
+        )
+        .expect("leg entity mesh should attach");
+
+    let mut store = HitZoneStore::new();
+    store.insert_for_test(
+        postretro_model::ModelHandle::from("legwalker".to_string()),
+        leg_model(),
+    );
+    (registry, entity, store)
+}
+
+#[test]
+fn foot_ground_probes_are_deterministic_and_carry_forward_aim() {
+    let position = Vec3::new(0.0, 1.0, 0.0);
+    let yaw = 0.4;
+
+    let first = probe_leg_entity(position, yaw);
+    let second = probe_leg_entity(position, yaw);
+
+    // Determinism: repeated headless runs of the same tick state are identical.
+    assert_eq!(
+        first.feet, second.feet,
+        "probe feet must be bit-identical run-to-run"
+    );
+    assert_eq!(first.foot_count, second.foot_count);
+
+    // foot_count equals the entity's leg-set length.
+    assert_eq!(first.foot_count, 1);
+
+    // Flat ground under the foot: contact, upward model-space normal, height.
+    let foot = first.feet[0];
+    assert!(foot.hit, "foot over flat floor finds ground");
+    assert!(
+        (foot.normal - Vec3::Y).length() < 1.0e-4,
+        "upward model-space normal, got {:?}",
+        foot.normal
+    );
+    // Entity origin sits 1.0 above the floor, so the model-space ground height
+    // under the foot is -1.0.
+    assert!(
+        (foot.contact_height + 1.0).abs() < 1.0e-3,
+        "contact_height = {}",
+        foot.contact_height
+    );
+
+    // Aim/heading fields authored by update_pose_inputs survive the probe write.
+    assert!(
+        (first.heading_yaw - yaw).abs() < 1.0e-5,
+        "heading preserved through the probe RMW, got {}",
+        first.heading_yaw
+    );
+    assert!((first.aim_yaw - yaw).abs() < 1.0e-5);
+    assert!(first.aim_pitch.abs() < 1.0e-6);
+
+    // A foot with no ground within the planting reach reports a miss, yet
+    // foot_count still equals the leg-set length and the aim fields stand.
+    let high = probe_leg_entity(Vec3::new(0.0, 10.0, 0.0), yaw);
+    assert_eq!(high.foot_count, 1);
+    assert!(
+        !high.feet[0].hit,
+        "no ground within the planting reach is a miss"
+    );
+    assert!((high.heading_yaw - yaw).abs() < 1.0e-5);
+}
+
+// Regression: connected clients skip simulate_tick, so remote legged meshes
+// previously reached rendering with no pose inputs or ground probes.
+#[test]
+fn connected_client_presentation_probes_freshly_displayed_remote_transform() {
+    let (mut registry, entity, store) = leg_probe_fixture(Vec3::new(0.0, 10.0, 0.0), 0.0);
+    registry
+        .set_presentation_transform(
+            entity,
+            Transform {
+                position: Vec3::new(0.0, 1.0, 0.0),
+                rotation: glam::Quat::from_rotation_y(0.6),
+                scale: Vec3::ONE,
+            },
+        )
+        .expect("remote presentation transform should apply");
+
+    super::update_presentation_pose_inputs(
+        &mut registry,
+        &floor_world(),
+        &[],
+        &MoverTickStateTable::default(),
+        &store,
+        0.0,
+    );
+
+    let inputs = registry
+        .get_component::<MeshComponent>(entity)
+        .unwrap()
+        .pose_inputs
+        .expect("connected-client presentation produces pose inputs");
+    assert_eq!(inputs.foot_count, 1);
+    assert!(inputs.feet[0].hit, "displayed remote foot probes the floor");
+    assert!((inputs.feet[0].contact_height + 1.0).abs() < 1.0e-3);
+    assert!((inputs.heading_yaw - 0.6).abs() < 1.0e-5);
+}
+
+// Regression: publishing the model's leg count before validating animation,
+// sample, and transform availability preserved stale contacts in the renderer.
+#[test]
+fn unavailable_probe_inputs_clear_stale_feet_and_publish_zero_count() {
+    let world = floor_world();
+    let (mut registry, entity, store) = leg_probe_fixture(Vec3::new(0.0, 1.0, 0.0), 0.0);
+    let mover_states = MoverTickStateTable::default();
+    let run = |registry: &mut EntityRegistry| {
+        super::update_presentation_pose_inputs(registry, &world, &[], &mover_states, &store, 0.0);
+    };
+    let assert_cleared = |registry: &EntityRegistry, reason: &str| {
+        let inputs = registry
+            .get_component::<MeshComponent>(entity)
+            .unwrap()
+            .pose_inputs
+            .unwrap();
+        assert_eq!(inputs.foot_count, 0, "{reason}");
+        assert_eq!(inputs.feet, [FootProbe::default(); MAX_FEET], "{reason}");
+    };
+
+    run(&mut registry);
+    let original_mesh = registry
+        .get_component::<MeshComponent>(entity)
+        .unwrap()
+        .clone();
+    assert_eq!(original_mesh.pose_inputs.unwrap().foot_count, 1);
+    assert!(original_mesh.pose_inputs.unwrap().feet[0].hit);
+
+    let mut missing_model = original_mesh.clone();
+    missing_model.model = "missing-model".to_string();
+    registry.set_component(entity, missing_model).unwrap();
+    run(&mut registry);
+    assert_cleared(&registry, "missing model clears stale feet");
+
+    let mut hidden_stale = original_mesh.clone();
+    hidden_stale.model = "missing-model".to_string();
+    let mut hidden_inputs = hidden_stale.pose_inputs.unwrap();
+    hidden_inputs.foot_count = 0;
+    hidden_stale.pose_inputs = Some(hidden_inputs);
+    registry.set_component(entity, hidden_stale).unwrap();
+    run(&mut registry);
+    assert_cleared(
+        &registry,
+        "non-default foot slots clear even when the stale live count is already zero",
+    );
+
+    let mut no_animation = original_mesh.clone();
+    no_animation.animation = None;
+    registry.set_component(entity, no_animation).unwrap();
+    run(&mut registry);
+    assert_cleared(&registry, "missing animation clears stale feet");
+
+    let mut unresolved = original_mesh.clone();
+    unresolved.pose_inputs = original_mesh.pose_inputs;
+    unresolved
+        .animation
+        .as_mut()
+        .unwrap()
+        .states
+        .get_mut("idle")
+        .unwrap()
+        .clip_index = None;
+    registry.set_component(entity, unresolved).unwrap();
+    run(&mut registry);
+    assert_cleared(
+        &registry,
+        "unresolved animated state is unavailable instead of sampling clip 0",
+    );
+    let zones = store.get_by_name("legwalker").unwrap();
+    let unresolved_animation = registry
+        .get_component::<MeshComponent>(entity)
+        .unwrap()
+        .animation
+        .as_ref()
+        .unwrap();
+    assert!(
+        crate::scripting_systems::hit_zones::sample_world_pose_for_probe(
+            zones,
+            Some(unresolved_animation),
+            0.0,
+            entity.to_raw(),
+        )
+        .is_none()
+    );
+    assert!(
+        crate::scripting_systems::hit_zones::sample_world_pose_for_probe(
+            zones,
+            None,
+            0.0,
+            entity.to_raw(),
+        )
+        .is_some(),
+        "the intentional stateless first-clip path remains explicit",
+    );
+
+    registry.set_component(entity, original_mesh).unwrap();
+    let mut tilted = *registry.get_component::<Transform>(entity).unwrap();
+    tilted.rotation = glam::Quat::from_rotation_x(0.2);
+    registry.set_component(entity, tilted).unwrap();
+    run(&mut registry);
+    assert_cleared(&registry, "unsupported transform clears stale feet");
+}
+
+#[test]
+fn foot_probe_transform_accepts_small_positive_uniform_and_nonuniform_scales() {
+    for scale in [Vec3::splat(1.0e-6), Vec3::new(1.0e-6, 2.0e-6, 3.0e-6)] {
+        let transform = Transform {
+            position: Vec3::ZERO,
+            rotation: glam::Quat::IDENTITY,
+            scale,
+        };
+        let model_to_world = model_matrix(&transform, Vec3::ZERO).unwrap();
+        assert!(
+            super::foot_probe_inverse(&transform, &model_to_world).is_some(),
+            "positive finite scale {scale:?} has a finite inverse"
+        );
+    }
+}
+
+#[test]
+fn foot_ik_plants_and_orients_on_slope_within_walkable_limit() {
+    use postretro_model::anim::{Loop, sample_clip_looped_modified};
+    use postretro_model::pose_modifier::{ModifierEntry, PoseModifier, PoseModifierStack};
+
+    // A ~16.7° ground tilt about world Z: surface y = 0.3 * x. Walkable
+    // (normal.y = 1/sqrt(1.09) = 0.958 >= COS_WALKABLE = 0.643).
+    let slope = 0.3_f32;
+    let world = sloped_floor_world(slope);
+
+    // Entity over the uphill face at x = 0.5 (surface there sits at y = 0.15),
+    // dropped so the model-space rest ankle (model-y = -0.70) hovers just above
+    // the slope: foot_world.y = 0.88 - 0.70 = 0.18, a 0.03 gap to the surface —
+    // inside the plant blend band so the foot genuinely plants (not swing).
+    let position = Vec3::new(0.5, 0.88, 0.0);
+    let inputs = probe_leg_entity_in(&world, position, 0.0);
+
+    // (2) The production tick probe reports the slope contact, not the flat
+    // floor: one live foot, a hit, the tilted (non-Y) upward normal, and the
+    // model-space slope height under the foot.
+    assert_eq!(inputs.foot_count, 1);
+    let foot = inputs.feet[0];
+    assert!(foot.hit, "foot over the walkable slope finds ground");
+    // Model-space slope surface under the foot: y(0.5) - position.y = 0.15 - 0.88.
+    let expected_contact = slope * position.x - position.y;
+    assert!(
+        (foot.contact_height - expected_contact).abs() < 1.0e-3,
+        "slope contact height = {}, expected {expected_contact}",
+        foot.contact_height
+    );
+    // Tilted ground normal, clearly not straight up, yet still walkable.
+    let expected_normal = Vec3::new(-slope, 1.0, 0.0).normalize();
+    assert!(
+        (foot.normal - expected_normal).length() < 1.0e-3,
+        "tilted slope normal, got {:?}",
+        foot.normal
+    );
+    assert!(
+        (foot.normal - Vec3::Y).length() > 0.1,
+        "normal must be a real tilt, not flat-ground Vec3::Y: {:?}",
+        foot.normal
+    );
+
+    // (3) Apply the FootIk modifier directly through the wgpu-free sampler with
+    // those driven probes. Build the stack from the model's own leg set, exactly
+    // as the loader does (one FootIk entry carrying the whole leg list).
+    let model = leg_model();
+    let stack = PoseModifierStack::new(vec![ModifierEntry {
+        mask: postretro_model::pose_modifier::JointMask::new(),
+        modifier: PoseModifier::FootIk {
+            legs: model.legs.clone(),
+        },
+    }]);
+
+    // Rest/clip pose (no joint tracks) for the same skeleton, unmodified, gives
+    // the flat-ground ankle baseline the plant must move away from.
+    let mut rest_palette = Vec::new();
+    sample_clip_looped_modified(
+        &model.clips[0],
+        &model.skeleton,
+        0.0,
+        Loop::Wrap,
+        &PoseModifierStack::default(),
+        None,
+        &mut rest_palette,
+    );
+    // Identity inverse_bind: a palette entry's translation column is that joint's
+    // model-space position.
+    let ankle_rest_y = rest_palette[2].matrix[3][1];
+    assert!(
+        (ankle_rest_y - -0.70).abs() < 1.0e-4,
+        "rest ankle model-y = {ankle_rest_y}, expected -0.70"
+    );
+
+    let mut planted = Vec::new();
+    sample_clip_looped_modified(
+        &model.clips[0],
+        &model.skeleton,
+        0.0,
+        Loop::Wrap,
+        &stack,
+        Some(&inputs),
+        &mut planted,
+    );
+
+    let ankle_planted_y = planted[2].matrix[3][1];
+    // Planted onto the slope surface: the ankle drops from the flat-ground rest
+    // (-0.70) toward the probed slope contact height, clearly below rest.
+    assert!(
+        ankle_planted_y < ankle_rest_y - 1.0e-2,
+        "ankle did not plant down onto the slope: rest {ankle_rest_y}, planted {ankle_planted_y}"
+    );
+    // ...and it lands at (approximately) the probed slope surface, never below it.
+    assert!(
+        ankle_planted_y >= foot.contact_height - 1.0e-3,
+        "ankle drove through the slope surface: planted {ankle_planted_y}, contact {}",
+        foot.contact_height
+    );
+    assert!(
+        (ankle_planted_y - foot.contact_height).abs() < 2.0e-2,
+        "ankle did not reach the slope surface: planted {ankle_planted_y}, contact {}",
+        foot.contact_height
+    );
+
+    // Foot orients toward the ground normal: the sole (foot model +Y) tips off
+    // straight-up toward the tilted slope normal.
+    let foot_rot = glam::Quat::from_mat4(&glam::Mat4::from_cols_array_2d(&planted[2].matrix));
+    let sole = (foot_rot * Vec3::Y).normalize();
+    assert!(
+        sole.dot(foot.normal) > sole.dot(Vec3::Y),
+        "foot sole tilted toward the slope normal: sole {sole:?}, normal {:?}",
+        foot.normal
+    );
+
+    // The solve rotates only the leg joints and never translates the root: joint
+    // 0 stays at the model origin, so the plant can never push the pelvis through
+    // the surface.
+    let root = planted[0].matrix[3];
+    assert!(
+        root[0].abs() < 1.0e-6 && root[1].abs() < 1.0e-6 && root[2].abs() < 1.0e-6,
+        "root joint translated during the solve: {:?}",
+        [root[0], root[1], root[2]]
+    );
 }
 
 fn fixed_command_stream() -> Vec<RecordedCommand> {

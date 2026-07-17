@@ -198,7 +198,26 @@ pub fn mesh_descriptor_from_js<'js>(obj: &Object<'js>) -> Result<MeshDescriptor,
         None
     };
 
-    MeshDescriptor::build(model, states, default_state, animations_present)
+    // Optional `locomotion` block: `{ speedScale?: bool }`. Absent block ⇒ None
+    // ⇒ the runtime `speed_scale = true` default; `speedScale` itself defaults
+    // to `true` when the block is present but omits the field.
+    let locomotion = if obj.contains_key("locomotion").map_err(js_err)? {
+        let raw: JsValue = obj.get("locomotion").map_err(js_err)?;
+        if raw.is_null() || raw.is_undefined() {
+            None
+        } else {
+            let loco_obj = Object::from_value(raw).map_err(|_| DescriptorError::InvalidShape {
+                reason: "`components.mesh.locomotion` must be an object".to_string(),
+            })?;
+            Some(LocomotionDescriptor::from_optional_speed_scale(
+                get_optional_bool_js(&loco_obj, "speedScale")?,
+            ))
+        }
+    } else {
+        None
+    };
+
+    MeshDescriptor::build(model, states, default_state, animations_present, locomotion)
 }
 
 /// Gather one animation-state entry from a JS object. `loop` defaults to
@@ -212,6 +231,9 @@ pub fn raw_animation_state_from_js<'js>(
     let clip = get_required_string_js(obj, "clip")?;
     let looping = get_optional_bool_js(obj, "loop")?.unwrap_or(false);
     let crossfade_ms = get_optional_f32_js(obj, "crossfadeMs")?.unwrap_or(DEFAULT_CROSSFADE_MS);
+    // Optional per-state `travelSpeed` override, read raw here; positivity /
+    // finiteness is validated in `MeshDescriptor::build`.
+    let travel_speed = get_optional_f32_js(obj, "travelSpeed")?;
     let interrupt = if obj.contains_key("interrupt").map_err(js_err)? {
         let raw: JsValue = obj.get("interrupt").map_err(js_err)?;
         if raw.is_null() || raw.is_undefined() {
@@ -228,5 +250,6 @@ pub fn raw_animation_state_from_js<'js>(
         looping,
         crossfade_ms,
         interrupt,
+        travel_speed,
     })
 }

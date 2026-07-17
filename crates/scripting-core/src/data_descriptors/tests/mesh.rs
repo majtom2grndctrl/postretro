@@ -88,6 +88,70 @@ fn js_mesh_negative_crossfade_is_rejected() {
 }
 
 #[test]
+fn js_mesh_travel_speed_rejects_non_positive() {
+    let src = r#"({ components: { mesh: {
+        model: "m", defaultState: "idle",
+        animations: { idle: { clip: "c", travelSpeed: 0 } }
+    } } })"#;
+    let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
+    assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+}
+
+#[test]
+fn js_mesh_travel_speed_rejects_negative() {
+    let src = r#"({ components: { mesh: {
+        model: "m", defaultState: "idle",
+        animations: { idle: { clip: "c", travelSpeed: -3 } }
+    } } })"#;
+    let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
+    assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+}
+
+#[test]
+fn js_mesh_travel_speed_rejects_non_finite() {
+    let src = r#"({ components: { mesh: {
+        model: "m", defaultState: "idle",
+        animations: { idle: { clip: "c", travelSpeed: 1/0 } }
+    } } })"#;
+    let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
+    assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+}
+
+#[test]
+fn js_mesh_locomotion_speed_scale_false_parses() {
+    let src = r#"({ components: { mesh: {
+        model: "m",
+        locomotion: { speedScale: false }
+    } } })"#;
+    let d = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
+    let mesh = d.mesh.expect("mesh descriptor parsed");
+    let locomotion = mesh.locomotion.expect("locomotion block parsed");
+    assert!(!locomotion.speed_scale);
+}
+
+#[test]
+fn js_mesh_locomotion_absent_defaults_speed_scale_true() {
+    let src = r#"({ components: { mesh: { model: "m" } } })"#;
+    let d = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
+    let mesh = d.mesh.expect("mesh descriptor parsed");
+    assert!(
+        mesh.locomotion.is_none(),
+        "absent `locomotion` block parses to None"
+    );
+    assert!(
+        mesh.speed_scale(),
+        "shared descriptor default is rate-scaled"
+    );
+}
+
+#[test]
+fn js_mesh_locomotion_present_without_field_defaults_speed_scale_true() {
+    let src = r#"({ components: { mesh: { model: "m", locomotion: {} } } })"#;
+    let d = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
+    assert!(d.mesh.unwrap().speed_scale());
+}
+
+#[test]
 fn js_mesh_unknown_interrupt_is_rejected() {
     let src = r#"({ components: { mesh: {
         model: "m", defaultState: "idle",
@@ -238,4 +302,68 @@ fn lua_mesh_negative_crossfade_is_rejected() {
     } } }"#;
     let err = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap_err());
     assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+}
+
+#[test]
+fn lua_mesh_travel_speed_rejects_non_positive() {
+    let src = r#"return { components = { mesh = {
+        model = "m", defaultState = "idle",
+        animations = { idle = { clip = "c", travelSpeed = 0 } }
+    } } }"#;
+    let err = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap_err());
+    assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+}
+
+#[test]
+fn lua_mesh_travel_speed_rejects_negative() {
+    let src = r#"return { components = { mesh = {
+        model = "m", defaultState = "idle",
+        animations = { idle = { clip = "c", travelSpeed = -3.0 } }
+    } } }"#;
+    let err = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap_err());
+    assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+}
+
+#[test]
+fn lua_mesh_travel_speed_rejects_non_finite() {
+    let src = r#"return { components = { mesh = {
+        model = "m", defaultState = "idle",
+        animations = { idle = { clip = "c", travelSpeed = 1/0 } }
+    } } }"#;
+    let err = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap_err());
+    assert!(matches!(err, DescriptorError::InvalidShape { .. }));
+}
+
+#[test]
+fn lua_mesh_locomotion_speed_scale_false_parses() {
+    let src = r#"return { components = { mesh = {
+        model = "m",
+        locomotion = { speedScale = false }
+    } } }"#;
+    let d = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap());
+    let mesh = d.mesh.expect("mesh descriptor parsed");
+    let locomotion = mesh.locomotion.expect("locomotion block parsed");
+    assert!(!locomotion.speed_scale);
+}
+
+#[test]
+fn lua_mesh_locomotion_absent_defaults_speed_scale_true() {
+    let src = r#"return { components = { mesh = { model = "m" } } }"#;
+    let d = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap());
+    let mesh = d.mesh.expect("mesh descriptor parsed");
+    assert!(
+        mesh.locomotion.is_none(),
+        "absent `locomotion` block parses to None"
+    );
+    assert!(
+        mesh.speed_scale(),
+        "shared descriptor default is rate-scaled"
+    );
+}
+
+#[test]
+fn lua_mesh_locomotion_present_without_field_defaults_speed_scale_true() {
+    let src = r#"return { components = { mesh = { model = "m", locomotion = {} } } }"#;
+    let d = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap());
+    assert!(d.mesh.unwrap().speed_scale());
 }

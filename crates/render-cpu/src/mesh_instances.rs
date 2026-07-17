@@ -364,6 +364,7 @@ mod tests {
             aim_pitch: 0.25,
             aim_yaw: -0.5,
             heading_yaw: 1.0,
+            ..Default::default()
         };
         let mut input = instance("grunt", 1.0, 7);
         input.pose_inputs = Some(expected);

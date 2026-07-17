@@ -28,7 +28,7 @@ const SLIDE_ITERATIONS: u32 = 4;
 /// `max_slope_deg` is in this neighborhood. A fixed threshold keeps the harness
 /// self-contained — it does not read the per-agent slope budget (the navmesh
 /// already eroded unwalkable slopes out of the agent's corridor).
-const COS_WALKABLE: f32 = 0.643;
+const COS_WALKABLE: f32 = postretro_foundation::WALKABLE_SURFACE_MIN_UP_DOT;
 
 /// Vertical lift margin added on top of `step_height` when the step-up probe
 /// commits, so the lifted capsule clears the step's top edge without parry

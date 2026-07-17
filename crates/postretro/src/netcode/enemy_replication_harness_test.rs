@@ -239,6 +239,7 @@ fn enemy_descriptor(class: &str) -> EntityTypeDescriptor {
             looping: true,
             crossfade_ms: 150.0,
             interrupt: InterruptPolicy::Smooth,
+            travel_speed: None,
             clip_index: None,
         },
     );
@@ -249,6 +250,7 @@ fn enemy_descriptor(class: &str) -> EntityTypeDescriptor {
             looping: false,
             crossfade_ms: 50.0,
             interrupt: InterruptPolicy::Snap,
+            travel_speed: None,
             clip_index: None,
         },
     );
@@ -263,6 +265,7 @@ fn enemy_descriptor(class: &str) -> EntityTypeDescriptor {
             model: "decraniated".to_string(),
             animations: states,
             default_state: Some("idle".to_string()),
+            locomotion: None,
         }),
         health: None,
         // The `ai` block is what `descriptor_materializes_ai_enemy` keys on — its
@@ -313,6 +316,7 @@ fn prop_descriptor(class: &str) -> EntityTypeDescriptor {
             looping: true,
             crossfade_ms: 0.0,
             interrupt: InterruptPolicy::Snap,
+            travel_speed: None,
             clip_index: None,
         },
     );
@@ -327,6 +331,7 @@ fn prop_descriptor(class: &str) -> EntityTypeDescriptor {
             model: "crate_mesh".to_string(),
             animations: states,
             default_state: Some("idle".to_string()),
+            locomotion: None,
         }),
         health: None,
         ai: None,

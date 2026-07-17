@@ -223,6 +223,14 @@ pub struct AnimationClip {
     /// Per-joint TRS tracks. Loader output is parallel to [`Skeleton::joints`].
     /// Public clips may be shorter; missing entries hold rest pose.
     pub joints: Vec<JointTracks>,
+    /// Authored ground travel speed in ground units per animated second, derived
+    /// at load from the selected locomotion root's horizontal (XZ) displacement
+    /// over the clip duration. The loader then removes that track's net XZ drift
+    /// so entity-authoritative displacement and the looping sampled pose do not
+    /// both move the character. `None` for no unambiguous locomotion root, no root
+    /// translation track, or a near-in-place clip (net XZ displacement below the
+    /// loader's epsilon).
+    pub travel_speed: Option<f32>,
 }
 
 #[cfg(test)]

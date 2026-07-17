@@ -16,5 +16,5 @@ pub use ir::*;
 pub use movement::{
     DashPrograms, GroundRef, MovementScope, MovementState, PlayerMovementComponent,
 };
-pub use pose::PoseInputs;
+pub use pose::{PoseInputs, WALKABLE_SURFACE_MIN_UP_DOT};
 pub use value_types::{EulerDegrees, Vec3Lit};

@@ -128,8 +128,9 @@ pub(crate) const SKIN_DISTANCE: f32 = 0.02;
 
 /// A surface counts as walkable when its contact normal points mostly upward.
 /// Mirrors the small agent harness's floor test so placement queries and agent
-/// movement agree about walls vs. floors.
-const COS_WALKABLE: f32 = 0.643;
+/// movement agree about walls vs. floors. Exposed `pub(crate)` so the fixed-tick
+/// foot ground-probe step applies the same floor-vs-wall threshold movement uses.
+pub(crate) const COS_WALKABLE: f32 = postretro_foundation::WALKABLE_SURFACE_MIN_UP_DOT;
 
 /// Small lift margin used by placement ground probes. Matches the agent harness
 /// so "within the step envelope" means the same thing for selection and motion.

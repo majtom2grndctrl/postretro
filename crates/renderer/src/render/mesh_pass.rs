@@ -2728,6 +2728,7 @@ mod tests {
             name: name.to_string(),
             duration,
             joints: Vec::new(),
+            travel_speed: None,
         }
     }
 
@@ -2927,6 +2928,7 @@ mod tests {
                 scale: Track::new(vec![0.0], vec![Vec3::ONE], Interp::Linear)
                     .expect("valid constant scale track"),
             }],
+            travel_speed: None,
         }
     }
 
@@ -3003,6 +3005,7 @@ mod tests {
             aim_pitch: 0.4,
             aim_yaw: 0.0,
             heading_yaw: 0.0,
+            ..Default::default()
         };
         let mut store = SnapshotStore::default();
         let tag = 42;
@@ -3128,6 +3131,7 @@ mod tests {
             aim_pitch: 0.25,
             aim_yaw: 0.4,
             heading_yaw: 0.0,
+            ..Default::default()
         };
         let mut out = Vec::new();
 

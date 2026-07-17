@@ -92,6 +92,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("clip", "String", "Clip name this state plays. Must be non-empty; resolved against the model's clips at level load.")
         .field("loop?", "bool", "Whether the clip loops. Optional; defaults to false.")
         .field("crossfadeMs?", "f32", "Crossfade duration into this state, in milliseconds. Optional; must be finite and >= 0. Defaults to 150 ms.")
+        .field("travelSpeed?", "f32", "Per-state locomotion travel-speed override, in ground units per animated second. Optional; must be finite and > 0. When present it replaces this clip's load-derived travel speed; omit to use the derived value. V1 consumes this calibration only when the state is the AI alert-mapped locomotion state.")
         .field("interrupt?", "InterruptPolicy", "How a fade into this state takes over an in-flight fade. Optional; defaults to \"smooth\".")
         .finish();
     registry
@@ -107,6 +108,20 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
             "defaultState?",
             "String",
             "The state entered at spawn. Required exactly when `animations` is present; must name a declared state.",
+        )
+        .field(
+            "locomotion?",
+            "LocomotionDescriptor",
+            "Optional locomotion calibration block. Carries the `speedScale` rate-scaling toggle; omit for the default (rate-scaled) behavior.",
+        )
+        .finish();
+    registry
+        .register_type("LocomotionDescriptor")
+        .doc("Authored per-archetype locomotion calibration attached to `MeshDescriptor.locomotion`. Sibling to the per-state `travelSpeed` override.")
+        .field(
+            "speedScale?",
+            "bool",
+            "Whether V1 rate-scales this archetype's AI alert-mapped locomotion state. Other animation states are never rate-scaled. Optional; defaults to true. Set false to play the authored cadence unscaled.",
         )
         .finish();
     registry

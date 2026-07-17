@@ -913,6 +913,7 @@ pub(crate) fn client_receive_and_apply(
     state_slots: &mut state_slots::ClientStateApply,
     prediction: &mut ClientPrediction,
     descriptors: &[EntityTypeDescriptor],
+    hit_zone_store: &crate::scripting_systems::hit_zones::HitZoneStore,
     agent_params: Option<NavAgentParams>,
     collision: &impl MovementCollisionSource,
     gravity: f32,
@@ -1006,8 +1007,21 @@ pub(crate) fn client_receive_and_apply(
                 .find(|descriptor| {
                     descriptor.canonical_name.as_deref() == Some(remote.entity_class.as_str())
                 })
-                .and_then(|descriptor| descriptor.ai.as_ref())
-                .map(|ai| (ai.move_speed, ai.states.alert.clone()));
+                .and_then(|descriptor| {
+                    let ai = descriptor.ai.as_ref()?;
+                    let mesh = descriptor.mesh.as_ref()?;
+                    let state = mesh.animations.get(&ai.states.alert)?;
+                    let derived_travel_speed = hit_zone_store
+                        .get(&postretro_model::ModelHandle::from(mesh.model.clone()))
+                        .and_then(|model| {
+                            model
+                                .clips
+                                .iter()
+                                .find(|clip| clip.name == state.clip)
+                                .and_then(|clip| clip.travel_speed)
+                        });
+                    Some((ai.move_speed, ai.states.alert.clone(), derived_travel_speed))
+                });
             replication.cache_remote_enemy_walk_playback(remote.network_id, walk_reference);
             let materialized = remote_materialize::materialize_armed_remote_enemy(
                 remote,
@@ -3111,6 +3125,7 @@ mod tests {
                 looping: true,
                 crossfade_ms: DEFAULT_CROSSFADE_MS,
                 interrupt: InterruptPolicy::Smooth,
+                travel_speed: None,
                 clip_index: None,
             },
         );
@@ -3124,8 +3139,10 @@ mod tests {
             )
             .unwrap();
         resolve_pending_animation_stamps(&mut registry, 0.0);
-        replication
-            .cache_remote_enemy_walk_playback(NetworkId(7), Some((60.0, "locomotion".to_string())));
+        replication.cache_remote_enemy_walk_playback(
+            NetworkId(7),
+            Some((60.0, "locomotion".to_string(), None)),
+        );
 
         let time_sync = ClientTimeSync::new();
         let mut delay = InterpolationDelayState::new();

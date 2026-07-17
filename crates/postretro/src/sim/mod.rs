@@ -5,17 +5,22 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 
-use glam::{EulerRot, Vec3};
+use glam::{EulerRot, Mat4, Vec3};
+use parry3d::math::{Point, Vector};
 
 use crate::agent_steering;
-use crate::collision::CollisionWorld;
-use crate::collision::moving::{CombinedCollisionWorld, MoverCollider};
+use crate::collision::moving::{
+    CombinedCollisionWorld, MoverCollider, MoverPoseSource, cast_ray_combined,
+};
+use crate::collision::{COS_WALKABLE, CollisionWorld, cast_ray};
 use crate::kinematic_mover::{self, MoverTickStateTable};
 use crate::movement::MovementInput;
 use crate::nav::NavGraph;
 use crate::netcode::{AuthorizedShot, OpenAuthorizedShot, ShotId};
 use crate::scripting_systems;
-use crate::scripting_systems::hit_zones::HitZoneStore;
+use crate::scripting_systems::hit_zones::{
+    HitZoneStore, model_matrix, sample_world_pose_for_probe,
+};
 use crate::scripting_systems::trigger_volume_bridge::TriggerVolumeBridge;
 use crate::trigger_bindings::{TriggerBindingTable, TriggerResidualHandle};
 use crate::trigger_commands::TriggerFireContext;
@@ -29,9 +34,12 @@ use postretro_entities::components::brain::{BrainComponent, LogicalState};
 use postretro_entities::components::health::{
     DamageContext, HealthComponent, apply_damage_with_context,
 };
-use postretro_entities::components::mesh::MeshComponent;
+use postretro_entities::components::mesh::{MeshAnimation, MeshComponent};
 use postretro_entities::components::weapon::{UNKNOWN_WEAPON_CREDIT_SOURCE, WeaponComponent};
-use postretro_entities::{ComponentKind, EntityId, EntityRegistry, ScriptCtx, SlotTable};
+use postretro_entities::{
+    ComponentKind, ComponentValue, EntityId, EntityRegistry, ScriptCtx, SlotTable,
+};
+use postretro_foundation::pose::{FootProbe, MAX_FEET};
 use postretro_scripting_core::reaction_dispatch::ProgressTracker;
 
 #[derive(Debug, Clone)]
@@ -284,8 +292,15 @@ pub(crate) fn simulate_tick(
         let mut registry = registry.borrow_mut();
         // AgentTickResult only carries a diagnostic `replans` counter, not observable sim state, so the return value is intentionally discarded.
         let _ = agent_steering::tick(&mut registry, collision_world, nav_graph, gravity, tick_dt);
-        update_brain_animation_playback_rates(&mut registry, anim_time);
-        update_pose_inputs(&mut registry);
+        update_brain_animation_playback_rates(&mut registry, hit_zone_store, anim_time);
+        update_presentation_pose_inputs(
+            &mut registry,
+            collision_world,
+            mover_colliders,
+            &*mover_tick_states,
+            hit_zone_store,
+            anim_time,
+        );
     }
 
     let (authorized_shots, mut reload_deliveries, remote_weapon_events) =
@@ -352,7 +367,11 @@ fn trigger_fire_context(
 /// the renderer. The AI pass's locomotion intent is deliberately not reused: it
 /// is a pre-steering, squared-speed read from the prior tick, while this path
 /// must match the motion the steering system actually produced.
-fn update_brain_animation_playback_rates(registry: &mut EntityRegistry, anim_time: f64) {
+fn update_brain_animation_playback_rates(
+    registry: &mut EntityRegistry,
+    hit_zone_store: &HitZoneStore,
+    anim_time: f64,
+) {
     let mut rebases = Vec::new();
 
     for (id, _) in registry.iter_with_kind(ComponentKind::Brain) {
@@ -366,25 +385,28 @@ fn update_brain_animation_playback_rates(registry: &mut EntityRegistry, anim_tim
             continue;
         };
         let speed_xz = Vec3::new(path_state.velocity.x, 0.0, path_state.velocity.z).length();
-        let raw_ratio = if agent.move_speed > 0.0 {
-            speed_xz / agent.move_speed
+
+        let Ok(mesh) = registry.get_component::<MeshComponent>(id) else {
+            continue;
+        };
+        let Some(animation) = mesh.animation.as_ref() else {
+            continue;
+        };
+
+        // Rate-scale only the alert-mapped locomotion state, and only while the
+        // archetype leaves `speedScale` on. Every other case rests at the
+        // authored rate (1.0). Calibration is `measured_ground_speed /
+        // effective_travel_speed`; a state with neither an override nor a derived
+        // clip stride falls back to `speed_xz / move_speed`, keeping the shipped
+        // in-place walk unchanged.
+        let is_locomotion =
+            animation.current_state == brain.tuning.states.animation_for(LogicalState::Alert);
+        let rate_input = if is_locomotion && animation.speed_scale {
+            let effective = effective_travel_speed(animation, mesh, hit_zone_store);
+            MeshAnimation::locomotion_rate_ratio(speed_xz, effective, agent.move_speed)
         } else {
             1.0
         };
-
-        let Some(animation) = registry
-            .get_component::<MeshComponent>(id)
-            .ok()
-            .and_then(|mesh| mesh.animation.as_ref())
-        else {
-            continue;
-        };
-        let rate_input =
-            if animation.current_state == brain.tuning.states.animation_for(LogicalState::Alert) {
-                raw_ratio
-            } else {
-                1.0
-            };
         if animation.playback_rate_needs_update(rate_input) {
             rebases.push((id, rate_input));
         }
@@ -403,6 +425,56 @@ fn update_brain_animation_playback_rates(registry: &mut EntityRegistry, anim_tim
         animation.update_playback_rate(rate_input, anim_time);
         let _ = registry.set_component(id, mesh);
     }
+}
+
+/// Resolve the effective travel speed for a locomotion state's speed-scaled
+/// playback: the active state's authored `travelSpeed` override wins, else the
+/// model clip's load-derived stride (via [`HitZoneStore`], keyed by the mesh's
+/// model handle and active state's clip). Runtime spawns may still have a pending
+/// clip index during their first rate pass, so the declared clip name is the
+/// equivalent lookup fallback. `None` when neither is calibrated — the
+/// degenerate reference (`speed_xz / move_speed`) that keeps the shipped
+/// in-place walk byte-for-byte unchanged.
+fn effective_travel_speed(
+    animation: &MeshAnimation,
+    mesh: &MeshComponent,
+    hit_zone_store: &HitZoneStore,
+) -> Option<f32> {
+    let state = animation.states.get(&animation.current_state)?;
+    let derived = hit_zone_store.get_by_name(&mesh.model).and_then(|model| {
+        state
+            .clip_index
+            .and_then(|clip_index| model.clips.get(clip_index))
+            // Runtime spawns reach this pass before their install-time clip-index
+            // queue drains. Resolve by declared clip name for that first tick so
+            // derived calibration does not temporarily fall back to move_speed.
+            .or_else(|| model.clips.iter().find(|clip| clip.name == state.clip))
+            .and_then(|clip| clip.travel_speed)
+    });
+    state.effective_travel_speed(derived)
+}
+
+/// Produce renderer-facing pose inputs from the registry's currently displayed
+/// transforms. The fixed tick calls this after steering; connected clients call
+/// it after remote interpolation because they intentionally skip `simulate_tick`.
+/// This mutates presentation-only mesh inputs and never enters replication.
+pub(crate) fn update_presentation_pose_inputs(
+    registry: &mut EntityRegistry,
+    collision_world: &CollisionWorld,
+    mover_colliders: &[MoverCollider],
+    mover_poses: &dyn MoverPoseSource,
+    hit_zone_store: &HitZoneStore,
+    anim_time: f64,
+) {
+    update_pose_inputs(registry);
+    update_foot_ground_probes(
+        registry,
+        collision_world,
+        mover_colliders,
+        mover_poses,
+        hit_zone_store,
+        anim_time,
+    );
 }
 
 /// Write same-tick presentation inputs after AI and steering have settled the
@@ -474,17 +546,23 @@ fn update_pose_inputs(registry: &mut EntityRegistry) {
             })
             .unwrap_or((0.0, heading_yaw));
 
-        let new_pose_inputs = PoseInputs {
-            aim_pitch,
-            aim_yaw,
-            heading_yaw,
-        };
         // Single borrow serves both the change check and the clone source, so a
         // stationary/idle crowd whose inputs haven't moved skips the write
         // entirely — mirrors the discipline in
         // `update_brain_animation_playback_rates` above.
         let Ok(current) = registry.get_component::<MeshComponent>(id) else {
             continue;
+        };
+        // This pass owns only the aim/heading fields. The feet/foot_count are
+        // authored by `update_foot_ground_probes` (ordered after this), so carry
+        // them forward rather than clobbering with `..Default::default()`.
+        let previous = current.pose_inputs.unwrap_or_default();
+        let new_pose_inputs = PoseInputs {
+            aim_pitch,
+            aim_yaw,
+            heading_yaw,
+            feet: previous.feet,
+            foot_count: previous.foot_count,
         };
         if current.pose_inputs == Some(new_pose_inputs) {
             continue;
@@ -493,6 +571,224 @@ fn update_pose_inputs(registry: &mut EntityRegistry) {
         mesh.pose_inputs = Some(new_pose_inputs);
         let _ = registry.set_component(id, mesh);
     }
+}
+
+/// Model-space downward reach of each foot ground probe, in model units. Ground
+/// farther than this below the animated foot reads as no contact — a swing foot
+/// with no plantable surface — sized for the roughly unit-tall models the loader
+/// ships. Scaled by the entity's model scale at cast time so the bound stays
+/// constant in model space regardless of instance scale.
+const FOOT_PLANTING_REACH: f32 = 0.5;
+/// Upward model-space allowance that lets a probe recover a foot already sunk
+/// slightly through the floor. The ray starts this far above the sampled foot,
+/// then covers this allowance plus [`FOOT_PLANTING_REACH`] downward.
+const FOOT_PENETRATION_ALLOWANCE: f32 = 0.15;
+
+/// Sample each leg-tagged animated entity's UNMODIFIED world foot pose, cast a
+/// short downward ray at the collision world under each foot, and write the
+/// model-space contact into `PoseInputs::feet` for the renderer's IK solver.
+///
+/// Ordered AFTER [`update_pose_inputs`], which owns the aim/heading fields: this
+/// step is the sole writer of `feet`/`foot_count` and read-modify-writes the
+/// mesh's existing `pose_inputs` so those aim fields survive. Leg `i` drives foot
+/// probe `i`; `foot_count` is the entity's leg-set length even when a foot finds
+/// no ground (that foot reports `hit == false`). The world-pose sample is the
+/// unmodified pose shared with hit zones — distinct from the renderer's modified
+/// palette. Everything runs against the same fixed-tick registry/collision state
+/// through the same per-instance seed, so repeated headless runs of a tick
+/// sequence produce identical probes.
+fn update_foot_ground_probes(
+    registry: &mut EntityRegistry,
+    collision_world: &CollisionWorld,
+    mover_colliders: &[MoverCollider],
+    mover_poses: &dyn MoverPoseSource,
+    hit_zone_store: &HitZoneStore,
+    anim_time: f64,
+) {
+    let mut candidates = hit_zone_store.foot_probe_candidates();
+    candidates.clear();
+    candidates.extend(
+        registry
+            .iter_with_kind(ComponentKind::Mesh)
+            .filter_map(|(id, value)| {
+                let ComponentValue::Mesh(mesh) = value else {
+                    return None;
+                };
+                let is_legged = mesh.animation.is_some()
+                    && hit_zone_store
+                        .get_by_name(&mesh.model)
+                        .is_some_and(|model| !model.legs.is_empty());
+                let has_stale_feet = mesh.pose_inputs.is_some_and(|inputs| {
+                    inputs.foot_count != 0
+                        || inputs
+                            .feet
+                            .iter()
+                            .any(|probe| *probe != FootProbe::default())
+                });
+                (is_legged || has_stale_feet).then_some(id)
+            }),
+    );
+
+    for &id in candidates.iter() {
+        let Ok(mesh) = registry.get_component::<MeshComponent>(id) else {
+            continue;
+        };
+        let zones = hit_zone_store.get_by_name(&mesh.model);
+        let mut foot_count = 0;
+        let mut feet = [FootProbe::default(); MAX_FEET];
+        if let (Some(animation), Some(zones), Ok(transform)) = (
+            mesh.animation.as_ref(),
+            zones,
+            registry
+                .get_component::<postretro_entities::Transform>(id)
+                .copied(),
+        ) {
+            if let Some(model_to_world) = model_matrix(&transform, mesh.origin_offset) {
+                if let Some(world_to_model) = foot_probe_inverse(&transform, &model_to_world) {
+                    let world_joints =
+                        sample_world_pose_for_probe(zones, Some(animation), anim_time, id.to_raw());
+                    if let Some(world_joints) = world_joints.as_ref() {
+                        foot_count = zones.legs.len().min(MAX_FEET);
+                        let downward_reach = FOOT_PLANTING_REACH * transform.scale.y;
+                        let upward_allowance = FOOT_PENETRATION_ALLOWANCE * transform.scale.y;
+                        for (slot, leg) in zones.legs.iter().take(foot_count).enumerate() {
+                            feet[slot] = probe_foot(
+                                leg.foot_joint,
+                                world_joints,
+                                &model_to_world,
+                                &world_to_model,
+                                downward_reach,
+                                upward_allowance,
+                                collision_world,
+                                mover_colliders,
+                                mover_poses,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // Read-modify-write: keep the aim/heading fields update_pose_inputs set.
+        let mut new_inputs = mesh.pose_inputs.unwrap_or_default();
+        new_inputs.feet = feet;
+        new_inputs.foot_count = foot_count as u8;
+        if mesh.pose_inputs == Some(new_inputs) {
+            continue;
+        }
+        let Ok(mut mesh) = registry.get_component::<MeshComponent>(id).cloned() else {
+            continue;
+        };
+        mesh.pose_inputs = Some(new_inputs);
+        let _ = registry.set_component(id, mesh);
+    }
+}
+
+/// Probe one foot: transform its animated model-space origin to world, cast a
+/// bounded downward ray, and convert a walkable hit back to model space for the
+/// solver. Returns a miss (`FootProbe::default`) when the foot joint is absent,
+/// no ground lies within `reach` below the foot, or the surface is too steep to
+/// stand on (the same `COS_WALKABLE` floor threshold movement ground-stick uses).
+#[allow(clippy::too_many_arguments)] // a flat parameter list keeps this a leaf helper.
+fn probe_foot(
+    foot_joint: usize,
+    world_joints: &[Mat4],
+    model_to_world: &Mat4,
+    world_to_model: &Mat4,
+    downward_reach: f32,
+    upward_allowance: f32,
+    collision_world: &CollisionWorld,
+    mover_colliders: &[MoverCollider],
+    mover_poses: &dyn MoverPoseSource,
+) -> FootProbe {
+    let miss = FootProbe::default();
+    let Some(foot) = world_joints.get(foot_joint) else {
+        return miss;
+    };
+    let foot_world = model_to_world.transform_point3(foot.w_axis.truncate());
+    if !foot_world.is_finite() || downward_reach <= 0.0 || upward_allowance < 0.0 {
+        return miss;
+    }
+
+    let ray_origin = foot_world + Vec3::Y * upward_allowance;
+    let max_toi = upward_allowance + downward_reach;
+    let origin = Point::new(ray_origin.x, ray_origin.y, ray_origin.z);
+    let down = Vector::new(0.0, -1.0, 0.0);
+    // Static-only fast path; fold movers in only when present.
+    let hit = if mover_colliders.is_empty() {
+        cast_ray(collision_world, origin, down, max_toi).map(|h| {
+            (
+                h.time_of_impact,
+                Vec3::new(h.normal.x, h.normal.y, h.normal.z),
+            )
+        })
+    } else {
+        cast_ray_combined(
+            collision_world,
+            mover_colliders,
+            mover_poses,
+            origin,
+            down,
+            max_toi,
+        )
+        .map(|h| (h.time_of_impact, h.normal))
+    };
+    let Some((toi, normal_world)) = hit else {
+        return miss;
+    };
+
+    // Walkable-normal convention: ground under the foot must face mostly up.
+    if !is_walkable_ground_normal(normal_world) {
+        return miss;
+    }
+
+    let contact_world = ray_origin + Vec3::new(0.0, -toi, 0.0);
+    let contact_model = world_to_model.transform_point3(contact_world);
+    // A world normal converted back to model space uses the transpose of the
+    // model→world linear map. Using the inverse as a direction is wrong for
+    // non-uniform scale.
+    let normal_model = model_to_world
+        .transpose()
+        .transform_vector3(normal_world)
+        .normalize_or_zero();
+    if !contact_model.is_finite() || normal_model == Vec3::ZERO {
+        return miss;
+    }
+    FootProbe {
+        contact_height: contact_model.y,
+        normal: normal_model,
+        hit: true,
+    }
+}
+
+fn is_walkable_ground_normal(normal: Vec3) -> bool {
+    normal.is_finite() && normal.y >= COS_WALKABLE
+}
+
+/// Foot contacts use model-space height, so v1 supports upright entities with
+/// positive, invertible scale (uniform or non-uniform). Tilted models would make
+/// a world-down ray change model XZ while the current `FootProbe` stores only a
+/// height; singular transforms have no valid inverse. Both report fresh misses.
+fn foot_probe_inverse(
+    transform: &postretro_entities::Transform,
+    model_to_world: &Mat4,
+) -> Option<Mat4> {
+    if !transform.scale.is_finite()
+        || transform.scale.min_element() <= 0.0
+        || !transform.rotation.is_normalized()
+    {
+        return None;
+    }
+    let model_up = transform.rotation * Vec3::Y;
+    if model_up.dot(Vec3::Y) < 1.0 - 1.0e-5 {
+        return None;
+    }
+    let inverse = model_to_world.inverse();
+    inverse
+        .to_cols_array()
+        .iter()
+        .all(|value| value.is_finite())
+        .then_some(inverse)
 }
 
 mod host_movement;
@@ -1075,6 +1371,7 @@ mod tests {
                     looping: name == "idle",
                     crossfade_ms: DEFAULT_CROSSFADE_MS,
                     interrupt: InterruptPolicy::Smooth,
+                    travel_speed: None,
                     clip_index: Some(clip_index),
                 },
             );

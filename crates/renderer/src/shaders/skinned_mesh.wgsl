@@ -167,14 +167,16 @@ struct BonePaletteEntry {
 
 // Per-instance data, one entry per batched instance, read by
 // `@builtin(instance_index)`. std430 layout: `model` (mat4x4, 64 B) then a
-// trailing `vec4<u32>` whose x is the palette base index (yzw padding) — total
-// 80 B, base at byte 64. The base index NEVER travels through `first_instance`
+// trailing `vec4<u32>` whose x is the palette base index and whose y is the
+// `shadowBiasScale` f32 bitcast (zw padding) — total 80 B, base at byte 64 and
+// bias scale at byte 68. The base index NEVER travels through `first_instance`
 // (DX12 reads it as 0, gfx-rs/wgpu#2471); it lives here, addressed by the
 // instance index. This SSBO is shaped to drop into `multi_draw_indexed_indirect`
 // later without a contract change; this pass draws with instanced `draw_indexed`.
 struct Instance {
     model: mat4x4<f32>,
-    // x = base index into `bone_palette`. yzw padding (16-byte std430 align).
+    // x = base index into `bone_palette`; y = bitcast<f32>(shadowBiasScale).
+    // zw padding preserves the 16-byte std430-aligned trailing vec4.
     base_and_pad: vec4<u32>,
 };
 @group(3) @binding(1) var<storage, read> instances: array<Instance>;
@@ -258,6 +260,8 @@ struct VertexOutput {
     // fragment to key the SH irradiance lookup. The clip position above is this
     // same point projected; the SH sampler needs the un-projected world point.
     @location(2) world_position: vec3<f32>,
+    // Flat per-instance authoring scalar read from Instance.base_and_pad.y.
+    @location(3) @interpolate(flat) shadow_bias_scale: f32,
 };
 
 // Octahedral unit-vector decode — copied verbatim from forward.wgsl so the
@@ -300,6 +304,7 @@ fn vs_main(in: VertexInput, @builtin(instance_index) instance_index: u32) -> Ver
 
     let instance = instances[instance_index];
     let base = instance.base_and_pad.x;
+    out.shadow_bias_scale = bitcast<f32>(instance.base_and_pad.y);
     let skin = skin_matrix(in.joints, in.weights, base);
 
     // Skin → model → view-proj. Skinning acts in model space; the model matrix
@@ -410,28 +415,6 @@ fn sample_sh_direct(world_pos: vec3<f32>, shading_normal: vec3<f32>, geo_normal:
 // either ⇒ unshadowed (×1.0). Slot logic is identical to forward.wgsl's dynamic
 // loop; the shadow factor folds into the per-light attenuation.
 //
-// BIAS / NORMAL-OFFSET TUNING SEAM (M10 mesh shadow receipt) — read before
-// touching self-shadow acne on skinned entities:
-//   * This loop — where `sample_spot_shadow` / `sample_point_shadow` are called
-//     below — is the SOLE SANCTIONED place to add or tune a mesh-receiver
-//     bias / normal-offset. Do NOT edit the bias inside the shared
-//     `shadow_sample.wgsl`: the forward and fog passes share those helpers, so a
-//     change there alters world shadows (peter-panning risk) and breaks forward's
-//     no-behavior-change AC. Keep mesh-only acne fixes here.
-//   * PREFERRED remedy if acne appears on curved skinned surfaces: a sample-site
-//     NORMAL-OFFSET — push `world_pos` along the interpolated normal `n` by a
-//     small world-space (normal-scaled) amount before passing it to the sampler,
-//     rather than raising the shared depth bias. The entity's own depth is already
-//     in the maps (occluders render via `record_skinned_depth`), so the receiver
-//     offset is the cleaner lever.
-//   * OPEN QUESTION (HUMAN CHECKPOINT — not resolved in-tree): the exact
-//     normal-offset / bias VALUES. They require a human visual check of self-
-//     shadow acne on dev skinned models at gameplay distance under BOTH spot- and
-//     point-shadowed lights. No value is invented here — the call sites below
-//     sample at the un-offset `world_pos` today (byte-identical to the
-//     pre-tuning behavior); a human introduces the offset constant here after
-//     judging acne, without touching the shared snippet.
-//
 // `use_dynamic` is the forward lighting-isolation gate (computed in `fs_main`
 // from `mesh_light_params.lighting_isolation`, mirroring forward.wgsl). When the
 // active mode excludes the dynamic term, the loop bound is forced to 0 — the SAME
@@ -439,7 +422,12 @@ fn sample_sh_direct(world_pos: vec3<f32>, shading_normal: vec3<f32>, geo_normal:
 // contributes nothing. With `light_count == 0` (or the gate off) the loop returns
 // zero and the composition reduces to indirect + baked direct; the accumulator
 // starts at zero, so a zero-trip loop adds nothing.
-fn accumulate_dynamic_direct(world_pos: vec3<f32>, n: vec3<f32>, use_dynamic: bool) -> vec3<f32> {
+fn accumulate_dynamic_direct(
+    world_pos: vec3<f32>,
+    n: vec3<f32>,
+    bias_factor: f32,
+    use_dynamic: bool,
+) -> vec3<f32> {
     var total = vec3<f32>(0.0);
     let light_count = select(0u, mesh_light_params.light_count, use_dynamic);
     for (var i: u32 = 0u; i < light_count; i = i + 1u) {
@@ -531,6 +519,8 @@ fn accumulate_dynamic_direct(world_pos: vec3<f32>, n: vec3<f32>, use_dynamic: bo
                         cube_slot,
                         light.position_and_type.xyz,
                         world_pos,
+                        n,
+                        SKINNED_SCALE * bias_factor,
                         light.direction_and_range.w
                     );
                     attenuation = attenuation * shadow;
@@ -556,7 +546,14 @@ fn accumulate_dynamic_direct(world_pos: vec3<f32>, n: vec3<f32>, use_dynamic: bo
                 let slot_index = bitcast<u32>(light.cone_angles_and_pad.z);
                 if slot_index != 0xFFFFFFFFu {
                     let light_proj = light_space_matrices.m[slot_index];
-                    let shadow = sample_spot_shadow(slot_index, world_pos, light_proj);
+                    let shadow = sample_spot_shadow(
+                        slot_index,
+                        light.position_and_type.xyz,
+                        world_pos,
+                        n,
+                        SKINNED_SCALE * bias_factor,
+                        light_proj,
+                    );
                     attenuation = attenuation * shadow;
                 }
             }
@@ -610,7 +607,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // terms (forward adds dynamic into the composition; it does not re-weight).
     // Diffuse-only against the interpolated skinned normal `n`. Gated by
     // `use_dynamic` (forced to zero outside the dynamic-visible modes).
-    let dynamic = accumulate_dynamic_direct(in.world_position, n, use_dynamic);
+    let dynamic = accumulate_dynamic_direct(
+        in.world_position,
+        n,
+        in.shadow_bias_scale,
+        use_dynamic,
+    );
 
     // Baked-SH dynamic-direct isolation (debug instrument) gates only the baked SH
     // terms — UNTOUCHED by the runtime gate above; the two multiply.

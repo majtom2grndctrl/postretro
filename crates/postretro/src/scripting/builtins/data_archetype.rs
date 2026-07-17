@@ -537,7 +537,11 @@ pub(crate) fn descriptor_mesh_component(
         ),
         None => MeshComponent::stateless(mesh_desc.model.clone()),
     };
-    Some(component.with_origin_offset(origin_offset))
+    Some(
+        component
+            .with_origin_offset(origin_offset)
+            .with_shadow_bias_scale(mesh_desc.shadow_bias_scale),
+    )
 }
 
 /// Seed an AI brain's aggro gate from a map placement.
@@ -905,6 +909,23 @@ mod tests {
 
         let provenance = reg.get_component::<DescriptorProvenance>(id).unwrap();
         assert!(provenance.owns(DescriptorComponentKind::Mesh));
+    }
+
+    #[test]
+    fn descriptor_mesh_materializes_shadow_bias_scale() {
+        let mut descriptor = mesh_descriptor("prop", false);
+        descriptor
+            .mesh
+            .as_mut()
+            .expect("fixture has mesh descriptor")
+            .shadow_bias_scale = 2.5;
+
+        let mesh = descriptor_mesh_component(&descriptor, None)
+            .expect("mesh descriptor materializes a mesh component");
+        assert!(
+            (mesh.shadow_bias_scale - 2.5).abs() < f32::EPSILON,
+            "descriptor authoring value must reach the runtime mesh component"
+        );
     }
 
     #[test]

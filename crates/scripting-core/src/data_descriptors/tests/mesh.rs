@@ -18,6 +18,55 @@ fn js_mesh_stateless_parses_model_only() {
 }
 
 #[test]
+fn js_mesh_shadow_bias_scale_defaults_and_validates() {
+    let default = eval_js(r#"({ components: { mesh: { model: "m" } } })"#, |ctx, v| {
+        entity_descriptor_from_js(ctx, v).unwrap()
+    });
+    assert!(
+        (default.mesh.unwrap().shadow_bias_scale - 1.0).abs() < f32::EPSILON,
+        "omitted shadowBiasScale must preserve the default"
+    );
+
+    let authored = eval_js(
+        r#"({ components: { mesh: { model: "m", shadowBiasScale: 2.5 } } })"#,
+        |ctx, v| entity_descriptor_from_js(ctx, v).unwrap(),
+    );
+    assert!((authored.mesh.unwrap().shadow_bias_scale - 2.5).abs() < f32::EPSILON);
+
+    for (source, expected) in [
+        (
+            r#"({ components: { mesh: { model: "m", shadowBiasScale: 0.0 } } })"#,
+            0.0,
+        ),
+        (
+            r#"({ components: { mesh: { model: "m", shadowBiasScale: 4.0 } } })"#,
+            4.0,
+        ),
+    ] {
+        let descriptor = eval_js(source, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
+        assert!((descriptor.mesh.unwrap().shadow_bias_scale - expected).abs() < f32::EPSILON);
+    }
+
+    for source in [
+        r#"({ components: { mesh: { model: "m", shadowBiasScale: -0.1 } } })"#,
+        r#"({ components: { mesh: { model: "m", shadowBiasScale: 4.1 } } })"#,
+        r#"({ components: { mesh: { model: "m", shadowBiasScale: 1 / 0 } } })"#,
+        r#"({ components: { mesh: { model: "m", shadowBiasScale: 0 / 0 } } })"#,
+    ] {
+        let err = eval_js(source, |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap_err()
+        });
+        let DescriptorError::InvalidShape { reason } = err else {
+            panic!("out-of-range shadowBiasScale must be a validation error");
+        };
+        assert!(
+            reason.contains("shadowBiasScale") && reason.contains("0.0..=4.0"),
+            "error must identify the authored field and valid range: {reason}"
+        );
+    }
+}
+
+#[test]
 fn js_mesh_animated_parses_states_and_default() {
     let src = r#"({ components: { mesh: {
         model: "decraniated",
@@ -207,6 +256,54 @@ fn lua_mesh_stateless_parses_model_only() {
     let mesh = d.mesh.expect("mesh descriptor parsed");
     assert_eq!(mesh.model, "decraniated");
     assert!(mesh.animations.is_empty() && mesh.default_state.is_none());
+}
+
+#[test]
+fn lua_mesh_shadow_bias_scale_defaults_and_validates() {
+    let default = eval_lua(
+        r#"return { components = { mesh = { model = "m" } } }"#,
+        |v| entity_descriptor_from_lua(v).unwrap(),
+    );
+    assert!(
+        (default.mesh.unwrap().shadow_bias_scale - 1.0).abs() < f32::EPSILON,
+        "omitted shadowBiasScale must preserve the default"
+    );
+
+    let authored = eval_lua(
+        r#"return { components = { mesh = { model = "m", shadowBiasScale = 2.5 } } }"#,
+        |v| entity_descriptor_from_lua(v).unwrap(),
+    );
+    assert!((authored.mesh.unwrap().shadow_bias_scale - 2.5).abs() < f32::EPSILON);
+
+    for (source, expected) in [
+        (
+            r#"return { components = { mesh = { model = "m", shadowBiasScale = 0.0 } } }"#,
+            0.0,
+        ),
+        (
+            r#"return { components = { mesh = { model = "m", shadowBiasScale = 4.0 } } }"#,
+            4.0,
+        ),
+    ] {
+        let descriptor = eval_lua(source, |v| entity_descriptor_from_lua(v).unwrap());
+        assert!((descriptor.mesh.unwrap().shadow_bias_scale - expected).abs() < f32::EPSILON);
+    }
+
+    for source in [
+        r#"return { components = { mesh = { model = "m", shadowBiasScale = -0.1 } } }"#,
+        r#"return { components = { mesh = { model = "m", shadowBiasScale = 4.1 } } }"#,
+        r#"return { components = { mesh = { model = "m", shadowBiasScale = 1 / 0 } } }"#,
+        r#"return { components = { mesh = { model = "m", shadowBiasScale = 0 / 0 } } }"#,
+    ] {
+        let err = eval_lua(source, |v| entity_descriptor_from_lua(v).unwrap_err());
+        let DescriptorError::InvalidShape { reason } = err else {
+            panic!("out-of-range shadowBiasScale must be a validation error");
+        };
+        assert!(
+            reason.contains("shadowBiasScale") && reason.contains("0.0..=4.0"),
+            "error must identify the authored field and valid range: {reason}"
+        );
+    }
 }
 
 #[test]

@@ -48,6 +48,8 @@ pub const MAX_INSTANCES: usize = MAX_PALETTE_ENTRIES;
 pub struct MeshInstanceInput {
     pub model: ModelHandle,
     pub transform: Mat4,
+    /// Per-model multiplier for the skinned receiver-side pool-shadow bias.
+    pub shadow_bias_scale: f32,
     /// Deterministic per-instance animation-phase seed (raw `EntityId`). Folded
     /// into a phase offset so a spawned wave does not animate lock-step, and the
     /// key into the snapshot store.
@@ -83,6 +85,8 @@ pub struct MeshInstanceInput {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlannedInstance {
     pub transform: Mat4,
+    /// Carried unchanged into the renderer's 80-byte skinned instance record.
+    pub shadow_bias_scale: f32,
     pub palette_base: u32,
     pub phase_seed: u32,
     /// The instance's model's LOCAL-space AABB (bind-pose bound), stamped from
@@ -243,6 +247,7 @@ fn plan_ordered_mesh_frame<'a>(
 
         let planned = PlannedInstance {
             transform: inst.transform,
+            shadow_bias_scale: inst.shadow_bias_scale,
             palette_base,
             phase_seed: inst.phase_seed,
             bounds: joints.model_bounds(&inst.model),
@@ -333,6 +338,7 @@ mod tests {
         MeshInstanceInput {
             model: ModelHandle::from(model),
             transform: Mat4::from_translation(Vec3::new(x, 0.0, 0.0)),
+            shadow_bias_scale: 1.0,
             phase_seed: seed,
             sample: MeshSampleParams::stateless(0.0),
             pose_inputs: None,
@@ -600,6 +606,7 @@ mod tests {
         // Inside: 10 m down the cone axis.
         let inside = PlannedInstance {
             transform: Mat4::from_translation(Vec3::new(0.0, 0.0, -10.0)),
+            shadow_bias_scale: 1.0,
             palette_base: 0,
             phase_seed: 0,
             bounds: local,
@@ -618,6 +625,7 @@ mod tests {
         // cone's angular spread.
         let outside = PlannedInstance {
             transform: Mat4::from_translation(Vec3::new(50.0, 0.0, -10.0)),
+            shadow_bias_scale: 1.0,
             palette_base: 0,
             phase_seed: 0,
             bounds: local,
@@ -674,6 +682,7 @@ mod tests {
             * Mat4::from_rotation_y(-std::f32::consts::FRAC_PI_2);
         let inst = PlannedInstance {
             transform,
+            shadow_bias_scale: 1.0,
             palette_base: 0,
             phase_seed: 0,
             bounds: bar,

@@ -150,6 +150,11 @@ mod tests {
         let as_value = serde_json::to_value(&value).unwrap();
         assert!(as_value.get("animation").is_none());
         assert!(as_value.get("origin_offset").is_none());
+        assert!(as_value.get("shadow_bias_scale").is_none());
+        assert!(
+            (back.shadow_bias_scale - 1.0).abs() < f32::EPSILON,
+            "old/default mesh payloads must deserialize with the bias-scale default"
+        );
     }
 
     #[test]
@@ -174,6 +179,7 @@ mod tests {
             model: "decraniated".into(),
             animation: Some(animation),
             origin_offset: Vec3::ZERO,
+            shadow_bias_scale: 1.0,
             pose_inputs: Some(crate::PoseInputs {
                 aim_pitch: 0.25,
                 aim_yaw: 0.5,
@@ -229,6 +235,7 @@ mod tests {
             model: "decraniated".into(),
             animation: Some(two_state_animation()),
             origin_offset: Vec3::ZERO,
+            shadow_bias_scale: 1.0,
             pose_inputs: None,
         };
         let json = serde_json::to_value(&value).unwrap();

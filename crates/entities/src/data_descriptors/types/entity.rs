@@ -29,6 +29,10 @@ pub use postretro_foundation::data_descriptors::LightDescriptor;
 #[derive(Debug, Clone, PartialEq)]
 pub struct MeshDescriptor {
     pub model: String,
+    /// Per-model receiver-bias multiplier for pooled/runtime shadows, including
+    /// skinned receipt from promoted static lights. The script-facing field is
+    /// `shadowBiasScale`; omission preserves 1.0.
+    pub shadow_bias_scale: f32,
     /// Declared state map: state name → clip + loop + crossfade + interrupt.
     /// Empty when the descriptor declared no `animations` block (stateless).
     pub animations: HashMap<String, AnimationState>,
@@ -103,17 +107,28 @@ impl MeshDescriptor {
     /// {smooth, snap}, and — when any state is declared — a present
     /// `defaultState` that names a declared state. An empty-but-present
     /// `animations` block is rejected; a wholly absent one yields a stateless
-    /// descriptor (`animations` empty, `default_state` None).
+    /// descriptor (`animations` empty, `default_state` None). `shadowBiasScale`
+    /// is optional on the wire, defaults to 1.0, and must be finite in 0.0..=4.0.
     pub fn build(
         model: String,
         states: Vec<RawAnimationState>,
         default_state: Option<String>,
         animations_present: bool,
         locomotion: Option<LocomotionDescriptor>,
+        shadow_bias_scale: Option<f32>,
     ) -> Result<Self, DescriptorError> {
         if model.is_empty() {
             return Err(DescriptorError::InvalidShape {
                 reason: "`components.mesh.model` must be a non-empty string".to_string(),
+            });
+        }
+
+        let shadow_bias_scale = shadow_bias_scale.unwrap_or(1.0);
+        if !shadow_bias_scale.is_finite() || !(0.0..=4.0).contains(&shadow_bias_scale) {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`components.mesh.shadowBiasScale` must be a finite value in 0.0..=4.0, got {shadow_bias_scale}"
+                ),
             });
         }
 
@@ -215,6 +230,7 @@ impl MeshDescriptor {
 
         Ok(MeshDescriptor {
             model,
+            shadow_bias_scale,
             animations,
             default_state,
             locomotion,

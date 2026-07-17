@@ -99,6 +99,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .register_type("MeshDescriptor")
         .doc("Authored mesh component preset attached to `EntityTypeDescriptor.components.mesh`. A descriptor carrying `components.mesh` is directly map-placeable via `canonicalName`. `model` is the skinned-model handle; `animations` declares the per-entity logical animation-state map (state name → clip + loop + crossfade + interrupt). When `animations` is present it must be non-empty and `defaultState` must name a declared state; omit both for a stateless mesh.")
         .field("model", "String", "Skinned-model handle this entity renders. Must be non-empty.")
+        .field("shadowBiasScale?", "number", "Per-model skinned pool-shadow receiver-bias multiplier. Defaults to 1.0; must be finite and in 0.0..=4.0. Set 0.0 to disable the receiver offset for this model.")
         .field(
             "animations?",
             "MeshAnimationStates",

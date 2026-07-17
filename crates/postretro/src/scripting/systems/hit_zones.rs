@@ -2180,6 +2180,7 @@ mod tests {
                 model: "smooth".into(),
                 animation: Some(anim),
                 origin_offset: Vec3::ZERO,
+                shadow_bias_scale: 1.0,
                 pose_inputs: None,
             },
         )
@@ -2304,6 +2305,7 @@ mod tests {
                 model: "mob".into(),
                 animation: Some(anim),
                 origin_offset: Vec3::ZERO,
+                shadow_bias_scale: 1.0,
                 pose_inputs: None,
             },
         )
@@ -2388,6 +2390,7 @@ mod tests {
                 model: "smooth".into(),
                 animation: Some(anim),
                 origin_offset: Vec3::ZERO,
+                shadow_bias_scale: 1.0,
                 pose_inputs: None,
             },
         )
@@ -2458,6 +2461,7 @@ mod tests {
                 model: "smooth".into(),
                 animation: Some(anim),
                 origin_offset: Vec3::ZERO,
+                shadow_bias_scale: 1.0,
                 pose_inputs: None,
             },
         )
@@ -2548,6 +2552,7 @@ mod tests {
                 model: "smooth".into(),
                 animation: Some(anim),
                 origin_offset: Vec3::ZERO,
+                shadow_bias_scale: 1.0,
                 pose_inputs: None,
             },
         )
@@ -2661,6 +2666,7 @@ mod tests {
                 model: "smooth".into(),
                 animation: Some(anim),
                 origin_offset: Vec3::ZERO,
+                shadow_bias_scale: 1.0,
                 pose_inputs: None,
             },
         )
@@ -2931,6 +2937,7 @@ mod tests {
                 model: "mob".into(),
                 animation: Some(anim),
                 origin_offset: Vec3::ZERO,
+                shadow_bias_scale: 1.0,
                 pose_inputs: None,
             },
         )
@@ -3041,6 +3048,7 @@ mod tests {
                 model: "mob".into(),
                 animation: None,
                 origin_offset: Vec3::new(0.0, -0.8, 0.0),
+                shadow_bias_scale: 1.0,
                 pose_inputs: None,
             },
         )

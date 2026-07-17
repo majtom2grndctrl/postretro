@@ -32,6 +32,13 @@ pub struct MeshComponent {
     pub animation: Option<MeshAnimation>,
     #[serde(default, skip_serializing_if = "vec3_is_zero")]
     pub origin_offset: Vec3,
+    /// Per-model multiplier for the skinned receiver-side pool-shadow bias.
+    /// Omitted persisted and replicated component payloads retain 1.0.
+    #[serde(
+        default = "default_shadow_bias_scale",
+        skip_serializing_if = "shadow_bias_scale_is_default"
+    )]
+    pub shadow_bias_scale: f32,
     /// Same-tick presentation inputs for the model's pose-modifier stack.
     /// Gameplay and persistence intentionally ignore this transient value.
     #[serde(skip)]
@@ -46,6 +53,7 @@ impl MeshComponent {
             model,
             animation: None,
             origin_offset: Vec3::ZERO,
+            shadow_bias_scale: 1.0,
             pose_inputs: None,
         }
     }
@@ -55,6 +63,7 @@ impl MeshComponent {
             model,
             animation: Some(animation),
             origin_offset: Vec3::ZERO,
+            shadow_bias_scale: 1.0,
             pose_inputs: None,
         }
     }
@@ -63,10 +72,23 @@ impl MeshComponent {
         self.origin_offset = origin_offset;
         self
     }
+
+    pub fn with_shadow_bias_scale(mut self, shadow_bias_scale: f32) -> Self {
+        self.shadow_bias_scale = shadow_bias_scale;
+        self
+    }
 }
 
 fn vec3_is_zero(value: &Vec3) -> bool {
     *value == Vec3::ZERO
+}
+
+fn default_shadow_bias_scale() -> f32 {
+    1.0
+}
+
+fn shadow_bias_scale_is_default(value: &f32) -> bool {
+    *value == default_shadow_bias_scale()
 }
 
 pub fn capsule_center_to_feet_origin_offset(radius: f32, height: f32) -> Vec3 {

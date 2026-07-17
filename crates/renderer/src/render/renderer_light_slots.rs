@@ -1280,6 +1280,7 @@ mod tests {
         };
         let planned_inside = PlannedInstance {
             transform: glam::Mat4::from_translation(Vec3::new(1.0, 0.0, 0.0)),
+            shadow_bias_scale: 1.0,
             palette_base: 0,
             phase_seed: 1,
             bounds: Aabb {

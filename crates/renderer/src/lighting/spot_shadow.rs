@@ -488,6 +488,33 @@ mod tests {
         );
     }
 
+    /// The skinned per-instance lane added by the follow-up task must scale the
+    /// complete receiver normal offset. Scaling only a packed input would leave
+    /// a non-zero offset at factor 0 and fail the pre-change sampling guarantee.
+    #[test]
+    fn receiver_bias_factor_scales_the_entire_shared_normal_offset() {
+        const SHADOW_SRC: &str = include_str!("../shaders/shadow_sample.wgsl");
+        const MESH_SRC: &str = include_str!("../shaders/skinned_mesh.wgsl");
+        const OFFSET: &str =
+            "let receiver_offset = receiver_normal * (texel_world_footprint * bias_scale);";
+
+        assert_eq!(
+            SHADOW_SRC.matches(OFFSET).count(),
+            2,
+            "spot and point receivers must multiply their complete normal offset by bias_scale"
+        );
+        assert_eq!(
+            MESH_SRC.matches("SKINNED_SCALE * bias_factor").count(),
+            2,
+            "skinned spot and point calls must apply the authorable factor to the shared offset scale"
+        );
+        assert!(
+            MESH_SRC.contains("out.shadow_bias_scale = bitcast<f32>(instance.base_and_pad.y);")
+                && MESH_SRC.contains("in.shadow_bias_scale,"),
+            "the Task 3 instance lane must reach the skinned receiver-bias factor"
+        );
+    }
+
     /// Spotlight at the origin aimed down -Z, used by light-space matrix tests.
     fn spot_down_neg_z() -> MapLight {
         MapLight {

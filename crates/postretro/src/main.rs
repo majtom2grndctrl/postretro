@@ -7574,6 +7574,7 @@ mod tests {
                     model: "models/descriptor_mob/scene.gltf".to_string(),
                     animation: Some(MeshAnimation::new(states, "idle".to_string())),
                     origin_offset: glam::Vec3::ZERO,
+                    shadow_bias_scale: 1.0,
                     pose_inputs: None,
                 },
             )
@@ -7726,6 +7727,7 @@ mod tests {
             weapon: None,
             mesh: Some(MeshDescriptor {
                 model: "models/remote_enemy/scene.gltf".to_string(),
+                shadow_bias_scale: 1.0,
                 animations: states,
                 default_state: Some("idle".to_string()),
                 locomotion: None,

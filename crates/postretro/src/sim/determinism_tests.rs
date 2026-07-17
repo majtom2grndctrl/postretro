@@ -1885,6 +1885,7 @@ fn leg_probe_fixture(position: Vec3, yaw: f32) -> (EntityRegistry, EntityId, Hit
                 model: "legwalker".into(),
                 animation: Some(MeshAnimation::new(states, "idle".into())),
                 origin_offset: Vec3::ZERO,
+                shadow_bias_scale: 1.0,
                 pose_inputs: None,
             },
         )

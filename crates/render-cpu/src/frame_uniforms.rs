@@ -47,12 +47,15 @@ pub enum SdfShadowMode {
     // Visualizes the static-light shadowmask world-receipt union subtraction
     // magnitude. Normal mode still applies the production subtraction.
     ShadowmaskUnion = 5,
+    // Visualizes raw pool visibility for promoted static lights on world
+    // receivers. The forward shader chooses the minimum across covering lights.
+    ShadowmaskRawPoolVisibility = 6,
 }
 
 impl SdfShadowMode {
     /// All variants in display order. Used by the debug UI dropdown.
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
-    pub const ALL_VARIANTS: [SdfShadowMode; 6] = [
+    pub const ALL_VARIANTS: [SdfShadowMode; 7] = [
         SdfShadowMode::On,
         SdfShadowMode::Off,
         SdfShadowMode::Visualize,
@@ -61,6 +64,7 @@ impl SdfShadowMode {
         // TEMP DEBUG: SDF shadow path visualization.
         SdfShadowMode::VisualizeNormals,
         SdfShadowMode::ShadowmaskUnion,
+        SdfShadowMode::ShadowmaskRawPoolVisibility,
     ];
 
     #[allow(dead_code)]
@@ -74,6 +78,7 @@ impl SdfShadowMode {
             // TEMP DEBUG: SDF shadow path visualization.
             SdfShadowMode::VisualizeNormals => "Visualize: normals",
             SdfShadowMode::ShadowmaskUnion => "Visualize: shadowmask union",
+            SdfShadowMode::ShadowmaskRawPoolVisibility => "Visualize: shadowmask pool visibility",
         }
     }
 }
@@ -372,6 +377,29 @@ mod tests {
             assert_eq!(decoded, mode as u32);
             assert!(data[120..128].iter().all(|&b| b == 0));
         }
+    }
+
+    #[test]
+    fn shadowmask_raw_pool_visibility_mode_uses_next_uniform_discriminant() {
+        let data = build_uniform_data(&FrameUniforms {
+            view_proj: Mat4::IDENTITY,
+            camera_position: Vec3::ZERO,
+            ambient_floor: 0.0,
+            light_count: 0,
+            time: 0.0,
+            lighting_isolation: LightingIsolation::Normal,
+            indirect_scale: 1.0,
+            sdf_shadow_flags: 0,
+            sdf_shadow_mode: SdfShadowMode::ShadowmaskRawPoolVisibility,
+            sdf_force_visibility_one: false,
+            dynamic_direct_scale: 0.0,
+            dynamic_direct_isolation: DynamicDirectIsolation::Combined,
+            has_direct: false,
+            total_light_count: 0,
+        });
+
+        assert_eq!(SdfShadowMode::ShadowmaskRawPoolVisibility as u32, 6);
+        assert_eq!(u32::from_ne_bytes(data[100..104].try_into().unwrap()), 6);
     }
 
     #[test]

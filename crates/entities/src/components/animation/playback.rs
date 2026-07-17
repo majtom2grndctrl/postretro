@@ -17,6 +17,39 @@ pub const RATE_MAX: f32 = 1.5;
 pub const RATE_CHANGE_EPSILON: f32 = 0.02;
 
 impl MeshAnimation {
+    /// Resolve the raw locomotion speed ratio for one tick, before the shared
+    /// clamp. This is the calibration policy for speed-scaled playback.
+    ///
+    /// When the active state carries a calibrated travel speed — a per-state
+    /// `travelSpeed` override or the clip's load-derived stride, resolved by the
+    /// caller into `effective_travel_speed` — the ratio is
+    /// `measured_ground_speed / effective_travel_speed`, so playback cadence
+    /// tracks the *authored stride* regardless of the agent's chase `move_speed`.
+    /// A character moving faster than its clip's authored travel speed plays it
+    /// proportionally faster, slower when slower.
+    ///
+    /// When the state has neither — the degenerate case that keeps the shipped
+    /// in-place walk byte-for-byte — it falls back to the historical
+    /// `measured_ground_speed / move_speed` reference. A non-positive denominator
+    /// rests at the authored rate, guarding the division from NaN/inf.
+    ///
+    /// The result is pre-clamp: pass it through [`Self::update_playback_rate`]
+    /// (or gate with [`Self::playback_rate_needs_update`]) so the one shared
+    /// `RATE_MIN`/`RATE_MAX` clamp and epsilon policy still apply — host and
+    /// remote sampling cannot drift apart.
+    pub fn locomotion_rate_ratio(
+        measured_ground_speed: f32,
+        effective_travel_speed: Option<f32>,
+        move_speed: f32,
+    ) -> f32 {
+        let denominator = effective_travel_speed.unwrap_or(move_speed);
+        if denominator > 0.0 {
+            measured_ground_speed / denominator
+        } else {
+            default_playback_rate()
+        }
+    }
+
     /// Update the current state's locomotion playback rate from a raw speed
     /// ratio. The caller supplies the same animation clock used by sampling;
     /// rebasing before changing the rate keeps clip-local time continuous.
@@ -109,6 +142,44 @@ mod tests {
     use super::*;
     use crate::components::animation::test_support::two_state_animation;
     use crate::components::mesh::MeshComponent;
+
+    #[test]
+    fn locomotion_rate_ratio_scales_proportionally_to_effective_travel_speed() {
+        // Faster than the authored 2.0 u/s stride plays proportionally faster.
+        assert!(
+            (MeshAnimation::locomotion_rate_ratio(3.0, Some(2.0), 5.0) - 1.5).abs() < f32::EPSILON,
+            "measured 3.0 over authored 2.0 stride is a 1.5x cadence",
+        );
+        // Slower than the stride plays proportionally slower — and the ratio is
+        // driven by the travel speed, never the agent's chase `move_speed`.
+        assert!(
+            (MeshAnimation::locomotion_rate_ratio(1.0, Some(2.0), 5.0) - 0.5).abs() < f32::EPSILON,
+            "measured 1.0 over authored 2.0 stride is a 0.5x cadence, independent of move_speed",
+        );
+    }
+
+    #[test]
+    fn locomotion_rate_ratio_falls_back_to_move_speed_when_uncalibrated() {
+        // The degenerate case (no override, no derived stride) reproduces the
+        // historical `speed_xz / move_speed` reference exactly — the shipped E10
+        // in-place walk depends on this being byte-for-byte unchanged.
+        assert!(
+            (MeshAnimation::locomotion_rate_ratio(3.0, None, 6.0) - 0.5).abs() < f32::EPSILON,
+            "no calibration divides by move_speed like the shipped walk did",
+        );
+    }
+
+    #[test]
+    fn locomotion_rate_ratio_rests_on_nonpositive_denominator() {
+        // Guard the division: a zero override or a zero move_speed rests at the
+        // authored rate rather than emitting NaN/inf into sampling.
+        assert!(
+            (MeshAnimation::locomotion_rate_ratio(4.0, Some(0.0), 5.0) - 1.0).abs() < f32::EPSILON,
+        );
+        assert!(
+            (MeshAnimation::locomotion_rate_ratio(4.0, None, 0.0) - 1.0).abs() < f32::EPSILON,
+        );
+    }
 
     #[test]
     fn playback_rate_clamps_and_scales_elapsed() {

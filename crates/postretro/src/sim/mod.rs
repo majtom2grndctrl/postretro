@@ -29,9 +29,10 @@ use postretro_entities::components::brain::{BrainComponent, LogicalState};
 use postretro_entities::components::health::{
     DamageContext, HealthComponent, apply_damage_with_context,
 };
-use postretro_entities::components::mesh::MeshComponent;
+use postretro_entities::components::mesh::{MeshAnimation, MeshComponent};
 use postretro_entities::components::weapon::{UNKNOWN_WEAPON_CREDIT_SOURCE, WeaponComponent};
 use postretro_entities::{ComponentKind, EntityId, EntityRegistry, ScriptCtx, SlotTable};
+use postretro_model::ModelHandle;
 use postretro_scripting_core::reaction_dispatch::ProgressTracker;
 
 #[derive(Debug, Clone)]
@@ -284,7 +285,7 @@ pub(crate) fn simulate_tick(
         let mut registry = registry.borrow_mut();
         // AgentTickResult only carries a diagnostic `replans` counter, not observable sim state, so the return value is intentionally discarded.
         let _ = agent_steering::tick(&mut registry, collision_world, nav_graph, gravity, tick_dt);
-        update_brain_animation_playback_rates(&mut registry, anim_time);
+        update_brain_animation_playback_rates(&mut registry, hit_zone_store, anim_time);
         update_pose_inputs(&mut registry);
     }
 
@@ -352,7 +353,11 @@ fn trigger_fire_context(
 /// the renderer. The AI pass's locomotion intent is deliberately not reused: it
 /// is a pre-steering, squared-speed read from the prior tick, while this path
 /// must match the motion the steering system actually produced.
-fn update_brain_animation_playback_rates(registry: &mut EntityRegistry, anim_time: f64) {
+fn update_brain_animation_playback_rates(
+    registry: &mut EntityRegistry,
+    hit_zone_store: &HitZoneStore,
+    anim_time: f64,
+) {
     let mut rebases = Vec::new();
 
     for (id, _) in registry.iter_with_kind(ComponentKind::Brain) {
@@ -366,25 +371,28 @@ fn update_brain_animation_playback_rates(registry: &mut EntityRegistry, anim_tim
             continue;
         };
         let speed_xz = Vec3::new(path_state.velocity.x, 0.0, path_state.velocity.z).length();
-        let raw_ratio = if agent.move_speed > 0.0 {
-            speed_xz / agent.move_speed
+
+        let Ok(mesh) = registry.get_component::<MeshComponent>(id) else {
+            continue;
+        };
+        let Some(animation) = mesh.animation.as_ref() else {
+            continue;
+        };
+
+        // Rate-scale only the alert-mapped locomotion state, and only while the
+        // archetype leaves `speedScale` on. Every other case rests at the
+        // authored rate (1.0). Calibration is `measured_ground_speed /
+        // effective_travel_speed`; a state with neither an override nor a derived
+        // clip stride falls back to `speed_xz / move_speed`, keeping the shipped
+        // in-place walk unchanged.
+        let is_locomotion =
+            animation.current_state == brain.tuning.states.animation_for(LogicalState::Alert);
+        let rate_input = if is_locomotion && animation.speed_scale {
+            let effective = effective_travel_speed(animation, mesh, hit_zone_store);
+            MeshAnimation::locomotion_rate_ratio(speed_xz, effective, agent.move_speed)
         } else {
             1.0
         };
-
-        let Some(animation) = registry
-            .get_component::<MeshComponent>(id)
-            .ok()
-            .and_then(|mesh| mesh.animation.as_ref())
-        else {
-            continue;
-        };
-        let rate_input =
-            if animation.current_state == brain.tuning.states.animation_for(LogicalState::Alert) {
-                raw_ratio
-            } else {
-                1.0
-            };
         if animation.playback_rate_needs_update(rate_input) {
             rebases.push((id, rate_input));
         }
@@ -403,6 +411,30 @@ fn update_brain_animation_playback_rates(registry: &mut EntityRegistry, anim_tim
         animation.update_playback_rate(rate_input, anim_time);
         let _ = registry.set_component(id, mesh);
     }
+}
+
+/// Resolve the effective travel speed for a locomotion state's speed-scaled
+/// playback: the active state's authored `travelSpeed` override wins, else the
+/// model clip's load-derived stride (via [`HitZoneStore`], keyed by the mesh's
+/// model handle and the active state's resolved clip index). `None` when neither
+/// is calibrated — the degenerate reference (`speed_xz / move_speed`) that keeps
+/// the shipped in-place walk byte-for-byte unchanged, since Task 2 derives no
+/// travel speed for an in-place clip.
+fn effective_travel_speed(
+    animation: &MeshAnimation,
+    mesh: &MeshComponent,
+    hit_zone_store: &HitZoneStore,
+) -> Option<f32> {
+    let state = animation.states.get(&animation.current_state)?;
+    if let Some(override_speed) = state.travel_speed {
+        return Some(override_speed);
+    }
+    let clip_index = state.clip_index?;
+    hit_zone_store
+        .get(&ModelHandle::from(mesh.model.clone()))?
+        .clips
+        .get(clip_index)?
+        .travel_speed
 }
 
 /// Write same-tick presentation inputs after AI and steering have settled the

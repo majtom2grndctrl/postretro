@@ -1205,13 +1205,22 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
         let agent = registry
             .get_component::<AgentComponent>(enemy)
             .expect("driven agent keeps steering state");
-        let animation = registry
+        let mesh = registry
             .get_component::<MeshComponent>(enemy)
-            .unwrap()
-            .animation
-            .as_ref()
-            .unwrap();
+            .expect("driven agent keeps mesh");
+        let animation = mesh.animation.as_ref().unwrap();
         let speed_xz = Vec3::new(agent.velocity.x, 0.0, agent.velocity.z).length();
+        // E10 premise: the shipped walk is authored in-place, so Task 2 derives
+        // no clip travel speed, and this state declares no `travelSpeed`
+        // override. Confirm the resolver returns None — the degenerate fallback —
+        // so the rate below uses `speed_xz / move_speed` byte-for-byte, not a
+        // stride calibration. The empty store stands in for a model whose walk
+        // clip carries no derived travel speed.
+        assert_eq!(
+            super::effective_travel_speed(animation, mesh, &HitZoneStore::new()),
+            None,
+            "in-place E10 walk resolves to no effective travel speed (degenerate fallback)",
+        );
         let expected_rate = (speed_xz / agent.move_speed).clamp(RATE_MIN, RATE_MAX);
         assert_eq!(animation.current_state, "locomotion");
         assert!(speed_xz > 0.0, "scenario must be driven by steering");
@@ -1258,6 +1267,125 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
             .as_ref(),
         before.as_ref(),
         "a sub-epsilon post-steering rate change must leave rebase state untouched",
+    );
+}
+
+/// Build a hit-zone store whose `model` entry carries `clip_index + 1` clips,
+/// with the clip at `clip_index` stamped with `travel_speed` — standing in for a
+/// model whose walk clip did (or did not) derive a stride from root motion at
+/// load. The skeleton/zones are empty: the sim tick never raycasts this store,
+/// it only reads the clip's derived travel speed.
+fn hit_zone_store_with_clip_travel_speed(
+    model: &str,
+    clip_index: usize,
+    travel_speed: Option<f32>,
+) -> HitZoneStore {
+    use crate::scripting_systems::hit_zones::ModelHitZones;
+    use postretro_model::skeleton::{AnimationClip, Skeleton};
+    use std::sync::Arc;
+
+    let mut clips: Vec<AnimationClip> = (0..=clip_index).map(|_| AnimationClip::default()).collect();
+    clips[clip_index].travel_speed = travel_speed;
+    let mut store = HitZoneStore::new();
+    store.insert_for_test(
+        postretro_model::ModelHandle::from(model.to_string()),
+        ModelHitZones {
+            skeleton: Arc::new(Skeleton::default()),
+            clips: Arc::new(clips),
+            joint_zones: Vec::new(),
+            derived_bound: None,
+            legs: Vec::new(),
+        },
+    );
+    store
+}
+
+// A locomotion state whose clip carries a load-derived travel speed calibrates
+// playback to `measured_ground_speed / travel_speed`, not `speed_xz / move_speed`
+// — moving faster than the authored stride plays it proportionally faster.
+#[test]
+fn update_brain_playback_rate_scales_from_clip_travel_speed() {
+    let mut registry = EntityRegistry::new();
+    let enemy = spawn_driven_agent(
+        &mut registry,
+        Vec3::new(5.0, 1.21, 5.0),
+        LogicalState::Alert,
+        "locomotion",
+    );
+    // Force a known post-steering velocity; the producer reads
+    // `path_state().velocity` directly, so no steering run is needed here.
+    let mut agent = registry
+        .get_component::<AgentComponent>(enemy)
+        .unwrap()
+        .clone();
+    agent.velocity = Vec3::new(3.0, 0.0, 0.0);
+    registry.set_component(enemy, agent).unwrap();
+
+    // Walk clip index 1 (the "locomotion" state's clip) authors a 2.5 u/s stride.
+    let store = hit_zone_store_with_clip_travel_speed("driven-agent", 1, Some(2.5));
+    super::update_brain_animation_playback_rates(&mut registry, &store, 1.0);
+
+    let rate = registry
+        .get_component::<MeshComponent>(enemy)
+        .unwrap()
+        .animation
+        .as_ref()
+        .unwrap()
+        .rate;
+    let expected = (3.0f32 / 2.5).clamp(RATE_MIN, RATE_MAX);
+    assert!(
+        (rate - expected).abs() <= 1.0e-6,
+        "rate must calibrate to measured/travel_speed ({expected}), got {rate}",
+    );
+    // Distinct from the degenerate move_speed reference (3.0 / 3.5 ≈ 0.857),
+    // proving the clip stride — not `move_speed` — drove the calibration.
+    let degenerate = (3.0f32 / 3.5).clamp(RATE_MIN, RATE_MAX);
+    assert!(
+        (rate - degenerate).abs() > 1.0e-3,
+        "travel-speed calibration must differ from the move_speed fallback",
+    );
+    assert!(rate > 1.0, "moving faster than the authored stride plays faster");
+}
+
+// `speedScale: false` disables rate-scaling entirely: even with a calibrated
+// clip stride and a nonzero measured speed, the rate holds at the authored 1.0.
+#[test]
+fn update_brain_playback_rate_skips_scaling_when_speed_scale_off() {
+    let mut registry = EntityRegistry::new();
+    let enemy = spawn_driven_agent(
+        &mut registry,
+        Vec3::new(5.0, 1.21, 5.0),
+        LogicalState::Alert,
+        "locomotion",
+    );
+    let mut mesh = registry
+        .get_component::<MeshComponent>(enemy)
+        .unwrap()
+        .clone();
+    mesh.animation = mesh.animation.map(|anim| anim.with_speed_scale(false));
+    registry.set_component(enemy, mesh).unwrap();
+    let mut agent = registry
+        .get_component::<AgentComponent>(enemy)
+        .unwrap()
+        .clone();
+    agent.velocity = Vec3::new(3.0, 0.0, 0.0);
+    registry.set_component(enemy, agent).unwrap();
+
+    // A calibrated stride that would otherwise scale to 1.2 — the assertion that
+    // the rate stays 1.0 catches a producer that ignores `speed_scale`.
+    let store = hit_zone_store_with_clip_travel_speed("driven-agent", 1, Some(2.5));
+    super::update_brain_animation_playback_rates(&mut registry, &store, 1.0);
+
+    let rate = registry
+        .get_component::<MeshComponent>(enemy)
+        .unwrap()
+        .animation
+        .as_ref()
+        .unwrap()
+        .rate;
+    assert!(
+        (rate - 1.0).abs() <= 1.0e-6,
+        "speedScale: false must hold the authored rate, got {rate}",
     );
 }
 

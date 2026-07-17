@@ -60,9 +60,10 @@ scripted-run capture and live-channel capture build on.
 - [ ] The written PNG's dimensions equal the scene's requested resolution.
 - [ ] Two runs of the same scene on the same adapter produce byte-identical PNG
       files.
-- [ ] A scene posed to look into level geometry produces a non-uniform image (not
-      a single flat color); changing the scene's camera yaw changes the output
-      bytes.
+- [ ] A fixture scene posed at a known spawn facing into level geometry produces a
+      non-uniform image (not a single flat color); changing the scene's camera yaw
+      changes the output bytes, and changing its pitch also changes the output
+      bytes (guards the pitch-inclusive look direction).
 - [ ] No GPU adapter available exits non-zero with a diagnostic saying capture
       requires an adapter — distinct from the batch runner, which requires none.
 - [ ] An invalid scene exits non-zero with a stderr diagnostic and writes no
@@ -100,7 +101,12 @@ holds no surface and never presents. The surface-coupled methods
 called on an offscreen renderer; whether the surface becomes an `Option`/enum is
 the implementer's call, but no offscreen code path may touch a surface. Device
 feature/limit request is unchanged (the full set, as `Renderer::new` does). No
-adapter fail-fast that windowed relies on may be dropped.
+adapter fail-fast that windowed relies on may be dropped. The offscreen
+constructor returns a **full-ready** renderer: it builds full init
+(`build_full_renderer`) immediately, not the boot-only (`full: None`) state
+`Renderer::new` leaves for a later `finish_full_init` — there is no boot-splash
+phase offscreen. (The install methods in Task 2 do `full_mut().expect(...)` and
+panic if `full` is `None`.)
 
 **(b) scene_color readback.** Add `COPY_SRC` to the `scene_color` texture usage
 (`create_scene_color`, `crates/renderer/src/render/screen_effects.rs` — today
@@ -108,9 +114,12 @@ adapter fail-fast that windowed relies on may be dropped.
 accessor to the `scene_color` `wgpu::Texture` reached through the existing
 `pub(super) screen_effects` field (none exists today — only a view accessor on the
 pass). Promote the test-gated readback pattern
-(`ui/gpu_test_harness.rs::read_texture_rgba8`: `copy_texture_to_buffer` at
-256-byte row alignment → submit → `map_async` → `poll(wait)` → de-pad to tight
-`width*4` RGBA8) into a non-test renderer-internal helper.
+(`read_texture_rgba8` in `crates/renderer/src/render/ui/gpu_test_harness.rs`, a
+`#[cfg(test)]` module: `copy_texture_to_buffer` at 256-byte row alignment →
+submit → `map_async` → `poll(wait)` → de-pad to tight `width*4` RGBA8) into a
+non-test renderer-internal helper. De-gate it and adapt the signature — the test
+helper takes a `GpuCtx { device, queue }`, the promoted helper operates on the
+renderer's own `device`/`queue`.
 
 **(c) Capture render entry.** Refactor `render_frame_indirect`
 (`crates/renderer/src/render/renderer_render_frame.rs`) so the scene-recording
@@ -120,11 +129,16 @@ acquisition and the resolve tail. Today that function acquires a swapchain
 (`acquire_present_handle` → `surface_view()`), records the scene, resolves into
 `scene_color`, and returns a `PresentHandle` the *caller* (`App`) presents; the
 windowed path is unchanged (same pass order, App still presents). Add a public
-offscreen capture entry taking the same per-frame inputs plus a fixed
-`now_seconds`: it acquires no swapchain, records the scene into `scene_color`,
+offscreen capture entry that records the world scene passes only — **no UI pass,
+no debug lines, no resolve, no present** — so it needs no `font_system` (the UI
+pass is session-owned; world-only capture carries no HUD). Its inputs are the
+per-frame visibility set (`cam_vis: CameraCullVisibility`,
+`light_reachable_cell_mask`, `reachable_cell_aabbs`, `fog_reachable`,
+`camera_cell`), `view_proj`, an empty `particle_collections`, a `clear_color`,
+`render_world = true`, and a fixed `now_seconds = 0.0` (so animated-lightmap
+inputs are deterministic). It acquires no swapchain, records into `scene_color`,
 then reads back `scene_color` (b) after the frame's submit retires and returns the
-tight RGBA8 bytes — no resolve, no present. Pass `now_seconds = 0.0` so
-animated-lightmap inputs are deterministic.
+tight RGBA8 bytes.
 
 ### Task 2: Capture driver + scene spec
 
@@ -147,11 +161,16 @@ The driver:
 4. Run the world renderer-upload sequence directly on the renderer, in this order
    — `install_level_payload` (`startup/lifecycle.rs:548`) itself is session-coupled
    (`expect("session installed")`, light-bridge, archetype sweep) and is **not**
-   callable; the driver replicates only its renderer-only calls: `install_textures`
-   → `normalize_world_uvs` → `render::level_world_to_geometry` +
-   `install_level_geometry` (uploads geometry and the baked lightmap/SH atlases).
-   Fog pixel-scale/cell-mask installs are skipped (fog is out of scope). No
-   scripting core, `HeadlessSession`, or scripts-build sidecar is needed.
+   callable; the driver replicates only its renderer-only calls. First build
+   `texture_materials` via the `derive_material` loop over `world.texture_names`
+   (`lifecycle.rs:597-619`) — it feeds both `install_textures` and
+   `level_world_to_geometry`. Then, in order: `install_textures` →
+   `normalize_world_uvs` → `render::level_world_to_geometry(&world,
+   &texture_materials)` + `install_level_geometry` (uploads geometry and the baked
+   lightmap/SH atlases — `install_level_geometry` rebuilds them straight from
+   `LevelGeometry`, no light bridge). Fog pixel-scale/cell-mask installs are
+   skipped (fog is out of scope). No scripting core, `HeadlessSession`, or
+   scripts-build sidecar is needed.
 5. Supply `install_textures`' `prm_cache_root`: derive it exactly as the windowed
    loader does — `content_root_from_map(Some(map))` (`startup/session.rs:309`) then
    `derive_prm_root_dev_layout` (`startup/worker.rs:108`, currently private — make
@@ -160,8 +179,12 @@ The driver:
 6. Build the static `view_proj` directly (do **not** route through
    `camera::RenderCamera::new`, which takes no FOV and ignores `fov_deg`):
    `vfov = 2*atan(tan(fov_deg.to_radians()/2)/aspect)`,
-   `perspective_rh(vfov, aspect, camera::NEAR, camera::FAR) * look_at_rh(pos, pos + forward(yaw,pitch), Y_up)`,
-   aspect from the resolution, mirroring `camera.rs:48-53`.
+   `perspective_rh(vfov, aspect, camera::NEAR, camera::FAR) * look_at_rh(pos, pos + look_dir, Y_up)`,
+   aspect from the resolution. Compute `look_dir` **pitch-inclusive** —
+   `Vec3::new(-yaw.sin()*pitch.cos(), pitch.sin(), -yaw.cos()*pitch.cos())`,
+   matching `render_view_matrix` (`camera.rs:71-75`). Do **not** use
+   `Camera::forward()` (`camera.rs:130`) — it is yaw-only and silently drops
+   pitch.
 7. Compute the one-frame visibility inputs by reproducing the `App::redraw` block:
    `postretro_visibility::determine_visible_cells(eye, view_proj, world,
    capture_portal_walk, &mut scratch)` returns `(VisibilityResult, Frustum)` — the
@@ -170,9 +193,13 @@ The driver:
    unused here. Derive `light_reachable_cell_mask: Vec<bool>` and
    `reachable_cell_aabbs: Vec<(Vec3,Vec3)>` from `fog_reachable` as `main.rs:2450`
    and `:2476` do.
-8. Call the Task 1c capture entry; encode the returned `Rgba8UnormSrgb` bytes
-   (already sRGB — a direct PNG write, no color conversion) to the output path via
-   the already-present `image` dependency.
+8. Call the Task 1c capture entry — `cam_vis` from the visibility set above, the
+   derived mask/AABBs, `view_proj`, an empty `particle_collections`, a
+   `clear_color`, `render_world = true` — and encode the returned `Rgba8UnormSrgb`
+   bytes (already sRGB — a direct PNG write, no color conversion) to the output
+   path via the already-present `image` dependency. Pre-check output-path
+   writability before rendering and write the PNG as the final step, so a failure
+   leaves no partial file.
 
 Also wire the `--capture <scene.json>` branch in `startup/session.rs` mirroring
 the `--headless` branch: detection sits outside the feature gate; the

@@ -224,11 +224,12 @@ pub struct AnimationClip {
     /// Public clips may be shorter; missing entries hold rest pose.
     pub joints: Vec<JointTracks>,
     /// Authored ground travel speed in ground units per animated second, derived
-    /// at load from the root joint's horizontal (XZ) root-motion displacement
-    /// over the clip duration. `None` for a clip with no root translation track
-    /// or a near-in-place clip (net XZ displacement below the loader's epsilon),
-    /// so locomotion calibration can fall back to a degenerate reference instead
-    /// of dividing the stride rate by a speed of ≈0.
+    /// at load from the selected locomotion root's horizontal (XZ) displacement
+    /// over the clip duration. The loader then removes that track's net XZ drift
+    /// so entity-authoritative displacement and the looping sampled pose do not
+    /// both move the character. `None` for no unambiguous locomotion root, no root
+    /// translation track, or a near-in-place clip (net XZ displacement below the
+    /// loader's epsilon).
     pub travel_speed: Option<f32>,
 }
 

@@ -67,6 +67,15 @@ pub struct AnimationState {
     pub clip_index: Option<usize>,
 }
 
+impl AnimationState {
+    /// Resolve this state's calibration with authored override precedence. The
+    /// caller supplies the active clip's load-derived speed, when available.
+    /// Local simulation and remote presentation share this policy.
+    pub fn effective_travel_speed(&self, derived_travel_speed: Option<f32>) -> Option<f32> {
+        self.travel_speed.or(derived_travel_speed)
+    }
+}
+
 /// The source the active fade blends *from*. Set by [`switch_animation_state`]
 /// when a switch lands: a smooth interrupt of an active fade records `Snapshot`
 /// (the collector then captures the in-flight blend), every other switch records
@@ -208,6 +217,48 @@ mod tests {
         }
         expected.pose_inputs = None;
         assert_eq!(back, expected);
+    }
+
+    #[test]
+    fn animation_block_serde_defaults_absent_locomotion_fields() {
+        // Regression: `bool` serde defaults to false unless MeshAnimation
+        // supplies its explicit `speedScale = true` default. This is the
+        // runtime-reload shape emitted by old/default descriptors, not merely
+        // a direct constructor test.
+        let value = MeshComponent {
+            model: "decraniated".into(),
+            animation: Some(two_state_animation()),
+            origin_offset: Vec3::ZERO,
+            pose_inputs: None,
+        };
+        let json = serde_json::to_value(&value).unwrap();
+        let states = &json["animation"]["states"];
+        assert!(
+            json["animation"].get("speedScale").is_none(),
+            "default true speedScale stays absent on the runtime wire shape"
+        );
+        assert!(
+            states
+                .as_object()
+                .unwrap()
+                .values()
+                .all(|state| state.get("travelSpeed").is_none()),
+            "override-free states omit travelSpeed"
+        );
+
+        let back: MeshComponent = serde_json::from_value(json).unwrap();
+        let animation = back.animation.expect("serialized animation restores");
+        assert!(
+            animation.speed_scale,
+            "absent speedScale must restore the authored default true"
+        );
+        assert!(
+            animation
+                .states
+                .values()
+                .all(|state| state.travel_speed.is_none()),
+            "absent travelSpeed restores no per-state override"
+        );
     }
 
     #[test]

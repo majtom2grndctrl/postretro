@@ -9,6 +9,13 @@ use glam::Vec3;
 /// its authored leg sets at this value, so it doubles as the leg-set capacity.
 pub const MAX_FEET: usize = 6;
 
+/// Minimum world-up dot product for a surface that movement and foot planting
+/// treat as walkable. `cos(50°) ~= 0.643`.
+///
+/// This is shared because accepting a probe that the ankle orientation then
+/// refuses to follow creates a visible discontinuity at the slope boundary.
+pub const WALKABLE_SURFACE_MIN_UP_DOT: f32 = 0.643;
+
 /// A single foot's ground-probe result, authored by the game-logic ground step.
 ///
 /// All quantities are **model-space** — the probe is resolved against the same

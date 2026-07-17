@@ -54,6 +54,23 @@ pub struct LocomotionDescriptor {
     pub speed_scale: bool,
 }
 
+impl Default for LocomotionDescriptor {
+    fn default() -> Self {
+        Self { speed_scale: true }
+    }
+}
+
+impl LocomotionDescriptor {
+    /// Build the authored block from its optional wire field. Owning the default
+    /// here keeps QuickJS, Luau, and direct Rust descriptor construction on one
+    /// `speedScale` contract.
+    pub fn from_optional_speed_scale(speed_scale: Option<bool>) -> Self {
+        Self {
+            speed_scale: speed_scale.unwrap_or(Self::default().speed_scale),
+        }
+    }
+}
+
 /// One parsed-but-unvalidated animation-state entry, as gathered from the wire
 /// by either FFI path. `interrupt` is the raw string when present (`None` =
 /// absent ⇒ defaults to `"smooth"`); validation maps it to [`InterruptPolicy`].
@@ -70,6 +87,16 @@ pub struct RawAnimationState {
 }
 
 impl MeshDescriptor {
+    /// Effective locomotion rate-scaling toggle. Omitting either the block or
+    /// its field preserves the shared default (`true`).
+    pub fn speed_scale(&self) -> bool {
+        self.locomotion
+            .as_ref()
+            .cloned()
+            .unwrap_or_default()
+            .speed_scale
+    }
+
     /// Build and validate a [`MeshDescriptor`] from the raw fields gathered by
     /// the JS / Luau parsers. Shared so both FFI paths enforce identical rules:
     /// non-empty `model`/`clip`, finite ≥ 0 `crossfadeMs`, `interrupt` in

@@ -3,7 +3,9 @@
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use glam::{EulerRot, Vec2, Vec3};
 use parry3d::math::{Isometry, Point};
@@ -18,7 +20,7 @@ use crate::kinematic_mover::MoverTickStateTable;
 use crate::movement::MovementInput;
 use crate::nav::NavGraph;
 use crate::netcode::ShotId;
-use crate::scripting_systems::hit_zones::HitZoneStore;
+use crate::scripting_systems::hit_zones::{HitZoneStore, model_matrix};
 use crate::scripting_systems::slot_accumulators::{
     SlotAccumulatorBindings, evaluate_slot_accumulators,
 };
@@ -42,6 +44,7 @@ use postretro_entities::{
     SlotOwnership, SlotRecord, SlotSchema, SlotTable, SlotType, SlotValue, Transform,
     TriggerActivation, TriggerFireMode, TriggerVolumeComponent,
 };
+use postretro_foundation::pose::{FootProbe, MAX_FEET};
 use postretro_foundation::{
     AirParams, CapsuleParams, FallParams, FireMode, ForgivenessParams, GroundParams, IrNode,
     IrValue, PlayerMovementComponent, PlayerMovementDescriptor, ResolutionMode, SpeedParams,
@@ -1079,6 +1082,7 @@ fn spawn_driven_agent(
 fn run_driven_agent_sim_tick(
     registry: Rc<RefCell<EntityRegistry>>,
     world: &CollisionWorld,
+    hit_zones: &HitZoneStore,
     nav_graph: &NavGraph,
     anim_time: f64,
     progress: &mut ProgressTracker,
@@ -1105,7 +1109,7 @@ fn run_driven_agent_sim_tick(
     let _ = simulate_tick(
         registry,
         world,
-        &HitZoneStore::new(),
+        hit_zones,
         Some(nav_graph),
         GRAVITY,
         None,
@@ -1125,6 +1129,43 @@ fn run_driven_agent_sim_tick(
     );
 }
 
+fn reference_enemy_walking_hit_zones() -> Option<(String, usize, HitZoneStore)> {
+    use crate::scripting_systems::hit_zones::ModelHitZones;
+    use postretro_model::ModelHandle;
+
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../content/dev/models/reference_enemy_kaykit_knight/scene.gltf");
+    if !path.exists() {
+        eprintln!("skipping: model asset not present at {}", path.display());
+        return None;
+    }
+    let model = postretro_model::gltf_loader::load_model(&path)
+        .expect("shipped reference enemy model loads");
+    let walking_index = model
+        .clips
+        .iter()
+        .position(|clip| clip.name == "Walking_A")
+        .expect("reference enemy declares Walking_A");
+    assert_eq!(
+        model.clips[walking_index].travel_speed, None,
+        "E10 fallback is justified only when the shipped Walking_A clip derives no travel speed",
+    );
+
+    let model_key = path.to_string_lossy().into_owned();
+    let mut store = HitZoneStore::new();
+    store.insert_for_test(
+        ModelHandle::from(model_key.clone()),
+        ModelHitZones {
+            skeleton: Arc::new(model.skeleton),
+            clips: Arc::new(model.clips),
+            joint_zones: model.joint_zones,
+            derived_bound: None,
+            legs: model.legs,
+        },
+    );
+    Some((model_key, walking_index, store))
+}
+
 #[test]
 fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsilon_writes() {
     let world = floor_world();
@@ -1132,6 +1173,7 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
     let mut progress = ProgressTracker::new();
     let mut ai_warned = HashSet::new();
     let mut mover_states = MoverTickStateTable::default();
+    let empty_hit_zones = HitZoneStore::new();
 
     // Attack is not the alert-mapped locomotion state, so the sim-tick path
     // must restore its previously scaled playback rate to one.
@@ -1158,6 +1200,7 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
     run_driven_agent_sim_tick(
         non_walk_registry.clone(),
         &world,
+        &empty_hit_zones,
         &nav_graph,
         1.0,
         &mut progress,
@@ -1177,16 +1220,38 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
         "non-walk states rest at the authored playback rate",
     );
 
+    let Some((reference_model, walking_index, hit_zones)) = reference_enemy_walking_hit_zones()
+    else {
+        return;
+    };
     let registry = Rc::new(RefCell::new(EntityRegistry::new()));
     let enemy = {
         let mut registry = registry.borrow_mut();
         spawn_player(&mut registry, Vec3::new(30.0, 1.21, 5.0));
-        spawn_driven_agent(
+        let enemy = spawn_driven_agent(
             &mut registry,
             Vec3::new(5.0, 1.21, 5.0),
             LogicalState::Alert,
             "locomotion",
-        )
+        );
+        let mut mesh = registry
+            .get_component::<MeshComponent>(enemy)
+            .expect("driven agent keeps mesh")
+            .clone();
+        mesh.model = reference_model;
+        let locomotion = mesh
+            .animation
+            .as_mut()
+            .expect("driven agent keeps animation")
+            .states
+            .get_mut("locomotion")
+            .expect("driven agent declares locomotion state");
+        locomotion.clip = "Walking_A".to_string();
+        locomotion.clip_index = Some(walking_index);
+        registry
+            .set_component(enemy, mesh)
+            .expect("reference enemy walk mesh should update");
+        enemy
     };
 
     // The first tick builds the route and drives actual steering. The second
@@ -1194,6 +1259,7 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
     run_driven_agent_sim_tick(
         registry.clone(),
         &world,
+        &hit_zones,
         &nav_graph,
         1.0,
         &mut progress,
@@ -1203,6 +1269,7 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
     run_driven_agent_sim_tick(
         registry.clone(),
         &world,
+        &hit_zones,
         &nav_graph,
         2.0,
         &mut progress,
@@ -1220,14 +1287,11 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
             .expect("driven agent keeps mesh");
         let animation = mesh.animation.as_ref().unwrap();
         let speed_xz = Vec3::new(agent.velocity.x, 0.0, agent.velocity.z).length();
-        // E10 premise: the shipped walk is authored in-place, so Task 2 derives
-        // no clip travel speed, and this state declares no `travelSpeed`
-        // override. Confirm the resolver returns None — the degenerate fallback —
-        // so the rate below uses `speed_xz / move_speed` byte-for-byte, not a
-        // stride calibration. The empty store stands in for a model whose walk
-        // clip carries no derived travel speed.
+        // E10 premise: the shipped Walking_A clip is authored in-place, so Task
+        // 2 derives no travel speed and this state declares no override. This
+        // uses the actual shipped model store rather than an empty-store stand-in.
         assert_eq!(
-            super::effective_travel_speed(animation, mesh, &HitZoneStore::new()),
+            super::effective_travel_speed(animation, mesh, &hit_zones),
             None,
             "in-place E10 walk resolves to no effective travel speed (degenerate fallback)",
         );
@@ -1262,6 +1326,7 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
     run_driven_agent_sim_tick(
         registry.clone(),
         &world,
+        &hit_zones,
         &nav_graph,
         3.0,
         &mut progress,
@@ -1404,12 +1469,196 @@ fn update_brain_playback_rate_skips_scaling_when_speed_scale_off() {
 }
 
 #[test]
+fn local_locomotion_rate_precedence_matrix_is_override_then_derived_then_fallback() {
+    struct Case {
+        label: &'static str,
+        override_speed: Option<f32>,
+        derived_speed: Option<f32>,
+        speed_scale: bool,
+        expected: f32,
+    }
+    let measured = 3.0_f32;
+    let move_speed = 3.5_f32;
+    let cases = [
+        Case {
+            label: "override wins over derived",
+            override_speed: Some(4.0),
+            derived_speed: Some(2.5),
+            speed_scale: true,
+            expected: measured / 4.0,
+        },
+        Case {
+            label: "derived clip speed",
+            override_speed: None,
+            derived_speed: Some(2.5),
+            speed_scale: true,
+            expected: measured / 2.5,
+        },
+        Case {
+            label: "E10 move-speed fallback",
+            override_speed: None,
+            derived_speed: None,
+            speed_scale: true,
+            expected: measured / move_speed,
+        },
+        Case {
+            label: "speedScale false",
+            override_speed: Some(4.0),
+            derived_speed: Some(2.5),
+            speed_scale: false,
+            expected: 1.0,
+        },
+    ];
+
+    for case in cases {
+        let mut registry = EntityRegistry::new();
+        let enemy = spawn_driven_agent(
+            &mut registry,
+            Vec3::new(5.0, 1.21, 5.0),
+            LogicalState::Alert,
+            "locomotion",
+        );
+        let mut mesh = registry
+            .get_component::<MeshComponent>(enemy)
+            .unwrap()
+            .clone();
+        let animation = mesh.animation.as_mut().unwrap();
+        animation.speed_scale = case.speed_scale;
+        animation.states.get_mut("locomotion").unwrap().travel_speed = case.override_speed;
+        registry.set_component(enemy, mesh).unwrap();
+        let mut agent = registry
+            .get_component::<AgentComponent>(enemy)
+            .unwrap()
+            .clone();
+        agent.velocity = Vec3::new(measured, 0.0, 0.0);
+        registry.set_component(enemy, agent).unwrap();
+
+        let store = hit_zone_store_with_clip_travel_speed("driven-agent", 1, case.derived_speed);
+        super::update_brain_animation_playback_rates(&mut registry, &store, 1.0);
+        let actual = registry
+            .get_component::<MeshComponent>(enemy)
+            .unwrap()
+            .animation
+            .as_ref()
+            .unwrap()
+            .rate;
+        let expected = case.expected.clamp(RATE_MIN, RATE_MAX);
+        assert!(
+            (actual - expected).abs() <= 1.0e-6,
+            "{}: expected {expected}, got {actual}",
+            case.label
+        );
+    }
+}
+
+// Regression: runtime-spawned host enemies enter the first rate pass before
+// the outer app loop drains their clip-index resolve queue.
+#[test]
+fn spawner_path_first_rate_pass_uses_derived_clip_calibration_before_index_resolve() {
+    use crate::scripting::builtins::data_archetype_test_fixtures::ai_enemy_descriptor;
+    use crate::spawner::SpawnContext;
+    use postretro_entities::components::spawner::SpawnerComponent;
+    use postretro_model::skeleton::{AnimationClip, Skeleton};
+
+    let mut descriptor = ai_enemy_descriptor("runtime_enemy");
+    let mesh_desc = descriptor.mesh.as_mut().unwrap();
+    mesh_desc.animations.insert(
+        "walk".to_string(),
+        AnimationState {
+            clip: "walk_clip".to_string(),
+            looping: true,
+            crossfade_ms: 0.0,
+            interrupt: InterruptPolicy::Smooth,
+            travel_speed: None,
+            clip_index: None,
+        },
+    );
+    mesh_desc.default_state = Some("walk".to_string());
+
+    let context = SpawnContext::default();
+    context.replace_level_data(
+        [("runtime_enemy".to_string(), descriptor)]
+            .into_iter()
+            .collect(),
+        None,
+    );
+    let mut registry = EntityRegistry::new();
+    let spawner = registry.spawn(Transform::default());
+    registry
+        .set_component(
+            spawner,
+            SpawnerComponent {
+                archetype_name: "runtime_enemy".to_string(),
+                count: 1,
+                resolved: true,
+            },
+        )
+        .unwrap();
+    crate::spawner::spawn_from_spawner_targets(&mut registry, &[spawner], &context);
+    let enemy = registry
+        .iter_with_kind(postretro_entities::ComponentKind::Brain)
+        .map(|(id, _)| id)
+        .next()
+        .expect("spawner path materializes one AI enemy");
+    assert_eq!(
+        registry
+            .get_component::<MeshComponent>(enemy)
+            .unwrap()
+            .animation
+            .as_ref()
+            .unwrap()
+            .states["walk"]
+            .clip_index,
+        None,
+        "first rate pass occurs before the queued index fill",
+    );
+    let mut agent = registry
+        .get_component::<AgentComponent>(enemy)
+        .unwrap()
+        .clone();
+    agent.velocity = Vec3::new(3.0, 0.0, 0.0);
+    registry.set_component(enemy, agent).unwrap();
+
+    let mut store = HitZoneStore::new();
+    store.insert_for_test(
+        postretro_model::ModelHandle::from("decraniated"),
+        crate::scripting_systems::hit_zones::ModelHitZones {
+            skeleton: Arc::new(Skeleton::default()),
+            clips: Arc::new(vec![AnimationClip {
+                name: "walk_clip".to_string(),
+                duration: 1.0,
+                joints: Vec::new(),
+                travel_speed: Some(2.0),
+            }]),
+            joint_zones: Vec::new(),
+            derived_bound: None,
+            legs: Vec::new(),
+        },
+    );
+
+    super::update_brain_animation_playback_rates(&mut registry, &store, 1.0);
+    let rate = registry
+        .get_component::<MeshComponent>(enemy)
+        .unwrap()
+        .animation
+        .as_ref()
+        .unwrap()
+        .rate;
+    assert!(
+        (rate - 1.5).abs() <= 1.0e-6,
+        "derived first-tick rate = {rate}"
+    );
+    assert_eq!(context.take_pending_mesh_clip_resolves(), vec![enemy]);
+}
+
+#[test]
 fn simulate_tick_writes_target_aim_and_tick_end_heading_pose_inputs() {
     let world = floor_world();
     let nav_graph = open_floor_nav_graph();
     let mut progress = ProgressTracker::new();
     let mut ai_warned = HashSet::new();
     let mut mover_states = MoverTickStateTable::default();
+    let hit_zones = HitZoneStore::new();
     let registry = Rc::new(RefCell::new(EntityRegistry::new()));
     let (enemy, target) = {
         let mut registry = registry.borrow_mut();
@@ -1432,6 +1681,7 @@ fn simulate_tick_writes_target_aim_and_tick_end_heading_pose_inputs() {
     run_driven_agent_sim_tick(
         registry.clone(),
         &world,
+        &hit_zones,
         &nav_graph,
         1.0,
         &mut progress,
@@ -1589,6 +1839,27 @@ fn probe_leg_entity_in(
     position: Vec3,
     yaw: f32,
 ) -> postretro_entities::PoseInputs {
+    let (mut registry, entity, store) = leg_probe_fixture(position, yaw);
+    let mover_colliders: Vec<MoverCollider> = Vec::new();
+    let mover_states = MoverTickStateTable::default();
+
+    super::update_presentation_pose_inputs(
+        &mut registry,
+        world,
+        &mover_colliders,
+        &mover_states,
+        &store,
+        0.0,
+    );
+
+    registry
+        .get_component::<MeshComponent>(entity)
+        .unwrap()
+        .pose_inputs
+        .expect("leg entity receives pose inputs")
+}
+
+fn leg_probe_fixture(position: Vec3, yaw: f32) -> (EntityRegistry, EntityId, HitZoneStore) {
     let mut registry = EntityRegistry::new();
     let mut states = std::collections::HashMap::new();
     states.insert(
@@ -1624,24 +1895,7 @@ fn probe_leg_entity_in(
         postretro_model::ModelHandle::from("legwalker".to_string()),
         leg_model(),
     );
-    let mover_colliders: Vec<MoverCollider> = Vec::new();
-    let mover_states = MoverTickStateTable::default();
-
-    super::update_pose_inputs(&mut registry);
-    super::update_foot_ground_probes(
-        &mut registry,
-        world,
-        &mover_colliders,
-        &mover_states,
-        &store,
-        0.0,
-    );
-
-    registry
-        .get_component::<MeshComponent>(entity)
-        .unwrap()
-        .pose_inputs
-        .expect("leg entity receives pose inputs")
+    (registry, entity, store)
 }
 
 #[test]
@@ -1696,6 +1950,161 @@ fn foot_ground_probes_are_deterministic_and_carry_forward_aim() {
         "no ground within the planting reach is a miss"
     );
     assert!((high.heading_yaw - yaw).abs() < 1.0e-5);
+}
+
+// Regression: connected clients skip simulate_tick, so remote legged meshes
+// previously reached rendering with no pose inputs or ground probes.
+#[test]
+fn connected_client_presentation_probes_freshly_displayed_remote_transform() {
+    let (mut registry, entity, store) = leg_probe_fixture(Vec3::new(0.0, 10.0, 0.0), 0.0);
+    registry
+        .set_presentation_transform(
+            entity,
+            Transform {
+                position: Vec3::new(0.0, 1.0, 0.0),
+                rotation: glam::Quat::from_rotation_y(0.6),
+                scale: Vec3::ONE,
+            },
+        )
+        .expect("remote presentation transform should apply");
+
+    super::update_presentation_pose_inputs(
+        &mut registry,
+        &floor_world(),
+        &[],
+        &MoverTickStateTable::default(),
+        &store,
+        0.0,
+    );
+
+    let inputs = registry
+        .get_component::<MeshComponent>(entity)
+        .unwrap()
+        .pose_inputs
+        .expect("connected-client presentation produces pose inputs");
+    assert_eq!(inputs.foot_count, 1);
+    assert!(inputs.feet[0].hit, "displayed remote foot probes the floor");
+    assert!((inputs.feet[0].contact_height + 1.0).abs() < 1.0e-3);
+    assert!((inputs.heading_yaw - 0.6).abs() < 1.0e-5);
+}
+
+// Regression: publishing the model's leg count before validating animation,
+// sample, and transform availability preserved stale contacts in the renderer.
+#[test]
+fn unavailable_probe_inputs_clear_stale_feet_and_publish_zero_count() {
+    let world = floor_world();
+    let (mut registry, entity, store) = leg_probe_fixture(Vec3::new(0.0, 1.0, 0.0), 0.0);
+    let mover_states = MoverTickStateTable::default();
+    let run = |registry: &mut EntityRegistry| {
+        super::update_presentation_pose_inputs(registry, &world, &[], &mover_states, &store, 0.0);
+    };
+    let assert_cleared = |registry: &EntityRegistry, reason: &str| {
+        let inputs = registry
+            .get_component::<MeshComponent>(entity)
+            .unwrap()
+            .pose_inputs
+            .unwrap();
+        assert_eq!(inputs.foot_count, 0, "{reason}");
+        assert_eq!(inputs.feet, [FootProbe::default(); MAX_FEET], "{reason}");
+    };
+
+    run(&mut registry);
+    let original_mesh = registry
+        .get_component::<MeshComponent>(entity)
+        .unwrap()
+        .clone();
+    assert_eq!(original_mesh.pose_inputs.unwrap().foot_count, 1);
+    assert!(original_mesh.pose_inputs.unwrap().feet[0].hit);
+
+    let mut missing_model = original_mesh.clone();
+    missing_model.model = "missing-model".to_string();
+    registry.set_component(entity, missing_model).unwrap();
+    run(&mut registry);
+    assert_cleared(&registry, "missing model clears stale feet");
+
+    let mut hidden_stale = original_mesh.clone();
+    hidden_stale.model = "missing-model".to_string();
+    let mut hidden_inputs = hidden_stale.pose_inputs.unwrap();
+    hidden_inputs.foot_count = 0;
+    hidden_stale.pose_inputs = Some(hidden_inputs);
+    registry.set_component(entity, hidden_stale).unwrap();
+    run(&mut registry);
+    assert_cleared(
+        &registry,
+        "non-default foot slots clear even when the stale live count is already zero",
+    );
+
+    let mut no_animation = original_mesh.clone();
+    no_animation.animation = None;
+    registry.set_component(entity, no_animation).unwrap();
+    run(&mut registry);
+    assert_cleared(&registry, "missing animation clears stale feet");
+
+    let mut unresolved = original_mesh.clone();
+    unresolved.pose_inputs = original_mesh.pose_inputs;
+    unresolved
+        .animation
+        .as_mut()
+        .unwrap()
+        .states
+        .get_mut("idle")
+        .unwrap()
+        .clip_index = None;
+    registry.set_component(entity, unresolved).unwrap();
+    run(&mut registry);
+    assert_cleared(
+        &registry,
+        "unresolved animated state is unavailable instead of sampling clip 0",
+    );
+    let zones = store.get_by_name("legwalker").unwrap();
+    let unresolved_animation = registry
+        .get_component::<MeshComponent>(entity)
+        .unwrap()
+        .animation
+        .as_ref()
+        .unwrap();
+    assert!(
+        crate::scripting_systems::hit_zones::sample_world_pose_for_probe(
+            zones,
+            Some(unresolved_animation),
+            0.0,
+            entity.to_raw(),
+        )
+        .is_none()
+    );
+    assert!(
+        crate::scripting_systems::hit_zones::sample_world_pose_for_probe(
+            zones,
+            None,
+            0.0,
+            entity.to_raw(),
+        )
+        .is_some(),
+        "the intentional stateless first-clip path remains explicit",
+    );
+
+    registry.set_component(entity, original_mesh).unwrap();
+    let mut tilted = *registry.get_component::<Transform>(entity).unwrap();
+    tilted.rotation = glam::Quat::from_rotation_x(0.2);
+    registry.set_component(entity, tilted).unwrap();
+    run(&mut registry);
+    assert_cleared(&registry, "unsupported transform clears stale feet");
+}
+
+#[test]
+fn foot_probe_transform_accepts_small_positive_uniform_and_nonuniform_scales() {
+    for scale in [Vec3::splat(1.0e-6), Vec3::new(1.0e-6, 2.0e-6, 3.0e-6)] {
+        let transform = Transform {
+            position: Vec3::ZERO,
+            rotation: glam::Quat::IDENTITY,
+            scale,
+        };
+        let model_to_world = model_matrix(&transform, Vec3::ZERO).unwrap();
+        assert!(
+            super::foot_probe_inverse(&transform, &model_to_world).is_some(),
+            "positive finite scale {scale:?} has a finite inverse"
+        );
+    }
 }
 
 #[test]

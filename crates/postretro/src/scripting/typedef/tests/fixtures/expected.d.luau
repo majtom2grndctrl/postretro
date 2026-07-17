@@ -41,7 +41,7 @@ export type AnimationStateDescriptor = {
   loop: boolean?,
   --- Crossfade duration into this state, in milliseconds. Optional; must be finite and >= 0. Defaults to 150 ms.
   crossfadeMs: number?,
-  --- Per-state locomotion travel-speed override, in ground units per animated second. Optional; must be finite and > 0. When present it replaces this clip's load-derived travel speed for speed-scaled playback; omit to use the derived value.
+  --- Per-state locomotion travel-speed override, in ground units per animated second. Optional; must be finite and > 0. When present it replaces this clip's load-derived travel speed; omit to use the derived value. V1 consumes this calibration only when the state is the AI alert-mapped locomotion state.
   travelSpeed: number?,
   --- How a fade into this state takes over an in-flight fade. Optional; defaults to "smooth".
   interrupt: InterruptPolicy?,
@@ -61,7 +61,7 @@ export type MeshDescriptor = {
 
 --- Authored per-archetype locomotion calibration attached to `MeshDescriptor.locomotion`. Sibling to the per-state `travelSpeed` override.
 export type LocomotionDescriptor = {
-  --- Whether locomotion rate-scaling applies to this archetype's playback. Optional; defaults to true (speed-scaled playback). Set false to play the authored cadence unscaled.
+  --- Whether V1 rate-scales this archetype's AI alert-mapped locomotion state. Other animation states are never rate-scaled. Optional; defaults to true. Set false to play the authored cadence unscaled.
   speedScale: boolean?,
 }
 

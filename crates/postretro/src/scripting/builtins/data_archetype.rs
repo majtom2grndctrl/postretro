@@ -446,37 +446,7 @@ pub(crate) fn attach_descriptor_components(
         owned_components.insert(DescriptorComponentKind::Movement);
     }
 
-    if let Some(mesh_desc) = descriptor.mesh.as_ref() {
-        let origin_offset = if descriptor.ai.is_some() {
-            let params = agent_params.unwrap_or(DEFAULT_AGENT_PARAMS);
-            capsule_center_to_feet_origin_offset(params.radius, params.height)
-        } else {
-            Vec3::ZERO
-        };
-        // No `animations` block ⇒ stateless mesh (model handle only). Otherwise
-        // copy the declared state map in via `MeshAnimation::new`: current =
-        // default state, entry stamp pending (filled by the resolve pass), no
-        // active fade. Parse-time validation guarantees `default_state`
-        // is `Some` exactly when the map is non-empty and names a declared state.
-        //
-        // `speedScale` rides the sibling `locomotion` block, so — unlike the
-        // per-state `travelSpeed` which already sits on each `AnimationState`
-        // in `animations` — it must be threaded explicitly onto the runtime
-        // `MeshAnimation` here. Absent block ⇒ the `true` default (speed-scaled
-        // playback preserved).
-        let speed_scale = mesh_desc
-            .locomotion
-            .as_ref()
-            .is_none_or(|loco| loco.speed_scale);
-        let component = match &mesh_desc.default_state {
-            Some(default_state) => MeshComponent::animated(
-                mesh_desc.model.clone(),
-                MeshAnimation::new(mesh_desc.animations.clone(), default_state.clone())
-                    .with_speed_scale(speed_scale),
-            ),
-            None => MeshComponent::stateless(mesh_desc.model.clone()),
-        }
-        .with_origin_offset(origin_offset);
+    if let Some(component) = descriptor_mesh_component(descriptor, agent_params) {
         let _ = registry.set_component(id, component);
         owned_components.insert(DescriptorComponentKind::Mesh);
     }
@@ -542,6 +512,32 @@ pub(crate) fn attach_descriptor_components(
         };
         let _ = registry.set_component(id, provenance);
     }
+}
+
+/// Materialize the descriptor-owned mesh presentation shared by local spawns
+/// and connected-client remote enemies. Descriptor state maps already carry
+/// validated `travelSpeed` overrides; this seam also applies the shared
+/// absent-`speedScale` default and AI render-origin offset.
+pub(crate) fn descriptor_mesh_component(
+    descriptor: &EntityTypeDescriptor,
+    agent_params: Option<NavAgentParams>,
+) -> Option<MeshComponent> {
+    let mesh_desc = descriptor.mesh.as_ref()?;
+    let origin_offset = if descriptor.ai.is_some() {
+        let params = agent_params.unwrap_or(DEFAULT_AGENT_PARAMS);
+        capsule_center_to_feet_origin_offset(params.radius, params.height)
+    } else {
+        Vec3::ZERO
+    };
+    let component = match &mesh_desc.default_state {
+        Some(default_state) => MeshComponent::animated(
+            mesh_desc.model.clone(),
+            MeshAnimation::new(mesh_desc.animations.clone(), default_state.clone())
+                .with_speed_scale(mesh_desc.speed_scale()),
+        ),
+        None => MeshComponent::stateless(mesh_desc.model.clone()),
+    };
+    Some(component.with_origin_offset(origin_offset))
 }
 
 /// Seed an AI brain's aggro gate from a map placement.
@@ -933,6 +929,35 @@ mod tests {
         assert_eq!(anim.states.len(), 2);
         assert!(anim.states.contains_key("idle"));
         assert!(anim.states.contains_key("attack"));
+    }
+
+    #[test]
+    fn descriptor_spawn_materializes_locomotion_contract() {
+        use postretro_scripting_core::data_descriptors::LocomotionDescriptor;
+
+        let mut descriptor = mesh_descriptor("decraniated_mob", true);
+        let mesh_desc = descriptor.mesh.as_mut().unwrap();
+        mesh_desc.locomotion = Some(LocomotionDescriptor { speed_scale: false });
+        mesh_desc.animations.get_mut("idle").unwrap().travel_speed = Some(2.75);
+
+        let mut reg = EntityRegistry::new();
+        apply_data_archetype_dispatch(
+            &[placement("decraniated_mob", &[])],
+            &[descriptor],
+            &HashSet::new(),
+            &mut reg,
+            None,
+        );
+
+        let (id, _) = reg.iter_with_kind(ComponentKind::Mesh).next().unwrap();
+        let animation = reg
+            .get_component::<MeshComponent>(id)
+            .unwrap()
+            .animation
+            .as_ref()
+            .unwrap();
+        assert!(!animation.speed_scale);
+        assert_eq!(animation.states["idle"].travel_speed, Some(2.75));
     }
 
     #[test]

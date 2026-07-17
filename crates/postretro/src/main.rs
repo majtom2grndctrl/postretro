@@ -2076,6 +2076,11 @@ impl ApplicationHandler for App {
                 // render stage reads entities, so the renderer stays read-only.
                 // No-op for single-player and the host.
                 self.net_sample_remote_interpolation(frame_dt, frame_anim_time);
+                // Connected clients skip the authoritative `simulate_tick`, so
+                // generate renderer-facing pose inputs here from the freshly
+                // interpolated displayed transforms. These transient mesh fields
+                // are client presentation only and never enter replication.
+                self.update_client_presentation_pose_inputs(frame_anim_time);
                 self.run_client_fire_path_post_loop(
                     gameplay_snapshot.as_ref(),
                     zero_tick_fire_snapshot.as_ref(),
@@ -4337,6 +4342,7 @@ impl App {
             self.host_spawn_points = host_spawn_points;
             return;
         };
+        let hit_zone_store = &session.hit_zone_store;
         let mut armed_local_pawn = None;
         match session.net_endpoint.as_mut() {
             None => {}
@@ -4516,6 +4522,7 @@ impl App {
                     state_slots,
                     prediction,
                     &net_descriptors,
+                    hit_zone_store,
                     host_agent_params,
                     &combined_collision,
                     gravity,
@@ -4832,6 +4839,24 @@ impl App {
             time_sync,
             interpolation_delay,
             f64::from(frame_dt),
+            frame_anim_time,
+        );
+    }
+
+    fn update_client_presentation_pose_inputs(&mut self, frame_anim_time: f64) {
+        if !self.is_connected_client() {
+            return;
+        }
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        let mut registry = session.scripting.script_ctx.registry.borrow_mut();
+        sim::update_presentation_pose_inputs(
+            &mut registry,
+            &self.collision_world,
+            &self.kinematic_mover_colliders,
+            &self.kinematic_mover_tick_states,
+            &session.hit_zone_store,
             frame_anim_time,
         );
     }

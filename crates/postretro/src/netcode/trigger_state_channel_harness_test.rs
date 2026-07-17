@@ -720,6 +720,7 @@ impl ReplicatedStateFrame for PersistentAtmosphereHarness {
                 &mut self.client_state,
                 &mut self.client_prediction,
                 &[],
+                &crate::scripting_systems::hit_zones::HitZoneStore::new(),
                 None,
                 &collision,
                 -20.0,

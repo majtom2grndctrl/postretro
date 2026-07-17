@@ -134,13 +134,21 @@ fn js_mesh_locomotion_absent_defaults_speed_scale_true() {
     let src = r#"({ components: { mesh: { model: "m" } } })"#;
     let d = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
     let mesh = d.mesh.expect("mesh descriptor parsed");
-    // Absent `locomotion` block parses to `None`; the runtime default
-    // (`MeshAnimation::speed_scale`, see `components/animation/mod.rs`) is
-    // `true`, so no block means unscaled-off playback stays scaled.
     assert!(
         mesh.locomotion.is_none(),
         "absent `locomotion` block parses to None"
     );
+    assert!(
+        mesh.speed_scale(),
+        "shared descriptor default is rate-scaled"
+    );
+}
+
+#[test]
+fn js_mesh_locomotion_present_without_field_defaults_speed_scale_true() {
+    let src = r#"({ components: { mesh: { model: "m", locomotion: {} } } })"#;
+    let d = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap());
+    assert!(d.mesh.unwrap().speed_scale());
 }
 
 #[test]
@@ -343,11 +351,19 @@ fn lua_mesh_locomotion_absent_defaults_speed_scale_true() {
     let src = r#"return { components = { mesh = { model = "m" } } }"#;
     let d = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap());
     let mesh = d.mesh.expect("mesh descriptor parsed");
-    // Absent `locomotion` block parses to `None`; the runtime default
-    // (`MeshAnimation::speed_scale`, see `components/animation/mod.rs`) is
-    // `true`.
     assert!(
         mesh.locomotion.is_none(),
         "absent `locomotion` block parses to None"
     );
+    assert!(
+        mesh.speed_scale(),
+        "shared descriptor default is rate-scaled"
+    );
+}
+
+#[test]
+fn lua_mesh_locomotion_present_without_field_defaults_speed_scale_true() {
+    let src = r#"return { components = { mesh = { model = "m", locomotion = {} } } }"#;
+    let d = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap());
+    assert!(d.mesh.unwrap().speed_scale());
 }

@@ -3,11 +3,10 @@
 
 use super::MapEntity;
 use super::data_archetype::{
-    DEFAULT_AGENT_PARAMS, find_descriptor, seed_weapon_reserve, spawn_descriptor_instance,
+    descriptor_mesh_component, find_descriptor, seed_weapon_reserve, spawn_descriptor_instance,
 };
-use postretro_entities::components::mesh::{
-    MeshAnimation, MeshComponent, capsule_center_to_feet_origin_offset,
-};
+#[cfg(test)]
+use postretro_entities::components::mesh::MeshComponent;
 use postretro_entities::components::player_movement::PlayerMovementComponent;
 use postretro_entities::provenance::DescriptorSpawnPath;
 use postretro_entities::registry::{ComponentKind, EntityId, EntityRegistry};
@@ -231,7 +230,7 @@ pub(crate) fn materialize_net_remote_enemy_presentation(
         );
         return false;
     };
-    let Some(mesh_desc) = descriptor.mesh.as_ref() else {
+    if descriptor.mesh.is_none() {
         log::debug!(
             "[Net] remote enemy entity_class `{entity_class}` has no mesh block; \
              leaving remote pawn transform-only (will not render)"
@@ -239,25 +238,8 @@ pub(crate) fn materialize_net_remote_enemy_presentation(
         return false;
     };
 
-    // Same materialization the data-archetype mesh path uses: no `animations` block
-    // ⇒ stateless mesh (model handle only); otherwise copy the declared state map in
-    // via `MeshAnimation::new` (current = default state, entry stamp pending). Parse
-    // validation guarantees `default_state` is `Some` exactly when the map is
-    // non-empty and names a declared state.
-    let origin_offset = if descriptor.ai.is_some() {
-        let params = agent_params.unwrap_or(DEFAULT_AGENT_PARAMS);
-        capsule_center_to_feet_origin_offset(params.radius, params.height)
-    } else {
-        glam::Vec3::ZERO
-    };
-    let component = match &mesh_desc.default_state {
-        Some(default_state) => MeshComponent::animated(
-            mesh_desc.model.clone(),
-            MeshAnimation::new(mesh_desc.animations.clone(), default_state.clone()),
-        ),
-        None => MeshComponent::stateless(mesh_desc.model.clone()),
-    }
-    .with_origin_offset(origin_offset);
+    let component = descriptor_mesh_component(descriptor, agent_params)
+        .expect("descriptor mesh presence checked above");
     // `set_component` only fails on a stale id; the caller proved the pawn live.
     let _ = registry.set_component(id, component);
     true
@@ -388,6 +370,35 @@ mod tests {
     }
 
     #[test]
+    fn remote_enemy_presentation_materializes_locomotion_contract() {
+        use postretro_scripting_core::data_descriptors::LocomotionDescriptor;
+
+        let mut descriptor = enemy_mesh_descriptor("decraniated_mob", true);
+        let mesh_desc = descriptor.mesh.as_mut().unwrap();
+        mesh_desc.locomotion = Some(LocomotionDescriptor { speed_scale: false });
+        mesh_desc.animations.get_mut("idle").unwrap().travel_speed = Some(2.75);
+        let mut reg = EntityRegistry::new();
+        let id = spawn_transform_only(&mut reg);
+
+        assert!(materialize_net_remote_enemy_presentation(
+            "decraniated_mob",
+            &[descriptor],
+            &mut reg,
+            id,
+            None,
+        ));
+
+        let animation = reg
+            .get_component::<MeshComponent>(id)
+            .unwrap()
+            .animation
+            .as_ref()
+            .unwrap();
+        assert!(!animation.speed_scale);
+        assert_eq!(animation.states["idle"].travel_speed, Some(2.75));
+    }
+
+    #[test]
     fn remote_enemy_presentation_offsets_ai_mesh_from_capsule_center_to_feet() {
         let mut descriptor = enemy_mesh_descriptor("decraniated_mob", true);
         descriptor.ai = Some(postretro_scripting_core::data_descriptors::AiDescriptor {
@@ -426,7 +437,10 @@ mod tests {
         let mesh = reg.get_component::<MeshComponent>(id).unwrap();
         assert_eq!(
             mesh.origin_offset,
-            capsule_center_to_feet_origin_offset(params.radius, params.height),
+            postretro_entities::components::mesh::capsule_center_to_feet_origin_offset(
+                params.radius,
+                params.height,
+            ),
             "client remote AI presentation uses the same capsule-center to feet offset as host materialization"
         );
     }

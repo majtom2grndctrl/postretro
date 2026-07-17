@@ -627,9 +627,18 @@ struct JointPoseMetadata {
     /// This joint belongs to the named leg's hip→knee→ankle chain (`legL`/
     /// `legR`/`leg{i}`).
     leg_chain: Option<LegRef>,
+    /// Conflicting `leg*` names were declared on this node. The membership is
+    /// invalid rather than whichever array entry happened to appear last.
+    leg_chain_conflict: bool,
     /// This joint is the named leg's foot/ankle target — the IK end effector
     /// (`footL`/`footR`/`foot{i}`).
     foot_target: Option<LegRef>,
+    /// Conflicting `foot*` names were declared on this node.
+    foot_target_conflict: bool,
+    /// Family sightings survive invalid same-node declarations so the loader
+    /// still diagnoses a model that mixes side and indexed names.
+    saw_side_leg_name: bool,
+    saw_indexed_leg_name: bool,
 }
 
 /// Read convention-named pose metadata from one joint node's `extras`.
@@ -671,41 +680,63 @@ fn read_pose_masks(
             "aimSpine" => metadata.aim_spine = true,
             "upperBody" => metadata.upper_body = true,
             "lowerBody" => metadata.lower_body = true,
-            "legL" => {
-                metadata.leg_chain = Some(LegRef {
+            "legL" => record_leg_chain(
+                &mut metadata,
+                LegRef {
                     index: 0,
                     family: LegNameFamily::Side,
-                })
-            }
-            "legR" => {
-                metadata.leg_chain = Some(LegRef {
+                },
+                node_index,
+                path_str,
+            ),
+            "legR" => record_leg_chain(
+                &mut metadata,
+                LegRef {
                     index: 1,
                     family: LegNameFamily::Side,
-                })
-            }
-            "footL" => {
-                metadata.foot_target = Some(LegRef {
+                },
+                node_index,
+                path_str,
+            ),
+            "footL" => record_foot_target(
+                &mut metadata,
+                LegRef {
                     index: 0,
                     family: LegNameFamily::Side,
-                })
-            }
-            "footR" => {
-                metadata.foot_target = Some(LegRef {
+                },
+                node_index,
+                path_str,
+            ),
+            "footR" => record_foot_target(
+                &mut metadata,
+                LegRef {
                     index: 1,
                     family: LegNameFamily::Side,
-                })
-            }
+                },
+                node_index,
+                path_str,
+            ),
             unknown => {
                 if let Some(index) = indexed_leg_suffix(unknown, "leg") {
-                    metadata.leg_chain = Some(LegRef {
-                        index,
-                        family: LegNameFamily::Indexed,
-                    });
+                    record_leg_chain(
+                        &mut metadata,
+                        LegRef {
+                            index,
+                            family: LegNameFamily::Indexed,
+                        },
+                        node_index,
+                        path_str,
+                    );
                 } else if let Some(index) = indexed_leg_suffix(unknown, "foot") {
-                    metadata.foot_target = Some(LegRef {
-                        index,
-                        family: LegNameFamily::Indexed,
-                    });
+                    record_foot_target(
+                        &mut metadata,
+                        LegRef {
+                            index,
+                            family: LegNameFamily::Indexed,
+                        },
+                        node_index,
+                        path_str,
+                    );
                 } else {
                     log::warn!(
                         "[Model] unknown poseMask '{unknown}' on joint node {node_index} in {path_str}; ignoring"
@@ -757,6 +788,71 @@ fn read_pose_masks(
     metadata
 }
 
+fn record_leg_chain(
+    metadata: &mut JointPoseMetadata,
+    leg: LegRef,
+    node_index: usize,
+    path_str: &str,
+) {
+    note_metadata_family(metadata, leg.family);
+    record_leg_ref(
+        &mut metadata.leg_chain,
+        &mut metadata.leg_chain_conflict,
+        leg,
+        "leg chain",
+        node_index,
+        path_str,
+    );
+}
+
+fn record_foot_target(
+    metadata: &mut JointPoseMetadata,
+    foot: LegRef,
+    node_index: usize,
+    path_str: &str,
+) {
+    note_metadata_family(metadata, foot.family);
+    record_leg_ref(
+        &mut metadata.foot_target,
+        &mut metadata.foot_target_conflict,
+        foot,
+        "foot target",
+        node_index,
+        path_str,
+    );
+}
+
+fn note_metadata_family(metadata: &mut JointPoseMetadata, family: LegNameFamily) {
+    match family {
+        LegNameFamily::Side => metadata.saw_side_leg_name = true,
+        LegNameFamily::Indexed => metadata.saw_indexed_leg_name = true,
+    }
+}
+
+fn record_leg_ref(
+    slot: &mut Option<LegRef>,
+    conflict: &mut bool,
+    authored: LegRef,
+    kind: &str,
+    node_index: usize,
+    path_str: &str,
+) {
+    if *conflict {
+        return;
+    }
+    match *slot {
+        None => *slot = Some(authored),
+        Some(existing) if existing == authored => {}
+        Some(existing) => {
+            log::warn!(
+                "[Model] conflicting {kind} poseMask tags {existing:?} and {authored:?} on joint node {node_index} in {path_str}; dropping this joint's {kind} membership"
+            );
+            *conflict = true;
+            *slot = None;
+        }
+    }
+}
+
 /// Parse an indexed leg/foot tag: `prefix` immediately followed by a base-10
 /// index, e.g. `leg0`, `foot12`. Returns the index, or `None` when the name is
 /// not `prefix` followed purely by ASCII digits — so the biped side names
@@ -777,6 +873,9 @@ struct LegBuilder {
     chain_mask: JointMask,
     /// The joint tagged as this leg's foot/ankle target via a `foot*` name.
     foot_joint: Option<usize>,
+    /// More than one joint declared itself as this leg's foot target. The
+    /// loader cannot choose a meaningful end effector, so the whole leg drops.
+    duplicate_foot_target: bool,
 }
 
 fn pose_masks_from_topo_metadata(
@@ -800,6 +899,12 @@ fn pose_masks_from_topo_metadata(
                 aim_bend_weight: 1.0,
                 ..JointPoseMetadata::default()
             });
+        if metadata.saw_side_leg_name {
+            note_family(LegNameFamily::Side, &mut saw_side, &mut saw_indexed);
+        }
+        if metadata.saw_indexed_leg_name {
+            note_family(LegNameFamily::Indexed, &mut saw_side, &mut saw_indexed);
+        }
         if metadata.aim_spine {
             let _ = masks.aim_spine.insert(topo_idx);
             aim_bend_weights[topo_idx] = metadata.aim_bend_weight;
@@ -821,13 +926,13 @@ fn pose_masks_from_topo_metadata(
         if let Some(foot) = metadata.foot_target {
             note_family(foot.family, &mut saw_side, &mut saw_indexed);
             let builder = leg_builders.entry(foot.index).or_default();
-            if builder.foot_joint.is_some() {
+            if builder.foot_joint.replace(topo_idx).is_some() {
                 log::warn!(
-                    "[Model] leg {} in {path_str} has more than one foot target (footL/footR/foot{{i}}); keeping the last",
+                    "[Model] leg {} in {path_str} has more than one foot target (footL/footR/foot{{i}}); dropping the leg",
                     foot.index
                 );
+                builder.duplicate_foot_target = true;
             }
-            builder.foot_joint = Some(topo_idx);
         }
     }
 
@@ -858,6 +963,9 @@ fn note_family(family: LegNameFamily, saw_side: &mut bool, saw_indexed: &mut boo
 fn build_leg_set(leg_builders: BTreeMap<usize, LegBuilder>, path_str: &str) -> Vec<LegChain> {
     let mut legs = Vec::new();
     for (index, builder) in leg_builders {
+        if builder.duplicate_foot_target {
+            continue;
+        }
         match (builder.chain_mask.is_empty(), builder.foot_joint) {
             (false, Some(foot_joint)) => {
                 if legs.len() >= MAX_FEET {
@@ -885,6 +993,41 @@ fn build_leg_set(leg_builders: BTreeMap<usize, LegBuilder>, path_str: &str) -> V
         }
     }
     legs
+}
+
+/// Keep only solver-ready two-bone leg declarations. The tag accumulator cannot
+/// validate topology because it runs before [`Skeleton::new`] establishes the
+/// parent links; do that once the topo-ordered skeleton exists. A FootIk leg is
+/// exactly hip → knee → ankle/foot, with the named foot target at its terminal
+/// joint. Disconnected, branched, oversized, and mis-targeted masks degrade to
+/// no leg instead of reaching the solver as a partially meaningful declaration.
+fn validate_leg_set(skeleton: &Skeleton, legs: Vec<LegChain>, path_str: &str) -> Vec<LegChain> {
+    legs.into_iter()
+        .filter_map(|leg| {
+            let Some(chain) = ordered_aim_spine_chain(skeleton, leg.chain_mask) else {
+                log::warn!(
+                    "[Model] foot-IK leg in {path_str} is not one connected non-branching parent-linked chain; dropping"
+                );
+                return None;
+            };
+            if chain.len() != 3 {
+                log::warn!(
+                    "[Model] foot-IK leg in {path_str} has {} tagged joints; expected hip → knee → ankle/foot; dropping",
+                    chain.len()
+                );
+                return None;
+            }
+            if chain.last().copied() != Some(leg.foot_joint) {
+                log::warn!(
+                    "[Model] foot-IK leg in {path_str} names foot joint {} but its chain ends at {}; dropping",
+                    leg.foot_joint,
+                    chain.last().copied().unwrap_or_default()
+                );
+                return None;
+            }
+            Some(leg)
+        })
+        .collect()
 }
 
 fn ordered_aim_spine_chain(skeleton: &Skeleton, mask: JointMask) -> Option<Vec<usize>> {
@@ -1078,6 +1221,7 @@ pub fn load_model(path: &Path) -> Result<LoadedModel, ModelLoadError> {
         legs,
         skin_joint_to_topo,
         node_to_topo,
+        locomotion_root,
     ) = match skin.as_ref() {
         Some(skin) => build_skeleton(skin, &buffers, &path_str)?,
         None => (
@@ -1088,6 +1232,7 @@ pub fn load_model(path: &Path) -> Result<LoadedModel, ModelLoadError> {
             Vec::new(),
             HashMap::new(),
             HashMap::new(),
+            None,
         ),
     };
     let pose_stack =
@@ -1106,6 +1251,7 @@ pub fn load_model(path: &Path) -> Result<LoadedModel, ModelLoadError> {
                 &buffers,
                 &node_to_topo,
                 skeleton.joints.len(),
+                locomotion_root,
                 &path_str,
             )
         })
@@ -1142,6 +1288,7 @@ type SkeletonMaps = (
     Vec<LegChain>,
     HashMap<usize, usize>,
     HashMap<usize, usize>,
+    Option<usize>,
 );
 
 fn build_skeleton(
@@ -1321,6 +1468,11 @@ fn build_skeleton(
         pose_masks_from_topo_metadata(&topo_order, &rest_pose_metadata, path_str);
 
     let skeleton = Skeleton::new(joints).map_err(|error| skeleton_build_error(path_str, error))?;
+    let legs = validate_leg_set(&skeleton, legs, path_str);
+    let declared_locomotion_root = skin
+        .skeleton()
+        .and_then(|node| node_to_topo.get(&node.index()).copied());
+    let locomotion_root = select_locomotion_root(&skeleton, declared_locomotion_root, path_str);
 
     Ok((
         skeleton,
@@ -1330,7 +1482,57 @@ fn build_skeleton(
         legs,
         skin_joint_to_topo,
         node_to_topo,
+        locomotion_root,
     ))
+}
+
+/// Select the joint whose translation may carry locomotion root motion.
+///
+/// A glTF skin may explicitly name its skeleton root. When that node belongs to
+/// the skin, it must also be a hierarchy root. Otherwise a single hierarchy
+/// root is unambiguous. Forests without a valid declaration have no automatic
+/// locomotion root: deriving from whichever root happened to sort first would
+/// attach calibration to skin-array order rather than authored intent.
+fn select_locomotion_root(
+    skeleton: &Skeleton,
+    declared_root: Option<usize>,
+    path_str: &str,
+) -> Option<usize> {
+    let roots: Vec<usize> = skeleton
+        .joints
+        .iter()
+        .enumerate()
+        .filter_map(|(index, joint)| joint.parent.is_none().then_some(index))
+        .collect();
+
+    if let Some(declared_root) = declared_root {
+        if roots.contains(&declared_root) {
+            return Some(declared_root);
+        }
+        log::warn!(
+            "[Model] skin skeleton joint {declared_root} is not a hierarchy root in {path_str}; \
+             root-motion calibration disabled"
+        );
+        return None;
+    }
+
+    match roots.as_slice() {
+        [root] => Some(*root),
+        [] => {
+            log::warn!(
+                "[Model] skin has no hierarchy root in {path_str}; root-motion calibration disabled"
+            );
+            None
+        }
+        _ => {
+            log::warn!(
+                "[Model] skin has {} hierarchy roots in {path_str} and names no in-skin skeleton root; \
+                 root-motion calibration disabled",
+                roots.len()
+            );
+            None
+        }
+    }
 }
 
 /// Load every primitive of `mesh` into one merged interleaved stream, remapping
@@ -1857,6 +2059,7 @@ fn load_clip(
     buffers: &[gltf::buffer::Data],
     node_to_topo: &HashMap<usize, usize>,
     joint_count: usize,
+    locomotion_root: Option<usize>,
     path_str: &str,
 ) -> AnimationClip {
     let buffer_data = |buffer: gltf::Buffer| buffers.get(buffer.index()).map(|d| &d.0[..]);
@@ -1982,7 +2185,8 @@ fn load_clip(
         }
     }
 
-    let travel_speed = derive_travel_speed(&joints, duration);
+    let travel_speed =
+        derive_and_neutralize_root_motion(&mut joints, locomotion_root, duration, &name, path_str);
 
     AnimationClip {
         name,
@@ -1992,9 +2196,9 @@ fn load_clip(
     }
 }
 
-/// Derive a clip's authored ground travel speed from its root-motion track.
+/// Derive a clip's authored ground travel speed, then make its pose loop in-place.
 ///
-/// The root joint (topo index 0) carries the clip's whole-body translation. We
+/// The selected locomotion root carries the clip's whole-body translation. We
 /// measure the horizontal (XZ) displacement between its first and last
 /// translation keyframes and divide by the clip `duration` → ground units per
 /// animated second. A clip with no root translation track, a non-positive
@@ -2002,17 +2206,80 @@ fn load_clip(
 /// near-in-place turn/strafe/idle) yields `None` so downstream calibration
 /// substitutes a degenerate reference rather than dividing by a speed of ≈0.
 /// Vertical (Y) motion is intentionally excluded — only ground travel counts.
-fn derive_travel_speed(joints: &[JointTracks], duration: f32) -> Option<f32> {
-    let values = joints.first()?.translation.values();
-    let first = values.first()?;
-    let last = values.last()?;
-    let dx = last.x - first.x;
-    let dz = last.z - first.z;
-    let displacement = (dx * dx + dz * dz).sqrt();
-    if duration <= 0.0 || displacement < MIN_TRAVEL_XZ_DISPLACEMENT {
+///
+/// Entity transforms own simulation displacement. After measuring, subtract the
+/// root track's linear net XZ drift from every key. This keeps vertical motion
+/// and intra-cycle horizontal sway, while making the first and last horizontal
+/// samples equal so looping the pose cannot add a second displacement source.
+/// Calculations stage in `f64`; if speed or any rewritten key cannot fit finite
+/// `f32`, the original track stays untouched and calibration is disabled.
+fn derive_and_neutralize_root_motion(
+    joints: &mut [JointTracks],
+    locomotion_root: Option<usize>,
+    duration: f32,
+    clip_name: &str,
+    path_str: &str,
+) -> Option<f32> {
+    let root = locomotion_root?;
+    let track = &mut joints.get_mut(root)?.translation;
+    let values = track.values();
+    let first = *values.first()?;
+    let last = *values.last()?;
+    let dx = f64::from(last.x) - f64::from(first.x);
+    let dz = f64::from(last.z) - f64::from(first.z);
+    let displacement = dx.hypot(dz);
+
+    let speed = if duration.is_finite()
+        && duration > 0.0
+        && displacement >= f64::from(MIN_TRAVEL_XZ_DISPLACEMENT)
+    {
+        finite_f32(displacement / f64::from(duration)).or_else(|| {
+            warn_root_motion_overflow(clip_name, path_str);
+            None
+        })?
+    } else {
+        0.0
+    };
+
+    if let (Some(&first_time), Some(&last_time)) = (track.times.first(), track.times.last()) {
+        let first_time = f64::from(first_time);
+        let time_span = f64::from(last_time) - first_time;
+        if time_span > 0.0 {
+            let mut neutralized_xz = Vec::with_capacity(track.values.len());
+            for (&time, value) in track.times.iter().zip(&track.values) {
+                let alpha = (f64::from(time) - first_time) / time_span;
+                let Some(x) = finite_f32(f64::from(value.x) - dx * alpha) else {
+                    warn_root_motion_overflow(clip_name, path_str);
+                    return None;
+                };
+                let Some(z) = finite_f32(f64::from(value.z) - dz * alpha) else {
+                    warn_root_motion_overflow(clip_name, path_str);
+                    return None;
+                };
+                neutralized_xz.push((x, z));
+            }
+            for (value, (x, z)) in track.values.iter_mut().zip(neutralized_xz) {
+                value.x = x;
+                value.z = z;
+            }
+        }
+    }
+
+    if speed == 0.0 {
         return None;
     }
-    Some(displacement / duration)
+    Some(speed)
+}
+
+fn finite_f32(value: f64) -> Option<f32> {
+    (value.is_finite() && value >= f64::from(f32::MIN) && value <= f64::from(f32::MAX))
+        .then_some(value as f32)
+}
+
+fn warn_root_motion_overflow(clip_name: &str, path_str: &str) {
+    log::warn!(
+        "[Model] root-motion calibration for clip '{clip_name}' in {path_str} exceeds finite f32 range; keeping the original translation track and disabling travel-speed derivation"
+    );
 }
 
 #[cfg(test)]
@@ -2033,19 +2300,36 @@ mod tests {
             Interp::Linear,
         )
         .expect("valid translation track");
-        let joints = vec![JointTracks {
+        let mut joints = vec![JointTracks {
             translation,
             ..JointTracks::default()
         }];
-        let speed = derive_travel_speed(&joints, 2.0).expect("root motion yields a speed");
+        let speed = derive_and_neutralize_root_motion(&mut joints, Some(0), 2.0, "walk", "fixture")
+            .expect("root motion yields a speed");
         assert!((speed - 2.5).abs() < 1.0e-6, "expected 2.5, got {speed}");
+        let root_values = joints[0].translation.values();
+        assert_eq!(
+            (
+                root_values.first().unwrap().x,
+                root_values.first().unwrap().z
+            ),
+            (root_values.last().unwrap().x, root_values.last().unwrap().z)
+        );
+        assert_eq!(
+            root_values.last().unwrap().y,
+            1.0,
+            "vertical motion is preserved"
+        );
     }
 
     #[test]
     fn derive_travel_speed_is_none_without_root_translation_track() {
         // An in-place clip's root joint has an empty translation track.
-        let joints = vec![JointTracks::default()];
-        assert_eq!(derive_travel_speed(&joints, 1.0), None);
+        let mut joints = vec![JointTracks::default()];
+        assert_eq!(
+            derive_and_neutralize_root_motion(&mut joints, Some(0), 1.0, "idle", "fixture",),
+            None
+        );
     }
 
     #[test]
@@ -2058,11 +2342,159 @@ mod tests {
             Interp::Linear,
         )
         .expect("valid translation track");
-        let joints = vec![JointTracks {
+        let mut joints = vec![JointTracks {
             translation,
             ..JointTracks::default()
         }];
-        assert_eq!(derive_travel_speed(&joints, 1.0), None);
+        assert_eq!(
+            derive_and_neutralize_root_motion(&mut joints, Some(0), 1.0, "turn", "fixture",),
+            None
+        );
+        assert_eq!(
+            (
+                joints[0].translation.values().first().unwrap().x,
+                joints[0].translation.values().first().unwrap().z,
+            ),
+            (
+                joints[0].translation.values().last().unwrap().x,
+                joints[0].translation.values().last().unwrap().z,
+            ),
+            "sub-epsilon drift is still removed from the looping pose"
+        );
+    }
+
+    #[test]
+    fn locomotion_root_selection_uses_declared_root_in_a_forest() {
+        let skeleton = Skeleton::new(vec![
+            Joint {
+                parent: None,
+                inverse_bind: Mat4::IDENTITY.to_cols_array_2d(),
+                rest_local: RestLocal::default(),
+            },
+            Joint {
+                parent: Some(0),
+                inverse_bind: Mat4::IDENTITY.to_cols_array_2d(),
+                rest_local: RestLocal::default(),
+            },
+            Joint {
+                parent: None,
+                inverse_bind: Mat4::IDENTITY.to_cols_array_2d(),
+                rest_local: RestLocal::default(),
+            },
+        ])
+        .unwrap();
+
+        assert_eq!(
+            select_locomotion_root(&skeleton, Some(2), "fixture"),
+            Some(2)
+        );
+        assert_eq!(
+            select_locomotion_root(&skeleton, None, "fixture"),
+            None,
+            "an undeclared forest is ambiguous rather than defaulting to topo joint 0"
+        );
+    }
+
+    #[test]
+    fn root_motion_derivation_uses_selected_nonzero_root() {
+        let translation = Track::new(
+            vec![0.0, 2.0],
+            vec![Vec3::new(1.0, 0.0, 2.0), Vec3::new(7.0, 0.5, 10.0)],
+            Interp::Linear,
+        )
+        .unwrap();
+        let mut joints = vec![
+            JointTracks::default(),
+            JointTracks::default(),
+            JointTracks {
+                translation,
+                ..JointTracks::default()
+            },
+        ];
+
+        let speed = derive_and_neutralize_root_motion(&mut joints, Some(2), 2.0, "walk", "fixture")
+            .unwrap();
+        assert!((speed - 5.0).abs() < 1.0e-6);
+        assert!(joints[0].translation.values().is_empty());
+        let selected = joints[2].translation.values();
+        assert_eq!(
+            (selected.first().unwrap().x, selected.first().unwrap().z),
+            (selected.last().unwrap().x, selected.last().unwrap().z)
+        );
+    }
+
+    #[test]
+    fn root_motion_speed_overflow_keeps_finite_track_unchanged() {
+        // Regression: subtracting opposite finite f32 extremes and squaring in
+        // f32 produced infinities, then neutralization wrote non-finite keys.
+        let translation = Track::new(
+            vec![0.0, 1.0],
+            vec![
+                Vec3::new(-f32::MAX, 1.0, -f32::MAX),
+                Vec3::new(f32::MAX, 2.0, f32::MAX),
+            ],
+            Interp::Linear,
+        )
+        .unwrap();
+        let original = translation.clone();
+        let mut joints = vec![JointTracks {
+            translation,
+            ..JointTracks::default()
+        }];
+
+        assert_eq!(
+            derive_and_neutralize_root_motion(&mut joints, Some(0), 1.0, "extreme", "fixture",),
+            None,
+        );
+        assert_eq!(joints[0].translation, original);
+        assert!(
+            joints[0]
+                .translation
+                .values()
+                .iter()
+                .all(|value| value.is_finite())
+        );
+    }
+
+    #[test]
+    fn root_motion_neutralization_overflow_keeps_finite_track_unchanged() {
+        // Net speed is representable, but removing its linear drift would push
+        // the opposing middle residual below finite f32 range. Reject the whole
+        // calibration before mutating any key.
+        let translation = Track::new(
+            vec![0.0, 0.5, 1.0],
+            vec![
+                Vec3::ZERO,
+                Vec3::new(-f32::MAX, 1.0, 0.0),
+                Vec3::new(f32::MAX, 2.0, 0.0),
+            ],
+            Interp::Linear,
+        )
+        .unwrap();
+        let original = translation.clone();
+        let mut joints = vec![JointTracks {
+            translation,
+            ..JointTracks::default()
+        }];
+
+        assert_eq!(
+            derive_and_neutralize_root_motion(
+                &mut joints,
+                Some(0),
+                2.0,
+                "extreme-residual",
+                "fixture",
+            ),
+            None,
+        );
+        assert_eq!(joints[0].translation, original);
+        assert!(
+            joints[0]
+                .translation
+                .values()
+                .iter()
+                .all(|value| value.is_finite())
+        );
     }
 
     // --- Pure mapping helpers (the seam: glTF values → engine encodings) ---
@@ -3683,6 +4115,38 @@ mod tests {
     }
 
     #[test]
+    fn same_node_mixed_family_tag_arrays_invalidate_membership_and_retain_family_sightings() {
+        // Regression: array entries previously overwrote the same Option, so
+        // [legL, leg0] and [footL, foot0] silently kept the last spelling and
+        // hid the model's mixed-family diagnostic.
+        let leg = read_pose_masks(
+            &extras_from_raw(r#"{ "poseMask": ["legL", "leg0"] }"#),
+            1,
+            "model.gltf",
+        );
+        assert_eq!(leg.leg_chain, None);
+        assert!(leg.leg_chain_conflict);
+        assert!(leg.saw_side_leg_name && leg.saw_indexed_leg_name);
+
+        let foot = read_pose_masks(
+            &extras_from_raw(r#"{ "poseMask": ["footL", "foot0"] }"#),
+            2,
+            "model.gltf",
+        );
+        assert_eq!(foot.foot_target, None);
+        assert!(foot.foot_target_conflict);
+        assert!(foot.saw_side_leg_name && foot.saw_indexed_leg_name);
+
+        let source = vec![leg, leg_meta(indexed_leg(0), None), foot];
+        let (_masks, _weights, legs) =
+            pose_masks_from_topo_metadata(&[0, 1, 2], &source, "model.gltf");
+        assert!(
+            legs.is_empty(),
+            "conflicting same-node declarations must not build a solver leg"
+        );
+    }
+
+    #[test]
     fn biped_leg_set_builds_in_l_then_r_order_through_topo_remap() {
         // Skin order [hipL, kneeL, ankleL, hipR, kneeR, ankleR]; a rotated topo
         // order proves the leg joints are reindexed and the set is ordered by
@@ -3785,6 +4249,64 @@ mod tests {
         ];
         let (_masks, _weights, legs) = pose_masks_from_topo_metadata(&[0, 1], &source, "x");
         assert!(legs.is_empty(), "incomplete legs are dropped, got {legs:?}");
+    }
+
+    #[test]
+    fn leg_with_duplicate_foot_targets_is_dropped() {
+        // A leg has one end effector. Keeping whichever duplicate happened to
+        // scan last makes authored node order decide the solver target.
+        let source = vec![
+            leg_meta(side_leg(0), None),
+            leg_meta(side_leg(0), None),
+            leg_meta(side_leg(0), side_leg(0)),
+            leg_meta(None, side_leg(0)),
+        ];
+        let (_masks, _weights, legs) = pose_masks_from_topo_metadata(&[0, 1, 2, 3], &source, "x");
+        assert!(legs.is_empty(), "duplicate foot targets invalidate the leg");
+    }
+
+    #[test]
+    fn leg_chain_validation_keeps_only_connected_terminal_three_joint_chains() {
+        // Regression: malformed leg tags used to reach FootIk as arbitrary
+        // masks. The solver needs one definite hip → knee → ankle chain, with
+        // the authored foot target at the terminal joint.
+        let skeleton = test_skeleton(&[None, Some(0), Some(1), Some(1), None, Some(4)]);
+        let valid = LegChain {
+            chain_mask: mask(&[0, 1, 2]),
+            foot_joint: 2,
+        };
+        let branched = LegChain {
+            chain_mask: mask(&[0, 1, 2, 3]),
+            foot_joint: 2,
+        };
+        let disconnected = LegChain {
+            chain_mask: mask(&[0, 1, 4]),
+            foot_joint: 4,
+        };
+        let non_terminal_foot = LegChain {
+            chain_mask: mask(&[0, 1, 2]),
+            foot_joint: 1,
+        };
+        let short = LegChain {
+            chain_mask: mask(&[4, 5]),
+            foot_joint: 5,
+        };
+
+        assert_eq!(
+            validate_leg_set(
+                &skeleton,
+                vec![
+                    valid.clone(),
+                    branched,
+                    disconnected,
+                    non_terminal_foot,
+                    short
+                ],
+                "fixture",
+            ),
+            vec![valid],
+            "only a connected hip-knee-ankle chain ending at its tagged foot survives",
+        );
     }
 
     #[test]
@@ -4209,28 +4731,43 @@ mod tests {
     }
 
     #[test]
-    fn multi_clip_fixture_step_channel_holds_lower_keyframe_value() {
-        // "walk" clip index 1: STEP translation on the root joint (topo 0), keys
-        // (0,0,0)@0, (10,0,0)@1, (20,0,0)@2. A STEP channel holds the earlier
-        // keyframe's value between keys and snaps at/after a keyframe time.
-        let model = load_model(&multi_clip_fixture_path()).expect("multi-clip fixture loads");
+    fn multi_clip_fixture_step_channel_on_non_root_holds_lower_keyframe_value() {
+        // Root-motion neutralization intentionally rewrites the selected root's
+        // translation keys. Retarget this fixture's STEP sampler to the child
+        // and remove its other translation channel so this remains a pure test
+        // of loaded STEP semantics on a non-neutralized track.
+        let mut json = fixture_json(&multi_clip_fixture_path());
+        json["animations"][1]["channels"]
+            .as_array_mut()
+            .expect("walk channels are an array")
+            .truncate(1);
+        json["animations"][1]["channels"][0]["target"]["node"] = serde_json::json!(2);
+        let path = write_temp_fixture("step_non_root", &json);
+        let model = load_model(&path).expect("retargeted multi-clip fixture loads");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(
+            model.clips[1].joints[1].translation.mode(),
+            Interp::Step,
+            "the glTF STEP sampler reaches the runtime track",
+        );
 
         // Between keys 0 and 1: holds the lower key exactly (NOT the (5,0,0) a
         // LINEAR track would lerp to at the midpoint).
         assert_vec3_close(
-            sampled_joint_translation(&model, 1, 0, 0.5),
+            sampled_joint_translation(&model, 1, 1, 0.5),
             Vec3::new(0.0, 0.0, 0.0),
             "STEP holds the earlier keyframe value mid-span",
         );
         // At a keyframe time: snaps to that keyframe's value.
         assert_vec3_close(
-            sampled_joint_translation(&model, 1, 0, 1.0),
+            sampled_joint_translation(&model, 1, 1, 1.0),
             Vec3::new(10.0, 0.0, 0.0),
             "STEP snaps to the keyframe value at its time",
         );
         // After that keyframe, before the next: still holds it.
         assert_vec3_close(
-            sampled_joint_translation(&model, 1, 0, 1.5),
+            sampled_joint_translation(&model, 1, 1, 1.5),
             Vec3::new(10.0, 0.0, 0.0),
             "STEP holds the keyframe value until the next key",
         );

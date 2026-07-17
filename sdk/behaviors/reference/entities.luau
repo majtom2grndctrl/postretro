@@ -56,9 +56,10 @@ M.referenceEnemyEntity = defineEntity({
     -- each `clip` is one of the model's real (pruned) clip names.
     mesh = {
       model = "models/reference_enemy_kaykit_knight/scene.gltf",
+      locomotion = { speedScale = true },
       animations = {
         idle = { clip = "Idle", loop = true },
-        walk = { clip = "Walking_A", loop = true, crossfadeMs = 200 },
+        walk = { clip = "Walking_A", loop = true, crossfadeMs = 200, travelSpeed = 3 },
         attack = {
           clip = "1H_Melee_Attack_Slice_Horizontal",
           loop = false,

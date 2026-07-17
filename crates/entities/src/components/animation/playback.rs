@@ -4,10 +4,11 @@
 
 use super::{MeshAnimation, default_playback_rate};
 
-/// Lowest locomotion playback-rate multiplier. The animation-rate producers
-/// pass their raw `speed_xz / move_speed` ratio through
-/// [`MeshAnimation::update_playback_rate`], which owns this clamp so host and
-/// remote sampling cannot drift apart.
+/// Lowest locomotion playback-rate multiplier. Producers pass calibrated
+/// `measured_ground_speed / effective_travel_speed` through
+/// [`MeshAnimation::update_playback_rate`]. V1's uncalibrated E10 walk falls
+/// back to `measured_ground_speed / move_speed`. This shared clamp keeps host
+/// and remote sampling aligned.
 pub const RATE_MIN: f32 = 0.5;
 
 /// Highest locomotion playback-rate multiplier. See [`RATE_MIN`].

@@ -36,9 +36,10 @@ use postretro_entities::components::health::{
 };
 use postretro_entities::components::mesh::{MeshAnimation, MeshComponent};
 use postretro_entities::components::weapon::{UNKNOWN_WEAPON_CREDIT_SOURCE, WeaponComponent};
-use postretro_entities::{ComponentKind, EntityId, EntityRegistry, ScriptCtx, SlotTable};
+use postretro_entities::{
+    ComponentKind, ComponentValue, EntityId, EntityRegistry, ScriptCtx, SlotTable,
+};
 use postretro_foundation::pose::{FootProbe, MAX_FEET};
-use postretro_model::ModelHandle;
 use postretro_scripting_core::reaction_dispatch::ProgressTracker;
 
 #[derive(Debug, Clone)]
@@ -292,8 +293,7 @@ pub(crate) fn simulate_tick(
         // AgentTickResult only carries a diagnostic `replans` counter, not observable sim state, so the return value is intentionally discarded.
         let _ = agent_steering::tick(&mut registry, collision_world, nav_graph, gravity, tick_dt);
         update_brain_animation_playback_rates(&mut registry, hit_zone_store, anim_time);
-        update_pose_inputs(&mut registry);
-        update_foot_ground_probes(
+        update_presentation_pose_inputs(
             &mut registry,
             collision_world,
             mover_colliders,
@@ -430,25 +430,51 @@ fn update_brain_animation_playback_rates(
 /// Resolve the effective travel speed for a locomotion state's speed-scaled
 /// playback: the active state's authored `travelSpeed` override wins, else the
 /// model clip's load-derived stride (via [`HitZoneStore`], keyed by the mesh's
-/// model handle and the active state's resolved clip index). `None` when neither
-/// is calibrated — the degenerate reference (`speed_xz / move_speed`) that keeps
-/// the shipped in-place walk byte-for-byte unchanged, since Task 2 derives no
-/// travel speed for an in-place clip.
+/// model handle and active state's clip). Runtime spawns may still have a pending
+/// clip index during their first rate pass, so the declared clip name is the
+/// equivalent lookup fallback. `None` when neither is calibrated — the
+/// degenerate reference (`speed_xz / move_speed`) that keeps the shipped
+/// in-place walk byte-for-byte unchanged.
 fn effective_travel_speed(
     animation: &MeshAnimation,
     mesh: &MeshComponent,
     hit_zone_store: &HitZoneStore,
 ) -> Option<f32> {
     let state = animation.states.get(&animation.current_state)?;
-    if let Some(override_speed) = state.travel_speed {
-        return Some(override_speed);
-    }
-    let clip_index = state.clip_index?;
-    hit_zone_store
-        .get(&ModelHandle::from(mesh.model.clone()))?
-        .clips
-        .get(clip_index)?
-        .travel_speed
+    let derived = hit_zone_store.get_by_name(&mesh.model).and_then(|model| {
+        state
+            .clip_index
+            .and_then(|clip_index| model.clips.get(clip_index))
+            // Runtime spawns reach this pass before their install-time clip-index
+            // queue drains. Resolve by declared clip name for that first tick so
+            // derived calibration does not temporarily fall back to move_speed.
+            .or_else(|| model.clips.iter().find(|clip| clip.name == state.clip))
+            .and_then(|clip| clip.travel_speed)
+    });
+    state.effective_travel_speed(derived)
+}
+
+/// Produce renderer-facing pose inputs from the registry's currently displayed
+/// transforms. The fixed tick calls this after steering; connected clients call
+/// it after remote interpolation because they intentionally skip `simulate_tick`.
+/// This mutates presentation-only mesh inputs and never enters replication.
+pub(crate) fn update_presentation_pose_inputs(
+    registry: &mut EntityRegistry,
+    collision_world: &CollisionWorld,
+    mover_colliders: &[MoverCollider],
+    mover_poses: &dyn MoverPoseSource,
+    hit_zone_store: &HitZoneStore,
+    anim_time: f64,
+) {
+    update_pose_inputs(registry);
+    update_foot_ground_probes(
+        registry,
+        collision_world,
+        mover_colliders,
+        mover_poses,
+        hit_zone_store,
+        anim_time,
+    );
 }
 
 /// Write same-tick presentation inputs after AI and steering have settled the
@@ -553,6 +579,10 @@ fn update_pose_inputs(registry: &mut EntityRegistry) {
 /// ships. Scaled by the entity's model scale at cast time so the bound stays
 /// constant in model space regardless of instance scale.
 const FOOT_PLANTING_REACH: f32 = 0.5;
+/// Upward model-space allowance that lets a probe recover a foot already sunk
+/// slightly through the floor. The ray starts this far above the sampled foot,
+/// then covers this allowance plus [`FOOT_PLANTING_REACH`] downward.
+const FOOT_PENETRATION_ALLOWANCE: f32 = 0.15;
 
 /// Sample each leg-tagged animated entity's UNMODIFIED world foot pose, cast a
 /// short downward ray at the collision world under each foot, and write the
@@ -575,58 +605,67 @@ fn update_foot_ground_probes(
     hit_zone_store: &HitZoneStore,
     anim_time: f64,
 ) {
-    // Leg-tagged animated meshes only. Collect ids first so the per-entity
-    // sample/cast can borrow the registry without aliasing the write-back.
-    let legged: Vec<EntityId> = registry
-        .iter_with_kind(ComponentKind::Mesh)
-        .filter_map(|(id, _)| {
-            let mesh = registry.get_component::<MeshComponent>(id).ok()?;
-            mesh.animation.as_ref()?;
-            let zones = hit_zone_store.get(&ModelHandle::from(mesh.model.clone()))?;
-            (!zones.legs.is_empty()).then_some(id)
-        })
-        .collect();
+    let mut candidates = hit_zone_store.foot_probe_candidates();
+    candidates.clear();
+    candidates.extend(
+        registry
+            .iter_with_kind(ComponentKind::Mesh)
+            .filter_map(|(id, value)| {
+                let ComponentValue::Mesh(mesh) = value else {
+                    return None;
+                };
+                let is_legged = mesh.animation.is_some()
+                    && hit_zone_store
+                        .get_by_name(&mesh.model)
+                        .is_some_and(|model| !model.legs.is_empty());
+                let has_stale_feet = mesh.pose_inputs.is_some_and(|inputs| {
+                    inputs.foot_count != 0
+                        || inputs
+                            .feet
+                            .iter()
+                            .any(|probe| *probe != FootProbe::default())
+                });
+                (is_legged || has_stale_feet).then_some(id)
+            }),
+    );
 
-    for id in legged {
-        let Ok(mesh) = registry.get_component::<MeshComponent>(id).cloned() else {
+    for &id in candidates.iter() {
+        let Ok(mesh) = registry.get_component::<MeshComponent>(id) else {
             continue;
         };
-        let Some(zones) = hit_zone_store.get(&ModelHandle::from(mesh.model.clone())) else {
-            continue;
-        };
-        let Ok(transform) = registry
-            .get_component::<postretro_entities::Transform>(id)
-            .copied()
-        else {
-            continue;
-        };
-        // Same model→world placement capsules and the renderer use, so the probe
-        // casts from where the foot is actually drawn.
-        let Some(model_to_world) = model_matrix(&transform, mesh.origin_offset) else {
-            continue;
-        };
-        let world_to_model = model_to_world.inverse();
-        let reach = FOOT_PLANTING_REACH * max_abs_component(transform.scale);
-
-        // Unmodified world-joint pose (model space); `None` when the precise pose
-        // is unavailable — every foot then reports a miss this tick.
-        let world_joints =
-            sample_world_pose_for_probe(zones, mesh.animation.as_ref(), anim_time, id.to_raw());
-
-        let foot_count = zones.legs.len().min(MAX_FEET);
+        let zones = hit_zone_store.get_by_name(&mesh.model);
+        let mut foot_count = 0;
         let mut feet = [FootProbe::default(); MAX_FEET];
-        if let Some(world_joints) = world_joints.as_ref() {
-            for (slot, leg) in zones.legs.iter().take(foot_count).enumerate() {
-                feet[slot] = probe_foot(
-                    leg.foot_joint,
-                    world_joints,
-                    &model_to_world,
-                    &world_to_model,
-                    reach,
-                    collision_world,
-                    mover_colliders,
-                    mover_poses,
-                );
+        if let (Some(animation), Some(zones), Ok(transform)) = (
+            mesh.animation.as_ref(),
+            zones,
+            registry
+                .get_component::<postretro_entities::Transform>(id)
+                .copied(),
+        ) {
+            if let Some(model_to_world) = model_matrix(&transform, mesh.origin_offset) {
+                if let Some(world_to_model) = foot_probe_inverse(&transform, &model_to_world) {
+                    let world_joints =
+                        sample_world_pose_for_probe(zones, Some(animation), anim_time, id.to_raw());
+                    if let Some(world_joints) = world_joints.as_ref() {
+                        foot_count = zones.legs.len().min(MAX_FEET);
+                        let downward_reach = FOOT_PLANTING_REACH * transform.scale.y;
+                        let upward_allowance = FOOT_PENETRATION_ALLOWANCE * transform.scale.y;
+                        for (slot, leg) in zones.legs.iter().take(foot_count).enumerate() {
+                            feet[slot] = probe_foot(
+                                leg.foot_joint,
+                                world_joints,
+                                &model_to_world,
+                                &world_to_model,
+                                downward_reach,
+                                upward_allowance,
+                                collision_world,
+                                mover_colliders,
+                                mover_poses,
+                            );
+                        }
+                    }
+                }
             }
         }
 
@@ -637,7 +676,9 @@ fn update_foot_ground_probes(
         if mesh.pose_inputs == Some(new_inputs) {
             continue;
         }
-        let mut mesh = mesh;
+        let Ok(mut mesh) = registry.get_component::<MeshComponent>(id).cloned() else {
+            continue;
+        };
         mesh.pose_inputs = Some(new_inputs);
         let _ = registry.set_component(id, mesh);
     }
@@ -654,7 +695,8 @@ fn probe_foot(
     world_joints: &[Mat4],
     model_to_world: &Mat4,
     world_to_model: &Mat4,
-    reach: f32,
+    downward_reach: f32,
+    upward_allowance: f32,
     collision_world: &CollisionWorld,
     mover_colliders: &[MoverCollider],
     mover_poses: &dyn MoverPoseSource,
@@ -664,15 +706,17 @@ fn probe_foot(
         return miss;
     };
     let foot_world = model_to_world.transform_point3(foot.w_axis.truncate());
-    if !foot_world.is_finite() || reach <= 0.0 {
+    if !foot_world.is_finite() || downward_reach <= 0.0 || upward_allowance < 0.0 {
         return miss;
     }
 
-    let origin = Point::new(foot_world.x, foot_world.y, foot_world.z);
+    let ray_origin = foot_world + Vec3::Y * upward_allowance;
+    let max_toi = upward_allowance + downward_reach;
+    let origin = Point::new(ray_origin.x, ray_origin.y, ray_origin.z);
     let down = Vector::new(0.0, -1.0, 0.0);
     // Static-only fast path; fold movers in only when present.
     let hit = if mover_colliders.is_empty() {
-        cast_ray(collision_world, origin, down, reach).map(|h| {
+        cast_ray(collision_world, origin, down, max_toi).map(|h| {
             (
                 h.time_of_impact,
                 Vec3::new(h.normal.x, h.normal.y, h.normal.z),
@@ -685,7 +729,7 @@ fn probe_foot(
             mover_poses,
             origin,
             down,
-            reach,
+            max_toi,
         )
         .map(|h| (h.time_of_impact, h.normal))
     };
@@ -694,13 +738,17 @@ fn probe_foot(
     };
 
     // Walkable-normal convention: ground under the foot must face mostly up.
-    if !normal_world.is_finite() || normal_world.y < COS_WALKABLE {
+    if !is_walkable_ground_normal(normal_world) {
         return miss;
     }
 
-    let contact_world = foot_world + Vec3::new(0.0, -toi, 0.0);
+    let contact_world = ray_origin + Vec3::new(0.0, -toi, 0.0);
     let contact_model = world_to_model.transform_point3(contact_world);
-    let normal_model = world_to_model
+    // A world normal converted back to model space uses the transpose of the
+    // model→world linear map. Using the inverse as a direction is wrong for
+    // non-uniform scale.
+    let normal_model = model_to_world
+        .transpose()
         .transform_vector3(normal_world)
         .normalize_or_zero();
     if !contact_model.is_finite() || normal_model == Vec3::ZERO {
@@ -713,8 +761,34 @@ fn probe_foot(
     }
 }
 
-fn max_abs_component(v: Vec3) -> f32 {
-    v.x.abs().max(v.y.abs()).max(v.z.abs())
+fn is_walkable_ground_normal(normal: Vec3) -> bool {
+    normal.is_finite() && normal.y >= COS_WALKABLE
+}
+
+/// Foot contacts use model-space height, so v1 supports upright entities with
+/// positive, invertible scale (uniform or non-uniform). Tilted models would make
+/// a world-down ray change model XZ while the current `FootProbe` stores only a
+/// height; singular transforms have no valid inverse. Both report fresh misses.
+fn foot_probe_inverse(
+    transform: &postretro_entities::Transform,
+    model_to_world: &Mat4,
+) -> Option<Mat4> {
+    if !transform.scale.is_finite()
+        || transform.scale.min_element() <= 0.0
+        || !transform.rotation.is_normalized()
+    {
+        return None;
+    }
+    let model_up = transform.rotation * Vec3::Y;
+    if model_up.dot(Vec3::Y) < 1.0 - 1.0e-5 {
+        return None;
+    }
+    let inverse = model_to_world.inverse();
+    inverse
+        .to_cols_array()
+        .iter()
+        .all(|value| value.is_finite())
+        .then_some(inverse)
 }
 
 mod host_movement;

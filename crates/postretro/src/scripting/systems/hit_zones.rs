@@ -2,6 +2,7 @@
 // weapon-agnostic entity ray hits against authored AABBs or trustworthy capsules.
 // See: context/lib/entity_model.md §7 · context/lib/rendering_pipeline.md §9
 
+use std::cell::{RefCell, RefMut};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
@@ -83,7 +84,7 @@ impl ModelHitZones {
 /// delegates to.
 #[derive(Default)]
 pub(crate) struct HitZoneStore {
-    models: HashMap<ModelHandle, ModelHitZones>,
+    models: HashMap<String, ModelHitZones>,
     /// Handles whose independently loaded model carries a presentation pose
     /// stack. The collector uses this cache-side metadata to opt those models
     /// out of animation time-slicing without carrying the stack per instance.
@@ -91,6 +92,10 @@ pub(crate) struct HitZoneStore {
     /// model sweep, reset together on `clear` — a model introduced only after
     /// that sweep never enters this set (same limitation as `models`).
     pose_modified_models: HashSet<ModelHandle>,
+    /// Reused by the fixed-tick foot-probe pass. Keeping the candidate buffer
+    /// with the model store avoids allocating one for every simulation tick or
+    /// connected-client presentation frame.
+    foot_probe_candidates: RefCell<Vec<EntityId>>,
 }
 
 impl HitZoneStore {
@@ -98,6 +103,7 @@ impl HitZoneStore {
         Self {
             models: HashMap::new(),
             pose_modified_models: HashSet::new(),
+            foot_probe_candidates: RefCell::new(Vec::new()),
         }
     }
 
@@ -106,6 +112,7 @@ impl HitZoneStore {
     pub(crate) fn clear(&mut self) {
         self.models.clear();
         self.pose_modified_models.clear();
+        self.foot_probe_candidates.get_mut().clear();
     }
 
     /// Re-load a model game-side from its glTF and install its hit-zone entry.
@@ -162,7 +169,7 @@ impl HitZoneStore {
             self.pose_modified_models.insert(handle.clone());
         }
         self.models.insert(
-            handle,
+            handle.0,
             ModelHitZones {
                 skeleton: Arc::new(skeleton),
                 clips: Arc::new(clips),
@@ -177,7 +184,14 @@ impl HitZoneStore {
     /// never loaded (or its load failed). The entity-raycast facility
     /// [`nearest_entity_hit`] looks the per-instance model up here.
     pub(crate) fn get(&self, handle: &ModelHandle) -> Option<&ModelHitZones> {
-        self.models.get(handle)
+        self.get_by_name(handle.as_str())
+    }
+
+    /// Borrowed-name lookup for hot paths that already hold a mesh model
+    /// string. This avoids constructing and allocating a temporary handle per
+    /// animated entity.
+    pub(crate) fn get_by_name(&self, model: &str) -> Option<&ModelHitZones> {
+        self.models.get(model)
     }
 
     /// True when `handle` has precise capsule zones available. Renderer
@@ -185,7 +199,7 @@ impl HitZoneStore {
     /// hitscan path can produce exact capsule hits.
     pub(crate) fn has_precise_zones(&self, handle: &ModelHandle) -> bool {
         self.models
-            .get(handle)
+            .get(handle.as_str())
             .is_some_and(|entry| entry.derived_bound.is_some())
     }
 
@@ -201,12 +215,16 @@ impl HitZoneStore {
     /// Production installs go through [`insert_from_load`](Self::insert_from_load).
     #[cfg(test)]
     pub(crate) fn insert_for_test(&mut self, handle: ModelHandle, model: ModelHitZones) {
-        self.models.insert(handle, model);
+        self.models.insert(handle.0, model);
     }
 
     #[cfg(test)]
     pub(crate) fn mark_pose_modified_for_test(&mut self, handle: ModelHandle) {
         self.pose_modified_models.insert(handle);
+    }
+
+    pub(crate) fn foot_probe_candidates(&self) -> RefMut<'_, Vec<EntityId>> {
+        self.foot_probe_candidates.borrow_mut()
     }
 }
 
@@ -1067,6 +1085,14 @@ pub(crate) fn sample_world_pose_for_probe(
     anim_time: f64,
     seed: u32,
 ) -> Option<Vec<Mat4>> {
+    // An animated mesh with an unresolved current state has no trustworthy
+    // sample. In particular, do not silently pose clip 0: that would plant feet
+    // from a different animation while the renderer shows its fallback pose.
+    if let Some(animation) = animation {
+        let state = animation.states.get(&animation.current_state)?;
+        let clip_index = state.clip_index?;
+        zones.clips.get(clip_index)?;
+    }
     let animation = animation.cloned().map(|mut anim| {
         resolve_animation_stamps_for_sampling(&mut anim, anim_time);
         anim
@@ -1088,9 +1114,10 @@ pub(crate) fn sample_world_pose_for_probe(
 /// When the entity carries an animation block, its current state resolves —
 /// through the SAME render-free [`mesh_anim::animate_entity`] the renderer's
 /// collector uses — to a [`MeshSampleParams`] (primary clip leg + optional
-/// crossfade), which [`pose_from_params`] then samples (single or blended). An
-/// unresolved state, or a stateless / no-animation mesh, poses the model's first
-/// clip looped at the clock; a model with no clips poses each joint to rest.
+/// crossfade), which [`pose_from_params`] then samples (single or blended). A
+/// stateless / no-animation mesh intentionally poses the model's first clip
+/// looped at the clock; a model with no clips poses each joint to rest. The
+/// foot-probe entry point rejects unresolved animated states before this helper.
 ///
 /// Phase de-sync uses the SAME per-instance phase as rendering, so authoritative
 /// capsules share its animation clock and sample parameters. Capsules use the
@@ -1134,9 +1161,9 @@ fn pose_world_joints(
         }
     }
 
-    // Default pose: the model's first clip, looped at the clock plus the SAME
-    // per-instance phase the renderer's stateless path applies (first clip's
-    // duration); or rest if the model carries no clips at all.
+    // Intentional STATELESS default pose: the model's first clip, looped at the
+    // clock plus the SAME per-instance phase the renderer's stateless path
+    // applies (first clip's duration); or rest if the model carries no clips.
     match clips.first() {
         Some(clip) => {
             let phase = instance_phase(seed, clip.duration);
@@ -1779,7 +1806,7 @@ mod tests {
         let mut store = HitZoneStore::new();
         let handle = ModelHandle::from("models/mob/scene.gltf");
         store.models.insert(
-            handle.clone(),
+            handle.0.clone(),
             ModelHitZones {
                 skeleton: Arc::new(skeleton),
                 clips: Arc::new(clips),
@@ -1975,7 +2002,7 @@ mod tests {
     /// Install a model in the store under `handle`.
     fn store_with(handle: &str, model: ModelHitZones) -> HitZoneStore {
         let mut store = HitZoneStore::new();
-        store.models.insert(ModelHandle::from(handle), model);
+        store.models.insert(handle.to_string(), model);
         store
     }
 

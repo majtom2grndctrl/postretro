@@ -1,40 +1,85 @@
 # Research anchors — foot IK + locomotion descriptor
 
-Source anchors grounding the spec, verified against current source after the prerequisite `E21--pose-modifier-stack` shipped. Not decisions — a fact-check aid. The stack, `PoseInputs`, `PoseModifier`, the `poseMask` loader path, and the modified samplers are landed, not assumed.
+Current-source fact-check for this in-progress plan. The E21 implementation is
+landed. These anchors describe the present code; the historical baseline below
+explains which assumptions the original plan replaced.
 
-## Shipped stack surface this plan extends
-- `PoseInputs` at `crates/foundation/src/pose.rs:8` — three `f32` fields (`aim_pitch`, `aim_yaw`, `heading_yaw`), `derive(Debug, Clone, Copy, PartialEq, Default)`, no serde. It is a closed POD with **no reserved room for feet** — `feet`/`foot_count` are net-new fields that must keep it `Copy`. Re-exported from `postretro_entities` (`crates/entities/src/lib.rs:27`).
-- `PoseModifier` at `crates/model/src/pose_modifier.rs:71` — **closed enum, NOT `#[non_exhaustive]`** (doc comment: extend the dispatch directly, no dynamic dispatch in the palette hot path). Variants today: `AimPitchBend { bend_weights: Vec<f32> }`, `UpperLowerSplit { lower_body_mask: JointMask }`. `FootIk` is a direct add. `JointMask` (:19, fixed `[u64; 4]` bitset over `MAX_JOINTS=256`, `Copy`), `ModifierEntry { mask, modifier }` (:93), `PoseModifierStack` (:100). `apply_pose_modifier_stack(stack, inputs: &PoseInputs, skeleton, locals: &mut [LocalTrs])` (:124) matches each variant — the FootIk arm joins here.
-- Modified samplers in `crates/model/src/anim/mod.rs`: `sample_clip_looped_modified` (:133), `sample_blended_modified` (:192), `sample_rest_pose_modified` (:167). Each materializes/resolves the `[LocalTrs]` buffer, runs `apply_pose_modifier_stack`, then `compose_palette`; empty stack or `inputs == None` delegates to the unmodified path (allocation-free). FootIk flows through these unchanged — no new sampler.
-- World-pose samplers `sample_clip_looped_world` (:230), `sample_blended_world` (:260) compose the forward hierarchy to model-space joint transforms (pre-inverse-bind), **no `_modified` variant**. Collision-free; the probe step samples these for animated foot world position, leaving hit-zone authority untouched.
+## Current pose and IK surface
 
-## Loader — leg/foot tags extend the shipped mask path
-- `read_pose_masks(extras, node_index, path_str) -> JointPoseMetadata` (`crates/model/src/gltf_loader.rs:597`) exact-matches `"aimSpine"`/`"upperBody"`/`"lowerBody"` today; unknown names warn and are ignored. Extend with `legL`/`legR`/`footL`/`footR` and the `leg{i}`/`foot{i}` numeric form.
-- `PoseMaskSet { aim_spine, upper_body, lower_body }` (:59) derives `Copy` (fixed masks). The N-leg leg set is variable-length — keep it a separate `Vec<LegChain>` field on `LoadedModel`, not inside `PoseMaskSet`.
-- `LoadedModel` (:70) carries `pose_masks: PoseMaskSet` and `pose_stack: PoseModifierStack`; add the leg set beside them. Topo remap via `pose_masks_from_topo_metadata` (:678).
-- `build_pose_modifier_stack(skeleton, masks, aim_bend_weights, path_str)` (:751) assembles entries in fixed order (split before aim bend); push a `FootIk` entry when the leg set is non-empty, mirroring the `aimSpine`→`AimPitchBend` rule. Chain validation precedent: `ordered_aim_spine_chain` (:708) returns root→tip only for a single connected non-branching chain.
+- `crates/foundation/src/pose.rs` defines `FootProbe`, `MAX_FEET = 6`, and
+  `PoseInputs.feet` / `foot_count`. Probes carry model-space contact height,
+  normal, and hit state. `PoseInputs` remains `Copy` and has no serde form.
+- `crates/model/src/pose_modifier.rs` contains the closed `PoseModifier` enum,
+  including `FootIk { legs: Vec<LegChain> }`. The stack applies each leg against
+  its matching probe; a miss or clip-lifted swing pose preserves that leg's
+  clip pose. A hit outside leg reach clamps to the nearest reachable-annulus
+  boundary.
+- `crates/model/src/anim/mod.rs:133` / `:167` / `:192` expose the modified
+  clip, rest-pose, and blend samplers. They materialize local TRS only for an
+  active stack and inputs, apply the stack, then compose the palette. The world
+  samplers at `:230` and `:260` stay unmodified for hit-zone and attachment
+  queries.
 
-## travelSpeed derivation — root translation IS loaded
-- `gltf_loader::load_clip` (:1648) writes each translation channel at `joints[topo_idx].translation` (:1740) with no root special-casing; root = topo 0, in-place clips have an empty track. So authored stride speed is measurable from `AnimationClip.joints[0].translation`.
-- `AnimationClip { name, duration, joints }` (`crates/model/src/skeleton.rs:216`); `JointTracks { translation, rotation, scale }` (:198). `Track` fields private — read via `times()` / `values()`. No `travel_speed` field exists today.
+## Loader and authored leg data
 
-## Playback-rate rework
-- Consts (`crates/entities/src/components/animation.rs`): `DEFAULT_CROSSFADE_MS=150.0` (:14), `RATE_MIN=0.5` (:20), `RATE_MAX=1.5` (:23), `RATE_CHANGE_EPSILON=0.02` (:26). File is ~1616 lines, still one file (Task 1 splits it).
-- Rate math on `MeshAnimation`: `update_playback_rate` (:221), `normalized_playback_rate` (:237, clamp), `playback_rate_needs_update` (:248), `scaled_elapsed` (:255), `previous_scaled_elapsed` (:269). The type only clamps the incoming ratio; the denominator is the producer's.
-- Producer `update_brain_animation_playback_rates` (`crates/postretro/src/sim/mod.rs:355`): `speed_xz` from `path_state().velocity` XZ (:368); `raw_ratio = speed_xz / agent.move_speed` (:369), gated to `animation_for(LogicalState::Alert)`. This is the denominator to swap to effective travel speed.
-- `update_pose_inputs` (sim/mod.rs:412) is called immediately after the rate producer (:288) — the ground-probe step is its sibling in the tick.
+- `crates/model/src/gltf_loader.rs:641` reads `poseMask` metadata. It supports
+  existing aim/body names plus `legL` / `legR` / `footL` / `footR` and indexed
+  `leg{i}` / `foot{i}` tags.
+- `PoseMaskSet` stays fixed and `Copy` (`gltf_loader.rs:70`). `LoadedModel`
+  carries variable-length `legs: Vec<LegChain>` beside it (`:80`), capped by
+  `MAX_FEET` and reindexed into skeleton topological order.
+- `pose_masks_from_topo_metadata` builds the ordered leg set; malformed or
+  incomplete chains warn and drop. `build_pose_modifier_stack` (`:933`) appends
+  one `FootIk` entry when that set is non-empty, after the body split and
+  aim-pitch entries.
 
-## Descriptor surface (Rust ↔ TS/Luau) — shared validator already exists
-- Both front-ends funnel through one shared validator `MeshDescriptor::build(model, states, default_state, animations_present)` (`crates/entities/src/data_descriptors/types/entity.rs:59`) — extend it for `travelSpeed` positivity/finiteness, do not build a parallel validator. `RawAnimationState` (:43) is the parsed-but-unvalidated entry; add `travel_speed` there.
-- Front-ends: `mesh_descriptor_from_js` (`crates/scripting-core/src/data_descriptors/js/entity.rs:166`) + `raw_animation_state_from_js` (:208, `crossfadeMs` at :214); Luau twins `mesh_descriptor_from_lua` (`.../lua/entity.rs:197`) + `raw_animation_state_from_lua` (:257, `crossfadeMs` :263). Parse `locomotion.speedScale` and per-state `travelSpeed` in both.
-- `AnimationState { clip, looping (rename "loop"), crossfade_ms (rename "crossfadeMs"), interrupt, clip_index (skip) }` (animation.rs:60). `MeshDescriptor { model, animations, default_state }` (entity.rs:28).
-- Typedefs are **generated**, not hand-maintained twins: `sdk/types/postretro.d.ts` and `.d.luau` regenerate from the Rust typedef source via `gen-script-types` (`crates/postretro/src/bin/gen_script_types.rs`), guarded by `committed_sdk_types_match_current_registry` (`crates/postretro/src/scripting/typedef/tests/committed.rs:8`). Extend the source and regenerate; never hand-edit the twins. Reference behaviors: `sdk/behaviors/reference/entities.{ts,luau}` (mesh block e.g. `entities.ts:61`).
+## Travel-speed calibration
 
-## Foot ground probe (collision)
-- `cast_ray(world, origin: Point<f32>, dir: Vector<f32>, max_toi) -> Option<RayIntersection>` (`crates/postretro/src/collision/mod.rs:279`) — `.time_of_impact` / `.normal`. Mover-aware `cast_ray_combined(...) -> Option<CombinedCastHit>` (`collision/moving.rs:163`); `CombinedCastHit.time_of_impact` / `.normal` (`:33`). Both `pub(crate)` — the tick (same crate) calls them. Convert glam → parry `Point`/`Vector` at the call site.
-- `COS_WALKABLE = 0.643` (mod.rs:132); floor classification `normal.y >= COS_WALKABLE` in `classify_contact` (moving.rs:402). Movement ground-stick precedent: `cast_ray_query` (`movement/substrate.rs:525`), `ground_ref_from_hit` (:541).
-- No existing call site joins a `crates/model` `sample_*_world` output with a `crates/postretro` `cast_ray` — the probe step is that net-new bridge.
+- `AnimationClip.travel_speed: Option<f32>` is present in
+  `crates/model/src/skeleton.rs:216`.
+- `gltf_loader::load_clip` derives it after loading tracks
+  (`gltf_loader.rs:2086`). `derive_and_neutralize_root_motion` (`:2111`)
+  measures selected-root first-to-last XZ displacement over duration, then
+  removes its linear net XZ drift. Absent, near-in-place, or invalid clips
+  yield `None`.
+- `crates/entities/src/components/animation/` replaces the former monolithic
+  `animation.rs`. `state.rs` owns per-state `travel_speed`; `mod.rs` owns the
+  `speed_scale` runtime flag; `playback.rs` owns rate calculation.
+- `crates/postretro/src/sim/mod.rs:370` selects an authored state override,
+  otherwise the loaded clip speed, before falling back to `move_speed`. It
+  skips scaling when `speed_scale` is false. The E10 `speed_xz / move_speed`
+  behavior is therefore the no-calibration fallback, not current primary logic.
 
-## E10 shipped locomotion contract
-- `context/plans/done/E10--speed-scaled-walk-playback/`, `E10--enemy-locomotion-animation/`, `M10--skinned-animation-runtime/`.
-- Idle-vs-walk from squared ground speed; `BrainComponent.locomotion_moving` latch (`crates/entities/src/components/brain.rs:155`). The degenerate rate case (no derived travel speed, no override, default `speedScale`) must stay byte-for-byte `speed_xz / move_speed`.
+## Descriptor and SDK boundary
+
+- `MeshDescriptor`, `LocomotionDescriptor`, and `RawAnimationState` in
+  `crates/entities/src/data_descriptors/types/entity.rs` carry `speed_scale`
+  and optional `travel_speed`. The shared builder validates a present travel
+  speed as finite and positive.
+- Both scripting readers parse `locomotion.speedScale` and per-state
+  `travelSpeed`: `crates/scripting-core/src/data_descriptors/js/entity.rs` and
+  `crates/scripting-core/src/data_descriptors/lua/entity.rs`.
+- SDK type files remain generated from the Rust typedef registry and are
+  guarded by the committed-type drift test; do not hand-edit the generated
+  TypeScript or Luau twins.
+
+## Ground-probe bridge
+
+- `update_pose_inputs` and `update_foot_ground_probes` in
+  `crates/postretro/src/sim/mod.rs:458` and `:570` run in the fixed tick.
+  Probes sample the unmodified world pose, ray-cast downward, reject
+  non-walkable surfaces with `COS_WALKABLE`, and write model-space results to
+  `PoseInputs`.
+- Collision remains in the game crate: `cast_ray` is at
+  `crates/postretro/src/collision/mod.rs:280`; mover-aware casts remain in
+  `collision/moving.rs:163`. Model sampling stays CPU-only and does not take a
+  collision dependency.
+
+## Historical baseline
+
+Before E21 landed, `PoseInputs` had only aim/heading values; `PoseModifier` had
+only aim-pitch and upper/lower-body variants; the loader recognized only the
+three original pose masks; and `AnimationClip` had no travel-speed field.
+Playback-rate code also lived in the single
+`crates/entities/src/components/animation.rs`. Those are historical planning
+conditions, not descriptions of current source.

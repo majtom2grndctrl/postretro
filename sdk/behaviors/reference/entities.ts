@@ -62,7 +62,12 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
       model: "models/reference_enemy_kaykit_knight/scene.gltf",
       animations: {
         idle: { clip: "Idle", loop: true },
-        walk: { clip: "Walking_A", loop: true, crossfadeMs: 200 },
+        walk: {
+          clip: "Walking_A",
+          loop: true,
+          crossfadeMs: 200,
+          travelSpeed: 3,
+        },
         attack: {
           clip: "1H_Melee_Attack_Slice_Horizontal",
           loop: false,
@@ -77,6 +82,9 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
         },
       },
       defaultState: "idle",
+      locomotion: {
+        speedScale: true,
+      },
     },
     // The AI brain. Ranges are in metres; cooldown/despawn in ms; moveSpeed in
     // m/s. `states` maps the brain's four logical states onto the mesh state

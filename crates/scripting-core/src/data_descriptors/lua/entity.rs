@@ -255,10 +255,9 @@ pub fn mesh_descriptor_from_lua(table: &Table) -> Result<MeshDescriptor, Descrip
         let raw: LuaValue = table.get("locomotion").map_err(lua_err)?;
         match raw {
             LuaValue::Nil => None,
-            LuaValue::Table(loco_table) => {
-                let speed_scale = get_optional_bool_lua(&loco_table, "speedScale")?.unwrap_or(true);
-                Some(LocomotionDescriptor { speed_scale })
-            }
+            LuaValue::Table(loco_table) => Some(LocomotionDescriptor::from_optional_speed_scale(
+                get_optional_bool_lua(&loco_table, "speedScale")?,
+            )),
             other => {
                 return Err(DescriptorError::InvalidShape {
                     reason: format!(

@@ -2,7 +2,7 @@
 // See: context/lib/rendering_pipeline.md §9
 
 use glam::{Mat4, Quat, Vec3};
-use postretro_foundation::PoseInputs;
+use postretro_foundation::{PoseInputs, WALKABLE_SURFACE_MIN_UP_DOT};
 
 use crate::anim::LocalTrs;
 use crate::mesh::MAX_JOINTS;
@@ -89,10 +89,10 @@ pub enum PoseModifier {
     ///
     /// The `legs` set is an ordered, N-leg-ready list: leg `i` consumes
     /// `PoseInputs::feet[i]`, so a biped runs two solves and a hexapod six from
-    /// one loop. Each leg is independent — a probe miss, an out-of-reach target,
-    /// or a clip-lifted (swing) foot ramps that leg to its clip pose without
-    /// touching the others. The variant's own leg masks drive it; the enclosing
-    /// [`ModifierEntry::mask`] is unused for this arm.
+    /// one loop. Each leg is independent. A probe miss or clip-lifted (swing)
+    /// foot uses the clip pose immediately; an unreachable hit clamps to the
+    /// nearest point in the leg's reach annulus. The variant's own leg masks
+    /// drive it; the enclosing [`ModifierEntry::mask`] is unused for this arm.
     FootIk { legs: Vec<LegChain> },
 }
 
@@ -282,11 +282,6 @@ fn wrapped_angle_delta(aim_yaw: f32, heading_yaw: f32) -> f32 {
 /// lift entirely. Sized for the roughly unit-tall models the loader ships.
 const PLANT_BLEND_BAND: f32 = 0.15;
 
-/// Angular cap (radians, ~34°) on how far the foot may tilt to meet the probed
-/// ground normal, so a steep normal never wrenches the ankle past a plausible
-/// pose.
-const MAX_FOOT_ALIGN: f32 = 0.6;
-
 /// Numerical floor for bone lengths, reach clamping, and degenerate-axis guards.
 const IK_EPS: f32 = 1e-4;
 
@@ -359,9 +354,17 @@ fn solve_and_plant_leg(
     let knee_clip = locals[knee].rotation;
     let foot_clip = locals[ankle].rotation;
 
-    let (hip_solved, knee_solved) = solve_two_bone(
+    let TwoBoneSolve::Solved {
+        hip_local: hip_solved,
+        knee_local: knee_solved,
+    } = solve_two_bone(
         hip_pos, knee_pos, ankle_pos, target, hip_rot, knee_rot, hip_clip, knee_clip,
-    );
+    )
+    else {
+        // A failed positional solve is a whole-leg clip fallback. In
+        // particular, do not orient the ankle normal after degenerate lengths.
+        return;
+    };
     locals[hip].rotation = hip_solved;
     locals[knee].rotation = knee_solved;
 
@@ -448,6 +451,12 @@ fn local_matrix(local: LocalTrs) -> Mat4 {
     Mat4::from_scale_rotation_translation(local.scale, local.rotation, local.translation)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum TwoBoneSolve {
+    Solved { hip_local: Quat, knee_local: Quat },
+    Failed,
+}
+
 /// Analytic two-bone IK (hip → knee → ankle), after Ryan Juckett's / Daniel
 /// Holden's closed-form "two joint" solve.
 ///
@@ -455,10 +464,10 @@ fn local_matrix(local: LocalTrs) -> Mat4 {
 /// ankle position, and the model-space and local rotations of the hip and knee,
 /// returns the hip and knee **local** rotations that place the ankle on the
 /// target. The reach `|target - hip|` is clamped into the leg's reachable
-/// annulus — no farther than the segment sum (an out-of-reach target straightens
-/// the leg without hyperextending), no closer than the segment difference (a
-/// too-close target cannot fold the ankle below the surface). Pure and
-/// side-effect free for direct unit testing.
+/// annulus — no farther than the segment sum (a far target straightens the leg
+/// without hyperextending), no closer than the segment difference (a too-close
+/// target folds only to the nearest reachable point). Pure and side-effect free
+/// for direct unit testing.
 #[allow(clippy::too_many_arguments)]
 fn solve_two_bone(
     hip: Vec3,
@@ -469,12 +478,12 @@ fn solve_two_bone(
     knee_model_rot: Quat,
     hip_local: Quat,
     knee_local: Quat,
-) -> (Quat, Quat) {
+) -> TwoBoneSolve {
     let lab = (knee - hip).length();
     let lcb = (ankle - knee).length();
     if lab < IK_EPS || lcb < IK_EPS {
         // Degenerate bone lengths — nothing sound to solve; keep the clip pose.
-        return (hip_local, knee_local);
+        return TwoBoneSolve::Failed;
     }
     // Reachable reach forms an annulus: the leg can neither extend past its
     // segment sum (far limit — hyperextension) nor fold closer than the
@@ -483,13 +492,10 @@ fn solve_two_bone(
     // leg to a reach *farther* than the target (the law-of-cosines args only get
     // saved from NaN by their own clamp), dropping the ankle below the intended
     // contact height and driving it through the surface at full plant weight.
-    let reach_min = (lab - lcb).abs() + IK_EPS;
-    let reach_max = lab + lcb - IK_EPS;
-    if reach_min >= reach_max {
-        // Segment lengths leave no solvable annulus — keep the clip pose.
-        return (hip_local, knee_local);
-    }
-    let lat = (target - hip).length().clamp(reach_min, reach_max);
+    let Some(lat) = clamped_reach(lab, lcb, (target - hip).length()) else {
+        // Segment lengths leave no finite solvable annulus — keep the clip pose.
+        return TwoBoneSolve::Failed;
+    };
 
     let ca = (ankle - hip).normalize_or_zero();
     let ba = (knee - hip).normalize_or_zero();
@@ -511,8 +517,19 @@ fn solve_two_bone(
         .clamp(-1.0, 1.0)
         .acos();
 
-    // Bend-plane normal (axis0) and swing axis (axis1), in model space.
-    let axis0 = (ankle - hip).cross(knee - hip).normalize_or_zero();
+    if ca == Vec3::ZERO || ba == Vec3::ZERO || ab == Vec3::ZERO || cb == Vec3::ZERO {
+        return TwoBoneSolve::Failed;
+    }
+
+    // Bend-plane normal (axis0) and swing axis (axis1), in model space. A
+    // straight nonzero chain has no geometric plane, so choose a fixed
+    // model-space pole deterministically instead of treating it as degenerate.
+    let bend_cross = ca.cross(ba);
+    let axis0 = if bend_cross.length_squared() > IK_EPS * IK_EPS {
+        bend_cross.normalize()
+    } else {
+        stable_straight_chain_bend_axis(ca)
+    };
     let axis1 = (ankle - hip).cross(target - hip).normalize_or_zero();
 
     // Swing that aims the current ankle direction at the target, applied to the
@@ -523,26 +540,54 @@ fn solve_two_bone(
         Quat::from_axis_angle(hip_model_rot.inverse() * axis1, ac_at_0)
     };
 
-    if axis0 == Vec3::ZERO {
-        // Colinear hip-knee-ankle: a perfectly straight leg has no defined bend
-        // plane, so the solver can only swing the whole leg toward the target —
-        // it cannot flex the knee to reach a closer one. Rigs should author a
-        // slight knee bend in planted poses so the bend plane stays defined.
-        let hip_out = (hip_local * hip_swing).normalize();
-        return (hip_out, knee_local);
-    }
-
     let hip_bend = Quat::from_axis_angle(hip_model_rot.inverse() * axis0, ac_ab_1 - ac_ab_0);
     let knee_bend = Quat::from_axis_angle(knee_model_rot.inverse() * axis0, ba_bc_1 - ba_bc_0);
 
     let hip_out = (hip_local * (hip_bend * hip_swing)).normalize();
     let knee_out = (knee_local * knee_bend).normalize();
-    (hip_out, knee_out)
+    TwoBoneSolve::Solved {
+        hip_local: hip_out,
+        knee_local: knee_out,
+    }
+}
+
+/// Stable model-space bend-plane normal for a straight nonzero chain.
+///
+/// Prefer model -X, which bends the common downward leg toward model forward
+/// (+Z). If the chain is parallel to that pole, fall back through fixed axes.
+/// Projection keeps the result perpendicular to the chain without depending on
+/// target direction or floating node order.
+fn stable_straight_chain_bend_axis(chain_direction: Vec3) -> Vec3 {
+    for pole in [Vec3::NEG_X, Vec3::Z, Vec3::Y] {
+        let projected = pole - chain_direction * pole.dot(chain_direction);
+        if projected.length_squared() > IK_EPS * IK_EPS {
+            return projected.normalize();
+        }
+    }
+    Vec3::X
+}
+
+/// Clamp a requested hip-to-target distance to the numerically stable reach
+/// annulus for two segments. Inside and exact-boundary targets are unchanged;
+/// too-close and far targets clamp to the near and far boundaries respectively.
+fn clamped_reach(upper_len: f32, lower_len: f32, target_reach: f32) -> Option<f32> {
+    if !upper_len.is_finite()
+        || !lower_len.is_finite()
+        || !target_reach.is_finite()
+        || upper_len < IK_EPS
+        || lower_len < IK_EPS
+    {
+        return None;
+    }
+    let reach_min = (upper_len - lower_len).abs() + IK_EPS;
+    let reach_max = upper_len + lower_len - IK_EPS;
+    (reach_min < reach_max).then(|| target_reach.clamp(reach_min, reach_max))
 }
 
 /// Foot local rotation that tilts the sole (the foot's model-space +Y) toward
-/// `normal`, capped at [`MAX_FOOT_ALIGN`]. Returns the input `foot_local`
-/// unchanged when the normal or the foot frame is degenerate.
+/// `normal`, capped at the same maximum angle accepted by the shared walkable
+/// surface threshold. Returns the input `foot_local` unchanged when the normal
+/// or the foot frame is degenerate.
 fn orient_foot_local(
     foot_model_rot: Quat,
     parent_model_rot: Quat,
@@ -558,7 +603,8 @@ fn orient_foot_local(
         return foot_local;
     }
     let (axis, angle) = Quat::from_rotation_arc(foot_up, n).to_axis_angle();
-    let align = Quat::from_axis_angle(axis, angle.min(MAX_FOOT_ALIGN));
+    let max_align = WALKABLE_SURFACE_MIN_UP_DOT.acos();
+    let align = Quat::from_axis_angle(axis, angle.min(max_align));
     let new_model = align * foot_model_rot;
     (parent_model_rot.inverse() * new_model).normalize()
 }
@@ -635,6 +681,16 @@ mod tests {
         joint_model_transform(skeleton, locals, joint).0
     }
 
+    fn expect_two_bone_solved(result: TwoBoneSolve) -> (Quat, Quat) {
+        match result {
+            TwoBoneSolve::Solved {
+                hip_local,
+                knee_local,
+            } => (hip_local, knee_local),
+            TwoBoneSolve::Failed => panic!("expected a solvable two-bone chain"),
+        }
+    }
+
     #[test]
     fn foot_ik_plants_ankle_at_flat_contact_height() {
         let (skeleton, mut locals) = single_leg();
@@ -701,7 +757,7 @@ mod tests {
         let segment_sum = knee_offset.length() + ankle_offset.length();
         let target = Vec3::new(0.0, -5.0, 0.0); // |target - hip| = 5 >> segment_sum
 
-        let (hip_rot, knee_rot) = solve_two_bone(
+        let (hip_rot, knee_rot) = expect_two_bone_solved(solve_two_bone(
             hip,
             knee,
             ankle,
@@ -710,7 +766,7 @@ mod tests {
             Quat::IDENTITY,
             Quat::IDENTITY,
             Quat::IDENTITY,
-        );
+        ));
 
         // Forward-compose the solved local rotations back to model positions.
         let knee_solved = hip + hip_rot * knee_offset;
@@ -742,6 +798,71 @@ mod tests {
     }
 
     #[test]
+    fn two_bone_reach_clamp_pins_inside_boundary_too_close_and_far_targets() {
+        let upper = 1.25;
+        let lower = 0.75;
+        let near = (upper - lower) + IK_EPS;
+        let far = upper + lower - IK_EPS;
+
+        assert!((clamped_reach(upper, lower, 1.0).unwrap() - 1.0).abs() < 1e-6);
+        assert!((clamped_reach(upper, lower, near).unwrap() - near).abs() < 1e-6);
+        assert!((clamped_reach(upper, lower, far).unwrap() - far).abs() < 1e-6);
+        assert!(
+            (clamped_reach(upper, lower, near - 0.2).unwrap() - near).abs() < 1e-6,
+            "outside the near boundary clamps to the too-close limit"
+        );
+        assert!(
+            (clamped_reach(upper, lower, far + 4.0).unwrap() - far).abs() < 1e-6,
+            "outside the far boundary clamps without hyperextension"
+        );
+    }
+
+    #[test]
+    fn straight_two_bone_chain_solves_inside_near_and_far_reach_targets() {
+        // Regression: a valid straight chain has no geometric bend-plane
+        // normal. It must use the deterministic fallback and still flex inside
+        // the annulus or clamp to either boundary.
+        let hip = Vec3::ZERO;
+        let knee_offset = Vec3::new(0.0, -1.25, 0.0);
+        let ankle_offset = Vec3::new(0.0, -0.75, 0.0);
+        let knee = hip + knee_offset;
+        let ankle = knee + ankle_offset;
+        let near = knee_offset.length() - ankle_offset.length() + IK_EPS;
+        let far = knee_offset.length() + ankle_offset.length() - IK_EPS;
+
+        for (label, requested_reach, expected_reach) in [
+            ("inside", 1.0, 1.0),
+            ("near-clamped", 0.1, near),
+            ("far-clamped", 4.0, far),
+        ] {
+            let target = Vec3::new(0.0, -requested_reach, 0.0);
+            let (hip_rot, knee_rot) = expect_two_bone_solved(solve_two_bone(
+                hip,
+                knee,
+                ankle,
+                target,
+                Quat::IDENTITY,
+                Quat::IDENTITY,
+                Quat::IDENTITY,
+                Quat::IDENTITY,
+            ));
+            let solved_knee = hip + hip_rot * knee_offset;
+            let solved_ankle = solved_knee + (hip_rot * knee_rot) * ankle_offset;
+            let solved_reach = (solved_ankle - hip).length();
+
+            assert!(
+                (solved_reach - expected_reach).abs() < 2.0e-3,
+                "{label}: expected reach {expected_reach}, got {solved_reach} at {solved_ankle:?}",
+            );
+            assert!(
+                solved_ankle.normalize_or_zero().dot(Vec3::NEG_Y) > 0.999,
+                "{label}: solved ankle left the target ray: {solved_ankle:?}",
+            );
+            assert!(hip_rot.is_finite() && knee_rot.is_finite());
+        }
+    }
+
+    #[test]
     fn foot_ik_miss_keeps_leg_on_clip_pose() {
         let (skeleton, mut locals) = single_leg();
         let before = locals.clone();
@@ -759,6 +880,77 @@ mod tests {
         apply_pose_modifier_stack(&stack, &inputs, &skeleton, &mut locals);
 
         assert_eq!(locals, before);
+    }
+
+    #[test]
+    fn foot_ik_degenerate_bone_lengths_keep_every_clip_rotation() {
+        // Regression: a failed positional solve returned the hip/knee clip
+        // rotations but still oriented the ankle toward the probe normal.
+        let skeleton = skeleton_from_parents(&[None, Some(0), Some(1)]);
+        let mut locals = vec![
+            LocalTrs {
+                rotation: Quat::from_rotation_y(0.2),
+                ..local_at(Vec3::ZERO)
+            },
+            LocalTrs {
+                rotation: Quat::from_rotation_x(-0.3),
+                ..local_at(Vec3::ZERO)
+            },
+            LocalTrs {
+                rotation: Quat::from_rotation_z(0.4),
+                ..local_at(Vec3::ZERO)
+            },
+        ];
+        let before = locals.clone();
+        let stack = foot_ik_stack(vec![LegChain {
+            chain_mask: leg_mask([0, 1, 2]),
+            foot_joint: 2,
+        }]);
+        let inputs = inputs_with_feet(&[FootProbe {
+            contact_height: 0.2,
+            normal: Vec3::new(0.4, 1.0, 0.2).normalize(),
+            hit: true,
+        }]);
+
+        apply_pose_modifier_stack(&stack, &inputs, &skeleton, &mut locals);
+
+        assert_eq!(
+            locals, before,
+            "failed solve must preserve hip, knee, and ankle clip rotations",
+        );
+    }
+
+    #[test]
+    fn foot_ik_hit_miss_hit_is_immediate_and_stateless() {
+        let (skeleton, clip_locals) = single_leg();
+        let stack = foot_ik_stack(vec![LegChain {
+            chain_mask: leg_mask([0, 1, 2]),
+            foot_joint: 2,
+        }]);
+        let hit = inputs_with_feet(&[FootProbe {
+            contact_height: -1.8,
+            normal: Vec3::Y,
+            hit: true,
+        }]);
+        let miss = inputs_with_feet(&[FootProbe::default()]);
+
+        let mut first_hit = clip_locals.clone();
+        apply_pose_modifier_stack(&stack, &hit, &skeleton, &mut first_hit);
+        assert_ne!(first_hit, clip_locals, "a hit applies the plant solve");
+
+        let mut missed = clip_locals.clone();
+        apply_pose_modifier_stack(&stack, &miss, &skeleton, &mut missed);
+        assert_eq!(
+            missed, clip_locals,
+            "the first miss immediately uses the fresh clip pose"
+        );
+
+        let mut second_hit = clip_locals.clone();
+        apply_pose_modifier_stack(&stack, &hit, &skeleton, &mut second_hit);
+        assert_eq!(
+            second_hit, first_hit,
+            "a later hit has no retained miss or contact history"
+        );
     }
 
     #[test]
@@ -782,6 +974,57 @@ mod tests {
         // Clip lift preserved: nothing pulled the swinging foot down to ground.
         assert_eq!(locals, before);
         assert!((model_pos(&skeleton, &locals, 2).y - -2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn plant_weight_pins_height_only_blend_band_envelope() {
+        assert_eq!(plant_weight(-0.1), 1.0, "at/below contact fully plants");
+        assert_eq!(plant_weight(0.0), 1.0, "contact boundary fully plants");
+        assert!((plant_weight(PLANT_BLEND_BAND * 0.5) - 0.5).abs() < 1e-6);
+        assert_eq!(
+            plant_weight(PLANT_BLEND_BAND),
+            0.0,
+            "the exact lift boundary is clip-driven"
+        );
+        assert_eq!(
+            plant_weight(PLANT_BLEND_BAND + 0.2),
+            0.0,
+            "large terrain drops and authored swing lifts share the clip-driven fallback"
+        );
+    }
+
+    #[test]
+    fn foot_orientation_cap_matches_walkable_slope_boundary() {
+        let max_angle = WALKABLE_SURFACE_MIN_UP_DOT.acos();
+        let boundary_normal = Vec3::new(
+            (1.0 - WALKABLE_SURFACE_MIN_UP_DOT.powi(2)).sqrt(),
+            WALKABLE_SURFACE_MIN_UP_DOT,
+            0.0,
+        );
+        let boundary = orient_foot_local(
+            Quat::IDENTITY,
+            Quat::IDENTITY,
+            Quat::IDENTITY,
+            boundary_normal,
+        );
+        assert!(
+            (boundary * Vec3::Y).dot(boundary_normal) > 0.99999,
+            "the exact walkable threshold aligns fully"
+        );
+
+        let steeper_angle = max_angle + 0.25;
+        let steeper_normal = Vec3::new(steeper_angle.sin(), steeper_angle.cos(), 0.0);
+        let capped = orient_foot_local(
+            Quat::IDENTITY,
+            Quat::IDENTITY,
+            Quat::IDENTITY,
+            steeper_normal,
+        );
+        let applied_angle = (capped * Vec3::Y).dot(Vec3::Y).clamp(-1.0, 1.0).acos();
+        assert!(
+            (applied_angle - max_angle).abs() < 1e-5,
+            "cap {applied_angle} must equal walkable limit {max_angle}"
+        );
     }
 
     #[test]

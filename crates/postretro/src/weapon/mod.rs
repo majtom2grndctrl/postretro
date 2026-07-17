@@ -1714,6 +1714,7 @@ mod tests {
                 min: Vec3::splat(-radius),
                 max: Vec3::splat(radius),
             }),
+            legs: Vec::new(),
         };
         let mut store = HitZoneStore::new();
         store.insert_for_test(postretro_model::ModelHandle::from(handle), model);

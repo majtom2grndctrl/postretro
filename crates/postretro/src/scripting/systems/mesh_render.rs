@@ -1184,6 +1184,7 @@ mod tests {
                     radius: Some(0.25),
                 })],
                 derived_bound: Some(Aabb::default()),
+                legs: Vec::new(),
             },
         );
         store

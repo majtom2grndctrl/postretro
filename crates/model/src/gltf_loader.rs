@@ -1,18 +1,19 @@
 // glTF → engine skinned-model loader (CPU-only; no wgpu).
 // See: context/lib/rendering_pipeline.md §9 · context/lib/build_pipeline.md §Baked texture mips · context/lib/entity_model.md §7
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use glam::{Mat4, Quat, Vec3};
 use gltf::accessor::{DataType, Dimensions};
+use postretro_foundation::pose::MAX_FEET;
 use postretro_level_format::gltf_resolve::resolve_material_base_color_path;
 use postretro_level_format::octahedral;
 use serde::Deserialize;
 use thiserror::Error;
 
 use super::mesh::{SkinnedMesh, SkinnedVertex};
-use super::pose_modifier::{JointMask, ModifierEntry, PoseModifier, PoseModifierStack};
+use super::pose_modifier::{JointMask, LegChain, ModifierEntry, PoseModifier, PoseModifierStack};
 use super::skeleton::{
     AnimationClip, Interp, Joint, JointTracks, RestLocal, Skeleton, SkeletonBuildError, Track,
 };
@@ -106,9 +107,18 @@ pub struct LoadedModel {
     /// Convention-named pose masks, reindexed to the same topological joint
     /// order as `skeleton` and `joint_zones`.
     pub pose_masks: PoseMaskSet,
-    /// Ordered modifier stack derived from `pose_masks` at load time. The
-    /// upper/lower split precedes the aim-pitch bend when both are authored.
+    /// Ordered modifier stack derived from `pose_masks` (and `legs`) at load
+    /// time. The upper/lower split precedes the aim-pitch bend when both are
+    /// authored; a non-empty `legs` set appends one foot-IK entry.
     pub pose_stack: PoseModifierStack,
+    /// Ordered leg set built from `legL`/`legR`/`footL`/`footR` (biped side
+    /// names, L=0, R=1) or `leg{i}`/`foot{i}` (indexed, N-leg) joint tags,
+    /// reindexed to the same topological joint order as `skeleton`. Leg `i`
+    /// consumes foot probe `i`; the set is capped at
+    /// [`postretro_foundation::pose::MAX_FEET`]. Kept OUTSIDE the fixed `Copy`
+    /// [`PoseMaskSet`] because it is a variable-length list, and read game-side
+    /// by the fixed-tick ground-probe step. Empty when no leg tags are authored.
+    pub legs: Vec<LegChain>,
 }
 
 /// Errors surfaced while loading required glTF model structure. Optional authored
@@ -589,12 +599,37 @@ fn valid_hit_zone_radius(value: Option<&serde_json::Value>) -> Option<f32> {
     (radius.is_finite() && radius > 0.0).then_some(radius)
 }
 
+/// Which spelling family a leg/foot tag was authored with. A model uses ONE
+/// family for its leg set; mixing side and indexed names warns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LegNameFamily {
+    /// Biped side names `legL`/`legR`/`footL`/`footR`.
+    Side,
+    /// General N-leg names `leg{i}`/`foot{i}`.
+    Indexed,
+}
+
+/// The leg-set slot a leg/foot tag references: the leg index (side names map
+/// L=0, R=1; indexed names map `{i}` → `i`) and the spelling family it came
+/// from (for the mixed-family warning).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LegRef {
+    index: usize,
+    family: LegNameFamily,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 struct JointPoseMetadata {
     aim_spine: bool,
     upper_body: bool,
     lower_body: bool,
     aim_bend_weight: f32,
+    /// This joint belongs to the named leg's hip→knee→ankle chain (`legL`/
+    /// `legR`/`leg{i}`).
+    leg_chain: Option<LegRef>,
+    /// This joint is the named leg's foot/ankle target — the IK end effector
+    /// (`footL`/`footR`/`foot{i}`).
+    foot_target: Option<LegRef>,
 }
 
 /// Read convention-named pose metadata from one joint node's `extras`.
@@ -636,9 +671,47 @@ fn read_pose_masks(
             "aimSpine" => metadata.aim_spine = true,
             "upperBody" => metadata.upper_body = true,
             "lowerBody" => metadata.lower_body = true,
-            unknown => log::warn!(
-                "[Model] unknown poseMask '{unknown}' on joint node {node_index} in {path_str}; ignoring"
-            ),
+            "legL" => {
+                metadata.leg_chain = Some(LegRef {
+                    index: 0,
+                    family: LegNameFamily::Side,
+                })
+            }
+            "legR" => {
+                metadata.leg_chain = Some(LegRef {
+                    index: 1,
+                    family: LegNameFamily::Side,
+                })
+            }
+            "footL" => {
+                metadata.foot_target = Some(LegRef {
+                    index: 0,
+                    family: LegNameFamily::Side,
+                })
+            }
+            "footR" => {
+                metadata.foot_target = Some(LegRef {
+                    index: 1,
+                    family: LegNameFamily::Side,
+                })
+            }
+            unknown => {
+                if let Some(index) = indexed_leg_suffix(unknown, "leg") {
+                    metadata.leg_chain = Some(LegRef {
+                        index,
+                        family: LegNameFamily::Indexed,
+                    });
+                } else if let Some(index) = indexed_leg_suffix(unknown, "foot") {
+                    metadata.foot_target = Some(LegRef {
+                        index,
+                        family: LegNameFamily::Indexed,
+                    });
+                } else {
+                    log::warn!(
+                        "[Model] unknown poseMask '{unknown}' on joint node {node_index} in {path_str}; ignoring"
+                    );
+                }
+            }
         };
 
         match pose_mask {
@@ -684,12 +757,40 @@ fn read_pose_masks(
     metadata
 }
 
+/// Parse an indexed leg/foot tag: `prefix` immediately followed by a base-10
+/// index, e.g. `leg0`, `foot12`. Returns the index, or `None` when the name is
+/// not `prefix` followed purely by ASCII digits — so the biped side names
+/// `legL`/`legR`/`footL`/`footR` fall through to their own match arms rather
+/// than being misread as indexed names.
+fn indexed_leg_suffix(name: &str, prefix: &str) -> Option<usize> {
+    let rest = name.strip_prefix(prefix)?;
+    if rest.is_empty() || !rest.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    rest.parse::<usize>().ok()
+}
+
+/// In-progress accumulation of one leg's joints while scanning topo joints.
+#[derive(Default)]
+struct LegBuilder {
+    /// Joints tagged into this leg's chain via a `leg*` name.
+    chain_mask: JointMask,
+    /// The joint tagged as this leg's foot/ankle target via a `foot*` name.
+    foot_joint: Option<usize>,
+}
+
 fn pose_masks_from_topo_metadata(
     topo_order: &[usize],
     rest_pose_metadata: &[JointPoseMetadata],
-) -> (PoseMaskSet, Vec<f32>) {
+    path_str: &str,
+) -> (PoseMaskSet, Vec<f32>, Vec<LegChain>) {
     let mut masks = PoseMaskSet::default();
     let mut aim_bend_weights = vec![1.0; topo_order.len()];
+    // Keyed by leg index → ascending iteration yields the ordered leg set
+    // (L=0 before R=1; `leg{i}` in `i` order).
+    let mut leg_builders: BTreeMap<usize, LegBuilder> = BTreeMap::new();
+    let mut saw_side = false;
+    let mut saw_indexed = false;
 
     for (topo_idx, &skin_idx) in topo_order.iter().enumerate() {
         let metadata = rest_pose_metadata
@@ -709,9 +810,74 @@ fn pose_masks_from_topo_metadata(
         if metadata.lower_body {
             let _ = masks.lower_body.insert(topo_idx);
         }
+        if let Some(leg) = metadata.leg_chain {
+            note_family(leg.family, &mut saw_side, &mut saw_indexed);
+            let _ = leg_builders
+                .entry(leg.index)
+                .or_default()
+                .chain_mask
+                .insert(topo_idx);
+        }
+        if let Some(foot) = metadata.foot_target {
+            note_family(foot.family, &mut saw_side, &mut saw_indexed);
+            leg_builders.entry(foot.index).or_default().foot_joint = Some(topo_idx);
+        }
     }
 
-    (masks, aim_bend_weights)
+    if saw_side && saw_indexed {
+        log::warn!(
+            "[Model] leg tags in {path_str} mix side names (legL/legR) and indexed names (leg{{i}}) for the same leg set; keeping both"
+        );
+    }
+
+    let legs = build_leg_set(leg_builders, path_str);
+    (masks, aim_bend_weights, legs)
+}
+
+fn note_family(family: LegNameFamily, saw_side: &mut bool, saw_indexed: &mut bool) {
+    match family {
+        LegNameFamily::Side => *saw_side = true,
+        LegNameFamily::Indexed => *saw_indexed = true,
+    }
+}
+
+/// Assemble the ordered, capacity-capped leg set from the per-index builders.
+///
+/// Iteration is ascending leg index (biped L=0 before R=1). A leg is emitted
+/// only when it has BOTH a chain (at least one `leg*` joint) and a foot/ankle
+/// target (`foot*`); an incomplete leg warns and is dropped. The foot joint is
+/// folded into the chain mask so the solver always finds its end effector in
+/// the chain. Legs past [`MAX_FEET`] warn and are dropped.
+fn build_leg_set(leg_builders: BTreeMap<usize, LegBuilder>, path_str: &str) -> Vec<LegChain> {
+    let mut legs = Vec::new();
+    for (index, builder) in leg_builders {
+        match (builder.chain_mask.is_empty(), builder.foot_joint) {
+            (false, Some(foot_joint)) => {
+                if legs.len() >= MAX_FEET {
+                    log::warn!(
+                        "[Model] more than {MAX_FEET} legs authored in {path_str}; dropping leg {index}"
+                    );
+                    continue;
+                }
+                let mut chain_mask = builder.chain_mask;
+                // The foot/ankle joint is the chain's end effector; ensure it is
+                // a chain member even if only `foot*` (not `leg*`) tagged it.
+                let _ = chain_mask.insert(foot_joint);
+                legs.push(LegChain {
+                    chain_mask,
+                    foot_joint,
+                });
+            }
+            (true, Some(_)) => log::warn!(
+                "[Model] leg {index} in {path_str} has a foot target (foot{index}/footL/footR) but no leg chain; dropping"
+            ),
+            (false, None) => log::warn!(
+                "[Model] leg {index} in {path_str} has a chain but no foot/ankle target; dropping"
+            ),
+            (true, None) => {}
+        }
+    }
+    legs
 }
 
 fn ordered_aim_spine_chain(skeleton: &Skeleton, mask: JointMask) -> Option<Vec<usize>> {
@@ -761,6 +927,7 @@ fn build_pose_modifier_stack(
     skeleton: &Skeleton,
     masks: PoseMaskSet,
     aim_bend_weights: &[f32],
+    legs: &[LegChain],
     path_str: &str,
 ) -> PoseModifierStack {
     let mut stack = PoseModifierStack::default();
@@ -793,6 +960,18 @@ fn build_pose_modifier_stack(
                 "[Model] aimSpine pose mask in {path_str} is not one connected parent-linked chain; dropping aim-pitch bend"
             );
         }
+    }
+
+    // Presence of leg tags builds the foot-IK modifier, exactly as `aimSpine`
+    // tags build the aim-pitch bend — no descriptor gate. The per-leg masks live
+    // inside each `LegChain`, so the enclosing entry mask is unused (empty).
+    if !legs.is_empty() {
+        stack.push(ModifierEntry {
+            mask: JointMask::new(),
+            modifier: PoseModifier::FootIk {
+                legs: legs.to_vec(),
+            },
+        });
     }
 
     stack
@@ -884,19 +1063,28 @@ pub fn load_model(path: &Path) -> Result<LoadedModel, ModelLoadError> {
     // `skin_joint_to_topo` reindexes mesh `JOINTS_0` (skin-joint indices) into
     // topo order; `node_to_topo` reindexes animation channel targets (node
     // indices) into the same topo order.
-    let (skeleton, joint_zones, pose_masks, aim_bend_weights, skin_joint_to_topo, node_to_topo) =
-        match skin.as_ref() {
-            Some(skin) => build_skeleton(skin, &buffers, &path_str)?,
-            None => (
-                identity_skeleton(),
-                static_identity_joint_zones(&document, mesh.index()),
-                PoseMaskSet::default(),
-                vec![1.0],
-                HashMap::new(),
-                HashMap::new(),
-            ),
-        };
-    let pose_stack = build_pose_modifier_stack(&skeleton, pose_masks, &aim_bend_weights, &path_str);
+    let (
+        skeleton,
+        joint_zones,
+        pose_masks,
+        aim_bend_weights,
+        legs,
+        skin_joint_to_topo,
+        node_to_topo,
+    ) = match skin.as_ref() {
+        Some(skin) => build_skeleton(skin, &buffers, &path_str)?,
+        None => (
+            identity_skeleton(),
+            static_identity_joint_zones(&document, mesh.index()),
+            PoseMaskSet::default(),
+            vec![1.0],
+            Vec::new(),
+            HashMap::new(),
+            HashMap::new(),
+        ),
+    };
+    let pose_stack =
+        build_pose_modifier_stack(&skeleton, pose_masks, &aim_bend_weights, &legs, &path_str);
 
     // --- Mesh -------------------------------------------------------------
     let (skinned_mesh, submeshes) =
@@ -931,6 +1119,7 @@ pub fn load_model(path: &Path) -> Result<LoadedModel, ModelLoadError> {
         joint_zones,
         pose_masks,
         pose_stack,
+        legs,
     })
 }
 
@@ -943,6 +1132,7 @@ type SkeletonMaps = (
     Vec<Option<JointZone>>,
     PoseMaskSet,
     Vec<f32>,
+    Vec<LegChain>,
     HashMap<usize, usize>,
     HashMap<usize, usize>,
 );
@@ -1120,8 +1310,8 @@ fn build_skeleton(
         .iter()
         .map(|&skin_idx| rest_zones.get(skin_idx).cloned().flatten())
         .collect();
-    let (pose_masks, aim_bend_weights) =
-        pose_masks_from_topo_metadata(&topo_order, &rest_pose_metadata);
+    let (pose_masks, aim_bend_weights, legs) =
+        pose_masks_from_topo_metadata(&topo_order, &rest_pose_metadata, path_str);
 
     let skeleton = Skeleton::new(joints).map_err(|error| skeleton_build_error(path_str, error))?;
 
@@ -1130,6 +1320,7 @@ fn build_skeleton(
         joint_zones,
         pose_masks,
         aim_bend_weights,
+        legs,
         skin_joint_to_topo,
         node_to_topo,
     ))
@@ -3319,7 +3510,7 @@ mod tests {
                 ..JointPoseMetadata::default()
             },
         ];
-        let (masks, weights) = pose_masks_from_topo_metadata(&[1, 0, 2], &source);
+        let (masks, weights, _legs) = pose_masks_from_topo_metadata(&[1, 0, 2], &source, "x");
         assert_eq!(masks.aim_spine.iter().collect::<Vec<_>>(), vec![0, 1]);
         assert_eq!(masks.upper_body.iter().collect::<Vec<_>>(), vec![0, 1]);
         assert_eq!(masks.lower_body.iter().collect::<Vec<_>>(), vec![2]);
@@ -3386,7 +3577,7 @@ mod tests {
             upper_body: mask(&[0, 1, 2]),
             lower_body: mask(&[3]),
         };
-        let stack = build_pose_modifier_stack(&skeleton, masks, &[0.25, 1.0, 2.0, 1.0], "x");
+        let stack = build_pose_modifier_stack(&skeleton, masks, &[0.25, 1.0, 2.0, 1.0], &[], "x");
         assert_eq!(stack.entries().len(), 2);
         assert!(matches!(
             stack.entries()[0].modifier,
@@ -3402,13 +3593,15 @@ mod tests {
     #[test]
     fn absent_masks_build_empty_stack_and_partial_masks_build_partial_stack() {
         let skeleton = test_skeleton(&[None, Some(0)]);
-        assert!(build_pose_modifier_stack(&skeleton, PoseMaskSet::default(), &[], "x").is_empty());
+        assert!(
+            build_pose_modifier_stack(&skeleton, PoseMaskSet::default(), &[], &[], "x").is_empty()
+        );
 
         let aim_only = PoseMaskSet {
             aim_spine: mask(&[0, 1]),
             ..PoseMaskSet::default()
         };
-        let stack = build_pose_modifier_stack(&skeleton, aim_only, &[1.0, 1.0], "x");
+        let stack = build_pose_modifier_stack(&skeleton, aim_only, &[1.0, 1.0], &[], "x");
         assert_eq!(stack.entries().len(), 1);
         assert!(matches!(
             stack.entries()[0].modifier,
@@ -3419,7 +3612,172 @@ mod tests {
             upper_body: mask(&[0]),
             ..PoseMaskSet::default()
         };
-        assert!(build_pose_modifier_stack(&skeleton, upper_only, &[], "x").is_empty());
+        assert!(build_pose_modifier_stack(&skeleton, upper_only, &[], &[], "x").is_empty());
+    }
+
+    // ---- Foot-IK leg tagging ----------------------------------------------
+
+    fn side_leg(index: usize) -> Option<LegRef> {
+        Some(LegRef {
+            index,
+            family: LegNameFamily::Side,
+        })
+    }
+
+    fn indexed_leg(index: usize) -> Option<LegRef> {
+        Some(LegRef {
+            index,
+            family: LegNameFamily::Indexed,
+        })
+    }
+
+    fn leg_meta(chain: Option<LegRef>, foot: Option<LegRef>) -> JointPoseMetadata {
+        JointPoseMetadata {
+            aim_bend_weight: 1.0,
+            leg_chain: chain,
+            foot_target: foot,
+            ..JointPoseMetadata::default()
+        }
+    }
+
+    #[test]
+    fn read_pose_masks_recognizes_leg_and_foot_side_and_indexed_names() {
+        let l = read_pose_masks(
+            &extras_from_raw(r#"{ "poseMask": ["legL", "footL"] }"#),
+            1,
+            "m",
+        );
+        assert_eq!(l.leg_chain, side_leg(0));
+        assert_eq!(l.foot_target, side_leg(0));
+
+        let r = read_pose_masks(&extras_from_raw(r#"{ "poseMask": "legR" }"#), 2, "m");
+        assert_eq!(r.leg_chain, side_leg(1));
+        assert_eq!(r.foot_target, None);
+
+        let foot_r = read_pose_masks(&extras_from_raw(r#"{ "poseMask": "footR" }"#), 3, "m");
+        assert_eq!(foot_r.foot_target, side_leg(1));
+
+        let indexed = read_pose_masks(
+            &extras_from_raw(r#"{ "poseMask": ["leg2", "foot2"] }"#),
+            4,
+            "m",
+        );
+        assert_eq!(indexed.leg_chain, indexed_leg(2));
+        assert_eq!(indexed.foot_target, indexed_leg(2));
+
+        // `leg`/`legX`/`foothold` are not `prefix + digits`: unknown, no membership.
+        let unknown = read_pose_masks(
+            &extras_from_raw(r#"{ "poseMask": ["leg", "legX", "foothold"] }"#),
+            5,
+            "m",
+        );
+        assert_eq!(unknown.leg_chain, None);
+        assert_eq!(unknown.foot_target, None);
+    }
+
+    #[test]
+    fn biped_leg_set_builds_in_l_then_r_order_through_topo_remap() {
+        // Skin order [hipL, kneeL, ankleL, hipR, kneeR, ankleR]; a rotated topo
+        // order proves the leg joints are reindexed and the set is ordered by
+        // leg index (L=0 before R=1), NOT by topo position.
+        let source = vec![
+            leg_meta(side_leg(0), None),        // hipL
+            leg_meta(side_leg(0), None),        // kneeL
+            leg_meta(side_leg(0), side_leg(0)), // ankleL (chain + foot)
+            leg_meta(side_leg(1), None),        // hipR
+            leg_meta(side_leg(1), None),        // kneeR
+            leg_meta(side_leg(1), side_leg(1)), // ankleR (chain + foot)
+        ];
+        let (_masks, _weights, legs) =
+            pose_masks_from_topo_metadata(&[3, 4, 5, 0, 1, 2], &source, "x");
+        assert_eq!(
+            legs,
+            vec![
+                LegChain {
+                    chain_mask: mask(&[3, 4, 5]),
+                    foot_joint: 5,
+                },
+                LegChain {
+                    chain_mask: mask(&[0, 1, 2]),
+                    foot_joint: 2,
+                },
+            ],
+            "L=0 leg precedes R=1, joints reindexed through the topo remap",
+        );
+    }
+
+    #[test]
+    fn build_pose_modifier_stack_installs_one_foot_ik_when_legs_present_and_none_when_absent() {
+        // AC 4: presence of leg tags builds exactly one FootIk entry; the same
+        // model with its leg tags removed builds none (no descriptor gate).
+        let skeleton = test_skeleton(&[None, Some(0), Some(1), Some(0), Some(3), Some(4)]);
+        let legs = vec![
+            LegChain {
+                chain_mask: mask(&[0, 1, 2]),
+                foot_joint: 2,
+            },
+            LegChain {
+                chain_mask: mask(&[3, 4, 5]),
+                foot_joint: 5,
+            },
+        ];
+
+        let with_legs =
+            build_pose_modifier_stack(&skeleton, PoseMaskSet::default(), &[], &legs, "x");
+        assert_eq!(with_legs.entries().len(), 1);
+        match &with_legs.entries()[0].modifier {
+            PoseModifier::FootIk { legs: built } => {
+                assert_eq!(built.len(), 2, "the whole 2-leg set rides one entry");
+                assert_eq!(built, &legs);
+            }
+            other => panic!("expected a single FootIk entry, got {other:?}"),
+        }
+
+        let without_legs =
+            build_pose_modifier_stack(&skeleton, PoseMaskSet::default(), &[], &[], "x");
+        assert!(
+            without_legs.is_empty(),
+            "leg tags removed ⇒ no FootIk entry",
+        );
+    }
+
+    #[test]
+    fn indexed_names_build_n_leg_set_and_truncate_beyond_max_feet() {
+        // Seven indexed legs, each a two-joint chain (a plain chain joint then an
+        // ankle carrying both chain and foot tags). 7 > MAX_FEET, so the last leg
+        // warns and is dropped, and the set is N-leg (not biped-hardcoded).
+        let mut source = Vec::new();
+        for i in 0..7 {
+            source.push(leg_meta(indexed_leg(i), None));
+            source.push(leg_meta(indexed_leg(i), indexed_leg(i)));
+        }
+        let topo: Vec<usize> = (0..source.len()).collect();
+        let (_masks, _weights, legs) = pose_masks_from_topo_metadata(&topo, &source, "x");
+
+        assert_eq!(legs.len(), MAX_FEET, "leg set truncates at MAX_FEET");
+        assert_eq!(
+            legs[0],
+            LegChain {
+                chain_mask: mask(&[0, 1]),
+                foot_joint: 1,
+            },
+        );
+        assert_eq!(
+            legs[5].foot_joint, 11,
+            "ascending index order up to the cap"
+        );
+    }
+
+    #[test]
+    fn leg_with_missing_chain_or_missing_foot_is_dropped() {
+        // Foot target without a chain, and a chain without a foot target: both
+        // are incomplete legs — warn and drop, never a load failure.
+        let source = vec![
+            leg_meta(None, side_leg(0)), // footL only, no chain
+            leg_meta(side_leg(1), None), // legR only, no foot target
+        ];
+        let (_masks, _weights, legs) = pose_masks_from_topo_metadata(&[0, 1], &source, "x");
+        assert!(legs.is_empty(), "incomplete legs are dropped, got {legs:?}");
     }
 
     #[test]

@@ -62,10 +62,8 @@ pub(crate) struct ModelHitZones {
     /// The model's ordered foot-IK leg set, moved in from
     /// [`gltf_loader::LoadedModel::legs`]. Empty for a model with no leg tags.
     /// Retained CPU-side so the fixed-tick ground-probe step can read each leg's
-    /// chain and foot joint; leg `i` drives foot probe `i`.
-    // Consumed by the fixed-tick ground-probe step (a later task); retained here
-    // at level load so that step has the leg set without re-reading the glTF.
-    #[allow(dead_code)]
+    /// chain and foot joint; leg `i` drives foot probe `i`. Consumed by
+    /// [`crate::sim`]'s ground-probe step via [`sample_world_pose_for_probe`].
     pub(crate) legs: Vec<LegChain>,
 }
 
@@ -977,8 +975,10 @@ fn first_child_index(skeleton: &Skeleton, joint_index: usize) -> Option<usize> {
 /// Compose the entity's model→world matrix exactly like the render collector's
 /// instance transform: full scale + rotation, translated to `position +
 /// origin_offset`. Non-finite transforms are not authoritative for precise
-/// capsules, so callers degrade to a coarse fallback.
-fn model_matrix(transform: &Transform, origin_offset: Vec3) -> Option<Mat4> {
+/// capsules, so callers degrade to a coarse fallback. Shared with [`crate::sim`]'s
+/// foot ground-probe step so probes place the model exactly as capsules and the
+/// renderer do.
+pub(crate) fn model_matrix(transform: &Transform, origin_offset: Vec3) -> Option<Mat4> {
     if !transform.position.is_finite()
         || !transform.rotation.is_finite()
         || !transform.scale.is_finite()
@@ -1047,6 +1047,31 @@ fn resolve_animation_stamps_for_sampling(anim: &mut MeshAnimation, now: f64) {
     if anim.previous_state.is_some() && anim.previous_entered_at.is_none() {
         anim.previous_entered_at = Some(now);
     }
+}
+
+/// Sample a leg-tagged model's UNMODIFIED world-joint pose for the fixed-tick
+/// foot ground-probe step ([`crate::sim`]). Returns per-joint MODEL-space world
+/// matrices (pre-inverse-bind), so a leg's `foot_joint` origin is the animated
+/// foot position the probe casts from — the same unmodified pose the hit-zone
+/// raycast path samples, distinct from the renderer's modified palette.
+///
+/// Resolves same-tick animation stamps on a private clone exactly as
+/// [`nearest_zone_hit`] does before sampling, so a state entered this tick
+/// evaluates the visible crossfade start. `None` propagates the fail-available
+/// contract of [`pose_world_joints`]: the precise pose is unavailable (a chained
+/// smooth-interrupt snapshot needing renderer-only data), and the caller treats
+/// every foot as a miss for this tick.
+pub(crate) fn sample_world_pose_for_probe(
+    zones: &ModelHitZones,
+    animation: Option<&MeshAnimation>,
+    anim_time: f64,
+    seed: u32,
+) -> Option<Vec<Mat4>> {
+    let animation = animation.cloned().map(|mut anim| {
+        resolve_animation_stamps_for_sampling(&mut anim, anim_time);
+        anim
+    });
+    pose_world_joints(zones, animation.as_ref(), anim_time, seed)
 }
 
 /// Pose the model's skeleton at `anim_time` into per-joint MODEL-space world

@@ -24,6 +24,7 @@ Code-grounding map from the drafting session (2026-07). Line numbers are drift-p
 - Joints carry no names (`Skeleton::joints` index-addressed, parent-before-child invariant, `skeleton.rs:74-89`) — socket identity must be the tag string.
 - Degradation contract: extras never hard-fail a load; warnings only (`gltf_loader.rs:742-767`).
 - Game-side retention: `ModelHitZones` (`hit_zones.rs:54,68`) keyed by `ModelHandle` holds `joint_zones`, `legs`; posed world joints via `pose_world_joints` (`hit_zones.rs:1130`).
+- **Rigid-model gap (drives the two-kind socket table):** the extras precedents all read *skin joints*, but rigid models load with one synthetic identity joint and no skin — so a skin-joints-only socket contract would make it impossible for rigid weapon/prop models to ever carry sockets. E16's `mount` consumers (scope on optic rail, barrel on muzzle) attach to rigid weapon models, so the spec widens sockets to plain nodes on skinless models, resolved to model-space rest transforms (node TRS composed through the hierarchy). Skinned models keep the skin-joint-only rule.
 
 ## Extraction site and transforms
 

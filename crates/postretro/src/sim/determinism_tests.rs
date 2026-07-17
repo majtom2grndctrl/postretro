@@ -954,11 +954,21 @@ fn player_descriptor() -> PlayerMovementDescriptor {
 }
 
 fn floor_world() -> CollisionWorld {
+    sloped_floor_world(0.0)
+}
+
+/// A large ground plane tilted about the world Z axis: surface height `y =
+/// slope * x`. `slope == 0.0` is the flat [`floor_world`]. The triangle winding
+/// matches `floor_world`, so the upward-facing normal is `(-slope, 1, 0)`
+/// normalized — a non-`Vec3::Y` tilt for any non-zero slope, staying walkable
+/// while `1/sqrt(1 + slope^2) >= COS_WALKABLE`.
+fn sloped_floor_world(slope: f32) -> CollisionWorld {
+    let y = |x: f32| slope * x;
     let points = vec![
-        Point::new(-500.0, 0.0, -500.0),
-        Point::new(500.0, 0.0, -500.0),
-        Point::new(500.0, 0.0, 500.0),
-        Point::new(-500.0, 0.0, 500.0),
+        Point::new(-500.0, y(-500.0), -500.0),
+        Point::new(500.0, y(500.0), -500.0),
+        Point::new(500.0, y(500.0), 500.0),
+        Point::new(-500.0, y(-500.0), 500.0),
     ];
     let triangles = vec![[0, 2, 1], [0, 3, 2]];
     CollisionWorld {
@@ -1513,21 +1523,31 @@ fn pose_inputs_fallbacks_and_vertical_targets_remain_finite() {
 /// One leg model: hip → knee → ankle, composed ankle resting at model (0,-0.7,0),
 /// with one looping idle clip (no joint tracks, so the pose falls back to the
 /// rest hierarchy the ground probe reads). Leg `0` drives foot probe `0`.
+///
+/// The knee carries a small forward (+Z) offset that the ankle segment cancels,
+/// so the composed ankle stays at exactly (0,-0.7,0) — the ground probe reads
+/// only the ankle, so its contact/normal are unchanged — while giving the
+/// two-bone IK a well-defined bend plane (a perfectly straight leg has none and
+/// cannot be re-solved). Segment sum 2·√(0.35²+0.12²) ≈ 0.740.
 fn leg_model() -> crate::scripting_systems::hit_zones::ModelHitZones {
     use postretro_model::pose_modifier::{JointMask, LegChain};
     use postretro_model::skeleton::{AnimationClip, Joint, RestLocal, Skeleton};
 
-    let joint = |parent, ty: f32| Joint {
+    let joint = |parent, offset: Vec3| Joint {
         parent,
         inverse_bind: glam::Mat4::IDENTITY.to_cols_array_2d(),
         rest_local: RestLocal {
-            translation: Vec3::new(0.0, ty, 0.0),
+            translation: offset,
             rotation: glam::Quat::IDENTITY,
             scale: Vec3::ONE,
         },
     };
     let skeleton = Skeleton {
-        joints: vec![joint(None, 0.0), joint(Some(0), -0.35), joint(Some(1), -0.35)],
+        joints: vec![
+            joint(None, Vec3::ZERO),
+            joint(Some(0), Vec3::new(0.0, -0.35, 0.12)),
+            joint(Some(1), Vec3::new(0.0, -0.35, -0.12)),
+        ],
     };
     let clips = vec![AnimationClip {
         name: "idle".to_string(),
@@ -1555,6 +1575,16 @@ fn leg_model() -> crate::scripting_systems::hit_zones::ModelHitZones {
 /// tick-end pose order (aim/heading, then the ground probe) against a flat floor,
 /// and return the resulting `PoseInputs`.
 fn probe_leg_entity(position: Vec3, yaw: f32) -> postretro_entities::PoseInputs {
+    probe_leg_entity_in(&floor_world(), position, yaw)
+}
+
+/// Same production tick-end pose order as [`probe_leg_entity`], but against a
+/// caller-supplied collision world so a slope fixture can drive the probe.
+fn probe_leg_entity_in(
+    world: &CollisionWorld,
+    position: Vec3,
+    yaw: f32,
+) -> postretro_entities::PoseInputs {
     let mut registry = EntityRegistry::new();
     let mut states = std::collections::HashMap::new();
     states.insert(
@@ -1585,7 +1615,6 @@ fn probe_leg_entity(position: Vec3, yaw: f32) -> postretro_entities::PoseInputs 
         )
         .expect("leg entity mesh should attach");
 
-    let world = floor_world();
     let mut store = HitZoneStore::new();
     store.insert_for_test(
         postretro_model::ModelHandle::from("legwalker".to_string()),
@@ -1597,7 +1626,7 @@ fn probe_leg_entity(position: Vec3, yaw: f32) -> postretro_entities::PoseInputs 
     super::update_pose_inputs(&mut registry);
     super::update_foot_ground_probes(
         &mut registry,
-        &world,
+        world,
         &mover_colliders,
         &mover_states,
         &store,
@@ -1663,6 +1692,131 @@ fn foot_ground_probes_are_deterministic_and_carry_forward_aim() {
         "no ground within the planting reach is a miss"
     );
     assert!((high.heading_yaw - yaw).abs() < 1.0e-5);
+}
+
+#[test]
+fn foot_ik_plants_and_orients_on_slope_within_walkable_limit() {
+    use postretro_model::anim::{Loop, sample_clip_looped_modified};
+    use postretro_model::pose_modifier::{ModifierEntry, PoseModifier, PoseModifierStack};
+
+    // A ~16.7° ground tilt about world Z: surface y = 0.3 * x. Walkable
+    // (normal.y = 1/sqrt(1.09) = 0.958 >= COS_WALKABLE = 0.643).
+    let slope = 0.3_f32;
+    let world = sloped_floor_world(slope);
+
+    // Entity over the uphill face at x = 0.5 (surface there sits at y = 0.15),
+    // dropped so the model-space rest ankle (model-y = -0.70) hovers just above
+    // the slope: foot_world.y = 0.88 - 0.70 = 0.18, a 0.03 gap to the surface —
+    // inside the plant blend band so the foot genuinely plants (not swing).
+    let position = Vec3::new(0.5, 0.88, 0.0);
+    let inputs = probe_leg_entity_in(&world, position, 0.0);
+
+    // (2) The production tick probe reports the slope contact, not the flat
+    // floor: one live foot, a hit, the tilted (non-Y) upward normal, and the
+    // model-space slope height under the foot.
+    assert_eq!(inputs.foot_count, 1);
+    let foot = inputs.feet[0];
+    assert!(foot.hit, "foot over the walkable slope finds ground");
+    // Model-space slope surface under the foot: y(0.5) - position.y = 0.15 - 0.88.
+    let expected_contact = slope * position.x - position.y;
+    assert!(
+        (foot.contact_height - expected_contact).abs() < 1.0e-3,
+        "slope contact height = {}, expected {expected_contact}",
+        foot.contact_height
+    );
+    // Tilted ground normal, clearly not straight up, yet still walkable.
+    let expected_normal = Vec3::new(-slope, 1.0, 0.0).normalize();
+    assert!(
+        (foot.normal - expected_normal).length() < 1.0e-3,
+        "tilted slope normal, got {:?}",
+        foot.normal
+    );
+    assert!(
+        (foot.normal - Vec3::Y).length() > 0.1,
+        "normal must be a real tilt, not flat-ground Vec3::Y: {:?}",
+        foot.normal
+    );
+
+    // (3) Apply the FootIk modifier directly through the wgpu-free sampler with
+    // those driven probes. Build the stack from the model's own leg set, exactly
+    // as the loader does (one FootIk entry carrying the whole leg list).
+    let model = leg_model();
+    let stack = PoseModifierStack::new(vec![ModifierEntry {
+        mask: postretro_model::pose_modifier::JointMask::new(),
+        modifier: PoseModifier::FootIk {
+            legs: model.legs.clone(),
+        },
+    }]);
+
+    // Rest/clip pose (no joint tracks) for the same skeleton, unmodified, gives
+    // the flat-ground ankle baseline the plant must move away from.
+    let mut rest_palette = Vec::new();
+    sample_clip_looped_modified(
+        &model.clips[0],
+        &model.skeleton,
+        0.0,
+        Loop::Wrap,
+        &PoseModifierStack::default(),
+        None,
+        &mut rest_palette,
+    );
+    // Identity inverse_bind: a palette entry's translation column is that joint's
+    // model-space position.
+    let ankle_rest_y = rest_palette[2].matrix[3][1];
+    assert!(
+        (ankle_rest_y - -0.70).abs() < 1.0e-4,
+        "rest ankle model-y = {ankle_rest_y}, expected -0.70"
+    );
+
+    let mut planted = Vec::new();
+    sample_clip_looped_modified(
+        &model.clips[0],
+        &model.skeleton,
+        0.0,
+        Loop::Wrap,
+        &stack,
+        Some(&inputs),
+        &mut planted,
+    );
+
+    let ankle_planted_y = planted[2].matrix[3][1];
+    // Planted onto the slope surface: the ankle drops from the flat-ground rest
+    // (-0.70) toward the probed slope contact height, clearly below rest.
+    assert!(
+        ankle_planted_y < ankle_rest_y - 1.0e-2,
+        "ankle did not plant down onto the slope: rest {ankle_rest_y}, planted {ankle_planted_y}"
+    );
+    // ...and it lands at (approximately) the probed slope surface, never below it.
+    assert!(
+        ankle_planted_y >= foot.contact_height - 1.0e-3,
+        "ankle drove through the slope surface: planted {ankle_planted_y}, contact {}",
+        foot.contact_height
+    );
+    assert!(
+        (ankle_planted_y - foot.contact_height).abs() < 2.0e-2,
+        "ankle did not reach the slope surface: planted {ankle_planted_y}, contact {}",
+        foot.contact_height
+    );
+
+    // Foot orients toward the ground normal: the sole (foot model +Y) tips off
+    // straight-up toward the tilted slope normal.
+    let foot_rot = glam::Quat::from_mat4(&glam::Mat4::from_cols_array_2d(&planted[2].matrix));
+    let sole = (foot_rot * Vec3::Y).normalize();
+    assert!(
+        sole.dot(foot.normal) > sole.dot(Vec3::Y),
+        "foot sole tilted toward the slope normal: sole {sole:?}, normal {:?}",
+        foot.normal
+    );
+
+    // The solve rotates only the leg joints and never translates the root: joint
+    // 0 stays at the model origin, so the plant can never push the pelvis through
+    // the surface.
+    let root = planted[0].matrix[3];
+    assert!(
+        root[0].abs() < 1.0e-6 && root[1].abs() < 1.0e-6 && root[2].abs() < 1.0e-6,
+        "root joint translated during the solve: {:?}",
+        [root[0], root[1], root[2]]
+    );
 }
 
 fn fixed_command_stream() -> Vec<RecordedCommand> {

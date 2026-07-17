@@ -19,6 +19,7 @@ use postretro_model::anim::{
     BlendSource, LocalTrs, Loop, capture_blend, sample_blended_world, sample_clip_looped_world,
 };
 use postretro_model::gltf_loader::{self, JointZone};
+use postretro_model::pose_modifier::LegChain;
 use postretro_model::sample_params::{
     CaptureInstruction, ClipSample, FadeSource, MeshSampleParams, instance_phase,
 };
@@ -58,6 +59,14 @@ pub(crate) struct ModelHitZones {
     /// past the skeleton, so no capsule folds in). Either way a `None` here routes
     /// the entity to the authored hitbox in the consumer.
     pub(crate) derived_bound: Option<Aabb>,
+    /// The model's ordered foot-IK leg set, moved in from
+    /// [`gltf_loader::LoadedModel::legs`]. Empty for a model with no leg tags.
+    /// Retained CPU-side so the fixed-tick ground-probe step can read each leg's
+    /// chain and foot joint; leg `i` drives foot probe `i`.
+    // Consumed by the fixed-tick ground-probe step (a later task); retained here
+    // at level load so that step has the leg set without re-reading the glTF.
+    #[allow(dead_code)]
+    pub(crate) legs: Vec<LegChain>,
 }
 
 impl ModelHitZones {
@@ -134,6 +143,7 @@ impl HitZoneStore {
             clips,
             joint_zones,
             pose_stack,
+            legs,
             ..
         } = model;
 
@@ -160,6 +170,7 @@ impl HitZoneStore {
                 clips: Arc::new(clips),
                 joint_zones,
                 derived_bound,
+                legs,
             },
         );
     }
@@ -1749,6 +1760,7 @@ mod tests {
                 clips: Arc::new(clips),
                 joint_zones: joint_zones.clone(),
                 derived_bound: Some(Aabb::default()),
+                legs: Vec::new(),
             },
         );
 
@@ -1829,6 +1841,7 @@ mod tests {
             clips: Arc::new(vec![clip]),
             joint_zones,
             derived_bound,
+            legs: Vec::new(),
         }
     }
 
@@ -1865,6 +1878,7 @@ mod tests {
             clips: Arc::new(clips),
             joint_zones,
             derived_bound,
+            legs: Vec::new(),
         }
     }
 
@@ -1891,6 +1905,7 @@ mod tests {
             clips: Arc::new(vec![]),
             joint_zones,
             derived_bound,
+            legs: Vec::new(),
         }
     }
 
@@ -2518,6 +2533,7 @@ mod tests {
             clips: Arc::new(clips),
             joint_zones,
             derived_bound,
+            legs: Vec::new(),
         }
     }
 
@@ -3091,6 +3107,7 @@ mod tests {
             clips: Arc::new(vec![]),
             joint_zones: vec![None],
             derived_bound: None,
+            legs: Vec::new(),
         };
         let store = store_with("plain", no_zone);
 

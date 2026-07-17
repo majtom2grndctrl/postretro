@@ -692,13 +692,18 @@ fn recorded_paired_exits() -> Vec<PlayerId> {
 mod tests {
     use super::*;
     use glam::Quat;
+    use postretro_entities::components::brain::{BrainComponent, attach_brain};
     use postretro_entities::{
         KinematicMoverComponent, KinematicMoverMode, MoverCommand, ScriptCtx,
     };
     use postretro_foundation::{
-        AirParams, CapsuleParams, FallParams, GroundParams, PlayerMovementComponent,
-        PlayerMovementDescriptor, SpeedParams,
+        AiDescriptor, AiStateNames, AirParams, CapsuleParams, FallParams, GroundParams,
+        PlayerMovementComponent, PlayerMovementDescriptor, SpeedParams,
     };
+    use postretro_scripting_core::data_descriptors::{
+        NamedReaction, PrimitiveDescriptor, ReactionDescriptor, TriggerEventDescriptor,
+    };
+    use postretro_scripting_core::data_registry::DataRegistry;
 
     const DT: f32 = 0.05;
 
@@ -1448,6 +1453,305 @@ mod tests {
         assert!(
             observed[0].fire.event_name.is_empty(),
             "the script-bound exit also carries an empty event name"
+        );
+    }
+
+    #[test]
+    fn closet_reveal_enter_edge_dispatches_door_and_enemy_release_reactions() {
+        // E18-C containment is authored as an onTriggerEvent fan-out. One
+        // script-bound enter edge must dispatch both named reaction bodies;
+        // neither is nested in the other as a sequence step.
+        let _guard = gate_test_guard().lock().expect("gate test guard poisoned");
+        reset_gate_fires();
+        let mut registry = EntityRegistry::new();
+        let mut bridge = TriggerVolumeBridge::new();
+        let trigger = spawn_trigger(
+            &mut registry,
+            &mut bridge,
+            TriggerActivation::Touch,
+            TriggerFireMode::Once,
+            0.0,
+            true,
+        );
+        registry
+            .set_tags(trigger, vec!["closet_reveal_plate".into()])
+            .expect("tag reveal plate");
+        let mover = spawn_mover(&mut registry);
+        registry
+            .set_tags(mover, vec!["closet_door".into()])
+            .expect("tag closet door");
+        let enemy = registry.spawn(Transform::default());
+        registry
+            .set_tags(enemy, vec!["closet_enemies".into()])
+            .expect("tag closet enemy");
+        attach_brain(
+            &mut registry,
+            enemy,
+            &AiDescriptor {
+                detection_range: 16.0,
+                attack_range: 2.0,
+                leash_range: 50.0,
+                attack_damage: 8.0,
+                attack_cooldown_ms: 1200.0,
+                move_speed: 3.0,
+                death_despawn_ms: 4000.0,
+                states: AiStateNames {
+                    idle: "idle".into(),
+                    alert: "alert".into(),
+                    attack: "attack".into(),
+                    death: "death".into(),
+                },
+            },
+        )
+        .expect("attach closed closet brain");
+        let mut brain = registry
+            .get_component::<BrainComponent>(enemy)
+            .expect("closet brain attached")
+            .clone();
+        brain.aggro_armed = false;
+        registry
+            .set_component(enemy, brain)
+            .expect("close closet aggro gate");
+
+        let mut data = DataRegistry::new();
+        data.populate_level_with_trigger_events(
+            vec![
+                NamedReaction {
+                    name: "closet.openDoor".into(),
+                    descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                        primitive: "moverStart".into(),
+                        target: None,
+                        tag: Some("closet_door".into()),
+                        args: serde_json::json!({}),
+                        on_complete: None,
+                    }),
+                },
+                NamedReaction {
+                    name: "closet.releaseCloset".into(),
+                    descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                        primitive: "updateEnemyState".into(),
+                        target: None,
+                        tag: Some("closet_enemies".into()),
+                        args: serde_json::json!({ "aggro": true }),
+                        on_complete: None,
+                    }),
+                },
+            ],
+            Vec::new(),
+            vec![TriggerEventDescriptor {
+                tag: "closet_reveal_plate".into(),
+                event: "enter".into(),
+                fire: vec!["closet.openDoor".into(), "closet.releaseCloset".into()],
+                levels: Vec::new(),
+            }],
+            &[],
+        );
+        let script_ctx = ScriptCtx::new();
+        let mut bindings = crate::trigger_bindings::TriggerBindingTable::build_with_script_ctx(
+            &registry,
+            &data,
+            &script_ctx,
+        );
+        bindings.install_manifest_events(&registry, &data, &script_ctx);
+        let player = spawn_player(&mut registry, Vec3::new(0.0, 1.0, 0.0));
+        let player_id = PlayerId::Local(player);
+        let players = [AuthoritativePlayer {
+            id: player_id,
+            pawn: player,
+        }];
+        let alive = HashSet::from([player_id]);
+        let bound_edges = bindings.bound_edges().clone();
+        let mut system = TriggerSystem::default();
+        let mut dispatched = Vec::new();
+
+        system.run_authoritative_tick_with_dispatch(
+            &mut registry,
+            &bridge,
+            TriggerTickInputs {
+                players: &players,
+                use_pressed: &HashMap::new(),
+                tick_dt: DT,
+            },
+            TriggerDispatchInputs {
+                alive_players: &alive,
+                bound_edges: &bound_edges,
+            },
+            |event, _, registry| {
+                let execution = bindings.execute_with_script_ctx(
+                    event.fire.trigger,
+                    event.edge,
+                    registry,
+                    &script_ctx,
+                    &crate::trigger_commands::TriggerFireContext::default(),
+                );
+                dispatched.extend(execution.commands);
+            },
+        );
+
+        assert_eq!(
+            dispatched,
+            vec![
+                crate::trigger_bindings::BoundTriggerCommandKind::Mover,
+                crate::trigger_bindings::BoundTriggerCommandKind::UpdateEnemyState,
+            ],
+            "one reveal enter edge fans out to the door and aggro-release reactions"
+        );
+        assert!(
+            registry
+                .get_component::<KinematicMoverComponent>(mover)
+                .expect("closet door mover attached")
+                .started,
+            "openDoor dispatch starts the closet door"
+        );
+        assert!(
+            registry
+                .get_component::<BrainComponent>(enemy)
+                .expect("closet brain attached")
+                .aggro_armed,
+            "releaseCloset dispatch opens the foundation-owned aggro gate"
+        );
+    }
+
+    #[test]
+    fn spawn_from_spawner_trigger_event_materializes_runtime_enemies() {
+        // AC 2 fixed-tick coverage: a `spawnFromSpawner` reaction bound to a
+        // trigger's enter edge must materialize enemies through the real
+        // `TriggerBindingTable` execute path — verifying the `spawn_context`
+        // threading, not just a direct `spawn_from_spawner_*` call. The table is
+        // built with a non-Default spawn context (via
+        // `build_with_script_ctx_and_diagnostics`) that both holds runtime-spawn
+        // authority and has the archetype resolved in its descriptor cache; a
+        // `Default` spawn context would silently no-op the materialization.
+        let _guard = gate_test_guard().lock().expect("gate test guard poisoned");
+        reset_gate_fires();
+        let mut registry = EntityRegistry::new();
+        let mut bridge = TriggerVolumeBridge::new();
+        let trigger = spawn_trigger(
+            &mut registry,
+            &mut bridge,
+            TriggerActivation::Touch,
+            TriggerFireMode::Once,
+            0.0,
+            true,
+        );
+        registry
+            .set_tags(trigger, vec!["ambush_plate".into()])
+            .expect("tag ambush plate");
+
+        // A resolved spawner tagged so the fire-time `spawnFromSpawner` tag target
+        // resolves against the Spawner column.
+        const SPAWN_COUNT: u32 = 3;
+        let spawner = registry.spawn(Transform::default());
+        registry
+            .set_tags(spawner, vec!["ambush_spawner".into()])
+            .expect("tag ambush spawner");
+        registry
+            .set_component(
+                spawner,
+                postretro_entities::components::spawner::SpawnerComponent {
+                    archetype_name: "cultist".into(),
+                    count: SPAWN_COUNT,
+                    resolved: true,
+                },
+            )
+            .expect("attach resolved spawner");
+
+        let mut data = DataRegistry::new();
+        data.populate_level_with_trigger_events(
+            vec![NamedReaction {
+                name: "ambush.spawn".into(),
+                descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                    primitive: "spawnFromSpawner".into(),
+                    target: None,
+                    tag: Some("ambush_spawner".into()),
+                    args: serde_json::json!({}),
+                    on_complete: None,
+                }),
+            }],
+            Vec::new(),
+            vec![TriggerEventDescriptor {
+                tag: "ambush_plate".into(),
+                event: "enter".into(),
+                fire: vec!["ambush.spawn".into()],
+                levels: Vec::new(),
+            }],
+            &[],
+        );
+
+        // Resolved archetype + runtime-spawn authority (default). A Default
+        // context has neither the descriptor cache nor level data, so the bound
+        // command would drop the spawn even though it dispatches.
+        let spawn_context = crate::spawner::SpawnContext::default();
+        spawn_context.replace_level_data(
+            [(
+                "cultist".to_string(),
+                crate::scripting::builtins::data_archetype_test_fixtures::ai_enemy_descriptor(
+                    "cultist",
+                ),
+            )]
+            .into_iter()
+            .collect(),
+            Some(postretro_foundation::NavAgentParams {
+                radius: 0.4,
+                height: 1.8,
+                step_height: 0.4,
+                max_slope_deg: 45.0,
+            }),
+        );
+
+        let script_ctx = ScriptCtx::new();
+        let mut bindings =
+            crate::trigger_bindings::TriggerBindingTable::build_with_script_ctx_and_diagnostics(
+                &registry,
+                &data,
+                &script_ctx,
+                MoverCommandDiagnostics::default(),
+                spawn_context,
+            );
+        bindings.install_manifest_events(&registry, &data, &script_ctx);
+        assert_eq!(
+            registry.iter_with_kind(ComponentKind::Brain).count(),
+            0,
+            "no AI entities exist before the trigger fires"
+        );
+
+        let player = spawn_player(&mut registry, Vec3::new(0.0, 1.0, 0.0));
+        let player_id = PlayerId::Local(player);
+        let players = [AuthoritativePlayer {
+            id: player_id,
+            pawn: player,
+        }];
+        let alive = HashSet::from([player_id]);
+        let bound_edges = bindings.bound_edges().clone();
+        let mut system = TriggerSystem::default();
+
+        system.run_authoritative_tick_with_dispatch(
+            &mut registry,
+            &bridge,
+            TriggerTickInputs {
+                players: &players,
+                use_pressed: &HashMap::new(),
+                tick_dt: DT,
+            },
+            TriggerDispatchInputs {
+                alive_players: &alive,
+                bound_edges: &bound_edges,
+            },
+            |event, _, registry| {
+                bindings.execute_with_script_ctx(
+                    event.fire.trigger,
+                    event.edge,
+                    registry,
+                    &script_ctx,
+                    &crate::trigger_commands::TriggerFireContext::default(),
+                );
+            },
+        );
+
+        assert_eq!(
+            registry.iter_with_kind(ComponentKind::Brain).count(),
+            SPAWN_COUNT as usize,
+            "the enter-edge spawnFromSpawner reaction materialized the spawner's enemies through the real execute path"
         );
     }
 

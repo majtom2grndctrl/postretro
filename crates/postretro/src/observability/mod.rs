@@ -47,6 +47,7 @@ const ALL_KINDS: [ComponentKind; ComponentKind::COUNT] = [
     ComponentKind::KinematicMover,
     ComponentKind::TriggerVolume,
     ComponentKind::AmmoReserve,
+    ComponentKind::Spawner,
 ];
 
 /// Snake_case name for a component kind, matching `ComponentValue`'s serde
@@ -74,6 +75,7 @@ fn component_kind_snake(kind: ComponentKind) -> &'static str {
         ComponentKind::KinematicMover => "kinematic_mover",
         ComponentKind::TriggerVolume => "trigger_volume",
         ComponentKind::AmmoReserve => "ammo_reserve",
+        ComponentKind::Spawner => "spawner",
     }
 }
 
@@ -329,6 +331,13 @@ mod tests {
                 ))
             }
             ComponentKind::AmmoReserve => ComponentValue::AmmoReserve(AmmoReserve::new()),
+            ComponentKind::Spawner => {
+                ComponentValue::Spawner(postretro_entities::components::spawner::SpawnerComponent {
+                    archetype_name: String::new(),
+                    count: 0,
+                    resolved: false,
+                })
+            }
         }
     }
 

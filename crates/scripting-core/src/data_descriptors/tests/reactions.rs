@@ -84,6 +84,20 @@ fn js_primitive_without_tag_is_system_targeted() {
 }
 
 #[test]
+fn js_spawner_primitive_requires_a_non_empty_tag() {
+    for source in [
+        r#"({ reactions: [{ name: "x", primitive: "spawnFromSpawner" }] })"#,
+        r#"({ reactions: [{ name: "x", primitive: "spawnFromSpawner", tag: "" }] })"#,
+        r#"({ reactions: [{ name: "x", primitive: "spawnFromSpawner", target: "@activators" }] })"#,
+    ] {
+        let manifest = eval_js(source, |ctx, value| {
+            LevelManifest::from_js_value(ctx, value).unwrap()
+        });
+        assert!(manifest.reactions.is_empty());
+    }
+}
+
+#[test]
 fn js_malformed_reaction_is_skipped() {
     // A bad descriptor must not discard the rest of a valid setup manifest.
     let src = r#"({
@@ -266,6 +280,20 @@ fn lua_primitive_without_tag_is_system_targeted() {
             assert!(p.tag.is_none());
         }
         other => panic!("expected primitive, got {other:?}"),
+    }
+}
+
+#[test]
+fn lua_spawner_primitive_requires_a_non_empty_tag() {
+    for source in [
+        r#"return { reactions = { { name = "x", primitive = "spawnFromSpawner" } } }"#,
+        r#"return { reactions = { { name = "x", primitive = "spawnFromSpawner", tag = "" } } }"#,
+        r#"return { reactions = { { name = "x", primitive = "spawnFromSpawner", target = "@activators" } } }"#,
+    ] {
+        let manifest = eval_lua(source, |value| {
+            LevelManifest::from_lua_value(value).unwrap()
+        });
+        assert!(manifest.reactions.is_empty());
     }
 }
 

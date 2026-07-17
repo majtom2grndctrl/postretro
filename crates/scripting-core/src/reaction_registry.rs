@@ -20,10 +20,14 @@ pub enum ReactionError {
 
 pub type ReactionPrimitiveFn =
     Box<dyn Fn(&mut EntityRegistry, &[EntityId], &serde_json::Value) -> Result<(), ReactionError>>;
+pub type TaggedReactionPrimitiveFn = Box<
+    dyn Fn(&mut EntityRegistry, &str, &[EntityId], &serde_json::Value) -> Result<(), ReactionError>,
+>;
 
 #[derive(Default)]
 pub struct ReactionPrimitiveRegistry {
     handlers: HashMap<String, ReactionPrimitiveFn>,
+    tagged_handlers: HashMap<String, TaggedReactionPrimitiveFn>,
 }
 
 impl ReactionPrimitiveRegistry {
@@ -37,7 +41,7 @@ impl ReactionPrimitiveRegistry {
             + 'static,
     {
         let name = name.into();
-        if self.handlers.contains_key(&name) {
+        if self.handlers.contains_key(&name) || self.tagged_handlers.contains_key(&name) {
             debug_assert!(false, "duplicate reaction primitive registration: {name}");
             log::warn!(
                 "[Scripting] ReactionPrimitiveRegistry: overwriting existing handler for '{name}'"
@@ -46,8 +50,32 @@ impl ReactionPrimitiveRegistry {
         self.handlers.insert(name, Box::new(handler));
     }
 
+    /// Register a tag-targeted primitive that needs the authored tag as well as
+    /// the Transform-resolved entity list. Most handlers only need targets; a
+    /// fire-time resolver uses the tag to distinguish a zero match from a tag
+    /// whose entities belong to another component family.
+    pub fn register_tagged<F>(&mut self, name: impl Into<String>, handler: F)
+    where
+        F: Fn(
+                &mut EntityRegistry,
+                &str,
+                &[EntityId],
+                &serde_json::Value,
+            ) -> Result<(), ReactionError>
+            + 'static,
+    {
+        let name = name.into();
+        if self.tagged_handlers.contains_key(&name) || self.handlers.contains_key(&name) {
+            debug_assert!(false, "duplicate reaction primitive registration: {name}");
+            log::warn!(
+                "[Scripting] ReactionPrimitiveRegistry: overwriting existing handler for '{name}'"
+            );
+        }
+        self.tagged_handlers.insert(name, Box::new(handler));
+    }
+
     pub fn contains(&self, name: &str) -> bool {
-        self.handlers.contains_key(name)
+        self.handlers.contains_key(name) || self.tagged_handlers.contains_key(name)
     }
 
     pub fn get(&self, name: &str) -> Option<&ReactionPrimitiveFn> {
@@ -66,12 +94,33 @@ impl ReactionPrimitiveRegistry {
         };
         handler(registry, targets, args).map(|_| true)
     }
+
+    pub fn dispatch_tagged(
+        &self,
+        name: &str,
+        registry: &mut EntityRegistry,
+        tag: &str,
+        targets: &[EntityId],
+        args: &serde_json::Value,
+    ) -> Result<bool, ReactionError> {
+        if let Some(handler) = self.tagged_handlers.get(name) {
+            return handler(registry, tag, targets, args).map(|_| true);
+        }
+        self.dispatch(name, registry, targets, args)
+    }
 }
 
 impl std::fmt::Debug for ReactionPrimitiveRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ReactionPrimitiveRegistry")
-            .field("handlers", &self.handlers.keys().collect::<Vec<_>>())
+            .field(
+                "handlers",
+                &self
+                    .handlers
+                    .keys()
+                    .chain(self.tagged_handlers.keys())
+                    .collect::<Vec<_>>(),
+            )
             .finish()
     }
 }

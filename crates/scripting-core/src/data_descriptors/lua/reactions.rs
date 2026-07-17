@@ -159,6 +159,13 @@ pub fn primitive_descriptor_from_lua(
             reason: "primitive `target` must be `@activators`".to_string(),
         });
     }
+    if primitive == "spawnFromSpawner"
+        && (tag.as_deref().is_none() || tag.as_deref().is_some_and(str::is_empty))
+    {
+        return Err(DescriptorError::InvalidShape {
+            reason: "primitive `spawnFromSpawner` requires a non-empty `tag`".to_string(),
+        });
+    }
 
     let on_complete = if table.contains_key("onComplete").map_err(lua_err)? {
         let raw: LuaValue = table.get("onComplete").map_err(lua_err)?;

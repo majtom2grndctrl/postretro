@@ -19,6 +19,7 @@ use crate::components::light::LightComponent;
 use crate::components::mesh::MeshComponent;
 use crate::components::particle::ParticleState;
 use crate::components::player_movement::PlayerMovementComponent;
+use crate::components::spawner::SpawnerComponent;
 use crate::components::sprite_visual::SpriteVisual;
 use crate::components::trigger_volume::TriggerVolumeComponent;
 use crate::components::weapon::WeaponComponent;
@@ -119,6 +120,9 @@ pub enum ComponentKind {
     TriggerVolume = 14,
     /// Pawn-owned ammunition balances pooled by authored ammo type.
     AmmoReserve = 15,
+    /// Map-authored, fixed-tick enemy-spawn configuration. The resolved
+    /// descriptor remains in the session spawn context, not this serde value.
+    Spawner = 16,
 }
 
 impl ComponentKind {
@@ -144,6 +148,7 @@ impl ComponentKind {
             ComponentKind::KinematicMover,
             ComponentKind::TriggerVolume,
             ComponentKind::AmmoReserve,
+            ComponentKind::Spawner,
         ];
         VARIANTS.len()
     };
@@ -200,6 +205,7 @@ pub enum ComponentValue {
     KinematicMover(KinematicMoverComponent),
     TriggerVolume(TriggerVolumeComponent),
     AmmoReserve(AmmoReserve),
+    Spawner(SpawnerComponent),
 }
 
 impl ComponentValue {
@@ -221,6 +227,7 @@ impl ComponentValue {
             ComponentValue::KinematicMover(_) => ComponentKind::KinematicMover,
             ComponentValue::TriggerVolume(_) => ComponentKind::TriggerVolume,
             ComponentValue::AmmoReserve(_) => ComponentKind::AmmoReserve,
+            ComponentValue::Spawner(_) => ComponentKind::Spawner,
         }
     }
 }
@@ -532,6 +539,21 @@ impl Component for AmmoReserve {
     }
 }
 
+impl Component for SpawnerComponent {
+    const KIND: ComponentKind = ComponentKind::Spawner;
+
+    fn from_value(value: &ComponentValue) -> Option<&Self> {
+        match value {
+            ComponentValue::Spawner(spawner) => Some(spawner),
+            _ => None,
+        }
+    }
+
+    fn into_value(self) -> ComponentValue {
+        ComponentValue::Spawner(self)
+    }
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum RegistryError {
     #[error("entity {0} does not exist")]
@@ -580,6 +602,10 @@ pub struct EntityRegistry {
     /// Phase 0 sim command. Not script-visible and not a tag/KVP, so it cannot
     /// affect world queries or authored entity properties.
     local_player_pawn: Option<EntityId>,
+    /// A test-only artificial slot ceiling. Production still has exactly the
+    /// `u16::MAX` registry capacity promised by `try_spawn`.
+    #[cfg(any(test, feature = "test-support"))]
+    test_capacity_limit: Option<usize>,
 }
 
 impl EntityRegistry {
@@ -592,7 +618,16 @@ impl EntityRegistry {
             tags: Vec::new(),
             kvp_table: HashMap::new(),
             local_player_pawn: None,
+            #[cfg(any(test, feature = "test-support"))]
+            test_capacity_limit: None,
         }
+    }
+
+    /// Artificially cap fresh slots for a focused exhaustion test. Reused
+    /// free-list slots remain valid capacity, matching the real registry.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_test_capacity_limit(&mut self, limit: usize) {
+        self.test_capacity_limit = Some(limit);
     }
 
     /// Mark the pawn driven by the single local Phase 0 sim command. Systems
@@ -730,6 +765,14 @@ impl EntityRegistry {
     /// KVPs from a source `MapEntity` must be written separately via
     /// `set_map_kvps` after spawn — `try_spawn` does not accept them.
     pub fn try_spawn(&mut self, transform: Transform, tags: &[String]) -> Option<EntityId> {
+        #[cfg(any(test, feature = "test-support"))]
+        if self.free_list.is_empty()
+            && self
+                .test_capacity_limit
+                .is_some_and(|limit| self.slots.len() >= limit)
+        {
+            return None;
+        }
         if self.free_list.is_empty() && self.slots.len() >= u16::MAX as usize {
             return None;
         }

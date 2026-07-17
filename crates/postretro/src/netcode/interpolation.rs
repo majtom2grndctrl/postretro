@@ -49,7 +49,7 @@ const MIN_DELAY_MICROS: u64 = 50_000;
 /// latency is worse than the occasional extrapolation a tighter delay would cause.
 /// Unchanged by the Symptom 2 calibration: it is the safety ceiling for a bad link,
 /// reached only when measured jitter is high, not the steady-state co-op latency.
-const MAX_DELAY_MICROS: u64 = 250_000;
+pub(crate) const MAX_DELAY_MICROS: u64 = 250_000;
 /// Jitter multiplier in the delay law: the delay absorbs twice the measured jitter on
 /// top of the 50 ms floor before clamping (a 2σ-style margin against the smoothed
 /// mean-absolute deviation `ClientTimeSync::jitter_micros` reports).

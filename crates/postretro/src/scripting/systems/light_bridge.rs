@@ -226,7 +226,10 @@ impl LightBridge {
     /// `populate_from_level` — typically by the data-archetype sweep, which
     /// runs after `App::resumed()` (where `populate_from_level` is called)
     /// during the first `RedrawRequested` once the data script has populated
-    /// the entity-type registry.
+    /// the entity-type registry. Also called every host fixed tick (`main.rs`)
+    /// to enroll descriptor lights carried by runtime spawner-spawned enemies;
+    /// that call is cheap on a no-op tick, since the scan below early-returns
+    /// without allocating once nothing new appears.
     ///
     /// Any `LightComponent` entity not already tracked in `self.entity_ids` is
     /// appended to the bridge's parallel arrays so its component participates
@@ -243,22 +246,19 @@ impl LightBridge {
     /// The cached f64 origin mirrors the f32 component origin
     /// (descriptor-spawn is f32 from the start; there is no f64 source).
     pub(crate) fn absorb_dynamic_lights(&mut self, registry: &EntityRegistry) {
-        let already_tracked: std::collections::HashSet<EntityId> =
-            self.entity_ids.iter().copied().collect();
+        // Called every fixed tick, but a runtime spawn that carries a descriptor
+        // light is rare — most ticks find nothing new. Scan the Light column and
+        // only touch the heap once an untracked id actually appears, so the
+        // common no-op tick allocates nothing. Membership is a linear check
+        // against `entity_ids` (bounded by the level's light count); materializing
+        // a `HashSet`/`Vec` of the whole column up front would churn the heap
+        // every tick just to discover there was nothing to absorb.
+        let mut absorbed_any = false;
+        for (id, _) in registry.iter_with_kind(ComponentKind::Light) {
+            if self.entity_ids.contains(&id) {
+                continue;
+            }
 
-        // Collect ids first (avoid borrowing the registry through the iterator
-        // while we mutate our own state).
-        let new_ids: Vec<EntityId> = registry
-            .iter_with_kind(ComponentKind::Light)
-            .map(|(id, _)| id)
-            .filter(|id| !already_tracked.contains(id))
-            .collect();
-
-        if new_ids.is_empty() {
-            return;
-        }
-
-        for id in new_ids {
             // Read the component to capture the spawn-time f32 origin so the
             // f64 cache matches what the bridge will hand back to the renderer
             // when it round-trips through `component_to_map_light`.
@@ -280,6 +280,11 @@ impl LightBridge {
                 animated_slot: None,
             });
             self.cached_origins_f64.push(origin_f64);
+            absorbed_any = true;
+        }
+
+        if !absorbed_any {
+            return;
         }
 
         // Resize scripted-sample mirror to match the new entity count and

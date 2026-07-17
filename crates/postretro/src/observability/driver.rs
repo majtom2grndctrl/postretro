@@ -150,6 +150,7 @@ fn run_headless_inner(runspec_arg: Option<&str>) -> Result<String> {
             world: &world,
             script_ctx: &script_ctx,
             command_diagnostics: session.scripting.command_diagnostics.clone(),
+            spawn_context: session.scripting.spawn_context.clone(),
             content_root: content_root.as_path(),
             active_level_tags: &active_level_tags,
             nav_graph: nav_graph.as_ref(),

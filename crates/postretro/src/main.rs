@@ -53,6 +53,7 @@ mod scripting;
 // See: context/lib/boot_sequence.md §1
 mod session;
 mod sim;
+mod spawner;
 mod startup;
 mod trigger_bindings;
 mod trigger_commands;
@@ -234,7 +235,26 @@ fn resolve_mesh_entity_clips(
         })
         .collect();
 
-    for id in animated {
+    resolve_mesh_entity_clips_for_entities(registry, tables, animated);
+}
+
+/// Resolve clip indices for a known set of newly materialized mesh entities.
+/// Runtime spawners call this through their session-owned pending-id queue after
+/// descriptor attachment; their models were already uploaded at level install.
+fn resolve_mesh_entity_clips_for_entities(
+    registry: &mut postretro_entities::EntityRegistry,
+    tables: &scripting_systems::mesh_anim::MeshClipTables,
+    entity_ids: impl IntoIterator<Item = postretro_entities::EntityId>,
+) {
+    use postretro_entities::ComponentKind;
+
+    for id in entity_ids {
+        if !matches!(
+            registry.has_component_kind(id, ComponentKind::Mesh),
+            Ok(true)
+        ) {
+            continue;
+        }
         let Ok(mut component) = registry
             .get_component::<postretro_entities::components::mesh::MeshComponent>(id)
             .cloned()
@@ -1993,6 +2013,26 @@ impl ApplicationHandler for App {
                                 use_edges: &trigger_use_edges,
                             }),
                         );
+                        // A runtime-spawned host enemy receives a mesh only
+                        // after the install-time whole-registry clip resolve.
+                        // Drain its one-shot queue now: its archetype model and
+                        // clip table were preloaded from the map spawner, so this
+                        // is solely an animation-index fill, never a GPU upload.
+                        let spawned_meshes = session
+                            .scripting
+                            .spawn_context
+                            .take_pending_mesh_clip_resolves();
+                        resolve_mesh_entity_clips_for_entities(
+                            &mut script_ctx.registry.borrow_mut(),
+                            &session.mesh_clip_tables,
+                            spawned_meshes,
+                        );
+                        // Runtime descriptor spawns can carry dynamic lights.
+                        // Enroll them after the fixed tick; the renderer still
+                        // receives only the bridge's CPU-packed update.
+                        session
+                            .light_bridge
+                            .absorb_dynamic_lights(&script_ctx.registry.borrow());
                         scripting_systems::slot_accumulators::evaluate_slot_accumulators(
                             &mut session.scripting.slot_accumulator_bindings,
                             tick_dt,
@@ -2011,6 +2051,13 @@ impl ApplicationHandler for App {
                         self.frame_timing
                             .push_state(InterpolableState::new(self.camera.position));
                         self.host_advance_fixed_sim_tick();
+                        // Unconditional per-tick sweep, not gated on "did a spawn happen this
+                        // tick": it must catch enemies materialized by any runtime
+                        // spawnFromSpawner before the post-loop serialize below, and threading
+                        // a spawn-happened signal through from SpawnContext isn't worth it when
+                        // the sweep is host-gated, idempotent, and a cheap empty collect() in
+                        // the common no-spawn case.
+                        self.host_register_map_enemies_after_fixed_sim_tick();
                     }
                 }
 
@@ -5011,19 +5058,31 @@ impl App {
         netcode::host_register_own_pawn(allocator, replicable, host_pawn, pawn);
     }
 
-    /// Register the listen host's map-placed AI enemies for outbound replication after a
-    /// level install (E10 Task 4). Map-placed descriptor enemies carrying `Brain` + `Agent`
-    /// are spawned by `apply_data_archetype_dispatch`; without registering them in the
-    /// `ReplicableSet` they never reach `produce_owned_snapshots`, so clients see no enemy.
+    /// Register the listen host's networked AI enemies for outbound replication after a
+    /// level install (E10 Task 4). Descriptor enemies carrying `Brain` + `Agent` from a
+    /// map placement or runtime spawner must enter the `ReplicableSet`, or clients never
+    /// receive their snapshots.
     ///
     /// Host-gated: a no-op for single-player and the connected client (the endpoint is not
     /// the `Host` variant). Thin delegation to `netcode::host_register_map_enemies`, which
-    /// sweeps the registry for AI map enemies, stamps each a `NetworkId`, registers it with
+    /// sweeps the registry for networked AI enemies, stamps each a `NetworkId`, registers it with
     /// NO owner mapping (host-authoritative, never `local_player`), and tracks the ids in
     /// the `Host` endpoint's `map_enemies` set so a level reload unregisters the stale ones
     /// first. The enemies stay driven by the host's AI/steering systems — this only
     /// replicates their `Transform` (and descriptor class) outbound.
     fn host_register_map_enemies_after_install(&mut self) {
+        self.host_register_map_enemies();
+    }
+
+    /// Re-sweep after every completed host fixed tick so runtime-spawned AI enemies are
+    /// registered before the next outbound snapshot. The underlying sweep is idempotent,
+    /// so existing registered enemies retain their `NetworkId`; this is a no-op off the host.
+    fn host_register_map_enemies_after_fixed_sim_tick(&mut self) {
+        self.host_register_map_enemies();
+    }
+
+    /// Shared host-gated delegation for install-time and post-tick AI registration.
+    fn host_register_map_enemies(&mut self) {
         let Some(script_ctx) = self
             .session
             .as_ref()
@@ -7527,6 +7586,84 @@ mod tests {
             .expect("animation block present");
         assert_eq!(anim.states.get("idle").unwrap().clip_index, Some(0));
         assert_eq!(anim.states.get("attack").unwrap().clip_index, Some(1));
+    }
+
+    #[test]
+    fn spawner_only_archetype_is_preuploaded_for_both_roles_and_host_spawn_resolves_clips() {
+        use crate::scripting::builtins::data_archetype_test_fixtures::ai_enemy_descriptor;
+        use postretro_entities::components::mesh::MeshComponent;
+        use postretro_entities::components::spawner::SpawnerComponent;
+        use postretro_entities::{ComponentKind, EntityRegistry, Transform};
+
+        let mut descriptor = ai_enemy_descriptor("spawner_only");
+        descriptor.mesh.as_mut().unwrap().model = "models/spawner_only.gltf".to_string();
+        let descriptors = vec![descriptor.clone()];
+
+        // There is no pre-placed enemy mesh: both role-specific upload sets must
+        // discover this model through the resolved map spawner alone.
+        let mut registry = EntityRegistry::new();
+        let spawner = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                spawner,
+                SpawnerComponent {
+                    archetype_name: "spawner_only".to_string(),
+                    count: 1,
+                    resolved: true,
+                },
+            )
+            .unwrap();
+        assert!(distinct_mesh_models(&registry).is_empty());
+        let spawner_models =
+            crate::startup::lifecycle::resolved_spawner_mesh_models(&registry, &descriptors);
+        let host_upload_models = spawner_models.clone();
+        let client_upload_models = spawner_models;
+        assert_eq!(host_upload_models, vec!["models/spawner_only.gltf"]);
+        assert_eq!(client_upload_models, host_upload_models);
+
+        // This stands in for the renderer install hook: the shared upload union
+        // builds the clip table before either host spawn or client remote
+        // materialization can attach the mesh.
+        let mut tables = scripting_systems::mesh_anim::MeshClipTables::new();
+        tables.insert_with_bounds(
+            postretro_model::ModelHandle::from("models/spawner_only.gltf"),
+            &[
+                postretro_render_cpu::mesh_pass::ClipMetadata {
+                    name: "idle_clip".to_string(),
+                    duration: 2.0,
+                },
+                postretro_render_cpu::mesh_pass::ClipMetadata {
+                    name: "attack_clip".to_string(),
+                    duration: 0.8,
+                },
+            ],
+            postretro_render_data::cone_frustum::Aabb::default(),
+        );
+
+        let context = crate::spawner::SpawnContext::default();
+        context.replace_level_data(
+            [("spawner_only".to_string(), descriptor)]
+                .into_iter()
+                .collect(),
+            None,
+        );
+        crate::spawner::spawn_from_spawner_targets(&mut registry, &[spawner], &context);
+
+        let spawned = registry
+            .iter_with_kind(ComponentKind::Mesh)
+            .map(|(id, _)| id)
+            .collect::<Vec<_>>();
+        assert_eq!(spawned.len(), 1);
+        resolve_mesh_entity_clips_for_entities(
+            &mut registry,
+            &tables,
+            context.take_pending_mesh_clip_resolves(),
+        );
+
+        let mesh = registry.get_component::<MeshComponent>(spawned[0]).unwrap();
+        let animation = mesh.animation.as_ref().unwrap();
+        assert_eq!(animation.states["idle"].clip_index, Some(0));
+        assert_eq!(animation.states["attack"].clip_index, Some(1));
     }
 
     #[test]

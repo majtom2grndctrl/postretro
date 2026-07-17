@@ -50,7 +50,7 @@ export type ProgressReactionDescriptor = {
 --- Primitive reaction body: invokes the named Rust primitive. With `tag`, it
 --- targets entities carrying that tag and mutates them. Tag-targeted primitives
 -- include emitter/fog/mover commands, `applyDamage`, `setAnimationState`,
--- `updateEnemyState`, `armTrigger`, and `disarmTrigger`; arm/disarm use empty args. Without `tag`,
+-- `updateEnemyState`, `spawnFromSpawner`, `armTrigger`, and `disarmTrigger`; arm/disarm use empty args. Without `tag`,
 --- it is a system reaction (no entities) that enqueues a typed engine command
 --- — `playSound`, `rumble`, `flashScreen`, the UI-stack reactions. `args`
 --- carries the primitive's typed payload (e.g. `{ rate = 0 }` for
@@ -293,6 +293,23 @@ function DataScriptSdk.enemies(filter: EnemyGroupFilter): EnemyGroup
   return {
     update = function(_self: EnemyGroup, fields: EnemyStateUpdateArgs): PrimitiveReactionDescriptor
       return { primitive = "updateEnemyState", tag = filter.tag, args = fields }
+    end,
+  }
+end
+
+--- Selects the live spawner group addressed when a reaction fires.
+export type SpawnerFilter = { tag: string }
+
+--- Fire-time-tag spawner handle. `fire` emits one primitive descriptor.
+export type SpawnerHandle = {
+  fire: (self: SpawnerHandle) -> PrimitiveReactionDescriptor,
+}
+
+--- Select a live spawner group by tag and fire each matching spawner.
+function DataScriptSdk.spawner(filter: SpawnerFilter): SpawnerHandle
+  return {
+    fire = function(_self: SpawnerHandle): PrimitiveReactionDescriptor
+      return { primitive = "spawnFromSpawner", tag = filter.tag }
     end,
   }
 end

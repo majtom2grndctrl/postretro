@@ -13,13 +13,15 @@ and composes with spawn-closets (`done/E18--spawner-and-closet-containment`).
 
 ### In scope
 
-- **`trapPools` manifest key** on the `setupLevel` return bundle — level-local declarative data
+- **`triggerPools` manifest key** on the `setupLevel` return bundle — level-local declarative data
   beside `reactions`/`crossings`/`triggerEvents`. Each entry: `{ name, tag, arm }` — a unique pool
   name (identity for logs/overlay), a tag selecting member trigger volumes, and the count to arm.
   Parsed warn-and-skip per entry in both runtimes, mirroring the `triggerEvents` drains.
-- **`defineTrapPool({ name, tag, arm })` SDK builder** — a pure identity/validation helper (the
+- **`defineTriggerPool({ name, tag, arm })` SDK builder** — a pure identity/validation helper (the
   `defineMapCatalog` shape): no FFI, returns the descriptor for the manifest array. TS + Luau,
-  typedefs, drift snapshot, parity fixture.
+  typedefs, drift snapshot, parity fixture. Trap pools are this primitive's motivating consumer;
+  the same tagged-pool arm/disarm mechanism generalizes to randomized pickups, ambush points, or
+  encounter variants.
 - **Pool membership = trigger volumes carrying the pool tag.** The trap's payload (spawner, mover,
   enemy release) hangs off each member trigger's `on_fire` reactions — shipped composition, nothing
   new. Non-trigger entities sharing the tag (a spawner sharing its closet tag) are simply not
@@ -31,13 +33,13 @@ and composes with spawn-closets (`done/E18--spawner-and-closet-containment`).
   so an authored `enabled_on_spawn` value never leaks into a pool member (authoring convention is
   `false`; `true` warns as a likely mistake and is overridden).
 - **Seed policy (pinned by research §4.6):** fresh roll per level install, including same-session
-  restarts. Seed sources: `--trap-seed=<u64>` CLI override, else entropy (windowed), else the fixed
+  restarts. Seed sources: `--pool-seed=<u64>` CLI override, else entropy (windowed), else the fixed
   default `0` in headless mode so batch-runner byte-identical output survives. Seed logged at info
   on every roll; each pool's armed member set logged with it.
 - **Engine-owned PRNG:** SplitMix64 (integer-only, cross-platform deterministic), copied from the
   in-tree netcode-harness implementation. No `rand` dependency. RNG lives only in this install
   pass — never in per-tick evaluation, never in command-buffer IR.
-- **Install report** (`TrapPoolInstallReport`): seed + per-pool member/selected sets, retained
+- **Install report** (`TriggerPoolInstallReport`): seed + per-pool member/selected sets, retained
   host-side for tests and the dev overlay. Host-local only.
 - **Replication: none.** Clients never run the pass; armed traps manifest to clients only through
   consequences (mover phase, spawned enemies) that already replicate. Two-endpoint QA proves it.
@@ -49,7 +51,7 @@ and composes with spawn-closets (`done/E18--spawner-and-closet-containment`).
 
 ### Out of scope
 
-- A mod-global `ModManifest.trapPools` tier with a `levels` selector — pools are per-level by
+- A mod-global `ModManifest.triggerPools` tier with a `levels` selector — pools are per-level by
   nature; add the tier only on authoring demand (the `ScopedTriggerEvent` machinery is the template
   when it comes).
 - Weighted selection, per-member weights, guaranteed/forbidden members — `arm` count only in v1
@@ -67,7 +69,7 @@ and composes with spawn-closets (`done/E18--spawner-and-closet-containment`).
 
 ## Acceptance criteria
 
-- [ ] A `setupLevel` returning `trapPools: [defineTrapPool({ name, tag, arm })]` parses in a TS mod
+- [ ] A `setupLevel` returning `triggerPools: [defineTriggerPool({ name, tag, arm })]` parses in a TS mod
       and a Luau mod; both runtimes emit byte-identical descriptor data; the typedef drift check
       passes after regeneration.
 - [ ] A level declaring one pool (`arm: 2`) over 4 member triggers installs on the host with
@@ -75,7 +77,7 @@ and composes with spawn-closets (`done/E18--spawner-and-closet-containment`).
       `enabled_on_spawn` (headless install test).
 - [ ] Two installs with the same seed produce identical armed sets; two pinned differing seeds
       (chosen by the test) produce different armed sets for the same fixture.
-- [ ] With `--trap-seed` pinned, a same-session `restartLevel` re-runs the pass and reproduces the
+- [ ] With `--pool-seed` pinned, a same-session `restartLevel` re-runs the pass and reproduces the
       identical armed set; the seed is logged on every roll.
 - [ ] Without an override, a headless run uses the fixed default seed and repeated identical runs
       stay byte-identical (batch-runner guarantee preserved).
@@ -104,32 +106,32 @@ and composes with spawn-closets (`done/E18--spawner-and-closet-containment`).
 
 ## Tasks
 
-### Task 1: `TrapPoolDescriptor` + manifest drains + registry storage
+### Task 1: `TriggerPoolDescriptor` + manifest drains + registry storage
 
-Add `TrapPoolDescriptor { name: String, tag: String, arm: u32 }` beside `TriggerEventDescriptor`
+Add `TriggerPoolDescriptor { name: String, tag: String, arm: u32 }` beside `TriggerEventDescriptor`
 in `crates/entities/src/data_descriptors/types/reactions.rs`. Widen `LevelManifest`
 (`crates/scripting-core/src/data_descriptors/runtime_manifest.rs`) with
-`trap_pools: Vec<TrapPoolDescriptor>`. Parse the `trapPools` key in both converter paths by
-mirroring the trigger-event drains exactly: a `drain_trap_pools_js(&obj, "setupLevel")` sibling to
+`trigger_pools: Vec<TriggerPoolDescriptor>`. Parse the `triggerPools` key in both converter paths by
+mirroring the trigger-event drains exactly: a `drain_trigger_pools_js(&obj, "setupLevel")` sibling to
 `drain_trigger_events_js` (`crates/scripting-core/src/data_descriptors/js/manifest.rs:62`) called
-from `LevelManifest::from_js_value`, and a `drain_trap_pools_lua` sibling to
+from `LevelManifest::from_js_value`, and a `drain_trigger_pools_lua` sibling to
 `drain_trigger_events_lua` (`.../lua/manifest.rs:66`) called from `from_lua_table`. Per-entry
 validation, warn-and-skip (never abort the manifest): `name` and `tag` required non-empty strings;
 `arm` a required non-negative integer (reject fractional and negative numbers); reject a duplicate
 `name` within the array (warn, skip the later entry). Storage: `DataRegistry`
-(`crates/entities/src/data_registry.rs`) gains a level-scoped `level_trap_pools:
-Vec<TrapPoolDescriptor>` with a `set_level_trap_pools(...)` setter called from the same
+(`crates/entities/src/data_registry.rs`) gains a level-scoped `level_trigger_pools:
+Vec<TriggerPoolDescriptor>` with a `set_level_trigger_pools(...)` setter called from the same
 `install_world_cpu` block that calls `populate_level_with_trigger_events`
 (`crates/postretro/src/startup/lifecycle.rs:1353-1361` — one added call), a read accessor
-`trap_pools()`, and clearing on the same level-unload path that clears level reactions/crossings.
+`trigger_pools()`, and clearing on the same level-unload path that clears level reactions/crossings.
 Level-local only: no `ModManifest` tier, no `staged_manifest.rs` edits.
 
 ### Task 2: Seeded arming pass + CLI seed override
 
-New module `crates/postretro/src/trap_pools.rs` owning the whole pass. **PRNG:** copy the
+New module `crates/postretro/src/trigger_pools.rs` owning the whole pass. **PRNG:** copy the
 SplitMix64 from `crates/net/src/harness.rs:33-65` (private there; copy, don't export — module-local
-`pub(crate)` struct) — integer-only, no floats in selection. **Seed resolution:** `--trap-seed
-<u64>` / `--trap-seed=<u64>` parsed in `crates/postretro/src/startup/session.rs` beside the
+`pub(crate)` struct) — integer-only, no floats in selection. **Seed resolution:** `--pool-seed
+<u64>` / `--pool-seed=<u64>` parsed in `crates/postretro/src/startup/session.rs` beside the
 existing manual `--content-root`/`--headless` scanners, stored on the session boot config;
 absent → headless sessions use fixed seed `0`, windowed sessions derive entropy from
 `SystemTime::now()` nanos scrambled through SplitMix64. Thread the resolved
@@ -139,7 +141,7 @@ gate reusing the already-threaded `suppress_ai_enemies` flag: the pass runs iff
 gating E18-C's spawner registration uses). **Call site:** inside `install_world_cpu`, after
 `resolve_spawners_for_level` (`lifecycle.rs:1466-1469`) and before the `levelLoad` fire
 (`:1531`), so `levelLoad` reactions observe — and may override — the final armed set. **Pass:**
-read `data_registry.trap_pools()`; log `[TrapPools] seed=<n>` once per roll; for each pool in
+read `data_registry.trigger_pools()`; log `[TriggerPools] seed=<n>` once per roll; for each pool in
 declaration order, resolve members via
 `registry.query_by_component_and_tag(ComponentKind::TriggerVolume, Some(tag))`
 (`crates/entities/src/registry.rs:709`), collect and sort `EntityId`s ascending (stable spawn
@@ -150,26 +152,26 @@ helpers `arm_trigger_targets` / `disarm_trigger_targets`
 in scope in `install_world_cpu`). Warn once per member whose component has
 `enabled_on_spawn == true`, and once per member matched by more than one pool (track ids across
 pools; later pool wins). Log each pool's selected set. **Report:** the pass returns
-`TrapPoolInstallReport { seed: u64, pools: Vec<TrapPoolOutcome> }` (`TrapPoolOutcome`: pool name,
+`TriggerPoolInstallReport { seed: u64, pools: Vec<TriggerPoolOutcome> }` (`TriggerPoolOutcome`: pool name,
 tag, member ids, selected ids); return it through a new field on `WorldInstallProducts`
 (`lifecycle.rs:1160`), unpacked onto `App` where the other products land, defaulting empty on a
 connected client. Unit tests live in the module; install-integration tests drive
 `install_world_cpu` headless.
 
-### Task 3: SDK surface — `defineTrapPool`, `trapPools` key, typedefs, parity
+### Task 3: SDK surface — `defineTriggerPool`, `triggerPools` key, typedefs, parity
 
-Add `defineTrapPool(pool: { name: string; tag: string; arm: number }): TrapPoolDescriptor` to
+Add `defineTriggerPool(pool: { name: string; tag: string; arm: number }): TriggerPoolDescriptor` to
 `sdk/lib/data_script.ts` (a pure identity helper, the `defineMapCatalog` shape — no FFI, no
-freezing beyond what siblings do) and the `TrapPoolDescriptor` type; widen the exported
-`LevelManifest` type (`data_script.ts:110-119`) with `trapPools?: TrapPoolDescriptor[]`. Mirror
-both in `sdk/lib/data_script.luau`, and add `defineTrapPool` to the Luau global allowlist
+freezing beyond what siblings do) and the `TriggerPoolDescriptor` type; widen the exported
+`LevelManifest` type (`data_script.ts:110-119`) with `triggerPools?: TriggerPoolDescriptor[]`. Mirror
+both in `sdk/lib/data_script.luau`, and add `defineTriggerPool` to the Luau global allowlist
 `DATA_SCRIPT_FIELDS` (`crates/scripting-core/src/luau_prelude.rs:127-140`) — an unlisted global is
 never lifted after the data script evaluates. Extend the typedef templates
 (`crates/scripting-core/src/typedef/templates/sdk_lib.d.ts` `LevelManifest` at `:284-287`, and
 `sdk_lib.luau` twin) with the builder and the manifest key; regenerate `sdk/types/postretro.d.ts` /
 `.d.luau` via `gen-script-types`; update the committed drift snapshot
 (`crates/postretro/src/scripting/typedef/tests/`). Add a TS/Luau parity fixture asserting both
-runtimes produce byte-identical `trapPools` manifest data for the same authored pool. SDK builders
+runtimes produce byte-identical `triggerPools` manifest data for the same authored pool. SDK builders
 do not pre-reject values beyond shape (required keys present, `arm` a number); the engine drains
 (Task 1) own warn-and-degrade, matching the `edge`-value precedent.
 
@@ -179,7 +181,7 @@ Extend `TriggerDiagnosticsRow` (`crates/renderer/src/render/debug_ui/mod.rs:98`)
 `pool: String` (empty when the trigger is in no pool) and `pool_selected: bool`; widen
 `draw_triggers_tab`'s `num_columns` from 10 to 11 (`:720`) and render the pool cell as name +
 selected/unselected mark. The renderer cannot see trap-pool types: `collect_trigger_diagnostics_rows`
-(`crates/postretro/src/trigger_diagnostics.rs:21`) gains a `&TrapPoolInstallReport` parameter
+(`crates/postretro/src/trigger_diagnostics.rs:21`) gains a `&TriggerPoolInstallReport` parameter
 (empty report off-host) fed at the render call site in `main.rs` from the `App`-stored report
 (Task 2), joining member ids to rows; update the function's existing test callers. Everything
 compiles out without `--features dev-tools`.
@@ -189,7 +191,7 @@ compiles out without `--features dev-tools`.
 Author `content/dev/maps/trap-pools.map` plus its companion script (follow the
 `closet-reveal.map` set-piece precedent): four spawn-flavor closet traps — each a
 `trigger_volume` member tagged into one pool, firing a `spawnFromSpawner` reaction at its
-co-placed `entity_spawner` — declared `defineTrapPool({ name: "closets", tag: "closet_trap",
+co-placed `entity_spawner` — declared `defineTriggerPool({ name: "closets", tag: "closet_trap",
 arm: 2 })`. Headless tests: exact armed count; same-seed reproducibility and pinned
 differing-seed divergence; restart-with-pinned-seed identity; unselected-member silence then
 runtime `armTrigger` re-arm-and-fire; the degradation matrix (empty tag, over-count clamp,
@@ -226,17 +228,17 @@ consumes Task 2's pass and Task 3's builder).
   the overlay shows no pool data on a connected client.
 - **Oversized-file note (soft):** `lifecycle.rs` (3524) and `trigger_system.rs` (2292) are already
   past the split threshold, but this spec adds only a call site to the former and calls existing
-  helpers in the latter — the feature lands in a new `trap_pools.rs`. No split-before-extend task
+  helpers in the latter — the feature lands in a new `trigger_pools.rs`. No split-before-extend task
   is warranted; do not grow either file with pass logic.
 
 ## Boundary inventory
 
 | Name | Rust | Wire / serde | JS / TS | Luau | FGD KVP |
 |---|---|---|---|---|---|
-| pool manifest key | `LevelManifest.trap_pools` / `DataRegistry::level_trap_pools` | `"trapPools"` (setupLevel return key) | `trapPools?: TrapPoolDescriptor[]` | same | n/a |
-| pool descriptor | `TrapPoolDescriptor { name, tag, arm }` | object keys `"name"`, `"tag"`, `"arm"` | `defineTrapPool({ name, tag, arm })` | same | n/a |
-| seed override | session boot config `Option<u64>` | n/a (CLI `--trap-seed=<u64>`) | n/a | n/a | n/a |
-| install report | `TrapPoolInstallReport` (host-local, not replicated) | none — no wire surface | n/a | n/a | n/a |
+| pool manifest key | `LevelManifest.trigger_pools` / `DataRegistry::level_trigger_pools` | `"triggerPools"` (setupLevel return key) | `triggerPools?: TriggerPoolDescriptor[]` | same | n/a |
+| pool descriptor | `TriggerPoolDescriptor { name, tag, arm }` | object keys `"name"`, `"tag"`, `"arm"` | `defineTriggerPool({ name, tag, arm })` | same | n/a |
+| seed override | session boot config `Option<u64>` | n/a (CLI `--pool-seed=<u64>`) | n/a | n/a | n/a |
+| install report | `TriggerPoolInstallReport` (host-local, not replicated) | none — no wire surface | n/a | n/a | n/a |
 
 No FGD KVP, no PRL/binary section, no new wire surface. Membership rides existing entity `_tags`.
 
@@ -244,7 +246,7 @@ No FGD KVP, no PRL/binary section, no new wire surface. Membership rides existin
 
 ```ts
 // setupLevel — four authored closet traps, two live per run.
-import { defineReaction, defineTrapPool, onTriggerEvent, spawner } from "postretro";
+import { defineReaction, defineTriggerPool, onTriggerEvent, spawner } from "postretro";
 
 export function setupLevel() {
   return {
@@ -256,9 +258,9 @@ export function setupLevel() {
       defineReaction("springClosetC", spawner({ tag: "closet_c" }).fire()),
       defineReaction("springClosetD", spawner({ tag: "closet_d" }).fire()),
     ],
-    trapPools: [
+    triggerPools: [
       // Engine rolls at install (host-only): 2 of the 4 tagged triggers arm.
-      defineTrapPool({ name: "hallClosets", tag: "closet_trap", arm: 2 }),
+      defineTriggerPool({ name: "hallClosets", tag: "closet_trap", arm: 2 }),
     ],
   };
 }
@@ -268,8 +270,8 @@ export function setupLevel() {
 -- Luau parity: same declarative shape, same wire.
 function setupLevel(_ctx)
   return {
-    trapPools = {
-      defineTrapPool({ name = "hallClosets", tag = "closet_trap", arm = 2 }),
+    triggerPools = {
+      defineTriggerPool({ name = "hallClosets", tag = "closet_trap", arm = 2 }),
     },
   }
 end
@@ -283,7 +285,7 @@ end
 
 ## Open questions
 
-- **Headless default seed.** Pinned here: fixed `0` when no `--trap-seed` is given, preserving the
+- **Headless default seed.** Pinned here: fixed `0` when no `--pool-seed` is given, preserving the
   batch runner's byte-identical guarantee; windowed default is entropy. If reviewers prefer
   entropy-everywhere with an explicit runspec seed field instead, that is a one-line policy swap —
   flag for human taste before promotion.

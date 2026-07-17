@@ -53,7 +53,7 @@ bridges → classname dispatch → data script + `populate_level_with_trigger_ev
 - No `rand`/`fastrand` workspace dependency (transitive lock entries only).
 - In-tree deterministic PRNG: private `SplitMix64 { state: u64 }` with `new(seed)`, `next_u64()`,
   `next_unit_f64()`, `next_in_inclusive(bound)` — `crates/net/src/harness.rs:33-65`. Copy into
-  `trap_pools.rs` (integer path only), don't export across crates for this.
+  `trigger_pools.rs` (integer path only), don't export across crates for this.
 - Other RNGs are client-local/bake-time only (emitter LCG `emitter_bridge.rs:70-81`, bake hashers)
   — consistent with the research doc's "no seeded gameplay RNG exists" gap.
 
@@ -61,7 +61,7 @@ bridges → classname dispatch → data script + `populate_level_with_trigger_ev
 
 - Manual `std::env::args()` scanning, no clap: `crates/postretro/src/startup/session.rs` (args
   collected :101; `--content-root`/`--mod` :211-296; `--headless [runspec]` :231-256).
-  `--trap-seed` joins these scanners. Env override precedent (`POSTRETRO_*` via `std::env::var`)
+  `--pool-seed` joins these scanners. Env override precedent (`POSTRETRO_*` via `std::env::var`)
   exists but the spec pins CLI-only per research §4.6.
 
 ## Dev overlay (Task 4 anchors)
@@ -79,7 +79,7 @@ bridges → classname dispatch → data script + `populate_level_with_trigger_ev
   `onTriggerEvent` :189-202, `defineMapCatalog` :328 (the pure-identity template), free builders
   `damage`/`armTrigger`/`disarmTrigger` :205/:214/:220. Luau twin `data_script.luau` (565 lines).
 - Luau allowlist `DATA_SCRIPT_FIELDS` — `crates/scripting-core/src/luau_prelude.rs:127-140`;
-  unlisted globals are never lifted (parity fixture would fail on undefined `defineTrapPool`).
+  unlisted globals are never lifted (parity fixture would fail on undefined `defineTriggerPool`).
 - Typedef templates: `crates/scripting-core/src/typedef/templates/sdk_lib.d.ts` (`LevelManifest`
   :284-287) + `sdk_lib.luau`; drift snapshots under `crates/postretro/src/scripting/typedef/tests/`.
 
@@ -93,7 +93,7 @@ bridges → classname dispatch → data script + `populate_level_with_trigger_ev
 
 `main.rs` 7974, `lifecycle.rs` 3524, `trigger_system.rs` 2292, `trigger_bindings.rs` 2066,
 `registry.rs` 1654, `debug_ui/mod.rs` 1151. D adds only call sites / small fields to these; all
-pass logic lands in a new `crates/postretro/src/trap_pools.rs`. No split-before-extend task.
+pass logic lands in a new `crates/postretro/src/trigger_pools.rs`. No split-before-extend task.
 
 ## Decisions carried into the spec (with rationale)
 

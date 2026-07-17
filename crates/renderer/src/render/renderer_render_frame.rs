@@ -26,24 +26,117 @@ impl Renderer {
         clear_color: ClearColor,
         render_world: bool,
     ) -> Result<Option<PresentHandle>> {
-        // The drawable visible-cell set; candidate-cull eligibility derives
-        // from `cam_vis` (set + path provenance) inside `record_pre_scene_compute`.
-        let visible: &VisibleCells = cam_vis.cells;
-
-        self.full_mut().debug_frame = self.full().debug_frame.wrapping_add(1);
         let Some(handle) = self.acquire_present_handle("gameplay frame")? else {
             return Ok(None);
         };
-
         let view = handle.surface_view();
-
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Frame Encoder"),
             });
 
-        self.record_pre_scene_compute(&mut encoder, cam_vis, view_proj, render_world);
+        self.record_scene_passes(
+            &mut encoder,
+            Some(font_system),
+            Some(&view),
+            cam_vis,
+            light_reachable_cell_mask,
+            reachable_cell_aabbs,
+            fog_reachable,
+            camera_cell,
+            view_proj,
+            particle_collections,
+            now_seconds,
+            clear_color,
+            render_world,
+        )?;
+        self.submit_windowed_frame(encoder);
+
+        // Caller (`App`) presents after optionally appending the egui overlay
+        // pass via `render_debug_ui`.
+        Ok(Some(handle))
+    }
+
+    /// Render the world scene into the renderer-owned pre-resolve target and
+    /// return tight RGBA8 pixels. The supplied camera updates both culling and
+    /// forward-pass uniforms at the fixed capture time. This path has no UI,
+    /// debug overlay, resolve, swapchain acquisition, or present step.
+    #[allow(clippy::too_many_arguments)]
+    pub fn capture_frame_indirect(
+        &mut self,
+        cam_vis: CameraCullVisibility<'_>,
+        light_reachable_cell_mask: &[bool],
+        reachable_cell_aabbs: &[(Vec3, Vec3)],
+        fog_reachable: &[u32],
+        camera_cell: Option<u32>,
+        view_proj: Mat4,
+        camera_position: Vec3,
+        particle_collections: &[(&str, &[u8])],
+        clear_color: ClearColor,
+        render_world: bool,
+    ) -> Result<Vec<u8>> {
+        self.update_per_frame_uniforms(view_proj, camera_position, 0.0);
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Frame Capture Encoder"),
+            });
+        self.record_scene_passes(
+            &mut encoder,
+            None,
+            None,
+            cam_vis,
+            light_reachable_cell_mask,
+            reachable_cell_aabbs,
+            fog_reachable,
+            camera_cell,
+            view_proj,
+            particle_collections,
+            0.0,
+            clear_color,
+            render_world,
+        )?;
+
+        let width = self.surface_config.width;
+        let height = self.surface_config.height;
+        let scene_color = self.scene_color_texture();
+        self.read_texture_rgba8(scene_color, width, height, encoder)
+    }
+
+    /// Reach the full renderer's capture source without exposing wgpu resources
+    /// across the renderer boundary.
+    fn scene_color_texture(&self) -> &wgpu::Texture {
+        self.full().screen_effects.scene_color_texture()
+    }
+
+    /// Record the world-scene passes shared by windowed gameplay and offscreen
+    /// capture. Window-only UI/debug/resolve work runs only when both windowed
+    /// inputs are supplied.
+    #[allow(clippy::too_many_arguments)]
+    fn record_scene_passes(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        font_system: Option<&mut postretro_ui::text::FontSystem>,
+        swapchain_view: Option<&wgpu::TextureView>,
+        cam_vis: CameraCullVisibility<'_>,
+        light_reachable_cell_mask: &[bool],
+        reachable_cell_aabbs: &[(Vec3, Vec3)],
+        fog_reachable: &[u32],
+        camera_cell: Option<u32>,
+        view_proj: Mat4,
+        particle_collections: &[(&str, &[u8])],
+        now_seconds: f64,
+        clear_color: ClearColor,
+        render_world: bool,
+    ) -> Result<()> {
+        // The drawable visible-cell set; candidate-cull eligibility derives
+        // from `cam_vis` (set + path provenance) inside `record_pre_scene_compute`.
+        let visible: &VisibleCells = cam_vis.cells;
+
+        self.full_mut().debug_frame = self.full().debug_frame.wrapping_add(1);
+        self.record_pre_scene_compute(encoder, cam_vis, view_proj, render_world);
 
         // The readback copy is deliberately not encoded here. A
         // `copy_texture_to_buffer` in the same command buffer as the compose
@@ -129,7 +222,7 @@ impl Renderer {
                     .map(|t| t.compute_pass_writes(TIMING_PAIR_DIRECT_SH_COMPOSE));
                 full.direct_sh_compose.dispatch_if_needed(
                     queue,
-                    &mut encoder,
+                    encoder,
                     direct_sh_active,
                     direct_sh_debug_override,
                     direct_sh_ts,
@@ -239,7 +332,7 @@ impl Renderer {
         }
 
         if render_world {
-            self.record_spot_shadow_depth(&mut encoder, mesh_frame_plan.as_ref());
+            self.record_spot_shadow_depth(encoder, mesh_frame_plan.as_ref());
         }
 
         // --- Cube point-light shadow depth loop -------------------------------
@@ -270,10 +363,10 @@ impl Renderer {
         // baseline" invariant.
         self.full_mut().cube_entity_occluders_submitted = 0;
         if render_world {
-            self.record_cube_shadow_depth(&mut encoder, mesh_frame_plan.as_ref());
+            self.record_cube_shadow_depth(encoder, mesh_frame_plan.as_ref());
         }
 
-        self.record_depth_and_sdf_passes(&mut encoder, view_proj, render_world);
+        self.record_depth_and_sdf_passes(encoder, view_proj, render_world);
 
         // Post-scene compositor seam: every gameplay scene + UI pass renders into
         // `scene_color` (the offscreen target) instead of the swapchain `view`.
@@ -605,7 +698,15 @@ impl Renderer {
             composite.draw(0..3, 0..1); // fullscreen triangle from vertex_index — no vertex buffer
         }
 
-        self.record_wireframe_overlay(&mut encoder, &scene_color, render_world, visible);
+        // Offscreen capture stops after the world scene. The windowed-only
+        // wireframe/debug/UI/resolve tail below must never enter capture bytes.
+        let Some(view) = swapchain_view else {
+            return Ok(());
+        };
+        let font_system =
+            font_system.expect("windowed gameplay rendering requires a UI font system");
+
+        self.record_wireframe_overlay(encoder, &scene_color, render_world, visible);
 
         #[cfg(feature = "dev-tools")]
         if render_world {
@@ -615,7 +716,7 @@ impl Renderer {
                 .expect("renderer full-init must complete before full-ready paths run");
             full.debug_lines.render(
                 queue,
-                &mut encoder,
+                encoder,
                 &scene_color,
                 &full.depth_view,
                 &full.uniform_bind_group,
@@ -644,9 +745,7 @@ impl Renderer {
         // `&full.ui_snapshot` / `&full.ui_theme` reads in single statements — the
         // `full_mut()` accessor borrows ALL of `self`, so it cannot coexist with
         // those argument reads. The destructure restores the disjoint-field
-        // borrows the inline layout had. Closed before the submit/readback tail,
-        // which calls `&mut self` helpers (`encode_sh_probe_readback`) and the
-        // boot `queue.submit` that need `self` intact.
+        // borrows the inline layout had.
         let Self {
             device,
             queue,
@@ -743,7 +842,7 @@ impl Renderer {
                 font_system,
                 device,
                 queue,
-                &mut encoder,
+                encoder,
                 &scene_color,
                 ui_viewport,
                 wgpu::LoadOp::Load,
@@ -760,22 +859,21 @@ impl Renderer {
         // resolve — the sole swapchain writer for the gameplay path, run every
         // frame (never skipped at rest). At-rest slot values pack to the identity
         // uniform, so the output stays byte-identical to the pre-SE blit.
-        full.screen_effects.encode_resolve(
-            queue,
-            &mut encoder,
-            &view,
-            &full.ui_snapshot.slot_values,
-        );
+        full.screen_effects
+            .encode_resolve(queue, encoder, view, &full.ui_snapshot.slot_values);
 
         if let Some(timing) = &full.frame_timing {
-            timing.encode_resolve(&mut encoder);
+            timing.encode_resolve(encoder);
         }
 
-        // Submit the UI-region encoder, then reset the glyphon prepare guard at
-        // the same boundary. After the guard reset, NLL releases the `&mut self`
-        // reborrow, so the submit/readback tail below may touch `self` again.
-        queue.submit(std::iter::once(encoder.finish()));
-        full.ui.mark_submitted();
+        Ok(())
+    }
+
+    /// Submit a windowed frame after its scene, UI, and resolve commands have
+    /// been recorded. Capture owns a separate submit/readback sequence.
+    fn submit_windowed_frame(&mut self, encoder: wgpu::CommandEncoder) {
+        self.queue.submit(std::iter::once(encoder.finish()));
+        self.full_mut().ui.mark_submitted();
 
         #[cfg(feature = "dev-tools")]
         self.encode_sh_probe_readback();
@@ -817,9 +915,5 @@ impl Renderer {
                 candidate.post_submit(device);
             }
         }
-
-        // Caller (`App`) presents after optionally appending the egui overlay
-        // pass via `render_debug_ui`.
-        Ok(Some(handle))
     }
 }

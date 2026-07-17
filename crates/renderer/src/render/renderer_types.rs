@@ -435,13 +435,13 @@ pub(crate) struct PromotedStaticLightState {
     pub last_score: f32,
 }
 
-/// Boot-phase renderer: the minimal GPU state needed to present the boot splash
-/// before the heavier renderer pipelines/resources are built. `Renderer::new`
-/// builds only this; `finish_full_init` builds the `FullRenderer` from it.
+/// Renderer GPU state. Windowed construction begins with a boot splash before
+/// the heavier pipelines/resources are built; offscreen construction builds the
+/// full renderer immediately.
 ///
 /// Phase split (see context/lib/boot_sequence.md §1, rendering_pipeline.md §7.8):
-/// - **Boot-ready** — `device`/`queue`/`surface`/`surface_config`/`boot_splash`
-///   exist; `is_boot_ready()` is true after `new`. The splash path needs only
+/// - **Boot-ready** — windowed `new` creates `device`/`queue`/`surface`/
+///   `surface_config`/`boot_splash`; `is_boot_ready()` is true after `new`. The splash path needs only
 ///   this. Device creation already requests the FULL feature/limit set
 ///   (`request_renderer_device`) because wgpu features can't be added later.
 /// - **Full-ready** — `full` is `Some`; every steady-state path (Frontend,
@@ -449,7 +449,9 @@ pub(crate) struct PromotedStaticLightState {
 pub struct Renderer {
     pub(super) device: wgpu::Device,
     pub(super) queue: wgpu::Queue,
-    pub(super) surface: wgpu::Surface<'static>,
+    /// Present surface for a windowed renderer. Offscreen capture deliberately
+    /// has no surface and never reaches the present/splash paths.
+    pub(super) surface: Option<wgpu::Surface<'static>>,
     pub(super) surface_config: wgpu::SurfaceConfiguration,
     pub(super) is_surface_configured: bool,
     pub(super) surface_reconfigure_pending: bool,
@@ -469,7 +471,7 @@ pub struct Renderer {
     /// full renderer (and UI system) initialize. Holds the uploaded logo between
     /// `install_splash_pixels` and `clear_splash`; its `Option<InstalledLogo>` is
     /// the renderer's "logo-installed" phase bit. See: context/lib/boot_sequence.md §1.
-    pub(super) boot_splash: splash_pass::BootSplashPass,
+    pub(super) boot_splash: Option<splash_pass::BootSplashPass>,
 
     /// Full-phase renderer state. `None` until `finish_full_init` builds it;
     /// `is_full_ready()` mirrors `is_some()`. Rebuilt (the old box dropped, GPU

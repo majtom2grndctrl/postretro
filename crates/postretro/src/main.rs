@@ -41,6 +41,10 @@ mod netcode;
 // See: context/plans/done/agentic-observability
 #[cfg(feature = "observability")]
 mod observability;
+// Static offscreen frame-capture scene parser and renderer driver. It exits
+// before boot constructs winit state, so this remains independent of UI.
+#[cfg(feature = "capture")]
+mod capture;
 mod options;
 mod weapon;
 

@@ -43,6 +43,10 @@ fn try_main() -> Result<i32, String> {
         return observe_headless(args.collect());
     }
 
+    if command == "capture" {
+        return capture_frame(args.collect());
+    }
+
     if command == "bake-model-textures" {
         return bake_model_textures_command(args.collect());
     }
@@ -266,6 +270,50 @@ fn parse_observe_args(args: Vec<OsString>) -> Result<PathBuf, String> {
     }
 }
 
+/// `capture <scene.json>`: run the engine's world-only frame capture mode.
+/// Unlike `observe`, capture executes no scripts and therefore needs no
+/// scripts-build sidecar.
+fn capture_frame(args: Vec<OsString>) -> Result<i32, String> {
+    let scene = parse_capture_args(args)?;
+    let workspace_root = workspace_root()?;
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
+
+    let mut command = Command::new(&cargo);
+    command
+        .current_dir(&workspace_root)
+        .arg("run")
+        .arg("-p")
+        .arg("postretro")
+        .arg("--bin")
+        .arg("postretro")
+        .arg("--features")
+        .arg("capture")
+        .arg("--")
+        .arg("--capture")
+        .arg(&scene)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+
+    status_code(
+        command
+            .status()
+            .map_err(|e| format!("launch postretro capture: {e}")),
+    )
+}
+
+fn parse_capture_args(args: Vec<OsString>) -> Result<PathBuf, String> {
+    match args.as_slice() {
+        [scene] => Ok(PathBuf::from(scene)),
+        [] => Err("capture requires a scene path\n\n\
+             Usage: cargo run -p xtask -- capture <scene.json>"
+            .to_string()),
+        _ => Err("capture accepts exactly one scene path\n\n\
+             Usage: cargo run -p xtask -- capture <scene.json>"
+            .to_string()),
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct RunArgs {
     cargo_run_args: Vec<OsString>,
@@ -370,6 +418,7 @@ fn print_help() {
            cargo run -p xtask -- run [cargo-run flags...] -- [postretro args...]\n\
            cargo run -p xtask -- run [postretro args...]\n\
            cargo run -p xtask -- observe <runspec.json>\n\
+           cargo run -p xtask -- capture <scene.json>\n\
            cargo run -p xtask -- bake-model-textures <scene.gltf>\n\
            cargo run -p xtask -- crate-graph [--write | --check | --mermaid | --rdeps <crate> | --deps <crate>]\n\n\
          COMMANDS:\n\
@@ -377,6 +426,8 @@ fn print_help() {
            observe              Build scripts-build, then run the engine headless\n\
                                 (--features observability --headless), forwarding\n\
                                 the JSON document on stdout untouched\n\
+           capture              Run the engine's world-only frame capture\n\
+                                (--features capture --capture <scene.json>)\n\
            bake-model-textures  Bake glTF base-color sidecars into baked/materials\n\
            crate-graph          Analyze the internal crate dependency graph: print it,\n\
                                 --write the committed snapshot, --check its freshness,\n\
@@ -504,6 +555,17 @@ mod tests {
 
         assert!(parse_observe_args(Vec::new()).is_err());
         assert!(parse_observe_args(os_args(&["a.json", "b.json"])).is_err());
+    }
+
+    #[test]
+    fn parse_capture_args_accepts_exactly_one_scene_path() {
+        assert_eq!(
+            parse_capture_args(os_args(&["scene.json"])),
+            Ok(PathBuf::from("scene.json"))
+        );
+
+        assert!(parse_capture_args(Vec::new()).is_err());
+        assert!(parse_capture_args(os_args(&["a.json", "b.json"])).is_err());
     }
 
     #[test]

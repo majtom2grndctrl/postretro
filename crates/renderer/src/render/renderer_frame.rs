@@ -5,19 +5,113 @@
 use super::*;
 
 impl Renderer {
+    /// Submit a texture-to-buffer copy, wait for its completion, and return a
+    /// tight RGBA8 grid. wgpu requires rows in copies to be 256-byte aligned;
+    /// the caller receives the padding-free pixels the capture contract exposes.
+    pub(super) fn read_texture_rgba8(
+        &self,
+        texture: &wgpu::Texture,
+        width: u32,
+        height: u32,
+        mut encoder: wgpu::CommandEncoder,
+    ) -> Result<Vec<u8>> {
+        let unpadded_bytes_per_row = width
+            .checked_mul(4)
+            .context("capture row byte count overflows u32")?;
+        let padded_bytes_per_row = unpadded_bytes_per_row
+            .div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+            .checked_mul(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+            .context("capture padded row byte count overflows u32")?;
+        let buffer_size = u64::from(padded_bytes_per_row)
+            .checked_mul(u64::from(height))
+            .context("capture readback buffer size overflows u64")?;
+
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Frame Capture Readback"),
+            size: buffer_size,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_bytes_per_row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        let slice = buffer.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = tx.send(result);
+        });
+        self.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .context("waiting for capture readback failed")?;
+        rx.recv()
+            .context("capture readback map callback did not complete")?
+            .context("capture readback map failed")?;
+
+        let data = slice.get_mapped_range();
+        let tight_len = u64::from(unpadded_bytes_per_row)
+            .checked_mul(u64::from(height))
+            .context("capture tight byte count overflows u64")?;
+        let tight_capacity = usize::try_from(tight_len)
+            .context("capture tight byte count exceeds addressable memory")?;
+        let mut tight = Vec::with_capacity(tight_capacity);
+        for row in 0..height {
+            let start = usize::try_from(u64::from(row) * u64::from(padded_bytes_per_row))
+                .context("capture row offset exceeds addressable memory")?;
+            let end = start
+                .checked_add(usize::try_from(unpadded_bytes_per_row)?)
+                .context("capture row end exceeds addressable memory")?;
+            tight.extend_from_slice(&data[start..end]);
+        }
+        drop(data);
+        buffer.unmap();
+
+        Ok(tight)
+    }
+
     pub(super) fn reconfigure_surface(&mut self) {
         self.is_surface_configured = false;
-        self.surface.configure(&self.device, &self.surface_config);
+        self.surface
+            .as_ref()
+            .expect("surface reconfigure requires a windowed renderer")
+            .configure(&self.device, &self.surface_config);
         self.is_surface_configured = true;
         self.surface_reconfigure_pending = false;
     }
 
     pub(super) fn acquire_present_handle(&mut self, phase: &str) -> Result<Option<PresentHandle>> {
+        if self.surface.is_none() {
+            anyhow::bail!("{phase} requires a windowed renderer");
+        }
         if self.surface_reconfigure_pending {
             self.reconfigure_surface();
         }
 
-        let output = match self.surface.get_current_texture() {
+        let output = match self
+            .surface
+            .as_ref()
+            .expect("surface presence checked above")
+            .get_current_texture()
+        {
             wgpu::CurrentSurfaceTexture::Success(tex) => tex,
             wgpu::CurrentSurfaceTexture::Suboptimal(tex) => {
                 self.surface_reconfigure_pending = true;
@@ -45,9 +139,10 @@ impl Renderer {
 
     /// Camera owns aspect ratio; caller must also call `update_per_frame_uniforms`.
     ///
-    /// Works in BOTH phases. The surface reconfigure is boot-phase and always
-    /// runs; the full-phase target rebuilds (depth, screen effects, fog, SDF
+    /// Works in BOTH windowed phases. Windowed renderers reconfigure the surface
+    /// during boot; the full-phase target rebuilds (depth, screen effects, fog, SDF
     /// shadow, spot-shadow bind group) only run when the full renderer exists.
+    /// Offscreen renderers have no surface, so resize is a no-op.
     /// During the boot/splash window (`full` is `None`) the surface is the only
     /// thing that needs resizing — the boot splash re-projects against the new
     /// backbuffer size on the next `render_splash_frame`.
@@ -55,9 +150,12 @@ impl Renderer {
         if width == 0 || height == 0 {
             return;
         }
+        let Some(surface) = self.surface.as_ref() else {
+            return;
+        };
         self.surface_config.width = width;
         self.surface_config.height = height;
-        self.surface.configure(&self.device, &self.surface_config);
+        surface.configure(&self.device, &self.surface_config);
         self.is_surface_configured = true;
         self.surface_reconfigure_pending = false;
 

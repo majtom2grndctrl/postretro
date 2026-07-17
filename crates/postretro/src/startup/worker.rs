@@ -105,7 +105,7 @@ fn run_worker(map_path: &Path, content_root: &Path) -> LoadOutcome {
 /// placeholder. The divergence in *how* they walk is intentional: collapsing
 /// them to share an implementation would break shipping layouts where no
 /// `Cargo.toml` exists at all.
-fn derive_prm_root_dev_layout(content_root: &Path) -> PathBuf {
+pub(crate) fn derive_prm_root_dev_layout(content_root: &Path) -> PathBuf {
     let workspace = content_root
         .parent()
         .and_then(|c| c.parent())

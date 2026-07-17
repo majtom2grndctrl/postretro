@@ -6,7 +6,7 @@ Grounded against source at draft time. Ephemeral: line numbers drift. Confirm be
 
 - `Renderer::new(window: &Arc<Window>)` — `crates/renderer/src/render/renderer_init.rs:24`. Creates the surface (`:32`), requests the adapter with `compatible_surface: Some(&surface)` (`:38`), picks an srgb surface format from surface caps (`:87-92`), sizes `surface_config` from the window (`:97-98`). Device requests the full feature/limit set up front (`request_renderer_device`, `:79`).
 - Full renderer builds from `surface_config` (format/width/height): `finish_full_init` → `build_full_renderer(...)` — `renderer_init.rs:136-149`. The full renderer (pipelines, lighting, shadow pools, screen effects, mesh/UI/fog) is **surface-agnostic** — it needs only format + size.
-- `render_frame_indirect(...)` — `crates/renderer/src/render/renderer_render_frame.rs:15`. **Unconditionally acquires the swapchain**: `self.acquire_present_handle("gameplay frame")?` (`:34`) → `handle.surface_view()` (`:38`); resolves + presents into it. A surfaceless path cannot call it unmodified.
+- `render_frame_indirect(...)` — `crates/renderer/src/render/renderer_render_frame.rs:15`. **Unconditionally acquires the swapchain**: `self.acquire_present_handle("gameplay frame")?` (`:34`) → `handle.surface_view()` (`:38`); records the scene, resolves into `scene_color` (`encode_resolve`, `:763`), and returns `Result<Option<PresentHandle>>` — the caller (`App`, `main.rs:2908`) presents. A surfaceless path cannot call it unmodified.
 - Surfaceless adapter is a trodden test path: `compatible_surface: None` in `ui/gpu_test_harness.rs:35`, `curve_eval_test.rs:98`, `sdf_light_select_test.rs:95`.
 
 ## scene_color: the capture source
@@ -30,7 +30,7 @@ Grounded against source at draft time. Ephemeral: line numbers drift. Confirm be
 ## Per-frame visibility inputs (`render_frame_indirect` args)
 
 App computes these each frame in `App::redraw`, `main.rs`:
-- `determine_visible_cells(eye, view_proj, world, capture_portal_walk, &mut scratch)` — `main.rs:2392`; result destructured `:2413-2417` → `visible_cells`, `fog_reachable`, `stats` (`stats.camera_cell`, `stats.path`).
+- `determine_visible_cells(camera_position, view_proj, world, capture_portal_walk, &mut scratch)` — `main.rs:2392`. Returns `(VisibilityResult, Frustum)` (`crates/visibility/src/visibility.rs:522`); the `visible_cells`, `fog_reachable`, and `stats` fields live on `VisibilityResult` (`:110`), `stats: VisibilityStats { camera_cell: u32, .., path: VisibilityPath }` (`:36`). The trailing `Frustum` is unused by a capture driver.
 - `CameraCullVisibility { cells, path }` — `main.rs:2910`.
 - `light_reachable_cell_mask: Vec<bool>` from `fog_reachable` — `main.rs:2450-2463`.
 - `reachable_cell_aabbs: Vec<(Vec3,Vec3)>` from `fog_reachable` cell bounds — `main.rs:2476-2485`.
@@ -46,7 +46,11 @@ On `Renderer`, called from `App::install_level_payload` (`crates/postretro/src/s
 - geometry: `render::level_world_to_geometry(&world, &texture_materials)` (`:648`) → `install_level_geometry(&geometry)` (`:649`). Uploads vertex/index/BVH **and baked lightmap + SH atlases** from the PRL.
 - `set_fog_pixel_scale(world.fog_pixel_scale)` (`:825`), `install_fog_cell_masks_for_level(world.fog_cell_masks.clone())` (`:826`).
 
-These are all `pub` on `Renderer` and callable without `App`. World-only capture needs no scripting core, no `HeadlessSession`, no scripts-build sidecar, no archetype sweep.
+These are all `pub` on `Renderer` and callable without `App`. World-only capture needs no scripting core, no `HeadlessSession`, no scripts-build sidecar, no archetype sweep. **`install_level_payload` itself is not callable** — it `expect("session installed")`, clones `script_ctx`, runs `light_bridge.populate_from_level` and the segment-B archetype sweep; the driver cherry-picks the renderer-only calls above.
+
+- **`prm_cache_root`** (arg to `install_textures`): windowed derives it as `derive_prm_root_dev_layout(content_root)` (`startup/worker.rs:53`, `:108` — currently a private `fn`), where `content_root = content_root_from_map(...)` (`startup/session.rs:309`, `pub(crate)`). A capture driver derives it the same way from the scene's map path; `derive_prm_root_dev_layout` must be lifted to `pub(crate)` (or its two-line body shared).
+
+- **Fog volumes (out of v1 scope):** volumetric fog rendering is fed by the session's `fog_volume_bridge` → `renderer.upload_fog_volumes` / `set_fog_aabbs` (`main.rs:2569-2582`) and fog point lights from `light_bridge.collect_all_as_map_lights` — session/entity tier. `set_fog_pixel_scale` / `install_fog_cell_masks_for_level` install only cell masks, not volume data. World-only capture cannot render fog; deferred to the scripted-run extension.
 
 - Dynamic light-bridge populate (`session.light_bridge.populate_from_level`, `:686`) and the archetype/entity sweep (segment B `install_world_cpu`, `:1241`) are entity-tier — **out of scope for world-only v1**.
 

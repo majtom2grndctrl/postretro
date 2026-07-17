@@ -1547,6 +1547,7 @@ mod tests {
                     looping: true,
                     crossfade_ms: 150.0,
                     interrupt: crate::components::mesh::InterruptPolicy::Smooth,
+                    travel_speed: None,
                     clip_index: None,
                 },
             ),
@@ -1557,6 +1558,7 @@ mod tests {
                     looping: false,
                     crossfade_ms: 150.0,
                     interrupt: crate::components::mesh::InterruptPolicy::Smooth,
+                    travel_speed: None,
                     clip_index: None,
                 },
             ),
@@ -1568,6 +1570,7 @@ mod tests {
             model: "decraniated".into(),
             animations: descriptor_states,
             default_state: Some("idle".into()),
+            locomotion: None,
         };
 
         let make_descriptor = |name: &str| EntityTypeDescriptor {
@@ -1600,6 +1603,7 @@ mod tests {
                     looping: true,
                     crossfade_ms: 150.0,
                     interrupt: crate::components::mesh::InterruptPolicy::Smooth,
+                    travel_speed: None,
                     clip_index: Some(0),
                 },
             ),
@@ -1610,6 +1614,7 @@ mod tests {
                     looping: false,
                     crossfade_ms: 150.0,
                     interrupt: crate::components::mesh::InterruptPolicy::Smooth,
+                    travel_speed: None,
                     clip_index: Some(1),
                 },
             ),
@@ -1631,6 +1636,7 @@ mod tests {
             previous_rebase_elapsed: 0.0,
             fade_source: FadeSourceKind::Clip,
             interrupted_outgoing: None,
+            speed_scale: true,
         };
         let live = MeshComponent {
             model: "decraniated".into(),

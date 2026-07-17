@@ -486,10 +486,10 @@ return Postretro.defineMod({
 })
 ```
 
-## Open questions
+## Resolved decisions
 
-- **Count-vs-percentage surface.** Reopened by the mod-global tier and pinned as two mutually
-  exclusive fields: `arm` (integer count) XOR `armPercentage` ([0, 100], floored per install), valid
-  at both tiers. The rejected alternative — one `arm` field reading values below 1 as fractions —
-  saves a field but makes `arm: 1` vs `arm: 0.99` a silent semantics cliff. Confirm the two-field
-  shape, and `floor` over round-half-up for percentage resolution, before promotion.
+- **Count-vs-percentage surface (settled).** Two mutually exclusive fields: `arm` (integer count)
+  XOR `armPercentage` ([0, 100]), valid at both tiers. The rejected alternative — one `arm` field
+  reading values below 1 as fractions — saves a field but makes `arm: 1` vs `arm: 0.99` a silent
+  semantics cliff. Percentage resolves with `floor` (not round-half-up), matching the script-side
+  `Math.floor` idiom. No open questions remain.

@@ -1,0 +1,203 @@
+// Game: Postretro
+// Format: Standard
+// E18 runtime-spawner test set piece. Same sealed room as closet-reveal, but
+// the closet holds an entity_spawner instead of pre-placed enemies: the plate
+// fires spawnFromSpawner to materialize fresh AI enemies at runtime (the path
+// the round-1 feet-to-center fix touched). Watch that spawned enemies stand
+// on the floor, not sunk into it, and walk out through the doorway.
+// Compile: cargo run -p postretro-level-compiler -- content/dev/maps/spawner-test.map -o content/dev/maps/spawner-test.prl
+// Run: cargo run -p xtask -- run content/dev/maps/spawner-test.prl
+// Sealed room, interior 288 x 256 x 128 units, wall thickness 16, with a
+// recessed closet nook carved into the solid east block. The nook interior
+// spans x 176 to 272, y 96 to 160, z 0 to 96, entered through a doorway at
+// x 176 that the sliding door occludes. The nook and main room form a single
+// enclosed interior joined by that internal doorway, so the world hull is
+// sealed with no leak. Worldspawn brush order: floor, ceiling, west, east,
+// south, north walls, east block south of nook, east block north of nook,
+// closet back wall, closet lintel. Every brush is an axis-aligned box wound
+// normal-inward, so there are no degenerate duplicate-point faces.
+// NOTE: keep map comments free of braces and quotes; the .map parser does not
+// fully strip // comments and those characters break the parse.
+// entity 0
+{
+"classname" "worldspawn"
+"initialGravity" "-9.81"
+"wad" ""
+"data_script" "../scripts/spawner-test.ts"
+"_tb_mod" "dev"
+"_tb_def" "external:../../../sdk/TrenchBroom/postretro.fgd"
+// brush 0
+{
+( -16 272 -16 ) ( -16 -16 0 ) ( -16 -16 -16 ) debug_ceiling_grey 0 0 0 1 1
+( -16 -320 0 ) ( 304 -320 -16 ) ( -16 -320 -16 ) debug_ceiling_grey 0 0 0 1 1
+( -16 -16 -16 ) ( 304 272 -16 ) ( -16 272 -16 ) debug_ceiling_grey 0 0 0 1 1
+( -16 272 0 ) ( 304 -16 0 ) ( -16 -16 0 ) debug_ceiling_grey 0 0 0 1 1
+( 304 272 0 ) ( -16 272 0 ) ( -16 272 -16 ) debug_ceiling_grey 0 0 0 1 1
+( 304 -16 -16 ) ( 304 272 0 ) ( 304 272 -16 ) debug_ceiling_grey 0 0 0 1 1
+}
+// brush 1
+{
+( -16 272 128 ) ( -16 -16 144 ) ( -16 -16 128 ) debug_ceiling_grey 0 0 0 1 1
+( -16 -320 144 ) ( 304 -320 128 ) ( -16 -320 128 ) debug_ceiling_grey 0 0 0 1 1
+( -16 -16 128 ) ( 304 272 128 ) ( -16 272 128 ) debug_ceiling_grey 0 0 0 1 1
+( -16 272 144 ) ( 304 -16 144 ) ( -16 -16 144 ) debug_ceiling_grey 0 0 0 1 1
+( 304 272 144 ) ( -16 272 144 ) ( -16 272 128 ) debug_ceiling_grey 0 0 0 1 1
+( 304 -16 128 ) ( 304 272 144 ) ( 304 272 128 ) debug_ceiling_grey 0 0 0 1 1
+}
+// brush 2
+{
+( -16 272 0 ) ( -16 -16 128 ) ( -16 -16 0 ) debug_ceiling_grey 0 0 0 1 1
+( -16 -320 128 ) ( 0 -320 0 ) ( -16 -320 0 ) debug_ceiling_grey 0 0 0 1 1
+( -16 -16 0 ) ( 0 272 0 ) ( -16 272 0 ) debug_ceiling_grey 0 0 0 1 1
+( -16 272 128 ) ( 0 -16 128 ) ( -16 -16 128 ) debug_ceiling_grey 0 0 0 1 1
+( 0 272 128 ) ( -16 272 128 ) ( -16 272 0 ) debug_ceiling_grey 0 0 0 1 1
+( 0 -16 0 ) ( 0 272 128 ) ( 0 272 0 ) debug_ceiling_grey 0 0 0 1 1
+}
+// brush 3
+{
+( 288 272 0 ) ( 288 -16 128 ) ( 288 -16 0 ) debug_ceiling_grey 0 0 0 1 1
+( 288 -320 128 ) ( 304 -320 0 ) ( 288 -320 0 ) debug_ceiling_grey 0 0 0 1 1
+( 288 -16 0 ) ( 304 272 0 ) ( 288 272 0 ) debug_ceiling_grey 0 0 0 1 1
+( 288 272 128 ) ( 304 -16 128 ) ( 288 -16 128 ) debug_ceiling_grey 0 0 0 1 1
+( 304 272 128 ) ( 288 272 128 ) ( 288 272 0 ) debug_ceiling_grey 0 0 0 1 1
+( 304 -16 0 ) ( 304 272 128 ) ( 304 272 0 ) debug_ceiling_grey 0 0 0 1 1
+}
+// brush 4
+{
+( -16 -304 0 ) ( -16 -320 128 ) ( -16 -320 0 ) debug_ceiling_grey 0 0 0 1 1
+( -16 -320 128 ) ( 304 -320 0 ) ( -16 -320 0 ) debug_ceiling_grey 0 0 0 1 1
+( -16 -320 0 ) ( 304 -304 0 ) ( -16 -304 0 ) debug_ceiling_grey 0 0 0 1 1
+( -16 -304 128 ) ( 304 -320 128 ) ( -16 -320 128 ) debug_ceiling_grey 0 0 0 1 1
+( 304 -304 128 ) ( -16 -304 128 ) ( -16 -304 0 ) debug_ceiling_grey 0 0 0 1 1
+( 304 -320 0 ) ( 304 -304 128 ) ( 304 -304 0 ) debug_ceiling_grey 0 0 0 1 1
+}
+// brush 5
+{
+( -16 272 0 ) ( -16 256 128 ) ( -16 256 0 ) debug_ceiling_grey 0 0 0 1 1
+( -16 256 128 ) ( 304 256 0 ) ( -16 256 0 ) debug_ceiling_grey 0 0 0 1 1
+( -16 256 0 ) ( 304 272 0 ) ( -16 272 0 ) debug_ceiling_grey 0 0 0 1 1
+( -16 272 128 ) ( 304 256 128 ) ( -16 256 128 ) debug_ceiling_grey 0 0 0 1 1
+( 304 272 128 ) ( -16 272 128 ) ( -16 272 0 ) debug_ceiling_grey 0 0 0 1 1
+( 304 256 0 ) ( 304 272 128 ) ( 304 272 0 ) debug_ceiling_grey 0 0 0 1 1
+}
+// brush 6
+{
+( 176 -208 0 ) ( 176 -304 128 ) ( 176 -304 0 ) debug_ceiling_grey 0 0 0 1 1
+( 176 -304 128 ) ( 288 -304 0 ) ( 176 -304 0 ) debug_ceiling_grey 0 0 0 1 1
+( 176 -304 0 ) ( 288 -208 0 ) ( 176 -208 0 ) debug_ceiling_grey 0 0 0 1 1
+( 176 -208 128 ) ( 288 -304 128 ) ( 176 -304 128 ) debug_ceiling_grey 0 0 0 1 1
+( 288 -112 128 ) ( 176 -112 128 ) ( 176 -112 0 ) debug_ceiling_grey 0 0 0 1 1
+( 288 -304 0 ) ( 288 -208 128 ) ( 288 -208 0 ) debug_ceiling_grey 0 0 0 1 1
+}
+// brush 7
+{
+( 176 256 0 ) ( 176 160 128 ) ( 176 160 0 ) debug_ceiling_grey 0 0 0 1 1
+( 176 80 128 ) ( 288 80 0 ) ( 176 80 0 ) debug_ceiling_grey 0 0 0 1 1
+( 176 160 0 ) ( 288 256 0 ) ( 176 256 0 ) debug_ceiling_grey 0 0 0 1 1
+( 176 256 128 ) ( 288 160 128 ) ( 176 160 128 ) debug_ceiling_grey 0 0 0 1 1
+( 288 256 128 ) ( 176 256 128 ) ( 176 256 0 ) debug_ceiling_grey 0 0 0 1 1
+( 288 160 0 ) ( 288 256 128 ) ( 288 256 0 ) debug_ceiling_grey 0 0 0 1 1
+}
+// brush 8
+{
+( 272 160 0 ) ( 272 96 128 ) ( 272 96 0 ) debug_ceiling_grey 0 0 0 1 1
+( 272 -208 128 ) ( 288 -208 0 ) ( 272 -208 0 ) debug_ceiling_grey 0 0 0 1 1
+( 272 96 0 ) ( 288 160 0 ) ( 272 160 0 ) debug_ceiling_grey 0 0 0 1 1
+( 272 160 128 ) ( 288 96 128 ) ( 272 96 128 ) debug_ceiling_grey 0 0 0 1 1
+( 288 160 128 ) ( 272 160 128 ) ( 272 160 0 ) debug_ceiling_grey 0 0 0 1 1
+( 288 96 0 ) ( 288 160 128 ) ( 288 160 0 ) debug_ceiling_grey 0 0 0 1 1
+}
+// brush 9
+{
+( 176 160 96 ) ( 176 96 128 ) ( 176 96 96 ) debug_ceiling_grey 0 0 0 1 1
+( 176 -112 128 ) ( 288 -112 96 ) ( 176 -112 96 ) debug_ceiling_grey 0 0 0 1 1
+( 176 96 96 ) ( 288 160 96 ) ( 176 160 96 ) debug_ceiling_grey 0 0 0 1 1
+( 176 160 128 ) ( 288 96 128 ) ( 176 96 128 ) debug_ceiling_grey 0 0 0 1 1
+( 288 80 128 ) ( 176 80 128 ) ( 176 80 96 ) debug_ceiling_grey 0 0 0 1 1
+( 288 96 96 ) ( 288 160 128 ) ( 288 160 96 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+// entity 1
+{
+"classname" "player_spawn"
+"origin" "40 128 24"
+"angles" "0 0 0"
+}
+// entity 2
+{
+"classname" "trigger_volume"
+"name" "closet_reveal_plate"
+"activation" "touch"
+"target_tag" ""
+"command" "start"
+"fire_mode" "once"
+"rearm_ms" "0"
+"enabled_on_spawn" "1"
+"_tags" "closet_reveal_plate"
+// brush 0
+{
+( 112 16 0 ) ( 112 -48 16 ) ( 112 -48 0 ) debug_ceiling_grey 0 0 0 1 1
+( 112 -48 16 ) ( 144 -48 0 ) ( 112 -48 0 ) debug_ceiling_grey 0 0 0 1 1
+( 112 -48 0 ) ( 144 16 0 ) ( 112 16 0 ) debug_ceiling_grey 0 0 0 1 1
+( 112 16 16 ) ( 144 -48 16 ) ( 112 -48 16 ) debug_ceiling_grey 0 0 0 1 1
+( 144 16 16 ) ( 112 16 16 ) ( 112 16 0 ) debug_ceiling_grey 0 0 0 1 1
+( 144 -48 0 ) ( 144 16 16 ) ( 144 16 0 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+// entity 3
+{
+"classname" "kinematic_mover"
+"name" "closet_door"
+"path" "closet_door_closed"
+"speed" "4"
+"wait_ms" "0"
+"move_mode" "once"
+"start_on_spawn" "0"
+"_tags" "closet_door"
+// brush 0
+{
+( 160 -48 0 ) ( 160 -112 96 ) ( 160 -112 0 ) debug_ceiling_grey 0 0 0 1 1
+( 160 -112 96 ) ( 176 -112 0 ) ( 160 -112 0 ) debug_ceiling_grey 0 0 0 1 1
+( 160 -112 0 ) ( 176 -48 0 ) ( 160 -48 0 ) debug_ceiling_grey 0 0 0 1 1
+( 160 -48 96 ) ( 176 -112 96 ) ( 160 -112 96 ) debug_ceiling_grey 0 0 0 1 1
+( 176 80 96 ) ( 160 80 96 ) ( 160 80 0 ) debug_ceiling_grey 0 0 0 1 1
+( 176 -112 0 ) ( 176 -48 96 ) ( 176 -48 0 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+// entity 4
+{
+"classname" "kinematic_waypoint"
+"name" "closet_door_closed"
+"next" "closet_door_open"
+"origin" "168 -16 48"
+}
+// entity 5
+{
+"classname" "kinematic_waypoint"
+"name" "closet_door_open"
+"origin" "168 -16 -64"
+}
+// entity 6
+// Runtime spawner: the plate fires spawnFromSpawner, materializing count
+// fresh reference_enemy AI enemies at this origin. count enemies fan out
+// along the spawner local +X axis, spaced by the AI capsule diameter; keep
+// the origin clear of the nook walls in that direction. archetype must name
+// a registered AI-enemy canonical name; reference_enemy is globally
+// registered by start-script.js.
+{
+"classname" "entity_spawner"
+"origin" "224 -16 16"
+"angles" "0 180 0"
+"archetype" "reference_enemy"
+"count" "3"
+"_tags" "closet_spawner"
+}
+// entity 8
+{
+"classname" "light_spot"
+"origin" "24 -216 104"
+"angles" "-30 50 0"
+"_falloff_range" "400"
+"light" "350"
+"style" ""
+}

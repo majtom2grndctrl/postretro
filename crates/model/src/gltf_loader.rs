@@ -820,7 +820,14 @@ fn pose_masks_from_topo_metadata(
         }
         if let Some(foot) = metadata.foot_target {
             note_family(foot.family, &mut saw_side, &mut saw_indexed);
-            leg_builders.entry(foot.index).or_default().foot_joint = Some(topo_idx);
+            let builder = leg_builders.entry(foot.index).or_default();
+            if builder.foot_joint.is_some() {
+                log::warn!(
+                    "[Model] leg {} in {path_str} has more than one foot target (footL/footR/foot{{i}}); keeping the last",
+                    foot.index
+                );
+            }
+            builder.foot_joint = Some(topo_idx);
         }
     }
 

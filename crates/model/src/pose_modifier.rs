@@ -384,6 +384,14 @@ fn solve_and_plant_leg(
 /// Fraction of the solved plant applied, from the clip foot's lift above the
 /// probed surface: `1.0` at or below the surface, ramping to `0.0` once lifted
 /// past [`PLANT_BLEND_BAND`].
+///
+/// Height-only trade-off: `lift` is the signed height `ankle_model_y -
+/// contact_height` alone, so a clip-authored swing lift and a stance foot over
+/// ground that has dropped away downslope both present as positive lift and ramp
+/// out identically. A stance foot over ground more than [`PLANT_BLEND_BAND`]
+/// below the clip pose therefore keeps its clip pose and does not plant down —
+/// an accepted envelope. Separating the two cases would need gait-phase input
+/// this modifier does not receive.
 fn plant_weight(lift: f32) -> f32 {
     if !lift.is_finite() {
         return 0.0;
@@ -446,9 +454,11 @@ fn local_matrix(local: LocalTrs) -> Mat4 {
 /// Given the chain's current model-space joint positions, the desired `target`
 /// ankle position, and the model-space and local rotations of the hip and knee,
 /// returns the hip and knee **local** rotations that place the ankle on the
-/// target. The reach `|target - hip|` is clamped to the leg's segment sum, so an
-/// out-of-reach target straightens the leg to its natural length without
-/// hyperextending. Pure and side-effect free for direct unit testing.
+/// target. The reach `|target - hip|` is clamped into the leg's reachable
+/// annulus — no farther than the segment sum (an out-of-reach target straightens
+/// the leg without hyperextending), no closer than the segment difference (a
+/// too-close target cannot fold the ankle below the surface). Pure and
+/// side-effect free for direct unit testing.
 #[allow(clippy::too_many_arguments)]
 fn solve_two_bone(
     hip: Vec3,
@@ -466,8 +476,20 @@ fn solve_two_bone(
         // Degenerate bone lengths — nothing sound to solve; keep the clip pose.
         return (hip_local, knee_local);
     }
-    // Clamp reach so the leg never hyperextends past its segment sum.
-    let lat = (target - hip).length().clamp(IK_EPS, lab + lcb - IK_EPS);
+    // Reachable reach forms an annulus: the leg can neither extend past its
+    // segment sum (far limit — hyperextension) nor fold closer than the
+    // difference of its segments (near limit — steep upslope, ground high under
+    // the hip). Clamp both ends. Left unclamped, a too-close target folds the
+    // leg to a reach *farther* than the target (the law-of-cosines args only get
+    // saved from NaN by their own clamp), dropping the ankle below the intended
+    // contact height and driving it through the surface at full plant weight.
+    let reach_min = (lab - lcb).abs() + IK_EPS;
+    let reach_max = lab + lcb - IK_EPS;
+    if reach_min >= reach_max {
+        // Segment lengths leave no solvable annulus — keep the clip pose.
+        return (hip_local, knee_local);
+    }
+    let lat = (target - hip).length().clamp(reach_min, reach_max);
 
     let ca = (ankle - hip).normalize_or_zero();
     let ba = (knee - hip).normalize_or_zero();
@@ -502,8 +524,10 @@ fn solve_two_bone(
     };
 
     if axis0 == Vec3::ZERO {
-        // Straight leg: the bend plane is undefined, so only swing toward target
-        // (and let the reach clamp keep it from hyperextending).
+        // Colinear hip-knee-ankle: a perfectly straight leg has no defined bend
+        // plane, so the solver can only swing the whole leg toward the target —
+        // it cannot flex the knee to reach a closer one. Rigs should author a
+        // slight knee bend in planted poses so the bend plane stays defined.
         let hip_out = (hip_local * hip_swing).normalize();
         return (hip_out, knee_local);
     }

@@ -190,19 +190,19 @@ pub enum ComponentValue {
     ParticleState(ParticleState),
     SpriteVisual(SpriteVisual),
     FogVolume(FogVolumeComponent),
-    // Boxed: `PlayerMovementComponent` is by far the largest component
-    // (~400+ bytes, and the dash `DashPrograms` bound trees grow it further),
-    // so an unboxed variant would inflate every `ComponentValue` to its size
+    // Boxed: `PlayerMovementComponent` is large (~400+ bytes — the dash
+    // `DashPrograms` bound trees grow it further), large enough that an unboxed
+    // variant would inflate every `ComponentValue` to its size
     // (clippy::large_enum_variant). Boxing keeps the enum compact; the player
     // pawn is a singleton, so the extra indirection is paid once.
     PlayerMovement(Box<PlayerMovementComponent>),
     Weapon(WeaponComponent),
     DescriptorProvenance(DescriptorProvenance),
     // Boxed: `MeshComponent` carries the per-instance `PoseInputs` render
-    // payload, whose fixed `[FootProbe; MAX_FEET]` foot-probe array makes it the
-    // largest component by far, so an unboxed variant would inflate every
-    // `ComponentValue` to its size (clippy::large_enum_variant). Boxing keeps the
-    // transport enum compact.
+    // payload, whose fixed `[FootProbe; MAX_FEET]` foot-probe array makes it
+    // large enough that an unboxed variant would inflate every `ComponentValue`
+    // to its size (clippy::large_enum_variant). Boxing keeps the transport enum
+    // compact.
     Mesh(Box<MeshComponent>),
     Health(HealthComponent),
     Agent(AgentComponent),

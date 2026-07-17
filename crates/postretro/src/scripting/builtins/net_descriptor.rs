@@ -289,6 +289,7 @@ mod tests {
                     looping: true,
                     crossfade_ms: 150.0,
                     interrupt: InterruptPolicy::Smooth,
+                    travel_speed: None,
                     clip_index: None,
                 },
             );
@@ -299,6 +300,7 @@ mod tests {
                     looping: false,
                     crossfade_ms: 0.0,
                     interrupt: InterruptPolicy::Snap,
+                    travel_speed: None,
                     clip_index: None,
                 },
             );
@@ -318,6 +320,7 @@ mod tests {
                 model: "decraniated".to_string(),
                 animations,
                 default_state,
+                locomotion: None,
             }),
             health: None,
             ai: None,

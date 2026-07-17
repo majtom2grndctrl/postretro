@@ -42,6 +42,8 @@ declare module "postretro" {
     loop?: boolean;
     /** Crossfade duration into this state, in milliseconds. Optional; must be finite and >= 0. Defaults to 150 ms. */
     crossfadeMs?: number;
+    /** Per-state locomotion travel-speed override, in ground units per animated second. Optional; must be finite and > 0. When present it replaces this clip's load-derived travel speed for speed-scaled playback; omit to use the derived value. */
+    travelSpeed?: number;
     /** How a fade into this state takes over an in-flight fade. Optional; defaults to "smooth". */
     interrupt?: InterruptPolicy;
   };
@@ -54,6 +56,14 @@ declare module "postretro" {
     animations?: { readonly [state: string]: AnimationStateDescriptor };
     /** The state entered at spawn. Required exactly when `animations` is present; must name a declared state. */
     defaultState?: string;
+    /** Optional locomotion calibration block. Carries the `speedScale` rate-scaling toggle; omit for the default (rate-scaled) behavior. */
+    locomotion?: LocomotionDescriptor;
+  };
+
+  /** Authored per-archetype locomotion calibration attached to `MeshDescriptor.locomotion`. Sibling to the per-state `travelSpeed` override. */
+  export type LocomotionDescriptor = {
+    /** Whether locomotion rate-scaling applies to this archetype's playback. Optional; defaults to true (speed-scaled playback). Set false to play the authored cadence unscaled. */
+    speedScale?: boolean;
   };
 
   /** Entity archetype registered through `ModManifest.entities`. `defineEntity()` is a typed identity helper for constructing this object. The descriptor is engine-global and survives level unloads. */

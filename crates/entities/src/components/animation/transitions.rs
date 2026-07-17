@@ -397,6 +397,7 @@ mod tests {
                 looping: false,
                 crossfade_ms: DEFAULT_CROSSFADE_MS,
                 interrupt: InterruptPolicy::Snap,
+                travel_speed: None,
                 clip_index: Some(2),
             },
         );
@@ -495,6 +496,7 @@ mod tests {
                 looping: true,
                 crossfade_ms: DEFAULT_CROSSFADE_MS,
                 interrupt: InterruptPolicy::Smooth,
+                travel_speed: None,
                 clip_index: None,
             },
         );
@@ -558,6 +560,7 @@ mod tests {
                 looping: false,
                 crossfade_ms: 0.0,
                 interrupt: InterruptPolicy::Smooth,
+                travel_speed: None,
                 clip_index: None,
             },
         );
@@ -764,6 +767,7 @@ mod tests {
                 looping: true,
                 crossfade_ms: DEFAULT_CROSSFADE_MS,
                 interrupt: InterruptPolicy::Smooth,
+                travel_speed: None,
                 clip_index: None,
             },
         );

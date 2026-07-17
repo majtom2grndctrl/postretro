@@ -945,6 +945,7 @@ mod tests {
             looping,
             crossfade_ms,
             interrupt: InterruptPolicy::Smooth,
+            travel_speed: None,
             clip_index: idx,
         }
     }

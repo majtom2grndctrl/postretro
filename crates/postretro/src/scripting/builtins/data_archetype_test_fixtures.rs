@@ -46,6 +46,7 @@ pub(crate) fn mesh_descriptor(classname: &str, animated: bool) -> EntityTypeDesc
                 looping: true,
                 crossfade_ms: 150.0,
                 interrupt: InterruptPolicy::Smooth,
+                travel_speed: None,
                 clip_index: None,
             },
         );
@@ -56,6 +57,7 @@ pub(crate) fn mesh_descriptor(classname: &str, animated: bool) -> EntityTypeDesc
                 looping: false,
                 crossfade_ms: 0.0,
                 interrupt: InterruptPolicy::Snap,
+                travel_speed: None,
                 clip_index: None,
             },
         );
@@ -75,6 +77,7 @@ pub(crate) fn mesh_descriptor(classname: &str, animated: bool) -> EntityTypeDesc
             model: "decraniated".to_string(),
             animations,
             default_state,
+            locomotion: None,
         }),
         health: None,
         ai: None,

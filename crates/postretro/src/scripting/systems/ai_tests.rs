@@ -84,6 +84,7 @@ fn usable_state(clip: &str, idx: usize) -> AnimationState {
         looping: true,
         crossfade_ms: 0.0,
         interrupt: InterruptPolicy::Smooth,
+        travel_speed: None,
         clip_index: Some(idx),
     }
 }

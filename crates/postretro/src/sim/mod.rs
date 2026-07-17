@@ -1076,6 +1076,7 @@ mod tests {
                     looping: name == "idle",
                     crossfade_ms: DEFAULT_CROSSFADE_MS,
                     interrupt: InterruptPolicy::Smooth,
+                    travel_speed: None,
                     clip_index: Some(clip_index),
                 },
             );

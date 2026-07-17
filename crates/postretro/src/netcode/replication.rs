@@ -382,6 +382,7 @@ mod tests {
                 looping: true,
                 crossfade_ms: 150.0,
                 interrupt: InterruptPolicy::Smooth,
+                travel_speed: None,
                 clip_index: Some(0),
             },
         );
@@ -392,6 +393,7 @@ mod tests {
                 looping: false,
                 crossfade_ms: 150.0,
                 interrupt: InterruptPolicy::Smooth,
+                travel_speed: None,
                 clip_index: Some(1),
             },
         );

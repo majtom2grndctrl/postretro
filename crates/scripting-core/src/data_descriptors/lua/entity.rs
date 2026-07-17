@@ -248,7 +248,32 @@ pub fn mesh_descriptor_from_lua(table: &Table) -> Result<MeshDescriptor, Descrip
         None
     };
 
-    MeshDescriptor::build(model, states, default_state, animations_present)
+    // Optional `locomotion` block: `{ speedScale?: bool }`. Absent block ⇒ None
+    // ⇒ the runtime `speed_scale = true` default; `speedScale` itself defaults
+    // to `true` when the block is present but omits the field.
+    let locomotion = if table.contains_key("locomotion").map_err(lua_err)? {
+        let raw: LuaValue = table.get("locomotion").map_err(lua_err)?;
+        match raw {
+            LuaValue::Nil => None,
+            LuaValue::Table(loco_table) => {
+                let speed_scale =
+                    get_optional_bool_lua(&loco_table, "speedScale")?.unwrap_or(true);
+                Some(LocomotionDescriptor { speed_scale })
+            }
+            other => {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`components.mesh.locomotion` must be a table, got {}",
+                        other.type_name()
+                    ),
+                });
+            }
+        }
+    } else {
+        None
+    };
+
+    MeshDescriptor::build(model, states, default_state, animations_present, locomotion)
 }
 
 /// Gather one animation-state entry from a Luau table. Mirrors
@@ -261,6 +286,9 @@ pub fn raw_animation_state_from_lua(
     let clip = get_required_string_lua(table, "clip")?;
     let looping = get_optional_bool_lua(table, "loop")?.unwrap_or(false);
     let crossfade_ms = get_optional_f32_lua(table, "crossfadeMs")?.unwrap_or(DEFAULT_CROSSFADE_MS);
+    // Optional per-state `travelSpeed` override, read raw here; positivity /
+    // finiteness is validated in `MeshDescriptor::build`.
+    let travel_speed = get_optional_f32_lua(table, "travelSpeed")?;
     let interrupt = if table.contains_key("interrupt").map_err(lua_err)? {
         let raw: LuaValue = table.get("interrupt").map_err(lua_err)?;
         match raw {
@@ -281,5 +309,6 @@ pub fn raw_animation_state_from_lua(
         looping,
         crossfade_ms,
         interrupt,
+        travel_speed,
     })
 }

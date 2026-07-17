@@ -28,6 +28,20 @@ pub(super) fn default_playback_rate() -> f32 {
     1.0
 }
 
+/// Default for [`MeshAnimation::speed_scale`]: locomotion rate-scaling is on
+/// unless the archetype's `locomotion.speedScale` toggle explicitly disables it.
+/// Absent `locomotion` block ⇒ `true`, preserving today's speed-scaled playback.
+pub(super) fn default_speed_scale() -> bool {
+    true
+}
+
+/// serde skip-if-absent predicate for [`MeshAnimation::speed_scale`]: the field
+/// is omitted on serialize when it holds its default (`true`), so an archetype
+/// that did not turn rate-scaling off round-trips without the key.
+fn speed_scale_is_default(value: &bool) -> bool {
+    *value == default_speed_scale()
+}
+
 /// Per-entity animation runtime state, present only on descriptor-spawned
 /// entities that declared an `animations` block. `prop_mesh` entities leave
 /// [`MeshComponent::animation`] as `None` and stay stateless (today's behavior:
@@ -78,6 +92,18 @@ pub struct MeshAnimation {
     /// Accumulated outgoing-leg elapsed time at `previous_rebase_time`.
     #[serde(skip, default)]
     pub previous_rebase_elapsed: f64,
+    /// Whether locomotion rate-scaling applies to this entity's playback.
+    /// Threaded from the archetype's `locomotion.speedScale` toggle at spawn
+    /// (`data_archetype.rs`); `true` (default, absent block) keeps speed-scaled
+    /// playback, `false` plays the authored cadence unscaled. `speedScale` on
+    /// the wire; `#[serde(default)]` and skip-if-absent so the default
+    /// round-trips without the key.
+    #[serde(
+        rename = "speedScale",
+        default = "default_speed_scale",
+        skip_serializing_if = "speed_scale_is_default"
+    )]
+    pub speed_scale: bool,
     /// What the active fade blends from (interrupted-state clip vs snapshot).
     /// Set by [`switch_animation_state`] per the entered state's interrupt policy.
     pub fade_source: FadeSourceKind,
@@ -110,9 +136,19 @@ impl MeshAnimation {
             previous_rate: default_playback_rate(),
             previous_rebase_time: None,
             previous_rebase_elapsed: 0.0,
+            speed_scale: default_speed_scale(),
             fade_source: FadeSourceKind::Clip,
             interrupted_outgoing: None,
         }
+    }
+
+    /// Override the locomotion `speed_scale` toggle, threading the archetype's
+    /// `locomotion.speedScale` value through the spawn path at the
+    /// [`MeshAnimation::new`] call site. Chainable so the descriptor spawn path
+    /// keeps its single-expression construction.
+    pub fn with_speed_scale(mut self, speed_scale: bool) -> Self {
+        self.speed_scale = speed_scale;
+        self
     }
 }
 
@@ -130,6 +166,7 @@ pub(crate) mod test_support {
             looping,
             crossfade_ms: DEFAULT_CROSSFADE_MS,
             interrupt: InterruptPolicy::Smooth,
+            travel_speed: None,
             clip_index: Some(clip_index),
         }
     }

@@ -1,9 +1,12 @@
-// E18 runtime-spawner test. The plate's enter edge fans out to three named
-// reactions: the alarm light snaps red, the closet door moves, and the spawner
-// materializes fresh AI enemies at runtime. This exercises the spawnFromSpawner
-// path (and the round-1 feet-to-center transform fix) rather than the
-// pre-placed closet-reveal aggro gate. Keep the bodies separate; tag-targeted
-// primitives are fire-time work and do not belong in a sequence together.
+// E18 runtime-spawner test, and the scripts-first half of the monster-closet
+// pair. spawner-test.map carries no reaction wiring — its trigger and mover
+// hold only their _tags handles — so every causal edge lives here. The plate's
+// enter edge fans out to three named reactions: the alarm light snaps red, the
+// closet door moves, and the spawner materializes fresh AI enemies at runtime.
+// This exercises the spawnFromSpawner path (and the round-1 feet-to-center
+// transform fix) rather than the pre-placed closet-reveal aggro gate. Keep the
+// bodies separate; tag-targeted primitives are fire-time work and do not belong
+// in a sequence together.
 //
 // NOTE on timing: all three reactions dispatch on the same tick — the light
 // turns red the same instant the door starts and the enemies spawn. A timed

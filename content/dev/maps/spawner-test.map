@@ -199,11 +199,19 @@
 }
 // entity 7
 {
-"classname" "light_spot"
+"classname" "light_dynamic_spot"
 "origin" "24 -216 104"
 "angles" "-30 50 0"
 "_falloff_range" "400"
 "light" "350"
 "style" ""
 "_tags" "alarm_light"
+}
+// entity 8
+{
+"classname" "light_spot"
+"origin" "8 248 8"
+"light" "50"
+"_falloff_range" "50"
+"angles" "0 0 0"
 }

@@ -198,7 +198,12 @@ pub enum ComponentValue {
     PlayerMovement(Box<PlayerMovementComponent>),
     Weapon(WeaponComponent),
     DescriptorProvenance(DescriptorProvenance),
-    Mesh(MeshComponent),
+    // Boxed: `MeshComponent` carries the per-instance `PoseInputs` render
+    // payload, whose fixed `[FootProbe; MAX_FEET]` foot-probe array makes it the
+    // largest component by far, so an unboxed variant would inflate every
+    // `ComponentValue` to its size (clippy::large_enum_variant). Boxing keeps the
+    // transport enum compact.
+    Mesh(Box<MeshComponent>),
     Health(HealthComponent),
     Agent(AgentComponent),
     Brain(BrainComponent),
@@ -443,13 +448,13 @@ impl Component for MeshComponent {
 
     fn from_value(value: &ComponentValue) -> Option<&Self> {
         match value {
-            ComponentValue::Mesh(m) => Some(m),
+            ComponentValue::Mesh(m) => Some(m.as_ref()),
             _ => None,
         }
     }
 
     fn into_value(self) -> ComponentValue {
-        ComponentValue::Mesh(self)
+        ComponentValue::Mesh(Box::new(self))
     }
 }
 

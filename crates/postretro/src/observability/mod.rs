@@ -279,7 +279,7 @@ mod tests {
                 })
             }
             ComponentKind::Mesh => {
-                ComponentValue::Mesh(MeshComponent::stateless("test_model".into()))
+                ComponentValue::Mesh(Box::new(MeshComponent::stateless("test_model".into())))
             }
             ComponentKind::Health => ComponentValue::Health(HealthComponent {
                 max: 1.0,

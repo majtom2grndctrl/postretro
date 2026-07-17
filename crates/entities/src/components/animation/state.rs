@@ -145,7 +145,7 @@ mod tests {
 
     #[test]
     fn mesh_serializes_within_component_value_tagged_form() {
-        let value = ComponentValue::Mesh(MeshComponent::stateless("decraniated".into()));
+        let value = ComponentValue::Mesh(Box::new(MeshComponent::stateless("decraniated".into())));
         let json = serde_json::to_value(&value).unwrap();
         assert_eq!(json["kind"], "mesh");
         assert_eq!(json["model"], "decraniated");

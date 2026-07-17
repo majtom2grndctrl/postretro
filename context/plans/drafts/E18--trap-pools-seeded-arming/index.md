@@ -202,7 +202,8 @@ after); in arm-all mode arm every member of every pool and skip the roll; otherw
 `registry.query_by_component_and_tag(ComponentKind::TriggerVolume, Some(tag))`
 (`crates/entities/src/registry.rs:709`), collect and sort `EntityId`s ascending (stable spawn
 order), warn+skip an empty member set, resolve the target count (`Count`: warn+clamp `arm > len`
-to all; `Percentage`: `floor(percentage / 100 × len)` — one f64 op then floor, no PRNG), pick that
+to all; `Percentage`: `floor((percentage / 100.0) * len)` — evaluated in that pinned order, no fma
+contraction, no PRNG), pick that
 many distinct members by partial Fisher–Yates over one PRNG stream shared across pools, then apply
 through the shipped helpers `arm_trigger_targets` / `disarm_trigger_targets`
 (`crates/postretro/src/trigger_system.rs:451/:461` — pass the `command_diagnostics` handle already

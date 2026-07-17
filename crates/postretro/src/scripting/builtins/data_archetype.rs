@@ -465,7 +465,7 @@ pub(crate) fn attach_descriptor_components(
         let speed_scale = mesh_desc
             .locomotion
             .as_ref()
-            .map_or(true, |loco| loco.speed_scale);
+            .is_none_or(|loco| loco.speed_scale);
         let component = match &mesh_desc.default_state {
             Some(default_state) => MeshComponent::animated(
                 mesh_desc.model.clone(),

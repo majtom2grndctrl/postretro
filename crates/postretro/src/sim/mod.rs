@@ -581,9 +581,7 @@ fn update_foot_ground_probes(
         .iter_with_kind(ComponentKind::Mesh)
         .filter_map(|(id, _)| {
             let mesh = registry.get_component::<MeshComponent>(id).ok()?;
-            if mesh.animation.is_none() {
-                return None;
-            }
+            mesh.animation.as_ref()?;
             let zones = hit_zone_store.get(&ModelHandle::from(mesh.model.clone()))?;
             (!zones.legs.is_empty()).then_some(id)
         })

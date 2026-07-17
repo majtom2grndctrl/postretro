@@ -1,8 +1,12 @@
 // Game: Postretro
 // Format: Standard
-// E18 reveal-closet set piece.
-// Compile: cargo run -p postretro-level-compiler -- content/dev/maps/closet-reveal.map -o content/dev/maps/closet-reveal.prl
-// Run: cargo run -p xtask -- run content/dev/maps/closet-reveal.prl
+// E18 runtime-spawner test set piece. Same sealed room as closet-reveal, but
+// the closet holds an entity_spawner instead of pre-placed enemies: the plate
+// fires spawnFromSpawner to materialize fresh AI enemies at runtime (the path
+// the round-1 feet-to-center fix touched). Watch that spawned enemies stand
+// on the floor, not sunk into it, and walk out through the doorway.
+// Compile: cargo run -p postretro-level-compiler -- content/dev/maps/spawner-test.map -o content/dev/maps/spawner-test.prl
+// Run: cargo run -p xtask -- run content/dev/maps/spawner-test.prl
 // Sealed room, interior 288 x 256 x 128 units, wall thickness 16, with a
 // recessed closet nook carved into the solid east block. The nook interior
 // spans x 176 to 272, y 96 to 160, z 0 to 96, entered through a doorway at
@@ -19,7 +23,7 @@
 "classname" "worldspawn"
 "initialGravity" "-9.81"
 "wad" ""
-"data_script" "../scripts/closet-reveal.ts"
+"data_script" "../scripts/spawner-test.ts"
 "_tb_mod" "dev"
 "_tb_def" "external:../../../sdk/TrenchBroom/postretro.fgd"
 // brush 0
@@ -174,20 +178,19 @@
 "origin" "168 -16 -64"
 }
 // entity 6
+// Runtime spawner: the plate fires spawnFromSpawner, materializing count
+// fresh reference_enemy AI enemies at this origin. count enemies fan out
+// along the spawner local +X axis, spaced by the AI capsule diameter; keep
+// the origin clear of the nook walls in that direction. archetype must name
+// a registered AI-enemy canonical name; reference_enemy is globally
+// registered by start-script.js.
 {
-"classname" "reference_enemy"
-"origin" "224 -56 16"
+"classname" "entity_spawner"
+"origin" "224 -16 16"
 "angles" "0 180 0"
-"enabled_on_spawn" "false"
-"_tags" "closet_enemies"
-}
-// entity 7
-{
-"classname" "reference_enemy"
-"origin" "256 8 16"
-"angles" "0 180 0"
-"enabled_on_spawn" "false"
-"_tags" "closet_enemies"
+"archetype" "reference_enemy"
+"count" "3"
+"_tags" "closet_spawner"
 }
 // entity 8
 {
@@ -197,4 +200,5 @@
 "_falloff_range" "400"
 "light" "350"
 "style" ""
+"_tags" "alarm_light"
 }

@@ -112,7 +112,7 @@ bridges → classname dispatch → data script + `populate_level_with_trigger_ev
 
 ## Sibling-spec status
 
-- `in-progress/E18--trigger-event-params` is effectively merged: `trigger_commands.rs` exists,
+- `done/E18--trigger-event-params` is shipped: `trigger_commands.rs` exists,
   `@activators`/`@trigger` sentinels and `onTriggerEvent`/`triggerEvents` are in source and SDK.
   D relies only on shipped surfaces (arm/disarm, `triggerEvents` drain pattern, spawner verb).
 

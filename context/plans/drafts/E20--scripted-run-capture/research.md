@@ -58,7 +58,7 @@ windowed render paths. This follow-up merges the batch driver with a renderer.
 
 ## Depends on E20-first seams (re-ground before promotion)
 
-Built by `plans/ready/E20--frame-capture`; grounded here only as spec text, will
+Built by `plans/done/E20--frame-capture`; grounded here only as spec text, will
 shift in implementation:
 - Surfaceless (offscreen) `Renderer` constructor (full-ready, no surface).
 - The capture render entry (records scene into `scene_color`, reads back RGBA8) —

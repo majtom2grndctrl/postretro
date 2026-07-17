@@ -4,7 +4,7 @@
 
 Close the Epic 18 semi-random loop: a per-level script — or a mod manifest scoped by level tags —
 declares pools of authored closet traps; at level install a host-only seeded roll arms a declared
-count or fraction per pool, so players learn where traps *can* be while each run varies which are
+count or percentage per pool, so players learn where traps *can* be while each run varies which are
 live. Scripts declare pools and arming targets; they never observe or perform the roll. Design
 intent: `context/research/co-op-triggers-trap-pools.md` §3 (RNG posture), §4.6. Consumes the shipped arm/disarm substrate (`done/E18--trigger-event-fanout`)
 and composes with spawn-closets (`done/E18--spawner-and-closet-containment`).
@@ -14,11 +14,12 @@ and composes with spawn-closets (`done/E18--spawner-and-closet-containment`).
 ### In scope
 
 - **`triggerPools` manifest key** on the `setupLevel` return bundle — level-local declarative data
-  beside `reactions`/`crossings`/`triggerEvents`. Each entry: `{ tag, arm | armFraction, levels? }`
+  beside `reactions`/`crossings`/`triggerEvents`. Each entry: `{ tag, arm | armPercentage, levels? }`
   — a tag selecting member trigger volumes (also the pool's identity for logs/overlay — the pool IS
   "the trigger volumes carrying tag X") plus exactly one arming form: `arm` (integer count) or
-  `armFraction` (proportion in [0, 1], resolved per install as `floor(fraction × member count)` —
-  one correctly-rounded f64 multiply then floor, bit-identical cross-platform). Parsed warn-and-skip
+  `armPercentage` (percentage in [0, 100], resolved per install as
+  `floor(percentage / 100 × member count)` — one correctly-rounded f64 op then floor,
+  bit-identical cross-platform). Parsed warn-and-skip
   per entry in both runtimes, mirroring the `triggerEvents` drains. `levels?` rides the descriptor
   at both tiers (the `TriggerEventDescriptor` precedent); it matters at mod scope.
 - **Mod-global `ModManifest.triggerPools` tier** — the same descriptor, selecting levels via
@@ -31,7 +32,7 @@ and composes with spawn-closets (`done/E18--spawner-and-closet-containment`).
   host-only — each matched level rolls independently at its own install; replication posture
   unchanged. A staged reload swaps definitions only, never re-rolls the live level — the next
   install rolls the new set.
-- **`defineTriggerPool({ tag, arm | armFraction, levels? })` SDK builder** — a pure
+- **`defineTriggerPool({ tag, arm | armPercentage, levels? })` SDK builder** — a pure
   identity/validation helper (the `defineMapCatalog` shape): no FFI, returns the descriptor for
   the manifest array. TS + Luau,
   typedefs, drift snapshot, parity fixture. Trap pools are this primitive's motivating consumer;
@@ -44,7 +45,7 @@ and composes with spawn-closets (`done/E18--spawner-and-closet-containment`).
 - **Host-only seeded arming pass at level install**, after placements and trigger bindings
   materialize and before the `levelLoad` fire: resolve each pool's member set by tag, sort members
   by entity id (stable spawn order), resolve the target count (`arm` clamped to the member set,
-  `armFraction` floored against it), pick that many distinct members with a seeded PRNG, arm the
+  `armPercentage` floored against it), pick that many distinct members with a seeded PRNG, arm the
   picks and disarm the rest via the shipped full-re-arm/disarm helpers. The pass force-sets both states,
   so an authored `enabled_on_spawn` value never leaks into a pool member (authoring convention is
   `false`; `true` warns as a likely mistake and is overridden).
@@ -70,7 +71,7 @@ and composes with spawn-closets (`done/E18--spawner-and-closet-containment`).
 
 ### Out of scope
 
-- Weighted selection, per-member weights, guaranteed/forbidden members — count and fraction only
+- Weighted selection, per-member weights, guaranteed/forbidden members — count and percentage only
   in v1 (research names weights as a later axis).
 - Any script-visible roll: no primitive returns armed state, no pool query handle, no `@`-input.
   `world.query({ component: "trigger_volume" })` keeps its shipped snapshot (no armed state).
@@ -108,9 +109,9 @@ and composes with spawn-closets (`done/E18--spawner-and-closet-containment`).
       consequential steps in the same sim tick.
 - [ ] Degradation (headless, pinned seed): `arm` ≥ member count arms all members and warns; a pool
       tag matching zero trigger volumes warns and the pool is inert; a malformed entry (missing
-      `tag`, negative or non-integer `arm`, `armFraction` outside [0, 1] or non-finite, both or
+      `tag`, negative or non-integer `arm`, `armPercentage` outside [0, 100] or non-finite, both or
       neither arming form present) warns and is skipped without aborting the manifest; a duplicate
-      pool tag within one tier warns and the later entry is skipped; `arm: 0` — or a fraction
+      pool tag within one tier warns and the later entry is skipped; `arm: 0` — or a percentage
       flooring to 0 — is valid and silently disarms every member (all-traps-off; the report
       records it).
 - [ ] A member matched by two pools warns once and the later pool's decision wins (composed
@@ -119,8 +120,9 @@ and composes with spawn-closets (`done/E18--spawner-and-closet-containment`).
       descriptor data) and composes by its `levels` selector: it rolls on a level whose catalog
       tags intersect the selector, is absent from a non-matching level, and an empty/omitted
       selector matches every level — including direct `.prl` path loads, whose tag set is empty.
-- [ ] `armFraction: 0.5` over 4 members arms exactly 2 (`floor(fraction × member count)`),
-      resolved against each matched level's own member set at its own install.
+- [ ] `armPercentage: 50` over 4 members arms exactly 2
+      (`floor(percentage / 100 × member count)`), resolved against each matched level's own
+      member set at its own install.
 - [ ] Cross-tier precedence: a level-local pool declaring the same tag as a matched mod-global
       pool replaces it for that level (logged at info; one roll for the tag).
 - [ ] A pool member authored `enabled_on_spawn = true` logs a warning naming the entity and is
@@ -140,9 +142,9 @@ and composes with spawn-closets (`done/E18--spawner-and-closet-containment`).
 ### Task 1: `TriggerPoolDescriptor` + manifest drains + registry tiers
 
 Add `TriggerPoolDescriptor { tag: String, arm: TriggerPoolArm, levels: Vec<String> }` with
-`TriggerPoolArm { Count(u32), Fraction(f64) }` beside `TriggerEventDescriptor`
+`TriggerPoolArm { Count(u32), Percentage(f64) }` beside `TriggerEventDescriptor`
 in `crates/entities/src/data_descriptors/types/reactions.rs`. Wire keys: `"arm"` XOR
-`"armFraction"` (exactly one), `"levels"` optional (absent → empty — the `TriggerEventDescriptor`
+`"armPercentage"` (exactly one), `"levels"` optional (absent → empty — the `TriggerEventDescriptor`
 precedent). Widen `LevelManifest`
 (`crates/scripting-core/src/data_descriptors/runtime_manifest.rs`) with
 `trigger_pools: Vec<TriggerPoolDescriptor>`. Parse the `triggerPools` key in both converter paths by
@@ -152,8 +154,8 @@ from `LevelManifest::from_js_value`, and a `drain_trigger_pools_lua` sibling to
 `drain_trigger_events_lua` (`.../lua/manifest.rs:66`) called from `from_lua_table` (both reused by
 Task 6's mod-init drains — the `scope` label distinguishes diagnostics). Per-entry validation,
 warn-and-skip (never abort the manifest): `tag` required non-empty string; exactly one of `arm`
-(non-negative integer — reject fractional and negative numbers) and `armFraction` (finite, in
-[0, 1]); `levels` an optional string array; reject a duplicate `tag` within the array (warn, skip
+(non-negative integer — reject fractional and negative numbers) and `armPercentage` (finite, in
+[0, 100]); `levels` an optional string array; reject a duplicate `tag` within the array (warn, skip
 the later entry). Storage mirrors the trigger-event tiers in `DataRegistry`
 (`crates/entities/src/data_registry.rs`): retained `level_trigger_pools`, durable
 `global_trigger_pools` with `replace_global_trigger_pools` (alias `ScopedTriggerPool =
@@ -190,7 +192,7 @@ after); in arm-all mode arm every member of every pool and skip the roll; otherw
 `registry.query_by_component_and_tag(ComponentKind::TriggerVolume, Some(tag))`
 (`crates/entities/src/registry.rs:709`), collect and sort `EntityId`s ascending (stable spawn
 order), warn+skip an empty member set, resolve the target count (`Count`: warn+clamp `arm > len`
-to all; `Fraction`: `floor(fraction × len)` — one f64 multiply then floor, no PRNG), pick that
+to all; `Percentage`: `floor(percentage / 100 × len)` — one f64 op then floor, no PRNG), pick that
 many distinct members by partial Fisher–Yates over one PRNG stream shared across pools, then apply
 through the shipped helpers `arm_trigger_targets` / `disarm_trigger_targets`
 (`crates/postretro/src/trigger_system.rs:451/:461` — pass the `command_diagnostics` handle already
@@ -205,7 +207,7 @@ connected client. Unit tests live in the module; install-integration tests drive
 
 ### Task 3: SDK surface — `defineTriggerPool`, `triggerPools` key, typedefs, parity
 
-Add `defineTriggerPool(pool: { tag: string; arm?: number; armFraction?: number; levels?: string[]
+Add `defineTriggerPool(pool: { tag: string; arm?: number; armPercentage?: number; levels?: string[]
 }): TriggerPoolDescriptor` to `sdk/lib/data_script.ts` (a pure identity helper, the
 `defineMapCatalog` shape — no FFI, no freezing beyond what siblings do) and the
 `TriggerPoolDescriptor` type; widen the exported `LevelManifest` type (`data_script.ts:110-119`)
@@ -220,7 +222,7 @@ generated `ModManifest` typedef — a `.field(...)` on the `register_type("ModMa
 `.d.luau` via `gen-script-types`; update the committed drift snapshot
 (`crates/postretro/src/scripting/typedef/tests/`). Add a TS/Luau parity fixture asserting both
 runtimes produce byte-identical `triggerPools` manifest data for the same authored pools —
-level-local count form and mod-global fraction form with a `levels` selector. SDK builders do not
+level-local count form and mod-global percentage form with a `levels` selector. SDK builders do not
 pre-reject values beyond shape (required keys present, arming fields numbers); the engine drains
 (Task 1) own warn-and-degrade, matching the `edge`-value precedent.
 
@@ -242,15 +244,15 @@ Author `content/dev/maps/trap-pools.map` plus its companion script (follow the
 `trigger_volume` member tagged into one pool, firing a `spawnFromSpawner` reaction at its
 co-placed `entity_spawner` — declared `defineTriggerPool({ tag: "closet_trap", arm: 2 })`. Add a
 second quartet of members tagged `ambush_trap` for the mod tier: the fixture mod's start script
-declares `defineTriggerPool({ tag: "ambush_trap", armFraction: 0.5, levels: ["trap-pools"] })`,
+declares `defineTriggerPool({ tag: "ambush_trap", armPercentage: 50, levels: ["trap-pools"] })`,
 with `trap-pools` a tag on the fixture's map-catalog entry. Headless tests (roll-exercising cases
 pin `--pool-seed` — headless no-seed arms all): exact armed count; the no-seed arm-all default
 (every member of both pools armed); same-seed reproducibility and pinned differing-seed
 divergence; restart-with-pinned-seed identity; unselected-member silence then runtime `armTrigger`
-re-arm-and-fire; fraction resolution (`armFraction: 0.5` over 4 arms 2); mod-global composition
+re-arm-and-fire; percentage resolution (`armPercentage: 50` over 4 arms 2); mod-global composition
 (the `ambush_trap` pool rolls on the matched fixture level, stays inert on a level without the
 catalog tag, and a level-local same-tag declaration replaces it); the degradation matrix (empty
-tag, over-count clamp, `arm: 0` and fraction-to-zero, malformed entry skip incl. both/neither
+tag, over-count clamp, `arm: 0` and percentage-to-zero, malformed entry skip incl. both/neither
 arming form, duplicate tag skip, overlap warning + later-pool-wins, `enabled_on_spawn = true`
 warning). Two-endpoint (loopback harness, E18 net-QA precedent): host
 installs with a pinned seed; assert the client ran no pass (client trigger armed state as
@@ -288,13 +290,13 @@ consumes Task 2's pass, Task 3's builder, and Task 6's mod-global commit).
 ## Rough sketch
 
 - **Selection is engine-evaluated data, exactly like mover commands and spawner config** — scripts
-  declare `{ tag, arm | armFraction, levels? }`, the engine owns the roll. Not command-buffer IR (RNG forbidden
+  declare `{ tag, arm | armPercentage, levels? }`, the engine owns the roll. Not command-buffer IR (RNG forbidden
   there), not a script-visible value, never a shared-seed client computation.
 - **One PRNG stream, composed declaration order** (matching mod-global pools first, then
   level-local). Deterministic given (seed, composed order, member id order). Member ids sort
   ascending; identical installs of the same `.prl` spawn identical ids.
-- **Fraction resolution is arithmetic, not RNG:** `floor(fraction × member count)` — a single
-  correctly-rounded IEEE f64 multiply, then floor. Bit-identical across platforms; the PRNG
+- **Percentage resolution is arithmetic, not RNG:** `floor(percentage / 100 × member count)` — a
+  single correctly-rounded IEEE f64 op, then floor. Bit-identical across platforms; the PRNG
   touches only member selection. `floor` matches the script-side `Math.floor` idiom in the
   `world.query` example below.
 - **Headless arm-all over a fixed default seed:** a fixed seed is byte-identical too, but bakes a
@@ -323,7 +325,7 @@ consumes Task 2's pass, Task 3's builder, and Task 6's mod-global commit).
 | Name | Rust | Wire / serde | JS / TS | Luau | FGD KVP |
 |---|---|---|---|---|---|
 | pool manifest key | `LevelManifest.trigger_pools` / `ModManifestResult.trigger_pools` / `DataRegistry` level + global tiers | `"triggerPools"` (setupLevel return key and `ModManifest` key) | `triggerPools?: TriggerPoolDescriptor[]` (both manifests) | same | n/a |
-| pool descriptor | `TriggerPoolDescriptor { tag, arm: TriggerPoolArm, levels }` | keys `"tag"`, `"arm"` XOR `"armFraction"`, optional `"levels"` | `defineTriggerPool({ tag, arm?, armFraction?, levels? })` | same | n/a |
+| pool descriptor | `TriggerPoolDescriptor { tag, arm: TriggerPoolArm, levels }` | keys `"tag"`, `"arm"` XOR `"armPercentage"`, optional `"levels"` | `defineTriggerPool({ tag, arm?, armPercentage?, levels? })` | same | n/a |
 | seed override | session boot config (pinned seed vs arm-all) | n/a (CLI `--pool-seed=<u64>`) | n/a | n/a | n/a |
 | install report | `TriggerPoolInstallReport` (host-local, not replicated) | none — no wire surface | n/a | n/a | n/a |
 
@@ -388,7 +390,7 @@ end
 { "classname" "entity_spawner" "archetype" "grunt" "count" "3" "_tags" "closet_a" }
 ```
 
-For a plain proportion, `armFraction` says it declaratively — `armFraction: 0.5` arms half of the
+For a plain proportion, `armPercentage` says it declaratively — `armPercentage: 50` arms half of the
 members, floored, engine-resolved per install. When the count is computed — half plus one, a
 minimum, a difficulty scale — query the authored trigger volumes by tag with `world.query` (the
 same primitive `world.query({ component: "trigger_volume" })` uses elsewhere in this spec) and
@@ -439,7 +441,7 @@ end
 ```
 
 A mod-global pool covers many levels, where member counts differ and `setupLevel`'s `world.query`
-never runs — so it arms by fraction (or a fixed per-level count) and selects levels by catalog
+never runs — so it arms by percentage (or a fixed per-level count) and selects levels by catalog
 tags. Each matched level rolls independently at its own install.
 
 ```ts
@@ -450,30 +452,27 @@ import { defineMod, defineTriggerPool } from "postretro";
 export default defineMod({
   name: "campaign",
   triggerPools: [
-    defineTriggerPool({ tag: "vent_trap", armFraction: 0.5, levels: ["campaign"] }),
+    defineTriggerPool({ tag: "vent_trap", armPercentage: 50, levels: ["campaign"] }),
   ],
 });
 ```
 
 ```luau
--- Luau parity: campaign-wide pool, fraction-armed per matched level.
+-- Luau parity: campaign-wide pool, percentage-armed per matched level.
 local Postretro = require("postretro")
 
 return Postretro.defineMod({
   name = "campaign",
   triggerPools = {
-    Postretro.defineTriggerPool({ tag = "vent_trap", armFraction = 0.5, levels = { "campaign" } }),
+    Postretro.defineTriggerPool({ tag = "vent_trap", armPercentage = 50, levels = { "campaign" } }),
   },
 })
 ```
 
 ## Open questions
 
-- **Count-vs-fraction surface.** Reopened by the mod-global tier and pinned as two mutually
-  exclusive fields: `arm` (integer count) XOR `armFraction` ([0, 1], floored per install), valid
+- **Count-vs-percentage surface.** Reopened by the mod-global tier and pinned as two mutually
+  exclusive fields: `arm` (integer count) XOR `armPercentage` ([0, 100], floored per install), valid
   at both tiers. The rejected alternative — one `arm` field reading values below 1 as fractions —
   saves a field but makes `arm: 1` vs `arm: 0.99` a silent semantics cliff. Confirm the two-field
-  shape, and `floor` over round-half-up for fraction resolution, before promotion.
-- **Cross-tier same-tag log level.** Pinned at info — a level-local pool replacing a matched
-  mod-global pool is the designed override idiom, not a mistake. Warn instead if reviewers want
-  overrides loud.
+  shape, and `floor` over round-half-up for percentage resolution, before promotion.

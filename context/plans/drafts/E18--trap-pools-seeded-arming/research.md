@@ -144,12 +144,13 @@ pass logic lands in a new `crates/postretro/src/trigger_pools.rs`. No split-befo
   configuration, recorded by the install report. Runtime pool/story-event arming is foreshadowed
   in Out of scope — the per-trigger `armTrigger` composition after the roll is already the
   substrate.
-- **`arm` XOR `armFraction`, both tiers.** A mod-global pool spans levels with differing member
+- **`arm` XOR `armPercentage`, both tiers.** A mod-global pool spans levels with differing member
   counts and `setupLevel`'s `world.query` never runs at mod scope, so a proportion form is
   required there; keeping both forms valid at both tiers gives one descriptor shape and one
   validation path. Two explicit fields over one polymorphic `arm` — values below 1 silently
-  flipping semantics is a footgun. Fraction resolves per install as `floor(fraction × members)`:
-  one correctly-rounded f64 multiply then floor, bit-identical cross-platform, no PRNG.
+  flipping semantics is a footgun. Percentage resolves per install as
+  `floor(percentage / 100 × members)`: one correctly-rounded f64 op then floor, bit-identical
+  cross-platform, no PRNG.
 - **Cross-tier same-tag = replace, not merge.** Two pools rolling one tag would force two
   arm/disarm passes over the same member set with declaration distance deciding the outcome; one
   declaration per tag per level, level-local wins (the override idiom, logged at info). Within a

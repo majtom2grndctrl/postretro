@@ -13,7 +13,7 @@
 - **Context file writing / updates** → `context_style_guide.md`
 - **Testing** → `testing_guide.md`
 - **Rendering pipeline / lighting** → `rendering_pipeline.md`
-- **Frame capture / offscreen readback / headless (surfaceless) rendering** → `rendering_pipeline.md` §7.8 · `plans/ready/E20--frame-capture`
+- **Frame capture / offscreen readback / headless (surfaceless) rendering** → `rendering_pipeline.md` §7.8 · `plans/done/E20--frame-capture`
 - **PRL format / level compiler / runtime portal vis** → `build_pipeline.md`
 - **Brush roles / which brushes participate in the BSP** → `build_pipeline.md` §Compiler pipeline
 - **Audio / spatial sound / reverb zones** → `audio.md`

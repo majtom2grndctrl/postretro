@@ -141,7 +141,8 @@ and composes with spawn-closets (`done/E18--spawner-and-closet-containment`).
       identical trigger fire sequences and post-tick registry/slot state with a trap-pool level
       active.
 - [ ] With `--features dev-tools`, the Triggers tab shows each member's pool tag and whether the
-      roll selected it; without the feature, no pool-overlay code compiles in.
+      roll selected it; without the feature, no pool-overlay code compiles in (compile/review gate,
+      not a runtime assertion).
 
 ## Tasks
 
@@ -149,7 +150,9 @@ and composes with spawn-closets (`done/E18--spawner-and-closet-containment`).
 
 Add `TriggerPoolDescriptor { tag: String, arm: TriggerPoolArm, levels: Vec<String> }` with
 `TriggerPoolArm { Count(u32), Percentage(f64) }` beside `TriggerEventDescriptor`
-in `crates/entities/src/data_descriptors/types/reactions.rs`. Wire keys: `"arm"` XOR
+in `crates/entities/src/data_descriptors/types/reactions.rs` — derive only `Debug, Clone, PartialEq`
+on both (not `Eq`/`Hash`: `Percentage(f64)` isn't hashable/`Eq`, so a literal mirror of
+`TriggerEventDescriptor`'s derive line won't compile). Wire keys: `"arm"` XOR
 `"armPercentage"` (exactly one), `"levels"` optional (absent → empty — the `TriggerEventDescriptor`
 precedent). Widen `LevelManifest`
 (`crates/scripting-core/src/data_descriptors/runtime_manifest.rs`) with
@@ -162,8 +165,12 @@ Task 6's mod-init drains — the `scope` label distinguishes diagnostics). Per-e
 warn-and-skip (never abort the manifest): `tag` required non-empty string; exactly one of `arm`
 (non-negative integer — reject fractional and negative numbers, and reject a value exceeding
 `u32::MAX` by the same warn-and-skip path) and `armPercentage` (finite, in
-[0, 100]); `levels` an optional string array; reject a duplicate `tag` within the array (warn, skip
-the later entry). Storage mirrors the trigger-event tiers in `DataRegistry`
+[0, 100]); `levels` an optional string array. Separately, across the `triggerPools` entries in this
+drain, keep a seen-pool-tags set (the `seen_ids` precedent in the trigger-event drains) and skip a
+later entry whose pool `tag` was already seen (warn) — pool-tag dedup, distinct from the `levels`
+array; the set is keyed by tag `String`, never a `HashSet<TriggerPoolDescriptor>` (the descriptor
+isn't `Hash`). Storage parallels the trigger-event tiers (with one deliberate divergence, noted
+below) in `DataRegistry`
 (`crates/entities/src/data_registry.rs`): retained `level_trigger_pools`, durable
 `global_trigger_pools` with `replace_global_trigger_pools` (alias `ScopedTriggerPool =
 TriggerPoolDescriptor`, the `ScopedTriggerEvent` pattern at `data_registry.rs:32`), and a composed
@@ -182,15 +189,22 @@ entries arrive via Task 6.
 New module `crates/postretro/src/trigger_pools.rs` owning the whole pass. **PRNG:** copy the
 SplitMix64 from `crates/net/src/harness.rs:33-65` (private there; copy, don't export — module-local
 `pub(crate)` struct) — integer-only, no floats in selection. **Seed resolution:** `--pool-seed
-<u64>` / `--pool-seed=<u64>` parsed in `crates/postretro/src/startup/session.rs` beside the
-existing manual `--content-root`/`--headless` scanners, stored on the session boot config;
-absent → windowed sessions derive an entropy seed from `SystemTime::now()` nanos scrambled through
-SplitMix64, headless sessions resolve to an arm-all bypass (no roll: every member of every pool
-arms, per-pool counts ignored; log the bypass in place of a seed); a malformed `--pool-seed`
-(non-numeric or out-of-`u64`-range) warns and falls through to the default policy (entropy seed
-windowed, arm-all headless). Thread the resolved policy
-(pinned seed vs arm-all — a two-variant enum, not `Option<u64>`) into `WorldInstallHandles`
-(`lifecycle.rs:1191`) as a new field, alongside a
+<u64>` / `--pool-seed=<u64>` parsed once in `crates/postretro/src/startup/session.rs`'s
+`build_session` (where argv is already collected) beside the existing manual
+`--content-root`/`--headless` scanners, stored on the session boot config shared by both the
+windowed and headless entry paths; absent → windowed sessions derive an entropy seed from
+`SystemTime::now()` nanos scrambled through SplitMix64, headless sessions resolve to an arm-all
+bypass (no roll: every member of every pool arms, per-pool counts ignored; log the bypass in place
+of a seed) — unless `--pool-seed` was given, in which case the headless driver performs the seeded
+roll too (closing AC5); a malformed `--pool-seed` (non-numeric or out-of-`u64`-range) warns and
+falls through to the default policy (entropy seed windowed, arm-all headless). Thread the resolved
+policy (pinned seed vs arm-all — a two-variant enum, not `Option<u64>`) into `WorldInstallHandles`
+(`lifecycle.rs:1191`) as a new field: three construction literals set it, reading the resolved
+policy from the boot config at both real entry points — the windowed site (`lifecycle.rs:744`) and
+the headless driver site (`observability/driver.rs:149`, which today constructs its own
+`WorldInstallHandles` and would otherwise hardcode the default) — plus the test literal at
+`lifecycle.rs:3477` (default arm-all); the compiler flags all three, and the non-windowed sites
+default to the arm-all bypass policy absent `--pool-seed`. Alongside a
 gate reusing the already-threaded `suppress_ai_enemies` flag: the pass runs iff
 `!suppress_ai_enemies` (that flag is set only on a connected client — the same host/single-player
 gating E18-C's spawner registration uses). **Call site:** inside `install_world_cpu`, after
@@ -200,8 +214,9 @@ read the composed `data_registry.trigger_pools()` (Task 1 orders it mod-global f
 after); in arm-all mode arm every member of every pool and skip the roll; otherwise log
 `[TriggerPools] seed=<n>` once per roll and, for each pool in composed order, resolve members via
 `registry.query_by_component_and_tag(ComponentKind::TriggerVolume, Some(tag))`
-(`crates/entities/src/registry.rs:709`), collect and sort `EntityId`s ascending (stable spawn
-order), warn+skip an empty member set, resolve the target count (`Count`: warn+clamp `arm > len`
+(`crates/entities/src/registry.rs:709`), collect and sort `EntityId`s ascending (`EntityId`'s `Ord`
+is generation-major — deterministic and stable for a given install; restart-identity per AC assumes
+members share a generation, true at a fresh install), warn+skip an empty member set, resolve the target count (`Count`: warn+clamp `arm > len`
 to all; `Percentage`: `floor((percentage / 100.0) * len)` — evaluated in that pinned order, no fma
 contraction, no PRNG), pick that
 many distinct members by partial Fisher–Yates over one PRNG stream shared across pools, then apply
@@ -213,8 +228,8 @@ pools; later pool wins). Log each pool's selected set, keyed by tag. **Report:**
 `TriggerPoolInstallReport { seed: Option<u64>, pools: Vec<TriggerPoolOutcome> }` (`seed` is `None`
 when the arm-all bypass ran — no roll, no seed to report; `TriggerPoolOutcome`:
 tag, member ids, selected ids); return it through a new field on `WorldInstallProducts`
-(`lifecycle.rs:1160`), unpacked onto `App` where the other products land, defaulting empty on a
-connected client. Unit tests live in the module; install-integration tests drive
+(`lifecycle.rs:1160`), unpacked onto `App` as `trigger_pool_report`, where the other products land,
+defaulting empty on a connected client. Unit tests live in the module; install-integration tests drive
 `install_world_cpu` headless.
 
 ### Task 3: SDK surface — `defineTriggerPool`, `triggerPools` key, typedefs, parity
@@ -238,7 +253,9 @@ generated `ModManifest` typedef — a `.field(...)` on the `register_type("ModMa
 `.d.luau` via `gen-script-types`; update the committed drift snapshot
 (`crates/postretro/src/scripting/typedef/tests/fixtures/expected.d.ts` + `.d.luau`). Add a TS/Luau parity fixture asserting both
 runtimes produce byte-identical `triggerPools` manifest data for the same authored pools —
-level-local count form and mod-global percentage form with a `levels` selector. SDK builders do not
+level-local count form and mod-global percentage form with a `levels` selector, the percentage form
+using exactly-representable values (e.g. 50, 25 — not 33) so the byte-identical f64 assert holds
+across QuickJS and Luau. SDK builders do not
 pre-reject values beyond shape (required keys present, arming fields numbers); the engine drains
 (Task 1) own warn-and-degrade, matching the `edge`-value precedent.
 
@@ -250,8 +267,8 @@ Extend `TriggerDiagnosticsRow` (`crates/renderer/src/render/debug_ui/mod.rs:98`)
 selected/unselected mark — for a member matched by more than one pool, the row shows the deciding
 (later/winning) pool, and `pool_selected` reflects that pool's outcome. The renderer cannot see trap-pool types: `collect_trigger_diagnostics_rows`
 (`crates/postretro/src/trigger_diagnostics.rs:21`) gains a `&TriggerPoolInstallReport` parameter
-(empty report off-host) fed at the render call site in `main.rs` from the `App`-stored report
-(Task 2), joining member ids to rows; update the function's existing test callers. Everything
+(empty report off-host) fed at the render call site in `main.rs` from the `App`-stored
+`trigger_pool_report` (Task 2), joining member ids to rows; update the function's existing test callers. Everything
 compiles out without `--features dev-tools`.
 
 ### Task 5: Fixture + determinism and net QA
@@ -268,14 +285,24 @@ pin `--pool-seed` — headless no-seed arms all): exact armed count; the no-seed
 divergence; restart-with-pinned-seed identity; unselected-member silence then runtime `armTrigger`
 re-arm-and-fire; percentage resolution (`armPercentage: 50` over 4 arms 2); mod-global composition
 (the `ambush_trap` pool rolls on the matched fixture level, stays inert on a level without the
-catalog tag, and a level-local same-tag declaration replaces it); the degradation matrix (empty
-tag, over-count clamp, `arm: 0` and percentage-to-zero, malformed entry skip incl. both/neither
-arming form, duplicate tag skip, overlap warning + later-pool-wins, `enabled_on_spawn = true`
-warning). Two-endpoint (loopback harness, E18 net-QA precedent): host
+catalog tag, and a level-local same-tag declaration replaces it). Blocker: the headless driver
+(`observability/driver.rs:145`) hardcodes `active_level_tags = Vec::new()`, so a `levels`-scoped
+mod-global pool (`ambush_trap`, `levels: ["trap-pools"]`) never composes headless (empty tags → no
+`levels_match`), making both the arm-all-default and seeded mod-global-match coverage for that pool
+unreachable — extend the headless driver to source `active_level_tags` from the target level's
+map-catalog entry (mirroring `retain_active_level_tags_for_install`, `lifecycle.rs:294`,
+`entry.tags.clone()`); pin seeds for install-integration tests via the `WorldInstallHandles` policy
+field directly, not the CLI, so they don't depend on argv threading. The degradation matrix covers
+empty tag, over-count clamp, `arm: 0` and percentage-to-zero, malformed entry skip incl.
+both/neither arming form, duplicate tag skip, overlap warning + later-pool-wins,
+`enabled_on_spawn = true` warning. Two-endpoint (loopback harness, E18 net-QA precedent): host
 installs with a pinned seed; assert the client ran no pass (client trigger armed state as
 authored), and a host-armed trap firing spawns an enemy that reaches the client via existing
 replication. Extend the determinism harness green-and-stays-green gate with a fixed-seed
-trap-pool tick sequence.
+trap-pool tick sequence. Note: warn/info-log assertions (Degradation's warns, the cross-tier and
+two-pool ACs' info/warn logs, the `enabled_on_spawn = true` warn) live at this install / mod-init
+test level via the `log_capture` harness — scripting-core drain unit tests (Task 1) assert result
+shape only (skip/inert/clamp/zero), with no log capture there.
 
 ### Task 6: Mod-global tier — mod-init drains + boot/staged commit
 
@@ -287,7 +314,9 @@ Vec<TriggerPoolDescriptor>`. Boot commit: drain into
 `DataRegistry::replace_global_trigger_pools` beside `replace_global_trigger_events`
 (`crates/postretro/src/session/mod.rs:610`). Staged dev reload: thread the field through the
 staged-manifest commit exactly as `next_global_trigger_events`
-(`crates/scripting-core/src/runtime/core.rs:199/:226/:365`); the existing post-commit
+(`crates/scripting-core/src/runtime/core.rs:199/:226/:365`) — every destructured arm: the `Built`
+arm, the `NoStartScript` arm (with its `Vec::new()` padding), the `Failed` early-return, and the
+`#[cfg(not(debug_assertions))]` block, easy to miss; the existing post-commit
 `recompose_active_sets` call (`main.rs:3700`) then refreshes the composed pool set for free.
 Definitions only — a staged reload never re-rolls the live level; the next install rolls the new
 set (the arming pass runs only in `install_world_cpu`). Tests: mod-init parse in both runtimes

@@ -1809,6 +1809,7 @@ mod tests {
             looping: true,
             crossfade_ms: DEFAULT_CROSSFADE_MS,
             interrupt: InterruptPolicy::Smooth,
+            travel_speed: None,
             clip_index: None,
         };
         let mut states = HashMap::new();

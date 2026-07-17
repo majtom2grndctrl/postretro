@@ -46,6 +46,19 @@ pub struct AnimationState {
     pub crossfade_ms: f32,
     #[serde(default)]
     pub interrupt: InterruptPolicy,
+    /// Optional authored per-state travel-speed override, in ground units per
+    /// animated second (`travelSpeed` on the wire). Finite and `> 0` when
+    /// present — validated in [`crate::data_descriptors::MeshDescriptor::build`]
+    /// so both FFI front-ends reject the same inputs. When `Some`, it replaces
+    /// the clip's load-derived travel speed for this state's speed-scaled
+    /// playback; `None` falls back to the derived value. `#[serde(default)]` and
+    /// skip-if-absent so an override-free state round-trips without the key.
+    #[serde(
+        rename = "travelSpeed",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub travel_speed: Option<f32>,
     /// Clip index this state resolves to, filled at level load by
     /// `resolve_mesh_entity_clips` against the model's clip metadata. `None` =
     /// unresolved / unusable: switching *to* this state is a warn + no-op, and
@@ -140,9 +153,21 @@ mod tests {
 
     #[test]
     fn animation_block_serde_round_trips_with_renames() {
+        let mut animation = two_state_animation();
+        // Exercise the non-default locomotion fields so their renames and
+        // skip-if-absent predicates are covered: `speed_scale = false` must
+        // serialize (default `true` is skipped), and a per-state `travelSpeed`
+        // override on `attack` must serialize while `idle`'s absent override
+        // stays off the wire.
+        animation.speed_scale = false;
+        animation
+            .states
+            .get_mut("attack")
+            .unwrap()
+            .travel_speed = Some(3.5);
         let value = MeshComponent {
             model: "decraniated".into(),
-            animation: Some(two_state_animation()),
+            animation: Some(animation),
             origin_offset: Vec3::ZERO,
             pose_inputs: Some(crate::PoseInputs {
                 aim_pitch: 0.25,
@@ -161,6 +186,15 @@ mod tests {
         );
         assert_eq!(json["animation"]["defaultState"], "idle");
         assert_eq!(json["animation"]["current_state"], "idle");
+        // `speedScale` rename: present because the non-default `false` is set.
+        assert_eq!(json["animation"]["speedScale"], false);
+        // `travelSpeed` rename: present on the overridden state, absent (skipped)
+        // on the state that left the override unset.
+        assert_eq!(states["attack"]["travelSpeed"], 3.5);
+        assert!(
+            states["idle"].get("travelSpeed").is_none(),
+            "absent `travelSpeed` override must not enter the serialized state"
+        );
         assert!(
             json.get("pose_inputs").is_none(),
             "transient pose inputs must not enter the serialized component"

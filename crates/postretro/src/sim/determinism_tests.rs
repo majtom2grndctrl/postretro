@@ -1014,6 +1014,7 @@ fn driven_agent_mesh(current_state: &str) -> MeshComponent {
         looping: true,
         crossfade_ms: 0.0,
         interrupt: InterruptPolicy::Smooth,
+        travel_speed: None,
         clip_index: Some(clip_index),
     };
     let mut states = std::collections::HashMap::new();

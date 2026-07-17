@@ -300,6 +300,7 @@ mod tests {
             looping: true,
             crossfade_ms: 0.0,
             interrupt: InterruptPolicy::Smooth,
+            travel_speed: None,
             clip_index: None,
         }
     }

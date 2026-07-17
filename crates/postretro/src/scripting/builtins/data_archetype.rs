@@ -456,10 +456,21 @@ pub(crate) fn attach_descriptor_components(
         // default state, entry stamp pending (filled by the resolve pass), no
         // active fade. Parse-time validation guarantees `default_state`
         // is `Some` exactly when the map is non-empty and names a declared state.
+        //
+        // `speedScale` rides the sibling `locomotion` block, so — unlike the
+        // per-state `travelSpeed` which already sits on each `AnimationState`
+        // in `animations` — it must be threaded explicitly onto the runtime
+        // `MeshAnimation` here. Absent block ⇒ the `true` default (speed-scaled
+        // playback preserved).
+        let speed_scale = mesh_desc
+            .locomotion
+            .as_ref()
+            .map_or(true, |loco| loco.speed_scale);
         let component = match &mesh_desc.default_state {
             Some(default_state) => MeshComponent::animated(
                 mesh_desc.model.clone(),
-                MeshAnimation::new(mesh_desc.animations.clone(), default_state.clone()),
+                MeshAnimation::new(mesh_desc.animations.clone(), default_state.clone())
+                    .with_speed_scale(speed_scale),
             ),
             None => MeshComponent::stateless(mesh_desc.model.clone()),
         }

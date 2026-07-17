@@ -2072,6 +2072,7 @@ mod tests {
                 looping: true,
                 crossfade_ms,
                 interrupt: InterruptPolicy::Smooth,
+                travel_speed: None,
                 clip_index: Some(clip_index),
             }
         }
@@ -2200,6 +2201,7 @@ mod tests {
                 looping: true,
                 crossfade_ms: 0.0,
                 interrupt: InterruptPolicy::Smooth,
+                travel_speed: None,
                 clip_index: Some(0),
             },
         );
@@ -2259,6 +2261,7 @@ mod tests {
                 looping: true,
                 crossfade_ms,
                 interrupt: InterruptPolicy::Smooth,
+                travel_speed: None,
                 clip_index: Some(clip_index),
             }
         }
@@ -2342,6 +2345,7 @@ mod tests {
                 looping: true,
                 crossfade_ms,
                 interrupt: InterruptPolicy::Smooth,
+                travel_speed: None,
                 clip_index: Some(clip_index),
             }
         }
@@ -2415,6 +2419,7 @@ mod tests {
                 looping: true,
                 crossfade_ms,
                 interrupt: InterruptPolicy::Smooth,
+                travel_speed: None,
                 clip_index: Some(clip_index),
             }
         }
@@ -2531,6 +2536,7 @@ mod tests {
                 looping: true,
                 crossfade_ms,
                 interrupt: InterruptPolicy::Smooth,
+                travel_speed: None,
                 clip_index: Some(clip_index),
             }
         }
@@ -2820,6 +2826,7 @@ mod tests {
                 looping: true,
                 crossfade_ms: 0.0,
                 interrupt: InterruptPolicy::Smooth,
+                travel_speed: None,
                 clip_index: Some(0),
             },
         );

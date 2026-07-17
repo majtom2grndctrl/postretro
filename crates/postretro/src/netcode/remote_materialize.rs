@@ -84,6 +84,7 @@ mod tests {
                 looping: true,
                 crossfade_ms: 150.0,
                 interrupt: InterruptPolicy::Smooth,
+                travel_speed: None,
                 clip_index: None,
             },
         );
@@ -98,6 +99,7 @@ mod tests {
                 model: "decraniated".to_string(),
                 animations: states,
                 default_state: Some("idle".to_string()),
+                locomotion: None,
             }),
             health: None,
             ai: None,

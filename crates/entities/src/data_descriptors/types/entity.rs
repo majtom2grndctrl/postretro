@@ -19,7 +19,8 @@ pub use postretro_foundation::data_descriptors::LightDescriptor;
 /// a pending entry stamp.
 ///
 /// Validation (at parse time): `model` non-empty; each state's `clip` non-empty;
-/// `crossfade_ms` finite ≥ 0; `interrupt` (when present on the wire) one of
+/// `crossfade_ms` finite ≥ 0; `travel_speed` (when present) finite > 0;
+/// `interrupt` (when present on the wire) one of
 /// `"smooth"`/`"snap"`. When `animations` is present it must be non-empty and
 /// `default_state` must be present and name a declared state. A `defaultState`
 /// without an `animations` block is also rejected. Clip resolution against the
@@ -35,6 +36,22 @@ pub struct MeshDescriptor {
     /// non-empty; parse validation rejects animations-without-default and a
     /// default that does not name a declared state.
     pub default_state: Option<String>,
+    /// Optional authored locomotion calibration block (`locomotion?` on the
+    /// wire). `None` when the block is absent, in which case the runtime uses
+    /// the `speed_scale = true` default. Threaded onto the runtime
+    /// [`crate::components::mesh::MeshAnimation`] at spawn.
+    pub locomotion: Option<LocomotionDescriptor>,
+}
+
+/// Authored per-archetype locomotion calibration attached to
+/// [`MeshDescriptor::locomotion`]. Sibling to the per-state `travelSpeed`
+/// override; carries the `speedScale` rate-scaling toggle.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LocomotionDescriptor {
+    /// Whether locomotion rate-scaling applies to this archetype's playback.
+    /// `speedScale` on the wire; defaults to `true` when the field or the whole
+    /// `locomotion` block is absent (preserving speed-scaled playback).
+    pub speed_scale: bool,
 }
 
 /// One parsed-but-unvalidated animation-state entry, as gathered from the wire
@@ -46,6 +63,10 @@ pub struct RawAnimationState {
     pub looping: bool,
     pub crossfade_ms: f32,
     pub interrupt: Option<String>,
+    /// Raw per-state `travelSpeed` override (`None` = absent). Positivity /
+    /// finiteness is validated in [`MeshDescriptor::build`] so both FFI paths
+    /// reject the same inputs.
+    pub travel_speed: Option<f32>,
 }
 
 impl MeshDescriptor {
@@ -61,6 +82,7 @@ impl MeshDescriptor {
         states: Vec<RawAnimationState>,
         default_state: Option<String>,
         animations_present: bool,
+        locomotion: Option<LocomotionDescriptor>,
     ) -> Result<Self, DescriptorError> {
         if model.is_empty() {
             return Err(DescriptorError::InvalidShape {
@@ -109,6 +131,19 @@ impl MeshDescriptor {
                     });
                 }
             };
+            // A present `travelSpeed` override must be a finite ground-units /
+            // animated-second value strictly greater than zero. Validated here
+            // in the shared builder so QuickJS and Luau reject identical inputs.
+            if let Some(travel_speed) = raw.travel_speed {
+                if !travel_speed.is_finite() || travel_speed <= 0.0 {
+                    return Err(DescriptorError::InvalidShape {
+                        reason: format!(
+                            "`components.mesh.animations.{}.travelSpeed` must be a finite value > 0.0, got {}",
+                            raw.name, travel_speed
+                        ),
+                    });
+                }
+            }
             animations.insert(
                 raw.name,
                 AnimationState {
@@ -116,6 +151,10 @@ impl MeshDescriptor {
                     looping: raw.looping,
                     crossfade_ms: raw.crossfade_ms,
                     interrupt,
+                    // Carried straight from the validated raw state onto the
+                    // runtime `AnimationState`; no extra threading needed since
+                    // this map is what `MeshAnimation::new` receives.
+                    travel_speed: raw.travel_speed,
                     // Resolved against the model's clip metadata at level load
                     // by `resolve_mesh_entity_clips`; unresolved here.
                     clip_index: None,
@@ -151,6 +190,7 @@ impl MeshDescriptor {
             model,
             animations,
             default_state,
+            locomotion,
         })
     }
 }

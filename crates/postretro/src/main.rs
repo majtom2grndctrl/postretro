@@ -7523,6 +7523,7 @@ mod tests {
             looping: true,
             crossfade_ms: DEFAULT_CROSSFADE_MS,
             interrupt: InterruptPolicy::Smooth,
+            travel_speed: None,
             clip_index: None,
         };
         let mut states = HashMap::new();
@@ -7674,6 +7675,7 @@ mod tests {
             looping,
             crossfade_ms: DEFAULT_CROSSFADE_MS,
             interrupt: InterruptPolicy::Smooth,
+            travel_speed: None,
             clip_index: None,
         };
         let mut states = HashMap::new();
@@ -7691,6 +7693,7 @@ mod tests {
                 model: "models/remote_enemy/scene.gltf".to_string(),
                 animations: states,
                 default_state: Some("idle".to_string()),
+                locomotion: None,
             }),
             health: None,
             ai: None,

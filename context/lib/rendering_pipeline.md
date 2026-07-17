@@ -246,7 +246,7 @@ The renderer owns a `scene_color` offscreen target: surface (sRGB) format, singl
 
 Three effects are composited on top of the identity blit: flash (over-blend toward a tint color, weighted by `flash.a`), vignette (edge darken/tint, strength-scaled radial blend), and shake (pure UV offset applied before the sample). All three are packed CPU-side from the frame's `UiReadSnapshot` into a per-frame `EffectUniform` (binding 2 of group 0). At rest, every term is exactly 0 — the mix factors collapse to 0 and the resolve is bit-identical to a direct passthrough. The resolve sampler is NEAREST / pixel-aligned so the 1:1 texel mapping holds for the identity case. See `crates/renderer/src/render/screen_effects.rs` and `crates/renderer/src/shaders/screen_effects.wgsl`.
 
-**Frame capture (Epic 20, planned).** `scene_color` is the designated offscreen readback source — the composited scene *before* the transient effects resolve, so captures are reproducible. Headless capture constructs the renderer surfaceless (no window, no `wgpu::Surface`; such a renderer holds no surface and never presents) and reads `scene_color` back to RGBA8; readback stays renderer-owned, PNG/CPU encoding lives in the consumer. Design intent: `plans/ready/E20--frame-capture`.
+**Frame capture (Epic 20, planned).** `scene_color` doubles as the offscreen readback source for headless frame capture — read pre-resolve, so a capture excludes the transient effects and stays reproducible. Renderer owns the readback (per the boundary rule); surfaceless-renderer construction and full design: `plans/ready/E20--frame-capture`.
 
 ---
 

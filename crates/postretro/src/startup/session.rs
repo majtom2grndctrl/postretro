@@ -17,6 +17,7 @@ use crate::camera::Camera;
 use crate::frame_timing::{FrameRateMeter, FrameTiming, InterpolableState};
 use crate::input;
 use crate::startup::StartupTimings;
+use crate::trigger_pools::{TriggerPoolSeedPolicy, entropy_seed};
 use crate::{App, collision, kinematic_mover, runtime_movers, view_feel};
 use postretro_foundation::ModThemeTokens;
 
@@ -29,6 +30,50 @@ const DEFAULT_MAP_PATH: &str = "content/dev/maps/campaign-test.prl";
 pub(crate) struct BootSession {
     pub(crate) event_loop: EventLoop<()>,
     pub(crate) app: App,
+}
+
+/// Arguments parsed before either entry path branches. The explicit override is
+/// retained rather than a precomputed entropy seed so a windowed restart gets a
+/// fresh roll while a pinned `--pool-seed` stays reproducible.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct SessionBootConfig {
+    pool_seed_override: Option<u64>,
+}
+
+impl SessionBootConfig {
+    fn from_args(args: &[String]) -> Self {
+        let pool_seed_override = match pool_seed_arg(args) {
+            PoolSeedArg::Absent => None,
+            PoolSeedArg::Valid(seed) => Some(seed),
+            PoolSeedArg::Invalid(value) => {
+                log::warn!(
+                    "[TriggerPools] invalid --pool-seed value {value:?}; using the default policy"
+                );
+                None
+            }
+        };
+        Self { pool_seed_override }
+    }
+
+    /// Windowed installs always roll. Without an explicit seed, resolve fresh
+    /// entropy at each install so restarting a level is a new run.
+    pub(crate) fn windowed_trigger_pool_policy(self) -> TriggerPoolSeedPolicy {
+        TriggerPoolSeedPolicy::Seeded(self.pool_seed_override.unwrap_or_else(entropy_seed))
+    }
+
+    /// Headless runs deliberately avoid an unpinned random subset, but a pinned
+    /// CLI seed restores the same seeded install path used by windowed sessions.
+    pub(crate) fn headless_trigger_pool_policy(self) -> TriggerPoolSeedPolicy {
+        self.pool_seed_override
+            .map(TriggerPoolSeedPolicy::Seeded)
+            .unwrap_or(TriggerPoolSeedPolicy::ArmAll)
+    }
+}
+
+enum PoolSeedArg {
+    Absent,
+    Valid(u64),
+    Invalid(String),
 }
 
 /// Deferred-startup owner. Carries the raw inputs needed to construct the entire
@@ -99,6 +144,11 @@ pub(crate) fn build_session() -> Result<BootSession> {
     // the content root and optional boot map. Net role is intentionally NOT
     // parsed here — it defers into `PendingSessionInit`.
     let args: Vec<String> = std::env::args().collect();
+    // Parse once before either windowed or headless execution branches. The
+    // resolved policy itself is chosen at each install so windowed restarts get
+    // a new entropy seed while headless defaults to arm-all.
+    let session_boot_config = SessionBootConfig::from_args(&args);
+    let headless = headless_arg(&args);
 
     // Static frame capture terminates the process instead of returning a
     // `BootSession`, so no event loop, window, or session is ever created. As
@@ -123,9 +173,12 @@ pub(crate) fn build_session() -> Result<BootSession> {
     // event loop. Arg detection sits OUTSIDE the feature gate: the driver body is
     // feature-gated, but the diagnostic for a build without the feature must be
     // reachable so `--headless` on a stock binary fails loudly.
-    if let Some(runspec_arg) = headless_arg(&args) {
+    if let Some(runspec_arg) = headless {
         #[cfg(feature = "observability")]
-        crate::observability::run_headless(runspec_arg);
+        crate::observability::run_headless(
+            runspec_arg,
+            session_boot_config.headless_trigger_pool_policy(),
+        );
         #[cfg(not(feature = "observability"))]
         {
             let _ = runspec_arg;
@@ -194,6 +247,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
         kinematic_mover_tick_states: kinematic_mover::MoverTickStateTable::default(),
         kinematic_mover_render: runtime_movers::KinematicMoverRenderCollector::new(),
         trigger_bindings: crate::trigger_bindings::TriggerBindingTable::default(),
+        trigger_pool_report: crate::trigger_pools::TriggerPoolInstallReport::default(),
         active_wieldable: None,
         active_wieldable_descriptor: None,
         client_weapon_state: None,
@@ -208,6 +262,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
         pending_level_log: false,
         pending_splash_override: None,
         boot_timings,
+        session_boot_config,
         mod_timings: StartupTimings::new(),
         level_timings: StartupTimings::new(),
         active_level_tags: Vec::new(),
@@ -230,19 +285,47 @@ pub(crate) fn build_session() -> Result<BootSession> {
 pub(crate) fn resolve_map_path(args: &[String]) -> Option<String> {
     let mut iter = args.iter().skip(1).peekable();
     while let Some(arg) = iter.next() {
-        if arg == "--content-root" || arg == "--mod" {
+        if arg == "--content-root" || arg == "--mod" || arg == "--pool-seed" {
             if iter.peek().is_some_and(|value| !value.starts_with("--")) {
                 let _ = iter.next();
             }
             continue;
         }
-        if arg.starts_with("--content-root=") || arg.starts_with("--mod=") || arg.starts_with("--")
+        if arg.starts_with("--content-root=")
+            || arg.starts_with("--mod=")
+            || arg.starts_with("--pool-seed=")
+            || arg.starts_with("--")
         {
             continue;
         }
         return Some(arg.clone());
     }
     None
+}
+
+/// Detect the optional trigger-pool seed. This intentionally keeps manual
+/// argument scanning beside `--headless`/`--content-root`: no CLI parser owns
+/// boot arguments yet, and a malformed seed degrades to the mode default.
+fn pool_seed_arg(args: &[String]) -> PoolSeedArg {
+    let mut iter = args.iter().skip(1).peekable();
+    while let Some(arg) = iter.next() {
+        let value = if arg == "--pool-seed" {
+            match iter.next_if(|value| !value.starts_with("--")) {
+                Some(value) => value.as_str(),
+                None => return PoolSeedArg::Invalid("<missing>".to_string()),
+            }
+        } else if let Some(value) = arg.strip_prefix("--pool-seed=") {
+            value
+        } else {
+            continue;
+        };
+
+        return match value.parse::<u64>() {
+            Ok(seed) => PoolSeedArg::Valid(seed),
+            Err(_) => PoolSeedArg::Invalid(value.to_string()),
+        };
+    }
+    PoolSeedArg::Absent
 }
 
 /// Detect the headless observability batch-mode flag. Returns `Some(path)` when

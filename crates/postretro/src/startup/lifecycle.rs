@@ -20,6 +20,9 @@ use crate::startup::{
     StartupTimings, spawn_level_worker,
 };
 use crate::trigger_bindings::TriggerBindingTable;
+use crate::trigger_pools::{
+    TriggerPoolInstallReport, TriggerPoolSeedPolicy, install_trigger_pools,
+};
 use crate::{App, weapon};
 use postretro_scripting_core::data_descriptors::LevelManifest;
 use postretro_scripting_core::reaction_dispatch::{
@@ -95,6 +98,7 @@ impl App {
         self.kinematic_mover_tick_states.clear();
         self.kinematic_mover_render.clear();
         self.trigger_bindings = TriggerBindingTable::default();
+        self.trigger_pool_report = TriggerPoolInstallReport::default();
         self.active_wieldable = None;
         self.active_wieldable_descriptor = None;
         self.client_weapon_state = None;
@@ -766,6 +770,7 @@ impl App {
             slot_accumulator_bindings: &mut session.scripting.slot_accumulator_bindings,
             mesh_clip_tables: &mut session.mesh_clip_tables,
             hit_zone_store: &mut session.hit_zone_store,
+            trigger_pool_policy: self.session_boot_config.windowed_trigger_pool_policy(),
             suppress_ai_enemies: suppress,
             suppress_boot_pawn: suppress,
         };
@@ -779,6 +784,7 @@ impl App {
 
         self.kinematic_mover_colliders = products.mover_colliders;
         self.trigger_bindings = products.trigger_bindings;
+        self.trigger_pool_report = products.trigger_pool_report;
         // Retain the spawn-point placements for the host's runtime net-slot accept
         // path (M15 Phase 3 Task 4): the host materializes each accepted client's
         // descriptor pawn from them later.
@@ -1162,6 +1168,9 @@ pub(crate) struct WorldInstallProducts {
     pub(crate) mover_colliders: Vec<crate::collision::moving::MoverCollider>,
     /// Trigger reactions partitioned from the final composed active set.
     pub(crate) trigger_bindings: TriggerBindingTable,
+    /// Host-only trigger-pool outcome retained by `App` for diagnostics and
+    /// tests. Connected clients receive the default empty report.
+    pub(crate) trigger_pool_report: TriggerPoolInstallReport,
     /// A fresh, empty mover tick-state table. Not an install product — it is
     /// caller-owned per-tick state — returned only so the headless batch runner
     /// has one to hand `simulate_tick` without reaching into `App` (the windowed
@@ -1221,6 +1230,9 @@ pub(crate) struct WorldInstallHandles<'a> {
         &'a mut crate::scripting_systems::slot_accumulators::SlotAccumulatorBindings,
     pub(crate) mesh_clip_tables: &'a mut crate::scripting_systems::mesh_anim::MeshClipTables,
     pub(crate) hit_zone_store: &'a mut crate::scripting_systems::hit_zones::HitZoneStore,
+    /// Resolved separately for each install. A pinned seed repeats exactly;
+    /// arm-all is the deterministic unpinned headless default.
+    pub(crate) trigger_pool_policy: TriggerPoolSeedPolicy,
     /// Connected-client suppression: skip local AI-enemy materialization / boot
     /// pawn spawn. Both `false` off a connected client (single-player, listen
     /// host, headless).
@@ -1268,6 +1280,7 @@ pub(crate) fn install_world_cpu(
         slot_accumulator_bindings,
         mesh_clip_tables,
         hit_zone_store,
+        trigger_pool_policy,
         suppress_ai_enemies,
         suppress_boot_pawn,
     } = handles;
@@ -1474,6 +1487,20 @@ pub(crate) fn install_world_cpu(
             spawner_diagnostics.invalid_total()
         );
     }
+    // Pool arming is host-only and occurs after every trigger/spawner binding
+    // exists, but before `levelLoad` so level-load reactions can override it.
+    // Connected clients retain their authored trigger state and an empty report.
+    let trigger_pool_report = if suppress_ai_enemies {
+        TriggerPoolInstallReport::default()
+    } else {
+        let pools = script_ctx.data_registry.borrow().trigger_pools().to_vec();
+        install_trigger_pools(
+            &mut script_ctx.registry.borrow_mut(),
+            &pools,
+            trigger_pool_policy,
+            &command_diagnostics,
+        )
+    };
     // An `entity_spawner` itself has no mesh. Its resolved archetype can still
     // be the only reference to an enemy model in this level, on either the host
     // or a connected client (spawners survive the client AI-placement filter).
@@ -1552,6 +1579,7 @@ pub(crate) fn install_world_cpu(
     WorldInstallProducts {
         mover_colliders,
         trigger_bindings,
+        trigger_pool_report,
         mover_tick_states: crate::kinematic_mover::MoverTickStateTable::default(),
         active_wieldable,
         active_wieldable_descriptor,
@@ -1824,6 +1852,7 @@ mod tests {
             kinematic_mover_tick_states: crate::kinematic_mover::MoverTickStateTable::default(),
             kinematic_mover_render: crate::runtime_movers::KinematicMoverRenderCollector::new(),
             trigger_bindings: crate::trigger_bindings::TriggerBindingTable::default(),
+            trigger_pool_report: TriggerPoolInstallReport::default(),
             active_wieldable: None,
             active_wieldable_descriptor: None,
             client_weapon_state: None,
@@ -1838,6 +1867,7 @@ mod tests {
             anim_time: 0.0,
             anim_time_scale: 1.0,
             boot_timings: StartupTimings::new(),
+            session_boot_config: crate::startup::session::SessionBootConfig::default(),
             mod_timings: StartupTimings::new(),
             level_timings: StartupTimings::new(),
             active_level_tags: Vec::new(),
@@ -3497,6 +3527,7 @@ mod tests {
                 slot_accumulator_bindings: &mut session.scripting.slot_accumulator_bindings,
                 mesh_clip_tables: &mut session.mesh_clip_tables,
                 hit_zone_store: &mut session.hit_zone_store,
+                trigger_pool_policy: TriggerPoolSeedPolicy::ArmAll,
                 suppress_ai_enemies: false,
                 suppress_boot_pawn: false,
             };

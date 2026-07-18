@@ -11,7 +11,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -32,6 +32,7 @@ use crate::startup::StartupTimings;
 use crate::startup::lifecycle::{
     WorldInstallHandles, install_world_cpu, install_world_gravity_and_nav,
 };
+use crate::trigger_pools::TriggerPoolSeedPolicy;
 use crate::weapon::FireButtonState;
 use postretro_scripting_core::reaction_dispatch::ProgressTracker;
 use postretro_scripting_core::state_crossings::CrossingDetector;
@@ -51,8 +52,11 @@ const TICK_DT: f32 = 1.0 / 60.0;
 /// never returns a `BootSession`, so `main` never drives a windowless event loop.
 /// Success prints the JSON document to stdout and exits 0; any failure prints a
 /// diagnostic to stderr and exits non-zero with no stdout output.
-pub(crate) fn run_headless(runspec_arg: Option<&str>) -> ! {
-    match run_headless_inner(runspec_arg) {
+pub(crate) fn run_headless(
+    runspec_arg: Option<&str>,
+    trigger_pool_policy: TriggerPoolSeedPolicy,
+) -> ! {
+    match run_headless_inner(runspec_arg, trigger_pool_policy) {
         Ok(json) => {
             // stdout carries ONLY the document; a single write after the full
             // build guarantees no partial JSON on any earlier failure.
@@ -69,7 +73,10 @@ pub(crate) fn run_headless(runspec_arg: Option<&str>) -> ! {
 /// The fallible body of the headless run. Returns the serialized JSON document on
 /// success; every error path bubbles up here so `run_headless` can map it to a
 /// stderr diagnostic and a non-zero exit without ever touching stdout.
-fn run_headless_inner(runspec_arg: Option<&str>) -> Result<String> {
+fn run_headless_inner(
+    runspec_arg: Option<&str>,
+    trigger_pool_policy: TriggerPoolSeedPolicy,
+) -> Result<String> {
     let runspec_path =
         runspec_arg.ok_or_else(|| anyhow!("`--headless` requires a runspec JSON path argument"))?;
 
@@ -140,9 +147,15 @@ fn run_headless_inner(runspec_arg: Option<&str>) -> Result<String> {
     let mut crossing_detector = CrossingDetector::new();
     let mut mesh_clip_tables = MeshClipTables::new();
     let mut hit_zone_store = HitZoneStore::new();
-    // Intentionally empty: headless has no level-tag source. Any tag-gated
-    // level reaction stays inert for the whole run.
-    let active_level_tags: Vec<String> = Vec::new();
+    // Runspecs address a map path, not a catalog id. When that path corresponds
+    // to a catalog entry, recover its tags so scoped mod definitions compose the
+    // same way they do for a windowed catalog load. A direct unmatched `.prl`
+    // path remains untagged by design.
+    let active_level_tags = active_level_tags_for_headless_install(
+        &map_path,
+        &content_root,
+        &script_ctx.data_registry.borrow().maps,
+    );
     let mut timings = StartupTimings::new();
 
     let products = {
@@ -168,6 +181,7 @@ fn run_headless_inner(runspec_arg: Option<&str>) -> Result<String> {
             slot_accumulator_bindings: &mut session.scripting.slot_accumulator_bindings,
             mesh_clip_tables: &mut mesh_clip_tables,
             hit_zone_store: &mut hit_zone_store,
+            trigger_pool_policy,
             suppress_ai_enemies: false,
             suppress_boot_pawn: false,
         };
@@ -311,6 +325,17 @@ fn run_headless_inner(runspec_arg: Option<&str>) -> Result<String> {
         )?
     };
     Ok(to_deterministic_json(&doc)?)
+}
+
+fn active_level_tags_for_headless_install(
+    map_path: &Path,
+    content_root: &Path,
+    maps: &[postretro_foundation::ModMapEntry],
+) -> Vec<String> {
+    maps.iter()
+        .find(|entry| content_root.join(&entry.path) == map_path)
+        .map(|entry| entry.tags.clone())
+        .unwrap_or_default()
 }
 
 /// The active command for `tick`: the last entry whose tick has arrived. `None`

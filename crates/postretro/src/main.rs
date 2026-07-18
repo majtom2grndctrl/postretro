@@ -63,6 +63,7 @@ mod trigger_bindings;
 mod trigger_commands;
 #[cfg(feature = "dev-tools")]
 mod trigger_diagnostics;
+mod trigger_pools;
 mod trigger_system;
 mod view_feel;
 
@@ -558,6 +559,9 @@ pub(crate) struct App {
     /// Per-level trigger event bindings resolved from the final composed
     /// reaction set during install. The fixed-tick seam borrows this table.
     trigger_bindings: trigger_bindings::TriggerBindingTable,
+    /// Host-local outcome of the most recent trigger-pool install. Connected
+    /// clients retain the default empty report because they never run the pass.
+    trigger_pool_report: trigger_pools::TriggerPoolInstallReport,
 
     /// Active wieldable instance equipped by the player. The companion
     /// descriptor name lets mod-init hot reload refresh authored weapon stats
@@ -632,6 +636,10 @@ pub(crate) struct App {
     /// after the logo frame — not in early engine boot.
     /// See: context/lib/boot_sequence.md §1.
     boot_timings: StartupTimings,
+
+    /// Parsed once before either the windowed or headless entry path. The
+    /// install sites resolve it into their two-variant per-install policy.
+    session_boot_config: startup::session::SessionBootConfig,
 
     /// Per-stage durations for log line B — mod init (mod_init,
     /// mod_splash_swap [conditional]).

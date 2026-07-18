@@ -51,6 +51,8 @@ export type AnimationStateDescriptor = {
 export type MeshDescriptor = {
   --- Skinned-model handle this entity renders. Must be non-empty.
   model: string,
+  --- Per-model skinned pool-shadow receiver-bias multiplier. Defaults to 1.0; must be finite and in 0.0..=4.0. Set 0.0 to disable the receiver offset for this model.
+  shadowBiasScale: number?,
   --- Declared animation states keyed by author-defined state name (e.g. idle/locomotion/attack/death). Optional; when present, must be non-empty and accompanied by a `defaultState` naming one of these states. Omit for a stateless mesh.
   animations: { [string]: AnimationStateDescriptor }?,
   --- The state entered at spawn. Required exactly when `animations` is present; must name a declared state.

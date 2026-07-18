@@ -63,23 +63,31 @@ use postretro_render_cpu::mesh_instances::{
 /// Byte size of one `BonePaletteEntry` (mat4x4<f32> = 64 B).
 const BONE_PALETTE_ENTRY_SIZE: usize = std::mem::size_of::<BonePaletteEntry>();
 
-/// Per-instance SSBO entry: model matrix (64 B) + base index packed into a
-/// trailing `vec4<u32>` (16 B) = 80 B. Matches the WGSL `Instance` std430
-/// struct (base at byte 64). The instance SSBO is an array of these, read by
+/// Per-instance SSBO entry: model matrix (64 B) + base index and receiver-bias
+/// scale packed into a trailing `vec4<u32>` (16 B) = 80 B. Matches the WGSL
+/// `Instance` std430 struct (base at byte 64, scale at byte 68). The instance
+/// SSBO is an array of these, read by
 /// `@builtin(instance_index)`; the same shape drops into a future
 /// `multi_draw_indexed_indirect` per-instance buffer without a contract change.
 const INSTANCE_ENTRY_SIZE: usize = 80;
 
-/// Pack one instance's SSBO bytes (model matrix column-major + base index).
-fn build_instance_entry(model: glam::Mat4, base_index: u32) -> [u8; INSTANCE_ENTRY_SIZE] {
+/// Pack one instance's SSBO bytes (model matrix column-major + base index +
+/// receiver-bias scale). The scale occupies `Instance.base_and_pad.y` as f32
+/// bits, preserving the WGSL record's 80-byte stride.
+fn build_instance_entry(
+    model: glam::Mat4,
+    base_index: u32,
+    shadow_bias_scale: f32,
+) -> [u8; INSTANCE_ENTRY_SIZE] {
     let mut bytes = [0u8; INSTANCE_ENTRY_SIZE];
     let cols = model.to_cols_array();
     for (i, v) in cols.iter().enumerate() {
         let off = i * 4;
         bytes[off..off + 4].copy_from_slice(&v.to_ne_bytes());
     }
-    // base index at offset 64 (x of the trailing vec4<u32>); 68..80 stay zero.
+    // Base index at offset 64 (x) and bias scale bits at 68 (y). z/w stay zero.
     bytes[64..68].copy_from_slice(&base_index.to_ne_bytes());
+    bytes[68..72].copy_from_slice(&shadow_bias_scale.to_bits().to_ne_bytes());
     bytes
 }
 
@@ -1744,7 +1752,8 @@ impl MeshPass {
 
             for (i, inst) in group.instances.iter().enumerate() {
                 let instance_index = group.instance_offset as usize + i;
-                let entry = build_instance_entry(inst.transform, inst.palette_base);
+                let entry =
+                    build_instance_entry(inst.transform, inst.palette_base, inst.shadow_bias_scale);
                 queue.write_buffer(
                     instance_buffer,
                     (instance_index * INSTANCE_ENTRY_SIZE) as u64,
@@ -2168,6 +2177,7 @@ mod tests {
     fn depth_instance_filter_keeps_dynamic_shadows_forward_visible_only() {
         let visible = postretro_render_cpu::mesh_instances::PlannedInstance {
             transform: glam::Mat4::IDENTITY,
+            shadow_bias_scale: 1.0,
             palette_base: 0,
             phase_seed: 1,
             bounds: postretro_render_data::cone_frustum::Aabb::default(),
@@ -2241,10 +2251,10 @@ mod tests {
     }
 
     #[test]
-    fn instance_entry_packs_model_and_base_index() {
+    fn instance_entry_packs_model_base_index_and_shadow_bias_scale() {
         // Guard the WGSL layout contract: Instance { model: mat4x4<f32>,
         // base_and_pad: vec4<u32> } — model at offset 0 (64 B), base_index at
-        // offset 64 (first u32 of the trailing vec4), total 80 B. If either side
+        // offset 64, bias scale bits at offset 68, total 80 B. If either side
         // (Rust packer or WGSL struct) is edited silently, this assertion fires.
         assert_eq!(
             INSTANCE_ENTRY_SIZE, 80,
@@ -2252,7 +2262,7 @@ mod tests {
         );
 
         let m = glam::Mat4::from_translation(Vec3::new(4.0, 5.0, 6.0));
-        let bytes = build_instance_entry(m, 7);
+        let bytes = build_instance_entry(m, 7, 2.5);
         assert_eq!(bytes.len(), 80);
 
         // Model matrix occupies bytes 0..64 (column-major f32x16).
@@ -2270,11 +2280,18 @@ mod tests {
         let base = u32::from_ne_bytes(bytes[64..68].try_into().unwrap());
         assert_eq!(base, 7, "base_index must be packed at byte offset 64");
 
-        // Padding bytes 68..80 must be zero.
+        // base_and_pad.y carries the authored receiver-bias scale as f32 bits.
+        let shadow_bias_scale = f32::from_ne_bytes(bytes[68..72].try_into().unwrap());
+        assert!(
+            (shadow_bias_scale - 2.5).abs() < f32::EPSILON,
+            "bias scale must be packed at byte offset 68"
+        );
+
+        // The two remaining padding lanes stay zero.
         assert_eq!(
-            &bytes[68..80],
-            &[0u8; 12],
-            "padding bytes 68..80 must be zero"
+            &bytes[72..80],
+            &[0u8; 8],
+            "padding bytes 72..80 must be zero"
         );
     }
 

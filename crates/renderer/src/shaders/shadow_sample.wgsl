@@ -33,13 +33,46 @@
 // per-pool (the depth pipeline's `DepthBiasState`), so only the radius is shared.
 const SPOT_SHADOW_PCF_RADIUS: f32 = 1.0;
 
+// One receiver-side normal-offset mechanism, calibrated per receiver class.
+// World surfaces and movers self-sample the pool depth at close door/wall
+// contacts, so they need a two-texel offset. Skinned models keep a deliberately
+// near-zero default: their quantized self-shadow is part of the flat-character
+// look, while Task 3 supplies a per-model multiplier for rounded characters.
+const WORLD_RECEIVER_BIAS_SCALE: f32 = 2.0;
+const MOVER_RECEIVER_BIAS_SCALE: f32 = 2.0;
+const SKINNED_SCALE: f32 = 0.25;
+
 // Sample the shadow map for a dynamic spot light. Returns 0.0 (fully shadowed)
 // to 1.0 (fully lit). Fragments outside the shadow map's projection are treated
 // as unshadowed (1.0).
 //
 // `slot_index`: shadow-map slot from GpuLight.cone_angles_and_pad.z.
-fn sample_spot_shadow(slot_index: u32, world_pos: vec3<f32>, light_proj: mat4x4<f32>) -> f32 {
-    let light_clip = light_proj * vec4<f32>(world_pos, 1.0);
+fn sample_spot_shadow(
+    slot_index: u32,
+    light_pos: vec3<f32>,
+    world_pos: vec3<f32>,
+    receiver_normal: vec3<f32>,
+    bias_scale: f32,
+    light_proj: mat4x4<f32>,
+) -> f32 {
+    // The length of the y row's rotational part is the perspective projection's
+    // y scale: the light view is rigid, so its rotation preserves that length.
+    // This recovers tan(fov_y / 2) from the bound light-space matrix without a
+    // separate per-light uniform.
+    let projection_y_scale = length(vec3<f32>(
+        light_proj[0].y,
+        light_proj[1].y,
+        light_proj[2].y,
+    ));
+    let tan_half_fov_y = 1.0 / max(projection_y_scale, 1.0e-4);
+    let distance_to_light = length(world_pos - light_pos);
+    let shadow_dims = textureDimensions(spot_shadow_depth);
+    let texel_world_footprint =
+        2.0 * distance_to_light * tan_half_fov_y / max(f32(shadow_dims.y), 1.0);
+    // Keep the scale inside the full vector offset: a scale of zero reproduces
+    // the pre-normal-offset sample position exactly.
+    let receiver_offset = receiver_normal * (texel_world_footprint * bias_scale);
+    let light_clip = light_proj * vec4<f32>(world_pos + receiver_offset, 1.0);
     // Points behind the light produce negative w; reject to avoid folding the
     // perspective divide onto the near plane.
     if light_clip.w <= 0.0 {
@@ -132,13 +165,22 @@ fn sample_point_shadow(
     slot_index: u32,
     light_pos: vec3<f32>,
     world_pos: vec3<f32>,
+    receiver_normal: vec3<f32>,
+    bias_scale: f32,
     far_range: f32,
 ) -> f32 {
     // CUBE_SHADOW_BODY_BEGIN — on a no-`CUBE_ARRAY_TEXTURES` adapter the renderer
     // replaces everything up to CUBE_SHADOW_BODY_END with `return 1.0;`, so this
     // function references no `point_shadow_cube` binding (which is stripped). The
     // point-light call site is still compiled but always reads "unshadowed".
-    let to_frag = world_pos - light_pos;
+    let distance_to_light = length(world_pos - light_pos);
+    // A cube face spans 2 × distance at its 90° FOV, so this is one face
+    // texel's conservative world footprint at the receiver.
+    let texel_world_footprint = 2.0 * distance_to_light / CUBE_FACE_RESOLUTION;
+    // Keep the scale inside the full vector offset: a scale of zero reproduces
+    // the pre-normal-offset sample position exactly.
+    let receiver_offset = receiver_normal * (texel_world_footprint * bias_scale);
+    let to_frag = (world_pos + receiver_offset) - light_pos;
     let dist = length(to_frag);
     // The depth pass clamps the far plane to >= 0.5 (`falloff_range.max(0.5)`);
     // mirror that so the NDC reconstruction uses the same far plane.
@@ -153,8 +195,8 @@ fn sample_point_shadow(
     let dir = to_frag / dist;
     let lookup = vec3<f32>(dir.x, -dir.y, dir.z);
     // Dominant-axis magnitude = the view-space depth on the selected face. Apply
-    // the world-space bias here (pull the receiver toward the light) before
-    // projecting, then convert to the stored NDC depth. `textureSampleCompareLevel`
+    // the constant depth bias before projecting, then convert to the stored NDC
+    // depth. `textureSampleCompareLevel`
     // (CompareFunction::Less) returns 1.0 per tap when the fragment is nearer
     // than the stored occluder depth (lit). Clamp the biased depth to the near
     // plane so a fragment closer than near never produces a negative reference.

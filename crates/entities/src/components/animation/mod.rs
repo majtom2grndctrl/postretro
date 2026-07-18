@@ -186,6 +186,7 @@ pub(crate) mod test_support {
                 model: "decraniated".into(),
                 animation: Some(two_state_animation()),
                 origin_offset: Vec3::ZERO,
+                shadow_bias_scale: 1.0,
                 pose_inputs: None,
             },
         )

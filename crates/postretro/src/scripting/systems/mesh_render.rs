@@ -316,6 +316,7 @@ impl MeshRenderCollector {
                     transform.rotation,
                     transform.position + mesh.origin_offset,
                 ),
+                shadow_bias_scale: mesh.shadow_bias_scale,
                 phase_seed: seed,
                 sample,
                 pose_inputs: mesh.pose_inputs,
@@ -634,6 +635,55 @@ mod tests {
         assert_eq!(inst.model.as_str(), "decraniated");
         let t = inst.transform.w_axis;
         assert_eq!([t.x, t.y, t.z], [1.0, 2.0, 3.0]);
+    }
+
+    // Regression: default-only fixtures let dropped collector/planner copies preserve 1.0.
+    #[test]
+    fn collector_and_planner_carry_mesh_shadow_bias_scale_verbatim() {
+        struct OneJointModel;
+
+        impl postretro_render_cpu::mesh_instances::JointCounts for OneJointModel {
+            fn joint_count(&self, _model: &postretro_model::ModelHandle) -> Option<u32> {
+                Some(1)
+            }
+
+            fn model_bounds(
+                &self,
+                _model: &postretro_model::ModelHandle,
+            ) -> postretro_render_data::cone_frustum::Aabb {
+                Default::default()
+            }
+        }
+
+        let mut registry = EntityRegistry::new();
+        let id = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                id,
+                MeshComponent::stateless("decraniated".into()).with_shadow_bias_scale(2.5),
+            )
+            .unwrap();
+
+        let mut collector = MeshRenderCollector::new();
+        collector.collect(
+            &registry,
+            &single_cell_world(),
+            &VisibleCells::DrawAll,
+            1.0,
+            0.0,
+            &MeshClipTables::new(),
+            Vec3::ZERO,
+        );
+        let plan = postretro_render_cpu::mesh_instances::plan_mesh_frame(
+            collector.instances(),
+            &OneJointModel,
+        );
+        let planned = &plan.groups[0].instances[0];
+
+        assert!(
+            (planned.shadow_bias_scale - 2.5).abs() < f32::EPSILON,
+            "authored mesh shadow bias must survive collector and planner copies"
+        );
     }
 
     #[test]
@@ -980,6 +1030,7 @@ mod tests {
                 model: "grunt".into(),
                 animation: Some(MeshAnimation::new(states, "idle".into())),
                 origin_offset: Vec3::ZERO,
+                shadow_bias_scale: 1.0,
                 pose_inputs: None,
             },
         )

@@ -100,6 +100,7 @@ fn enemy_mesh() -> MeshComponent {
         model: "grunt".into(),
         animation: Some(MeshAnimation::new(states, "idle".into())),
         origin_offset: Vec3::ZERO,
+        shadow_bias_scale: 1.0,
         pose_inputs: None,
     }
 }

@@ -75,6 +75,7 @@ pub(crate) fn mesh_descriptor(classname: &str, animated: bool) -> EntityTypeDesc
         weapon: None,
         mesh: Some(postretro_scripting_core::data_descriptors::MeshDescriptor {
             model: "decraniated".to_string(),
+            shadow_bias_scale: 1.0,
             animations,
             default_state,
             locomotion: None,

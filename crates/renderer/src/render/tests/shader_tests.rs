@@ -259,6 +259,59 @@ fn forward_shader_shadowmask_union_uses_promoted_count_and_safe_metadata_tail() 
         helper.contains("let weight = clamp(meta0.w, 0.0, 1.0);"),
         "shader must use raw promoted-set w from metadata, not GpuLight color"
     );
+    assert!(
+        helper.contains("out.subtraction = vec3<f32>(0.0);")
+            && helper.contains("if uniforms.total_light_count <= uniforms.light_count")
+            && helper.contains("return out;"),
+        "zero promoted lights must retain a zero union subtraction"
+    );
+}
+
+// Regression: one bad point-shadow tap survived the spot-calibrated dead zone.
+#[test]
+fn forward_shader_shadowmask_dead_zone_matches_each_pool_kernel() {
+    let src = include_str!("../../shaders/forward.wgsl");
+    let shadow_src = include_str!("../../shaders/shadow_sample.wgsl");
+    let point_shadow = &shadow_src[shadow_src
+        .find("fn sample_point_shadow(")
+        .expect("shared shadow sampler must declare sample_point_shadow")..];
+
+    assert!(
+        src.contains("const SHADOWMASK_SPOT_KERNEL_RADIUS: i32 = 2;")
+            && src.contains(
+                "for (var dy: i32 = -SHADOWMASK_SPOT_KERNEL_RADIUS; dy <= SHADOWMASK_SPOT_KERNEL_RADIUS;"
+            )
+            && src.contains(
+                "for (var dx: i32 = -SHADOWMASK_SPOT_KERNEL_RADIUS; dx <= SHADOWMASK_SPOT_KERNEL_RADIUS;"
+            )
+            && src.contains(
+                "const SHADOWMASK_SPOT_VISIBILITY_DEAD_ZONE: f32 = 1.0 / 25.0;"
+            ),
+        "the promoted spot union must ignore one tap of its 5x5 comparison kernel"
+    );
+    assert!(
+        point_shadow.contains("for (var dy = -1; dy <= 1;")
+            && point_shadow.contains("for (var dx = -1; dx <= 1;")
+            && point_shadow.contains("return lit / 9.0;")
+            && src.contains("const SHADOWMASK_POINT_VISIBILITY_DEAD_ZONE: f32 = 1.0 / 9.0;"),
+        "the promoted point union must ignore one tap of its 3x3 comparison kernel"
+    );
+    assert!(
+        src.contains("fn shadowmask_visibility_difference(\n    pool_kind: u32,")
+            && src.contains("pool_kind == SHADOWMASK_POOL_CUBE,")
+            && src.contains("max(difference - dead_zone, 0.0) / (1.0 - dead_zone)")
+            && src
+                .contains("shadowmask_visibility_difference(pool_kind, baked_vis, shadow_map_vis)"),
+        "the continuous union difference must select and apply the validated pool-kind calibration"
+    );
+
+    let renormalized_difference =
+        |difference: f32, dead_zone: f32| ((difference - dead_zone).max(0.0)) / (1.0 - dead_zone);
+    for dead_zone in [1.0 / 25.0, 1.0 / 9.0] {
+        assert_eq!(renormalized_difference(dead_zone, dead_zone), 0.0);
+        assert!(renormalized_difference(dead_zone + 1.0e-3, dead_zone) > 0.0);
+        assert!((renormalized_difference(1.0, dead_zone) - 1.0).abs() < f32::EPSILON);
+    }
 }
 
 #[test]
@@ -275,6 +328,21 @@ fn forward_shader_shadowmask_visualization_mode_is_wired() {
     assert!(
         src.contains("return vec4<f32>(shadowmask_union, base_color.a);"),
         "visualization mode should show the union term directly"
+    );
+    assert!(
+        src.contains("const SHADOWMASK_RAW_POOL_VISIBILITY_MODE: u32 = 6u;")
+            && src.contains(
+                "out.raw_pool_visibility = min(out.raw_pool_visibility, shadow_map_vis);"
+            ),
+        "mode 6 must show the darkest raw promoted-light pool visibility"
+    );
+    assert!(
+        src.contains("uniforms.sdf_shadow_mode == SHADOWMASK_RAW_POOL_VISIBILITY_MODE")
+            && src.contains("return vec4<f32>(g, g, g, base_color.a);")
+            && src.contains(
+                "if use_lightmap || uniforms.sdf_shadow_mode == SHADOWMASK_RAW_POOL_VISIBILITY_MODE"
+            ),
+        "raw pool visibility must be a grayscale early-return diagnostic independent of lighting isolation"
     );
 }
 

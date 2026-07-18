@@ -42,7 +42,7 @@ struct BonePaletteEntry {
 
 struct Instance {
     model: mat4x4<f32>,
-    // x = base index into `bone_palette`; yzw padding (16-byte std430 align).
+    // x = base index into `bone_palette`; y = shadow-bias scale; zw padding.
     base_and_pad: vec4<u32>,
 };
 @group(3) @binding(1) var<storage, read> instances: array<Instance>;

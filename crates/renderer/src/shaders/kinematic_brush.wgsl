@@ -198,6 +198,7 @@ fn sample_sh_direct(world_pos: vec3<f32>, shading_normal: vec3<f32>, geo_normal:
 fn accumulate_dynamic_direct(
     world_pos: vec3<f32>,
     n: vec3<f32>,
+    mesh_n: vec3<f32>,
     V: vec3<f32>,
     spec_exp: f32,
     spec_int: f32,
@@ -251,7 +252,14 @@ fn accumulate_dynamic_direct(
                 attenuation = light_eval_falloff(dist, light.direction_and_range.w, falloff_model);
                 let cube_slot = bitcast<u32>(light.cone_angles_and_pad.w);
                 if cube_slot != 0xFFFFFFFFu {
-                    attenuation = attenuation * sample_point_shadow(cube_slot, light.position_and_type.xyz, world_pos, light.direction_and_range.w);
+                    attenuation = attenuation * sample_point_shadow(
+                        cube_slot,
+                        light.position_and_type.xyz,
+                        world_pos,
+                        mesh_n,
+                        MOVER_RECEIVER_BIAS_SCALE,
+                        light.direction_and_range.w,
+                    );
                 }
             }
             case 1u: {
@@ -263,7 +271,14 @@ fn accumulate_dynamic_direct(
                 attenuation = dist_falloff * cone;
                 let slot_index = bitcast<u32>(light.cone_angles_and_pad.z);
                 if slot_index != 0xFFFFFFFFu {
-                    attenuation = attenuation * sample_spot_shadow(slot_index, world_pos, light_space_matrices.m[slot_index]);
+                    attenuation = attenuation * sample_spot_shadow(
+                        slot_index,
+                        light.position_and_type.xyz,
+                        world_pos,
+                        mesh_n,
+                        MOVER_RECEIVER_BIAS_SCALE,
+                        light_space_matrices.m[slot_index],
+                    );
                 }
             }
             default: {
@@ -324,7 +339,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let V = normalize(camera.camera_position - in.world_position);
     let spec_exp = max(material.shininess, 1.0);
     let spec_int = sample_post_retro(spec_texture, aniso_sampler, in.uv, ddx, ddy).r;
-    let dynamic = accumulate_dynamic_direct(in.world_position, n, V, spec_exp, spec_int, use_dynamic);
+    let dynamic = accumulate_dynamic_direct(
+        in.world_position,
+        n,
+        mesh_n,
+        V,
+        spec_exp,
+        spec_int,
+        use_dynamic,
+    );
 
     var lighting = indirect + direct;
     if dynamic_direct.isolation == 1u {

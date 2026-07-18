@@ -11,24 +11,28 @@ use crate::data_descriptors::{
 pub use postretro_foundation::data_descriptors::LightDescriptor;
 
 /// Authored mesh component preset attached to an [`EntityTypeDescriptor`].
-/// Carries the model handle a skinned-model entity renders plus an optional
-/// declared animation-state surface. The data-archetype spawn path materializes
-/// this into a [`crate::components::mesh::MeshComponent`]: a descriptor with no
+/// Carries the model handle a mesh entity renders plus an optional declared
+/// animation-state surface. The data-archetype spawn path materializes this into
+/// a [`crate::components::mesh::MeshComponent`]: a descriptor with no
 /// `animations` block yields a stateless component, otherwise the declared state
-/// map is copied in via `MeshAnimation::new` with current = `default_state` and
-/// a pending entry stamp.
+/// map is copied in via `MeshAnimation::new` with current = `default_state` and a
+/// pending entry stamp.
 ///
-/// Validation (at parse time): `model` non-empty; each state's `clip` non-empty;
-/// `crossfade_ms` finite ≥ 0; `travel_speed` (when present) finite > 0;
-/// `interrupt` (when present on the wire) one of
-/// `"smooth"`/`"snap"`. When `animations` is present it must be non-empty and
-/// `default_state` must be present and name a declared state. A `defaultState`
-/// without an `animations` block is also rejected. Clip resolution against the
-/// model's clip metadata is resolved at level load by `resolve_mesh_entity_clips`;
-/// `AnimationState::clip_index` stays `None` at parse.
+/// Validation (at parse time): `model`, attachment socket names, attachment model
+/// paths, and each state's `clip` are non-empty; `crossfade_ms` finite ≥ 0;
+/// `travel_speed` (when present) finite > 0; `interrupt` (when present on the
+/// wire) one of `"smooth"`/`"snap"`. When `animations` is present it must be
+/// non-empty and `default_state` must be present and name a declared state. A
+/// `defaultState` without an `animations` block is also rejected. Clip resolution
+/// against the model's clip metadata is resolved at level load by
+/// `resolve_mesh_entity_clips`; `AnimationState::clip_index` stays `None` at parse.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MeshDescriptor {
     pub model: String,
+    /// Named holder socket → content-relative prop model path. The spawn path
+    /// materializes these into transiently unresolved mesh attachments; level
+    /// load resolves their holder-side binding from the loaded glTF sockets.
+    pub attachments: HashMap<String, String>,
     /// Per-model receiver-bias multiplier for pooled/runtime shadows, including
     /// skinned receipt from promoted static lights. The script-facing field is
     /// `shadowBiasScale`; omission preserves 1.0.
@@ -103,14 +107,16 @@ impl MeshDescriptor {
 
     /// Build and validate a [`MeshDescriptor`] from the raw fields gathered by
     /// the JS / Luau parsers. Shared so both FFI paths enforce identical rules:
-    /// non-empty `model`/`clip`, finite ≥ 0 `crossfadeMs`, `interrupt` in
-    /// {smooth, snap}, and — when any state is declared — a present
-    /// `defaultState` that names a declared state. An empty-but-present
-    /// `animations` block is rejected; a wholly absent one yields a stateless
-    /// descriptor (`animations` empty, `default_state` None). `shadowBiasScale`
-    /// is optional on the wire, defaults to 1.0, and must be finite in 0.0..=4.0.
+    /// non-empty model, attachment socket names, attachment model paths, and
+    /// clips; finite ≥ 0 `crossfadeMs`; `interrupt` in {smooth, snap}; and — when
+    /// any state is declared — a present `defaultState` that names a declared
+    /// state. An empty-but-present `animations` block is rejected; a wholly absent
+    /// one yields a stateless descriptor (`animations` empty, `default_state`
+    /// None). `shadowBiasScale` is optional on the wire, defaults to 1.0, and must
+    /// be finite in 0.0..=4.0.
     pub fn build(
         model: String,
+        attachments: HashMap<String, String>,
         states: Vec<RawAnimationState>,
         default_state: Option<String>,
         animations_present: bool,
@@ -121,6 +127,22 @@ impl MeshDescriptor {
             return Err(DescriptorError::InvalidShape {
                 reason: "`components.mesh.model` must be a non-empty string".to_string(),
             });
+        }
+
+        for (socket, attachment_model) in &attachments {
+            if socket.is_empty() {
+                return Err(DescriptorError::InvalidShape {
+                    reason: "`components.mesh.attachments` must not contain an empty socket name"
+                        .to_string(),
+                });
+            }
+            if attachment_model.is_empty() {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`components.mesh.attachments.{socket}` must be a non-empty model path"
+                    ),
+                });
+            }
         }
 
         let shadow_bias_scale = shadow_bias_scale.unwrap_or(1.0);
@@ -230,6 +252,7 @@ impl MeshDescriptor {
 
         Ok(MeshDescriptor {
             model,
+            attachments,
             shadow_bias_scale,
             animations,
             default_state,

@@ -44,8 +44,8 @@ fn speed_scale_is_default(value: &bool) -> bool {
 
 /// Per-entity animation runtime state, present only on descriptor-spawned
 /// entities that declared an `animations` block. `prop_mesh` entities leave
-/// [`MeshComponent::animation`] as `None` and stay stateless (today's behavior:
-/// first clip, looped, phase offset).
+/// [`MeshComponent::animation`] as `None` and hold the model's authored rest
+/// pose.
 ///
 /// [`MeshComponent::animation`]: super::mesh::MeshComponent::animation
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -187,6 +187,7 @@ pub(crate) mod test_support {
                 animation: Some(two_state_animation()),
                 origin_offset: Vec3::ZERO,
                 shadow_bias_scale: 1.0,
+                attachments: Vec::new(),
                 pose_inputs: None,
             },
         )

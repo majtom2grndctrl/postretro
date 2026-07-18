@@ -106,12 +106,11 @@ impl Renderer {
     /// `LoadedTexture`, build one bind group per distinct key, and upload to the
     /// mesh pass.
     ///
-    /// Called once per distinct `prop_mesh` model by the level-load model sweep
-    /// (after classname dispatch); spawning itself happens earlier in
-    /// `prop_mesh::handle`. Returns `Some(tags)` on success (the model's glTF
+    /// Called once per distinct mesh model by the level-load model sweep (after
+    /// classname dispatch). Returns `Some(tags)` on success (the model's glTF
     /// `extras` tags — currently unused by callers, a residual of the old spawn
-    /// seam) or `None` on a load error, which also logs a `warn!` naming the path
-    /// and leaves the entry uncached (that model renders nothing).
+    /// seam) or `None` on a load error, which logs a `warn!` naming the path and
+    /// leaves the entry uncached (that model renders nothing).
     ///
     /// The renderer owns the GPU upload, cached skeleton, and all animation clips
     /// (inside the mesh pass's model cache); the per-frame draw list
@@ -139,7 +138,7 @@ impl Renderer {
             Ok(m) => m,
             Err(err) => {
                 log::warn!(
-                    "[Model] skinned model load failed for {} : {err} — mesh pass idle",
+                    "[Model] model load failed for {} : {err} — mesh pass idle",
                     model_path.display(),
                 );
                 return None;

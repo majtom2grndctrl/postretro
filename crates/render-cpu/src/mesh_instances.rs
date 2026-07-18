@@ -37,6 +37,31 @@ pub const MAX_PALETTE_ENTRIES: usize = 4096;
 /// the instance cap even for a pure-rigid flood. One cap value covers both buffers.
 pub const MAX_INSTANCES: usize = MAX_PALETTE_ENTRIES;
 
+/// Stable identity for one instance's renderer-side palette cache entry.
+///
+/// An attachment has no animation/snapshot identity of its own, but it still
+/// needs a cache slot distinct from every entity body. Keeping this separate
+/// from `phase_seed` prevents an attached rigid prop from overwriting a
+/// time-sliced entity palette.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MeshPaletteCacheKey {
+    Entity(u32),
+    Attachment {
+        holder: u32,
+        attachment_index: usize,
+    },
+}
+
+impl MeshPaletteCacheKey {
+    /// Stable holder group used for atomic frame-budget admission.
+    fn holder_group(self) -> u32 {
+        match self {
+            Self::Entity(entity) => entity,
+            Self::Attachment { holder, .. } => holder,
+        }
+    }
+}
+
 /// One skinned-mesh instance to consider for this frame: which model it draws,
 /// its final interpolated world transform, a deterministic phase seed (the raw
 /// `EntityId`) used to de-sync animation across a wave, the resolved per-frame
@@ -54,9 +79,13 @@ pub struct MeshInstanceInput {
     /// into a phase offset so a spawned wave does not animate lock-step, and the
     /// key into the snapshot store.
     pub phase_seed: u32,
-    /// Resolved sample parameters: primary clip leg + optional crossfade. The
-    /// collector computes these from entity state + the clip table; for a
-    /// stateless `prop_mesh` entity this is [`MeshSampleParams::stateless`].
+    /// Stable renderer-side palette-cache identity. This differs from
+    /// [`phase_seed`](Self::phase_seed) for attachment props, which never own
+    /// animation snapshots but must not alias their holder's cached palette.
+    pub palette_cache_key: MeshPaletteCacheKey,
+    /// Resolved pose selection: explicit rest pose, primary clip leg, or an
+    /// optional crossfade. The collector computes this from entity state and
+    /// the clip table.
     pub sample: MeshSampleParams,
     /// Same-tick presentation inputs for the model's pose-modifier stack.
     pub pose_inputs: Option<PoseInputs>,
@@ -89,6 +118,7 @@ pub struct PlannedInstance {
     pub shadow_bias_scale: f32,
     pub palette_base: u32,
     pub phase_seed: u32,
+    pub palette_cache_key: MeshPaletteCacheKey,
     /// The instance's model's LOCAL-space AABB (bind-pose bound), stamped from
     /// the renderer's model cache at plan time. The per-light caster cull
     /// transforms this by `transform` and tests it against a light's
@@ -153,8 +183,9 @@ pub struct MeshFramePlan {
 /// cache: the skeleton's joint count (the palette-run length) and the model's
 /// local-space bound (stamped onto each `PlannedInstance` for the caster cull).
 /// `joint_count` returning `None` means the handle is not in the cache (never
-/// uploaded) — its instances are skipped, not budget-dropped. Keeps the planner
-/// GPU-free: the cache provides plain values, no wgpu reference crosses.
+/// uploaded). A missing holder skips its whole holder group; a missing
+/// attachment is omitted while the cached holder remains drawable. Keeps the
+/// planner GPU-free: the cache provides plain values, no wgpu reference crosses.
 pub trait JointCounts {
     fn joint_count(&self, model: &ModelHandle) -> Option<u32>;
     /// The model's local-space AABB, or a zero box if the handle is uncached
@@ -169,8 +200,11 @@ pub trait JointCounts {
 /// Instances are bucketed by model handle in first-seen order (stable, cheap to
 /// reason about — not sorted, since wave counts are small). Each instance gets a
 /// run of `joint_count(model)` palette slots; runs are laid out back-to-back
-/// across all instances of all groups. An instance is DROPPED (counted in
-/// `dropped`) rather than truncated when EITHER budget would overflow:
+/// across all instances of all groups. A holder and its contiguous attachment
+/// inputs are reserved atomically. Their palette-cache identities carry one
+/// shared holder id, so the planner rejects the whole group before assigning
+/// any run. A rejected group's members are all counted in `dropped` when EITHER
+/// budget would overflow:
 /// - its palette run would push the cursor past [`MAX_PALETTE_ENTRIES`] (a
 ///   partial run would corrupt skinning), or
 /// - the running instance count would reach [`MAX_INSTANCES`] (the per-frame
@@ -179,9 +213,9 @@ pub trait JointCounts {
 /// Static / rigid `prop_mesh` models are not zero-joint: the loader gives them
 /// a single identity joint, so `run == 1` and each instance still consumes one
 /// palette slot — the palette cap can fire for them too, just at a much higher
-/// instance count than skinned models. An instance whose model is absent from
-/// `joints` (never uploaded) is silently skipped and not counted as a budget
-/// drop.
+/// instance count than skinned models. Missing or failed attachment models are
+/// silently omitted and are not counted as budget drops; a missing holder still
+/// suppresses its holder group.
 ///
 /// The mesh collector may emit mixed forward/non-forward instances when a
 /// non-forward mesh is relevant to a selected static-light shadow. The
@@ -194,14 +228,7 @@ pub fn plan_mesh_frame(
     instances: &[MeshInstanceInput],
     joints: &impl JointCounts,
 ) -> MeshFramePlan {
-    // Budget forward-visible instances first so shadow-only inputs never evict a
-    // forward instance. Two passes over the slice, no clone.
-    let forward_first = instances
-        .iter()
-        .filter(|i| i.forward_visible)
-        .chain(instances.iter().filter(|i| !i.forward_visible));
-
-    plan_ordered_mesh_frame(forward_first, joints)
+    plan_grouped_mesh_frame(instances, joints, false)
 }
 
 /// Plan only forward-visible instances, using the same cache/budget behavior as
@@ -212,61 +239,50 @@ pub fn plan_forward_visible_mesh_frame(
     instances: &[MeshInstanceInput],
     joints: &impl JointCounts,
 ) -> MeshFramePlan {
-    plan_ordered_mesh_frame(instances.iter().filter(|i| i.forward_visible), joints)
+    plan_grouped_mesh_frame(instances, joints, true)
 }
 
-fn plan_ordered_mesh_frame<'a>(
-    ordered_instances: impl Iterator<Item = &'a MeshInstanceInput>,
+fn plan_grouped_mesh_frame(
+    instances: &[MeshInstanceInput],
     joints: &impl JointCounts,
+    forward_only: bool,
 ) -> MeshFramePlan {
     let mut groups: Vec<ModelDrawGroup> = Vec::new();
     let mut palette_cursor: usize = 0;
     let mut instance_count: usize = 0;
     let mut dropped: u32 = 0;
 
-    for inst in ordered_instances {
-        let Some(joint_count) = joints.joint_count(&inst.model) else {
-            // Model not in the cache (never uploaded) — skip, not a budget drop.
-            continue;
-        };
-        let run = joint_count as usize;
-
-        // Drop the instance if it would overflow EITHER budget. Both caps apply
-        // to every model, including rigid / static props (loader gives them a
-        // 1-joint identity skeleton, so `run == 1`). The instance cap is still
-        // load-bearing on its own: without it, the instance count — and the GPU
-        // layer's per-instance SSBO writes — would run unbounded past the
-        // buffer the renderer sized to `MAX_INSTANCES` and panic wgpu.
-        if instance_count >= MAX_INSTANCES || palette_cursor + run > MAX_PALETTE_ENTRIES {
-            dropped += 1;
-            continue;
+    // Budget forward-visible groups first so shadow-only inputs never evict a
+    // forward group. Collector output keeps each holder immediately followed by
+    // its attachments, so two scans preserve group order without an allocation.
+    for group_is_forward in [true, false] {
+        if forward_only && !group_is_forward {
+            break;
         }
-        let palette_base = palette_cursor as u32;
-        palette_cursor += run;
-        instance_count += 1;
 
-        let planned = PlannedInstance {
-            transform: inst.transform,
-            shadow_bias_scale: inst.shadow_bias_scale,
-            palette_base,
-            phase_seed: inst.phase_seed,
-            bounds: joints.model_bounds(&inst.model),
-            sample: inst.sample,
-            pose_inputs: inst.pose_inputs,
-            capture: inst.capture,
-            resample: inst.resample,
-            forward_visible: inst.forward_visible,
-        };
-
-        // Append to the existing group for this model, or start a new one.
-        if let Some(group) = groups.iter_mut().find(|g| g.model == inst.model) {
-            group.instances.push(planned);
-        } else {
-            groups.push(ModelDrawGroup {
-                model: inst.model.clone(),
-                instance_offset: 0, // assigned in the dense-offset pass below
-                instances: vec![planned],
-            });
+        let mut group_start = 0;
+        while group_start < instances.len() {
+            let holder_group = instances[group_start].palette_cache_key.holder_group();
+            let mut group_end = group_start + 1;
+            while group_end < instances.len()
+                && instances[group_end].palette_cache_key.holder_group() == holder_group
+            {
+                group_end += 1;
+            }
+            let input_group = &instances[group_start..group_end];
+            let forward_visible = input_group.iter().any(|instance| instance.forward_visible);
+            if forward_visible == group_is_forward {
+                plan_instance_group(
+                    input_group,
+                    forward_visible,
+                    joints,
+                    &mut groups,
+                    &mut palette_cursor,
+                    &mut instance_count,
+                    &mut dropped,
+                );
+            }
+            group_start = group_end;
         }
     }
 
@@ -282,6 +298,90 @@ fn plan_ordered_mesh_frame<'a>(
         groups,
         instance_count: instance_offset,
         dropped,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn plan_instance_group(
+    input_group: &[MeshInstanceInput],
+    forward_visible: bool,
+    joints: &impl JointCounts,
+    groups: &mut Vec<ModelDrawGroup>,
+    palette_cursor: &mut usize,
+    instance_count: &mut usize,
+    dropped: &mut u32,
+) {
+    let Some(holder_joints) = input_group
+        .first()
+        .and_then(|instance| joints.joint_count(&instance.model))
+    else {
+        // A missing holder model suppresses the whole visual group. Cache
+        // absence is not a budget drop, and an unavailable attachment is
+        // omitted below so the holder can still render.
+        return;
+    };
+
+    let mut palette_entries = holder_joints as usize;
+    let mut available_instances = 1usize;
+    for instance in &input_group[1..] {
+        let Some(joint_count) = joints.joint_count(&instance.model) else {
+            continue;
+        };
+        let Some(next) = palette_entries.checked_add(joint_count as usize) else {
+            *dropped = (*dropped).saturating_add(available_instances as u32);
+            return;
+        };
+        palette_entries = next;
+        available_instances += 1;
+    }
+
+    let instance_budget_overflows = available_instances > MAX_INSTANCES - *instance_count;
+    let palette_budget_overflows = palette_entries > MAX_PALETTE_ENTRIES - *palette_cursor;
+    if instance_budget_overflows || palette_budget_overflows {
+        *dropped = (*dropped).saturating_add(available_instances as u32);
+        return;
+    }
+
+    for (index, instance) in input_group.iter().enumerate() {
+        let Some(run) = joints
+            .joint_count(&instance.model)
+            .map(|count| count as usize)
+        else {
+            debug_assert!(index > 0, "holder cache was preflighted");
+            continue;
+        };
+        let palette_base = *palette_cursor as u32;
+        *palette_cursor += run;
+        *instance_count += 1;
+
+        let planned = PlannedInstance {
+            transform: instance.transform,
+            shadow_bias_scale: instance.shadow_bias_scale,
+            palette_base,
+            phase_seed: instance.phase_seed,
+            palette_cache_key: instance.palette_cache_key,
+            bounds: joints.model_bounds(&instance.model),
+            sample: instance.sample,
+            pose_inputs: instance.pose_inputs,
+            capture: instance.capture,
+            resample: instance.resample,
+            // Holder visibility is a group contract. Normalize every member so
+            // forward and shadow draws cannot split malformed mixed inputs.
+            forward_visible,
+        };
+
+        if let Some(group) = groups
+            .iter_mut()
+            .find(|group| group.model == instance.model)
+        {
+            group.instances.push(planned);
+        } else {
+            groups.push(ModelDrawGroup {
+                model: instance.model.clone(),
+                instance_offset: 0,
+                instances: vec![planned],
+            });
+        }
     }
 }
 
@@ -340,12 +440,27 @@ mod tests {
             transform: Mat4::from_translation(Vec3::new(x, 0.0, 0.0)),
             shadow_bias_scale: 1.0,
             phase_seed: seed,
+            palette_cache_key: MeshPaletteCacheKey::Entity(seed),
             sample: MeshSampleParams::stateless(0.0),
             pose_inputs: None,
             capture: None,
             resample: true,
             forward_visible: true,
         }
+    }
+
+    fn attachment_instance(
+        model: &str,
+        x: f32,
+        holder: u32,
+        attachment_index: usize,
+    ) -> MeshInstanceInput {
+        let mut input = instance(model, x, holder);
+        input.palette_cache_key = MeshPaletteCacheKey::Attachment {
+            holder,
+            attachment_index,
+        };
+        input
     }
 
     #[test]
@@ -448,6 +563,89 @@ mod tests {
         for r in runs {
             assert!((r.palette_base + per) as usize <= MAX_PALETTE_ENTRIES);
         }
+    }
+
+    #[test]
+    fn plan_packs_holder_and_attachment_normally_as_one_budget_group() {
+        let joints = joints(&[("holder", 3), ("prop", 1), ("other", 2)]);
+        let instances = [
+            instance("holder", 1.0, 7),
+            attachment_instance("prop", 2.0, 7, 0),
+            instance("other", 3.0, 8),
+        ];
+
+        let plan = plan_mesh_frame(&instances, &joints);
+
+        assert_eq!(plan.instance_count, 3);
+        assert_eq!(plan.dropped, 0);
+        assert_eq!(plan.groups[0].model, ModelHandle::from("holder"));
+        assert_eq!(plan.groups[0].instances[0].palette_base, 0);
+        assert_eq!(plan.groups[1].model, ModelHandle::from("prop"));
+        assert_eq!(plan.groups[1].instances[0].palette_base, 3);
+        assert_eq!(plan.groups[2].model, ModelHandle::from("other"));
+        assert_eq!(plan.groups[2].instances[0].palette_base, 4);
+    }
+
+    #[test]
+    fn plan_rejects_attachment_when_holder_run_does_not_fit() {
+        // Regression: independent budgeting dropped the large holder but kept
+        // its one-joint prop, producing a floating attachment.
+        let joints = joints(&[
+            ("prefix", 1),
+            ("holder", MAX_PALETTE_ENTRIES as u32),
+            ("prop", 1),
+        ]);
+        let instances = [
+            instance("prefix", 0.0, 1),
+            instance("holder", 1.0, 7),
+            attachment_instance("prop", 2.0, 7, 0),
+        ];
+
+        let plan = plan_mesh_frame(&instances, &joints);
+
+        assert_eq!(plan.instance_count, 1, "only the independent prefix fits");
+        assert_eq!(plan.dropped, 2, "holder and attachment reject together");
+        assert_eq!(plan.groups.len(), 1);
+        assert_eq!(plan.groups[0].model, ModelHandle::from("prefix"));
+    }
+
+    #[test]
+    fn plan_rejects_holder_when_attachment_run_does_not_fit() {
+        // Regression: independent budgeting admitted the holder and rejected
+        // its prop at the palette boundary.
+        let joints = joints(&[("holder", (MAX_PALETTE_ENTRIES - 1) as u32), ("prop", 2)]);
+        let instances = [
+            instance("holder", 1.0, 7),
+            attachment_instance("prop", 2.0, 7, 0),
+        ];
+
+        let plan = plan_mesh_frame(&instances, &joints);
+
+        assert_eq!(plan.instance_count, 0);
+        assert_eq!(plan.dropped, 2, "holder and attachment reject together");
+        assert!(plan.groups.is_empty());
+    }
+
+    #[test]
+    fn plan_rejects_holder_group_atomically_at_instance_budget() {
+        let joints = joints(&[("prefix", 0), ("holder", 0), ("prop", 0)]);
+        let mut instances: Vec<MeshInstanceInput> = (0..MAX_INSTANCES - 1)
+            .map(|index| instance("prefix", index as f32, index as u32))
+            .collect();
+        let holder = u32::MAX;
+        instances.push(instance("holder", 1.0, holder));
+        instances.push(attachment_instance("prop", 2.0, holder, 0));
+
+        let plan = plan_mesh_frame(&instances, &joints);
+
+        assert_eq!(plan.instance_count as usize, MAX_INSTANCES - 1);
+        assert_eq!(plan.dropped, 2, "instance admission is group-atomic");
+        assert!(
+            plan.groups
+                .iter()
+                .all(|group| group.model.as_str() == "prefix"),
+            "neither holder member enters the plan",
+        );
     }
 
     #[test]
@@ -564,6 +762,22 @@ mod tests {
         assert_eq!(plan.groups[0].model.as_str(), "grunt");
     }
 
+    #[test]
+    fn plan_keeps_cached_holder_when_attachment_model_is_uncached() {
+        let joints = joints(&[("holder", 10)]);
+        let instances = [
+            instance("holder", 1.0, 7),
+            attachment_instance("missing-prop", 2.0, 7, 0),
+        ];
+
+        let plan = plan_mesh_frame(&instances, &joints);
+
+        assert_eq!(plan.instance_count, 1);
+        assert_eq!(plan.dropped, 0, "cache absence is not budget pressure");
+        assert_eq!(plan.groups.len(), 1);
+        assert_eq!(plan.groups[0].model.as_str(), "holder");
+    }
+
     /// AC#2: the per-light caster cull keeps an instance whose transformed bound
     /// is inside the cone and drops one whose transformed bound is outside it.
     /// Pure CPU: builds the cone planes from a spotlight aimed down -Z, then
@@ -609,6 +823,7 @@ mod tests {
             shadow_bias_scale: 1.0,
             palette_base: 0,
             phase_seed: 0,
+            palette_cache_key: MeshPaletteCacheKey::Entity(0),
             bounds: local,
             sample: MeshSampleParams::stateless(0.0),
             pose_inputs: None,
@@ -628,6 +843,7 @@ mod tests {
             shadow_bias_scale: 1.0,
             palette_base: 0,
             phase_seed: 0,
+            palette_cache_key: MeshPaletteCacheKey::Entity(0),
             bounds: local,
             sample: MeshSampleParams::stateless(0.0),
             pose_inputs: None,
@@ -685,6 +901,7 @@ mod tests {
             shadow_bias_scale: 1.0,
             palette_base: 0,
             phase_seed: 0,
+            palette_cache_key: MeshPaletteCacheKey::Entity(0),
             bounds: bar,
             sample: MeshSampleParams::stateless(0.0),
             pose_inputs: None,

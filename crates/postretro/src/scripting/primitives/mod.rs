@@ -97,8 +97,13 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("MeshDescriptor")
-        .doc("Authored mesh component preset attached to `EntityTypeDescriptor.components.mesh`. A descriptor carrying `components.mesh` is directly map-placeable via `canonicalName`. `model` is the skinned-model handle; `animations` declares the per-entity logical animation-state map (state name → clip + loop + crossfade + interrupt). When `animations` is present it must be non-empty and `defaultState` must name a declared state; omit both for a stateless mesh.")
-        .field("model", "String", "Skinned-model handle this entity renders. Must be non-empty.")
+        .doc("Authored mesh component preset attached to `EntityTypeDescriptor.components.mesh`. A descriptor carrying `components.mesh` is directly map-placeable via `canonicalName`. `model` is the model handle; `animations` declares the per-entity logical animation-state map (state name → clip + loop + crossfade + interrupt). When `animations` is present it must be non-empty and `defaultState` must name a declared state; omit both for a stateless mesh.")
+        .field("model", "String", "Model handle this entity renders. Must be non-empty.")
+        .field(
+            "attachments?",
+            "MeshAttachments",
+            "Optional socket-name → content-relative prop-model map. Both socket names and model paths must be non-empty. Attachments are presentation-only and follow their holder's authored socket.",
+        )
         .field("shadowBiasScale?", "number", "Per-model skinned pool-shadow receiver-bias multiplier. Defaults to 1.0; must be finite and in 0.0..=4.0. Set 0.0 to disable the receiver offset for this model.")
         .field(
             "animations?",
@@ -267,7 +272,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("emitter?", "Option<BillboardEmitterComponent>", "Billboard-particle emitter preset materialized on each spawned instance.")
         .field("movement?", "Option<PlayerMovementDescriptor>", "Player movement, collision capsule, and first-person view-feel preset.")
         .field("weapon?", "Option<WeaponDescriptor>", "Weapon tuning preset. Weapon archetypes are instantiated as wieldable entities when referenced by `defaultWeapon`.")
-        .field("mesh?", "Option<MeshDescriptor>", "Animated skinned-mesh preset: model handle plus an optional per-state animation map. A descriptor carrying this is directly map-placeable by canonicalName.")
+        .field("mesh?", "Option<MeshDescriptor>", "Mesh preset: model handle plus an optional per-state animation map. A descriptor carrying this is directly map-placeable by canonicalName.")
         .field("health?", "Option<HealthDescriptor>", "Hit points plus an optional hitscan hitbox. A descriptor carrying this is directly map-placeable by canonicalName.")
         .field("ai?", "Option<AiDescriptor>", "AI brain preset: detection/attack/leash ranges, attack tuning, move speed, despawn delay, and the logical-state → mesh animation-state map. Materializes a brain plus a navigation agent at spawn. Rides on health+mesh for map placement; it does not itself make a descriptor placeable.")
         .finish();

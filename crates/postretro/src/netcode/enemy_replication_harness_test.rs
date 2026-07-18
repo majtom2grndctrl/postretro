@@ -276,6 +276,7 @@ fn enemy_descriptor(class: &str) -> EntityTypeDescriptor {
         weapon: None,
         mesh: Some(MeshDescriptor {
             model: "decraniated".to_string(),
+            attachments: Default::default(),
             shadow_bias_scale: 1.0,
             animations: states,
             default_state: Some("idle".to_string()),
@@ -343,6 +344,7 @@ fn prop_descriptor(class: &str) -> EntityTypeDescriptor {
         weapon: None,
         mesh: Some(MeshDescriptor {
             model: "crate_mesh".to_string(),
+            attachments: Default::default(),
             shadow_bias_scale: 1.0,
             animations: states,
             default_state: Some("idle".to_string()),

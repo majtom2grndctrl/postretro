@@ -22,8 +22,9 @@ use super::WORLD_POSE_SCRATCH;
 /// skinning palette multiplies by each joint's inverse-bind matrix
 /// ([`compose_palette`]) and what the world-joint samplers
 /// ([`sample_clip_looped_world`], [`sample_blended_world`]) expose directly for
-/// hit-zone / attachment queries. Factoring the sweep here keeps both paths on
-/// exactly the same forward composition.
+/// hit-zone queries, while their modifier-applied counterparts expose them for
+/// attachment presentation. Factoring the sweep here keeps every path on exactly
+/// the same forward composition.
 pub(super) fn compose_world_pose(
     skeleton: &Skeleton,
     world: &mut Vec<Mat4>,

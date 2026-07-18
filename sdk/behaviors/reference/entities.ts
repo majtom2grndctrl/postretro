@@ -129,6 +129,9 @@ export const poseFixtureEnemyEntity: EntityTypeDescriptor = defineEntity({
     },
     mesh: {
       model: "models/pose-modifier-fixture/joint_zones.gltf",
+      attachments: {
+        hand_r: "models/attachment-marker/hand-prop.gltf",
+      },
       animations: {
         idle: { clip: "Rest", loop: true },
         walk: { clip: "Rest", loop: true },

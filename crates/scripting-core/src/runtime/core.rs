@@ -26,6 +26,38 @@ use super::types::{
     ReloadSummary, ScriptRuntime, ScriptRuntimeConfig, StagedManifestCommitOutcome,
 };
 
+/// Mesh descriptors are installed with the level: their models are pre-uploaded,
+/// spawner caches retain the resolved descriptor, and live components carry
+/// transient animation and attachment bindings. Staged hot reload cannot update
+/// those consumers atomically, so preserve the active mesh block until reload.
+#[cfg(debug_assertions)]
+fn defer_mesh_descriptor_refreshes(
+    old_descriptors: &[crate::data_descriptors::EntityTypeDescriptor],
+    next_descriptors: &mut [crate::data_descriptors::EntityTypeDescriptor],
+) -> bool {
+    let mut deferred = false;
+    for next in next_descriptors {
+        let Some(name) = next.canonical_name.as_deref() else {
+            continue;
+        };
+        let old_mesh = old_descriptors
+            .iter()
+            .find(|old| old.canonical_name.as_deref() == Some(name))
+            .and_then(|old| old.mesh.clone());
+        if next.mesh == old_mesh {
+            continue;
+        }
+
+        deferred = true;
+
+        log::warn!(
+            "[Scripting] staged descriptor refresh deferred components.mesh for `{name}`; active mesh bindings and model uploads remain in use until the next level load"
+        );
+        next.mesh = old_mesh;
+    }
+    deferred
+}
+
 impl ScriptRuntime {
     /// Construction is side-effect-free with respect to the working tree.
     ///
@@ -55,6 +87,8 @@ impl ScriptRuntime {
             staged_manifest_lane: None,
             #[cfg(debug_assertions)]
             active_mod_init_dependencies: None,
+            #[cfg(debug_assertions)]
+            deferred_mesh_descriptors: None,
             script_ctx: ctx.clone(),
             cfg: *cfg,
         })
@@ -159,6 +193,27 @@ impl ScriptRuntime {
         #[cfg(not(debug_assertions))]
         {
             None
+        }
+    }
+
+    /// Promote mesh descriptor changes deferred by a staged hot reload before
+    /// the next level's model and attachment install sweep reads descriptors.
+    /// Live components intentionally keep their existing bindings until then.
+    pub fn install_deferred_mesh_descriptors(&mut self, ctx: &ScriptCtx) -> bool {
+        #[cfg(debug_assertions)]
+        {
+            let Some(descriptors) = self.deferred_mesh_descriptors.take() else {
+                return false;
+            };
+            ctx.data_registry
+                .borrow_mut()
+                .replace_entity_types(descriptors);
+            true
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            let _ = ctx;
+            false
         }
     }
 
@@ -273,7 +328,7 @@ impl ScriptRuntime {
             // Dedup once up front (last-write-wins, matching startup's upsert)
             // so the warning fires a single time and both the refresh plan and
             // the registry replace observe the same deduped snapshot.
-            let next_descriptors =
+            let mut next_descriptors =
                 crate::data_registry::DataRegistry::dedup_entity_type_snapshot(next_descriptors);
             let next_global_reactions =
                 crate::reaction_dispatch::validate_scoped_sequence_primitives(
@@ -300,6 +355,18 @@ impl ScriptRuntime {
             };
 
             let old_descriptors = ctx.data_registry.borrow().entities.clone();
+            let incoming_descriptors = next_descriptors.clone();
+            if defer_mesh_descriptor_refreshes(&old_descriptors, &mut next_descriptors) {
+                // Preserve the unmodified, latest snapshot. A subsequent staged
+                // reload replaces it, so the next level sees the final authored
+                // mesh additions, removals, and attachment-map changes.
+                self.deferred_mesh_descriptors = Some(incoming_descriptors);
+            } else {
+                // A later reload can revert every previously deferred mesh
+                // change. Its snapshot is now safe for the active level, so do
+                // not let an older deferred snapshot override it at install.
+                self.deferred_mesh_descriptors = None;
+            }
             let refresh_plan = {
                 let registry = ctx.registry.borrow();
                 crate::refresh_plan::plan_descriptor_refresh(
@@ -449,11 +516,13 @@ impl ScriptRuntime {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::*;
+    use crate::data_descriptors::{EntityTypeDescriptor, MeshDescriptor};
     use crate::staged_manifest::{StagedManifestBuildConfig, build_staged_manifest};
 
     fn temp_mod_root(name: &str) -> PathBuf {
@@ -466,6 +535,144 @@ mod tests {
         ));
         fs::create_dir_all(&path).expect("temporary mod root should be created");
         path
+    }
+
+    fn mesh_descriptor(attachment_model: &str) -> MeshDescriptor {
+        MeshDescriptor {
+            model: "models/holder.gltf".to_string(),
+            attachments: [("hand".to_string(), attachment_model.to_string())]
+                .into_iter()
+                .collect(),
+            shadow_bias_scale: 1.0,
+            animations: HashMap::new(),
+            default_state: None,
+            locomotion: None,
+        }
+    }
+
+    fn descriptor(
+        name: &str,
+        mesh: Option<MeshDescriptor>,
+        default_weapon: Option<&str>,
+    ) -> EntityTypeDescriptor {
+        EntityTypeDescriptor {
+            canonical_name: Some(name.to_string()),
+            default_weapon: default_weapon.map(str::to_string),
+            light: None,
+            emitter: None,
+            movement: None,
+            weapon: None,
+            mesh,
+            health: None,
+            ai: None,
+        }
+    }
+
+    #[test]
+    fn staged_refresh_defers_mesh_attachments_but_commits_non_mesh_fields() {
+        // Regression: committing a refreshed attachment descriptor while a level
+        // still holds old mesh bindings left remote materialization pointing at a
+        // prop model the level never uploaded.
+        let old = vec![
+            descriptor(
+                "remote_enemy",
+                Some(mesh_descriptor("models/old_prop.gltf")),
+                Some("old_weapon"),
+            ),
+            descriptor(
+                "removed_mesh",
+                Some(mesh_descriptor("models/removed_prop.gltf")),
+                None,
+            ),
+        ];
+        let mut next = vec![
+            descriptor(
+                "remote_enemy",
+                Some(mesh_descriptor("models/new_prop.gltf")),
+                Some("new_weapon"),
+            ),
+            descriptor("removed_mesh", None, None),
+            descriptor(
+                "new_remote_enemy",
+                Some(mesh_descriptor("models/new_remote_prop.gltf")),
+                None,
+            ),
+        ];
+
+        let incoming = next.clone();
+        assert!(defer_mesh_descriptor_refreshes(&old, &mut next));
+
+        assert_eq!(
+            next[0].mesh, old[0].mesh,
+            "the active-level descriptor snapshot keeps its uploaded attachment model"
+        );
+        assert_eq!(
+            next[0].default_weapon.as_deref(),
+            Some("new_weapon"),
+            "unrelated descriptor refreshes remain available"
+        );
+        assert!(
+            next[1].mesh.is_some(),
+            "a removed mesh descriptor remains active until the next level"
+        );
+        assert!(
+            next[2].mesh.is_none(),
+            "a newly introduced mesh descriptor also waits for a level-load upload sweep"
+        );
+        assert_eq!(
+            incoming[0].mesh.as_ref().unwrap().attachments["hand"],
+            "models/new_prop.gltf",
+            "the next-level snapshot retains attachment edits"
+        );
+        assert!(
+            incoming[1].mesh.is_none(),
+            "the next-level snapshot retains removed mesh descriptors"
+        );
+        assert!(
+            incoming[2].mesh.is_some(),
+            "the next-level snapshot retains added mesh descriptors"
+        );
+    }
+
+    #[test]
+    fn level_install_promotes_the_latest_deferred_mesh_snapshot() {
+        let ctx = ScriptCtx::new();
+        let active = vec![descriptor(
+            "remote_enemy",
+            Some(mesh_descriptor("models/old_prop.gltf")),
+            None,
+        )];
+        let incoming = vec![
+            descriptor(
+                "remote_enemy",
+                Some(mesh_descriptor("models/new_prop.gltf")),
+                None,
+            ),
+            descriptor(
+                "new_remote_enemy",
+                Some(mesh_descriptor("models/new_remote_prop.gltf")),
+                None,
+            ),
+        ];
+        ctx.data_registry
+            .borrow_mut()
+            .replace_entity_types(active.clone());
+
+        let primitives = PrimitiveRegistry::new();
+        let mut runtime =
+            ScriptRuntime::new(&primitives, &ScriptRuntimeConfig::default(), &ctx).unwrap();
+        runtime.deferred_mesh_descriptors = Some(incoming.clone());
+
+        assert!(runtime.install_deferred_mesh_descriptors(&ctx));
+        assert_eq!(
+            ctx.data_registry.borrow().entities,
+            incoming,
+            "the next level sees attachment edits and added mesh descriptors"
+        );
+        assert!(
+            !runtime.install_deferred_mesh_descriptors(&ctx),
+            "the deferred snapshot is consumed by one level install"
+        );
     }
 
     #[test]

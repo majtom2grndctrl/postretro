@@ -157,13 +157,24 @@ pub fn sample_clip_looped_modified(
     });
 }
 
+/// Compose the skeleton's authored rest-local pose into a skinning palette.
+///
+/// This is the unmodified counterpart to [`sample_rest_pose_modified`].
+pub fn sample_rest_pose(skeleton: &Skeleton, out: &mut Vec<BonePaletteEntry>) {
+    compose_palette(skeleton, out, |_i, joint| {
+        Mat4::from_scale_rotation_translation(
+            joint.rest_local.scale,
+            joint.rest_local.rotation,
+            joint.rest_local.translation,
+        )
+    });
+}
+
 /// Apply an ordered modifier stack to the skeleton's rest-local pose, then
 /// compose the skinning palette.
 ///
 /// This is the clipless counterpart to [`sample_clip_looped_modified`]. The
-/// caller deliberately selects it only when both a non-empty stack and pose
-/// inputs are present; animation-less models without active presentation
-/// modifiers retain the renderer's existing identity-palette fallback.
+/// caller selects it when both a non-empty stack and pose inputs are present.
 pub fn sample_rest_pose_modified(
     skeleton: &Skeleton,
     stack: &PoseModifierStack,
@@ -218,11 +229,12 @@ pub fn sample_blended_modified(
 /// The world-pose counterpart of [`sample_clip_looped`]: same inputs, same
 /// forward hierarchy compose ([`compose_world_pose`]) — but it stops at the
 /// composed world joint transform instead of multiplying by the inverse-bind
-/// matrix. That is the joint's placement in model space, which hit-zone /
-/// attachment queries need (the skinning palette's inverse-bind product is not a
-/// joint position; it maps bind-space vertices, so it is the wrong space for
-/// locating a joint). Multiplying each output by that joint's inverse-bind matrix
-/// recovers the skinning palette exactly.
+/// matrix. That is the joint's placement in model space, which hit-zone queries
+/// need (the skinning palette's inverse-bind product is not a joint position; it
+/// maps bind-space vertices, so it is the wrong space for locating a joint).
+/// Modifier-applied attachment presentation uses
+/// [`sample_clip_looped_world_modified`] instead. Multiplying each output by
+/// that joint's inverse-bind matrix recovers the skinning palette exactly.
 ///
 /// Reuse: pass the same `out` every frame. `out` is cleared then filled to
 /// `skeleton.joints.len()`, so a steady-state call performs no heap allocation —
@@ -250,9 +262,9 @@ pub fn sample_clip_looped_world(
 /// (see [`blend::blend_local`]) resolved through the same scratch, same single forward
 /// compose ([`compose_world_pose`]) — but it stops at the composed world joint
 /// transform instead of multiplying by the inverse-bind matrix (see
-/// [`sample_clip_looped_world`] for why hit-zone / attachment queries want the
-/// world pose, not the skinning matrix). Multiplying each output by that joint's
-/// inverse-bind matrix recovers the blended skinning palette exactly.
+/// [`sample_clip_looped_world`] for why hit-zone queries want the world pose,
+/// not the skinning matrix). Multiplying each output by that joint's inverse-bind
+/// matrix recovers the blended skinning palette exactly.
 ///
 /// Reuse `out` across frames: a thread-local TRS scratch is reused and `out` is
 /// cleared then refilled, so steady-state world-pose blending allocates nothing —
@@ -267,6 +279,94 @@ pub fn sample_blended_world(
     BLEND_LOCAL_SCRATCH.with(|cell| {
         let mut locals = cell.borrow_mut();
         resolve_blend_into(a, b, weight, skeleton, &mut locals);
+        compose_world_pose(skeleton, out, |i, _joint| locals[i].to_mat4());
+    });
+}
+
+/// Sample one clip, apply an ordered local-TRS modifier stack, then compose
+/// each joint's model-space world transform (PRE-inverse-bind).
+///
+/// An empty `stack` or absent `inputs` immediately delegates to
+/// [`sample_clip_looped_world`], preserving the fused, allocation-free
+/// unmodified path used by hit-zone authority. Only an active modified pose
+/// materializes one [`LocalTrs`] per joint.
+pub fn sample_clip_looped_world_modified(
+    clip: &AnimationClip,
+    skeleton: &Skeleton,
+    time: f32,
+    loop_policy: Loop,
+    stack: &PoseModifierStack,
+    inputs: Option<&PoseInputs>,
+    out: &mut Vec<Mat4>,
+) {
+    let Some(inputs) = inputs.filter(|_| !stack.is_empty()) else {
+        sample_clip_looped_world(clip, skeleton, time, loop_policy, out);
+        return;
+    };
+
+    let t = resolve_time(clip.duration, time, loop_policy);
+    BLEND_LOCAL_SCRATCH.with(|cell| {
+        let mut locals = cell.borrow_mut();
+        locals.clear();
+        locals.reserve(skeleton.joints.len());
+        for (i, joint) in skeleton.joints.iter().enumerate() {
+            locals.push(sample_local_trs(clip.joints.get(i), &joint.rest_local, t));
+        }
+        apply_pose_modifier_stack(stack, inputs, skeleton, &mut locals);
+        compose_world_pose(skeleton, out, |i, _joint| locals[i].to_mat4());
+    });
+}
+
+/// Apply an ordered modifier stack to the skeleton's rest-local pose, then
+/// compose each joint's model-space world transform (PRE-inverse-bind).
+///
+/// This is the clipless counterpart to [`sample_clip_looped_world_modified`].
+/// The caller selects it when both a non-empty stack and pose inputs are
+/// present.
+pub fn sample_rest_pose_world_modified(
+    skeleton: &Skeleton,
+    stack: &PoseModifierStack,
+    inputs: &PoseInputs,
+    out: &mut Vec<Mat4>,
+) {
+    BLEND_LOCAL_SCRATCH.with(|cell| {
+        let mut locals = cell.borrow_mut();
+        locals.clear();
+        locals.reserve(skeleton.joints.len());
+        locals.extend(skeleton.joints.iter().map(|joint| LocalTrs {
+            translation: joint.rest_local.translation,
+            rotation: joint.rest_local.rotation,
+            scale: joint.rest_local.scale,
+        }));
+        apply_pose_modifier_stack(stack, inputs, skeleton, &mut locals);
+        compose_world_pose(skeleton, out, |i, _joint| locals[i].to_mat4());
+    });
+}
+
+/// Blend two sources into local TRS, apply an ordered modifier stack, then
+/// compose each joint's model-space world transform (PRE-inverse-bind).
+///
+/// An empty `stack` or absent `inputs` immediately delegates to
+/// [`sample_blended_world`], preserving its existing scratch/allocation
+/// behavior.
+pub fn sample_blended_world_modified(
+    a: &BlendSource,
+    b: &BlendSource,
+    weight: f32,
+    skeleton: &Skeleton,
+    stack: &PoseModifierStack,
+    inputs: Option<&PoseInputs>,
+    out: &mut Vec<Mat4>,
+) {
+    let Some(inputs) = inputs.filter(|_| !stack.is_empty()) else {
+        sample_blended_world(a, b, weight, skeleton, out);
+        return;
+    };
+
+    BLEND_LOCAL_SCRATCH.with(|cell| {
+        let mut locals = cell.borrow_mut();
+        resolve_blend_into(a, b, weight, skeleton, &mut locals);
+        apply_pose_modifier_stack(stack, inputs, skeleton, &mut locals);
         compose_world_pose(skeleton, out, |i, _joint| locals[i].to_mat4());
     });
 }

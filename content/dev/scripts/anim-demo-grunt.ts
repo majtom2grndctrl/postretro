@@ -16,6 +16,9 @@ export const animDemoGruntEntity = defineEntity({
   components: {
     mesh: {
       model: "models/decraniated_low_poly_retro_pixel/scene.gltf",
+      attachments: {
+        hand_r: "models/attachment-marker/hand-prop.gltf",
+      },
       animations: {
         idle: { clip: "mixamo.com", loop: true },
         alert: {

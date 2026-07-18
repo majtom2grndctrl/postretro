@@ -1,0 +1,78 @@
+{
+  "asset": {
+    "version": "2.0",
+    "generator": "postretro E21 attachment verification marker"
+  },
+  "scene": 0,
+  "scenes": [
+    {
+      "nodes": [0]
+    }
+  ],
+  "nodes": [
+    {
+      "name": "hand_prop_mesh",
+      "mesh": 0
+    }
+  ],
+  "meshes": [
+    {
+      "name": "hand_prop_marker",
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0
+          },
+          "indices": 1,
+          "material": 0
+        }
+      ]
+    }
+  ],
+  "materials": [
+    {
+      "name": "attachment_marker",
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [0.95, 0.65, 0.1, 1.0],
+        "metallicFactor": 0.0,
+        "roughnessFactor": 0.7
+      }
+    }
+  ],
+  "buffers": [
+    {
+      "byteLength": 72,
+      "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAArkdhPgAAAAAAAAAAAAAAAK5HYT4AAAAAAAAAAAAAAADNzAw/AAACAAEAAAABAAMAAAADAAIAAQACAAMA"
+    }
+  ],
+  "bufferViews": [
+    {
+      "buffer": 0,
+      "byteOffset": 0,
+      "byteLength": 48
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 48,
+      "byteLength": 24
+    }
+  ],
+  "accessors": [
+    {
+      "bufferView": 0,
+      "byteOffset": 0,
+      "componentType": 5126,
+      "count": 4,
+      "type": "VEC3",
+      "min": [0.0, 0.0, 0.0],
+      "max": [0.22, 0.22, 0.55]
+    },
+    {
+      "bufferView": 1,
+      "byteOffset": 0,
+      "componentType": 5123,
+      "count": 12,
+      "type": "SCALAR"
+    }
+  ]
+}

@@ -6,11 +6,14 @@
 // groups from these plain Pod types. Keep it that way.
 
 pub mod anim;
+pub(crate) mod gltf_extras;
 pub mod gltf_loader;
 pub mod mesh;
 pub mod pose_modifier;
 pub mod sample_params;
 pub mod skeleton;
+
+use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
 
@@ -21,10 +24,10 @@ use bytemuck::{Pod, Zeroable};
 /// uses to dedup uploaded models (one `UploadedModel` per distinct handle) and
 /// the grouping key the per-frame draw planner buckets instances by. CPU-only:
 /// the collector (game side) produces it from the component; the renderer
-/// consumes it. Cloning is a `String` clone — cheap at the handful-of-models
-/// scale a frame carries.
+/// consumes it. Cloning shares the immutable path storage so per-frame instance
+/// construction does not allocate.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ModelHandle(pub String);
+pub struct ModelHandle(pub Arc<str>);
 
 impl ModelHandle {
     /// The underlying handle string (the raw `MeshComponent.model` path).
@@ -35,13 +38,13 @@ impl ModelHandle {
 
 impl From<&str> for ModelHandle {
     fn from(s: &str) -> Self {
-        ModelHandle(s.to_string())
+        ModelHandle(Arc::from(s))
     }
 }
 
 impl From<String> for ModelHandle {
     fn from(s: String) -> Self {
-        ModelHandle(s)
+        ModelHandle(Arc::from(s))
     }
 }
 

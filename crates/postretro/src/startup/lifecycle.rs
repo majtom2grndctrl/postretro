@@ -569,6 +569,18 @@ impl App {
             .scripting
             .script_ctx
             .clone();
+        if self
+            .session
+            .as_mut()
+            .expect("session installed before level install")
+            .scripting
+            .script_runtime
+            .install_deferred_mesh_descriptors(&script_ctx)
+        {
+            log::info!(
+                "[Scripting] installed deferred mesh descriptors for the next level model sweep"
+            );
+        }
         // Segment A of the CPU world install: seed gravity from the level's
         // authored value (before the data script runs, so a `world.getGravity()`
         // in `setupLevel` / `levelLoad` reactions sees it) and build the runtime
@@ -739,6 +751,7 @@ impl App {
                         models.len(),
                     );
                 }
+                crate::scripting_systems::hit_zones::ModelLoadWarningOwner::Renderer
             };
 
         let session = self
@@ -1135,6 +1148,11 @@ pub(crate) fn resolved_spawner_mesh_models(
 
     let mut seen = std::collections::HashSet::new();
     let mut models = Vec::new();
+    let mut add_model = |model: &str| {
+        if !model.is_empty() && seen.insert(model.to_string()) {
+            models.push(model.to_string());
+        }
+    };
     for (id, _) in registry.iter_with_kind(postretro_entities::ComponentKind::Spawner) {
         let Ok(spawner) = registry.get_component::<SpawnerComponent>(id) else {
             continue;
@@ -1151,8 +1169,12 @@ pub(crate) fn resolved_spawner_mesh_models(
         let Some(mesh) = descriptor.mesh.as_ref() else {
             continue;
         };
-        if !mesh.model.is_empty() && seen.insert(mesh.model.clone()) {
-            models.push(mesh.model.clone());
+        add_model(&mesh.model);
+        let mut attachment_models: Vec<&str> =
+            mesh.attachments.values().map(String::as_str).collect();
+        attachment_models.sort_unstable();
+        for attachment_model in attachment_models {
+            add_model(attachment_model);
         }
     }
     models
@@ -1247,16 +1269,18 @@ pub(crate) struct WorldInstallHandles<'a> {
 /// sole renderer-coupled step — skinned-model upload + clip-table build — is
 /// injected as `upload_mesh_models`, called between the archetype sweep and the
 /// clip-index resolve: the windowed caller uploads models and fills the clip
-/// tables; a headless caller passes a no-op, leaving clips unresolved (the
-/// documented headless shape). Stage durations record into `timings`, matching
-/// the windowed log-line-C labels.
+/// tables and returns renderer ownership of model-load diagnostics; a headless
+/// caller passes a no-op that returns game-side ownership, leaving clips
+/// unresolved while preserving load warnings. Stage durations record into
+/// `timings`, matching the windowed log-line-C labels.
 pub(crate) fn install_world_cpu(
     handles: WorldInstallHandles<'_>,
     timings: &mut StartupTimings,
     mut upload_mesh_models: impl FnMut(
         &[String],
         &mut crate::scripting_systems::mesh_anim::MeshClipTables,
-    ),
+    )
+        -> crate::scripting_systems::hit_zones::ModelLoadWarningOwner,
 ) -> WorldInstallProducts {
     let WorldInstallHandles {
         world,
@@ -1539,13 +1563,17 @@ pub(crate) fn install_world_cpu(
         }
         models
     };
-    upload_mesh_models(&models, mesh_clip_tables);
+    let model_load_warning_owner = upload_mesh_models(&models, mesh_clip_tables);
     for model in &models {
         // Build this model's game-side hit-zone entry by re-loading the glTF
         // independently of the renderer (CPU-only).
-        hit_zone_store.insert_from_load(model, content_root);
+        hit_zone_store.insert_from_load(model, content_root, model_load_warning_owner);
     }
-    crate::resolve_mesh_entity_clips(&mut script_ctx.registry.borrow_mut(), mesh_clip_tables);
+    crate::resolve_mesh_entity_bindings(
+        &mut script_ctx.registry.borrow_mut(),
+        mesh_clip_tables,
+        hit_zone_store,
+    );
     crate::warn_unknown_zone_multipliers(
         &script_ctx.data_registry.borrow().entities,
         hit_zone_store,
@@ -1573,9 +1601,10 @@ pub(crate) fn install_world_cpu(
     // Its archetype's table already exists above; fill only the newly attached
     // meshes before the first render rather than rebuilding or uploading.
     let spawned_meshes = spawn_context.take_pending_mesh_clip_resolves();
-    crate::resolve_mesh_entity_clips_for_entities(
+    crate::resolve_mesh_entity_bindings_for_entities(
         &mut script_ctx.registry.borrow_mut(),
         mesh_clip_tables,
+        hit_zone_store,
         spawned_meshes,
     );
     timings.record("level_load_event");
@@ -1750,11 +1779,21 @@ mod tests {
 
         let mut spawner_only = ai_enemy_descriptor("spawner_only");
         spawner_only.mesh.as_mut().unwrap().model = "models/spawner_only.gltf".to_string();
+        spawner_only.mesh.as_mut().unwrap().attachments =
+            [("hand".to_string(), "models/spawner_prop.gltf".to_string())]
+                .into_iter()
+                .collect();
         let mut non_mesh = ai_enemy_descriptor("non_mesh");
         non_mesh.mesh = None;
 
         let models = resolved_spawner_mesh_models(&registry, &[spawner_only, non_mesh]);
-        assert_eq!(models, vec!["models/spawner_only.gltf"]);
+        assert_eq!(
+            models,
+            vec![
+                "models/spawner_only.gltf".to_string(),
+                "models/spawner_prop.gltf".to_string(),
+            ]
+        );
         assert!(crate::distinct_mesh_models(&registry).is_empty());
     }
 
@@ -2340,7 +2379,9 @@ mod tests {
                 suppress_ai_enemies,
                 suppress_boot_pawn: suppress_ai_enemies,
             };
-            install_world_cpu(handles, &mut timings, |_models, _clip_tables| {})
+            install_world_cpu(handles, &mut timings, |_models, _clip_tables| {
+                crate::scripting_systems::hit_zones::ModelLoadWarningOwner::GameSide
+            })
         };
 
         let registry = std::mem::take(&mut *ctx.registry.borrow_mut());
@@ -3742,7 +3783,9 @@ mod tests {
                 suppress_boot_pawn: false,
             };
             // No-op mesh hook: headless-shaped, no renderer to upload models.
-            let _ = install_world_cpu(handles, &mut timings, |_models, _clip_tables| {});
+            let _ = install_world_cpu(handles, &mut timings, |_models, _clip_tables| {
+                crate::scripting_systems::hit_zones::ModelLoadWarningOwner::GameSide
+            });
         }
 
         // Fresh registry (no despawns): `to_raw()` low bits are the allocation

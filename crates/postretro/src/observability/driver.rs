@@ -179,7 +179,9 @@ fn run_headless_inner(
             suppress_ai_enemies: false,
             suppress_boot_pawn: false,
         };
-        install_world_cpu(handles, &mut timings, |_models, _clip_tables| {})
+        install_world_cpu(handles, &mut timings, |_models, _clip_tables| {
+            crate::scripting_systems::hit_zones::ModelLoadWarningOwner::GameSide
+        })
     };
 
     let mover_colliders = products.mover_colliders;

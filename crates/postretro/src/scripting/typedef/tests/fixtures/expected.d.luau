@@ -47,10 +47,12 @@ export type AnimationStateDescriptor = {
   interrupt: InterruptPolicy?,
 }
 
---- Authored mesh component preset attached to `EntityTypeDescriptor.components.mesh`. A descriptor carrying `components.mesh` is directly map-placeable via `canonicalName`. `model` is the skinned-model handle; `animations` declares the per-entity logical animation-state map (state name → clip + loop + crossfade + interrupt). When `animations` is present it must be non-empty and `defaultState` must name a declared state; omit both for a stateless mesh.
+--- Authored mesh component preset attached to `EntityTypeDescriptor.components.mesh`. A descriptor carrying `components.mesh` is directly map-placeable via `canonicalName`. `model` is the model handle; `animations` declares the per-entity logical animation-state map (state name → clip + loop + crossfade + interrupt). When `animations` is present it must be non-empty and `defaultState` must name a declared state; omit both for a stateless mesh.
 export type MeshDescriptor = {
-  --- Skinned-model handle this entity renders. Must be non-empty.
+  --- Model handle this entity renders. Must be non-empty.
   model: string,
+  --- Optional socket-name → content-relative prop-model map. Both socket names and model paths must be non-empty. Attachments are presentation-only and follow their holder's authored socket.
+  attachments: { [string]: string }?,
   --- Per-model skinned pool-shadow receiver-bias multiplier. Defaults to 1.0; must be finite and in 0.0..=4.0. Set 0.0 to disable the receiver offset for this model.
   shadowBiasScale: number?,
   --- Declared animation states keyed by author-defined state name (e.g. idle/locomotion/attack/death). Optional; when present, must be non-empty and accompanied by a `defaultState` naming one of these states. Omit for a stateless mesh.
@@ -210,7 +212,7 @@ export type EntityTypeComponents = {
   movement: PlayerMovementDescriptor?,
   --- Weapon tuning preset. Weapon archetypes are instantiated as wieldable entities when referenced by `defaultWeapon`.
   weapon: WeaponDescriptor?,
-  --- Animated skinned-mesh preset: model handle plus an optional per-state animation map. A descriptor carrying this is directly map-placeable by canonicalName.
+  --- Mesh preset: model handle plus an optional per-state animation map. A descriptor carrying this is directly map-placeable by canonicalName.
   mesh: MeshDescriptor?,
   --- Hit points plus an optional hitscan hitbox. A descriptor carrying this is directly map-placeable by canonicalName.
   health: HealthDescriptor?,

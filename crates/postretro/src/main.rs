@@ -184,10 +184,11 @@ fn apply_menu_camera_pose(
     frame_timing.hold_state(InterpolableState::new(position));
 }
 
-/// Collect the distinct, non-empty `MeshComponent.model` handles currently in
-/// the registry, preserving first-seen order. GPU-free: this is the pure half of
-/// the level-load model sweep — the renderer's GPU upload happens in the caller,
-/// once per returned handle, so each distinct model is uploaded exactly once.
+/// Collect the distinct, non-empty holder and attachment model handles currently
+/// in the registry, preserving first-seen order. GPU-free: this is the pure half
+/// of the level-load model sweep — the renderer's GPU upload happens in the
+/// caller, once per returned handle, so each distinct model is uploaded exactly
+/// once.
 ///
 /// Empty handles are skipped: a `prop_mesh` with an absent/empty `model` logs a
 /// warning at spawn time and renders nothing; there is nothing to upload for it.
@@ -201,57 +202,68 @@ fn distinct_mesh_models(registry: &postretro_entities::EntityRegistry) -> Vec<St
 
     let mut seen = std::collections::HashSet::new();
     let mut ordered = Vec::new();
+    let mut add_model = |model: &str| {
+        if !model.is_empty() && seen.insert(model.to_string()) {
+            ordered.push(model.to_string());
+        }
+    };
     for (_id, value) in registry.iter_with_kind(ComponentKind::Mesh) {
         let ComponentValue::Mesh(mesh) = value else {
             continue;
         };
-        if mesh.model.is_empty() {
-            continue;
-        }
-        if seen.insert(mesh.model.clone()) {
-            ordered.push(mesh.model.clone());
+        add_model(&mesh.model);
+        for attachment in &mesh.attachments {
+            add_model(&attachment.model);
         }
     }
     ordered
 }
 
 /// Resolve every animated mesh entity's declared state map against the level's
-/// clip tables, filling each `AnimationState.clip_index` (name → glTF index). A
-/// state naming a clip the model does not carry warns ONCE here (at level load)
-/// and stays `clip_index = None` (unusable: switching to it warns + no-ops,
-/// switching out of it hard-cuts — both handled by the animation state machine). Stateless `prop_mesh`
-/// entities (no animation block) are skipped.
+/// clip tables, filling each `AnimationState.clip_index` (name → glTF index),
+/// and resolve descriptor-authored attachment sockets from the game-side loaded
+/// model table. Clip resolution remains animation-gated; attachment resolution
+/// deliberately also visits stateless and rigid holders.
 ///
 /// Runs at level load with a mutable registry, after the model sweep built the
 /// clip tables — so every state's index is concrete before the first frame.
-fn resolve_mesh_entity_clips(
+fn resolve_mesh_entity_bindings(
     registry: &mut postretro_entities::EntityRegistry,
     tables: &scripting_systems::mesh_anim::MeshClipTables,
+    hit_zone_store: &scripting_systems::hit_zones::HitZoneStore,
 ) {
     use postretro_entities::{ComponentKind, ComponentValue};
 
     // Collect ids first so the mutable per-entity writes do not alias the
     // immutable iteration borrow. Mesh entity counts are small.
-    let animated: Vec<postretro_entities::EntityId> = registry
+    let needing_resolution: Vec<postretro_entities::EntityId> = registry
         .iter_with_kind(ComponentKind::Mesh)
         .filter_map(|(id, value)| match value {
-            ComponentValue::Mesh(mesh) if mesh.animation.is_some() => Some(id),
+            ComponentValue::Mesh(mesh)
+                if mesh.animation.is_some() || !mesh.attachments.is_empty() =>
+            {
+                Some(id)
+            }
             _ => None,
         })
         .collect();
 
-    resolve_mesh_entity_clips_for_entities(registry, tables, animated);
+    resolve_mesh_entity_bindings_for_entities(registry, tables, hit_zone_store, needing_resolution);
 }
 
-/// Resolve clip indices for a known set of newly materialized mesh entities.
-/// Runtime spawners call this through their session-owned pending-id queue after
-/// descriptor attachment; their models were already uploaded at level install.
-fn resolve_mesh_entity_clips_for_entities(
+/// Resolve clip indices and attachment bindings for a known set of newly
+/// materialized mesh entities. Runtime spawners call this through their
+/// session-owned pending-id queue after descriptor attachment; their models were
+/// already uploaded at level install.
+fn resolve_mesh_entity_bindings_for_entities(
     registry: &mut postretro_entities::EntityRegistry,
     tables: &scripting_systems::mesh_anim::MeshClipTables,
+    hit_zone_store: &scripting_systems::hit_zones::HitZoneStore,
     entity_ids: impl IntoIterator<Item = postretro_entities::EntityId>,
 ) {
     use postretro_entities::ComponentKind;
+    use postretro_entities::components::mesh::AttachmentBinding;
+    use postretro_model::gltf_loader::SocketBinding;
 
     for id in entity_ids {
         if !matches!(
@@ -268,33 +280,70 @@ fn resolve_mesh_entity_clips_for_entities(
         };
         let model_name = component.model.clone();
         let handle = postretro_model::ModelHandle::from(model_name.clone());
-        let Some(anim) = component.animation.as_mut() else {
-            continue;
-        };
-        match tables.get(&handle) {
-            Some(table) => {
-                let missing =
-                    scripting_systems::mesh_anim::resolve_state_clips(&mut anim.states, table);
-                for m in &missing {
+        if let Some(anim) = component.animation.as_mut() {
+            match tables.get(&handle) {
+                Some(table) => {
+                    let missing =
+                        scripting_systems::mesh_anim::resolve_state_clips(&mut anim.states, table);
+                    for m in &missing {
+                        log::warn!(
+                            "[Model] animation state '{}' on model '{}' names clip '{}' absent from \
+                             the model — state unusable (switching to it no-ops)",
+                            m.state,
+                            model_name,
+                            m.clip,
+                        );
+                    }
+                }
+                None => {
+                    // Model never uploaded (load failed): no clips resolve. Warn once
+                    // for the model, leave every state unresolved.
                     log::warn!(
-                        "[Model] animation state '{}' on model '{}' names clip '{}' absent from \
-                         the model — state unusable (switching to it no-ops)",
-                        m.state,
+                        "[Model] mesh entity references uncached model '{}' — animation states \
+                         unresolved",
                         model_name,
-                        m.clip,
                     );
+                    for state in anim.states.values_mut() {
+                        state.clip_index = None;
+                    }
                 }
             }
-            None => {
-                // Model never uploaded (load failed): no clips resolve. Warn once
-                // for the model, leave every state unresolved.
-                log::warn!(
-                    "[Model] mesh entity references uncached model '{}' — animation states \
-                     unresolved",
-                    model_name,
-                );
-                for state in anim.states.values_mut() {
-                    state.clip_index = None;
+        }
+
+        for attachment in &mut component.attachments {
+            // An attachment model must have made it through the same model
+            // sweep as its holder. The game-side store records successful loads,
+            // so absence covers missing and failed paths without a placeholder.
+            // The renderer already emitted the single path-level load diagnostic.
+            if hit_zone_store.get_by_name(&attachment.model).is_none() {
+                attachment.binding = AttachmentBinding::Unresolved;
+                continue;
+            }
+
+            let binding = hit_zone_store
+                .get(&handle)
+                .and_then(|holder| holder.sockets.get(&attachment.socket));
+            match binding {
+                Some(SocketBinding::SkinnedJoint(joint)) => {
+                    attachment.binding = AttachmentBinding::Skinned(*joint);
+                }
+                Some(SocketBinding::RigidRest(rest)) => {
+                    attachment.binding = AttachmentBinding::Rigid(*rest);
+                }
+                None => {
+                    attachment.binding = AttachmentBinding::Unresolved;
+                    let warning_key = format!(
+                        "attachment-socket:{model_name}:{}:{}",
+                        attachment.socket, attachment.model
+                    );
+                    if hit_zone_store.mark_attachment_resolution_warning(warning_key) {
+                        log::warn!(
+                            "[Model] holder model '{}' has no socket '{}' for attachment model '{}' — attachment unresolved",
+                            model_name,
+                            attachment.socket,
+                            attachment.model,
+                        );
+                    }
                 }
             }
         }
@@ -306,7 +355,7 @@ fn resolve_mesh_entity_clips_for_entities(
 /// and `health.zoneMultipliers`, warn ONCE per archetype per declared tag that
 /// names no zone on the spawned model. The unknown set is computed by the pure,
 /// unit-tested `unknown_zone_multiplier_tags`; this is a thin warn-only caller,
-/// modeled on `resolve_mesh_entity_clips`. An archetype whose model has no
+/// modeled on `resolve_mesh_entity_bindings`. An archetype whose model has no
 /// hit-zone entry (load failed, or an AABB-only model) treats every declared tag
 /// as unknown — the model carries no zones to satisfy them.
 fn warn_unknown_zone_multipliers(
@@ -2034,9 +2083,10 @@ impl ApplicationHandler for App {
                             .scripting
                             .spawn_context
                             .take_pending_mesh_clip_resolves();
-                        resolve_mesh_entity_clips_for_entities(
+                        resolve_mesh_entity_bindings_for_entities(
                             &mut script_ctx.registry.borrow_mut(),
                             &session.mesh_clip_tables,
+                            &session.hit_zone_store,
                             spawned_meshes,
                         );
                         // Runtime descriptor spawns can carry dynamic lights.
@@ -4556,7 +4606,11 @@ impl App {
                 if apply_outcome.materialized_remote_enemy_presentation {
                     // `mesh_clip_tables` is a disjoint field of the same `session`
                     // bound for the `net_endpoint` match above.
-                    resolve_mesh_entity_clips(&mut registry, &session.mesh_clip_tables);
+                    resolve_mesh_entity_bindings(
+                        &mut registry,
+                        &session.mesh_clip_tables,
+                        hit_zone_store,
+                    );
                 }
                 // The interpolation-buffer sampling that writes presented remote poses
                 // runs in `net_sample_remote_interpolation`, AFTER the catch-up tick
@@ -7507,6 +7561,41 @@ mod tests {
             .expect("freshly spawned id is live");
     }
 
+    fn test_model_hit_zones(
+        sockets: std::collections::HashMap<String, postretro_model::gltf_loader::SocketBinding>,
+    ) -> scripting_systems::hit_zones::ModelHitZones {
+        use std::sync::Arc;
+
+        scripting_systems::hit_zones::ModelHitZones {
+            skeleton: Arc::new(postretro_model::skeleton::Skeleton::default()),
+            clips: Arc::new(Vec::new()),
+            joint_zones: Vec::new(),
+            sockets,
+            derived_bound: None,
+            legs: Vec::new(),
+            pose_stack: Arc::new(postretro_model::pose_modifier::PoseModifierStack::default()),
+        }
+    }
+
+    fn attachment_resolution_store(
+        holder_model: &str,
+        sockets: std::collections::HashMap<String, postretro_model::gltf_loader::SocketBinding>,
+        attachment_models: &[&str],
+    ) -> scripting_systems::hit_zones::HitZoneStore {
+        let mut store = scripting_systems::hit_zones::HitZoneStore::new();
+        store.insert_for_test(
+            postretro_model::ModelHandle::from(holder_model),
+            test_model_hit_zones(sockets),
+        );
+        for attachment_model in attachment_models {
+            store.insert_for_test(
+                postretro_model::ModelHandle::from(*attachment_model),
+                test_model_hit_zones(Default::default()),
+            );
+        }
+        store
+    }
+
     #[test]
     fn distinct_mesh_models_dedups_repeated_handles() {
         use postretro_entities::EntityRegistry;
@@ -7535,6 +7624,34 @@ mod tests {
 
         let models = distinct_mesh_models(&registry);
         assert_eq!(models, vec!["models/a/scene.gltf".to_string()]);
+    }
+
+    #[test]
+    fn distinct_mesh_models_includes_attachment_handles_once() {
+        use postretro_entities::components::mesh::MeshComponent;
+        use postretro_entities::{EntityRegistry, Transform};
+
+        let mut registry = EntityRegistry::new();
+        let id = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                id,
+                MeshComponent::stateless("models/holder.gltf".to_string()).with_attachments([
+                    ("hand".to_string(), "models/prop.gltf".to_string()),
+                    ("hip".to_string(), "models/prop.gltf".to_string()),
+                    ("unused".to_string(), "".to_string()),
+                ]),
+            )
+            .expect("fresh mesh entity accepts its component");
+
+        assert_eq!(
+            distinct_mesh_models(&registry),
+            vec![
+                "models/holder.gltf".to_string(),
+                "models/prop.gltf".to_string(),
+            ],
+            "holder and attachment handles join one first-seen, deduplicated upload union"
+        );
     }
 
     #[test]
@@ -7585,6 +7702,7 @@ mod tests {
                     animation: Some(MeshAnimation::new(states, "idle".to_string())),
                     origin_offset: glam::Vec3::ZERO,
                     shadow_bias_scale: 1.0,
+                    attachments: Vec::new(),
                     pose_inputs: None,
                 },
             )
@@ -7614,7 +7732,8 @@ mod tests {
             postretro_render_data::cone_frustum::Aabb::default(),
         );
 
-        resolve_mesh_entity_clips(&mut registry, &tables);
+        let hit_zone_store = scripting_systems::hit_zones::HitZoneStore::new();
+        resolve_mesh_entity_bindings(&mut registry, &tables, &hit_zone_store);
 
         // The descriptor entity's states are now resolved to concrete glTF
         // indices — the contract that makes `setAnimationState` work at spawn.
@@ -7638,6 +7757,10 @@ mod tests {
 
         let mut descriptor = ai_enemy_descriptor("spawner_only");
         descriptor.mesh.as_mut().unwrap().model = "models/spawner_only.gltf".to_string();
+        descriptor.mesh.as_mut().unwrap().attachments =
+            [("hand".to_string(), "models/spawner_prop.gltf".to_string())]
+                .into_iter()
+                .collect();
         let descriptors = vec![descriptor.clone()];
 
         // There is no pre-placed enemy mesh: both role-specific upload sets must
@@ -7659,7 +7782,13 @@ mod tests {
             crate::startup::lifecycle::resolved_spawner_mesh_models(&registry, &descriptors);
         let host_upload_models = spawner_models.clone();
         let client_upload_models = spawner_models;
-        assert_eq!(host_upload_models, vec!["models/spawner_only.gltf"]);
+        assert_eq!(
+            host_upload_models,
+            vec![
+                "models/spawner_only.gltf".to_string(),
+                "models/spawner_prop.gltf".to_string(),
+            ]
+        );
         assert_eq!(client_upload_models, host_upload_models);
 
         // This stands in for the renderer install hook: the shared upload union
@@ -7680,6 +7809,14 @@ mod tests {
             ],
             postretro_render_data::cone_frustum::Aabb::default(),
         );
+        let hit_zone_store = attachment_resolution_store(
+            "models/spawner_only.gltf",
+            std::collections::HashMap::from([(
+                "hand".to_string(),
+                postretro_model::gltf_loader::SocketBinding::SkinnedJoint(0),
+            )]),
+            &["models/spawner_prop.gltf"],
+        );
 
         let context = crate::spawner::SpawnContext::default();
         context.replace_level_data(
@@ -7695,9 +7832,10 @@ mod tests {
             .map(|(id, _)| id)
             .collect::<Vec<_>>();
         assert_eq!(spawned.len(), 1);
-        resolve_mesh_entity_clips_for_entities(
+        resolve_mesh_entity_bindings_for_entities(
             &mut registry,
             &tables,
+            &hit_zone_store,
             context.take_pending_mesh_clip_resolves(),
         );
 
@@ -7705,6 +7843,107 @@ mod tests {
         let animation = mesh.animation.as_ref().unwrap();
         assert_eq!(animation.states["idle"].clip_index, Some(0));
         assert_eq!(animation.states["attack"].clip_index, Some(1));
+        assert_eq!(
+            mesh.attachments[0].binding,
+            postretro_entities::components::mesh::AttachmentBinding::Skinned(0)
+        );
+    }
+
+    #[test]
+    fn resolve_stateless_mesh_attachments_uses_skinned_and_rigid_socket_bindings() {
+        use postretro_entities::components::mesh::{AttachmentBinding, MeshComponent};
+        use postretro_entities::{EntityRegistry, Transform};
+
+        let mut registry = EntityRegistry::new();
+        let id = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                id,
+                MeshComponent::stateless("models/holder.gltf".to_string()).with_attachments([
+                    ("hand".to_string(), "models/hand_prop.gltf".to_string()),
+                    ("rail".to_string(), "models/rail_prop.gltf".to_string()),
+                ]),
+            )
+            .expect("fresh mesh entity accepts its component");
+        let rigid_rest = glam::Mat4::from_translation(glam::Vec3::new(1.0, 2.0, 3.0));
+        let store = attachment_resolution_store(
+            "models/holder.gltf",
+            std::collections::HashMap::from([
+                (
+                    "hand".to_string(),
+                    postretro_model::gltf_loader::SocketBinding::SkinnedJoint(4),
+                ),
+                (
+                    "rail".to_string(),
+                    postretro_model::gltf_loader::SocketBinding::RigidRest(rigid_rest),
+                ),
+            ]),
+            &["models/hand_prop.gltf", "models/rail_prop.gltf"],
+        );
+
+        resolve_mesh_entity_bindings(
+            &mut registry,
+            &scripting_systems::mesh_anim::MeshClipTables::new(),
+            &store,
+        );
+
+        let mesh = registry.get_component::<MeshComponent>(id).unwrap();
+        assert!(mesh.animation.is_none(), "holder stays stateless");
+        assert_eq!(mesh.attachments[0].binding, AttachmentBinding::Skinned(4));
+        assert_eq!(
+            mesh.attachments[1].binding,
+            AttachmentBinding::Rigid(rigid_rest)
+        );
+    }
+
+    #[test]
+    fn unresolved_attachment_socket_or_model_does_not_block_stateless_holder_resolution() {
+        use postretro_entities::components::mesh::{AttachmentBinding, MeshComponent};
+        use postretro_entities::{EntityRegistry, Transform};
+
+        let mut registry = EntityRegistry::new();
+        let id = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                id,
+                MeshComponent::stateless("models/holder.gltf".to_string()).with_attachments([
+                    (
+                        "missing_socket".to_string(),
+                        "models/loaded_prop.gltf".to_string(),
+                    ),
+                    ("hand".to_string(), "models/missing_prop.gltf".to_string()),
+                ]),
+            )
+            .expect("fresh mesh entity accepts its component");
+        let store = attachment_resolution_store(
+            "models/holder.gltf",
+            std::collections::HashMap::from([(
+                "hand".to_string(),
+                postretro_model::gltf_loader::SocketBinding::SkinnedJoint(1),
+            )]),
+            &["models/loaded_prop.gltf"],
+        );
+
+        let tables = scripting_systems::mesh_anim::MeshClipTables::new();
+        resolve_mesh_entity_bindings(&mut registry, &tables, &store);
+        resolve_mesh_entity_bindings(&mut registry, &tables, &store);
+
+        let mesh = registry.get_component::<MeshComponent>(id).unwrap();
+        assert_eq!(mesh.attachments[0].binding, AttachmentBinding::Unresolved);
+        assert_eq!(mesh.attachments[1].binding, AttachmentBinding::Unresolved);
+        assert!(
+            !store.mark_attachment_resolution_warning(
+                "attachment-socket:models/holder.gltf:missing_socket:models/loaded_prop.gltf"
+                    .to_string()
+            ),
+            "repeated whole-registry resolution must preserve the socket warn-once diagnostic"
+        );
+        assert!(
+            store.mark_attachment_resolution_warning(
+                "attachment-model:models/holder.gltf:hand:models/missing_prop.gltf".to_string()
+            ),
+            "missing attachment models rely on the renderer's path-level diagnostic instead of a second attachment warning"
+        );
     }
 
     #[test]
@@ -7737,6 +7976,9 @@ mod tests {
             weapon: None,
             mesh: Some(MeshDescriptor {
                 model: "models/remote_enemy/scene.gltf".to_string(),
+                attachments: [("hand".to_string(), "models/remote_prop.gltf".to_string())]
+                    .into_iter()
+                    .collect(),
                 shadow_bias_scale: 1.0,
                 animations: states,
                 default_state: Some("idle".to_string()),
@@ -7755,6 +7997,12 @@ mod tests {
             id,
             None,
         );
+        let component = registry
+            .get_component::<MeshComponent>(id)
+            .expect("remote presentation mesh attached");
+        assert_eq!(component.attachments.len(), 1);
+        assert_eq!(component.attachments[0].socket, "hand");
+        assert_eq!(component.attachments[0].model, "models/remote_prop.gltf");
 
         let mut tables = scripting_systems::mesh_anim::MeshClipTables::new();
         let meta = vec![
@@ -7772,8 +8020,16 @@ mod tests {
             &meta,
             postretro_render_data::cone_frustum::Aabb::default(),
         );
+        let hit_zone_store = attachment_resolution_store(
+            "models/remote_enemy/scene.gltf",
+            std::collections::HashMap::from([(
+                "hand".to_string(),
+                postretro_model::gltf_loader::SocketBinding::SkinnedJoint(2),
+            )]),
+            &["models/remote_prop.gltf"],
+        );
 
-        resolve_mesh_entity_clips(&mut registry, &tables);
+        resolve_mesh_entity_bindings(&mut registry, &tables, &hit_zone_store);
 
         let component = registry
             .get_component::<MeshComponent>(id)
@@ -7785,6 +8041,11 @@ mod tests {
         assert_eq!(anim.current_state, "idle");
         assert_eq!(anim.states.get("idle").unwrap().clip_index, Some(1));
         assert_eq!(anim.states.get("attack").unwrap().clip_index, Some(0));
+        assert_eq!(
+            component.attachments[0].binding,
+            postretro_entities::components::mesh::AttachmentBinding::Skinned(2),
+            "remote descriptor attachments resolve through the existing whole-registry pass"
+        );
     }
 
     #[test]

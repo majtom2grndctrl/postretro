@@ -57,7 +57,8 @@ use postretro_model::sample_params::{ClipSample, FadeSource, MeshSampleParams, S
 use postretro_model::skeleton::{AnimationClip, Skeleton};
 use postretro_model::{BonePaletteEntry, ModelHandle};
 use postretro_render_cpu::mesh_instances::{
-    JointCounts, MAX_INSTANCES, MAX_PALETTE_ENTRIES, MeshFramePlan, instance_casts_into_cone,
+    JointCounts, MAX_INSTANCES, MAX_PALETTE_ENTRIES, MeshFramePlan, MeshPaletteCacheKey,
+    instance_casts_into_cone,
 };
 
 /// Byte size of one `BonePaletteEntry` (mat4x4<f32> = 64 B).
@@ -559,8 +560,8 @@ struct CachedPalette {
 }
 
 /// Renderer-side per-entity palette cache for animation time-slicing,
-/// keyed by entity seed — the `SnapshotStore`/`model_bounds` precedent (GPU-free
-/// data logic, unit-testable without a `wgpu::Device`). On a RESAMPLE frame the
+/// keyed by the collector's stable per-instance identity (GPU-free data logic,
+/// unit-testable without a `wgpu::Device`). On a RESAMPLE frame the
 /// pass samples the pose and refreshes the cached run; on a SKIPPED frame it
 /// re-uploads the cached run with no sampling. A cache MISS forces a resample
 /// that frame regardless of the collector's flag (the collector cannot see
@@ -570,39 +571,39 @@ struct CachedPalette {
 /// Eviction: entries not touched in a frame are dropped at [`end_frame`], so the
 /// cache is bounded by the frame's planned-instance count (≤ `MAX_INSTANCES`
 /// entries, ≤ `MAX_PALETTE_ENTRIES` total slots). Emptied wholesale at level load
-/// by [`PaletteCache::clear`] (entity seeds are not stable across levels).
+/// by [`PaletteCache::clear`] (instance identities are not stable across levels).
 ///
 /// [`end_frame`]: PaletteCache::end_frame
 #[derive(Debug, Default)]
 struct PaletteCache {
-    entries: HashMap<u32, CachedPalette>,
+    entries: HashMap<MeshPaletteCacheKey, CachedPalette>,
 }
 
 impl PaletteCache {
     /// Resolve whether this instance must sample this frame. Returns `true` when
     /// the collector asked to resample OR the cache misses (no entry for this
-    /// seed) — the miss upgrade is what keeps a re-entering instance from showing
+    /// key) — the miss upgrade is what keeps a re-entering instance from showing
     /// a stale pose. A `false` return means a valid cached run exists and the
     /// collector cleared the instance to skip.
-    fn must_sample(&self, seed: u32, collector_resample: bool) -> bool {
-        collector_resample || !self.entries.contains_key(&seed)
+    fn must_sample(&self, key: MeshPaletteCacheKey, collector_resample: bool) -> bool {
+        collector_resample || !self.entries.contains_key(&key)
     }
 
-    /// Store a freshly sampled run for `seed`, reusing the entry's `Vec` storage
+    /// Store a freshly sampled run for `key`, reusing the entry's `Vec` storage
     /// in place (cleared + extended — no realloc on a steady-state hit). Marks the
     /// entry seen this frame so eviction keeps it.
-    fn store(&mut self, seed: u32, run: &[BonePaletteEntry]) {
-        let entry = self.entries.entry(seed).or_default();
+    fn store(&mut self, key: MeshPaletteCacheKey, run: &[BonePaletteEntry]) {
+        let entry = self.entries.entry(key).or_default();
         entry.run.clear();
         entry.run.extend_from_slice(run);
         entry.seen_this_frame = true;
     }
 
-    /// The cached run for `seed` on a SKIP frame, or `None` if absent. Also marks
+    /// The cached run for `key` on a SKIP frame, or `None` if absent. Also marks
     /// the entry seen so a skipped instance is not evicted. (A skip only reaches
     /// here when `must_sample` already returned `false`, i.e. the entry exists.)
-    fn touch_cached(&mut self, seed: u32) -> Option<&[BonePaletteEntry]> {
-        let entry = self.entries.get_mut(&seed)?;
+    fn touch_cached(&mut self, key: MeshPaletteCacheKey) -> Option<&[BonePaletteEntry]> {
+        let entry = self.entries.get_mut(&key)?;
         entry.seen_this_frame = true;
         Some(entry.run.as_slice())
     }
@@ -718,9 +719,9 @@ fn sample_modified_rest_instance<'a>(
 }
 
 /// Sample one instance's pose into `out` per its resolved [`MeshSampleParams`]:
-/// a single clip (no fade), a clip→clip blend, or a snapshot→clip blend. Always
-/// writes a full run into `out` and returns `true`, so the caller's palette write
-/// covers the whole region.
+/// explicit rest pose, a single clip, a clip→clip blend, or a snapshot→clip
+/// blend. Always writes a full run into `out` and returns `true`, so the caller's
+/// palette write covers the whole region.
 ///
 /// When the primary clip does not resolve, an active modifier stack samples the
 /// skeleton rest pose so a model whose primary clip is unresolved can still
@@ -746,11 +747,20 @@ fn sample_instance<'a>(
     let sample = instance.params;
     let pose_inputs = instance.pose_inputs;
     let seed = instance.seed;
+    if sample.is_rest_pose() {
+        if let Some(inputs) = pose_inputs.filter(|_| !pose_stack.is_empty()) {
+            postretro_model::anim::sample_rest_pose_modified(skeleton, pose_stack, inputs, out);
+        } else {
+            postretro_model::anim::sample_rest_pose(skeleton, out);
+        }
+        return true;
+    }
+
     // A model whose primary clip is unresolved can still consume external
     // presentation inputs: modify its skeleton rest pose, retaining any
-    // outgoing fade source. (In production, only meshes with an animation
-    // block carry pose_inputs, so this is that block's clip going unresolved,
-    // not a model authored with no animation at all.) Without both an active
+    // outgoing fade source. Pose inputs are presentation data and may also be
+    // supplied by stateless holders, so this fallback is not limited to an
+    // animation block whose clip failed to resolve. Without both an active
     // stack and inputs, preserve the historical exact identity fallback rather
     // than composing the model's rest/inverse-bind data.
     let Some(primary) = clip_blend_source(&sample.primary, resolve_clip) else {
@@ -1786,7 +1796,7 @@ impl MeshPass {
                 // for a resample OR the cache misses (a re-entering instance with
                 // no cached run must sample, never show a stale pose). Otherwise
                 // re-upload the cached run with no sampling.
-                if palette_cache.must_sample(inst.phase_seed, inst.resample) {
+                if palette_cache.must_sample(inst.palette_cache_key, inst.resample) {
                     // RESAMPLE: sample this instance's pose, upload it, and refresh
                     // the cache with the freshly sampled run.
                     let started = measure.then(std::time::Instant::now);
@@ -1814,9 +1824,9 @@ impl MeshPass {
                         );
                         // Refresh the cache so a future skipped frame re-uploads
                         // THIS pose. Reuses the entry's `Vec` storage in place.
-                        palette_cache.store(inst.phase_seed, scratch);
+                        palette_cache.store(inst.palette_cache_key, scratch);
                     }
-                } else if let Some(cached) = palette_cache.touch_cached(inst.phase_seed) {
+                } else if let Some(cached) = palette_cache.touch_cached(inst.palette_cache_key) {
                     // SKIP: re-upload the cached run at this frame's palette base
                     // (the base can move frame to frame as the dense plan repacks).
                     // No sampling, no allocation.
@@ -2180,6 +2190,7 @@ mod tests {
             shadow_bias_scale: 1.0,
             palette_base: 0,
             phase_seed: 1,
+            palette_cache_key: MeshPaletteCacheKey::Entity(1),
             bounds: postretro_render_data::cone_frustum::Aabb::default(),
             sample: MeshSampleParams::stateless(0.0),
             pose_inputs: None,
@@ -3003,6 +3014,30 @@ mod tests {
     }
 
     #[test]
+    fn sample_instance_explicit_rest_pose_ignores_clip_zero() {
+        let mut skel = one_joint_skeleton();
+        skel.joints[0].rest_local.translation = Vec3::new(2.0, 0.0, 0.0);
+        let clips = [const_x_clip("clip-zero", 5.0)];
+        let store = SnapshotStore::default();
+        let mut out = Vec::new();
+
+        let sampled = sample_unmodified_instance(
+            &MeshSampleParams::rest(),
+            &skel,
+            &store,
+            1,
+            &|i| clips.get(i),
+            &mut out,
+        );
+
+        assert!(sampled);
+        assert!(
+            (palette_x(&out) - 2.0).abs() < 1.0e-4,
+            "explicit rest selection must not sample clip zero",
+        );
+    }
+
+    #[test]
     fn sample_instance_applies_pose_stack_for_single_clip_and_all_fade_sources() {
         use postretro_model::pose_modifier::{
             JointMask, ModifierEntry, PoseModifier, PoseModifierStack,
@@ -3641,33 +3676,31 @@ mod tests {
         // collector's flag — a re-entering instance never re-uploads a stale (or
         // absent) pose. After the run is stored, a collector skip serves the cache.
         let mut cache = PaletteCache::default();
-        let seed = 7u32;
+        let key = MeshPaletteCacheKey::Entity(7);
 
         // Miss: even with collector_resample = false, must_sample is true.
         assert!(
-            cache.must_sample(seed, false),
+            cache.must_sample(key, false),
             "a cache miss forces a resample even when the collector cleared a skip",
         );
 
         // Store a sampled run (the resample frame's outcome).
         let run = palette_run(1.0, 4);
-        cache.store(seed, &run);
+        cache.store(key, &run);
 
         // Now a collector skip (resample = false) is honored — the entry exists.
         assert!(
-            !cache.must_sample(seed, false),
+            !cache.must_sample(key, false),
             "with a cached run, a collector skip is honored (no forced resample)",
         );
         // And the cached run is served for the skip re-upload.
-        let cached = cache
-            .touch_cached(seed)
-            .expect("cached run present on skip");
+        let cached = cache.touch_cached(key).expect("cached run present on skip");
         assert_eq!(cached.len(), 4);
         assert_eq!(cached[0].matrix[0][0], 1.0);
 
         // A collector resample still samples even with a cache hit.
         assert!(
-            cache.must_sample(seed, true),
+            cache.must_sample(key, true),
             "an explicit collector resample always samples, cache hit or not",
         );
     }
@@ -3677,10 +3710,10 @@ mod tests {
         // A resample refreshes the run in place — repeated stores must not change
         // the served contents' shape unexpectedly, and the latest store wins.
         let mut cache = PaletteCache::default();
-        let seed = 3u32;
-        cache.store(seed, &palette_run(1.0, 6));
-        cache.store(seed, &palette_run(2.0, 6));
-        let cached = cache.touch_cached(seed).expect("present");
+        let key = MeshPaletteCacheKey::Entity(3);
+        cache.store(key, &palette_run(1.0, 6));
+        cache.store(key, &palette_run(2.0, 6));
+        let cached = cache.touch_cached(key).expect("present");
         assert_eq!(cached.len(), 6);
         assert_eq!(cached[0].matrix[0][0], 2.0, "the latest stored run wins");
     }
@@ -3691,21 +3724,23 @@ mod tests {
         // bounded by the frame's planned-instance count — a culled-out entity's
         // stale run does not linger.
         let mut cache = PaletteCache::default();
-        cache.store(1, &palette_run(1.0, 2));
-        cache.store(2, &palette_run(1.0, 2));
+        let one = MeshPaletteCacheKey::Entity(1);
+        let two = MeshPaletteCacheKey::Entity(2);
+        cache.store(one, &palette_run(1.0, 2));
+        cache.store(two, &palette_run(1.0, 2));
         cache.end_frame(); // both stored this "frame" → both survive
-        assert!(!cache.must_sample(1, false), "entry 1 survives its frame");
-        assert!(!cache.must_sample(2, false), "entry 2 survives its frame");
+        assert!(!cache.must_sample(one, false), "entry 1 survives its frame");
+        assert!(!cache.must_sample(two, false), "entry 2 survives its frame");
 
         // Next frame: touch only entity 1 (it skips), entity 2 is absent (culled).
-        assert!(cache.touch_cached(1).is_some());
+        assert!(cache.touch_cached(one).is_some());
         cache.end_frame();
         assert!(
-            !cache.must_sample(1, false),
+            !cache.must_sample(one, false),
             "the touched entry survives eviction",
         );
         assert!(
-            cache.must_sample(2, false),
+            cache.must_sample(two, false),
             "the untouched entry is evicted → its next appearance forces a resample",
         );
     }
@@ -3715,20 +3750,22 @@ mod tests {
         // Regression: an empty mesh plan still ends the palette-cache frame, so
         // all previously cached culled-out poses are evicted before they re-enter.
         let mut cache = PaletteCache::default();
-        cache.store(1, &palette_run(1.0, 2));
-        cache.store(2, &palette_run(2.0, 2));
+        let one = MeshPaletteCacheKey::Entity(1);
+        let two = MeshPaletteCacheKey::Entity(2);
+        cache.store(one, &palette_run(1.0, 2));
+        cache.store(two, &palette_run(2.0, 2));
         cache.end_frame();
-        assert!(!cache.must_sample(1, false), "entry 1 survived setup");
-        assert!(!cache.must_sample(2, false), "entry 2 survived setup");
+        assert!(!cache.must_sample(one, false), "entry 1 survived setup");
+        assert!(!cache.must_sample(two, false), "entry 2 survived setup");
 
         cache.end_frame();
 
         assert!(
-            cache.must_sample(1, false),
+            cache.must_sample(one, false),
             "empty frame evicts entry 1 so re-entry forces resample",
         );
         assert!(
-            cache.must_sample(2, false),
+            cache.must_sample(two, false),
             "empty frame evicts entry 2 so re-entry forces resample",
         );
     }
@@ -3738,13 +3775,39 @@ mod tests {
         // The level-load clear empties the cache wholesale — entity seeds are not
         // stable across levels, so a stale run must not survive.
         let mut cache = PaletteCache::default();
-        cache.store(9, &palette_run(1.0, 3));
+        let key = MeshPaletteCacheKey::Entity(9);
+        cache.store(key, &palette_run(1.0, 3));
         cache.end_frame();
-        assert!(!cache.must_sample(9, false), "entry present before clear");
+        assert!(!cache.must_sample(key, false), "entry present before clear");
         cache.clear();
         assert!(
-            cache.must_sample(9, false),
+            cache.must_sample(key, false),
             "clear empties the cache → a miss forces a resample",
+        );
+    }
+
+    #[test]
+    fn palette_cache_separates_attachment_from_entity_seed_collision() {
+        // The first holder's first attachment used to derive seed 1, which can
+        // be a second entity's raw id. Cache identity must retain both runs.
+        let mut cache = PaletteCache::default();
+        let attachment = MeshPaletteCacheKey::Attachment {
+            holder: 0,
+            attachment_index: 0,
+        };
+        let entity = MeshPaletteCacheKey::Entity(1);
+        cache.store(attachment, &palette_run(1.0, 1));
+        cache.store(entity, &palette_run(2.0, 2));
+
+        assert_eq!(
+            cache.touch_cached(attachment).unwrap()[0].matrix[0][0],
+            1.0,
+            "rigid attachment keeps its own identity palette",
+        );
+        assert_eq!(
+            cache.touch_cached(entity).unwrap()[0].matrix[0][0],
+            2.0,
+            "entity palette is not overwritten by the attachment",
         );
     }
 }

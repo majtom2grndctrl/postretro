@@ -31,7 +31,8 @@
       "extras": {
         "hitZone": "head",
         "poseMask": ["aimSpine", "upperBody"],
-        "aimBendWeight": 2.0
+        "aimBendWeight": 2.0,
+        "socket": "hand_r"
       }
     },
     {

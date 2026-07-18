@@ -8,6 +8,8 @@ use std::collections::BinaryHeap;
 use glam::Vec3;
 use postretro_level_format::navmesh::NavPortal;
 
+use crate::collision::SKIN_DISTANCE;
+
 use super::{NavGraph, distance_xz};
 
 /// One-shot path query: A* over regions + funnel string-pull. Resolves the
@@ -57,7 +59,11 @@ pub fn find_path(graph: &NavGraph, start: Vec3, goal: Vec3) -> Option<Vec<Vec3>>
         );
         return None;
     }
-    Some(funnel(start, goal, &portals, graph.agent.radius))
+    // Funnel corners become capsule-center movement targets. Preserve the
+    // collision sweep's skin across that seam so a radius-clear corner does
+    // not still consume the first steering ticks in `collide_and_slide`.
+    let corner_clearance_radius = graph.agent.radius.max(0.0) + SKIN_DISTANCE;
+    Some(funnel(start, goal, &portals, corner_clearance_radius))
 }
 
 /// One hop of the region corridor: which portal A* crossed and which direction
@@ -238,25 +244,30 @@ fn triangle_area_xz(a: Vec3, b: Vec3, c: Vec3) -> f32 {
 }
 
 /// Move a funnel corner away from one endpoint and toward the interior of its
-/// portal. A portal too narrow for the canonical agent has no valid
-/// radius-clear endpoint, so its midpoint is the stable fallback.
-fn inset_portal_endpoint(endpoint: Vec3, opposite_endpoint: Vec3, radius: f32) -> Vec3 {
+/// portal. A portal too narrow for the capsule plus its collision skin has no
+/// valid clearance endpoint, so its midpoint is the stable fallback.
+fn inset_portal_endpoint(endpoint: Vec3, opposite_endpoint: Vec3, clearance_radius: f32) -> Vec3 {
     let portal = opposite_endpoint - endpoint;
     let width = portal.length();
-    let radius = radius.max(0.0);
+    let clearance_radius = clearance_radius.max(0.0);
 
-    if width <= 2.0 * radius {
+    if width <= 2.0 * clearance_radius {
         return (endpoint + opposite_endpoint) * 0.5;
     }
 
-    endpoint + portal * (radius / width)
+    endpoint + portal * (clearance_radius / width)
 }
 
 /// Simple Stupid Funnel string-pull over an ordered list of traversal-oriented
 /// `(left, right)` portal segments. Emits the tightest waypoint list from
 /// `start` to `goal` that stays within the corridor. The first waypoint is
 /// `start`, the last is `goal`; a straight corridor collapses to `[start, goal]`.
-fn funnel(start: Vec3, goal: Vec3, portals: &[(Vec3, Vec3)], agent_radius: f32) -> Vec<Vec3> {
+fn funnel(
+    start: Vec3,
+    goal: Vec3,
+    portals: &[(Vec3, Vec3)],
+    corner_clearance_radius: f32,
+) -> Vec<Vec3> {
     let mut path = vec![start];
 
     let mut apex = start;
@@ -286,7 +297,7 @@ fn funnel(start: Vec3, goal: Vec3, portals: &[(Vec3, Vec3)], agent_radius: f32) 
                 path.push(inset_portal_endpoint(
                     left,
                     gates[left_index].1,
-                    agent_radius,
+                    corner_clearance_radius,
                 ));
                 apex = left;
                 // Restart the funnel from the vertex after the new apex.
@@ -308,7 +319,7 @@ fn funnel(start: Vec3, goal: Vec3, portals: &[(Vec3, Vec3)], agent_radius: f32) 
                 path.push(inset_portal_endpoint(
                     right,
                     gates[right_index].0,
-                    agent_radius,
+                    corner_clearance_radius,
                 ));
                 apex = right;
                 right_index += 1;
@@ -502,9 +513,9 @@ mod tests {
         assert!(approx_xz(path[0], start));
         assert!(approx_xz(*path.last().unwrap(), goal));
         // The funnel must bend at the inner-corner portal endpoint inset by the
-        // canonical agent radius, rather than steering the capsule into the
-        // raw wall corner.
-        let inset_corner = Vec3::new(4.0, 0.0, 4.0 + graph.agent.radius);
+        // canonical agent radius plus collision skin, rather than steering the
+        // capsule into the raw wall corner.
+        let inset_corner = Vec3::new(4.0, 0.0, 4.0 + graph.agent.radius + SKIN_DISTANCE);
         let bends_at_inset_corner = path[1..path.len() - 1]
             .iter()
             .any(|w| approx_xz(*w, inset_corner));
@@ -567,7 +578,7 @@ mod tests {
 
         assert!(approx_xz(path[0], start));
         assert!(approx_xz(*path.last().unwrap(), goal));
-        let inset_corner = Vec3::new(4.0, 0.0, 4.0 + graph.agent.radius);
+        let inset_corner = Vec3::new(4.0, 0.0, 4.0 + graph.agent.radius + SKIN_DISTANCE);
         let bends_at_inset_corner = path[1..path.len() - 1]
             .iter()
             .any(|w| approx_xz(*w, inset_corner));
@@ -578,14 +589,16 @@ mod tests {
     }
 
     #[test]
-    fn funnel_uses_portal_midpoint_when_portal_is_narrower_than_agent_diameter() {
+    fn funnel_uses_portal_midpoint_when_portal_is_narrower_than_effective_diameter() {
         let endpoint = Vec3::new(4.0, 0.0, 4.0);
-        let opposite_endpoint = Vec3::new(4.4, 0.0, 4.0);
+        // This portal clears the physical 0.3m radius (0.62m > 0.6m) but not
+        // its collision skin (0.62m < 2 * (0.3m + SKIN_DISTANCE)).
+        let opposite_endpoint = Vec3::new(4.62, 0.0, 4.0);
 
-        let waypoint = inset_portal_endpoint(endpoint, opposite_endpoint, 0.3);
+        let waypoint = inset_portal_endpoint(endpoint, opposite_endpoint, 0.3 + SKIN_DISTANCE);
 
         assert!(waypoint.is_finite(), "narrow portal inset must stay finite");
-        assert!(approx_xz(waypoint, Vec3::new(4.2, 0.0, 4.0)));
+        assert!(approx_xz(waypoint, Vec3::new(4.31, 0.0, 4.0)));
     }
 
     #[test]

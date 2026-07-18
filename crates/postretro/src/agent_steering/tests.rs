@@ -9,10 +9,12 @@
 use super::*;
 
 use parry3d::math::{Isometry, Point};
+use parry3d::query::PointQuery;
 use parry3d::shape::TriMesh;
 use postretro_entities::Transform;
 use postretro_level_format::navmesh::{NAVMESH_VERSION, NavMeshSection, NavPortal, NavRegion};
 
+use crate::collision::SKIN_DISTANCE;
 use crate::nav::NavAgentParams;
 
 const EPS: f32 = 1e-3;
@@ -225,6 +227,95 @@ impl LWall {
     }
 }
 
+/// Clearance-buffered route around a central pillar. The hand-built regions
+/// deliberately leave a 1m corridor around the 2m-square obstacle, which is
+/// wider than the fixture agent's 0.35m radius plus collision skin. It is a
+/// deterministic steering fixture, not evidence that the offline erosion pass
+/// generated these regions.
+struct PillarRoute;
+
+impl PillarRoute {
+    fn collision_world() -> CollisionWorld {
+        let mut points: Vec<Point<f32>> = Vec::new();
+        let mut tris: Vec<[u32; 3]> = Vec::new();
+
+        let base = points.len() as u32;
+        points.push(Point::new(0.0, 0.0, 0.0));
+        points.push(Point::new(10.0, 0.0, 0.0));
+        points.push(Point::new(10.0, 0.0, 10.0));
+        points.push(Point::new(0.0, 0.0, 10.0));
+        tris.push([base, base + 1, base + 2]);
+        tris.push([base, base + 2, base + 3]);
+
+        let mut push_wall = |x0: f32, z0: f32, x1: f32, z1: f32| {
+            let base = points.len() as u32;
+            points.push(Point::new(x0, 0.0, z0));
+            points.push(Point::new(x1, 0.0, z1));
+            points.push(Point::new(x1, 3.0, z1));
+            points.push(Point::new(x0, 3.0, z0));
+            tris.push([base, base + 1, base + 2]);
+            tris.push([base, base + 2, base + 3]);
+            tris.push([base, base + 2, base + 1]);
+            tris.push([base, base + 3, base + 2]);
+        };
+
+        push_wall(4.0, 4.0, 6.0, 4.0);
+        push_wall(6.0, 4.0, 6.0, 6.0);
+        push_wall(6.0, 6.0, 4.0, 6.0);
+        push_wall(4.0, 6.0, 4.0, 4.0);
+
+        CollisionWorld {
+            mesh: TriMesh::new(points, tris),
+            isometry: Isometry::identity(),
+        }
+    }
+
+    fn nav_graph() -> NavGraph {
+        let region = |x0, z0, x1, z1| NavRegion {
+            x0,
+            z0,
+            x1,
+            z1,
+            floor_y_min: 0.0,
+            floor_y_max: 0.25,
+        };
+        let section = NavMeshSection {
+            version: NAVMESH_VERSION,
+            origin: [0.0, 0.0, 0.0],
+            cell_size: 1.0,
+            dim_x: 10,
+            dim_z: 10,
+            agent_radius: 0.35,
+            agent_height: 1.8,
+            step_height: 0.4,
+            max_slope_deg: 45.0,
+            regions: vec![
+                // South lane, 1m below the pillar's south face.
+                region(0, 0, 7, 3),
+                // East lane, 1m right of the pillar's east face.
+                region(7, 0, 10, 7),
+                // North lane, 1m above the pillar's north face.
+                region(0, 7, 10, 10),
+            ],
+            portals: vec![
+                NavPortal {
+                    region_a: 0,
+                    region_b: 1,
+                    left: [7.0, 0.0, 0.0],
+                    right: [7.0, 0.0, 3.0],
+                },
+                NavPortal {
+                    region_a: 1,
+                    region_b: 2,
+                    left: [7.0, 0.0, 7.0],
+                    right: [10.0, 0.0, 7.0],
+                },
+            ],
+        };
+        NavGraph::from_section(&section)
+    }
+}
+
 /// Concave-corner recovery fixture: two vertical wall segments meet at an
 /// interior corner. The agent approaches from southwest toward northeast, so
 /// collision can consume the goal-directed motion while the fixed +90deg
@@ -396,6 +487,24 @@ fn goal_projected_xz_progress(start: Vec3, end: Vec3, heading: Vec3) -> f32 {
     displacement.dot(heading.normalize())
 }
 
+/// Point-to-static-mesh clearance at the agent's capsule-center height. The
+/// nav query surface is floor-relative while collision uses a capsule center,
+/// so testing the raw waypoint Y would measure the floor rather than the wall
+/// clearance the funnel promises.
+fn static_mesh_clearance(world: &CollisionWorld, waypoint: Vec3, capsule_center_y: f32) -> f32 {
+    let point = Point::new(waypoint.x, capsule_center_y, waypoint.z);
+    let projection = world.mesh.project_point(&world.isometry, &point, false);
+    (point - projection.point).norm()
+}
+
+fn portal_midpoint(portal: &NavPortal) -> Vec3 {
+    (Vec3::from_array(portal.left) + Vec3::from_array(portal.right)) * 0.5
+}
+
+fn portal_width(portal: &NavPortal) -> f32 {
+    (Vec3::from_array(portal.right) - Vec3::from_array(portal.left)).length()
+}
+
 fn run_until_stuck_threshold(
     registry: &mut EntityRegistry,
     id: EntityId,
@@ -514,6 +623,110 @@ fn steer_velocity_ramps_independently_of_wall_clamped_collision_velocity() {
         steer_speeds,
         post_collision_speeds
     );
+}
+
+#[test]
+fn funnel_waypoints_keep_effective_capsule_clearance_from_concave_fixture_mesh() {
+    let corner = ConcaveCorner::fixture();
+    let world = corner.collision_world();
+    let graph = corner.nav_graph();
+    let params = graph.agent_params();
+    let start = Vec3::new(1.2, rest_y(&params), 1.2);
+    let goal = Vec3::new(5.0, rest_y(&params), 5.0);
+    let path = find_path(&graph, start, goal).expect("concave-corner route exists");
+
+    assert!(
+        path.len() >= 3,
+        "the concave route must expose an interior funnel waypoint: {path:?}"
+    );
+
+    let narrow_portal_midpoints: Vec<Vec3> = graph
+        .portals()
+        .iter()
+        .filter(|portal| portal_width(portal) <= 2.0 * (params.radius + SKIN_DISTANCE))
+        .map(portal_midpoint)
+        .collect();
+    let clearance_epsilon = 0.1 * graph.cell_size();
+    let effective_clearance_radius = params.radius + SKIN_DISTANCE;
+
+    // This fixture's regions and portals are hand-built. It validates the
+    // runtime funnel's output against the shared collision geometry, not the
+    // offline erosion pass that would produce a baked graph.
+    for waypoint in &path[1..path.len() - 1] {
+        let is_narrow_portal_midpoint = narrow_portal_midpoints.iter().any(|midpoint| {
+            let delta = Vec3::new(waypoint.x - midpoint.x, 0.0, waypoint.z - midpoint.z);
+            delta.length() <= EPS
+        });
+        if is_narrow_portal_midpoint {
+            continue;
+        }
+
+        let clearance = static_mesh_clearance(&world, *waypoint, rest_y(&params));
+        assert!(
+            clearance + clearance_epsilon >= effective_clearance_radius,
+            "interior waypoint {waypoint:?} has only {clearance:.4}m static-mesh clearance; expected at least {:.4}m (capsule + skin {:.4}m - epsilon {:.4}m), path={path:?}",
+            effective_clearance_radius - clearance_epsilon,
+            effective_clearance_radius,
+            clearance_epsilon,
+        );
+    }
+}
+
+#[test]
+fn funnel_path_routes_around_pillar_without_stuck_detection() {
+    let world = PillarRoute::collision_world();
+    let graph = PillarRoute::nav_graph();
+    let params = graph.agent_params();
+    let mut registry = EntityRegistry::new();
+    let id = spawn_agent(&mut registry, 1.2, 1.2, &params);
+    let destination = Vec3::new(8.5, rest_y(&params), 8.5);
+    set_destination(&mut registry, id, destination);
+
+    for tick_index in 0..600 {
+        let before = agent_position(&registry, id);
+        // Keep the vertical channel neutral so this strict horizontal-progress
+        // assertion exercises the funnel/capsule route rather than a separate
+        // floor-settling contact tick. Ground-stick remains active here; the
+        // harness's gravity and settling behavior are covered independently.
+        tick(&mut registry, &world, Some(&graph), 0.0, DT);
+        let agent = registry.get_component::<AgentComponent>(id).unwrap();
+        if tick_index == 0 {
+            assert!(
+                agent.path.len() >= 3,
+                "pillar route must retain an interior funnel waypoint: {:?}",
+                agent.path
+            );
+        }
+        assert!(
+            agent.stuck_ticks < STUCK_TICKS_THRESHOLD,
+            "funnel route reached stuck detection on tick {tick_index}: pos={:?}, path={:?}",
+            agent_position(&registry, id),
+            agent.path,
+        );
+        if agent.arrived {
+            return;
+        }
+
+        let after = agent_position(&registry, id);
+        let progress = goal_projected_xz_progress(before, after, agent.steer_velocity);
+        assert!(
+            progress > STUCK_PROGRESS_EPSILON,
+            "funnel route must make goal-projected progress above the stuck epsilon on tick {tick_index}; progress={progress}, position={after:?}, steer={:?}, path={:?}",
+            agent.steer_velocity,
+            agent.path,
+        );
+
+        if tick_index == 0 {
+            // This test covers collision progress along one real funnel result.
+            // Periodic path-refresh scheduling has separate coverage; freezing
+            // this fresh plan prevents it from replacing the route mid-traverse.
+            let mut frozen_plan = agent.clone();
+            frozen_plan.replan_cooldown_ticks = u32::MAX;
+            registry.set_component(id, frozen_plan).unwrap();
+        }
+    }
+
+    panic!("funnel route did not reach the pillar-route goal within 600 ticks");
 }
 
 #[test]

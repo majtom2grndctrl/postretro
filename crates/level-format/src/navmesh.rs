@@ -328,6 +328,10 @@ mod tests {
 
     #[test]
     fn single_region_round_trips() {
+        assert_eq!(
+            NAVMESH_VERSION, 1,
+            "erosion changes the bake, not the serialized navmesh layout"
+        );
         let section = single_region_section();
         let bytes = section.to_bytes();
         let restored = NavMeshSection::from_bytes(&bytes).unwrap();

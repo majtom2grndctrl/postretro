@@ -197,6 +197,7 @@ impl ScriptRuntime {
                 next_global_reactions,
                 next_global_crossings,
                 next_global_trigger_events,
+                next_global_trigger_pools,
                 next_store_declarations,
                 next_dependencies,
                 descriptor_label,
@@ -224,6 +225,7 @@ impl ScriptRuntime {
                         manifest.reactions.clone(),
                         manifest.crossings.clone(),
                         manifest.trigger_events.clone(),
+                        manifest.trigger_pools.clone(),
                         manifest.store_declarations.clone(),
                         dependencies,
                         format!("mod `{}`", manifest.name),
@@ -246,6 +248,7 @@ impl ScriptRuntime {
                         }
                     };
                     (
+                        Vec::new(),
                         Vec::new(),
                         Vec::new(),
                         Vec::new(),
@@ -363,6 +366,9 @@ impl ScriptRuntime {
             ctx.data_registry
                 .borrow_mut()
                 .replace_global_trigger_events(next_global_trigger_events);
+            ctx.data_registry
+                .borrow_mut()
+                .replace_global_trigger_pools(next_global_trigger_pools);
             let dependency_count = next_dependencies.len();
             self.active_mod_init_dependencies = Some(next_dependencies);
             log::info!(
@@ -438,5 +444,117 @@ impl ScriptRuntime {
     /// caller owns registry lifecycle. See: context/lib/boot_sequence.md §3.
     pub fn mod_manifest_mut(&mut self) -> Option<&mut ModManifestResult> {
         self.mod_manifest.as_mut()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use super::*;
+    use crate::staged_manifest::{StagedManifestBuildConfig, build_staged_manifest};
+
+    fn temp_mod_root(name: &str) -> PathBuf {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let sequence = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "postretro_runtime_core_test_{}_{}_{name}",
+            std::process::id(),
+            sequence,
+        ));
+        fs::create_dir_all(&path).expect("temporary mod root should be created");
+        path
+    }
+
+    #[test]
+    fn staged_commit_replaces_trigger_pools_and_recomposes_by_level_tags() {
+        let mod_root = temp_mod_root("trigger_pools");
+        fs::write(
+            mod_root.join("start-script.js"),
+            r#"
+                globalThis.__postretroModManifest = {
+                    name: "ReloadedPools",
+                    triggerPools: [
+                        { tag: "every_level", arm: 1 },
+                        { tag: "campaign_only", armPercentage: 50, levels: ["campaign"] },
+                        { tag: "deathmatch_only", arm: 1, levels: ["deathmatch"] },
+                    ],
+                };
+            "#,
+        )
+        .expect("staged mod manifest should be written");
+        let result = build_staged_manifest(&mod_root, 1, &StagedManifestBuildConfig::default());
+        assert!(
+            matches!(result.status, StagedManifestBuildStatus::Built(_)),
+            "staged manifest must build before its replacement can commit: {result:?}",
+        );
+
+        let ctx = ScriptCtx::new();
+        {
+            let mut data_registry = ctx.data_registry.borrow_mut();
+            data_registry.replace_global_trigger_pools(vec![
+                crate::data_descriptors::TriggerPoolDescriptor {
+                    tag: "stale_pool".to_string(),
+                    arm: crate::data_descriptors::TriggerPoolArm::Count(1),
+                    levels: Vec::new(),
+                },
+            ]);
+            data_registry.recompose_active_sets(&["campaign".to_string()]);
+            assert_eq!(data_registry.trigger_pools()[0].tag, "stale_pool");
+        }
+
+        let primitive_registry = PrimitiveRegistry::new();
+        let mut runtime =
+            ScriptRuntime::new(&primitive_registry, &ScriptRuntimeConfig::default(), &ctx)
+                .expect("script runtime should initialize");
+        runtime.staged_manifest_lane = Some(StagedManifestBuildLane::new_for_test_latest(1));
+
+        let outcome = runtime.commit_staged_manifest_result(
+            &result,
+            &ctx,
+            &SequencedPrimitiveRegistry::new(),
+        );
+        assert!(matches!(
+            outcome,
+            StagedManifestCommitOutcome::Committed { generation: 1, .. }
+        ));
+
+        let mut data_registry = ctx.data_registry.borrow_mut();
+        assert_eq!(
+            data_registry
+                .global_trigger_pools
+                .iter()
+                .map(|pool| pool.tag.as_str())
+                .collect::<Vec<_>>(),
+            ["every_level", "campaign_only", "deathmatch_only"],
+            "a staged commit replaces the prior global-pool definition snapshot",
+        );
+
+        data_registry.recompose_active_sets(&["campaign".to_string()]);
+        assert_eq!(
+            data_registry
+                .trigger_pools()
+                .iter()
+                .map(|pool| pool.tag.as_str())
+                .collect::<Vec<_>>(),
+            ["every_level", "campaign_only"],
+            "unscoped and matching pools compose; non-matching pools remain inactive",
+        );
+
+        data_registry.recompose_active_sets(&[]);
+        assert_eq!(
+            data_registry
+                .trigger_pools()
+                .iter()
+                .map(|pool| pool.tag.as_str())
+                .collect::<Vec<_>>(),
+            ["every_level"],
+            "a direct .prl path has no catalog tags, so only unscoped pools compose",
+        );
+
+        drop(data_registry);
+        fs::remove_dir_all(mod_root).expect("temporary mod root should be removed");
     }
 }

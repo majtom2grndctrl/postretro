@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use crate::ctx::ScriptCtx;
 use crate::data_descriptors::{
     EntityTypeDescriptor, ModFontAssets, ModThemeTokens, RegisteredUiTree, TriggerEventDescriptor,
+    TriggerPoolDescriptor,
 };
 use crate::data_registry::{ScopedCrossing, ScopedReaction};
 pub use crate::foundation_pods::ModMapEntry;
@@ -71,6 +72,11 @@ pub struct ModManifestResult {
     /// field. Empty when absent. Drained into `DataRegistry` by the boot caller.
     pub crossings: Vec<ScopedCrossing>,
     pub trigger_events: Vec<TriggerEventDescriptor>,
+    /// Engine-global trigger-pool definitions from the mod manifest's
+    /// `triggerPools` field. Drained into `DataRegistry` by the boot caller;
+    /// staged reload replaces the definition snapshot but never re-arms a
+    /// live level.
+    pub trigger_pools: Vec<TriggerPoolDescriptor>,
     /// Validated state-store declarations collected during this mod-init
     /// attempt. This is engine metadata, not a `ModManifest` script field.
     pub store_declarations: StoreDeclarationSet,

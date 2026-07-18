@@ -10,8 +10,9 @@ use crate::data_descriptors::{
     EntityTypeDescriptor, drain_fonts_js, drain_fonts_lua, drain_frontend_js, drain_frontend_lua,
     drain_global_crossings_js, drain_global_crossings_lua, drain_global_reactions_js,
     drain_global_reactions_lua, drain_maps_js, drain_maps_lua, drain_theme_js, drain_theme_lua,
-    drain_trigger_events_js, drain_trigger_events_lua, drain_ui_trees_js, drain_ui_trees_lua,
-    entity_descriptor_from_js, entity_descriptor_from_lua,
+    drain_trigger_events_js, drain_trigger_events_lua, drain_trigger_pools_js,
+    drain_trigger_pools_lua, drain_ui_trees_js, drain_ui_trees_lua, entity_descriptor_from_js,
+    entity_descriptor_from_lua,
 };
 use crate::error::ScriptError;
 use crate::primitives_registry::ScriptPrimitive;
@@ -266,6 +267,13 @@ pub(super) fn run_mod_init_quickjs(
                 return;
             }
         };
+        let trigger_pools = match drain_trigger_pools_js(&obj, "default mod manifest export") {
+            Ok(v) => v,
+            Err(e) => {
+                out = Err(ScriptError::InvalidArgument { reason: format!("mod-init: `{source_path}` triggerPools invalid: {e}") });
+                return;
+            }
+        };
 
         out = Ok(ModManifestResult {
             name,
@@ -278,6 +286,7 @@ pub(super) fn run_mod_init_quickjs(
             reactions,
             crossings,
             trigger_events,
+            trigger_pools,
             store_declarations,
         });
     });
@@ -444,6 +453,11 @@ pub(super) fn run_mod_init_luau(
                 reason: format!("mod-init: `{source_path}` returned triggerEvents invalid: {e}"),
             }
         })?;
+    let trigger_pools = drain_trigger_pools_lua(&table, "returned mod manifest").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!("mod-init: `{source_path}` returned triggerPools invalid: {e}"),
+        }
+    })?;
 
     Ok(ModManifestResult {
         name,
@@ -456,6 +470,57 @@ pub(super) fn run_mod_init_luau(
         reactions,
         crossings,
         trigger_events,
+        trigger_pools,
         store_declarations,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data_descriptors::TriggerPoolArm;
+    use crate::primitives_registry::PrimitiveRegistry;
+
+    #[test]
+    fn mod_init_trigger_pools_skip_malformed_entries_in_both_runtimes() {
+        let registry = PrimitiveRegistry::new();
+        let quickjs = QuickJsSubsystem::new(&registry, &crate::quickjs::QuickJsConfig::default())
+            .expect("QuickJS subsystem should initialize");
+        let js_manifest = run_mod_init_quickjs(
+            &quickjs,
+            r#"
+                globalThis.__postretroModManifest = {
+                    name: "PoolMod",
+                    triggerPools: [
+                        { tag: "valid_pool", arm: 2, levels: ["campaign"] },
+                        { tag: "invalid_pool", arm: -1 },
+                    ],
+                };
+            "#,
+            "pool-mod.js",
+        )
+        .expect("malformed pool entry should not abort QuickJS mod init");
+        let luau_manifest = run_mod_init_luau(
+            &[],
+            r#"
+                return {
+                    name = "PoolMod",
+                    triggerPools = {
+                        { tag = "valid_pool", arm = 2, levels = { "campaign" } },
+                        { tag = "invalid_pool", arm = -1 },
+                    },
+                }
+            "#,
+            "pool-mod.luau",
+            Path::new("."),
+        )
+        .expect("malformed pool entry should not abort Luau mod init");
+
+        assert_eq!(js_manifest.trigger_pools, luau_manifest.trigger_pools);
+        assert_eq!(js_manifest.trigger_pools.len(), 1);
+        let pool = &js_manifest.trigger_pools[0];
+        assert_eq!(pool.tag, "valid_pool");
+        assert_eq!(pool.arm, TriggerPoolArm::Count(2));
+        assert_eq!(pool.levels, ["campaign"]);
+    }
 }

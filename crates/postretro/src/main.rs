@@ -2750,6 +2750,7 @@ impl ApplicationHandler for App {
                                     &session.trigger_volume_bridge,
                                     &session.trigger_system,
                                     &self.trigger_bindings,
+                                    &self.trigger_pool_report,
                                 ),
                                 trigger_diagnostics::collect_trigger_overlay_labels(
                                     &registry,

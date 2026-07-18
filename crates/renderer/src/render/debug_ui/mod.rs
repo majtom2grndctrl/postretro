@@ -98,6 +98,10 @@ pub struct AgentDiagnosticsRow {
 pub struct TriggerDiagnosticsRow {
     pub name: String,
     pub tags: String,
+    /// The later pool that decided this trigger's install state, if any.
+    pub pool: String,
+    /// Whether `pool` selected this trigger during its install roll.
+    pub pool_selected: bool,
     pub activation: String,
     pub armed: bool,
     pub latched: bool,
@@ -717,11 +721,12 @@ fn draw_triggers_tab(ui: &mut egui::Ui, trigger_rows: &[TriggerDiagnosticsRow]) 
 
             egui::ScrollArea::both().auto_shrink(false).show(ui, |ui| {
                 egui::Grid::new("trigger_diagnostics_grid")
-                    .num_columns(10)
+                    .num_columns(11)
                     .striped(true)
                     .show(ui, |ui| {
                         ui.strong("Name");
                         ui.strong("Tags");
+                        ui.strong("Pool");
                         ui.strong("Activation");
                         ui.strong("Armed");
                         ui.strong("Latched");
@@ -735,6 +740,7 @@ fn draw_triggers_tab(ui: &mut egui::Ui, trigger_rows: &[TriggerDiagnosticsRow]) 
                         for row in trigger_rows {
                             ui.label(row.name.as_str());
                             ui.label(row.tags.as_str());
+                            ui.label(trigger_pool_status_label(&row.pool, row.pool_selected));
                             ui.label(row.activation.as_str());
                             ui.label(row.armed.to_string());
                             ui.label(row.latched.to_string());
@@ -754,6 +760,16 @@ fn draw_triggers_tab(ui: &mut egui::Ui, trigger_rows: &[TriggerDiagnosticsRow]) 
                     });
             });
         });
+}
+
+fn trigger_pool_status_label(pool: &str, selected: bool) -> String {
+    if pool.is_empty() {
+        "-".to_string()
+    } else if selected {
+        format!("{pool} (selected)")
+    } else {
+        format!("{pool} (unselected)")
+    }
 }
 
 fn cell_set_diagnostic_label(value: SpatialCellSetDiagnostics, empty_note: &str) -> String {
@@ -1146,6 +1162,19 @@ mod tests {
         assert_eq!(
             trigger_event_status_label("missing", false),
             "missing (unresolved)"
+        );
+    }
+
+    #[test]
+    fn trigger_pool_status_label_marks_selected_state_and_no_pool() {
+        assert_eq!(trigger_pool_status_label("", false), "-");
+        assert_eq!(
+            trigger_pool_status_label("closet_trap", true),
+            "closet_trap (selected)"
+        );
+        assert_eq!(
+            trigger_pool_status_label("closet_trap", false),
+            "closet_trap (unselected)"
         );
     }
 }

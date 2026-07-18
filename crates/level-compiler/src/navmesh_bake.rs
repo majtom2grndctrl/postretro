@@ -473,7 +473,7 @@ fn near_boundary(
     boundary.iter().any(|b| {
         let dx = (b.x as f32 - cell.x as f32) * cell_size;
         let dz = (b.z as f32 - cell.z as f32) * cell_size;
-        dx * dx + dz * dz <= center_reach_sq && (b.floor_y - cell.floor_y).abs() <= step
+        dx * dx + dz * dz <= center_reach_sq && (b.floor_y - cell.floor_y).abs() <= step + STEP_EPS
     })
 }
 

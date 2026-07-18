@@ -76,6 +76,11 @@ pub struct AgentComponent {
     /// destination, produced by the pathfinding query. Empty when the agent has
     /// no active path.
     pub path: Vec<Vec3>,
+    /// Parallel to `path`: `true` marks clearance geometry that steering must
+    /// reach without arrival-radius skipping or lookahead shortcutting. Empty
+    /// is equivalent to all `false` for legacy/manual paths.
+    #[serde(default)]
+    pub mandatory_waypoints: Vec<bool>,
     /// Cursor into `path`: the index of the waypoint the agent is currently
     /// steering toward. Advanced on arrival-radius by the steering system.
     pub waypoint_cursor: usize,
@@ -131,6 +136,7 @@ impl AgentComponent {
             unstick_window_remaining: 0,
             is_grounded: false,
             path: Vec::new(),
+            mandatory_waypoints: Vec::new(),
             waypoint_cursor: 0,
             destination: None,
             planned_destination: None,
@@ -214,6 +220,7 @@ mod tests {
         assert_eq!(agent.unstick_window_remaining, 0);
         assert!(!agent.is_grounded);
         assert!(agent.path.is_empty());
+        assert!(agent.mandatory_waypoints.is_empty());
         assert_eq!(agent.waypoint_cursor, 0);
         assert_eq!(agent.destination, None);
         assert_eq!(agent.planned_destination, None);
@@ -233,6 +240,7 @@ mod tests {
         json.as_object_mut()
             .unwrap()
             .remove("unstick_window_remaining");
+        json.as_object_mut().unwrap().remove("mandatory_waypoints");
 
         let ComponentValue::Agent(back) = serde_json::from_value(json).unwrap() else {
             panic!("expected agent component");
@@ -240,6 +248,7 @@ mod tests {
         assert_eq!(back.steer_velocity, Vec3::ZERO);
         assert_eq!(back.stuck_ticks, 0);
         assert_eq!(back.unstick_window_remaining, 0);
+        assert!(back.mandatory_waypoints.is_empty());
     }
 
     #[test]

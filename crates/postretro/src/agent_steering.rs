@@ -46,6 +46,12 @@ const ARRIVAL_RADIUS_FACTOR: f32 = 1.5;
 /// easing happens before `arrived` zeroes the final low-speed tail.
 const ARRIVAL_SLOWDOWN_RADIUS_FACTOR: f32 = 7.0;
 
+/// Clearance-repair points sit on the collision sweep's skin boundary. Accept
+/// them within two skins: one for the collision-tangent target and one for the
+/// slowed fixed-tick approach. This stays much tighter than ordinary waypoint
+/// arrival while advancing before the easing tail falls below stuck progress.
+const MANDATORY_WAYPOINT_ARRIVAL_RADIUS: f32 = 2.0 * crate::collision::SKIN_DISTANCE;
+
 /// Path-following acceleration/deceleration as "top-speed changes per second".
 /// A value above 1 spans multiple fixed ticks while still letting agents brake
 /// down through the short arrival band.
@@ -206,6 +212,7 @@ pub(crate) fn clear_destination(registry: &mut EntityRegistry, agent: EntityId) 
     updated.destination = None;
     updated.planned_destination = None;
     updated.path.clear();
+    updated.mandatory_waypoints.clear();
     updated.waypoint_cursor = 0;
     updated.steer_velocity = Vec3::ZERO;
     updated.stuck_ticks = 0;
@@ -367,7 +374,7 @@ pub(crate) fn tick(
             agent.planned_destination = Some(destination);
             match nav_graph.and_then(|graph| find_path(graph, position, destination)) {
                 Some(path) => {
-                    agent.path = path;
+                    (agent.path, agent.mandatory_waypoints) = path.into_parts();
                     agent.waypoint_cursor = 0;
                     agent.arrived = false;
                     agent.blocked = false;
@@ -378,6 +385,7 @@ pub(crate) fn tick(
                     // the raw destination. The cooldown (set above) keeps this
                     // from re-qualifying every tick.
                     agent.path.clear();
+                    agent.mandatory_waypoints.clear();
                     agent.waypoint_cursor = 0;
                     agent.blocked = true;
                     if forced_replan_during_recovery {
@@ -618,9 +626,27 @@ fn goal_speed(
     // backtrack. Stops at the last waypoint.
     while agent.waypoint_cursor < agent.path.len() {
         let target = agent.path[agent.waypoint_cursor];
-        if distance_xz(position, target) <= arrival_radius
+        let mandatory = agent
+            .mandatory_waypoints
+            .get(agent.waypoint_cursor)
+            .copied()
+            .unwrap_or(false);
+        let waypoint_arrival_radius = if mandatory {
+            MANDATORY_WAYPOINT_ARRIVAL_RADIUS
+        } else {
+            arrival_radius
+        };
+        if distance_xz(position, target) <= waypoint_arrival_radius
             && agent.waypoint_cursor + 1 < agent.path.len()
         {
+            if mandatory {
+                // A mandatory waypoint is a hard clearance vertex, not just a
+                // position target. Carrying the incoming smoothed heading into
+                // its next leg rounds the corner back through the endpoint
+                // clearance disk. Restart steering so the outgoing safe chord
+                // establishes its own heading on this tick.
+                agent.steer_velocity = Vec3::ZERO;
+            }
             agent.waypoint_cursor += 1;
         } else {
             break;
@@ -630,6 +656,17 @@ fn goal_speed(
     let target = agent.path[agent.waypoint_cursor.min(agent.path.len() - 1)];
     let is_final = agent.waypoint_cursor + 1 >= agent.path.len();
     let final_distance = distance_xz(position, target);
+    let mandatory = agent
+        .mandatory_waypoints
+        .get(agent.waypoint_cursor)
+        .copied()
+        .unwrap_or(false);
+    if mandatory && !is_final && final_distance < arrival_radius {
+        // Hard clearance geometry uses a tight collision-scale acceptance band.
+        // Ease into that smaller target so a full-speed fixed tick cannot
+        // oscillate over it forever.
+        return agent.move_speed * (final_distance / arrival_radius).clamp(0.0, 1.0);
+    }
     if is_final {
         if final_distance <= arrival_radius {
             agent.arrived = true;
@@ -697,7 +734,7 @@ fn target_point(agent: &AgentComponent, position: Vec3, lookahead_distance: f32)
 
     let mut remaining = lookahead_distance;
     let mut from = Vec3::new(position.x, 0.0, position.z);
-    for waypoint in &agent.path[cursor..] {
+    for (offset, waypoint) in agent.path[cursor..].iter().enumerate() {
         let to = Vec3::new(waypoint.x, 0.0, waypoint.z);
         let segment = to - from;
         let len = segment.length();
@@ -708,6 +745,14 @@ fn target_point(agent: &AgentComponent, position: Vec3, lookahead_distance: f32)
         if remaining <= len {
             let point = from + segment * (remaining / len);
             return Some(Vec3::new(point.x, waypoint.y, point.z));
+        }
+        if agent
+            .mandatory_waypoints
+            .get(cursor + offset)
+            .copied()
+            .unwrap_or(false)
+        {
+            return Some(*waypoint);
         }
         remaining -= len;
         from = to;

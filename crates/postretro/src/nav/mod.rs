@@ -5,7 +5,7 @@
 mod path;
 // One-shot path query. Re-exported so callers import `crate::nav::find_path`;
 // the production caller is the agent steering tick (`agent_steering`).
-pub use path::find_path;
+pub(crate) use path::find_path;
 
 use glam::Vec3;
 use postretro_level_format::navmesh::{NavMeshSection, NavPortal, NavRegion};

@@ -1,3 +1,6 @@
+// Navmesh bake tests cover rasterization, erosion, region decomposition, and portals.
+// See: context/lib/build_pipeline.md §Navigation bake
+
 use super::*;
 use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
 use postretro_level_format::texture_names::TextureNamesSection;
@@ -209,6 +212,62 @@ fn agent_radius_erodes_floor_edges() {
     assert_eq!(r.z0, 2);
     assert_eq!(r.x1, 6);
     assert_eq!(r.z1, 6);
+}
+
+// Regression: erosion used a stricter floor match than boundary classification,
+// leaving cells beside climbable steps in the step-height rounding band.
+#[test]
+fn erosion_removes_candidate_matching_boundary_within_step_epsilon() {
+    const CELL_SIZE: f32 = 0.25;
+    const DIM: u32 = 9;
+    const CANDIDATE: (u32, u32) = (3, 3);
+    const RAISED_BOUNDARY: (u32, u32) = (4, 4);
+    const NOTCH: (u32, u32) = (5, 4);
+
+    let params = NavParams {
+        agent_radius: 0.19,
+        step_height: 0.3,
+        cell_size: CELL_SIZE,
+        ..no_erode_params()
+    };
+    let raised_floor = params.step_height + STEP_EPS * 0.5;
+    assert!(raised_floor > params.step_height);
+    assert!(raised_floor <= params.step_height + STEP_EPS);
+
+    let mut tris: Vec<[[f32; 3]; 3]> = Vec::new();
+    for z in 0..DIM {
+        for x in 0..DIM {
+            if (x, z) == NOTCH {
+                continue;
+            }
+            let floor_y = if (x, z) == RAISED_BOUNDARY {
+                raised_floor
+            } else {
+                0.0
+            };
+            tris.extend_from_slice(&floor_quad(
+                x as f32 * CELL_SIZE,
+                z as f32 * CELL_SIZE,
+                (x + 1) as f32 * CELL_SIZE,
+                (z + 1) as f32 * CELL_SIZE,
+                floor_y,
+            ));
+        }
+    }
+
+    let geo = geo_from_triangles(&tris);
+    let section = bake_navmesh(&geo, &params).expect("fixture interior must survive erosion");
+    let candidate_is_covered = section.regions.iter().any(|region| {
+        CANDIDATE.0 >= region.x0
+            && CANDIDATE.0 < region.x1
+            && CANDIDATE.1 >= region.z0
+            && CANDIDATE.1 < region.z1
+    });
+
+    assert!(
+        !candidate_is_covered,
+        "candidate must erode against a climbable boundary within STEP_EPS"
+    );
 }
 
 #[test]

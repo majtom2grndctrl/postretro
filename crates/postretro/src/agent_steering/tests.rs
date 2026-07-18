@@ -67,6 +67,7 @@ fn set_manual_path(registry: &mut EntityRegistry, id: EntityId, path: Vec<Vec3>)
     agent.destination = Some(destination);
     agent.planned_destination = Some(destination);
     agent.path = path;
+    agent.mandatory_waypoints.clear();
     agent.waypoint_cursor = 0;
     agent.replan_cooldown_ticks = u32::MAX;
     agent.arrived = false;
@@ -1294,6 +1295,95 @@ fn lookahead_targets_path_ahead_and_falls_back_to_current_waypoint() {
     agent.path.truncate(1);
     let unavailable = target_point(&agent, position, 1.0).unwrap();
     assert_eq!(unavailable, agent.path[0]);
+}
+
+#[test]
+fn outgoing_only_clearance_bevel_is_not_arrival_skipped_or_lookahead_shortcut() {
+    let mut agent = AgentComponent::new(0.35, 1.8, 0.4, 4.0);
+    let corner = Vec3::ZERO;
+    let outgoing_bevel = Vec3::new(0.37, 0.0, 0.37);
+    agent.path = vec![corner, outgoing_bevel, Vec3::new(2.0, 0.0, 1.0)];
+    agent.mandatory_waypoints = vec![true, true, false];
+
+    // Regression: the canonical 0.37m outgoing-only bevel was inside the
+    // ordinary 0.525m arrival band, so steering skipped both hard points.
+    let position = Vec3::new(-0.1, 0.0, 0.0);
+    let radius = agent.radius;
+    let speed = goal_speed(
+        &mut agent,
+        position,
+        ARRIVAL_RADIUS_FACTOR * radius,
+        ARRIVAL_SLOWDOWN_RADIUS_FACTOR * radius,
+    );
+    assert_eq!(agent.waypoint_cursor, 0);
+    assert!(speed > 0.0 && speed < agent.move_speed);
+    assert_eq!(target_point(&agent, position, 10.0), Some(corner));
+
+    // Regression: a one-skin acceptance band made the slowed approach dip
+    // below the stuck-progress floor before steering could advance. The tight
+    // mandatory band must complete without such a false stall.
+    let mut approach = Vec3::new(-0.1, 0.0, 0.0);
+    for _ in 0..16 {
+        let speed = goal_speed(
+            &mut agent,
+            approach,
+            ARRIVAL_RADIUS_FACTOR * radius,
+            ARRIVAL_SLOWDOWN_RADIUS_FACTOR * radius,
+        );
+        if agent.waypoint_cursor > 0 {
+            break;
+        }
+        let progress = speed * DT;
+        assert!(
+            progress > STUCK_PROGRESS_EPSILON,
+            "mandatory arrival tail fell below stuck progress: {progress}"
+        );
+        approach.x += progress;
+    }
+    assert_eq!(agent.waypoint_cursor, 1);
+    assert_eq!(target_point(&agent, approach, 10.0), Some(outgoing_bevel));
+}
+
+#[test]
+fn mandatory_clearance_turn_restarts_heading_on_outgoing_safe_leg() {
+    let mut agent = AgentComponent::new(0.35, 1.8, 0.4, 4.0);
+    let clearance_turn = Vec3::ZERO;
+    let goal = Vec3::new(1.0, 0.0, 0.0);
+    agent.path = vec![Vec3::new(0.0, 0.0, -1.0), clearance_turn, goal];
+    agent.mandatory_waypoints = vec![false, true, false];
+    agent.waypoint_cursor = 1;
+    agent.steer_velocity = Vec3::new(0.0, 0.0, agent.move_speed);
+
+    // Regression: the final mandatory turn retained its incoming heading and
+    // the turn-rate limiter rounded the clearance vertex back into collision.
+    let position = Vec3::new(0.0, 0.0, -MANDATORY_WAYPOINT_ARRIVAL_RADIUS * 0.5);
+    let radius = agent.radius;
+    let speed = goal_speed(
+        &mut agent,
+        position,
+        ARRIVAL_RADIUS_FACTOR * radius,
+        ARRIVAL_SLOWDOWN_RADIUS_FACTOR * radius,
+    );
+    assert_eq!(agent.waypoint_cursor, 2);
+
+    let velocity = integrated_steer_velocity(
+        &agent,
+        position,
+        speed,
+        STEERING_ACCEL_PER_SPEED * agent.move_speed,
+        MAX_TURN_RATE,
+        LOOKAHEAD_DISTANCE_RADIUS_FACTOR * agent.radius,
+        DT,
+    );
+    let outgoing_direction = Vec3::new(goal.x - position.x, 0.0, goal.z - position.z).normalize();
+    assert!(
+        velocity.normalize().dot(outgoing_direction) > 1.0 - EPS,
+        "mandatory turn must start on its outgoing safe leg; velocity={velocity:?}, outgoing={outgoing_direction:?}"
+    );
+    assert!(
+        velocity.dot(outgoing_direction) * DT > STUCK_PROGRESS_EPSILON,
+        "mandatory turn restart must still clear the strict progress floor; velocity={velocity:?}"
+    );
 }
 
 #[test]

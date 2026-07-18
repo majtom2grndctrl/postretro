@@ -4,6 +4,7 @@
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
+use std::ops::Deref;
 
 use glam::Vec3;
 use postretro_level_format::navmesh::NavPortal;
@@ -22,7 +23,34 @@ use super::{NavGraph, distance_xz};
 /// endpoint is non-finite, or when no corridor connects their regions. A
 /// reachable goal always yields a path whose first waypoint is `start` and last
 /// is `goal`; a goal in the start region is a trivial two-point `[start, goal]`.
-pub fn find_path(graph: &NavGraph, start: Vec3, goal: Vec3) -> Option<Vec<Vec3>> {
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct NavPath {
+    points: Vec<Vec3>,
+    mandatory_waypoints: Vec<bool>,
+}
+
+impl NavPath {
+    fn direct(start: Vec3, goal: Vec3) -> Self {
+        Self {
+            points: vec![start, goal],
+            mandatory_waypoints: vec![false, false],
+        }
+    }
+
+    pub(crate) fn into_parts(self) -> (Vec<Vec3>, Vec<bool>) {
+        (self.points, self.mandatory_waypoints)
+    }
+}
+
+impl Deref for NavPath {
+    type Target = [Vec3];
+
+    fn deref(&self) -> &Self::Target {
+        &self.points
+    }
+}
+
+pub(crate) fn find_path(graph: &NavGraph, start: Vec3, goal: Vec3) -> Option<NavPath> {
     // Finiteness guard: a NaN/inf endpoint makes every funnel area comparison
     // false, silently collapsing the result to a straight `[start, goal]` line
     // that may cross solid geometry. Reject it rather than emit a path through a
@@ -40,7 +68,7 @@ pub fn find_path(graph: &NavGraph, start: Vec3, goal: Vec3) -> Option<Vec<Vec3>>
 
     if start_region == goal_region {
         // Same region: no portal to cross, the straight segment is the path.
-        return Some(vec![start, goal]);
+        return Some(NavPath::direct(start, goal));
     }
 
     let corridor = astar_corridor(graph, start_region, goal_region)?;
@@ -63,12 +91,9 @@ pub fn find_path(graph: &NavGraph, start: Vec3, goal: Vec3) -> Option<Vec<Vec3>>
     // collision sweep's skin across that seam so a radius-clear corner does
     // not still consume the first steering ticks in `collide_and_slide`.
     let corner_clearance_radius = graph.agent.radius.max(0.0) + SKIN_DISTANCE;
-    let gates = inset_portals(&portals, corner_clearance_radius);
+    let gates = inset_portals(&portals, corner_clearance_radius)?;
     let pulled_path = funnel(start, goal, &gates);
-    Some(bevel_clearance_corners(
-        &pulled_path,
-        corner_clearance_radius,
-    ))
+    ensure_endpoint_clearance(&pulled_path, &gates, corner_clearance_radius)
 }
 
 /// One hop of the region corridor: which portal A* crossed and which direction
@@ -275,24 +300,30 @@ struct FunnelGate {
 /// committed apex uses the same clearance-safe geometry. Portal width and
 /// direction are horizontal; Y is interpolated along the original endpoint
 /// pair so stepped or sloped portal height remains meaningful.
-fn inset_portals(portals: &[(Vec3, Vec3)], clearance_radius: f32) -> Vec<FunnelGate> {
+fn inset_portals(portals: &[(Vec3, Vec3)], clearance_radius: f32) -> Option<Vec<FunnelGate>> {
     let clearance_radius = clearance_radius.max(0.0);
     portals
         .iter()
         .map(|&(left, right)| {
             let delta_xz = Vec3::new(right.x - left.x, 0.0, right.z - left.z);
             let width_xz = delta_xz.length();
+            if !delta_xz.is_finite() || !width_xz.is_finite() {
+                return None;
+            }
             if width_xz <= 2.0 * clearance_radius || width_xz <= f32::EPSILON {
                 let midpoint = (left + right) * 0.5;
-                return FunnelGate {
+                if !midpoint.is_finite() {
+                    return None;
+                }
+                return Some(FunnelGate {
                     left: FunnelEndpoint::terminal(midpoint),
                     right: FunnelEndpoint::terminal(midpoint),
-                };
+                });
             }
 
             let inset_fraction = clearance_radius / width_xz;
             let left_interior = delta_xz / width_xz;
-            FunnelGate {
+            let gate = FunnelGate {
                 left: FunnelEndpoint {
                     point: left.lerp(right, inset_fraction),
                     raw_endpoint: Some(left),
@@ -303,7 +334,11 @@ fn inset_portals(portals: &[(Vec3, Vec3)], clearance_radius: f32) -> Vec<FunnelG
                     raw_endpoint: Some(right),
                     portal_interior_xz: Some(-left_interior),
                 },
-            }
+            };
+            (gate.left.point.is_finite()
+                && gate.right.point.is_finite()
+                && left_interior.is_finite())
+            .then_some(gate)
         })
         .collect()
 }
@@ -338,33 +373,93 @@ fn clearance_bevel(corner: FunnelEndpoint, toward: Vec3, clearance_radius: f32) 
     Some(corner.point + corridor_side * clearance_radius)
 }
 
-/// Radius-offset portal endpoints are safe points, but a chord incident to one
-/// can still cut the endpoint's clearance disk. Add a portal-side bevel only
-/// for those incident segments. The two bevel legs are tangent to the disk and
-/// stay on the same corridor side as the adjacent path point.
-fn bevel_clearance_corners(path: &[FunnelEndpoint], clearance_radius: f32) -> Vec<Vec3> {
+#[derive(Clone, Copy)]
+struct PathPoint {
+    point: Vec3,
+    mandatory: bool,
+}
+
+/// Repair every emitted chord against every wide-portal endpoint disk. The
+/// funnel may cross a gate near an endpoint without emitting that endpoint, so
+/// checking only committed funnel corners is insufficient. A repair routes via
+/// the inset point and whichever square bevels its adjacent chords need. The
+/// portal-side bevel leg is tangent; the other leg is clearance-safe.
+fn ensure_endpoint_clearance(
+    path: &[FunnelEndpoint],
+    gates: &[FunnelGate],
+    clearance_radius: f32,
+) -> Option<NavPath> {
     let clearance_radius = clearance_radius.max(0.0);
-    if path.len() <= 2 || clearance_radius <= f32::EPSILON {
-        return path.iter().map(|waypoint| waypoint.point).collect();
+    let obstacles: Vec<FunnelEndpoint> = gates
+        .iter()
+        .flat_map(|gate| [gate.left, gate.right])
+        .filter(|endpoint| endpoint.raw_endpoint.is_some())
+        .collect();
+    let mut repaired: Vec<PathPoint> = path
+        .iter()
+        .map(|waypoint| PathPoint {
+            point: waypoint.point,
+            mandatory: false,
+        })
+        .collect();
+
+    if clearance_radius > f32::EPSILON {
+        let mut segment_index = 0;
+        let mut repairs_remaining = obstacles.len().saturating_mul(4).max(1);
+        while segment_index + 1 < repaired.len() {
+            let start = repaired[segment_index].point;
+            let end = repaired[segment_index + 1].point;
+            let violated = obstacles.iter().copied().find(|obstacle| {
+                let raw = obstacle.raw_endpoint.expect("filtered endpoint");
+                segment_point_distance_xz(start, end, raw) + 1e-5 < clearance_radius
+            });
+            let Some(obstacle) = violated else {
+                segment_index += 1;
+                continue;
+            };
+            if repairs_remaining == 0 {
+                return None;
+            }
+            repairs_remaining -= 1;
+
+            let corner = obstacle.point;
+            let start_is_corner = start.abs_diff_eq(corner, 1e-5);
+            let end_is_corner = end.abs_diff_eq(corner, 1e-5);
+            let mut inserts = Vec::with_capacity(3);
+            if start_is_corner {
+                repaired[segment_index].mandatory = true;
+            } else if let Some(bevel) = clearance_bevel(obstacle, start, clearance_radius) {
+                inserts.push(PathPoint {
+                    point: bevel,
+                    mandatory: true,
+                });
+            }
+            if !start_is_corner && !end_is_corner {
+                inserts.push(PathPoint {
+                    point: corner,
+                    mandatory: true,
+                });
+            }
+            if end_is_corner {
+                repaired[segment_index + 1].mandatory = true;
+            } else if let Some(bevel) = clearance_bevel(obstacle, end, clearance_radius) {
+                inserts.push(PathPoint {
+                    point: bevel,
+                    mandatory: true,
+                });
+            }
+
+            if inserts.is_empty() {
+                return None;
+            }
+            repaired.splice(segment_index + 1..segment_index + 1, inserts);
+        }
     }
 
-    let mut beveled = Vec::with_capacity(path.len() * 2);
-    beveled.push(path[0].point);
-    for index in 1..path.len() - 1 {
-        let corner = path[index];
-        let previous = *beveled.last().expect("path starts with its first point");
-        if let Some(incoming_bevel) = clearance_bevel(corner, previous, clearance_radius) {
-            beveled.push(incoming_bevel);
-        }
-        beveled.push(corner.point);
-
-        let next = path[index + 1].point;
-        if let Some(outgoing_bevel) = clearance_bevel(corner, next, clearance_radius) {
-            beveled.push(outgoing_bevel);
-        }
-    }
-    beveled.push(path[path.len() - 1].point);
-    beveled
+    Some(NavPath {
+        points: repaired.iter().map(|waypoint| waypoint.point).collect(),
+        mandatory_waypoints: repaired.iter().map(|waypoint| waypoint.mandatory).collect(),
+    })
 }
 
 /// Simple Stupid Funnel string-pull over an ordered list of traversal-oriented
@@ -697,7 +792,8 @@ mod tests {
         let endpoint = Vec3::new(4.0, 1.0, 4.0);
         let opposite_endpoint = Vec3::new(4.74, 3.0, 4.0);
 
-        let gate = inset_portals(&[(endpoint, opposite_endpoint)], 0.37)[0];
+        let gates = inset_portals(&[(endpoint, opposite_endpoint)], 0.37).unwrap();
+        let gate = gates[0];
 
         // Regression: 3D width treated this stepped portal as wide even though
         // its horizontal width is exactly the inclusive midpoint threshold.
@@ -712,7 +808,8 @@ mod tests {
         let left = Vec3::new(0.0, 1.0, 4.0);
         let right = Vec3::new(2.0, 3.0, 4.0);
 
-        let gate = inset_portals(&[(left, right)], 0.4)[0];
+        let gates = inset_portals(&[(left, right)], 0.4).unwrap();
+        let gate = gates[0];
 
         assert!(gate.left.point.abs_diff_eq(Vec3::new(0.4, 1.4, 4.0), EPS));
         assert!(gate.right.point.abs_diff_eq(Vec3::new(1.6, 2.6, 4.0), EPS));
@@ -737,6 +834,60 @@ mod tests {
                 segment,
             );
         }
+    }
+
+    #[test]
+    fn find_path_repairs_oblique_straight_chord_near_raw_portal_endpoint() {
+        let mut navmesh = section(
+            vec![region(0, 0, 4, 4), region(0, 4, 4, 8)],
+            vec![NavPortal {
+                region_a: 0,
+                region_b: 1,
+                left: [0.0, 0.0, 4.0],
+                right: [4.0, 0.0, 4.0],
+            }],
+        );
+        navmesh.agent_radius = 0.35;
+        let graph = NavGraph::from_section(&navmesh);
+        let raw_endpoint = Vec3::new(0.0, 0.0, 4.0);
+        let clearance = graph.agent.radius + SKIN_DISTANCE;
+        let start = Vec3::new(0.0, 0.0, 3.0);
+        let goal = Vec3::new(0.74, 0.0, 5.0);
+
+        assert!(
+            segment_point_distance_xz(start, goal, raw_endpoint) < clearance,
+            "fixture must reproduce the oblique straight-chord failure"
+        );
+        let path = find_path(&graph, start, goal).expect("connected corridor");
+        assert!(
+            path.len() > 2,
+            "unsafe straight chord must be repaired: {path:?}"
+        );
+        assert!(path.mandatory_waypoints.iter().any(|mandatory| *mandatory));
+        for segment in path.windows(2) {
+            assert!(
+                segment_point_distance_xz(segment[0], segment[1], raw_endpoint) + EPS >= clearance,
+                "repaired segment {segment:?} cuts endpoint disk; path={path:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn find_path_rejects_finite_portal_endpoints_whose_delta_overflows() {
+        let graph = NavGraph::from_section(&section(
+            vec![region(0, 0, 4, 4), region(0, 4, 4, 8)],
+            vec![NavPortal {
+                region_a: 0,
+                region_b: 1,
+                left: [f32::MAX, 0.0, 4.0],
+                right: [-f32::MAX, 0.0, 4.0],
+            }],
+        ));
+
+        // Regression: finite endpoint subtraction overflowed while insetting,
+        // and NaN gates collapsed the funnel to a bad direct route.
+        let path = find_path(&graph, Vec3::new(1.0, 0.0, 1.0), Vec3::new(1.0, 0.0, 6.0));
+        assert!(path.is_none());
     }
 
     #[test]

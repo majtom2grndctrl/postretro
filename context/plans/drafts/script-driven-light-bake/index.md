@@ -6,7 +6,10 @@
 > Later the same day, four decisions were folded in: derive (not validate-only); Luau parity is a
 > landing requirement, not a fast-follow; store-conditional membership resolves to a runtime-only
 > warning, no compile-time store-read check; and the mechanism pivoted from an in-process VM in
-> `prl-build` to a sidecar manifest emitted by `scripts-build`.
+> `prl-build` to a sidecar manifest emitted by `scripts-build`. Later the same day, the three
+> remaining open questions closed: manifest resolution is resolved membership (not predicates);
+> a throwing script fails the build; `start_active` bakes last-write-wins from
+> `levelLoad`-addressed steps only. See *Resolved decisions* below.
 
 ## Goal
 
@@ -142,6 +145,9 @@ a runtime curve to diverge from; the only thing the two sides can disagree about
 - [ ] A static light neither targeted nor flagged produces byte-identical output to today.
 - [ ] A `setLightAnimation` step targeting a dynamic-tier light changes no baked output and is
   logged at info level, not as a warning.
+- [ ] A light targeted by both a `levelLoad`-addressed step and a trigger-addressed step bakes
+  `start_active` from the `levelLoad` step only. Two `levelLoad`-addressed steps disagreeing on
+  `startActive` for the same light take the last one in manifest order and log a warning.
 - [ ] Two consecutive builds of the same inputs are byte-identical, including for a script that
   calls `Math.random()` or `Date.now()` (pinned in the manifest emitter).
 - [ ] A `.luau` data script derives identical membership to the equivalent `.ts` script: the same
@@ -174,7 +180,7 @@ does not touch the compose path or membership).
 Give `scripts-build` (`postretro-script-compiler`) a sandboxed evaluation context — QuickJS for
 `.ts`, mlua for `.luau` — that evaluates a compiled data script's `setupLevel`, walks the
 returned `LevelManifest`, and emits a light-membership manifest as a sidecar output next to the
-compiled bytes. This is the recommended path: full-fidelity `world.query` resolution, and the VM
+compiled bytes. This is the decided approach: full-fidelity `world.query` resolution, and the VM
 stays out of `postretro-level-compiler`'s dependency graph entirely.
 
 - `prl-build` passes its parsed light table (tags, ids, positions, `isDynamic`) to
@@ -203,8 +209,24 @@ stays out of `postretro-level-compiler`'s dependency graph entirely.
 Read the sidecar manifest `scripts-build` emitted (Task 1): the resolved set of targeted
 map-light indices. For static baked-tier targets with `animation == None` and `is_animated ==
 false`, synthesize the same placeholder `LightAnimation` the `_animated` parser path emits
-(empty channels, `start_active` from the step's `startActive` when present, else the FGD
-`_start_inactive` default). Downstream stages key on `animation.is_some()` and need no change —
+(empty channels; `start_active` derived per the rule below).
+
+**Membership vs. `start_active`.** Membership is the union of `setLightAnimation` targets across
+all dispatch addresses (unchanged from the In-scope rule above — the light needs reserved
+structure because it will be animated whenever its reaction fires, regardless of when that
+reaction fires). Baked `start_active`, by contrast, derives from `levelLoad`-addressed steps
+only, last-write-wins in manifest order. This mirrors the runtime exactly: the light bridge
+writes each reaction's `start_active` into the descriptor in place when the reaction fires
+(`light_bridge.rs`), so the last `levelLoad`-addressed write is what the runtime has settled to
+by the time the level finishes installing, and the baked pre-script value cannot diverge from
+it. Trigger- and crossing-addressed steps do not contribute to the initial baked state — they
+are later transitions, not install-time state. If no `levelLoad`-addressed step targets the
+light, `start_active` falls back to the FGD `_start_inactive` default (active), which correctly
+yields "looks normal until triggered." When two `levelLoad`-addressed steps disagree on
+`startActive` for the same light, emit a build-log line — two boot handlers targeting the same
+light's initial state is an authoring smell, surfaced without inventing a precedence mechanic.
+
+Downstream stages key on `animation.is_some()` and need no change —
 `AnimatedBakedLights` picks the lights up, and the entity-shadow selector already excludes both
 `is_animated` and `animation.is_some()` lights (`crates/level-compiler/src/entity_shadow_select.rs`),
 so derived membership drops out of promotion by construction. Pin that with a test rather than
@@ -247,19 +269,16 @@ diagnostic) — independent.
 
 **Phase 3:** Task 4 — after behavior settles.
 
-## Open questions
+## Resolved decisions
 
-- **Manifest resolution granularity.** Should `scripts-build` receive the full parsed light
-  table and return *resolved* membership (recommended: full fidelity, handles data-dependent
-  `world.query` logic correctly), or should it emit query *predicates* that `prl-build` resolves
-  in Rust (simpler IPC, but degrades when light selection depends on script-side data the
-  predicate can't capture)? Resolved membership is the recommendation; confirm before Task 1.
-- **Evaluation-failure policy.** Recommended: a script that throws fails the build (it would
-  fail at level load too, and stubs are non-throwing so compile-time-only failures should be
-  rare). Alternative: warn-and-skip to flag-only membership — but that reintroduces a silent
-  path. Confirm before Task 1.
-- **`start_active` fidelity.** Deriving `start_active` from the step's `startActive` assumes
-  one step per light; a light targeted by multiple reactions (e.g. a levelLoad idle flicker
-  plus a trigger-fired surge) has no single authoritative initial state. Placeholder default
-  (FGD `_start_inactive`) with a log line when steps disagree is the likely answer; confirm at
-  implementation.
+- **Manifest resolution granularity → resolved membership.** `scripts-build` receives the full
+  parsed light table and returns *resolved* membership, not query predicates for `prl-build` to
+  re-resolve in Rust: full fidelity, handles data-dependent `world.query` logic correctly. See
+  In scope and Task 1.
+- **Evaluation-failure policy → a throwing script fails the build.** A genuine script exception
+  fails the build with the script path and exception; primitive stubs are non-throwing by
+  design, so compile-time-only failures should be rare. See the first acceptance criterion.
+- **`start_active` fidelity → dispatch-semantic last-write-wins.** Baked `start_active` derives
+  from `levelLoad`-addressed steps only, last-write-wins in manifest order — this is what the
+  runtime settles to at install, so the baked value cannot diverge from it. See Task 2 and its
+  matching acceptance criterion.

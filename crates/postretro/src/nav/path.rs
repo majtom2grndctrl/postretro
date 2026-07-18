@@ -63,7 +63,12 @@ pub fn find_path(graph: &NavGraph, start: Vec3, goal: Vec3) -> Option<Vec<Vec3>>
     // collision sweep's skin across that seam so a radius-clear corner does
     // not still consume the first steering ticks in `collide_and_slide`.
     let corner_clearance_radius = graph.agent.radius.max(0.0) + SKIN_DISTANCE;
-    Some(funnel(start, goal, &portals, corner_clearance_radius))
+    let gates = inset_portals(&portals, corner_clearance_radius);
+    let pulled_path = funnel(start, goal, &gates);
+    Some(bevel_clearance_corners(
+        &pulled_path,
+        corner_clearance_radius,
+    ))
 }
 
 /// One hop of the region corridor: which portal A* crossed and which direction
@@ -243,89 +248,188 @@ fn triangle_area_xz(a: Vec3, b: Vec3, c: Vec3) -> f32 {
     abz * acx - abx * acz
 }
 
-/// Move a funnel corner away from one endpoint and toward the interior of its
-/// portal. A portal too narrow for the capsule plus its collision skin has no
-/// valid clearance endpoint, so its midpoint is the stable fallback.
-fn inset_portal_endpoint(endpoint: Vec3, opposite_endpoint: Vec3, clearance_radius: f32) -> Vec3 {
-    let portal = opposite_endpoint - endpoint;
-    let width = portal.length();
-    let clearance_radius = clearance_radius.max(0.0);
+#[derive(Clone, Copy)]
+struct FunnelEndpoint {
+    point: Vec3,
+    raw_endpoint: Option<Vec3>,
+    portal_interior_xz: Option<Vec3>,
+}
 
-    if width <= 2.0 * clearance_radius {
-        return (endpoint + opposite_endpoint) * 0.5;
+impl FunnelEndpoint {
+    fn terminal(point: Vec3) -> Self {
+        Self {
+            point,
+            raw_endpoint: None,
+            portal_interior_xz: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct FunnelGate {
+    left: FunnelEndpoint,
+    right: FunnelEndpoint,
+}
+
+/// Shrink portal gates before string-pulling so every funnel comparison and
+/// committed apex uses the same clearance-safe geometry. Portal width and
+/// direction are horizontal; Y is interpolated along the original endpoint
+/// pair so stepped or sloped portal height remains meaningful.
+fn inset_portals(portals: &[(Vec3, Vec3)], clearance_radius: f32) -> Vec<FunnelGate> {
+    let clearance_radius = clearance_radius.max(0.0);
+    portals
+        .iter()
+        .map(|&(left, right)| {
+            let delta_xz = Vec3::new(right.x - left.x, 0.0, right.z - left.z);
+            let width_xz = delta_xz.length();
+            if width_xz <= 2.0 * clearance_radius || width_xz <= f32::EPSILON {
+                let midpoint = (left + right) * 0.5;
+                return FunnelGate {
+                    left: FunnelEndpoint::terminal(midpoint),
+                    right: FunnelEndpoint::terminal(midpoint),
+                };
+            }
+
+            let inset_fraction = clearance_radius / width_xz;
+            let left_interior = delta_xz / width_xz;
+            FunnelGate {
+                left: FunnelEndpoint {
+                    point: left.lerp(right, inset_fraction),
+                    raw_endpoint: Some(left),
+                    portal_interior_xz: Some(left_interior),
+                },
+                right: FunnelEndpoint {
+                    point: right.lerp(left, inset_fraction),
+                    raw_endpoint: Some(right),
+                    portal_interior_xz: Some(-left_interior),
+                },
+            }
+        })
+        .collect()
+}
+
+fn segment_point_distance_xz(start: Vec3, end: Vec3, point: Vec3) -> f32 {
+    let segment = Vec3::new(end.x - start.x, 0.0, end.z - start.z);
+    let to_point = Vec3::new(point.x - start.x, 0.0, point.z - start.z);
+    let length_squared = segment.length_squared();
+    if length_squared <= f32::EPSILON {
+        return to_point.length();
+    }
+    let t = (to_point.dot(segment) / length_squared).clamp(0.0, 1.0);
+    (to_point - segment * t).length()
+}
+
+fn clearance_bevel(corner: FunnelEndpoint, toward: Vec3, clearance_radius: f32) -> Option<Vec3> {
+    let raw_endpoint = corner.raw_endpoint?;
+    let portal_interior = corner.portal_interior_xz?;
+    if segment_point_distance_xz(toward, corner.point, raw_endpoint) + f32::EPSILON
+        >= clearance_radius
+    {
+        return None;
     }
 
-    endpoint + portal * (clearance_radius / width)
+    let left_perpendicular = Vec3::new(-portal_interior.z, 0.0, portal_interior.x);
+    let toward_corner = Vec3::new(toward.x - raw_endpoint.x, 0.0, toward.z - raw_endpoint.z);
+    let corridor_side = if left_perpendicular.dot(toward_corner) >= 0.0 {
+        left_perpendicular
+    } else {
+        -left_perpendicular
+    };
+    Some(corner.point + corridor_side * clearance_radius)
+}
+
+/// Radius-offset portal endpoints are safe points, but a chord incident to one
+/// can still cut the endpoint's clearance disk. Add a portal-side bevel only
+/// for those incident segments. The two bevel legs are tangent to the disk and
+/// stay on the same corridor side as the adjacent path point.
+fn bevel_clearance_corners(path: &[FunnelEndpoint], clearance_radius: f32) -> Vec<Vec3> {
+    let clearance_radius = clearance_radius.max(0.0);
+    if path.len() <= 2 || clearance_radius <= f32::EPSILON {
+        return path.iter().map(|waypoint| waypoint.point).collect();
+    }
+
+    let mut beveled = Vec::with_capacity(path.len() * 2);
+    beveled.push(path[0].point);
+    for index in 1..path.len() - 1 {
+        let corner = path[index];
+        let previous = *beveled.last().expect("path starts with its first point");
+        if let Some(incoming_bevel) = clearance_bevel(corner, previous, clearance_radius) {
+            beveled.push(incoming_bevel);
+        }
+        beveled.push(corner.point);
+
+        let next = path[index + 1].point;
+        if let Some(outgoing_bevel) = clearance_bevel(corner, next, clearance_radius) {
+            beveled.push(outgoing_bevel);
+        }
+    }
+    beveled.push(path[path.len() - 1].point);
+    beveled
 }
 
 /// Simple Stupid Funnel string-pull over an ordered list of traversal-oriented
 /// `(left, right)` portal segments. Emits the tightest waypoint list from
 /// `start` to `goal` that stays within the corridor. The first waypoint is
 /// `start`, the last is `goal`; a straight corridor collapses to `[start, goal]`.
-fn funnel(
-    start: Vec3,
-    goal: Vec3,
-    portals: &[(Vec3, Vec3)],
-    corner_clearance_radius: f32,
-) -> Vec<Vec3> {
-    let mut path = vec![start];
+fn funnel(start: Vec3, goal: Vec3, portals: &[FunnelGate]) -> Vec<FunnelEndpoint> {
+    let start_endpoint = FunnelEndpoint::terminal(start);
+    let mut path = vec![start_endpoint];
 
     let mut apex = start;
-    let mut left = start;
-    let mut right = start;
+    let mut left = start_endpoint;
+    let mut right = start_endpoint;
     let mut left_index = 0usize;
     let mut right_index = 0usize;
 
     // Append the goal as a degenerate final portal so the funnel pulls all the
     // way to it with the same logic as any interior gate.
-    let mut gates: Vec<(Vec3, Vec3)> = Vec::with_capacity(portals.len() + 1);
+    let mut gates: Vec<FunnelGate> = Vec::with_capacity(portals.len() + 1);
     gates.extend_from_slice(portals);
-    gates.push((goal, goal));
+    let goal_endpoint = FunnelEndpoint::terminal(goal);
+    gates.push(FunnelGate {
+        left: goal_endpoint,
+        right: goal_endpoint,
+    });
 
     let mut i = 0;
     while i < gates.len() {
-        let (gate_left, gate_right) = gates[i];
+        let gate_left = gates[i].left;
+        let gate_right = gates[i].right;
 
         // Tighten the right side.
-        if triangle_area_xz(apex, right, gate_right) <= 0.0 {
-            if apex == right || triangle_area_xz(apex, left, gate_right) > 0.0 {
+        if triangle_area_xz(apex, right.point, gate_right.point) <= 0.0 {
+            if apex == right.point || triangle_area_xz(apex, left.point, gate_right.point) > 0.0 {
                 // Still inside the funnel — narrow the right edge.
                 right = gate_right;
                 right_index = i;
             } else {
                 // Right over left: the left vertex becomes a new apex/corner.
-                path.push(inset_portal_endpoint(
-                    left,
-                    gates[left_index].1,
-                    corner_clearance_radius,
-                ));
-                apex = left;
+                let new_apex = left;
+                path.push(new_apex);
+                apex = new_apex.point;
                 // Restart the funnel from the vertex after the new apex.
                 left_index += 1;
                 right_index = left_index;
-                left = apex;
-                right = apex;
+                left = new_apex;
+                right = new_apex;
                 i = left_index;
                 continue;
             }
         }
 
         // Tighten the left side.
-        if triangle_area_xz(apex, left, gate_left) >= 0.0 {
-            if apex == left || triangle_area_xz(apex, right, gate_left) < 0.0 {
+        if triangle_area_xz(apex, left.point, gate_left.point) >= 0.0 {
+            if apex == left.point || triangle_area_xz(apex, right.point, gate_left.point) < 0.0 {
                 left = gate_left;
                 left_index = i;
             } else {
-                path.push(inset_portal_endpoint(
-                    right,
-                    gates[right_index].0,
-                    corner_clearance_radius,
-                ));
-                apex = right;
+                let new_apex = right;
+                path.push(new_apex);
+                apex = new_apex.point;
                 right_index += 1;
                 left_index = right_index;
-                left = apex;
-                right = apex;
+                left = new_apex;
+                right = new_apex;
                 i = right_index;
                 continue;
             }
@@ -336,8 +440,8 @@ fn funnel(
 
     // Always end on the goal (the degenerate last gate guarantees reachability,
     // but the apex may already sit at goal if the corridor pulled straight).
-    if *path.last().expect("path starts with `start`") != goal {
-        path.push(goal);
+    if path.last().expect("path starts with `start`").point != goal {
+        path.push(goal_endpoint);
     }
     path
 }
@@ -589,16 +693,110 @@ mod tests {
     }
 
     #[test]
-    fn funnel_uses_portal_midpoint_when_portal_is_narrower_than_effective_diameter() {
-        let endpoint = Vec3::new(4.0, 0.0, 4.0);
-        // This portal clears the physical 0.3m radius (0.62m > 0.6m) but not
-        // its collision skin (0.62m < 2 * (0.3m + SKIN_DISTANCE)).
-        let opposite_endpoint = Vec3::new(4.62, 0.0, 4.0);
+    fn funnel_uses_midpoint_for_equal_effective_diameter_with_unequal_endpoint_y() {
+        let endpoint = Vec3::new(4.0, 1.0, 4.0);
+        let opposite_endpoint = Vec3::new(4.74, 3.0, 4.0);
 
-        let waypoint = inset_portal_endpoint(endpoint, opposite_endpoint, 0.3 + SKIN_DISTANCE);
+        let gate = inset_portals(&[(endpoint, opposite_endpoint)], 0.37)[0];
 
-        assert!(waypoint.is_finite(), "narrow portal inset must stay finite");
-        assert!(approx_xz(waypoint, Vec3::new(4.31, 0.0, 4.0)));
+        // Regression: 3D width treated this stepped portal as wide even though
+        // its horizontal width is exactly the inclusive midpoint threshold.
+        let midpoint = Vec3::new(4.37, 2.0, 4.0);
+        assert!(gate.left.point.is_finite() && gate.right.point.is_finite());
+        assert!(gate.left.point.abs_diff_eq(midpoint, EPS));
+        assert!(gate.right.point.abs_diff_eq(midpoint, EPS));
+    }
+
+    #[test]
+    fn funnel_insets_wide_unequal_y_portal_by_horizontal_fraction() {
+        let left = Vec3::new(0.0, 1.0, 4.0);
+        let right = Vec3::new(2.0, 3.0, 4.0);
+
+        let gate = inset_portals(&[(left, right)], 0.4)[0];
+
+        assert!(gate.left.point.abs_diff_eq(Vec3::new(0.4, 1.4, 4.0), EPS));
+        assert!(gate.right.point.abs_diff_eq(Vec3::new(1.6, 2.6, 4.0), EPS));
+    }
+
+    #[test]
+    fn funnel_bevels_segments_around_inner_corner_clearance_disk() {
+        let graph = NavGraph::from_section(&l_corridor_section());
+        let start = Vec3::new(1.0, 0.0, 1.0);
+        let goal = Vec3::new(7.0, 0.0, 5.0);
+        let path = find_path(&graph, start, goal).expect("L corridor connects");
+        let corner = Vec3::new(4.0, 0.0, 4.0);
+        let effective_clearance = graph.agent.radius + SKIN_DISTANCE;
+
+        // Regression: radius-clear inset points were joined by chords that cut
+        // inside the same corner's clearance disk.
+        for segment in path.windows(2) {
+            let clearance = segment_point_distance_xz(segment[0], segment[1], corner);
+            assert!(
+                clearance + EPS >= effective_clearance,
+                "segment {:?} cuts the corner disk: clearance={clearance}, path={path:?}",
+                segment,
+            );
+        }
+    }
+
+    #[test]
+    fn find_path_keeps_every_segment_crossing_inside_preinset_portals() {
+        let mut navmesh = section(
+            vec![
+                region(7, 0, 9, 1),
+                region(0, 1, 8, 2),
+                region(0, 2, 6, 3),
+                region(3, 3, 5, 5),
+            ],
+            vec![
+                NavPortal {
+                    region_a: 0,
+                    region_b: 1,
+                    left: [7.0, 0.0, 1.0],
+                    right: [8.0, 0.0, 1.0],
+                },
+                NavPortal {
+                    region_a: 1,
+                    region_b: 2,
+                    left: [0.0, 0.0, 2.0],
+                    right: [6.0, 0.0, 2.0],
+                },
+                NavPortal {
+                    region_a: 2,
+                    region_b: 3,
+                    left: [3.0, 0.0, 3.0],
+                    right: [5.0, 0.0, 3.0],
+                },
+            ],
+        );
+        navmesh.agent_radius = 0.35;
+        let graph = NavGraph::from_section(&navmesh);
+        let start = Vec3::new(8.0, 0.0, 0.2);
+        let goal = Vec3::new(4.0, 0.0, 4.0);
+        let path = find_path(&graph, start, goal).expect("four-region corridor connects");
+        let inset = graph.agent.radius + SKIN_DISTANCE;
+
+        // Regression: the returned corner was inset while the funnel apex stayed
+        // raw, letting a later segment cross the first portal outside its gate.
+        for (portal_z, raw_min_x, raw_max_x) in [(1.0, 7.0, 8.0), (2.0, 0.0, 6.0), (3.0, 3.0, 5.0)]
+        {
+            let crossing = path.windows(2).find_map(|segment| {
+                let dz = segment[1].z - segment[0].z;
+                if dz.abs() <= EPS {
+                    return None;
+                }
+                let t = (portal_z - segment[0].z) / dz;
+                (t >= -EPS && t <= 1.0 + EPS)
+                    .then_some(segment[0].x + t * (segment[1].x - segment[0].x))
+            });
+            let crossing_x = crossing.expect("path must cross each corridor portal");
+            assert!(
+                crossing_x + EPS >= raw_min_x + inset && crossing_x - EPS <= raw_max_x - inset,
+                "portal z={portal_z} crossing x={crossing_x} leaves inset range [{}, {}], path={path:?}",
+                raw_min_x + inset,
+                raw_max_x - inset,
+            );
+        }
     }
 
     #[test]

@@ -20,9 +20,9 @@ use crate::nav::NavAgentParams;
 const EPS: f32 = 1e-3;
 const DT: f32 = 1.0 / 60.0;
 const GRAVITY: f32 = -20.0;
-// The segmented concave fixture routes around finite wall ends via portals.
-// That route still produces a visible recovery displacement, but less direct
-// goal projection than the old all-floor shortcut.
+// Physical escape distance for the segmented concave fixture. Goal projection
+// has its own semantic floor because a clearance-safe replan may initially
+// route mostly sideways around a finite wall end.
 const SEGMENTED_CONCAVE_ESCAPE_DISTANCE: f32 = 0.025;
 
 /// Canonical agent params for the fixtures: 0.35 m radius, 1.8 m tall, 0.4 m
@@ -227,95 +227,6 @@ impl LWall {
     }
 }
 
-/// Clearance-buffered route around a central pillar. The hand-built regions
-/// deliberately leave a 1m corridor around the 2m-square obstacle, which is
-/// wider than the fixture agent's 0.35m radius plus collision skin. It is a
-/// deterministic steering fixture, not evidence that the offline erosion pass
-/// generated these regions.
-struct PillarRoute;
-
-impl PillarRoute {
-    fn collision_world() -> CollisionWorld {
-        let mut points: Vec<Point<f32>> = Vec::new();
-        let mut tris: Vec<[u32; 3]> = Vec::new();
-
-        let base = points.len() as u32;
-        points.push(Point::new(0.0, 0.0, 0.0));
-        points.push(Point::new(10.0, 0.0, 0.0));
-        points.push(Point::new(10.0, 0.0, 10.0));
-        points.push(Point::new(0.0, 0.0, 10.0));
-        tris.push([base, base + 1, base + 2]);
-        tris.push([base, base + 2, base + 3]);
-
-        let mut push_wall = |x0: f32, z0: f32, x1: f32, z1: f32| {
-            let base = points.len() as u32;
-            points.push(Point::new(x0, 0.0, z0));
-            points.push(Point::new(x1, 0.0, z1));
-            points.push(Point::new(x1, 3.0, z1));
-            points.push(Point::new(x0, 3.0, z0));
-            tris.push([base, base + 1, base + 2]);
-            tris.push([base, base + 2, base + 3]);
-            tris.push([base, base + 2, base + 1]);
-            tris.push([base, base + 3, base + 2]);
-        };
-
-        push_wall(4.0, 4.0, 6.0, 4.0);
-        push_wall(6.0, 4.0, 6.0, 6.0);
-        push_wall(6.0, 6.0, 4.0, 6.0);
-        push_wall(4.0, 6.0, 4.0, 4.0);
-
-        CollisionWorld {
-            mesh: TriMesh::new(points, tris),
-            isometry: Isometry::identity(),
-        }
-    }
-
-    fn nav_graph() -> NavGraph {
-        let region = |x0, z0, x1, z1| NavRegion {
-            x0,
-            z0,
-            x1,
-            z1,
-            floor_y_min: 0.0,
-            floor_y_max: 0.25,
-        };
-        let section = NavMeshSection {
-            version: NAVMESH_VERSION,
-            origin: [0.0, 0.0, 0.0],
-            cell_size: 1.0,
-            dim_x: 10,
-            dim_z: 10,
-            agent_radius: 0.35,
-            agent_height: 1.8,
-            step_height: 0.4,
-            max_slope_deg: 45.0,
-            regions: vec![
-                // South lane, 1m below the pillar's south face.
-                region(0, 0, 7, 3),
-                // East lane, 1m right of the pillar's east face.
-                region(7, 0, 10, 7),
-                // North lane, 1m above the pillar's north face.
-                region(0, 7, 10, 10),
-            ],
-            portals: vec![
-                NavPortal {
-                    region_a: 0,
-                    region_b: 1,
-                    left: [7.0, 0.0, 0.0],
-                    right: [7.0, 0.0, 3.0],
-                },
-                NavPortal {
-                    region_a: 1,
-                    region_b: 2,
-                    left: [7.0, 0.0, 7.0],
-                    right: [10.0, 0.0, 7.0],
-                },
-            ],
-        };
-        NavGraph::from_section(&section)
-    }
-}
-
 /// Concave-corner recovery fixture: two vertical wall segments meet at an
 /// interior corner. The agent approaches from southwest toward northeast, so
 /// collision can consume the goal-directed motion while the fixed +90deg
@@ -502,7 +413,24 @@ fn portal_midpoint(portal: &NavPortal) -> Vec3 {
 }
 
 fn portal_width(portal: &NavPortal) -> f32 {
-    (Vec3::from_array(portal.right) - Vec3::from_array(portal.left)).length()
+    let delta = Vec3::from_array(portal.right) - Vec3::from_array(portal.left);
+    Vec3::new(delta.x, 0.0, delta.z).length()
+}
+
+fn static_mesh_segment_clearance(
+    world: &CollisionWorld,
+    start: Vec3,
+    end: Vec3,
+    capsule_center_y: f32,
+) -> f32 {
+    let length = distance_xz(start, end);
+    let sample_count = (length / 0.01).ceil().max(1.0) as usize;
+    (0..=sample_count)
+        .map(|sample| {
+            let t = sample as f32 / sample_count as f32;
+            static_mesh_clearance(world, start.lerp(end, t), capsule_center_y)
+        })
+        .fold(f32::INFINITY, f32::min)
 }
 
 fn run_until_stuck_threshold(
@@ -673,13 +601,39 @@ fn funnel_waypoints_keep_effective_capsule_clearance_from_concave_fixture_mesh()
 }
 
 #[test]
-fn funnel_path_routes_around_pillar_without_stuck_detection() {
-    let world = PillarRoute::collision_world();
-    let graph = PillarRoute::nav_graph();
+fn funnel_segments_keep_effective_capsule_clearance_from_concave_fixture_mesh() {
+    let corner = ConcaveCorner::fixture();
+    let world = corner.collision_world();
+    let graph = corner.nav_graph();
+    let params = graph.agent_params();
+    let start = Vec3::new(1.2, rest_y(&params), 1.2);
+    let goal = Vec3::new(5.0, rest_y(&params), 5.0);
+    let path = find_path(&graph, start, goal).expect("concave-corner route exists");
+    let effective_clearance_radius = params.radius + SKIN_DISTANCE;
+
+    // Regression: individually clear inset waypoints formed a chord that passed
+    // only 0.2616m from the wall end for a 0.37m effective clearance.
+    for segment in path.windows(2) {
+        let clearance =
+            static_mesh_segment_clearance(&world, segment[0], segment[1], rest_y(&params));
+        assert!(
+            clearance + EPS >= effective_clearance_radius,
+            "path segment {:?} has only {clearance:.4}m static-mesh clearance; expected {:.4}m, path={path:?}",
+            segment,
+            effective_clearance_radius,
+        );
+    }
+}
+
+#[test]
+fn funnel_path_routes_concave_corner_without_stuck_detection() {
+    let corner = ConcaveCorner::fixture();
+    let world = corner.collision_world();
+    let graph = corner.nav_graph();
     let params = graph.agent_params();
     let mut registry = EntityRegistry::new();
     let id = spawn_agent(&mut registry, 1.2, 1.2, &params);
-    let destination = Vec3::new(8.5, rest_y(&params), 8.5);
+    let destination = Vec3::new(5.0, rest_y(&params), 5.0);
     set_destination(&mut registry, id, destination);
 
     for tick_index in 0..600 {
@@ -693,7 +647,7 @@ fn funnel_path_routes_around_pillar_without_stuck_detection() {
         if tick_index == 0 {
             assert!(
                 agent.path.len() >= 3,
-                "pillar route must retain an interior funnel waypoint: {:?}",
+                "concave route must retain an interior funnel waypoint: {:?}",
                 agent.path
             );
         }
@@ -726,7 +680,7 @@ fn funnel_path_routes_around_pillar_without_stuck_detection() {
         }
     }
 
-    panic!("funnel route did not reach the pillar-route goal within 600 ticks");
+    panic!("funnel route did not reach the concave-corner goal within 600 ticks");
 }
 
 #[test]
@@ -786,8 +740,8 @@ fn recovery_window_escapes_concave_corner_with_goal_projected_progress() {
     let displacement = Vec3::new(end.x - start.x, 0.0, end.z - start.z);
     let progress = displacement.dot(goal_dir);
     assert!(
-        progress > SEGMENTED_CONCAVE_ESCAPE_DISTANCE,
-        "recovery should escape the segmented concave route with goal-projected progress > {SEGMENTED_CONCAVE_ESCAPE_DISTANCE}, got {progress}; start={start:?}, end={end:?}"
+        progress > STUCK_PROGRESS_EPSILON,
+        "recovery should restore goal-projected progress above the stuck epsilon {STUCK_PROGRESS_EPSILON}, got {progress}; start={start:?}, end={end:?}"
     );
     assert!(
         xz_length(displacement) > SEGMENTED_CONCAVE_ESCAPE_DISTANCE,

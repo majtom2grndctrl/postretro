@@ -194,9 +194,8 @@ fn low_clearance_ceiling_blocks_walkability() {
 
 #[test]
 fn agent_radius_erodes_floor_edges() {
-    // 2 m floor with agent_radius 0.25 (= 1 cell). The outer ring of cells
-    // borders the grid edge (a non-walkable boundary) and erodes, leaving a
-    // strictly smaller interior region.
+    // 2 m floor with agent_radius 0.25. The conservative cell-square test
+    // erodes the boundary ring plus its immediately adjacent ring.
     let tris = floor_quad(0.0, 0.0, 2.0, 2.0, 0.0);
     let geo = geo_from_triangles(&tris);
     let params = NavParams {
@@ -205,11 +204,82 @@ fn agent_radius_erodes_floor_edges() {
     };
     let section = bake_navmesh(&geo, &params).expect("interior must survive erosion");
     let r = section.regions[0];
-    // 8x8 grid, one-cell erosion ring → interior 6x6 at [1,7).
-    assert_eq!(r.x0, 1);
-    assert_eq!(r.z0, 1);
-    assert_eq!(r.x1, 7);
-    assert_eq!(r.z1, 7);
+    // 8x8 grid, two-cell erosion ring → interior 4x4 at [2,6).
+    assert_eq!(r.x0, 2);
+    assert_eq!(r.z0, 2);
+    assert_eq!(r.x1, 6);
+    assert_eq!(r.z1, 6);
+}
+
+#[test]
+fn euclidean_erosion_is_isotropic_and_bounded_by_one_cell() {
+    const CELL_SIZE: f32 = 0.25;
+    const AGENT_RADIUS: f32 = 0.8;
+    const DIM: u32 = 64;
+    const WALL: u32 = 24;
+    const EPSILON: f32 = 1.0e-5;
+
+    let params = NavParams {
+        agent_radius: AGENT_RADIUS,
+        step_height: 0.0,
+        cell_size: CELL_SIZE,
+        ..no_erode_params()
+    };
+    let make_grid = |is_walkable: &dyn Fn(u32, u32) -> bool| WalkGrid {
+        origin: Vec3::ZERO,
+        cell_size: CELL_SIZE,
+        dim_x: DIM,
+        dim_z: DIM,
+        cells: (0..DIM)
+            .flat_map(|z| {
+                (0..DIM).map(move |x| {
+                    if is_walkable(x, z) {
+                        vec![0.0]
+                    } else {
+                        Vec::new()
+                    }
+                })
+            })
+            .collect(),
+    };
+
+    // The empty half-grid is the non-walkable side of a straight wall. The
+    // diagonal fixture is the same wall rotated 45 degrees, rasterized as a
+    // staircase boundary. Both sample paths start on a boundary column and
+    // advance perpendicular to their wall, far from the outer grid edges.
+    let straight = erode(make_grid(&|x, _| x >= WALL), &params);
+    let diagonal = erode(make_grid(&|x, z| x + z >= WALL * 2), &params);
+    let erased_run = |grid: &WalkGrid, start_x: u32, start_z: u32, dx: u32, dz: u32| {
+        let count = (0..(DIM - WALL))
+            .take_while(|&offset| {
+                grid.heights_at(start_x + offset * dx, start_z + offset * dz)
+                    .is_empty()
+            })
+            .count();
+        assert!(
+            count > 0,
+            "the sample must begin on an eroded boundary column"
+        );
+        (count - 1) as f32
+    };
+
+    let straight_depth = erased_run(&straight, WALL, DIM / 2, 1, 0) * CELL_SIZE;
+    let diagonal_depth =
+        erased_run(&diagonal, WALL, WALL, 1, 1) * CELL_SIZE * std::f32::consts::SQRT_2;
+
+    assert!(
+        (straight_depth - diagonal_depth).abs() <= CELL_SIZE + EPSILON,
+        "straight and 45-degree erosion must agree within one cell: \
+         straight={straight_depth}, diagonal={diagonal_depth}"
+    );
+    assert!(
+        straight_depth <= AGENT_RADIUS + CELL_SIZE + EPSILON,
+        "straight-wall erosion must not exceed agent radius plus one cell: {straight_depth}"
+    );
+    assert!(
+        diagonal_depth <= AGENT_RADIUS + CELL_SIZE + EPSILON,
+        "45-degree erosion must not exceed agent radius plus one cell: {diagonal_depth}"
+    );
 }
 
 #[test]

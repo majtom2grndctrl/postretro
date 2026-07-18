@@ -12,7 +12,7 @@ use crate::map_data::NavParams;
 /// stage cache key so a stale on-disk entry from a prior version is a miss on
 /// the first build after the bump and a hit on the second (matches the SDF and
 /// SH stage pattern).
-pub const NAVMESH_STAGE_VERSION: u32 = 2;
+pub const NAVMESH_STAGE_VERSION: u32 = 3;
 
 /// Tolerance on every `step_height` comparison. A floor delta exactly equal to
 /// `step_height` must count as a climbable step (a one-step riser is reachable),
@@ -401,11 +401,11 @@ fn flatten_cells(grid: &WalkGrid) -> Vec<NavCell> {
 /// within `step_height` of it (a wall, an unclimbable drop, or the grid edge).
 /// A climbable-step neighbor (a walkable span within `step_height`) is NOT a
 /// boundary and does not erode its neighbors — this keeps doorway-width paths
-/// beside steps connected. Removes every walkable span within `radius_cells`
-/// (Chebyshev, matching floor heights within `step_height`) of a boundary span.
+/// beside steps connected. Removes every walkable span whose square can reach
+/// the agent-radius disk around a boundary span at a matching floor height.
 fn erode(grid: WalkGrid, params: &NavParams) -> WalkGrid {
-    let radius_cells = (params.agent_radius / grid.cell_size).ceil() as i64;
-    if radius_cells <= 0 {
+    let agent_radius = params.agent_radius;
+    if agent_radius <= 0.0 {
         return grid;
     }
     let step = params.step_height;
@@ -418,12 +418,12 @@ fn erode(grid: WalkGrid, params: &NavParams) -> WalkGrid {
         }
     }
 
-    // Build the surviving span set: drop any span within `radius_cells`
-    // (Chebyshev) of a boundary span at a compatible height.
+    // Build the surviving span set: drop any span whose square can lie within
+    // the agent-radius disk around a boundary span at a compatible height.
     let mut eroded: Vec<Vec<f32>> = vec![Vec::new(); grid.cells.len()];
     let mut eroded_count = 0usize;
     for cell in flatten_cells(&grid) {
-        if near_boundary(&boundary, &cell, radius_cells, step) {
+        if near_boundary(&boundary, &cell, agent_radius, grid.cell_size, step) {
             eroded_count += 1;
             continue;
         }
@@ -456,18 +456,24 @@ fn is_boundary_span(grid: &WalkGrid, cell: &NavCell, step: f32) -> bool {
     false
 }
 
-/// Whether `cell` lies within `agent_radius` of a true non-walkable boundary.
-/// A boundary cell is itself the wall-adjacent ring and is always eroded
-/// (distance 0); cells further in erode only while strictly inside the radius
-/// reach. With `radius_cells == 1` (radius == cell_size) this removes exactly
-/// the one outermost ring — the boundary cells themselves — and no interior
-/// ring, matching the spec's "within `agent_radius` of a boundary" measured
-/// from the boundary cell outward.
-fn near_boundary(boundary: &[NavCell], cell: &NavCell, radius_cells: i64, step: f32) -> bool {
+/// Whether any point of `cell` can lie within `agent_radius` of a true
+/// non-walkable boundary span. Center distance includes a half cell diagonal,
+/// conservatively covering the whole candidate cell instead of quantizing the
+/// radius to a Chebyshev number of cells.
+fn near_boundary(
+    boundary: &[NavCell],
+    cell: &NavCell,
+    agent_radius: f32,
+    cell_size: f32,
+    step: f32,
+) -> bool {
+    let center_reach = agent_radius + cell_size * std::f32::consts::FRAC_1_SQRT_2;
+    let center_reach_sq = center_reach * center_reach;
+
     boundary.iter().any(|b| {
-        let dx = (b.x as i64 - cell.x as i64).abs();
-        let dz = (b.z as i64 - cell.z as i64).abs();
-        dx < radius_cells && dz < radius_cells && (b.floor_y - cell.floor_y).abs() <= step
+        let dx = (b.x as f32 - cell.x as f32) * cell_size;
+        let dz = (b.z as f32 - cell.z as f32) * cell_size;
+        dx * dx + dz * dz <= center_reach_sq && (b.floor_y - cell.floor_y).abs() <= step
     })
 }
 

@@ -441,6 +441,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn headless_install_uses_catalog_tags_and_keeps_direct_prl_paths_untagged() {
+        let content_root = Path::new("content/dev");
+        let maps = vec![postretro_foundation::ModMapEntry {
+            id: "trap-pools".to_string(),
+            path: "maps/trap-pools.prl".to_string(),
+            name: "Trap Pools".to_string(),
+            tags: vec!["trap-pools".to_string(), "test".to_string()],
+        }];
+
+        assert_eq!(
+            active_level_tags_for_headless_install(
+                &content_root.join("maps/trap-pools.prl"),
+                content_root,
+                &maps,
+            ),
+            ["trap-pools", "test"],
+            "a catalog-addressable headless map must compose scoped mod definitions",
+        );
+        assert!(
+            active_level_tags_for_headless_install(
+                &content_root.join("maps/direct-fixture.prl"),
+                content_root,
+                &maps,
+            )
+            .is_empty(),
+            "a direct .prl path has no catalog classification and cannot match scoped pools",
+        );
+    }
+
+    #[test]
     fn yaw_from_negative_z_direction_is_zero() {
         assert!(yaw_from_direction([0.0, 0.0, -1.0]).abs() < 1e-6);
     }

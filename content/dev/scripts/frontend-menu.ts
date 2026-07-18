@@ -26,6 +26,12 @@ export const mapCatalog = defineMapCatalog([
     tags: ["combat", "recommended"],
   },
   {
+    id: "trap-pools",
+    path: "maps/trap-pools.prl",
+    name: "Trap Pools",
+    tags: ["trap-pools", "test"],
+  },
+  {
     id: "occlusion-test",
     path: "maps/occlusion-test.prl",
     name: "Occlusion Test",

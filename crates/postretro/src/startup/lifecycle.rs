@@ -1604,14 +1604,16 @@ mod tests {
     use crate::{input, options, scripting_systems, view_feel};
     use postretro_entities::SystemReactionCommand;
     use postretro_entities::{
-        CrossingCondition, CrossingDescriptor, EntityTypeDescriptor, MoverCommand, NamedReaction,
-        PrimitiveDescriptor, ProgressDescriptor, ReactionDescriptor, TriggerActivation,
-        TriggerEventDescriptor, TriggerFireMode, TriggerVolumeComponent,
+        CrossingCondition, CrossingDescriptor, EntityId, EntityTypeDescriptor, MoverCommand,
+        NamedReaction, PrimitiveDescriptor, ProgressDescriptor, ReactionDescriptor,
+        TriggerActivation, TriggerEventDescriptor, TriggerFireMode, TriggerPoolArm,
+        TriggerPoolDescriptor, TriggerVolumeComponent,
     };
     use postretro_entities::{
         ScriptCtx, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue, Transform,
     };
     use postretro_foundation::ModMapEntry;
+    use postretro_level_format::trigger_volumes::TriggerVolumeRecord;
     use postretro_scripting_core::data_descriptors::RegisteredUiTree;
     use postretro_scripting_core::primitives_registry::PrimitiveRegistry;
     use postretro_scripting_core::reaction_dispatch::ProgressTracker;
@@ -2214,6 +2216,139 @@ mod tests {
             fog_cell_masks: None,
             navmesh: None,
             cell_draw_index: None,
+        }
+    }
+
+    fn pool_descriptor(tag: &str, arm: TriggerPoolArm, levels: &[&str]) -> TriggerPoolDescriptor {
+        TriggerPoolDescriptor {
+            tag: tag.to_string(),
+            arm,
+            levels: levels.iter().map(|level| (*level).to_string()).collect(),
+        }
+    }
+
+    fn trap_pool_trigger_record(
+        name: &str,
+        tag: &str,
+        index: usize,
+        enabled_on_spawn: bool,
+    ) -> TriggerVolumeRecord {
+        let x = index as f32 * 4.0;
+        TriggerVolumeRecord {
+            name: name.to_string(),
+            tags: vec![tag.to_string()],
+            aabb_min: [x, 0.0, 0.0],
+            aabb_max: [x + 1.0, 1.0, 1.0],
+            activation: 0,
+            target_tag: String::new(),
+            command: 0,
+            command_arg: String::new(),
+            fire_mode: 0,
+            rearm_ms: 0.0,
+            enabled_on_spawn,
+            on_fire: String::new(),
+            on_exit: String::new(),
+        }
+    }
+
+    fn trap_pool_fixture_world() -> postretro_level_loader::LevelWorld {
+        let mut world = level_world("trap_pools", 1);
+        world.trigger_volumes = (0..4)
+            .map(|index| {
+                trap_pool_trigger_record(&format!("closet-{index}"), "closet_trap", index, true)
+            })
+            .chain((0..4).map(|index| {
+                trap_pool_trigger_record(
+                    &format!("ambush-{index}"),
+                    "ambush_trap",
+                    index + 4,
+                    false,
+                )
+            }))
+            .collect();
+        world
+    }
+
+    struct TrapPoolFixtureInstall {
+        report: TriggerPoolInstallReport,
+        armed_by_tag: BTreeMap<String, Vec<EntityId>>,
+    }
+
+    /// Run the real renderer-free installation seam with a policy pinned on
+    /// `WorldInstallHandles`, never through argv. The synthetic records mirror
+    /// the authored fixture's two four-member pools while keeping this QA gate
+    /// free of a cold PRL bake.
+    fn install_trap_pool_fixture(
+        policy: TriggerPoolSeedPolicy,
+        active_level_tags: &[&str],
+        global_pools: Vec<TriggerPoolDescriptor>,
+        suppress_ai_enemies: bool,
+    ) -> TrapPoolFixtureInstall {
+        let mut app = test_app();
+        let ctx = script_ctx(&app);
+        ctx.data_registry
+            .borrow_mut()
+            .replace_global_trigger_pools(global_pools);
+        let world = trap_pool_fixture_world();
+        let active_level_tags: Vec<String> = active_level_tags
+            .iter()
+            .map(|tag| (*tag).to_string())
+            .collect();
+        let mut timings = StartupTimings::new();
+        let products = {
+            let session = app.session.as_mut().expect("test app session installed");
+            let handles = WorldInstallHandles {
+                command_diagnostics: Default::default(),
+                spawn_context: Default::default(),
+                world: &world,
+                script_ctx: &ctx,
+                content_root: std::path::Path::new("content/dev"),
+                active_level_tags: &active_level_tags,
+                nav_graph: None,
+                collision_world: &mut app.collision_world,
+                fog_volume_bridge: &mut session.fog_volume_bridge,
+                trigger_volume_bridge: &mut session.trigger_volume_bridge,
+                classname_dispatch: &session.classname_dispatch,
+                script_runtime: &session.scripting.script_runtime,
+                sequence_registry: &session.scripting.sequence_registry,
+                reaction_registry: &session.scripting.reaction_registry,
+                system_registry: &session.scripting.system_registry,
+                modal_stack: &mut session.modal_stack,
+                progress_tracker: &mut session.progress_tracker,
+                crossing_detector: &mut session.crossing_detector,
+                slot_accumulator_bindings: &mut session.scripting.slot_accumulator_bindings,
+                mesh_clip_tables: &mut session.mesh_clip_tables,
+                hit_zone_store: &mut session.hit_zone_store,
+                trigger_pool_policy: policy,
+                suppress_ai_enemies,
+                suppress_boot_pawn: suppress_ai_enemies,
+            };
+            install_world_cpu(handles, &mut timings, |_models, _clip_tables| {})
+        };
+
+        let registry = ctx.registry.borrow();
+        let armed_by_tag = ["closet_trap", "ambush_trap"]
+            .into_iter()
+            .map(|tag| {
+                let mut armed: Vec<EntityId> = registry
+                    .query_by_component_and_tag(
+                        postretro_entities::ComponentKind::TriggerVolume,
+                        Some(tag),
+                    )
+                    .filter_map(|(id, _)| {
+                        registry
+                            .get_component::<TriggerVolumeComponent>(id)
+                            .is_ok_and(|trigger| trigger.armed)
+                            .then_some(id)
+                    })
+                    .collect();
+                armed.sort_unstable();
+                (tag.to_string(), armed)
+            })
+            .collect();
+        TrapPoolFixtureInstall {
+            report: products.trigger_pool_report,
+            armed_by_tag,
         }
     }
 
@@ -3554,6 +3689,154 @@ mod tests {
         assert!(
             max_light_id < min_fog_id,
             "light entity ids (max {max_light_id}) must precede fog entity ids (min {min_fog_id})",
+        );
+    }
+
+    #[test]
+    fn pinned_trigger_pool_install_selects_exact_counts_and_restarts_identically() {
+        let pools = vec![
+            pool_descriptor("closet_trap", TriggerPoolArm::Count(2), &[]),
+            pool_descriptor(
+                "ambush_trap",
+                TriggerPoolArm::Percentage(50.0),
+                &["trap-pools"],
+            ),
+        ];
+
+        let first = install_trap_pool_fixture(
+            TriggerPoolSeedPolicy::Seeded(17),
+            &["trap-pools"],
+            pools.clone(),
+            false,
+        );
+        let restarted = install_trap_pool_fixture(
+            TriggerPoolSeedPolicy::Seeded(17),
+            &["trap-pools"],
+            pools.clone(),
+            false,
+        );
+        let different_seed = install_trap_pool_fixture(
+            TriggerPoolSeedPolicy::Seeded(18),
+            &["trap-pools"],
+            pools,
+            false,
+        );
+
+        assert_eq!(first.report.seed, Some(17));
+        assert_eq!(
+            first
+                .report
+                .pools
+                .iter()
+                .map(|pool| (pool.tag.as_str(), pool.members.len(), pool.selected.len()))
+                .collect::<Vec<_>>(),
+            [("closet_trap", 4, 2), ("ambush_trap", 4, 2)],
+            "count and percentage pools must resolve against their actual installed members",
+        );
+        assert_eq!(first.armed_by_tag["closet_trap"].len(), 2);
+        assert_eq!(first.armed_by_tag["ambush_trap"].len(), 2);
+        assert_eq!(
+            first.report, restarted.report,
+            "the pinned policy reproduces the same armed identities on restart",
+        );
+        assert_ne!(
+            first.report.pools[0].selected, different_seed.report.pools[0].selected,
+            "the fixed distinct seeds deliberately select different closet members",
+        );
+    }
+
+    #[test]
+    fn headless_arm_all_fixture_ignores_pool_counts_and_keeps_no_seed() {
+        let fixture = install_trap_pool_fixture(
+            TriggerPoolSeedPolicy::ArmAll,
+            &["trap-pools"],
+            vec![
+                pool_descriptor("closet_trap", TriggerPoolArm::Count(0), &[]),
+                pool_descriptor(
+                    "ambush_trap",
+                    TriggerPoolArm::Percentage(0.0),
+                    &["trap-pools"],
+                ),
+            ],
+            false,
+        );
+
+        assert_eq!(fixture.report.seed, None);
+        assert_eq!(fixture.armed_by_tag["closet_trap"].len(), 4);
+        assert_eq!(fixture.armed_by_tag["ambush_trap"].len(), 4);
+        assert!(
+            fixture
+                .report
+                .pools
+                .iter()
+                .all(|pool| pool.members == pool.selected),
+            "the headless default bypass arms every installed member without rolling",
+        );
+    }
+
+    #[test]
+    fn scoped_global_trigger_pool_matches_catalog_tags_but_not_direct_prl_paths() {
+        let pools = vec![
+            pool_descriptor("closet_trap", TriggerPoolArm::Count(2), &[]),
+            pool_descriptor(
+                "ambush_trap",
+                TriggerPoolArm::Percentage(50.0),
+                &["trap-pools"],
+            ),
+        ];
+        let catalog_install = install_trap_pool_fixture(
+            TriggerPoolSeedPolicy::Seeded(17),
+            &["trap-pools"],
+            pools.clone(),
+            false,
+        );
+        let direct_prl_install =
+            install_trap_pool_fixture(TriggerPoolSeedPolicy::Seeded(17), &[], pools, false);
+
+        assert_eq!(catalog_install.report.pools.len(), 2);
+        assert_eq!(catalog_install.armed_by_tag["ambush_trap"].len(), 2);
+        assert_eq!(
+            direct_prl_install
+                .report
+                .pools
+                .iter()
+                .map(|pool| pool.tag.as_str())
+                .collect::<Vec<_>>(),
+            ["closet_trap"],
+            "an untagged direct .prl load must not match a levels-scoped mod pool",
+        );
+        assert!(
+            direct_prl_install.armed_by_tag["ambush_trap"].is_empty(),
+            "the client-authored false state remains untouched when the scoped pool is absent",
+        );
+    }
+
+    #[test]
+    fn connected_client_install_skips_pool_roll_and_preserves_authored_trigger_state() {
+        let fixture = install_trap_pool_fixture(
+            TriggerPoolSeedPolicy::Seeded(17),
+            &["trap-pools"],
+            vec![
+                pool_descriptor("closet_trap", TriggerPoolArm::Count(2), &[]),
+                pool_descriptor(
+                    "ambush_trap",
+                    TriggerPoolArm::Percentage(50.0),
+                    &["trap-pools"],
+                ),
+            ],
+            true,
+        );
+
+        assert!(fixture.report.pools.is_empty());
+        assert_eq!(fixture.report.seed, None);
+        assert_eq!(
+            fixture.armed_by_tag["closet_trap"].len(),
+            4,
+            "the client keeps authored enabled_on_spawn=true rather than running the host roll",
+        );
+        assert!(
+            fixture.armed_by_tag["ambush_trap"].is_empty(),
+            "the client keeps authored enabled_on_spawn=false rather than running the host roll",
         );
     }
 }

@@ -141,9 +141,9 @@ a runtime curve to diverge from; the only thing the two sides can disagree about
   themselves never throw (parity: a script that evaluates at runtime evaluates at compile time).
 - [ ] `world.query({ component: "light", tag })` in the manifest emitter's context resolves
   against the light table `prl-build` passes in, returning handles for all map lights with that
-  tag, snapshot-shaped like the runtime (`id`, `position`, `tags`, `isDynamic`,
-  component fields) so `wrapLightEntity` and the handle methods (`pulse`, `fade`, `flicker`,
-  `colorShift`, `sweep`) work unchanged.
+  tag, snapshot-shaped like the runtime (`id`, `position`, `tags`, `isDynamic`, a nested
+  `component` (`LightComponent`) snapshot) so `wrapLightEntity` and the handle methods (`pulse`,
+  `fade`, `flicker`, `colorShift`, `sweep`) work unchanged.
 - [ ] A static baked-tier light targeted by any returned reaction's `setLightAnimation` step
   produces baked output structurally identical to authoring `_animated 1` on that light:
   excluded from the static lightmap, present in `AnimatedLightChunks`/`AnimatedLightWeightMaps`,
@@ -155,7 +155,12 @@ a runtime curve to diverge from; the only thing the two sides can disagree about
   logged at info level, not as a warning.
 - [ ] A light targeted by both a `levelLoad`-addressed step and a trigger-addressed step bakes
   `start_active` from the `levelLoad` step only. Two `levelLoad`-addressed steps disagreeing on
-  `startActive` for the same light take the last one in manifest order and log a warning.
+  `startActive` for the same light take the last one in manifest order, and `scripts-build` sets
+  the sidecar's `startActiveConflict` true; `prl-build` is the sole owner of the resulting
+  build-log line — it logs the single warning, `scripts-build` does not separately warn.
+- [ ] A `_animated 1` light also targeted by a `levelLoad` step bakes the step's resolved
+  `start_active`, overwriting the existing placeholder in place, not the FGD `_start_inactive`
+  default.
 - [ ] Two consecutive builds of the same inputs are byte-identical, including for a script that
   calls `Math.random()` or `Date.now()` (QuickJS) or `math.random`, `os.time`, `os.clock`
   (Luau) — all pinned in the manifest emitter.
@@ -164,6 +169,9 @@ a runtime curve to diverge from; the only thing the two sides can disagree about
 - [ ] Runtime: `setLightAnimation` on a static light with no `animated_slot` logs a warning
   naming the light by its map-light index and tag (the build-local runtime entity id is not
   stable, so it is not used) and stating the fix (script-derived membership or `_animated 1`).
+- [ ] The sidecar manifest carries `stubbedPrimitives` (names hit during evaluation), and
+  `prl-build`'s build log reports the full inventory: derived / flag-only / dynamic-target /
+  conflict / stubbed.
 - [ ] Integration test: fixture map + data script animating tagged static lights compiles to a
   PRL whose animated sections cover exactly the targeted lights.
 - [ ] `cargo test --workspace` passes.
@@ -192,27 +200,39 @@ Give `scripts-build` (`postretro-script-compiler`) a sandboxed evaluation contex
 returned `LevelManifest`, and emits a light-membership manifest as a sidecar output at the path
 `prl-build` requests via `--manifest-out`. This is the decided approach: full-fidelity
 `world.query` resolution, and the VM stays out of `postretro-level-compiler`'s dependency graph
-entirely.
+entirely. That premise is about `postretro-level-compiler` (prl-build) specifically;
+`script-compiler` necessarily embeds both the QuickJS and mlua VMs to evaluate `setupLevel` —
+that is the intended home for them.
 
 **CLI surface.** The existing invocation `scripts-build --in <source> --out <js>` is unchanged.
 Two new optional flags: `--light-table <path.json>` (input: the map's light table) and
-`--manifest-out <path.json>` (output: the light-membership sidecar). Manifest emission
-activates only when `--light-table` is present; absent it (the live-reload watcher's path),
-behavior is exactly today's compile-only — no manifest, no light-table read. `prl-build` writes
-the light table to a temp path, passes `--light-table`/`--manifest-out`, and reads the sidecar
-back from the path it chose — there is no implicit "next to the compiled bytes" naming
-convention to guess.
+`--manifest-out <path.json>` (output: the light-membership sidecar). Manifest emission requires
+BOTH `--light-table` and `--manifest-out` together; supplying one without the other is a usage
+error. Absent both (the live-reload watcher's path), behavior is exactly today's compile-only —
+no manifest, no light-table read. `prl-build` writes the light table to a temp path, passes
+`--light-table`/`--manifest-out`, and reads the sidecar back from the path it chose — there is no
+implicit "next to the compiled bytes" naming convention to guess. Both flags compose with the
+existing `--in`/`--out` compile mode and are mutually exclusive with `--prelude` mode, consistent
+with the hand-rolled parser's existing mode-compat checks (e.g. `--dep-json` is incompatible with
+`--prelude`).
 
 - `prl-build` passes its parsed light table (tags, ids, positions, `isDynamic`) to
   `scripts-build` via `--light-table` (schema below), so `world.query({component: "light",
   tag})` resolves against real map lights rather than a stub.
-- `scripts-build` **is** `postretro-script-compiler`, the tool that already generates the SDK
-  prelude the engine embeds — so it assembles the prelude in-process from the SDK sources it
-  already compiles, not by reading a prebuilt file. For Luau, it reproduces the engine's
-  ordered per-file `sdk/lib/*.luau` embedding and `require` virtual-module wiring (per
-  `scripting.md` §7) in the same in-process context.
+- For TS/QuickJS, `scripts-build` (`postretro-script-compiler`) reuses its own existing
+  prelude-assembly machinery — `bundle_prelude`/`write_prelude`
+  (`crates/script-compiler/src/lib.rs`) — to assemble the in-process prelude from the SDK sources
+  it already compiles. Genuine reuse, no new machinery.
+- For Luau there is no reusable generator: the ordered `.luau` embedding, `require`
+  virtual-module wiring, and `wrapLightEntity` upvalue capture live in `evaluate_prelude`
+  (`crates/scripting-core/src/luau_prelude.rs`), which evaluates live in an mlua VM inside the
+  engine runtime crate (`scripting-core`) — and `scripting-core` depends on
+  `postretro-script-compiler`, not the reverse, so `scripts-build` cannot call into it.
+  Landing Luau parity (a landing requirement, not a fast-follow — see Status note above) is
+  real new work in this task: porting the ordered-embedding + `require` + wrapper-capture logic,
+  plus an mlua VM, into `script-compiler` itself.
 - `world_query` backed by the passed-in light table: lights fully faithful to the light-table
-  schema (`index`, `tags`, `position`, `isDynamic`, component fields); movers, trigger volumes,
+  schema (`index`, `tags`, `position`, `isDynamic`, nested `component`); movers, trigger volumes,
   fog volumes best-effort from parsed map data if available; runtime-only kinds (enemies,
   spawner-spawned) return empty with a warning.
 - All other primitives install as non-throwing stubs that log once per name. Store reads return
@@ -239,8 +259,19 @@ The prl-build → scripts-build light table (`--light-table`):
       "tags": ["arena_1"],
       "position": [0.0, 0.0, 0.0],
       "isDynamic": false,
-      "color": [1.0, 1.0, 1.0],
-      "intensity": 1.0
+      "component": {
+        "origin": [0.0, 0.0, 0.0],
+        "lightType": "Point",
+        "intensity": 1.0,
+        "color": [1.0, 1.0, 1.0],
+        "falloffModel": "InverseSquared",
+        "falloffRange": 512.0,
+        "coneAngleInner": null,
+        "coneAngleOuter": null,
+        "coneDirection": null,
+        "isDynamic": false,
+        "animation": null
+      }
     }
   ]
 }
@@ -248,11 +279,11 @@ The prl-build → scripts-build light table (`--light-table`):
 
 `index` is the stable `MapData.lights` vec index — the identity the sidecar (below) keys on.
 `position` is engine-space `Vec3` as `[f32; 3]`. `isDynamic` is camelCase to match the handle
-surface. Component fields (`color`, `intensity`, and any others `wrapLightEntity` expects —
-mirror the `LightEntity` shape in `sdk/types/postretro.d.ts`) are carried so `world.query`
-handles are faithful, neutral-defaulted when the map omits them. `scripts-build` assigns
-build-local entity ids internally for `world.query`; those ids are never serialized — the JSON
-carries `index` (the map-light index), not runtime ids.
+surface. `component` carries the full `LightComponent` snapshot (`sdk/types/postretro.d.ts`) —
+not flattened `color`/`intensity` — neutral-defaulted when the map omits fields, so `world.query`
+handles are faithful; without it the reconstructed handle's `component` is nil. `scripts-build`
+assigns build-local entity ids internally for `world.query`; those ids are never serialized — the
+JSON carries `index` (the map-light index), not runtime ids.
 
 The scripts-build → prl-build sidecar manifest (`--manifest-out`):
 
@@ -293,7 +324,10 @@ Read the sidecar manifest `scripts-build` emitted (Task 1): a resolved per-light
 in Task 1's Wire formats) for each targeted map-light index. For static baked-tier targets with
 `animation == None` and `is_animated == false`, synthesize the same placeholder `LightAnimation`
 the `_animated` parser path emits (empty channels; `start_active` taken from the record's
-resolved value per the rule below).
+resolved value per the rule below). For targets with `is_animated == true` (an existing
+`_animated`-flagged placeholder), `prl-build` does not synthesize a new placeholder — instead it
+overwrites the existing placeholder's `start_active` with the sidecar's resolved `startActive`
+when non-null, mirroring the runtime's in-place overwrite (`light_bridge.rs`).
 
 **Membership vs. `start_active`.** Membership is the union of `setLightAnimation` targets across
 all dispatch addresses (unchanged from the In-scope rule above — the light needs reserved
@@ -313,7 +347,8 @@ state — they are later transitions, not install-time state. When the sidecar's
 the sidecar's `startActiveConflict` is `true` (two `levelLoad`-addressed steps disagreed on
 `startActive` for the same light), `prl-build` emits a build-log line — two boot handlers
 targeting the same light's initial state is an authoring smell, surfaced without inventing a
-precedence mechanic.
+precedence mechanic. `prl-build` is the sole owner of this log line: `scripts-build` only sets
+`startActiveConflict` on the sidecar record, it does not itself log a warning.
 
 Downstream stages key on `animation.is_some()` and need no change —
 `AnimatedBakedLights` picks the lights up, and the entity-shadow selector already excludes both

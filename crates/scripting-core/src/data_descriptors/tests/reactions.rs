@@ -494,6 +494,56 @@ fn trigger_pool_manifests_parse_identically_across_vms() {
 }
 
 #[test]
+fn sparse_trigger_pool_arrays_keep_valid_siblings_in_both_vms() {
+    let js = eval_js(
+        r#"({ triggerPools: [
+            { tag: "first", arm: 1 },
+            ,
+            { tag: "third", arm: 2 }
+        ] })"#,
+        |ctx, value| LevelManifest::from_js_value(ctx, value).unwrap(),
+    );
+    let lua = eval_lua(
+        r#"return { triggerPools = {
+            [1] = { tag = "first", arm = 1 },
+            [3] = { tag = "third", arm = 2 }
+        } }"#,
+        |value| LevelManifest::from_lua_value(value).unwrap(),
+    );
+
+    assert_eq!(js.trigger_pools, lua.trigger_pools);
+    assert_eq!(
+        js.trigger_pools
+            .iter()
+            .map(|pool| pool.tag.as_str())
+            .collect::<Vec<_>>(),
+        ["first", "third"]
+    );
+}
+
+#[test]
+fn nullish_unused_trigger_pool_arm_form_is_ignored_in_both_vms() {
+    let js = eval_js(
+        r#"({ triggerPools: [
+            { tag: "percentage", arm: undefined, armPercentage: 50 },
+            { tag: "count", arm: 2, armPercentage: undefined }
+        ] })"#,
+        |ctx, value| LevelManifest::from_js_value(ctx, value).unwrap(),
+    );
+    let lua = eval_lua(
+        r#"return { triggerPools = {
+            { tag = "percentage", arm = nil, armPercentage = 50 },
+            { tag = "count", arm = 2, armPercentage = nil }
+        } }"#,
+        |value| LevelManifest::from_lua_value(value).unwrap(),
+    );
+
+    assert_eq!(js.trigger_pools, lua.trigger_pools);
+    assert_eq!(js.trigger_pools[0].arm, TriggerPoolArm::Percentage(50.0));
+    assert_eq!(js.trigger_pools[1].arm, TriggerPoolArm::Count(2));
+}
+
+#[test]
 fn trigger_pool_manifests_skip_malformed_entries_keep_first_duplicate_and_accept_zero_arms() {
     let js = eval_js(
         r#"({ triggerPools: [

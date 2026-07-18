@@ -1,10 +1,10 @@
 //! Host-side seeded trigger-pool arming during level install.
 //! See: context/plans/in-progress/E18--trap-pools-seeded-arming/index.md (Task 2)
 
-use std::collections::HashSet;
+use std::{cmp::Ordering, collections::HashSet};
 
 use postretro_entities::{
-    ComponentKind, EntityId, EntityRegistry, TriggerPoolArm, TriggerPoolDescriptor,
+    ComponentKind, EntityId, EntityRegistry, Transform, TriggerPoolArm, TriggerPoolDescriptor,
     TriggerVolumeComponent,
 };
 
@@ -106,7 +106,10 @@ pub(crate) fn install_trigger_pools(
             .query_by_component_and_tag(ComponentKind::TriggerVolume, Some(&pool.tag))
             .map(|(id, _)| id)
             .collect();
-        members.sort_unstable();
+        // Entity slots are recycled in LIFO order on unload, so raw IDs are not
+        // an authored identity. Sort by stable map-authored transform data and
+        // use the ID only as a tie-breaker for indistinguishable volumes.
+        members.sort_by(|a, b| stable_trigger_order(registry, *a, *b));
 
         if members.is_empty() {
             log::warn!(
@@ -162,6 +165,43 @@ pub(crate) fn install_trigger_pools(
     }
 
     report
+}
+
+fn stable_trigger_order(registry: &EntityRegistry, a: EntityId, b: EntityId) -> Ordering {
+    let transform_a = registry.get_component::<Transform>(a).ok();
+    let transform_b = registry.get_component::<Transform>(b).ok();
+    let component_a = registry.get_component::<TriggerVolumeComponent>(a).ok();
+    let component_b = registry.get_component::<TriggerVolumeComponent>(b).ok();
+
+    transform_a
+        .zip(transform_b)
+        .map(|(a, b)| {
+            a.position
+                .x
+                .total_cmp(&b.position.x)
+                .then_with(|| a.position.y.total_cmp(&b.position.y))
+                .then_with(|| a.position.z.total_cmp(&b.position.z))
+                .then_with(|| a.rotation.x.total_cmp(&b.rotation.x))
+                .then_with(|| a.rotation.y.total_cmp(&b.rotation.y))
+                .then_with(|| a.rotation.z.total_cmp(&b.rotation.z))
+                .then_with(|| a.rotation.w.total_cmp(&b.rotation.w))
+                .then_with(|| a.scale.x.total_cmp(&b.scale.x))
+                .then_with(|| a.scale.y.total_cmp(&b.scale.y))
+                .then_with(|| a.scale.z.total_cmp(&b.scale.z))
+        })
+        .unwrap_or(Ordering::Equal)
+        .then_with(|| {
+            component_a
+                .zip(component_b)
+                .map(|(a, b)| {
+                    a.target_tag
+                        .cmp(&b.target_tag)
+                        .then_with(|| a.on_fire.cmp(&b.on_fire))
+                        .then_with(|| a.on_exit.cmp(&b.on_exit))
+                })
+                .unwrap_or(Ordering::Equal)
+        })
+        .then_with(|| a.cmp(&b))
 }
 
 fn resolve_target_count(pool: &TriggerPoolDescriptor, member_count: usize) -> usize {

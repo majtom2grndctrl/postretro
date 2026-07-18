@@ -122,7 +122,7 @@ pub fn drain_trigger_pools_lua(
     let Some(arr) = optional_manifest_array_lua(table, "triggerPools", scope)? else {
         return Ok(Vec::new());
     };
-    let len = validate_dense_lua_array(&arr, "`triggerPools` field")?;
+    let len = trigger_pool_array_len(&arr, scope)?;
     let mut out = Vec::with_capacity(len);
     let mut seen_tags = BTreeSet::new();
     for i in 1..=(len as i64) {
@@ -139,6 +139,35 @@ pub fn drain_trigger_pools_lua(
         }
     }
     Ok(out)
+}
+
+/// Return the highest positive integer key in a Luau trigger-pool array.
+/// Unlike the older dense-array drains, pool entries deliberately treat holes
+/// as malformed entries so valid siblings can still be retained like QuickJS.
+fn trigger_pool_array_len(arr: &Table, scope: &str) -> Result<usize, DescriptorError> {
+    let mut max_index = 0usize;
+    for pair in arr.clone().pairs::<LuaValue, LuaValue>() {
+        let (key, _) = pair.map_err(lua_err)?;
+        match key {
+            LuaValue::Integer(index) if index >= 1 => {
+                let Ok(index) = usize::try_from(index) else {
+                    log::warn!(
+                        "[Scripting] {scope}: `triggerPools` index {index} is out of range and was skipped"
+                    );
+                    continue;
+                };
+                max_index = max_index.max(index);
+            }
+            LuaValue::Integer(index) => log::warn!(
+                "[Scripting] {scope}: `triggerPools` index {index} is out of range and was skipped"
+            ),
+            other => log::warn!(
+                "[Scripting] {scope}: `triggerPools` entry with {} key was skipped",
+                other.type_name()
+            ),
+        }
+    }
+    Ok(max_index)
 }
 
 fn trigger_pool_from_lua(value: LuaValue) -> Result<TriggerPoolDescriptor, DescriptorError> {

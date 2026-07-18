@@ -24,7 +24,7 @@ pub struct RegisteredUiTree {
 pub struct LevelManifest {
     pub reactions: Vec<NamedReaction>,
     /// State-crossing watchers (M13 HUD dynamics). Parsed alongside `reactions`
-    /// from the widened `{ reactions, crossings, triggerEvents }` setup-manifest return and
+    /// from the widened `{ reactions, crossings, triggerEvents, triggerPools }` setup-manifest return and
     /// drained into the per-level `DataRegistry`; cleared on level unload.
     pub crossings: Vec<CrossingDescriptor>,
     /// Trigger-volume enter/exit watchers declared via the `triggerEvents`

@@ -395,6 +395,7 @@ declare defineReaction: (
 )
 
 export type TriggerEventDescriptor = { tag: string, event: "enter" | "exit", fire: {string}, levels: {string}? }
+--- A seeded trap-pool declaration; exactly one arming form is required.
 export type TriggerPoolDescriptor = { tag: string, arm: number?, armPercentage: number?, levels: {string}? }
 export type TriggerEventOptions = { levels: {string}? }
 declare function onTriggerEvent(filter: { tag: string }, event: "enter" | "exit", fire: {Reaction<any> | string}, options: TriggerEventOptions?): TriggerEventDescriptor

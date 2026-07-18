@@ -150,8 +150,12 @@ fn trigger_pool_from_js<'js>(
         });
     }
 
-    let has_arm = item.contains_key("arm").map_err(js_err)?;
-    let has_percentage = item.contains_key("armPercentage").map_err(js_err)?;
+    let arm_value: JsValue = item.get("arm").map_err(js_err)?;
+    let percentage_value: JsValue = item.get("armPercentage").map_err(js_err)?;
+    // Treat null/undefined like an omitted optional property, matching Luau's
+    // `nil` semantics and keeping the TS/Luau descriptor drains equivalent.
+    let has_arm = !arm_value.is_null() && !arm_value.is_undefined();
+    let has_percentage = !percentage_value.is_null() && !percentage_value.is_undefined();
     if has_arm == has_percentage {
         return Err(DescriptorError::InvalidShape {
             reason: "trigger-pool must define exactly one of `arm` or `armPercentage`".into(),
@@ -161,7 +165,7 @@ fn trigger_pool_from_js<'js>(
     let arm = if has_arm {
         TriggerPoolArm::Count(get_required_u32_js(&item, "arm")?)
     } else {
-        let raw: JsValue = item.get("armPercentage").map_err(js_err)?;
+        let raw = percentage_value;
         let percentage = if let Some(value) = raw.as_int() {
             value as f64
         } else if let Some(value) = raw.as_float() {

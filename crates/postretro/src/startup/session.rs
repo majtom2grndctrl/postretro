@@ -483,6 +483,46 @@ mod tests {
     }
 
     #[test]
+    fn pool_seed_arg_accepts_split_and_equals_forms_at_u64_boundaries() {
+        let split = vec![
+            "postretro".to_string(),
+            "--pool-seed".to_string(),
+            "0".to_string(),
+        ];
+        assert_eq!(
+            SessionBootConfig::from_args(&split).headless_trigger_pool_policy(),
+            TriggerPoolSeedPolicy::Seeded(0)
+        );
+
+        let equals = vec!["postretro".to_string(), format!("--pool-seed={}", u64::MAX)];
+        assert_eq!(
+            SessionBootConfig::from_args(&equals).headless_trigger_pool_policy(),
+            TriggerPoolSeedPolicy::Seeded(u64::MAX)
+        );
+    }
+
+    #[test]
+    fn invalid_or_missing_pool_seed_uses_headless_arm_all_policy() {
+        for args in [
+            vec!["postretro".to_string(), "--pool-seed".to_string()],
+            vec![
+                "postretro".to_string(),
+                "--pool-seed=not-a-number".to_string(),
+            ],
+            vec![
+                "postretro".to_string(),
+                "--pool-seed".to_string(),
+                "18446744073709551616".to_string(),
+            ],
+        ] {
+            assert_eq!(
+                SessionBootConfig::from_args(&args).headless_trigger_pool_policy(),
+                TriggerPoolSeedPolicy::ArmAll
+            );
+        }
+    }
+
+    #[test]
     fn content_root_from_map_uses_default_dev_root_without_map() {
         assert_eq!(content_root_from_map(None), PathBuf::from("content/dev"));
     }

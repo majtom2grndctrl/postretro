@@ -147,15 +147,9 @@ fn run_headless_inner(
     let mut crossing_detector = CrossingDetector::new();
     let mut mesh_clip_tables = MeshClipTables::new();
     let mut hit_zone_store = HitZoneStore::new();
-    // Runspecs address a map path, not a catalog id. When that path corresponds
-    // to a catalog entry, recover its tags so scoped mod definitions compose the
-    // same way they do for a windowed catalog load. A direct unmatched `.prl`
-    // path remains untagged by design.
-    let active_level_tags = active_level_tags_for_headless_install(
-        &map_path,
-        &content_root,
-        &script_ctx.data_registry.borrow().maps,
-    );
+    // Runspecs address raw map paths, not catalog ids. Preserve the raw-path
+    // contract: direct `.prl` loads never inherit catalog classification tags.
+    let active_level_tags = active_level_tags_for_headless_install();
     let mut timings = StartupTimings::new();
 
     let products = {
@@ -327,15 +321,8 @@ fn run_headless_inner(
     Ok(to_deterministic_json(&doc)?)
 }
 
-fn active_level_tags_for_headless_install(
-    map_path: &Path,
-    content_root: &Path,
-    maps: &[postretro_foundation::ModMapEntry],
-) -> Vec<String> {
-    maps.iter()
-        .find(|entry| content_root.join(&entry.path) == map_path)
-        .map(|entry| entry.tags.clone())
-        .unwrap_or_default()
+fn active_level_tags_for_headless_install() -> Vec<String> {
+    Vec::new()
 }
 
 /// The active command for `tick`: the last entry whose tick has arrived. `None`
@@ -441,32 +428,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn headless_install_uses_catalog_tags_and_keeps_direct_prl_paths_untagged() {
-        let content_root = Path::new("content/dev");
-        let maps = vec![postretro_foundation::ModMapEntry {
-            id: "trap-pools".to_string(),
-            path: "maps/trap-pools.prl".to_string(),
-            name: "Trap Pools".to_string(),
-            tags: vec!["trap-pools".to_string(), "test".to_string()],
-        }];
-
-        assert_eq!(
-            active_level_tags_for_headless_install(
-                &content_root.join("maps/trap-pools.prl"),
-                content_root,
-                &maps,
-            ),
-            ["trap-pools", "test"],
-            "a catalog-addressable headless map must compose scoped mod definitions",
-        );
+    fn headless_install_keeps_direct_prl_paths_untagged() {
         assert!(
-            active_level_tags_for_headless_install(
-                &content_root.join("maps/direct-fixture.prl"),
-                content_root,
-                &maps,
-            )
-            .is_empty(),
-            "a direct .prl path has no catalog classification and cannot match scoped pools",
+            active_level_tags_for_headless_install().is_empty(),
+            "headless runspecs use raw .prl paths and cannot match scoped pools",
         );
     }
 

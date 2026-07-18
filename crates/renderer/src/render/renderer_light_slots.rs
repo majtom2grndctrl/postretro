@@ -1283,6 +1283,7 @@ mod tests {
             shadow_bias_scale: 1.0,
             palette_base: 0,
             phase_seed: 1,
+            palette_cache_key: postretro_render_cpu::mesh_instances::MeshPaletteCacheKey::Entity(1),
             bounds: Aabb {
                 min: Vec3::splat(-0.5),
                 max: Vec3::splat(0.5),
@@ -1296,6 +1297,7 @@ mod tests {
         let planned_outside = PlannedInstance {
             transform: glam::Mat4::from_translation(Vec3::new(20.0, 0.0, 0.0)),
             phase_seed: 2,
+            palette_cache_key: postretro_render_cpu::mesh_instances::MeshPaletteCacheKey::Entity(2),
             ..planned_inside.clone()
         };
         let plan = MeshFramePlan {

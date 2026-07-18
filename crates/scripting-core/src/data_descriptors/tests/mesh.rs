@@ -18,6 +18,79 @@ fn js_mesh_stateless_parses_model_only() {
 }
 
 #[test]
+fn mesh_attachments_have_js_luau_validation_parity() {
+    let js_undefined = eval_js(
+        r#"({ components: { mesh: { model: "holder", attachments: undefined } } })"#,
+        |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err(),
+    );
+    assert!(
+        matches!(js_undefined, DescriptorError::InvalidShape { .. }),
+        "an explicitly present JS undefined attachment map is an invalid shape"
+    );
+
+    // Optional maps are omitted in both runtimes; when present, both parse the
+    // same string-to-string map.
+    let js = eval_js(
+        r#"({ components: { mesh: { model: "holder", attachments: { hand: "models/prop.gltf" } } } })"#,
+        |ctx, v| entity_descriptor_from_js(ctx, v).unwrap(),
+    );
+    let lua = eval_lua(
+        r#"return { components = { mesh = { model = "holder", attachments = { hand = "models/prop.gltf" } } } }"#,
+        |v| entity_descriptor_from_lua(v).unwrap(),
+    );
+    assert_eq!(
+        js.mesh.unwrap().attachments,
+        lua.mesh.unwrap().attachments,
+        "JS and Luau must materialize the same attachment map"
+    );
+
+    let cases = [
+        (
+            r#"({ components: { mesh: { model: "holder", attachments: null } } })"#,
+            r#"return { components = { mesh = { model = "holder", attachments = false } } }"#,
+        ),
+        (
+            r#"({ components: { mesh: { model: "holder", attachments: "not a map" } } })"#,
+            r#"return { components = { mesh = { model = "holder", attachments = "not a map" } } }"#,
+        ),
+        (
+            r#"({ components: { mesh: { model: "holder", attachments: ["models/prop.gltf"] } } })"#,
+            r#"return { components = { mesh = { model = "holder", attachments = { "models/prop.gltf" } } } }"#,
+        ),
+        (
+            r#"({ components: { mesh: { model: "holder", attachments: { "": "models/prop.gltf" } } } })"#,
+            r#"return { components = { mesh = { model = "holder", attachments = { [""] = "models/prop.gltf" } } } }"#,
+        ),
+        (
+            r#"({ components: { mesh: { model: "holder", attachments: { hand: "" } } } })"#,
+            r#"return { components = { mesh = { model = "holder", attachments = { hand = "" } } } }"#,
+        ),
+        (
+            r#"({ components: { mesh: { model: "holder", attachments: function attachmentFactory() {} } } })"#,
+            r#"return { components = { mesh = { model = "holder", attachments = function() end } } }"#,
+        ),
+        (
+            r#"({ components: { mesh: { model: "holder", attachments: new Date(0) } } })"#,
+            r#"return { components = { mesh = { model = "holder", attachments = coroutine.create(function() end) } } }"#,
+        ),
+    ];
+    for (js_source, lua_source) in cases {
+        let js_error = eval_js(js_source, |ctx, v| {
+            entity_descriptor_from_js(ctx, v).unwrap_err()
+        });
+        let lua_error = eval_lua(lua_source, |v| entity_descriptor_from_lua(v).unwrap_err());
+        assert!(
+            matches!(js_error, DescriptorError::InvalidShape { .. }),
+            "JS attachment validation must be a descriptor shape error: {js_error}"
+        );
+        assert!(
+            matches!(lua_error, DescriptorError::InvalidShape { .. }),
+            "Luau attachment validation must be a descriptor shape error: {lua_error}"
+        );
+    }
+}
+
+#[test]
 fn js_mesh_shadow_bias_scale_defaults_and_validates() {
     let default = eval_js(r#"({ components: { mesh: { model: "m" } } })"#, |ctx, v| {
         entity_descriptor_from_js(ctx, v).unwrap()

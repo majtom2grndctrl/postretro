@@ -9,9 +9,15 @@ use gltf::accessor::{DataType, Dimensions};
 use postretro_foundation::pose::MAX_FEET;
 use postretro_level_format::gltf_resolve::resolve_material_base_color_path;
 use postretro_level_format::octahedral;
-use serde::Deserialize;
 use thiserror::Error;
 
+pub use super::gltf_extras::JointZone;
+#[cfg(test)]
+use super::gltf_extras::LegRef;
+use super::gltf_extras::{
+    JointPoseMetadata, LegNameFamily, read_joint_zone, read_model_tags, read_pose_masks,
+    read_socket_name,
+};
 use super::mesh::{SkinnedMesh, SkinnedVertex};
 use super::pose_modifier::{JointMask, LegChain, ModifierEntry, PoseModifier, PoseModifierStack};
 use super::skeleton::{
@@ -48,20 +54,6 @@ pub struct Submesh {
     pub indices: std::ops::Range<u32>,
 }
 
-/// A skeletal hit zone authored on a joint node's per-node `extras`. Read at
-/// load time and carried parallel to [`Skeleton::joints`] (see
-/// [`LoadedModel::joint_zones`]). A radius is carried only when authored as a
-/// positive finite meter value; absent or invalid radii degrade to `None`.
-#[derive(Debug, Clone, PartialEq)]
-pub struct JointZone {
-    /// Author-supplied zone tag (e.g. "head", "torso").
-    pub tag: String,
-    /// Optional positive finite zone radius in meters. `None` when the joint
-    /// node omits `hitZoneRadius` or authors an invalid radius; the consumer
-    /// applies its own default.
-    pub radius: Option<f32>,
-}
-
 /// Convention-named skeletal pose masks authored on glTF joint nodes.
 ///
 /// Every mask contains indices into the model's topologically ordered
@@ -71,6 +63,16 @@ pub struct PoseMaskSet {
     pub aim_spine: JointMask,
     pub upper_body: JointMask,
     pub lower_body: JointMask,
+}
+
+/// A named attachment point authored on a model node.
+///
+/// Skinned sockets identify a topologically ordered skeleton joint. Rigid
+/// sockets carry their fully composed rest transform in mesh-node local space.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SocketBinding {
+    SkinnedJoint(usize),
+    RigidRest(Mat4),
 }
 
 /// A model loaded from glTF: one skinned mesh, its skeleton, its animation
@@ -94,6 +96,9 @@ pub struct LoadedModel {
     /// resolves each key against the shared material/texture cache and draws each
     /// range against its (possibly shared) material.
     pub submeshes: Vec<Submesh>,
+    /// Author-named attachment points. The table keeps the first valid node in
+    /// deterministic document-node traversal order when names are duplicated.
+    pub sockets: HashMap<String, SocketBinding>,
     /// Tags parsed from the document's top-level `extras` (`{ "tags": [..] }`).
     /// They are returned but currently unused; map placement tags are separate.
     /// Empty when `extras` or `tags` is absent or malformed.
@@ -462,6 +467,7 @@ fn validate_skinning_attribute_presence(
 
 struct SelectedModel<'a> {
     mesh: gltf::Mesh<'a>,
+    mesh_node: Option<gltf::Node<'a>>,
     skin: Option<gltf::Skin<'a>>,
 }
 
@@ -476,6 +482,7 @@ fn select_model<'a>(
             }
             return Ok(SelectedModel {
                 mesh,
+                mesh_node: Some(node),
                 skin: Some(skin),
             });
         }
@@ -485,7 +492,15 @@ fn select_model<'a>(
         .meshes()
         .next()
         .ok_or_else(|| ModelLoadError::NoMesh(path_str.to_string()))?;
-    Ok(SelectedModel { mesh, skin: None })
+    let mesh_node = document.nodes().find(|node| {
+        node.mesh()
+            .is_some_and(|node_mesh| node_mesh.index() == mesh.index())
+    });
+    Ok(SelectedModel {
+        mesh,
+        mesh_node,
+        skin: None,
+    })
 }
 
 /// The all-zero cache key, hex-encoded (64 chars). The shared `.prm` convention
@@ -536,334 +551,6 @@ fn hex_encode(bytes: &[u8; 32]) -> String {
         let _ = write!(s, "{b:02x}");
     }
     s
-}
-
-/// The shape of the document's top-level `extras` this loader cares about.
-/// Unknown keys are ignored (no `deny_unknown_fields`) so authors can stash
-/// arbitrary metadata alongside `tags`; `tags` defaults to empty when absent.
-#[derive(Debug, Deserialize)]
-struct ModelExtras {
-    #[serde(default)]
-    tags: Vec<String>,
-}
-
-/// Read the entity tags off the document's top-level `extras`.
-///
-/// The `extras` feature surfaces the raw JSON as `&Option<Box<RawValue>>`. Absent
-/// `extras` → no tags. Present `extras` deserializes into [`ModelExtras`]; any
-/// deserialize failure (wrong shape, non-array `tags`, etc.) also yields no tags.
-/// Tags are author metadata, not load-critical data — a garbled `extras` must not
-/// fail the load, so every error arm collapses to an empty list.
-fn read_model_tags(extras: &gltf::json::Extras) -> Vec<String> {
-    let Some(raw) = extras.as_ref() else {
-        return Vec::new();
-    };
-    match serde_json::from_str::<ModelExtras>(raw.get()) {
-        Ok(parsed) => parsed.tags,
-        Err(_) => Vec::new(),
-    }
-}
-
-/// The shape of a joint node's per-node `extras` this loader cares about.
-/// Unknown keys are ignored so authors can stash arbitrary metadata; the zone
-/// is meaningful only when `hitZone` is present (see [`read_joint_zone`]).
-#[derive(Debug, Deserialize)]
-struct JointZoneExtras {
-    #[serde(rename = "hitZone")]
-    hit_zone: Option<String>,
-    /// Radius in meters. Invalid optional values degrade to no authored radius.
-    #[serde(rename = "hitZoneRadius")]
-    hit_zone_radius: Option<serde_json::Value>,
-}
-
-/// Read a single joint node's hit zone off its per-node `extras`
-/// (`gltf::Node::extras()` — NOT the document-level extras).
-///
-/// Absent `extras`, a deserialize failure (wrong shape), or a missing `hitZone`
-/// tag all yield `None` — a zone is author metadata, not load-critical data, so
-/// a garbled value degrades to no zone for that joint rather than failing the
-/// load. The radius is carried only when positive and finite; otherwise the
-/// zone keeps its tag and degrades to no authored radius.
-fn read_joint_zone(extras: &gltf::json::Extras) -> Option<JointZone> {
-    let raw = extras.as_ref()?;
-    let parsed = serde_json::from_str::<JointZoneExtras>(raw.get()).ok()?;
-    let tag = parsed.hit_zone?;
-    Some(JointZone {
-        tag,
-        radius: valid_hit_zone_radius(parsed.hit_zone_radius.as_ref()),
-    })
-}
-
-fn valid_hit_zone_radius(value: Option<&serde_json::Value>) -> Option<f32> {
-    let radius = value?.as_f64()? as f32;
-    (radius.is_finite() && radius > 0.0).then_some(radius)
-}
-
-/// Which spelling family a leg/foot tag was authored with. A model uses ONE
-/// family for its leg set; mixing side and indexed names warns.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LegNameFamily {
-    /// Biped side names `legL`/`legR`/`footL`/`footR`.
-    Side,
-    /// General N-leg names `leg{i}`/`foot{i}`.
-    Indexed,
-}
-
-/// The leg-set slot a leg/foot tag references: the leg index (side names map
-/// L=0, R=1; indexed names map `{i}` → `i`) and the spelling family it came
-/// from (for the mixed-family warning).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct LegRef {
-    index: usize,
-    family: LegNameFamily,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-struct JointPoseMetadata {
-    aim_spine: bool,
-    upper_body: bool,
-    lower_body: bool,
-    aim_bend_weight: f32,
-    /// This joint belongs to the named leg's hip→knee→ankle chain (`legL`/
-    /// `legR`/`leg{i}`).
-    leg_chain: Option<LegRef>,
-    /// Conflicting `leg*` names were declared on this node. The membership is
-    /// invalid rather than whichever array entry happened to appear last.
-    leg_chain_conflict: bool,
-    /// This joint is the named leg's foot/ankle target — the IK end effector
-    /// (`footL`/`footR`/`foot{i}`).
-    foot_target: Option<LegRef>,
-    /// Conflicting `foot*` names were declared on this node.
-    foot_target_conflict: bool,
-    /// Family sightings survive invalid same-node declarations so the loader
-    /// still diagnoses a model that mixes side and indexed names.
-    saw_side_leg_name: bool,
-    saw_indexed_leg_name: bool,
-}
-
-/// Read convention-named pose metadata from one joint node's `extras`.
-///
-/// `poseMask` accepts either one string or an array of strings. Invalid array
-/// members and unknown names are diagnosed independently, allowing valid
-/// memberships in the same array to survive. Optional metadata never fails the
-/// model load.
-fn read_pose_masks(
-    extras: &gltf::json::Extras,
-    node_index: usize,
-    path_str: &str,
-) -> JointPoseMetadata {
-    let mut metadata = JointPoseMetadata {
-        aim_bend_weight: 1.0,
-        ..JointPoseMetadata::default()
-    };
-    let Some(raw) = extras.as_ref() else {
-        return metadata;
-    };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw.get()) else {
-        log::warn!(
-            "[Model] malformed pose metadata on joint node {node_index} in {path_str}; ignoring"
-        );
-        return metadata;
-    };
-    let Some(object) = value.as_object() else {
-        log::warn!(
-            "[Model] malformed pose metadata on joint node {node_index} in {path_str}; expected an object; ignoring"
-        );
-        return metadata;
-    };
-    let Some(pose_mask) = object.get("poseMask") else {
-        return metadata;
-    };
-
-    {
-        let mut read_name = |name: &str| match name {
-            "aimSpine" => metadata.aim_spine = true,
-            "upperBody" => metadata.upper_body = true,
-            "lowerBody" => metadata.lower_body = true,
-            "legL" => record_leg_chain(
-                &mut metadata,
-                LegRef {
-                    index: 0,
-                    family: LegNameFamily::Side,
-                },
-                node_index,
-                path_str,
-            ),
-            "legR" => record_leg_chain(
-                &mut metadata,
-                LegRef {
-                    index: 1,
-                    family: LegNameFamily::Side,
-                },
-                node_index,
-                path_str,
-            ),
-            "footL" => record_foot_target(
-                &mut metadata,
-                LegRef {
-                    index: 0,
-                    family: LegNameFamily::Side,
-                },
-                node_index,
-                path_str,
-            ),
-            "footR" => record_foot_target(
-                &mut metadata,
-                LegRef {
-                    index: 1,
-                    family: LegNameFamily::Side,
-                },
-                node_index,
-                path_str,
-            ),
-            unknown => {
-                if let Some(index) = indexed_leg_suffix(unknown, "leg") {
-                    record_leg_chain(
-                        &mut metadata,
-                        LegRef {
-                            index,
-                            family: LegNameFamily::Indexed,
-                        },
-                        node_index,
-                        path_str,
-                    );
-                } else if let Some(index) = indexed_leg_suffix(unknown, "foot") {
-                    record_foot_target(
-                        &mut metadata,
-                        LegRef {
-                            index,
-                            family: LegNameFamily::Indexed,
-                        },
-                        node_index,
-                        path_str,
-                    );
-                } else {
-                    log::warn!(
-                        "[Model] unknown poseMask '{unknown}' on joint node {node_index} in {path_str}; ignoring"
-                    );
-                }
-            }
-        };
-
-        match pose_mask {
-            serde_json::Value::String(name) => read_name(name),
-            serde_json::Value::Array(names) => {
-                if names.is_empty() {
-                    log::warn!(
-                        "[Model] empty poseMask array on joint node {node_index} in {path_str}; ignoring"
-                    );
-                }
-                for name in names {
-                    if let Some(name) = name.as_str() {
-                        read_name(name);
-                    } else {
-                        log::warn!(
-                            "[Model] non-string poseMask array value on joint node {node_index} in {path_str}; ignoring"
-                        );
-                    }
-                }
-            }
-            _ => log::warn!(
-                "[Model] malformed poseMask on joint node {node_index} in {path_str}; expected string or string array; ignoring"
-            ),
-        }
-    }
-
-    if metadata.aim_spine {
-        if let Some(weight_value) = object.get("aimBendWeight") {
-            let valid_weight = weight_value.as_f64().and_then(|weight| {
-                let weight = weight as f32;
-                (weight.is_finite() && weight > 0.0).then_some(weight)
-            });
-            if let Some(weight) = valid_weight {
-                metadata.aim_bend_weight = weight;
-            } else {
-                log::warn!(
-                    "[Model] invalid aimBendWeight on joint node {node_index} in {path_str}; using 1.0"
-                );
-            }
-        }
-    }
-
-    metadata
-}
-
-fn record_leg_chain(
-    metadata: &mut JointPoseMetadata,
-    leg: LegRef,
-    node_index: usize,
-    path_str: &str,
-) {
-    note_metadata_family(metadata, leg.family);
-    record_leg_ref(
-        &mut metadata.leg_chain,
-        &mut metadata.leg_chain_conflict,
-        leg,
-        "leg chain",
-        node_index,
-        path_str,
-    );
-}
-
-fn record_foot_target(
-    metadata: &mut JointPoseMetadata,
-    foot: LegRef,
-    node_index: usize,
-    path_str: &str,
-) {
-    note_metadata_family(metadata, foot.family);
-    record_leg_ref(
-        &mut metadata.foot_target,
-        &mut metadata.foot_target_conflict,
-        foot,
-        "foot target",
-        node_index,
-        path_str,
-    );
-}
-
-fn note_metadata_family(metadata: &mut JointPoseMetadata, family: LegNameFamily) {
-    match family {
-        LegNameFamily::Side => metadata.saw_side_leg_name = true,
-        LegNameFamily::Indexed => metadata.saw_indexed_leg_name = true,
-    }
-}
-
-fn record_leg_ref(
-    slot: &mut Option<LegRef>,
-    conflict: &mut bool,
-    authored: LegRef,
-    kind: &str,
-    node_index: usize,
-    path_str: &str,
-) {
-    if *conflict {
-        return;
-    }
-    match *slot {
-        None => *slot = Some(authored),
-        Some(existing) if existing == authored => {}
-        Some(existing) => {
-            log::warn!(
-                "[Model] conflicting {kind} poseMask tags {existing:?} and {authored:?} on joint node {node_index} in {path_str}; dropping this joint's {kind} membership"
-            );
-            *conflict = true;
-            *slot = None;
-        }
-    }
-}
-
-/// Parse an indexed leg/foot tag: `prefix` immediately followed by a base-10
-/// index, e.g. `leg0`, `foot12`. Returns the index, or `None` when the name is
-/// not `prefix` followed purely by ASCII digits — so the biped side names
-/// `legL`/`legR`/`footL`/`footR` fall through to their own match arms rather
-/// than being misread as indexed names.
-fn indexed_leg_suffix(name: &str, prefix: &str) -> Option<usize> {
-    let rest = name.strip_prefix(prefix)?;
-    if rest.is_empty() || !rest.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    rest.parse::<usize>().ok()
 }
 
 /// In-progress accumulation of one leg's joints while scanning topo joints.
@@ -1202,7 +889,11 @@ pub fn load_model(path: &Path) -> Result<LoadedModel, ModelLoadError> {
     // non-empty skin so geometry and skeleton are selected as a pair. A
     // document with no usable skinned mesh node falls back to the first mesh as
     // a static model.
-    let SelectedModel { mesh, skin } = select_model(&document, &path_str)?;
+    let SelectedModel {
+        mesh,
+        mesh_node,
+        skin,
+    } = select_model(&document, &path_str)?;
 
     // --- Skeleton ---------------------------------------------------------
     // Use the selected skinned node's skin. A static/no-skin model still
@@ -1219,17 +910,19 @@ pub fn load_model(path: &Path) -> Result<LoadedModel, ModelLoadError> {
         pose_masks,
         aim_bend_weights,
         legs,
+        sockets,
         skin_joint_to_topo,
         node_to_topo,
         locomotion_root,
     ) = match skin.as_ref() {
-        Some(skin) => build_skeleton(skin, &buffers, &path_str)?,
+        Some(skin) => build_skeleton(skin, &document, &buffers, &path_str)?,
         None => (
             identity_skeleton(),
             static_identity_joint_zones(&document, mesh.index()),
             PoseMaskSet::default(),
             vec![1.0],
             Vec::new(),
+            build_rigid_sockets(&document, mesh_node.as_ref(), &path_str),
             HashMap::new(),
             HashMap::new(),
             None,
@@ -1268,6 +961,7 @@ pub fn load_model(path: &Path) -> Result<LoadedModel, ModelLoadError> {
         skeleton,
         clips,
         submeshes,
+        sockets,
         tags,
         joint_zones,
         pose_masks,
@@ -1286,6 +980,7 @@ type SkeletonMaps = (
     PoseMaskSet,
     Vec<f32>,
     Vec<LegChain>,
+    HashMap<String, SocketBinding>,
     HashMap<usize, usize>,
     HashMap<usize, usize>,
     Option<usize>,
@@ -1293,6 +988,7 @@ type SkeletonMaps = (
 
 fn build_skeleton(
     skin: &gltf::Skin,
+    document: &gltf::Document,
     buffers: &[gltf::buffer::Data],
     path_str: &str,
 ) -> Result<SkeletonMaps, ModelLoadError> {
@@ -1430,6 +1126,9 @@ fn build_skeleton(
         .map(|(topo_idx, &skin_idx)| (skin_idx, topo_idx))
         .collect();
 
+    let sockets =
+        build_skinned_sockets(document, &node_to_skin_joint, &skin_joint_to_topo, path_str);
+
     // node-index → topo-index, for remapping animation channel targets (which
     // address joints by node, not by skin-joint index).
     let node_to_topo: HashMap<usize, usize> = joint_nodes
@@ -1480,10 +1179,131 @@ fn build_skeleton(
         pose_masks,
         aim_bend_weights,
         legs,
+        sockets,
         skin_joint_to_topo,
         node_to_topo,
         locomotion_root,
     ))
+}
+
+/// Resolve sockets authored on a skinned model. Scanning document nodes (rather
+/// than only `skin.joints()`) both gives duplicate names one deterministic
+/// document-order winner and diagnoses tags accidentally placed on non-joints.
+fn build_skinned_sockets(
+    document: &gltf::Document,
+    node_to_skin_joint: &HashMap<usize, usize>,
+    skin_joint_to_topo: &HashMap<usize, usize>,
+    path_str: &str,
+) -> HashMap<String, SocketBinding> {
+    let mut sockets = HashMap::new();
+    for node in document.nodes() {
+        let node_index = node.index();
+        let Some(name) = read_socket_name(node.extras(), node_index, path_str) else {
+            continue;
+        };
+        let Some(&skin_joint) = node_to_skin_joint.get(&node_index) else {
+            log::warn!(
+                "[Model] socket '{name}' on non-joint node {node_index} in {path_str}; ignoring"
+            );
+            continue;
+        };
+        let topo_joint = skin_joint_to_topo[&skin_joint];
+        insert_socket(
+            &mut sockets,
+            name,
+            SocketBinding::SkinnedJoint(topo_joint),
+            node_index,
+            path_str,
+        );
+    }
+    sockets
+}
+
+/// Resolve sockets authored on a rigid model. Raw mesh vertices already live in
+/// the selected mesh node's local frame, so the mesh node itself contributes no
+/// transform; only the descendant chain to the socket is composed.
+fn build_rigid_sockets(
+    document: &gltf::Document,
+    mesh_node: Option<&gltf::Node>,
+    path_str: &str,
+) -> HashMap<String, SocketBinding> {
+    let mut parents = HashMap::new();
+    for node in document.nodes() {
+        for child in node.children() {
+            parents.insert(child.index(), node.index());
+        }
+    }
+
+    let mut sockets = HashMap::new();
+    for node in document.nodes() {
+        let node_index = node.index();
+        let Some(name) = read_socket_name(node.extras(), node_index, path_str) else {
+            continue;
+        };
+        let Some(rest_transform) = mesh_local_rest_transform(
+            document,
+            mesh_node.map(gltf::Node::index),
+            node_index,
+            &parents,
+        ) else {
+            log::warn!(
+                "[Model] rigid socket '{name}' on node {node_index} in {path_str} has no valid acyclic path from the selected mesh node; ignoring"
+            );
+            continue;
+        };
+        insert_socket(
+            &mut sockets,
+            name,
+            SocketBinding::RigidRest(rest_transform),
+            node_index,
+            path_str,
+        );
+    }
+    sockets
+}
+
+fn mesh_local_rest_transform(
+    document: &gltf::Document,
+    mesh_node: Option<usize>,
+    socket_node: usize,
+    parents: &HashMap<usize, usize>,
+) -> Option<Mat4> {
+    let mesh_node = mesh_node?;
+    let mut chain = Vec::new();
+    let mut visited = vec![false; document.nodes().len()];
+    let mut current = socket_node;
+    while current != mesh_node {
+        let seen = visited.get_mut(current)?;
+        if *seen {
+            return None;
+        }
+        *seen = true;
+        chain.push(current);
+        current = *parents.get(&current)?;
+    }
+
+    let mut transform = Mat4::IDENTITY;
+    for node_index in chain.into_iter().rev() {
+        let node = document.nodes().nth(node_index)?;
+        transform *= Mat4::from_cols_array_2d(&node.transform().matrix());
+    }
+    Some(transform)
+}
+
+fn insert_socket(
+    sockets: &mut HashMap<String, SocketBinding>,
+    name: String,
+    binding: SocketBinding,
+    node_index: usize,
+    path_str: &str,
+) {
+    if sockets.contains_key(&name) {
+        log::warn!(
+            "[Model] duplicate socket '{name}' on node {node_index} in {path_str}; keeping the first document-order binding"
+        );
+        return;
+    }
+    sockets.insert(name, binding);
 }
 
 /// Select the joint whose translation may carry locomotion root motion.
@@ -3862,6 +3682,21 @@ mod tests {
         assert!(read_joint_zone(&extras).is_none());
     }
 
+    #[test]
+    fn malformed_socket_extras_warn_and_degrade_to_none() {
+        for raw in [
+            r#"{ "socket": 42 }"#,
+            r#"{ "socket": ["not", "a", "name"] }"#,
+            r#"["not", "an", "object"]"#,
+        ] {
+            let extras = extras_from_raw(raw);
+            assert!(
+                read_socket_name(&extras, 7, "model.gltf").is_none(),
+                "malformed socket extras {raw} must not produce a socket",
+            );
+        }
+    }
+
     // --- Per-node extras -> pose masks and stack --------------------------
 
     #[test]
@@ -4420,6 +4255,155 @@ mod tests {
         assert!(
             leaf_zones.contains(&&None),
             "the untagged leaf joint (extras without hitZone) has no zone, got {leaf_zones:?}",
+        );
+    }
+
+    #[test]
+    fn skinned_socket_uses_skin_joint_to_topo_remap() {
+        let mut json = fixture_json(&joint_zones_fixture_path());
+        // Node 2 is skin-joint index 0, but its parent (node 1, skin index 1)
+        // emits first. The sibling at skin index 2 then emits in that same
+        // traversal pass, so this node resolves to topo joint 2 — never its
+        // raw skin-joint index 0.
+        json["nodes"][2]["extras"]["socket"] = serde_json::json!("head_grip");
+        let path = write_temp_fixture("skinned_socket_remap", &json);
+        let model = load_model(&path).expect("socket metadata never rejects a model");
+        let _ = std::fs::remove_file(path);
+
+        assert_eq!(
+            model.sockets.get("head_grip"),
+            Some(&SocketBinding::SkinnedJoint(2)),
+            "socket follows the skin-joint-to-topo remap",
+        );
+    }
+
+    #[test]
+    fn skinned_socket_duplicates_keep_first_document_node_and_non_joints_drop() {
+        let mut json = fixture_json(&joint_zones_fixture_path());
+        // Node 0 is the mesh node, not a skin joint: it must not create a
+        // binding. Nodes 1 then 2 are joints in document order and share the
+        // same name, so the topo-root binding on node 1 wins.
+        json["nodes"][0]["extras"] = serde_json::json!({ "socket": "stray" });
+        json["nodes"][1]["extras"]["socket"] = serde_json::json!("grip");
+        json["nodes"][2]["extras"]["socket"] = serde_json::json!("grip");
+        let path = write_temp_fixture("skinned_socket_duplicate", &json);
+        let model = load_model(&path).expect("duplicate socket metadata never rejects a model");
+        let _ = std::fs::remove_file(path);
+
+        assert_eq!(
+            model.sockets.len(),
+            1,
+            "only the valid first binding remains"
+        );
+        assert_eq!(
+            model.sockets.get("grip"),
+            Some(&SocketBinding::SkinnedJoint(0)),
+            "the root node is the deterministic first document-order winner",
+        );
+        assert!(
+            !model.sockets.contains_key("stray"),
+            "a socket on a skinned non-joint is ignored",
+        );
+    }
+
+    #[test]
+    fn malformed_skinned_socket_degrades_without_failing_load() {
+        let mut json = fixture_json(&joint_zones_fixture_path());
+        json["nodes"][2]["extras"]["socket"] = serde_json::json!(42);
+        let path = write_temp_fixture("malformed_skinned_socket", &json);
+        let model = load_model(&path).expect("malformed socket metadata never rejects a model");
+        let _ = std::fs::remove_file(path);
+
+        assert!(model.sockets.is_empty(), "malformed socket is skipped");
+    }
+
+    #[test]
+    fn rigid_sockets_compose_descendant_rest_transforms_and_keep_first_duplicate() {
+        let mut json = fixture_json(&multi_primitive_fixture_path());
+        let nodes = json["nodes"]
+            .as_array_mut()
+            .expect("fixture nodes are an array");
+        // Geometry is consumed in this mesh node's local frame, so its own
+        // translation must not appear in the socket transforms.
+        nodes[0]["translation"] = serde_json::json!([100.0, 0.0, 0.0]);
+        nodes[0]["extras"] = serde_json::json!({ "socket": "origin" });
+        nodes[0]["children"] = serde_json::json!([1, 3]);
+        nodes.push(serde_json::json!({
+            "translation": [1.0, 2.0, 3.0],
+            "rotation": [0.0, 0.0, 0.70710677, 0.70710677],
+            "scale": [2.0, 3.0, 4.0],
+            "children": [2],
+        }));
+        nodes.push(serde_json::json!({
+            "translation": [0.0, 1.0, 0.0],
+            "extras": { "socket": "rail" },
+        }));
+        nodes.push(serde_json::json!({
+            "translation": [50.0, 0.0, 0.0],
+            "extras": { "socket": "rail" },
+        }));
+        nodes.push(serde_json::json!({
+            "extras": { "socket": "outside" },
+        }));
+        let path = write_temp_fixture("rigid_socket_transforms", &json);
+        let model = load_model(&path).expect("rigid socket metadata never rejects a model");
+        let _ = std::fs::remove_file(path);
+
+        let parent = Mat4::from_scale_rotation_translation(
+            Vec3::new(2.0, 3.0, 4.0),
+            Quat::from_xyzw(0.0, 0.0, 0.70710677, 0.70710677),
+            Vec3::new(1.0, 2.0, 3.0),
+        );
+        let expected_rail = parent * Mat4::from_translation(Vec3::Y);
+        let SocketBinding::RigidRest(rail) = model
+            .sockets
+            .get("rail")
+            .expect("descendant socket is retained")
+        else {
+            panic!("rigid socket must retain a rest transform");
+        };
+        for (actual, expected) in rail
+            .to_cols_array()
+            .into_iter()
+            .zip(expected_rail.to_cols_array())
+        {
+            assert!(
+                (actual - expected).abs() < 1.0e-5,
+                "descendant rest transform differs: {rail:?} vs {expected_rail:?}",
+            );
+        }
+        assert_eq!(
+            model.sockets.get("origin"),
+            Some(&SocketBinding::RigidRest(Mat4::IDENTITY)),
+            "a socket on the mesh node is model-space identity",
+        );
+        assert!(
+            !model.sockets.contains_key("outside"),
+            "a rigid socket outside the mesh-node hierarchy is ignored",
+        );
+    }
+
+    // Regression: a cyclic rigid node hierarchy made socket parent traversal
+    // loop forever.
+    #[test]
+    fn rigid_socket_cycle_degrades_without_failing_load() {
+        let mut json = fixture_json(&multi_primitive_fixture_path());
+        let nodes = json["nodes"]
+            .as_array_mut()
+            .expect("fixture nodes are an array");
+        nodes[0]["children"] = serde_json::json!([1]);
+        nodes.push(serde_json::json!({ "children": [2] }));
+        nodes.push(serde_json::json!({
+            "children": [1],
+            "extras": { "socket": "loop" },
+        }));
+        let path = write_temp_fixture("rigid_socket_cycle", &json);
+        let model = load_model(&path).expect("malformed socket hierarchy stays non-fatal");
+        let _ = std::fs::remove_file(path);
+
+        assert!(
+            !model.sockets.contains_key("loop"),
+            "socket with a cyclic parent chain is skipped",
         );
     }
 

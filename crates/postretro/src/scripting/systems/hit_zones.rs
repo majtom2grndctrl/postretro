@@ -19,8 +19,8 @@ use postretro_model::ModelHandle;
 use postretro_model::anim::{
     BlendSource, LocalTrs, Loop, capture_blend, sample_blended_world, sample_clip_looped_world,
 };
-use postretro_model::gltf_loader::{self, JointZone};
-use postretro_model::pose_modifier::LegChain;
+use postretro_model::gltf_loader::{self, JointZone, SocketBinding};
+use postretro_model::pose_modifier::{LegChain, PoseModifierStack};
 use postretro_model::sample_params::{
     CaptureInstruction, ClipSample, FadeSource, MeshSampleParams, instance_phase,
 };
@@ -32,6 +32,15 @@ use postretro_render_data::cone_frustum::Aabb;
 /// loader preserves only positive finite authored radii; direct `JointZone`
 /// construction can still bypass that loader policy.
 pub(crate) const DEFAULT_ZONE_RADIUS: f32 = 0.12;
+
+/// Subsystem responsible for reporting model-load failures during level install.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ModelLoadWarningOwner {
+    /// The graphical renderer attempted the same load and reports any failure.
+    Renderer,
+    /// No renderer attempted the load, so the CPU model store reports failures.
+    GameSide,
+}
 
 /// One model TYPE's retained CPU hit-zone data, keyed by [`ModelHandle`] in the
 /// [`HitZoneStore`].
@@ -52,6 +61,9 @@ pub(crate) struct ModelHitZones {
     /// Per-joint authored hit zones, parallel to `skeleton.joints`. `None` where
     /// a joint carries no zone. Empty for a model with no zones at all.
     pub(crate) joint_zones: Vec<Option<JointZone>>,
+    /// Named attachment points authored by the model. Retained alongside the
+    /// pose inputs so descriptor resolution can avoid reloading the glTF.
+    pub(crate) sockets: HashMap<String, SocketBinding>,
     /// Model-local broad-phase AABB seeded from rest pose, then expanded from
     /// every clip's key poses and conservative hierarchy reach.
     /// `None` for an AABB-only model (no zone tags), OR for a zone-bearing model
@@ -66,6 +78,10 @@ pub(crate) struct ModelHitZones {
     /// chain and foot joint; leg `i` drives foot probe `i`. Consumed by
     /// [`crate::sim`]'s ground-probe step via [`sample_world_pose_for_probe`].
     pub(crate) legs: Vec<LegChain>,
+    /// Loader-built presentation modifiers for this immutable model. The
+    /// renderer palette and attachment collector's socket-pose sampler consume
+    /// the same stack; hit-zone authority intentionally samples unmodified poses.
+    pub(crate) pose_stack: Arc<PoseModifierStack>,
 }
 
 impl ModelHitZones {
@@ -85,6 +101,13 @@ impl ModelHitZones {
 #[derive(Default)]
 pub(crate) struct HitZoneStore {
     models: HashMap<String, ModelHitZones>,
+    /// Per-level diagnostics emitted by load-time attachment resolution. Remote
+    /// presentation can invoke the shared resolver repeatedly, so unresolved
+    /// attachment errors need explicit deduplication rather than log spam.
+    attachment_resolution_warnings: RefCell<HashSet<String>>,
+    /// Failed CPU model loads already reported for this level. The renderer owns
+    /// graphical-path diagnostics; this set deduplicates renderer-free installs.
+    model_load_warnings: HashSet<String>,
     /// Handles whose independently loaded model carries a presentation pose
     /// stack. The collector uses this cache-side metadata to opt those models
     /// out of animation time-slicing without carrying the stack per instance.
@@ -102,6 +125,8 @@ impl HitZoneStore {
     pub(crate) fn new() -> Self {
         Self {
             models: HashMap::new(),
+            attachment_resolution_warnings: RefCell::new(HashSet::new()),
+            model_load_warnings: HashSet::new(),
             pose_modified_models: HashSet::new(),
             foot_probe_candidates: RefCell::new(Vec::new()),
         }
@@ -111,6 +136,8 @@ impl HitZoneStore {
     /// `MeshClipTables::clear` so a new level starts from an empty store.
     pub(crate) fn clear(&mut self) {
         self.models.clear();
+        self.attachment_resolution_warnings.get_mut().clear();
+        self.model_load_warnings.clear();
         self.pose_modified_models.clear();
         self.foot_probe_candidates.get_mut().clear();
     }
@@ -123,22 +150,37 @@ impl HitZoneStore {
     /// path (`content_root.join(model_rel)`, the same recipe the renderer's
     /// `resolve_model_open_path_and_handle` uses for its cache key vs. open path).
     ///
-    /// A failed/invalid load is non-fatal: it warns (naming the path) and installs
-    /// nothing — mirroring `load_skinned_model`, so the sweep keeps going and the
-    /// model simply has no hit-zone entry, and no `pose_modified_models` membership
-    /// change either. Idempotent re-install replaces the entry AND refreshes the
-    /// model's `pose_modified_models` membership to match its reloaded pose stack
-    /// (the collector's time-slicing opt-out rides on that store). The derived
-    /// bound is computed once, here, from the loaded skeleton rest pose and clips.
-    pub(crate) fn insert_from_load(&mut self, model_rel: &str, content_root: &Path) {
+    /// A failed/invalid load is non-fatal and leaves the handle with no hit-zone
+    /// entry or `pose_modified_models` membership. `warning_owner` prevents the
+    /// CPU reload from duplicating graphical renderer diagnostics while keeping
+    /// renderer-free installs observable.
+    /// Idempotent re-install replaces the entry and refreshes the model's
+    /// `pose_modified_models` membership to match its reloaded pose stack (the
+    /// collector's time-slicing opt-out rides on that store). The derived bound is
+    /// computed once, here, from the loaded skeleton rest pose and clips.
+    pub(crate) fn insert_from_load(
+        &mut self,
+        model_rel: &str,
+        content_root: &Path,
+        warning_owner: ModelLoadWarningOwner,
+    ) {
         let open_path = content_root.join(model_rel);
+        let handle = ModelHandle::from(model_rel.to_string());
+        self.models.remove(handle.as_str());
+        self.pose_modified_models.remove(&handle);
+
         let model = match gltf_loader::load_model(&open_path) {
             Ok(m) => m,
             Err(err) => {
-                log::warn!(
-                    "[HitZones] model load failed for {} : {err} — no hit-zone entry",
-                    open_path.display(),
-                );
+                if warning_owner == ModelLoadWarningOwner::GameSide
+                    && self.model_load_warnings.insert(model_rel.to_owned())
+                {
+                    log::warn!(
+                        "[Model] model load failed for {}: {err} — \
+                         any mesh or attachment using it remains unresolved",
+                        open_path.display(),
+                    );
+                }
                 return;
             }
         };
@@ -147,6 +189,7 @@ impl HitZoneStore {
             skeleton,
             clips,
             joint_zones,
+            sockets,
             pose_stack,
             legs,
             ..
@@ -162,20 +205,21 @@ impl HitZoneStore {
             None
         };
 
-        let handle = ModelHandle::from(model_rel.to_string());
         if pose_stack.is_empty() {
             self.pose_modified_models.remove(&handle);
         } else {
             self.pose_modified_models.insert(handle.clone());
         }
         self.models.insert(
-            handle.0,
+            handle.as_str().to_owned(),
             ModelHitZones {
                 skeleton: Arc::new(skeleton),
                 clips: Arc::new(clips),
                 joint_zones,
+                sockets,
                 derived_bound,
                 legs,
+                pose_stack: Arc::new(pose_stack),
             },
         );
     }
@@ -194,6 +238,13 @@ impl HitZoneStore {
         self.models.get(model)
     }
 
+    /// Record a load-time attachment diagnostic if it has not already been
+    /// emitted for this level. Returns `true` exactly for the first occurrence
+    /// of `key`; callers own the corresponding log message.
+    pub(crate) fn mark_attachment_resolution_warning(&self, key: String) -> bool {
+        self.attachment_resolution_warnings.borrow_mut().insert(key)
+    }
+
     /// True when `handle` has precise capsule zones available. Renderer
     /// time-slicing uses this to keep drawn palettes frame-fresh for models whose
     /// hitscan path can produce exact capsule hits.
@@ -208,6 +259,10 @@ impl HitZoneStore {
     /// change independently of animation time.
     pub(crate) fn has_pose_modifiers(&self, handle: &ModelHandle) -> bool {
         self.pose_modified_models.contains(handle)
+            || self
+                .models
+                .get(handle.as_str())
+                .is_some_and(|entry| !entry.pose_stack.is_empty())
     }
 
     /// Install a pre-built model entry under `handle` for tests in OTHER modules
@@ -215,7 +270,7 @@ impl HitZoneStore {
     /// Production installs go through [`insert_from_load`](Self::insert_from_load).
     #[cfg(test)]
     pub(crate) fn insert_for_test(&mut self, handle: ModelHandle, model: ModelHitZones) {
-        self.models.insert(handle.0, model);
+        self.models.insert(handle.as_str().to_owned(), model);
     }
 
     #[cfg(test)]
@@ -645,8 +700,8 @@ pub(crate) fn nearest_entity_hit(
         let hit = match zoned {
             Some(zoned) => {
                 // The entity's animation, if any, drives the posed skeleton; a
-                // mesh with no animation block (stateless prop) poses to the
-                // model's first clip at the clock. The animation is cloned LAZILY
+                // mesh with no animation block holds the authored rest pose. The
+                // animation is cloned LAZILY
                 // — only AFTER the broad phase survives — so a broad-phase reject
                 // never deep-clones the state map. The closure keeps the registry
                 // borrow live so the reject path allocates nothing.
@@ -884,7 +939,7 @@ fn nearest_zone_hit(
     }
 
     // Broad phase survived: NOW resolve (clone) the entity's animation. A mesh
-    // with no animation block (stateless prop) poses to the model's first clip.
+    // with no animation block holds the authored rest pose.
     let animation = resolve_animation().map(|mut anim| {
         resolve_animation_stamps_for_sampling(&mut anim, anim_time);
         anim
@@ -1108,25 +1163,24 @@ pub(crate) fn sample_world_pose_for_probe(
 /// smooth-interrupt snapshot fade whose capture references renderer-only stored
 /// data (mirrors the same case on [`pose_from_params`]). The caller degrades to
 /// the coarse fallback rather than posing a wrong fallback-clip capsule; it
-/// never means "the ray missed". A model with no clips, or an unresolved state,
-/// still poses (rest or first clip) and returns `Some`.
+/// never means "the ray missed". A stateless model always poses at rest,
+/// regardless of whether its model data also carries clips.
 ///
 /// When the entity carries an animation block, its current state resolves —
 /// through the SAME render-free [`mesh_anim::animate_entity`] the renderer's
 /// collector uses — to a [`MeshSampleParams`] (primary clip leg + optional
 /// crossfade), which [`pose_from_params`] then samples (single or blended). A
-/// stateless / no-animation mesh intentionally poses the model's first clip
-/// looped at the clock; a model with no clips poses each joint to rest. The
-/// foot-probe entry point rejects unresolved animated states before this helper.
+/// stateless / no-animation mesh poses each joint to rest. The foot-probe entry
+/// point rejects unresolved animated states before this helper.
 ///
 /// Phase de-sync uses the SAME per-instance phase as rendering, so authoritative
 /// capsules share its animation clock and sample parameters. Capsules use the
 /// unmodified world-joint pose. Presentation-only pose modifiers affect only the
-/// rendered palette. The phase is [`instance_phase`] of the entity's `EntityId`
-/// seed against the CURRENT state's clip duration (the stateless/default path
-/// uses the first clip's duration) — the exact seed + duration the renderer's
-/// collector uses, so the values match. `instance_phase`/`state_time` apply it
-/// ONLY to looping legs; one-shot states ignore it, matching the renderer.
+/// rendered palette. For animated entities, the phase is [`instance_phase`] of
+/// the entity's `EntityId` seed against the CURRENT state's clip duration — the
+/// exact seed + duration the renderer's collector uses, so the values match.
+/// `instance_phase`/`state_time` apply it ONLY to looping legs; one-shot states
+/// ignore it, matching the renderer.
 fn pose_world_joints(
     zones: &ModelHitZones,
     animation: Option<&MeshAnimation>,
@@ -1142,7 +1196,7 @@ fn pose_world_joints(
     // sample unmodified world-joint poses; presentation-only pose modifiers stay
     // in the rendered palette. `animate_entity` applies the phase only to looping
     // legs; it returns `None` for an unresolved current state, so we fall through
-    // to the default pose.
+    // to rest pose.
     if let Some(anim) = animation {
         let phase = current_state_phase(anim, clips, seed);
         if let Some(result) = super::mesh_anim::animate_entity(anim, anim_time, phase) {
@@ -1161,22 +1215,9 @@ fn pose_world_joints(
         }
     }
 
-    // Intentional STATELESS default pose: the model's first clip, looped at the
-    // clock plus the SAME per-instance phase the renderer's stateless path
-    // applies (first clip's duration); or rest if the model carries no clips.
-    match clips.first() {
-        Some(clip) => {
-            let phase = instance_phase(seed, clip.duration);
-            sample_clip_looped_world(
-                clip,
-                skeleton,
-                anim_time as f32 + phase,
-                Loop::Wrap,
-                &mut out,
-            )
-        }
-        None => pose_rest(skeleton, &mut out),
-    }
+    // Stateless consumers share the renderer and attachment policy: authored
+    // rest pose, even when the model also carries animation clips.
+    pose_rest(skeleton, &mut out);
     Some(out)
 }
 
@@ -1806,13 +1847,15 @@ mod tests {
         let mut store = HitZoneStore::new();
         let handle = ModelHandle::from("models/mob/scene.gltf");
         store.models.insert(
-            handle.0.clone(),
+            handle.as_str().to_owned(),
             ModelHitZones {
                 skeleton: Arc::new(skeleton),
                 clips: Arc::new(clips),
                 joint_zones: joint_zones.clone(),
+                sockets: HashMap::new(),
                 derived_bound: Some(Aabb::default()),
                 legs: Vec::new(),
+                pose_stack: Arc::new(PoseModifierStack::default()),
             },
         );
 
@@ -1833,6 +1876,113 @@ mod tests {
         assert!(store.get(&handle).is_none(), "cleared on level change");
     }
 
+    #[test]
+    fn insert_from_load_retains_loader_sockets_and_pose_stack() {
+        let fixture_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../model/tests/fixtures/joint_zones/joint_zones.gltf");
+        let mut json: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(fixture_path).expect("model fixture reads"),
+        )
+        .expect("model fixture parses");
+        // This is the child-first skin-joint entry, so its raw skin index is 0
+        // while its topo index is 2. The store must retain the loader's resolved
+        // binding, not raw glTF metadata.
+        json["nodes"][2]["extras"]["socket"] = serde_json::json!("hand");
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time after Unix epoch")
+            .as_nanos();
+        let model_rel = format!(
+            "postretro_hit_zone_socket_retention_{}_{}.gltf",
+            std::process::id(),
+            unique
+        );
+        let content_root = std::env::temp_dir();
+        let model_path = content_root.join(&model_rel);
+        std::fs::write(
+            &model_path,
+            serde_json::to_string(&json).expect("fixture serializes"),
+        )
+        .expect("temporary model fixture writes");
+
+        let mut store = HitZoneStore::new();
+        store.insert_from_load(&model_rel, &content_root, ModelLoadWarningOwner::GameSide);
+        let _ = std::fs::remove_file(model_path);
+
+        let handle = ModelHandle::from(model_rel);
+        let entry = store.get(&handle).expect("loaded model is retained");
+        assert_eq!(
+            entry.sockets.get("hand"),
+            Some(&SocketBinding::SkinnedJoint(2)),
+            "store retains the loader's topo-resolved socket table",
+        );
+        assert!(
+            !entry.pose_stack.is_empty(),
+            "store retains the loader-built pose-modifier stack",
+        );
+        assert!(
+            store.has_pose_modifiers(&handle),
+            "existing pose-modifier time-slicing behavior remains intact",
+        );
+    }
+
+    // Regression: a failed idempotent reload retained the previous model and
+    // pose-stack marker.
+    #[test]
+    fn insert_from_load_failure_clears_stale_model_and_pose_membership() {
+        let fixture_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../model/tests/fixtures/joint_zones/joint_zones.gltf");
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time after Unix epoch")
+            .as_nanos();
+        let model_rel = format!(
+            "postretro_hit_zone_failed_reload_{}_{}.gltf",
+            std::process::id(),
+            unique
+        );
+        let content_root = std::env::temp_dir();
+        let model_path = content_root.join(&model_rel);
+        std::fs::copy(&fixture_path, &model_path).expect("temporary model fixture copies");
+
+        let mut store = HitZoneStore::new();
+        store.insert_from_load(&model_rel, &content_root, ModelLoadWarningOwner::GameSide);
+        let handle = ModelHandle::from(model_rel.clone());
+        assert!(store.get(&handle).is_some(), "initial model load succeeds");
+        assert!(
+            store.has_pose_modifiers(&handle),
+            "fixture initially records its pose stack",
+        );
+
+        std::fs::remove_file(&model_path).expect("temporary model fixture removes");
+        store.insert_from_load(&model_rel, &content_root, ModelLoadWarningOwner::GameSide);
+
+        assert!(
+            store.get(&handle).is_none(),
+            "failed replacement load clears the stale model entry",
+        );
+        assert!(
+            !store.has_pose_modifiers(&handle),
+            "failed replacement load clears stale pose-modifier membership",
+        );
+    }
+
+    #[test]
+    fn attachment_resolution_warnings_are_deduplicated_until_level_clear() {
+        let mut store = HitZoneStore::new();
+        assert!(store.mark_attachment_resolution_warning("missing-hand".to_string()));
+        assert!(
+            !store.mark_attachment_resolution_warning("missing-hand".to_string()),
+            "the same unresolved attachment must warn only once per level"
+        );
+        store.clear();
+        assert!(
+            store.mark_attachment_resolution_warning("missing-hand".to_string()),
+            "a new level may surface its own attachment diagnostic"
+        );
+    }
+
     /// A miss (unloaded handle) returns `None` rather than panicking.
     #[test]
     fn store_lookup_miss_is_none() {
@@ -1846,7 +1996,9 @@ mod tests {
     // --- Entity-raycast facility --------------------------------------------
 
     use postretro_entities::components::health::{HealthComponent, Hitbox};
-    use postretro_entities::components::mesh::MeshComponent;
+    use postretro_entities::components::mesh::{
+        AnimationState, InterruptPolicy, MeshAnimation, MeshComponent,
+    };
     use postretro_entities::registry::{EntityRegistry, Transform};
 
     const FACILITY_EPS: f32 = 1.0e-4;
@@ -1892,8 +2044,10 @@ mod tests {
             skeleton: Arc::new(skeleton),
             clips: Arc::new(vec![clip]),
             joint_zones,
+            sockets: HashMap::new(),
             derived_bound,
             legs: Vec::new(),
+            pose_stack: Arc::new(PoseModifierStack::default()),
         }
     }
 
@@ -1929,8 +2083,10 @@ mod tests {
             skeleton: Arc::new(skeleton),
             clips: Arc::new(clips),
             joint_zones,
+            sockets: HashMap::new(),
             derived_bound,
             legs: Vec::new(),
+            pose_stack: Arc::new(PoseModifierStack::default()),
         }
     }
 
@@ -1956,8 +2112,10 @@ mod tests {
             skeleton: Arc::new(skeleton),
             clips: Arc::new(vec![]),
             joint_zones,
+            sockets: HashMap::new(),
             derived_bound,
             legs: Vec::new(),
+            pose_stack: Arc::new(PoseModifierStack::default()),
         }
     }
 
@@ -2006,8 +2164,26 @@ mod tests {
         store
     }
 
-    /// Spawn a health + stateless-mesh entity (no animation block → poses the
-    /// model's first clip looped at the animation clock).
+    fn clip_zero_animated_mesh(model: &str) -> MeshComponent {
+        let mut states = HashMap::new();
+        states.insert(
+            "clip-zero".to_string(),
+            AnimationState {
+                clip: "clip-zero".to_string(),
+                looping: false,
+                crossfade_ms: 0.0,
+                interrupt: InterruptPolicy::Smooth,
+                travel_speed: None,
+                clip_index: Some(0),
+            },
+        );
+        let mut animation = MeshAnimation::new(states, "clip-zero".to_string());
+        animation.entered_at = Some(0.0);
+        MeshComponent::animated(model.to_string(), animation)
+    }
+
+    /// Spawn a health + explicitly animated mesh entity whose state selects
+    /// clip zero. Tests that need stateless behavior attach it explicitly.
     fn spawn_zone_entity(reg: &mut EntityRegistry, model: &str, position: Vec3) -> EntityId {
         let id = reg.spawn(Transform {
             position,
@@ -2025,7 +2201,7 @@ mod tests {
             },
         )
         .unwrap();
-        reg.set_component(id, MeshComponent::stateless(model.to_string()))
+        reg.set_component(id, clip_zero_animated_mesh(model))
             .unwrap();
         id
     }
@@ -2059,7 +2235,7 @@ mod tests {
             position,
             ..Transform::default()
         });
-        reg.set_component(id, MeshComponent::stateless(model.to_string()))
+        reg.set_component(id, clip_zero_animated_mesh(model))
             .unwrap();
         id
     }
@@ -2181,6 +2357,7 @@ mod tests {
                 animation: Some(anim),
                 origin_offset: Vec3::ZERO,
                 shadow_bias_scale: 1.0,
+                attachments: Vec::new(),
                 pose_inputs: None,
             },
         )
@@ -2231,6 +2408,41 @@ mod tests {
             .expect("the posed limb lies on the ray");
         assert_eq!(posed.target, id, "the zone entity is hit");
         assert_eq!(posed.zone.as_deref(), Some("hand"), "zone tag surfaced");
+    }
+
+    #[test]
+    fn stateless_zone_entity_holds_rest_pose_when_clip_zero_moves() {
+        // Regression: animation-free hit zones advanced clip zero while the
+        // visible mesh and its socket attachments held the authored rest pose.
+        let mut reg = EntityRegistry::new();
+        let store = store_with("mob", swinging_limb_model());
+        let id = spawn_zone_entity(&mut reg, "mob", Vec3::ZERO);
+        reg.set_component(id, MeshComponent::stateless("mob".to_string()))
+            .unwrap();
+
+        let moving_clip_position = nearest_entity_hit(
+            &reg,
+            &store,
+            1.0,
+            Vec3::new(5.0, 0.0, 10.0),
+            Vec3::new(0.0, 0.0, -1.0),
+            100.0,
+        );
+        assert!(
+            moving_clip_position.is_none(),
+            "stateless capsules must not advance clip zero",
+        );
+
+        let rest_position = nearest_entity_hit(
+            &reg,
+            &store,
+            1.0,
+            Vec3::new(0.0, 0.0, 10.0),
+            Vec3::new(0.0, 0.0, -1.0),
+            100.0,
+        )
+        .expect("stateless capsule remains at the authored rest position");
+        assert_eq!(rest_position.zone.as_deref(), Some("hand"));
     }
 
     /// Regression: zoned skeletons with no clips are still hittable at their
@@ -2306,6 +2518,7 @@ mod tests {
                 animation: Some(anim),
                 origin_offset: Vec3::ZERO,
                 shadow_bias_scale: 1.0,
+                attachments: Vec::new(),
                 pose_inputs: None,
             },
         )
@@ -2391,6 +2604,7 @@ mod tests {
                 animation: Some(anim),
                 origin_offset: Vec3::ZERO,
                 shadow_bias_scale: 1.0,
+                attachments: Vec::new(),
                 pose_inputs: None,
             },
         )
@@ -2462,6 +2676,7 @@ mod tests {
                 animation: Some(anim),
                 origin_offset: Vec3::ZERO,
                 shadow_bias_scale: 1.0,
+                attachments: Vec::new(),
                 pose_inputs: None,
             },
         )
@@ -2553,6 +2768,7 @@ mod tests {
                 animation: Some(anim),
                 origin_offset: Vec3::ZERO,
                 shadow_bias_scale: 1.0,
+                attachments: Vec::new(),
                 pose_inputs: None,
             },
         )
@@ -2589,8 +2805,10 @@ mod tests {
             skeleton: Arc::new(skeleton),
             clips: Arc::new(clips),
             joint_zones,
+            sockets: HashMap::new(),
             derived_bound,
             legs: Vec::new(),
+            pose_stack: Arc::new(PoseModifierStack::default()),
         }
     }
 
@@ -2667,6 +2885,7 @@ mod tests {
                 animation: Some(anim),
                 origin_offset: Vec3::ZERO,
                 shadow_bias_scale: 1.0,
+                attachments: Vec::new(),
                 pose_inputs: None,
             },
         )
@@ -2858,7 +3077,7 @@ mod tests {
             },
         )
         .unwrap();
-        reg.set_component(id, MeshComponent::stateless("mob".into()))
+        reg.set_component(id, clip_zero_animated_mesh("mob"))
             .unwrap();
 
         // Posed at t=1 the only capsule (child sphere) sits at (5,0,0), r=0.3. A -Z
@@ -2938,6 +3157,7 @@ mod tests {
                 animation: Some(anim),
                 origin_offset: Vec3::ZERO,
                 shadow_bias_scale: 1.0,
+                attachments: Vec::new(),
                 pose_inputs: None,
             },
         )
@@ -3042,17 +3262,9 @@ mod tests {
             },
         )
         .unwrap();
-        reg.set_component(
-            id,
-            MeshComponent {
-                model: "mob".into(),
-                animation: None,
-                origin_offset: Vec3::new(0.0, -0.8, 0.0),
-                shadow_bias_scale: 1.0,
-                pose_inputs: None,
-            },
-        )
-        .unwrap();
+        let mut mesh = clip_zero_animated_mesh("mob");
+        mesh.origin_offset = Vec3::new(0.0, -0.8, 0.0);
+        reg.set_component(id, mesh).unwrap();
 
         let hit = nearest_entity_hit(
             &reg,
@@ -3166,8 +3378,10 @@ mod tests {
             skeleton: Arc::new(skeleton),
             clips: Arc::new(vec![]),
             joint_zones: vec![None],
+            sockets: HashMap::new(),
             derived_bound: None,
             legs: Vec::new(),
+            pose_stack: Arc::new(PoseModifierStack::default()),
         };
         let store = store_with("plain", no_zone);
 

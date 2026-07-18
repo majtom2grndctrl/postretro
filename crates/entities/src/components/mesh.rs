@@ -1,7 +1,7 @@
-// Mesh component: the model handle a skinned-model entity renders.
+// Mesh component: model handle and presentation state for mesh entities.
 // See: context/lib/scripting.md §10.3 (Mesh Animation)
 
-use glam::Vec3;
+use glam::{Mat4, Vec3};
 use postretro_foundation::PoseInputs;
 use serde::{Deserialize, Serialize};
 
@@ -11,7 +11,45 @@ pub use super::animation::{
     SwitchResult, resolve_pending_animation_stamps, restart_animation_clip, switch_animation_state,
 };
 
-/// Marks an entity as rendering a skinned model. `model` is the model handle
+/// Load-resolved location of a descriptor-authored attachment socket on this
+/// mesh's holder model. This is presentation-only runtime state: it is rebuilt
+/// after model loading and never crosses persistence or replication boundaries.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum AttachmentBinding {
+    /// A socket on a skinned holder, indexed in the model's topological joint
+    /// order.
+    Skinned(usize),
+    /// A socket on a rigid holder, expressed in model-space rest coordinates.
+    Rigid(Mat4),
+    /// The holder socket or attached model could not be resolved at load time.
+    /// Render collection skips this attachment.
+    #[default]
+    Unresolved,
+}
+
+/// Descriptor-authored prop model mounted at one named socket of a mesh
+/// holder. The authoring pair is serializable; [`binding`](Self::binding) is a
+/// transient, load-time cache so a stale joint or matrix is never persisted or
+/// replicated.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MeshAttachment {
+    pub socket: String,
+    pub model: String,
+    #[serde(skip)]
+    pub binding: AttachmentBinding,
+}
+
+impl MeshAttachment {
+    pub fn unresolved(socket: String, model: String) -> Self {
+        Self {
+            socket,
+            model,
+            binding: AttachmentBinding::Unresolved,
+        }
+    }
+}
+
+/// Marks an entity as rendering a mesh model. `model` is the model handle
 /// the `prop_mesh` classname handler reads from a map entity's `model` key — the
 /// content-canonical path passed to `postretro_model::gltf_loader::load_model`. It
 /// doubles as the renderer cache key: the level-load model sweep uploads each
@@ -39,6 +77,10 @@ pub struct MeshComponent {
         skip_serializing_if = "shadow_bias_scale_is_default"
     )]
     pub shadow_bias_scale: f32,
+    /// Descriptor-authored prop models mounted at named holder sockets. Socket
+    /// names and model handles persist; the resolved binding does not.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<MeshAttachment>,
     /// Same-tick presentation inputs for the model's pose-modifier stack.
     /// Gameplay and persistence intentionally ignore this transient value.
     #[serde(skip)]
@@ -54,6 +96,7 @@ impl MeshComponent {
             animation: None,
             origin_offset: Vec3::ZERO,
             shadow_bias_scale: 1.0,
+            attachments: Vec::new(),
             pose_inputs: None,
         }
     }
@@ -64,6 +107,7 @@ impl MeshComponent {
             animation: Some(animation),
             origin_offset: Vec3::ZERO,
             shadow_bias_scale: 1.0,
+            attachments: Vec::new(),
             pose_inputs: None,
         }
     }
@@ -75,6 +119,20 @@ impl MeshComponent {
 
     pub fn with_shadow_bias_scale(mut self, shadow_bias_scale: f32) -> Self {
         self.shadow_bias_scale = shadow_bias_scale;
+        self
+    }
+
+    /// Attach descriptor-authored socket/model pairs. Every materialized entry
+    /// begins unresolved; level load fills the transient binding from the
+    /// holder model's socket table.
+    pub fn with_attachments(
+        mut self,
+        attachments: impl IntoIterator<Item = (String, String)>,
+    ) -> Self {
+        self.attachments = attachments
+            .into_iter()
+            .map(|(socket, model)| MeshAttachment::unresolved(socket, model))
+            .collect();
         self
     }
 }
@@ -94,4 +152,33 @@ fn shadow_bias_scale_is_default(value: &f32) -> bool {
 pub fn capsule_center_to_feet_origin_offset(radius: f32, height: f32) -> Vec3 {
     let half_height = (height / 2.0 - radius).max(0.0);
     Vec3::new(0.0, -(half_height + radius), 0.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn attachment_binding_is_transient_but_authoring_pair_round_trips() {
+        let mut mesh = MeshComponent::stateless("models/holder.gltf".to_string())
+            .with_attachments([("hand".to_string(), "models/prop.gltf".to_string())]);
+        mesh.attachments[0].binding = AttachmentBinding::Rigid(Mat4::from_translation(Vec3::X));
+
+        let json = serde_json::to_value(&mesh).expect("mesh component serializes");
+        assert_eq!(json["attachments"][0]["socket"], "hand");
+        assert_eq!(json["attachments"][0]["model"], "models/prop.gltf");
+        assert!(
+            json["attachments"][0].get("binding").is_none(),
+            "resolved attachment bindings must not persist or replicate"
+        );
+
+        let restored: MeshComponent = serde_json::from_value(json).expect("mesh component parses");
+        assert_eq!(restored.attachments[0].socket, "hand");
+        assert_eq!(restored.attachments[0].model, "models/prop.gltf");
+        assert_eq!(
+            restored.attachments[0].binding,
+            AttachmentBinding::Unresolved,
+            "deserialization must never retain a stale resolved binding"
+        );
+    }
 }

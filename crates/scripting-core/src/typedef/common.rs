@@ -116,6 +116,7 @@ pub fn rust_to_ts(ty_name: &str) -> String {
         "MeshAnimationStates" => {
             "{ readonly [state: string]: AnimationStateDescriptor }".to_string()
         }
+        "MeshAttachments" => "{ readonly [socket: string]: string }".to_string(),
         "ZoneMultipliers" => "{ readonly [tag: string]: number }".to_string(),
         "EntityTypeDescriptor" => "EntityTypeDescriptor".to_string(),
         "EntityTypeComponents" => "EntityTypeComponents".to_string(),
@@ -251,6 +252,7 @@ pub fn rust_to_luau(ty_name: &str) -> String {
         "AnimationStateDescriptor" => "AnimationStateDescriptor".to_string(),
         "InterruptPolicy" => "InterruptPolicy".to_string(),
         "MeshAnimationStates" => "{ [string]: AnimationStateDescriptor }".to_string(),
+        "MeshAttachments" => "{ [string]: string }".to_string(),
         "ZoneMultipliers" => "{ [string]: number }".to_string(),
         "EntityTypeDescriptor" => "EntityTypeDescriptor".to_string(),
         "EntityTypeComponents" => "EntityTypeComponents".to_string(),

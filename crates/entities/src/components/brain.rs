@@ -437,6 +437,7 @@ mod tests {
                 animation: Some(MeshAnimation::new(states, "idle".into())),
                 origin_offset: glam::Vec3::ZERO,
                 shadow_bias_scale: 1.0,
+                attachments: Vec::new(),
                 pose_inputs: None,
             },
         )
@@ -471,6 +472,7 @@ mod tests {
                 animation: Some(MeshAnimation::new(states, "idle".into())),
                 origin_offset: glam::Vec3::ZERO,
                 shadow_bias_scale: 1.0,
+                attachments: Vec::new(),
                 pose_inputs: None,
             },
         )

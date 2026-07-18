@@ -1531,6 +1531,91 @@ fn active_bend_does_not_modify_world_pose_samplers_used_by_hit_zones() {
 }
 
 #[test]
+fn modified_world_sampler_matches_manually_composed_modified_locals() {
+    let skeleton = Skeleton {
+        joints: vec![
+            joint(
+                None,
+                Mat4::IDENTITY,
+                RestLocal {
+                    translation: Vec3::new(1.0, 0.0, 0.0),
+                    ..Default::default()
+                },
+            ),
+            joint(
+                Some(0),
+                Mat4::IDENTITY,
+                RestLocal {
+                    translation: Vec3::new(0.0, 0.0, 2.0),
+                    rotation: Quat::from_rotation_z(0.2),
+                    ..Default::default()
+                },
+            ),
+        ],
+    };
+    let clip = rest_clip(2);
+    let stack = PoseModifierStack::new(vec![ModifierEntry {
+        mask: mask(&[0, 1]),
+        modifier: PoseModifier::AimPitchBend {
+            bend_weights: vec![1.0, 3.0],
+        },
+    }]);
+    let inputs = PoseInputs {
+        aim_pitch: 0.6,
+        ..Default::default()
+    };
+
+    let mut unmodified_before = Vec::new();
+    sample_clip_looped_world(&clip, &skeleton, 0.0, Loop::Wrap, &mut unmodified_before);
+
+    let mut modified_world = Vec::new();
+    sample_clip_looped_world_modified(
+        &clip,
+        &skeleton,
+        0.0,
+        Loop::Wrap,
+        &stack,
+        Some(&inputs),
+        &mut modified_world,
+    );
+
+    let mut modified_locals = skeleton
+        .joints
+        .iter()
+        .map(|joint| LocalTrs {
+            translation: joint.rest_local.translation,
+            rotation: joint.rest_local.rotation,
+            scale: joint.rest_local.scale,
+        })
+        .collect::<Vec<_>>();
+    crate::pose_modifier::apply_pose_modifier_stack(
+        &stack,
+        &inputs,
+        &skeleton,
+        &mut modified_locals,
+    );
+    let expected_root_world = modified_locals[0].to_mat4();
+    let expected_child_world = expected_root_world * modified_locals[1].to_mat4();
+
+    assert_ne!(
+        modified_world[1], unmodified_before[1],
+        "a nonzero aim pitch changes the masked joint's world pose"
+    );
+    assert_mat4_eq(
+        modified_world[1],
+        expected_child_world,
+        "modified world pose composes the modifier-applied locals parent before child",
+    );
+
+    let mut unmodified_after = Vec::new();
+    sample_clip_looped_world(&clip, &skeleton, 0.0, Loop::Wrap, &mut unmodified_after);
+    assert_eq!(
+        unmodified_after, unmodified_before,
+        "hit-zone world-pose sampling remains unmodified after visual pose sampling",
+    );
+}
+
+#[test]
 fn combined_split_and_bend_aims_torso_while_legs_keep_heading() {
     let heading = 0.2;
     let aim_yaw = 0.7;

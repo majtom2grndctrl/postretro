@@ -6,6 +6,7 @@
 // See: context/lib/scripting.md
 
 pub(crate) mod ai;
+pub(crate) mod attachments;
 pub(crate) mod emitter_bridge;
 pub(crate) mod flash_decay;
 pub(crate) mod fog_volume_bridge;

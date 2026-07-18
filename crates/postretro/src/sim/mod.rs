@@ -584,8 +584,8 @@ const FOOT_PLANTING_REACH: f32 = 0.5;
 /// then covers this allowance plus [`FOOT_PLANTING_REACH`] downward.
 const FOOT_PENETRATION_ALLOWANCE: f32 = 0.15;
 
-/// Sample each leg-tagged animated entity's UNMODIFIED world foot pose, cast a
-/// short downward ray at the collision world under each foot, and write the
+/// Sample each leg-tagged entity's UNMODIFIED world foot pose, cast a short
+/// downward ray at the collision world under each foot, and write the
 /// model-space contact into `PoseInputs::feet` for the renderer's IK solver.
 ///
 /// Ordered AFTER [`update_pose_inputs`], which owns the aim/heading fields: this
@@ -614,10 +614,9 @@ fn update_foot_ground_probes(
                 let ComponentValue::Mesh(mesh) = value else {
                     return None;
                 };
-                let is_legged = mesh.animation.is_some()
-                    && hit_zone_store
-                        .get_by_name(&mesh.model)
-                        .is_some_and(|model| !model.legs.is_empty());
+                let is_legged = hit_zone_store
+                    .get_by_name(&mesh.model)
+                    .is_some_and(|model| !model.legs.is_empty());
                 let has_stale_feet = mesh.pose_inputs.is_some_and(|inputs| {
                     inputs.foot_count != 0
                         || inputs
@@ -636,8 +635,7 @@ fn update_foot_ground_probes(
         let zones = hit_zone_store.get_by_name(&mesh.model);
         let mut foot_count = 0;
         let mut feet = [FootProbe::default(); MAX_FEET];
-        if let (Some(animation), Some(zones), Ok(transform)) = (
-            mesh.animation.as_ref(),
+        if let (Some(zones), Ok(transform)) = (
             zones,
             registry
                 .get_component::<postretro_entities::Transform>(id)
@@ -645,8 +643,12 @@ fn update_foot_ground_probes(
         ) {
             if let Some(model_to_world) = model_matrix(&transform, mesh.origin_offset) {
                 if let Some(world_to_model) = foot_probe_inverse(&transform, &model_to_world) {
-                    let world_joints =
-                        sample_world_pose_for_probe(zones, Some(animation), anim_time, id.to_raw());
+                    let world_joints = sample_world_pose_for_probe(
+                        zones,
+                        mesh.animation.as_ref(),
+                        anim_time,
+                        id.to_raw(),
+                    );
                     if let Some(world_joints) = world_joints.as_ref() {
                         foot_count = zones.legs.len().min(MAX_FEET);
                         let downward_reach = FOOT_PLANTING_REACH * transform.scale.y;

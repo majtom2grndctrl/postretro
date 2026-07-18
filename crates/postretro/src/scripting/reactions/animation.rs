@@ -116,6 +116,7 @@ mod tests {
                 animation: Some(two_state_animation()),
                 origin_offset: glam::Vec3::ZERO,
                 shadow_bias_scale: 1.0,
+                attachments: Vec::new(),
                 pose_inputs: None,
             },
         )

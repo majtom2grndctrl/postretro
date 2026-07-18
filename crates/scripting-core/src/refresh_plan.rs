@@ -1568,6 +1568,7 @@ mod tests {
 
         let mesh_descriptor = MeshDescriptor {
             model: "decraniated".into(),
+            attachments: Default::default(),
             shadow_bias_scale: 1.0,
             animations: descriptor_states,
             default_state: Some("idle".into()),
@@ -1644,6 +1645,7 @@ mod tests {
             animation: Some(live_anim),
             origin_offset: glam::Vec3::ZERO,
             shadow_bias_scale: 1.0,
+            attachments: Vec::new(),
             pose_inputs: None,
         };
         registry.set_component(id, live).unwrap();

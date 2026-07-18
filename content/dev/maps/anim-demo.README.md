@@ -10,8 +10,9 @@ reaction.
 
 - `content/dev/scripts/anim-demo-grunt.ts` — `defineEntity({ canonicalName:
   "anim_demo_grunt", components: { mesh: { ... } } })`. Declares the per-entity
-  animation-state map (`idle`, `alert`) and `defaultState: "idle"`. Registered
-  into the mod via `content/dev/start-script.ts`'s `ModManifest.entities`.
+  animation-state map (`idle`, `alert`), `defaultState: "idle"`, and an E21
+  `hand_r` attachment pointing at the rigid verification marker. Registered into
+  the mod via `content/dev/start-script.ts`'s `ModManifest.entities`.
 - `content/dev/scripts/anim-demo-reaction.ts` — the level **data script**
   (`setupLevel`). Returns a `levelLoad` Primitive reaction that fires
   `setAnimationState { state: "alert" }` against entities tagged `demo_grunt`.
@@ -57,13 +58,17 @@ per-instance sampling path, end to end:
   switch is recorded through the same validated `switch_animation_state` entry
   point the future AI / command-buffer layer will use.
 
+- The rigid marker stays at the grunt's right hand through both the looping
+  `idle` clip and the installed `alert` state. This is the visual E21 socket
+  check; E20 v1 captures contain world geometry only, not mesh attachments.
+
 ## Why the state switch is a HARD CUT here, not a crossfade
 
 `alert` declares `crossfadeMs: 250`, but you will **not** see a 250 ms blend from
 this demo. A `levelLoad` reaction fires during level install, **before any frame
 has rendered**, so the grunt's entry stamp is still *pending* when
 `setAnimationState` runs. A switch out of a pending current state hits the
-pending-stamp collapse (`scripting/components/mesh.rs`,
+pending-stamp collapse (`crates/entities/src/components/animation/transitions.rs`,
 `switch_animation_state`): the never-rendered intermediate is dropped, it
 contributes no outgoing fade, and the transition is a **hard cut**. The grunt is
 already in `alert` by the first rendered frame.
@@ -88,16 +93,15 @@ resolved when the switch lands. Two ways:
 ## The `prop_mesh` control
 
 The `prop_mesh` beside the grunt (origin `176 176 16`) carries **no animation
-state**. A stateless mesh is not frozen in a rest pose — it samples clip 0 on a
-`Loop::Wrap` policy against the animation clock (`MeshSampleParams::stateless` in
-`render/mesh_instances.rs`), i.e. it **loops clip 0**.
+configuration**. A stateless mesh holds the model's authored **rest pose**;
+it does not sample a clip (`MeshSampleParams::rest` in
+`crates/model/src/sample_params.rs`).
 
 Because the only skinned model shipped in the repo exposes exactly one clip, the
-`prop_mesh` and the grunt's `idle` are sampling the *same* clip — so there is no
-visible "animated vs. stateless" contrast with this single-clip asset. The
-`prop_mesh` is a stateless **control**: with a multi-clip model the descriptor
-entity would switch among distinct authored states while the `prop_mesh` stayed
-locked on clip 0.
+`prop_mesh` and the grunt's `idle` differ semantically even when their visual
+difference is subtle. The `prop_mesh` is a stateless **control**: with a
+multi-clip model the descriptor entity would switch among distinct authored
+states while the `prop_mesh` stayed in its rest pose.
 
 ## Multi-clip-model swap
 
@@ -122,8 +126,9 @@ animations:
 
    `clip` is resolved against the model's clip metadata at level load.
 
-With distinct clips the `prop_mesh` (still on clip 0) and the grunt's switched
-state would differ visibly — restoring the animated-vs-control contrast.
+With distinct clips the `prop_mesh` (still in rest pose) and the grunt's
+switched state would differ visibly — restoring the animated-vs-control
+contrast.
 
 ## Authoring notes / caveats
 

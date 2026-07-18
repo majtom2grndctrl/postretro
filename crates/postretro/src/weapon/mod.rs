@@ -1710,11 +1710,13 @@ mod tests {
                 tag: "head".to_string(),
                 radius: Some(radius),
             })],
+            sockets: std::collections::HashMap::new(),
             derived_bound: Some(Aabb {
                 min: Vec3::splat(-radius),
                 max: Vec3::splat(radius),
             }),
             legs: Vec::new(),
+            pose_stack: Arc::new(postretro_model::pose_modifier::PoseModifierStack::default()),
         };
         let mut store = HitZoneStore::new();
         store.insert_for_test(postretro_model::ModelHandle::from(handle), model);

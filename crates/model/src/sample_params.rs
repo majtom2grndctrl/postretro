@@ -68,9 +68,9 @@ pub enum FadeSource {
 }
 
 /// Per-instance animation sample parameters — what the pose consumer feeds the
-/// sampler this frame. `Copy` plain-old-data; the default
-/// ([`MeshSampleParams::stateless`]) reproduces today's stateless behavior
-/// (first clip, looped, phase-offset time).
+/// sampler this frame. `Copy` plain-old-data. Animation-free holders explicitly
+/// select [`MeshSampleParams::rest`]; unresolved animated states may still use
+/// [`MeshSampleParams::stateless`] as their clip-zero fallback.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MeshSampleParams {
     /// The state currently being entered / held — always sampled.
@@ -119,15 +119,48 @@ pub struct CaptureInstruction {
 }
 
 impl MeshSampleParams {
-    /// The stateless `prop_mesh` default: sample the model's first clip (glTF
-    /// index 0), looping, with no crossfade. The clip-local time is filled by the
-    /// collector (animation clock + per-instance phase) — this names the legs.
+    /// Select the skeleton's authored rest pose without sampling any clip.
+    ///
+    /// The reserved clip index is interpreted explicitly by pose consumers; it
+    /// is distinct from the rigid identity-palette sentinel.
+    pub fn rest() -> Self {
+        Self {
+            primary: ClipSample {
+                clip_index: usize::MAX - 1,
+                time: 0.0,
+                loop_policy: Loop::Clamp,
+            },
+            fade: None,
+        }
+    }
+
+    /// Whether this sample explicitly selects the authored rest pose.
+    pub fn is_rest_pose(self) -> bool {
+        self.primary.clip_index == usize::MAX - 1
+    }
+
+    /// Legacy clip-zero fallback for an animated state whose authored clip does
+    /// not resolve. Samples glTF clip index 0, looping, with no crossfade.
     pub fn stateless(time: f32) -> Self {
         Self {
             primary: ClipSample {
                 clip_index: 0,
                 time,
                 loop_policy: Loop::Wrap,
+            },
+            fade: None,
+        }
+    }
+
+    /// A rigid instance has no animation sample. The intentionally-invalid
+    /// clip index selects the mesh pass's existing identity-palette fallback,
+    /// which is the rigid-model path (one synthetic identity joint).
+    pub fn rigid() -> Self {
+        Self {
+            primary: ClipSample {
+                clip_index: usize::MAX,
+                time: 0.0,
+                loop_policy: Loop::Clamp,
             },
             fade: None,
         }
@@ -162,5 +195,14 @@ mod tests {
     #[test]
     fn instance_phase_zero_for_zero_length_clip() {
         assert_eq!(instance_phase(12345, 0.0), 0.0);
+    }
+
+    #[test]
+    fn rest_pose_selection_is_distinct_from_clip_and_rigid_samples() {
+        let rest = MeshSampleParams::rest();
+
+        assert!(rest.is_rest_pose());
+        assert!(!MeshSampleParams::stateless(0.0).is_rest_pose());
+        assert!(!MeshSampleParams::rigid().is_rest_pose());
     }
 }

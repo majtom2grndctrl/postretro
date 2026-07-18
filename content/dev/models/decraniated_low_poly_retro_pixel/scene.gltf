@@ -2177,6 +2177,9 @@
       ]
     },
     {
+      "extras": {
+        "socket": "hand_r"
+      },
       "name": "mixamorig:RightHand_014",
       "rotation": [
         -2.7755575615628914e-17,

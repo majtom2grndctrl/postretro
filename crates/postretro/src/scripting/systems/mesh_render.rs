@@ -4,13 +4,14 @@
 
 use std::collections::HashMap;
 
+use super::attachments::{self, SocketPoseResolver};
 use super::hit_zones::HitZoneStore;
 use super::mesh_anim::{self, MeshClipTables};
 use postretro_entities::registry::{ComponentKind, ComponentValue, EntityRegistry, Transform};
 use postretro_level_loader::LevelWorld;
 use postretro_model::ModelHandle;
 use postretro_model::sample_params::MeshSampleParams;
-use postretro_render_cpu::mesh_instances::MeshInstanceInput;
+use postretro_render_cpu::mesh_instances::{MeshInstanceInput, MeshPaletteCacheKey};
 use postretro_render_cpu::mesh_pass::mesh_visible;
 use postretro_render_data::cone_frustum::Aabb;
 use postretro_render_data::influence::LightInfluence;
@@ -114,6 +115,13 @@ pub(crate) struct MeshRenderCollector {
     /// Tallied at the bucketing decision — the game-side counter a collector unit
     /// test asserts the reduced rate against without a GPU device.
     resample_count: u32,
+    /// Reused modifier-applied world-pose buffer for skinned socket bindings.
+    /// One holder fills it once and all of that holder's skinned attachments read
+    /// their matrices from the same sample.
+    attachment_world_pose: Vec<glam::Mat4>,
+    /// Persistent path-to-handle cache for attachment draw inputs. ModelHandle
+    /// paths are interned here so steady-state collection does not allocate.
+    attachment_model_handles: HashMap<String, ModelHandle>,
 }
 
 impl MeshRenderCollector {
@@ -124,6 +132,8 @@ impl MeshRenderCollector {
             last_state: HashMap::new(),
             last_state_scratch: HashMap::new(),
             resample_count: 0,
+            attachment_world_pose: Vec::new(),
+            attachment_model_handles: HashMap::new(),
         }
     }
 
@@ -132,6 +142,8 @@ impl MeshRenderCollector {
         self.last_state.clear();
         self.last_state_scratch.clear();
         self.resample_count = 0;
+        self.attachment_world_pose.clear();
+        self.attachment_model_handles.clear();
     }
 
     /// Walk `ComponentKind::Mesh` entities, cull each against the frame's
@@ -153,8 +165,8 @@ impl MeshRenderCollector {
     /// an animated entity the collector resolves its current/previous states into
     /// per-instance `MeshSampleParams` (clip-local times, crossfade weight,
     /// snapshot fade) and emits a one-time capture instruction on a `"smooth"`
-    /// interrupt frame. A stateless `prop_mesh` entity (no animation block) gets
-    /// the default params: first clip, looped, `anim_time + per-instance phase`.
+    /// interrupt frame. A stateless `prop_mesh` entity (no animation block)
+    /// explicitly selects the model's authored rest pose.
     ///
     /// The per-instance phase seed is the raw `EntityId`, folded into a
     /// deterministic phase offset so a spawned wave does not animate lock-step
@@ -183,6 +195,7 @@ impl MeshRenderCollector {
         tables: &MeshClipTables,
         camera_pos: glam::Vec3,
     ) {
+        let socket_poses = SocketPoseResolver::empty();
         self.collect_inner(
             registry,
             world,
@@ -190,6 +203,7 @@ impl MeshRenderCollector {
             alpha,
             anim_time,
             tables,
+            &socket_poses,
             camera_pos,
             |_| false,
         );
@@ -213,6 +227,7 @@ impl MeshRenderCollector {
         camera_pos: glam::Vec3,
         hit_zones: &HitZoneStore,
     ) {
+        let socket_poses = SocketPoseResolver::new(hit_zones);
         self.collect_inner(
             registry,
             world,
@@ -220,6 +235,7 @@ impl MeshRenderCollector {
             alpha,
             anim_time,
             tables,
+            &socket_poses,
             camera_pos,
             |handle| hit_zones.has_precise_zones(handle) || hit_zones.has_pose_modifiers(handle),
         );
@@ -234,6 +250,7 @@ impl MeshRenderCollector {
         alpha: f32,
         anim_time: f64,
         tables: &MeshClipTables,
+        socket_poses: &SocketPoseResolver<'_>,
         camera_pos: glam::Vec3,
         force_resample_model: impl Fn(&ModelHandle) -> bool,
     ) {
@@ -299,31 +316,52 @@ impl MeshRenderCollector {
                 }
                 None => false,
             };
+            let holder_transform = glam::Mat4::from_scale_rotation_translation(
+                transform.scale,
+                transform.rotation,
+                transform.position + mesh.origin_offset,
+            );
+            let holder_index = self.instances.len();
+            self.instances.push(MeshInstanceInput {
+                model: handle.clone(),
+                transform: holder_transform,
+                shadow_bias_scale: mesh.shadow_bias_scale,
+                phase_seed: seed,
+                palette_cache_key: MeshPaletteCacheKey::Entity(seed),
+                sample,
+                pose_inputs: mesh.pose_inputs,
+                capture,
+                // Attachments are emitted next and report whether this holder
+                // has a skinned socket. Fill the final decision afterward so
+                // the holder remains immediately before its attachments.
+                resample: false,
+                forward_visible,
+            });
+            let has_skinned_attachment = attachments::emit_for_holder(
+                &mut self.instances,
+                &mut self.attachment_world_pose,
+                &mut self.attachment_model_handles,
+                socket_poses,
+                &handle,
+                holder_transform,
+                sample,
+                mesh.pose_inputs,
+                mesh.shadow_bias_scale,
+                seed,
+                forward_visible,
+                &mesh.attachments,
+            );
             let force = state_changed
                 || sample.fade.is_some()
                 || capture.is_some()
+                || has_skinned_attachment
                 || force_resample_model(&handle);
             let distance = current_model_position.distance(camera_pos);
             let resample = should_resample(distance, frame_index, seed, force);
             if resample {
                 self.resample_count += 1;
             }
-
-            self.instances.push(MeshInstanceInput {
-                model: handle,
-                transform: glam::Mat4::from_scale_rotation_translation(
-                    transform.scale,
-                    transform.rotation,
-                    transform.position + mesh.origin_offset,
-                ),
-                shadow_bias_scale: mesh.shadow_bias_scale,
-                phase_seed: seed,
-                sample,
-                pose_inputs: mesh.pose_inputs,
-                capture,
-                resample,
-                forward_visible,
-            });
+            self.instances[holder_index].resample = resample;
         }
 
         // Swap the rebuilt map in (the old one becomes next frame's scratch) and
@@ -396,15 +434,14 @@ fn state_fingerprint(
 
 /// Resolve one entity's sample params + optional capture instruction.
 ///
-/// Stateless (`animation == None`) or a model whose clip table is absent (never
-/// uploaded): the default stateless params — first clip, looped, `anim_time +
-/// per-instance phase`. The phase de-syncs a spawned wave (looping props).
+/// Stateless (`animation == None`) entities explicitly select the authored rest
+/// pose. They never sample clip zero implicitly.
 ///
 /// Animated, with a clip table: delegate to [`mesh_anim::animate_entity`], which
 /// computes clip-local times, the crossfade weight, the snapshot fade, and the
 /// `"smooth"`-interrupt capture instruction. If the current state is unresolved
-/// (no usable clip) the entity falls back to the stateless default so it still
-/// renders (its bind pose / first clip) rather than vanishing.
+/// (no usable clip) the entity falls back to the legacy clip-zero sample so it
+/// still renders rather than vanishing.
 fn resolve_sample(
     animation: Option<&postretro_entities::components::mesh::MeshAnimation>,
     handle: &ModelHandle,
@@ -415,6 +452,10 @@ fn resolve_sample(
     MeshSampleParams,
     Option<postretro_model::sample_params::CaptureInstruction>,
 ) {
+    if animation.is_none() {
+        return (MeshSampleParams::rest(), None);
+    }
+
     let table = tables.get(handle);
 
     // Animated entity with a resolved clip table → state-driven sampling.
@@ -431,8 +472,8 @@ fn resolve_sample(
         }
     }
 
-    // Stateless / unresolved / un-uploaded: today's behavior. The primary clip is
-    // index 0; phase folds in against its duration (0 if the model is uncached).
+    // Animated but unresolved / un-uploaded: legacy fallback. The primary clip
+    // is index 0; phase folds in against its duration (0 if uncached).
     let duration = table.and_then(|t| t.duration(0)).unwrap_or(0.0);
     let phase = postretro_model::sample_params::instance_phase(seed, duration);
     (MeshSampleParams::stateless(anim_time as f32 + phase), None)
@@ -965,12 +1006,13 @@ mod tests {
 
     // --- Animated-state sample-param resolution through `collect` ---------------
 
-    use postretro_entities::components::mesh::{AnimationState, InterruptPolicy, MeshAnimation};
+    use postretro_entities::components::mesh::{
+        AnimationState, AttachmentBinding, InterruptPolicy, MeshAnimation, MeshAttachment,
+    };
     use postretro_entities::components::mesh::{
         resolve_pending_animation_stamps, switch_animation_state,
     };
     use postretro_model::ModelHandle;
-    use postretro_model::anim::Loop;
     use postretro_model::gltf_loader::JointZone;
     use postretro_model::sample_params::FadeSource;
     use postretro_model::skeleton::{Joint, RestLocal, Skeleton};
@@ -1031,6 +1073,7 @@ mod tests {
                 animation: Some(MeshAnimation::new(states, "idle".into())),
                 origin_offset: Vec3::ZERO,
                 shadow_bias_scale: 1.0,
+                attachments: Vec::new(),
                 pose_inputs: None,
             },
         )
@@ -1039,9 +1082,9 @@ mod tests {
     }
 
     #[test]
-    fn collect_stateless_uses_first_clip_looped_with_phase() {
-        // A stateless prop_mesh: first clip (index 0), looped, time = anim_time +
-        // per-instance phase. Two distinct seeds give distinct phases (not lock-step).
+    fn collect_stateless_selects_rest_pose_even_when_clip_zero_exists() {
+        // Regression: stateless bodies sampled clip zero while their sockets
+        // sampled rest pose, visibly detaching mounted props.
         let mut reg = EntityRegistry::new();
         let world = single_cell_world();
         let mut collector = MeshRenderCollector::new();
@@ -1052,7 +1095,6 @@ mod tests {
             Aabb::default(),
         );
         spawn_mesh(&mut reg, "prop", Vec3::new(1.0, 0.0, 0.0));
-        spawn_mesh(&mut reg, "prop", Vec3::new(2.0, 0.0, 0.0));
 
         collector.collect(
             &reg,
@@ -1064,26 +1106,9 @@ mod tests {
             glam::Vec3::ZERO,
         );
         let insts = collector.instances();
-        assert_eq!(insts.len(), 2);
-        for inst in insts {
-            assert_eq!(inst.sample.primary.clip_index, 0, "stateless = first clip");
-            assert_eq!(
-                inst.sample.primary.loop_policy,
-                Loop::Wrap,
-                "stateless loops"
-            );
-            assert!(inst.sample.fade.is_none(), "stateless never fades");
-            assert!(
-                inst.sample.primary.time >= 3.0,
-                "time = anim_time + phase ≥ clock"
-            );
-            assert!(inst.capture.is_none());
-        }
-        // Distinct phases → distinct sample times (wave de-sync).
-        assert!(
-            (insts[0].sample.primary.time - insts[1].sample.primary.time).abs() > 1.0e-4,
-            "two stateless instances are not lock-step",
-        );
+        assert_eq!(insts.len(), 1);
+        assert_eq!(insts[0].sample, MeshSampleParams::rest());
+        assert!(insts[0].capture.is_none());
     }
 
     #[test]
@@ -1234,11 +1259,91 @@ mod tests {
                     tag: "core".to_string(),
                     radius: Some(0.25),
                 })],
+                sockets: std::collections::HashMap::new(),
                 derived_bound: Some(Aabb::default()),
                 legs: Vec::new(),
+                pose_stack: Arc::new(postretro_model::pose_modifier::PoseModifierStack::default()),
             },
         );
         store
+    }
+
+    fn attachment(binding: AttachmentBinding, model: &str) -> MeshAttachment {
+        MeshAttachment {
+            socket: "socket".to_string(),
+            model: model.to_string(),
+            binding,
+        }
+    }
+
+    fn socket_pose_store(
+        model: &str,
+        pose_stack: postretro_model::pose_modifier::PoseModifierStack,
+    ) -> HitZoneStore {
+        use postretro_model::skeleton::{AnimationClip, Interp, JointTracks, Track};
+
+        let skeleton = Skeleton {
+            joints: vec![
+                Joint {
+                    parent: None,
+                    inverse_bind: glam::Mat4::IDENTITY.to_cols_array_2d(),
+                    rest_local: RestLocal::default(),
+                },
+                Joint {
+                    parent: Some(0),
+                    inverse_bind: glam::Mat4::IDENTITY.to_cols_array_2d(),
+                    rest_local: RestLocal {
+                        translation: Vec3::new(0.0, 2.0, 0.0),
+                        ..RestLocal::default()
+                    },
+                },
+            ],
+        };
+        let clip = AnimationClip {
+            name: "idle".to_string(),
+            duration: 0.0,
+            joints: vec![
+                JointTracks {
+                    translation: Track::new(
+                        vec![0.0],
+                        vec![Vec3::new(3.0, 0.0, 0.0)],
+                        Interp::Linear,
+                    )
+                    .expect("one finite key builds"),
+                    ..JointTracks::default()
+                },
+                JointTracks::default(),
+            ],
+            travel_speed: None,
+        };
+        let mut store = HitZoneStore::new();
+        store.insert_for_test(
+            ModelHandle::from(model),
+            crate::scripting_systems::hit_zones::ModelHitZones {
+                skeleton: Arc::new(skeleton),
+                clips: Arc::new(vec![clip]),
+                joint_zones: vec![None, None],
+                sockets: std::collections::HashMap::new(),
+                derived_bound: None,
+                legs: Vec::new(),
+                pose_stack: Arc::new(pose_stack),
+            },
+        );
+        store
+    }
+
+    fn assert_mat4_approx(actual: glam::Mat4, expected: glam::Mat4, context: &str) {
+        for (index, (actual, expected)) in actual
+            .to_cols_array()
+            .into_iter()
+            .zip(expected.to_cols_array())
+            .enumerate()
+        {
+            assert!(
+                (actual - expected).abs() < 1.0e-5,
+                "{context}: matrix element {index}: expected {expected}, got {actual}",
+            );
+        }
     }
 
     #[test]
@@ -1622,6 +1727,319 @@ mod tests {
         assert!(
             collector.instances()[0].forward_visible,
             "a visible mesh remains in the shared forward/shadow plan",
+        );
+    }
+
+    #[test]
+    fn collect_emits_skinned_attachment_at_modified_world_socket_pose() {
+        use glam::{Quat, Vec3};
+        use postretro_model::pose_modifier::{
+            JointMask, ModifierEntry, PoseModifier, PoseModifierStack,
+        };
+
+        let mut registry = EntityRegistry::new();
+        let mut collector = MeshRenderCollector::new();
+        let world = single_cell_world();
+        let mut child_mask = JointMask::new();
+        assert!(child_mask.insert(1));
+        let store = socket_pose_store(
+            "holder",
+            PoseModifierStack::new(vec![ModifierEntry {
+                mask: child_mask,
+                modifier: PoseModifier::AimPitchBend {
+                    bend_weights: vec![1.0],
+                },
+            }]),
+        );
+        let mut states = HashMap::new();
+        states.insert("idle".to_string(), state("idle", true, 0.0, Some(0)));
+        let id = registry.spawn(Transform {
+            position: Vec3::new(4.0, -1.0, 2.0),
+            rotation: Quat::from_rotation_y(0.4),
+            scale: Vec3::new(2.0, 3.0, 4.0),
+        });
+        let mut mesh = MeshComponent::animated(
+            "holder".to_string(),
+            MeshAnimation::new(states, "idle".to_string()),
+        );
+        let inputs = postretro_entities::PoseInputs {
+            aim_pitch: 0.5,
+            ..Default::default()
+        };
+        mesh.pose_inputs = Some(inputs);
+        mesh.attachments
+            .push(attachment(AttachmentBinding::Skinned(1), "hand-prop"));
+        registry.set_component(id, mesh).unwrap();
+        resolve_pending_animation_stamps(&mut registry, 0.0);
+
+        let mut tables = MeshClipTables::new();
+        tables.insert_with_bounds(
+            ModelHandle::from("holder"),
+            &clip_meta(&[("idle", 0.0)]),
+            Aabb::default(),
+        );
+        collector.collect_with_hit_zones(
+            &registry,
+            &world,
+            &VisibleCells::DrawAll,
+            1.0,
+            0.0,
+            &tables,
+            Vec3::ZERO,
+            &store,
+        );
+
+        let instances = collector.instances();
+        assert_eq!(instances.len(), 2, "holder plus one resolved attachment");
+        let holder_transform = glam::Mat4::from_scale_rotation_translation(
+            Vec3::new(2.0, 3.0, 4.0),
+            Quat::from_rotation_y(0.4),
+            Vec3::new(4.0, -1.0, 2.0),
+        );
+        let socket_matrix = glam::Mat4::from_translation(Vec3::new(3.0, 0.0, 0.0))
+            * glam::Mat4::from_translation(Vec3::new(0.0, 2.0, 0.0))
+            * glam::Mat4::from_rotation_x(-inputs.aim_pitch);
+        assert_mat4_approx(
+            instances[1].transform,
+            holder_transform * socket_matrix,
+            "attachment composes the modified child world pose after the holder transform",
+        );
+        assert_eq!(instances[1].model, ModelHandle::from("hand-prop"));
+        assert_eq!(
+            instances[1].pose_inputs, None,
+            "props carry no holder inputs"
+        );
+        assert_eq!(instances[1].sample, MeshSampleParams::rigid());
+        assert!(instances[1].capture.is_none(), "props never capture fades");
+    }
+
+    #[test]
+    fn stateless_holder_and_attachment_share_rest_pose_policy() {
+        // Regression: the body sampled clip zero while the socket sampled rest,
+        // so a moving clip-zero joint detached an animation-free holder's prop.
+        let mut registry = EntityRegistry::new();
+        let mut collector = MeshRenderCollector::new();
+        let world = single_cell_world();
+        let store = socket_pose_store(
+            "holder",
+            postretro_model::pose_modifier::PoseModifierStack::default(),
+        );
+        let id = registry.spawn(Transform::default());
+        let mut mesh = MeshComponent::stateless("holder".to_string());
+        mesh.attachments
+            .push(attachment(AttachmentBinding::Skinned(1), "prop"));
+        registry.set_component(id, mesh).unwrap();
+
+        let mut tables = MeshClipTables::new();
+        tables.insert_with_bounds(
+            ModelHandle::from("holder"),
+            &clip_meta(&[("clip-zero", 1.0)]),
+            Aabb::default(),
+        );
+        collector.collect_with_hit_zones(
+            &registry,
+            &world,
+            &VisibleCells::DrawAll,
+            1.0,
+            0.5,
+            &tables,
+            Vec3::ZERO,
+            &store,
+        );
+
+        let instances = collector.instances();
+        assert_eq!(instances.len(), 2);
+        assert_eq!(
+            instances[0].sample,
+            MeshSampleParams::rest(),
+            "the holder body explicitly selects rest pose",
+        );
+        assert_mat4_approx(
+            instances[1].transform,
+            glam::Mat4::from_translation(Vec3::new(0.0, 2.0, 0.0)),
+            "the attachment resolves from the same rest pose, not moving clip zero",
+        );
+    }
+
+    #[test]
+    fn rigid_attachment_uses_rest_matrix_and_identity_palette_without_pose_sampling() {
+        use glam::{Quat, Vec3};
+
+        let mut registry = EntityRegistry::new();
+        let mut collector = MeshRenderCollector::new();
+        let world = single_cell_world();
+        let id = registry.spawn(Transform {
+            position: Vec3::new(2.0, 3.0, 4.0),
+            rotation: Quat::from_rotation_z(0.3),
+            scale: Vec3::new(1.5, 2.0, 0.5),
+        });
+        let rigid_socket = glam::Mat4::from_translation(Vec3::new(0.0, 1.0, -2.0));
+        let mut mesh = MeshComponent::stateless("rigid-holder".to_string());
+        mesh.attachments.push(attachment(
+            AttachmentBinding::Rigid(rigid_socket),
+            "rigid-prop",
+        ));
+        registry.set_component(id, mesh).unwrap();
+
+        collector.collect(
+            &registry,
+            &world,
+            &VisibleCells::DrawAll,
+            1.0,
+            17.0,
+            &MeshClipTables::new(),
+            Vec3::ZERO,
+        );
+
+        let instances = collector.instances();
+        assert_eq!(instances.len(), 2, "rigid holder and prop both emit");
+        let holder_transform = glam::Mat4::from_scale_rotation_translation(
+            Vec3::new(1.5, 2.0, 0.5),
+            Quat::from_rotation_z(0.3),
+            Vec3::new(2.0, 3.0, 4.0),
+        );
+        assert_mat4_approx(
+            instances[1].transform,
+            holder_transform * rigid_socket,
+            "rigid attachment reads its pre-resolved rest matrix directly",
+        );
+        assert_eq!(instances[1].pose_inputs, None);
+        assert_eq!(instances[1].sample, MeshSampleParams::rigid());
+        assert!(!instances[1].resample, "rigid prop has no pose to resample");
+        assert_ne!(
+            instances[0].palette_cache_key, instances[1].palette_cache_key,
+            "rigid attachment must not alias its holder's palette-cache entry",
+        );
+    }
+
+    #[test]
+    fn attachments_inherit_shadow_only_holder_visibility() {
+        let mut registry = EntityRegistry::new();
+        let mut collector = MeshRenderCollector::new();
+        let world = single_cell_world_with_selected_static_shadow_light();
+        let id = registry.spawn(Transform {
+            position: Vec3::new(1.0, 0.0, 0.0),
+            ..Transform::default()
+        });
+        let mut mesh = MeshComponent::stateless("holder".to_string());
+        mesh.attachments.push(attachment(
+            AttachmentBinding::Rigid(glam::Mat4::from_translation(Vec3::X)),
+            "prop",
+        ));
+        registry.set_component(id, mesh).unwrap();
+
+        collector.collect(
+            &registry,
+            &world,
+            &VisibleCells::Culled(vec![1]),
+            1.0,
+            0.0,
+            &MeshClipTables::new(),
+            Vec3::ZERO,
+        );
+
+        let instances = collector.instances();
+        assert_eq!(
+            instances.len(),
+            2,
+            "shadow-retained holder retains its prop"
+        );
+        assert!(
+            instances.iter().all(|instance| !instance.forward_visible),
+            "holder and prop share the same shadow-only visibility class",
+        );
+    }
+
+    #[test]
+    fn skinned_attachment_forces_far_holder_resample_without_hit_zones_or_modifiers() {
+        let mut registry = EntityRegistry::new();
+        let mut collector = MeshRenderCollector::new();
+        let world = single_cell_world();
+        let store = socket_pose_store(
+            "holder",
+            postretro_model::pose_modifier::PoseModifierStack::default(),
+        );
+        let id = registry.spawn(Transform::default());
+        let mut mesh = MeshComponent::stateless("holder".to_string());
+        mesh.attachments
+            .push(attachment(AttachmentBinding::Skinned(1), "prop"));
+        registry.set_component(id, mesh).unwrap();
+
+        for _ in 0..(RESAMPLE_STRIDE_FAR * 2) {
+            collector.collect_with_hit_zones(
+                &registry,
+                &world,
+                &VisibleCells::DrawAll,
+                1.0,
+                3.0,
+                &MeshClipTables::new(),
+                far_camera(),
+                &store,
+            );
+            assert_eq!(collector.instances().len(), 2);
+            assert_eq!(
+                collector.resample_count(),
+                1,
+                "the holder palette must stay at the socket sample's anim-time",
+            );
+            assert!(collector.instances()[0].resample);
+        }
+    }
+
+    #[test]
+    fn remote_descriptor_attachment_emits_through_the_presentation_collector() {
+        use postretro_entities::{EntityTypeDescriptor, MeshDescriptor};
+
+        let mut registry = EntityRegistry::new();
+        let id = registry.spawn(Transform::default());
+        let descriptor = EntityTypeDescriptor {
+            canonical_name: Some("remote-holder".to_string()),
+            default_weapon: None,
+            light: None,
+            emitter: None,
+            movement: None,
+            weapon: None,
+            mesh: Some(MeshDescriptor {
+                model: "remote-holder-model".to_string(),
+                attachments: [("socket".to_string(), "remote-prop".to_string())]
+                    .into_iter()
+                    .collect(),
+                shadow_bias_scale: 1.0,
+                animations: HashMap::new(),
+                default_state: None,
+                locomotion: None,
+            }),
+            health: None,
+            ai: None,
+        };
+        assert!(
+            crate::scripting::builtins::net_descriptor::materialize_net_remote_enemy_presentation(
+                "remote-holder",
+                &[descriptor],
+                &mut registry,
+                id,
+                None,
+            ),
+            "remote descriptor materializes its presentation mesh",
+        );
+        let mut mesh = registry.get_component::<MeshComponent>(id).unwrap().clone();
+        mesh.attachments[0].binding = AttachmentBinding::Rigid(glam::Mat4::IDENTITY);
+        registry.set_component(id, mesh).unwrap();
+
+        let mut collector = MeshRenderCollector::new();
+        collector.collect(
+            &registry,
+            &single_cell_world(),
+            &VisibleCells::DrawAll,
+            1.0,
+            0.0,
+            &MeshClipTables::new(),
+            Vec3::ZERO,
+        );
+        assert_eq!(collector.instances().len(), 2);
+        assert_eq!(
+            collector.instances()[1].model,
+            ModelHandle::from("remote-prop")
         );
     }
 }

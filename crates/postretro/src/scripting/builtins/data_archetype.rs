@@ -351,8 +351,9 @@ pub(crate) fn filter_out_client_ai_enemies(
 /// suppressed enemy's model is uploaded up front.
 ///
 /// Each returned string is the VERBATIM renderer cache key (the descriptor's
-/// `mesh.model`), identical in shape to [`crate::distinct_mesh_models`] output,
-/// so the caller can dedup the two sets and upload each handle once.
+/// holder `mesh.model` or attachment model), identical in shape to
+/// [`crate::distinct_mesh_models`] output, so the caller can dedup the two sets
+/// and upload each handle once.
 pub(crate) fn suppressed_ai_enemy_mesh_models(
     entities: &[MapEntity],
     descriptors: &[EntityTypeDescriptor],
@@ -369,11 +370,16 @@ pub(crate) fn suppressed_ai_enemy_mesh_models(
         let Some(mesh) = descriptor.mesh.as_ref() else {
             continue;
         };
-        if mesh.model.is_empty() {
-            continue;
-        }
-        if seen.insert(mesh.model.clone()) {
+        if !mesh.model.is_empty() && seen.insert(mesh.model.clone()) {
             ordered.push(mesh.model.clone());
+        }
+        let mut attachment_models: Vec<&str> =
+            mesh.attachments.values().map(String::as_str).collect();
+        attachment_models.sort_unstable();
+        for attachment_model in attachment_models {
+            if !attachment_model.is_empty() && seen.insert(attachment_model.to_string()) {
+                ordered.push(attachment_model.to_string());
+            }
         }
     }
     ordered
@@ -537,8 +543,17 @@ pub(crate) fn descriptor_mesh_component(
         ),
         None => MeshComponent::stateless(mesh_desc.model.clone()),
     };
+    // Descriptor maps are unordered. Give the component a stable attachment
+    // order so later presentation collection is deterministic across runs.
+    let mut attachments: Vec<(String, String)> = mesh_desc
+        .attachments
+        .iter()
+        .map(|(socket, model)| (socket.clone(), model.clone()))
+        .collect();
+    attachments.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
     Some(
         component
+            .with_attachments(attachments)
             .with_origin_offset(origin_offset)
             .with_shadow_bias_scale(mesh_desc.shadow_bias_scale),
     )
@@ -926,6 +941,39 @@ mod tests {
             (mesh.shadow_bias_scale - 2.5).abs() < f32::EPSILON,
             "descriptor authoring value must reach the runtime mesh component"
         );
+    }
+
+    #[test]
+    fn descriptor_mesh_materializes_unresolved_attachments_in_socket_order() {
+        let mut descriptor = mesh_descriptor("prop", false);
+        descriptor
+            .mesh
+            .as_mut()
+            .expect("fixture has mesh descriptor")
+            .attachments = [
+            ("z_socket".to_string(), "models/z_prop.gltf".to_string()),
+            ("a_socket".to_string(), "models/a_prop.gltf".to_string()),
+        ]
+        .into_iter()
+        .collect();
+
+        let mesh = descriptor_mesh_component(&descriptor, None)
+            .expect("mesh descriptor materializes a mesh component");
+        assert_eq!(
+            mesh.attachments
+                .iter()
+                .map(|attachment| (attachment.socket.as_str(), attachment.model.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("a_socket", "models/a_prop.gltf"),
+                ("z_socket", "models/z_prop.gltf"),
+            ],
+            "data-archetype materialization copies a deterministic socket/model list"
+        );
+        assert!(mesh.attachments.iter().all(|attachment| {
+            attachment.binding
+                == postretro_entities::components::mesh::AttachmentBinding::Unresolved
+        }));
     }
 
     #[test]
@@ -2320,10 +2368,12 @@ mod tests {
         // suppressed enemies' models into the level-load upload union: the
         // map-referenced AI enemy's model is collected; non-AI props and
         // unknown classnames contribute nothing.
-        let descriptors = vec![
-            ai_enemy_descriptor("grunt"),
-            mesh_descriptor("crate", false),
-        ];
+        let mut grunt = ai_enemy_descriptor("grunt");
+        grunt.mesh.as_mut().unwrap().attachments =
+            [("hand".to_string(), "models/grunt_prop.gltf".to_string())]
+                .into_iter()
+                .collect();
+        let descriptors = vec![grunt, mesh_descriptor("crate", false)];
         let placements = vec![
             placement("grunt", &[]),
             placement("crate", &[]),
@@ -2333,9 +2383,15 @@ mod tests {
 
         let models = suppressed_ai_enemy_mesh_models(&placements, &descriptors);
 
-        // Only the AI enemy's mesh model, deduped across both grunt placements;
-        // the non-AI crate and the unknown classname add nothing.
-        assert_eq!(models, vec!["decraniated".to_string()]);
+        // The AI enemy holder and its attachment model are both deduped across
+        // placements; the non-AI crate and unknown classname add nothing.
+        assert_eq!(
+            models,
+            vec![
+                "decraniated".to_string(),
+                "models/grunt_prop.gltf".to_string()
+            ]
+        );
     }
 
     #[test]

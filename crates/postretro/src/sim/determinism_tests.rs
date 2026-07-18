@@ -1208,8 +1208,10 @@ fn reference_enemy_walking_hit_zones() -> Option<(String, usize, HitZoneStore)> 
             skeleton: Arc::new(model.skeleton),
             clips: Arc::new(model.clips),
             joint_zones: model.joint_zones,
+            sockets: model.sockets,
             derived_bound: None,
             legs: model.legs,
+            pose_stack: Arc::new(model.pose_stack),
         },
     );
     Some((model_key, walking_index, store))
@@ -1418,8 +1420,10 @@ fn hit_zone_store_with_clip_travel_speed(
             skeleton: Arc::new(Skeleton::default()),
             clips: Arc::new(clips),
             joint_zones: Vec::new(),
+            sockets: std::collections::HashMap::new(),
             derived_bound: None,
             legs: Vec::new(),
+            pose_stack: Arc::new(postretro_model::pose_modifier::PoseModifierStack::default()),
         },
     );
     store
@@ -1680,8 +1684,10 @@ fn spawner_path_first_rate_pass_uses_derived_clip_calibration_before_index_resol
                 travel_speed: Some(2.0),
             }]),
             joint_zones: Vec::new(),
+            sockets: std::collections::HashMap::new(),
             derived_bound: None,
             legs: Vec::new(),
+            pose_stack: Arc::new(postretro_model::pose_modifier::PoseModifierStack::default()),
         },
     );
 
@@ -1866,11 +1872,15 @@ fn leg_model() -> crate::scripting_systems::hit_zones::ModelHitZones {
         skeleton: std::sync::Arc::new(skeleton),
         clips: std::sync::Arc::new(clips),
         joint_zones: vec![None, None, None],
+        sockets: std::collections::HashMap::new(),
         derived_bound: None,
         legs: vec![LegChain {
             chain_mask,
             foot_joint: 2,
         }],
+        pose_stack: std::sync::Arc::new(
+            postretro_model::pose_modifier::PoseModifierStack::default(),
+        ),
     }
 }
 
@@ -1935,6 +1945,7 @@ fn leg_probe_fixture(position: Vec3, yaw: f32) -> (EntityRegistry, EntityId, Hit
                 animation: Some(MeshAnimation::new(states, "idle".into())),
                 origin_offset: Vec3::ZERO,
                 shadow_bias_scale: 1.0,
+                attachments: Vec::new(),
                 pose_inputs: None,
             },
         )
@@ -2088,7 +2099,16 @@ fn unavailable_probe_inputs_clear_stale_feet_and_publish_zero_count() {
     no_animation.animation = None;
     registry.set_component(entity, no_animation).unwrap();
     run(&mut registry);
-    assert_cleared(&registry, "missing animation clears stale feet");
+    let stateless_inputs = registry
+        .get_component::<MeshComponent>(entity)
+        .unwrap()
+        .pose_inputs
+        .expect("stateless legged mesh receives rest-pose probes");
+    assert_eq!(stateless_inputs.foot_count, 1);
+    assert!(
+        stateless_inputs.feet[0].hit,
+        "stateless legged mesh probes from its rest-pose foot",
+    );
 
     let mut unresolved = original_mesh.clone();
     unresolved.pose_inputs = original_mesh.pose_inputs;
@@ -2122,23 +2142,42 @@ fn unavailable_probe_inputs_clear_stale_feet_and_publish_zero_count() {
         )
         .is_none()
     );
-    assert!(
-        crate::scripting_systems::hit_zones::sample_world_pose_for_probe(
-            zones,
-            None,
-            0.0,
-            entity.to_raw(),
-        )
-        .is_some(),
-        "the intentional stateless first-clip path remains explicit",
-    );
-
     registry.set_component(entity, original_mesh).unwrap();
     let mut tilted = *registry.get_component::<Transform>(entity).unwrap();
     tilted.rotation = glam::Quat::from_rotation_x(0.2);
     registry.set_component(entity, tilted).unwrap();
     run(&mut registry);
     assert_cleared(&registry, "unsupported transform clears stale feet");
+}
+
+#[test]
+fn stateless_probe_sampler_holds_rest_pose_when_clip_zero_moves() {
+    use postretro_model::skeleton::{AnimationClip, Interp, JointTracks, Track};
+
+    let mut zones = leg_model();
+    zones.clips = Arc::new(vec![AnimationClip {
+        name: "moving-clip-zero".to_string(),
+        duration: 1.0,
+        joints: vec![JointTracks {
+            translation: Track::new(
+                vec![0.0, 1.0],
+                vec![Vec3::new(8.0, 0.0, 0.0), Vec3::new(8.0, 0.0, 0.0)],
+                Interp::Linear,
+            )
+            .expect("finite clip-zero track builds"),
+            ..JointTracks::default()
+        }],
+        travel_speed: None,
+    }]);
+
+    let pose =
+        crate::scripting_systems::hit_zones::sample_world_pose_for_probe(&zones, None, 0.5, 7)
+            .expect("stateless rest pose is available");
+    let foot = pose[2].w_axis.truncate();
+    assert!(
+        (foot - Vec3::new(0.0, -0.7, 0.0)).length() < 1.0e-5,
+        "stateless probe must use rest pose, not clip-zero translation: {foot:?}",
+    );
 }
 
 #[test]

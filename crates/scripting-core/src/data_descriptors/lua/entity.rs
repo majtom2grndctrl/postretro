@@ -4,7 +4,7 @@
 use super::super::*;
 
 /// Mirror of [`entity_descriptor_from_js`] for Luau tables. Shape:
-/// `{ canonicalName?: string, defaultWeapon?: string, components?: { light?: LightDescriptor, emitter?: BillboardEmitterComponent, movement?: PlayerMovementDescriptor, weapon?: WeaponDescriptor } }`.
+/// `{ canonicalName?: string, defaultWeapon?: string, components?: { mesh?: MeshDescriptor, movement?: PlayerMovementDescriptor, weapon?: WeaponDescriptor, health?: HealthDescriptor, ai?: AiDescriptor, light?: LightDescriptor, emitter?: BillboardEmitterComponent } }`.
 ///
 /// `canonicalName` is optional; absence means the descriptor has no direct
 /// map-placement form (see `EntityTypeDescriptor`).
@@ -197,6 +197,49 @@ pub fn entity_descriptor_from_lua(
 pub fn mesh_descriptor_from_lua(table: &Table) -> Result<MeshDescriptor, DescriptorError> {
     let model = get_required_string_lua(table, "model")?;
 
+    let mut attachments = HashMap::new();
+    if table.contains_key("attachments").map_err(lua_err)? {
+        let raw: LuaValue = table.get("attachments").map_err(lua_err)?;
+        match raw {
+            LuaValue::Table(attachment_table) => {
+                for pair in attachment_table.pairs::<LuaValue, LuaValue>() {
+                    let (key, value) = pair.map_err(lua_err)?;
+                    let socket = match key {
+                        LuaValue::String(value) => value.to_str().map_err(lua_err)?.to_string(),
+                        other => {
+                            return Err(DescriptorError::InvalidShape {
+                                reason: format!(
+                                    "`components.mesh.attachments` must be a socket-name map, got {} key",
+                                    other.type_name()
+                                ),
+                            });
+                        }
+                    };
+                    let attachment_model = match value {
+                        LuaValue::String(value) => value.to_str().map_err(lua_err)?.to_string(),
+                        other => {
+                            return Err(DescriptorError::InvalidShape {
+                                reason: format!(
+                                    "`components.mesh.attachments.{socket}` must be a string, got {}",
+                                    other.type_name()
+                                ),
+                            });
+                        }
+                    };
+                    attachments.insert(socket, attachment_model);
+                }
+            }
+            other => {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`components.mesh.attachments` must be a table, got {}",
+                        other.type_name()
+                    ),
+                });
+            }
+        }
+    }
+
     let mut animations_present = false;
     let mut states = Vec::new();
     if table.contains_key("animations").map_err(lua_err)? {
@@ -275,6 +318,7 @@ pub fn mesh_descriptor_from_lua(table: &Table) -> Result<MeshDescriptor, Descrip
 
     MeshDescriptor::build(
         model,
+        attachments,
         states,
         default_state,
         animations_present,

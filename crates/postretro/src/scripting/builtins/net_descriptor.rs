@@ -300,6 +300,7 @@ mod tests {
             weapon: None,
             mesh: Some(MeshDescriptor {
                 model: "decraniated".to_string(),
+                attachments: Default::default(),
                 shadow_bias_scale: 1.0,
                 animations,
                 default_state,

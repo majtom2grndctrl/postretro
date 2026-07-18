@@ -86,7 +86,7 @@ Between phases, check that prerequisites for the next phase are satisfied.
 ### 5. Complete
 
 When all phases are done:
-- Run the full preflight **once after integration** (this is the coordinator's single full-suite gate): `cargo fmt --check && cargo clippy -- -D warnings && cargo test`. If the session touched the bake/compile pipeline or its fixtures, ALSO run the on-demand cold-bake coverage as part of this one-time gate: `CARGO_PROFILE_TEST_SPLIT_DEBUGINFO=off cargo test -p postretro-level-compiler -- --ignored` (these are `#[ignore]`-gated because they cost ~1h; the gate is where that cost belongs, not per-task).
+- Run the full preflight **once after integration** (this is the coordinator's single full-suite gate): `cargo fmt --check && cargo clippy --target-dir target/preflight-clippy -- -D warnings && cargo test`. (Clippy uses its own target dir so it doesn't invalidate the warm dev/test cache — see the `preflight` skill.) If the session touched the bake/compile pipeline or its fixtures, ALSO run the on-demand cold-bake coverage as part of this one-time gate: `CARGO_PROFILE_TEST_SPLIT_DEBUGINFO=off cargo test -p postretro-level-compiler -- --ignored` (these are `#[ignore]`-gated because they cost ~1h; the gate is where that cost belongs, not per-task).
 - Run a `/review-panel` on code edited in this session
 - Report review panel findings to user to discuss which feedback to act on
 

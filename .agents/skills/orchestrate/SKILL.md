@@ -119,7 +119,7 @@ Between phases, check that prerequisites for the next phase are satisfied.
 ### 5. Complete
 
 When all phases are done:
-- Run the full preflight once after integration: `cargo fmt --check && cargo clippy -- -D warnings && cargo test`
+- Run the full preflight once after integration: `cargo fmt --check && cargo clippy --target-dir target/preflight-clippy -- -D warnings && cargo test` (clippy uses its own target dir so it doesn't invalidate the warm dev/test cache — see the `preflight` skill)
 - Run a `/review-panel` on code edited in this session
 - For producer/consumer changes, ensure the review panel includes a correctness tracer for each seam: compiler→format→loader, loader→renderer, renderer→shader, and runtime→diagnostics when touched.
 - For persistent or mirrored layouts, ensure the review panel includes a contract verifier for versioning, offset order, cache epoch, validation, docs, and tests.

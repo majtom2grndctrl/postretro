@@ -5,7 +5,7 @@ use super::super::*;
 
 impl LevelManifest {
     /// Deserialize a top-level table returned from a Luau `setupLevel()` call.
-    /// Its `reactions`, `crossings`, `triggerEvents`, and `uiTrees` arrays are optional.
+    /// Its `reactions`, `crossings`, `triggerEvents`, `triggerPools`, and `uiTrees` arrays are optional.
     pub fn from_lua_value(value: LuaValue) -> Result<Self, DescriptorError> {
         let table = match value {
             LuaValue::Table(t) => t,
@@ -47,6 +47,7 @@ impl LevelManifest {
             Vec::new()
         };
         let trigger_events = drain_trigger_events_lua(&table, "setupLevel")?;
+        let trigger_pools = drain_trigger_pools_lua(&table, "setupLevel")?;
 
         let ui_trees = drain_ui_trees_lua(&table, "setupLevel")?;
 
@@ -54,6 +55,7 @@ impl LevelManifest {
             reactions,
             crossings,
             trigger_events,
+            trigger_pools,
             ui_trees,
         })
     }
@@ -108,6 +110,162 @@ fn trigger_event_from_lua(
         fire: string_array_from_lua(&item, "fire")?,
         levels: string_array_from_lua(&item, "levels")?,
     }))
+}
+
+/// Drain the `triggerPools` array from a Luau manifest table. A malformed
+/// entry is logged and skipped so one bad pool does not abort the manifest.
+/// Pool tags are unique within this drain; a later duplicate is skipped.
+pub fn drain_trigger_pools_lua(
+    table: &Table,
+    scope: &str,
+) -> Result<Vec<TriggerPoolDescriptor>, DescriptorError> {
+    let Some(arr) = optional_trigger_pool_array_lua(table, scope)? else {
+        return Ok(Vec::new());
+    };
+    let entries = trigger_pool_entries_lua(&arr, scope)?;
+    let mut out = Vec::with_capacity(entries.len());
+    let mut seen_tags = BTreeSet::new();
+    for (i, value) in entries {
+        match trigger_pool_from_lua(value) {
+            Ok(descriptor) if seen_tags.insert(descriptor.tag.clone()) => out.push(descriptor),
+            Ok(descriptor) => log::warn!(
+                "[Scripting] {scope}: triggerPools[{i}] duplicates pool tag `{}` and was skipped",
+                descriptor.tag,
+            ),
+            Err(e) => log::warn!(
+                "[Scripting] {scope}: triggerPools[{i}] is malformed and was skipped: {e}"
+            ),
+        }
+    }
+    Ok(out)
+}
+
+fn optional_trigger_pool_array_lua(
+    table: &Table,
+    scope: &str,
+) -> Result<Option<Table>, DescriptorError> {
+    let raw: LuaValue = match table.get("triggerPools") {
+        Ok(raw) => raw,
+        Err(error) => {
+            let error = lua_err(error);
+            log::warn!(
+                "[Scripting] {scope}: could not access `triggerPools`; ignoring the field: {error}"
+            );
+            return Ok(None);
+        }
+    };
+    match raw {
+        LuaValue::Nil => Ok(None),
+        LuaValue::Table(table) => Ok(Some(table)),
+        other => {
+            log::warn!(
+                "[Scripting] {scope}: `triggerPools` must be an array, got {}; ignoring the field",
+                other.type_name()
+            );
+            Ok(None)
+        }
+    }
+}
+
+/// Retain sparse positive integer slots within the authoring limit. Any slot
+/// above that limit makes the whole container malformed in both runtimes.
+fn trigger_pool_entries_lua(
+    arr: &Table,
+    scope: &str,
+) -> Result<Vec<(u64, LuaValue)>, DescriptorError> {
+    let mut entries = Vec::new();
+    let mut saw_property = false;
+    for pair in arr.clone().pairs::<LuaValue, LuaValue>() {
+        saw_property = true;
+        let (key, value) = pair.map_err(lua_err)?;
+        match key {
+            LuaValue::Integer(index) if index >= 1 => {
+                if (index as u64) > MAX_TRIGGER_POOL_CONTAINER_ENTRIES as u64 {
+                    log::warn!(
+                        "[Scripting] {scope}: `triggerPools` exceeds the {}-slot limit; ignoring the field",
+                        MAX_TRIGGER_POOL_CONTAINER_ENTRIES,
+                    );
+                    return Ok(Vec::new());
+                }
+                entries.push((index as u64, value));
+            }
+            LuaValue::Number(index)
+                if index.is_finite() && index >= 1.0 && index.fract() == 0.0 =>
+            {
+                if index > MAX_TRIGGER_POOL_CONTAINER_ENTRIES as f64 {
+                    log::warn!(
+                        "[Scripting] {scope}: `triggerPools` exceeds the {}-slot limit; ignoring the field",
+                        MAX_TRIGGER_POOL_CONTAINER_ENTRIES,
+                    );
+                    return Ok(Vec::new());
+                }
+                entries.push((index as u64, value));
+            }
+            LuaValue::Integer(index) => log::warn!(
+                "[Scripting] {scope}: `triggerPools` index {index} is out of range and was skipped"
+            ),
+            LuaValue::Number(index) => log::warn!(
+                "[Scripting] {scope}: `triggerPools` index {index} is not a positive integer and was skipped"
+            ),
+            other => log::warn!(
+                "[Scripting] {scope}: `triggerPools` entry with {} key was skipped",
+                other.type_name()
+            ),
+        }
+    }
+    if saw_property && entries.is_empty() {
+        log::warn!("[Scripting] {scope}: `triggerPools` must be an array; ignoring the field");
+    }
+    entries.sort_by_key(|(index, _)| *index);
+    Ok(entries)
+}
+
+fn trigger_pool_from_lua(value: LuaValue) -> Result<TriggerPoolDescriptor, DescriptorError> {
+    let item = lua_table(value, "trigger-pool entry")?;
+    let tag = get_required_string_lua(&item, "tag")?;
+    if tag.is_empty() {
+        return Err(DescriptorError::InvalidShape {
+            reason: "trigger-pool `tag` must not be empty".into(),
+        });
+    }
+
+    let has_arm = item.contains_key("arm").map_err(lua_err)?;
+    let has_percentage = item.contains_key("armPercentage").map_err(lua_err)?;
+    if has_arm == has_percentage {
+        return Err(DescriptorError::InvalidShape {
+            reason: "trigger-pool must define exactly one of `arm` or `armPercentage`".into(),
+        });
+    }
+
+    let arm = if has_arm {
+        TriggerPoolArm::Count(get_required_u32_lua(&item, "arm")?)
+    } else {
+        let raw: LuaValue = item.get("armPercentage").map_err(lua_err)?;
+        let percentage = match raw {
+            LuaValue::Integer(value) => value as f64,
+            LuaValue::Number(value) => value,
+            other => {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "'armPercentage' must be a number, got {}",
+                        other.type_name()
+                    ),
+                });
+            }
+        };
+        if !percentage.is_finite() || !(0.0..=100.0).contains(&percentage) {
+            return Err(DescriptorError::InvalidShape {
+                reason: "'armPercentage' must be finite and in [0, 100]".into(),
+            });
+        }
+        TriggerPoolArm::Percentage(percentage)
+    };
+
+    Ok(TriggerPoolDescriptor {
+        tag,
+        arm,
+        levels: string_array_from_lua(&item, "levels")?,
+    })
 }
 
 /// Drain the `uiTrees` array from a Luau manifest table. Mirrors

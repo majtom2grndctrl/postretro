@@ -221,10 +221,11 @@ fn build_scripts_sidecar(
 /// headless under the `observability` feature. xtask is a transparent pipe — it
 /// forwards the child's stdout, stderr, and exit code untouched and never parses
 /// the runspec or the JSON document the engine emits. Unlike `run`, `observe`
-/// takes no cargo/engine passthrough: it always builds with `--features
-/// observability` and always passes `--headless`.
+/// takes no general cargo/engine passthrough: it always builds with `--features
+/// observability` and always passes `--headless`. `--pool-seed` is the one
+/// supported engine option because headless pool rolls must be pinnable.
 fn observe_headless(args: Vec<OsString>) -> Result<i32, String> {
-    let runspec = parse_observe_args(args)?;
+    let observe_args = parse_observe_args(args)?;
     let workspace_root = workspace_root()?;
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
 
@@ -245,8 +246,7 @@ fn observe_headless(args: Vec<OsString>) -> Result<i32, String> {
         .arg("--features")
         .arg("observability")
         .arg("--")
-        .arg("--headless")
-        .arg(&runspec)
+        .args(observe_postretro_args(&observe_args))
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
@@ -258,16 +258,70 @@ fn observe_headless(args: Vec<OsString>) -> Result<i32, String> {
     )
 }
 
-fn parse_observe_args(args: Vec<OsString>) -> Result<PathBuf, String> {
-    match args.as_slice() {
-        [runspec] => Ok(PathBuf::from(runspec)),
-        [] => Err("observe requires a runspec path\n\n\
-             Usage: cargo run -p xtask -- observe <runspec.json>"
-            .to_string()),
-        _ => Err("observe accepts exactly one runspec path\n\n\
-             Usage: cargo run -p xtask -- observe <runspec.json>"
-            .to_string()),
+#[derive(Debug, PartialEq, Eq)]
+struct ObserveArgs {
+    runspec: PathBuf,
+    pool_seed: Option<OsString>,
+}
+
+fn parse_observe_args(args: Vec<OsString>) -> Result<ObserveArgs, String> {
+    let mut runspec = None;
+    let mut pool_seed = None;
+    let mut index = 0;
+
+    while index < args.len() {
+        let arg = &args[index];
+        if arg == "--pool-seed" {
+            if pool_seed.is_some() {
+                return Err(observe_usage("observe accepts only one --pool-seed"));
+            }
+            let Some(value) = args.get(index + 1) else {
+                return Err(observe_usage("observe --pool-seed requires a value"));
+            };
+            pool_seed = Some(value.clone());
+            index += 2;
+            continue;
+        }
+
+        if let Some(value) = arg
+            .to_str()
+            .and_then(|arg| arg.strip_prefix("--pool-seed="))
+        {
+            if pool_seed.is_some() {
+                return Err(observe_usage("observe accepts only one --pool-seed"));
+            }
+            pool_seed = Some(OsString::from(value));
+            index += 1;
+            continue;
+        }
+
+        if runspec.replace(PathBuf::from(arg)).is_some() {
+            return Err(observe_usage("observe accepts exactly one runspec path"));
+        }
+        index += 1;
     }
+
+    let runspec = runspec.ok_or_else(|| observe_usage("observe requires a runspec path"))?;
+    Ok(ObserveArgs { runspec, pool_seed })
+}
+
+fn observe_postretro_args(args: &ObserveArgs) -> Vec<OsString> {
+    let mut forwarded = vec![
+        OsString::from("--headless"),
+        args.runspec.clone().into_os_string(),
+    ];
+    if let Some(seed) = &args.pool_seed {
+        forwarded.push(OsString::from("--pool-seed"));
+        forwarded.push(seed.clone());
+    }
+    forwarded
+}
+
+fn observe_usage(message: &str) -> String {
+    format!(
+        "{message}\n\nUsage: cargo run -p xtask -- observe <runspec.json> \
+         [--pool-seed <u64> | --pool-seed=<u64>]"
+    )
 }
 
 /// `capture <scene.json>`: run the engine's world-only frame capture mode.
@@ -417,7 +471,7 @@ fn print_help() {
          USAGE:\n\
            cargo run -p xtask -- run [cargo-run flags...] -- [postretro args...]\n\
            cargo run -p xtask -- run [postretro args...]\n\
-           cargo run -p xtask -- observe <runspec.json>\n\
+           cargo run -p xtask -- observe <runspec.json> [--pool-seed=<u64>]\n\
            cargo run -p xtask -- capture <scene.json>\n\
            cargo run -p xtask -- bake-model-textures <scene.gltf>\n\
            cargo run -p xtask -- crate-graph [--write | --check | --mermaid | --rdeps <crate> | --deps <crate>]\n\n\
@@ -436,7 +490,7 @@ fn print_help() {
            cargo run -p xtask -- run content/dev/maps/campaign-test.prl\n\
            cargo run -p xtask -- run --features dev-tools -- content/dev/maps/campaign-test.prl\n\
            cargo run -p xtask -- run --release -- content/dev/maps/campaign-test.prl\n\
-           cargo run -p xtask -- observe runspec.json\n\
+           cargo run -p xtask -- observe runspec.json --pool-seed=17\n\
            cargo run -p xtask -- bake-model-textures content/dev/models/reference_enemy_kaykit_knight/scene.gltf\n\n\
          NOTES:\n\
            Cargo flags before `--` are passed to the engine cargo run. Only\n\
@@ -547,14 +601,52 @@ mod tests {
     }
 
     #[test]
-    fn parse_observe_args_accepts_exactly_one_runspec_path() {
+    fn parse_observe_args_accepts_runspec_without_seed() {
         assert_eq!(
             parse_observe_args(os_args(&["runspec.json"])),
-            Ok(PathBuf::from("runspec.json"))
+            Ok(ObserveArgs {
+                runspec: PathBuf::from("runspec.json"),
+                pool_seed: None,
+            })
         );
 
         assert!(parse_observe_args(Vec::new()).is_err());
         assert!(parse_observe_args(os_args(&["a.json", "b.json"])).is_err());
+    }
+
+    #[test]
+    fn parse_observe_args_accepts_split_and_equals_pool_seed_and_forwards_it() {
+        for input in [
+            os_args(&["runspec.json", "--pool-seed", "17"]),
+            os_args(&["runspec.json", "--pool-seed=17"]),
+        ] {
+            let parsed = parse_observe_args(input).expect("observe arguments should parse");
+            assert_eq!(
+                parsed,
+                ObserveArgs {
+                    runspec: PathBuf::from("runspec.json"),
+                    pool_seed: Some(OsString::from("17")),
+                }
+            );
+            assert_eq!(
+                observe_postretro_args(&parsed),
+                os_args(&["--headless", "runspec.json", "--pool-seed", "17"]),
+            );
+        }
+    }
+
+    #[test]
+    fn parse_observe_args_rejects_missing_or_duplicate_pool_seed() {
+        assert!(parse_observe_args(os_args(&["runspec.json", "--pool-seed"])).is_err());
+        assert!(
+            parse_observe_args(os_args(&[
+                "runspec.json",
+                "--pool-seed=17",
+                "--pool-seed",
+                "18",
+            ]))
+            .is_err()
+        );
     }
 
     #[test]

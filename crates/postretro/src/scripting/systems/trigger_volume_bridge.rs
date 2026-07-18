@@ -1,5 +1,7 @@
-//! Level-load bridge for trigger-volume AABBs and authored event names.
+//! Level-load bridge for trigger-volume AABBs, authored identity, and event names.
 //! See: context/lib/build_pipeline.md §Entity resolution
+
+use std::{cmp::Ordering, collections::HashMap};
 
 use glam::{Quat, Vec3};
 use postretro_entities::{
@@ -7,10 +9,12 @@ use postretro_entities::{
     TriggerVolumeComponent,
 };
 use postretro_level_format::trigger_volumes::TriggerVolumeRecord;
-use std::collections::HashMap;
 
 pub(crate) struct TriggerVolumeBridge {
     aabbs: HashMap<EntityId, (Vec3, Vec3)>,
+    /// Source-record order is unique within one PRL and survives registry slot
+    /// recycling across unload/reinstall.
+    authored_order: HashMap<EntityId, usize>,
     #[cfg(any(test, feature = "dev-tools"))]
     names: HashMap<EntityId, String>,
 }
@@ -19,17 +23,32 @@ impl TriggerVolumeBridge {
     pub(crate) fn new() -> Self {
         Self {
             aabbs: HashMap::new(),
+            authored_order: HashMap::new(),
             #[cfg(any(test, feature = "dev-tools"))]
             names: HashMap::new(),
         }
     }
     pub(crate) fn clear(&mut self) {
         self.aabbs.clear();
+        self.authored_order.clear();
         #[cfg(any(test, feature = "dev-tools"))]
         self.names.clear();
     }
     pub(crate) fn aabb(&self, id: EntityId) -> Option<(Vec3, Vec3)> {
         self.aabbs.get(&id).copied()
+    }
+    pub(crate) fn authored_order(&self, id: EntityId) -> Option<usize> {
+        self.authored_order.get(&id).copied()
+    }
+    /// Authored volumes follow source-record order across reinstall. Triggers
+    /// without authored identity follow registry identity directly.
+    pub(crate) fn stable_order(&self, a: EntityId, b: EntityId) -> Ordering {
+        match (self.authored_order(a), self.authored_order(b)) {
+            (Some(a), Some(b)) => a.cmp(&b),
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (None, None) => a.cmp(&b),
+        }
     }
     #[cfg(any(test, feature = "dev-tools"))]
     pub(crate) fn name(&self, id: EntityId) -> Option<&str> {
@@ -41,7 +60,7 @@ impl TriggerVolumeBridge {
         records: &[TriggerVolumeRecord],
     ) {
         self.clear();
-        for record in records {
+        for (authored_order, record) in records.iter().enumerate() {
             let min = Vec3::from(record.aabb_min);
             let max = Vec3::from(record.aabb_max);
             let Some(id) = registry.try_spawn(
@@ -89,6 +108,7 @@ impl TriggerVolumeBridge {
                 ),
             );
             self.aabbs.insert(id, (min, max));
+            self.authored_order.insert(id, authored_order);
             #[cfg(any(test, feature = "dev-tools"))]
             self.names.insert(id, record.name.clone());
         }
@@ -144,5 +164,6 @@ mod tests {
         assert_eq!(component.on_fire, "open_lift");
         assert_eq!(component.on_exit, "close_lift");
         assert_eq!(bridge.name(id), Some("lift_plate"));
+        assert_eq!(bridge.authored_order(id), Some(0));
     }
 }

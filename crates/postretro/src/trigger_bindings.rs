@@ -1196,6 +1196,7 @@ mod tests {
                     levels: Vec::new(),
                 },
             ],
+            Vec::new(),
             &[],
         );
         ctx.slot_table
@@ -1268,6 +1269,7 @@ mod tests {
                     levels: Vec::new(),
                 },
             ],
+            Vec::new(),
             &[],
         );
         *ctx.slot_table.borrow_mut() = writable_slots();

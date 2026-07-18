@@ -503,7 +503,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field(
             "tags?",
             "Vec<String>",
-            "Authoritative classification tags for filtering plus `levels` selection on mod-global reactions, crossings, and trigger events. Optional; missing/null normalizes to empty.",
+            "Authoritative classification tags for filtering plus `levels` selection on mod-global reactions, crossings, trigger events, and trigger pools. Optional; missing/null normalizes to empty.",
         )
         .finish();
     registry
@@ -599,6 +599,11 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
             "triggerEvents?",
             "Vec<TriggerEventDescriptor>",
             "Trigger-volume enter/exit observers. Optional; compose by level tags.",
+        )
+        .field(
+            "triggerPools?",
+            "Vec<TriggerPoolDescriptor>",
+            "Trigger-volume arming pools. Optional; compose by level tags.",
         )
         .field(
             "stores?",
@@ -701,6 +706,7 @@ mod tests {
             reactions: Vec::new(),
             crossings: Vec::new(),
             trigger_events: Vec::new(),
+            trigger_pools: Vec::new(),
             store_declarations: StoreDeclarationSet::default(),
         };
         let expected_fields: &[&str] = &[
@@ -714,6 +720,7 @@ mod tests {
             "reactions",
             "crossings",
             "triggerEvents",
+            "triggerPools",
             "stores",
         ];
 

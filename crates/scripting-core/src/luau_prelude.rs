@@ -136,6 +136,7 @@ const DATA_SCRIPT_FIELDS: &[&str] = &[
     "defineEntity",
     "defineMod",
     "defineMapCatalog",
+    "defineTriggerPool",
     "defineStore",
 ];
 
@@ -268,6 +269,7 @@ pub const POSTRETRO_ROOT_MODULE_EXPORTS: &[&str] = &[
     "defineEntity",
     "defineMod",
     "defineMapCatalog",
+    "defineTriggerPool",
     "defineStore",
     "emitter",
     "smokeEmitter",

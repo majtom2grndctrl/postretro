@@ -112,6 +112,7 @@ export type LevelManifest = {
   /** State-crossing watchers (HUD dynamics). See `onStateCrossing`. */
   crossings?: import("./ui/reactions").CrossingDescriptor[];
   triggerEvents?: TriggerEventDescriptor[];
+  triggerPools?: TriggerPoolDescriptor[];
   /** Per-level UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; same
    * shape as `ModManifest.uiTrees` but level-scoped (cleared on unload).
    * Malformed entries are logged and skipped. */
@@ -178,6 +179,13 @@ export type TriggerEventDescriptor = {
   tag: string;
   event: "enter" | "exit";
   fire: string[];
+  levels?: string[];
+};
+
+export type TriggerPoolDescriptor = {
+  tag: string;
+  arm?: number;
+  armPercentage?: number;
   levels?: string[];
 };
 
@@ -317,7 +325,7 @@ export function defineEntity(
   return descriptor;
 }
 
-/** Identity builder for the mod manifest consumed from the default export. `config.name` is required; optional arrays include `entities`, `maps`, `uiTrees`, `reactions`, `crossings`, `triggerEvents`, and `stores`. Pure: no engine side effects until the manifest is returned and validated. */
+/** Identity builder for the mod manifest consumed from the default export. `config.name` is required; optional arrays include `entities`, `maps`, `uiTrees`, `reactions`, `crossings`, `triggerEvents`, `triggerPools`, and `stores`. Pure: no engine side effects until the manifest is returned and validated. */
 export function defineMod(
   config: import("postretro").ModManifest,
 ): import("postretro").ModManifest {
@@ -329,6 +337,11 @@ export function defineMapCatalog(
   entries: import("postretro").ModMapEntry[],
 ): import("postretro").ModMapEntry[] {
   return entries;
+}
+
+/** Identity builder for a trigger-pool declaration returned from a level or mod manifest. Engine parsing owns arming validation. */
+export function defineTriggerPool(pool: TriggerPoolDescriptor): TriggerPoolDescriptor {
+  return pool;
 }
 
 const MAGIC_SCHEMA_KEYS = new Set(["__proto__", "constructor", "prototype"]);

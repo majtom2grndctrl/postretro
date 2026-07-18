@@ -579,7 +579,7 @@ fn build_scripting_core(
 impl ScriptingCore {
     /// Drain the validated mod manifest's engine-global registrations into the
     /// `DataRegistry`: entity-type descriptors, the map catalog, global reactions
-    /// (validated against the sequence registry), and global crossings. Shared by
+    /// (validated against the sequence registry), global crossings, and global trigger pools. Shared by
     /// the windowed splash path and the headless driver so the two cannot drift —
     /// without this drain the archetype sweep sees an empty entity-type list and
     /// no player pawn spawns.
@@ -608,6 +608,7 @@ impl ScriptingCore {
         data_registry.replace_global_reactions(global_reactions);
         data_registry.replace_global_crossings(std::mem::take(&mut manifest.crossings));
         data_registry.replace_global_trigger_events(std::mem::take(&mut manifest.trigger_events));
+        data_registry.replace_global_trigger_pools(std::mem::take(&mut manifest.trigger_pools));
     }
 }
 

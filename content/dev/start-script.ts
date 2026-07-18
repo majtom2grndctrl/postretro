@@ -1,4 +1,4 @@
-import { defineMod } from "postretro";
+import { defineMod, defineTriggerPool } from "postretro";
 import { playerEntity } from "./scripts/player";
 import { referencePistolEntity } from "./scripts/reference-pistol";
 import { animDemoGruntEntity } from "./scripts/anim-demo-grunt";
@@ -25,6 +25,15 @@ export default defineMod({
   uiTrees: [hud, reticle, reloadMeterTree, pauseMenu, frontendMenu],
   theme: hudTheme,
   reactions: frontendReactions,
+  // Fixture-only mod-global tier: this composes on the tagged trap-pools map
+  // while its level-local script owns the independent closet_trap count pool.
+  triggerPools: [
+    defineTriggerPool({
+      tag: "ambush_trap",
+      armPercentage: 50,
+      levels: ["trap-pools"],
+    }),
+  ],
   entities: [
     playerEntity,
     referencePistolEntity,

@@ -21,8 +21,10 @@ and composes with spawn-closets (`done/E18--spawner-and-closet-containment`).
   `floor(percentage / 100 × member count)`, evaluated in the pinned order
   `(percentage / 100.0) * member_count` (no fma contraction) then floor —
   bit-identical cross-platform). Parsed warn-and-skip
-  per entry in both runtimes, mirroring the `triggerEvents` drains. `levels?` rides the descriptor
-  at both tiers (the `TriggerEventDescriptor` precedent); it matters at mod scope.
+  per entry in both runtimes, mirroring the `triggerEvents` drains. Both drains require arrays,
+  accept sparse siblings within 4096 slots (JS `0..4095`, Luau `1..4096`), and reject an
+  oversized array as one malformed field; malformed or over-limit containers warn and yield no pools. `levels?`
+  rides the descriptor at both tiers (the `TriggerEventDescriptor` precedent); it matters at mod scope.
 - **Mod-global `ModManifest.triggerPools` tier** — the same descriptor, selecting levels via
   `levels` (empty/omitted = every level; else exact case-sensitive intersection with the level's
   map-catalog tags — `TriggerEventDescriptor.levels` semantics). Drained in mod-init in both
@@ -44,9 +46,9 @@ and composes with spawn-closets (`done/E18--spawner-and-closet-containment`).
   new. Non-trigger entities sharing the tag (a spawner sharing its closet tag) are simply not
   members; no warning.
 - **Host-only seeded arming pass at level install**, after placements and trigger bindings
-  materialize and before the `levelLoad` fire: resolve each pool's member set by tag, sort members
-  by entity id (stable spawn order), resolve the target count (`arm` clamped to the member set,
-  `armPercentage` floored against it), pick that many distinct members with a seeded PRNG, arm the
+  materialize and before the `levelLoad` fire: resolve each pool's member set by tag, sort authored
+  members by restart-stable trigger-record order, resolve the target count (`arm` clamped to the
+  member set, `armPercentage` floored against it), pick that many distinct members with a seeded PRNG, arm the
   picks and disarm the rest via the shipped full-re-arm/disarm helpers. The helpers set each
   member's runtime `armed` state directly, overriding whatever `enabled_on_spawn` seeded at spawn,
   so an authored `enabled_on_spawn` value never survives into a pool member's live arming
@@ -162,7 +164,10 @@ mirroring the trigger-event drains exactly: a `drain_trigger_pools_js(&obj, scop
 from `LevelManifest::from_js_value`, and a `drain_trigger_pools_lua` sibling to
 `drain_trigger_events_lua` (`.../lua/manifest.rs:66`) called from `from_lua_value` (both reused by
 Task 6's mod-init drains — the `scope` label distinguishes diagnostics). Per-entry validation,
-warn-and-skip (never abort the manifest): `tag` required non-empty string; exactly one of `arm`
+warn-and-skip (never abort the manifest): the container must be an array; retain sparse siblings
+within 4096 slots (JS `0..4095`, Luau `1..4096`) and ignore the whole field after warning when an
+array exceeds that bound. `tag` required non-empty string; exactly
+one of `arm`
 (non-negative integer — reject fractional and negative numbers, and reject a value exceeding
 `u32::MAX` by the same warn-and-skip path) and `armPercentage` (finite, in
 [0, 100]); `levels` an optional string array. Separately, across the `triggerPools` entries in this
@@ -214,9 +219,10 @@ read the composed `data_registry.trigger_pools()` (Task 1 orders it mod-global f
 after); in arm-all mode arm every member of every pool and skip the roll; otherwise log
 `[TriggerPools] seed=<n>` once per roll and, for each pool in composed order, resolve members via
 `registry.query_by_component_and_tag(ComponentKind::TriggerVolume, Some(tag))`
-(`crates/entities/src/registry.rs:709`), collect and sort `EntityId`s ascending (`EntityId`'s `Ord`
-is generation-major — deterministic and stable for a given install; restart-identity per AC assumes
-members share a generation, true at a fresh install), warn+skip an empty member set, resolve the target count (`Count`: warn+clamp `arm > len`
+(`crates/entities/src/registry.rs:709`). The trigger-volume level bridge retains each authored
+record's source ordinal; authored members sort by that unique, restart-stable identity. Entity-id
+order remains only the fallback for runtime-only test triggers. Warn+skip an empty member set,
+resolve the target count (`Count`: warn+clamp `arm > len`
 to all; `Percentage`: `floor((percentage / 100.0) * len)` — evaluated in that pinned order, no fma
 contraction, no PRNG), pick that
 many distinct members by partial Fisher–Yates over one PRNG stream shared across pools, then apply
@@ -285,14 +291,13 @@ pin `--pool-seed` — headless no-seed arms all): exact armed count; the no-seed
 divergence; restart-with-pinned-seed identity; unselected-member silence then runtime `armTrigger`
 re-arm-and-fire; percentage resolution (`armPercentage: 50` over 4 arms 2); mod-global composition
 (the `ambush_trap` pool rolls on the matched fixture level, stays inert on a level without the
-catalog tag, and a level-local same-tag declaration replaces it). Blocker: the headless driver
-(`observability/driver.rs:145`) hardcodes `active_level_tags = Vec::new()`, so a `levels`-scoped
-mod-global pool (`ambush_trap`, `levels: ["trap-pools"]`) never composes headless (empty tags → no
-`levels_match`), making both the arm-all-default and seeded mod-global-match coverage for that pool
-unreachable — extend the headless driver to source `active_level_tags` from the target level's
-map-catalog entry (mirroring `retain_active_level_tags_for_install`, `lifecycle.rs:294`,
-`entry.tags.clone()`); pin seeds for install-integration tests via the `WorldInstallHandles` policy
-field directly, not the CLI, so they don't depend on argv threading. The degradation matrix covers
+catalog tag, and a level-local same-tag declaration replaces it). Exercise the matched case through
+a catalog install, which carries the entry's tags into level install. Install-integration tests that
+need scoped composition without a catalog load use the synthetic active-level-tags seam. Direct
+raw-path headless loads retain their durable empty tag set and cover the non-match case; do not
+recover catalog tags from a raw path. Pin seeds for install-integration tests via the
+`WorldInstallHandles` policy field directly, not the CLI, so they don't depend on argv threading.
+The degradation matrix covers
 empty tag, over-count clamp, `arm: 0` and percentage-to-zero, malformed entry skip incl.
 both/neither arming form, duplicate tag skip, overlap warning + later-pool-wins,
 `enabled_on_spawn = true` warning. Two-endpoint (loopback harness, E18 net-QA precedent): host
@@ -339,8 +344,8 @@ consumes Task 2's pass, Task 3's builder, and Task 6's mod-global commit).
   declare `{ tag, arm | armPercentage, levels? }`, the engine owns the roll. Not command-buffer IR (RNG forbidden
   there), not a script-visible value, never a shared-seed client computation.
 - **One PRNG stream, composed declaration order** (matching mod-global pools first, then
-  level-local). Deterministic given (seed, composed order, member id order). Member ids sort
-  ascending; identical installs of the same `.prl` spawn identical ids.
+  level-local). Deterministic given (seed, composed order, authored trigger-record order).
+  Registry slot recycling and generation-bearing entity ids do not affect authored selection.
 - **Percentage resolution is arithmetic, not RNG:** `floor(percentage / 100 × member count)`,
   evaluated in the pinned order `(percentage / 100.0) * member_count` (no fma contraction) then
   floor. Bit-identical across platforms; the PRNG touches only member selection. `floor` matches the script-side `Math.floor` idiom in the

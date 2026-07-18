@@ -11,11 +11,12 @@ use rquickjs::{
 };
 
 use super::data_descriptors::{
-    EntityTypeDescriptor, ModThemeTokens, RegisteredUiTree, drain_fonts_js, drain_fonts_lua,
-    drain_frontend_js, drain_frontend_lua, drain_global_crossings_js, drain_global_crossings_lua,
-    drain_global_reactions_js, drain_global_reactions_lua, drain_maps_js, drain_maps_lua,
-    drain_theme_js, drain_theme_lua, drain_trigger_events_js, drain_trigger_events_lua,
-    drain_ui_trees_js, drain_ui_trees_lua, entity_descriptor_from_js,
+    EntityTypeDescriptor, ModThemeTokens, RegisteredUiTree, TriggerPoolDescriptor, drain_fonts_js,
+    drain_fonts_lua, drain_frontend_js, drain_frontend_lua, drain_global_crossings_js,
+    drain_global_crossings_lua, drain_global_reactions_js, drain_global_reactions_lua,
+    drain_maps_js, drain_maps_lua, drain_theme_js, drain_theme_lua, drain_trigger_events_js,
+    drain_trigger_events_lua, drain_trigger_pools_js, drain_trigger_pools_lua, drain_ui_trees_js,
+    drain_ui_trees_lua, entity_descriptor_from_js,
 };
 use super::data_registry::{ScopedCrossing, ScopedReaction};
 use super::error::ScriptError;
@@ -62,6 +63,7 @@ pub struct StagedManifest {
     pub reactions: Vec<ScopedReaction>,
     pub crossings: Vec<ScopedCrossing>,
     pub trigger_events: Vec<super::data_descriptors::TriggerEventDescriptor>,
+    pub trigger_pools: Vec<TriggerPoolDescriptor>,
     pub ui_trees: Vec<RegisteredUiTree>,
     pub theme: ModThemeTokens,
     pub frontend: Option<Frontend>,
@@ -383,6 +385,7 @@ fn run_staged_manifest_build(
         reactions: manifest.reactions,
         crossings: manifest.crossings,
         trigger_events: manifest.trigger_events,
+        trigger_pools: manifest.trigger_pools,
         ui_trees: manifest.ui_trees,
         theme: manifest.theme,
         frontend: manifest.frontend,
@@ -594,6 +597,12 @@ fn manifest_from_js_value<'js>(
                 reason: format!("mod-init: `{source_path}` triggerEvents invalid: {e}"),
             }
         })?;
+    let trigger_pools =
+        drain_trigger_pools_js(&obj, "default mod manifest export").map_err(|e| {
+            ScriptError::InvalidArgument {
+                reason: format!("mod-init: `{source_path}` triggerPools invalid: {e}"),
+            }
+        })?;
 
     Ok(ModManifestResult {
         name,
@@ -606,6 +615,7 @@ fn manifest_from_js_value<'js>(
         reactions,
         crossings,
         trigger_events,
+        trigger_pools,
         store_declarations,
     })
 }
@@ -769,6 +779,11 @@ fn run_staged_mod_init_luau(
                 reason: format!("mod-init: `{source_path}` triggerEvents invalid: {e}"),
             }
         })?;
+    let trigger_pools = drain_trigger_pools_lua(&table, "returned mod manifest").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!("mod-init: `{source_path}` triggerPools invalid: {e}"),
+        }
+    })?;
 
     Ok(ModManifestResult {
         name,
@@ -781,6 +796,7 @@ fn run_staged_mod_init_luau(
         reactions,
         crossings,
         trigger_events,
+        trigger_pools,
         store_declarations,
     })
 }

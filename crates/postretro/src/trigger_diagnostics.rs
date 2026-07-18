@@ -7,6 +7,7 @@ use postretro_entities::{ComponentKind, ComponentValue, EntityRegistry, TriggerA
 use crate::render;
 use crate::scripting_systems::trigger_volume_bridge::TriggerVolumeBridge;
 use crate::trigger_bindings::TriggerBindingTable;
+use crate::trigger_pools::TriggerPoolInstallReport;
 use crate::trigger_system::{TriggerEventEdge, TriggerSystem};
 
 pub(crate) struct TriggerOverlayLabel {
@@ -23,6 +24,7 @@ pub(crate) fn collect_trigger_diagnostics_rows(
     bridge: &TriggerVolumeBridge,
     trigger_system: &TriggerSystem,
     bindings: &TriggerBindingTable,
+    pool_report: &TriggerPoolInstallReport,
 ) -> Vec<render::TriggerDiagnosticsRow> {
     let mut rows: Vec<_> = registry
         .iter_with_kind(ComponentKind::TriggerVolume)
@@ -39,9 +41,21 @@ pub(crate) fn collect_trigger_diagnostics_rows(
                 .ok()
                 .map(|tags| tags.join(", "))
                 .unwrap_or_default();
+            // Pools are processed in declaration order; the later overlapping
+            // pool owns the final armed state and is therefore the diagnostics
+            // answer for this member too.
+            let (pool, pool_selected) = pool_report
+                .pools
+                .iter()
+                .rev()
+                .find(|outcome| outcome.members.contains(&id))
+                .map(|outcome| (outcome.tag.clone(), outcome.selected.contains(&id)))
+                .unwrap_or_default();
             Some(render::TriggerDiagnosticsRow {
                 name,
                 tags,
+                pool,
+                pool_selected,
                 activation: activation_label(trigger.activation).to_string(),
                 armed: trigger.armed,
                 latched: trigger.latched,
@@ -283,6 +297,8 @@ mod tests {
     use postretro_scripting_core::data_descriptors::{NamedReaction, ReactionDescriptor};
     use postretro_scripting_core::data_registry::DataRegistry;
 
+    use crate::trigger_pools::{TriggerPoolInstallReport, TriggerPoolOutcome};
+
     fn spawn_trigger(registry: &mut EntityRegistry) -> EntityId {
         let id = registry.spawn(Transform {
             position: Vec3::ZERO,
@@ -330,11 +346,14 @@ mod tests {
             &bridge,
             &TriggerSystem::default(),
             &bindings,
+            &TriggerPoolInstallReport::default(),
         );
 
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].name, trigger.to_string());
         assert_eq!(rows[0].tags, "plate");
+        assert_eq!(rows[0].pool, "");
+        assert!(!rows[0].pool_selected);
         assert_eq!(rows[0].activation, "touch");
         assert!(rows[0].armed);
         assert_eq!(rows[0].occupancy, 0);
@@ -342,6 +361,53 @@ mod tests {
         assert!(rows[0].on_fire_resolved);
         assert_eq!(rows[0].on_exit, "close_door");
         assert!(!rows[0].on_exit_resolved);
+    }
+
+    #[test]
+    fn trigger_rows_show_the_later_pool_decision_for_overlapping_members() {
+        let mut registry = EntityRegistry::new();
+        let first_trigger = spawn_trigger(&mut registry);
+        let second_trigger = spawn_trigger(&mut registry);
+        let mut bridge = TriggerVolumeBridge::new();
+        bridge.insert_for_test(first_trigger, Vec3::splat(-1.0), Vec3::splat(1.0));
+        bridge.insert_for_test(second_trigger, Vec3::splat(-1.0), Vec3::splat(1.0));
+        let bindings = TriggerBindingTable::default();
+        let report = TriggerPoolInstallReport {
+            seed: Some(42),
+            pools: vec![
+                TriggerPoolOutcome {
+                    tag: "earlier".into(),
+                    members: vec![first_trigger, second_trigger],
+                    selected: Vec::new(),
+                },
+                TriggerPoolOutcome {
+                    tag: "later".into(),
+                    members: vec![first_trigger],
+                    selected: vec![first_trigger],
+                },
+            ],
+        };
+
+        let rows = collect_trigger_diagnostics_rows(
+            &registry,
+            &bridge,
+            &TriggerSystem::default(),
+            &bindings,
+            &report,
+        );
+        let first_row = rows
+            .iter()
+            .find(|row| row.name == first_trigger.to_string())
+            .expect("first trigger row");
+        let second_row = rows
+            .iter()
+            .find(|row| row.name == second_trigger.to_string())
+            .expect("second trigger row");
+
+        assert_eq!(first_row.pool, "later");
+        assert!(first_row.pool_selected);
+        assert_eq!(second_row.pool, "earlier");
+        assert!(!second_row.pool_selected);
     }
 
     #[test]

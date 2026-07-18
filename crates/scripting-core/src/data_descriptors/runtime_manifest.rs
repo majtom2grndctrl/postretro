@@ -3,7 +3,7 @@
 
 use crate::ui::descriptor::AnchoredTree;
 
-use super::{CrossingDescriptor, NamedReaction, TriggerEventDescriptor};
+use super::{CrossingDescriptor, NamedReaction, TriggerEventDescriptor, TriggerPoolDescriptor};
 
 /// A script-registered UI tree: a named [`AnchoredTree`] plus the `alwaysOn`
 /// registration attribute. Drained from `ModManifest.uiTrees` (mod scope) and
@@ -24,13 +24,17 @@ pub struct RegisteredUiTree {
 pub struct LevelManifest {
     pub reactions: Vec<NamedReaction>,
     /// State-crossing watchers (M13 HUD dynamics). Parsed alongside `reactions`
-    /// from the widened `{ reactions, crossings, triggerEvents }` setup-manifest return and
+    /// from the widened `{ reactions, crossings, triggerEvents, triggerPools }` setup-manifest return and
     /// drained into the per-level `DataRegistry`; cleared on level unload.
     pub crossings: Vec<CrossingDescriptor>,
     /// Trigger-volume enter/exit watchers declared via the `triggerEvents`
     /// field. Composes with mod-global `ModManifest.triggerEvents` entries
     /// matched by the `levels` tag selector; per-level and cleared on unload.
     pub trigger_events: Vec<TriggerEventDescriptor>,
+    /// Trigger-volume pool declarations. Their `levels` selector is retained
+    /// for the shared descriptor contract, but level-local pools always apply
+    /// to the level that declared them.
+    pub trigger_pools: Vec<TriggerPoolDescriptor>,
     /// Per-level UI trees declared via the `uiTrees` field. A malformed entry is
     /// logged and skipped rather than aborting level load (`ui.md` §1.1).
     pub ui_trees: Vec<RegisteredUiTree>,

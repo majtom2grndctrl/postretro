@@ -502,7 +502,7 @@ declare module "postretro" {
     path: string;
     /** Display name shown to players in catalog-driven UI. Required. */
     name: string;
-    /** Authoritative classification tags for filtering plus `levels` selection on mod-global reactions, crossings, and trigger events. Optional; missing/null normalizes to empty. */
+    /** Authoritative classification tags for filtering plus `levels` selection on mod-global reactions, crossings, trigger events, and trigger pools. Optional; missing/null normalizes to empty. */
     tags?: ReadonlyArray<string>;
   };
 
@@ -558,6 +558,8 @@ declare module "postretro" {
     crossings?: ReadonlyArray<CrossingDescriptor>;
     /** Trigger-volume enter/exit observers. Optional; compose by level tags. */
     triggerEvents?: ReadonlyArray<TriggerEventDescriptor>;
+    /** Trigger-volume arming pools. Optional; compose by level tags. */
+    triggerPools?: ReadonlyArray<TriggerPoolDescriptor>;
     /** Engine-global state-store declarations returned by `defineStore(...).declaration`. Optional; commit atomically after the manifest validates and preserve existing values when the schema is identical. */
     stores?: ReadonlyArray<StoreDeclaration>;
   };
@@ -995,6 +997,7 @@ declare module "postretro" {
     reactions: NamedReactionDescriptor[];
     crossings?: CrossingDescriptor[];
     triggerEvents?: TriggerEventDescriptor[];
+    triggerPools?: TriggerPoolDescriptor[];
     /** Per-level UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; same shape as `ModManifest.uiTrees` but level-scoped (cleared on unload). Malformed entries are logged and skipped. */
     uiTrees?: ReadonlyArray<ModUiTree>;
   };
@@ -1037,6 +1040,8 @@ declare module "postretro" {
   ): Reaction<TriggerEventParams>;
 
   export type TriggerEventDescriptor = { tag: string; event: "enter" | "exit"; fire: string[]; levels?: string[] };
+  /** A seeded trap-pool declaration; exactly one arming form is required. */
+  export type TriggerPoolDescriptor = { tag: string; arm?: number; armPercentage?: number; levels?: string[] };
   export type TriggerEventOptions = { levels?: string[] };
   export function onTriggerEvent(filter: { tag: string }, event: "enter" | "exit", fire: (Reaction<{}> | Reaction<TriggerEventParams> | string)[], options?: TriggerEventOptions): TriggerEventDescriptor;
   export function damage(target: ActivatorsTarget | string, amount: number): PrimitiveReactionDescriptor;
@@ -1147,10 +1152,12 @@ declare module "postretro" {
   };
   /** Pure identity builder for entity-type descriptors. Returned from `ModManifest.entities`; `descriptor` is the full archetype object: optional `canonicalName`, optional `defaultWeapon`, and optional component presets. */
   export function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor;
-  /** Pure identity builder for the mod manifest consumed from the default export. `config.name` is required; optional arrays include `entities`, `maps`, `uiTrees`, `reactions`, `crossings`, `triggerEvents`, and `stores`. */
+  /** Pure identity builder for the mod manifest consumed from the default export. `config.name` is required; optional arrays include `entities`, `maps`, `uiTrees`, `reactions`, `crossings`, `triggerEvents`, `triggerPools`, and `stores`. */
   export function defineMod(config: ModManifest): ModManifest;
   /** Pure identity builder for a mod map catalog. Entries require `id`, `path`, and `name`; optional `tags` default to empty and drive filtering plus `levels` selectors. */
   export function defineMapCatalog(entries: ModMapEntry[]): ModMapEntry[];
+  /** Pure identity builder for a trigger-pool declaration returned from a level or mod manifest. Engine parsing owns arming validation. */
+  export function defineTriggerPool(pool: TriggerPoolDescriptor): TriggerPoolDescriptor;
 
   // -------------------------------------------------------------------------
   // Runtime-value vocabulary — the typed command buffer (scripting.md §11). The

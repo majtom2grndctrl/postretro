@@ -502,7 +502,7 @@ declare module "postretro" {
     path: string;
     /** Display name shown to players in catalog-driven UI. Required. */
     name: string;
-    /** Authoritative classification tags for filtering plus `levels` selection on mod-global reactions, crossings, and trigger events. Optional; missing/null normalizes to empty. */
+    /** Authoritative classification tags for filtering plus `levels` selection on mod-global reactions, crossings, trigger events, and trigger pools. Optional; missing/null normalizes to empty. */
     tags?: ReadonlyArray<string>;
   };
 
@@ -558,12 +558,131 @@ declare module "postretro" {
     crossings?: ReadonlyArray<CrossingDescriptor>;
     /** Trigger-volume enter/exit observers. Optional; compose by level tags. */
     triggerEvents?: ReadonlyArray<TriggerEventDescriptor>;
+    /** Trigger-volume arming pools. Optional; compose by level tags. */
+    triggerPools?: ReadonlyArray<TriggerPoolDescriptor>;
     /** Engine-global state-store declarations returned by `defineStore(...).declaration`. Optional; commit atomically after the manifest validates and preserve existing values when the schema is identical. */
     stores?: ReadonlyArray<StoreDeclaration>;
   };
 
+  /** Valid values: `Point`, `Spot`, `Directional`. */
+  export type LightKind = "Point" | "Spot" | "Directional";
+
+  /** Valid values: `Linear`, `InverseDistance`, `InverseSquared`. */
+  export type FalloffKind = "Linear" | "InverseDistance" | "InverseSquared";
+
+  export type LightAnimation = {
+    /** Total period of the loop, in milliseconds. */
+    periodMs: number;
+    /** Starting phase in [0.0, 1.0). Values outside this range are normalized via rem_euclid. */
+    phase: number | null;
+    /** Total full periods to play; null loops forever. */
+    playCount: number | null;
+    /** Whether the animation starts in the active state. null defaults to true; false mirrors the FGD `_start_inactive` flag. */
+    startActive: boolean | null;
+    /** Per-sample brightness curve. */
+    brightness: ReadonlyArray<number> | null;
+    /** Per-sample color curve. Accepted on dynamic and authored static lights; baked indirect stays at the authored color. */
+    color: ReadonlyArray<Vec3> | null;
+    /** Per-sample direction curve. Non-unit samples are silently normalized. */
+    direction: ReadonlyArray<Vec3> | null;
+  };
+
+  export type LightComponent = { origin: Vec3; lightType: LightKind; intensity: number; color: Vec3; falloffModel: FalloffKind; falloffRange: number; coneAngleInner: number | null; coneAngleOuter: number | null; coneDirection: Vec3 | null; isDynamic: boolean; animation: LightAnimation | null };
+
+  /** Component-name literals accepted by `worldQuery` and the `world.query` SDK wrapper. New queryable component types extend this union. Valid values: `light`, `transform`, `emitter`, `fog_volume`, `kinematic_mover`, `trigger_volume`, `particle`, `sprite_visual`. */
+  export type WorldQueryComponent =
+    | "light"
+    | "transform"
+    | "emitter"
+    | "fog_volume"
+    | "kinematic_mover"
+    | "trigger_volume"
+    /** Always returns []. Engine-managed; scripts never iterate individual particles. */
+    | "particle"
+    /** Always returns []. Engine-managed. */
+    | "sprite_visual";
+
+  export type WorldQueryFilter = {
+    /** Component name to query. */
+    component: WorldQueryComponent;
+    /** Optional tag filter (exact string match). */
+    tag: string | null;
+  };
+
+  /** Generic entity handle returned by `world.query` when the component type is not known at compile time. */
+  export type Entity = {
+    id: EntityId;
+    /** Entity position at query time. */
+    position: Vec3;
+    /** The entity's tags at query time. Empty array if untagged. */
+    tags: ReadonlyArray<string>;
+  };
+
+  /** Entity handle returned by `world.query` when filtering for billboard emitter entities. */
+  export type EmitterEntity = {
+    id: EntityId;
+    /** Emitter position at query time (from the entity's Transform). */
+    position: Vec3;
+    /** The entity's tags at query time. Empty array if untagged. */
+    tags: ReadonlyArray<string>;
+    /** Full emitter component snapshot at query time. */
+    component: BillboardEmitterComponent;
+  };
+
+  /** Entity handle returned by `world.query` when filtering for light entities. */
+  export type LightEntity = {
+    id: EntityId;
+    /** Light origin at query time. */
+    position: Vec3;
+    /** Whether the light is driven by the runtime dynamic-light buffer. Static lights baked from FGD entities are not; descriptor-spawned lights always are. */
+    isDynamic: boolean;
+    /** The entity's tags at query time. Empty array if untagged. */
+    tags: ReadonlyArray<string>;
+    /** Full component snapshot at query time. */
+    component: LightComponent;
+  };
+
+  /** Raw mover snapshot returned by `worldQuery` when filtering for kinematic movers. The SDK world-query wrapper exposes closed command-reaction builders; raw mover components remain engine-managed. */
+  export type MoverEntity = {
+    id: EntityId;
+    /** Mover position at query time (from the entity's Transform). */
+    position: Vec3;
+    /** The entity's tags at query time. Empty array if untagged. */
+    tags: ReadonlyArray<string>;
+  };
+
+  /** Raw trigger snapshot returned by `worldQuery` when filtering for trigger volumes. Arming and activation phase remain engine-managed; the SDK wrapper exposes only arm/disarm command builders. */
+  export type TriggerVolumeEntity = {
+    id: EntityId;
+    /** Trigger position at query time (from the entity's Transform). */
+    position: Vec3;
+    /** The entity's tags at query time. Empty array if untagged. */
+    tags: ReadonlyArray<string>;
+  };
+
   /** Returns true if the entity id refers to a live entity. */
   export function entityExists(id: EntityId): boolean;
+
+  /** Reads a per-placement KVP value authored on the source `.map` entity. Returns null when the key is absent or the entity has no KVP bag (e.g. runtime-spawned). Available in definition and data contexts. */
+  export function getEntityProperty(id: EntityId, key: string): string | null;
+
+  /** Overwrite the LightComponent.animation on the given entity. Pass null/nil to clear. Non-unit direction samples are silently normalized; zero-length direction samples and empty channel arrays error with InvalidArgument. Definition context. */
+  export function setLightAnimation(id: EntityId, animation: LightAnimation | null): void;
+
+  /** Read the current value of an engine-global state slot by stable dotted name. Available in definition and data contexts. */
+  export function storeRead(name: string): unknown;
+
+  /** Write an engine-global state slot by stable dotted name. The value must exactly match the declared slot type. Finite numbers are clamped to the declared inclusive range. Readonly slots reject script writes with a warning and remain unchanged. Available in definition and data contexts. */
+  export function storeWrite(name: string, value: unknown): void;
+
+  /** Return the current world gravity in m/s² (negative = downward; positive = upward). Seeded from the worldspawn `initialGravity` KVP at level load and persists until the next level load or a `worldSetGravity` call. The `world.ts` vocabulary module wraps this as `world.getGravity`. */
+  export function worldGetGravity(): number;
+
+  /** Return an array of raw entity snapshots matching the filter. Available in definition and data contexts. Filter shape: { component: "light" | "transform" | "emitter" | "fog_volume" | "kinematic_mover" | "trigger_volume" | "particle" | "sprite_visual", tag?: string }. `"particle"` and `"sprite_visual"` always return `[]` (engine-managed; scripts never iterate individual particles). Unknown component values raise InvalidArgument. The `world.ts` vocabulary module wraps these snapshots as `world.query` handles. */
+  export function worldQuery<T extends WorldQueryComponent>(filter: { component: T; tag?: string | null }): ReadonlyArray<RawEntityForComponent<T>>;
+
+  /** Set the world gravity in m/s² (negative = downward; positive = upward). NaN and non-finite values are silently ignored (a warning is logged) so a misbehaving script cannot wedge particle physics. Effect is immediate and persists until the next level load or another `worldSetGravity` call. The `world.ts` vocabulary module wraps this as `world.setGravity`. */
+  export function worldSetGravity(value: number): void;
   /** Generated engine-owned state reference tree returned by `getGameState()`. */
   export type GameStateRefs = {
     readonly input: {
@@ -878,6 +997,7 @@ declare module "postretro" {
     reactions: NamedReactionDescriptor[];
     crossings?: CrossingDescriptor[];
     triggerEvents?: TriggerEventDescriptor[];
+    triggerPools?: TriggerPoolDescriptor[];
     /** Per-level UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; same shape as `ModManifest.uiTrees` but level-scoped (cleared on unload). Malformed entries are logged and skipped. */
     uiTrees?: ReadonlyArray<ModUiTree>;
   };
@@ -920,6 +1040,8 @@ declare module "postretro" {
   ): Reaction<TriggerEventParams>;
 
   export type TriggerEventDescriptor = { tag: string; event: "enter" | "exit"; fire: string[]; levels?: string[] };
+  /** A seeded trap-pool declaration; exactly one arming form is required. */
+  export type TriggerPoolDescriptor = { tag: string; arm?: number; armPercentage?: number; levels?: string[] };
   export type TriggerEventOptions = { levels?: string[] };
   export function onTriggerEvent(filter: { tag: string }, event: "enter" | "exit", fire: (Reaction<{}> | Reaction<TriggerEventParams> | string)[], options?: TriggerEventOptions): TriggerEventDescriptor;
   export function damage(target: ActivatorsTarget | string, amount: number): PrimitiveReactionDescriptor;
@@ -1030,10 +1152,12 @@ declare module "postretro" {
   };
   /** Pure identity builder for entity-type descriptors. Returned from `ModManifest.entities`; `descriptor` is the full archetype object: optional `canonicalName`, optional `defaultWeapon`, and optional component presets. */
   export function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor;
-  /** Pure identity builder for the mod manifest consumed from the default export. `config.name` is required; optional arrays include `entities`, `maps`, `uiTrees`, `reactions`, `crossings`, `triggerEvents`, and `stores`. */
+  /** Pure identity builder for the mod manifest consumed from the default export. `config.name` is required; optional arrays include `entities`, `maps`, `uiTrees`, `reactions`, `crossings`, `triggerEvents`, `triggerPools`, and `stores`. */
   export function defineMod(config: ModManifest): ModManifest;
   /** Pure identity builder for a mod map catalog. Entries require `id`, `path`, and `name`; optional `tags` default to empty and drive filtering plus `levels` selectors. */
   export function defineMapCatalog(entries: ModMapEntry[]): ModMapEntry[];
+  /** Pure identity builder for a trigger-pool declaration returned from a level or mod manifest. Engine parsing owns arming validation. */
+  export function defineTriggerPool(pool: TriggerPoolDescriptor): TriggerPoolDescriptor;
 
   // -------------------------------------------------------------------------
   // Runtime-value vocabulary — the typed command buffer (scripting.md §11). The

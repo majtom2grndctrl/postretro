@@ -1,0 +1,225 @@
+// Game: Postretro
+// Format: Standard
+// E18 seeded trap-pool fixture.
+// Compile: cargo run -p postretro-level-compiler -- content/dev/maps/trap-pools.map -o content/dev/maps/trap-pools.prl
+// Run the catalog-scoped mod-global pool: cargo run -p xtask -- run, then choose
+// Trap Pools from the dev-level menu. A direct .prl launch exercises only the
+// level-local pool because raw paths intentionally carry no catalog tags.
+// The upper row is the level-local closet_trap pool. The lower row is the
+// mod-global ambush_trap pool, selected only when this map's catalog tag matches.
+{
+"classname" "worldspawn"
+"initialGravity" "-9.81"
+"wad" ""
+"data_script" "../scripts/trap-pools.ts"
+"_tb_mod" "dev"
+"_tb_def" "external:../../../sdk/TrenchBroom/postretro.fgd"
+// floor
+{
+( 448 0 -16 ) ( 448 320 0 ) ( 448 320 -16 ) debug_ceiling_grey 0 0 0 1 1
+( 0 320 -16 ) ( 0 0 0 ) ( 0 0 -16 ) debug_ceiling_grey 0 0 0 1 1
+( 448 320 -16 ) ( 0 320 0 ) ( 0 320 -16 ) debug_ceiling_grey 0 0 0 1 1
+( 0 0 -16 ) ( 448 0 0 ) ( 448 0 -16 ) debug_ceiling_grey 0 0 0 1 1
+( 0 320 0 ) ( 448 0 0 ) ( 0 0 0 ) debug_ceiling_grey 0 0 0 1 1
+( 0 0 -16 ) ( 448 320 -16 ) ( 0 320 -16 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+{
+"classname" "player_spawn"
+"origin" "32 48 24"
+"angles" "0 0 0"
+}
+// Four authored closet traps. Each brush is a pool member and owns one spawner reaction.
+{
+"classname" "trigger_volume"
+"name" "closet_trap_a"
+"activation" "touch"
+"on_fire" "trapPools.spawnClosetA"
+"fire_mode" "once"
+"enabled_on_spawn" "0"
+"_tags" "closet_trap"
+{
+( 64 112 0 ) ( 64 64 16 ) ( 64 64 0 ) debug_ceiling_grey 0 0 0 1 1
+( 64 64 16 ) ( 96 64 0 ) ( 64 64 0 ) debug_ceiling_grey 0 0 0 1 1
+( 64 64 0 ) ( 96 112 0 ) ( 64 112 0 ) debug_ceiling_grey 0 0 0 1 1
+( 64 112 16 ) ( 96 64 16 ) ( 64 64 16 ) debug_ceiling_grey 0 0 0 1 1
+( 96 112 16 ) ( 64 112 16 ) ( 64 112 0 ) debug_ceiling_grey 0 0 0 1 1
+( 96 64 0 ) ( 96 112 16 ) ( 96 112 0 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+{
+"classname" "entity_spawner"
+"origin" "80 88 16"
+"archetype" "reference_enemy"
+"count" "1"
+"_tags" "trap_pools_closet_a"
+}
+{
+"classname" "trigger_volume"
+"name" "closet_trap_b"
+"activation" "touch"
+"on_fire" "trapPools.spawnClosetB"
+"fire_mode" "once"
+"enabled_on_spawn" "0"
+"_tags" "closet_trap"
+{
+( 160 112 0 ) ( 160 64 16 ) ( 160 64 0 ) debug_ceiling_grey 0 0 0 1 1
+( 160 64 16 ) ( 192 64 0 ) ( 160 64 0 ) debug_ceiling_grey 0 0 0 1 1
+( 160 64 0 ) ( 192 112 0 ) ( 160 112 0 ) debug_ceiling_grey 0 0 0 1 1
+( 160 112 16 ) ( 192 64 16 ) ( 160 64 16 ) debug_ceiling_grey 0 0 0 1 1
+( 192 112 16 ) ( 160 112 16 ) ( 160 112 0 ) debug_ceiling_grey 0 0 0 1 1
+( 192 64 0 ) ( 192 112 16 ) ( 192 112 0 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+{
+"classname" "entity_spawner"
+"origin" "176 88 16"
+"archetype" "reference_enemy"
+"count" "1"
+"_tags" "trap_pools_closet_b"
+}
+{
+"classname" "trigger_volume"
+"name" "closet_trap_c"
+"activation" "touch"
+"on_fire" "trapPools.spawnClosetC"
+"fire_mode" "once"
+"enabled_on_spawn" "0"
+"_tags" "closet_trap"
+{
+( 256 112 0 ) ( 256 64 16 ) ( 256 64 0 ) debug_ceiling_grey 0 0 0 1 1
+( 256 64 16 ) ( 288 64 0 ) ( 256 64 0 ) debug_ceiling_grey 0 0 0 1 1
+( 256 64 0 ) ( 288 112 0 ) ( 256 112 0 ) debug_ceiling_grey 0 0 0 1 1
+( 256 112 16 ) ( 288 64 16 ) ( 256 64 16 ) debug_ceiling_grey 0 0 0 1 1
+( 288 112 16 ) ( 256 112 16 ) ( 256 112 0 ) debug_ceiling_grey 0 0 0 1 1
+( 288 64 0 ) ( 288 112 16 ) ( 288 112 0 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+{
+"classname" "entity_spawner"
+"origin" "272 88 16"
+"archetype" "reference_enemy"
+"count" "1"
+"_tags" "trap_pools_closet_c"
+}
+{
+"classname" "trigger_volume"
+"name" "closet_trap_d"
+"activation" "touch"
+"on_fire" "trapPools.spawnClosetD"
+"fire_mode" "once"
+"enabled_on_spawn" "0"
+"_tags" "closet_trap"
+{
+( 352 112 0 ) ( 352 64 16 ) ( 352 64 0 ) debug_ceiling_grey 0 0 0 1 1
+( 352 64 16 ) ( 384 64 0 ) ( 352 64 0 ) debug_ceiling_grey 0 0 0 1 1
+( 352 64 0 ) ( 384 112 0 ) ( 352 112 0 ) debug_ceiling_grey 0 0 0 1 1
+( 352 112 16 ) ( 384 64 16 ) ( 352 64 16 ) debug_ceiling_grey 0 0 0 1 1
+( 384 112 16 ) ( 352 112 16 ) ( 352 112 0 ) debug_ceiling_grey 0 0 0 1 1
+( 384 64 0 ) ( 384 112 16 ) ( 384 112 0 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+{
+"classname" "entity_spawner"
+"origin" "368 88 16"
+"archetype" "reference_enemy"
+"count" "1"
+"_tags" "trap_pools_closet_d"
+}
+// The mod-global percentage pool uses the matching catalog tag in start-script.ts.
+{
+"classname" "trigger_volume"
+"name" "ambush_trap_a"
+"activation" "touch"
+"on_fire" "trapPools.spawnAmbushA"
+"fire_mode" "once"
+"enabled_on_spawn" "0"
+"_tags" "ambush_trap"
+{
+( 64 256 0 ) ( 64 208 16 ) ( 64 208 0 ) debug_ceiling_grey 0 0 0 1 1
+( 64 208 16 ) ( 96 208 0 ) ( 64 208 0 ) debug_ceiling_grey 0 0 0 1 1
+( 64 208 0 ) ( 96 256 0 ) ( 64 256 0 ) debug_ceiling_grey 0 0 0 1 1
+( 64 256 16 ) ( 96 208 16 ) ( 64 208 16 ) debug_ceiling_grey 0 0 0 1 1
+( 96 256 16 ) ( 64 256 16 ) ( 64 256 0 ) debug_ceiling_grey 0 0 0 1 1
+( 96 208 0 ) ( 96 256 16 ) ( 96 256 0 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+{
+"classname" "entity_spawner"
+"origin" "80 232 16"
+"archetype" "reference_enemy"
+"count" "1"
+"_tags" "trap_pools_ambush_a"
+}
+{
+"classname" "trigger_volume"
+"name" "ambush_trap_b"
+"activation" "touch"
+"on_fire" "trapPools.spawnAmbushB"
+"fire_mode" "once"
+"enabled_on_spawn" "0"
+"_tags" "ambush_trap"
+{
+( 160 256 0 ) ( 160 208 16 ) ( 160 208 0 ) debug_ceiling_grey 0 0 0 1 1
+( 160 208 16 ) ( 192 208 0 ) ( 160 208 0 ) debug_ceiling_grey 0 0 0 1 1
+( 160 208 0 ) ( 192 256 0 ) ( 160 256 0 ) debug_ceiling_grey 0 0 0 1 1
+( 160 256 16 ) ( 192 208 16 ) ( 160 208 16 ) debug_ceiling_grey 0 0 0 1 1
+( 192 256 16 ) ( 160 256 16 ) ( 160 256 0 ) debug_ceiling_grey 0 0 0 1 1
+( 192 208 0 ) ( 192 256 16 ) ( 192 256 0 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+{
+"classname" "entity_spawner"
+"origin" "176 232 16"
+"archetype" "reference_enemy"
+"count" "1"
+"_tags" "trap_pools_ambush_b"
+}
+{
+"classname" "trigger_volume"
+"name" "ambush_trap_c"
+"activation" "touch"
+"on_fire" "trapPools.spawnAmbushC"
+"fire_mode" "once"
+"enabled_on_spawn" "0"
+"_tags" "ambush_trap"
+{
+( 256 256 0 ) ( 256 208 16 ) ( 256 208 0 ) debug_ceiling_grey 0 0 0 1 1
+( 256 208 16 ) ( 288 208 0 ) ( 256 208 0 ) debug_ceiling_grey 0 0 0 1 1
+( 256 208 0 ) ( 288 256 0 ) ( 256 256 0 ) debug_ceiling_grey 0 0 0 1 1
+( 256 256 16 ) ( 288 208 16 ) ( 256 208 16 ) debug_ceiling_grey 0 0 0 1 1
+( 288 256 16 ) ( 256 256 16 ) ( 256 256 0 ) debug_ceiling_grey 0 0 0 1 1
+( 288 208 0 ) ( 288 256 16 ) ( 288 256 0 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+{
+"classname" "entity_spawner"
+"origin" "272 232 16"
+"archetype" "reference_enemy"
+"count" "1"
+"_tags" "trap_pools_ambush_c"
+}
+{
+"classname" "trigger_volume"
+"name" "ambush_trap_d"
+"activation" "touch"
+"on_fire" "trapPools.spawnAmbushD"
+"fire_mode" "once"
+"enabled_on_spawn" "0"
+"_tags" "ambush_trap"
+{
+( 352 256 0 ) ( 352 208 16 ) ( 352 208 0 ) debug_ceiling_grey 0 0 0 1 1
+( 352 208 16 ) ( 384 208 0 ) ( 352 208 0 ) debug_ceiling_grey 0 0 0 1 1
+( 352 208 0 ) ( 384 256 0 ) ( 352 256 0 ) debug_ceiling_grey 0 0 0 1 1
+( 352 256 16 ) ( 384 208 16 ) ( 352 208 16 ) debug_ceiling_grey 0 0 0 1 1
+( 384 256 16 ) ( 352 256 16 ) ( 352 256 0 ) debug_ceiling_grey 0 0 0 1 1
+( 384 208 0 ) ( 384 256 16 ) ( 384 256 0 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+{
+"classname" "entity_spawner"
+"origin" "368 232 16"
+"archetype" "reference_enemy"
+"count" "1"
+"_tags" "trap_pools_ambush_d"
+}

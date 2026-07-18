@@ -118,22 +118,6 @@ fn luau_with_sdk_lib_block(prefix: &str) -> String {
     out
 }
 
-fn assert_starts_with_snapshot(got: &str, expected_prefix: &str, label: &str) {
-    if got.starts_with(expected_prefix) {
-        return;
-    }
-    let mismatch = got
-        .bytes()
-        .zip(expected_prefix.bytes())
-        .position(|(got, expected)| got != expected)
-        .unwrap_or_else(|| got.len().min(expected_prefix.len()));
-    let got_tail = &got[mismatch..got.len().min(mismatch + 240)];
-    let expected_tail = &expected_prefix[mismatch..expected_prefix.len().min(mismatch + 240)];
-    panic!(
-        "{label} registry snapshot drift at byte {mismatch}:\nexpected: {expected_tail:?}\ngot:      {got_tail:?}"
-    );
-}
-
 fn ts_module_block<'a>(ts: &'a str, module_name: &str) -> &'a str {
     let marker = format!("declare module \"{module_name}\" {{");
     let start = ts

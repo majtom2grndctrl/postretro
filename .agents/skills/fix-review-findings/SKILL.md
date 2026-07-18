@@ -70,4 +70,4 @@ Dispatch a fix `worker` per failure — one per file for independent failures (`
 
 What was fixed, what was skipped and why, and the gate result.
 
-Once clean, the coordinator runs the full preflight before commit or push: `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`. This full gate is authoritative; step 5 is for fast feedback and lower cache churn.
+Once clean, the coordinator runs the full preflight before commit or push: `cargo fmt --check`, `cargo clippy --target-dir target/preflight-clippy -- -D warnings`, `cargo test`. This full gate is authoritative; step 5 is for fast feedback and lower cache churn.

@@ -13,11 +13,23 @@ Run quality checks and report results. Fix mechanical issues automatically; esca
 
 ## Checks
 
-Run all three in parallel:
+Run these **sequentially**, not in parallel. They share one `target/` dir and
+a single build lock, so parallel runs contend on the lock and thrash each
+other's fingerprints — they serialize anyway, just less predictably and with
+more cache churn.
 
-1. **Format:** `cargo fmt --check`
-2. **Lint:** `cargo clippy -- -D warnings`
+1. **Format:** `cargo fmt --check` (no build)
+2. **Lint:** `cargo clippy --target-dir target/preflight-clippy -- -D warnings`
 3. **Test:** `cargo test`
+
+Clippy gets its **own target dir** on purpose. It compiles the whole workspace
+under the clippy driver, which writes different fingerprints than the `rustc`
+builds behind `cargo run` / `cargo test`. Sharing `target/` means every
+preflight invalidates the warm dev cache (and the next `cargo run` invalidates
+clippy's). Isolating it trades a little disk for a second build tree in exchange
+for keeping your day-to-day cache hot — worth it on a machine that builds many
+times a day. This keeps full coverage: fmt, `clippy -D warnings`, and the full
+`cargo test` suite all still run.
 
 ## Reporting
 

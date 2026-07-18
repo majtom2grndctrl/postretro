@@ -1544,6 +1544,7 @@ mod tests {
                 fire: vec!["closet.openDoor".into(), "closet.releaseCloset".into()],
                 levels: Vec::new(),
             }],
+            Vec::new(),
             &[],
         );
         let script_ctx = ScriptCtx::new();
@@ -1675,6 +1676,7 @@ mod tests {
                 fire: vec!["ambush.spawn".into()],
                 levels: Vec::new(),
             }],
+            Vec::new(),
             &[],
         );
 

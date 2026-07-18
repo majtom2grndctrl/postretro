@@ -1357,6 +1357,7 @@ pub(crate) fn install_world_cpu(
                 manifest.reactions,
                 manifest.crossings,
                 manifest.trigger_events,
+                manifest.trigger_pools,
                 active_level_tags,
             );
         // CROSSING-CHANNEL INSTALL ORDER (E18): the detector must capture this

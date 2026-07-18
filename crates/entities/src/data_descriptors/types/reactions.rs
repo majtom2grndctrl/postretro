@@ -12,6 +12,19 @@ pub struct TriggerEventDescriptor {
     pub levels: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct TriggerPoolDescriptor {
+    pub tag: String,
+    pub arm: TriggerPoolArm,
+    pub levels: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TriggerPoolArm {
+    Count(u32),
+    Percentage(f64),
+}
+
 /// Variants of a single reaction's behavior body. The `name` lives on the
 /// wrapping [`NamedReaction`]; this enum captures only the descriptor shape.
 #[derive(Debug, Clone, PartialEq)]

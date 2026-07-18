@@ -5,7 +5,7 @@ use super::super::*;
 
 impl LevelManifest {
     /// Deserialize a top-level table returned from a Luau `setupLevel()` call.
-    /// Its `reactions`, `crossings`, `triggerEvents`, and `uiTrees` arrays are optional.
+    /// Its `reactions`, `crossings`, `triggerEvents`, `triggerPools`, and `uiTrees` arrays are optional.
     pub fn from_lua_value(value: LuaValue) -> Result<Self, DescriptorError> {
         let table = match value {
             LuaValue::Table(t) => t,
@@ -47,6 +47,7 @@ impl LevelManifest {
             Vec::new()
         };
         let trigger_events = drain_trigger_events_lua(&table, "setupLevel")?;
+        let trigger_pools = drain_trigger_pools_lua(&table, "setupLevel")?;
 
         let ui_trees = drain_ui_trees_lua(&table, "setupLevel")?;
 
@@ -54,6 +55,7 @@ impl LevelManifest {
             reactions,
             crossings,
             trigger_events,
+            trigger_pools,
             ui_trees,
         })
     }
@@ -108,6 +110,83 @@ fn trigger_event_from_lua(
         fire: string_array_from_lua(&item, "fire")?,
         levels: string_array_from_lua(&item, "levels")?,
     }))
+}
+
+/// Drain the `triggerPools` array from a Luau manifest table. A malformed
+/// entry is logged and skipped so one bad pool does not abort the manifest.
+/// Pool tags are unique within this drain; a later duplicate is skipped.
+pub fn drain_trigger_pools_lua(
+    table: &Table,
+    scope: &str,
+) -> Result<Vec<TriggerPoolDescriptor>, DescriptorError> {
+    let Some(arr) = optional_manifest_array_lua(table, "triggerPools", scope)? else {
+        return Ok(Vec::new());
+    };
+    let len = validate_dense_lua_array(&arr, "`triggerPools` field")?;
+    let mut out = Vec::with_capacity(len);
+    let mut seen_tags = BTreeSet::new();
+    for i in 1..=(len as i64) {
+        let value: LuaValue = arr.get(i).map_err(lua_err)?;
+        match trigger_pool_from_lua(value) {
+            Ok(descriptor) if seen_tags.insert(descriptor.tag.clone()) => out.push(descriptor),
+            Ok(descriptor) => log::warn!(
+                "[Scripting] {scope}: triggerPools[{i}] duplicates pool tag `{}` and was skipped",
+                descriptor.tag,
+            ),
+            Err(e) => log::warn!(
+                "[Scripting] {scope}: triggerPools[{i}] is malformed and was skipped: {e}"
+            ),
+        }
+    }
+    Ok(out)
+}
+
+fn trigger_pool_from_lua(value: LuaValue) -> Result<TriggerPoolDescriptor, DescriptorError> {
+    let item = lua_table(value, "trigger-pool entry")?;
+    let tag = get_required_string_lua(&item, "tag")?;
+    if tag.is_empty() {
+        return Err(DescriptorError::InvalidShape {
+            reason: "trigger-pool `tag` must not be empty".into(),
+        });
+    }
+
+    let has_arm = item.contains_key("arm").map_err(lua_err)?;
+    let has_percentage = item.contains_key("armPercentage").map_err(lua_err)?;
+    if has_arm == has_percentage {
+        return Err(DescriptorError::InvalidShape {
+            reason: "trigger-pool must define exactly one of `arm` or `armPercentage`".into(),
+        });
+    }
+
+    let arm = if has_arm {
+        TriggerPoolArm::Count(get_required_u32_lua(&item, "arm")?)
+    } else {
+        let raw: LuaValue = item.get("armPercentage").map_err(lua_err)?;
+        let percentage = match raw {
+            LuaValue::Integer(value) => value as f64,
+            LuaValue::Number(value) => value,
+            other => {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "'armPercentage' must be a number, got {}",
+                        other.type_name()
+                    ),
+                });
+            }
+        };
+        if !percentage.is_finite() || !(0.0..=100.0).contains(&percentage) {
+            return Err(DescriptorError::InvalidShape {
+                reason: "'armPercentage' must be finite and in [0, 100]".into(),
+            });
+        }
+        TriggerPoolArm::Percentage(percentage)
+    };
+
+    Ok(TriggerPoolDescriptor {
+        tag,
+        arm,
+        levels: string_array_from_lua(&item, "levels")?,
+    })
 }
 
 /// Drain the `uiTrees` array from a Luau manifest table. Mirrors

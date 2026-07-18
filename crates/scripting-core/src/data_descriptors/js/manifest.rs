@@ -4,7 +4,7 @@
 use super::super::*;
 
 impl LevelManifest {
-    /// Deserialize a top-level `{ reactions, crossings, triggerEvents, uiTrees }`
+    /// Deserialize a top-level `{ reactions, crossings, triggerEvents, triggerPools, uiTrees }`
     /// object returned from a QuickJS `setupLevel()` call. Each array field is optional.
     pub fn from_js_value<'js>(
         ctx: &Ctx<'js>,
@@ -43,6 +43,7 @@ impl LevelManifest {
             Vec::new()
         };
         let trigger_events = drain_trigger_events_js(&obj, "setupLevel")?;
+        let trigger_pools = drain_trigger_pools_js(&obj, "setupLevel")?;
 
         let ui_trees = drain_ui_trees_js(ctx, &obj, "setupLevel")?;
 
@@ -50,6 +51,7 @@ impl LevelManifest {
             reactions,
             crossings,
             trigger_events,
+            trigger_pools,
             ui_trees,
         })
     }
@@ -105,6 +107,83 @@ fn trigger_event_from_js<'js>(
         fire: string_array_from_js(&item, "fire")?,
         levels: string_array_from_js(&item, "levels")?,
     }))
+}
+
+/// Drain the `triggerPools` array from a QuickJS manifest object. A malformed
+/// entry is logged and skipped so one bad pool does not abort the manifest.
+/// Pool tags are unique within this drain; a later duplicate is skipped.
+pub fn drain_trigger_pools_js<'js>(
+    obj: &Object<'js>,
+    scope: &str,
+) -> Result<Vec<TriggerPoolDescriptor>, DescriptorError> {
+    let Some(arr) = optional_manifest_array_js(obj, "triggerPools", scope)? else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::with_capacity(arr.len());
+    let mut seen_tags = BTreeSet::new();
+    for i in 0..arr.len() {
+        let value: JsValue = arr.get(i).map_err(js_err)?;
+        match trigger_pool_from_js(value) {
+            Ok(descriptor) if seen_tags.insert(descriptor.tag.clone()) => out.push(descriptor),
+            Ok(descriptor) => log::warn!(
+                "[Scripting] {scope}: triggerPools[{i}] duplicates pool tag `{}` and was skipped",
+                descriptor.tag,
+            ),
+            Err(e) => log::warn!(
+                "[Scripting] {scope}: triggerPools[{i}] is malformed and was skipped: {e}"
+            ),
+        }
+    }
+    Ok(out)
+}
+
+fn trigger_pool_from_js<'js>(
+    value: JsValue<'js>,
+) -> Result<TriggerPoolDescriptor, DescriptorError> {
+    let item = Object::from_value(value).map_err(|_| DescriptorError::InvalidShape {
+        reason: "trigger-pool entry must be an object".into(),
+    })?;
+    let tag = get_required_string_js(&item, "tag")?;
+    if tag.is_empty() {
+        return Err(DescriptorError::InvalidShape {
+            reason: "trigger-pool `tag` must not be empty".into(),
+        });
+    }
+
+    let has_arm = item.contains_key("arm").map_err(js_err)?;
+    let has_percentage = item.contains_key("armPercentage").map_err(js_err)?;
+    if has_arm == has_percentage {
+        return Err(DescriptorError::InvalidShape {
+            reason: "trigger-pool must define exactly one of `arm` or `armPercentage`".into(),
+        });
+    }
+
+    let arm = if has_arm {
+        TriggerPoolArm::Count(get_required_u32_js(&item, "arm")?)
+    } else {
+        let raw: JsValue = item.get("armPercentage").map_err(js_err)?;
+        let percentage = if let Some(value) = raw.as_int() {
+            value as f64
+        } else if let Some(value) = raw.as_float() {
+            value
+        } else {
+            return Err(DescriptorError::InvalidShape {
+                reason: "'armPercentage' must be a number".into(),
+            });
+        };
+        if !percentage.is_finite() || !(0.0..=100.0).contains(&percentage) {
+            return Err(DescriptorError::InvalidShape {
+                reason: "'armPercentage' must be finite and in [0, 100]".into(),
+            });
+        }
+        TriggerPoolArm::Percentage(percentage)
+    };
+
+    Ok(TriggerPoolDescriptor {
+        tag,
+        arm,
+        levels: string_array_from_js(&item, "levels")?,
+    })
 }
 
 // ===========================================================================

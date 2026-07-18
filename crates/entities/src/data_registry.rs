@@ -10,6 +10,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::data_descriptors::{
     CrossingDescriptor, EntityTypeDescriptor, NamedReaction, TriggerEventDescriptor,
+    TriggerPoolDescriptor,
 };
 use postretro_foundation::ModMapEntry;
 
@@ -30,11 +31,12 @@ pub struct ScopedCrossing {
 }
 
 pub type ScopedTriggerEvent = TriggerEventDescriptor;
+pub type ScopedTriggerPool = TriggerPoolDescriptor;
 
 /// Data registries collected from script execution.
-/// `reactions`, `crossings`, and `trigger_events` are per-level and cleared on
-/// unload; entity, map, and global reaction/crossing/trigger-event definitions
-/// survive level unload.
+/// `reactions`, `crossings`, `trigger_events`, and `trigger_pools` are per-level
+/// and cleared on unload; entity, map, and global reaction/crossing/trigger-event/
+/// trigger-pool definitions survive level unload.
 #[derive(Debug, Default)]
 pub struct DataRegistry {
     /// Active reactions for this level after composing matching mod-global
@@ -45,6 +47,7 @@ pub struct DataRegistry {
     /// detector reads these to know which slots to watch.
     pub crossings: Vec<CrossingDescriptor>,
     pub trigger_events: Vec<TriggerEventDescriptor>,
+    trigger_pools: Vec<TriggerPoolDescriptor>,
     /// Engine-global reaction definitions from `ModManifest.reactions`.
     /// These are durable definitions, not the currently active per-level set.
     pub global_reactions: Vec<ScopedReaction>,
@@ -52,6 +55,7 @@ pub struct DataRegistry {
     /// These are durable definitions, not the currently active per-level set.
     pub global_crossings: Vec<ScopedCrossing>,
     pub global_trigger_events: Vec<ScopedTriggerEvent>,
+    pub global_trigger_pools: Vec<ScopedTriggerPool>,
     /// Level-local reaction definitions from `setupLevel()`. Retained so a
     /// staged mod-init reload can recompose active globals without rerunning the
     /// level data script.
@@ -60,6 +64,7 @@ pub struct DataRegistry {
     /// same staged-reload recomposition path as [`Self::level_reactions`].
     level_crossings: Vec<CrossingDescriptor>,
     level_trigger_events: Vec<TriggerEventDescriptor>,
+    level_trigger_pools: Vec<TriggerPoolDescriptor>,
     /// Entity-type descriptors. Engine-global — survive level unload.
     /// Populated by the boot caller after `run_mod_init`: it drains the
     /// `entities` field of the validated mod manifest into here
@@ -79,7 +84,8 @@ impl DataRegistry {
     }
 
     /// Append level-local definitions, then recompose the active per-level
-    /// reaction/crossing/trigger-event sets from matching globals plus locals.
+    /// reaction/crossing/trigger-event/trigger-pool sets from matching globals
+    /// plus locals.
     /// Existing level-local definitions are preserved — call [`Self::clear`]
     /// first for a fresh population. Entity-type descriptors arrive separately
     /// via `ModManifest.entities` (they outlive level unload). UI trees are
@@ -90,7 +96,7 @@ impl DataRegistry {
         crossings: Vec<CrossingDescriptor>,
         tags: &[String],
     ) {
-        self.populate_level_with_trigger_events(reactions, crossings, Vec::new(), tags);
+        self.populate_level_with_trigger_events(reactions, crossings, Vec::new(), Vec::new(), tags);
     }
 
     pub fn populate_level_with_trigger_events(
@@ -98,11 +104,13 @@ impl DataRegistry {
         reactions: Vec<NamedReaction>,
         crossings: Vec<CrossingDescriptor>,
         trigger_events: Vec<TriggerEventDescriptor>,
+        trigger_pools: Vec<TriggerPoolDescriptor>,
         tags: &[String],
     ) {
         self.set_level_reactions(reactions);
         self.set_level_crossings(crossings);
         self.level_trigger_events.extend(trigger_events);
+        self.level_trigger_pools.extend(trigger_pools);
         self.recompose(tags);
     }
 
@@ -155,17 +163,51 @@ impl DataRegistry {
                 .filter(|descriptor| Self::levels_match(&descriptor.levels, tags))
                 .cloned(),
         );
-        let mut seen = HashSet::new();
+        let mut seen = Vec::new();
         trigger_events.retain(|descriptor| {
-            if seen.insert(descriptor.clone()) { true } else {
+            if seen.contains(descriptor) {
                 log::warn!("[Loader] duplicate trigger-event descriptor for tag `{}` event `{}`; ignoring duplicate", descriptor.tag, descriptor.event);
                 false
+            } else {
+                seen.push(descriptor.clone());
+                true
             }
         });
+
+        let matching_global_pools: Vec<&ScopedTriggerPool> = self
+            .global_trigger_pools
+            .iter()
+            .filter(|descriptor| Self::levels_match(&descriptor.levels, tags))
+            .collect();
+        let level_pool_tags: HashSet<&str> = self
+            .level_trigger_pools
+            .iter()
+            .map(|descriptor| descriptor.tag.as_str())
+            .collect();
+        for pool in &self.level_trigger_pools {
+            if matching_global_pools
+                .iter()
+                .any(|global| global.tag == pool.tag)
+            {
+                log::info!(
+                    "[Loader] level-local trigger pool `{}` overrides matching mod-global pool",
+                    pool.tag,
+                );
+            }
+        }
+        let mut trigger_pools: Vec<TriggerPoolDescriptor> = matching_global_pools
+            .into_iter()
+            .filter(|descriptor| !level_pool_tags.contains(descriptor.tag.as_str()))
+            .cloned()
+            .collect();
+        // Level-local pools always apply to the level whose setupLevel() script
+        // declared them. Their retained `levels` field scopes only mod globals.
+        trigger_pools.extend(self.level_trigger_pools.iter().cloned());
 
         self.reactions = reactions;
         self.crossings = crossings;
         self.trigger_events = trigger_events;
+        self.trigger_pools = trigger_pools;
     }
 
     fn levels_match(levels: &[String], tags: &[String]) -> bool {
@@ -281,17 +323,29 @@ impl DataRegistry {
         self.global_trigger_events = events;
     }
 
-    /// Drop every active per-level reaction/crossing/trigger-event definition.
-    /// Engine-global entity, map, and global reaction/crossing/trigger-event
-    /// definitions outlive the clear. Called on level unload.
+    pub fn replace_global_trigger_pools(&mut self, pools: Vec<ScopedTriggerPool>) {
+        self.global_trigger_pools = pools;
+    }
+
+    /// Active pools for the installed level, ordered as matching mod globals
+    /// followed by level locals after same-tag overrides are applied.
+    pub fn trigger_pools(&self) -> &[TriggerPoolDescriptor] {
+        &self.trigger_pools
+    }
+
+    /// Drop every active per-level reaction/crossing/trigger-event/trigger-pool
+    /// definition. Engine-global entity, map, and global reaction/crossing/
+    /// trigger-event/trigger-pool definitions outlive the clear. Called on level unload.
     /// See [`Self::upsert_entity_type`].
     pub fn clear(&mut self) {
         self.reactions.clear();
         self.crossings.clear();
         self.trigger_events.clear();
+        self.trigger_pools.clear();
         self.level_reactions.clear();
         self.level_crossings.clear();
         self.level_trigger_events.clear();
+        self.level_trigger_pools.clear();
     }
 
     /// Returns `true` only when every registry collection is empty. After level
@@ -303,12 +357,15 @@ impl DataRegistry {
         self.reactions.is_empty()
             && self.crossings.is_empty()
             && self.trigger_events.is_empty()
+            && self.trigger_pools.is_empty()
             && self.global_reactions.is_empty()
             && self.global_crossings.is_empty()
             && self.global_trigger_events.is_empty()
+            && self.global_trigger_pools.is_empty()
             && self.level_reactions.is_empty()
             && self.level_crossings.is_empty()
             && self.level_trigger_events.is_empty()
+            && self.level_trigger_pools.is_empty()
             && self.entities.is_empty()
             && self.maps.is_empty()
     }
@@ -319,7 +376,7 @@ mod tests {
     use super::*;
     use crate::data_descriptors::{
         CrossingCondition, CrossingDescriptor, EntityTypeDescriptor, NamedReaction,
-        PrimitiveDescriptor, ReactionDescriptor,
+        PrimitiveDescriptor, ReactionDescriptor, TriggerPoolArm, TriggerPoolDescriptor,
     };
 
     fn sample_level_reactions() -> Vec<NamedReaction> {
@@ -364,6 +421,14 @@ mod tests {
             event: "enter".to_string(),
             fire: vec!["openAirlock".to_string()],
             levels: Vec::new(),
+        }
+    }
+
+    fn sample_trigger_pool(tag: &str, levels: &[&str]) -> TriggerPoolDescriptor {
+        TriggerPoolDescriptor {
+            tag: tag.to_string(),
+            arm: TriggerPoolArm::Count(2),
+            levels: levels.iter().map(|level| level.to_string()).collect(),
         }
     }
 
@@ -432,6 +497,14 @@ mod tests {
             .collect()
     }
 
+    fn trigger_pool_tags(registry: &DataRegistry) -> Vec<String> {
+        registry
+            .trigger_pools()
+            .iter()
+            .map(|pool| pool.tag.clone())
+            .collect()
+    }
+
     #[test]
     fn new_registry_is_empty() {
         let r = DataRegistry::new();
@@ -449,6 +522,7 @@ mod tests {
     #[test]
     fn trigger_event_collections_make_registry_nonempty() {
         let trigger_event = sample_trigger_event();
+        let trigger_pool = sample_trigger_pool("closet", &[]);
 
         let mut registry = DataRegistry::new();
         registry.trigger_events.push(trigger_event.clone());
@@ -461,6 +535,93 @@ mod tests {
         let mut registry = DataRegistry::new();
         registry.level_trigger_events.push(trigger_event);
         assert!(!registry.is_empty());
+
+        let mut registry = DataRegistry::new();
+        registry.trigger_pools.push(trigger_pool.clone());
+        assert!(!registry.is_empty());
+
+        let mut registry = DataRegistry::new();
+        registry.global_trigger_pools.push(trigger_pool.clone());
+        assert!(!registry.is_empty());
+
+        let mut registry = DataRegistry::new();
+        registry.level_trigger_pools.push(trigger_pool);
+        assert!(!registry.is_empty());
+    }
+
+    #[test]
+    fn trigger_pools_compose_matching_globals_before_unfiltered_level_locals() {
+        let mut registry = DataRegistry::new();
+        registry.replace_global_trigger_pools(vec![
+            sample_trigger_pool("campaign", &["campaign"]),
+            sample_trigger_pool("deathmatch", &["deathmatch"]),
+            sample_trigger_pool("all-levels", &[]),
+        ]);
+        registry.populate_level_with_trigger_events(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![sample_trigger_pool("local", &["not-active"])],
+            &tags(&["campaign"]),
+        );
+
+        assert_eq!(
+            trigger_pool_tags(&registry),
+            ["campaign", "all-levels", "local"],
+            "only mod-global pools use their levels selector; locals retain declaration order",
+        );
+    }
+
+    #[test]
+    fn level_local_trigger_pool_replaces_matching_global_with_the_same_tag() {
+        let mut registry = DataRegistry::new();
+        registry.replace_global_trigger_pools(vec![
+            sample_trigger_pool("shared", &["campaign"]),
+            sample_trigger_pool("global-only", &["campaign"]),
+        ]);
+        let local = TriggerPoolDescriptor {
+            tag: "shared".to_string(),
+            arm: TriggerPoolArm::Percentage(50.0),
+            levels: vec!["ignored-at-level-scope".to_string()],
+        };
+        registry.populate_level_with_trigger_events(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![local.clone()],
+            &tags(&["campaign"]),
+        );
+
+        assert_eq!(trigger_pool_tags(&registry), ["global-only", "shared"]);
+        assert_eq!(registry.trigger_pools()[1], local);
+    }
+
+    #[test]
+    fn clear_drops_level_trigger_pools_but_retains_globals_for_next_install() {
+        let mut registry = DataRegistry::new();
+        let global = sample_trigger_pool("global", &[]);
+        registry.replace_global_trigger_pools(vec![global.clone()]);
+        registry.populate_level_with_trigger_events(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![sample_trigger_pool("local", &[])],
+            &[],
+        );
+
+        registry.clear();
+
+        assert!(registry.trigger_pools().is_empty());
+        assert_eq!(registry.global_trigger_pools, vec![global.clone()]);
+
+        registry.populate_level_with_trigger_events(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            &[],
+        );
+        assert_eq!(registry.trigger_pools(), [global]);
     }
 
     #[test]

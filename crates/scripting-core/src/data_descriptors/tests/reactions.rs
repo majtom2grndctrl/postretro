@@ -471,6 +471,88 @@ fn trigger_event_manifests_parse_identically_and_drop_unknown_events() {
 }
 
 #[test]
+fn trigger_pool_manifests_parse_identically_across_vms() {
+    let js = eval_js(
+        r#"({ triggerPools: [
+            { tag: "closet", arm: 2 },
+            { tag: "ambush", armPercentage: 50, levels: ["campaign", "challenge"] }
+        ] })"#,
+        |ctx, value| LevelManifest::from_js_value(ctx, value).unwrap(),
+    );
+    let lua = eval_lua(
+        r#"return { triggerPools = {
+            { tag = "closet", arm = 2 },
+            { tag = "ambush", armPercentage = 50, levels = { "campaign", "challenge" } }
+        } }"#,
+        |value| LevelManifest::from_lua_value(value).unwrap(),
+    );
+
+    assert_eq!(js.trigger_pools, lua.trigger_pools);
+    assert_eq!(js.trigger_pools[0].arm, TriggerPoolArm::Count(2));
+    assert_eq!(js.trigger_pools[1].arm, TriggerPoolArm::Percentage(50.0));
+    assert_eq!(js.trigger_pools[1].levels, ["campaign", "challenge"]);
+}
+
+#[test]
+fn trigger_pool_manifests_skip_malformed_entries_keep_first_duplicate_and_accept_zero_arms() {
+    let js = eval_js(
+        r#"({ triggerPools: [
+            { tag: "count-zero", arm: 0 },
+            { tag: "percentage-zero", armPercentage: 0, levels: ["campaign"] },
+            42,
+            { tag: "", arm: 1 },
+            { arm: 1 },
+            { tag: "neither" },
+            { tag: "both", arm: 1, armPercentage: 50 },
+            { tag: "negative-count", arm: -1 },
+            { tag: "fractional-count", arm: 1.5 },
+            { tag: "over-u32", arm: 4294967296 },
+            { tag: "negative-percentage", armPercentage: -0.1 },
+            { tag: "high-percentage", armPercentage: 100.1 },
+            { tag: "nonfinite-percentage", armPercentage: NaN },
+            { tag: "bad-levels", arm: 1, levels: ["campaign", 2] },
+            { tag: "count-zero", arm: 5 }
+        ] })"#,
+        |ctx, value| LevelManifest::from_js_value(ctx, value).unwrap(),
+    );
+    let lua = eval_lua(
+        r#"return { triggerPools = {
+            { tag = "count-zero", arm = 0 },
+            { tag = "percentage-zero", armPercentage = 0, levels = { "campaign" } },
+            42,
+            { tag = "", arm = 1 },
+            { arm = 1 },
+            { tag = "neither" },
+            { tag = "both", arm = 1, armPercentage = 50 },
+            { tag = "negative-count", arm = -1 },
+            { tag = "fractional-count", arm = 1.5 },
+            { tag = "over-u32", arm = 4294967296 },
+            { tag = "negative-percentage", armPercentage = -0.1 },
+            { tag = "high-percentage", armPercentage = 100.1 },
+            { tag = "nonfinite-percentage", armPercentage = 0 / 0 },
+            { tag = "bad-levels", arm = 1, levels = { "campaign", 2 } },
+            { tag = "count-zero", arm = 5 }
+        } }"#,
+        |value| LevelManifest::from_lua_value(value).unwrap(),
+    );
+    let expected = vec![
+        TriggerPoolDescriptor {
+            tag: "count-zero".to_string(),
+            arm: TriggerPoolArm::Count(0),
+            levels: Vec::new(),
+        },
+        TriggerPoolDescriptor {
+            tag: "percentage-zero".to_string(),
+            arm: TriggerPoolArm::Percentage(0.0),
+            levels: vec!["campaign".to_string()],
+        },
+    ];
+
+    assert_eq!(js.trigger_pools, lua.trigger_pools);
+    assert_eq!(js.trigger_pools, expected);
+}
+
+#[test]
 fn malformed_reactions_do_not_discard_valid_manifest_siblings_in_either_vm() {
     let cases = [
         (

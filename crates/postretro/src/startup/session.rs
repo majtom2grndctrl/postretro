@@ -63,6 +63,7 @@ impl SessionBootConfig {
 
     /// Headless runs deliberately avoid an unpinned random subset, but a pinned
     /// CLI seed restores the same seeded install path used by windowed sessions.
+    #[cfg_attr(not(feature = "observability"), allow(dead_code))]
     pub(crate) fn headless_trigger_pool_policy(self) -> TriggerPoolSeedPolicy {
         self.pool_seed_override
             .map(TriggerPoolSeedPolicy::Seeded)

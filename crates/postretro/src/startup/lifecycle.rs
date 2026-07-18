@@ -1383,8 +1383,11 @@ pub(crate) fn install_world_cpu(
     }
     // Bind after subscriber rebuild: `populate_level` has committed the final
     // composed reaction set, so tick dispatch never re-matches a name later.
-    let mut trigger_bindings =
-        build_trigger_bindings(script_ctx, command_diagnostics, spawn_context.clone());
+    let mut trigger_bindings = build_trigger_bindings(
+        script_ctx,
+        command_diagnostics.clone(),
+        spawn_context.clone(),
+    );
     {
         let registry = script_ctx.registry.borrow();
         let data_registry = script_ctx.data_registry.borrow();

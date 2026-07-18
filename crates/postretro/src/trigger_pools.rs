@@ -14,6 +14,7 @@ use crate::trigger_system::{arm_trigger_targets, disarm_trigger_targets};
 /// Resolved per-install policy for trigger-pool arming. This intentionally does
 /// not use `Option<u64>`: a missing seed is observably different from a seeded
 /// roll because headless runs arm every member without consuming RNG.
+#[cfg_attr(not(feature = "observability"), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TriggerPoolSeedPolicy {
     Seeded(u64),
@@ -136,7 +137,7 @@ pub(crate) fn install_trigger_pools(
 
         let selected = match (&pool.arm, rng.as_mut()) {
             (_, None) => members.clone(),
-            (arm, Some(rng)) => {
+            (_, Some(rng)) => {
                 select_members(&members, resolve_target_count(pool, members.len()), rng)
             }
         };

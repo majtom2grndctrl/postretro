@@ -706,6 +706,7 @@ mod tests {
             reactions: Vec::new(),
             crossings: Vec::new(),
             trigger_events: Vec::new(),
+            trigger_pools: Vec::new(),
             store_declarations: StoreDeclarationSet::default(),
         };
         let expected_fields: &[&str] = &[

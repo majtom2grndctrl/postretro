@@ -2883,6 +2883,7 @@ mod tests {
                 reactions: Vec::new(),
                 crossings: Vec::new(),
                 trigger_events: Vec::new(),
+                trigger_pools: Vec::new(),
                 ui_trees: vec![RegisteredUiTree {
                     name: "newMenu".to_string(),
                     tree: postretro_ui::demo::build_frontend_menu_descriptor(),

@@ -311,7 +311,7 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let shared = spawn_trigger(&mut registry, &["first", "second"], false);
         let captured = crate::scripting::reactions::log_capture::capture(|| {
-            install_trigger_pools(
+            let _ = install_trigger_pools(
                 &mut registry,
                 &[
                     pool("first", TriggerPoolArm::Count(0)),
@@ -319,7 +319,7 @@ mod tests {
                 ],
                 TriggerPoolSeedPolicy::Seeded(9),
                 &Default::default(),
-            )
+            );
         });
 
         assert!(

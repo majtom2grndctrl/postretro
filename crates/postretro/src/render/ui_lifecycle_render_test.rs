@@ -94,6 +94,7 @@ fn staged_manifest_result(
             reactions: Vec::new(),
             crossings: Vec::new(),
             trigger_events: Vec::new(),
+            trigger_pools: Vec::new(),
             ui_trees,
             theme,
             frontend: None,

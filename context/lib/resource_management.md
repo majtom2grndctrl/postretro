@@ -197,6 +197,8 @@ Skinned or static 3D models are the character/prop alternative to billboard spri
 
 Placed mesh entities carry `Transform.scale = 1`; no FGD or descriptor scale override exists (`entity_model.md` §4). On-screen size is entirely the authored geometry.
 
+**Sockets (named attachment points).** A model node may carry a glTF `extras` socket tag naming an attachment point — the same per-node extras channel as hit-zone and pose tags. On skinned models the tag rides a skin joint (resolved to that joint and posed with the skeleton); on rigid models it rides a mesh-node descendant (resolved to a static rest transform in the mesh node's local frame). A mesh component's `attachments` map (`entity_model.md`) mounts prop model handles at sockets by name, rendered as rigid instances at the holder's posed socket. Presentation-only — sockets never participate in collision, hit-zone raycasts, or gameplay queries.
+
 ---
 
 ## 8. Resource Ownership

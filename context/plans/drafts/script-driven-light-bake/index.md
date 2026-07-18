@@ -150,7 +150,9 @@ a runtime curve to diverge from; the only thing the two sides can disagree about
   descriptor slot reserved, delta tiles baked. `start_active` is governed separately by the
   `start_active` acceptance criterion below, so the two paths may differ there without violating
   this one.
-- [ ] A static light neither targeted nor flagged produces byte-identical output to today.
+- [ ] A static light neither targeted nor flagged produces byte-identical output to today (a
+  golden-PRL compare — a committed golden fixture and review gate, not a self-checking unit test,
+  since the harness holds no "today" bytes on its own).
 - [ ] A `setLightAnimation` step targeting a dynamic-tier light changes no baked output and is
   logged at info level, not as a warning.
 - [ ] A light targeted by both a `levelLoad`-addressed step and a trigger-addressed step bakes
@@ -221,8 +223,18 @@ with the hand-rolled parser's existing mode-compat checks (e.g. `--dep-json` is 
   tag})` resolves against real map lights rather than a stub.
 - For TS/QuickJS, `scripts-build` (`postretro-script-compiler`) reuses its own existing
   prelude-assembly machinery — `bundle_prelude`/`write_prelude`
-  (`crates/script-compiler/src/lib.rs`) — to assemble the in-process prelude from the SDK sources
-  it already compiles. Genuine reuse, no new machinery.
+  (`crates/script-compiler/src/lib.rs`) — but only for the prelude SOURCE STRING, assembled from
+  the SDK sources it already compiles. The QuickJS host itself is net-new work here:
+  `scripts-build` must stand up its own rquickjs VM, install the primitive stubs, invoke
+  `setupLevel`, and extract the `reactions[].sequence[]` subset it needs directly — it does not
+  need to port the full `LevelManifest::from_js_value` deserializer. This host cannot be borrowed:
+  rquickjs VM construction, primitive-stub install, `setupLevel` invocation, and `LevelManifest`
+  extraction live in `scripting-core` today, but the dependency runs `scripting-core` →
+  `postretro-script-compiler` (for prelude assembly), not the reverse, so `script-compiler` cannot
+  link `scripting-core`. The primitive stubs to install are the globals the assembled prelude
+  references (`worldQuery`, `setLightAnimation`, `getGameState`, and the
+  `wrapLightEntity`/mover/trigger/fog bridges) — discoverable from `sdk/types/postretro.d.ts` plus
+  the prelude itself.
 - For Luau there is no reusable generator: the ordered `.luau` embedding, `require`
   virtual-module wiring, and `wrapLightEntity` upvalue capture live in `evaluate_prelude`
   (`crates/scripting-core/src/luau_prelude.rs`), which evaluates live in an mlua VM inside the
@@ -247,6 +259,14 @@ with the hand-rolled parser's existing mode-compat checks (e.g. `--dep-json` is 
   scripts — pin this with a test.
 
 **Wire formats.**
+
+The JSON below is the illustrative shape; the canonical contract is a pair of versioned `serde`
+structs — the light-table struct and the sidecar-manifest struct — defined in
+`postretro-level-format`, a leaf crate (no `postretro-*` deps) both binaries link:
+`level-compiler` already depends on it (with the `serde` feature), and `script-compiler` adds the
+dependency (it currently pulls no `postretro-*` crate and already uses `serde_json`, so this
+introduces no cycle). Both binaries (de)serialize through these structs rather than hand-rolling
+JSON on either side.
 
 The prl-build → scripts-build light table (`--light-table`):
 
@@ -283,7 +303,10 @@ surface. `component` carries the full `LightComponent` snapshot (`sdk/types/post
 not flattened `color`/`intensity` — neutral-defaulted when the map omits fields, so `world.query`
 handles are faithful; without it the reconstructed handle's `component` is nil. `scripts-build`
 assigns build-local entity ids internally for `world.query`; those ids are never serialized — the
-JSON carries `index` (the map-light index), not runtime ids.
+JSON carries `index` (the map-light index), not runtime ids. The light table's `position` is
+`[f32; 3]`, while the runtime handle snapshot uses `{x, y, z}`; `scripts-build` reshapes
+`[f32; 3]` → `{x, y, z}` when constructing the `world.query` handles it hands to the script, so
+`wrapLightEntity` sees the same shape it would at runtime.
 
 The scripts-build → prl-build sidecar manifest (`--manifest-out`):
 
@@ -320,11 +343,24 @@ conflict / stubbed).
 
 ### Task 2: `prl-build` consumes the manifest and wires bake membership
 
-Read the sidecar manifest `scripts-build` emitted (Task 1): a resolved per-light record (schema
-in Task 1's Wire formats) for each targeted map-light index. For static baked-tier targets with
-`animation == None` and `is_animated == false`, synthesize the same placeholder `LightAnimation`
-the `_animated` parser path emits (empty channels; `start_active` taken from the record's
-resolved value per the rule below). For targets with `is_animated == true` (an existing
+First, invoke `scripts-build`: `prl-build` serializes the light table (the shared
+`postretro-level-format` light-table struct) from the parsed `MapData`, invokes `scripts-build`
+with `--light-table <temp>` and `--manifest-out <temp>`, and reads the sidecar back, deserializing
+it through the shared `postretro-level-format` sidecar-manifest struct. This lands in
+`compile_worldspawn_data_script` (`crates/level-compiler/src/main.rs`) — the sole `scripts-build`
+invocation site, called from `pipeline.rs` — alongside the existing `--in`/`--out` call that
+already lives there.
+
+Then read the sidecar manifest: a resolved per-light record (the shared `postretro-level-format`
+sidecar-manifest struct) for each targeted map-light index. For static baked-tier targets with
+`animation == None` and `is_animated == false`, synthesize the same placeholder
+`map_data::LightAnimation` the `_animated` parser path emits (mirroring the existing placeholder
+emission in `crates/level-compiler/src/format/quake_map.rs`) — empty channels; `start_active`
+taken from the record's resolved value per the rule below. This is the compiler-side placeholder
+type (`start_active: bool`, field `period`) — distinct from the runtime `entities::LightAnimation`
+(`start_active: Option<bool>`, `period_ms`), which Task 2 does not touch. The sidecar's `Option`
+`startActive` maps to the placeholder's `bool` `start_active` by: non-null → that value; null →
+the FGD `_start_inactive` default. For targets with `is_animated == true` (an existing
 `_animated`-flagged placeholder), `prl-build` does not synthesize a new placeholder — instead it
 overwrites the existing placeholder's `start_active` with the sidecar's resolved `startActive`
 when non-null, mirroring the runtime's in-place overwrite (`light_bridge.rs`).
@@ -357,17 +393,25 @@ so derived membership drops out of promotion by construction. Pin that with a te
 new code.
 
 Emit the build-log inventory (derived / flagged / dynamic-target / stubs-hit, the last forwarded
-from `scripts-build`'s own log). Run the manifest-read step between parse and the lightmap bake
-in `pipeline.rs`; fold the script bytes and the manifest into the affected stages' cache keys if
-they are not already part of the input hash.
+from `scripts-build`'s own log). `run_after_parsing` (`pipeline.rs`) currently takes `map_data` by
+value (not `mut`); the manifest-read + membership-injection step needs `mut map_data` and must
+land after the `scripts-build` call that produces the sidecar and before the light-namespace
+construction. Fold the script bytes and the manifest into the affected stages' cache keys if they
+are not already part of the input hash.
 
 ### Task 3: Runtime slotless-target diagnostic
 
-In the light bridge (or the `setLightAnimation` handler seam in
-`crates/lighting/src/script_primitives.rs`), warn when a static light without an
+In `LightBridge::update` (`crates/postretro/src/scripting/systems/light_bridge.rs`) — the seam
+that holds the map-light index (`entity_ids` position), tags (`registry.get_tags(id)`),
+`animated_slot`, and `is_dynamic`; the `setLightAnimation` handler seam in
+`crates/lighting/src/script_primitives.rs` sees only an `EntityId` and cannot name the map-light
+index this diagnostic requires, so it is not the right seam — warn when a static light without an
 `animated_slot` receives an animation: name the light by its map-light index and tag (the
 build-local runtime entity id is not stable, so it is not used) and state that its baked
-contribution will not animate. Cheap, independent of Tasks 1–2, and valuable even alone — it
+contribution will not animate. Gate the warning on `!is_dynamic && animated_slot.is_none() &&
+animation.is_some()`, so script-spawned dynamic lights (also slotless) do not warn. `update` runs
+every dirty frame, so the warning must be warn-once (per light, not re-logged on every dirty
+frame the animation stays active). Cheap, independent of Tasks 1–2, and valuable even alone — it
 converts today's silent failure into a diagnosable one for maps built before this plan lands.
 
 This diagnostic is also the resolution for store-conditional membership (a script that gates

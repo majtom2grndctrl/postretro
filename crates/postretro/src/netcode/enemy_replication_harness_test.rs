@@ -730,10 +730,9 @@ fn runtime_spawned_enemy_registers_and_materializes_on_connected_client() {
 }
 
 // E18 Task 5: the host alone performs the pinned pool install. Its selected
-// trigger fires through the normal authoritative trigger evaluator, then the
-// existing spawnFromSpawner executor creates an ordinary runtime enemy. The
-// established in-memory host→client harness proves only that consequence
-// crosses the network; no pool state or new wire field is introduced.
+// trigger fires through the normal authoritative trigger evaluator; the test
+// then invokes the existing spawnFromSpawner helper to isolate the established
+// host→client consequence path. No pool state or new wire field is introduced.
 #[test]
 fn host_armed_trap_pool_spawn_reaches_client_while_client_keeps_authored_trigger_state() {
     let mut h = EnemyReplicationHarness::new(perfect_link());
@@ -797,6 +796,9 @@ fn host_armed_trap_pool_spawn_reaches_client_while_client_keeps_authored_trigger
     // Mirror client map materialization, deliberately without the host-only
     // install pass: its component remains exactly as authored (disabled).
     let client_trap = h.client_registry.spawn(Transform::default());
+    h.client_registry
+        .set_tags(client_trap, vec!["trap-pool".to_string()])
+        .expect("client trap accepts its pool tag");
     h.client_registry
         .set_component(
             client_trap,
@@ -885,6 +887,9 @@ fn host_armed_trap_pool_spawn_reaches_client_while_client_keeps_authored_trigger
         "the host-selected trap must enter the ordinary trigger fire stream",
     );
 
+    // This harness does not construct a full ScriptingCore/TriggerBindingTable;
+    // use the same existing spawner executor after the production trigger system
+    // has emitted the fire, then verify only the network consequence.
     spawn_from_spawner_tag(&mut h.host_registry, "trap-spawner", &spawn_context);
     let spawned = h
         .host_registry

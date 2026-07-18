@@ -313,7 +313,7 @@ impl SimHarness {
                 .expect("determinism trigger accepts its pool tag");
 
             // Keep three non-overlapping peers in the same fixture pool. The
-            // fixed seed below selects the source (the first sorted member), so
+            // fixed seed below selects the source, so
             // the existing tick sequence proves load-time pool selection and
             // ordinary trigger dispatch compose without adding a test-only wire
             // or tick field.
@@ -368,7 +368,7 @@ impl SimHarness {
                     arm: TriggerPoolArm::Count(1),
                     levels: Vec::new(),
                 }],
-                TriggerPoolSeedPolicy::Seeded(9),
+                TriggerPoolSeedPolicy::Seeded(0),
                 &Default::default(),
             );
             report.pools[0].selected == [trigger_source]

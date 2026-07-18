@@ -2,7 +2,9 @@
 // Format: Standard
 // E18 seeded trap-pool fixture.
 // Compile: cargo run -p postretro-level-compiler -- content/dev/maps/trap-pools.map -o content/dev/maps/trap-pools.prl
-// Run: cargo run -p xtask -- run content/dev/maps/trap-pools.prl
+// Run the catalog-scoped mod-global pool: cargo run -p xtask -- run, then choose
+// Trap Pools from the dev-level menu. A direct .prl launch exercises only the
+// level-local pool because raw paths intentionally carry no catalog tags.
 // The upper row is the level-local closet_trap pool. The lower row is the
 // mod-global ambush_trap pool, selected only when this map's catalog tag matches.
 {

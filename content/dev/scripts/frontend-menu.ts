@@ -145,6 +145,7 @@ export const frontendMenu = defineUiTree({
         VStack({ gap: 14, align: "stretch" }, [
           section("Recommended", mapsTagged("recommended")),
           section("Visibility", mapsTaggedWithout("visibility", "variant")),
+          section("Trap Pools", mapsTagged("trap-pools")),
         ]),
         VStack({ gap: 14, align: "stretch" }, [
           section("Animated Weight Maps", mapsTagged("animated-weight-map")),

@@ -1,7 +1,8 @@
 # Script-Driven Light Bake
 
-> **Status:** draft — substantively rewritten 2026-07-18 against the shipped reaction/interactive
-> substrate. The original 2026-07-16 draft assumed the pre-reaction scripting model
+> **Status:** ready — promoted 2026-07-18 after structural, source-anchor, and implementability
+> review. Substantively rewritten the same day against the shipped reaction/interactive substrate;
+> the original 2026-07-16 draft assumed the pre-reaction scripting model
 > (`registerHandler`, imperative capture at a synthetic `levelLoad`); that world no longer exists.
 > Later the same day, four decisions were folded in: derive (not validate-only); Luau parity is a
 > landing requirement, not a fast-follow; store-conditional membership resolves to a runtime-only

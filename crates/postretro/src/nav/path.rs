@@ -57,7 +57,7 @@ pub fn find_path(graph: &NavGraph, start: Vec3, goal: Vec3) -> Option<Vec<Vec3>>
         );
         return None;
     }
-    Some(funnel(start, goal, &portals))
+    Some(funnel(start, goal, &portals, graph.agent.radius))
 }
 
 /// One hop of the region corridor: which portal A* crossed and which direction
@@ -237,11 +237,26 @@ fn triangle_area_xz(a: Vec3, b: Vec3, c: Vec3) -> f32 {
     abz * acx - abx * acz
 }
 
+/// Move a funnel corner away from one endpoint and toward the interior of its
+/// portal. A portal too narrow for the canonical agent has no valid
+/// radius-clear endpoint, so its midpoint is the stable fallback.
+fn inset_portal_endpoint(endpoint: Vec3, opposite_endpoint: Vec3, radius: f32) -> Vec3 {
+    let portal = opposite_endpoint - endpoint;
+    let width = portal.length();
+    let radius = radius.max(0.0);
+
+    if width <= 2.0 * radius {
+        return (endpoint + opposite_endpoint) * 0.5;
+    }
+
+    endpoint + portal * (radius / width)
+}
+
 /// Simple Stupid Funnel string-pull over an ordered list of traversal-oriented
 /// `(left, right)` portal segments. Emits the tightest waypoint list from
 /// `start` to `goal` that stays within the corridor. The first waypoint is
 /// `start`, the last is `goal`; a straight corridor collapses to `[start, goal]`.
-fn funnel(start: Vec3, goal: Vec3, portals: &[(Vec3, Vec3)]) -> Vec<Vec3> {
+fn funnel(start: Vec3, goal: Vec3, portals: &[(Vec3, Vec3)], agent_radius: f32) -> Vec<Vec3> {
     let mut path = vec![start];
 
     let mut apex = start;
@@ -268,7 +283,11 @@ fn funnel(start: Vec3, goal: Vec3, portals: &[(Vec3, Vec3)]) -> Vec<Vec3> {
                 right_index = i;
             } else {
                 // Right over left: the left vertex becomes a new apex/corner.
-                path.push(left);
+                path.push(inset_portal_endpoint(
+                    left,
+                    gates[left_index].1,
+                    agent_radius,
+                ));
                 apex = left;
                 // Restart the funnel from the vertex after the new apex.
                 left_index += 1;
@@ -286,7 +305,11 @@ fn funnel(start: Vec3, goal: Vec3, portals: &[(Vec3, Vec3)]) -> Vec<Vec3> {
                 left = gate_left;
                 left_index = i;
             } else {
-                path.push(right);
+                path.push(inset_portal_endpoint(
+                    right,
+                    gates[right_index].0,
+                    agent_radius,
+                ));
                 apex = right;
                 right_index += 1;
                 left_index = right_index;
@@ -461,7 +484,7 @@ mod tests {
     }
 
     #[test]
-    fn find_path_bends_l_corridor_at_inner_corner_portal_endpoint() {
+    fn find_path_bends_l_corridor_at_inset_inner_corner_portal_endpoint() {
         let graph = NavGraph::from_section(&l_corridor_section());
         // Start low in region 0, goal in region 2 (+X side). Start and goal are
         // chosen so the straight segment would exit the corridor at the z=4
@@ -478,14 +501,16 @@ mod tests {
         );
         assert!(approx_xz(path[0], start));
         assert!(approx_xz(*path.last().unwrap(), goal));
-        // A correct funnel bends exactly at the inner-corner portal endpoint; a
-        // broken-handedness straight-collapse would not place a vertex there.
-        let bends_at_corner = path[1..path.len() - 1]
+        // The funnel must bend at the inner-corner portal endpoint inset by the
+        // canonical agent radius, rather than steering the capsule into the
+        // raw wall corner.
+        let inset_corner = Vec3::new(4.0, 0.0, 4.0 + graph.agent.radius);
+        let bends_at_inset_corner = path[1..path.len() - 1]
             .iter()
-            .any(|w| approx_xz(*w, inner_corner));
+            .any(|w| approx_xz(*w, inset_corner));
         assert!(
-            bends_at_corner,
-            "expected a bend at the inner corner {inner_corner:?}, got {path:?}"
+            bends_at_inset_corner,
+            "expected a bend inset from the inner corner {inner_corner:?}, got {path:?}"
         );
     }
 
@@ -540,16 +565,27 @@ mod tests {
         let goal = Vec3::new(7.0, 0.0, 5.0); // region 0
         let path = find_path(&graph, start, goal).expect("reversed corridor connects");
 
-        let inner_corner = Vec3::new(4.0, 0.0, 4.0);
         assert!(approx_xz(path[0], start));
         assert!(approx_xz(*path.last().unwrap(), goal));
-        let bends_at_corner = path[1..path.len() - 1]
+        let inset_corner = Vec3::new(4.0, 0.0, 4.0 + graph.agent.radius);
+        let bends_at_inset_corner = path[1..path.len() - 1]
             .iter()
-            .any(|w| approx_xz(*w, inner_corner));
+            .any(|w| approx_xz(*w, inset_corner));
         assert!(
-            bends_at_corner,
-            "reversed L corridor must still bend at inner corner {inner_corner:?}, got {path:?}"
+            bends_at_inset_corner,
+            "reversed L corridor must still bend inset from its inner corner {inset_corner:?}, got {path:?}"
         );
+    }
+
+    #[test]
+    fn funnel_uses_portal_midpoint_when_portal_is_narrower_than_agent_diameter() {
+        let endpoint = Vec3::new(4.0, 0.0, 4.0);
+        let opposite_endpoint = Vec3::new(4.4, 0.0, 4.0);
+
+        let waypoint = inset_portal_endpoint(endpoint, opposite_endpoint, 0.3);
+
+        assert!(waypoint.is_finite(), "narrow portal inset must stay finite");
+        assert!(approx_xz(waypoint, Vec3::new(4.2, 0.0, 4.0)));
     }
 
     #[test]

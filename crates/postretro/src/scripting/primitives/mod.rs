@@ -601,6 +601,11 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
             "Trigger-volume enter/exit observers. Optional; compose by level tags.",
         )
         .field(
+            "triggerPools?",
+            "Vec<TriggerPoolDescriptor>",
+            "Trigger-volume arming pools. Optional; compose by level tags.",
+        )
+        .field(
             "stores?",
             "Vec<StoreDeclaration>",
             "Engine-global state-store declarations returned by `defineStore(...).declaration`. Optional; commit atomically after the manifest validates and preserve existing values when the schema is identical.",
@@ -714,6 +719,7 @@ mod tests {
             "reactions",
             "crossings",
             "triggerEvents",
+            "triggerPools",
             "stores",
         ];
 

@@ -195,6 +195,7 @@ export type LevelManifest = {
   -- `onStateCrossing`.
   crossings: {CrossingDescriptor}?,
   triggerEvents: {TriggerEventDescriptor}?,
+  triggerPools: {TriggerPoolDescriptor}?,
   -- Per-level UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; same shape
   -- as `ModManifest.uiTrees` but level-scoped (cleared on unload). Malformed
   -- entries are logged and skipped.
@@ -247,6 +248,13 @@ export type TriggerEventDescriptor = {
   tag: string,
   event: "enter" | "exit",
   fire: {string},
+  levels: {string}?,
+}
+
+export type TriggerPoolDescriptor = {
+  tag: string,
+  arm: number?,
+  armPercentage: number?,
   levels: {string}?,
 }
 
@@ -470,7 +478,8 @@ end
 
 --- Identity builder for the mod manifest consumed from the chunk return.
 --- `config.name` is required; optional arrays include `entities`, `maps`,
---- `uiTrees`, `reactions`, `crossings`, `triggerEvents`, and `stores`. Pure:
+--- `uiTrees`, `reactions`, `crossings`, `triggerEvents`, `triggerPools`, and
+--- `stores`. Pure:
 --- no engine side effects until the manifest is returned and validated.
 function DataScriptSdk.defineMod(config: ModManifest): ModManifest
   return config
@@ -481,6 +490,12 @@ end
 --- drive filtering plus `levels` selectors. Pure: no engine side effects.
 function DataScriptSdk.defineMapCatalog(entries: {ModMapEntry}): {ModMapEntry}
   return entries
+end
+
+--- Identity builder for a trigger-pool declaration returned from a level or
+--- mod manifest. Engine parsing owns arming validation.
+function DataScriptSdk.defineTriggerPool(pool: TriggerPoolDescriptor): TriggerPoolDescriptor
+  return pool
 end
 
 local MAGIC_SCHEMA_KEYS = {

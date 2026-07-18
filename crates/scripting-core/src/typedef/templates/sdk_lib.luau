@@ -371,6 +371,7 @@ export type LevelManifest = {
   reactions: {NamedReactionDescriptor},
   crossings: {CrossingDescriptor}?,
   triggerEvents: {TriggerEventDescriptor}?,
+  triggerPools: {TriggerPoolDescriptor}?,
   --- Per-level UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; same shape
   --- as `ModManifest.uiTrees` but level-scoped (cleared on unload). Malformed
   --- entries are logged and skipped.
@@ -394,6 +395,7 @@ declare defineReaction: (
 )
 
 export type TriggerEventDescriptor = { tag: string, event: "enter" | "exit", fire: {string}, levels: {string}? }
+export type TriggerPoolDescriptor = { tag: string, arm: number?, armPercentage: number?, levels: {string}? }
 export type TriggerEventOptions = { levels: {string}? }
 declare function onTriggerEvent(filter: { tag: string }, event: "enter" | "exit", fire: {Reaction<any> | string}, options: TriggerEventOptions?): TriggerEventDescriptor
 declare function damage(target: ActivatorsTarget | string, amount: number): PrimitiveReactionDescriptor
@@ -426,12 +428,16 @@ declare function scopeReactions<S>(tags: {string}, list: {Reaction<S>}): {Reacti
 declare function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor
 --- Pure identity builder for the mod manifest consumed from the chunk return.
 --- `config.name` is required; optional arrays include `entities`, `maps`,
---- `uiTrees`, `reactions`, `crossings`, `triggerEvents`, and `stores`.
+--- `uiTrees`, `reactions`, `crossings`, `triggerEvents`, `triggerPools`, and
+--- `stores`.
 declare function defineMod(config: ModManifest): ModManifest
 --- Pure identity builder for a mod map catalog. Entries require `id`, `path`,
 --- and `name`; optional `tags` default to empty and drive filtering plus
 --- `levels` selectors.
 declare function defineMapCatalog(entries: {ModMapEntry}): {ModMapEntry}
+--- Pure identity builder for a trigger-pool declaration returned from a level
+--- or mod manifest. Engine parsing owns arming validation.
+declare function defineTriggerPool(pool: TriggerPoolDescriptor): TriggerPoolDescriptor
 
 --- Build a state-crossing watcher. The threshold form watches a numeric slot;
 --- the predicate form fires on a Bool `RuntimeValue` false-to-true edge. A

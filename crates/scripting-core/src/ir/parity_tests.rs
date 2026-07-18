@@ -342,6 +342,69 @@ fn spawner_fire_descriptors_match_across_authoring_runtimes() {
 }
 
 #[test]
+fn trigger_pool_manifest_data_is_byte_identical_across_authoring_runtimes() {
+    // This exercises both public root-module spellings: the level-local count
+    // form and the mod-global percentage form with a map-tag selector.
+    const TYPESCRIPT_FIXTURE: &str = r#"
+        import { defineMod, defineTriggerPool } from "postretro";
+
+        const level = {
+          triggerPools: [defineTriggerPool({ tag: "closet_trap", arm: 2 })],
+        };
+        const mod = defineMod({
+          name: "Trap Pools",
+          triggerPools: [defineTriggerPool({
+            tag: "ambush_trap",
+            armPercentage: 50,
+            levels: ["trap-pools"],
+          })],
+        });
+        JSON.stringify({ level, mod });
+    "#;
+    const LUAU_FIXTURE: &str = r#"
+        local Postretro = require("postretro")
+
+        local level = {
+          triggerPools = { Postretro.defineTriggerPool({ tag = "closet_trap", arm = 2 }) },
+        }
+        local mod = Postretro.defineMod({
+          name = "Trap Pools",
+          triggerPools = { Postretro.defineTriggerPool({
+            tag = "ambush_trap",
+            armPercentage = 50,
+            levels = { "trap-pools" },
+          }) },
+        })
+        return { level = level, mod = mod }
+    "#;
+
+    let typescript = quickjs_fixture_value(TYPESCRIPT_FIXTURE);
+    let luau = luau_fixture_value(LUAU_FIXTURE);
+    assert_eq!(
+        serde_json::to_vec(&typescript).expect("serialize TypeScript manifest data"),
+        serde_json::to_vec(&luau).expect("serialize Luau manifest data"),
+        "TS and Luau trigger-pool manifest data diverged"
+    );
+    assert_eq!(
+        typescript,
+        serde_json::json!({
+            "level": {
+                "triggerPools": [{ "tag": "closet_trap", "arm": 2 }],
+            },
+            "mod": {
+                "name": "Trap Pools",
+                "triggerPools": [{
+                    "tag": "ambush_trap",
+                    "armPercentage": 50,
+                    "levels": ["trap-pools"],
+                }],
+            },
+        }),
+        "trigger-pool builders must preserve the authored manifest data"
+    );
+}
+
+#[test]
 fn dispatch_tracers_accumulators_and_state_refs_match_across_runtimes() {
     const TYPESCRIPT_FIXTURE: &str = r#"
         import { defineReaction, defineStore, runtime } from "postretro";

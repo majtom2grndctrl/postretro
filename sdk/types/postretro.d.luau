@@ -557,6 +557,8 @@ export type ModManifest = {
   crossings: {CrossingDescriptor}?,
   --- Trigger-volume enter/exit observers. Optional; compose by level tags.
   triggerEvents: {TriggerEventDescriptor}?,
+  --- Trigger-volume arming pools. Optional; compose by level tags.
+  triggerPools: {TriggerPoolDescriptor}?,
   --- Engine-global state-store declarations returned by `defineStore(...).declaration`. Optional; commit atomically after the manifest validates and preserve existing values when the schema is identical.
   stores: {StoreDeclaration}?,
 }
@@ -1080,6 +1082,7 @@ export type LevelManifest = {
   reactions: {NamedReactionDescriptor},
   crossings: {CrossingDescriptor}?,
   triggerEvents: {TriggerEventDescriptor}?,
+  triggerPools: {TriggerPoolDescriptor}?,
   --- Per-level UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; same shape
   --- as `ModManifest.uiTrees` but level-scoped (cleared on unload). Malformed
   --- entries are logged and skipped.
@@ -1103,6 +1106,7 @@ declare defineReaction: (
 )
 
 export type TriggerEventDescriptor = { tag: string, event: "enter" | "exit", fire: {string}, levels: {string}? }
+export type TriggerPoolDescriptor = { tag: string, arm: number?, armPercentage: number?, levels: {string}? }
 export type TriggerEventOptions = { levels: {string}? }
 declare function onTriggerEvent(filter: { tag: string }, event: "enter" | "exit", fire: {Reaction<any> | string}, options: TriggerEventOptions?): TriggerEventDescriptor
 declare function damage(target: ActivatorsTarget | string, amount: number): PrimitiveReactionDescriptor
@@ -1135,12 +1139,16 @@ declare function scopeReactions<S>(tags: {string}, list: {Reaction<S>}): {Reacti
 declare function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor
 --- Pure identity builder for the mod manifest consumed from the chunk return.
 --- `config.name` is required; optional arrays include `entities`, `maps`,
---- `uiTrees`, `reactions`, `crossings`, `triggerEvents`, and `stores`.
+--- `uiTrees`, `reactions`, `crossings`, `triggerEvents`, `triggerPools`, and
+--- `stores`.
 declare function defineMod(config: ModManifest): ModManifest
 --- Pure identity builder for a mod map catalog. Entries require `id`, `path`,
 --- and `name`; optional `tags` default to empty and drive filtering plus
 --- `levels` selectors.
 declare function defineMapCatalog(entries: {ModMapEntry}): {ModMapEntry}
+--- Pure identity builder for a trigger-pool declaration returned from a level
+--- or mod manifest. Engine parsing owns arming validation.
+declare function defineTriggerPool(pool: TriggerPoolDescriptor): TriggerPoolDescriptor
 
 -- ---------------------------------------------------------------------------
 -- State-store declarations. `defineStore` is special-cased in the typedef
@@ -1636,6 +1644,8 @@ export type PostretroModule = {
   defineMod: typeof(defineMod),
   --- Pure identity builder for map catalog entries with required `id`, `path`, and `name`.
   defineMapCatalog: typeof(defineMapCatalog),
+  --- Pure identity builder for trigger-pool declarations returned from level or mod manifests.
+  defineTriggerPool: typeof(defineTriggerPool),
   --- Pure state-store builder returning `{ declaration, state }`.
   defineStore: typeof(defineStore),
   emitter: typeof(emitter),

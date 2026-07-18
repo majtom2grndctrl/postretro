@@ -11,7 +11,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use anyhow::{Context, Result, anyhow, bail};

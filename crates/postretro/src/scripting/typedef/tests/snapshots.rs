@@ -15,18 +15,25 @@ fn luau_snapshot_matches_mini_registry_with_docs() {
 }
 
 #[test]
-fn typescript_snapshot_matches_mini_registry() {
-    let got = generate_typescript(&mini_registry());
-    let expected_prefix = EXPECTED_TS
-        .strip_suffix("}\n")
-        .expect("expected TS snapshot to end with `}\\n`");
-    assert_starts_with_snapshot(&got, expected_prefix, "TS");
+fn typescript_snapshot_matches_full_registry() {
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
+
+    let mut registry = PrimitiveRegistry::new();
+    register_all(&mut registry, ScriptCtx::new());
+    let got = generate_typescript(&registry);
+    assert_eq!(got, EXPECTED_TS, "TS snapshot drift:\n{got}");
 }
 
 #[test]
-fn luau_snapshot_matches_mini_registry() {
-    let got = generate_luau(&mini_registry());
-    assert_starts_with_snapshot(&got, EXPECTED_LUAU, "Luau");
+fn luau_snapshot_matches_full_registry() {
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
+
+    let mut registry = PrimitiveRegistry::new();
+    register_all(&mut registry, ScriptCtx::new());
+    let got = generate_luau(&registry);
+    assert_eq!(got, EXPECTED_LUAU, "Luau snapshot drift:\n{got}");
 }
 
 #[test]

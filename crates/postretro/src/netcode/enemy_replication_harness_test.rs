@@ -89,8 +89,8 @@ use postretro_entities::provenance::{
 };
 use postretro_entities::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, EntityTypeDescriptor, MeshDescriptor,
-    MoverCommand, Transform, TriggerActivation, TriggerFireMode, TriggerPoolArm,
-    TriggerPoolDescriptor, TriggerVolumeComponent,
+    MoverCommand, NamedReaction, PrimitiveDescriptor, ReactionDescriptor, ScriptCtx, Transform,
+    TriggerActivation, TriggerFireMode, TriggerVolumeComponent,
 };
 use postretro_foundation::{
     AirParams, CapsuleParams, FallParams, GroundParams, PlayerMovementComponent,
@@ -98,9 +98,11 @@ use postretro_foundation::{
 };
 
 use crate::scripting_systems::trigger_volume_bridge::TriggerVolumeBridge;
-use crate::spawner::{SpawnContext, spawn_from_spawner_tag};
-use crate::trigger_pools::{TriggerPoolSeedPolicy, install_trigger_pools};
-use crate::trigger_system::{AuthoritativePlayer, PlayerId, TriggerSystem};
+use crate::spawner::SpawnContext;
+use crate::trigger_bindings::TriggerBindingTable;
+use crate::trigger_system::{
+    AuthoritativePlayer, PlayerId, TriggerDispatchInputs, TriggerSystem, TriggerTickInputs,
+};
 
 // --- Fixture constants ------------------------------------------------------
 
@@ -730,8 +732,8 @@ fn runtime_spawned_enemy_registers_and_materializes_on_connected_client() {
 }
 
 // E18 Task 5: the host alone performs the pinned pool install. Its selected
-// trigger fires through the normal authoritative trigger evaluator; the test
-// then invokes the existing spawnFromSpawner helper to isolate the established
+// trigger fires through the normal authoritative trigger evaluator and bound
+// reaction executor before the spawned enemy follows the established
 // host→client consequence path. No pool state or new wire field is introduced.
 #[test]
 fn host_armed_trap_pool_spawn_reaches_client_while_client_keeps_authored_trigger_state() {
@@ -779,41 +781,58 @@ fn host_armed_trap_pool_spawn_reaches_client_while_client_keeps_authored_trigger
             .collect(),
         Some(agent_params()),
     );
+    let script_ctx = ScriptCtx::new();
+    script_ctx
+        .data_registry
+        .borrow_mut()
+        .populate_level_with_trigger_events(
+            vec![NamedReaction {
+                name: "trapPools.spawn".to_string(),
+                descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                    primitive: "spawnFromSpawner".to_string(),
+                    target: None,
+                    tag: Some("trap-spawner".to_string()),
+                    args: serde_json::json!({}),
+                    on_complete: None,
+                }),
+            }],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            &[],
+        );
+    let bindings = {
+        let data_registry = script_ctx.data_registry.borrow();
+        TriggerBindingTable::build_with_script_ctx_and_diagnostics(
+            &h.host_registry,
+            &data_registry,
+            &script_ctx,
+            Default::default(),
+            spawn_context,
+        )
+    };
 
-    let report = install_trigger_pools(
+    let report = crate::trigger_pools::install_trigger_pools(
         &mut h.host_registry,
-        &[TriggerPoolDescriptor {
+        &[postretro_entities::TriggerPoolDescriptor {
             tag: "trap-pool".to_string(),
-            arm: TriggerPoolArm::Count(1),
+            arm: postretro_entities::TriggerPoolArm::Count(1),
             levels: Vec::new(),
         }],
-        TriggerPoolSeedPolicy::Seeded(17),
+        crate::trigger_pools::TriggerPoolSeedPolicy::Seeded(17),
+        &Default::default(),
         &Default::default(),
     );
     assert_eq!(report.seed, Some(17));
     assert_eq!(report.pools[0].selected, [trap]);
 
-    // Mirror client map materialization, deliberately without the host-only
-    // install pass: its component remains exactly as authored (disabled).
-    let client_trap = h.client_registry.spawn(Transform::default());
-    h.client_registry
-        .set_tags(client_trap, vec!["trap-pool".to_string()])
-        .expect("client trap accepts its pool tag");
-    h.client_registry
-        .set_component(
-            client_trap,
-            TriggerVolumeComponent::new(
-                TriggerActivation::Touch,
-                String::new(),
-                "trapPools.spawn".to_string(),
-                String::new(),
-                MoverCommand::Start,
-                TriggerFireMode::Once,
-                0.0,
-                false,
-            ),
-        )
-        .expect("client trap receives authored trigger state");
+    // Install the client map through the real lifecycle seam. The seeded policy
+    // would arm this sole member if the connected-client suppression gate failed.
+    let client_install =
+        crate::startup::lifecycle::install_connected_client_trigger_pool_fixture_for_test();
+    assert_eq!(client_install.report, Default::default());
+    let client_trap = client_install.trap;
+    h.client_registry = client_install.registry;
     assert!(
         !h.client_registry
             .get_component::<TriggerVolumeComponent>(client_trap)
@@ -867,17 +886,40 @@ fn host_armed_trap_pool_spawn_reaches_client_while_client_keeps_authored_trigger
         )
         .expect("host player receives movement state");
     let player_id = PlayerId::Local(player);
+    let players = [AuthoritativePlayer {
+        id: player_id,
+        pawn: player,
+    }];
+    let alive_players = HashSet::from([player_id]);
+    let bound_edges = bindings.bound_edges().clone();
     let mut bridge = TriggerVolumeBridge::new();
     bridge.insert_for_test(trap, Vec3::new(-1.0, 0.0, -1.0), Vec3::new(1.0, 2.0, 1.0));
-    let fires = TriggerSystem::default().run_authoritative_tick(
+    let mut trigger_system = TriggerSystem::default();
+    let fires = trigger_system.run_authoritative_tick_with_dispatch(
         &mut h.host_registry,
         &bridge,
-        &[AuthoritativePlayer {
-            id: player_id,
-            pawn: player,
-        }],
-        &HashMap::new(),
-        1.0 / 60.0,
+        TriggerTickInputs {
+            players: &players,
+            use_pressed: &HashMap::new(),
+            tick_dt: 1.0 / 60.0,
+        },
+        TriggerDispatchInputs {
+            alive_players: &alive_players,
+            bound_edges: &bound_edges,
+        },
+        |event, occupancy, registry| {
+            bindings.execute_with_script_ctx(
+                event.fire.trigger,
+                event.edge,
+                registry,
+                &script_ctx,
+                &crate::trigger_commands::TriggerFireContext {
+                    fired_trigger: Some(event.fire.trigger),
+                    activator: Some(player),
+                    occupancy,
+                },
+            );
+        },
     );
     assert!(
         fires
@@ -887,10 +929,6 @@ fn host_armed_trap_pool_spawn_reaches_client_while_client_keeps_authored_trigger
         "the host-selected trap must enter the ordinary trigger fire stream",
     );
 
-    // This harness does not construct a full ScriptingCore/TriggerBindingTable;
-    // use the same existing spawner executor after the production trigger system
-    // has emitted the fire, then verify only the network consequence.
-    spawn_from_spawner_tag(&mut h.host_registry, "trap-spawner", &spawn_context);
     let spawned = h
         .host_registry
         .iter_with_kind(ComponentKind::Brain)

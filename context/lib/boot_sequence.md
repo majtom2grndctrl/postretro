@@ -162,8 +162,8 @@ Platform suspend is a separate path: it clears renderer/window/fog/collision and
 | Session-lifetime core (primitive registry, `ScriptCtx`, `ScriptRuntime`, Rust-side registries, input/UI/modal group, options, frontend, net endpoint, audio) | Process exit only. Owned by `Session`, built once post-first-pixel by `Session::build` (not pre-window), then held for the whole run via `App.session`; never recreated. Survives platform suspend. |
 | `data_registry.entities` (entity-type descriptors from `ModManifest.entities`) | Engine-global. Survives level unload; survives platform suspend. |
 | `data_registry.maps` (mod map catalog from `ModManifest.maps`) | Engine-global. Survives level unload; survives platform suspend. |
-| `data_registry.global_reactions` / `global_crossings` / `global_trigger_pools` (definitions from `ModManifest.reactions` / `crossings` / `triggerPools`) | Engine-global. Survive level unload; survive platform suspend. |
-| Active per-level reactions/crossings/trigger pools (`data_registry.reactions` / `crossings` / `trigger_pools`), accumulator bindings, and level-scope UI trees | Level unload. Active sets recompose on the next level load from current globals plus that level's catalog tags. |
+| `data_registry.global_reactions` / `global_crossings` / `global_trigger_events` / `global_trigger_pools` (definitions from `ModManifest.reactions` / `crossings` / `triggerEvents` / `triggerPools`) | Engine-global. Survive level unload; survive platform suspend. |
+| Active per-level reactions/crossings/trigger events/trigger pools (`data_registry.reactions` / `crossings` / `trigger_events` / `trigger_pools`), accumulator bindings, and level-scope UI trees | Level unload. Active sets recompose on the next level load from current globals plus that level's catalog tags. |
 | Level world, collision world, fog bridge, light bridge, level sounds, sprite collections, per-level GPU resources | Level unload; also cleared/dropped by suspend or exit as applicable. |
 | Renderer device/queue, window | Dropped on exit; cleared on suspend and rebuilt on resume. (Audio is session-owned — see the session-lifetime row; it survives suspend.) |
 

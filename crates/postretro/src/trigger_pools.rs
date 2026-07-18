@@ -1,14 +1,15 @@
 //! Host-side seeded trigger-pool arming during level install.
 //! See: context/plans/in-progress/E18--trap-pools-seeded-arming/index.md (Task 2)
 
-use std::{cmp::Ordering, collections::HashSet};
+use std::collections::HashSet;
 
 use postretro_entities::{
-    ComponentKind, EntityId, EntityRegistry, Transform, TriggerPoolArm, TriggerPoolDescriptor,
+    ComponentKind, EntityId, EntityRegistry, TriggerPoolArm, TriggerPoolDescriptor,
     TriggerVolumeComponent,
 };
 
 use crate::kinematic_mover::MoverCommandDiagnostics;
+use crate::scripting_systems::trigger_volume_bridge::TriggerVolumeBridge;
 use crate::trigger_system::{arm_trigger_targets, disarm_trigger_targets};
 
 /// Resolved per-install policy for trigger-pool arming. This intentionally does
@@ -81,6 +82,7 @@ pub(crate) fn install_trigger_pools(
     pools: &[TriggerPoolDescriptor],
     policy: TriggerPoolSeedPolicy,
     command_diagnostics: &MoverCommandDiagnostics,
+    trigger_volume_bridge: &TriggerVolumeBridge,
 ) -> TriggerPoolInstallReport {
     let (seed, mut rng) = match policy {
         TriggerPoolSeedPolicy::Seeded(seed) => {
@@ -106,10 +108,7 @@ pub(crate) fn install_trigger_pools(
             .query_by_component_and_tag(ComponentKind::TriggerVolume, Some(&pool.tag))
             .map(|(id, _)| id)
             .collect();
-        // Entity slots are recycled in LIFO order on unload, so raw IDs are not
-        // an authored identity. Sort by stable map-authored transform data and
-        // use the ID only as a tie-breaker for indistinguishable volumes.
-        members.sort_by(|a, b| stable_trigger_order(registry, *a, *b));
+        members.sort_by(|a, b| trigger_volume_bridge.stable_order(*a, *b));
 
         if members.is_empty() {
             log::warn!(
@@ -167,43 +166,6 @@ pub(crate) fn install_trigger_pools(
     report
 }
 
-fn stable_trigger_order(registry: &EntityRegistry, a: EntityId, b: EntityId) -> Ordering {
-    let transform_a = registry.get_component::<Transform>(a).ok();
-    let transform_b = registry.get_component::<Transform>(b).ok();
-    let component_a = registry.get_component::<TriggerVolumeComponent>(a).ok();
-    let component_b = registry.get_component::<TriggerVolumeComponent>(b).ok();
-
-    transform_a
-        .zip(transform_b)
-        .map(|(a, b)| {
-            a.position
-                .x
-                .total_cmp(&b.position.x)
-                .then_with(|| a.position.y.total_cmp(&b.position.y))
-                .then_with(|| a.position.z.total_cmp(&b.position.z))
-                .then_with(|| a.rotation.x.total_cmp(&b.rotation.x))
-                .then_with(|| a.rotation.y.total_cmp(&b.rotation.y))
-                .then_with(|| a.rotation.z.total_cmp(&b.rotation.z))
-                .then_with(|| a.rotation.w.total_cmp(&b.rotation.w))
-                .then_with(|| a.scale.x.total_cmp(&b.scale.x))
-                .then_with(|| a.scale.y.total_cmp(&b.scale.y))
-                .then_with(|| a.scale.z.total_cmp(&b.scale.z))
-        })
-        .unwrap_or(Ordering::Equal)
-        .then_with(|| {
-            component_a
-                .zip(component_b)
-                .map(|(a, b)| {
-                    a.target_tag
-                        .cmp(&b.target_tag)
-                        .then_with(|| a.on_fire.cmp(&b.on_fire))
-                        .then_with(|| a.on_exit.cmp(&b.on_exit))
-                })
-                .unwrap_or(Ordering::Equal)
-        })
-        .then_with(|| a.cmp(&b))
-}
-
 fn resolve_target_count(pool: &TriggerPoolDescriptor, member_count: usize) -> usize {
     match pool.arm {
         TriggerPoolArm::Count(requested) => {
@@ -250,8 +212,8 @@ mod tests {
         AirParams, CapsuleParams, FallParams, GroundParams, PlayerMovementComponent,
         PlayerMovementDescriptor, SpeedParams,
     };
+    use postretro_level_format::trigger_volumes::TriggerVolumeRecord;
 
-    use crate::scripting_systems::trigger_volume_bridge::TriggerVolumeBridge;
     use crate::trigger_system::{AuthoritativePlayer, PlayerId, TriggerEventEdge, TriggerSystem};
 
     fn pool(tag: &str, arm: TriggerPoolArm) -> TriggerPoolDescriptor {
@@ -291,6 +253,42 @@ mod tests {
             )
             .expect("fresh trigger id accepts component");
         id
+    }
+
+    fn authored_trigger_record(name: &str) -> TriggerVolumeRecord {
+        TriggerVolumeRecord {
+            name: name.to_string(),
+            tags: vec!["closet".to_string()],
+            aabb_min: [0.0, 0.0, 0.0],
+            aabb_max: [1.0, 1.0, 1.0],
+            activation: 0,
+            target_tag: String::new(),
+            command: 0,
+            command_arg: String::new(),
+            fire_mode: 0,
+            rearm_ms: 0.0,
+            enabled_on_spawn: false,
+            on_fire: String::new(),
+            on_exit: String::new(),
+        }
+    }
+
+    fn selected_authored_names(
+        report: &TriggerPoolInstallReport,
+        bridge: &TriggerVolumeBridge,
+    ) -> Vec<String> {
+        let mut names: Vec<String> = report.pools[0]
+            .selected
+            .iter()
+            .map(|id| {
+                bridge
+                    .name(*id)
+                    .expect("selected authored trigger keeps its name")
+                    .to_string()
+            })
+            .collect();
+        names.sort();
+        names
     }
 
     fn armed_members(registry: &EntityRegistry, ids: &[EntityId]) -> Vec<EntityId> {
@@ -369,6 +367,7 @@ mod tests {
                 &[pool("closet", TriggerPoolArm::Count(2))],
                 TriggerPoolSeedPolicy::Seeded(17),
                 &Default::default(),
+                &Default::default(),
             );
             (report, armed_members(&registry, &ids))
         };
@@ -384,6 +383,102 @@ mod tests {
         assert_eq!(first_report.pools[0].selected, first_armed);
     }
 
+    // Regression: runtime trigger field changes reordered seeded pool members.
+    #[test]
+    fn runtime_only_pool_order_uses_entity_id_despite_field_changes() {
+        let mut registry = EntityRegistry::new();
+        let bridge = TriggerVolumeBridge::new();
+        let ids = [
+            spawn_trigger(&mut registry, &["runtime"], false),
+            spawn_trigger(&mut registry, &["runtime"], false),
+            spawn_trigger(&mut registry, &["runtime"], false),
+        ];
+
+        for (&id, x) in ids.iter().zip([3.0, 2.0, 1.0]) {
+            let mut transform = *registry
+                .get_component::<Transform>(id)
+                .expect("runtime trigger transform remains attached");
+            transform.position.x = x;
+            registry
+                .set_component(id, transform)
+                .expect("runtime trigger accepts transform update");
+        }
+        let first = install_trigger_pools(
+            &mut registry,
+            &[pool("runtime", TriggerPoolArm::Count(1))],
+            TriggerPoolSeedPolicy::Seeded(17),
+            &Default::default(),
+            &bridge,
+        );
+
+        for (&id, x) in ids.iter().zip([1.0, 3.0, 2.0]) {
+            let mut transform = *registry
+                .get_component::<Transform>(id)
+                .expect("runtime trigger transform remains attached");
+            transform.position.x = x;
+            registry
+                .set_component(id, transform)
+                .expect("runtime trigger accepts transform update");
+            let mut trigger = registry
+                .get_component::<TriggerVolumeComponent>(id)
+                .expect("runtime trigger component remains attached")
+                .clone();
+            trigger.on_fire = format!("changed-{x}");
+            registry
+                .set_component(id, trigger)
+                .expect("runtime trigger accepts reaction-field update");
+        }
+        let second = install_trigger_pools(
+            &mut registry,
+            &[pool("runtime", TriggerPoolArm::Count(1))],
+            TriggerPoolSeedPolicy::Seeded(17),
+            &Default::default(),
+            &bridge,
+        );
+
+        assert_eq!(first.pools[0].members, ids);
+        assert_eq!(second.pools[0].members, ids);
+        assert_eq!(first.pools[0].selected, second.pools[0].selected);
+    }
+
+    // Regression: unload recycled slots in reverse order, so tied authored
+    // triggers could select a different map member with the same seed.
+    #[test]
+    fn same_registry_unload_reinstall_selects_same_authored_trigger_identity() {
+        let records = ["alpha", "bravo", "charlie", "delta"].map(authored_trigger_record);
+        let mut registry = EntityRegistry::new();
+        let mut bridge = TriggerVolumeBridge::new();
+
+        bridge.populate_from_level(&mut registry, &records);
+        let first_report = install_trigger_pools(
+            &mut registry,
+            &[pool("closet", TriggerPoolArm::Count(1))],
+            TriggerPoolSeedPolicy::Seeded(0),
+            &Default::default(),
+            &bridge,
+        );
+        let first_ids = first_report.pools[0].selected.clone();
+        let first_names = selected_authored_names(&first_report, &bridge);
+
+        registry.clear_for_level_unload();
+        bridge.populate_from_level(&mut registry, &records);
+        let second_report = install_trigger_pools(
+            &mut registry,
+            &[pool("closet", TriggerPoolArm::Count(1))],
+            TriggerPoolSeedPolicy::Seeded(0),
+            &Default::default(),
+            &bridge,
+        );
+        let second_names = selected_authored_names(&second_report, &bridge);
+
+        assert_ne!(
+            first_ids, second_report.pools[0].selected,
+            "the regression must exercise generation-bearing recycled IDs",
+        );
+        assert_eq!(first_names, second_names);
+        assert_eq!(first_names, ["delta"]);
+    }
+
     #[test]
     fn arm_all_bypass_ignores_declared_count_and_reports_no_seed() {
         let mut registry = EntityRegistry::new();
@@ -396,6 +491,7 @@ mod tests {
             &mut registry,
             &[pool("closet", TriggerPoolArm::Count(0))],
             TriggerPoolSeedPolicy::ArmAll,
+            &Default::default(),
             &Default::default(),
         );
 
@@ -416,6 +512,7 @@ mod tests {
                     pool("second", TriggerPoolArm::Count(1)),
                 ],
                 TriggerPoolSeedPolicy::Seeded(9),
+                &Default::default(),
                 &Default::default(),
             );
         });
@@ -451,6 +548,7 @@ mod tests {
             &mut registry,
             &[pool("ambush", TriggerPoolArm::Percentage(50.0))],
             TriggerPoolSeedPolicy::Seeded(3),
+            &Default::default(),
             &Default::default(),
         );
 
@@ -489,6 +587,7 @@ mod tests {
                     pool("exact", TriggerPoolArm::Count(2)),
                 ],
                 TriggerPoolSeedPolicy::Seeded(17),
+                &Default::default(),
                 &Default::default(),
             ));
         });
@@ -562,6 +661,7 @@ mod tests {
             &[pool("quiet", TriggerPoolArm::Count(0))],
             TriggerPoolSeedPolicy::Seeded(17),
             &Default::default(),
+            &bridge,
         );
         assert!(report.pools[0].selected.is_empty());
 

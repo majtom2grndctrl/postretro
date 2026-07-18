@@ -119,14 +119,13 @@ pub fn drain_trigger_pools_lua(
     table: &Table,
     scope: &str,
 ) -> Result<Vec<TriggerPoolDescriptor>, DescriptorError> {
-    let Some(arr) = optional_manifest_array_lua(table, "triggerPools", scope)? else {
+    let Some(arr) = optional_trigger_pool_array_lua(table, scope)? else {
         return Ok(Vec::new());
     };
-    let len = trigger_pool_array_len(&arr, scope)?;
-    let mut out = Vec::with_capacity(len);
+    let entries = trigger_pool_entries_lua(&arr, scope)?;
+    let mut out = Vec::with_capacity(entries.len());
     let mut seen_tags = BTreeSet::new();
-    for i in 1..=(len as i64) {
-        let value: LuaValue = arr.get(i).map_err(lua_err)?;
+    for (i, value) in entries {
         match trigger_pool_from_lua(value) {
             Ok(descriptor) if seen_tags.insert(descriptor.tag.clone()) => out.push(descriptor),
             Ok(descriptor) => log::warn!(
@@ -141,25 +140,72 @@ pub fn drain_trigger_pools_lua(
     Ok(out)
 }
 
-/// Return the highest positive integer key in a Luau trigger-pool array.
-/// Unlike the older dense-array drains, pool entries deliberately treat holes
-/// as malformed entries so valid siblings can still be retained like QuickJS.
-fn trigger_pool_array_len(arr: &Table, scope: &str) -> Result<usize, DescriptorError> {
-    let mut max_index = 0usize;
+fn optional_trigger_pool_array_lua(
+    table: &Table,
+    scope: &str,
+) -> Result<Option<Table>, DescriptorError> {
+    let raw: LuaValue = match table.get("triggerPools") {
+        Ok(raw) => raw,
+        Err(error) => {
+            let error = lua_err(error);
+            log::warn!(
+                "[Scripting] {scope}: could not access `triggerPools`; ignoring the field: {error}"
+            );
+            return Ok(None);
+        }
+    };
+    match raw {
+        LuaValue::Nil => Ok(None),
+        LuaValue::Table(table) => Ok(Some(table)),
+        other => {
+            log::warn!(
+                "[Scripting] {scope}: `triggerPools` must be an array, got {}; ignoring the field",
+                other.type_name()
+            );
+            Ok(None)
+        }
+    }
+}
+
+/// Retain sparse positive integer slots within the authoring limit. Any slot
+/// above that limit makes the whole container malformed in both runtimes.
+fn trigger_pool_entries_lua(
+    arr: &Table,
+    scope: &str,
+) -> Result<Vec<(u64, LuaValue)>, DescriptorError> {
+    let mut entries = Vec::new();
+    let mut saw_property = false;
     for pair in arr.clone().pairs::<LuaValue, LuaValue>() {
-        let (key, _) = pair.map_err(lua_err)?;
+        saw_property = true;
+        let (key, value) = pair.map_err(lua_err)?;
         match key {
             LuaValue::Integer(index) if index >= 1 => {
-                let Ok(index) = usize::try_from(index) else {
+                if (index as u64) > MAX_TRIGGER_POOL_CONTAINER_ENTRIES as u64 {
                     log::warn!(
-                        "[Scripting] {scope}: `triggerPools` index {index} is out of range and was skipped"
+                        "[Scripting] {scope}: `triggerPools` exceeds the {}-slot limit; ignoring the field",
+                        MAX_TRIGGER_POOL_CONTAINER_ENTRIES,
                     );
-                    continue;
-                };
-                max_index = max_index.max(index);
+                    return Ok(Vec::new());
+                }
+                entries.push((index as u64, value));
+            }
+            LuaValue::Number(index)
+                if index.is_finite() && index >= 1.0 && index.fract() == 0.0 =>
+            {
+                if index > MAX_TRIGGER_POOL_CONTAINER_ENTRIES as f64 {
+                    log::warn!(
+                        "[Scripting] {scope}: `triggerPools` exceeds the {}-slot limit; ignoring the field",
+                        MAX_TRIGGER_POOL_CONTAINER_ENTRIES,
+                    );
+                    return Ok(Vec::new());
+                }
+                entries.push((index as u64, value));
             }
             LuaValue::Integer(index) => log::warn!(
                 "[Scripting] {scope}: `triggerPools` index {index} is out of range and was skipped"
+            ),
+            LuaValue::Number(index) => log::warn!(
+                "[Scripting] {scope}: `triggerPools` index {index} is not a positive integer and was skipped"
             ),
             other => log::warn!(
                 "[Scripting] {scope}: `triggerPools` entry with {} key was skipped",
@@ -167,7 +213,11 @@ fn trigger_pool_array_len(arr: &Table, scope: &str) -> Result<usize, DescriptorE
             ),
         }
     }
-    Ok(max_index)
+    if saw_property && entries.is_empty() {
+        log::warn!("[Scripting] {scope}: `triggerPools` must be an array; ignoring the field");
+    }
+    entries.sort_by_key(|(index, _)| *index);
+    Ok(entries)
 }
 
 fn trigger_pool_from_lua(value: LuaValue) -> Result<TriggerPoolDescriptor, DescriptorError> {

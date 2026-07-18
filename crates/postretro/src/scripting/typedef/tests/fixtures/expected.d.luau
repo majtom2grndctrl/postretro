@@ -501,7 +501,7 @@ export type ModMapEntry = {
   path: string,
   --- Display name shown to players in catalog-driven UI. Required.
   name: string,
-  --- Authoritative classification tags for filtering plus `levels` selection on mod-global reactions, crossings, and trigger events. Optional; missing/null normalizes to empty.
+  --- Authoritative classification tags for filtering plus `levels` selection on mod-global reactions, crossings, trigger events, and trigger pools. Optional; missing/null normalizes to empty.
   tags: {string}?,
 }
 

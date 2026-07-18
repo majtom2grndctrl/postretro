@@ -522,6 +522,208 @@ fn sparse_trigger_pool_arrays_keep_valid_siblings_in_both_vms() {
 }
 
 #[test]
+fn oversized_sparse_trigger_pool_arrays_degrade_to_empty_in_both_vms() {
+    // Regression: sparse arrays outside the 4,096-slot authoring contract must
+    // fail as one field rather than driving a giant hole walk or allocation.
+    let js = eval_js(
+        r#"(() => {
+            const triggerPools = [];
+            triggerPools[0] = { tag: "first", arm: 1 };
+            triggerPools[4294967294] = { tag: "last", arm: 1 };
+            return { triggerPools };
+        })()"#,
+        |ctx, value| LevelManifest::from_js_value(ctx, value).unwrap(),
+    );
+    let lua = eval_lua(
+        r#"return { triggerPools = {
+            [1] = { tag = "first", arm = 1 },
+            [4294967295] = { tag = "last", arm = 1 }
+        } }"#,
+        |value| LevelManifest::from_lua_value(value).unwrap(),
+    );
+
+    assert_eq!(js.trigger_pools, lua.trigger_pools);
+    assert!(js.trigger_pools.is_empty());
+}
+
+#[test]
+fn huge_nested_trigger_pool_levels_skip_bad_pool_and_keep_valid_sibling() {
+    // Regression: a huge sparse JS `levels` array panicked before the sibling pool was parsed.
+    let js = eval_js(
+        r#"(() => {
+            const levels = [];
+            levels[4294967294] = "campaign";
+            return { triggerPools: [
+                { tag: "bad", arm: 1, levels },
+                { tag: "good", arm: 2, levels: ["campaign"] }
+            ] };
+        })()"#,
+        |ctx, value| LevelManifest::from_js_value(ctx, value).unwrap(),
+    );
+    let lua = eval_lua(
+        r#"return { triggerPools = {
+            { tag = "bad", arm = 1, levels = { [4294967295] = "campaign" } },
+            { tag = "good", arm = 2, levels = { "campaign" } }
+        } }"#,
+        |value| LevelManifest::from_lua_value(value).unwrap(),
+    );
+
+    assert_eq!(js.trigger_pools, lua.trigger_pools);
+    assert_eq!(js.trigger_pools.len(), 1);
+    assert_eq!(js.trigger_pools[0].tag, "good");
+}
+
+#[test]
+fn malformed_trigger_pool_containers_degrade_to_empty_in_both_vms() {
+    let js = eval_js(
+        r#"({ triggerPools: { first: { tag: "first", arm: 1 } } })"#,
+        |ctx, value| LevelManifest::from_js_value(ctx, value).unwrap(),
+    );
+    let lua = eval_lua(
+        r#"return { triggerPools = { first = { tag = "first", arm = 1 } } }"#,
+        |value| LevelManifest::from_lua_value(value).unwrap(),
+    );
+
+    assert_eq!(js.trigger_pools, lua.trigger_pools);
+    assert!(js.trigger_pools.is_empty());
+}
+
+// Regression: a throwing `triggerPools` accessor aborted Luau manifest parsing.
+#[test]
+fn throwing_trigger_pool_container_getters_degrade_field_and_keep_manifest_siblings() {
+    let js = eval_js(
+        r#"(() => {
+            const manifest = {
+                reactions: [{ name: "good", primitive: "playSound" }],
+                crossings: [{ slot: "test.value", above: 1, fire: ["good"] }],
+                triggerEvents: [{ tag: "plate", event: "enter", fire: ["good"] }]
+            };
+            Object.defineProperty(manifest, "triggerPools", {
+                enumerable: true,
+                get() { throw new Error("triggerPools accessor failed"); }
+            });
+            return manifest;
+        })()"#,
+        |ctx, value| LevelManifest::from_js_value(ctx, value).unwrap(),
+    );
+    let lua = eval_lua(
+        r#"local manifest = {
+            reactions = { { name = "good", primitive = "playSound" } },
+            crossings = { { slot = "test.value", above = 1, fire = { "good" } } },
+            triggerEvents = { { tag = "plate", event = "enter", fire = { "good" } } }
+        }
+        return setmetatable(manifest, {
+            __index = function(_, key)
+                if key == "triggerPools" then
+                    error("triggerPools accessor failed")
+                end
+                return nil
+            end
+        })"#,
+        |value| LevelManifest::from_lua_value(value).unwrap(),
+    );
+
+    assert_eq!(js, lua);
+    assert!(js.trigger_pools.is_empty());
+    assert_eq!(js.reactions.len(), 1);
+    assert_eq!(js.crossings.len(), 1);
+    assert_eq!(js.trigger_events.len(), 1);
+}
+
+// Regression: a throwing indexed accessor discarded valid sparse JS siblings.
+#[test]
+fn js_throwing_trigger_pool_index_accessor_skips_entry_and_keeps_sparse_siblings() {
+    let manifest = eval_js(
+        r#"(() => {
+            const triggerPools = [];
+            triggerPools[0] = { tag: "first", arm: 1 };
+            Object.defineProperty(triggerPools, "1", {
+                enumerable: true,
+                get() { throw new Error("trigger pool entry failed"); }
+            });
+            triggerPools[2] = { tag: "last", arm: 1 };
+            return {
+                reactions: [{ name: "good", primitive: "playSound" }],
+                crossings: [{ slot: "test.value", above: 1, fire: ["good"] }],
+                triggerEvents: [{ tag: "plate", event: "enter", fire: ["good"] }],
+                triggerPools
+            };
+        })()"#,
+        |ctx, value| LevelManifest::from_js_value(ctx, value).unwrap(),
+    );
+
+    assert_eq!(
+        manifest
+            .trigger_pools
+            .iter()
+            .map(|pool| pool.tag.as_str())
+            .collect::<Vec<_>>(),
+        ["first", "last"]
+    );
+    assert_eq!(manifest.reactions.len(), 1);
+    assert_eq!(manifest.crossings.len(), 1);
+    assert_eq!(manifest.trigger_events.len(), 1);
+}
+
+#[test]
+fn over_limit_trigger_pool_containers_degrade_to_empty_in_both_vms() {
+    let descriptor_count = MAX_TRIGGER_POOL_CONTAINER_ENTRIES + 1;
+    let js_source = format!(
+        r#"(() => {{
+            const triggerPools = [];
+            for (let i = 0; i < {descriptor_count}; i += 1) {{
+                triggerPools.push({{ tag: "pool-" + i, arm: 1 }});
+            }}
+            return {{ triggerPools }};
+        }})()"#,
+    );
+    let lua_source = format!(
+        r#"local triggerPools = {{}}
+        for i = 1, {descriptor_count} do
+            triggerPools[i] = {{ tag = "pool-" .. i, arm = 1 }}
+        end
+        return {{ triggerPools = triggerPools }}"#,
+    );
+
+    let js = eval_js(&js_source, |ctx, value| {
+        LevelManifest::from_js_value(ctx, value).unwrap()
+    });
+    let lua = eval_lua(&lua_source, |value| {
+        LevelManifest::from_lua_value(value).unwrap()
+    });
+
+    assert_eq!(js.trigger_pools, lua.trigger_pools);
+    assert!(js.trigger_pools.is_empty());
+}
+
+#[test]
+fn luau_trigger_pool_slot_limit_ignores_metadata_properties() {
+    // Regression: metadata was counted as a 4,097th array slot and discarded valid pools.
+    let lua_source = format!(
+        r#"local triggerPools = {{ metadata = "allowed" }}
+        for i = 1, {} do
+            triggerPools[i] = {{ tag = "pool-" .. i, arm = 1 }}
+        end
+        return {{ triggerPools = triggerPools }}"#,
+        MAX_TRIGGER_POOL_CONTAINER_ENTRIES,
+    );
+
+    let manifest = eval_lua(&lua_source, |value| {
+        LevelManifest::from_lua_value(value).unwrap()
+    });
+
+    assert_eq!(
+        manifest.trigger_pools.len(),
+        MAX_TRIGGER_POOL_CONTAINER_ENTRIES
+    );
+    assert_eq!(manifest.trigger_pools.first().unwrap().tag, "pool-1");
+    assert_eq!(
+        manifest.trigger_pools.last().unwrap().tag,
+        format!("pool-{}", MAX_TRIGGER_POOL_CONTAINER_ENTRIES)
+    );
+}
+
+#[test]
 fn nullish_unused_trigger_pool_arm_form_is_ignored_in_both_vms() {
     let js = eval_js(
         r#"({ triggerPools: [

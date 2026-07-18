@@ -30,6 +30,11 @@ pub use crate::ui::descriptor::{
 pub use crate::ui::layout::Anchor;
 pub use crate::ui::style_ranges::{Flash, Pulse, StyleEntry, StyleRanges};
 
+/// Trigger-pool arrays contain at most this many slots. Holes within the
+/// bounded range are valid; an oversized container degrades as one malformed
+/// field so descriptor parsing stays bounded in both VMs.
+const MAX_TRIGGER_POOL_CONTAINER_ENTRIES: usize = 4_096;
+
 // Sibling scripting modules referenced by the converters. Re-exported so the
 // nested converter files reach them via `use super::super::*`.
 pub use super::components::mesh::DEFAULT_CROSSFADE_MS;

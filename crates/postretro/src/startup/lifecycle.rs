@@ -1502,6 +1502,7 @@ pub(crate) fn install_world_cpu(
             &pools,
             trigger_pool_policy,
             &command_diagnostics,
+            trigger_volume_bridge,
         )
     };
     // An `entity_spawner` itself has no mesh. Its resolved archetype can still
@@ -1589,6 +1590,21 @@ pub(crate) fn install_world_cpu(
         first_spawn,
         spawn_points,
     }
+}
+
+/// Connected-client trigger-pool install result exposed only to cross-subsystem
+/// tests. The registry is the one populated by [`install_world_cpu`].
+#[cfg(test)]
+pub(crate) struct ConnectedClientTriggerPoolInstallFixture {
+    pub(crate) registry: postretro_entities::EntityRegistry,
+    pub(crate) trap: postretro_entities::EntityId,
+    pub(crate) report: TriggerPoolInstallReport,
+}
+
+#[cfg(test)]
+pub(crate) fn install_connected_client_trigger_pool_fixture_for_test()
+-> ConnectedClientTriggerPoolInstallFixture {
+    tests::install_connected_client_trigger_pool_fixture()
 }
 
 #[cfg(test)]
@@ -2274,22 +2290,23 @@ mod tests {
         armed_by_tag: BTreeMap<String, Vec<EntityId>>,
     }
 
-    /// Run the real renderer-free installation seam with a policy pinned on
-    /// `WorldInstallHandles`, never through argv. The synthetic records mirror
-    /// the authored fixture's two four-member pools while keeping this QA gate
-    /// free of a cold PRL bake.
-    fn install_trap_pool_fixture(
+    struct TriggerPoolWorldInstall {
+        report: TriggerPoolInstallReport,
+        registry: postretro_entities::EntityRegistry,
+    }
+
+    fn install_trigger_pool_world(
+        world: postretro_level_loader::LevelWorld,
         policy: TriggerPoolSeedPolicy,
         active_level_tags: &[&str],
         global_pools: Vec<TriggerPoolDescriptor>,
         suppress_ai_enemies: bool,
-    ) -> TrapPoolFixtureInstall {
+    ) -> TriggerPoolWorldInstall {
         let mut app = test_app();
         let ctx = script_ctx(&app);
         ctx.data_registry
             .borrow_mut()
             .replace_global_trigger_pools(global_pools);
-        let world = trap_pool_fixture_world();
         let active_level_tags: Vec<String> = active_level_tags
             .iter()
             .map(|tag| (*tag).to_string())
@@ -2326,7 +2343,31 @@ mod tests {
             install_world_cpu(handles, &mut timings, |_models, _clip_tables| {})
         };
 
-        let registry = ctx.registry.borrow();
+        let registry = std::mem::take(&mut *ctx.registry.borrow_mut());
+        TriggerPoolWorldInstall {
+            report: products.trigger_pool_report,
+            registry,
+        }
+    }
+
+    /// Run the real renderer-free installation seam with a policy pinned on
+    /// `WorldInstallHandles`, never through argv. The synthetic records mirror
+    /// the authored fixture's two four-member pools while keeping this QA gate
+    /// free of a cold PRL bake.
+    fn install_trap_pool_fixture(
+        policy: TriggerPoolSeedPolicy,
+        active_level_tags: &[&str],
+        global_pools: Vec<TriggerPoolDescriptor>,
+        suppress_ai_enemies: bool,
+    ) -> TrapPoolFixtureInstall {
+        let installed = install_trigger_pool_world(
+            trap_pool_fixture_world(),
+            policy,
+            active_level_tags,
+            global_pools,
+            suppress_ai_enemies,
+        );
+        let registry = &installed.registry;
         let armed_by_tag = ["closet_trap", "ambush_trap"]
             .into_iter()
             .map(|tag| {
@@ -2347,8 +2388,38 @@ mod tests {
             })
             .collect();
         TrapPoolFixtureInstall {
-            report: products.trigger_pool_report,
+            report: installed.report,
             armed_by_tag,
+        }
+    }
+
+    pub(super) fn install_connected_client_trigger_pool_fixture()
+    -> ConnectedClientTriggerPoolInstallFixture {
+        let mut world = level_world("connected_client_trap_pool", 1);
+        let mut trap = trap_pool_trigger_record("network-trap", "trap-pool", 0, false);
+        trap.on_fire = "trapPools.spawn".to_string();
+        world.trigger_volumes = vec![trap];
+        let installed = install_trigger_pool_world(
+            world,
+            TriggerPoolSeedPolicy::Seeded(17),
+            &[],
+            vec![pool_descriptor("trap-pool", TriggerPoolArm::Count(1), &[])],
+            true,
+        );
+        let trap = installed
+            .registry
+            .query_by_component_and_tag(
+                postretro_entities::ComponentKind::TriggerVolume,
+                Some("trap-pool"),
+            )
+            .map(|(id, _)| id)
+            .next()
+            .expect("real client install materializes the authored trap");
+
+        ConnectedClientTriggerPoolInstallFixture {
+            registry: installed.registry,
+            trap,
+            report: installed.report,
         }
     }
 

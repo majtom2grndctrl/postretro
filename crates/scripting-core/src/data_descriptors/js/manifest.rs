@@ -116,13 +116,13 @@ pub fn drain_trigger_pools_js<'js>(
     obj: &Object<'js>,
     scope: &str,
 ) -> Result<Vec<TriggerPoolDescriptor>, DescriptorError> {
-    let Some(arr) = optional_manifest_array_js(obj, "triggerPools", scope)? else {
+    let Some(arr) = optional_trigger_pool_array_js(obj, scope)? else {
         return Ok(Vec::new());
     };
-    let mut out = Vec::with_capacity(arr.len());
+    let entries = trigger_pool_entries_js(&arr, scope)?;
+    let mut out = Vec::with_capacity(entries.len());
     let mut seen_tags = BTreeSet::new();
-    for i in 0..arr.len() {
-        let value: JsValue = arr.get(i).map_err(js_err)?;
+    for (i, value) in entries {
         match trigger_pool_from_js(value) {
             Ok(descriptor) if seen_tags.insert(descriptor.tag.clone()) => out.push(descriptor),
             Ok(descriptor) => log::warn!(
@@ -135,6 +135,117 @@ pub fn drain_trigger_pools_js<'js>(
         }
     }
     Ok(out)
+}
+
+fn optional_trigger_pool_array_js<'js>(
+    obj: &Object<'js>,
+    scope: &str,
+) -> Result<Option<Array<'js>>, DescriptorError> {
+    let has_trigger_pools = match obj.contains_key("triggerPools") {
+        Ok(has_trigger_pools) => has_trigger_pools,
+        Err(error) => {
+            let error = caught_js_err(obj.ctx(), error);
+            log::warn!(
+                "[Scripting] {scope}: could not access `triggerPools`; ignoring the field: {error}"
+            );
+            return Ok(None);
+        }
+    };
+    if !has_trigger_pools {
+        return Ok(None);
+    }
+    let raw: JsValue = match obj.get("triggerPools") {
+        Ok(raw) => raw,
+        Err(error) => {
+            let error = caught_js_err(obj.ctx(), error);
+            log::warn!(
+                "[Scripting] {scope}: could not access `triggerPools`; ignoring the field: {error}"
+            );
+            return Ok(None);
+        }
+    };
+    if raw.is_null() || raw.is_undefined() {
+        return Ok(None);
+    }
+    let Some(arr) = raw.as_array() else {
+        log::warn!("[Scripting] {scope}: `triggerPools` must be an array; ignoring the field");
+        return Ok(None);
+    };
+    Ok(Some(arr.clone()))
+}
+
+/// Walk the bounded slot range directly. Holes are valid, but arrays whose
+/// declared length exceeds the authoring limit degrade before any slot reads.
+fn trigger_pool_entries_js<'js>(
+    arr: &Array<'js>,
+    scope: &str,
+) -> Result<Vec<(u64, JsValue<'js>)>, DescriptorError> {
+    // `Array::len()` asserts that QuickJS stores `length` as a 32-bit integer.
+    // Read the standard array length as a JS number instead so a hostile sparse
+    // index still degrades through this parser rather than panicking.
+    let len = match safe_js_array_len(arr, "`triggerPools`") {
+        Ok(len) => len,
+        Err(error) => {
+            log::warn!(
+                "[Scripting] {scope}: could not read `triggerPools.length`; ignoring the field: {error}"
+            );
+            return Ok(Vec::new());
+        }
+    };
+    if len > MAX_TRIGGER_POOL_CONTAINER_ENTRIES {
+        log::warn!(
+            "[Scripting] {scope}: `triggerPools` exceeds the {}-slot limit; ignoring the field",
+            MAX_TRIGGER_POOL_CONTAINER_ENTRIES,
+        );
+        return Ok(Vec::new());
+    }
+
+    let mut entries = Vec::with_capacity(len);
+    for index in 0..len {
+        let value: JsValue = match arr.get(index) {
+            Ok(value) => value,
+            Err(error) => {
+                let error = caught_js_err(arr.ctx(), error);
+                log::warn!(
+                    "[Scripting] {scope}: triggerPools[{index}] accessor failed and was skipped: {error}"
+                );
+                continue;
+            }
+        };
+        if !value.is_undefined() {
+            entries.push((index as u64, value));
+        }
+    }
+    Ok(entries)
+}
+
+fn safe_js_array_len<'js>(arr: &Array<'js>, field: &str) -> Result<usize, DescriptorError> {
+    let raw_len: JsValue = arr
+        .as_object()
+        .get("length")
+        .map_err(|error| caught_js_err(arr.ctx(), error))?;
+    raw_len
+        .as_int()
+        .and_then(|value| usize::try_from(value).ok())
+        .or_else(|| {
+            raw_len.as_float().and_then(|value| {
+                (value.is_finite()
+                    && value >= 0.0
+                    && value.fract() == 0.0
+                    && value <= usize::MAX as f64)
+                    .then_some(value as usize)
+            })
+        })
+        .ok_or_else(|| DescriptorError::InvalidShape {
+            reason: format!("{field} has an invalid array length"),
+        })
+}
+
+fn caught_js_err<'js>(ctx: &Ctx<'js>, error: rquickjs::Error) -> DescriptorError {
+    if error.is_exception() {
+        let _ = ctx.catch();
+    }
+    js_err(error)
 }
 
 fn trigger_pool_from_js<'js>(
@@ -186,8 +297,40 @@ fn trigger_pool_from_js<'js>(
     Ok(TriggerPoolDescriptor {
         tag,
         arm,
-        levels: string_array_from_js(&item, "levels")?,
+        levels: trigger_pool_levels_from_js(&item)?,
     })
+}
+
+fn trigger_pool_levels_from_js<'js>(item: &Object<'js>) -> Result<Vec<String>, DescriptorError> {
+    let raw: JsValue = item
+        .get("levels")
+        .map_err(|error| caught_js_err(item.ctx(), error))?;
+    if raw.is_null() || raw.is_undefined() {
+        return Ok(Vec::new());
+    }
+    let Some(arr) = raw.as_array() else {
+        return Err(DescriptorError::InvalidShape {
+            reason: "`levels` must be a string array".into(),
+        });
+    };
+    let len = safe_js_array_len(arr, "`levels`")?;
+    if len > MAX_TRIGGER_POOL_CONTAINER_ENTRIES {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`levels` exceeds the {}-slot limit",
+                MAX_TRIGGER_POOL_CONTAINER_ENTRIES
+            ),
+        });
+    }
+
+    let mut levels = Vec::with_capacity(len);
+    for index in 0..len {
+        let value: JsValue = arr
+            .get(index)
+            .map_err(|error| caught_js_err(arr.ctx(), error))?;
+        levels.push(String::from_js_value_required(value, "levels")?);
+    }
+    Ok(levels)
 }
 
 // ===========================================================================

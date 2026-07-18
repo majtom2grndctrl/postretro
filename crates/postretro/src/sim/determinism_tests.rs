@@ -368,7 +368,8 @@ impl SimHarness {
                     arm: TriggerPoolArm::Count(1),
                     levels: Vec::new(),
                 }],
-                TriggerPoolSeedPolicy::Seeded(0),
+                TriggerPoolSeedPolicy::Seeded(6),
+                &Default::default(),
                 &Default::default(),
             );
             report.pools[0].selected == [trigger_source]

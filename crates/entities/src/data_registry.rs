@@ -1,6 +1,6 @@
 // Data-script registries: active level definitions plus engine-global entity,
-// map, reaction, crossing, and trigger-event snapshots used by startup and
-// staged reloads.
+// map, reaction, crossing, trigger-event, and trigger-pool snapshots used by
+// startup and staged reloads.
 // See: context/lib/scripting.md §2 (Data context lifecycle)
 //
 // Held inside `ScriptCtx` (not directly on `App`) so primitive closures can

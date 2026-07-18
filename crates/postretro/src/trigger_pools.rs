@@ -200,10 +200,19 @@ fn select_members(members: &[EntityId], target: usize, rng: &mut SplitMix64) -> 
 mod tests {
     use super::*;
 
+    use std::collections::HashMap;
+
     use glam::Vec3;
     use postretro_entities::{
         MoverCommand, Transform, TriggerActivation, TriggerFireMode, TriggerVolumeComponent,
     };
+    use postretro_foundation::{
+        AirParams, CapsuleParams, FallParams, GroundParams, PlayerMovementComponent,
+        PlayerMovementDescriptor, SpeedParams,
+    };
+
+    use crate::scripting_systems::trigger_volume_bridge::TriggerVolumeBridge;
+    use crate::trigger_system::{AuthoritativePlayer, PlayerId, TriggerEventEdge, TriggerSystem};
 
     fn pool(tag: &str, arm: TriggerPoolArm) -> TriggerPoolDescriptor {
         TriggerPoolDescriptor {
@@ -254,6 +263,55 @@ mod tests {
                     .armed
             })
             .collect()
+    }
+
+    fn spawn_player(registry: &mut EntityRegistry, position: Vec3) -> EntityId {
+        let id = registry.spawn(Transform {
+            position,
+            rotation: glam::Quat::IDENTITY,
+            scale: Vec3::ONE,
+        });
+        registry
+            .set_component(
+                id,
+                PlayerMovementComponent::from_descriptor(&PlayerMovementDescriptor {
+                    capsule: CapsuleParams {
+                        radius: 0.4,
+                        half_height: 0.8,
+                        eye_height: 0.5,
+                    },
+                    ground: GroundParams {
+                        speed: SpeedParams {
+                            walk: 7.0,
+                            run: 11.0,
+                            crouch: 3.0,
+                        },
+                        accel: 10.0,
+                        step_height: 0.3,
+                        max_slope: 45.0,
+                    },
+                    air: AirParams {
+                        forward_steer: 0.0,
+                        accel: 0.7,
+                        max_control_speed: 0.5,
+                        bunny_hop: false,
+                        jumps: 0,
+                        jump_velocity: 5.5,
+                        jump_ceiling: 0.0,
+                    },
+                    fall: FallParams {
+                        terminal_velocity: 40.0,
+                    },
+                    stuck_stop_enabled: PlayerMovementDescriptor::DEFAULT_STUCK_STOP_ENABLED,
+                    stuck_stop_threshold: PlayerMovementDescriptor::DEFAULT_STUCK_STOP_THRESHOLD,
+                    dash: None,
+                    forgiveness: None,
+                    crouch: None,
+                    view_feel: None,
+                }),
+            )
+            .expect("fresh player accepts movement component");
+        id
     }
 
     #[test]
@@ -358,5 +416,144 @@ mod tests {
 
         assert_eq!(report.pools[0].selected.len(), 2);
         assert_eq!(armed_members(&registry, &ids).len(), 2);
+    }
+
+    #[test]
+    fn degradation_warns_and_keeps_empty_oversized_and_zero_pools_deterministic() {
+        let mut registry = EntityRegistry::new();
+        let oversized = [
+            spawn_trigger(&mut registry, &["oversized"], true),
+            spawn_trigger(&mut registry, &["oversized"], true),
+        ];
+        let zero_count = [
+            spawn_trigger(&mut registry, &["zero-count"], false),
+            spawn_trigger(&mut registry, &["zero-count"], false),
+        ];
+        let zero_percentage = [
+            spawn_trigger(&mut registry, &["zero-percentage"], false),
+            spawn_trigger(&mut registry, &["zero-percentage"], false),
+        ];
+        let exact = [
+            spawn_trigger(&mut registry, &["exact"], false),
+            spawn_trigger(&mut registry, &["exact"], false),
+        ];
+        let mut report = None;
+        let captured = crate::scripting::reactions::log_capture::capture(|| {
+            report = Some(install_trigger_pools(
+                &mut registry,
+                &[
+                    pool("missing", TriggerPoolArm::Count(1)),
+                    pool("oversized", TriggerPoolArm::Count(3)),
+                    pool("zero-count", TriggerPoolArm::Count(0)),
+                    pool("zero-percentage", TriggerPoolArm::Percentage(25.0)),
+                    pool("exact", TriggerPoolArm::Count(2)),
+                ],
+                TriggerPoolSeedPolicy::Seeded(17),
+                &Default::default(),
+            ));
+        });
+        let report = report.expect("install pass returns its degradation report");
+
+        assert_eq!(report.pools.len(), 4, "the empty pool stays inert");
+        assert_eq!(armed_members(&registry, &oversized), oversized);
+        assert!(armed_members(&registry, &zero_count).is_empty());
+        assert!(armed_members(&registry, &zero_percentage).is_empty());
+        assert_eq!(armed_members(&registry, &exact), exact);
+        assert!(
+            captured.iter().any(|(level, message)| {
+                *level == log::Level::Warn
+                    && message.contains("matches no trigger volumes")
+                    && message.contains("missing")
+            }),
+            "an empty tag must warn and skip; logs were {captured:?}",
+        );
+        assert!(
+            captured.iter().any(|(level, message)| {
+                *level == log::Level::Warn
+                    && message.contains("requested 3")
+                    && message.contains("oversized")
+            }),
+            "an oversized count must clamp with a warning; logs were {captured:?}",
+        );
+        assert!(
+            captured.iter().any(|(level, message)| {
+                *level == log::Level::Warn
+                    && message.contains("enabled_on_spawn=true")
+                    && message.contains("oversized")
+            }),
+            "pool members authored enabled must be diagnosed; logs were {captured:?}",
+        );
+        assert!(
+            !captured.iter().any(|(level, message)| {
+                *level == log::Level::Warn
+                    && message.contains("exact")
+                    && message.contains("requested")
+            }),
+            "a count exactly equal to membership arms all without an over-count warning",
+        );
+    }
+
+    #[test]
+    fn unselected_pool_member_stays_silent_until_runtime_arm_reopens_it() {
+        let mut registry = EntityRegistry::new();
+        let trigger = spawn_trigger(&mut registry, &["quiet"], false);
+        let mut component = registry
+            .get_component::<TriggerVolumeComponent>(trigger)
+            .expect("fixture trigger remains live")
+            .clone();
+        component.on_fire = "trapPools.rearmed".to_string();
+        registry
+            .set_component(trigger, component)
+            .expect("fixture trigger accepts an event name");
+        let player = spawn_player(&mut registry, Vec3::new(0.0, 1.0, 0.0));
+        let player_id = PlayerId::Local(player);
+        let players = [AuthoritativePlayer {
+            id: player_id,
+            pawn: player,
+        }];
+        let mut bridge = TriggerVolumeBridge::new();
+        bridge.insert_for_test(
+            trigger,
+            Vec3::new(-1.0, 0.0, -1.0),
+            Vec3::new(1.0, 2.0, 1.0),
+        );
+        let report = install_trigger_pools(
+            &mut registry,
+            &[pool("quiet", TriggerPoolArm::Count(0))],
+            TriggerPoolSeedPolicy::Seeded(17),
+            &Default::default(),
+        );
+        assert!(report.pools[0].selected.is_empty());
+
+        let mut system = TriggerSystem::default();
+        let first = system.run_authoritative_tick(
+            &mut registry,
+            &bridge,
+            &players,
+            &HashMap::new(),
+            1.0 / 60.0,
+        );
+        assert!(
+            first.fires.is_empty(),
+            "the unselected member observes occupancy but must not fire",
+        );
+
+        arm_trigger_targets(&mut registry, &[trigger], &Default::default());
+        let rearmed = system.run_authoritative_tick(
+            &mut registry,
+            &bridge,
+            &players,
+            &HashMap::new(),
+            1.0 / 60.0,
+        );
+        assert_eq!(
+            rearmed.fires.len(),
+            1,
+            "runtime armTrigger re-admits the standing player on the following tick",
+        );
+        assert_eq!(rearmed.fires[0].edge, TriggerEventEdge::Enter);
+        assert_eq!(rearmed.fires[0].fire.trigger, trigger);
+        assert_eq!(rearmed.fires[0].fire.player, player_id);
+        assert_eq!(rearmed.fires[0].fire.event_name, "trapPools.rearmed");
     }
 }

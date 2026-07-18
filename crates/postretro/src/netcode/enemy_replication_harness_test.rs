@@ -61,7 +61,7 @@
 
 #![cfg(test)]
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use glam::{Quat, Vec3};
 
@@ -83,13 +83,24 @@ use crate::scripting::builtins::data_archetype::{
 use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::components::brain::{AiStateMap, AiTuning, BrainComponent, LogicalState};
 use postretro_entities::components::mesh::{AnimationState, InterruptPolicy, MeshComponent};
+use postretro_entities::components::spawner::SpawnerComponent;
 use postretro_entities::provenance::{
     DescriptorComponentKind, DescriptorProvenance, DescriptorSpawnPath,
 };
 use postretro_entities::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, EntityTypeDescriptor, MeshDescriptor,
-    Transform,
+    MoverCommand, Transform, TriggerActivation, TriggerFireMode, TriggerPoolArm,
+    TriggerPoolDescriptor, TriggerVolumeComponent,
 };
+use postretro_foundation::{
+    AirParams, CapsuleParams, FallParams, GroundParams, PlayerMovementComponent,
+    PlayerMovementDescriptor, SpeedParams,
+};
+
+use crate::scripting_systems::trigger_volume_bridge::TriggerVolumeBridge;
+use crate::spawner::{SpawnContext, spawn_from_spawner_tag};
+use crate::trigger_pools::{TriggerPoolSeedPolicy, install_trigger_pools};
+use crate::trigger_system::{AuthoritativePlayer, PlayerId, TriggerSystem};
 
 // --- Fixture constants ------------------------------------------------------
 
@@ -715,6 +726,186 @@ fn runtime_spawned_enemy_registers_and_materializes_on_connected_client() {
             .get_component::<MeshComponent>(remote)
             .is_ok(),
         "Transform-only runtime-spawn snapshot carries its canonical class for presentation"
+    );
+}
+
+// E18 Task 5: the host alone performs the pinned pool install. Its selected
+// trigger fires through the normal authoritative trigger evaluator, then the
+// existing spawnFromSpawner executor creates an ordinary runtime enemy. The
+// established in-memory host→client harness proves only that consequence
+// crosses the network; no pool state or new wire field is introduced.
+#[test]
+fn host_armed_trap_pool_spawn_reaches_client_while_client_keeps_authored_trigger_state() {
+    let mut h = EnemyReplicationHarness::new(perfect_link());
+    let trap = h.host_registry.spawn(Transform::default());
+    h.host_registry
+        .set_tags(trap, vec!["trap-pool".to_string()])
+        .expect("host trap accepts its pool tag");
+    h.host_registry
+        .set_component(
+            trap,
+            TriggerVolumeComponent::new(
+                TriggerActivation::Touch,
+                String::new(),
+                "trapPools.spawn".to_string(),
+                String::new(),
+                MoverCommand::Start,
+                TriggerFireMode::Once,
+                0.0,
+                false,
+            ),
+        )
+        .expect("host trap receives trigger state");
+    let spawner = h.host_registry.spawn(Transform {
+        position: Vec3::new(3.0, 0.0, 0.0),
+        ..Transform::default()
+    });
+    h.host_registry
+        .set_tags(spawner, vec!["trap-spawner".to_string()])
+        .expect("host spawner accepts its reaction tag");
+    h.host_registry
+        .set_component(
+            spawner,
+            SpawnerComponent {
+                archetype_name: ENEMY_CLASS.to_string(),
+                count: 1,
+                resolved: true,
+            },
+        )
+        .expect("host spawner receives resolved state");
+    let spawn_context = SpawnContext::default();
+    spawn_context.replace_level_data(
+        [(ENEMY_CLASS.to_string(), enemy_descriptor(ENEMY_CLASS))]
+            .into_iter()
+            .collect(),
+        Some(agent_params()),
+    );
+
+    let report = install_trigger_pools(
+        &mut h.host_registry,
+        &[TriggerPoolDescriptor {
+            tag: "trap-pool".to_string(),
+            arm: TriggerPoolArm::Count(1),
+            levels: Vec::new(),
+        }],
+        TriggerPoolSeedPolicy::Seeded(17),
+        &Default::default(),
+    );
+    assert_eq!(report.seed, Some(17));
+    assert_eq!(report.pools[0].selected, [trap]);
+
+    // Mirror client map materialization, deliberately without the host-only
+    // install pass: its component remains exactly as authored (disabled).
+    let client_trap = h.client_registry.spawn(Transform::default());
+    h.client_registry
+        .set_component(
+            client_trap,
+            TriggerVolumeComponent::new(
+                TriggerActivation::Touch,
+                String::new(),
+                "trapPools.spawn".to_string(),
+                String::new(),
+                MoverCommand::Start,
+                TriggerFireMode::Once,
+                0.0,
+                false,
+            ),
+        )
+        .expect("client trap receives authored trigger state");
+    assert!(
+        !h.client_registry
+            .get_component::<TriggerVolumeComponent>(client_trap)
+            .expect("client trap remains live")
+            .armed,
+        "the client does not rerun the host pool roll",
+    );
+
+    let player = h.host_registry.spawn(Transform {
+        position: Vec3::new(0.0, 1.0, 0.0),
+        ..Transform::default()
+    });
+    h.host_registry
+        .set_component(
+            player,
+            PlayerMovementComponent::from_descriptor(&PlayerMovementDescriptor {
+                capsule: CapsuleParams {
+                    radius: 0.4,
+                    half_height: 0.8,
+                    eye_height: 0.5,
+                },
+                ground: GroundParams {
+                    speed: SpeedParams {
+                        walk: 7.0,
+                        run: 11.0,
+                        crouch: 3.0,
+                    },
+                    accel: 10.0,
+                    step_height: 0.3,
+                    max_slope: 45.0,
+                },
+                air: AirParams {
+                    forward_steer: 0.0,
+                    accel: 0.7,
+                    max_control_speed: 0.5,
+                    bunny_hop: false,
+                    jumps: 0,
+                    jump_velocity: 5.5,
+                    jump_ceiling: 0.0,
+                },
+                fall: FallParams {
+                    terminal_velocity: 40.0,
+                },
+                stuck_stop_enabled: PlayerMovementDescriptor::DEFAULT_STUCK_STOP_ENABLED,
+                stuck_stop_threshold: PlayerMovementDescriptor::DEFAULT_STUCK_STOP_THRESHOLD,
+                dash: None,
+                forgiveness: None,
+                crouch: None,
+                view_feel: None,
+            }),
+        )
+        .expect("host player receives movement state");
+    let player_id = PlayerId::Local(player);
+    let mut bridge = TriggerVolumeBridge::new();
+    bridge.insert_for_test(trap, Vec3::new(-1.0, 0.0, -1.0), Vec3::new(1.0, 2.0, 1.0));
+    let fires = TriggerSystem::default().run_authoritative_tick(
+        &mut h.host_registry,
+        &bridge,
+        &[AuthoritativePlayer {
+            id: player_id,
+            pawn: player,
+        }],
+        &HashMap::new(),
+        1.0 / 60.0,
+    );
+    assert!(
+        fires
+            .fires
+            .iter()
+            .any(|fire| fire.fire.trigger == trap && fire.fire.event_name == "trapPools.spawn"),
+        "the host-selected trap must enter the ordinary trigger fire stream",
+    );
+
+    spawn_from_spawner_tag(&mut h.host_registry, "trap-spawner", &spawn_context);
+    let spawned = h
+        .host_registry
+        .iter_with_kind(ComponentKind::Brain)
+        .map(|(id, _)| id)
+        .next()
+        .expect("the fired spawner materializes one authoritative enemy");
+    h.host_register_enemies();
+    let network_id = h.enemy_network_id(spawned);
+    assert!(
+        h.step_until_client_maps(network_id, 16) > 0,
+        "the trap consequence reaches the connected client through existing replication",
+    );
+    let remote = h
+        .client_mapped_entity(network_id)
+        .expect("the connected client materializes the spawned enemy");
+    assert!(
+        h.client_registry
+            .get_component::<MeshComponent>(remote)
+            .is_ok(),
+        "the replicated consequence is a drawable remote presentation",
     );
 }
 

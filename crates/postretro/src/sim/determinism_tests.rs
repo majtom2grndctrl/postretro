@@ -28,6 +28,7 @@ use crate::scripting_systems::trigger_volume_bridge::TriggerVolumeBridge;
 use crate::trigger_bindings::{
     BoundTriggerCommandKind, TriggerBindingTable, TriggerResidualHandle,
 };
+use crate::trigger_pools::{TriggerPoolSeedPolicy, install_trigger_pools};
 use crate::trigger_system::{PlayerId, TriggerEvent, TriggerEventEdge, TriggerSystem};
 use crate::weapon::FireButtonState;
 use postretro_entities::components::agent::AgentComponent;
@@ -42,7 +43,8 @@ use postretro_entities::{
     CrossingCondition, CrossingDescriptor, DataRegistry, EntityId, EntityRegistry, MoverCommand,
     NamedReaction, PrimitiveDescriptor, ReactionDescriptor, ReplicationScope, ScriptCtx,
     SlotOwnership, SlotRecord, SlotSchema, SlotTable, SlotType, SlotValue, Transform,
-    TriggerActivation, TriggerFireMode, TriggerVolumeComponent,
+    TriggerActivation, TriggerFireMode, TriggerPoolArm, TriggerPoolDescriptor,
+    TriggerVolumeComponent,
 };
 use postretro_foundation::pose::{FootProbe, MAX_FEET};
 use postretro_foundation::{
@@ -220,6 +222,7 @@ struct SimRun {
     predicate_crossing_sequence: Vec<Vec<(String, bool)>>,
     trigger_arm_target_armed: bool,
     role_health_ledger: Vec<(Role, f32)>,
+    trap_pool_source_selected: bool,
 }
 
 struct SimHarness {
@@ -245,6 +248,7 @@ struct SimHarness {
     remote_player: EntityId,
     enemy: EntityId,
     trigger_arm_target: EntityId,
+    trap_pool_source_selected: bool,
 }
 
 impl SimHarness {
@@ -304,6 +308,36 @@ impl SimHarness {
                     ),
                 )
                 .expect("determinism trigger attaches");
+            registry
+                .set_tags(source, vec!["determinism-trap-pool".to_string()])
+                .expect("determinism trigger accepts its pool tag");
+
+            // Keep three non-overlapping peers in the same fixture pool. The
+            // fixed seed below selects the source (the first sorted member), so
+            // the existing tick sequence proves load-time pool selection and
+            // ordinary trigger dispatch compose without adding a test-only wire
+            // or tick field.
+            for _ in 0..3 {
+                let peer = registry.spawn(Transform::default());
+                registry
+                    .set_tags(peer, vec!["determinism-trap-pool".to_string()])
+                    .expect("determinism pool peer accepts tag");
+                registry
+                    .set_component(
+                        peer,
+                        TriggerVolumeComponent::new(
+                            TriggerActivation::Touch,
+                            String::new(),
+                            String::new(),
+                            String::new(),
+                            MoverCommand::Start,
+                            TriggerFireMode::Multiple,
+                            0.0,
+                            false,
+                        ),
+                    )
+                    .expect("determinism pool peer attaches");
+            }
 
             let arm_target = registry.spawn(Transform::default());
             registry
@@ -325,6 +359,19 @@ impl SimHarness {
                 )
                 .expect("determinism trigger arm target attaches");
             (source, arm_target)
+        };
+        let trap_pool_source_selected = {
+            let report = install_trigger_pools(
+                &mut registry.borrow_mut(),
+                &[TriggerPoolDescriptor {
+                    tag: "determinism-trap-pool".to_string(),
+                    arm: TriggerPoolArm::Count(1),
+                    levels: Vec::new(),
+                }],
+                TriggerPoolSeedPolicy::Seeded(9),
+                &Default::default(),
+            );
+            report.pools[0].selected == [trigger_source]
         };
         let mut trigger_data = DataRegistry::new();
         trigger_data.populate_level(
@@ -462,6 +509,7 @@ impl SimHarness {
             remote_player,
             enemy,
             trigger_arm_target,
+            trap_pool_source_selected,
         }
     }
 
@@ -2283,6 +2331,7 @@ fn run_stream(commands: &[RecordedCommand], spawn_order: SpawnOrder) -> SimRun {
         predicate_crossing_sequence,
         trigger_arm_target_armed: harness.trigger_arm_target_armed(),
         role_health_ledger: harness.role_health_ledger(),
+        trap_pool_source_selected: harness.trap_pool_source_selected,
         events,
     }
 }
@@ -2328,6 +2377,10 @@ fn assert_trigger_positive_anchors(run: &SimRun) {
         "the baseline trigger must arm its target"
     );
     assert!(
+        run.trap_pool_source_selected,
+        "the fixed seed must select the live trap-pool source for this tick sequence",
+    );
+    assert!(
         run.events
             .iter()
             .any(|events| !events.trigger_fires.is_empty()),
@@ -2370,6 +2423,10 @@ fn assert_runs_match(actual: &SimRun, expected: &SimRun) {
     assert_eq!(
         actual.trigger_arm_target_armed, expected.trigger_arm_target_armed,
         "trigger fixed-tick registry mutation must match exactly"
+    );
+    assert_eq!(
+        actual.trap_pool_source_selected, expected.trap_pool_source_selected,
+        "the fixed-seed trap-pool selection must match exactly"
     );
     assert_eq!(
         actual.pawns.len(),

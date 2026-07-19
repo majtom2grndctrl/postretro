@@ -88,6 +88,25 @@ def action_name_from_filename(filepath):
     return name
 
 
+def get_action_fcurves(action):
+    """Get fcurves from an action, handling both legacy and layered (Blender 4.4+) APIs."""
+    if hasattr(action, 'fcurves') and action.fcurves is not None:
+        try:
+            iter(action.fcurves)
+            return action.fcurves
+        except (TypeError, AttributeError):
+            pass
+    # Blender 4.4+ layered animation system
+    if hasattr(action, 'layers'):
+        for layer in action.layers:
+            for strip in layer.strips:
+                if hasattr(strip, 'channelbags'):
+                    for channelbag in strip.channelbags:
+                        if hasattr(channelbag, 'fcurves'):
+                            return channelbag.fcurves
+    return []
+
+
 def fcurve_bone_name(data_path):
     """Extract the bone name from an F-curve data_path like pose.bones["Hips"].location."""
     prefix = 'pose.bones["'
@@ -179,7 +198,8 @@ def merge_animations(input_dir, scale=None):
             # Validate that the clip's F-curves actually drive base armature bones
             orphaned_channels = []
             matched_any = False
-            for fcurve in action.fcurves:
+            fcurves = get_action_fcurves(action)
+            for fcurve in fcurves:
                 bone_name = fcurve_bone_name(fcurve.data_path)
                 if bone_name is None:
                     continue
@@ -187,7 +207,7 @@ def merge_animations(input_dir, scale=None):
                     matched_any = True
                 else:
                     orphaned_channels.append(fcurve.data_path)
-            if not matched_any and action.fcurves:
+            if not matched_any and fcurves:
                 print(f"  ERROR: No F-curves in '{clip_name}' target a base armature bone; clip is useless")
             elif orphaned_channels:
                 print(f"  WARNING: Channels in '{clip_name}' target bones not in the base armature: "

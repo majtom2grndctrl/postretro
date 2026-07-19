@@ -1,26 +1,31 @@
 // Steering-tick tests: path-following around geometry, arrived/blocked status,
 // crowd separation, the replan budget, and the replan-starvation fairness gate.
+// Also covers funnel corner-offset clearance, mandatory-clearance-vertex
+// easing/full-speed rounding, and chase-freeze (stale-path retention).
 //
 // The L-wall fixture derives BOTH the collision trimesh AND the hand-built
 // navmesh from ONE wall description (`LWall`), so the navmesh corridor and the
 // solid geometry agree geometrically — a path that the navmesh says wraps the
-// corner is the same corner the trimesh blocks.
+// corner is the same corner the trimesh blocks. The ConcaveCorner fixture
+// extends this pattern for the corner-clearance and chase-freeze coverage.
 
 use super::*;
 
 use parry3d::math::{Isometry, Point};
+use parry3d::query::PointQuery;
 use parry3d::shape::TriMesh;
 use postretro_entities::Transform;
 use postretro_level_format::navmesh::{NAVMESH_VERSION, NavMeshSection, NavPortal, NavRegion};
 
+use crate::collision::SKIN_DISTANCE;
 use crate::nav::NavAgentParams;
 
 const EPS: f32 = 1e-3;
 const DT: f32 = 1.0 / 60.0;
 const GRAVITY: f32 = -20.0;
-// The segmented concave fixture routes around finite wall ends via portals.
-// That route still produces a visible recovery displacement, but less direct
-// goal projection than the old all-floor shortcut.
+// Physical escape distance for the segmented concave fixture. Goal projection
+// has its own semantic floor because a clearance-safe replan may initially
+// route mostly sideways around a finite wall end.
 const SEGMENTED_CONCAVE_ESCAPE_DISTANCE: f32 = 0.025;
 
 /// Canonical agent params for the fixtures: 0.35 m radius, 1.8 m tall, 0.4 m
@@ -65,6 +70,7 @@ fn set_manual_path(registry: &mut EntityRegistry, id: EntityId, path: Vec<Vec3>)
     agent.destination = Some(destination);
     agent.planned_destination = Some(destination);
     agent.path = path;
+    agent.mandatory_waypoints.clear();
     agent.waypoint_cursor = 0;
     agent.replan_cooldown_ticks = u32::MAX;
     agent.arrived = false;
@@ -396,6 +402,41 @@ fn goal_projected_xz_progress(start: Vec3, end: Vec3, heading: Vec3) -> f32 {
     displacement.dot(heading.normalize())
 }
 
+/// Point-to-static-mesh clearance at the agent's capsule-center height. The
+/// nav query surface is floor-relative while collision uses a capsule center,
+/// so testing the raw waypoint Y would measure the floor rather than the wall
+/// clearance the funnel promises.
+fn static_mesh_clearance(world: &CollisionWorld, waypoint: Vec3, capsule_center_y: f32) -> f32 {
+    let point = Point::new(waypoint.x, capsule_center_y, waypoint.z);
+    let projection = world.mesh.project_point(&world.isometry, &point, false);
+    (point - projection.point).norm()
+}
+
+fn portal_midpoint(portal: &NavPortal) -> Vec3 {
+    (Vec3::from_array(portal.left) + Vec3::from_array(portal.right)) * 0.5
+}
+
+fn portal_width(portal: &NavPortal) -> f32 {
+    let delta = Vec3::from_array(portal.right) - Vec3::from_array(portal.left);
+    Vec3::new(delta.x, 0.0, delta.z).length()
+}
+
+fn static_mesh_segment_clearance(
+    world: &CollisionWorld,
+    start: Vec3,
+    end: Vec3,
+    capsule_center_y: f32,
+) -> f32 {
+    let length = distance_xz(start, end);
+    let sample_count = (length / 0.01).ceil().max(1.0) as usize;
+    (0..=sample_count)
+        .map(|sample| {
+            let t = sample as f32 / sample_count as f32;
+            static_mesh_clearance(world, start.lerp(end, t), capsule_center_y)
+        })
+        .fold(f32::INFINITY, f32::min)
+}
+
 fn run_until_stuck_threshold(
     registry: &mut EntityRegistry,
     id: EntityId,
@@ -517,6 +558,521 @@ fn steer_velocity_ramps_independently_of_wall_clamped_collision_velocity() {
 }
 
 #[test]
+fn funnel_waypoints_keep_effective_capsule_clearance_from_concave_fixture_mesh() {
+    let corner = ConcaveCorner::fixture();
+    let world = corner.collision_world();
+    let graph = corner.nav_graph();
+    let params = graph.agent_params();
+    let start = Vec3::new(1.2, rest_y(&params), 1.2);
+    let goal = Vec3::new(5.0, rest_y(&params), 5.0);
+    let path = find_path(&graph, start, goal).expect("concave-corner route exists");
+
+    assert!(
+        path.len() >= 3,
+        "the concave route must expose an interior funnel waypoint: {path:?}"
+    );
+
+    let narrow_portal_midpoints: Vec<Vec3> = graph
+        .portals()
+        .iter()
+        .filter(|portal| portal_width(portal) <= 2.0 * (params.radius + SKIN_DISTANCE))
+        .map(portal_midpoint)
+        .collect();
+    let clearance_epsilon = 0.1 * graph.cell_size();
+    let effective_clearance_radius = params.radius + SKIN_DISTANCE;
+
+    // This fixture's regions and portals are hand-built. It validates the
+    // runtime funnel's output against the shared collision geometry, not the
+    // offline erosion pass that would produce a baked graph.
+    for waypoint in &path[1..path.len() - 1] {
+        let is_narrow_portal_midpoint = narrow_portal_midpoints.iter().any(|midpoint| {
+            let delta = Vec3::new(waypoint.x - midpoint.x, 0.0, waypoint.z - midpoint.z);
+            delta.length() <= EPS
+        });
+        if is_narrow_portal_midpoint {
+            continue;
+        }
+
+        let clearance = static_mesh_clearance(&world, *waypoint, rest_y(&params));
+        assert!(
+            clearance + clearance_epsilon >= effective_clearance_radius,
+            "interior waypoint {waypoint:?} has only {clearance:.4}m static-mesh clearance; expected at least {:.4}m (capsule + skin {:.4}m - epsilon {:.4}m), path={path:?}",
+            effective_clearance_radius - clearance_epsilon,
+            effective_clearance_radius,
+            clearance_epsilon,
+        );
+    }
+}
+
+#[test]
+fn funnel_segments_keep_effective_capsule_clearance_from_concave_fixture_mesh() {
+    let corner = ConcaveCorner::fixture();
+    let world = corner.collision_world();
+    let graph = corner.nav_graph();
+    let params = graph.agent_params();
+    let start = Vec3::new(1.2, rest_y(&params), 1.2);
+    let goal = Vec3::new(5.0, rest_y(&params), 5.0);
+    let path = find_path(&graph, start, goal).expect("concave-corner route exists");
+    let effective_clearance_radius = params.radius + SKIN_DISTANCE;
+
+    // Regression: individually clear inset waypoints formed a chord that passed
+    // only 0.2616m from the wall end for a 0.37m effective clearance.
+    for segment in path.windows(2) {
+        let clearance =
+            static_mesh_segment_clearance(&world, segment[0], segment[1], rest_y(&params));
+        assert!(
+            clearance + EPS >= effective_clearance_radius,
+            "path segment {:?} has only {clearance:.4}m static-mesh clearance; expected {:.4}m, path={path:?}",
+            segment,
+            effective_clearance_radius,
+        );
+    }
+}
+
+#[test]
+fn funnel_path_routes_concave_corner_without_stuck_detection() {
+    let corner = ConcaveCorner::fixture();
+    let world = corner.collision_world();
+    let graph = corner.nav_graph();
+    let params = graph.agent_params();
+    let mut registry = EntityRegistry::new();
+    let id = spawn_agent(&mut registry, 1.2, 1.2, &params);
+    let destination = Vec3::new(5.0, rest_y(&params), 5.0);
+    set_destination(&mut registry, id, destination);
+
+    for tick_index in 0..600 {
+        let before = agent_position(&registry, id);
+        // Keep the vertical channel neutral so this strict horizontal-progress
+        // assertion exercises the funnel/capsule route rather than a separate
+        // floor-settling contact tick. Ground-stick remains active here; the
+        // harness's gravity and settling behavior are covered independently.
+        tick(&mut registry, &world, Some(&graph), 0.0, DT);
+        let agent = registry.get_component::<AgentComponent>(id).unwrap();
+        if tick_index == 0 {
+            assert!(
+                agent.path.len() >= 3,
+                "concave route must retain an interior funnel waypoint: {:?}",
+                agent.path
+            );
+        }
+        assert!(
+            agent.stuck_ticks < STUCK_TICKS_THRESHOLD,
+            "funnel route reached stuck detection on tick {tick_index}: pos={:?}, path={:?}",
+            agent_position(&registry, id),
+            agent.path,
+        );
+        if agent.arrived {
+            return;
+        }
+
+        let after = agent_position(&registry, id);
+        let progress = goal_projected_xz_progress(before, after, agent.steer_velocity);
+        assert!(
+            progress > STUCK_PROGRESS_EPSILON,
+            "funnel route must make goal-projected progress above the stuck epsilon on tick {tick_index}; progress={progress}, position={after:?}, steer={:?}, path={:?}",
+            agent.steer_velocity,
+            agent.path,
+        );
+
+        if tick_index == 0 {
+            // This test covers collision progress along one real funnel result.
+            // Periodic path-refresh scheduling has separate coverage; freezing
+            // this fresh plan prevents it from replacing the route mid-traverse.
+            let mut frozen_plan = agent.clone();
+            frozen_plan.replan_cooldown_ticks = u32::MAX;
+            registry.set_component(id, frozen_plan).unwrap();
+        }
+    }
+
+    panic!("funnel route did not reach the concave-corner goal within 600 ticks");
+}
+
+#[test]
+fn full_speed_agent_rounds_concave_corner_mandatory_vertices_without_crawling() {
+    // E10 follow-up: intermediate mandatory clearance vertices are corner-offset
+    // waypoints to ROUND at full move_speed, not points to settle onto. Removing
+    // the intermediate arrival throttle lets a chasing agent drive the corner at
+    // speed; this guards the two failure modes that removal could reintroduce and
+    // asserts the crawl is gone:
+    //   (a) no orbit/stall — a wide full-speed arc that never enters the vertex
+    //       arrival band would leave the cursor stuck and the agent never
+    //       arriving; assert it reaches the goal within a bounded tick budget;
+    //   (b) no false stuck — stuck_ticks never reaches the threshold and tangent
+    //       recovery never fires;
+    //   (c) no crawl — on the exact ticks the OLD throttle slowed to near zero
+    //       (a mandatory vertex active within the arrival band), speed now stays
+    //       near move_speed;
+    //   (d) no clearance regression — the resolved capsule center stays clear of
+    //       the corner geometry by the effective clearance for the whole route.
+    let corner = ConcaveCorner::fixture();
+    let world = corner.collision_world();
+    let graph = corner.nav_graph();
+    let params = graph.agent_params();
+    let mut registry = EntityRegistry::new();
+    let id = spawn_agent(&mut registry, 1.2, 1.2, &params);
+    // Canonical full move_speed (spawn_agent seeds 4.0); anchor the "did not
+    // crawl" threshold below to it.
+    let move_speed = registry
+        .get_component::<AgentComponent>(id)
+        .unwrap()
+        .move_speed;
+    assert!(
+        (move_speed - 4.0).abs() <= EPS,
+        "fixture agent should run at the canonical 4.0 m/s, got {move_speed}"
+    );
+
+    let destination = Vec3::new(5.0, rest_y(&params), 5.0);
+    set_destination(&mut registry, id, destination);
+
+    let arrival_radius = ARRIVAL_RADIUS_FACTOR * params.radius;
+    let effective_clearance_radius = params.radius + SKIN_DISTANCE;
+    let clearance_epsilon = 0.1 * graph.cell_size();
+
+    let mut arrived = false;
+    let mut easing_speeds: Vec<f32> = Vec::new();
+
+    for tick_index in 0..600 {
+        // Neutral vertical channel, matching the sibling no-stuck tests, so this
+        // exercises the funnel/capsule route rather than a floor-settling tick.
+        tick(&mut registry, &world, Some(&graph), 0.0, DT);
+        let agent = registry
+            .get_component::<AgentComponent>(id)
+            .unwrap()
+            .clone();
+
+        if tick_index == 0 {
+            assert!(
+                agent.path.len() >= 3,
+                "concave route must retain an interior funnel waypoint: {:?}",
+                agent.path
+            );
+            assert!(
+                agent.mandatory_waypoints.iter().any(|&m| m),
+                "concave route must include a mandatory clearance vertex: mandatory={:?}, path={:?}",
+                agent.mandatory_waypoints,
+                agent.path,
+            );
+            // Freeze the fresh plan so periodic refresh cannot swap the route
+            // mid-traverse, matching the canonical no-stuck test.
+            let mut frozen = agent.clone();
+            frozen.replan_cooldown_ticks = u32::MAX;
+            registry.set_component(id, frozen).unwrap();
+        }
+
+        // (b) never reaches stuck detection; recovery never arms.
+        assert!(
+            agent.stuck_ticks < STUCK_TICKS_THRESHOLD,
+            "full-speed agent reached stuck detection on tick {tick_index}: pos={:?}, cursor={}, path={:?}",
+            agent_position(&registry, id),
+            agent.waypoint_cursor,
+            agent.path,
+        );
+        assert_eq!(
+            agent.unstick_window_remaining,
+            0,
+            "full-speed agent fired recovery on tick {tick_index}: pos={:?}, cursor={}",
+            agent_position(&registry, id),
+            agent.waypoint_cursor,
+        );
+
+        let position = agent_position(&registry, id);
+
+        // (d) the resolved capsule center clears the corner geometry by the
+        // effective clearance (same point-to-static-mesh query the waypoint
+        // clearance tests use).
+        let clearance = static_mesh_clearance(&world, position, rest_y(&params));
+        assert!(
+            clearance + clearance_epsilon >= effective_clearance_radius,
+            "full-speed agent cut the corner on tick {tick_index}: pos={position:?} cleared only {clearance:.4}m, expected >= {:.4}m",
+            effective_clearance_radius - clearance_epsilon,
+        );
+
+        // (c) speed through the intermediate vertices: on ticks where a mandatory
+        // vertex is the active target within the arrival band — the exact window
+        // the OLD throttle crawled to near zero — the agent now runs at
+        // move_speed. This window only opens once the agent has driven up to the
+        // wall-end vertices, long after the initial acceleration ramp completed.
+        if easing_onto_mandatory_waypoint(&agent, position, arrival_radius) {
+            easing_speeds.push(steer_speed(&registry, id));
+        }
+
+        if agent.arrived {
+            arrived = true;
+            break;
+        }
+    }
+
+    // (a) reached the goal within budget — did not orbit/stall at the corner.
+    assert!(
+        arrived,
+        "full-speed agent did not arrive within 600 ticks (possible corner orbit/stall)"
+    );
+    // Positively confirm the mandatory-vertex window was exercised so (c) is not
+    // a vacuous pass.
+    assert!(
+        !easing_speeds.is_empty(),
+        "full-speed agent never entered the mandatory-vertex arrival band; the speed guarantee was never exercised"
+    );
+
+    // (c) did NOT crawl. The removed throttle set the in-band goal speed to
+    // move_speed * (dist / arrival_radius), which is STRICTLY below move_speed on
+    // EVERY in-band tick and fell toward zero as the agent neared each vertex. So
+    // two facts, together, prove the throttle is gone and the agent drives the
+    // corner at speed:
+    //   - many in-band ticks run at the full move_speed — mathematically
+    //     impossible under the old throttle (it forbids full speed in-band); and
+    //   - the mean in-band speed stays high, so the only slow ticks are the
+    //     brief, single-tick heading-reset re-accelerations at the tight
+    //     collision band (goal_speed zeroes steer_velocity to re-establish the
+    //     outgoing safe chord), not a sustained crawl.
+    let full_speed_ticks = easing_speeds
+        .iter()
+        .filter(|&&s| s >= move_speed - EPS)
+        .count();
+    assert!(
+        full_speed_ticks >= 4,
+        "expected several full-speed ticks while rounding the mandatory vertices (the old throttle makes full speed in-band impossible), got {full_speed_ticks} of {} in-band ticks: {easing_speeds:?}",
+        easing_speeds.len(),
+    );
+    let mean_speed = easing_speeds.iter().sum::<f32>() / easing_speeds.len() as f32;
+    assert!(
+        mean_speed >= 0.6 * move_speed,
+        "full-speed agent crawled the mandatory vertices: mean in-band speed {mean_speed:.3} m/s (expected >= {:.3}); the old throttle crawled toward zero across the whole window",
+        0.6 * move_speed,
+    );
+}
+
+#[test]
+fn slow_agent_clears_mandatory_clearance_vertices_without_stuck_detection() {
+    // Regression: the mandatory-waypoint easing band was silently calibrated to
+    // move_speed ~= 4.0. An author-defined slower enemy eases onto a mandatory
+    // clearance vertex with per-tick goal-projected progress below
+    // STUCK_PROGRESS_EPSILON (an absolute distance), which used to trip false
+    // stuck recovery at the clearance vertex this machinery exists to smooth.
+    //
+    // Guards only the mandatory-clearance-vertex regime: no false stuck while a
+    // move_speed = 1.0 agent eases onto and through the interior funnel
+    // waypoints. The test stops asserting once the cursor passes the last
+    // mandatory waypoint, because the separate final arrival-slowdown crawl also
+    // dips a slow agent under STUCK_PROGRESS_EPSILON — a distinct, deferred issue
+    // tracked in context/plans/drafts/E10--slow-agent-arrival-stuck/.
+    let corner = ConcaveCorner::fixture();
+    let world = corner.collision_world();
+    let graph = corner.nav_graph();
+    let params = graph.agent_params();
+    let mut registry = EntityRegistry::new();
+    let id = spawn_agent(&mut registry, 1.2, 1.2, &params);
+    // 1.0 m/s: well below the canonical 4.0 the easing band was tuned against,
+    // and inside the regime where the eased mandatory tail dips under the stuck
+    // floor while the intent gate still arms recovery.
+    {
+        let mut agent = registry
+            .get_component::<AgentComponent>(id)
+            .unwrap()
+            .clone();
+        agent.move_speed = 1.0;
+        registry.set_component(id, agent).unwrap();
+    }
+    let destination = Vec3::new(5.0, rest_y(&params), 5.0);
+    set_destination(&mut registry, id, destination);
+
+    // Slower agent, same route: allow proportionally more ticks than the 4.0
+    // m/s variant's 600.
+    let arrival_radius = ARRIVAL_RADIUS_FACTOR * params.radius;
+    let mut saw_mandatory_throttle = false;
+    for tick_index in 0..4000 {
+        // Neutral vertical channel, matching the canonical no-stuck test, so the
+        // assertion exercises the funnel/capsule route rather than floor settle.
+        tick(&mut registry, &world, Some(&graph), 0.0, DT);
+        let agent = registry.get_component::<AgentComponent>(id).unwrap();
+        // Record whether the mandatory-easing throttle (goal_speed < move_speed
+        // while a mandatory vertex is the active target) ever engaged, so a run
+        // that rounded the route without ever entering the throttle can't pass
+        // this suppression guard vacuously.
+        if easing_onto_mandatory_waypoint(&agent, agent_position(&registry, id), arrival_radius) {
+            saw_mandatory_throttle = true;
+        }
+        if tick_index == 0 {
+            assert!(
+                agent.path.len() >= 3,
+                "concave route must retain an interior funnel waypoint: {:?}",
+                agent.path
+            );
+            // Positively confirm the route actually contains a mandatory
+            // clearance vertex, so the run below can't pass vacuously on a route
+            // that never enters the regime this gate protects.
+            assert!(
+                agent.mandatory_waypoints.iter().any(|&m| m),
+                "concave route must include a mandatory clearance vertex: mandatory={:?}, path={:?}",
+                agent.mandatory_waypoints,
+                agent.path,
+            );
+        }
+
+        // True while a mandatory clearance vertex still sits at or ahead of the
+        // cursor — the exact regime the E10 easing gate must keep stuck-free.
+        let mandatory_ahead = agent
+            .mandatory_waypoints
+            .get(agent.waypoint_cursor..)
+            .is_some_and(|rest| rest.iter().any(|&m| m));
+
+        if !mandatory_ahead {
+            // Cursor advanced past the last mandatory clearance vertex onto the
+            // final arrival-slowdown leg. The regime this test guards is done;
+            // the slow final-arrival crawl is the deferred E10 issue and is out
+            // of scope here, so end the run successfully.
+            assert!(
+                saw_mandatory_throttle,
+                "slow agent cleared the route without ever engaging the mandatory-easing throttle, \
+                 so the no-stuck guarantee was never exercised (vacuous pass)"
+            );
+            return;
+        }
+
+        assert!(
+            agent.stuck_ticks < STUCK_TICKS_THRESHOLD,
+            "slow agent reached stuck detection while easing through mandatory clearance vertices on tick {tick_index}: pos={:?}, cursor={}, stuck_ticks={}, path={:?}",
+            agent_position(&registry, id),
+            agent.waypoint_cursor,
+            agent.stuck_ticks,
+            agent.path,
+        );
+        assert_eq!(
+            agent.unstick_window_remaining,
+            0,
+            "slow agent must not fire recovery while easing through mandatory clearance vertices on tick {tick_index}: pos={:?}, cursor={}",
+            agent_position(&registry, id),
+            agent.waypoint_cursor,
+        );
+
+        if tick_index == 0 {
+            // Freeze the fresh plan so periodic refresh cannot replace the route
+            // mid-traverse, matching the canonical-speed variant.
+            let mut frozen_plan = agent.clone();
+            frozen_plan.replan_cooldown_ticks = u32::MAX;
+            registry.set_component(id, frozen_plan).unwrap();
+        }
+    }
+
+    panic!(
+        "slow agent never advanced past the mandatory clearance vertices within 4000 ticks: pos={:?}, cursor={:?}",
+        agent_position(&registry, id),
+        registry
+            .get_component::<AgentComponent>(id)
+            .map(|a| a.waypoint_cursor),
+    );
+}
+
+#[test]
+fn chasing_agent_follows_moving_target_around_concave_corner_without_stalling() {
+    // Regression (E10 follow-up): mandatory clearance vertices plus the
+    // stuck-suppression gate made a chasing enemy PAUSE the moment its target
+    // rounded the concave corner. With a MOVING destination the plan is refreshed
+    // (drift + 30-tick staleness) and each refresh resets the waypoint cursor to a
+    // mandatory clearance vertex the agent must reach within 0.04 m to advance; on
+    // a live chase heading it never lands that exact band, eases forever, and the
+    // suppression gate keeps zeroing stuck_ticks so tangent recovery never arms.
+    // Net observable: has_path && !arrived && !blocked with the agent frozen at the
+    // corner. Static-target tests miss this because they freeze the plan.
+    let corner = ConcaveCorner::fixture();
+    let world = corner.collision_world();
+    let graph = corner.nav_graph();
+    let params = graph.agent_params();
+    let mut registry = EntityRegistry::new();
+    let id = spawn_agent(&mut registry, 1.2, 1.2, &params);
+
+    // The "player": a moving destination that rounds the concave corner past the
+    // enemy. On this fixture every route from the enemy's start wraps the east
+    // wall end (the three mandatory clearance vertices at x=7.37), then crosses
+    // the interior region to the goal. The player starts on the side that keeps
+    // the enemy committed to that wall end, then walks to the far (north-west)
+    // side of the interior — the "rounds a corner past the enemy" moment — while
+    // the enemy is still easing onto the mandatory clearance vertices. It then
+    // rests at a final interior point the enemy must ultimately reach.
+    let ry = rest_y(&params);
+    let player_waypoints = [Vec3::new(6.0, ry, 2.6), Vec3::new(2.6, ry, 6.0)];
+    let player_speed = 0.8_f32; // slow so the enemy can ultimately catch up
+    let player_at = |elapsed: f32| -> Vec3 {
+        let mut budget = elapsed * player_speed;
+        for seg in player_waypoints.windows(2) {
+            let len = distance_xz(seg[0], seg[1]);
+            if budget <= len || len <= 1e-6 {
+                let t = if len <= 1e-6 { 0.0 } else { budget / len };
+                return seg[0].lerp(seg[1], t);
+            }
+            budget -= len;
+        }
+        *player_waypoints.last().unwrap()
+    };
+    let final_player = *player_waypoints.last().unwrap();
+
+    let max_ticks = 2400usize;
+    // Silent-stall detector: a run of consecutive ticks in the pursuit state
+    // (has_path && !arrived && !blocked) with negligible net displacement. The
+    // pre-fix bug also manifested as walking off the interior into a permanent
+    // `blocked` state; the arrival assertion below is the mechanism-agnostic
+    // catch, this detector pins the specific silent-stall symptom the review
+    // named (frozen with a live path, neither arrived nor blocked).
+    let mut stall_run = 0usize;
+    let mut stall_window_start = Vec3::ZERO;
+    let stall_limit = 90usize; // 1.5 s of no progress is a hang, not easing
+    let mut arrived = false;
+    let mut min_final_distance = f32::INFINITY;
+
+    for tick_index in 0..max_ticks {
+        let elapsed = tick_index as f32 * DT;
+        set_destination(&mut registry, id, player_at(elapsed));
+
+        let before = agent_position(&registry, id);
+        // Neutral vertical channel, matching the sibling no-stuck tests.
+        tick(&mut registry, &world, Some(&graph), 0.0, DT);
+        let after = agent_position(&registry, id);
+
+        let state = path_state(&registry, id).unwrap();
+        let agent = registry.get_component::<AgentComponent>(id).unwrap();
+        min_final_distance = min_final_distance.min(distance_xz(after, final_player));
+
+        // Track a silent-stall run: pursuing (path, not arrived, not blocked) yet
+        // essentially not moving.
+        let pursuing = state.has_path && !state.arrived && !state.blocked;
+        if pursuing && distance_xz(before, after) < 0.5 * STUCK_PROGRESS_EPSILON {
+            if stall_run == 0 {
+                stall_window_start = before;
+            }
+            stall_run += 1;
+        } else {
+            stall_run = 0;
+        }
+        assert!(
+            stall_run < stall_limit,
+            "chasing agent entered a silent stall at tick {tick_index}: {stall_run} ticks with no motion \
+             from {stall_window_start:?} (pos={after:?}, cursor={}, stuck_ticks={}, unstick={}, \
+             has_path={}, arrived={}, blocked={}, mandatory={:?}, path={:?})",
+            agent.waypoint_cursor,
+            agent.stuck_ticks,
+            agent.unstick_window_remaining,
+            state.has_path,
+            state.arrived,
+            state.blocked,
+            agent.mandatory_waypoints,
+            agent.path,
+        );
+
+        // Once the player has come to rest, the enemy must close in and arrive.
+        if distance_xz(after, final_player) <= ARRIVAL_RADIUS_FACTOR * params.radius + 0.05 {
+            arrived = true;
+            break;
+        }
+    }
+
+    assert!(
+        arrived,
+        "chasing agent never reached the vicinity of the moving target's final position {final_player:?}; \
+         closest approach was {min_final_distance:.3} m over {max_ticks} ticks",
+    );
+}
+
+#[test]
 fn stuck_detection_reaches_threshold_then_recovery_fires_next_tick() {
     let corner = ConcaveCorner::fixture();
     let world = corner.collision_world();
@@ -573,8 +1129,8 @@ fn recovery_window_escapes_concave_corner_with_goal_projected_progress() {
     let displacement = Vec3::new(end.x - start.x, 0.0, end.z - start.z);
     let progress = displacement.dot(goal_dir);
     assert!(
-        progress > SEGMENTED_CONCAVE_ESCAPE_DISTANCE,
-        "recovery should escape the segmented concave route with goal-projected progress > {SEGMENTED_CONCAVE_ESCAPE_DISTANCE}, got {progress}; start={start:?}, end={end:?}"
+        progress > STUCK_PROGRESS_EPSILON,
+        "recovery should restore goal-projected progress above the stuck epsilon {STUCK_PROGRESS_EPSILON}, got {progress}; start={start:?}, end={end:?}"
     );
     assert!(
         xz_length(displacement) > SEGMENTED_CONCAVE_ESCAPE_DISTANCE,
@@ -727,7 +1283,13 @@ fn stuck_detection_resets_for_idle_blocked_and_arrived_gates() {
 }
 
 #[test]
-fn failed_same_tick_replan_suppresses_stale_recovery_threshold() {
+fn failed_replan_keeps_stale_path_and_recovery_still_fires() {
+    // Path failure is TRANSIENT: a replan that finds no route (no nav graph
+    // here) must not wipe the path the agent is following — the agent keeps
+    // moving on its last good route. With the stale path retained, live
+    // steering intent persists, so an agent that had already accumulated the
+    // stuck threshold still fires tangent recovery this same tick instead of
+    // converting the wedge into a frozen blocked hold.
     let wall = LWall::fixture();
     let world = wall.collision_world();
     let params = agent_params();
@@ -741,162 +1303,96 @@ fn failed_same_tick_replan_suppresses_stale_recovery_threshold() {
             .unwrap()
             .clone();
         agent.stuck_ticks = STUCK_TICKS_THRESHOLD;
-        agent.planned_destination = None;
+        agent.planned_destination = None; // forces a drift-driven replan now
         registry.set_component(id, agent).unwrap();
     }
 
-    tick(&mut registry, &world, None, GRAVITY, DT);
+    let result = tick(&mut registry, &world, None, GRAVITY, DT);
 
     let agent = registry.get_component::<AgentComponent>(id).unwrap();
+    assert_eq!(
+        result.replans, 1,
+        "planned_destination=None routes through the budgeted replan path"
+    );
     assert!(
-        agent.blocked,
-        "missing nav graph should produce a no-route state"
-    );
-    assert!(
-        agent.path.is_empty(),
-        "failed replan should drop the stale path"
+        !agent.blocked,
+        "an agent still holding a path to follow is not blocked"
     );
     assert_eq!(
-        agent.stuck_ticks, 0,
-        "failed same-tick replan should clear stale detection"
+        agent.path,
+        vec![destination],
+        "the failed replan must keep the stale path"
     );
     assert_eq!(
-        agent.unstick_window_remaining, 0,
-        "failed same-tick replan must not seed recovery"
+        agent.unstick_window_remaining,
+        UNSTICK_WINDOW - 1,
+        "retained intent lets the accumulated threshold fire recovery this tick"
     );
+    assert_eq!(agent.stuck_ticks, 0, "recovery fire resets the detector");
     assert_eq!(
-        agent.planned_destination,
-        Some(destination),
-        "failed replan should keep the failed-plan latch for the cooldown gate"
+        agent.planned_destination, None,
+        "the recovery fire re-requests a budgeted forced replan"
     );
 }
 
 #[test]
-fn failed_forced_recovery_replan_holds_without_stale_steer_or_tangent() {
-    // Regression: a recovery-forced replan can fail from a wedged/off-navmesh
-    // position; once the path is cleared, stale steer_velocity and the fixed
-    // tangent bias must not move the blocked agent toward a global side.
+fn pathless_blocked_agent_does_not_drift_from_stale_steer_or_tangent() {
+    // A blocked agent with NO path must not be moved by stale steer_velocity or
+    // the recovery tangent bias toward a global side. With no path there is no
+    // movement intent, so a leftover recovery window is cleared (blocked
+    // retries ride the replan cooldown, not the recovery window) and the agent
+    // holds position exactly.
     let wall = LWall::fixture();
     let world = wall.collision_world();
     let params = agent_params();
     let mut registry = EntityRegistry::new();
     let id = spawn_agent(&mut registry, 1.0, 6.0, &params);
     let destination = Vec3::new(7.0, rest_y(&params), 6.0);
-    set_manual_path(&mut registry, id, vec![destination]);
+    set_destination(&mut registry, id, destination);
     {
         let mut agent = registry
             .get_component::<AgentComponent>(id)
             .unwrap()
             .clone();
-        agent.planned_destination = None;
         agent.unstick_window_remaining = 3;
         agent.steer_velocity = Vec3::X * agent.move_speed;
         registry.set_component(id, agent).unwrap();
     }
 
     let start = agent_position(&registry, id);
+    // No nav graph: the first (drift-admitted) plan fails with no prior path.
     let result = tick(&mut registry, &world, None, GRAVITY, DT);
     let end = agent_position(&registry, id);
 
     let agent = registry.get_component::<AgentComponent>(id).unwrap();
     assert_eq!(
         result.replans, 1,
-        "planned_destination=None should still route through the budgeted replan path"
+        "the never-planned destination is drift-admitted through the budget"
     );
-    assert!(
-        agent.blocked,
-        "the failed query still reports blocked while recovery continues"
-    );
-    assert!(
-        agent.path.is_empty(),
-        "the failed query still drops the stale path"
-    );
-    assert_eq!(
-        agent.planned_destination, None,
-        "active recovery should keep retrying budgeted forced replans during its window"
-    );
-    assert_eq!(
-        agent.unstick_window_remaining, 2,
-        "failed forced replan should spend one recovery tick, not cancel the retry window"
-    );
+    assert!(agent.blocked, "no route and no retained path reads blocked");
+    assert!(agent.path.is_empty(), "there is no path to retain");
     assert_eq!(
         agent.steer_velocity,
         Vec3::ZERO,
-        "empty blocked path should zero steer_velocity instead of retaining the stale heading"
-    );
-    assert!(
-        distance_xz(start, end) <= EPS,
-        "failed forced replan should produce no XZ movement; start={start:?}, end={end:?}"
-    );
-}
-
-#[test]
-fn final_recovery_tick_failed_forced_replan_closes_latch_for_cooldown() {
-    // Regression: a failed recovery-forced replan on the final recovery tick
-    // left planned_destination=None, causing one more drift-driven retry after
-    // the bounded window had expired.
-    let wall = LWall::fixture();
-    let world = wall.collision_world();
-    let params = agent_params();
-    let mut registry = EntityRegistry::new();
-    let id = spawn_agent(&mut registry, 1.0, 6.0, &params);
-    let destination = Vec3::new(7.0, rest_y(&params), 6.0);
-    set_manual_path(&mut registry, id, vec![destination]);
-    {
-        let mut agent = registry
-            .get_component::<AgentComponent>(id)
-            .unwrap()
-            .clone();
-        agent.planned_destination = None;
-        agent.unstick_window_remaining = 1;
-        agent.steer_velocity = Vec3::X * agent.move_speed;
-        registry.set_component(id, agent).unwrap();
-    }
-
-    let final_recovery_result = tick(&mut registry, &world, None, GRAVITY, DT);
-
-    {
-        let agent = registry.get_component::<AgentComponent>(id).unwrap();
-        assert_eq!(
-            final_recovery_result.replans, 1,
-            "the final recovery tick should attempt its forced replan through the budget"
-        );
-        assert!(agent.blocked, "missing nav graph should mark blocked");
-        assert!(agent.path.is_empty(), "failed replan should drop the path");
-        assert_eq!(
-            agent.unstick_window_remaining, 0,
-            "the final recovery tick should spend the remaining window"
-        );
-        assert_eq!(
-            agent.planned_destination,
-            Some(destination),
-            "an expired recovery window should close the forced-replan latch"
-        );
-    }
-
-    let following_result = tick(&mut registry, &world, None, GRAVITY, DT);
-
-    let agent = registry.get_component::<AgentComponent>(id).unwrap();
-    assert_eq!(
-        following_result.replans, 0,
-        "after recovery expires, the failed-plan cooldown should block an immediate retry"
-    );
-    assert_eq!(
-        agent.planned_destination,
-        Some(destination),
-        "normal blocked lifecycle should keep the failed-plan latch closed"
+        "an empty path zeroes steering instead of retaining the stale heading"
     );
     assert_eq!(
         agent.unstick_window_remaining, 0,
-        "the expired recovery window should stay closed"
+        "recovery has nothing to bias without a path; the window clears"
+    );
+    assert!(
+        distance_xz(start, end) <= EPS,
+        "a pathless blocked agent holds position; start={start:?}, end={end:?}"
     );
 }
 
 #[test]
 fn just_fired_recovery_window_survives_next_tick_failed_forced_replan() {
-    // Regression: recovery fires by clearing planned_destination, then the next
-    // tick's forced replan fails; that failure must not erase the just-seeded
-    // window.
+    // Recovery fires by clearing planned_destination; the next tick's forced
+    // replan fails (no nav graph). The failure must keep the stale path — so
+    // movement intent persists and the just-seeded window keeps running — and
+    // record the failed attempt so the staleness cooldown gates the next retry
+    // instead of hammering the budget every tick.
     let wall = LWall::fixture();
     let world = wall.collision_world();
     let params = agent_params();
@@ -933,24 +1429,37 @@ fn just_fired_recovery_window_survives_next_tick_failed_forced_replan() {
 
     let replan_result = tick(&mut registry, &world, None, GRAVITY, DT);
 
-    let agent = registry.get_component::<AgentComponent>(id).unwrap();
+    {
+        let agent = registry.get_component::<AgentComponent>(id).unwrap();
+        assert_eq!(
+            replan_result.replans, 1,
+            "the follow-up forced replan is admitted through the normal budget"
+        );
+        assert!(
+            !agent.blocked,
+            "the stale path is retained, so the agent is not blocked"
+        );
+        assert_eq!(
+            agent.path,
+            vec![destination],
+            "the failed forced replan keeps the stale path"
+        );
+        assert_eq!(
+            agent.unstick_window_remaining,
+            UNSTICK_WINDOW - 2,
+            "the just-fired recovery window keeps running on retained intent"
+        );
+        assert_eq!(
+            agent.planned_destination,
+            Some(destination),
+            "a failed retry records the attempt; the staleness cooldown gates the next"
+        );
+    }
+
+    let followup_result = tick(&mut registry, &world, None, GRAVITY, DT);
     assert_eq!(
-        replan_result.replans, 1,
-        "the follow-up forced replan is admitted through the normal budget"
-    );
-    assert!(agent.blocked, "missing nav graph should still mark blocked");
-    assert!(
-        agent.path.is_empty(),
-        "failed forced replan should still clear the path"
-    );
-    assert_eq!(
-        agent.unstick_window_remaining,
-        UNSTICK_WINDOW - 2,
-        "failed forced replan should preserve the just-fired recovery window"
-    );
-    assert_eq!(
-        agent.planned_destination, None,
-        "just-fired recovery should remain eligible for budgeted retry while the window runs"
+        followup_result.replans, 0,
+        "the failed-plan cooldown blocks an immediate re-retry"
     );
 }
 
@@ -1127,6 +1636,99 @@ fn lookahead_targets_path_ahead_and_falls_back_to_current_waypoint() {
     agent.path.truncate(1);
     let unavailable = target_point(&agent, position, 1.0).unwrap();
     assert_eq!(unavailable, agent.path[0]);
+}
+
+#[test]
+fn outgoing_only_clearance_bevel_is_not_arrival_skipped_or_lookahead_shortcut() {
+    let mut agent = AgentComponent::new(0.35, 1.8, 0.4, 4.0);
+    let corner = Vec3::ZERO;
+    let outgoing_bevel = Vec3::new(0.37, 0.0, 0.37);
+    agent.path = vec![corner, outgoing_bevel, Vec3::new(2.0, 0.0, 1.0)];
+    agent.mandatory_waypoints = vec![true, true, false];
+
+    // Regression: the canonical 0.37m outgoing-only bevel was inside the
+    // ordinary 0.525m arrival band, so steering skipped both hard points. The
+    // cursor must NOT skip the vertex and lookahead must NOT shortcut past it,
+    // but an INTERMEDIATE mandatory vertex is now traversed at full move_speed
+    // (no arrival-style throttle — it is a corner to round, not a point to
+    // settle onto), so the goal speed here is the full move_speed.
+    let position = Vec3::new(-0.1, 0.0, 0.0);
+    let radius = agent.radius;
+    let speed = goal_speed(
+        &mut agent,
+        position,
+        ARRIVAL_RADIUS_FACTOR * radius,
+        ARRIVAL_SLOWDOWN_RADIUS_FACTOR * radius,
+    );
+    assert_eq!(agent.waypoint_cursor, 0);
+    assert_eq!(speed, agent.move_speed);
+    assert_eq!(target_point(&agent, position, 10.0), Some(corner));
+
+    // The full-speed approach must still advance the cursor past the tight
+    // mandatory band without stalling: each tick's goal-projected progress stays
+    // well above the stuck-progress floor.
+    let mut approach = Vec3::new(-0.1, 0.0, 0.0);
+    for _ in 0..16 {
+        let speed = goal_speed(
+            &mut agent,
+            approach,
+            ARRIVAL_RADIUS_FACTOR * radius,
+            ARRIVAL_SLOWDOWN_RADIUS_FACTOR * radius,
+        );
+        if agent.waypoint_cursor > 0 {
+            break;
+        }
+        let progress = speed * DT;
+        assert!(
+            progress > STUCK_PROGRESS_EPSILON,
+            "mandatory arrival tail fell below stuck progress: {progress}"
+        );
+        approach.x += progress;
+    }
+    assert_eq!(agent.waypoint_cursor, 1);
+    assert_eq!(target_point(&agent, approach, 10.0), Some(outgoing_bevel));
+}
+
+#[test]
+fn mandatory_clearance_turn_restarts_heading_on_outgoing_safe_leg() {
+    let mut agent = AgentComponent::new(0.35, 1.8, 0.4, 4.0);
+    let clearance_turn = Vec3::ZERO;
+    let goal = Vec3::new(1.0, 0.0, 0.0);
+    agent.path = vec![Vec3::new(0.0, 0.0, -1.0), clearance_turn, goal];
+    agent.mandatory_waypoints = vec![false, true, false];
+    agent.waypoint_cursor = 1;
+    agent.steer_velocity = Vec3::new(0.0, 0.0, agent.move_speed);
+
+    // Regression: the final mandatory turn retained its incoming heading and
+    // the turn-rate limiter rounded the clearance vertex back into collision.
+    let position = Vec3::new(0.0, 0.0, -MANDATORY_WAYPOINT_ARRIVAL_RADIUS * 0.5);
+    let radius = agent.radius;
+    let speed = goal_speed(
+        &mut agent,
+        position,
+        ARRIVAL_RADIUS_FACTOR * radius,
+        ARRIVAL_SLOWDOWN_RADIUS_FACTOR * radius,
+    );
+    assert_eq!(agent.waypoint_cursor, 2);
+
+    let velocity = integrated_steer_velocity(
+        &agent,
+        position,
+        speed,
+        STEERING_ACCEL_PER_SPEED * agent.move_speed,
+        MAX_TURN_RATE,
+        LOOKAHEAD_DISTANCE_RADIUS_FACTOR * agent.radius,
+        DT,
+    );
+    let outgoing_direction = Vec3::new(goal.x - position.x, 0.0, goal.z - position.z).normalize();
+    assert!(
+        velocity.normalize().dot(outgoing_direction) > 1.0 - EPS,
+        "mandatory turn must start on its outgoing safe leg; velocity={velocity:?}, outgoing={outgoing_direction:?}"
+    );
+    assert!(
+        velocity.dot(outgoing_direction) * DT > STUCK_PROGRESS_EPSILON,
+        "mandatory turn restart must still clear the strict progress floor; velocity={velocity:?}"
+    );
 }
 
 #[test]
@@ -1395,6 +1997,60 @@ fn agent_with_no_path_reports_blocked_and_holds_position() {
 }
 
 #[test]
+fn drifted_destination_replan_failure_keeps_agent_moving_on_stale_path() {
+    // The live-play freeze, isolated: a chasing agent holds a good path; its
+    // target then moves far enough to cross the drift threshold, forcing a
+    // replan that FAILS (the target left the navmesh entirely). Pre-fix the
+    // failure wiped the working path — speed 0, blocked, frozen mid-chase. The
+    // failure must instead keep the stale route and the agent moving.
+    let wall = LWall::fixture();
+    let world = wall.collision_world();
+    let graph = wall.nav_graph();
+    let params = agent_params();
+
+    let mut registry = EntityRegistry::new();
+    let id = spawn_agent(&mut registry, 1.0, 6.0, &params);
+    let good_destination = Vec3::new(7.0, rest_y(&params), 6.0);
+    set_destination(&mut registry, id, good_destination);
+    for _ in 0..10 {
+        tick(&mut registry, &world, Some(&graph), GRAVITY, DT);
+    }
+    assert!(
+        path_state(&registry, id).unwrap().has_path,
+        "fixture: the agent must be following a live path before the drift"
+    );
+
+    // The target teleports far beyond the navmesh: past the drift threshold
+    // (forces a replan THIS tick) and past the snap tolerance (the replan fails).
+    let unroutable = Vec3::new(7.0, rest_y(&params), 20.0);
+    set_destination(&mut registry, id, unroutable);
+    let before = agent_position(&registry, id);
+    let result = tick(&mut registry, &world, Some(&graph), GRAVITY, DT);
+    let after = agent_position(&registry, id);
+
+    let agent = registry.get_component::<AgentComponent>(id).unwrap();
+    assert_eq!(result.replans, 1, "the drifted destination is admitted");
+    assert!(
+        !agent.blocked,
+        "an agent still holding a path to follow is not blocked"
+    );
+    assert!(
+        !agent.path.is_empty(),
+        "the failed replan must keep the stale route"
+    );
+    assert!(
+        distance_xz(before, after) > STUCK_PROGRESS_EPSILON,
+        "the agent keeps moving on its stale route; moved {}",
+        distance_xz(before, after)
+    );
+    assert_eq!(
+        agent.planned_destination,
+        Some(unroutable),
+        "the failed attempt is recorded; the cooldown gates the retry"
+    );
+}
+
+#[test]
 fn blocked_agent_replans_when_live_destination_becomes_directly_routable() {
     // Regression: a failed plan can leave an alert enemy as
     // arrived=false/has_path=false/blocked=true. If the agent later sits on the
@@ -1406,7 +2062,9 @@ fn blocked_agent_replans_when_live_destination_becomes_directly_routable() {
     let params = agent_params();
 
     let mut registry = EntityRegistry::new();
-    let id = spawn_agent(&mut registry, -1.0, 6.0, &params);
+    // Spawned 3.0 outside every region — beyond the eroded-band snap tolerance
+    // (radius 0.35 + 1.5 * cell 1.0 = 1.85), so pathfinding genuinely fails.
+    let id = spawn_agent(&mut registry, -3.0, 6.0, &params);
     let old_destination = Vec3::new(1.0, rest_y(&params), 6.0);
     set_destination(&mut registry, id, old_destination);
 
@@ -1414,7 +2072,10 @@ fn blocked_agent_replans_when_live_destination_becomes_directly_routable() {
     assert_eq!(failed.replans, 1, "first tick attempts the bad plan");
     {
         let state = path_state(&registry, id).unwrap();
-        assert!(state.blocked, "off-navmesh start should fail pathfinding");
+        assert!(
+            state.blocked,
+            "a start far off the navmesh should fail pathfinding"
+        );
         assert!(!state.has_path, "failed plan should hold no path");
     }
 

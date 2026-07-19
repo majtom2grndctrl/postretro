@@ -4,8 +4,9 @@
 
 mod path;
 // One-shot path query. Re-exported so callers import `crate::nav::find_path`;
-// the production caller is the agent steering tick (`agent_steering`).
-pub use path::find_path;
+// the primary production caller is the agent steering tick (`agent_steering`),
+// and combat positioning (`combat_positioning`) also queries it.
+pub(crate) use path::find_path;
 
 use glam::Vec3;
 use postretro_level_format::navmesh::{NavMeshSection, NavPortal, NavRegion};
@@ -203,6 +204,79 @@ impl NavGraph {
         best.map(|(i, _)| i)
     }
 
+    /// Maximum XZ distance an off-mesh query position may sit from a region and
+    /// still resolve to it via [`resolve_region_at`].
+    ///
+    /// The bake erodes the walkable grid conservatively: every cell any point of
+    /// which lies within `agent_radius` of a boundary column is removed, so the
+    /// walkable set can start up to `agent_radius + cell diagonal` away from the
+    /// actual wall. A capsule legitimately standing against that wall (its
+    /// center at roughly its radius plus a collision skin from the surface)
+    /// therefore sits INSIDE the eroded band — off every region — even though it
+    /// is physically on walkable floor. Chase targets (the player hugging a
+    /// corner) and steered agents (pushed wall-ward by collide-and-slide,
+    /// separation, or full-speed corner rounding) hit this constantly, and a
+    /// routing query that returns `None` for them freezes pursuit.
+    ///
+    /// `radius + 1.5 * cell_size` covers the conservative quantization
+    /// (`cell * sqrt(2)`) with slack for query capsules fatter than the baked
+    /// agent (the player pawn). It stays far below any authored corridor width,
+    /// so snapping cannot jump a wall: positions in an eroded band are always
+    /// nearer the band's own region than anything across the solid geometry that
+    /// caused the erosion.
+    pub(crate) fn region_snap_tolerance(&self) -> f32 {
+        self.agent.radius + 1.5 * self.grid.cell_size
+    }
+
+    /// [`region_at`], with off-mesh tolerance: a position outside every region
+    /// resolves to the NEAREST region within [`region_snap_tolerance`] (XZ
+    /// distance to the region footprint; ties break toward the nearer floor
+    /// band, then the lower index). `None` when the position is farther than the
+    /// tolerance from everything — genuinely off the mesh, not merely inside the
+    /// eroded wall margin.
+    ///
+    /// This is the routing definition of "which region does this world position
+    /// belong to": `find_path` resolves BOTH endpoints through it, and the
+    /// steering replan gates use it so a target skirting in and out of the
+    /// eroded band does not flap between "routable" and "off-mesh".
+    pub(crate) fn resolve_region_at(&self, position: Vec3) -> Option<usize> {
+        if let Some(region) = self.region_at(position) {
+            return Some(region);
+        }
+
+        let tolerance = self.region_snap_tolerance();
+        let mut best: Option<(usize, f32, f32)> = None;
+        for (i, region) in self.regions.iter().enumerate() {
+            let dx = (region.world_min_xz[0] - position.x)
+                .max(position.x - region.world_max_xz[0])
+                .max(0.0);
+            let dz = (region.world_min_xz[1] - position.z)
+                .max(position.z - region.world_max_xz[1])
+                .max(0.0);
+            let dist_xz = (dx * dx + dz * dz).sqrt();
+            if dist_xz > tolerance {
+                continue;
+            }
+            let dy = if position.y < region.floor_y_min {
+                region.floor_y_min - position.y
+            } else if position.y > region.floor_y_max {
+                position.y - region.floor_y_max
+            } else {
+                0.0
+            };
+            let better = match best {
+                Some((_, best_dist, best_dy)) => {
+                    dist_xz < best_dist || (dist_xz == best_dist && dy < best_dy)
+                }
+                None => true,
+            };
+            if better {
+                best = Some((i, dist_xz, dy));
+            }
+        }
+        best.map(|(i, _, _)| i)
+    }
+
     /// Iterate the portals touching `region_index` (the per-region adjacency
     /// built at load). Empty when the region is isolated or the index is out of
     /// range. Navmesh query surface; pathfinding uses `region_portal_indices`
@@ -356,6 +430,48 @@ mod tests {
         // z in [0,4) → region 0; z in [4,8) → region 1.
         assert_eq!(graph.region_at(Vec3::new(2.0, 0.0, 1.0)), Some(0));
         assert_eq!(graph.region_at(Vec3::new(2.0, 0.5, 5.0)), Some(1));
+    }
+
+    #[test]
+    fn resolve_region_at_matches_region_at_for_on_mesh_points() {
+        let graph = NavGraph::from_section(&single_region_section());
+        let inside = Vec3::new(-2.0, 0.1, -6.0);
+        assert_eq!(graph.resolve_region_at(inside), graph.region_at(inside));
+        assert_eq!(graph.resolve_region_at(inside), Some(0));
+    }
+
+    #[test]
+    fn resolve_region_at_snaps_eroded_band_point_to_nearest_region() {
+        // Region footprint x [-3,-1), z [-7,-5); agent radius 0.3, cell 0.5 →
+        // tolerance 0.3 + 0.75 = 1.05. A point 0.4 outside the footprint (the
+        // eroded wall margin a capsule can legitimately stand in) resolves.
+        let graph = NavGraph::from_section(&single_region_section());
+        assert_eq!(graph.region_at(Vec3::new(-0.6, 0.1, -6.0)), None);
+        assert_eq!(graph.resolve_region_at(Vec3::new(-0.6, 0.1, -6.0)), Some(0));
+        // Diagonal off the corner within tolerance also resolves.
+        assert_eq!(graph.resolve_region_at(Vec3::new(-0.5, 0.1, -4.5)), Some(0));
+    }
+
+    #[test]
+    fn resolve_region_at_rejects_points_beyond_the_snap_tolerance() {
+        let graph = NavGraph::from_section(&single_region_section());
+        // 1.5 beyond the footprint edge > tolerance 1.05: genuinely off-mesh.
+        assert_eq!(graph.resolve_region_at(Vec3::new(0.5, 0.1, -6.0)), None);
+        assert_eq!(graph.resolve_region_at(Vec3::new(100.0, 0.0, 100.0)), None);
+    }
+
+    #[test]
+    fn resolve_region_at_picks_the_nearer_of_two_regions() {
+        // Two stacked regions; a point just below region 0's footprint is nearer
+        // region 0 than region 1 and must snap to it.
+        let graph = NavGraph::from_section(&stacked_region_section());
+        // (-0.5, 0, 3.5): left of both footprints (x0 = 0), within the 1.85
+        // tolerance of both (0.5 from region 0, ~0.71 from region 1); the
+        // nearer region 0 must win.
+        assert_eq!(graph.region_at(Vec3::new(-0.5, 0.0, 3.5)), None);
+        assert_eq!(graph.resolve_region_at(Vec3::new(-0.5, 0.0, 3.5)), Some(0));
+        // Mirrored just above the shared edge: region 1 is nearer.
+        assert_eq!(graph.resolve_region_at(Vec3::new(-0.5, 0.5, 4.5)), Some(1));
     }
 
     #[test]

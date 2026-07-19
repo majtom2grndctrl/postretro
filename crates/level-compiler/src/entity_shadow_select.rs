@@ -359,7 +359,7 @@ mod tests {
             }],
             Vec::new(),
         );
-        script_light_membership::apply_manifest(&mut lights, &manifest)
+        script_light_membership::apply_manifest(&mut lights, &[true], &manifest)
             .expect("script target becomes an animated baked light");
 
         let selected = select(&lights, &empty_geometry());

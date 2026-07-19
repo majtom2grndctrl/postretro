@@ -47,8 +47,14 @@ pub fn handles_to_json(handles: Vec<LightQueryHandle>) -> serde_json::Value {
         .map(|h| {
             // `LightComponent` carries `#[serde(rename_all = "camelCase")]`,
             // so direct serialization yields the script-facing key shape.
-            let comp =
+            let mut comp =
                 serde_json::to_value(&h.component).expect("LightComponent always serializes");
+            // `animated_slot` is renderer-routing metadata, not part of the
+            // authored LightComponent surface. Keep it in engine storage but
+            // remove it from the read snapshot handed to either script host.
+            if let Value::Object(fields) = &mut comp {
+                fields.remove("animatedSlot");
+            }
             let mut obj = Map::with_capacity(5);
             obj.insert("id".to_string(), Value::from(h.id.to_raw()));
             let [x, y, z] = h.component.origin;
@@ -474,6 +480,36 @@ mod tests {
         let (ctx, _) = test_ctx_with_light(true, None);
         let handles = collect_light_handles(&ctx, Some("nonexistent_tag"));
         assert!(handles.is_empty());
+    }
+
+    #[test]
+    fn world_query_snapshot_omits_internal_animated_slot() {
+        // Regression: runtime map lights have an assigned compose slot while
+        // compiler-time queries run before slot assignment. Exposing it made
+        // setupLevel branch differently between the two hosts.
+        let (ctx, id) = test_ctx_with_light(false, Some("baked_wave"));
+        {
+            let mut registry = ctx.registry.borrow_mut();
+            let mut component = registry
+                .get_component::<LightComponent>(id)
+                .expect("fixture light exists")
+                .clone();
+            component.animated_slot = Some(7);
+            registry
+                .set_component(id, component)
+                .expect("fixture light updates");
+        }
+
+        let json = handles_to_json(collect_light_handles(&ctx, Some("baked_wave")));
+        assert_eq!(
+            json[0]["component"]["animatedSlot"],
+            serde_json::Value::Null
+        );
+        assert!(
+            json[0]["component"]
+                .as_object()
+                .is_some_and(|component| !component.contains_key("animatedSlot"))
+        );
     }
 
     #[test]

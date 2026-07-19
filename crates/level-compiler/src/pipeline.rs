@@ -256,6 +256,7 @@ fn run_after_parsing(
     if let Some(membership_manifest) = membership_manifest.as_ref() {
         let inventory = crate::script_light_membership::apply_manifest(
             &mut map_data.lights,
+            &map_data.light_start_active_defaults,
             membership_manifest,
         )?;
         crate::script_light_membership::log_inventory(&inventory, &map_data.lights);

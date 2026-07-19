@@ -471,10 +471,11 @@ map build reserves its animated baked-light data automatically. Do not add
 to reactions returned by that map's `setupLevel`; use `_animated 1` when a
 mod-global reaction can animate the static light.
 
-Do not gate this setup on persisted-store reads. Map compilation observes store
-defaults, which can differ from the player's restored values. If a static light
-is animated at runtime without baked membership, the engine warns as a safety
-net. Dynamic lights remain runtime-only, and no animation curves are baked.
+Do not gate this setup on store reads. Compile-time membership evaluation has no
+live or persisted store and returns neutral/nil values from store primitives,
+which can differ from runtime state. If a static light is animated at runtime
+without baked membership, the engine warns as a safety net. Dynamic lights
+remain runtime-only, and no animation curves are baked.
 
 ### TriggerVolumeHandle
 

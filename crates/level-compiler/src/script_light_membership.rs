@@ -5,13 +5,10 @@
 
 use anyhow::{Context as _, Result, bail};
 use postretro_level_format::light_membership::{
-    LightAnimationSnapshot, LightComponentSnapshot, LightMembershipManifest, LightTable,
-    LightTableLight,
+    LightComponentSnapshot, LightMembershipManifest, LightTable, LightTableLight,
 };
 
-use crate::map_data::{
-    FalloffModel, LightAnimation, LightType, MapLight, animated_light_placeholder,
-};
+use crate::map_data::{FalloffModel, LightType, MapLight, animated_light_placeholder};
 
 /// Inventory emitted by `prl-build` after it accepts a manifest. Keeping it as
 /// data makes the routing decision directly testable; logging stays at the
@@ -25,8 +22,9 @@ pub(crate) struct MembershipInventory {
     pub(crate) stubbed_primitives: Vec<String>,
 }
 
-/// Build the full script-facing table from the parsed map lights. The vec
-/// position is intentionally the only identity sent across the sidecar seam.
+/// Build the compiler query table from the parsed map lights. The vec position
+/// is intentionally the only identity sent across the sidecar seam. The
+/// script host removes internal routing fields before exposing snapshots.
 pub(crate) fn light_table_from_lights(lights: &[MapLight]) -> Result<LightTable> {
     let lights = lights
         .iter()
@@ -52,7 +50,10 @@ pub(crate) fn light_table_from_lights(lights: &[MapLight]) -> Result<LightTable>
                     // Slots are allocated only after the sidecar is consumed;
                     // the parsed map has no compose-slot number to expose yet.
                     animated_slot: None,
-                    animation: light.animation.as_ref().map(animation_snapshot),
+                    // Runtime LightBridge initializes every map-light
+                    // component with no script animation. Authored bake curves
+                    // are compiler input, not the setupLevel snapshot.
+                    animation: None,
                 },
             })
         })
@@ -67,12 +68,20 @@ pub(crate) fn light_table_from_lights(lights: &[MapLight]) -> Result<LightTable>
 /// their runtime path owns all animation and no bake structure is reserved.
 pub(crate) fn apply_manifest(
     lights: &mut [MapLight],
+    authored_start_active_defaults: &[bool],
     manifest: &LightMembershipManifest,
 ) -> Result<MembershipInventory> {
     manifest
         .validate_version()
         .map_err(anyhow::Error::from)
         .context("invalid light-membership manifest")?;
+    if authored_start_active_defaults.len() != lights.len() {
+        bail!(
+            "authored light start-state table has {} entries for {} map lights",
+            authored_start_active_defaults.len(),
+            lights.len()
+        );
+    }
 
     let mut inventory = MembershipInventory {
         stubbed_primitives: manifest.stubbed_primitives.clone(),
@@ -118,7 +127,9 @@ pub(crate) fn apply_manifest(
         script_targeted_static[index] = true;
         if light.animation.is_none() && !light.is_animated {
             light.animation = Some(animated_light_placeholder(
-                record.start_active.unwrap_or(true),
+                record
+                    .start_active
+                    .unwrap_or(authored_start_active_defaults[index]),
             ));
             inventory.derived_static_indices.push(index);
         } else if light.is_animated {
@@ -173,18 +184,6 @@ pub(crate) fn log_inventory(inventory: &MembershipInventory, lights: &[MapLight]
         log::info!(
             "[prl-build] light membership: data-script evaluation stubbed primitive {primitive}"
         );
-    }
-}
-
-fn animation_snapshot(animation: &LightAnimation) -> LightAnimationSnapshot {
-    LightAnimationSnapshot {
-        period_ms: animation.period * 1000.0,
-        phase: Some(animation.phase),
-        play_count: None,
-        start_active: Some(animation.start_active),
-        brightness: animation.brightness.clone(),
-        color: animation.color.clone(),
-        direction: animation.direction.clone(),
     }
 }
 
@@ -267,8 +266,12 @@ mod tests {
         flagged[0].is_animated = true;
         flagged[0].animation = Some(animated_light_placeholder(true));
 
-        let inventory = apply_manifest(&mut derived, &manifest(vec![record(0, false, None)]))
-            .expect("valid static record applies");
+        let inventory = apply_manifest(
+            &mut derived,
+            &[true],
+            &manifest(vec![record(0, false, None)]),
+        )
+        .expect("valid static record applies");
 
         assert_eq!(inventory.derived_static_indices, vec![0]);
         assert!(StaticBakedLights::from_lights(&derived).is_empty());
@@ -281,25 +284,44 @@ mod tests {
     }
 
     #[test]
+    fn light_table_snapshot_matches_runtime_initial_animation_state() {
+        let mut lights = vec![light(false)];
+        lights[0].animation = Some(animated_light_placeholder(false));
+
+        let table = light_table_from_lights(&lights).expect("light table builds");
+
+        assert!(
+            table.lights[0].component.animation.is_none(),
+            "setupLevel must see the runtime LightBridge initial snapshot, not compiler bake curves"
+        );
+    }
+
+    #[test]
     fn flagged_target_uses_script_resolved_start_active_in_place() {
         let mut lights = vec![light(false)];
         lights[0].is_animated = true;
         lights[0].animation = Some(animated_light_placeholder(false));
 
-        apply_manifest(&mut lights, &manifest(vec![record(0, false, Some(true))]))
-            .expect("valid flagged record applies");
+        apply_manifest(
+            &mut lights,
+            &[false],
+            &manifest(vec![record(0, false, Some(true))]),
+        )
+        .expect("valid flagged record applies");
 
         assert!(lights[0].animation.as_ref().unwrap().start_active);
     }
 
     #[test]
-    fn trigger_only_target_preserves_flagged_start_active_default() {
+    fn trigger_only_static_target_preserves_authored_inactive_default() {
         let mut lights = vec![light(false)];
-        lights[0].is_animated = true;
-        lights[0].animation = Some(animated_light_placeholder(false));
 
-        apply_manifest(&mut lights, &manifest(vec![record(0, false, None)]))
-            .expect("trigger-only record applies");
+        apply_manifest(
+            &mut lights,
+            &[false],
+            &manifest(vec![record(0, false, None)]),
+        )
+        .expect("trigger-only record applies");
 
         assert!(!lights[0].animation.as_ref().unwrap().start_active);
     }
@@ -307,8 +329,12 @@ mod tests {
     #[test]
     fn dynamic_manifest_target_creates_no_bake_membership() {
         let mut lights = vec![light(true)];
-        let inventory = apply_manifest(&mut lights, &manifest(vec![record(0, true, Some(false))]))
-            .expect("dynamic record is normal");
+        let inventory = apply_manifest(
+            &mut lights,
+            &[true],
+            &manifest(vec![record(0, true, Some(false))]),
+        )
+        .expect("dynamic record is normal");
 
         assert_eq!(inventory.dynamic_target_indices, vec![0]);
         assert!(lights[0].animation.is_none());
@@ -325,7 +351,8 @@ mod tests {
         let manifest =
             LightMembershipManifest::new(vec![dynamic_record], vec!["spawnParticle".to_owned()]);
 
-        let inventory = apply_manifest(&mut lights, &manifest).expect("manifest applies");
+        let inventory =
+            apply_manifest(&mut lights, &[true, true], &manifest).expect("manifest applies");
 
         assert_eq!(inventory.flag_only_indices, vec![0]);
         assert_eq!(inventory.dynamic_target_indices, vec![1]);
@@ -338,23 +365,27 @@ mod tests {
         let mut stale = manifest(vec![]);
         stale.version = 0;
         assert!(
-            apply_manifest(&mut [], &stale)
+            apply_manifest(&mut [], &[], &stale)
                 .unwrap_err()
                 .to_string()
                 .contains("invalid light-membership manifest")
         );
 
         let mut lights = vec![light(false)];
-        let error = apply_manifest(&mut lights, &manifest(vec![record(4, false, None)]))
-            .unwrap_err()
-            .to_string();
+        let error = apply_manifest(
+            &mut lights,
+            &[true],
+            &manifest(vec![record(4, false, None)]),
+        )
+        .unwrap_err()
+        .to_string();
         assert!(error.contains("map-light index 4"));
     }
 
     #[test]
     fn manifest_rejects_dynamic_tier_mismatch() {
         let mut lights = vec![light(false)];
-        let error = apply_manifest(&mut lights, &manifest(vec![record(0, true, None)]))
+        let error = apply_manifest(&mut lights, &[true], &manifest(vec![record(0, true, None)]))
             .unwrap_err()
             .to_string();
         assert!(error.contains("reports isDynamic=true"));
@@ -365,6 +396,7 @@ mod tests {
         let mut lights = vec![light(false)];
         let error = apply_manifest(
             &mut lights,
+            &[true],
             &manifest(vec![record(0, false, None), record(0, false, None)]),
         )
         .unwrap_err()

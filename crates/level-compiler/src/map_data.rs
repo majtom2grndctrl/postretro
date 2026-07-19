@@ -531,6 +531,10 @@ pub struct MapData {
     pub entity_brushes: Vec<(String, usize)>,
     pub entities: Vec<EntityInfo>,
     pub lights: Vec<MapLight>,
+    /// Authored initial state for each `lights` entry, retained even when the
+    /// light has no parse-time animation. Script-derived membership uses this
+    /// fallback when no levelLoad reaction resolves `startActive`.
+    pub light_start_active_defaults: Vec<bool>,
     /// Optional path to a data-script source file (`.ts`/`.js`/`.luau`), taken
     /// verbatim from the `data_script` worldspawn KVP. Resolved relative to the
     /// `.map` file's directory by the compile pipeline; the compiled output is

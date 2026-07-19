@@ -52,12 +52,13 @@ pub struct LightTableLight {
     /// format. The script host reshapes it to the SDK's `{ x, y, z }` value.
     pub position: [f32; 3],
     pub is_dynamic: bool,
-    /// Full script-facing `LightComponent` snapshot. Arrays in this wire
-    /// record are reshaped to `{ x, y, z }` vectors before the SDK sees them.
+    /// Build-side `LightComponent` snapshot. Arrays in this wire record are
+    /// reshaped to `{ x, y, z }` vectors before the SDK sees them. Internal
+    /// routing fields are removed from the authored query surface.
     pub component: LightComponentSnapshot,
 }
 
-/// Script-facing light component as it crosses the compiler-side JSON seam.
+/// Build-side light component as it crosses the compiler-side JSON seam.
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[derive(Clone, Debug, PartialEq)]
@@ -72,9 +73,8 @@ pub struct LightComponentSnapshot {
     pub cone_angle_outer: Option<f32>,
     pub cone_direction: Option<[f32; 3]>,
     pub is_dynamic: bool,
-    /// The authored compose-side animated-light slot, if this light owns one.
-    /// This is retained in the table because `world.query` exposes the full
-    /// serialized component snapshot to data scripts.
+    /// Compose-side routing metadata retained for wire compatibility. The
+    /// manifest evaluator removes it before exposing query snapshots to scripts.
     pub animated_slot: Option<u32>,
     pub animation: Option<LightAnimationSnapshot>,
 }

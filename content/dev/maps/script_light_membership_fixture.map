@@ -1,6 +1,6 @@
 // Game: Generic
 // Format: Standard
-// Compact room with one script-targeted static light.
+// Compact room with one trigger-only script target and one ordinary static neighbour.
 {
 "classname" "worldspawn"
 "initialGravity" "-9.81"
@@ -72,4 +72,11 @@
 "light" "300"
 "_falloff_range" "2048"
 "_tags" "script_wave"
+"_start_inactive" "1"
+}
+{
+"classname" "light"
+"origin" "192 128 100"
+"light" "200"
+"_falloff_range" "1024"
 }

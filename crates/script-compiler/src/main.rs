@@ -28,7 +28,7 @@
 //! ```text
 //! scripts-build --in <INPUT.ts> --out <OUTPUT.js>
 //! scripts-build --in <INPUT.ts> --out <OUTPUT.js> --dep-json
-//! scripts-build --in <INPUT.ts> --out <OUTPUT.js> --light-table <TABLE.json> --manifest-out <MANIFEST.json>
+//! scripts-build --in <INPUT.ts> --out <OUTPUT.js> --light-table <TABLE.json> --manifest-out <MANIFEST.json> [--mod-root <DIR>]
 //! scripts-build --prelude --sdk-root <DIR> --out <OUTPUT.js>
 //! ```
 //!
@@ -68,6 +68,7 @@ fn run() -> Result<()> {
             dep_json,
             light_table,
             manifest_out,
+            mod_root,
         } => {
             // Canonicalize so swc resolves relative imports against a stable
             // absolute path regardless of the cwd at invocation.
@@ -104,13 +105,19 @@ fn run() -> Result<()> {
                 let table: LightTable = serde_json::from_str(&table_json).with_context(|| {
                     format!("failed to parse light table `{}`", light_table.display())
                 })?;
-                let manifest = emit_light_membership_manifest(&bundled.js, &entry, &table)
-                    .with_context(|| {
-                        format!(
-                            "failed to derive light-membership manifest for `{}`",
-                            entry.display()
-                        )
-                    })?;
+                let default_mod_root = entry.parent().unwrap_or_else(|| std::path::Path::new("."));
+                let manifest = emit_light_membership_manifest(
+                    &bundled.js,
+                    &entry,
+                    mod_root.as_deref().unwrap_or(default_mod_root),
+                    &table,
+                )
+                .with_context(|| {
+                    format!(
+                        "failed to derive light-membership manifest for `{}`",
+                        entry.display()
+                    )
+                })?;
                 if let Some(parent) = manifest_out.parent()
                     && !parent.as_os_str().is_empty()
                 {
@@ -160,6 +167,7 @@ enum CliMode {
         dep_json: bool,
         light_table: Option<PathBuf>,
         manifest_out: Option<PathBuf>,
+        mod_root: Option<PathBuf>,
     },
     Prelude {
         sdk_root: PathBuf,
@@ -179,6 +187,7 @@ fn parse_args() -> Result<CliMode> {
     let mut dep_json = false;
     let mut light_table: Option<PathBuf> = None;
     let mut manifest_out: Option<PathBuf> = None;
+    let mut mod_root: Option<PathBuf> = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -216,6 +225,13 @@ fn parse_args() -> Result<CliMode> {
                         .into(),
                 );
             }
+            "--mod-root" => {
+                mod_root = Some(
+                    args.next()
+                        .ok_or_else(|| anyhow!("`--mod-root` requires a path argument"))?
+                        .into(),
+                );
+            }
             "--sdk-root" => {
                 sdk_root = Some(
                     args.next()
@@ -247,6 +263,9 @@ fn parse_args() -> Result<CliMode> {
         if light_table.is_some() {
             bail!("`--light-table` and `--manifest-out` are incompatible with `--prelude`");
         }
+        if mod_root.is_some() {
+            bail!("`--mod-root` is incompatible with `--prelude`");
+        }
         let sdk_root =
             sdk_root.ok_or_else(|| anyhow!("`--prelude` requires `--sdk-root <dir>`"))?;
         Ok(CliMode::Prelude { sdk_root, output })
@@ -255,12 +274,16 @@ fn parse_args() -> Result<CliMode> {
             bail!("`--sdk-root` is only valid with `--prelude`");
         }
         let input = input.ok_or_else(|| anyhow!("missing `--in <path>`"))?;
+        if mod_root.is_some() && light_table.is_none() {
+            bail!("`--mod-root` is only valid with `--light-table` and `--manifest-out`");
+        }
         Ok(CliMode::Bundle {
             input,
             output,
             dep_json,
             light_table,
             manifest_out,
+            mod_root,
         })
     }
 }
@@ -269,7 +292,7 @@ fn print_usage() {
     eprintln!(
         "scripts-build — bundle and transpile TypeScript to JavaScript (no type checking).\n\
          \n\
-         USAGE:\n    scripts-build --in <INPUT.ts> --out <OUTPUT.js> [--dep-json] [--light-table <TABLE.json> --manifest-out <MANIFEST.json>]\n\
+         USAGE:\n    scripts-build --in <INPUT.ts> --out <OUTPUT.js> [--dep-json] [--light-table <TABLE.json> --manifest-out <MANIFEST.json> [--mod-root <DIR>]]\n\
          \n    scripts-build --prelude --sdk-root <DIR> --out <OUTPUT.js>\n\
          \n\
          Run `tsc --noEmit` in your editor or CI for type safety."

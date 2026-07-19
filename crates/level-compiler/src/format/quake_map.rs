@@ -267,17 +267,7 @@ pub fn translate_light(
 
     // `_start_inactive` only has runtime effect on animated lights; we still
     // parse and warn on static lights so authoring mistakes are visible.
-    let start_inactive = match parse_optional_int(props, "_start_inactive")? {
-        None | Some(0) => false,
-        Some(1) => true,
-        Some(other) => {
-            return Err(TranslateError::InvalidProperty {
-                key: "_start_inactive",
-                value: other.to_string(),
-                reason: "expected 0 (active at load) or 1 (inactive at load)",
-            });
-        }
-    };
+    let start_inactive = !authored_light_start_active(props)?;
 
     let bake_only = match parse_optional_int(props, "_bake_only")? {
         None | Some(0) => false,
@@ -574,6 +564,23 @@ fn parse_optional_int(
             }
         }
         None => Ok(None),
+    }
+}
+
+/// Authored initial state retained independently from animation membership.
+/// A script may derive membership later, after translation has intentionally
+/// left an unflagged static light's `animation` empty.
+pub(crate) fn authored_light_start_active(
+    props: &HashMap<String, String>,
+) -> Result<bool, TranslateError> {
+    match parse_optional_int(props, "_start_inactive")? {
+        None | Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        Some(other) => Err(TranslateError::InvalidProperty {
+            key: "_start_inactive",
+            value: other.to_string(),
+            reason: "expected 0 (active at load) or 1 (inactive at load)",
+        }),
     }
 }
 

@@ -6,7 +6,7 @@
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use anyhow::{Context as _, Result, anyhow, bail};
@@ -47,6 +47,8 @@ const UI_TREE_LUAU: &str = include_str!("../../../sdk/lib/ui/tree.luau");
 const UI_STATE_LUAU: &str = include_str!("../../../sdk/lib/ui/state.luau");
 const UI_THEME_LUAU: &str = include_str!("../../../sdk/lib/ui/theme.luau");
 
+const MAX_VIRTUAL_MODULE_COPY_DEPTH: usize = 32;
+
 /// Evaluate a compiled data script against `light_table` and derive the
 /// map-light membership sidecar. The script path selects QuickJS for `.ts` /
 /// `.js` input and Luau for `.luau` input; callers pass the already compiled
@@ -54,6 +56,7 @@ const UI_THEME_LUAU: &str = include_str!("../../../sdk/lib/ui/theme.luau");
 pub fn emit_light_membership_manifest(
     compiled_source: &str,
     script_path: &Path,
+    mod_root: &Path,
     light_table: &LightTable,
 ) -> Result<LightMembershipManifest> {
     light_table.validate_version().map_err(|e| anyhow!(e))?;
@@ -61,9 +64,13 @@ pub fn emit_light_membership_manifest(
 
     let stubs = Rc::new(RefCell::new(BTreeSet::new()));
     let returned = match script_path.extension().and_then(|ext| ext.to_str()) {
-        Some(ext) if ext.eq_ignore_ascii_case("luau") => {
-            evaluate_luau(compiled_source, script_path, light_table, stubs.clone())?
-        }
+        Some(ext) if ext.eq_ignore_ascii_case("luau") => evaluate_luau(
+            compiled_source,
+            script_path,
+            mod_root,
+            light_table,
+            stubs.clone(),
+        )?,
         _ => evaluate_quickjs(compiled_source, script_path, light_table, stubs.clone())?,
     };
 
@@ -134,6 +141,7 @@ fn evaluate_quickjs(
 fn evaluate_luau(
     source: &str,
     script_path: &Path,
+    mod_root: &Path,
     light_table: &LightTable,
     stubs: StubInventory,
 ) -> Result<JsonValue> {
@@ -148,7 +156,7 @@ fn evaluate_luau(
     install_lua_primitives(&lua, light_table, stubs).map_err(|error| {
         anyhow!("failed to install Luau manifest-evaluation primitives: {error}")
     })?;
-    install_lua_prelude(&lua)
+    install_lua_prelude(&lua, mod_root)
         .map_err(|error| anyhow!("failed to assemble Luau SDK prelude: {error}"))?;
     lua.sandbox(true)
         .map_err(|error| anyhow!("failed to freeze Luau manifest-evaluation globals: {error}"))?;
@@ -238,10 +246,18 @@ fn install_js_determinism(ctx: &JsCtx<'_>) -> Result<()> {
         r#"
         (() => {
           const NativeDate = Date;
-          globalThis.Date = class extends NativeDate {
-            constructor(...args) { super(...(args.length ? args : [0])); }
-            static now() { return 0; }
-          };
+          function PinnedDate(...args) {
+            if (new.target) {
+              return Reflect.construct(NativeDate, args.length ? args : [0], new.target);
+            }
+            // Native Date is both callable and constructible. Its callable
+            // form ignores arguments and returns the current instant as text.
+            return new NativeDate(0).toString();
+          }
+          Object.setPrototypeOf(PinnedDate, NativeDate);
+          PinnedDate.prototype = NativeDate.prototype;
+          Object.defineProperty(PinnedDate, "now", { value: () => 0 });
+          globalThis.Date = PinnedDate;
           let state = 0x6d2b79f5;
           Math.random = () => {
             state = (state * 1664525 + 1013904223) >>> 0;
@@ -283,16 +299,15 @@ fn install_js_primitives(
     }
 
     let light_table = light_table.clone();
+    let stubs_for_query = stubs.clone();
     let f = JsFunction::new(
         ctx.clone(),
-        move |_ctx: JsCtx<'_>, filter: JsObject<'_>| -> rquickjs::Result<JsJsonValue> {
+        move |ctx: JsCtx<'_>, filter: JsObject<'_>| -> rquickjs::Result<JsJsonValue> {
             let component: String = filter.get("component")?;
             let tag: Option<String> = filter.get("tag")?;
-            Ok(JsJsonValue(query_lights_json(
-                &light_table,
-                &component,
-                tag.as_deref(),
-            )))
+            query_world_json(&light_table, &component, tag.as_deref(), &stubs_for_query)
+                .map(JsJsonValue)
+                .map_err(|message| rquickjs::Exception::throw_message(&ctx, &message))
         },
     )?;
     globals.set("worldQuery", f)?;
@@ -316,9 +331,24 @@ fn install_lua_determinism(lua: &Lua) -> mlua::Result<()> {
     lua.load(
         r#"
         local state = 0x6d2b79f5
-        math.random = function(...)
+        local function nextRandom()
           state = (state * 1664525 + 1013904223) % 4294967296
           return state / 4294967296
+        end
+        math.random = function(lower, upper)
+          local sample = nextRandom()
+          if lower == nil then
+            return sample
+          end
+          if upper == nil then
+            upper = lower
+            lower = 1
+          end
+          if type(lower) ~= "number" or type(upper) ~= "number"
+              or lower % 1 ~= 0 or upper % 1 ~= 0 or lower > upper then
+            error("bad argument(s) to 'random' (interval is empty or bounds are not integers)")
+          end
+          return lower + math.floor(sample * (upper - lower + 1))
         end
         os.time = function(...) return 0 end
         os.clock = function() return 0 end
@@ -357,13 +387,13 @@ fn install_lua_primitives(
     }
 
     let light_table = light_table.clone();
+    let stubs_for_query = stubs.clone();
     let f = lua.create_function(move |lua, filter: LuaTable| {
         let component: String = filter.get("component")?;
         let tag: Option<String> = filter.get("tag")?;
-        json_to_lua(
-            lua,
-            &query_lights_json(&light_table, &component, tag.as_deref()),
-        )
+        let value = query_world_json(&light_table, &component, tag.as_deref(), &stubs_for_query)
+            .map_err(mlua::Error::RuntimeError)?;
+        json_to_lua(lua, &value)
     })?;
     globals.set("worldQuery", f)?;
     Ok(())
@@ -371,7 +401,7 @@ fn install_lua_primitives(
 
 /// Ordered Luau SDK construction. The wrapper bridges are visible only long
 /// enough for `world.luau` to capture them, exactly like the runtime prelude.
-fn install_lua_prelude(lua: &Lua) -> mlua::Result<()> {
+fn install_lua_prelude(lua: &Lua, mod_root: &Path) -> mlua::Result<()> {
     let globals = lua.globals();
 
     let game_state = eval_lua_table(lua, GAME_STATE_LUAU, "sdk/lib/game_state.luau")?;
@@ -472,7 +502,7 @@ fn install_lua_prelude(lua: &Lua) -> mlua::Result<()> {
         &["emitter", "smokeEmitter", "sparkEmitter", "dustEmitter"],
     )?;
     copy_lua_fields(&root, &data, DATA_FIELDS)?;
-    root.set_readonly(true);
+    let root = copy_readonly_lua_table(lua, root, 0)?;
     let ui = lua.create_table()?;
     copy_lua_fields(
         &ui,
@@ -523,16 +553,81 @@ fn install_lua_prelude(lua: &Lua) -> mlua::Result<()> {
     )?;
     copy_lua_fields(&ui, &game_state, &["getGameState"])?;
     copy_lua_fields(&ui, &ui_theme, &["defineTheme", "getDesignTokens"])?;
-    ui.set_readonly(true);
-    let require = lua.create_function(move |_, name: String| match name.as_str() {
+    let ui = copy_readonly_lua_table(lua, ui, 0)?;
+    // Match scripting-core's runtime resolver: relative paths are rooted at
+    // the mod, checked lexically for traversal, and evaluated in this state.
+    // The ordinary data-script runtime does not enable dependency tracking,
+    // so it likewise does not canonicalize each required file.
+    let mod_root = mod_root.to_path_buf();
+    let require = lua.create_function(move |lua, name: String| match name.as_str() {
         "postretro" => Ok(LuaValue::Table(root.clone())),
         "postretro/ui" => Ok(LuaValue::Table(ui.clone())),
-        _ => Err(mlua::Error::RuntimeError(format!(
-            "require(`{name}`): manifest evaluation exposes only postretro SDK modules"
-        ))),
+        _ => evaluate_luau_required_module(lua, &mod_root, &name),
     })?;
     globals.set("require", require)?;
     Ok(())
+}
+
+fn evaluate_luau_required_module(
+    lua: &Lua,
+    mod_root: &Path,
+    request: &str,
+) -> mlua::Result<LuaValue> {
+    let resolved =
+        resolve_luau_require_path(mod_root, request).map_err(mlua::Error::RuntimeError)?;
+    let source = std::fs::read_to_string(&resolved).map_err(|error| {
+        mlua::Error::RuntimeError(format!(
+            "require(`{request}`): failed to read `{}`: {error}",
+            resolved.display()
+        ))
+    })?;
+    let bytecode = LuaCompiler::new().compile(&source).map_err(|error| {
+        mlua::Error::RuntimeError(format!("require(`{request}`): compile failed: {error}"))
+    })?;
+    lua.load(&bytecode)
+        .set_name(resolved.to_string_lossy().as_ref())
+        .set_mode(mlua::ChunkMode::Binary)
+        .eval()
+}
+
+fn resolve_luau_require_path(
+    mod_root: &Path,
+    request: &str,
+) -> std::result::Result<PathBuf, String> {
+    let trimmed = request.trim();
+    if trimmed.is_empty() {
+        return Err("require: empty path".to_owned());
+    }
+    if trimmed.contains('\\') {
+        return Err(format!(
+            "require(`{request}`): backslashes are not permitted in require paths"
+        ));
+    }
+    if trimmed.split('/').any(|segment| segment == "..") {
+        return Err(format!(
+            "require(`{request}`): `..` segments are not permitted (mod root escape)"
+        ));
+    }
+    let stripped = trimmed.strip_prefix("./").unwrap_or(trimmed);
+    let candidate = Path::new(stripped);
+    if candidate.is_absolute() {
+        return Err(format!(
+            "require(`{request}`): absolute paths are not permitted"
+        ));
+    }
+    if candidate
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err(format!(
+            "require(`{request}`): `..` segments are not permitted (mod root escape)"
+        ));
+    }
+    let mut resolved = mod_root.join(candidate);
+    if resolved.extension().is_none() {
+        resolved.set_extension("luau");
+    }
+    Ok(resolved)
 }
 
 fn eval_lua_table(lua: &Lua, source: &str, name: &str) -> mlua::Result<LuaTable> {
@@ -551,6 +646,37 @@ fn copy_lua_fields(target: &LuaTable, source: &LuaTable, fields: &[&str]) -> mlu
         target.set(*field, source.get::<LuaValue>(*field)?)?;
     }
     Ok(())
+}
+
+/// Copy an SDK virtual module into compiler-owned tables and recursively mark
+/// every nested table read-only. This mirrors scripting-core's runtime module
+/// registry without introducing the reverse dependency that the compiler/VM
+/// boundary forbids.
+fn copy_readonly_lua_value(lua: &Lua, value: LuaValue, depth: usize) -> mlua::Result<LuaValue> {
+    match value {
+        LuaValue::Table(table) => {
+            copy_readonly_lua_table(lua, table, depth + 1).map(LuaValue::Table)
+        }
+        other => Ok(other),
+    }
+}
+
+fn copy_readonly_lua_table(lua: &Lua, source: LuaTable, depth: usize) -> mlua::Result<LuaTable> {
+    if depth > MAX_VIRTUAL_MODULE_COPY_DEPTH {
+        return Err(mlua::Error::RuntimeError(format!(
+            "virtual Luau module table nesting exceeds {MAX_VIRTUAL_MODULE_COPY_DEPTH} levels"
+        )));
+    }
+
+    let table = lua.create_table()?;
+    for pair in source.pairs::<LuaValue, LuaValue>() {
+        let (key, value) = pair?;
+        let key = copy_readonly_lua_value(lua, key, depth)?;
+        let value = copy_readonly_lua_value(lua, value, depth)?;
+        table.set(key, value)?;
+    }
+    table.set_readonly(true);
+    Ok(table)
 }
 
 fn game_state_refs_json() -> JsonValue {
@@ -574,9 +700,25 @@ fn game_state_refs_json() -> JsonValue {
     })
 }
 
-fn query_lights_json(light_table: &LightTable, component: &str, tag: Option<&str>) -> JsonValue {
+const WORLD_QUERY_COMPONENTS: &[&str] = &[
+    "light",
+    "transform",
+    "emitter",
+    "fog_volume",
+    "kinematic_mover",
+    "trigger_volume",
+    "particle",
+    "sprite_visual",
+];
+
+fn query_world_json(
+    light_table: &LightTable,
+    component: &str,
+    tag: Option<&str>,
+    stubs: &StubInventory,
+) -> std::result::Result<JsonValue, String> {
     match component {
-        "light" => JsonValue::Array(
+        "light" => Ok(JsonValue::Array(
             light_table
                 .lights
                 .iter()
@@ -586,12 +728,22 @@ fn query_lights_json(light_table: &LightTable, component: &str, tag: Option<&str
                 })
                 .map(light_handle_json)
                 .collect(),
-        ),
-        // There is no parsed map snapshot for these component kinds at this
-        // sidecar seam. Returning an empty set matches the normal runtime
-        // treatment for engine-managed particles and is preferable to making
-        // unrelated helpers fail membership extraction.
-        _ => JsonValue::Array(Vec::new()),
+        )),
+        component if WORLD_QUERY_COMPONENTS.contains(&component) => {
+            // The v1 compiler seam carries only map lights. Other valid
+            // runtime component kinds degrade to an empty query, and the
+            // inventory makes any branch-sensitive under-derivation visible.
+            stubs.borrow_mut().insert(format!("worldQuery:{component}"));
+            Ok(JsonValue::Array(Vec::new()))
+        }
+        other => Err(format!(
+            "invalid argument: worldQuery: unknown component `{other}`; supported: {}",
+            WORLD_QUERY_COMPONENTS
+                .iter()
+                .map(|component| format!("\"{component}\""))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        )),
     }
 }
 
@@ -617,7 +769,6 @@ fn component_json(component: &LightComponentSnapshot) -> JsonValue {
         "coneAngleOuter": component.cone_angle_outer,
         "coneDirection": component.cone_direction.map(vec3_json),
         "isDynamic": component.is_dynamic,
-        "animatedSlot": component.animated_slot,
         "animation": component.animation.as_ref().map(animation_json),
     })
 }
@@ -647,6 +798,10 @@ fn collect_membership(
         .ok_or_else(|| anyhow!("setupLevel must return an object"))?;
     let reactions = match manifest.get("reactions") {
         Some(JsonValue::Array(reactions)) => reactions.as_slice(),
+        // Luau has one empty-table literal for both arrays and objects. At
+        // this typed manifest boundary an empty `reactions = {}` is the empty
+        // dense array, matching the runtime descriptor parser.
+        Some(JsonValue::Object(reactions)) if reactions.is_empty() => &[],
         Some(_) => bail!("setupLevel.reactions must be an array"),
         None => &[],
     };
@@ -666,9 +821,11 @@ fn collect_membership(
         let Some(sequence) = reaction.get("sequence") else {
             continue;
         };
-        let sequence = sequence
-            .as_array()
-            .ok_or_else(|| anyhow!("reaction sequence must be an array"))?;
+        let sequence = match sequence {
+            JsonValue::Array(sequence) => sequence.as_slice(),
+            JsonValue::Object(sequence) if sequence.is_empty() => &[],
+            _ => bail!("reaction sequence must be an array"),
+        };
         for step in sequence {
             let step = step
                 .as_object()
@@ -928,8 +1085,13 @@ mod tests {
               ] };
             }
         "#;
-        let manifest = emit_light_membership_manifest(source, Path::new("fixture.ts"), &table())
-            .expect("script evaluates");
+        let manifest = emit_light_membership_manifest(
+            source,
+            Path::new("fixture.ts"),
+            Path::new("."),
+            &table(),
+        )
+        .expect("script evaluates");
         assert_eq!(manifest.lights.len(), 2);
         assert_eq!(manifest.lights[0].index, 2);
         assert_eq!(manifest.lights[0].start_active, Some(true));
@@ -950,8 +1112,13 @@ mod tests {
               ] };
             }
         "#;
-        let manifest = emit_light_membership_manifest(source, Path::new("fixture.ts"), &table())
-            .expect("script evaluates");
+        let manifest = emit_light_membership_manifest(
+            source,
+            Path::new("fixture.ts"),
+            Path::new("."),
+            &table(),
+        )
+        .expect("script evaluates");
         assert_eq!(manifest.lights.len(), 1);
         assert_eq!(manifest.lights[0].start_active, Some(true));
         assert!(manifest.lights[0].start_active_conflict);
@@ -966,12 +1133,96 @@ mod tests {
               return { reactions: [defineReaction("levelLoad", { sequence: light.pulse({ min: 0, max: 1, periodMs: 1 }) })] };
             }
         "#;
-        let first = emit_light_membership_manifest(source, Path::new("fixture.ts"), &table())
-            .expect("first evaluation");
-        let second = emit_light_membership_manifest(source, Path::new("fixture.ts"), &table())
-            .expect("second evaluation");
+        let first = emit_light_membership_manifest(
+            source,
+            Path::new("fixture.ts"),
+            Path::new("."),
+            &table(),
+        )
+        .expect("first evaluation");
+        let second = emit_light_membership_manifest(
+            source,
+            Path::new("fixture.ts"),
+            Path::new("."),
+            &table(),
+        )
+        .expect("second evaluation");
         assert_eq!(first, second);
         assert_eq!(first.lights[0].index, 2);
+    }
+
+    #[test]
+    fn deterministic_date_preserves_callable_and_construct_forms() {
+        // Regression: replacing Date with a class pinned construction but made
+        // the standard callable `Date()` form throw during setupLevel.
+        let source = r#"
+            function setupLevel() {
+              const called = Date();
+              const calledWithArgs = Date(1234);
+              const constructed = new Date();
+              const explicit = new Date(1234);
+              const compatible = typeof called === "string"
+                && called === calledWithArgs
+                && called === new Date(0).toString()
+                && constructed.getTime() === 0
+                && explicit.getTime() === 1234
+                && Date.now() === 0
+                && Date.UTC(1970, 0, 1) === 0;
+              const light = world.query({ component: "light", tag: compatible ? "wave" : "dynamic" })[0];
+              return { reactions: [defineReaction("levelLoad", { sequence: light.pulse({ min: 0, max: 1, periodMs: 1 }) })] };
+            }
+        "#;
+        let manifest = emit_light_membership_manifest(
+            source,
+            Path::new("fixture.ts"),
+            Path::new("."),
+            &table(),
+        )
+        .expect("callable and constructible deterministic Date evaluates");
+        assert_eq!(manifest.lights[0].index, 2);
+    }
+
+    #[test]
+    fn compiler_world_query_omits_internal_animated_slot_in_both_hosts() {
+        // Regression: runtime queries exposed assigned compose slots while the
+        // pre-bake compiler query could only expose null, allowing membership
+        // branches to diverge between evaluation hosts.
+        let mut light_table = table();
+        light_table.lights[0].component.animated_slot = Some(4);
+
+        let quickjs = r#"
+            function setupLevel() {
+              const light = world.query({ component: "light", tag: "wave" })[0];
+              if (Object.hasOwn(light.component, "animatedSlot")) throw new Error("leaked animatedSlot");
+              return { reactions: [defineReaction("levelLoad", { sequence: light.pulse({ min: 0, max: 1, periodMs: 1 }) })] };
+            }
+        "#;
+        let luau = r#"
+            function setupLevel(_)
+              local light = world:query({ component = "light", tag = "wave" })[1]
+              if light.component.animatedSlot ~= nil then error("leaked animatedSlot") end
+              return { reactions = {
+                defineReaction("levelLoad", { sequence = light:pulse({ min = 0, max = 1, periodMs = 1 }) }),
+              } }
+            end
+        "#;
+
+        let quickjs_manifest = emit_light_membership_manifest(
+            quickjs,
+            Path::new("fixture.ts"),
+            Path::new("."),
+            &light_table,
+        )
+        .expect("QuickJS query hides internal slot");
+        let luau_manifest = emit_light_membership_manifest(
+            luau,
+            Path::new("fixture.luau"),
+            Path::new("."),
+            &light_table,
+        )
+        .expect("Luau query hides internal slot");
+        assert_eq!(quickjs_manifest.lights, luau_manifest.lights);
+        assert_eq!(quickjs_manifest.lights[0].index, 2);
     }
 
     #[test]
@@ -979,6 +1230,7 @@ mod tests {
         let error = emit_light_membership_manifest(
             "function setupLevel() { throw new Error('bad setup'); }",
             Path::new("content/dev/bad-lights.ts"),
+            Path::new("."),
             &table(),
         )
         .expect_err("throwing data script must fail the build");
@@ -998,9 +1250,184 @@ mod tests {
               return { reactions: [defineReaction("levelLoad", { sequence: light.flicker({ min: 0, max: 1, rate: 4 }) })] };
             }
         "#;
-        let manifest = emit_light_membership_manifest(source, Path::new("fixture.ts"), &table())
-            .expect("stubs must not throw");
+        let manifest = emit_light_membership_manifest(
+            source,
+            Path::new("fixture.ts"),
+            Path::new("."),
+            &table(),
+        )
+        .expect("stubs must not throw");
         assert_eq!(manifest.stubbed_primitives, vec!["fireTick"]);
+    }
+
+    #[test]
+    fn unavailable_world_queries_degrade_and_inventory_branch_sensitive_use() {
+        let source = r#"
+            function setupLevel() {
+              const transforms = world.query({ component: "transform" });
+              world.query({ component: "particle" });
+              const light = world.query({ component: "light", tag: "wave" })[0];
+              return { reactions: transforms.length === 0 ? [] : [
+                defineReaction("levelLoad", { sequence: light.pulse({ min: 0, max: 1, periodMs: 1 }) }),
+              ] };
+            }
+        "#;
+        let manifest = emit_light_membership_manifest(
+            source,
+            Path::new("fixture.ts"),
+            Path::new("."),
+            &table(),
+        )
+        .expect("valid unavailable query kinds degrade");
+        assert!(manifest.lights.is_empty());
+        assert_eq!(
+            manifest.stubbed_primitives,
+            vec!["worldQuery:particle", "worldQuery:transform"]
+        );
+    }
+
+    #[test]
+    fn unknown_world_query_component_matches_runtime_error_contract() {
+        let quickjs = emit_light_membership_manifest(
+            "function setupLevel() { world.query({ component: 'decal' }); return {}; }",
+            Path::new("fixture.ts"),
+            Path::new("."),
+            &table(),
+        )
+        .expect_err("unknown QuickJS component must throw")
+        .to_string();
+        assert!(
+            quickjs.contains("invalid argument") && quickjs.contains("decal"),
+            "{quickjs}"
+        );
+
+        let luau = emit_light_membership_manifest(
+            "function setupLevel(_) world:query({ component = 'decal' }); return {} end",
+            Path::new("fixture.luau"),
+            Path::new("."),
+            &table(),
+        )
+        .expect_err("unknown Luau component must throw")
+        .to_string();
+        assert!(
+            luau.contains("invalid argument") && luau.contains("decal"),
+            "{luau}"
+        );
+    }
+
+    #[test]
+    fn empty_luau_reaction_array_is_valid() {
+        let manifest = emit_light_membership_manifest(
+            "function setupLevel(_) return { reactions = {} } end",
+            Path::new("fixture.luau"),
+            Path::new("."),
+            &table(),
+        )
+        .expect("empty Luau reaction table is the empty dense array");
+        assert!(manifest.lights.is_empty());
+    }
+
+    #[test]
+    fn luau_random_preserves_argument_forms_and_is_deterministic() {
+        let source = r#"
+            function setupLevel(_)
+              local unit = math.random()
+              local one = math.random(1)
+              local exact = math.random(2, 2)
+              local tag = unit >= 0 and unit < 1 and one == 1 and exact == 2 and "wave" or "dynamic"
+              local light = world:query({ component = "light", tag = tag })[1]
+              return { reactions = {
+                defineReaction("levelLoad", { sequence = light:pulse({ min = 0, max = 1, periodMs = 1 }) }),
+              } }
+            end
+        "#;
+        let first = emit_light_membership_manifest(
+            source,
+            Path::new("fixture.luau"),
+            Path::new("."),
+            &table(),
+        )
+        .expect("first Luau evaluation");
+        let second = emit_light_membership_manifest(
+            source,
+            Path::new("fixture.luau"),
+            Path::new("."),
+            &table(),
+        )
+        .expect("second Luau evaluation");
+        assert_eq!(first, second);
+        assert_eq!(first.lights[0].index, 2);
+    }
+
+    #[test]
+    fn luau_relative_require_uses_mod_root_and_sdk_virtual_modules() {
+        let root = std::env::temp_dir().join(format!(
+            "postretro-script-compiler-require-{}",
+            std::process::id()
+        ));
+        let modules = root.join("modules");
+        std::fs::create_dir_all(&modules).expect("create module fixture");
+        std::fs::write(
+            modules.join("membership.luau"),
+            r#"
+                local Postretro = require("postretro")
+                return function()
+                  local light = Postretro.world:query({ component = "light", tag = "wave" })[1]
+                  return Postretro.defineReaction("levelLoad", {
+                    sequence = light:pulse({ min = 0, max = 1, periodMs = 1 }),
+                  })
+                end
+            "#,
+        )
+        .expect("write module fixture");
+        let source = r#"
+            local membership = require("./modules/membership")
+            function setupLevel(_)
+              return { reactions = { membership() } }
+            end
+        "#;
+        let manifest = emit_light_membership_manifest(
+            source,
+            &root.join("maps/fixture.luau"),
+            &root,
+            &table(),
+        )
+        .expect("map-local relative module evaluates like runtime");
+        assert_eq!(manifest.lights[0].index, 2);
+        std::fs::remove_dir_all(root).expect("remove module fixture");
+    }
+
+    #[test]
+    fn luau_virtual_sdk_modules_are_recursively_readonly() {
+        // Regression: compiler-time require froze only module roots, so nested
+        // SDK tables were mutable even though the runtime deep-freezes them.
+        let source = r#"
+            local Postretro = require("postretro")
+            local Ui = require("postretro/ui")
+            local rootMutationOk = pcall(function()
+              Postretro.world.query = function() return {} end
+            end)
+            local uiMutationOk = pcall(function()
+              Ui.ui.createLocalState = function() return {} end
+            end)
+            function setupLevel(_)
+              if rootMutationOk or uiMutationOk then
+                error("nested SDK module table was writable")
+              end
+              local light = Postretro.world:query({ component = "light", tag = "wave" })[1]
+              return { reactions = {
+                Postretro.defineReaction("levelLoad", { sequence = light:pulse({ min = 0, max = 1, periodMs = 1 }) }),
+              } }
+            end
+        "#;
+        let manifest = emit_light_membership_manifest(
+            source,
+            Path::new("fixture.luau"),
+            Path::new("."),
+            &table(),
+        )
+        .expect("nested SDK module mutations fail like runtime");
+        assert_eq!(manifest.lights[0].index, 2);
     }
 
     #[test]
@@ -1020,11 +1447,16 @@ mod tests {
               } }
             end
         "#;
-        let ts_manifest = emit_light_membership_manifest(ts, Path::new("fixture.ts"), &table())
-            .expect("TS evaluates");
-        let luau_manifest =
-            emit_light_membership_manifest(luau, Path::new("fixture.luau"), &table())
-                .expect("Luau evaluates");
+        let ts_manifest =
+            emit_light_membership_manifest(ts, Path::new("fixture.ts"), Path::new("."), &table())
+                .expect("TS evaluates");
+        let luau_manifest = emit_light_membership_manifest(
+            luau,
+            Path::new("fixture.luau"),
+            Path::new("."),
+            &table(),
+        )
+        .expect("Luau evaluates");
         assert_eq!(ts_manifest.lights, luau_manifest.lights);
     }
 }

@@ -812,11 +812,8 @@ fn parse_size(raw: &str) -> anyhow::Result<u64> {
 // scripting integration. See:
 // context/plans/drafts/scripting-tools-dedup/index.md
 fn is_compiler_stale(binary_path: &Path) -> bool {
-    let source_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("script-compiler")
-        .join("src");
-    if !source_dir.is_dir() {
+    let source_dirs = compiler_freshness_roots();
+    if source_dirs.iter().all(|source_dir| !source_dir.is_dir()) {
         return false;
     }
     let sidecar_mtime = match std::fs::metadata(binary_path).and_then(|m| m.modified()) {
@@ -826,7 +823,7 @@ fn is_compiler_stale(binary_path: &Path) -> bool {
 
     // Find newest source mtime recursively
     let mut newest: Option<std::time::SystemTime> = None;
-    let mut stack = vec![source_dir];
+    let mut stack = source_dirs;
     while let Some(d) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&d) else {
             continue;
@@ -847,6 +844,21 @@ fn is_compiler_stale(binary_path: &Path) -> bool {
         Some(newest_mtime) => newest_mtime > sidecar_mtime,
         None => false,
     }
+}
+
+fn compiler_freshness_roots() -> Vec<PathBuf> {
+    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("level compiler lives two directories below the workspace")
+        .to_path_buf();
+    vec![
+        workspace_root.join("crates/script-compiler/src"),
+        // scripts-build embeds and evaluates this SDK source during manifest
+        // derivation. An SDK edit must invalidate the production sidecar even
+        // when the Rust crate itself is unchanged.
+        workspace_root.join("sdk/lib"),
+    ]
 }
 
 /// Return the non-empty streams captured from a child process.
@@ -992,14 +1004,14 @@ pub(crate) struct CompiledDataScript {
     pub(crate) membership_manifest: LightMembershipManifest,
 }
 
-/// Private staging directory for the two JSON sidecars and Luau's pass-through
-/// output. A directory, rather than predictable filenames in the map folder,
-/// prevents stale sidecars from one build being mistaken for another.
+/// Private staging directory for the JSON sidecars and compiled/pass-through
+/// script output. A directory, rather than predictable filenames in the map
+/// folder, prevents stale sidecars from one build being mistaken for another.
 struct DataScriptTempDir {
     path: PathBuf,
     light_table_path: PathBuf,
     manifest_path: PathBuf,
-    luau_output_path: PathBuf,
+    script_output_path: PathBuf,
     cleaned: bool,
 }
 
@@ -1015,7 +1027,7 @@ impl DataScriptTempDir {
                     return Ok(Self {
                         light_table_path: path.join("light-table.json"),
                         manifest_path: path.join("light-membership.json"),
-                        luau_output_path: path.join("data-script.luau"),
+                        script_output_path: path.join("data-script.out"),
                         path,
                         cleaned: false,
                     });
@@ -1144,13 +1156,10 @@ fn compile_worldspawn_data_script(
     let light_table = crate::script_light_membership::light_table_from_lights(lights)?;
     temporary.write_light_table(&light_table)?;
 
-    let output_path = if extension.as_deref() == Some("luau") {
-        // Luau stays pass-through in the PRL while still using scripts-build to
-        // evaluate setupLevel and produce the paired sidecar.
-        temporary.luau_output_path.clone()
-    } else {
-        source_path.with_extension("js")
-    };
+    // Always stage emitted bytes away from authored content. In particular, a
+    // `.js` input must never select itself as `--out` and be truncated while
+    // scripts-build is still deriving the manifest.
+    let output_path = temporary.script_output_path.clone();
     let compiler = find_scripts_build().ok_or_else(|| {
         anyhow::anyhow!(
             "[prl-build] data_script {} requires scripts-build to derive light membership, but scripts-build was not found or could not be built",
@@ -1172,6 +1181,8 @@ fn compile_worldspawn_data_script(
         .arg(&temporary.light_table_path)
         .arg("--manifest-out")
         .arg(&temporary.manifest_path)
+        .arg("--mod-root")
+        .arg(resolve_content_root(map_path))
         .output()
         .map_err(|error| {
             anyhow::anyhow!(
@@ -1281,6 +1292,20 @@ mod tests {
             "a Cargo test binary must ignore a stale deps/scripts-build in favor of the profile sidecar"
         );
         std::fs::remove_dir_all(root).expect("remove sidecar-resolution fixture");
+    }
+
+    #[test]
+    fn scripts_build_freshness_tracks_embedded_sdk_sources() {
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("workspace root");
+        let roots = compiler_freshness_roots();
+        assert!(roots.contains(&workspace.join("crates/script-compiler/src")));
+        assert!(
+            roots.contains(&workspace.join("sdk/lib")),
+            "SDK sources embedded by scripts-build must participate in production freshness"
+        );
     }
 
     fn png_bytes(width: u32, height: u32) -> Vec<u8> {
@@ -2026,6 +2051,10 @@ mod tests {
             help.contains("--manifest-out"),
             "resolved scripts-build must support --manifest-out: {help}"
         );
+        assert!(
+            help.contains("--mod-root"),
+            "resolved scripts-build must support runtime-parity Luau module resolution: {help}"
+        );
     }
 
     #[test]
@@ -2071,6 +2100,29 @@ mod tests {
     }
 
     #[test]
+    fn data_script_javascript_source_is_never_used_as_staged_output() {
+        let tmp_dir = unique_temp_dir("data-script-js-source");
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let map_path = tmp_dir.join("test.map");
+        std::fs::write(&map_path, "").unwrap();
+        let source_path = tmp_dir.join("level-data.js");
+        let source = "globalThis.setupLevel = function() { return { reactions: [] }; };\n";
+        std::fs::write(&source_path, source).unwrap();
+
+        let compiled = compile_worldspawn_data_script(&map_path, Some("level-data.js"), &[])
+            .expect("JavaScript data script should compile")
+            .expect("section must be emitted");
+
+        assert_eq!(
+            std::fs::read_to_string(&source_path).expect("read authored source after compile"),
+            source,
+            "scripts-build output must never overwrite the authored .js input"
+        );
+        assert!(!compiled.section.compiled_bytes.is_empty());
+        std::fs::remove_dir_all(&tmp_dir).unwrap();
+    }
+
+    #[test]
     fn fixture_data_script_derives_only_tagged_static_bake_membership() {
         let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -2090,12 +2142,26 @@ mod tests {
 
         let inventory = script_light_membership::apply_manifest(
             &mut map_data.lights,
+            &map_data.light_start_active_defaults,
             &compiled.membership_manifest,
         )
         .expect("apply fixture membership manifest");
 
+        assert_eq!(map_data.light_start_active_defaults, [false, true]);
         assert_eq!(inventory.derived_static_indices, vec![0]);
-        assert!(light_namespaces::StaticBakedLights::from_lights(&map_data.lights).is_empty());
+        assert!(
+            !map_data.lights[0]
+                .animation
+                .as_ref()
+                .expect("script target receives an animation placeholder")
+                .start_active,
+            "a trigger-only target must retain its authored _start_inactive default"
+        );
+        assert_eq!(
+            light_namespaces::StaticBakedLights::from_lights(&map_data.lights).len(),
+            1,
+            "the untagged static neighbour must remain in the ordinary static namespace"
+        );
         assert_eq!(
             light_namespaces::AnimatedBakedLights::from_lights(&map_data.lights).len(),
             1,

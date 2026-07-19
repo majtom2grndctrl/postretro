@@ -177,6 +177,14 @@ pub(crate) struct AgentTickResult {
 /// plan (it is waiting for a replan-budget slot) — not stuck, and not a chaser
 /// mid-pursuit (which retains its path). A genuinely unroutable agent reads
 /// `blocked`; an idle one reads `!has_destination`.
+///
+/// `blocked` implies `!has_path` by construction: a FAILED path refresh keeps
+/// the previous route (stale-but-moving) rather than wiping it, so `blocked`
+/// only latches when the agent holds no path at all — its destination is
+/// genuinely unroutable from where it stands (endpoints are snap-resolved by
+/// `find_path`, so the eroded wall margin never causes this). The blocked
+/// state is transient by design: retries ride the replan cooldown plus the
+/// drift/topology/direct-routable admission clauses.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct AgentPathState {
     /// The agent currently has a destination set (`Some`).
@@ -185,7 +193,9 @@ pub(crate) struct AgentPathState {
     pub(crate) has_path: bool,
     /// The agent reached its destination (within the arrival radius).
     pub(crate) arrived: bool,
-    /// The agent has a destination but pathfinding found no route to it.
+    /// The agent has a destination but pathfinding found no route to it AND it
+    /// holds no path to keep following (see the struct doc: a failed refresh
+    /// keeps the previous route, so `blocked` implies `!has_path`).
     pub(crate) blocked: bool,
     /// XZ distance from the agent's current position to its destination.
     /// `0.0` when there is no destination.
@@ -396,9 +406,6 @@ pub(crate) fn tick(
         // admission pass above (drift-driven before staleness-only, capped at the
         // budget) — the ONLY place the path is (re)built. An agent that WANTED a
         // replan but lost the prioritized race is simply not in `admitted`.
-        let forced_replan_during_recovery =
-            agent.unstick_window_remaining > 0 && agent.planned_destination.is_none();
-        let mut failed_forced_replan_during_recovery = false;
         if admitted.contains(&current.id) {
             // Admitted: rebuild the path now.
             replans += 1;
@@ -412,24 +419,20 @@ pub(crate) fn tick(
                     agent.blocked = false;
                 }
                 None => {
-                    // No route: a genuine no-route stop (distinct from a budget
-                    // loss). Drop the path and hold position; do NOT walk toward
-                    // the raw destination. The cooldown (set above) keeps this
-                    // from re-qualifying every tick.
-                    agent.path.clear();
-                    agent.mandatory_waypoints.clear();
-                    agent.waypoint_cursor = 0;
-                    agent.blocked = true;
-                    if forced_replan_during_recovery {
-                        // A recovery-forced replan can transiently fail while
-                        // the capsule is wedged or just off the navmesh. Keep
-                        // the forced-replan latch open for the bounded recovery
-                        // window so later ticks still retry through the normal
-                        // budget instead of converting the wedge to a held
-                        // blocked state immediately.
-                        agent.planned_destination = None;
-                        failed_forced_replan_during_recovery = true;
-                    }
+                    // No route from the current position. `find_path` already
+                    // snaps eroded-band endpoints onto the graph, so this is a
+                    // GENUINE no-route (a disconnected or far-off-mesh
+                    // destination — or a map with no navmesh at all), never a
+                    // mere near-wall wobble. Path failure must stay TRANSIENT:
+                    // any existing path is KEPT — the agent follows its last
+                    // good route (stale-but-moving) instead of freezing — and
+                    // the cooldown (set above) gates the next retry, with the
+                    // drift / topology / direct-routable admission clauses able
+                    // to retry sooner. `blocked` reports the no-route state
+                    // only when there is nothing left to follow; a pathless
+                    // blocked agent holds position rather than marching into
+                    // geometry toward the raw destination.
+                    agent.blocked = agent.path.is_empty();
                 }
             }
         }
@@ -460,32 +463,35 @@ pub(crate) fn tick(
             LOOKAHEAD_DISTANCE_RADIUS_FACTOR * agent.radius,
             dt,
         );
-        let preserve_forced_replan_recovery = forced_replan_during_recovery
-            && agent.unstick_window_remaining > 0
-            && (failed_forced_replan_during_recovery || agent.path.is_empty() || agent.blocked);
         agent.steer_velocity = steer_velocity;
         let mut desired = steer_velocity;
 
         let has_recovery_intent = has_stuck_recovery_intent(&agent, goal_speed, steer_velocity);
         if has_recovery_intent {
             if agent.unstick_window_remaining == 0 && agent.stuck_ticks >= STUCK_TICKS_THRESHOLD {
+                // Fire recovery: clear the plan latch so the next tick's
+                // admission pass treats this agent as drift-driven (a forced,
+                // budgeted replan from the wedged position), and open the
+                // bounded tangent-bias window. A replan that FAILS during the
+                // window keeps the existing path (see the replan block), so
+                // the window keeps running on live steering intent — no
+                // separate latch is needed to survive a failed forced replan.
                 agent.planned_destination = None;
                 agent.unstick_window_remaining = UNSTICK_WINDOW;
                 agent.stuck_ticks = 0;
             }
-        } else if !preserve_forced_replan_recovery {
+        } else {
+            // No live movement intent (idle tail, arrival, or a pathless
+            // blocked agent): there is nothing for recovery to bias, so the
+            // detector and any stale window reset. Blocked retries ride the
+            // replan cooldown, not the recovery window.
             agent.stuck_ticks = 0;
             agent.unstick_window_remaining = 0;
         }
         let recovery_active_this_tick = agent.unstick_window_remaining > 0;
         if recovery_active_this_tick {
-            if has_recovery_intent {
-                desired += recovery_tangent_bias(steer_velocity, agent.move_speed);
-            }
+            desired += recovery_tangent_bias(steer_velocity, agent.move_speed);
             agent.unstick_window_remaining = agent.unstick_window_remaining.saturating_sub(1);
-            if failed_forced_replan_during_recovery && agent.unstick_window_remaining == 0 {
-                agent.planned_destination = Some(destination);
-            }
         }
 
         // Separation: sum pushes from every other agent whose capsule overlaps
@@ -620,7 +626,13 @@ fn destination_topology_changed(
         return false;
     };
 
-    match (graph.region_at(planned), graph.region_at(destination)) {
+    // Resolve through the snapping resolver — the same definition `find_path`
+    // routes with — so a target skirting in and out of the eroded wall margin
+    // does not flap between "routable" and "off-mesh" and force a replan storm.
+    match (
+        graph.resolve_region_at(planned),
+        graph.resolve_region_at(destination),
+    ) {
         (Some(planned_region), Some(destination_region)) => planned_region != destination_region,
         (Some(_), None) | (None, Some(_)) => true,
         (None, None) => false,
@@ -641,7 +653,10 @@ fn blocked_destination_now_directly_routable(
         return false;
     };
 
-    match (graph.region_at(position), graph.region_at(destination)) {
+    match (
+        graph.resolve_region_at(position),
+        graph.resolve_region_at(destination),
+    ) {
         (Some(position_region), Some(destination_region)) => position_region == destination_region,
         _ => false,
     }

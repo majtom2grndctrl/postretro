@@ -62,10 +62,20 @@ impl Deref for NavPath {
 /// between region centroids), reconstructs the exact portal corridor A* chose,
 /// then funnels it to the tightest waypoint list within the corridor.
 ///
-/// Returns `None` when `start` or `goal` lies outside every region, when either
-/// endpoint is non-finite, or when no corridor connects their regions. A
-/// reachable goal always yields a path whose first waypoint is `start` and last
-/// is `goal`; a goal in the start region is a trivial two-point `[start, goal]`.
+/// Endpoint resolution tolerates the eroded wall margin: each endpoint resolves
+/// via [`NavGraph::resolve_region_at`], so a capsule legitimately standing
+/// against a wall — inside the conservatively-eroded band and therefore outside
+/// every region — still routes from/to its nearest region instead of failing.
+/// The emitted waypoints keep the RAW `start`/`goal` positions; only the region
+/// resolution snaps. This matters for pursuit: chase targets hug corners and
+/// steered agents get pushed wall-ward, and a query that returned `None` for
+/// those positions froze chasing agents in a permanent `blocked` state.
+///
+/// Returns `None` when `start` or `goal` lies farther than the snap tolerance
+/// from every region, when either endpoint is non-finite, or when no corridor
+/// connects their regions. A reachable goal always yields a path whose first
+/// waypoint is `start` and last is `goal`; a goal in the start region is a
+/// trivial two-point `[start, goal]`.
 pub(crate) fn find_path(graph: &NavGraph, start: Vec3, goal: Vec3) -> Option<NavPath> {
     // Finiteness guard: a NaN/inf endpoint makes every funnel area comparison
     // false, silently collapsing the result to a straight `[start, goal]` line
@@ -79,8 +89,8 @@ pub(crate) fn find_path(graph: &NavGraph, start: Vec3, goal: Vec3) -> Option<Nav
         return None;
     }
 
-    let start_region = graph.region_at(start)?;
-    let goal_region = graph.region_at(goal)?;
+    let start_region = graph.resolve_region_at(start)?;
+    let goal_region = graph.resolve_region_at(goal)?;
 
     if start_region == goal_region {
         // Same region: no portal to cross, the straight segment is the path.
@@ -747,6 +757,33 @@ mod tests {
             Vec3::new(100.0, 0.0, 100.0),
         );
         assert!(path.is_none());
+    }
+
+    #[test]
+    fn find_path_snaps_eroded_band_endpoints_onto_the_graph() {
+        // Both endpoints sit just OUTSIDE every region (the eroded wall margin a
+        // capsule can legitimately occupy) but within the snap tolerance
+        // (radius 0.3 + 1.5 * cell 1.0 = 1.8). The query must resolve each to
+        // its nearest region and route, keeping the RAW endpoint positions.
+        let graph = NavGraph::from_section(&straight_corridor_section());
+        let start = Vec3::new(2.0, 0.0, -0.4); // 0.4 below region 0
+        let goal = Vec3::new(2.0, 0.0, 12.4); // 0.4 past region 2
+        assert!(graph.region_at(start).is_none() && graph.region_at(goal).is_none());
+
+        let path = find_path(&graph, start, goal).expect("eroded-band endpoints must route");
+        assert!(approx_xz(path[0], start), "raw start preserved: {path:?}");
+        assert!(
+            approx_xz(*path.last().unwrap(), goal),
+            "raw goal preserved: {path:?}"
+        );
+    }
+
+    #[test]
+    fn find_path_still_rejects_endpoints_far_off_the_mesh() {
+        let graph = NavGraph::from_section(&straight_corridor_section());
+        // 3.0 beyond the last region: past the 1.8 snap tolerance.
+        assert!(find_path(&graph, Vec3::new(2.0, 0.0, 1.0), Vec3::new(2.0, 0.0, 15.0)).is_none());
+        assert!(find_path(&graph, Vec3::new(2.0, 0.0, -3.0), Vec3::new(2.0, 0.0, 1.0)).is_none());
     }
 
     #[test]

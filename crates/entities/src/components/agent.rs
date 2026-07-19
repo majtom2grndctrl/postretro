@@ -110,10 +110,14 @@ pub struct AgentComponent {
     /// only in a true overload — MORE than the replan budget of agents genuinely
     /// drifting the same tick — never crowded out by a staleness refresh.
     pub arrived: bool,
-    /// `true` when the agent has a destination but pathfinding found no route
-    /// to it (an empty path that survived a replan attempt). The agent holds
-    /// position rather than walking into geometry. Cleared on a new
-    /// destination or a successful plan.
+    /// `true` when the agent has a destination, pathfinding found no route to
+    /// it, AND the agent holds no path to keep following. A failed path
+    /// REFRESH keeps the previous route instead (stale-but-moving), so
+    /// `blocked` implies an empty `path` by construction. A pathless blocked
+    /// agent holds position rather than walking into geometry; the state is
+    /// transient — the steering tick keeps retrying under its replan cooldown
+    /// and drift/topology gates. Cleared on a successful plan or a cleared
+    /// destination.
     pub blocked: bool,
 }
 

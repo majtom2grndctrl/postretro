@@ -124,7 +124,7 @@ fn evaluate_quickjs(
             let returned: JsValue = setup.call((arg,)).catch(&ctx).map_err(|caught| {
                 anyhow!("data script `{source_name}` setupLevel threw: {caught}")
             })?;
-            js_to_json(&ctx, returned).context("setupLevel returned a non-manifest value")
+            js_to_json(returned).context("setupLevel returned a non-manifest value")
         })();
         result = evaluation;
     });
@@ -741,15 +741,11 @@ fn json_to_js<'js>(ctx: &JsCtx<'js>, value: &JsonValue) -> rquickjs::Result<JsVa
     }
 }
 
-fn js_to_json(ctx: &JsCtx<'_>, value: JsValue<'_>) -> rquickjs::Result<JsonValue> {
-    js_to_json_inner(ctx, value, 0)
+fn js_to_json(value: JsValue<'_>) -> rquickjs::Result<JsonValue> {
+    js_to_json_inner(value, 0)
 }
 
-fn js_to_json_inner(
-    ctx: &JsCtx<'_>,
-    value: JsValue<'_>,
-    depth: usize,
-) -> rquickjs::Result<JsonValue> {
+fn js_to_json_inner(value: JsValue<'_>, depth: usize) -> rquickjs::Result<JsonValue> {
     if depth >= 64 {
         return Err(rquickjs::Error::new_from_js_message(
             "value",
@@ -784,7 +780,7 @@ fn js_to_json_inner(
     if let Some(array) = value.as_array() {
         let mut values = Vec::with_capacity(array.len());
         for index in 0..array.len() {
-            values.push(js_to_json_inner(ctx, array.get(index)?, depth + 1)?);
+            values.push(js_to_json_inner(array.get(index)?, depth + 1)?);
         }
         return Ok(JsonValue::Array(values));
     }
@@ -793,7 +789,7 @@ fn js_to_json_inner(
         for entry in object.props::<String, JsValue>() {
             let (key, value) = entry?;
             if !value.is_undefined() {
-                values.insert(key, js_to_json_inner(ctx, value, depth + 1)?);
+                values.insert(key, js_to_json_inner(value, depth + 1)?);
             }
         }
         return Ok(JsonValue::Object(values));

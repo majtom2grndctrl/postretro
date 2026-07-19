@@ -1,110 +1,98 @@
-// PROPOSED SDK SURFACE — not shipped. Every export here is a WALL: a seam the
-// death-as-health-crossing spec would have to build. Kept in a SEPARATE module
-// ("postretro/proposed") from the real "postretro" so that, in the adjacent
-// spike, every `from "postretro/proposed"` import is visibly a gap.
+// PROPOSED SDK SURFACE — not shipped. Every export here is a WALL the
+// death-as-health-crossing spec would build. Separate module ("postretro/proposed")
+// so each import in the spike is visibly a gap.
 //
-// Real symbols are imported from "postretro" and re-used honestly so the stub
-// stays anchored to shipped shapes.
+// This revision adds the SYMMETRIC half of NamedEventDispatch: a listen/observe
+// surface. We had firing (dispatch) but no unified listener, so every "listen"
+// was re-invented per source. Here:
+//   defineEvent()          — declare a modder-owned (script-fired) event
+//   fire(event, params?)   — emit a script event from a reaction
+//   onEvent(event, react)  — LISTEN (bind reactions; the tracer runs once at load)
+//   healthCrossing(...)     — an engine-PREDEFINED event (you listen, you don't fire)
+//
+// There is deliberately NO "kill"/"death" concept in the engine surface. The
+// engine emits a NEUTRAL "health crossed below N" event; "death" is the name a
+// modder gives to a LISTENER over it.
 
 import type {
   Reaction,
   PrimitiveReactionDescriptor,
   LevelManifest,
   WritableStateRef,
+  ReadonlyStateRef,
   RuntimeValue,
 } from "postretro";
 
 declare module "postretro/proposed" {
-  // WALL 1 — two opaque per-entity tokens the kill scope publishes. Pass-only,
-  // like the shipped ActivatorsTarget/TriggerTarget brands: a token may flow into
-  // a target slot but is NOT a number and NOT an IR operand. VICTIM and KILLER are
-  // DISTINCT types (sharpened from the Fable consensus) so the type system stops
-  // you despawning the killer or crediting the corpse.
-  const victimBrand: unique symbol;
-  const attackerBrand: unique symbol;
-  export type DeadEntityTarget = { readonly [victimBrand]: true };
-  export type AttackerTarget = { readonly [attackerBrand]: true };
+  // ---- Tokens: pass-only, neutral. SUBJECT (the entity an event is about) and
+  //      SOURCE (the last damage contributor, from the ledger) are DISTINCT so the
+  //      type system stops you despawning the source or crediting the subject.
+  const subjectBrand: unique symbol;
+  const sourceBrand: unique symbol;
+  export type SubjectRef = { readonly [subjectBrand]: true };
+  export type SourceRef = { readonly [sourceBrand]: true };
 
-  // WALL 2 — the dispatch scope a health-zero crossing publishes. Tokens are
-  // pass-only; measures are IR leaves (RuntimeValue). There is deliberately NO
-  // string-shaped fact. `attacker`/`attributedDamage` come straight from the
-  // SHIPPED contributor ledger (E16 source-id-ledger already stages these at the
-  // sweep), so exposing them is re-surfacing staged data, not new bookkeeping —
-  // this is where the consensus's "widened death channel" insight now lives.
-  // Field-validity: a hit-less death (DoT, lava, fall) has no killer, so
-  // `attacker`/`attributedDamage` read type-zero, never null.
-  export type KillScope = Readonly<{
-    entity: DeadEntityTarget;       // the victim — despawn / death-anim target
-    attacker: AttackerTarget;       // the killer — credit/grant target (type-zero if hit-less)
-    overkill: RuntimeValue;         // IR leaf: HP below zero at the crossing
-    attributedDamage: RuntimeValue; // IR leaf: the killer's share, from the ledger
-  }>;
-
-  // WALL 3 — the two-arm dispatch split (the biggest Fable-consensus correction).
-  // The SDK partitions each effect BY IDENTITY, exactly like trigger commands:
-  //   consequential → runs IN-TICK, host-authoritative, replicates via shared slots
-  //   presentation  → runs on the app drain, LOCAL to each client
-  // The author still writes ONE flat fire-list — there is no lane to mistype — so
-  // the arm is a property of the primitive, surfaced as a phantom marker here so
-  // the assignment stays legible (the consensus asked for an explicit arm table).
+  // ---- Two-arm dispatch: consequential (in-tick, host-authoritative, replicated)
+  //      vs presentation (app-drain, local). The SDK partitions by identity; the
+  //      arm is a legible phantom marker on each primitive.
   export type Arm = "consequential" | "presentation";
   export type Effect<A extends Arm> = PrimitiveReactionDescriptor & { readonly __arm?: A };
 
-  // WALL 4 — a per-entity crossing over the health COMPONENT. Distinct wire shape
-  // from the shipped slot/predicate CrossingDescriptor (which keys on a global
-  // `slot` string); a per-entity channel has no single slot, so this is a NEW
-  // source kind (new Rust registry field + observer), not a generalization.
-  export type HealthWatcherDescriptor = {
-    component: "health";
-    tag?: string;
-    below: number;
-    fire: string[];
-    levels?: string[];
-  };
-  export function onHealthCrossing(
-    filter: { tag?: string },
-    cond: { below: number },
-    fire: (Reaction<{}> | Reaction<KillScope> | string)[],
-  ): HealthWatcherDescriptor;
+  // ==== The symmetric event surface ==========================================
 
-  // WALL 5 — a KillScope tracer overload for defineReaction (the shipped one knows
-  // only CrossingParams / TriggerEventParams tracers).
-  export function defineDeathReaction(
-    tracer: (on: KillScope) => PrimitiveReactionDescriptor,
-  ): Reaction<KillScope>;
+  // An event you can listen to. `P` is the param published when it fires.
+  const eventParamBrand: unique symbol;
+  export type EventDescriptor<P> = { readonly name: string; readonly [eventParamBrand]?: (p: P) => void };
 
-  // WALL 6 — script-invoked, script-timed despawn. Rust owns the act of removal;
-  // the script owns WHEN. Consequential. Takes the VICTIM token only.
-  export function despawn(
-    target: DeadEntityTarget,
-    opts?: { after?: "anim" | "now" },
-  ): Effect<"consequential">;
+  // A reaction bound to an event: a param-free handle (reusable anywhere), a
+  // param-reading inline tracer (runs once at load → a descriptor, NOT a live
+  // callback), or a name. This is where `onEvent(evt, (param) => …)` lives.
+  export type EventReaction<P> =
+    | ((on: P) => PrimitiveReactionDescriptor)
+    | Reaction<{}>
+    | Reaction<P>
+    | string;
 
-  // WALL 7 — script-invoked death animation (today the AI brain auto-drives the
-  // mesh `death` state). Presentation. Takes the VICTIM token.
-  export function playDeathAnim(target: DeadEntityTarget): Effect<"presentation">;
+  export type ListenerDescriptor = { event: string; fire: string[]; levels?: string[] };
 
-  // WALL 8 — credit a resource to the KILLER (the resource-grant chokepoint from
-  // the consensus). Consequential. Takes the ATTACKER token.
-  export function grant(
-    target: AttackerTarget,
-    resource: string,
-    amount: number | RuntimeValue,
-  ): Effect<"consequential">;
+  // DECLARE a modder-owned event (pure script pub/sub; needs no engine edge).
+  export function defineEvent<P = {}>(name: string): EventDescriptor<P>;
+  // FIRE a script event from a reaction. Consequential (routes the drain).
+  export function fire<P>(event: EventDescriptor<P>, params?: P): Effect<"consequential">;
+  // LISTEN. Bind reactions/tracers to any event — engine-predefined or script.
+  export function onEvent<P>(event: EventDescriptor<P>, react: EventReaction<P>[]): ListenerDescriptor;
+  export function onEvent<P>(event: EventDescriptor<P>, tracer: (on: P) => PrimitiveReactionDescriptor): ListenerDescriptor;
 
-  // WALL 9 — event-driven delta write (read-modify-write add). Consequential.
-  // Today the store surface has only absolute `updateState` and a per-tick
-  // `accumulate` hook; neither is correct for "add N on THIS event", and absolute
-  // writes are wrong under multi-death-per-frame. Deltas COMPOSE — which is why
-  // the CSS-style cascade/tie-break DSL we explored is unnecessary for the common
-  // case (accumulation needs no precedence; only true overrides would).
-  export function addStore(
-    ref: WritableStateRef<number>,
-    delta: number | RuntimeValue,
-  ): Effect<"consequential">;
+  // ==== Engine-PREDEFINED events (the engine ships the descriptor) ============
 
-  // WALL 10 — LevelManifest has no field to carry per-entity health crossings.
-  export type DeathManifest = LevelManifest & {
-    healthWatchers: HealthWatcherDescriptor[];
+  // A per-entity health-COMPONENT crossing. NEUTRAL: no "kill" concept. The param
+  // is the crossed entity plus its observable component state — the ledger is
+  // component state, like health.current, so `source`/`attributedDamage` ride
+  // along the same way. Field-validity: a hit-less crossing (DoT, lava, fall) has
+  // no contributor, so `source`/`attributedDamage` read type-zero, never null.
+  export type HealthCrossing = Readonly<{
+    subject: SubjectRef;             // the entity that crossed
+    source: SourceRef;               // last damage contributor (type-zero if none)
+    overkill: RuntimeValue;          // IR leaf: how far below the threshold
+    attributedDamage: RuntimeValue;  // IR leaf: the source's ledger share
+  }>;
+  export function healthCrossing(filter: { tag?: string }, cond: { below: number }): EventDescriptor<HealthCrossing>;
+
+  // The SHIPPED state-crossing, re-expressed as an event constructor so the SAME
+  // onEvent listens to it (the shipped onStateCrossing folds into onEvent).
+  export type Crossing = Readonly<{ rising: RuntimeValue }>;
+  export function stateCrossing(slot: ReadonlyStateRef<number>, cond: { below?: number; above?: number }): EventDescriptor<Crossing>;
+
+  // ==== Effects the death recipe uses ========================================
+  export function despawn(target: SubjectRef, opts?: { after?: "anim" | "now" }): Effect<"consequential">;
+  export function playDeathAnim(target: SubjectRef): Effect<"presentation">;
+  export function grant(target: SourceRef, resource: string, amount: number | RuntimeValue): Effect<"consequential">;
+  export function addStore(ref: WritableStateRef<number>, delta: number | RuntimeValue): Effect<"consequential">;
+
+  // Unified manifest: one `listeners` array replaces the separate crossings /
+  // triggerEvents fields, plus a registry for script-defined `events`.
+  export type EventManifest = LevelManifest & {
+    events?: EventDescriptor<any>[];
+    listeners: ListenerDescriptor[];
   };
 }

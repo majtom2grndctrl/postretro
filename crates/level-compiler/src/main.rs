@@ -910,15 +910,26 @@ fn find_scripts_build() -> Option<PathBuf> {
         })
     });
 
-    let needs_build = match &path {
-        None => true,
-        Some(p) => is_compiler_stale(p),
-    };
+    // Cargo does not wire `scripts-build` into this binary test target as a
+    // `CARGO_BIN_EXE_*` dependency. A previous `cargo build` can therefore
+    // leave an older sibling binary in `target/<profile>/` even though the
+    // tests exercise newly compiled `prl-build` code. Rebuild in test builds
+    // so the subprocess has the CLI contract the test target expects. Normal
+    // development and release builds retain the source-mtime freshness check.
+    let needs_build = cfg!(test)
+        || match &path {
+            None => true,
+            Some(p) => is_compiler_stale(p),
+        };
 
     if needs_build {
         log::info!("[prl-build] scripts-build is missing or stale. Rebuilding via cargo...");
         let mut cmd = std::process::Command::new("cargo");
-        cmd.arg("build").arg("-p").arg("postretro-script-compiler");
+        cmd.arg("build")
+            .arg("-p")
+            .arg("postretro-script-compiler")
+            .arg("--bin")
+            .arg("scripts-build");
         if !cfg!(debug_assertions) {
             cmd.arg("--release");
         }
@@ -1950,6 +1961,33 @@ mod tests {
         assert!(
             result.is_none(),
             "absent data_script KVP must not emit a DataScript section"
+        );
+    }
+
+    #[test]
+    fn data_script_sidecar_supports_light_membership_flags() {
+        // Regression: a stale sibling `scripts-build` previously accepted the
+        // old CLI but rejected the paired manifest arguments that prl-build
+        // now always supplies for a data script.
+        let compiler =
+            find_scripts_build().expect("scripts-build must resolve for data-script tests");
+        let output = std::process::Command::new(&compiler)
+            .arg("--help")
+            .output()
+            .expect("run resolved scripts-build");
+        assert!(
+            output.status.success(),
+            "resolved scripts-build should print help: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let help = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            help.contains("--light-table"),
+            "resolved scripts-build must support --light-table: {help}"
+        );
+        assert!(
+            help.contains("--manifest-out"),
+            "resolved scripts-build must support --manifest-out: {help}"
         );
     }
 

@@ -720,11 +720,20 @@ fn slow_agent_clears_mandatory_clearance_vertices_without_stuck_detection() {
 
     // Slower agent, same route: allow proportionally more ticks than the 4.0
     // m/s variant's 600.
+    let arrival_radius = ARRIVAL_RADIUS_FACTOR * params.radius;
+    let mut saw_mandatory_throttle = false;
     for tick_index in 0..4000 {
         // Neutral vertical channel, matching the canonical no-stuck test, so the
         // assertion exercises the funnel/capsule route rather than floor settle.
         tick(&mut registry, &world, Some(&graph), 0.0, DT);
         let agent = registry.get_component::<AgentComponent>(id).unwrap();
+        // Record whether the mandatory-easing throttle (goal_speed < move_speed
+        // while a mandatory vertex is the active target) ever engaged, so a run
+        // that rounded the route without ever entering the throttle can't pass
+        // this suppression guard vacuously.
+        if easing_onto_mandatory_waypoint(&agent, agent_position(&registry, id), arrival_radius) {
+            saw_mandatory_throttle = true;
+        }
         if tick_index == 0 {
             assert!(
                 agent.path.len() >= 3,
@@ -754,6 +763,11 @@ fn slow_agent_clears_mandatory_clearance_vertices_without_stuck_detection() {
             // final arrival-slowdown leg. The regime this test guards is done;
             // the slow final-arrival crawl is the deferred E10 issue and is out
             // of scope here, so end the run successfully.
+            assert!(
+                saw_mandatory_throttle,
+                "slow agent cleared the route without ever engaging the mandatory-easing throttle, \
+                 so the no-stuck guarantee was never exercised (vacuous pass)"
+            );
             return;
         }
 
@@ -788,6 +802,115 @@ fn slow_agent_clears_mandatory_clearance_vertices_without_stuck_detection() {
         registry
             .get_component::<AgentComponent>(id)
             .map(|a| a.waypoint_cursor),
+    );
+}
+
+#[test]
+fn chasing_agent_follows_moving_target_around_concave_corner_without_stalling() {
+    // Regression (E10 follow-up): mandatory clearance vertices plus the
+    // stuck-suppression gate made a chasing enemy PAUSE the moment its target
+    // rounded the concave corner. With a MOVING destination the plan is refreshed
+    // (drift + 30-tick staleness) and each refresh resets the waypoint cursor to a
+    // mandatory clearance vertex the agent must reach within 0.04 m to advance; on
+    // a live chase heading it never lands that exact band, eases forever, and the
+    // suppression gate keeps zeroing stuck_ticks so tangent recovery never arms.
+    // Net observable: has_path && !arrived && !blocked with the agent frozen at the
+    // corner. Static-target tests miss this because they freeze the plan.
+    let corner = ConcaveCorner::fixture();
+    let world = corner.collision_world();
+    let graph = corner.nav_graph();
+    let params = graph.agent_params();
+    let mut registry = EntityRegistry::new();
+    let id = spawn_agent(&mut registry, 1.2, 1.2, &params);
+
+    // The "player": a moving destination that rounds the concave corner past the
+    // enemy. On this fixture every route from the enemy's start wraps the east
+    // wall end (the three mandatory clearance vertices at x=7.37), then crosses
+    // the interior region to the goal. The player starts on the side that keeps
+    // the enemy committed to that wall end, then walks to the far (north-west)
+    // side of the interior — the "rounds a corner past the enemy" moment — while
+    // the enemy is still easing onto the mandatory clearance vertices. It then
+    // rests at a final interior point the enemy must ultimately reach.
+    let ry = rest_y(&params);
+    let player_waypoints = [Vec3::new(6.0, ry, 2.6), Vec3::new(2.6, ry, 6.0)];
+    let player_speed = 0.8_f32; // slow so the enemy can ultimately catch up
+    let player_at = |elapsed: f32| -> Vec3 {
+        let mut budget = elapsed * player_speed;
+        for seg in player_waypoints.windows(2) {
+            let len = distance_xz(seg[0], seg[1]);
+            if budget <= len || len <= 1e-6 {
+                let t = if len <= 1e-6 { 0.0 } else { budget / len };
+                return seg[0].lerp(seg[1], t);
+            }
+            budget -= len;
+        }
+        *player_waypoints.last().unwrap()
+    };
+    let final_player = *player_waypoints.last().unwrap();
+
+    let max_ticks = 2400usize;
+    // Silent-stall detector: a run of consecutive ticks in the pursuit state
+    // (has_path && !arrived && !blocked) with negligible net displacement. The
+    // pre-fix bug also manifested as walking off the interior into a permanent
+    // `blocked` state; the arrival assertion below is the mechanism-agnostic
+    // catch, this detector pins the specific silent-stall symptom the review
+    // named (frozen with a live path, neither arrived nor blocked).
+    let mut stall_run = 0usize;
+    let mut stall_window_start = Vec3::ZERO;
+    let stall_limit = 90usize; // 1.5 s of no progress is a hang, not easing
+    let mut arrived = false;
+    let mut min_final_distance = f32::INFINITY;
+
+    for tick_index in 0..max_ticks {
+        let elapsed = tick_index as f32 * DT;
+        set_destination(&mut registry, id, player_at(elapsed));
+
+        let before = agent_position(&registry, id);
+        // Neutral vertical channel, matching the sibling no-stuck tests.
+        tick(&mut registry, &world, Some(&graph), 0.0, DT);
+        let after = agent_position(&registry, id);
+
+        let state = path_state(&registry, id).unwrap();
+        let agent = registry.get_component::<AgentComponent>(id).unwrap();
+        min_final_distance = min_final_distance.min(distance_xz(after, final_player));
+
+        // Track a silent-stall run: pursuing (path, not arrived, not blocked) yet
+        // essentially not moving.
+        let pursuing = state.has_path && !state.arrived && !state.blocked;
+        if pursuing && distance_xz(before, after) < 0.5 * STUCK_PROGRESS_EPSILON {
+            if stall_run == 0 {
+                stall_window_start = before;
+            }
+            stall_run += 1;
+        } else {
+            stall_run = 0;
+        }
+        assert!(
+            stall_run < stall_limit,
+            "chasing agent entered a silent stall at tick {tick_index}: {stall_run} ticks with no motion \
+             from {stall_window_start:?} (pos={after:?}, cursor={}, stuck_ticks={}, unstick={}, \
+             has_path={}, arrived={}, blocked={}, mandatory={:?}, path={:?})",
+            agent.waypoint_cursor,
+            agent.stuck_ticks,
+            agent.unstick_window_remaining,
+            state.has_path,
+            state.arrived,
+            state.blocked,
+            agent.mandatory_waypoints,
+            agent.path,
+        );
+
+        // Once the player has come to rest, the enemy must close in and arrive.
+        if distance_xz(after, final_player) <= ARRIVAL_RADIUS_FACTOR * params.radius + 0.05 {
+            arrived = true;
+            break;
+        }
+    }
+
+    assert!(
+        arrived,
+        "chasing agent never reached the vicinity of the moving target's final position {final_player:?}; \
+         closest approach was {min_final_distance:.3} m over {max_ticks} ticks",
     );
 }
 

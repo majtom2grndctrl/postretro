@@ -685,6 +685,161 @@ fn funnel_path_routes_concave_corner_without_stuck_detection() {
 }
 
 #[test]
+fn full_speed_agent_rounds_concave_corner_mandatory_vertices_without_crawling() {
+    // E10 follow-up: intermediate mandatory clearance vertices are corner-offset
+    // waypoints to ROUND at full move_speed, not points to settle onto. Removing
+    // the intermediate arrival throttle lets a chasing agent drive the corner at
+    // speed; this guards the two failure modes that removal could reintroduce and
+    // asserts the crawl is gone:
+    //   (a) no orbit/stall — a wide full-speed arc that never enters the vertex
+    //       arrival band would leave the cursor stuck and the agent never
+    //       arriving; assert it reaches the goal within a bounded tick budget;
+    //   (b) no false stuck — stuck_ticks never reaches the threshold and tangent
+    //       recovery never fires;
+    //   (c) no crawl — on the exact ticks the OLD throttle slowed to near zero
+    //       (a mandatory vertex active within the arrival band), speed now stays
+    //       near move_speed;
+    //   (d) no clearance regression — the resolved capsule center stays clear of
+    //       the corner geometry by the effective clearance for the whole route.
+    let corner = ConcaveCorner::fixture();
+    let world = corner.collision_world();
+    let graph = corner.nav_graph();
+    let params = graph.agent_params();
+    let mut registry = EntityRegistry::new();
+    let id = spawn_agent(&mut registry, 1.2, 1.2, &params);
+    // Canonical full move_speed (spawn_agent seeds 4.0); anchor the "did not
+    // crawl" threshold below to it.
+    let move_speed = registry
+        .get_component::<AgentComponent>(id)
+        .unwrap()
+        .move_speed;
+    assert!(
+        (move_speed - 4.0).abs() <= EPS,
+        "fixture agent should run at the canonical 4.0 m/s, got {move_speed}"
+    );
+
+    let destination = Vec3::new(5.0, rest_y(&params), 5.0);
+    set_destination(&mut registry, id, destination);
+
+    let arrival_radius = ARRIVAL_RADIUS_FACTOR * params.radius;
+    let effective_clearance_radius = params.radius + SKIN_DISTANCE;
+    let clearance_epsilon = 0.1 * graph.cell_size();
+
+    let mut arrived = false;
+    let mut easing_speeds: Vec<f32> = Vec::new();
+
+    for tick_index in 0..600 {
+        // Neutral vertical channel, matching the sibling no-stuck tests, so this
+        // exercises the funnel/capsule route rather than a floor-settling tick.
+        tick(&mut registry, &world, Some(&graph), 0.0, DT);
+        let agent = registry
+            .get_component::<AgentComponent>(id)
+            .unwrap()
+            .clone();
+
+        if tick_index == 0 {
+            assert!(
+                agent.path.len() >= 3,
+                "concave route must retain an interior funnel waypoint: {:?}",
+                agent.path
+            );
+            assert!(
+                agent.mandatory_waypoints.iter().any(|&m| m),
+                "concave route must include a mandatory clearance vertex: mandatory={:?}, path={:?}",
+                agent.mandatory_waypoints,
+                agent.path,
+            );
+            // Freeze the fresh plan so periodic refresh cannot swap the route
+            // mid-traverse, matching the canonical no-stuck test.
+            let mut frozen = agent.clone();
+            frozen.replan_cooldown_ticks = u32::MAX;
+            registry.set_component(id, frozen).unwrap();
+        }
+
+        // (b) never reaches stuck detection; recovery never arms.
+        assert!(
+            agent.stuck_ticks < STUCK_TICKS_THRESHOLD,
+            "full-speed agent reached stuck detection on tick {tick_index}: pos={:?}, cursor={}, path={:?}",
+            agent_position(&registry, id),
+            agent.waypoint_cursor,
+            agent.path,
+        );
+        assert_eq!(
+            agent.unstick_window_remaining,
+            0,
+            "full-speed agent fired recovery on tick {tick_index}: pos={:?}, cursor={}",
+            agent_position(&registry, id),
+            agent.waypoint_cursor,
+        );
+
+        let position = agent_position(&registry, id);
+
+        // (d) the resolved capsule center clears the corner geometry by the
+        // effective clearance (same point-to-static-mesh query the waypoint
+        // clearance tests use).
+        let clearance = static_mesh_clearance(&world, position, rest_y(&params));
+        assert!(
+            clearance + clearance_epsilon >= effective_clearance_radius,
+            "full-speed agent cut the corner on tick {tick_index}: pos={position:?} cleared only {clearance:.4}m, expected >= {:.4}m",
+            effective_clearance_radius - clearance_epsilon,
+        );
+
+        // (c) speed through the intermediate vertices: on ticks where a mandatory
+        // vertex is the active target within the arrival band — the exact window
+        // the OLD throttle crawled to near zero — the agent now runs at
+        // move_speed. This window only opens once the agent has driven up to the
+        // wall-end vertices, long after the initial acceleration ramp completed.
+        if easing_onto_mandatory_waypoint(&agent, position, arrival_radius) {
+            easing_speeds.push(steer_speed(&registry, id));
+        }
+
+        if agent.arrived {
+            arrived = true;
+            break;
+        }
+    }
+
+    // (a) reached the goal within budget — did not orbit/stall at the corner.
+    assert!(
+        arrived,
+        "full-speed agent did not arrive within 600 ticks (possible corner orbit/stall)"
+    );
+    // Positively confirm the mandatory-vertex window was exercised so (c) is not
+    // a vacuous pass.
+    assert!(
+        !easing_speeds.is_empty(),
+        "full-speed agent never entered the mandatory-vertex arrival band; the speed guarantee was never exercised"
+    );
+
+    // (c) did NOT crawl. The removed throttle set the in-band goal speed to
+    // move_speed * (dist / arrival_radius), which is STRICTLY below move_speed on
+    // EVERY in-band tick and fell toward zero as the agent neared each vertex. So
+    // two facts, together, prove the throttle is gone and the agent drives the
+    // corner at speed:
+    //   - many in-band ticks run at the full move_speed — mathematically
+    //     impossible under the old throttle (it forbids full speed in-band); and
+    //   - the mean in-band speed stays high, so the only slow ticks are the
+    //     brief, single-tick heading-reset re-accelerations at the tight
+    //     collision band (goal_speed zeroes steer_velocity to re-establish the
+    //     outgoing safe chord), not a sustained crawl.
+    let full_speed_ticks = easing_speeds
+        .iter()
+        .filter(|&&s| s >= move_speed - EPS)
+        .count();
+    assert!(
+        full_speed_ticks >= 4,
+        "expected several full-speed ticks while rounding the mandatory vertices (the old throttle makes full speed in-band impossible), got {full_speed_ticks} of {} in-band ticks: {easing_speeds:?}",
+        easing_speeds.len(),
+    );
+    let mean_speed = easing_speeds.iter().sum::<f32>() / easing_speeds.len() as f32;
+    assert!(
+        mean_speed >= 0.6 * move_speed,
+        "full-speed agent crawled the mandatory vertices: mean in-band speed {mean_speed:.3} m/s (expected >= {:.3}); the old throttle crawled toward zero across the whole window",
+        0.6 * move_speed,
+    );
+}
+
+#[test]
 fn slow_agent_clears_mandatory_clearance_vertices_without_stuck_detection() {
     // Regression: the mandatory-waypoint easing band was silently calibrated to
     // move_speed ~= 4.0. An author-defined slower enemy eases onto a mandatory
@@ -1536,7 +1691,11 @@ fn outgoing_only_clearance_bevel_is_not_arrival_skipped_or_lookahead_shortcut() 
     agent.mandatory_waypoints = vec![true, true, false];
 
     // Regression: the canonical 0.37m outgoing-only bevel was inside the
-    // ordinary 0.525m arrival band, so steering skipped both hard points.
+    // ordinary 0.525m arrival band, so steering skipped both hard points. The
+    // cursor must NOT skip the vertex and lookahead must NOT shortcut past it,
+    // but an INTERMEDIATE mandatory vertex is now traversed at full move_speed
+    // (no arrival-style throttle — it is a corner to round, not a point to
+    // settle onto), so the goal speed here is the full move_speed.
     let position = Vec3::new(-0.1, 0.0, 0.0);
     let radius = agent.radius;
     let speed = goal_speed(
@@ -1546,12 +1705,12 @@ fn outgoing_only_clearance_bevel_is_not_arrival_skipped_or_lookahead_shortcut() 
         ARRIVAL_SLOWDOWN_RADIUS_FACTOR * radius,
     );
     assert_eq!(agent.waypoint_cursor, 0);
-    assert!(speed > 0.0 && speed < agent.move_speed);
+    assert_eq!(speed, agent.move_speed);
     assert_eq!(target_point(&agent, position, 10.0), Some(corner));
 
-    // Regression: a one-skin acceptance band made the slowed approach dip
-    // below the stuck-progress floor before steering could advance. The tight
-    // mandatory band must complete without such a false stall.
+    // The full-speed approach must still advance the cursor past the tight
+    // mandatory band without stalling: each tick's goal-projected progress stays
+    // well above the stuck-progress floor.
     let mut approach = Vec3::new(-0.1, 0.0, 0.0);
     for _ in 0..16 {
         let speed = goal_speed(

@@ -48,8 +48,10 @@ const ARRIVAL_RADIUS_FACTOR: f32 = 1.5;
 const ARRIVAL_SLOWDOWN_RADIUS_FACTOR: f32 = 7.0;
 
 /// Tight collision-scale acceptance band for a mandatory clearance vertex: two
-/// skins, one for the collision-tangent target and one for the slowed fixed-tick
-/// approach. Landing THIS band means the agent is essentially on the vertex.
+/// skins, one for the collision-tangent target and one for the fixed-tick landing
+/// slop. Landing THIS band means the agent is essentially on the vertex, and on
+/// that tick [`goal_speed`] zeroes `steer_velocity` to re-establish the outgoing
+/// safe chord (heading restart) before rounding the corner.
 ///
 /// It is NOT the only way to advance past a mandatory vertex, though: a chasing
 /// agent on a live heading rarely lands a sub-skin band exactly, so requiring it
@@ -60,23 +62,26 @@ const ARRIVAL_SLOWDOWN_RADIUS_FACTOR: f32 = 7.0;
 /// is preserved (the plane runs through the vertex, so the agent cannot cut back
 /// inside the corner disk) without making progress hostage to sub-skin precision.
 ///
-/// The eased approach tail (`goal_speed`) near this band advances by
-/// `move_speed * (distance / arrival_radius) * dt` per tick, which stays below
-/// `STUCK_PROGRESS_EPSILON` (an absolute floor) for slower agents. So while an
-/// agent legitimately eases onto a mandatory vertex the stuck detector measures
+/// Intermediate mandatory vertices are traversed at full `move_speed` (no arrival
+/// throttle — they are corners to round, not points to settle onto). But near the
+/// vertex the goal-projected forward progress can still legitimately be small for
+/// a tick or two: the heading-restart zeroing above resets the speed to re-accel
+/// from zero, and a hard full-speed turn advances mostly sideways. So while an
+/// agent is inside a mandatory vertex's arrival band the stuck detector measures
 /// progress against a much smaller easing floor rather than accumulating against
 /// the absolute floor (see [`update_stuck_ticks`]) — bounded suppression: a
 /// genuine no-progress wedge at the vertex still escalates to tangent recovery.
 const MANDATORY_WAYPOINT_ARRIVAL_RADIUS: f32 = 2.0 * crate::collision::SKIN_DISTANCE;
 
-/// Goal-projected progress floor used while an agent EASES onto a mandatory
-/// clearance vertex. The mandatory easing band deliberately throttles the goal
-/// step far below `STUCK_PROGRESS_EPSILON`, so measuring against that absolute
-/// floor would false-trip stuck recovery on legitimate easing (the reason the
-/// detector used to suspend entirely). This far smaller floor still distinguishes
-/// legitimate easing — which always makes some positive progress toward the
-/// vertex — from a genuine WEDGE that consumes all motion (progress ~= 0), so the
-/// suppression is bounded and a real wedge escalates to recovery.
+/// Goal-projected progress floor used while an agent is inside a mandatory
+/// clearance vertex's arrival band. Rounding a mandatory vertex at full speed can
+/// briefly show tiny forward progress — the heading-restart zeroing re-accelerates
+/// from zero, and a hard turn advances mostly sideways — so measuring against the
+/// absolute `STUCK_PROGRESS_EPSILON` floor would false-trip stuck recovery on a
+/// legitimate corner turn. This far smaller floor still distinguishes a legitimate
+/// turn — which always makes some positive progress — from a genuine WEDGE that
+/// consumes all motion (progress ~= 0), so the suppression is bounded and a real
+/// wedge escalates to recovery.
 const MANDATORY_EASING_PROGRESS_EPSILON: f32 = STUCK_PROGRESS_EPSILON * 0.05;
 
 /// Path-following acceleration/deceleration as "top-speed changes per second".
@@ -439,10 +444,11 @@ pub(crate) fn tick(
         let arrival_radius = ARRIVAL_RADIUS_FACTOR * agent.radius;
         let slowdown_radius = ARRIVAL_SLOWDOWN_RADIUS_FACTOR * agent.radius;
         let goal_speed = goal_speed(&mut agent, position, arrival_radius, slowdown_radius);
-        // Is the agent easing onto a mandatory clearance vertex this tick? In
-        // that band `goal_speed` deliberately throttles below `move_speed`, so
-        // the small goal-projected step is intended easing rather than a wedge —
-        // the stuck detector must not accumulate against it (see below).
+        // Is the agent inside a mandatory clearance vertex's arrival band this
+        // tick? It rounds the vertex at full `move_speed`, but the heading-restart
+        // zeroing and hard-turn geometry can make the goal-projected step briefly
+        // small there — legitimate cornering rather than a wedge — so the stuck
+        // detector must not accumulate against it (see below).
         let easing_onto_mandatory =
             easing_onto_mandatory_waypoint(&agent, position, arrival_radius);
         let steer_velocity = integrated_steer_velocity(
@@ -702,17 +708,18 @@ fn goal_speed(
     let target = agent.path[agent.waypoint_cursor.min(agent.path.len() - 1)];
     let is_final = agent.waypoint_cursor + 1 >= agent.path.len();
     let final_distance = distance_xz(position, target);
-    let mandatory = agent
-        .mandatory_waypoints
-        .get(agent.waypoint_cursor)
-        .copied()
-        .unwrap_or(false);
-    if mandatory && !is_final && final_distance < arrival_radius {
-        // Hard clearance geometry uses a tight collision-scale acceptance band.
-        // Ease into that smaller target so a full-speed fixed tick cannot
-        // oscillate over it forever.
-        return agent.move_speed * (final_distance / arrival_radius).clamp(0.0, 1.0);
-    }
+    // Intermediate mandatory clearance vertices are traversed at full
+    // `move_speed`: they are corner-offset waypoints a chasing agent must round,
+    // not points it must settle onto. The cursor advances via
+    // [`mandatory_waypoint_cleared`] as soon as the agent is within the ordinary
+    // arrival band AND has passed the vertex plane toward the next leg, so
+    // landing the tight sub-skin band exactly is not required and there is
+    // nothing to "ease onto" — an intermediate throttle only makes the agent
+    // crawl the corner. Arrival deceleration below is reserved for the FINAL
+    // destination. `mandatory && !is_final` therefore falls through to full
+    // speed. (The stuck-suppression gate in `update_stuck_ticks` still treats
+    // this window defensively: a fast turn can show legitimately small forward
+    // progress while the heading swings, so suppression there stays correct.)
     if is_final {
         if final_distance <= arrival_radius {
             agent.arrived = true;
@@ -892,10 +899,13 @@ fn mandatory_waypoint_cleared(
 }
 
 /// True when the agent's current path target is a mandatory clearance vertex it
-/// is still easing onto: mandatory, non-final, and inside the ordinary arrival
-/// band (`arrival_radius`). This mirrors the mandatory-easing branch of
-/// [`goal_speed`], so it identifies exactly the ticks on which the goal step is
-/// throttled below `move_speed` to settle onto the tight collision-scale band.
+/// is inside the arrival band of: mandatory, non-final, and within the ordinary
+/// arrival band (`arrival_radius`). Intermediate mandatory vertices are traversed
+/// at full `move_speed`, but this window still sees legitimately-small forward
+/// progress on a tick or two — the tight-band heading restart in [`goal_speed`]
+/// zeroes and re-accelerates the speed, and a hard full-speed corner turn
+/// advances mostly sideways — so [`update_stuck_ticks`] uses it to select the
+/// smaller easing progress floor there instead of the absolute floor.
 fn easing_onto_mandatory_waypoint(
     agent: &AgentComponent,
     position: Vec3,
@@ -938,12 +948,13 @@ fn update_stuck_ticks(
         resolved_position.z - start_position.z,
     );
     let progress = displacement.dot(goal_dir);
-    // While easing onto a mandatory clearance vertex the goal step is deliberately
-    // throttled far below `STUCK_PROGRESS_EPSILON`, so legitimate progress here is
-    // tiny but still positive. Measure it against the much smaller easing floor
-    // instead of the absolute floor: bounded suppression that never trips on real
-    // easing yet still accumulates — and eventually escalates to tangent recovery
-    // — against a genuine no-progress wedge at the vertex.
+    // Inside a mandatory clearance vertex's arrival band the agent runs at full
+    // move_speed, but goal-projected forward progress can briefly be tiny yet
+    // positive — the tight-band heading restart re-accelerates from zero and a
+    // hard corner turn advances mostly sideways. Measure it against the much
+    // smaller easing floor instead of the absolute floor: bounded suppression that
+    // never trips on a real corner turn yet still accumulates — and eventually
+    // escalates to tangent recovery — against a genuine no-progress wedge.
     let floor = if easing_onto_mandatory {
         MANDATORY_EASING_PROGRESS_EPSILON
     } else {

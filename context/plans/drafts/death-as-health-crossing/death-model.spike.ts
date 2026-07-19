@@ -71,7 +71,7 @@ export function setupLevel(): EventManifest {
         (on) => playDeathAnim(on.subject),
         enemySfx,
         // consequential arm (in-tick, replicated)
-        (on) => despawn(on.subject, { after: "anim" }),
+        (on) => despawn(on.subject, { afterMs: 1500 }), // timer property; reuses death_despawn_ms
         (on) => grant(on.source, "ammo", 5),          // credits the SOURCE
         (on) => addStore(econ.state.score, on.overkill), // IR leaf
         enemyReward,

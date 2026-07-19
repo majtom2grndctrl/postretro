@@ -84,7 +84,10 @@ declare module "postretro/proposed" {
   export function stateCrossing(slot: ReadonlyStateRef<number>, cond: { below?: number; above?: number }): EventDescriptor<Crossing>;
 
   // ==== Effects the death recipe uses ========================================
-  export function despawn(target: SubjectRef, opts?: { after?: "anim" | "now" }): Effect<"consequential">;
+  // despawn timing is a PROPERTY (afterMs), not a sequence edge — reuses the
+  // shipped deferred-despawn seam (AI death_despawn_ms: sweep latches, tick counts
+  // down, then despawns). It is an ms timer, NOT wait-for-anim-completion.
+  export function despawn(target: SubjectRef, opts?: { afterMs?: number }): Effect<"consequential">;
   export function playDeathAnim(target: SubjectRef): Effect<"presentation">;
   export function grant(target: SourceRef, resource: string, amount: number | RuntimeValue): Effect<"consequential">;
   export function addStore(ref: WritableStateRef<number>, delta: number | RuntimeValue): Effect<"consequential">;

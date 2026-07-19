@@ -1,8 +1,20 @@
 // PROPOSED — ERGONOMICS PROBE (module "postretro/ergo"). Isolated from the main
-// proposed surface so it can't destabilize the death spike. Explores the
-// JavaScript-event-listener FEEL — method-style handles + sequence/parallel — while
-// keeping the hard invariant: the builder returns DATA (a tree), it is not a live
-// callback. See event-ergonomics.spike.ts.
+// proposed surface. Explores the JavaScript-event-listener FEEL — method-style
+// handles — while keeping the hard invariant: the builder returns DATA, it is not
+// a live callback.
+//
+// REVISED after grounding the sequence/parallel question against shipped code:
+//   * Shipped `sequence` is instant (no delay/wait/duration) — so a tree cannot
+//     mean temporal "then".  (reaction_dispatch.rs:424, reactions.rs:29)
+//   * Cross-arm order is FIXED: consequential in-tick, THEN presentation on the
+//     app drain — so a cross-arm "then" is not authorable (and is backwards vs a
+//     recipe like "anim then despawn").  (sim/mod.rs:211 → main.rs:2075)
+//   * "despawn after death" is already an engine timer PROPERTY (death_despawn_ms),
+//     not composition.  (health.rs:143, ai.rs:622)
+// So the rich sequence/parallel TREE collapses: a handler is a flat effect SET,
+// auto-partitioned by arm; timing lives on effect properties; a real timed pause
+// is a SEPARATE WALL (a duration/wait primitive). `parallel` was the flat set all
+// along.
 
 import type {
   Reaction,
@@ -12,23 +24,18 @@ import type {
 } from "postretro";
 
 declare module "postretro/ergo" {
-  // A composed effect TREE — the DATA a builder returns. Leaves are descriptors;
-  // `sequence` is ordered, `parallel` is a concurrent group. NOTE the real cost:
-  // this is a genuinely NEW capability. Shipped reaction bodies are a single
-  // primitive OR a mover/trigger/light step list — not an arbitrary tree of
-  // arbitrary effects. That tree is the price of this ergonomics.
-  export type Node = PrimitiveReactionDescriptor | Reaction<{}> | SeqNode | ParNode;
-  export type SeqNode = { readonly seq: Node[] };
-  export type ParNode = { readonly par: Node[] };
-  export function sequence(nodes: Node[]): SeqNode;
-  export function parallel(nodes: Node[]): ParNode;
+  // A single effect leaf. A handler returns one, or a flat SET of them (an array).
+  // The SDK auto-partitions the set into the two arms (consequential in-tick,
+  // presentation app-drain). Within an arm, additive deltas commute; only same-slot
+  // absolute writes are order-sensitive (a footgun — prefer deltas). There is no
+  // temporal composition here: everything in the set dispatches at one instant.
+  export type Effect = PrimitiveReactionDescriptor | Reaction<{}>;
 
   // Method-style handles: the pass-only token PLUS builder methods that RETURN
-  // descriptors. The subject/source distinction is encoded as which methods
-  // exist — despawning the source or crediting the subject is a missing method,
-  // discoverable in autocomplete.
+  // descriptors. Subject vs source is encoded as which methods exist.
   export interface SubjectHandle {
-    despawn(opts?: { after?: "anim" | "now" }): PrimitiveReactionDescriptor;
+    // timer property, NOT a sequence edge; reuses death_despawn_ms.
+    despawn(opts?: { afterMs?: number }): PrimitiveReactionDescriptor;
     playDeathAnim(): PrimitiveReactionDescriptor;
   }
   export interface SourceHandle {
@@ -49,7 +56,7 @@ declare module "postretro/ergo" {
   export type EventDescriptor<P> = { readonly name: string; readonly [eventBrand]?: (p: P) => void };
   export function healthCrossing(filter: { tag?: string }, cond: { below: number }): EventDescriptor<HealthEvent>;
 
-  // The builder MUST return a Node. This is the guard: a void statement-body
-  // (discarded builder calls) is not assignable and fails to compile.
-  export function onEvent<P>(event: EventDescriptor<P>, build: (event: P) => Node): { readonly event: string };
+  // The builder MUST return an Effect (or a set). A void statement-body — the
+  // JS-callback trap — is not assignable and fails to compile.
+  export function onEvent<P>(event: EventDescriptor<P>, build: (event: P) => Effect | readonly Effect[]): { readonly event: string };
 }

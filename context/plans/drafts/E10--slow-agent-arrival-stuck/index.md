@@ -176,11 +176,11 @@ open-floor arrival and slow-wedge cases.
   window instead of a single-tick floor, or cap how many consecutive easing-suppressed
   ticks are allowed before falling back to the absolute floor — either way a genuine
   wedge must still escalate. Needs a repro test constructing a mandatory vertex the
-  capsule cannot plane-pass while still sliding along it; no such test exists today. The
-  E10 review panel split on this exact point — a tracer reviewer judged the existing gate
-  escalates fine, an adversarial reviewer judged it hangs — and the disagreement turns on
-  whether a real jittering wedge sustains occasional above-floor ticks. The repro test is
-  the arbiter; resolve it there before deciding this needs code changes at all.
+  capsule cannot plane-pass while still sliding along it; no such test exists today. This
+  is unresolved: whether a real jittering wedge sustains occasional above-floor ticks
+  (resetting the counter) or settles sub-floor (escalating) is not established — a repro
+  test constructing an unclearable-but-sliding mandatory vertex is the arbiter; resolve it
+  there before deciding this needs a code change.
 - **Slow cruise below the absolute floor mid-route.** Direction 2 only relaxes the
   arrival band; a `move_speed < ~0.3 m/s` agent cruising a long straight corridor at full
   intended speed is ALSO below the absolute floor and would still false-trip. Is such an

@@ -716,7 +716,7 @@ fn run_after_parsing(
         animated_lights: &animated_baked_lights,
         total_light_count: map_data.lights.len(),
     };
-    let sh_volume_section = if let Some(ref cache) = stage_cache {
+    let mut sh_volume_section = if let Some(ref cache) = stage_cache {
         // Warm path: per-probe-group SH. Each group bakes/loads a cached
         // entry over its probe subset with a bounded reaching-light set, then the
         // groups assemble into the volume. This is a deliberate approximation —
@@ -730,6 +730,12 @@ fn run_after_parsing(
         // shippable source of truth. No per-group reads/writes, no warning.
         sh_bake::bake_sh_volume_controlled(&sh_ctx, &sh_config, &sh_control)
     };
+    // SH bake stages use raw MapData source indices so bake-only animated
+    // lights can own descriptors. Runtime map lights come from compact
+    // AlphaLights (`_bake_only` omitted), so remap the lookup table exactly
+    // once at the PRL boundary.
+    sh_volume_section.slot_for_map_light =
+        alpha_lights_ns.compact_source_table(&sh_volume_section.slot_for_map_light);
     finish_stage(
         &mut timings,
         reporter.as_ref(),

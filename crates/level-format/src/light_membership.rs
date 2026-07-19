@@ -1,16 +1,15 @@
 //! Versioned JSON sidecars exchanged between `prl-build` and `scripts-build`.
 //!
-//! These records deliberately live beside the PRL format rather than in either
-//! compiler. The level compiler owns the map-light identities and the script
-//! compiler owns evaluation, so neither binary may hand-roll the shared JSON
-//! shape. See `context/plans/in-progress/script-driven-light-bake`.
+//! `prl-build` owns map-light identities; `scripts-build` owns evaluation, so
+//! shared JSON records live beside the PRL format. See
+//! `context/lib/build_pipeline.md`.
 
 /// The only supported light-membership sidecar contract version.
 pub const LIGHT_MEMBERSHIP_MANIFEST_VERSION: u32 = 1;
 
-/// Map-light data supplied to `scripts-build` while evaluating a level data
-/// script. `index` is the stable `MapData::lights` vector index, not a
-/// runtime entity id.
+/// Runtime-present map-light data supplied to `scripts-build` while evaluating
+/// a level data script. `_bake_only` lights are omitted; each surviving
+/// `index` is its stable `MapData::lights` vector index, not a runtime entity id.
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[derive(Clone, Debug, PartialEq)]

@@ -54,6 +54,11 @@ pub const DEFAULT_INDIRECT_SCALE: f32 = 0.33;
 /// the Diagnostics panel slider on first open.
 pub const DEFAULT_DYNAMIC_DIRECT_SCALE: f32 = 1.0;
 
+/// Renderer-owned headroom for dynamic lights spawned after level install.
+/// All index-parallel direct-light buffers reserve this many records so the
+/// game layer can append lights without reallocating or rebinding GPU state.
+pub const RUNTIME_DYNAMIC_LIGHT_RESERVE: usize = 256;
+
 pub(crate) struct GpuTexture {
     pub(super) bind_group: wgpu::BindGroup,
 }
@@ -539,6 +544,9 @@ pub(super) struct FullRenderer {
     /// wgpu rejects zero-sized storage buffer bindings.
     pub(super) lighting_bind_group: wgpu::BindGroup,
     pub(super) influence_buffer: wgpu::Buffer,
+    /// Maximum dynamic-direct prefix accepted from the scripting bridge.
+    /// Promoted static records occupy a separate reserved tail.
+    pub(super) dynamic_light_capacity: usize,
     pub(super) light_count: u32,
     /// Dynamic-tier records plus promoted static records appended for entity
     /// consumers this frame. Forward world rendering continues to use
@@ -635,6 +643,10 @@ pub(super) struct FullRenderer {
     /// Last bytes uploaded to `lights_buffer`. Reused each frame to skip a
     /// redundant `queue.write_buffer` when the packed bytes are unchanged.
     pub(super) last_lights_upload: Vec<u8>,
+    /// Dynamic-prefix mirror of `influence_buffer`, index-parallel to
+    /// `last_lights_upload`. Promoted static influences and metadata append
+    /// after this prefix during shadow-slot updates.
+    pub(super) last_influence_upload: Vec<u8>,
     /// Scratch buffer for the fallback full-repack path. Used only when
     /// `last_lights_upload` is not yet sized to the current light set
     /// (first frame or light-count change). The hot path patches

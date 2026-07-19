@@ -254,13 +254,10 @@ impl Renderer {
         }
         full.lights_pack_scratch = scratch;
 
-        // The influence buffer's dynamic prefix is packed once at level load and
-        // never changes per frame (`level_light_influences` is load-time state),
-        // so the only per-frame movement is the promoted-static tail. Gate the
-        // re-upload on promoted records existing: old maps (no selected static
-        // lights → never any promoted records) then pay zero per-frame CPU→GPU
-        // copy. When records drop back to empty the stale tail is left in place
-        // but is never read — the forward/mesh loops bound by the light count.
+        // The bridge owns the complete dynamic influence prefix, including
+        // runtime-spawned lights. Promotion appends its static tail after the
+        // current dynamic count. Gate the combined re-upload on promoted records;
+        // without promotion the bridge's prefix upload is already complete.
         // The `entity_shadow_light_influences` vector is raw-length N and
         // index-parallel to the selection index, so `[selection_index]` is a
         // direct aligned lookup for every promoted record.
@@ -272,7 +269,13 @@ impl Renderer {
             );
             let mut influence_bytes = std::mem::take(&mut full.influence_pack_scratch);
             influence_bytes.clear();
-            influence::pack_influence_into(&mut influence_bytes, &full.level_light_influences);
+            let dynamic_bytes = full.light_count as usize * 16;
+            if full.last_influence_upload.len() >= dynamic_bytes {
+                influence_bytes.extend_from_slice(&full.last_influence_upload[..dynamic_bytes]);
+            } else {
+                influence::pack_influence_into(&mut influence_bytes, &full.level_light_influences);
+                influence_bytes.resize(dynamic_bytes, 0);
+            }
             for record in &full.promoted_static_records {
                 let influence =
                     &full.entity_shadow_light_influences[record.selection_index as usize];
@@ -1148,7 +1151,7 @@ fn build_count_split_light_upload(
     bytes: &mut Vec<u8>,
 ) {
     bytes.clear();
-    let dynamic_bytes = full.level_lights.len() * postretro_lighting::GPU_LIGHT_SIZE;
+    let dynamic_bytes = full.light_count as usize * postretro_lighting::GPU_LIGHT_SIZE;
     if full.last_lights_upload.len() >= dynamic_bytes && dynamic_bytes > 0 {
         bytes.extend_from_slice(&full.last_lights_upload[..dynamic_bytes]);
         postretro_lighting::patch_shadow_slots(bytes, level_spot_slots);
@@ -1156,6 +1159,7 @@ fn build_count_split_light_upload(
     } else if !full.level_lights.is_empty() {
         pack_lights_with_slots_into(bytes, &full.level_lights, level_spot_slots);
         postretro_lighting::patch_cube_slots(bytes, level_cube_slots);
+        bytes.resize(dynamic_bytes, 0);
     }
 
     // `entity_shadow_lights` is raw-length N and index-parallel to the selection

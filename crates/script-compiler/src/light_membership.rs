@@ -814,9 +814,19 @@ fn collect_membership(
     let mut records: BTreeMap<u32, LightMembershipRecord> = BTreeMap::new();
 
     for reaction in reactions {
-        let reaction = reaction
-            .as_object()
-            .ok_or_else(|| anyhow!("setupLevel.reactions entries must be objects"))?;
+        // Runtime manifest drains warn and skip malformed reaction siblings.
+        // Membership extraction must inspect exactly that degraded subset or
+        // it can reserve bake data for a reaction runtime discards.
+        let Some(reaction) = reaction.as_object() else {
+            continue;
+        };
+        if reaction.get("name").and_then(JsonValue::as_str).is_none() {
+            continue;
+        }
+        // Runtime discriminator priority is progress, sequence, primitive.
+        if reaction.contains_key("progress") {
+            continue;
+        }
         let level_load = reaction.get("name").and_then(JsonValue::as_str) == Some("levelLoad");
         let Some(sequence) = reaction.get("sequence") else {
             continue;
@@ -824,22 +834,27 @@ fn collect_membership(
         let sequence = match sequence {
             JsonValue::Array(sequence) => sequence.as_slice(),
             JsonValue::Object(sequence) if sequence.is_empty() => &[],
-            _ => bail!("reaction sequence must be an array"),
+            _ => continue,
         };
+        if !sequence.iter().all(runtime_sequence_step_shape_is_valid) {
+            continue;
+        }
         for step in sequence {
             let step = step
                 .as_object()
-                .ok_or_else(|| anyhow!("reaction sequence steps must be objects"))?;
+                .expect("sequence shape was validated before membership collection");
             if step.get("primitive").and_then(JsonValue::as_str) != Some("setLightAnimation") {
                 continue;
             }
-            let id = step
+            let Some(id) = step
                 .get("id")
                 .and_then(JsonValue::as_u64)
                 .and_then(|id| u32::try_from(id).ok())
-                .ok_or_else(|| {
-                    anyhow!("setLightAnimation step id must be a map-light handle id")
-                })?;
+            else {
+                // Runtime accepts dispatch sentinels as sequence targets, but
+                // they do not identify a map light and reserve no bake slot.
+                continue;
+            };
             let light = lights_by_id.get(&id).ok_or_else(|| {
                 anyhow!(
                     "setLightAnimation targets unknown light handle id {id}; the supplied light table has no matching map-light index"
@@ -873,6 +888,30 @@ fn collect_membership(
         }
     }
     Ok(records.into_values().collect())
+}
+
+fn runtime_sequence_step_shape_is_valid(step: &JsonValue) -> bool {
+    let Some(step) = step.as_object() else {
+        return false;
+    };
+    let Some(primitive) = step.get("primitive").and_then(JsonValue::as_str) else {
+        return false;
+    };
+    if primitive.is_empty() {
+        return false;
+    }
+
+    match step.get("id") {
+        Some(JsonValue::String(target)) => {
+            matches!(target.as_str(), "@activators" | "@trigger")
+                && !(target == "@activators" && matches!(primitive, "armTrigger" | "disarmTrigger"))
+        }
+        Some(value) => value
+            .as_u64()
+            .and_then(|id| u32::try_from(id).ok())
+            .is_some(),
+        None => false,
+    }
 }
 
 fn json_to_js<'js>(ctx: &JsCtx<'js>, value: &JsonValue) -> rquickjs::Result<JsValue<'js>> {
@@ -1325,6 +1364,65 @@ mod tests {
         )
         .expect("empty Luau reaction table is the empty dense array");
         assert!(manifest.lights.is_empty());
+    }
+
+    #[test]
+    fn malformed_reaction_siblings_degrade_identically_in_both_hosts() {
+        // Regression: compile-time extraction aborted on shapes the runtime
+        // manifest drain warns about and skips.
+        let quickjs = r#"
+            function setupLevel() {
+              const good = world.query({ component: "light", tag: "wave" })[0];
+              const discarded = world.query({ component: "light", tag: "dynamic" })[0];
+              return { reactions: [
+                null,
+                { name: "bad-sequence", sequence: "not-an-array" },
+                { name: "bad-step", sequence: [
+                  { id: discarded.id, primitive: "setLightAnimation", args: {} },
+                  null,
+                ] },
+                { name: "levelLoad", sequence: [
+                  { id: good.id, primitive: "setLightAnimation", args: {} },
+                ] },
+              ] };
+            }
+        "#;
+        let luau = r#"
+            function setupLevel(_)
+              local good = world:query({ component = "light", tag = "wave" })[1]
+              local discarded = world:query({ component = "light", tag = "dynamic" })[1]
+              return { reactions = {
+                false,
+                { name = "bad-sequence", sequence = "not-an-array" },
+                { name = "bad-step", sequence = {
+                  { id = discarded.id, primitive = "setLightAnimation", args = {} },
+                  false,
+                } },
+                { name = "levelLoad", sequence = {
+                  { id = good.id, primitive = "setLightAnimation", args = {} },
+                } },
+              } }
+            end
+        "#;
+
+        let quickjs_manifest = emit_light_membership_manifest(
+            quickjs,
+            Path::new("fixture.ts"),
+            Path::new("."),
+            &table(),
+        )
+        .expect("QuickJS malformed siblings degrade");
+        let luau_manifest = emit_light_membership_manifest(
+            luau,
+            Path::new("fixture.luau"),
+            Path::new("."),
+            &table(),
+        )
+        .expect("Luau malformed siblings degrade");
+
+        assert_eq!(quickjs_manifest.lights, luau_manifest.lights);
+        assert_eq!(quickjs_manifest.lights.len(), 1);
+        assert_eq!(quickjs_manifest.lights[0].index, 2);
     }
 
     #[test]

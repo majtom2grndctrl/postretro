@@ -86,8 +86,8 @@
     // authored keyframes into uniform samples covering [0, period_ms] at 32 Hz.
     // If both 'style' and 'brightness_curve' are present, the curve wins and 'style'
     // is ignored (a warning names the light). color_curve is valid on
-    // _bake_only and _animated lights. Baked indirect lighting stays at the
-    // authored color.
+    // _bake_only and _animated lights. The runtime compose applies the color
+    // curve to both animated direct and baked-indirect contributions.
     brightness_curve(string) : "Brightness Keyframe Curve ([t_ms, v] entries)" : ""
     color_curve(string) : "Color Keyframe Curve ([t_ms, r, g, b] entries; requires _bake_only or _animated)" : ""
     direction_curve(string) : "Direction Keyframe Curve ([t_ms, x, y, z] entries; spot/sun only)" : ""
@@ -97,19 +97,30 @@
     _curve_phase(string) : "Keyframe Curve Phase Offset [0.0, 1.0) (separate from legacy _phase)" : "0.0"
     _bake_only(choices) : "Bake Only" : 0 =
     [
-        0 : "Runtime dynamic (direct loop + probe bake)"
-        1 : "Bake only (probe bake, no runtime presence)"
+        0 : "Runtime-present baked light"
+        1 : "Bake only (no runtime entity)"
     ]
-    // `_animated` declares a light whose geometry is static but whose
-    // intensity arrives from script at runtime. The compiler reserves an
-    // animated-lightmap weight map and an animated-compose descriptor slot
-    // for the light; the runtime `setLightAnimation` primitive writes the
-    // curve into the slot. Also admits `color_curve` (alongside `_bake_only`).
-    // Task 2c of the SDF static-occluder-shadows feature.
-    _animated(choices) : "Animated (script-driven intensity)" : 0 =
+    // `_animated` explicitly reserves animated-bake storage for a static light
+    // whose brightness or color a script changes at runtime. For a map data
+    // script, this is normally automatic: any `setLightAnimation` step that
+    // reaches the light derives the same reservation during the level bake.
+    // Set this only when there is no such map-script step (for example, a
+    // mod-global reaction), or when reserving the slot deliberately. Valid on
+    // baked-tier static lights only; it also admits `color_curve`.
+    _animated(choices) : "Animated-bake reservation (script-driven)" : 0 =
     [
         0 : "Off (default)"
-        1 : "On — reserve baked weight map; script writes the curve at runtime"
+        1 : "On — reserve baked weight map and runtime compose slot"
+    ]
+    // Initial state for an animated-bake light. The default / 0 is lit at map
+    // load; 1 begins dark until a script writes an active animation. A
+    // `levelLoad` setLightAnimation step supplies its own startActive value and
+    // overrides this fallback. This key has no runtime effect on an otherwise
+    // static, unanimated light.
+    _start_inactive(choices) : "Start inactive (animated-bake lights)" : 0 =
+    [
+        0 : "No — lit at map load (default)"
+        1 : "Yes — dark until an active script animation"
     ]
     // Two-axis shadow model — these axes are ORTHOGONAL and live on different
     // tiers:
@@ -140,10 +151,14 @@
         "static_light_map" : "Static Lightmap - baked, soft, free at runtime, fixed at bake time. The default for nearly all static lights."
         "sdf"              : "SDF (runtime-traced) - sharper static-geometry shadow, excluded from the lightmap bake, tweakable without re-baking. Costs runtime work."
     ]
-    // Space-delimited list of script tags. An entity matches
-    // `world.query({ component: "light", tag: "t" })` when any tag equals
-    // `"t"`. Leave blank for no tags. Example: "ambientFill warm"
-    _tags(string) : "Script tags" : ""
+    // Whitespace-delimited script tags. Each non-whitespace token is one,
+    // case-sensitive tag; do not use commas or spaces inside a tag. A light
+    // matches `world.query({ component: "light", tag: "t" })` when any token
+    // exactly equals `"t"`. Map data scripts use these queries during baking
+    // too, so a tagged static light reached by setLightAnimation gets an
+    // animated-bake reservation automatically. Leave blank for no tags.
+    // Example: "ambientFill warm"
+    _tags(string) : "Script tags (whitespace-delimited)" : ""
 ]
 
 @PointClass base(Light)

@@ -1,6 +1,6 @@
 # Script-Driven Light Bake
 
-> **Status:** ready — promoted 2026-07-18 after structural, source-anchor, and implementability
+> **Status:** in progress — promoted 2026-07-18 after structural, source-anchor, and implementability
 > review. Substantively rewritten the same day against the shipped reaction/interactive substrate;
 > the original 2026-07-16 draft assumed the pre-reaction scripting model
 > (`registerHandler`, imperative capture at a synthetic `levelLoad`); that world no longer exists.

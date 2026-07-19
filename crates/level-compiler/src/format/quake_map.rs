@@ -265,8 +265,9 @@ pub fn translate_light(
         phase_raw
     };
 
-    // `_start_inactive` only has runtime effect on animated lights; we still
-    // parse and warn on static lights so authoring mistakes are visible.
+    // Parse the fallback before script-derived membership is known. A style-0
+    // light may legitimately gain its animated-bake reservation from the map
+    // data script, so this boundary must not warn merely from `style`.
     let start_inactive = !authored_light_start_active(props)?;
 
     let bake_only = match parse_optional_int(props, "_bake_only")? {
@@ -473,11 +474,6 @@ pub fn translate_light(
     } else if style == 0 {
         if props.contains_key("_phase") && phase_raw != 0.0 {
             log::warn!("light _phase set but style=0 (no animation); phase has no effect");
-        }
-        if start_inactive {
-            log::warn!(
-                "light _start_inactive set but style=0 (no animation); static lights have no runtime toggle"
-            );
         }
         None
     } else {

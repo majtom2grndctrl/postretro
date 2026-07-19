@@ -5,6 +5,16 @@
 
 use super::*;
 
+const LIGHT_INFLUENCE_SIZE: usize = 16;
+
+fn bridge_record_count(bytes_len: usize, stride: usize, capacity: usize) -> Option<usize> {
+    if bytes_len % stride != 0 {
+        return None;
+    }
+    let count = bytes_len / stride;
+    (count <= capacity).then_some(count)
+}
+
 /// Pack the SH grid metadata the SDF shadow pass needs for its open-space
 /// skip uniform. Mirrors what the forward pass reads from `ShGridInfo` (group
 /// 3) — replicating it here lets the shadow pass keep group 3 off its
@@ -363,19 +373,25 @@ impl Renderer {
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
-        debug_assert_eq!(
+        let Some(light_count) = bridge_record_count(
             lights_bytes.len(),
-            full.level_lights.len() * GPU_LIGHT_SIZE,
-            "bridge produced {} bytes; expected {} × {} = {}",
-            lights_bytes.len(),
-            full.level_lights.len(),
             GPU_LIGHT_SIZE,
-            full.level_lights.len() * GPU_LIGHT_SIZE,
-        );
-        if lights_bytes.is_empty() {
+            full.dynamic_light_capacity,
+        ) else {
+            log::warn!(
+                "[Renderer] upload_bridge_lights: bridge produced {} bytes; expected a multiple \
+                 of {} within the {}-record dynamic-light capacity. Skipping upload.",
+                lights_bytes.len(),
+                GPU_LIGHT_SIZE,
+                full.dynamic_light_capacity,
+            );
             return;
+        };
+        if !lights_bytes.is_empty() {
+            queue.write_buffer(&full.lights_buffer, 0, lights_bytes);
         }
-        queue.write_buffer(&full.lights_buffer, 0, lights_bytes);
+        full.light_count = light_count as u32;
+        full.total_light_count = full.light_count + full.promoted_static_records.len() as u32;
         // Keep the CPU mirror in lock-step with the GPU buffer. The bridge
         // packs animated base data with sentinel shadow slots; the shadow pool
         // (`update_dynamic_light_slots`) then patches the real slot field onto
@@ -388,19 +404,60 @@ impl Renderer {
         full.last_lights_upload.extend_from_slice(lights_bytes);
     }
 
+    /// Upload the influence record paired with each compact dynamic light.
+    /// The runtime-spawn reserve keeps this prefix in-bounds without rebinding.
+    pub fn upload_bridge_influences(&mut self, influence_bytes: &[u8]) {
+        let Self { queue, full, .. } = self;
+        let full = full
+            .as_mut()
+            .expect("renderer full-init must complete before full-ready paths run");
+        let expected = full.light_count as usize * LIGHT_INFLUENCE_SIZE;
+        if influence_bytes.len() != expected
+            || bridge_record_count(
+                influence_bytes.len(),
+                LIGHT_INFLUENCE_SIZE,
+                full.dynamic_light_capacity,
+            )
+            .is_none()
+        {
+            log::warn!(
+                "[Renderer] upload_bridge_influences: bridge produced {} bytes; expected {} \
+                 dynamic records × {} = {}. Skipping upload.",
+                influence_bytes.len(),
+                full.light_count,
+                LIGHT_INFLUENCE_SIZE,
+                expected,
+            );
+            return;
+        }
+        if !influence_bytes.is_empty() {
+            queue.write_buffer(&full.influence_buffer, 0, influence_bytes);
+        }
+        full.last_influence_upload.clear();
+        full.last_influence_upload
+            .extend_from_slice(influence_bytes);
+    }
+
     /// Mismatched length logs a warning and skips upload — fail soft over crashing the frame.
     pub fn upload_bridge_descriptors(&mut self, descriptor_bytes: &[u8]) {
         let Self { queue, full, .. } = self;
         let full = full
             .as_ref()
             .expect("renderer full-init must complete before full-ready paths run");
-        let expected = full.level_lights.len() * sh_volume::ANIMATION_DESCRIPTOR_SIZE;
-        if descriptor_bytes.len() != expected {
+        let expected = full.light_count as usize * sh_volume::ANIMATION_DESCRIPTOR_SIZE;
+        if descriptor_bytes.len() != expected
+            || bridge_record_count(
+                descriptor_bytes.len(),
+                sh_volume::ANIMATION_DESCRIPTOR_SIZE,
+                full.dynamic_light_capacity,
+            )
+            .is_none()
+        {
             log::warn!(
                 "[Renderer] upload_bridge_descriptors: bridge produced {} bytes; \
                  expected {} × {} = {}. Skipping upload.",
                 descriptor_bytes.len(),
-                full.level_lights.len(),
+                full.light_count,
                 sh_volume::ANIMATION_DESCRIPTOR_SIZE,
                 expected,
             );
@@ -425,6 +482,23 @@ impl Renderer {
         let full = full
             .as_ref()
             .expect("renderer full-init must complete before full-ready paths run");
+        let sample_capacity = full.sh_volume_resources.scripted_light_count as usize
+            * postretro_render_cpu::sh_volume::SCRIPTED_FLOATS_PER_LIGHT
+            * std::mem::size_of::<f32>();
+        if samples_bytes.len() > sample_capacity
+            || samples_bytes.len()
+                % (postretro_render_cpu::sh_volume::SCRIPTED_FLOATS_PER_LIGHT
+                    * std::mem::size_of::<f32>())
+                != 0
+        {
+            log::warn!(
+                "[Renderer] upload_bridge_samples: bridge produced {} bytes; scripted region \
+                 capacity is {} bytes. Skipping upload.",
+                samples_bytes.len(),
+                sample_capacity,
+            );
+            return;
+        }
         let offset = full.sh_volume_resources.scripted_sample_byte_offset as u64;
         queue.write_buffer(
             &full.sh_volume_resources.animation.anim_samples,
@@ -622,8 +696,47 @@ impl Renderer {
 
     pub fn set_light_effective_brightness(&mut self, effective_brightness: &[f32]) {
         let full = self.full_mut();
+        let expected = full.light_count as usize;
+        if effective_brightness.len() != expected {
+            log::warn!(
+                "[Renderer] effective brightness count {} does not match dynamic light count {}; \
+                 missing entries default to fully bright and excess entries are ignored.",
+                effective_brightness.len(),
+                expected,
+            );
+        }
         full.light_effective_brightness.clear();
         full.light_effective_brightness
-            .extend_from_slice(effective_brightness);
+            .extend(effective_brightness.iter().copied().take(expected));
+        full.light_effective_brightness.resize(expected, 1.0);
+    }
+}
+
+#[cfg(test)]
+mod bridge_contract_tests {
+    use super::*;
+
+    #[test]
+    fn bridge_record_count_accepts_zero_authored_runtime_records_within_reserve() {
+        assert_eq!(
+            bridge_record_count(
+                GPU_LIGHT_SIZE,
+                GPU_LIGHT_SIZE,
+                RUNTIME_DYNAMIC_LIGHT_RESERVE
+            ),
+            Some(1),
+        );
+    }
+
+    #[test]
+    fn bridge_record_count_rejects_partial_and_over_capacity_uploads() {
+        assert_eq!(
+            bridge_record_count(GPU_LIGHT_SIZE - 1, GPU_LIGHT_SIZE, 4),
+            None
+        );
+        assert_eq!(
+            bridge_record_count(5 * GPU_LIGHT_SIZE, GPU_LIGHT_SIZE, 4),
+            None
+        );
     }
 }

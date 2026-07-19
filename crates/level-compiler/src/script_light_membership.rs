@@ -29,6 +29,11 @@ pub(crate) fn light_table_from_lights(lights: &[MapLight]) -> Result<LightTable>
     let lights = lights
         .iter()
         .enumerate()
+        // `_bake_only` lights have no runtime entity. Omitting them keeps the
+        // compiler query's result order and membership faithful to the runtime
+        // query while `index` below retains raw MapData identity for the
+        // sidecar's compiler-facing remap.
+        .filter(|(_, light)| !light.bake_only)
         .map(|(index, light)| {
             Ok(LightTableLight {
                 index: u32::try_from(index)
@@ -413,5 +418,22 @@ mod tests {
         assert_eq!(table.lights[0].position, [1.0, 2.0, 3.0]);
         assert_eq!(table.lights[0].component.light_type, "Point");
         assert_eq!(table.lights[0].component.falloff_model, "InverseSquared");
+    }
+
+    #[test]
+    fn light_table_omits_bake_only_lights_but_keeps_raw_source_indices() {
+        // Regression: exposing a bake-only sibling shifted script-derived ids
+        // away from the compact AlphaLights/runtime query order.
+        let mut bake_only = light(false);
+        bake_only.bake_only = true;
+        bake_only.tags = vec!["bake-only".to_string()];
+        let mut runtime_light = light(false);
+        runtime_light.tags = vec!["runtime".to_string()];
+
+        let table = light_table_from_lights(&[bake_only, runtime_light]).expect("table builds");
+
+        assert_eq!(table.lights.len(), 1);
+        assert_eq!(table.lights[0].index, 1);
+        assert_eq!(table.lights[0].tags, ["runtime"]);
     }
 }

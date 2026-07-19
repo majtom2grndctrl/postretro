@@ -65,7 +65,7 @@
 // entity 1
 {
 "classname" "player_spawn"
-"origin" "256 256 40"
+"origin" "256 256 24"
 "angle" "0"
 }
 // entity 2
@@ -96,5 +96,4 @@
 "_color" "255 100 80"
 "brightness_curve" "[0, 0.2] [750, 1.0] [1500, 0.2]"
 "period_ms" "1500"
-}
 }

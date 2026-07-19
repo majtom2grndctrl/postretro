@@ -2597,6 +2597,7 @@ impl ApplicationHandler for App {
                         {
                             if update.has_dirty_data {
                                 renderer.upload_bridge_lights(&update.lights_bytes);
+                                renderer.upload_bridge_influences(&update.influence_bytes);
                                 renderer.upload_bridge_descriptors(&update.descriptor_bytes);
                                 renderer.upload_bridge_samples(&update.samples_bytes);
                                 // Fan out `_animated` descriptor updates to
@@ -2614,10 +2615,9 @@ impl ApplicationHandler for App {
                     // pre-culls dynamic point lights against fog AABBs. Upload
                     // happens unconditionally so an empty list zeroes the GPU
                     // volume count and skips the pass for the rest of the frame.
-                    // Combine static map lights with script-spawned dynamic lights so
-                    // fog halos react to lights from both sources. The light bridge
-                    // tracks both via `populate_from_level` + `absorb_dynamic_lights`;
-                    // `renderer.level_lights()` only covers the static subset.
+                    // The light bridge tracks the full authored light list plus
+                    // script-spawned dynamic lights. The fog bridge filters that
+                    // snapshot to the dynamic point-light subset it consumes.
                     // `collect_all_as_map_lights` pairs each light with its
                     // brightness multiplier so the two cannot drift out of alignment
                     // when a `LightComponent` lookup fails.

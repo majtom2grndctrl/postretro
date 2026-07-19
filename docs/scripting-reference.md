@@ -396,7 +396,7 @@ Providing a `tag` narrows the result to entities whose tag matches exactly.
 
 ### LightEntity
 
-Returned when `component` is `"light"`. All fields are a snapshot at query time. `setAnimation` operates on the **live** entity by id and does not require a fresh `world.query`.
+Returned when `component` is `"light"`. All fields are a snapshot at query time. Handle methods build `setLightAnimation` sequence steps for reactions; they do not mutate the entity during setup.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -413,7 +413,7 @@ Tag the hallway lights `"hallway_wave"` in TrenchBroom. The data script queries 
 **TypeScript**
 
 ```typescript
-import { world } from "postretro";
+import { defineReaction, world } from "postretro";
 import type { LightAnimation } from "postretro";
 
 const lights = world
@@ -430,8 +430,12 @@ const pulse: LightAnimation = {
   ],
 };
 
-lights.forEach((light, i) => {
-  light.setAnimation({ ...pulse, phase: i / lights.length });
+const wave = defineReaction("levelLoad", {
+  sequence: lights.map((light, i) => ({
+    id: light.id,
+    primitive: "setLightAnimation" as const,
+    args: { ...pulse, phase: i / lights.length },
+  })),
 });
 ```
 
@@ -454,13 +458,15 @@ local pulse = {
   },
 }
 
+local steps = {}
 for i, light in ipairs(lights) do
-  light:setAnimation({
+  steps[i] = { id = light.id, primitive = "setLightAnimation", args = {
     periodMs = pulse.periodMs,
     brightness = pulse.brightness,
     phase = (i - 1) / #lights,
-  })
+  } }
 end
+local wave = defineReaction("levelLoad", { sequence = steps })
 ```
 
 ### Baked-light membership
@@ -540,7 +546,7 @@ A `LightAnimation` describes one looping (or finite) animation cycle. All fields
 |-------|------|---------|-------------|
 | `periodMs` | `number` | required | Total duration of one cycle, in milliseconds. |
 | `brightness` | `number[]` | `null` | Brightness multiplier samples. The GPU interpolates via Catmull-Rom over the period. `0` = off, `1` = full intensity. Values above `1` are valid. |
-| `color` | `Vec3[]` | `null` | RGB color samples (`{ x, y, z }`). Accepted on dynamic and authored static lights; baked indirect lighting stays at the authored color. |
+| `color` | `Vec3[]` | `null` | RGB color samples (`{ x, y, z }`). Accepted on dynamic and animated-baked static lights; the curve recolors their direct and baked-indirect contributions while preserving authored intensity. |
 | `direction` | `Vec3[]` | `null` | Unit-vector direction samples for spot lights. Non-unit samples are silently normalized. Zero-length samples are rejected with `InvalidArgument`. |
 | `phase` | `number` | `null` | Offset into the cycle where this light starts, in `[0, 1)`. Use to stagger lights in a sequence. Values outside `[0, 1)` are normalized automatically. |
 | `playCount` | `number` | `null` | Number of complete cycles to play, then stop. `null` loops forever. |
@@ -550,7 +556,7 @@ A `LightAnimation` describes one looping (or finite) animation cycle. All fields
 
 ## LightComponent
 
-The full component state returned in `LightEntity.component`. All fields are read-only on the snapshot; use `setAnimation` to mutate the live entity.
+The full component state returned in `LightEntity.component`. All fields are read-only on the snapshot; return `setLightAnimation` steps from reactions to mutate the live entity.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -563,30 +569,30 @@ The full component state returned in `LightEntity.component`. All fields are rea
 | `coneAngleOuter` | `number \| null` | Outer cone half-angle in radians. `null` for non-Spot lights. |
 | `coneDirection` | `{ x, y, z } \| null` | Normalized aim vector. `null` for Point lights. |
 | `isDynamic` | `boolean` | Same as `LightEntity.isDynamic`. |
-| `animation` | `LightAnimation \| null` | Active animation, or `null` if none. Reflects any animation set by `setAnimation` in a previous frame. |
+| `animation` | `LightAnimation \| null` | Active animation, or `null` if none. Reflects the last executed `setLightAnimation` step. |
 
 ---
 
 ## Vocabulary helpers
 
-Import from `"postretro"` (TypeScript) or use the bare globals directly (Luau) — `flicker`, `pulse`, `colorShift`, `sweep`, `timeline`, and `sequence` are installed by the engine prelude; no require or import is needed in Luau. Each helper returns a `LightAnimation` object without touching the engine — pass the result to `setAnimation`. Generic keyframe utilities (`timeline`, `sequence`, the `Keyframe` type) are usable with any keyframed animation, not only lights.
+Light handles expose `flicker`, `pulse`, `fade`, `colorShift`, and `sweep`. Each returns a one-step `SequenceStep[]`; splice or concatenate those arrays into a reaction's `sequence`. Generic keyframe utilities (`timeline`, `sequence`, the `Keyframe` type) remain usable when constructing a raw `setLightAnimation` step.
 
 None of the helpers set `phase`. Set it at the call site when staggering multiple lights.
 
 ### `flicker`
 
 ```typescript
-flicker(minBrightness: number, maxBrightness: number, rate: number): LightAnimation
+light.flicker(opts: { min: number; max: number; rate: number }): SequenceStep[]
 ```
 
-Returns an 8-sample irregular brightness curve. `rate` is flicker frequency in Hz; `periodMs` is `1000 / rate`.
+Builds one `setLightAnimation` step with an 8-sample irregular brightness curve. `rate` is flicker frequency in Hz; `periodMs` is `1000 / rate`.
 
 ```typescript
-light.setAnimation(flicker(0.2, 1.0, 8));
+defineReaction("alarm", { sequence: light.flicker({ min: 0.2, max: 1.0, rate: 8 }) });
 ```
 
 ```lua
-light:setAnimation(flicker(0.2, 1.0, 8))
+defineReaction("alarm", { sequence = light:flicker({ min = 0.2, max = 1.0, rate = 8 }) })
 ```
 
 ---
@@ -594,17 +600,17 @@ light:setAnimation(flicker(0.2, 1.0, 8))
 ### `pulse`
 
 ```typescript
-pulse(minBrightness: number, maxBrightness: number, periodMs: number): LightAnimation
+light.pulse(opts: { min: number; max: number; periodMs: number }): SequenceStep[]
 ```
 
-Returns a 16-sample sine-approximating brightness curve oscillating between the given bounds over one period.
+Builds one `setLightAnimation` step with a 16-sample sine-approximating brightness curve oscillating between the given bounds over one period.
 
 ```typescript
-light.setAnimation(pulse(0.4, 1.0, 2000));
+defineReaction("pulse", { sequence: light.pulse({ min: 0.4, max: 1.0, periodMs: 2000 }) });
 ```
 
 ```lua
-light:setAnimation(pulse(0.4, 1.0, 2000))
+defineReaction("pulse", { sequence = light:pulse({ min = 0.4, max = 1.0, periodMs = 2000 }) })
 ```
 
 ---
@@ -612,13 +618,13 @@ light:setAnimation(pulse(0.4, 1.0, 2000))
 ### `colorShift`
 
 ```typescript
-colorShift(colors: [number, number, number][], periodMs: number): LightAnimation
+light.colorShift(opts: { values: Vec3[]; periodMs: number }): SequenceStep[]
 ```
 
-Cycles uniformly through the given RGB colors over `periodMs`. Works on dynamic and authored static lights.
+Builds one `setLightAnimation` step that cycles uniformly through the given RGB colors over `periodMs`. Works on dynamic and authored static lights.
 
 ```typescript
-light.setAnimation(colorShift([[1, 0, 0], [0, 0, 1]], 3000));
+defineReaction("shift", { sequence: light.colorShift({ values: [{ x: 1, y: 0, z: 0 }, { x: 0, y: 0, z: 1 }], periodMs: 3000 }) });
 ```
 
 ---
@@ -626,13 +632,13 @@ light.setAnimation(colorShift([[1, 0, 0], [0, 0, 1]], 3000));
 ### `sweep`
 
 ```typescript
-sweep(directions: [number, number, number][], periodMs: number): LightAnimation
+light.sweep(opts: { values: Vec3[]; periodMs: number }): SequenceStep[]
 ```
 
-Sweeps a spot light's direction through the given unit vectors over `periodMs`. Samples are normalized; zero-length vectors error at the primitive.
+Builds one `setLightAnimation` step that sweeps a spot light's direction through the given unit vectors over `periodMs`. Samples are normalized; zero-length vectors error at the primitive.
 
 ```typescript
-light.setAnimation(sweep([[1, 0, 0], [0, 0, -1], [-1, 0, 0]], 4000));
+defineReaction("sweep", { sequence: light.sweep({ values: [{ x: 1, y: 0, z: 0 }, { x: 0, y: 0, z: -1 }, { x: -1, y: 0, z: 0 }], periodMs: 4000 }) });
 ```
 
 ---
@@ -653,7 +659,8 @@ const kf = timeline([
   [ 500, 1.0],
   [1000, 0.0],
 ]);
-light.setAnimation({ periodMs: 1000, brightness: kf.map(([, v]) => v) });
+const step = { id: light.id, primitive: "setLightAnimation" as const,
+  args: { periodMs: 1000, brightness: kf.map(([, v]) => v) } };
 ```
 
 ---
@@ -694,13 +701,14 @@ local kf = sequence({
 
 Methods on the handle returned by `world.query`. In TypeScript, called as `light.method()`; in Luau, called as `light:method()`.
 
-### `setAnimation(anim | null)`
+### Raw install and clear steps
 
-Replaces the current animation. Pass `null` / `nil` to clear it. The last call wins — all lights are interruptible.
+Handle capability methods cover common installs. For a custom animation or a clear, author a `setLightAnimation` sequence step directly. `args: null` / `nil` clears the animation when the reaction fires. The last executed step wins.
 
 ```typescript
-light.setAnimation(pulse(0.4, 1.0, 2000));
-light.setAnimation(null); // clears it
+const clear = defineReaction("clearLight", {
+  sequence: [{ id: light.id, primitive: "setLightAnimation", args: null }],
+});
 ```
 
 ---

@@ -1,96 +1,70 @@
-// DESIGN SPIKE — the CANONICAL pre-spec artifact (fuses the earlier death-model +
-// ergonomics probes). Type-checks against the real postretro.d.ts + postretro/ui
-// plus proposed.d.ts (the WALLs). A persisted, tsc-checked target for /draft-plan.
+// DESIGN SPIKE — the CANONICAL pre-spec artifact. Type-checks against the real
+// postretro.d.ts + postretro/ui plus proposed.d.ts (the WALLs).
 //
-// MODEL: Rust owns collision, state mutation, and the act of despawning — NOT
-// "death". The engine emits a NEUTRAL health-crossing event; "death" is the name
-// THIS SCRIPT gives to a LISTENER over it. defineEvent / fire / onEvent are the
-// dispatch<->listen pair; events are DERIVED from a query-shaped surface.
+// THE MODEL (grounded true against shipped code): the engine owns IMPACT — the
+// damage chokepoint, the single HP-decrement site through which every damage
+// application flows. DEATH is not an engine concept; it is DERIVED from impact.
+// So we don't listen to a pre-baked `onDeath` — we DEFINE death (and overkill, and
+// xp) by deriving them from the one impact event.
 //
-// GROUNDED: a listener returns a FLAT effect SET, auto-partitioned into the two
-// arms (consequential in-tick / presentation app-drain). No temporal tree; timing
-// is a property (despawn afterMs). A real timed pause is a separate WALL.
-//
-// RECONCILED WITH THE FABLE CONSENSUS: combatKill-as-engine-event is SUPERSEDED
-// (death is a listener); the two-arm split, addStore, ledger attribution, and
-// ProgressTracker-retirement all SURVIVE (flagship below); subject vs source is
-// SHARPENED into distinct handles. Coordination: E18-C, not M10 (shipped).
+// Two rules the guardrails at the bottom enforce:
+//   1. Derived facts are IR EXPRESSIONS, not live JS (no VM at fire time):
+//      `impact.target.level.times(1.25)`, never `200 * impact.target.level`.
+//   2. Subject (damaged) vs source (damager) are distinct: you despawn the
+//      subject, you credit the source.
 //
 // "postretro" / "postretro/ui" → SHIPPED.  "postretro/proposed" → a WALL.
 
-import { defineReaction, defineStore } from "postretro";
-import { playSound, loadLevel, restartLevel } from "postretro/ui";
-import {
-  defineEvent, entities, fire, onEvent, slot,
-  type LevelManifestWithEvents,
-} from "postretro/proposed";
+import { defineStore } from "postretro";
+import { entities, slot, type GatedEffect, type LevelManifestWithEvents } from "postretro/proposed";
 
-// Score + kill counter. Both `network: "shared"` — consequential, replicated.
-// (Store DECLARATION commits via ModManifest.stores; not the level manifest.)
 const econ = defineStore("arena", {
-  score:  { type: "number", default: 0, network: "shared" },
   deaths: { type: "number", default: 0, network: "shared" },
 });
-const score  = slot(econ.state.score);
 const deaths = slot(econ.state.deaths);
 
-// LIVE standing entity sets (spawn-aware), named as queries. Events derive from
-// them. "gruntDied"/"playerDied" are LISTENER-side names for a neutral crossing —
-// the engine never hears the word "death".
-const grunts  = entities.query({ tag: "grunt" });
-const players = entities.query({ tag: "player" });
-const gruntDied  = grunts.healthCrossing({ below: 0 });
-const playerDied = players.healthCrossing({ below: 1 });
-const waveCleared = defineEvent("arena.waveCleared"); // modder-owned; fired + heard below
-
-// Reusable, param-free reactions (Reaction<{}> — bind to any event).
-const enemySfx    = defineReaction(playSound("enemyDown"));
-const openBoss    = defineReaction(loadLevel("arena-boss"));
-const playerReset = defineReaction(restartLevel());
-
-// === setupLevel returns a LevelManifest; the event surface is a nested child. ==
+// === setupLevel returns a LevelManifest; the derived behaviors are its `events`
+// child. (This same block lives at ModManifest scope as the global reference
+// behavior; a map overrides by adding its own.)
 export function setupLevel(): LevelManifestWithEvents {
-  return {
-    reactions: [enemySfx, openBoss, playerReset],
-    events: {
-      defined: [waveCleared],
-      listeners: [
-        // "Death" IS this listener. One JS-familiar builder returns a flat effect
-        // SET; the SDK partitions it into the two arms.
-        onEvent(gruntDied, (event) => [
-          event.subject.playDeathAnim(),           // presentation
-          event.source.grant("ammo", 5),           // consequential — credits the SOURCE
-          score.add(event.overkill),               // consequential — IR leaf
-          enemySfx,
-          deaths.add(1),                           // consequential — retires ProgressTracker
-          event.subject.despawn({ afterMs: 1500 }),// consequential — timer property
-        ]),
-        // A validly DIFFERENT death over the same event: the player never despawns.
-        onEvent(playerDied, [playerReset]),
+  const grunts = entities.query({ tag: "grunt" });
 
-        // FLAGSHIP — retire the Rust ProgressTracker via the symmetry: a store
-        // slot's crossing is just another event; listen to it and FIRE the modder's
-        // own event when the (spawn-aware) kill count crosses the threshold.
-        onEvent(deaths.crossing({ above: 7 }), [() => fire(waveCleared)]),
-        onEvent(waveCleared, [openBoss]),
-      ],
-    },
+  return {
+    reactions: [],
+    events: [
+      // DEFINE death by DERIVING it from impact. Facts are IR expressions the
+      // engine evaluates at impact time; effects are gated on those facts.
+      grunts.onImpact((impact) => {
+        const isKill     = impact.target.crossedBelow(0);              // BoolRef edge — once per death
+        const isOverkill = impact.target.healthAfter.lt(-10);          // BoolRef
+        const xpReward   = impact.target.level.times(1.25).times(200); // NumberRef — IR, not JS math
+
+        return [
+          { when: isKill, do: [
+            impact.target.playDeathAnim(),                // presentation
+            impact.source.grant("xp", xpReward),          // consequential — credits the SOURCE
+            deaths.add(1),                                // consequential — retires ProgressTracker
+            impact.target.despawn({ afterMs: 1500 }),     // consequential — timer property
+          ] },
+          { when: isOverkill, do: [ impact.source.grant("style", 1) ] },
+        ];
+      }),
+    ],
   };
 }
 
 // === GUARDRAILS — these MUST NOT compile. ===================================
-
-// The JS-callback trap: a statement body returns void, not an Effect — the
-// discarded builder calls would record NOTHING (no live VM runs them).
-// @ts-expect-error statement body returns void, not an Effect/Effect set.
-const imperativeBody: (e: import("postretro/proposed").HealthEvent) => import("postretro/proposed").Effect =
-  (e) => { e.subject.despawn(); };
-void imperativeBody;
-
-// Subject/source distinction, enforced by which methods EXIST:
-onEvent(gruntDied, (event) => [
+const grunts = entities.query({ tag: "grunt" });
+grunts.onImpact((impact) => {
+  // @ts-expect-error live JS math on an IR ref — use .times(), not `*`.
+  const badXp = 200 * impact.target.level;
+  void badXp;
+  // @ts-expect-error a NumberRef is not a BoolRef gate.
+  const badGate: GatedEffect = { when: impact.target.healthAfter, do: [] };
+  void badGate;
   // @ts-expect-error `source` has no despawn — you despawn the SUBJECT.
-  event.source.despawn(),
-  // @ts-expect-error `subject` has no grant — you credit the SOURCE.
-  event.subject.grant("ammo", 5),
-]);
+  impact.source.despawn();
+  // @ts-expect-error `target` has no grant — you credit the SOURCE.
+  impact.target.grant("xp", 5);
+  return [];
+});

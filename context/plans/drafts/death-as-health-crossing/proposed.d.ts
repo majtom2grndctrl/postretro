@@ -1,105 +1,98 @@
-// PROPOSED SDK SURFACE — not shipped. Every export is a WALL the
-// death-as-health-crossing spec would build. Module "postretro/proposed" so each
-// import in the spike is visibly a gap. This is the UNIFIED surface (it replaced
-// the earlier split proposed/proposed-ergo probes).
+// PROPOSED SDK SURFACE — not shipped. Every export is a WALL the spec would build.
+// Module "postretro/proposed" so each import in the spike is visibly a gap.
 //
-// THE MODEL, in one breath: Rust owns collision, state mutation, and the act of
-// despawning. It does NOT own "death". The engine emits a NEUTRAL event — an
-// entity's health crossed below N — carrying the crossed entity plus its
-// observable component state (the ledger is component state, so source /
-// attributedDamage ride along; nothing is a "kill payload"). "Death" is the name a
-// modder gives to a LISTENER over that event.
+// THE MODEL (grounded): the engine owns IMPACT — the damage chokepoint
+// (apply_damage_with_context, the single HP-decrement site, health.rs:329). Every
+// HP reduction flows through it and nothing reaches <=0 HP any other way, so DEATH
+// is always DERIVABLE from impact. The engine does NOT own death; it emits ONE
+// net-new event (impact), and modders DEFINE kill / overkill / xp by deriving them
+// from it. There is no engine "health-crossing event" — a crossing is an apply-time
+// PREDICATE on the impact.
 //
-// SYMMETRY: defineEvent / fire / onEvent are the dispatch<->listen pair. Events
-// are DERIVED from things via a query-shaped surface: entities.query(...).
-// healthCrossing(...) and slot(...).crossing(...). onEvent binds listeners.
-//
-// GROUNDED DECISIONS (see the four-question probe): a listener returns a FLAT
-// effect SET, auto-partitioned into the two arms (consequential in-tick /
-// presentation app-drain) by primitive identity — no temporal sequence/parallel
-// tree (shipped sequencing is instant; cross-arm order is fixed). Timing is a
-// PROPERTY (despawn afterMs, reusing death_despawn_ms), not composition. A real
-// timed pause is a SEPARATE WALL (a duration primitive).
+// Two hard rules the types enforce below:
+//   1. Derived facts (isKill, xpReward) are IR EXPRESSIONS, not live JS — there is
+//      no VM at fire time. `200 * ref` must fail; `ref.times(200)` is the way.
+//   2. SUBJECT (damaged) and SOURCE (damager) are distinct handles.
 
 import type {
   Reaction,
   PrimitiveReactionDescriptor,
   LevelManifest,
   WritableStateRef,
-  RuntimeValue,
 } from "postretro";
 
 declare module "postretro/proposed" {
-  // ---- Effects. A single leaf; the SDK derives its arm (consequential /
-  //      presentation) by identity. Additive deltas commute; same-slot absolute
-  //      writes are order-sensitive (prefer deltas). No temporal composition.
+  // ---- IR value refs. The IR is Number/Bool; distinct TS brands give safety.
+  //      Accessors return refs (never raw values), so JS arithmetic on them fails.
+  const numBrand: unique symbol;
+  const boolBrand: unique symbol;
+  export interface NumberRef {
+    readonly [numBrand]: true;
+    times(n: NumberValue): NumberRef;
+    plus(n: NumberValue): NumberRef;
+    lt(n: number): BoolRef;
+  }
+  export interface BoolRef {
+    readonly [boolBrand]: true;
+  }
+  export type NumberValue = number | NumberRef;
+
+  // ---- Effects; the SDK derives each one's arm (consequential / presentation) by
+  //      identity. Additive deltas commute; timing is a property, not composition.
   export type Effect = PrimitiveReactionDescriptor | Reaction<{}>;
 
-  // ---- Method-style handles: the pass-only token PLUS builder methods returning
-  //      descriptors. SUBJECT (the entity an event is about) and SOURCE (last
-  //      damage contributor, from the ledger) are DISTINCT — despawning the source
-  //      or crediting the subject is a missing method.
+  // ---- Handles on the impact event. Accessors return IR REFS; methods return
+  //      effect descriptors. Subject (damaged) vs source (damager) are distinct.
   export interface SubjectHandle {
-    // WALL: script-invoked despawn. Timing is a PROPERTY reusing death_despawn_ms
-    // (an ms timer, NOT wait-for-anim-completion). Consequential.
-    despawn(opts?: { afterMs?: number }): PrimitiveReactionDescriptor;
-    // WALL: script-invoked death animation (today the AI brain auto-drives it). Presentation.
-    playDeathAnim(): PrimitiveReactionDescriptor;
+    // apply-time edge predicate: true only on the impact that crossed the
+    // boundary (once-per-death — derivable from pre/post health at the chokepoint).
+    crossedBelow(threshold: number): BoolRef;
+    readonly healthAfter: NumberRef;
+    readonly level: NumberRef;                            // per-entity stat → a leaf
+    despawn(opts?: { afterMs?: number }): Effect;         // consequential; timer property
+    playDeathAnim(): Effect;                              // presentation
   }
   export interface SourceHandle {
-    // WALL: the resource-grant chokepoint, crediting the killer. Consequential.
-    grant(resource: string, amount: number | RuntimeValue): PrimitiveReactionDescriptor;
+    grant(resource: string, amount: NumberValue): Effect; // consequential
   }
 
-  // ---- Store slot handle: write (.add — WALL: event-driven delta) + derive a
-  //      crossing event (.crossing), symmetric with entities.query().healthCrossing.
+  // ---- Store slot handle: write (delta) + derive a crossing event, symmetric
+  //      with entities.query().onImpact.
   export interface NumberSlot {
-    add(delta: number | RuntimeValue): PrimitiveReactionDescriptor;
-    crossing(cond: { above?: number; below?: number }): EventDescriptor<CrossingEvent>;
+    add(delta: NumberValue): Effect;
   }
   export function slot(ref: WritableStateRef<number>): NumberSlot;
 
-  // ---- Entity query: a LIVE STANDING selector — distinct from the shipped
-  //      world.query SNAPSHOT. Spawn-aware: entities matching the tag that spawn
-  //      later are included (the E18-C need). Events hang off it, so the query
-  //      reads as a query.
+  // ---- The ONE net-new engine event: impact, at the damage chokepoint. Carries
+  //      the damaged/damaging entities and the amount dealt. DEATH is derived, not
+  //      emitted.
+  export type ImpactEvent = Readonly<{
+    target: SubjectHandle;
+    source: SourceHandle;
+    amount: NumberRef;
+  }>;
+
+  // A conditional effect group: `when` (a BoolRef) gates the group at fire time;
+  // omitted = always. This is how derived semantics (kill, overkill) drive effects.
+  export type GatedEffect = { when?: BoolRef; do: readonly Effect[] };
+
+  // ---- Entity query: a LIVE STANDING selector — spawn-aware, distinct from the
+  //      shipped world.query snapshot. `onImpact` DEFINES a derived behavior over
+  //      the impact stream: the builder computes IR facts and returns gated effects.
+  //      (Runs ONCE at load to emit data — it is not a live callback.)
   export interface EntitySet {
-    healthCrossing(cond: { below: number }): EventDescriptor<HealthEvent>;
-    // future: impact(), damaged(), ...
+    onImpact(build: (impact: ImpactEvent) => readonly GatedEffect[]): EventBehavior;
   }
   export interface Entities {
     query(filter: { tag?: string }): EntitySet;
   }
   export const entities: Entities;
 
-  // ---- The symmetric event surface ----
-  const eventBrand: unique symbol;
-  export type EventDescriptor<P> = { readonly name: string; readonly [eventBrand]?: (p: P) => void };
+  export type EventBehavior = { readonly kind: "impact"; readonly tag?: string };
 
-  // A bound reaction: a param-reading inline builder (runs ONCE at load → data, not
-  // a live callback), a param-free reusable handle, or a name.
-  export type EventReaction<P> = ((on: P) => Effect | readonly Effect[]) | Effect | string;
-  export type ListenerDescriptor = { event: string; fire: string[]; levels?: string[] };
-
-  // DECLARE a modder-owned (script-fired) event. FIRE it. LISTEN to any event.
-  export function defineEvent<P = {}>(name: string): EventDescriptor<P>;
-  export function fire<P>(event: EventDescriptor<P>, params?: P): PrimitiveReactionDescriptor;
-  export function onEvent<P>(event: EventDescriptor<P>, react: EventReaction<P>[]): ListenerDescriptor;
-  export function onEvent<P>(event: EventDescriptor<P>, build: (on: P) => Effect | readonly Effect[]): ListenerDescriptor;
-
-  // ---- Neutral event params (tokens pass-only; measures are IR leaves; NO string
-  //      fact). Field-validity: a hit-less crossing (DoT/lava/fall) has no
-  //      contributor, so source / attributedDamage read type-zero, never null.
-  export type HealthEvent = Readonly<{
-    subject: SubjectHandle;
-    source: SourceHandle;
-    overkill: RuntimeValue;
-    attributedDamage: RuntimeValue;
-  }>;
-  export type CrossingEvent = Readonly<{ rising: RuntimeValue }>;
-
-  // ---- Manifest. setupLevel returns the real LevelManifest; the event surface is
-  //      a nested `events` CHILD (the real spec would add `events?` to LevelManifest).
-  export type EventManifest = { defined?: EventDescriptor<any>[]; listeners: ListenerDescriptor[] };
-  export type LevelManifestWithEvents = LevelManifest & { events?: EventManifest };
+  // ---- Manifest: setupLevel returns the real LevelManifest; the derived-event
+  //      behaviors are an OPTIONAL CHILD (the spec adds `events?` to LevelManifest
+  //      itself). The same shape lives at ModManifest scope for the global
+  //      reference behavior; a map overrides by adding its own.
+  export type LevelManifestWithEvents = LevelManifest & { events?: EventBehavior[] };
 }

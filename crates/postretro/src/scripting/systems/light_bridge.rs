@@ -78,6 +78,10 @@ pub(crate) struct LightBridge {
     snapshots: HashMap<EntityId, LightSnapshot>,
     /// Shape metadata needed to re-pack. Parallels `entity_ids`.
     shape: Vec<MapLightShape>,
+    /// Static, slotless map lights for which the animation diagnostic has
+    /// already been emitted. Map-light indices are stable for the level, so
+    /// this avoids tying author-facing diagnostics to runtime `EntityId`s.
+    warned_slotless_animation_indices: std::collections::HashSet<usize>,
     dirty: bool,
     /// f64 origins from level load. Preserved so round-tripping through the f32
     /// `LightComponent` doesn't drop precision on non-moving lights.
@@ -109,6 +113,7 @@ impl LightBridge {
             entity_ids: Vec::new(),
             snapshots: HashMap::new(),
             shape: Vec::new(),
+            warned_slotless_animation_indices: std::collections::HashSet::new(),
             dirty: false,
             cached_origins_f64: Vec::new(),
             fgd_sample_float_count: 0,
@@ -120,6 +125,7 @@ impl LightBridge {
         self.entity_ids.clear();
         self.snapshots.clear();
         self.shape.clear();
+        self.warned_slotless_animation_indices.clear();
         self.dirty = false;
         self.cached_origins_f64.clear();
         self.fgd_sample_float_count = 0;
@@ -188,6 +194,7 @@ impl LightBridge {
         self.entity_ids.clear();
         self.snapshots.clear();
         self.shape.clear();
+        self.warned_slotless_animation_indices.clear();
         self.cached_origins_f64.clear();
         self.entity_ids.reserve(lights.len());
         self.shape.reserve(lights.len());
@@ -314,10 +321,22 @@ impl LightBridge {
         // Settled animations are collected and written back after the loop to
         // avoid aliasing the registry borrow.
         let mut settled: Vec<(EntityId, LightComponent)> = Vec::new();
-        for &id in &self.entity_ids {
+        for (map_idx, &id) in self.entity_ids.iter().enumerate() {
             let Ok(current) = registry.get_component::<LightComponent>(id) else {
                 continue;
             };
+
+            let shape = &self.shape[map_idx];
+            if !shape.is_dynamic
+                && shape.animated_slot.is_none()
+                && current.animation.is_some()
+                && self.warned_slotless_animation_indices.insert(map_idx)
+            {
+                let tags = registry.get_tags(id).unwrap_or(&[]);
+                log::warn!(
+                    "[LightBridge] static map light {map_idx} (tags: {tags:?}) received an animation but has no animated compose slot; its baked contribution will not animate. Use script-derived membership or `_animated 1`."
+                );
+            }
             let snapshot = self.snapshots.get(&id);
 
             let changed = match snapshot {
@@ -768,6 +787,18 @@ mod tests {
             tags: vec![],
             cell_index: 0,
             shadow_type: postretro_level_loader::ShadowType::StaticLightMap,
+        }
+    }
+
+    fn sample_animation() -> LightAnimation {
+        LightAnimation {
+            period_ms: 1000.0,
+            phase: None,
+            play_count: None,
+            start_active: None,
+            brightness: Some(vec![0.0, 1.0, 0.0]),
+            color: None,
+            direction: None,
         }
     }
 
@@ -1304,6 +1335,93 @@ mod tests {
         assert!(
             update.compose_descriptor_writes.is_empty(),
             "lights without `animated_slot` must not feed the compose buffer"
+        );
+    }
+
+    #[test]
+    fn slotless_static_animation_warns_once_with_stable_map_index_and_tags() {
+        let mut light = sample_point_light();
+        light.tags = vec!["hallway_wave".into(), "alarm".into()];
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[light], &mut registry, 0);
+        let _ = bridge.update(&mut registry, 0.0);
+
+        let id = bridge.entity_for_map_index(0).unwrap();
+        let mut component = registry
+            .get_component::<LightComponent>(id)
+            .unwrap()
+            .clone();
+        component.animation = Some(sample_animation());
+        registry.set_component(id, component).unwrap();
+
+        let captured = crate::scripting::reactions::log_capture::capture(|| {
+            let _ = bridge.update(&mut registry, 0.1);
+
+            // A subsequent dirty update while the same animation remains live
+            // must not repeat the author-facing warning.
+            let mut component = registry
+                .get_component::<LightComponent>(id)
+                .unwrap()
+                .clone();
+            component.intensity = 2.0;
+            registry.set_component(id, component).unwrap();
+            let _ = bridge.update(&mut registry, 0.2);
+        });
+
+        let warnings: Vec<_> = captured
+            .iter()
+            .filter(|(level, message)| {
+                *level == log::Level::Warn && message.contains("static map light")
+            })
+            .collect();
+        assert_eq!(
+            warnings.len(),
+            1,
+            "expected one slotless-light warning: {captured:?}"
+        );
+        let message = &warnings[0].1;
+        assert!(message.contains("map light 0"));
+        assert!(message.contains("hallway_wave"));
+        assert!(message.contains("alarm"));
+        assert!(message.contains("baked contribution will not animate"));
+        assert!(message.contains("script-derived membership or `_animated 1`"));
+    }
+
+    #[test]
+    fn only_slotless_static_light_animations_warn() {
+        let mut slot_backed_static = sample_point_light();
+        slot_backed_static.animated_slot = Some(7);
+        let lights = vec![
+            sample_spot_light(),
+            slot_backed_static,
+            sample_point_light(),
+        ];
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&lights, &mut registry, 0);
+        let _ = bridge.update(&mut registry, 0.0);
+
+        // Dynamic and slot-backed static lights receive animations; the final
+        // static slotless light remains unanimated. None meet the diagnostic gate.
+        for map_idx in [0, 1] {
+            let id = bridge.entity_for_map_index(map_idx).unwrap();
+            let mut component = registry
+                .get_component::<LightComponent>(id)
+                .unwrap()
+                .clone();
+            component.animation = Some(sample_animation());
+            registry.set_component(id, component).unwrap();
+        }
+
+        let captured = crate::scripting::reactions::log_capture::capture(|| {
+            let _ = bridge.update(&mut registry, 0.1);
+        });
+        assert!(
+            !captured.iter().any(|(level, message)| {
+                *level == log::Level::Warn && message.contains("static map light")
+            }),
+            "dynamic, slot-backed, and unanimated lights must not warn: {captured:?}"
         );
     }
 }

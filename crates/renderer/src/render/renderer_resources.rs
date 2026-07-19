@@ -187,8 +187,10 @@ impl Renderer {
         full.total_light_count = full.light_count;
         let level_light_count = level_lights.len();
         let selected_static_count = selected_static.lights.len();
+        let dynamic_light_capacity = level_light_count + RUNTIME_DYNAMIC_LIGHT_RESERVE;
+        full.dynamic_light_capacity = dynamic_light_capacity;
 
-        let light_record_capacity = (level_light_count + selected_static_count).max(1);
+        let light_record_capacity = (dynamic_light_capacity + selected_static_count).max(1);
         let mut lights_data = Vec::with_capacity(light_record_capacity * GPU_LIGHT_SIZE);
         if !level_lights.is_empty() {
             lights_data.extend_from_slice(&pack_lights(&level_lights));
@@ -251,7 +253,7 @@ impl Renderer {
         full.shadow_candidate_selection_indices = shadow_candidate_selection_indices;
 
         let influence_record_capacity = shadowmask::influence_capacity_with_shadowmask_metadata(
-            level_light_count,
+            dynamic_light_capacity,
             selected_static_count,
         );
         let mut influence_data = Vec::with_capacity(influence_record_capacity * 16);
@@ -341,7 +343,8 @@ impl Renderer {
             geometry.sh_volume,
             geometry.direct_sh_volume,
             geometry.direct_sh_delta_volumes,
-            full.level_lights.len() + full.entity_shadow_lights.len(),
+            // Runtime-spawned lights append after the full-authored prefix.
+            geometry.lights.len() + RUNTIME_DYNAMIC_LIGHT_RESERVE,
             full.probe_occlusion_enabled,
         );
 
@@ -540,6 +543,7 @@ impl Renderer {
 
         full.has_geometry = has_geometry;
         full.last_lights_upload.clear();
+        full.last_influence_upload.clear();
         full.lights_pack_scratch.clear();
         full.influence_pack_scratch.clear();
         full.light_effective_brightness.clear();

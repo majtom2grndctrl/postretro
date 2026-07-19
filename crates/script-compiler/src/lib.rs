@@ -28,6 +28,8 @@ use swc_ecma_transforms_base::resolver;
 use swc_ecma_transforms_typescript::strip;
 use swc_ecma_visit::{VisitMut, VisitMutWith};
 
+pub mod light_membership;
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -144,6 +146,11 @@ fn bundle_with_dependencies(entry: &Path, prelude: bool) -> Result<BundleWithDep
             // the final module-declaration strip removes all import/export
             // syntax.
             module.visit_mut_with(&mut DefaultExportToManifestSlot);
+            // Per-level data scripts export `setupLevel`; preserve that one
+            // named export as the script-mode global the runtime and the
+            // light-membership evaluator both invoke. Other named exports stay
+            // module-local implementation details and are stripped below.
+            module.visit_mut_with(&mut ExportSetupLevelToGlobal);
         }
         module.visit_mut_with(&mut StripExternalImports);
 
@@ -669,6 +676,54 @@ impl VisitMut for DefaultExportToManifestSlot {
                         }
                     }
                     if !consumed_default {
+                        lowered.push(ModuleItem::ModuleDecl(ModuleDecl::ExportNamed(named)));
+                    }
+                }
+                other => lowered.push(other),
+            }
+        }
+        *items = lowered;
+    }
+}
+
+/// Lowers the exported data-script entry point into the global function that
+/// the runtime invokes after evaluating a bundled script. This must happen
+/// before [`StripExternalImports`] removes surviving module declarations.
+struct ExportSetupLevelToGlobal;
+
+impl VisitMut for ExportSetupLevelToGlobal {
+    fn visit_mut_module_items(&mut self, items: &mut Vec<ModuleItem>) {
+        let mut lowered = Vec::with_capacity(items.len());
+        for item in std::mem::take(items) {
+            match item {
+                ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(export_decl)) => {
+                    let names = decl_binding_names(&export_decl.decl);
+                    if names.iter().any(|name| name == "setupLevel") {
+                        lowered.push(ModuleItem::Stmt(Stmt::Decl(export_decl.decl)));
+                        lowered.push(global_assignment("setupLevel", "setupLevel"));
+                    } else {
+                        lowered.push(ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(export_decl)));
+                    }
+                }
+                ModuleItem::ModuleDecl(ModuleDecl::ExportNamed(named)) if named.src.is_none() => {
+                    let mut lowered_setup_level = false;
+                    for specifier in &named.specifiers {
+                        let ExportSpecifier::Named(specifier) = specifier else {
+                            continue;
+                        };
+                        let exported = specifier
+                            .exported
+                            .as_ref()
+                            .map(export_name_to_string)
+                            .unwrap_or_else(|| export_name_to_string(&specifier.orig));
+                        if exported == "setupLevel" {
+                            if let ModuleExportName::Ident(local) = &specifier.orig {
+                                lowered.push(global_assignment("setupLevel", &local.sym));
+                                lowered_setup_level = true;
+                            }
+                        }
+                    }
+                    if !lowered_setup_level {
                         lowered.push(ModuleItem::ModuleDecl(ModuleDecl::ExportNamed(named)));
                     }
                 }

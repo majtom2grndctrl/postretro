@@ -196,10 +196,15 @@ fn compose_main(
         // Clamp non-negative — Catmull-Rom overshoot can dip below zero between
         // keyframes; a negative brightness/color would subtract light.
         let b = max(sample_curve_catmull_rom(desc.brightness_offset, desc.brightness_count, t), 0.0);
-        let c = max(
-            sample_color_catmull_rom(desc.color_offset, desc.color_count, t, desc.base_color),
-            vec3<f32>(0.0),
-        );
+        var c = desc.base_color;
+        if (desc.color_count > 0u) {
+            // Color curves replace hue while base_color carries authored
+            // intensity. Weight maps contain unit-radiance transport.
+            c = max(
+                sample_color_catmull_rom(desc.color_offset, desc.color_count, t, vec3<f32>(1.0)),
+                vec3<f32>(0.0),
+            ) * desc.base_color;
+        }
         let contribution = c * b * entry.weight;
         accum = accum + contribution;
         let luminance = dot(contribution, vec3<f32>(0.2126, 0.7152, 0.0722));

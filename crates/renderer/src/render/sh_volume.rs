@@ -100,9 +100,9 @@ pub struct ShVolumeResources {
     /// Owned here but shared with the compose pass — one upload, two bind groups.
     /// CPU mirror kept alongside so per-frame `active` edits patch bytes and flush in one `write_buffer`.
     pub animation: AnimatedLightBuffers,
-    /// Size fixed at `max(map_light_count, 1) * ANIMATION_DESCRIPTOR_SIZE`, zero-initialized —
-    /// sentinel descriptor (`is_active == 0`) so the forward shader reads static `GpuLight` color
-    /// until the bridge writes a real animation.
+    /// Fixed-capacity, zero-initialized forward descriptor buffer. Authored
+    /// lights plus the runtime-spawn reserve fit without a GPU rebind. The
+    /// dynamic-direct loop reads only its compact `light_count` prefix.
     pub scripted_light_descriptors: wgpu::Buffer,
     #[allow(dead_code)]
     pub scripted_light_count: u32,
@@ -261,7 +261,7 @@ impl ShVolumeResources {
         direct_delta_section: Option<
             &postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection,
         >,
-        map_light_count: usize,
+        scripted_light_capacity: usize,
         probe_occlusion_enabled: bool,
     ) -> Self {
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -405,7 +405,7 @@ impl ShVolumeResources {
         // FGD samples occupy [0, scripted_sample_byte_offset); scripted samples
         // follow. The LightBridge writes into this region at runtime.
         let scripted_sample_byte_offset = anim_sample_bytes.len();
-        let scripted_region_bytes = map_light_count * SCRIPTED_FLOATS_PER_LIGHT * 4;
+        let scripted_region_bytes = scripted_light_capacity * SCRIPTED_FLOATS_PER_LIGHT * 4;
         anim_sample_bytes.extend(std::iter::repeat_n(0u8, scripted_region_bytes));
 
         let anim_descriptors_buffer = device.create_buffer_init_helper(
@@ -420,8 +420,8 @@ impl ShVolumeResources {
         );
 
         // wgpu rejects zero-sized storage buffers; pad to one slot for empty maps.
-        // The forward loop bound is map_light_count so the dummy slot is never read.
-        let scripted_descriptor_slots = map_light_count.max(1);
+        // The forward loop has no lights in that case, so the dummy is never read.
+        let scripted_descriptor_slots = scripted_light_capacity.max(1);
         let scripted_descriptor_bytes =
             vec![0u8; scripted_descriptor_slots * ANIMATION_DESCRIPTOR_SIZE];
         let scripted_light_descriptors_buffer = device.create_buffer_init_helper(
@@ -629,7 +629,7 @@ impl ShVolumeResources {
             direct_composed_storage_view,
             animation,
             scripted_light_descriptors: scripted_light_descriptors_buffer,
-            scripted_light_count: map_light_count as u32,
+            scripted_light_count: scripted_light_capacity as u32,
             scripted_sample_byte_offset,
             #[cfg(feature = "dev-tools")]
             validity,

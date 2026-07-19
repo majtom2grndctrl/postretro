@@ -17,9 +17,10 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use postretro_level_format::SectionId;
+use postretro_level_format::animated_light_chunks::AnimatedLightChunksSection;
 use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
 use postretro_level_format::lightmap::LightmapSection;
-use postretro_level_format::sh_volume::OctahedralShVolumeSection;
+use postretro_level_format::sh_volume::{ANIMATED_SLOT_NONE, OctahedralShVolumeSection};
 use postretro_level_format::{read_container, read_section_data};
 
 /// Walk from the crate root to the workspace root (for locating `content/dev/`).
@@ -115,6 +116,104 @@ fn single_fixture_compiles_and_carries_weight_map_section() {
     );
 
     // Cleanup.
+    let _ = std::fs::remove_file(&output);
+    let _ = std::fs::remove_dir(&out_dir);
+}
+
+/// The fixture's KVP curve and script target must occupy distinct animated slots,
+/// while its steady-light control must stay in the static namespace. This stays
+/// ignored because the assertion is intentionally against a real PRL bake, not a
+/// self-referential unit fixture.
+#[test]
+#[ignore = "cold prl-build bake; run on demand with -- --ignored"]
+fn fixture_keeps_script_and_kvp_animated_prl_slots_distinct() {
+    let ws = workspace_root();
+    let input = ws.join("content/dev/maps/script_light_membership_fixture.map");
+    assert!(input.exists(), "fixture map missing: {}", input.display());
+
+    let out_dir = std::env::temp_dir().join("postretro_fixture_script_light_membership");
+    std::fs::create_dir_all(&out_dir).expect("mkdir temp out");
+    let output = out_dir.join("script_light_membership_fixture.prl");
+
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let status = Command::new(cargo)
+        .args([
+            "run",
+            "--quiet",
+            "-p",
+            "postretro-level-compiler",
+            "--bin",
+            "prl-build",
+            "--",
+        ])
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .arg("--no-cache")
+        .current_dir(&ws)
+        .status()
+        .expect("spawn prl-build");
+    assert!(status.success(), "prl-build failed: {status}");
+
+    let bytes = std::fs::read(&output).expect("read compiled .prl");
+    let mut cursor = Cursor::new(&bytes);
+    let meta = read_container(&mut cursor).expect("read_container");
+    let mut read_section = |id| {
+        read_section_data(&mut cursor, &meta, id)
+            .expect("read section")
+            .expect("script-targeted fixture must emit animated section")
+    };
+
+    let chunks = AnimatedLightChunksSection::from_bytes(&read_section(
+        SectionId::AnimatedLightChunks as u32,
+    ))
+    .expect("AnimatedLightChunks decodes");
+    let weights = AnimatedLightWeightMapsSection::from_bytes(&read_section(
+        SectionId::AnimatedLightWeightMaps as u32,
+    ))
+    .expect("AnimatedLightWeightMaps decodes");
+    let sh =
+        OctahedralShVolumeSection::from_bytes(&read_section(SectionId::OctahedralShVolume as u32))
+            .expect("OctahedralShVolume decodes");
+
+    assert_eq!(
+        sh.animation_descriptors.len(),
+        2,
+        "the script target and KVP curve should each receive an animated descriptor slot",
+    );
+    assert_eq!(
+        sh.slot_for_map_light,
+        [0, ANIMATED_SLOT_NONE, 1],
+        "script and KVP lights must retain distinct map-light identities while the steady control has no animated slot",
+    );
+    assert!(
+        !chunks.light_indices.is_empty()
+            && chunks
+                .light_indices
+                .iter()
+                .all(|&index| matches!(index, 0 | 2))
+            && chunks.light_indices.contains(&0)
+            && chunks.light_indices.contains(&2),
+        "animated chunks must contain both the script and KVP light, never the steady control",
+    );
+    assert!(
+        !weights.texel_lights.is_empty()
+            && weights
+                .texel_lights
+                .iter()
+                .all(|entry| matches!(entry.light_index, 0 | 2))
+            && weights
+                .texel_lights
+                .iter()
+                .any(|entry| entry.light_index == 0)
+            && weights
+                .texel_lights
+                .iter()
+                .any(|entry| entry.light_index == 2),
+        "animated weights must contain both the script and KVP light, never the steady control: {:?}",
+        weights.texel_lights,
+    );
+
     let _ = std::fs::remove_file(&output);
     let _ = std::fs::remove_dir(&out_dir);
 }
@@ -264,6 +363,65 @@ fn mixed_fixture_light_indices_are_in_descriptor_buffer_bounds() {
             animated_light_count,
         );
     }
+
+    let _ = std::fs::remove_file(&output);
+    let _ = std::fs::remove_dir(&out_dir);
+}
+
+/// Golden regression for the script-light-membership seam: an unflagged static
+/// light in a map with no data script must keep its pre-feature baked output.
+///
+/// The checked-in baseline was produced from commit `33e3a152` with
+/// `prl-build --no-cache` on this exact map. Its SHA-256 is
+/// `9264a3b23d806d50b2f33ae52a7a3720d7f5237e01255f4b48abdf22c1f89c19`.
+/// Byte-for-byte comparison prevents script-membership plumbing from changing
+/// the output for static lights that it does not target.
+#[test]
+#[ignore = "cold prl-build bake; run on demand with -- --ignored"]
+fn mixed_fixture_without_script_membership_matches_pre_feature_golden_prl() {
+    let ws = workspace_root();
+    let input = ws.join("content/dev/maps/test_animated_weight_maps_mixed.map");
+    let baseline = ws.join(
+        "crates/level-compiler/tests/fixtures/golden/\
+         test_animated_weight_maps_mixed.pre-script-light-membership.prl",
+    );
+    assert!(input.exists(), "fixture map missing: {}", input.display());
+    assert!(
+        baseline.exists(),
+        "pre-feature baseline missing: {}",
+        baseline.display(),
+    );
+
+    let out_dir = std::env::temp_dir().join("postretro_fixture_mixed_golden");
+    std::fs::create_dir_all(&out_dir).expect("mkdir temp out");
+    let output = out_dir.join("test_animated_weight_maps_mixed.prl");
+
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let status = Command::new(cargo)
+        .args([
+            "run",
+            "--quiet",
+            "-p",
+            "postretro-level-compiler",
+            "--bin",
+            "prl-build",
+            "--",
+        ])
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .arg("--no-cache")
+        .current_dir(&ws)
+        .status()
+        .expect("spawn prl-build");
+    assert!(status.success(), "prl-build failed: {status}");
+
+    let actual = std::fs::read(&output).expect("read compiled .prl");
+    let expected = std::fs::read(&baseline).expect("read pre-feature baseline");
+    assert_eq!(
+        actual, expected,
+        "an un-targeted static light changed the pre-feature PRL output",
+    );
 
     let _ = std::fs::remove_file(&output);
     let _ = std::fs::remove_dir(&out_dir);

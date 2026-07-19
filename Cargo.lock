@@ -3737,6 +3737,7 @@ dependencies = [
  "ratatui",
  "rayon",
  "serde",
+ "serde_json",
  "shambler",
  "thiserror 2.0.18",
 ]
@@ -3751,6 +3752,7 @@ dependencies = [
  "gltf",
  "percent-encoding",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
 ]
 
@@ -3870,6 +3872,9 @@ name = "postretro-script-compiler"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "mlua",
+ "postretro-level-format",
+ "rquickjs",
  "serde_json",
  "swc_atoms",
  "swc_bundler",

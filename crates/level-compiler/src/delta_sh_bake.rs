@@ -1,8 +1,8 @@
 // Per-animated-light sparse octahedral delta irradiance baker (CSR / affinity-cell form).
 //
 // For each animated light, bakes the light's **indirect-only** (bounced)
-// contribution at peak brightness (brightness = 1.0, authored color × intensity)
-// into octahedral irradiance tiles — but ONLY at base-grid probes that fall
+// unit-radiance transport contribution into octahedral irradiance tiles — but
+// ONLY at base-grid probes that fall
 // inside an affinity cell the light reaches (from `affinity_grid::decompose_affinity`).
 //
 // Indirect-only is a deliberate split: the animated light's DIRECT contribution
@@ -20,7 +20,7 @@
 //     octahedral tile matching the base irradiance atlas tile geometry.
 //
 // The runtime compose pass reads one per-cell light list per workgroup and adds
-// `delta × brightness_curve(t)` to the base irradiance atlas.
+// `delta × authored_radiance × curve_modulation(t)` to the base irradiance atlas.
 //
 // Sub-blocks are COINCIDENT with base SH probes 1:1: the base-probe global coords
 // of in-cell probe `local` in cell `(cx,cy,cz)` are `(cx*4+lx, cy*4+ly, cz*4+lz)`
@@ -267,6 +267,12 @@ fn bake_subblock(
 
     let spacing = base_spacing as f64;
     let mut out = vec![0u16; PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE];
+    // Delta tiles encode transport, not authored radiance. The compose
+    // descriptor is the single source of color/intensity so color curves can
+    // recolor every channel without squaring the authored light.
+    let mut unit_light = light.clone();
+    unit_light.color = [1.0, 1.0, 1.0];
+    unit_light.intensity = 1.0;
 
     for local in 0..PROBES_PER_CELL {
         // In-cell local coords, x-fastest: local = lx + ly*4 + lz*16. Matches the
@@ -296,7 +302,7 @@ fn bake_subblock(
         }
 
         let pos = Vec3::new(pos_d.x as f32, pos_d.y as f32, pos_d.z as f32);
-        let lights_slice: [&MapLight; 1] = [light];
+        let lights_slice: [&MapLight; 1] = [&unit_light];
         // Indirect-only: the same bounce math as the base bake. The animated
         // light's DIRECT contribution lives in `lm_anim` (occlusion-tested),
         // so baking it here too would double-count. Delta irradiance is indirect-only.
@@ -605,7 +611,10 @@ mod tests {
         let tree = tree_all_empty();
         let exterior: HashSet<usize> = HashSet::new();
         let light_pos = DVec3::new(-7.0, -7.0, -7.0);
-        let lights = vec![animated_point_light(light_pos, 1.5)];
+        let mut authored_light = animated_point_light(light_pos, 1.5);
+        authored_light.color = [0.25, 0.5, 0.75];
+        authored_light.intensity = 3.0;
+        let lights = vec![authored_light];
         let envelope = AnimatedBakedLights::from_lights(&lights);
         let inputs = DeltaBakeInputs {
             bvh: &bvh,
@@ -635,7 +644,10 @@ mod tests {
             geometry: &geo,
         };
         let pos = Vec3::new(-7.0, -7.0, -7.0);
-        let indirect = bake_probe_indirect_rgb(&ctx, pos, &[&lights[0]], 0);
+        let mut unit_light = lights[0].clone();
+        unit_light.color = [1.0; 3];
+        unit_light.intensity = 1.0;
+        let indirect = bake_probe_indirect_rgb(&ctx, pos, &[&unit_light], 0);
         let expected_tile = pack_octahedral_irradiance_tile(
             &indirect,
             true,
@@ -647,7 +659,7 @@ mod tests {
         assert_eq!(
             stored,
             &expected[..],
-            "delta sub-block must store an indirect-only octahedral tile, not direct + indirect",
+            "delta sub-block must store unit-radiance indirect transport, not authored radiance or direct light",
         );
     }
 

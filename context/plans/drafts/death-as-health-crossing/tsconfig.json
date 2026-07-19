@@ -11,7 +11,8 @@
     "paths": {
       "postretro": ["../../../../sdk/types/postretro.d.ts"],
       "postretro/ui": ["../../../../sdk/types/postretro.d.ts"],
-      "postretro/proposed": ["./proposed.d.ts"]
+      "postretro/proposed": ["./proposed.d.ts"],
+      "postretro/ergo": ["./proposed-ergo.d.ts"]
     }
   },
   "include": ["*.ts", "*.d.ts"]

@@ -2123,7 +2123,7 @@ mod tests {
     }
 
     #[test]
-    fn fixture_data_script_derives_only_tagged_static_bake_membership() {
+    fn fixture_keeps_script_and_kvp_animated_lights_distinct() {
         let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .and_then(Path::parent)
@@ -2147,25 +2147,25 @@ mod tests {
         )
         .expect("apply fixture membership manifest");
 
-        assert_eq!(map_data.light_start_active_defaults, [false, true]);
+        assert_eq!(map_data.light_start_active_defaults, [false, true, true]);
         assert_eq!(inventory.derived_static_indices, vec![0]);
         assert!(
-            !map_data.lights[0]
+            map_data.lights[0]
                 .animation
                 .as_ref()
                 .expect("script target receives an animation placeholder")
                 .start_active,
-            "a trigger-only target must retain its authored _start_inactive default"
+            "a levelLoad animation defaults to active, overriding the authored _start_inactive fallback"
         );
         assert_eq!(
             light_namespaces::StaticBakedLights::from_lights(&map_data.lights).len(),
             1,
-            "the untagged static neighbour must remain in the ordinary static namespace"
+            "the steady-light control must remain in the ordinary static namespace"
         );
         assert_eq!(
             light_namespaces::AnimatedBakedLights::from_lights(&map_data.lights).len(),
-            1,
-            "only the tagged static fixture light should reserve animated bake output"
+            2,
+            "the KVP curve and script target must each reserve animated bake output"
         );
         assert!(!compiled.section.compiled_bytes.is_empty());
     }

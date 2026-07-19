@@ -120,13 +120,13 @@ fn single_fixture_compiles_and_carries_weight_map_section() {
     let _ = std::fs::remove_dir(&out_dir);
 }
 
-/// A trigger-only static map light targeted by the data script must reserve the
-/// same animated sections as `_animated`, while its untagged static neighbour
-/// must not leak into those sections. This stays ignored because the assertion
-/// is intentionally against a real PRL bake, not a self-referential unit fixture.
+/// The fixture's KVP curve and script target must occupy distinct animated slots,
+/// while its steady-light control must stay in the static namespace. This stays
+/// ignored because the assertion is intentionally against a real PRL bake, not a
+/// self-referential unit fixture.
 #[test]
 #[ignore = "cold prl-build bake; run on demand with -- --ignored"]
-fn script_targeted_static_light_populates_only_its_animated_prl_slots() {
+fn fixture_keeps_script_and_kvp_animated_prl_slots_distinct() {
     let ws = workspace_root();
     let input = ws.join("content/dev/maps/script_light_membership_fixture.map");
     assert!(input.exists(), "fixture map missing: {}", input.display());
@@ -178,25 +178,39 @@ fn script_targeted_static_light_populates_only_its_animated_prl_slots() {
 
     assert_eq!(
         sh.animation_descriptors.len(),
-        1,
-        "only the data-script target should receive an animated descriptor slot",
+        2,
+        "the script target and KVP curve should each receive an animated descriptor slot",
     );
     assert_eq!(
         sh.slot_for_map_light,
-        [0, ANIMATED_SLOT_NONE],
-        "the script target must retain map-light identity while its untagged neighbour has no animated slot",
+        [0, ANIMATED_SLOT_NONE, 1],
+        "script and KVP lights must retain distinct map-light identities while the steady control has no animated slot",
     );
     assert!(
-        !chunks.light_indices.is_empty() && chunks.light_indices.iter().all(|&index| index == 0),
-        "every animated chunk entry must reference the one script-targeted static light",
+        !chunks.light_indices.is_empty()
+            && chunks
+                .light_indices
+                .iter()
+                .all(|&index| matches!(index, 0 | 2))
+            && chunks.light_indices.contains(&0)
+            && chunks.light_indices.contains(&2),
+        "animated chunks must contain both the script and KVP light, never the steady control",
     );
     assert!(
         !weights.texel_lights.is_empty()
             && weights
                 .texel_lights
                 .iter()
-                .all(|entry| entry.light_index == 0),
-        "every animated weight must reference the one script-targeted static light: {:?}",
+                .all(|entry| matches!(entry.light_index, 0 | 2))
+            && weights
+                .texel_lights
+                .iter()
+                .any(|entry| entry.light_index == 0)
+            && weights
+                .texel_lights
+                .iter()
+                .any(|entry| entry.light_index == 2),
+        "animated weights must contain both the script and KVP light, never the steady control: {:?}",
         weights.texel_lights,
     );
 

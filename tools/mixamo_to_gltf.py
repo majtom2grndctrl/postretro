@@ -16,9 +16,9 @@ Output is glTF Separate (.gltf + .bin + textures) ready for the engine.
 
 import bpy
 import sys
-import os
 import argparse
 from pathlib import Path
+from mathutils import Vector
 
 
 def parse_args():
@@ -88,15 +88,24 @@ def action_name_from_filename(filepath):
     return name
 
 
+def fcurve_bone_name(data_path):
+    """Extract the bone name from an F-curve data_path like pose.bones["Hips"].location."""
+    prefix = 'pose.bones["'
+    if not data_path.startswith(prefix):
+        return None
+    return data_path[len(prefix):data_path.index('"]')]
+
+
 def merge_animations(input_dir, scale=None):
     """Import all FBX files, keeping one armature+mesh and collecting actions."""
-    fbx_files = sorted(Path(input_dir).glob("*.fbx"), key=lambda p: p.name.lower())
-    if not fbx_files:
-        # Try case-insensitive
-        fbx_files = sorted(
-            [f for f in Path(input_dir).iterdir() if f.suffix.lower() == ".fbx"],
-            key=lambda p: p.name.lower()
-        )
+    if not Path(input_dir).is_dir():
+        print(f"ERROR: Input directory not found: {input_dir}")
+        sys.exit(1)
+
+    fbx_files = sorted(
+        [f for f in Path(input_dir).iterdir() if f.suffix.lower() == ".fbx"],
+        key=lambda p: p.name.lower()
+    )
     if not fbx_files:
         print(f"ERROR: No .fbx files found in {input_dir}")
         sys.exit(1)
@@ -116,26 +125,28 @@ def merge_animations(input_dir, scale=None):
         sys.exit(1)
 
     # Rename the base action
+    seen_names = set()
     if base_armature.animation_data and base_armature.animation_data.action:
         base_action = base_armature.animation_data.action
         base_action.name = action_name_from_filename(base_file)
+        base_action.use_fake_user = True
+        seen_names.add(base_action.name)
         print(f"  Action: {base_action.name}")
 
     # Store base bone names for validation
     base_bones = set(bone.name for bone in base_armature.data.bones)
 
-    # Apply transforms on base mesh
+    # Apply transforms on base mesh (deselect first so only the mesh is affected)
     base_mesh = get_mesh()
     if base_mesh:
+        bpy.ops.object.select_all(action='DESELECT')
         bpy.context.view_layer.objects.active = base_mesh
         base_mesh.select_set(True)
         bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
         base_mesh.select_set(False)
 
-    bpy.context.view_layer.objects.active = base_armature
-    base_armature.select_set(True)
-    bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
-    base_armature.select_set(False)
+    # Snapshot all objects that belong to the base model (may include multiple meshes)
+    base_objects = set(bpy.data.objects[:])
 
     # Import remaining files for their animations
     for fbx_file in fbx_files[1:]:
@@ -158,24 +169,46 @@ def merge_animations(input_dir, scale=None):
         # Grab the action from the new armature
         if new_armature.animation_data and new_armature.animation_data.action:
             action = new_armature.animation_data.action
+            if clip_name in seen_names:
+                print(f"  WARNING: Clip name '{clip_name}' collides with an earlier clip; "
+                      f"Blender will auto-suffix it (e.g. '{clip_name}.001')")
+            seen_names.add(clip_name)
             action.name = clip_name
+            action.use_fake_user = True
 
-            # Validate bone names match
-            new_bones = set(bone.name for bone in new_armature.data.bones)
-            missing = base_bones - new_bones
-            if missing:
-                print(f"  WARNING: New armature missing bones: {missing}")
+            # Validate that the clip's F-curves actually drive base armature bones
+            orphaned_channels = []
+            matched_any = False
+            for fcurve in action.fcurves:
+                bone_name = fcurve_bone_name(fcurve.data_path)
+                if bone_name is None:
+                    continue
+                if bone_name in base_bones:
+                    matched_any = True
+                else:
+                    orphaned_channels.append(fcurve.data_path)
+            if not matched_any and action.fcurves:
+                print(f"  ERROR: No F-curves in '{clip_name}' target a base armature bone; clip is useless")
+            elif orphaned_channels:
+                print(f"  WARNING: Channels in '{clip_name}' target bones not in the base armature: "
+                      f"{sorted(set(orphaned_channels))}")
         else:
             print(f"  WARNING: No animation data in {fbx_file.name}")
 
-        # Delete the duplicate armature and any meshes that came with it
-        new_meshes = [
-            obj for obj in bpy.data.objects
-            if obj.type == "MESH" and obj != base_mesh
-        ]
-        for mesh_obj in new_meshes:
-            bpy.data.objects.remove(mesh_obj, do_unlink=True)
-        bpy.data.objects.remove(new_armature, do_unlink=True)
+        # Delete objects that came with this clip import (not in the base snapshot)
+        for obj in list(bpy.data.objects):
+            if obj not in base_objects:
+                bpy.data.objects.remove(obj, do_unlink=True)
+
+    # Join all mesh objects into one (engine requires a single mesh node)
+    mesh_objects = [obj for obj in bpy.data.objects if obj.type == "MESH"]
+    if len(mesh_objects) > 1:
+        print(f"\nJoining {len(mesh_objects)} mesh objects into one...")
+        bpy.ops.object.select_all(action='DESELECT')
+        for obj in mesh_objects:
+            obj.select_set(True)
+        bpy.context.view_layer.objects.active = mesh_objects[0]
+        bpy.ops.object.join()
 
     # Summary
     print(f"\n--- Result ---")
@@ -199,7 +232,7 @@ def validate_model():
 
     # Check height (should be ~1.8-2.0m for a human character)
     dims = mesh.dimensions
-    height = dims.z  # Blender Z-up after FBX import with auto bone orientation
+    height = dims.z
     print(f"\nModel height: {height:.2f}m")
     if height < 0.5:
         print("  WARNING: Model seems very small. Consider adjusting --scale.")
@@ -210,11 +243,18 @@ def validate_model():
     else:
         print("  OK (engine expects ~2m for a human)")
 
-    # Check mesh count (engine loads one mesh node only)
+    # Check feet-origin: engine requires the origin between the feet at ground level (z=0)
+    min_z = min((mesh.matrix_world @ Vector(corner)).z for corner in mesh.bound_box)
+    print(f"  Bounding box min Z: {min_z:.2f}m")
+    if abs(min_z) > 0.1:
+        print("  WARNING: Origin may not be at feet level. Engine expects the origin "
+              "between the feet at ground level (z=0).")
+
+    # Sanity check: merge_animations should have joined all meshes already
     mesh_count = sum(1 for obj in bpy.data.objects if obj.type == "MESH")
     if mesh_count > 1:
-        print(f"\n  WARNING: {mesh_count} mesh objects found. Engine loads only one mesh node.")
-        print("  Consider joining meshes (Ctrl+J) before export.")
+        print(f"\n  ERROR: {mesh_count} mesh objects remain after join. Engine loads only one mesh node.")
+        sys.exit(1)
 
 
 def export_gltf(output_path):
@@ -261,6 +301,10 @@ def export_gltf(output_path):
         # Clear the active action so it doesn't double-export
         ad.action = None
 
+    # Filter kwargs to only properties the installed Blender version supports
+    valid_props = set(bpy.ops.export_scene.gltf.get_rna_type().properties.keys())
+    export_kwargs = {k: v for k, v in export_kwargs.items() if k in valid_props}
+
     print(f"\nExporting to: {output}")
     bpy.ops.export_scene.gltf(**export_kwargs)
     print("Done!")
@@ -270,7 +314,7 @@ def export_gltf(output_path):
     output_stem = output.stem
     print(f"\nOutput files:")
     for f in sorted(output_dir.iterdir()):
-        if f.stem.startswith(output_stem) or f.suffix in (".bin", ".png", ".jpg"):
+        if f.stem.startswith(output_stem):
             size_kb = f.stat().st_size / 1024
             print(f"  {f.name} ({size_kb:.1f} KB)")
 

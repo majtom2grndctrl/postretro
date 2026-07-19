@@ -872,16 +872,30 @@ fn log_captured_command_output(label: &str, stdout: &[u8], stderr: &[u8], level:
 }
 
 fn scripts_build_beside(exe_dir: &Path, name: &str) -> Option<PathBuf> {
+    let profile_binary = exe_dir.parent().map(|parent| parent.join(name));
+
+    // A Cargo unit-test executable lives in `target/<profile>/deps/`. Cargo
+    // builds the standalone sidecar at `target/<profile>/`, while a stale
+    // un-hashed compatibility binary can remain in `deps/`. Prefer the
+    // profile-level sidecar for that test-only layout so a child `cargo build`
+    // is also the binary we subsequently invoke.
+    if exe_dir
+        .file_name()
+        .is_some_and(|component| component == "deps")
+        && let Some(profile_binary) = profile_binary.as_ref()
+        && profile_binary.is_file()
+    {
+        return Some(profile_binary.clone());
+    }
+
     let adjacent = exe_dir.join(name);
     if adjacent.is_file() {
         return Some(adjacent);
     }
 
-    // Test executables live in `target/<profile>/deps/`, whereas Cargo writes
-    // the sidecar binary to `target/<profile>/`. Check that parent so unit
-    // tests exercise the same sidecar seam as `prl-build` itself.
-    let parent = exe_dir.parent()?.join(name);
-    parent.is_file().then_some(parent)
+    // A test target without a profile-level sidecar still falls through here,
+    // preserving the normal adjacent-then-parent discovery cascade.
+    profile_binary.filter(|binary| binary.is_file())
 }
 
 fn find_scripts_build() -> Option<PathBuf> {
@@ -1244,6 +1258,29 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    #[test]
+    fn scripts_build_beside_test_binary_prefers_profile_sidecar() {
+        let root = unique_temp_dir("scripts-build-resolution");
+        let deps = root.join("debug/deps");
+        std::fs::create_dir_all(&deps).expect("create test executable directory");
+        let name = if cfg!(windows) {
+            "scripts-build.exe"
+        } else {
+            "scripts-build"
+        };
+        let stale_deps_binary = deps.join(name);
+        let current_profile_binary = root.join("debug").join(name);
+        std::fs::write(&stale_deps_binary, "stale").expect("write stale deps sidecar");
+        std::fs::write(&current_profile_binary, "current").expect("write current profile sidecar");
+
+        assert_eq!(
+            scripts_build_beside(&deps, name),
+            Some(current_profile_binary),
+            "a Cargo test binary must ignore a stale deps/scripts-build in favor of the profile sidecar"
+        );
+        std::fs::remove_dir_all(root).expect("remove sidecar-resolution fixture");
     }
 
     fn png_bytes(width: u32, height: u32) -> Vec<u8> {

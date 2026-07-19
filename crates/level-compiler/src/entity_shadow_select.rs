@@ -183,8 +183,12 @@ mod tests {
     use crate::geometry::FaceIndexRange;
     use crate::light_namespaces::{AlphaLightsNs, StaticBakedLights};
     use crate::map_data::{FalloffModel, LightAnimation};
+    use crate::script_light_membership;
     use glam::DVec3;
     use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
+    use postretro_level_format::light_membership::{
+        LightMembershipManifest, LightMembershipRecord,
+    };
     use postretro_level_format::texture_names::TextureNamesSection;
 
     fn point_light(intensity: f32, range: f32) -> MapLight {
@@ -341,6 +345,29 @@ mod tests {
         let selected = select(&lights, &empty_geometry());
 
         assert_eq!(selected.light_indices, vec![0]);
+    }
+
+    #[test]
+    fn selector_excludes_script_derived_animated_membership() {
+        let mut lights = vec![point_light(1.0, 8.0)];
+        let manifest = LightMembershipManifest::new(
+            vec![LightMembershipRecord {
+                index: 0,
+                is_dynamic: false,
+                start_active: None,
+                start_active_conflict: false,
+            }],
+            Vec::new(),
+        );
+        script_light_membership::apply_manifest(&mut lights, &manifest)
+            .expect("script target becomes an animated baked light");
+
+        let selected = select(&lights, &empty_geometry());
+
+        assert!(
+            selected.light_indices.is_empty(),
+            "derived animated membership must not promote the light to entity-shadow selection"
+        );
     }
 
     #[test]

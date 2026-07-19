@@ -236,7 +236,7 @@ fn run_after_parsing(
     started: Instant,
     reporter: Arc<dyn Reporter>,
     governor: Arc<Governor>,
-    map_data: map_data::MapData,
+    mut map_data: map_data::MapData,
     parsing_elapsed: Duration,
 ) -> anyhow::Result<()> {
     let mut timings = Vec::new();
@@ -244,8 +244,27 @@ fn run_after_parsing(
     reporter.finish_stage(StageId::Parsing);
 
     let stage_start = begin_stage(reporter.as_ref(), StageId::DataScript);
-    let data_script_section =
-        compile_worldspawn_data_script(&args.input, map_data.data_script.as_deref())?;
+    let compiled_data_script = compile_worldspawn_data_script(
+        &args.input,
+        map_data.data_script.as_deref(),
+        &map_data.lights,
+    )?;
+    let (data_script_section, membership_manifest) = match compiled_data_script {
+        Some(script) => (Some(script.section), Some(script.membership_manifest)),
+        None => (None, None),
+    };
+    if let Some(membership_manifest) = membership_manifest.as_ref() {
+        let inventory = crate::script_light_membership::apply_manifest(
+            &mut map_data.lights,
+            membership_manifest,
+        )?;
+        crate::script_light_membership::log_inventory(&inventory, &map_data.lights);
+    }
+    // Every cached bake stage keys from the post-injection light namespaces or
+    // their `MapLight` records, so a manifest membership change produces a
+    // different cache key without a cache-epoch bump. The compiled script bytes
+    // are packed uncached into DataScript and do not affect bake output unless
+    // their evaluated manifest changes membership.
     finish_stage(
         &mut timings,
         reporter.as_ref(),

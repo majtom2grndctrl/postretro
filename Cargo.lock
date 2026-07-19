@@ -3737,6 +3737,7 @@ dependencies = [
  "ratatui",
  "rayon",
  "serde",
+ "serde_json",
  "shambler",
  "thiserror 2.0.18",
 ]

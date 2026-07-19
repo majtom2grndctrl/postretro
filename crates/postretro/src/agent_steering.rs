@@ -2,10 +2,11 @@
 // steer along the current path with lookahead, separate from crowding neighbors,
 // and move each agent through the world via the collide-and-slide harness.
 //
-// This is the production caller for `nav::find_path` and the agent component. It
-// owns the replan policy (per-tick budget + per-agent staleness gate), the
-// waypoint-following loop, and the O(n²) separation pass; the actual capsule
-// sweep lives in `agent::collide_and_slide`.
+// This is the primary production caller for `nav::find_path` and the agent
+// component — `combat_positioning` also queries `find_path` when scoring
+// candidate positions. It owns the replan policy (per-tick budget + per-agent
+// staleness gate), the waypoint-following loop, and the O(n²) separation pass;
+// the actual capsule sweep lives in `agent::collide_and_slide`.
 //
 // See: context/lib/build_pipeline.md §Navigation bake (pathfinding query surface)
 //      context/lib/entity_model.md §7 (collision), §5 (fixed-tick game logic)
@@ -49,7 +50,13 @@ const ARRIVAL_SLOWDOWN_RADIUS_FACTOR: f32 = 7.0;
 /// Clearance-repair points sit on the collision sweep's skin boundary. Accept
 /// them within two skins: one for the collision-tangent target and one for the
 /// slowed fixed-tick approach. This stays much tighter than ordinary waypoint
-/// arrival while advancing before the easing tail falls below stuck progress.
+/// arrival. The eased approach tail (`goal_speed`) at this band edge advances by
+/// `move_speed * (radius / arrival_radius) * dt` per tick, which only clears
+/// `STUCK_PROGRESS_EPSILON` for a fast enough agent — the canonical 4.0 m/s agent
+/// by ~1.6%, author-defined slower enemies not at all. Rather than widen this
+/// physical band to outrun the absolute floor, the stuck detector suspends
+/// accumulation while an agent eases onto a mandatory vertex (see
+/// [`update_stuck_ticks`]), so the guarantee holds across `move_speed`.
 const MANDATORY_WAYPOINT_ARRIVAL_RADIUS: f32 = 2.0 * crate::collision::SKIN_DISTANCE;
 
 /// Path-following acceleration/deceleration as "top-speed changes per second".
@@ -412,6 +419,12 @@ pub(crate) fn tick(
         let arrival_radius = ARRIVAL_RADIUS_FACTOR * agent.radius;
         let slowdown_radius = ARRIVAL_SLOWDOWN_RADIUS_FACTOR * agent.radius;
         let goal_speed = goal_speed(&mut agent, position, arrival_radius, slowdown_radius);
+        // Is the agent easing onto a mandatory clearance vertex this tick? In
+        // that band `goal_speed` deliberately throttles below `move_speed`, so
+        // the small goal-projected step is intended easing rather than a wedge —
+        // the stuck detector must not accumulate against it (see below).
+        let easing_onto_mandatory =
+            easing_onto_mandatory_waypoint(&agent, position, arrival_radius);
         let steer_velocity = integrated_steer_velocity(
             &agent,
             position,
@@ -487,6 +500,7 @@ pub(crate) fn tick(
             steer_velocity,
             goal_speed,
             recovery_active_this_tick,
+            easing_onto_mandatory,
         );
 
         // Write back the resolved position and the updated agent state.
@@ -813,6 +827,29 @@ fn recovery_tangent_bias(steer_velocity: Vec3, move_speed: f32) -> Vec3 {
     }
 }
 
+/// True when the agent's current path target is a mandatory clearance vertex it
+/// is still easing onto: mandatory, non-final, and inside the ordinary arrival
+/// band (`arrival_radius`). This mirrors the mandatory-easing branch of
+/// [`goal_speed`], so it identifies exactly the ticks on which the goal step is
+/// throttled below `move_speed` to settle onto the tight collision-scale band.
+fn easing_onto_mandatory_waypoint(
+    agent: &AgentComponent,
+    position: Vec3,
+    arrival_radius: f32,
+) -> bool {
+    if agent.path.is_empty() {
+        return false;
+    }
+    let cursor = agent.waypoint_cursor.min(agent.path.len() - 1);
+    let is_final = agent.waypoint_cursor + 1 >= agent.path.len();
+    let mandatory = agent
+        .mandatory_waypoints
+        .get(cursor)
+        .copied()
+        .unwrap_or(false);
+    mandatory && !is_final && distance_xz(position, agent.path[cursor]) < arrival_radius
+}
+
 fn update_stuck_ticks(
     agent: &mut AgentComponent,
     start_position: Vec3,
@@ -820,8 +857,20 @@ fn update_stuck_ticks(
     steer_velocity: Vec3,
     goal_speed: f32,
     recovery_active_this_tick: bool,
+    easing_onto_mandatory: bool,
 ) {
     if recovery_active_this_tick {
+        return;
+    }
+    if easing_onto_mandatory {
+        // Easing onto a mandatory clearance vertex deliberately throttles the
+        // goal step below `move_speed`, so a slow agent's per-tick goal-projected
+        // progress here can legitimately fall under `STUCK_PROGRESS_EPSILON`
+        // (an absolute distance) without being wedged. Hold the detector clear so
+        // the clearance approach never trips false stuck recovery — the band's
+        // physical clearance guarantee, not a speed-dependent floor, keeps this
+        // safe across the descriptor's `move_speed` range.
+        agent.stuck_ticks = 0;
         return;
     }
     if !has_stuck_recovery_intent(agent, goal_speed, steer_velocity) {

@@ -685,6 +685,113 @@ fn funnel_path_routes_concave_corner_without_stuck_detection() {
 }
 
 #[test]
+fn slow_agent_clears_mandatory_clearance_vertices_without_stuck_detection() {
+    // Regression: the mandatory-waypoint easing band was silently calibrated to
+    // move_speed ~= 4.0. An author-defined slower enemy eases onto a mandatory
+    // clearance vertex with per-tick goal-projected progress below
+    // STUCK_PROGRESS_EPSILON (an absolute distance), which used to trip false
+    // stuck recovery at the clearance vertex this machinery exists to smooth.
+    //
+    // Guards only the mandatory-clearance-vertex regime: no false stuck while a
+    // move_speed = 1.0 agent eases onto and through the interior funnel
+    // waypoints. The test stops asserting once the cursor passes the last
+    // mandatory waypoint, because the separate final arrival-slowdown crawl also
+    // dips a slow agent under STUCK_PROGRESS_EPSILON — a distinct, deferred issue
+    // tracked in context/plans/drafts/E10--slow-agent-arrival-stuck/.
+    let corner = ConcaveCorner::fixture();
+    let world = corner.collision_world();
+    let graph = corner.nav_graph();
+    let params = graph.agent_params();
+    let mut registry = EntityRegistry::new();
+    let id = spawn_agent(&mut registry, 1.2, 1.2, &params);
+    // 1.0 m/s: well below the canonical 4.0 the easing band was tuned against,
+    // and inside the regime where the eased mandatory tail dips under the stuck
+    // floor while the intent gate still arms recovery.
+    {
+        let mut agent = registry
+            .get_component::<AgentComponent>(id)
+            .unwrap()
+            .clone();
+        agent.move_speed = 1.0;
+        registry.set_component(id, agent).unwrap();
+    }
+    let destination = Vec3::new(5.0, rest_y(&params), 5.0);
+    set_destination(&mut registry, id, destination);
+
+    // Slower agent, same route: allow proportionally more ticks than the 4.0
+    // m/s variant's 600.
+    for tick_index in 0..4000 {
+        // Neutral vertical channel, matching the canonical no-stuck test, so the
+        // assertion exercises the funnel/capsule route rather than floor settle.
+        tick(&mut registry, &world, Some(&graph), 0.0, DT);
+        let agent = registry.get_component::<AgentComponent>(id).unwrap();
+        if tick_index == 0 {
+            assert!(
+                agent.path.len() >= 3,
+                "concave route must retain an interior funnel waypoint: {:?}",
+                agent.path
+            );
+            // Positively confirm the route actually contains a mandatory
+            // clearance vertex, so the run below can't pass vacuously on a route
+            // that never enters the regime this gate protects.
+            assert!(
+                agent.mandatory_waypoints.iter().any(|&m| m),
+                "concave route must include a mandatory clearance vertex: mandatory={:?}, path={:?}",
+                agent.mandatory_waypoints,
+                agent.path,
+            );
+        }
+
+        // True while a mandatory clearance vertex still sits at or ahead of the
+        // cursor — the exact regime the E10 easing gate must keep stuck-free.
+        let mandatory_ahead = agent
+            .mandatory_waypoints
+            .get(agent.waypoint_cursor..)
+            .is_some_and(|rest| rest.iter().any(|&m| m));
+
+        if !mandatory_ahead {
+            // Cursor advanced past the last mandatory clearance vertex onto the
+            // final arrival-slowdown leg. The regime this test guards is done;
+            // the slow final-arrival crawl is the deferred E10 issue and is out
+            // of scope here, so end the run successfully.
+            return;
+        }
+
+        assert!(
+            agent.stuck_ticks < STUCK_TICKS_THRESHOLD,
+            "slow agent reached stuck detection while easing through mandatory clearance vertices on tick {tick_index}: pos={:?}, cursor={}, stuck_ticks={}, path={:?}",
+            agent_position(&registry, id),
+            agent.waypoint_cursor,
+            agent.stuck_ticks,
+            agent.path,
+        );
+        assert_eq!(
+            agent.unstick_window_remaining,
+            0,
+            "slow agent must not fire recovery while easing through mandatory clearance vertices on tick {tick_index}: pos={:?}, cursor={}",
+            agent_position(&registry, id),
+            agent.waypoint_cursor,
+        );
+
+        if tick_index == 0 {
+            // Freeze the fresh plan so periodic refresh cannot replace the route
+            // mid-traverse, matching the canonical-speed variant.
+            let mut frozen_plan = agent.clone();
+            frozen_plan.replan_cooldown_ticks = u32::MAX;
+            registry.set_component(id, frozen_plan).unwrap();
+        }
+    }
+
+    panic!(
+        "slow agent never advanced past the mandatory clearance vertices within 4000 ticks: pos={:?}, cursor={:?}",
+        agent_position(&registry, id),
+        registry
+            .get_component::<AgentComponent>(id)
+            .map(|a| a.waypoint_cursor),
+    );
+}
+
+#[test]
 fn stuck_detection_reaches_threshold_then_recovery_fires_next_tick() {
     let corner = ConcaveCorner::fixture();
     let world = corner.collision_world();

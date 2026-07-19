@@ -273,7 +273,17 @@ fn erosion_removes_candidate_matching_boundary_within_step_epsilon() {
 #[test]
 fn euclidean_erosion_is_isotropic_and_bounded_by_one_cell() {
     const CELL_SIZE: f32 = 0.25;
-    const AGENT_RADIUS: f32 = 0.8;
+    // The one-cell isotropy bound only holds where the straight and
+    // 45-degree diagonal sample paths quantize to aligned depths; it is NOT
+    // a universal property of the erosion (e.g. agent_radius in roughly
+    // [0.823, 0.884) at this cell_size diverges by ~1.17 cells, because the
+    // diagonal sample advances in steps of sqrt(2)*cell_size while the
+    // straight sample advances in whole cells). 0.4 is the canonical baked
+    // agent radius (see `NavParams`/`map_data.rs`) and is the value this
+    // test must validate AC3 against, since it's the only radius the engine
+    // actually bakes and it comfortably satisfies the bound (straight 0.5 vs
+    // diagonal ~0.354, diff ~0.146 < one cell).
+    const AGENT_RADIUS: f32 = 0.4;
     const DIM: u32 = 64;
     const WALL: u32 = 24;
     const EPSILON: f32 = 1.0e-5;

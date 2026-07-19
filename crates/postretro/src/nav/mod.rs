@@ -4,7 +4,8 @@
 
 mod path;
 // One-shot path query. Re-exported so callers import `crate::nav::find_path`;
-// the production caller is the agent steering tick (`agent_steering`).
+// the primary production caller is the agent steering tick (`agent_steering`),
+// and combat positioning (`combat_positioning`) also queries it.
 pub(crate) use path::find_path;
 
 use glam::Vec3;

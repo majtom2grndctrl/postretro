@@ -191,6 +191,20 @@ impl<'a> AlphaLightsNs<'a> {
     pub fn len(&self) -> usize {
         self.entries.len()
     }
+
+    /// Compact a raw-`MapData::lights` table into the runtime AlphaLights
+    /// identity space. Bake-only entries deliberately disappear; every
+    /// surviving value stays paired with the same authored light.
+    pub fn compact_source_table<T: Copy>(&self, source: &[T]) -> Vec<T> {
+        self.entries
+            .iter()
+            .map(|entry| {
+                *source
+                    .get(entry.source_index)
+                    .expect("source table must cover every AlphaLights source index")
+            })
+            .collect()
+    }
 }
 
 fn derive_influence(light: &MapLight) -> InfluenceRecord {
@@ -284,5 +298,21 @@ mod tests {
         let ns = AnimatedBakedLights::from_lights(&lights);
         let idx = source_indices(ns.entries(), |e| e.source_index);
         assert_eq!(idx, vec![0, 1]);
+    }
+
+    #[test]
+    fn alpha_lights_compacts_raw_source_tables_without_shifting_survivors() {
+        // Regression: a bake-only predecessor left the SH slot table in raw
+        // MapData order while AlphaLights used compact runtime order.
+        let mut bake_only = light(ShadowType::StaticLightMap, true, false);
+        bake_only.bake_only = true;
+        let lights = vec![
+            bake_only,
+            light(ShadowType::StaticLightMap, true, false),
+            light(ShadowType::StaticLightMap, false, true),
+        ];
+        let alpha = AlphaLightsNs::from_lights(&lights);
+
+        assert_eq!(alpha.compact_source_table(&[10_u32, 20, 30]), [20, 30]);
     }
 }

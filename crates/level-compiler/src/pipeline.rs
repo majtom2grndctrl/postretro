@@ -236,7 +236,7 @@ fn run_after_parsing(
     started: Instant,
     reporter: Arc<dyn Reporter>,
     governor: Arc<Governor>,
-    map_data: map_data::MapData,
+    mut map_data: map_data::MapData,
     parsing_elapsed: Duration,
 ) -> anyhow::Result<()> {
     let mut timings = Vec::new();
@@ -244,8 +244,28 @@ fn run_after_parsing(
     reporter.finish_stage(StageId::Parsing);
 
     let stage_start = begin_stage(reporter.as_ref(), StageId::DataScript);
-    let data_script_section =
-        compile_worldspawn_data_script(&args.input, map_data.data_script.as_deref())?;
+    let compiled_data_script = compile_worldspawn_data_script(
+        &args.input,
+        map_data.data_script.as_deref(),
+        &map_data.lights,
+    )?;
+    let (data_script_section, membership_manifest) = match compiled_data_script {
+        Some(script) => (Some(script.section), Some(script.membership_manifest)),
+        None => (None, None),
+    };
+    if let Some(membership_manifest) = membership_manifest.as_ref() {
+        let inventory = crate::script_light_membership::apply_manifest(
+            &mut map_data.lights,
+            &map_data.light_start_active_defaults,
+            membership_manifest,
+        )?;
+        crate::script_light_membership::log_inventory(&inventory, &map_data.lights);
+    }
+    // Every cached bake stage keys from the post-injection light namespaces or
+    // their `MapLight` records, so a manifest membership change produces a
+    // different cache key without a cache-epoch bump. The compiled script bytes
+    // are packed uncached into DataScript and do not affect bake output unless
+    // their evaluated manifest changes membership.
     finish_stage(
         &mut timings,
         reporter.as_ref(),
@@ -696,7 +716,7 @@ fn run_after_parsing(
         animated_lights: &animated_baked_lights,
         total_light_count: map_data.lights.len(),
     };
-    let sh_volume_section = if let Some(ref cache) = stage_cache {
+    let mut sh_volume_section = if let Some(ref cache) = stage_cache {
         // Warm path: per-probe-group SH. Each group bakes/loads a cached
         // entry over its probe subset with a bounded reaching-light set, then the
         // groups assemble into the volume. This is a deliberate approximation —
@@ -710,6 +730,12 @@ fn run_after_parsing(
         // shippable source of truth. No per-group reads/writes, no warning.
         sh_bake::bake_sh_volume_controlled(&sh_ctx, &sh_config, &sh_control)
     };
+    // SH bake stages use raw MapData source indices so bake-only animated
+    // lights can own descriptors. Runtime map lights come from compact
+    // AlphaLights (`_bake_only` omitted), so remap the lookup table exactly
+    // once at the PRL boundary.
+    sh_volume_section.slot_for_map_light =
+        alpha_lights_ns.compact_source_table(&sh_volume_section.slot_for_map_light);
     finish_stage(
         &mut timings,
         reporter.as_ref(),

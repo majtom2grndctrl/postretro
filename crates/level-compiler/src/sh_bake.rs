@@ -1182,16 +1182,28 @@ fn animation_descriptor_for(light: &MapLight) -> AnimationDescriptor {
         .animation
         .as_ref()
         .expect("animation_descriptor_for called on a non-animated light");
-    AnimationDescriptor {
-        period: anim.period.max(1.0e-6),
-        phase: anim.phase,
-        // Bake color × intensity into base_color: weight maps are baked at unit intensity/white,
-        // so this is the only place the authored intensity re-enters the pipeline.
-        base_color: [
+    let base_color = if anim
+        .color
+        .as_ref()
+        .is_some_and(|samples| !samples.is_empty())
+    {
+        // RGB curve samples replace authored hue. Retain intensity as a
+        // channel-neutral multiplier; unit-radiance bake data supplies the
+        // transport term.
+        [light.intensity; 3]
+    } else {
+        [
             light.color[0] * light.intensity,
             light.color[1] * light.intensity,
             light.color[2] * light.intensity,
-        ],
+        ]
+    };
+    AnimationDescriptor {
+        period: anim.period.max(1.0e-6),
+        phase: anim.phase,
+        // Weight maps and indirect delta tiles are unit-radiance transport.
+        // This descriptor is the only authored-radiance application.
+        base_color,
         brightness: anim.brightness.clone().unwrap_or_default(),
         color: anim.color.clone().unwrap_or_default(),
         direction: anim.direction.clone().unwrap_or_default(),
@@ -2384,6 +2396,15 @@ mod tests {
                  intensity was not folded into base_color",
             );
         }
+
+        let mut color_animated = light.clone();
+        color_animated.animation.as_mut().unwrap().color =
+            Some(vec![[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]);
+        assert_eq!(
+            animation_descriptor_for_light(&color_animated).base_color,
+            [3.0; 3],
+            "color-curve descriptors retain authored intensity without applying authored hue twice",
+        );
     }
 
     #[test]

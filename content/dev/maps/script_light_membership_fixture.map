@@ -1,0 +1,99 @@
+// Game: Generic
+// Format: Standard
+// entity 0
+{
+"classname" "worldspawn"
+"initialGravity" "-9.81"
+"data_script" "../scripts/script-light-membership-fixture.ts"
+"wad" ""
+"_tb_def" "external:../../../sdk/TrenchBroom/postretro.fgd"
+// brush 0
+{
+( -16 528 -16 ) ( -16 -16 0 ) ( -16 -16 -16 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 -16 ) ( 528 -16 0 ) ( 528 -16 -16 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 -16 ) ( 528 528 -16 ) ( -16 528 -16 ) concrete_pavement_036 0 0 0 1 1
+( -16 528 0 ) ( 528 -16 0 ) ( -16 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 528 528 -16 ) ( -16 528 0 ) ( -16 528 -16 ) concrete_pavement_036 0 0 0 1 1
+( 528 -16 -16 ) ( 528 528 0 ) ( 528 528 -16 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 1
+{
+( -16 528 128 ) ( -16 -16 144 ) ( -16 -16 128 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 128 ) ( 528 -16 144 ) ( 528 -16 128 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 128 ) ( 528 528 128 ) ( -16 528 128 ) concrete_pavement_036 0 0 0 1 1
+( -16 528 144 ) ( 528 -16 144 ) ( -16 -16 144 ) concrete_pavement_036 0 0 0 1 1
+( 528 528 128 ) ( -16 528 144 ) ( -16 528 128 ) concrete_pavement_036 0 0 0 1 1
+( 528 -16 128 ) ( 528 528 144 ) ( 528 528 128 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 2
+{
+( -16 528 0 ) ( -16 -16 128 ) ( -16 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 0 ) ( 0 -16 128 ) ( 0 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( -16 -16 0 ) ( 0 528 0 ) ( -16 528 0 ) concrete_pavement_036 0 0 0 1 1
+( -16 528 128 ) ( 0 -16 128 ) ( -16 -16 128 ) concrete_pavement_036 0 0 0 1 1
+( 0 528 0 ) ( -16 528 128 ) ( -16 528 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 -16 0 ) ( 0 528 128 ) ( 0 528 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 3
+{
+( 512 528 0 ) ( 512 -16 128 ) ( 512 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 512 -16 0 ) ( 528 -16 128 ) ( 528 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 512 -16 0 ) ( 528 528 0 ) ( 512 528 0 ) concrete_pavement_036 0 0 0 1 1
+( 512 528 128 ) ( 528 -16 128 ) ( 512 -16 128 ) concrete_pavement_036 0 0 0 1 1
+( 528 528 0 ) ( 512 528 128 ) ( 512 528 0 ) concrete_pavement_036 0 0 0 1 1
+( 528 -16 0 ) ( 528 528 128 ) ( 528 528 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 4
+{
+( 0 0 0 ) ( 0 -16 128 ) ( 0 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 -16 0 ) ( 512 -16 128 ) ( 512 -16 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 -16 0 ) ( 512 0 0 ) ( 0 0 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 0 128 ) ( 512 -16 128 ) ( 0 -16 128 ) concrete_pavement_036 0 0 0 1 1
+( 512 0 0 ) ( 0 0 128 ) ( 0 0 0 ) concrete_pavement_036 0 0 0 1 1
+( 512 -16 0 ) ( 512 0 128 ) ( 512 0 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 5
+{
+( 0 528 0 ) ( 0 512 128 ) ( 0 512 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 512 0 ) ( 512 512 128 ) ( 512 512 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 512 0 ) ( 512 528 0 ) ( 0 528 0 ) concrete_pavement_036 0 0 0 1 1
+( 0 528 128 ) ( 512 512 128 ) ( 0 512 128 ) concrete_pavement_036 0 0 0 1 1
+( 512 528 0 ) ( 0 528 128 ) ( 0 528 0 ) concrete_pavement_036 0 0 0 1 1
+( 512 512 0 ) ( 512 528 128 ) ( 512 528 0 ) concrete_pavement_036 0 0 0 1 1
+}
+}
+// entity 1
+{
+"classname" "player_spawn"
+"origin" "256 256 24"
+"angle" "0"
+}
+// entity 2
+{
+"classname" "light"
+"origin" "40 472 100"
+"light" "180"
+"_falloff_range" "140"
+"_tags" "script_wave"
+"_start_inactive" "1"
+"_color" "119 0 204"
+}
+// entity 3
+{
+"classname" "light"
+"origin" "472 40 100"
+"light" "180"
+"_falloff_range" "140"
+"_color" "255 210 120"
+"style" "0"
+}
+// entity 4
+{
+"classname" "light"
+"origin" "472 472 100"
+"light" "180"
+"_falloff_range" "140"
+"_color" "255 100 80"
+"brightness_curve" "[0, 0.2] [750, 1.0] [1500, 0.2]"
+"period_ms" "1500"
+}

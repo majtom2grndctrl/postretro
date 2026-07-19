@@ -265,19 +265,10 @@ pub fn translate_light(
         phase_raw
     };
 
-    // `_start_inactive` only has runtime effect on animated lights; we still
-    // parse and warn on static lights so authoring mistakes are visible.
-    let start_inactive = match parse_optional_int(props, "_start_inactive")? {
-        None | Some(0) => false,
-        Some(1) => true,
-        Some(other) => {
-            return Err(TranslateError::InvalidProperty {
-                key: "_start_inactive",
-                value: other.to_string(),
-                reason: "expected 0 (active at load) or 1 (inactive at load)",
-            });
-        }
-    };
+    // Parse the fallback before script-derived membership is known. A style-0
+    // light may legitimately gain its animated-bake reservation from the map
+    // data script, so this boundary must not warn merely from `style`.
+    let start_inactive = !authored_light_start_active(props)?;
 
     let bake_only = match parse_optional_int(props, "_bake_only")? {
         None | Some(0) => false,
@@ -484,11 +475,6 @@ pub fn translate_light(
         if props.contains_key("_phase") && phase_raw != 0.0 {
             log::warn!("light _phase set but style=0 (no animation); phase has no effect");
         }
-        if start_inactive {
-            log::warn!(
-                "light _start_inactive set but style=0 (no animation); static lights have no runtime toggle"
-            );
-        }
         None
     } else {
         match quake_style_animation(style, phase) {
@@ -517,16 +503,7 @@ pub fn translate_light(
     // `setLightAnimation` call. Empty sample vectors mean the GPU evaluator
     // falls back to `base_color` (= `color * intensity`) until then.
     let animation = if is_animated && animation.is_none() {
-        Some(LightAnimation {
-            // Period > 0 (sh_volume enforces a 1e-6 floor anyway); phase 0;
-            // all channels empty (compose pass guards on `count == 0`).
-            period: 1.0,
-            phase: 0.0,
-            brightness: None,
-            color: None,
-            direction: None,
-            start_active: !start_inactive,
-        })
+        Some(crate::map_data::animated_light_placeholder(!start_inactive))
     } else {
         animation
     };
@@ -583,6 +560,23 @@ fn parse_optional_int(
             }
         }
         None => Ok(None),
+    }
+}
+
+/// Authored initial state retained independently from animation membership.
+/// A script may derive membership later, after translation has intentionally
+/// left an unflagged static light's `animation` empty.
+pub(crate) fn authored_light_start_active(
+    props: &HashMap<String, String>,
+) -> Result<bool, TranslateError> {
+    match parse_optional_int(props, "_start_inactive")? {
+        None | Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        Some(other) => Err(TranslateError::InvalidProperty {
+            key: "_start_inactive",
+            value: other.to_string(),
+            reason: "expected 0 (active at load) or 1 (inactive at load)",
+        }),
     }
 }
 

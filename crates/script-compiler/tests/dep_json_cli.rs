@@ -7,6 +7,10 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use postretro_level_format::light_membership::{
+    LightComponentSnapshot, LightMembershipManifest, LightTable, LightTableLight,
+};
+
 fn unique_tempdir(label: &str) -> PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now()
@@ -234,6 +238,139 @@ fn sdk_hud_fixture_bundles_without_generated_sibling() {
         !generated_sibling.exists(),
         "compiler fixture writes only to the requested temp output",
     );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+fn write_light_table(path: &std::path::Path) {
+    let table = LightTable::new(vec![LightTableLight {
+        index: 4,
+        tags: vec!["arena".to_string()],
+        position: [1.0, 2.0, 3.0],
+        is_dynamic: false,
+        component: LightComponentSnapshot {
+            origin: [1.0, 2.0, 3.0],
+            light_type: "Point".to_string(),
+            intensity: 1.0,
+            color: [1.0, 1.0, 1.0],
+            falloff_model: "InverseSquared".to_string(),
+            falloff_range: 8.0,
+            cone_angle_inner: None,
+            cone_angle_outer: None,
+            cone_direction: None,
+            is_dynamic: false,
+            animated_slot: None,
+            animation: None,
+        },
+    }]);
+    fs::write(path, serde_json::to_vec(&table).unwrap()).expect("write light table");
+}
+
+#[test]
+fn manifest_flags_require_a_pair_and_compile_only_mode_stays_sidecar_free() {
+    let dir = unique_tempdir("manifest-cli-pair");
+    let entry = dir.join("data.ts");
+    let output = dir.join("data.js");
+    let table = dir.join("lights.json");
+    let manifest = dir.join("membership.json");
+    fs::write(&entry, "const value: number = 42;\n").expect("write source");
+    write_light_table(&table);
+
+    let compile_only = Command::new(env!("CARGO_BIN_EXE_scripts-build"))
+        .arg("--in")
+        .arg(&entry)
+        .arg("--out")
+        .arg(&output)
+        .output()
+        .expect("run compile-only mode");
+    assert!(compile_only.status.success(), "{compile_only:?}");
+    assert!(output.is_file(), "compile-only mode writes script output");
+    assert!(
+        !manifest.exists(),
+        "compile-only mode must not infer a sidecar path"
+    );
+
+    let missing_manifest = Command::new(env!("CARGO_BIN_EXE_scripts-build"))
+        .arg("--in")
+        .arg(&entry)
+        .arg("--out")
+        .arg(&output)
+        .arg("--light-table")
+        .arg(&table)
+        .output()
+        .expect("run invalid one-sided flags");
+    assert!(!missing_manifest.status.success());
+    assert!(
+        String::from_utf8_lossy(&missing_manifest.stderr).contains("must be supplied together"),
+        "stderr={}",
+        String::from_utf8_lossy(&missing_manifest.stderr)
+    );
+
+    let missing_table = Command::new(env!("CARGO_BIN_EXE_scripts-build"))
+        .arg("--in")
+        .arg(&entry)
+        .arg("--out")
+        .arg(&output)
+        .arg("--manifest-out")
+        .arg(&manifest)
+        .output()
+        .expect("run invalid one-sided flags");
+    assert!(!missing_table.status.success());
+    assert!(
+        String::from_utf8_lossy(&missing_table.stderr).contains("must be supplied together"),
+        "stderr={}",
+        String::from_utf8_lossy(&missing_table.stderr)
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn manifest_flags_emit_resolved_typescript_membership() {
+    let dir = unique_tempdir("manifest-cli-membership");
+    let entry = dir.join("data.ts");
+    let output = dir.join("data.js");
+    let table = dir.join("lights.json");
+    let manifest = dir.join("membership.json");
+    fs::write(
+        &entry,
+        r#"
+        import { defineReaction, world } from "postretro";
+        export function setupLevel() {
+          const light = world.query({ component: "light", tag: "arena" })[0];
+          return { reactions: [
+            defineReaction("levelLoad", { sequence: light.pulse({ min: 0.2, max: 1.0, periodMs: 500 }) }),
+          ] };
+        }
+        "#,
+    )
+    .expect("write source");
+    write_light_table(&table);
+
+    let result = Command::new(env!("CARGO_BIN_EXE_scripts-build"))
+        .arg("--in")
+        .arg(&entry)
+        .arg("--out")
+        .arg(&output)
+        .arg("--light-table")
+        .arg(&table)
+        .arg("--manifest-out")
+        .arg(&manifest)
+        .output()
+        .expect("run scripts-build manifest mode");
+    assert!(
+        result.status.success(),
+        "scripts-build failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let sidecar: LightMembershipManifest =
+        serde_json::from_slice(&fs::read(&manifest).expect("read manifest"))
+            .expect("parse manifest");
+    assert_eq!(sidecar.version, LightMembershipManifest::VERSION);
+    assert_eq!(sidecar.lights.len(), 1);
+    assert_eq!(sidecar.lights[0].index, 4);
+    assert_eq!(sidecar.lights[0].start_active, Some(true));
+    assert!(sidecar.stubbed_primitives.is_empty());
 
     let _ = fs::remove_dir_all(&dir);
 }

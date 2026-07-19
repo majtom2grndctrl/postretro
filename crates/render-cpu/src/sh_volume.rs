@@ -153,11 +153,16 @@ pub fn build_animation_buffers(
         );
     }
 
-    (
-        descriptors,
-        f32_slice_to_bytes(&samples),
-        animated_light_count as u32,
-    )
+    let sample_bytes = if samples.is_empty() {
+        // Regression: a script-reserved animated light can have a descriptor
+        // without any authored FGD curve samples. wgpu rejects a zero-sized
+        // storage-buffer binding before the runtime script can upload its curve.
+        dummy_storage_buffer()
+    } else {
+        f32_slice_to_bytes(&samples)
+    };
+
+    (descriptors, sample_bytes, animated_light_count as u32)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -417,6 +422,31 @@ mod tests {
         assert_eq!(count, 0);
         assert!(!descriptors.is_empty());
         assert!(!samples.is_empty());
+    }
+
+    // Regression: script-only animated membership produced an empty GPU sample
+    // buffer and wgpu rejected the SH bind group before levelLoad could run.
+    #[test]
+    fn build_animation_buffers_script_only_descriptor_produces_sample_dummy() {
+        let section = test_octahedral_section(
+            [1, 1, 1],
+            vec![AnimationDescriptor {
+                period: 1.0,
+                phase: 0.0,
+                base_color: [1.0; 3],
+                brightness: Vec::new(),
+                color: Vec::new(),
+                direction: Vec::new(),
+                start_active: 1,
+            }],
+        );
+
+        let (descriptors, samples, count) = build_animation_buffers(Some(&section));
+
+        assert_eq!(count, 1);
+        assert_eq!(descriptors.len(), ANIMATION_DESCRIPTOR_SIZE);
+        assert_eq!(samples.len(), ANIMATION_DESCRIPTOR_SIZE);
+        assert!(samples.iter().all(|&byte| byte == 0));
     }
 
     #[test]

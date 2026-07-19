@@ -288,7 +288,8 @@ pub(crate) fn build_lighting_bind_group(
     let promoted_capacity = geometry
         .map(|g| g.entity_shadow_lights.len())
         .unwrap_or_default();
-    let light_record_capacity = (level_lights.len() + promoted_capacity).max(1);
+    let dynamic_light_capacity = level_lights.len() + RUNTIME_DYNAMIC_LIGHT_RESERVE;
+    let light_record_capacity = (dynamic_light_capacity + promoted_capacity).max(1);
     // wgpu rejects zero-size storage buffers — pad to one dummy; light_count stays 0.
     let mut lights_data = Vec::with_capacity(light_record_capacity * GPU_LIGHT_SIZE);
     if !level_lights.is_empty() {
@@ -303,7 +304,7 @@ pub(crate) fn build_lighting_bind_group(
 
     // Influence volume buffer — same dummy strategy as lights.
     let influence_record_capacity = shadowmask::influence_capacity_with_shadowmask_metadata(
-        level_lights.len(),
+        dynamic_light_capacity,
         promoted_capacity,
     );
     let mut influence_data = Vec::with_capacity(influence_record_capacity * 16);

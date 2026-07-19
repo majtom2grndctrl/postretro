@@ -259,6 +259,21 @@ pub struct LightAnimation {
     pub start_active: bool,
 }
 
+/// Empty compose-side reservation for a baked-tier light whose curve arrives
+/// later through `setLightAnimation`. Both FGD `_animated` and script-derived
+/// membership use this one compiler-side placeholder so their bake structure
+/// stays identical while runtime remains the sole curve authority.
+pub fn animated_light_placeholder(start_active: bool) -> LightAnimation {
+    LightAnimation {
+        period: 1.0,
+        phase: 0.0,
+        brightness: None,
+        color: None,
+        direction: None,
+        start_active,
+    }
+}
+
 /// Default emitter radius (world units / meters) applied when `_light_size` is
 /// absent, so existing maps gain soft shadows on recompile. An explicit `0`
 /// authored value is preserved (hard shadow). See `MapLight::light_size`.

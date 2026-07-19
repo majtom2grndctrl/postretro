@@ -517,16 +517,7 @@ pub fn translate_light(
     // `setLightAnimation` call. Empty sample vectors mean the GPU evaluator
     // falls back to `base_color` (= `color * intensity`) until then.
     let animation = if is_animated && animation.is_none() {
-        Some(LightAnimation {
-            // Period > 0 (sh_volume enforces a 1e-6 floor anyway); phase 0;
-            // all channels empty (compose pass guards on `count == 0`).
-            period: 1.0,
-            phase: 0.0,
-            brightness: None,
-            color: None,
-            direction: None,
-            start_active: !start_inactive,
-        })
+        Some(crate::map_data::animated_light_placeholder(!start_inactive))
     } else {
         animation
     };

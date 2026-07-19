@@ -17,6 +17,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use postretro_level_format::SectionId;
+use postretro_level_format::animated_light_chunks::AnimatedLightChunksSection;
 use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
 use postretro_level_format::lightmap::LightmapSection;
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
@@ -115,6 +116,85 @@ fn single_fixture_compiles_and_carries_weight_map_section() {
     );
 
     // Cleanup.
+    let _ = std::fs::remove_file(&output);
+    let _ = std::fs::remove_dir(&out_dir);
+}
+
+/// A static map light targeted only by the data script must reserve the same
+/// animated sections as `_animated`, while its untagged static neighbour must
+/// not leak into those sections. This stays ignored because the assertion is
+/// intentionally against a real PRL bake, not a self-referential unit fixture.
+#[test]
+#[ignore = "cold prl-build bake; run on demand with -- --ignored"]
+fn script_targeted_static_light_populates_only_its_animated_prl_slots() {
+    let ws = workspace_root();
+    let input = ws.join("content/dev/maps/script_light_membership_fixture.map");
+    assert!(input.exists(), "fixture map missing: {}", input.display());
+
+    let out_dir = std::env::temp_dir().join("postretro_fixture_script_light_membership");
+    std::fs::create_dir_all(&out_dir).expect("mkdir temp out");
+    let output = out_dir.join("script_light_membership_fixture.prl");
+
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let status = Command::new(cargo)
+        .args([
+            "run",
+            "--quiet",
+            "-p",
+            "postretro-level-compiler",
+            "--bin",
+            "prl-build",
+            "--",
+        ])
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .arg("--no-cache")
+        .current_dir(&ws)
+        .status()
+        .expect("spawn prl-build");
+    assert!(status.success(), "prl-build failed: {status}");
+
+    let bytes = std::fs::read(&output).expect("read compiled .prl");
+    let mut cursor = Cursor::new(&bytes);
+    let meta = read_container(&mut cursor).expect("read_container");
+    let mut read_section = |id| {
+        read_section_data(&mut cursor, &meta, id)
+            .expect("read section")
+            .expect("script-targeted fixture must emit animated section")
+    };
+
+    let chunks = AnimatedLightChunksSection::from_bytes(&read_section(
+        SectionId::AnimatedLightChunks as u32,
+    ))
+    .expect("AnimatedLightChunks decodes");
+    let weights = AnimatedLightWeightMapsSection::from_bytes(&read_section(
+        SectionId::AnimatedLightWeightMaps as u32,
+    ))
+    .expect("AnimatedLightWeightMaps decodes");
+    let sh =
+        OctahedralShVolumeSection::from_bytes(&read_section(SectionId::OctahedralShVolume as u32))
+            .expect("OctahedralShVolume decodes");
+
+    assert_eq!(
+        sh.animation_descriptors.len(),
+        1,
+        "only the data-script target should receive an animated descriptor slot",
+    );
+    assert!(
+        !chunks.light_indices.is_empty() && chunks.light_indices.iter().all(|&index| index == 0),
+        "every animated chunk entry must reference the one script-targeted static light",
+    );
+    assert!(
+        !weights.texel_lights.is_empty()
+            && weights
+                .texel_lights
+                .iter()
+                .all(|entry| entry.light_index == 0),
+        "every animated weight must reference the one script-targeted static light: {:?}",
+        weights.texel_lights,
+    );
+
     let _ = std::fs::remove_file(&output);
     let _ = std::fs::remove_dir(&out_dir);
 }

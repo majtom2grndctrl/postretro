@@ -463,6 +463,19 @@ for i, light in ipairs(lights) do
 end
 ```
 
+### Baked-light membership
+
+When a map data script animates a static map light with `setLightAnimation`, the
+map build reserves its animated baked-light data automatically. Do not add
+`_animated 1` for that light in either TypeScript or Luau. The rule applies only
+to reactions returned by that map's `setupLevel`; use `_animated 1` when a
+mod-global reaction can animate the static light.
+
+Do not gate this setup on persisted-store reads. Map compilation observes store
+defaults, which can differ from the player's restored values. If a static light
+is animated at runtime without baked membership, the engine warns as a safety
+net. Dynamic lights remain runtime-only, and no animation curves are baked.
+
 ### TriggerVolumeHandle
 
 Returned when `component` is `"trigger_volume"`. The snapshot exposes only

@@ -489,6 +489,10 @@ pub(crate) fn tick(
             agent.unstick_window_remaining = 0;
         }
         let recovery_active_this_tick = agent.unstick_window_remaining > 0;
+        // Safe to bias with `steer_velocity` unchecked: the sibling `else`
+        // above zeroes the window the instant intent is lost, so a nonzero
+        // window here means intent was live this tick, i.e. `steer_velocity`
+        // is provably nonzero.
         if recovery_active_this_tick {
             desired += recovery_tangent_bias(steer_velocity, agent.move_speed);
             agent.unstick_window_remaining = agent.unstick_window_remaining.saturating_sub(1);
@@ -645,6 +649,8 @@ fn blocked_destination_now_directly_routable(
     position: Vec3,
     destination: Vec3,
 ) -> bool {
+    // `!agent.path.is_empty()` is now unreachable under the `blocked ⇒
+    // !has_path` invariant when `agent.blocked` holds; kept as defense-in-depth.
     if !agent.blocked || !agent.path.is_empty() {
         return false;
     }

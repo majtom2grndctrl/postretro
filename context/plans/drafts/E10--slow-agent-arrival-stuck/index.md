@@ -149,8 +149,38 @@ Validation instruments already exist: the `ConcaveCorner` fixture and the `stuck
 `unstick_window_remaining` signals in `agent_steering/tests.rs`. Reuse them; add the
 open-floor arrival and slow-wedge cases.
 
+## Related observations
+
+- **Play-test: enemies pause before arriving at the player.** Live play shows chasing
+  enemies visibly decelerate/pause shortly before reaching the player. Likely the
+  ordinary arrival-deceleration band (`is_final` slowdown, this spec's subject) and/or
+  the combat-slot engagement band (`combat_positioning.rs`) holding enemies at ~attack
+  range — i.e. the same arrival-deceleration tuning this spec governs. A symptom to
+  validate the fix against once implemented, not a confirmed bug in its own right; may
+  turn out to be intended engagement-range behavior rather than a stuck-adjacent defect.
+
 ## Open questions
 
+- **Tangential/jittering wedge at a mandatory vertex escapes escalation (E10 review
+  panel finding).** The prior-art gate this spec composes with has its own latent gap,
+  the mirror image of this spec's false positive. `update_stuck_ticks` only accumulates
+  `stuck_ticks` when a tick's progress falls under the active floor — inside a mandatory
+  vertex's arrival band that floor is `MANDATORY_EASING_PROGRESS_EPSILON`
+  (`STUCK_PROGRESS_EPSILON * 0.05`, ≈0.00025 m/tick) — and escalation needs
+  `STUCK_TICKS_THRESHOLD` (20) CONSECUTIVE sub-floor ticks. A wedge that jitters even
+  occasionally above that floor (numerical jitter from `collide_and_slide`, or a shallow
+  slide along a wall that yields a small positive goal-projected step) resets
+  `stuck_ticks` to 0 on those ticks and never arms recovery — a silent permanent stall,
+  masked by the same easing gate that exists to let a legitimate corner turn through.
+  Fix direction, not a prescription: accumulate against NET progress over a bounded
+  window instead of a single-tick floor, or cap how many consecutive easing-suppressed
+  ticks are allowed before falling back to the absolute floor — either way a genuine
+  wedge must still escalate. Needs a repro test constructing a mandatory vertex the
+  capsule cannot plane-pass while still sliding along it; no such test exists today. The
+  E10 review panel split on this exact point — a tracer reviewer judged the existing gate
+  escalates fine, an adversarial reviewer judged it hangs — and the disagreement turns on
+  whether a real jittering wedge sustains occasional above-floor ticks. The repro test is
+  the arbiter; resolve it there before deciding this needs code changes at all.
 - **Slow cruise below the absolute floor mid-route.** Direction 2 only relaxes the
   arrival band; a `move_speed < ~0.3 m/s` agent cruising a long straight corridor at full
   intended speed is ALSO below the absolute floor and would still false-trip. Is such an

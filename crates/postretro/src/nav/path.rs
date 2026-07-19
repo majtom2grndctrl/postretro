@@ -66,16 +66,24 @@ impl Deref for NavPath {
 /// via [`NavGraph::resolve_region_at`], so a capsule legitimately standing
 /// against a wall — inside the conservatively-eroded band and therefore outside
 /// every region — still routes from/to its nearest region instead of failing.
-/// The emitted waypoints keep the RAW `start`/`goal` positions; only the region
-/// resolution snaps. This matters for pursuit: chase targets hug corners and
-/// steered agents get pushed wall-ward, and a query that returned `None` for
+/// The emitted terminals normally keep the RAW `start`/`goal` positions; only the
+/// region resolution snaps. This matters for pursuit: chase targets hug corners
+/// and steered agents get pushed wall-ward, and a query that returned `None` for
 /// those positions froze chasing agents in a permanent `blocked` state.
+///
+/// The one exception: a terminal snapped into the eroded band can land inside a
+/// wide portal endpoint's clearance disk. Such a terminal is projected onto the
+/// disk boundary, so the emitted first/last waypoint becomes a walkable STANDOFF
+/// at the obstacle edge rather than the raw start/goal. The true entity target
+/// stays on the agent's steering `destination` (independent of this path), which
+/// is what engagement and arrival distance key off — the standoff is only where
+/// the agent walks to.
 ///
 /// Returns `None` when `start` or `goal` lies farther than the snap tolerance
 /// from every region, when either endpoint is non-finite, or when no corridor
-/// connects their regions. A reachable goal always yields a path whose first
-/// waypoint is `start` and last is `goal`; a goal in the start region is a
-/// trivial two-point `[start, goal]`.
+/// connects their regions. A reachable goal yields a path whose first/last
+/// waypoints are `start`/`goal` (or their disk-boundary standoffs); a goal in the
+/// start region is a trivial two-point `[start, goal]`.
 pub(crate) fn find_path(graph: &NavGraph, start: Vec3, goal: Vec3) -> Option<NavPath> {
     // Finiteness guard: a NaN/inf endpoint makes every funnel area comparison
     // false, silently collapsing the result to a straight `[start, goal]` line
@@ -458,6 +466,66 @@ fn route_out_of_disk(
     ))
 }
 
+/// Squared XZ length below which a direction vector is treated as zero — no
+/// stable direction can be normalized out of it. Matches the AI/steering guard.
+const MIN_XZ_LEN_SQ: f32 = 1e-8;
+
+/// Project an immovable terminal waypoint (the path's start `repaired[0]` or its
+/// goal `repaired[last]`) radially onto `obstacle`'s clearance-disk boundary,
+/// turning it into a walkable STANDOFF at the obstacle edge. The endpoint-snap
+/// (`resolve_region_at`) admits a terminal sitting in the eroded wall band, which
+/// can land inside a wide portal endpoint's disk; no point inserted around a
+/// terminal can pull the chord's fixed far vertex clear, so the terminal itself
+/// must move.
+///
+/// Unlike [`route_out_of_disk`] — which holds a vertex's along-gate coordinate to
+/// preserve a corridor crossing — a terminal has no corridor constraint, so the
+/// nearest boundary point (the radial projection `raw + normalize_xz(T - raw) *
+/// clearance_radius`) is the minimal move. Y is preserved. `toward` is the
+/// adjacent waypoint, used only to pick a stable direction when the terminal sits
+/// on the disk center in XZ; if that too coincides, fall back to the portal normal
+/// (the bevel axis). The true entity target still lives on the agent's steering
+/// `destination`, independent of this emitted waypoint. Returns `None` only when
+/// no finite direction exists (raw endpoint, terminal, and adjacent all coincide
+/// in XZ) — a degenerate corridor.
+fn project_out_of_disk(
+    obstacle: FunnelEndpoint,
+    terminal: Vec3,
+    toward: Vec3,
+    clearance_radius: f32,
+) -> Option<Vec3> {
+    let raw_endpoint = obstacle.raw_endpoint?;
+    let radial = Vec3::new(
+        terminal.x - raw_endpoint.x,
+        0.0,
+        terminal.z - raw_endpoint.z,
+    );
+    let direction = if radial.length_squared() > MIN_XZ_LEN_SQ {
+        radial.normalize()
+    } else {
+        // Terminal sits on the disk center in XZ: no radial direction. Push
+        // toward the adjacent waypoint so the standoff faces the corridor; if
+        // that too coincides, use the portal normal (unit for a wide portal).
+        let toward_xz = Vec3::new(toward.x - raw_endpoint.x, 0.0, toward.z - raw_endpoint.z);
+        if toward_xz.length_squared() > MIN_XZ_LEN_SQ {
+            toward_xz.normalize()
+        } else {
+            let portal_interior = obstacle.portal_interior_xz?;
+            let normal = Vec3::new(-portal_interior.z, 0.0, portal_interior.x);
+            if normal.length_squared() > MIN_XZ_LEN_SQ {
+                normal.normalize()
+            } else {
+                return None;
+            }
+        }
+    };
+    Some(Vec3::new(
+        raw_endpoint.x + direction.x * clearance_radius,
+        terminal.y,
+        raw_endpoint.z + direction.z * clearance_radius,
+    ))
+}
+
 #[derive(Clone, Copy)]
 struct PathPoint {
     point: Vec3,
@@ -516,15 +584,32 @@ fn ensure_endpoint_clearance(
             repairs_remaining -= 1;
 
             let raw = obstacle.raw_endpoint.expect("filtered endpoint");
+            let last_index = repaired.len() - 1;
 
-            // The segment's start vertex is immovable by appending: no point
-            // inserted after it can pull the near end of the chord out of `raw`'s
-            // disk. If `start` itself sits inside the disk (a zig-zag where one
-            // gate's inset corner lands within clearance of a *distinct* neighbor
-            // endpoint), slide that interior vertex out along the bevel axis and
-            // re-validate the segment feeding into it. Index 0 is the agent's own
-            // origin, placed clear by erosion, so it is never moved.
-            if segment_index > 0 && distance_xz(start, raw) + CLEARANCE_EPS < clearance_radius {
+            // A vertex is immovable by appending: no point inserted after it can
+            // pull the fixed near end of its chord out of `raw`'s disk, so a
+            // vertex sitting inside the disk must itself move.
+            //
+            // Interior vertices (a zig-zag where one gate's inset corner lands
+            // within clearance of a *distinct* neighbor endpoint) slide out along
+            // the bevel axis, holding their along-gate coordinate to keep the
+            // corridor crossing, then re-validate the feeding segment.
+            //
+            // Terminals cannot slide that way — they have no corridor crossing to
+            // preserve — and are the agent's own start (`repaired[0]`) or the goal
+            // (`repaired[last]`). The endpoint-snap admits a terminal in the eroded
+            // wall band that can land inside a WIDE portal endpoint's disk; project
+            // it radially onto the disk boundary, making the emitted terminal a
+            // walkable STANDOFF at the obstacle edge. The true entity target still
+            // lives on the agent's steering `destination`, so the first/last
+            // waypoint no longer necessarily equals the raw start/goal.
+            if distance_xz(start, raw) + CLEARANCE_EPS < clearance_radius {
+                if segment_index == 0 {
+                    let projected = project_out_of_disk(obstacle, start, end, clearance_radius)?;
+                    repaired[0].point = projected;
+                    repaired[0].mandatory = true;
+                    continue;
+                }
                 match route_out_of_disk(obstacle, start, clearance_radius) {
                     Some(routed) => {
                         repaired[segment_index].point = routed;
@@ -534,6 +619,16 @@ fn ensure_endpoint_clearance(
                     }
                     None => return None,
                 }
+            }
+            // The goal terminal is the immovable FAR end of the final segment;
+            // project it out the same way when it is snapped inside the disk.
+            if segment_index + 1 == last_index
+                && distance_xz(end, raw) + CLEARANCE_EPS < clearance_radius
+            {
+                let projected = project_out_of_disk(obstacle, end, start, clearance_radius)?;
+                repaired[last_index].point = projected;
+                repaired[last_index].mandatory = true;
+                continue;
             }
 
             let corner = obstacle.point;
@@ -851,7 +946,7 @@ mod tests {
     }
 
     #[test]
-    fn find_path_bends_l_corridor_at_inset_inner_corner_portal_endpoint() {
+    fn find_path_bends_l_corridor_at_inset_corner_clearing_every_segment() {
         let graph = NavGraph::from_section(&l_corridor_section());
         // Start low in region 0, goal in region 2 (+X side). Start and goal are
         // chosen so the straight segment would exit the corridor at the z=4
@@ -868,9 +963,15 @@ mod tests {
         );
         assert!(approx_xz(path[0], start));
         assert!(approx_xz(*path.last().unwrap(), goal));
-        // The funnel must bend at the inner-corner portal endpoint inset by the
-        // canonical agent radius plus collision skin, rather than steering the
-        // capsule into the raw wall corner.
+
+        // Two independent, complementary guarantees on the same path. First: the
+        // bend lands at the exact inner-corner endpoint inset by the canonical
+        // agent radius plus collision skin, not the raw wall corner — a specific
+        // location the general clearance test below cannot pin (a wide detour
+        // would also clear the disk). Second: no segment cuts the corner's
+        // clearance disk anywhere along its length — a universal property the
+        // single exact-bend waypoint cannot certify (a segment can touch the disk
+        // boundary at the bend yet dip closer elsewhere).
         let inset_corner = Vec3::new(4.0, 0.0, 4.0 + graph.agent.radius + SKIN_DISTANCE);
         let bends_at_inset_corner = path[1..path.len() - 1]
             .iter()
@@ -879,6 +980,120 @@ mod tests {
             bends_at_inset_corner,
             "expected a bend inset from the inner corner {inner_corner:?}, got {path:?}"
         );
+
+        let effective_clearance = graph.agent.radius + SKIN_DISTANCE;
+        for segment in path.windows(2) {
+            let clearance = segment_point_distance_xz(segment[0], segment[1], inner_corner);
+            assert!(
+                clearance + EPS >= effective_clearance,
+                "segment {segment:?} cuts the corner disk: clearance={clearance}, path={path:?}"
+            );
+        }
+    }
+
+    // Raw wide-portal endpoints of `l_corridor_section`: the two ends of the z=4
+    // portal and the far end of the x=4 portal. `(4,*,4)` is shared by both.
+    const L_CORRIDOR_ENDPOINTS: [Vec3; 3] = [
+        Vec3::new(0.0, 0.0, 4.0),
+        Vec3::new(4.0, 0.0, 4.0),
+        Vec3::new(4.0, 0.0, 8.0),
+    ];
+
+    #[test]
+    fn find_path_projects_start_inside_wide_endpoint_disk_to_a_standoff() {
+        // R1: the endpoint-snap admits a terminal inside a WIDE portal endpoint's
+        // clearance disk (a start hugging a doorway jamb). The agent's own start
+        // (`repaired[0]`) cannot be pulled clear by appending points — it is the
+        // chord's fixed near end — so the pre-fix repair churned its budget and
+        // dropped a routable corridor to `None`, re-freezing the chaser. The fix
+        // projects the start onto the disk boundary — a walkable standoff — and
+        // still routes.
+        let graph = NavGraph::from_section(&l_corridor_section());
+        let clearance = graph.agent.radius + SKIN_DISTANCE;
+        // `start` hugs the (0,*,4) jamb from the region-0 side, 0.224 m off it —
+        // inside the 0.32 m disk. Its offset points into the wide opening, so the
+        // funnel crosses both gates interior (no bend) and the standoff routes
+        // straight on. (A pre-fix run churns this exact fixture to `None`.)
+        let jamb = Vec3::new(0.0, 0.0, 4.0);
+        let start = Vec3::new(0.2, 0.0, 3.9);
+        let goal = Vec3::new(7.0, 0.0, 5.0);
+        assert_eq!(graph.region_at(start), Some(0), "start is in region 0");
+        assert!(
+            distance_xz(start, jamb) < clearance,
+            "fixture must place the start inside the endpoint disk"
+        );
+
+        let path =
+            find_path(&graph, start, goal).expect("start-in-disk corridor must not drop to None");
+
+        // The emitted first waypoint is a projected standoff, no longer the raw
+        // start, and it clears the endpoint disk by the effective clearance.
+        assert!(
+            !approx_xz(path[0], start),
+            "start terminal must be projected off the raw position: {path:?}"
+        );
+        assert!(
+            distance_xz(path[0], jamb) + EPS >= clearance,
+            "projected start must clear the endpoint disk: {path:?}"
+        );
+        assert!(
+            approx_xz(*path.last().unwrap(), goal),
+            "clean goal preserved: {path:?}"
+        );
+
+        // Interior clearance still holds: no segment cuts any wide-portal endpoint.
+        for segment in path.windows(2) {
+            for raw in L_CORRIDOR_ENDPOINTS {
+                assert!(
+                    segment_point_distance_xz(segment[0], segment[1], raw) + EPS >= clearance,
+                    "segment {segment:?} cuts endpoint {raw:?}; path={path:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn find_path_projects_goal_inside_wide_endpoint_disk_to_a_standoff() {
+        // R1, goal side: the goal terminal is the immovable FAR end of the final
+        // segment, which the pre-fix repair also could not move — a goal inside a
+        // wide endpoint disk churned to `None` too. The fix projects it to a
+        // boundary standoff.
+        let graph = NavGraph::from_section(&l_corridor_section());
+        let clearance = graph.agent.radius + SKIN_DISTANCE;
+        // `goal` sits 0.224 m off the (4,*,8) endpoint inside region 2, so the
+        // straight corridor crosses both gates interior and the final segment
+        // approaches the endpoint from one side — the standoff clears without a
+        // disk-cutting bend.
+        let endpoint = Vec3::new(4.0, 0.0, 8.0);
+        let start = Vec3::new(1.0, 0.0, 1.0);
+        let goal = Vec3::new(4.1, 0.0, 7.8);
+        assert_eq!(graph.region_at(goal), Some(2), "goal is in region 2");
+        assert!(
+            distance_xz(goal, endpoint) < clearance,
+            "fixture must place the goal inside the endpoint disk"
+        );
+
+        let path =
+            find_path(&graph, start, goal).expect("goal-in-disk corridor must not drop to None");
+
+        assert!(approx_xz(path[0], start), "clean start preserved: {path:?}");
+        assert!(
+            !approx_xz(*path.last().unwrap(), goal),
+            "goal terminal must be projected off the raw position: {path:?}"
+        );
+        assert!(
+            distance_xz(*path.last().unwrap(), endpoint) + EPS >= clearance,
+            "projected goal must clear the endpoint disk: {path:?}"
+        );
+
+        for segment in path.windows(2) {
+            for raw in L_CORRIDOR_ENDPOINTS {
+                assert!(
+                    segment_point_distance_xz(segment[0], segment[1], raw) + EPS >= clearance,
+                    "segment {segment:?} cuts endpoint {raw:?}; path={path:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -970,27 +1185,6 @@ mod tests {
 
         assert!(gate.left.point.abs_diff_eq(Vec3::new(0.4, 1.4, 4.0), EPS));
         assert!(gate.right.point.abs_diff_eq(Vec3::new(1.6, 2.6, 4.0), EPS));
-    }
-
-    #[test]
-    fn funnel_bevels_segments_around_inner_corner_clearance_disk() {
-        let graph = NavGraph::from_section(&l_corridor_section());
-        let start = Vec3::new(1.0, 0.0, 1.0);
-        let goal = Vec3::new(7.0, 0.0, 5.0);
-        let path = find_path(&graph, start, goal).expect("L corridor connects");
-        let corner = Vec3::new(4.0, 0.0, 4.0);
-        let effective_clearance = graph.agent.radius + SKIN_DISTANCE;
-
-        // Regression: radius-clear inset points were joined by chords that cut
-        // inside the same corner's clearance disk.
-        for segment in path.windows(2) {
-            let clearance = segment_point_distance_xz(segment[0], segment[1], corner);
-            assert!(
-                clearance + EPS >= effective_clearance,
-                "segment {:?} cuts the corner disk: clearance={clearance}, path={path:?}",
-                segment,
-            );
-        }
     }
 
     #[test]
@@ -1156,35 +1350,23 @@ mod tests {
 
     #[test]
     fn find_path_routes_bent_twin_portal_chicane_without_dropping_to_none() {
-        // Finding 1: `ensure_endpoint_clearance` must not drop a routable bent
+        // Guards `ensure_endpoint_clearance` against dropping a routable bent
         // twin-portal chicane to `None`. The funnel's naive chord grazes a raw
-        // endpoint disk; the repair has to bevel it clear and still return `Some`
+        // endpoint disk; the repair must bevel it clear and still return `Some`
         // with every segment clearing every wide-portal raw endpoint.
         //
-        // Decision — OPTION 2 (fragile fixture, not a code bug). The earlier
-        // fixture placed the two convex corners only ~0.69 apart (2*clearance is
-        // 0.64), a ~0.05 m safe gap. A guarantee-satisfying route through a 0.05 m
-        // gap only exists as a straight segment *tilted* perpendicular to the
-        // corner-to-corner axis (it can clear both disks by up to ~0.344). The
-        // straight-segment repair here offsets bevels along the *portal normal*
-        // (±Z, i.e. axis-aligned), and the best axis-aligned threading of that gap
-        // — the segment joining the two inset corners — clears both raw endpoints
-        // by only 0.31929 m, 0.0007 m short of the 0.32 m clearance. So the repair
-        // architecture *cannot* satisfy the guarantee in a 0.05 m gap (it either
-        // oscillates on a bevel that lands inside the opposing corner's disk, or
-        // emits a segment 0.0007 m too close): the drop was the architecture's
-        // genuine limit, not a droppable-routable regression, and no in-scope
-        // helper change threads it without weakening the clearance guarantee.
-        //
-        // The widening keeps a bent twin-portal chicane but sets the two convex
-        // corners a comfortable ~0.94 apart (~0.30 m safe gap), so the naive chord
-        // still cuts corner_b's disk (~0.077 m of incursion — the repair is
-        // load-bearing, not a trivial straight corridor) yet a clean axis-aligned
-        // bevel route exists with margin. This is a robust guard against
-        // `ensure_endpoint_clearance` regressing to drop the corridor or to emit a
-        // disk-cutting segment. (A fixture that reproduces the *pre-fix* drop is
-        // not usable: that drop only flips within a sub-CLEARANCE_EPS band, so it
-        // is not reproducible robustly in f32 across platforms.)
+        // Fixture gap size is load-bearing. The repair offsets bevels along the
+        // portal normal (axis-aligned), so it can only thread a pinch gap that is
+        // comfortably wider than `2 * clearance` — an axis-aligned route exists
+        // there with margin. The two convex corners are set ~0.94 apart against a
+        // 0.64 (`2 * clearance`) minimum, a ~0.30 m safe gap. That is wide enough
+        // for a clean bevel route yet tight enough that the naive chord still cuts
+        // corner_b's disk (~0.077 m of incursion), so the repair genuinely fires
+        // rather than the corridor collapsing to a trivial straight `[start,
+        // goal]`. A gap only marginally above `2 * clearance` (e.g. ~0.05 m) has
+        // no axis-aligned threading — the sole clear route is a segment tilted off
+        // the normal axis, which this repair does not emit — so shrinking the gap
+        // would make the drop a genuine geometric limit, not a regression.
         //
         // Regions are integer cells for `region_at`; the portal geometry is float.
         let mut navmesh = section(
@@ -1249,9 +1431,9 @@ mod tests {
 
     #[test]
     fn route_out_of_disk_slides_vertex_to_boundary_along_portal_normal() {
-        // Finding 1(b) helper: a vertex inside an endpoint's clearance disk is
-        // moved to exactly `clearance` from the raw endpoint along the portal
-        // normal, holding its along-gate coordinate and Y fixed.
+        // A vertex inside an endpoint's clearance disk is moved to exactly
+        // `clearance` from the raw endpoint along the portal normal, holding its
+        // along-gate coordinate and Y fixed.
         let gates = inset_portals(&[(Vec3::new(0.0, 0.0, 0.0), Vec3::new(4.0, 0.0, 0.0))], 0.5)
             .expect("wide portal insets");
         let obstacle = gates[0].left; // raw (0,0,0), interior +x, normal +z

@@ -278,12 +278,26 @@ fn euclidean_erosion_is_isotropic_and_bounded_by_one_cell() {
     // a universal property of the erosion (e.g. agent_radius in roughly
     // [0.823, 0.884) at this cell_size diverges by ~1.17 cells, because the
     // diagonal sample advances in steps of sqrt(2)*cell_size while the
-    // straight sample advances in whole cells). 0.4 is the canonical baked
-    // agent radius (see `NavParams`/`map_data.rs`) and is the value this
-    // test must validate AC3 against, since it's the only radius the engine
-    // actually bakes and it comfortably satisfies the bound (straight 0.5 vs
-    // diagonal ~0.354, diff ~0.146 < one cell).
-    const AGENT_RADIUS: f32 = 0.4;
+    // straight sample advances in whole cells).
+    //
+    // 0.4 is the canonical baked agent radius (see `NavParams`/`map_data.rs`,
+    // AC3's "one canonical agent" scoping) but it does not discriminate the
+    // real Euclidean disk `near_boundary` implements from a coarser
+    // ceil'd-integer-cell disk: with `radius_cells = ceil(agent_radius /
+    // cell_size)`, `radius_cells * cell_size <= agent_radius + cell_size`
+    // always holds (ceil adds less than one full cell), so a loose "depth <=
+    // agent_radius + cell" bound can never fail for a ceil'd disk. 0.3 is
+    // used instead because the two implementations diverge here:
+    // `near_boundary`'s `center_reach = agent_radius + cell_size / sqrt(2) =
+    // 0.3 + 0.25/1.41421 = 0.476777`, so a cell at integer offset k from the
+    // boundary erodes while `k * cell_size <= 0.476777`, i.e. k in {0, 1} ->
+    // straight-wall depth (count - 1) * cell_size = 1 * 0.25 = 0.25. A
+    // ceil'd disk (`radius_cells = ceil(0.3 / 0.25) = 2`) would instead erode
+    // k in {0, 1, 2} -> depth 0.5, failing the exact-depth assertions below.
+    // Still exercises the same AC3 invariant (isotropic, one-canonical-agent
+    // erosion) the shipped algorithm applies at whatever radius is baked,
+    // including the canonical 0.4.
+    const AGENT_RADIUS: f32 = 0.3;
     const DIM: u32 = 64;
     const WALL: u32 = 24;
     const EPSILON: f32 = 1.0e-5;
@@ -341,13 +355,21 @@ fn euclidean_erosion_is_isotropic_and_bounded_by_one_cell() {
         "straight and 45-degree erosion must agree within one cell: \
          straight={straight_depth}, diagonal={diagonal_depth}"
     );
+    // Exact depths for the real Euclidean disk at agent_radius = 0.3,
+    // cell_size = 0.25 (derivation above). A coarser ceil'd-integer disk
+    // would erode one whole cell deeper on both axes (0.5 straight,
+    // 0.5*sqrt(2) diagonal), so these exact checks -- not a loose upper
+    // bound -- are what actually discriminates the two implementations.
     assert!(
-        straight_depth <= AGENT_RADIUS + CELL_SIZE + EPSILON,
-        "straight-wall erosion must not exceed agent radius plus one cell: {straight_depth}"
+        (straight_depth - CELL_SIZE).abs() <= EPSILON,
+        "straight-wall erosion depth must match the real Euclidean disk, not a coarser \
+         ceil'd-integer disk: expected {CELL_SIZE}, got {straight_depth}"
     );
+    let expected_diagonal_depth = CELL_SIZE * std::f32::consts::SQRT_2;
     assert!(
-        diagonal_depth <= AGENT_RADIUS + CELL_SIZE + EPSILON,
-        "45-degree erosion must not exceed agent radius plus one cell: {diagonal_depth}"
+        (diagonal_depth - expected_diagonal_depth).abs() <= EPSILON,
+        "45-degree erosion depth must match the real Euclidean disk, not a coarser \
+         ceil'd-integer disk: expected {expected_diagonal_depth}, got {diagonal_depth}"
     );
 }
 

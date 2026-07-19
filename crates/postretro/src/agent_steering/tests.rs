@@ -1,10 +1,13 @@
 // Steering-tick tests: path-following around geometry, arrived/blocked status,
 // crowd separation, the replan budget, and the replan-starvation fairness gate.
+// Also covers funnel corner-offset clearance, mandatory-clearance-vertex
+// easing/full-speed rounding, and chase-freeze (stale-path retention).
 //
 // The L-wall fixture derives BOTH the collision trimesh AND the hand-built
 // navmesh from ONE wall description (`LWall`), so the navmesh corridor and the
 // solid geometry agree geometrically — a path that the navmesh says wraps the
-// corner is the same corner the trimesh blocks.
+// corner is the same corner the trimesh blocks. The ConcaveCorner fixture
+// extends this pattern for the corner-clearance and chase-freeze coverage.
 
 use super::*;
 

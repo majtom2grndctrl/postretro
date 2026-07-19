@@ -22,6 +22,7 @@ pub mod geometry;
 pub mod gltf_resolve;
 pub mod kinematic_geometry;
 pub mod light_influence;
+pub mod light_membership;
 pub mod light_tags;
 pub mod lightmap;
 pub mod map_entity;

@@ -32,6 +32,21 @@ freeze is a pathing failure, not a perception one. Do not conflate the two.
    architecture's pre-existing pinch-gap limit, documented in path.rs's chicane
    regression test. A wraparound-to-far-middle route is exactly that far-side
    geometry.
+
+   This residual is reachable under the PRODUCTION navmesh defaults, not just an
+   edge config. Baked portal endpoints are cell-lattice-aligned, so distinct
+   endpoints are only `>= cell_size` apart; two endpoint clearance disks overlap
+   whenever their centers are `< 2 * clearance` apart, where `clearance =
+   agent_radius + SKIN_DISTANCE`. With the shipped `nav_cell_size` (0.25 m) and
+   `nav_agent_radius` (0.4 m), `2 * clearance` is 0.84 m — well above `cell_size`
+   — so the `cell_size > 2 * clearance` no-overlap condition does NOT hold, and
+   adjacent wide-portal clearance disks CAN overlap. A start/goal terminal
+   projected out of one disk (`project_out_of_disk`) can then land inside an
+   overlapping neighbor and be re-projected; `ensure_endpoint_clearance`'s repair
+   budget hard-bounds that churn to a clean `None` rather than a spin, panic, or
+   grazing path — which is exactly the wraparound `blocked` freeze this spec
+   describes. See the `project_out_of_disk` doc comment in
+   `crates/postretro/src/nav/path.rs` for the mechanism.
 2. **Combat-slot reachability.** `combat_positioning` scores candidate slots
    around the target via `find_path`. If every wraparound candidate hits the same
    repair limit and the raw-target fallback also fails to route, the agent is left

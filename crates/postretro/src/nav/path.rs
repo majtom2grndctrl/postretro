@@ -485,9 +485,24 @@ const MIN_XZ_LEN_SQ: f32 = 1e-8;
 /// adjacent waypoint, used only to pick a stable direction when the terminal sits
 /// on the disk center in XZ; if that too coincides, fall back to the portal normal
 /// (the bevel axis). The true entity target still lives on the agent's steering
-/// `destination`, independent of this emitted waypoint. Returns `None` only when
-/// no finite direction exists (raw endpoint, terminal, and adjacent all coincide
-/// in XZ) — a degenerate corridor.
+/// `destination`, independent of this emitted waypoint.
+///
+/// The `raw_endpoint`/`portal_interior_xz` `?`s and the final `None` are
+/// type-safety guards, not reachable outcomes for a FILTERED obstacle:
+/// `inset_portals` sets `raw_endpoint` and `portal_interior_xz` together, and a
+/// wide portal's interior is a unit vector, so the portal-normal fallback always
+/// yields a finite direction — `None` is unreachable here in practice.
+///
+/// Overlapping-disk churn is bounded, not prevented. Baked portal endpoints are
+/// cell-lattice-aligned (distinct centers >= `cell_size` apart); two clearance disks
+/// overlap when their centers are < `2 * clearance` apart. The production defaults
+/// (`cell_size` 0.25 m, `agent_radius` 0.4 m => `2 * clearance` 0.84 m) do NOT
+/// separate the disks, so a terminal projected onto one disk boundary CAN land inside
+/// a distinct overlapping disk and be re-projected. `ensure_endpoint_clearance`'s
+/// repair budget bounds that churn to a clean `None` — never a spin, panic, or
+/// grazing path — surfacing as the far-side pinch-gap re-freeze tracked in
+/// `context/plans/drafts/E10--pursuit-wraparound-blocked`. Ping-pong is structurally
+/// impossible only where `cell_size > 2 * clearance`.
 fn project_out_of_disk(
     obstacle: FunnelEndpoint,
     terminal: Vec3,
@@ -510,6 +525,11 @@ fn project_out_of_disk(
         if toward_xz.length_squared() > MIN_XZ_LEN_SQ {
             toward_xz.normalize()
         } else {
+            // Terminal AND adjacent both coincide with the raw endpoint in XZ: no
+            // radial and no `toward` direction survive, so `bevel_point`'s
+            // toward-based side pick is unavailable. Both `+/-normal` clear the disk
+            // equally, so the fixed `+normal` sign is arbitrary but clearance-safe;
+            // this branch is only reachable at a measure-zero triple-coincidence.
             let portal_interior = obstacle.portal_interior_xz?;
             let normal = Vec3::new(-portal_interior.z, 0.0, portal_interior.x);
             if normal.length_squared() > MIN_XZ_LEN_SQ {
@@ -560,12 +580,17 @@ fn ensure_endpoint_clearance(
 
     if clearance_radius > f32::EPSILON {
         let mut segment_index = 0;
-        // Safety budget: each splice re-checks the same segment without advancing
-        // `segment_index`, so a repair that never converges would spin forever.
-        // A converging repair touches a given obstacle a bounded number of times
-        // (route-out, then at most the start/corner/end inserts), so `4` per
-        // obstacle is comfortable headroom; exhausting it means the geometry is
-        // genuinely unroutable and we bail to `None`.
+        // Safety budget: each splice or terminal projection re-checks the same
+        // segment without advancing `segment_index`, so a repair that never
+        // converges would spin forever. A converging interior repair touches a given
+        // obstacle a bounded number of times (route-out plus at most the
+        // start/corner/end inserts). The two terminal-projection branches (start
+        // `repaired[0]`, goal `repaired[last]`) cost one projection per terminal where
+        // clearance disks do not overlap; under the production defaults they DO overlap
+        // (see `project_out_of_disk`), so a terminal can ping-pong between disks — this
+        // budget hard-bounds that case too. `4` per obstacle stays comfortable
+        // headroom; exhausting it means the geometry is genuinely unroutable (a
+        // sub-`2 * clearance` pinch or overlapping disks) and we bail cleanly to `None`.
         let mut repairs_remaining = obstacles.len().saturating_mul(4).max(1);
         while segment_index + 1 < repaired.len() {
             let start = repaired[segment_index].point;
@@ -1454,5 +1479,160 @@ mod tests {
         // A vertex already clear (along-gate offset beyond the radius) has no
         // perpendicular solution.
         assert!(route_out_of_disk(obstacle, Vec3::new(0.9, 0.0, 0.0), 0.5).is_none());
+    }
+
+    #[test]
+    fn project_out_of_disk_uses_portal_normal_for_fully_coincident_terminal() {
+        // Guards the degenerate triple-coincidence fallback: the terminal AND its
+        // adjacent waypoint both sit on the raw endpoint in XZ, so neither the
+        // radial nor the `toward` direction survives and `project_out_of_disk` must
+        // fall back to the portal normal (Finding 3's arbitrary-but-clearance-safe
+        // branch). The fallback must still emit a finite standoff, moved off the raw
+        // endpoint, that clears the disk by the effective clearance — no NaN/inf, no
+        // zero-length move.
+        let gates = inset_portals(&[(Vec3::new(0.0, 0.0, 0.0), Vec3::new(4.0, 0.0, 0.0))], 0.5)
+            .expect("wide portal insets");
+        let obstacle = gates[0].left; // raw (0,0,0), interior +x, normal +z
+        let raw = obstacle
+            .raw_endpoint
+            .expect("wide endpoint carries its raw position");
+
+        // Terminal and toward both coincide with raw in XZ (distinct Y is fine),
+        // forcing the portal-normal fallback.
+        let terminal = Vec3::new(0.0, 0.7, 0.0);
+        let toward = Vec3::new(0.0, 1.0, 0.0);
+        let projected = project_out_of_disk(obstacle, terminal, toward, 0.5)
+            .expect("portal-normal fallback yields a finite direction for a filtered obstacle");
+
+        assert!(
+            projected.is_finite(),
+            "standoff must be finite: {projected:?}"
+        );
+        assert!(
+            !approx_xz(projected, raw),
+            "standoff must move off the raw endpoint: {projected:?}"
+        );
+        assert!(
+            approx_eq(distance_xz(projected, raw), 0.5),
+            "standoff must sit on the disk boundary (clearance 0.5): {projected:?}"
+        );
+        assert!(
+            approx_eq(projected.y, terminal.y),
+            "terminal Y is preserved: {projected:?}"
+        );
+    }
+
+    #[test]
+    fn find_path_projects_both_terminals_in_wide_endpoint_disks_to_standoffs() {
+        // Both endpoints snapped into a disk at once on one funnelled L route: the
+        // start hugs the (0,*,4) jamb and the goal hugs the (4,*,8) endpoint, each
+        // inside its wide-portal clearance disk. The start branch (`repaired[0]`)
+        // and the goal branch (`repaired[last]`) must BOTH project to boundary
+        // standoffs and the corridor must still route. Combines the two single-side
+        // R1 fixtures to pin their interaction.
+        let graph = NavGraph::from_section(&l_corridor_section());
+        let clearance = graph.agent.radius + SKIN_DISTANCE;
+        let start_jamb = Vec3::new(0.0, 0.0, 4.0);
+        let goal_endpoint = Vec3::new(4.0, 0.0, 8.0);
+        let start = Vec3::new(0.2, 0.0, 3.9);
+        let goal = Vec3::new(4.1, 0.0, 7.8);
+        assert_eq!(graph.region_at(start), Some(0), "start is in region 0");
+        assert_eq!(graph.region_at(goal), Some(2), "goal is in region 2");
+        assert!(
+            distance_xz(start, start_jamb) < clearance
+                && distance_xz(goal, goal_endpoint) < clearance,
+            "fixture must place BOTH terminals inside their endpoint disks"
+        );
+
+        let path = find_path(&graph, start, goal)
+            .expect("both-terminals-in-disk corridor must not drop to None");
+
+        assert!(
+            !approx_xz(path[0], start),
+            "start terminal must be projected off its raw position: {path:?}"
+        );
+        assert!(
+            distance_xz(path[0], start_jamb) + EPS >= clearance,
+            "projected start must clear its endpoint disk: {path:?}"
+        );
+        assert!(
+            !approx_xz(*path.last().unwrap(), goal),
+            "goal terminal must be projected off its raw position: {path:?}"
+        );
+        assert!(
+            distance_xz(*path.last().unwrap(), goal_endpoint) + EPS >= clearance,
+            "projected goal must clear its endpoint disk: {path:?}"
+        );
+
+        // Interior clearance still holds: no segment cuts any wide-portal endpoint.
+        for segment in path.windows(2) {
+            for raw in L_CORRIDOR_ENDPOINTS {
+                assert!(
+                    segment_point_distance_xz(segment[0], segment[1], raw) + EPS >= clearance,
+                    "segment {segment:?} cuts endpoint {raw:?}; path={path:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn find_path_returns_none_for_unthreadable_pinch_gap_limit() {
+        // Characterizes the KNOWN pinch-gap limit (see the twin-portal chicane
+        // test): the endpoint-clearance repair offsets bevels along the portal
+        // normal (axis-aligned), so it cannot thread a pinch narrower than
+        // `2 * clearance`. Here the two convex corners are 0.5 apart — BELOW
+        // `2 * clearance` (0.64) — so their clearance disks OVERLAP and no route
+        // crosses the throat clear (portal 0-1 ends at x=2.7, portal 1-2 starts at
+        // x=2.7, so any crossing passes the overlapping disks). The funnel's tight
+        // route through the throat cannot be repaired clear, so `find_path` bails to
+        // a clean `None` (the repair budget bounds the churn). This is the documented
+        // residual, NOT a bug: a `None` here is expected, and the test guards that it
+        // stays graceful — no panic, no NaN, no emitted path that grazes the disks.
+        // The start is a snapped eroded-band terminal (region_at `None`) that reaches
+        // this limit, so the `None` comes from the repair, not from endpoint resolve.
+        let mut navmesh = section(
+            vec![region(0, 0, 6, 2), region(0, 2, 6, 3), region(0, 3, 6, 6)],
+            vec![
+                NavPortal {
+                    region_a: 0,
+                    region_b: 1,
+                    left: [0.0, 0.0, 2.0],
+                    right: [2.7, 0.0, 2.0],
+                },
+                NavPortal {
+                    region_a: 1,
+                    region_b: 2,
+                    left: [2.7, 0.0, 2.5],
+                    right: [6.0, 0.0, 2.5],
+                },
+            ],
+        );
+        navmesh.agent_radius = 0.3;
+        let graph = NavGraph::from_section(&navmesh);
+        let clearance = graph.agent.radius + SKIN_DISTANCE;
+
+        // The two convex pinch corners overlap: distance < 2 * clearance, so the
+        // throat between them has no clearance-safe crossing.
+        let corner_a = Vec3::new(2.7, 0.0, 2.0);
+        let corner_b = Vec3::new(2.7, 0.0, 2.5);
+        assert!(
+            distance_xz(corner_a, corner_b) < 2.0 * clearance,
+            "fixture must overlap the disks so the throat is genuinely unroutable"
+        );
+
+        // Start snapped from the eroded band (region_at `None`) just below region 0;
+        // it must still resolve so the `None` is attributable to the pinch repair.
+        let start = Vec3::new(1.0, 0.0, -0.2);
+        let goal = Vec3::new(4.0, 0.0, 4.0);
+        assert!(
+            graph.region_at(start).is_none() && graph.resolve_region_at(start).is_some(),
+            "start must be off-mesh yet snap onto the graph"
+        );
+        assert_eq!(graph.region_at(goal), Some(2), "goal is in region 2");
+
+        assert!(
+            find_path(&graph, start, goal).is_none(),
+            "an unthreadable sub-2*clearance pinch must drop to a clean None"
+        );
     }
 }

@@ -189,42 +189,55 @@ per receiver — the no-double-count invariant holds column by column.
 
 ## Acceptance criteria
 
-- [ ] A kinematic mover fully inside a script-animated `light_spot`'s cone receives
-      the light's animated direct illumination; when the alarm curve drives the
-      light red, the mover reddens together with the adjacent static wall (no dark
+Each AC is tagged with how it is verified: `[unit]` runnable test, `[loader unit]`
+byte-feeding loader test, `[golden]` GPU-adapter-gated threshold image, `[review]`
+grep/read gate, `[manual GPU]` env-var run. Not every AC is a unit test — the tag tells
+the executor which gate applies.
+
+- [ ] **AC1** `[golden]` A kinematic mover fully inside a script-animated `light_spot`'s
+      cone receives the light's animated direct illumination; when the alarm curve drives
+      the light red, the mover reddens together with the adjacent static wall (no dark
       mover beside a lit wall).
-- [ ] A skinned mesh and a billboard in the same cone receive the same animated
-      direct term (shared composed atlas), with no per-receiver wiring beyond the
-      compose pass.
-- [ ] The animated light's direct is counted exactly once on each receiver: it is
-      absent from the `DirectShVolume` base atlas, absent from the dynamic-direct
-      light buffer, and absent from promotion selection — verified by a compiler
-      test that a script-animated baked light produces an `AnimatedDirectShDeltaVolumes`
-      entry and no `EntityShadowLights`/base-direct contribution.
-- [ ] Script lifecycle on the mover-direct term: initial-active lights the mover
-      from frame 0; initial-inactive (`startActive: false`) leaves it dark; a
-      trigger-installed curve lights it on fire; a looping curve animates it each
-      cycle; a one-shot settles and holds the final keyframe with no brightness pop;
-      clearing (`setLightAnimation(null)`) holds authored radiance; despawn/reload
-      drops the contribution cleanly.
-- [ ] Brightness and RGB color animate the mover-direct term; direction animation
-      does not rotate it (documented v1 limitation) and does not crash or corrupt
-      the atlas.
-- [ ] A map with **only** animated baked lights (no static `DirectShVolume`) still
-      allocates a composed direct atlas, sets `has_direct`, and lights movers; a map
-      with **zero** animated baked lights keeps the current promotion-only compose
-      cadence and shows no per-frame compose dispatch attributable to this feature.
-- [ ] Static world surfaces render unchanged (still `lm_anim`-based); a scene with
-      no animated baked lights is byte-identical on the direct atlas to pre-change.
-- [ ] Loader rejects a malformed or partial section 45 by cleanly disabling the
-      animated-direct term (no crash), mirroring the id-41 all-or-nothing clear.
-- [ ] `POSTRETRO_GPU_TIMING=1` attributes the animated additive cost to the existing
-      `direct_sh_compose` bracket; a dev-tools control isolates the animated-direct
-      contribution for inspection.
-- [ ] `content/dev/maps/spawner-test.map` recompiles with the alarm light as a baked
-      animated `light_spot`; the closet door visibly reddens inside the cone when the
-      plate fires, and the E18 spawner behavior (enemies spawn on the floor and walk
-      out) is unaffected.
+- [ ] **AC2** `[golden]` + `[review]` A skinned mesh and a billboard in the same cone
+      receive the same animated direct term (shared composed atlas); "no per-receiver
+      wiring beyond the compose pass" is a review gate (consumers unchanged, still sample
+      binding 15).
+- [ ] **AC3** `[unit]` The animated light's direct is counted exactly once on each
+      receiver: absent from the `DirectShVolume` base atlas, absent from the dynamic-direct
+      light buffer, absent from promotion selection — a compiler namespace-partition test
+      that a script-animated baked light produces an `AnimatedDirectShDeltaVolumes` entry
+      and no `EntityShadowLights`/base-direct contribution. (Certifies pre-existing
+      namespace exclusion; kept as a guard.)
+- [ ] **AC4** `[unit]` (per-state scale math via the CPU scale seam) + `[golden]` (no
+      brightness pop, despawn/reload drops cleanly): initial-active lights the mover from
+      frame 0; initial-inactive (`startActive: false`) dark; a trigger-installed curve
+      lights it on fire; a looping curve animates each cycle; a one-shot settles/holds the
+      final keyframe with no pop; clearing (`setLightAnimation(null)`) holds authored
+      radiance; despawn/reload drops the contribution cleanly.
+- [ ] **AC5** `[unit]` (direction-safe/no-NaN bake) + `[golden]` (brightness/RGB animate):
+      brightness and RGB color animate the mover-direct term; direction animation does not
+      rotate it (documented v1 limitation, not a test) and does not crash or corrupt the
+      atlas.
+- [ ] **AC6** `[unit]` (dispatch predicate is a pure fn) + `[manual GPU]` (allocation /
+      `has_direct` need an adapter) + `[golden]` (no-dispatch byte-identity): a map with
+      **only** animated baked lights (no static `DirectShVolume`) still allocates a composed
+      direct atlas, sets `has_direct`, and lights movers; a map with **zero** animated baked
+      lights keeps the promotion-only compose cadence and shows no per-frame compose
+      dispatch attributable to this feature.
+- [ ] **AC7** `[golden]` + `[review]` Static world surfaces render unchanged (still
+      `lm_anim`-based); a scene with no animated baked lights is byte-identical on the
+      direct atlas to pre-change (Case-1 path untouched — review + golden diff, not a unit
+      test).
+- [ ] **AC8** `[loader unit]` Loader rejects a malformed or partial section 45 by cleanly
+      disabling the animated-direct term (no crash), mirroring the id-41 soft-drop.
+- [ ] **AC9** `[manual GPU]` + `[review]` `POSTRETRO_GPU_TIMING=1` attributes the animated
+      additive cost to the `direct_sh_compose` bracket (TIMESTAMP_QUERY GPU); a dev-tools
+      control isolates the animated-direct contribution for inspection.
+- [ ] **AC10** `[unit]` (prl-build recompile) + `[golden]` (door reddens) + `[review]` (E18
+      unaffected): `content/dev/maps/spawner-test.map` recompiles with the alarm light as a
+      baked animated `light_spot`; the closet door visibly reddens inside the cone when the
+      plate fires, and the E18 spawner behavior (enemies spawn on the floor and walk out) is
+      unaffected.
 
 ## Tasks
 
@@ -245,9 +258,16 @@ loads independently of whether section 27 is present); the copy is keyed by
 `AnimatedBakedLights` index, independent of the affinity CSR layout. `affinity_lights`
 entries are `AnimatedBakedLights` indices (same space section 27 uses), NOT selection
 indices. Wire encode/decode + round-trip test.
-Add loader validation in `crates/level-loader/src/prl_loader.rs` (sibling to
-`validate_direct_sh_delta`): every referenced descriptor index resolvable; malformed
-or partial → drop the whole section (animated-direct disabled), never a hard error.
+Add loader validation in `crates/level-loader/src/prl_loader.rs`. Mirror the **id-27**
+`validate_delta_sh` for the self-describing struct decode (NOT `validate_direct_sh_delta`,
+whose base-grid + selection-count cross-checks section 45 does not share), but wire the
+loader block with the **id-41 soft-drop** pattern — warn + clear, never id-27's hard `?`
+(a hard error would brick the load and violate AC 8). Validate internal consistency only:
+CSR offsets monotone, `affinity_lights` within the animated-light count,
+`animation_descriptor_indices` length matches. Cross-section descriptor resolvability need
+not be a hard load check — an out-of-range index is a no-op at runtime via the shader's
+existing `INVALID_DESCRIPTOR_INDEX` (`0xffffffff`) sentinel guard. Malformed or partial →
+drop the whole section (animated-direct disabled).
 
 ### Task 2: Compiler bake — animated direct-SH delta
 
@@ -257,7 +277,9 @@ Add module `crates/level-compiler/src/animated_direct_sh_bake.rs` (new file — 
 animation.is_some()`). For each animated baked light, per reaching probe, bake its
 **direct** unit-radiance transport reusing the same `pub(crate)` primitives the
 indirect delta bake (`delta_sh_bake.rs`) reuses: `sh_bake::bake_probe_direct_rgb`
-with the single light, then `sh_bake::pack_octahedral_irradiance_tile`. Occlusion
+with the single light (it takes a `light_global_indices: &[u64]` arg the indirect variant
+lacks — pass the light's global index as a one-element slice to seed soft-visibility),
+then `sh_bake::pack_octahedral_irradiance_tile`. Occlusion
 (against the static-geometry BVH) and the cosine-lobe convolution happen **inside**
 `bake_probe_direct_rgb` — the `soft_visibility`/`segment_clear`/`apply_cosine_lobe_rgb`
 helpers are module-private (`sh_bake.rs`/`lightmap_bake.rs`) and reached through it,
@@ -265,7 +287,9 @@ not called directly. Unit-radiance means the bake omits the light's authored
 intensity/color (the runtime descriptor applies them once); bake at the light's
 **authored cone direction** (rest). Reach-cull with the direct-reach
 `decompose_affinity_for_lights` (cone/falloff + portal reach), the same tighter reach
-the base direct bake uses — not the broader indirect bounce reach. Emit section 45
+the base direct bake uses — not the broader indirect bounce reach. This is an intentional
+deviation from the mirror: `delta_sh_bake` calls `decompose_affinity` over the animated
+envelope; this bake calls `decompose_affinity_for_lights` over the single-light slice. Emit section 45
 with its own `animation_descriptor_indices` (same `AnimatedBakedLights` index space
 section 27 uses). Wire into `pipeline.rs` to run whenever `AnimatedBakedLights` is
 non-empty. Tests: bake determinism (seeded soft visibility); per-light separability
@@ -300,7 +324,14 @@ off the buffer budget.)
   A runs.
   - **Pass A** — the existing `direct_sh_compose` shader, unchanged; only its output bind
     group is repointed to `direct_intermediate_storage_view`. Writes `base − Σ_promo`
-    (4 storage buffers).
+    (4 storage buffers). **Its construction gate must widen.** `DirectShComposeResources::new`
+    today returns `disabled()` unless the id-35 base and id-41 promotion delta are present,
+    so a 45-only map (AC 6) would have no Pass A and no intermediate producer. Construct
+    Pass A whenever the composed atlas is needed — id 35 **or** id 41 **or** section 45
+    present — tolerating missing inputs: an absent id-35 base binds the existing dummy-zero
+    direct texture (the `has_direct == false` path) so `base = 0`, and an absent id-41 delta
+    means `Σ_promo = 0`. On a 45-only map Pass A thus writes a zero intermediate onto which
+    Pass B adds `Σ_anim`.
   - **Pass B (new)** — `direct_sh_compose.rs` + `direct_sh_compose.wgsl` gain a sibling
     pass reading `direct_intermediate_sampled_view` and writing+clamping
     `direct_composed_storage_view` (binding 15's texture) as
@@ -327,26 +358,37 @@ Plumbing:
   keyed to id-34 base probes).
 - **`has_direct` + allocation.** Widen to true when section 35 **or** 45 is present. Case
   2 allocates the intermediate texture in `ShVolumeResources::new`; Case 1 does not.
-- **Dispatch.** Widen `direct_compose_should_dispatch` (`(active, pending_copy_through,
-  was_active)`) so `active` also covers "any section-45 descriptor active." The Case-2
-  pair shares this one predicate — both passes fire together, including the initial
-  copy-through. Case 1 keeps the unchanged promotion-only predicate. A 45-present map with
-  all descriptors currently inactive and no promotion change does not dispatch (final
-  retains its last value); a 45-absent map dispatches nothing beyond today's cadence
-  (delivers AC 6).
-- Add a runtime lifecycle test (headless — assert at the descriptor→scale seam, no GPU
-  context) covering each descriptor state: initial-active, initial-inactive
-  (`is_active == 0` → 0), looping mid-cycle, one-shot settle, cleared, despawn/reload —
-  delivers AC 4.
+- **Section-45 threading.** Thread the decoded `AnimatedDirectShDeltaVolumesSection` from
+  the loader through `World` into `ShVolumeResources::new` / the Pass-B resource, mirroring
+  how the id-41 `direct_delta_section` param is threaded into `DirectShComposeResources::new`.
+- **Dispatch.** The `active` arg of `direct_compose_should_dispatch` (`(active,
+  pending_copy_through, was_active)`) is computed at the renderer frame call site
+  (`renderer_render_frame.rs`, where `promoted_static_weights` currently feeds it). Widen
+  that computed `active` to also cover "any section-45 descriptor active" — a **new CPU
+  accessor** over the section-45 descriptor-index set (`AnimatedLightBuffers` has no
+  any-active query today). The Case-2 pair shares this one predicate — both passes fire
+  together, including the initial copy-through. Case 1 keeps the unchanged promotion-only
+  predicate. A 45-present map with all descriptors inactive and no promotion change does not
+  dispatch (final retains its last value); a 45-absent map dispatches nothing beyond today's
+  cadence (delivers AC 6).
+- **CPU scale seam + lifecycle test.** No CPU `animated_light_scale` exists in `render-cpu`
+  today; author one as the single source the WGSL `animated_light_scale` traces to (same
+  `intensity × (base_color | color curve) × brightness`, `is_active` gate), and add a
+  headless test (no GPU) over it covering each descriptor state: initial-active,
+  initial-inactive (`is_active == 0` → 0), looping mid-cycle, one-shot settle, cleared,
+  despawn/reload — delivers AC 4's per-state scale math. The GPU-visible "no brightness pop"
+  and "despawn/reload drops cleanly" are integration properties left to the golden/review
+  gate (see AC 4), not this unit test.
 - The mover/skinned/billboard consumers are unchanged — they sample `direct_atlas_view`
   at binding 15.
 
 ### Task 4: Diagnostics
 
-Add a dev-tools isolation for the animated-direct contribution, reusing the existing
-debug-override shape (Rust `DirectShDebugOverride` / WGSL `DebugOverride` at binding
-27) so a single animated light's added term can be viewed in isolation (parallel to
-the promotion selection override). Confirm `POSTRETRO_GPU_TIMING=1` attributes the
+Add a dev-tools isolation for the animated-direct contribution: a **new Pass-B override**
+buffer/uniform modeled on the existing debug-override shape (Rust `DirectShDebugOverride` /
+WGSL `DebugOverride`), keyed by `AnimatedBakedLights` index, isolating one animated light's
+added term. It is a second override living on Pass B — not the same binding-27 buffer,
+which is promotion-selection-keyed on Pass A. Confirm `POSTRETRO_GPU_TIMING=1` attributes the
 new Pass B to a timing bracket — extend the existing `direct_sh_compose` bracket to
 span both passes, or add a sibling bracket (§12). Extend the
 forward/mesh lighting-isolation modes only if the existing direct-SH isolation mode
@@ -359,8 +401,10 @@ baked animated `light_spot` (keep `_tags "alarm_light"`, set `_cone`/`_cone2`/`a
 so the closet-door mover sits inside the cone, set `light`/`_falloff_range`). The
 `turnRed` `setLightAnimation` reaction in `content/dev/scripts/spawner-test.ts` is
 unchanged (queries `component: "light"`, matches the spot). Recompile the `.prl` (command in the map
-header). Add a headless/frame-capture regression asserting the door fragment inside
-the cone reddens with the wall after the plate fires. At promotion, update
+header). Add a frame-capture golden regression (via the `--capture` driver + GPU golden
+harness) asserting the door fragment inside the cone reddens with the wall after the plate
+fires — note this is a **GPU-adapter-gated, threshold-based** golden (the harness self-skips
+without an adapter), not a deterministic headless assert. At promotion, update
 `context/lib/rendering_pipeline.md` §4 (new "Animated direct SH for dynamic
 receivers" paragraph + the receiver matrix), `context/lib/build_pipeline.md` PRL
 section table (id 45), and the FGD comment on the baked-`Light` base class noting

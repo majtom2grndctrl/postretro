@@ -79,7 +79,9 @@ declare module "postretro/proposed" {
     readonly healthAfter: NumberRef;
     readonly maxHealth: NumberRef;                      // from the health descriptor's `max` — for % thresholds
     despawn(opts?: { afterMs?: number }): Effect;       // consequential; you remove the entity — the engine does NOT auto-remove at 0 HP
-    playAnim(clip: string): Effect;                     // presentation; modder-owned (string arg OK — not IR)
+    // presentation; modder-owned. `clip` names a DECLARED animation state on the entity's mesh
+    // (string arg OK — not IR), switched via the id-targeted `switch_animation_state` seam.
+    playAnim(clip: string): Effect;
     // WALL-NEW (zombie): absolute entity-health write, optionally deferred (stand back up).
     setHealth(amount: NumberValue, opts?: { afterMs?: number }): Effect;
     // WALL-NEW (Doom lifecycle): per-INSTANCE modder-owned state, a number slot keyed by name.
@@ -108,7 +110,7 @@ declare module "postretro/proposed" {
   export type Impact = Readonly<{
     target: TargetHandle;
     source: SourceHandle;
-    amount: NumberRef;   // requested damage (pre-floor)
+    amount: NumberRef;   // damage applied at the chokepoint: post-zone-multiplier, pre-floor
   }>;
 
   const impactEventBrand: unique symbol;
@@ -137,9 +139,9 @@ declare module "postretro/proposed" {
 
   // ---- Manifests: the proposed `events` child folded onto the REAL Level/Mod manifest (aliased
   //      here as Base*). These shadow the shipped names on purpose — the spec adds `events` to the
-  //      real types, at which point these collapse to plain re-exports. TODO(spec): `events`
-  //      almost certainly LOWERS INTO reactions + a chokepoint-registered predicate (apply-site,
-  //      NOT a tick-polled store crossing).
+  //      real types, at which point these collapse to plain re-exports. The spec's Task 6 owns
+  //      the lowering: `events` becomes a chokepoint-registered predicate + effect dispatch
+  //      (apply-site, NOT a tick-polled store crossing).
   export type LevelManifest = BaseLevelManifest & { events?: readonly ImpactEvent[] };
   export type ModManifest = BaseModManifest & { events?: readonly ImpactEvent[] };
 }

@@ -4,8 +4,8 @@ Grounding anchors from three session agents (death lifecycle, enemy AI, timer/st
 
 ## Damage chokepoint
 - `crates/entities/src/components/health.rs:319-340` — `apply_damage_with_context`, the single HP-decrement site. `updated.current = (updated.current - payload.amount).max(0.0)` at `:329`. Pre-health and unfloored post (`current - amount`, may be negative) both in scope at `:329`; unfloored value is discarded today.
-- `payload.amount` is zone-multiplier-scaled at the fire site (`crates/postretro/src/scripting/sim/mod.rs:783-795`), not at the chokepoint. `HealthComponent.last_attacker` set at `health.rs:333`.
-- All producers route through it: weapon fire `sim/mod.rs:803`; `applyDamage` reaction `crates/.../reactions/health/reactions.rs:74` (damage-only, rejects negatives `:57-63`).
+- `payload.amount` is zone-multiplier-scaled at the fire site (`crates/postretro/src/scripting/sim/mod.rs:783-795`), not at the chokepoint. The damager identity is `DamageContext.attacker` (`health.rs:61`), the `context` param in scope at the chokepoint (copied to `record.attacker` at `health.rs:333`, but only when the ledger records a hit — the param itself is always in scope). There is no `HealthComponent.last_attacker` field; `last_attacker` exists only on `ContributorLedgerEntry`/`ContributorLedgerOverflow` (`health.rs:85`, `:121`).
+- All producers route through it: weapon fire `sim/mod.rs:803`; `applyDamage` reaction `crates/postretro/src/health/reactions.rs:74` (damage-only, rejects negatives `:57-63`).
 
 ## Auto-death machinery (to make inert)
 - `sweep_deaths` — `crates/postretro/src/scripting/systems/health.rs:89-185`. Dead predicate `health.current <= 0.0 || !is_finite` (`:103`). Plain non-player branch does immediate `registry.despawn(id)` at `:170-181` (the fused branch to unfuse). Brain branch (`:143-166`) latches + counts kill, does NOT despawn (already detect-only). `death_handled` latch at `crates/entities/src/components/health.rs:239`.

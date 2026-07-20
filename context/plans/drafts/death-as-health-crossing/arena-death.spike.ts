@@ -1,18 +1,21 @@
-// DESIGN SPIKE — the CANONICAL consolidated pre-spec artifact (v2). Type-checks against
+// DESIGN SPIKE — the CANONICAL consolidated pre-spec artifact (v3). Type-checks against
 // the real postretro.d.ts + postretro/ui plus proposed.d.ts (the WALLs).
 //
-// THE MODEL (grounded true against shipped code): the engine owns IMPACT — the damage
-// chokepoint, the single HP-decrement site. DEATH is not an engine concept; it is
-// DERIVED. We DEFINE a named `killed` event ONCE from impact, then bind independent
-// consumers to it — reuse is the whole reason death is derived, not engine-owned.
+// THE MODEL (grounded): the engine owns IMPACT — the single HP-decrement site. DEATH is a
+// POLICY the modder writes over impact facts; the engine has no opinion about it. One
+// uniform syntax — `entities.query(...).onImpact(...)` — covers the global reference
+// behavior AND per-arena overrides. Re-query a narrower set, define its onImpact LATER, and
+// it OVERRIDES for the entities both queries match. No named event, no consumer registry.
 //
-// v2 folds in three fixes the review caught against shipped source:
-//   • KILL EDGE: `died()` (healthBefore>0 && healthAfter<=0), NOT `healthAfter<0` /
-//     `crossedBelow(0)`. Health is FLOORED at 0 (health.rs:329), so a killed target sits
-//     at exactly 0 — a strict `< 0` test can NEVER fire. (Passed tsc; failed reality.)
-//   • OVERKILL: derived from `amount − healthBefore`, not the (unsatisfiable) `healthAfter`.
-//   • COMPOSITION: `executed` shows a COMPOSED boolean via `.and(...)`, which desugars to
-//     the shipped `select` opcode (the IR has no and/or/not).
+// The three cases below exist to prove the thesis:
+//   1. GRUNT     — the author defines death as "health depleted → gone". health<=0 → despawn.
+//   2. ARENA     — same syntax, narrower re-query, defined LATER → wins for arena_1 grunts.
+//   3. ZOMBIE    — health<=0 is NOT death (Quake). Only a gib-level overshoot kills; otherwise
+//                  the zombie DOWNS and stands back up. Same health<=0, opposite meaning.
+//
+// Why there is no `died()`: a blessed engine "dead" predicate would smuggle death back into
+// the engine. The author writes the condition in IR (`healthAfter.le(0)`, `.le(-40)`) so
+// death stays theirs. The IR is the calculator, not the death authority.
 //
 // "postretro" / "postretro/ui" → SHIPPED.  "postretro/proposed" → a WALL.
 
@@ -21,6 +24,7 @@ import {
   entities,
   slot,
   type EventBehavior,
+  type GatedEffect,
   type LevelManifestWithEvents,
 } from "postretro/proposed";
 
@@ -29,79 +33,92 @@ const econ = defineStore("arena", {
 });
 const deaths = slot(econ.state.deaths);
 
-const grunts = entities.query({ tag: "grunt" });
-
-// === STAGE 1 — DEFINE the derived `killed` event ONCE. Enrich impact into a firing
-// edge + a payload of IR facts. No effects here; this names what "kill" MEANS for the map.
-const killed = grunts.defineEvent((impact) => ({
-  when: impact.target.died(),                                       // blessed kill edge
-  props: {
-    target:   impact.target,                                       // pass-through token
-    source:   impact.source,                                       // pass-through token
-    xp:       impact.target.level.times(1.25).times(200),          // IR — not JS math
-    overkill: impact.amount.minus(impact.target.healthBefore).gt(10), // real overkill magnitude
-    executed: impact.target.died().and(impact.target.healthBefore.lt(25)), // COMPOSED bool (→ select)
-  },
-}));
-
-// === STAGE 2a — the arena's own consumer: presentation + economy. Consumers run once at
-// load and RETURN effect descriptors; the payload facts are already IR.
-function arenaBehavior(): EventBehavior {
-  return killed.on((kill) => [
-    kill.target.playDeathAnim(),                                   // presentation (baked curve)
-    kill.source.grant("xp", kill.xp),                              // consequential — credits SOURCE
-    deaths.add(1),                                                 // consequential — retires ProgressTracker
-    kill.target.despawn({ afterMs: 1500 }),                       // consequential — timer property
-    { when: kill.overkill, do: [kill.source.grant("style", 1)] }, // inline gate
-    { when: kill.executed, do: [kill.source.grant("style", 2)] },
+// 1. GRUNT — the global reference policy. THE AUTHOR decides health-depleted means dead,
+// and THE AUTHOR removes the entity (the engine does not auto-despawn at 0 HP).
+function gruntImpact(): EventBehavior {
+  return entities.query({ tag: "grunt" }).onImpact((impact) => [
+    {
+      when: impact.target.healthAfter.le(0), // author's death policy, expressed in IR
+      do: [
+        impact.target.playAnim("death"),
+        impact.source.grant("xp", impact.target.level.times(1.25).times(200)),
+        deaths.add(1),
+        impact.target.despawn({ afterMs: 1500 }),
+      ],
+    },
   ]);
 }
 
-// === STAGE 2b — a SECOND, independent consumer of the SAME event. This is the payoff of
-// two-stage: it reuses `killed` without re-deriving the edge, and knows nothing about the
-// economy. Under one-stage this handler would have to re-write the (subtle) kill test.
-function announcer(): EventBehavior {
-  return killed.on((kill) => [
-    { when: kill.executed, do: [kill.source.grant("announce_execution", 1)] },
+// 2. ARENA OVERRIDE — identical syntax, narrower query, defined LATER. For a grunt in
+// zone "arena_1" this REPLACES the global policy: double bounty, instant vaporize, no anim.
+function arenaGruntImpact(): EventBehavior {
+  return entities.query({ tag: "grunt", zone: "arena_1" }).onImpact((impact) => [
+    {
+      when: impact.target.healthAfter.le(0),
+      do: [
+        impact.source.grant("xp", impact.target.level.times(2).times(200)),
+        deaths.add(1),
+        impact.target.despawn(),
+      ],
+    },
   ]);
 }
 
-// === setupLevel returns the REAL LevelManifest; the derived behaviors are its `events`
-// child. (This same block lives at ModManifest scope as the global reference behavior;
-// a map overrides by adding its own.)
+// 3. ZOMBIE — the thesis in one function. health<=0 does NOT mean dead. Only a gib-level
+// overshoot (healthAfter well below 0) truly kills; a mere depletion FLOPS the zombie and it
+// stands back up. `lethal`/`downed` are composed booleans (→ shipped `select`).
+function zombieImpact(): EventBehavior {
+  return entities.query({ tag: "zombie" }).onImpact((impact) => {
+    const lethal = impact.target.healthAfter.le(-40); // big overshoot → truly dead (gib)
+    const downed = impact.target.healthAfter.le(0).and(lethal.not()); // depleted, not gibbed → flop
+    return [
+      {
+        when: lethal,
+        do: [
+          impact.target.playAnim("gib"),
+          impact.source.grant("xp", 100),
+          impact.target.despawn(),
+        ],
+      },
+      {
+        when: downed,
+        do: [
+          impact.target.playAnim("down"),
+          impact.target.setHealth(impact.target.level.times(20), { afterMs: 3000 }), // resurrect
+        ],
+      },
+    ];
+  });
+}
+
+// setupLevel returns the REAL LevelManifest; behaviors are its `events` child, in PRECEDENCE
+// ORDER — arenaGruntImpact comes after gruntImpact, so it wins for arena_1 grunts.
 export function setupLevel(): LevelManifestWithEvents {
   return {
     reactions: [],
-    events: [arenaBehavior(), announcer()],
+    events: [gruntImpact(), arenaGruntImpact(), zombieImpact()],
   };
 }
 
 // === GUARDRAILS — these MUST NOT compile. ===================================
-const guard = grunts.defineEvent((impact) => ({
-  when: impact.target.died(),
-  props: {
-    target: impact.target,
-    source: impact.source,
-    xp: impact.target.level.times(200),
-  },
-}));
-guard.on((kill) => {
+entities.query({ tag: "grunt" }).onImpact((impact) => {
   // @ts-expect-error live JS math on an IR ref — use .times(), not `*`.
-  const badXp = 200 * kill.xp;
+  const badXp = 200 * impact.target.level;
   void badXp;
-  // @ts-expect-error relational operators don't work on IR refs — use .gt(), not `>`.
-  const badCmp = kill.target.healthAfter > 0;
+  // @ts-expect-error relational operators don't work on IR refs — use .le(), not `<=`.
+  const badCmp = impact.target.healthAfter <= 0;
   void badCmp;
   // @ts-expect-error `source` has no despawn — you despawn the TARGET.
-  kill.source.despawn();
+  impact.source.despawn();
   // @ts-expect-error `target` has no grant — you credit the SOURCE.
-  kill.target.grant("xp", 5);
-  // @ts-expect-error `overkill` was never enriched onto THIS event — the payload is exact.
-  void kill.overkill;
+  impact.target.grant("xp", 5);
+  // @ts-expect-error a NumberRef is not a BoolRef gate.
+  const badGate: GatedEffect = { when: impact.target.healthAfter, do: [] };
+  void badGate;
   return [];
 });
 
-// @ts-expect-error a bare {kind:"impact"} is NOT an EventBehavior — the authored data
-// (gated effects + IR) must survive the load→manifest seam; the brand can't be forged.
+// @ts-expect-error a bare {kind:"impact"} is NOT an EventBehavior — the authored effects/IR
+// must survive the load→manifest seam; the brand can't be forged.
 const badBehavior: EventBehavior = { kind: "impact" };
 void badBehavior;

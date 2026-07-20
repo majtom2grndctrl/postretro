@@ -443,5 +443,19 @@ decision, not a deferral.
   tier owns the pulse/color vocabulary. The docs task carries this as one line of
   authoring guidance rather than a backlog item.
 
+- **Compose: two passes, not a merged single-pass CSR** (the storage-buffer choice in
+  Task 3). The renderer's values decide it, not just the 8-buffer limit. What a single
+  merged pass would save — one dispatch and one probe-atlas-sized intermediate texture
+  — is below the manual perf-check floor: screen-sized fragment and shadow-map work
+  dominate the GTX 1660 / Radeon Pro 5500M envelope, not a small pre-frame compute
+  dispatch. The merge spends what the renderer treats as scarce: it pins the compose
+  stage at exactly 8 storage buffers (zero headroom for queued lighting features) and
+  abandons the id-27 field-for-field CSR mirror. Two passes conform to the established
+  compose-pass idiom (the indirect `sh_compose` already runs every frame), preserve
+  headroom, and keep the merge as a measured-pivot escape — consolidate later if a
+  profile ever shows dispatch count matters (it won't at probe-atlas size); a shipped
+  merged CSR can't be un-shipped without a wire migration. Same measure-before-
+  optimizing discipline as clustered-forward and global-BVH deferral.
+
 No residual open questions block implementation. Fixture cone/aim tuning is ordinary
 Task-5 implementation detail.

@@ -4,7 +4,7 @@ Grounding anchors from three session agents (death lifecycle, enemy AI, timer/st
 
 ## Damage chokepoint
 - `crates/entities/src/components/health.rs:319-340` — `apply_damage_with_context`, the single HP-decrement site. `updated.current = (updated.current - payload.amount).max(0.0)` at `:329`. Pre-health and unfloored post (`current - amount`, may be negative) both in scope at `:329`; unfloored value is discarded today.
-- `payload.amount` is zone-multiplier-scaled at the fire site (`crates/postretro/src/scripting/sim/mod.rs:783-795`), not at the chokepoint. The damager identity is `DamageContext.attacker` (`health.rs:61`), the `context` param in scope at the chokepoint (copied to `record.attacker` at `health.rs:333`, but only when the ledger records a hit — the param itself is always in scope). There is no `HealthComponent.last_attacker` field; `last_attacker` exists only on `ContributorLedgerEntry`/`ContributorLedgerOverflow` (`health.rs:85`, `:121`).
+- `payload.amount` is zone-multiplier-scaled at the fire site (`crates/postretro/src/sim/mod.rs:783-795`), not at the chokepoint. The damager identity is `DamageContext.attacker` (`health.rs:61`), the `context` param in scope at the chokepoint (copied to `record.attacker` at `health.rs:333`, but only when the ledger records a hit — the param itself is always in scope). There is no `HealthComponent.last_attacker` field; `last_attacker` exists only on `ContributorLedgerEntry`/`ContributorLedgerOverflow` (`health.rs:85`, `:121`).
 - All producers route through it: weapon fire `sim/mod.rs:803`; `applyDamage` reaction `crates/postretro/src/health/reactions.rs:74` (damage-only, rejects negatives `:57-63`).
 
 ## Auto-death machinery (to make inert)
@@ -25,10 +25,10 @@ Grounding anchors from three session agents (death lifecycle, enemy AI, timer/st
 - Storage write exists internally: `HealthComponent.current` public, written via `registry.set_component`; `refresh_from_descriptor` clamps on hot-reload (`health.rs:275-277`). `setHealth` = new absolute chokepoint mirroring `apply_damage`; resurrect must reset `death_handled = false`. `death_handled` is set only by `sweep_deaths` (`health.rs:129`, `:154`) and is NEVER cleared today — resetting it in `setHealth` is what re-arms kill detection (`apply_damage`/`sweep_deaths` skip a latched target). This is the real re-arm, distinct from the FSM-state recovery above.
 
 ## Enemy AI FSM
-- Closed 4-state FSM: `LogicalState { Idle, Alert, Attack, Death }` `crates/entities/src/components/brain.rs:29-40`, "engine-closed, scripts cannot add states" `brain.rs:24-26`. Per-instance `BrainComponent` `brain.rs:131-180`.
+- Closed 4-state FSM: `LogicalState { Idle, Alert, Attack, Death }` `crates/entities/src/components/brain.rs:29-40`, engine-closed — scripts tune thresholds and the anim mapping but cannot add states (`brain.rs:24-26`). Per-instance `BrainComponent` `brain.rs:131-180`.
 - Pure swappable transition core `evaluate_transition(...)` `ai.rs:248-318`; tick `run_ai_tick_with_navigation` `ai.rs:504`. Distance-driven edges only.
 - Damage→AI is near-absent: only 0-HP→Death. `ai.rs` never reads `last_attacker`. No flinch/stagger/hurt/downed anywhere (grep-confirmed).
-- Modder surface today: `AiDescriptor` 8 scalars + `AiStateNames` closed anim map (`crates/foundation/src/data_descriptors/types/combat.rs:230-261`); one bool `enemies({tag}).update({aggro})` → `reactions/enemy_state.rs`; tag `setAnimationState` `reactions/animation.rs:14`.
+- Modder surface today: `AiDescriptor` 7 scalars + a closed `AiStateNames` anim map (`crates/foundation/src/data_descriptors/types/combat.rs:230-261`); one bool `enemies({tag}).update({aggro})` → `reactions/enemy_state.rs`; tag `setAnimationState` `reactions/animation.rs:14`.
 - Animation seam reusable: `switch_animation_state`/`restart_animation_clip` `ai.rs:864-902`; `state_elapsed` clip-complete query pre-built, unused, annotated "future AI state-selection layer is the named consumer" `mesh_anim.rs:393-407`.
 - Prior design intent: `context/research/enemy-aggro-model.md` (v0-floor aggro; stagger/downed axis not yet on paper). M10 decision `ai.rs:11-13`.
 

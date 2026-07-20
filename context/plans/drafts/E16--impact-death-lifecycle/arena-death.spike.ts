@@ -1,5 +1,5 @@
-// DESIGN SPIKE — the HANDLE MODEL. Type-checks against the real postretro.d.ts + postretro/ui
-// plus proposed.d.ts (the WALLs).
+// DESIGN SPIKE — the HANDLE MODEL. Type-checks against the real postretro.d.ts
+// plus proposed.d.ts (the WALL).
 //
 // This file's job: the blessed handle, cross-scope OVERRIDE, and policy reuse — how a mod
 // defines a baseline death behavior and a map refines it. (Per-entity state and the lifecycles
@@ -19,7 +19,7 @@
 // NOTE: crediting the SOURCE (grant xp/style/ammo) is deferred — see the spec's Out-of-scope /
 // roadmap. Rewards here are modelled as mod-store writes (slot.add), which ship in v1.
 //
-// "postretro" / "postretro/ui" → SHIPPED.  "postretro/proposed" → a WALL.
+// "postretro" → SHIPPED.  "postretro/proposed" → a WALL.
 
 import { defineStore } from "postretro";
 import {
@@ -45,7 +45,12 @@ const arenaKills = slot(econ.state.arenaKills);
 function baseGruntDeath(impact: Impact): readonly EffectOrGroup[] {
   return [
     {
-      when: impact.target.healthAfter.le(0), // author's death policy, expressed in IR
+      // The KILL EDGE, not a level: `healthBefore.gt(0).and(healthAfter.le(0))` fires only on the
+      // hit that crosses 0. A bare `healthAfter.le(0)` is a LEVEL predicate — it stays true while
+      // the entity persists through its 1500 ms despawn window, so every subsequent hit to the
+      // corpse would re-run this group and double-count `deaths`. The impact facts publish
+      // `healthBefore` precisely so a policy can express the crossing.
+      when: impact.target.healthBefore.gt(0).and(impact.target.healthAfter.le(0)),
       do: [
         impact.target.playAnim("death"),
         deaths.add(1),
@@ -62,6 +67,7 @@ const gruntImpactEvent = defineImpactEvent({ tag: "grunt" }, baseGruntDeath);
 export function setupMod(): ModManifest {
   return {
     name: "arena-combat",
+    stores: [econ.declaration], // register the store whose slots the policies write
     events: [gruntImpactEvent],
   };
 }
@@ -76,7 +82,11 @@ export function setupLevel(): LevelManifest {
     events: [
       gruntImpactEvent.override({ tag: "arena_grunt" }, (impact) => [
         ...baseGruntDeath(impact),
-        { when: impact.target.healthAfter.le(0), do: [arenaKills.add(1)] },
+        // Same kill edge as the base group (independent evaluation fires both on the crossing hit).
+        {
+          when: impact.target.healthBefore.gt(0).and(impact.target.healthAfter.le(0)),
+          do: [arenaKills.add(1)],
+        },
       ]),
     ],
   };

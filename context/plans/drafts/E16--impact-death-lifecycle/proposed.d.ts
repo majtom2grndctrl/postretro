@@ -83,7 +83,7 @@ declare module "postretro/proposed" {
     // (string arg OK — not IR), switched via the id-targeted `switch_animation_state` seam.
     playAnim(clip: string): Effect;
     // WALL-NEW (zombie): absolute entity-health write, optionally deferred (stand back up).
-    setHealth(amount: NumberValue, opts?: { afterMs?: number }): Effect;
+    setHealth(value: NumberValue, opts?: { afterMs?: number }): Effect;
     // WALL-NEW (Doom lifecycle): per-INSTANCE modder-owned state, a number slot keyed by name.
     // The substrate for lifecycle state machines (alive/staggered/downed). Read → IR ref;
     // write → effect. Host-authoritative; per-entity replication is deferred (see roadmap).

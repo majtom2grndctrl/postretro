@@ -49,9 +49,11 @@ const impLifecycle = defineImpactEvent({ tag: "imp" }, (impact) => {
         .and(t.healthAfter.gt(0)),
       do: [t.setState("stagger", STAGGERED), t.playAnim("falter")],
     },
-    // Normal death path (killed outright, never staggered).
+    // Normal death path (killed outright, never staggered). The `healthBefore.gt(0)` makes this
+    // the kill EDGE — it fires only on the crossing hit, not on every subsequent hit while the imp
+    // persists through its 1200 ms despawn window (a bare `healthAfter.le(0)` would re-fire).
     {
-      when: t.healthAfter.le(0).and(stagger.eq(ALIVE)),
+      when: t.healthBefore.gt(0).and(t.healthAfter.le(0)).and(stagger.eq(ALIVE)),
       do: [t.playAnim("death"), t.despawn({ afterMs: 1200 })],
     },
   ];
@@ -62,8 +64,14 @@ const impLifecycle = defineImpactEvent({ tag: "imp" }, (impact) => {
 // negative = a big overshoot = a gib).
 const zombieLifecycle = defineImpactEvent({ tag: "zombie" }, (impact) => {
   const t = impact.target;
-  const lethal = t.healthAfter.le(-40); // big overshoot → truly dead (gib)
-  const downed = t.healthAfter.le(0).and(lethal.not()); // depleted, not gibbed → flop
+  // GIB is a LEVEL, DOWN is an EDGE — the asymmetry is deliberate.
+  //   lethal: fire whenever the overshoot is this deep, from ANY state — you can gib an
+  //           already-downed (0-HP) zombie, so this must NOT be edge-guarded.
+  //   downed: fire only on the hit that CROSSES 0 from alive (`healthBefore.gt(0)`). A downed
+  //           zombie persists at 0 HP through its 3000 ms resurrect window; a bare level gate
+  //           would re-flop (re-enqueue `setHealth`, restart "down") on every hit in that window.
+  const lethal = t.healthAfter.le(-40); // big overshoot → truly dead (gib), from any state
+  const downed = t.healthBefore.gt(0).and(t.healthAfter.le(0)).and(lethal.not()); // the down edge
   return [
     { when: lethal, do: [t.playAnim("gib"), t.despawn()] },
     { when: downed, do: [t.playAnim("down"), t.setHealth(t.maxHealth, { afterMs: 3000 })] }, // resurrect

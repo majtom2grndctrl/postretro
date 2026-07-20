@@ -13,7 +13,7 @@ use crate::components::ammo_reserve::AmmoReserve;
 use crate::components::billboard_emitter::BillboardEmitterComponent;
 use crate::components::brain::BrainComponent;
 use crate::components::fog_volume::FogAnimation;
-use crate::components::health::HealthComponent;
+use crate::components::health::{HealthComponent, ImpactDispatch};
 use crate::components::kinematic_mover::KinematicMoverComponent;
 use crate::components::light::LightComponent;
 use crate::components::mesh::MeshComponent;
@@ -607,6 +607,10 @@ pub struct EntityRegistry {
     /// Phase 0 sim command. Not script-visible and not a tag/KVP, so it cannot
     /// affect world queries or authored entity properties.
     local_player_pawn: Option<EntityId>,
+    /// Fires from the health chokepoint after each successful decrement. The
+    /// event payload belongs to the health component module, while the registry
+    /// owns the single-threaded handoff to impact-policy consumers.
+    impact_dispatches: Vec<ImpactDispatch>,
     /// A test-only artificial slot ceiling. Production still has exactly the
     /// `u16::MAX` registry capacity promised by `try_spawn`.
     #[cfg(any(test, feature = "test-support"))]
@@ -623,6 +627,7 @@ impl EntityRegistry {
             tags: Vec::new(),
             kvp_table: HashMap::new(),
             local_player_pawn: None,
+            impact_dispatches: Vec::new(),
             #[cfg(any(test, feature = "test-support"))]
             test_capacity_limit: None,
         }
@@ -866,6 +871,18 @@ impl EntityRegistry {
         }
     }
 
+    /// Publish one damage-chokepoint dispatch for the engine's impact-policy
+    /// consumer. This is intentionally separate from component columns: it is
+    /// ephemeral per-fire data, not persistent entity state.
+    pub fn push_impact_dispatch(&mut self, dispatch: ImpactDispatch) {
+        self.impact_dispatches.push(dispatch);
+    }
+
+    /// Drain every impact dispatch published since the previous consumer pass.
+    pub fn take_impact_dispatches(&mut self) -> Vec<ImpactDispatch> {
+        std::mem::take(&mut self.impact_dispatches)
+    }
+
     /// Despawn every live entity while preserving slot-generation semantics.
     /// Level unload uses this instead of replacing the registry wholesale so
     /// stale `EntityId`s from the old level cannot become valid in a later load.
@@ -885,6 +902,7 @@ impl EntityRegistry {
         for id in live_ids {
             let _ = self.despawn(id);
         }
+        self.impact_dispatches.clear();
     }
 
     fn validate(&self, id: EntityId) -> Result<usize, RegistryError> {

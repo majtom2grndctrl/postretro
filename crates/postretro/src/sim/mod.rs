@@ -32,7 +32,7 @@ use postretro_entities::PoseInputs;
 use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::components::brain::{BrainComponent, LogicalState};
 use postretro_entities::components::health::{
-    DamageContext, HealthComponent, apply_damage_with_context,
+    DamageContext, DamageProducer, HealthComponent, apply_damage_with_context,
 };
 use postretro_entities::components::mesh::{MeshAnimation, MeshComponent};
 use postretro_entities::components::weapon::{UNKNOWN_WEAPON_CREDIT_SOURCE, WeaponComponent};
@@ -1107,6 +1107,7 @@ fn apply_weapon_impact_damage_with_source(
             attacker,
             weapon: Some(weapon_id),
             zone: impact.zone.clone(),
+            producer: DamageProducer::InTick,
         },
     );
 }

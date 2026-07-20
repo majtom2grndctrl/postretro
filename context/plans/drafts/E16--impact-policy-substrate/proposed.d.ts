@@ -2,7 +2,7 @@
 // Module "postretro/proposed" so each import in the spike is visibly a gap.
 //
 // THE MODEL (grounded): the engine owns IMPACT — the damage chokepoint, the single
-// HP-decrement site (health.rs:319-329). DEATH is NOT an engine concept; the modder writes
+// HP-decrement site (health.rs:319-340). DEATH is NOT an engine concept; the modder writes
 // what counts as death (and the whole life→death lifecycle) as a POLICY over impact facts.
 //
 // BLESSED-HANDLE DISCIPLINE (mirrors defineStore, grounded in postretro.d.ts:1087-1097):
@@ -110,16 +110,19 @@ declare module "postretro/proposed" {
   export type Impact = Readonly<{
     target: TargetHandle;
     source: SourceHandle;
-    amount: NumberRef;   // damage applied at the chokepoint: post-zone-multiplier, pre-floor
+    amount: NumberRef;   // damage applied at the chokepoint, pre-floor. Weapon fire is
+                         // zone-multiplier-scaled at the fire site; enemy melee passes raw
+                         // attack_damage (unscaled). Do not assume it is zone-scaled.
   }>;
 
   const impactEventBrand: unique symbol;
   // ---- The BLESSED HANDLE for a defined impact event. Pure returnable data (goes into a
   //      manifest's `events`), branded so a bare `{ kind: "impact" }` can't be forged. Thread
   //      it across scopes; `override(...)` returns a LINKED override handle to return from the
-  //      overriding scope's manifest. Precedence is MOST-RECENTLY-EXECUTED: the last override
-  //      to run for a matched entity wins. The filter narrows the base set by an ADDITIONAL tag
-  //      (an entity may carry several tags), so an override targets a subset the base also matches.
+  //      overriding scope's manifest. Precedence is LOAD ORDER: the LAST-REGISTERED override wins
+  //      (registration/load order, not runtime execution). The filter narrows the base set by an
+  //      ADDITIONAL tag (an entity may carry several tags), so an override targets a subset the
+  //      base also matches.
   export interface ImpactEvent {
     readonly kind: "impact";
     readonly [impactEventBrand]: true;

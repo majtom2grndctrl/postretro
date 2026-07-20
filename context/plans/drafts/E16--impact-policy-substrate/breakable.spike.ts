@@ -11,8 +11,9 @@
 //
 // Two substrate rules on display:
 //   PRE-EFFECT SNAPSHOT  every group's `when` evaluates against the state as it was BEFORE
-//                        any of this impact's consequential effects ran — so the same-impact
-//                        `setState` cannot shift the threshold gate. The break gate therefore
+//                        any of this impact's effects (bare or gated) applied — evaluate-then-
+//                        apply per fire — so the same-impact bare `setState` cannot shift the
+//                        threshold gate. The break gate therefore
 //                        reads `hits.eq(HITS_TO_BREAK - 1)`: the count BEFORE this hit's
 //                        increment. That also makes the gate edge-like — it holds on exactly
 //                        one hit per instance.
@@ -46,11 +47,15 @@ function breakableAfter(hitsToBreak: number) {
     return [
       // Every impact dents THIS instance: read-modify-write on its own counter.
       t.setState("hits", hits.plus(1)),
-      // The shatter threshold. `hits` is the PRE-EFFECT snapshot value, so the increment
-      // above is invisible here: the gate holds on the hit where the accrued count REACHES
-      // the threshold (count was N-1 before this hit) — once per instance, no re-fire.
-      // `despawn()` removes at end-of-frame, AFTER the presentation drain, so the same-group
-      // `playAnim` still targets a live entity (Decisions: Despawn ordering).
+      // The shatter threshold. `hits` is the PRE-EFFECT snapshot value, so the bare `setState`
+      // above is invisible here (evaluate-then-apply per fire: every `when` and every effect
+      // read is served from the pre-fire snapshot, then all effects apply). The gate holds on
+      // the hit where the accrued count REACHES the threshold (count was N-1 before this hit) —
+      // once per instance, no re-fire. `despawn()` only MARKS; removal runs at end-of-frame, and
+      // `playAnim` is an in-tick switch, so it targets a LIVE entity (the switch applies without
+      // error). With a bare `despawn()` the crate is reaped this frame before render, so no frame
+      // renders the shatter clip — visible playback needs `despawn({ afterMs })`.
+      // (Decisions: Despawn ordering.)
       {
         when: hits.eq(hitsToBreak - 1),
         do: [t.playAnim("shatter"), cratesBroken.add(1), t.despawn()],

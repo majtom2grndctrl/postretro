@@ -81,7 +81,17 @@ declare module "postretro/proposed" {
   //      the impact stream: the builder computes IR facts and returns gated effects.
   //      (Runs ONCE at load to emit data — it is not a live callback.)
   export interface EntitySet {
+    // ONE-STAGE: the impact handler computes IR facts AND returns gated effects.
+    // Complete for a single behavior; the facts are private to this handler.
     onImpact(build: (impact: ImpactEvent) => readonly GatedEffect[]): EventBehavior;
+
+    // TWO-STAGE (ALTERNATIVE — a fork, not a committed wall): the handler ENRICHES
+    // impact into a NAMED DERIVED EVENT (an edge + a payload of IR facts / tokens),
+    // and a SEPARATE consumer does the effects. This is "we aren't adding a listener,
+    // we're DEFINING a new event" — it pays off when MANY consumers want "kill".
+    defineEvent<P extends Props>(
+      build: (impact: ImpactEvent) => Enrichment<P>,
+    ): DerivedEvent<P>;
   }
   export interface Entities {
     query(filter: { tag?: string }): EntitySet;
@@ -89,6 +99,17 @@ declare module "postretro/proposed" {
   export const entities: Entities;
 
   export type EventBehavior = { readonly kind: "impact"; readonly tag?: string };
+
+  // ---- TWO-STAGE support types. A payload is a record of IR refs and pass-through
+  //      tokens (no raw values — JS math on them still fails). `when` is the derived
+  //      event's firing edge; `props` becomes the consumer's payload, typed exactly.
+  export type PropValue = NumberRef | BoolRef | SubjectHandle | SourceHandle;
+  export type Props = Record<string, PropValue>;
+  export type Enrichment<P extends Props> = { when?: BoolRef; props: P };
+  export type EffectOrGroup = Effect | GatedEffect;
+  export interface DerivedEvent<P extends Props> {
+    on(consume: (payload: P) => readonly EffectOrGroup[]): EventBehavior;
+  }
 
   // ---- Manifest: setupLevel returns the real LevelManifest; the derived-event
   //      behaviors are an OPTIONAL CHILD (the spec adds `events?` to LevelManifest

@@ -108,15 +108,14 @@ The prompt's seven decisions, resolved:
 
 6. **Budgets.** A second additive compute pass over the direct probe atlas array
    (small — probe-atlas sized, not screen-sized), split from the promotion compose to
-   stay within the compute stage's storage-buffer budget (see Task 3). Dispatch
-   cadence: the animated pass runs every frame while any animated
-   baked light is active (curves change per frame), matching the indirect
-   `sh_compose` cadence (which already runs unconditionally). **Zero-animated-light
-   maps:** section 45 absent → the animated loop binds an empty CSR and the pass
-   keeps its current promotion-only cadence (copy-through + while-any-weight-nonzero
-   + settle). GPU memory: one new sparse f16 section, same footprint class as the
-   indirect delta, clipped to each light's occlusion-tested direct reach (tighter
-   than indirect bounce reach).
+   stay within the compute stage's storage-buffer budget (see Task 3). Structure is
+   chosen at load time: a **45-present** map runs the Pass A/B pair on one widened
+   dispatch predicate (promotion active **or** any section-45 descriptor active, plus
+   copy-through); a **45-absent** map is Case 1 — the single unchanged
+   `direct_sh_compose` pass, no Pass B, no intermediate, no dummy buffers, today's
+   cadence. GPU memory: one new sparse f16 section, same footprint class as the indirect
+   delta, clipped to each light's occlusion-tested direct reach (tighter than indirect
+   bounce reach), plus (45-present only) one probe-atlas-sized intermediate texture.
 
 7. **Acceptance surfaces.** Compiler bake + section round-trip; PRL wire + loader
    validation with all-or-nothing clear; renderer compose extension + widened
@@ -154,12 +153,12 @@ RUNTIME (per frame)  light_bridge → compose animation descriptor (shared buffe
   └─────────────────────────────────────────────────────────────────────┘
         │
         ▼
-  direct_sh_compose (compute, pre-frame — two passes, Task 3)
-    Pass A: interm = base(static direct, BC6H)
-                   − Σ_promo (selection_weight_i × promo_delta_i)  [id 41, existing]
-    Pass B: composed = interm
-                   + Σ_anim  (descriptor_scale_j(t) × anim_delta_j) [id 45, NEW]
-    clamp ≥ 0, write Rgba16Float composed direct atlas (binding 15)
+  direct_sh_compose (compute, pre-frame — structure by load-time case, Task 3)
+    Case 1 (no id 45): one pass, base − Σ_promo, clamp ≥ 0 → binding 15 (unchanged)
+    Case 2 (id 45 present): atomic Pass A/B pair
+      Pass A: interm = base(static direct) − Σ_promo (id 41)          → intermediate
+      Pass B: composed = clamp(interm + Σ_anim(scale_j(t)·anim_delta_j), ≥ 0) [id 45]
+              → Rgba16Float composed direct atlas (binding 15)
         │
         ▼
   DYNAMIC RECEIVERS  sample_sh_direct(binding 15), gated by has_direct
@@ -276,53 +275,71 @@ the `DirectShVolume` base atlas or `EntityShadowLights` selection (delivers AC 3
 **direction-safe** — a direction-animated light bakes a clean rest-direction delta
 with no panic or NaN (delivers half of AC 5).
 
-### Task 3: Renderer — animated-direct additive compose (second pass)
+### Task 3: Renderer — animated-direct additive compose
 
-**Why a second pass, not an extended loop.** A single extended `direct_sh_compose`
-would bind 10 storage buffers in the compute stage — the existing 4 (promotion
-`delta_subblocks` @20, `affinity_offsets` @21, `affinity_lights` @24,
-`selection_weights` @26) plus section-45's CSR ×3 and the shared `descriptors` @22,
-`anim_samples` @23, `animation_descriptor_indices` @25 — over the fixed
-`max_storage_buffers_per_shader_stage = 8` the renderer must not raise (§10). Split
-the animated addition into its own compute pass so each stays within budget. (Note:
-`direct_composed_atlas` is a storage *texture*, not a storage buffer, so it is off
-this budget.)
+**Why a second pass, and why the structure is chosen at load time.** A single extended
+`direct_sh_compose` would bind 10 storage buffers in the compute stage — the existing 4
+(promotion `delta_subblocks` @20, `affinity_offsets` @21, `affinity_lights` @24,
+`selection_weights` @26) plus section-45's 4 buffers and 2 shared — over the fixed
+`max_storage_buffers_per_shader_stage = 8` the renderer must not raise (§10). Split the
+animated addition into a second pass. The single-vs-pair choice is made at **load time**
+by whether section 45 is present, so binding 15 is always written and promotion-only
+maps stay byte-for-byte unchanged. (`direct_composed_atlas` @1 is a storage *texture*,
+off the buffer budget.)
 
-- **Pass A (unchanged):** the existing `direct_sh_compose` writes `base − Σ_promo`
-  into an intermediate `Rgba16Float` composed view (4 storage buffers).
-- **Pass B (new):** `crates/renderer/src/render/direct_sh_compose.rs` +
-  `shaders/direct_sh_compose.wgsl` gain a sibling pass that samples Pass A's output
-  and writes the **final** composed view (`direct_atlas_view`, binding 15) as
-  `passA + Σ_anim(animated_light_scale_j(t) × anim_delta_j)`, clamped `≥ 0`. Its
-  storage buffers (6, within budget): section-45 `delta_subblocks`/`affinity_offsets`/
-  `affinity_lights` at fresh numbers, plus the shared `descriptors` @22,
-  `anim_samples` @23, `animation_descriptor_indices` @25 — the **same handles** the
-  indirect `sh_compose` binds (owned by the renderer's SH-compose resources; thread
-  them in). Those three numbers are free in the compose group, so `animated_light_scale`
-  ports **verbatim** from `sh_compose.wgsl` (with `curve_eval.wgsl` appended); it
-  applies `intensity × (base_color | color curve) × brightness` once, gated by
-  `is_active`. The intermediate composed view is one extra probe-atlas-sized texture
-  (small); use a sampled read of it in Pass B to stay downlevel-safe (no read_write
-  storage textures).
+- **Case 1 — section 45 absent (promotion-only or no-direct map).** Exactly today: one
+  `direct_sh_compose` pass reads `direct_base_atlas_view` (BC6H base) and writes+clamps
+  `direct_composed_storage_view` — the storage view of the final texture the sampled
+  `direct_atlas_view` (binding 15) reads. No intermediate, no Pass B, no new dispatch.
+  Byte-for-byte unchanged (delivers AC 7).
+
+- **Case 2 — section 45 present.** Allocate one extra intermediate `Rgba16Float` texture
+  with a storage view (`direct_intermediate_storage_view`, Pass A write) and a sampled
+  view (`direct_intermediate_sampled_view`, Pass B read). Pass A and Pass B are an
+  **atomic pair** — always dispatched together, so binding 15 is written every time Pass
+  A runs.
+  - **Pass A** — the existing `direct_sh_compose` shader, unchanged; only its output bind
+    group is repointed to `direct_intermediate_storage_view`. Writes `base − Σ_promo`
+    (4 storage buffers).
+  - **Pass B (new)** — `direct_sh_compose.rs` + `direct_sh_compose.wgsl` gain a sibling
+    pass reading `direct_intermediate_sampled_view` and writing+clamping
+    `direct_composed_storage_view` (binding 15's texture) as
+    `clamp(intermediate + Σ_anim(animated_light_scale_j(t) × anim_delta_j), ≥ 0)`. Its 6
+    storage buffers, within budget: section 45's **own** `delta_subblocks`,
+    `affinity_offsets`, `affinity_lights`, and its **own** `animation_descriptor_indices`
+    (built from the section-45 copy — the indirect `sh_compose`'s
+    `animation_descriptor_indices` is section-27-specific and would misresolve a 45-only
+    map), plus the genuinely shared `descriptors` @22 and `anim_samples` @23 threaded from
+    `ShVolumeResources.animation` (`sh.animation.descriptors`/`anim_samples`). 22/23 are
+    free in the compose group, so `animated_light_scale` ports **verbatim** from
+    `sh_compose.wgsl` (with `curve_eval.wgsl` appended); it applies
+    `intensity × (base_color | color curve) × brightness` once, gated by `is_active`. When
+    Σ_anim is zero this frame (all descriptors inactive), Pass B clamps+copies the
+    intermediate to final. Use a sampled read of the intermediate (no read_write storage
+    textures — not downlevel-safe).
 
 Plumbing:
-- Widen `has_direct` (and both composed-view allocations in `ShVolumeResources::new`,
-  `render/sh_volume.rs`) to true when section 35 **or** section 45 is present; when
-  only 45 is present, Pass A's base is a zero atlas and Pass B adds onto zero.
-- Widen `direct_compose_should_dispatch` so Pass B (and thus Pass A) dispatch every
-  frame while any section-45 descriptor is active — OR the animated-active predicate
-  into the existing promotion predicate. When section 45 is absent, Pass B is skipped
-  entirely and Pass A keeps its current promotion-only cadence.
-- No-animated / promotion-only maps must still bind valid buffers: Pass B is skipped,
-  so its section-45 CSR and shared descriptor bindings need no dummy buffers; Pass A
-  is byte-for-byte unchanged.
+- **Atlas dimensions.** The composed/intermediate atlas and the compose grid uniform
+  currently source dimensions from `DirectShVolumeSection` (id 35). Section 45 (mirroring
+  `DeltaShVolumes`) carries none, so for a 45-only map derive them from the
+  `OctahedralShVolume` base grid (id 34) — whose direct-atlas layout id 35 already matches
+  byte-identically, and which is always present when section 45 is (its delta tiles are
+  keyed to id-34 base probes).
+- **`has_direct` + allocation.** Widen to true when section 35 **or** 45 is present. Case
+  2 allocates the intermediate texture in `ShVolumeResources::new`; Case 1 does not.
+- **Dispatch.** Widen `direct_compose_should_dispatch` (`(active, pending_copy_through,
+  was_active)`) so `active` also covers "any section-45 descriptor active." The Case-2
+  pair shares this one predicate — both passes fire together, including the initial
+  copy-through. Case 1 keeps the unchanged promotion-only predicate. A 45-present map with
+  all descriptors currently inactive and no promotion change does not dispatch (final
+  retains its last value); a 45-absent map dispatches nothing beyond today's cadence
+  (delivers AC 6).
 - Add a runtime lifecycle test (headless — assert at the descriptor→scale seam, no GPU
-  context) covering the composed-atlas animated term for each descriptor state:
-  initial-active, initial-inactive (`is_active == 0` → 0), looping mid-cycle, one-shot
-  settle, cleared, despawn/reload — delivers AC 4. Confirm a scene with no animated
-  baked lights leaves the direct atlas byte-identical to pre-change (delivers AC 7).
-- The mover/skinned/billboard consumers are unchanged — they already sample the final
-  `direct_atlas_view` at binding 15.
+  context) covering each descriptor state: initial-active, initial-inactive
+  (`is_active == 0` → 0), looping mid-cycle, one-shot settle, cleared, despawn/reload —
+  delivers AC 4.
+- The mover/skinned/billboard consumers are unchanged — they sample `direct_atlas_view`
+  at binding 15.
 
 ### Task 4: Diagnostics
 
@@ -370,11 +387,14 @@ consume the shipped runtime behavior from Phase 2.
 | Section struct | `AnimatedDirectShDeltaVolumesSection` | mirrors `DeltaShVolumesSection` | n/a | n/a |
 | Light namespace | `AnimatedBakedLights` (`!is_dynamic && animation.is_some()`) | n/a | n/a | baked `Light` + `setLightAnimation` reservation |
 | Bake module | `animated_direct_sh_bake::bake_animated_direct_sh_delta_volumes` | n/a | n/a | n/a |
-| Descriptor (per-frame) | `pack_compose_animation_descriptor` output | shared 48-byte `AnimationDescriptor` | `AnimationDescriptor` | authored via `setLightAnimation` |
+| Descriptor (per-frame) | `pack_compose_animation_descriptor` output; shared `descriptors`/`anim_samples` from `sh.animation` | shared 48-byte `AnimationDescriptor` | `AnimationDescriptor` (@22/@23) | authored via `setLightAnimation` |
+| Descriptor index map | section-45's **own** `animation_descriptor_indices` (not id 27's) | serialized in section 45 | Pass B storage buffer | n/a |
 | Curve modulation | (CPU curves in `anim_samples`) | `f32` sample buffer | `animated_light_scale` / `sample_*_catmull_rom` | brightness / color / (direction rest) |
-| Composed atlas | `direct_atlas_view` / `direct_composed_storage_view` | n/a | `sh_direct_atlas` (binding 15) | n/a |
+| Final composed atlas | `direct_composed_storage_view` (Pass write) / `direct_atlas_view` (sampled) | n/a | `sh_direct_atlas` (binding 15) | n/a |
+| Intermediate atlas (Case 2) | `direct_intermediate_storage_view` (Pass A) / `direct_intermediate_sampled_view` (Pass B) | n/a | Pass A output / Pass B input | n/a |
+| Atlas dimensions | id 35 layout; id 34 base grid when 45-only | from `DirectShVolume`/`OctahedralShVolume` | n/a | n/a |
 | Direct gate | `has_direct` (widen to 35 ∨ 45) | n/a | `DynamicDirectParams.has_direct` (binding 16) | n/a |
-| Dispatch predicate | `direct_compose_should_dispatch` (widen) | n/a | n/a | n/a |
+| Dispatch predicate | `direct_compose_should_dispatch` (`active` widened to include any active section-45 descriptor; Case-2 pair shares it) | n/a | n/a | n/a |
 
 ## Wire format
 

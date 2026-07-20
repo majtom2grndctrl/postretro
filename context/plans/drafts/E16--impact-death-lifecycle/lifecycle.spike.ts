@@ -20,7 +20,7 @@
 
 import {
   defineImpactEvent,
-  type LevelManifestWithEvents,
+  type LevelManifest,
 } from "postretro/proposed";
 
 // A per-entity "stagger" state field the modder owns: 0 = alive, 1 = staggered.
@@ -74,7 +74,7 @@ const zombieLifecycle = defineImpactEvent({ tag: "zombie" }, (impact) => {
   ];
 });
 
-export function setupLevel(): LevelManifestWithEvents {
+export function setupLevel(): LevelManifest {
   return {
     reactions: [],
     events: [impLifecycle, zombieLifecycle],

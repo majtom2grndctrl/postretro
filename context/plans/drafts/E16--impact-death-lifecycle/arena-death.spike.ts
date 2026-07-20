@@ -24,8 +24,8 @@ import {
   type EffectOrGroup,
   type GatedEffect,
   type Impact,
-  type LevelManifestWithEvents,
-  type ModManifestWithEvents,
+  type LevelManifest,
+  type ModManifest,
 } from "postretro/proposed";
 
 const econ = defineStore("arena", {
@@ -54,7 +54,7 @@ function baseGruntDeath(impact: Impact): readonly EffectOrGroup[] {
 const gruntImpactEvent = defineImpactEvent({ tag: "grunt" }, baseGruntDeath);
 
 // MOD SCOPE — register the baseline behavior mod-wide by returning the handle.
-export function setupMod(): ModManifestWithEvents {
+export function setupMod(): ModManifest {
   return {
     name: "arena-combat",
     events: [gruntImpactEvent],
@@ -64,7 +64,7 @@ export function setupMod(): ModManifestWithEvents {
 // MAP SCOPE — a DIFFERENT application scope. Refine the SAME blessed handle: for arena_1
 // grunts, REUSE the baseline and add a style payout. `override(...)` returns a linked override
 // to return from THIS manifest — no mutation, no re-declaration of the base.
-export function setupLevel(): LevelManifestWithEvents {
+export function setupLevel(): LevelManifest {
   return {
     reactions: [],
     events: [

@@ -27,8 +27,8 @@
 import type {
   Reaction,
   PrimitiveReactionDescriptor,
-  LevelManifest,
-  ModManifest,
+  LevelManifest as BaseLevelManifest,
+  ModManifest as BaseModManifest,
   WritableStateRef,
 } from "postretro";
 
@@ -130,9 +130,11 @@ declare module "postretro/proposed" {
     build: (impact: Impact) => readonly EffectOrGroup[],
   ): ImpactEvent;
 
-  // ---- Manifests: return the real Level/Mod manifest; the impact-event handles are an
-  //      OPTIONAL CHILD `events`. TODO(spec): `events` almost certainly LOWERS INTO reactions +
-  //      a chokepoint-registered predicate (apply-site, NOT a tick-polled store crossing).
-  export type LevelManifestWithEvents = LevelManifest & { events?: readonly ImpactEvent[] };
-  export type ModManifestWithEvents = ModManifest & { events?: readonly ImpactEvent[] };
+  // ---- Manifests: the proposed `events` child folded onto the REAL Level/Mod manifest (aliased
+  //      here as Base*). These shadow the shipped names on purpose — the spec adds `events` to the
+  //      real types, at which point these collapse to plain re-exports. TODO(spec): `events`
+  //      almost certainly LOWERS INTO reactions + a chokepoint-registered predicate (apply-site,
+  //      NOT a tick-polled store crossing).
+  export type LevelManifest = BaseLevelManifest & { events?: readonly ImpactEvent[] };
+  export type ModManifest = BaseModManifest & { events?: readonly ImpactEvent[] };
 }

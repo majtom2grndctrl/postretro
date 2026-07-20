@@ -1,5 +1,9 @@
-// DESIGN SPIKE — the CANONICAL pre-spec artifact (v4). Type-checks against the real
-// postretro.d.ts + postretro/ui plus proposed.d.ts (the WALLs).
+// DESIGN SPIKE — the HANDLE MODEL. Type-checks against the real postretro.d.ts + postretro/ui
+// plus proposed.d.ts (the WALLs).
+//
+// This file's job: the blessed handle, cross-scope OVERRIDE, and policy reuse — how a mod
+// defines a baseline death behavior and a map refines it. (Per-entity state and the lifecycles
+// it unlocks — zombie, Doom stagger — live in lifecycle.spike.ts.)
 //
 // THE MODEL (grounded): the engine owns IMPACT; DEATH is a modder POLICY over impact facts.
 // `defineImpactEvent(...)` returns a BLESSED HANDLE (like defineStore's handle — pure data,
@@ -46,26 +50,14 @@ function baseGruntDeath(impact: Impact): readonly EffectOrGroup[] {
   ];
 }
 
-// Quake zombie: health<=0 is NOT death. Only a gib-level overshoot kills; otherwise the
-// zombie DOWNS and stands back up.
-function zombiePolicy(impact: Impact): readonly EffectOrGroup[] {
-  const lethal = impact.target.healthAfter.le(-40);
-  const downed = impact.target.healthAfter.le(0).and(lethal.not());
-  return [
-    { when: lethal, do: [impact.target.playAnim("gib"), impact.source.grant("xp", 100), impact.target.despawn()] },
-    { when: downed, do: [impact.target.playAnim("down"), impact.target.setHealth(impact.target.level.times(20), { afterMs: 3000 })] },
-  ];
-}
-
-// BLESSED HANDLES — defined ONCE at module scope, pure, threadable across application scopes.
+// THE BLESSED HANDLE — defined ONCE at module scope, pure, threadable across application scopes.
 const gruntImpactEvent = defineImpactEvent({ tag: "grunt" }, baseGruntDeath);
-const zombieImpactEvent = defineImpactEvent({ tag: "zombie" }, zombiePolicy);
 
-// MOD SCOPE — register the baseline behaviors mod-wide by returning the handles.
+// MOD SCOPE — register the baseline behavior mod-wide by returning the handle.
 export function setupMod(): ModManifestWithEvents {
   return {
     name: "arena-combat",
-    events: [gruntImpactEvent, zombieImpactEvent],
+    events: [gruntImpactEvent],
   };
 }
 

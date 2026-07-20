@@ -1,24 +1,25 @@
-// DESIGN SPIKE — the LIFECYCLE stress test. Type-checks against proposed.d.ts (the WALLs).
+// DESIGN SPIKE — the KEYSTONE. Type-checks against proposed.d.ts (the WALLs).
 //
-// The zombie proved "health<=0 is not death." Doom 2016 proves the bigger thing: an entity
-// is a STATE MACHINE and impact drives the transitions. The Glory Kill loop is:
+// This file's job: per-entity modder state and the lifecycles it unlocks — the two things that
+// make DEATH a modder policy rather than an engine event. (The blessed handle + cross-scope
+// override live in arena-death.spike.ts.) Two cases:
 //
-//     alive ──(health < ~30%)──▶ staggered/falter ──(any hit)──▶ glory-killed (drops health/ammo)
-//                                        │
-//                                        └──────────(enough overshoot)──▶ normal death
+//   ZOMBIE (Quake)   health<=0 is NOT death. A gib-level overshoot kills; otherwise the zombie
+//                    DOWNS and stands back up (setHealth after a delay). Same crossing, opposite
+//                    meaning — no per-entity state needed, just the unfloored healthAfter.
+//   IMP (Doom 2016)  an entity is a STATE MACHINE and impact drives transitions:
+//                    alive ─(health<30%)→ staggered ─(any hit)→ glory-kill ; else → death.
+//                    The SAME hit means different things per state, so we need PER-ENTITY,
+//                    modder-owned state (`target.state("stagger")`). This is the keystone.
 //
-// The SAME incoming hit means different things depending on which state the imp is in — so
-// impact facts (healthAfter/amount) are not enough. We need PER-ENTITY, modder-owned state
-// (`target.state("stagger")`). Impact reads and writes it; the engine has no lifecycle opinion.
-//
-// This spike exists to answer one question: is the surface expressive enough to build that
-// loop? If it type-checks with only the WALL primitives, yes.
+// Death is authored in IR; the engine has no lifecycle opinion. Per the spec, gated groups
+// evaluate INDEPENDENTLY (every group whose `when` holds fires), so the author writes
+// mutually-exclusive `when`s for a state machine.
 //
 // "postretro" → SHIPPED.  "postretro/proposed" → a WALL.
 
 import {
   defineImpactEvent,
-  type ImpactEvent,
   type LevelManifestWithEvents,
 } from "postretro/proposed";
 
@@ -26,48 +27,57 @@ import {
 const ALIVE = 0;
 const STAGGERED = 1;
 
-function impLifecycle(): ImpactEvent {
-  return defineImpactEvent({ tag: "imp" }, (impact) => {
-    const t = impact.target;
-    const stagger = t.state("stagger");                         // per-instance modder state (IR ref)
+// IMP — the Doom-2016 Glory Kill loop, a per-entity state machine driven by impact. A blessed
+// handle at module scope (pure data), NOT a function that returns one.
+const impLifecycle = defineImpactEvent({ tag: "imp" }, (impact) => {
+  const t = impact.target;
+  const stagger = t.state("stagger"); // per-instance modder state (IR ref)
 
-    // Transitions, authored as mutually-exclusive gated groups. NOTE(spec): this relies on
-    // gated groups evaluating INDEPENDENTLY (every group whose `when` holds fires) with the
-    // author guaranteeing exclusivity — vs a first-match/cond semantics. That choice is an
-    // open question this example surfaces; the conditions below are written to be correct
-    // under either reading.
-    return [
-      // A hit while STAGGERED = a Glory Kill: instant death, drops health + ammo to the source.
-      {
-        when: stagger.eq(STAGGERED),
-        do: [
-          t.playAnim("glory_kill"),
-          impact.source.grant("health", 25),
-          impact.source.grant("ammo", 10),
-          t.despawn(),
-        ],
-      },
-      // First drop below 30% max health, while still alive and not yet a kill → FALTER.
-      {
-        when: t.healthAfter
-          .le(t.maxHealth.times(0.3))
-          .and(stagger.eq(ALIVE))
-          .and(t.healthAfter.gt(0)),
-        do: [t.setState("stagger", STAGGERED), t.playAnim("falter")],
-      },
-      // Normal death path (killed outright, never staggered).
-      {
-        when: t.healthAfter.le(0).and(stagger.eq(ALIVE)),
-        do: [t.playAnim("death"), t.despawn({ afterMs: 1200 })],
-      },
-    ];
-  });
-}
+  // Mutually-exclusive gated groups (independent evaluation; the author guarantees exclusivity).
+  return [
+    // A hit while STAGGERED = a Glory Kill: instant death, drops health + ammo to the source.
+    {
+      when: stagger.eq(STAGGERED),
+      do: [
+        t.playAnim("glory_kill"),
+        impact.source.grant("health", 25),
+        impact.source.grant("ammo", 10),
+        t.despawn(),
+      ],
+    },
+    // First drop below 30% max health, while still alive and not yet a kill → FALTER.
+    {
+      when: t.healthAfter
+        .le(t.maxHealth.times(0.3))
+        .and(stagger.eq(ALIVE))
+        .and(t.healthAfter.gt(0)),
+      do: [t.setState("stagger", STAGGERED), t.playAnim("falter")],
+    },
+    // Normal death path (killed outright, never staggered).
+    {
+      when: t.healthAfter.le(0).and(stagger.eq(ALIVE)),
+      do: [t.playAnim("death"), t.despawn({ afterMs: 1200 })],
+    },
+  ];
+});
+
+// ZOMBIE — health<=0 is NOT death. Only a gib-level overshoot kills; otherwise the zombie DOWNS
+// and resurrects. No per-entity state — the unfloored healthAfter carries enough (a large
+// negative = a big overshoot = a gib).
+const zombieLifecycle = defineImpactEvent({ tag: "zombie" }, (impact) => {
+  const t = impact.target;
+  const lethal = t.healthAfter.le(-40); // big overshoot → truly dead (gib)
+  const downed = t.healthAfter.le(0).and(lethal.not()); // depleted, not gibbed → flop
+  return [
+    { when: lethal, do: [t.playAnim("gib"), impact.source.grant("xp", 100), t.despawn()] },
+    { when: downed, do: [t.playAnim("down"), t.setHealth(t.maxHealth, { afterMs: 3000 })] }, // resurrect
+  ];
+});
 
 export function setupLevel(): LevelManifestWithEvents {
   return {
     reactions: [],
-    events: [impLifecycle()],
+    events: [impLifecycle, zombieLifecycle],
   };
 }
 

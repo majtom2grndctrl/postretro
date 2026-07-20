@@ -87,7 +87,7 @@ Casing per scripting §4 (primitives camelCase, types PascalCase, `@` reserved f
 
 ## Script syntax examples
 
-See the fixtures: `arena-death.spike.ts` (grunt baseline, arena cross-scope override, zombie), `lifecycle.spike.ts` (Doom-2016 stagger/glory-kill). Canonical shape:
+See the fixtures, split by job: `arena-death.spike.ts` (the handle model — grunt baseline + arena cross-scope override + policy reuse), `lifecycle.spike.ts` (the keystone — per-entity state, the zombie resurrect, the Doom-2016 stagger/glory-kill machine). Canonical shape:
 
 ```ts
 // Proposed design — the death policy is data over impact facts.

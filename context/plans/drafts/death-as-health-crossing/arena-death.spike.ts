@@ -23,8 +23,10 @@ import { defineStore } from "postretro";
 import {
   entities,
   slot,
+  type EffectOrGroup,
   type EventBehavior,
   type GatedEffect,
+  type ImpactEvent,
   type LevelManifestWithEvents,
 } from "postretro/proposed";
 
@@ -33,10 +35,11 @@ const econ = defineStore("arena", {
 });
 const deaths = slot(econ.state.deaths);
 
-// 1. GRUNT — the global reference policy. THE AUTHOR decides health-depleted means dead,
-// and THE AUTHOR removes the entity (the engine does not auto-despawn at 0 HP).
-function gruntImpact(): EventBehavior {
-  return entities.query({ tag: "grunt" }).onImpact((impact) => [
+// THE BASELINE POLICY — an ordinary function of impact, not a hoisted event. This is the
+// reusable unit: the author decides health-depleted means dead, and the author removes the
+// entity (the engine does not auto-despawn at 0 HP). Reuse it anywhere by CALLING it.
+function baseGruntDeath(impact: ImpactEvent): readonly EffectOrGroup[] {
+  return [
     {
       when: impact.target.healthAfter.le(0), // author's death policy, expressed in IR
       do: [
@@ -46,21 +49,22 @@ function gruntImpact(): EventBehavior {
         impact.target.despawn({ afterMs: 1500 }),
       ],
     },
-  ]);
+  ];
 }
 
-// 2. ARENA OVERRIDE — identical syntax, narrower query, defined LATER. For a grunt in
-// zone "arena_1" this REPLACES the global policy: double bounty, instant vaporize, no anim.
+// 1. GRUNT — the global reference behavior: pass the baseline straight through.
+function gruntImpact(): EventBehavior {
+  return entities.query({ tag: "grunt" }).onImpact(baseGruntDeath);
+}
+
+// 2. ARENA OVERRIDE — SAME syntax, narrower query, defined LATER so it wins for arena_1
+// grunts. It MUTATES the baseline by reusing it (`...baseGruntDeath(impact)`) instead of
+// rewriting it: everything the baseline does, plus a style payout. Because the body is a
+// plain array, an override could just as well omit or replace a baseline effect.
 function arenaGruntImpact(): EventBehavior {
   return entities.query({ tag: "grunt", zone: "arena_1" }).onImpact((impact) => [
-    {
-      when: impact.target.healthAfter.le(0),
-      do: [
-        impact.source.grant("xp", impact.target.level.times(2).times(200)),
-        deaths.add(1),
-        impact.target.despawn(),
-      ],
-    },
+    ...baseGruntDeath(impact),
+    { when: impact.target.healthAfter.le(0), do: [impact.source.grant("style", 5)] },
   ]);
 }
 

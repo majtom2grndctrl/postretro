@@ -81,12 +81,20 @@ declare module "postretro/proposed" {
     // TRUE, UNFLOORED post-impact health — MAY be negative. `.le(0)` = depleted; a large
     // negative = a big overshoot (gib). Never assume it is >= 0.
     readonly healthAfter: NumberRef;
+    readonly maxHealth: NumberRef;                      // from the health descriptor's `max` — for % thresholds
     readonly level: NumberRef;                          // per-entity stat → a leaf
     despawn(opts?: { afterMs?: number }): Effect;       // consequential; you remove the entity — the engine does NOT auto-remove at 0 HP
     playAnim(clip: string): Effect;                     // presentation; modder-owned (string arg OK — not IR)
     // WALL-NEW capability the zombie surfaces: an absolute entity-health write, optionally
     // deferred by a timer (stand back up after N ms). Needs an engine deferred-write path.
     setHealth(amount: NumberValue, opts?: { afterMs?: number }): Effect;
+    // WALL-NEW capability the Doom-2016 lifecycle surfaces: per-INSTANCE modder-owned state,
+    // a number slot keyed by name (string key like a store slot, but entity-scoped). This is
+    // the substrate for lifecycle state machines (alive / staggered / downed). Read returns an
+    // IR ref; write is an effect. Open questions: is this a declared per-entity "script state"
+    // component, and how does it network?
+    state(name: string): NumberRef;
+    setState(name: string, value: NumberValue): Effect;
   }
   export interface SourceHandle {
     grant(resource: string, amount: NumberValue): Effect; // consequential

@@ -139,8 +139,8 @@ declare module "postretro/proposed" {
 
   // ---- Manifests: the proposed `events` child folded onto the REAL Level/Mod manifest (aliased
   //      here as Base*). These shadow the shipped names on purpose — the spec adds `events` to the
-  //      real types, at which point these collapse to plain re-exports. The spec's Task 6 owns
-  //      the lowering: `events` becomes a chokepoint-registered predicate + effect dispatch
+  //      real types, at which point these collapse to plain re-exports. The spec's evaluator task
+  //      (Task 5) owns the lowering: `events` becomes a chokepoint-registered predicate + effect dispatch
   //      (apply-site, NOT a tick-polled store crossing).
   export type LevelManifest = BaseLevelManifest & { events?: readonly ImpactEvent[] };
   export type ModManifest = BaseModManifest & { events?: readonly ImpactEvent[] };

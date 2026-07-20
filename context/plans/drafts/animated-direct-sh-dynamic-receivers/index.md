@@ -40,11 +40,17 @@ last direct-light gap for moving receivers under authored script animation.
   design (`is_promotable_base_light` already excludes `is_animated`/`animation.is_some()`).
   v1 delivers the baked static-occlusion SH quality tier only; runtime shadow-map
   quality for animated lights is a deliberate future escalation, not a v1 handoff.
-- **Direction-animated mover direct.** The baked direct-SH delta encodes the light's
-  authored (rest) cone direction. Brightness and RGB color animate the delta; a
-  swept cone changes spatial coverage a fixed baked tile cannot represent, so
-  direction animation does not rotate the mover-direct term in v1 (world `lm_anim`
-  and indirect SH keep their own direction behavior). Documented limitation.
+- **Direction-animated mover direct — the dynamic tier's job, by design.** The baked
+  direct-SH delta encodes the light's authored (rest) cone direction; brightness and
+  RGB color animate the delta. A cone that must *rake* across moving geometry with a
+  live direction is precisely what the dynamic tier exists for, and `light_dynamic_spot`
+  already lights movers through the runtime loop with a real cone and shadows. So this
+  is not a baked-tier limitation to close later — it is the "static-vs-dynamic is an
+  authoring choice, not an engine rule" invariant (index.md §2) drawing its line: the
+  baked animated tier serves the pulse/color theatrical vocabulary (alarm red,
+  strobing); a swept searchlight over movers is authored dynamic. The rest-direction
+  bake keeps world (`lm_anim`) and mover terms consistent for the brightness/color
+  cases; it does not crash or corrupt the atlas when a direction curve is present.
 - **Static world direct.** Unchanged — stays animated-lightmap-based (`lm_anim`).
 - **Entity self-shadowing under an animated light.** The baked SH delta cannot
   encode a receiver's own geometry (probes know nothing of the mover). Self-shadow
@@ -302,7 +308,11 @@ the cone reddens with the wall after the plate fires. At promotion, update
 `context/lib/rendering_pipeline.md` §4 (new "Animated direct SH for dynamic
 receivers" paragraph + the receiver matrix), `context/lib/build_pipeline.md` PRL
 section table (id 45), and the FGD comment on the baked-`Light` base class noting
-that script-animated baked lights now reach moving receivers' direct term.
+that script-animated baked lights now reach moving receivers' direct term. Add one
+line of authoring guidance (FGD comment and/or `docs/`): pulse/color animation →
+baked animated light (cheap, reaches movers via this feature); a cone that must
+sweep its direction across movers → author `light_dynamic_spot` (the dynamic tier
+owns live-direction cones on moving geometry).
 
 ## Sequencing
 
@@ -363,20 +373,34 @@ const turnRed = defineReaction("closet.turnRed", {
 // The door (kinematic_mover) inside the cone now reddens with the wall on fire.
 ```
 
-## Open questions
+## Decisions grounded in project goals
 
-- **Fixture: convert in place vs. add a second light.** Recommendation: convert
-  entity 7 in place to a baked animated `light_spot`. It keeps a single alarm light
-  matching the narrative; the E18 spawner assertions are light-tier-agnostic. A
-  second baked light sharing the `alarm_light` tag would have `setLightAnimation`
-  target both and muddy the fixture. Decide before implementing Task 5.
-- **CSR sharing with the indirect delta (id 27).** The animated indirect delta and
-  the new animated direct delta key on the same `AnimatedBakedLights` set, but their
-  affinity reach differs (indirect bounce reaches farther than the occlusion-tested
-  direct cone). v1 bakes an independent, tighter direct-reach CSR for section 45.
-  Sharing section 27's CSR would waste sub-blocks on bounce-only cells; revisit only
-  if the two sections' combined footprint is measured to matter.
-- **Direction-animated mover direct.** Left as a rest-direction approximation in v1.
-  If a swept-cone mover-direct case arises, the escalation is either promotion (real
-  runtime cone) or a small set of direction-keyframe-indexed deltas — both larger
-  than this plan; do not fold into v1.
+Three questions that first read as open resolve once measured against the project's
+own values — theatrical scripted reveals as first-class, lean/baked-over-computed,
+and "static-vs-dynamic is an authoring choice, not an engine rule." Each is a
+decision, not a deferral.
+
+- **Fixture: convert entity 7 in place** to a baked animated `light_spot`. The
+  fixture *is* a monster-closet set-piece, and the northstar makes those first-class;
+  a single alarm light that is the animated thing is the honest set-piece and the
+  natural authoring pattern a modder should copy. A second tag-sharing light is an
+  engine-testing artifact that would also make `setLightAnimation` target both. The
+  E18 spawner assertions are light-tier-agnostic, so nothing blocks the conversion.
+
+- **CSR: bake the independent, tighter direct-reach index for section 45** (not
+  shared with the indirect delta's id-27 CSR). This is leaner, not merely simpler:
+  sharing would carry direct sub-blocks for bounce-only cells the occlusion-tested
+  direct cone never reaches, spending VRAM against the compatibility-floor budget for
+  no benefit. It also matches the codebase's measure-before-pivoting culture (global
+  BVH, clustered-forward deferral): independent-tighter is the correct lean default;
+  a shared index is the speculative variant to reach for only if a measured combined
+  footprint ever demands it. Escape hatch noted, decision made.
+
+- **Direction animation on movers is the dynamic tier's job, by design** (see Out of
+  scope). Not a limitation to close later: a live-direction cone raking moving
+  geometry is authored `light_dynamic_spot`, which already works; the baked animated
+  tier owns the pulse/color vocabulary. The docs task carries this as one line of
+  authoring guidance rather than a backlog item.
+
+No residual open questions block implementation. Fixture cone/aim tuning is ordinary
+Task-5 implementation detail.

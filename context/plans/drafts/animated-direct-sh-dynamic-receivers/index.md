@@ -22,9 +22,10 @@ last direct-light gap for moving receivers under authored script animation.
   compile time.
 - Compiler bake keyed on the existing `AnimatedBakedLights` namespace
   (`!is_dynamic && animation.is_some()`), reusing the direct-SH primitives.
-- Renderer: extend the existing `direct_sh_compose` pass to **add** the animated
-  term, per-frame, modulated by the shared compose animation descriptors — the
-  same buffer `lm_anim` and the indirect SH delta already consume.
+- Renderer: a second `direct_sh_compose` pass that **adds** the animated term
+  per-frame, modulated by the shared compose animation descriptors — the same buffer
+  `lm_anim` and the indirect SH delta already consume (split from the promotion
+  compose to stay within the compute storage-buffer budget; see Task 3).
 - Receivers: kinematic movers (required), skinned meshes, and billboards — all
   three already sample the composed direct atlas at binding 15, so the fix is
   producer-side only.
@@ -98,15 +99,17 @@ The prompt's seven decisions, resolved:
    light routes its direct through the animated compose path in every runtime state
    — initial, active, looping, settled, cleared — because its compose descriptor
    stays active reading authored (or settled) radiance (`pack_compose_animation_descriptor`,
-   `active_without_animation`). No double-count: the light is absent from the
+   via the `active_without_animation` arg of `pack_animation_descriptor`). No
+   double-count: the light is absent from the
    `DirectShVolume` base (`StaticBakedLights` filters `animation.is_none()`), absent
    from the dynamic-direct `lights` buffer (baked lights never enter it), and absent
    from promotion selection (`is_promotable_base_light` excludes animated). The
    animated direct delta is its sole mover-direct source, by construction.
 
-6. **Budgets.** One extra additive loop in the already-dispatched `direct_sh_compose`
-   pass, over the direct probe atlas array (small — probe-atlas sized, not
-   screen-sized). Dispatch cadence widens to run every frame while any animated
+6. **Budgets.** A second additive compute pass over the direct probe atlas array
+   (small — probe-atlas sized, not screen-sized), split from the promotion compose to
+   stay within the compute stage's storage-buffer budget (see Task 3). Dispatch
+   cadence: the animated pass runs every frame while any animated
    baked light is active (curves change per frame), matching the indirect
    `sh_compose` cadence (which already runs unconditionally). **Zero-animated-light
    maps:** section 45 absent → the animated loop binds an empty CSR and the pass
@@ -151,10 +154,11 @@ RUNTIME (per frame)  light_bridge → compose animation descriptor (shared buffe
   └─────────────────────────────────────────────────────────────────────┘
         │
         ▼
-  direct_sh_compose (compute, pre-frame)
-    composed = base(static direct, BC6H)
-             − Σ_promo (selection_weight_i × promo_delta_i)   [id 41, existing]
-             + Σ_anim  (descriptor_scale_j(t) × anim_delta_j) [id 45, NEW]
+  direct_sh_compose (compute, pre-frame — two passes, Task 3)
+    Pass A: interm = base(static direct, BC6H)
+                   − Σ_promo (selection_weight_i × promo_delta_i)  [id 41, existing]
+    Pass B: composed = interm
+                   + Σ_anim  (descriptor_scale_j(t) × anim_delta_j) [id 45, NEW]
     clamp ≥ 0, write Rgba16Float composed direct atlas (binding 15)
         │
         ▼
@@ -231,12 +235,17 @@ Add PRL section `SectionId::AnimatedDirectShDeltaVolumes = 45` in
 `crates/level-format/src/lib.rs` (append after `TriggerVolumes = 44`; update
 `from_u32`). Add module `animated_direct_sh_delta_volumes.rs` with struct
 `AnimatedDirectShDeltaVolumesSection`, mirroring `DeltaShVolumesSection` (id 27)
-field-for-field — `affinity_factor`, `affinity_dims`, `tile_dimension`,
-`tile_border`, `delta_probe_f16_stride`, CSR `affinity_offsets`, flat
-`affinity_lights`, `delta_subblocks` (dense 64-probe RGBA16F octahedral sub-block
-per CSR entry), and the `animation_descriptor_indices` map — with a section-internal
-version constant. `affinity_lights` entries are `AnimatedBakedLights` indices (same
-space section 27 uses), NOT selection indices. Wire encode/decode + round-trip test.
+field-for-field — its eight stored fields `affinity_factor`, `affinity_dims`,
+`tile_dimension`, `tile_border`, `animation_descriptor_indices`, `affinity_offsets`,
+`affinity_lights`, `delta_subblocks` (dense 64-probe RGBA16F octahedral sub-block per
+CSR entry) — plus a section-internal `u32` version constant (initial value `1`).
+Note `delta_probe_f16_stride` is a **derived method** on id 27, not a stored field —
+carry it as the same derived accessor, do not serialize it. Section 45 serializes its
+**own** `animation_descriptor_indices` copy (it does not reference section 27's, so it
+loads independently of whether section 27 is present); the copy is keyed by
+`AnimatedBakedLights` index, independent of the affinity CSR layout. `affinity_lights`
+entries are `AnimatedBakedLights` indices (same space section 27 uses), NOT selection
+indices. Wire encode/decode + round-trip test.
 Add loader validation in `crates/level-loader/src/prl_loader.rs` (sibling to
 `validate_direct_sh_delta`): every referenced descriptor index resolvable; malformed
 or partial → drop the whole section (animated-direct disabled), never a hard error.
@@ -247,52 +256,82 @@ Add module `crates/level-compiler/src/animated_direct_sh_bake.rs` (new file — 
 **not** extend the 2137-line `direct_sh_bake.rs`). Key on the existing
 `AnimatedBakedLights` namespace (`light_namespaces.rs`, `!is_dynamic &&
 animation.is_some()`). For each animated baked light, per reaching probe, bake its
-**direct** unit-radiance transport with the shared primitives already used by the
-static direct bake: `sh_bake::bake_probe_direct_rgb` with the single light,
-occlusion via `soft_visibility`/`segment_clear` against the static-geometry BVH,
-`apply_cosine_lobe_rgb`, `pack_octahedral_irradiance_tile`. Unit-radiance means the
-bake omits the light's authored intensity/color (the runtime descriptor applies them
-once); bake at the light's **authored cone direction** (rest). Reach-cull with the
-direct-reach `decompose_affinity_for_lights` (cone/falloff + portal reach), the same
-tighter reach the base direct bake uses — not the broader indirect bounce reach.
-Emit section 45 with `animation_descriptor_indices` parallel to section 27's, so the
-runtime descriptor mapping is shared. Wire into `pipeline.rs` to run whenever
-`AnimatedBakedLights` is non-empty. Bake determinism test (seeded soft visibility)
-and a per-light-separability test (single-light sub-block equals that light's share).
+**direct** unit-radiance transport reusing the same `pub(crate)` primitives the
+indirect delta bake (`delta_sh_bake.rs`) reuses: `sh_bake::bake_probe_direct_rgb`
+with the single light, then `sh_bake::pack_octahedral_irradiance_tile`. Occlusion
+(against the static-geometry BVH) and the cosine-lobe convolution happen **inside**
+`bake_probe_direct_rgb` — the `soft_visibility`/`segment_clear`/`apply_cosine_lobe_rgb`
+helpers are module-private (`sh_bake.rs`/`lightmap_bake.rs`) and reached through it,
+not called directly. Unit-radiance means the bake omits the light's authored
+intensity/color (the runtime descriptor applies them once); bake at the light's
+**authored cone direction** (rest). Reach-cull with the direct-reach
+`decompose_affinity_for_lights` (cone/falloff + portal reach), the same tighter reach
+the base direct bake uses — not the broader indirect bounce reach. Emit section 45
+with its own `animation_descriptor_indices` (same `AnimatedBakedLights` index space
+section 27 uses). Wire into `pipeline.rs` to run whenever `AnimatedBakedLights` is
+non-empty. Tests: bake determinism (seeded soft visibility); per-light separability
+(single-light sub-block equals that light's share); **no-double-count** — a
+script-animated baked light produces a section-45 entry and contributes nothing to
+the `DirectShVolume` base atlas or `EntityShadowLights` selection (delivers AC 3);
+**direction-safe** — a direction-animated light bakes a clean rest-direction delta
+with no panic or NaN (delivers half of AC 5).
 
-### Task 3: Renderer — additive animated term in `direct_sh_compose`
+### Task 3: Renderer — animated-direct additive compose (second pass)
 
-Extend `crates/renderer/src/render/direct_sh_compose.rs` and
-`crates/renderer/src/shaders/direct_sh_compose.wgsl`. In the shader, after the
-existing promotion-subtraction loop, add an **additive** loop over the section-45
-affinity cell: read the animated delta sub-block and multiply by
-`animated_light_scale(light_index)` — port the helper verbatim from `sh_compose.wgsl`
-(reads the shared compose `descriptors` + `anim_samples` + `curve_eval.wgsl`
-`sample_curve_catmull_rom`/`sample_color_catmull_rom`, gated by `is_active`, applies
-`intensity × (base_color | color curve) × brightness` once). Bind the new section-45
-buffers + the shared compose descriptor/anim-sample buffers (already produced each
-frame by the light bridge for `sh_compose`) at fresh, non-colliding bindings on the
-compose BGL. Clamp `≥ 0` after both loops. Plumbing:
-- Widen `has_direct` (and the `direct_composed_storage_view` allocation in
-  `ShVolumeResources::new`, `render/sh_volume.rs`) to true when section 35 **or**
-  section 45 is present; when only 45 is present, the base atlas is a zero atlas and
-  the pass adds the animated term onto zero.
-- Widen `direct_compose_should_dispatch` to also dispatch every frame while any
-  section-45 descriptor is active — OR the animated-active predicate into the
-  existing promotion predicate. Keep the promotion-only cadence when section 45 is
-  absent.
-- Feed the per-frame compose descriptor + `anim_samples` buffers into the compose
-  pass. These already exist for the indirect `sh_compose`; thread the same handles.
-- The mover/skinned/billboard consumers are unchanged — they already sample the
-  composed `direct_atlas_view` at binding 15.
+**Why a second pass, not an extended loop.** A single extended `direct_sh_compose`
+would bind 10 storage buffers in the compute stage — the existing 4 (promotion
+`delta_subblocks` @20, `affinity_offsets` @21, `affinity_lights` @24,
+`selection_weights` @26) plus section-45's CSR ×3 and the shared `descriptors` @22,
+`anim_samples` @23, `animation_descriptor_indices` @25 — over the fixed
+`max_storage_buffers_per_shader_stage = 8` the renderer must not raise (§10). Split
+the animated addition into its own compute pass so each stays within budget. (Note:
+`direct_composed_atlas` is a storage *texture*, not a storage buffer, so it is off
+this budget.)
+
+- **Pass A (unchanged):** the existing `direct_sh_compose` writes `base − Σ_promo`
+  into an intermediate `Rgba16Float` composed view (4 storage buffers).
+- **Pass B (new):** `crates/renderer/src/render/direct_sh_compose.rs` +
+  `shaders/direct_sh_compose.wgsl` gain a sibling pass that samples Pass A's output
+  and writes the **final** composed view (`direct_atlas_view`, binding 15) as
+  `passA + Σ_anim(animated_light_scale_j(t) × anim_delta_j)`, clamped `≥ 0`. Its
+  storage buffers (6, within budget): section-45 `delta_subblocks`/`affinity_offsets`/
+  `affinity_lights` at fresh numbers, plus the shared `descriptors` @22,
+  `anim_samples` @23, `animation_descriptor_indices` @25 — the **same handles** the
+  indirect `sh_compose` binds (owned by the renderer's SH-compose resources; thread
+  them in). Those three numbers are free in the compose group, so `animated_light_scale`
+  ports **verbatim** from `sh_compose.wgsl` (with `curve_eval.wgsl` appended); it
+  applies `intensity × (base_color | color curve) × brightness` once, gated by
+  `is_active`. The intermediate composed view is one extra probe-atlas-sized texture
+  (small); use a sampled read of it in Pass B to stay downlevel-safe (no read_write
+  storage textures).
+
+Plumbing:
+- Widen `has_direct` (and both composed-view allocations in `ShVolumeResources::new`,
+  `render/sh_volume.rs`) to true when section 35 **or** section 45 is present; when
+  only 45 is present, Pass A's base is a zero atlas and Pass B adds onto zero.
+- Widen `direct_compose_should_dispatch` so Pass B (and thus Pass A) dispatch every
+  frame while any section-45 descriptor is active — OR the animated-active predicate
+  into the existing promotion predicate. When section 45 is absent, Pass B is skipped
+  entirely and Pass A keeps its current promotion-only cadence.
+- No-animated / promotion-only maps must still bind valid buffers: Pass B is skipped,
+  so its section-45 CSR and shared descriptor bindings need no dummy buffers; Pass A
+  is byte-for-byte unchanged.
+- Add a runtime lifecycle test (headless — assert at the descriptor→scale seam, no GPU
+  context) covering the composed-atlas animated term for each descriptor state:
+  initial-active, initial-inactive (`is_active == 0` → 0), looping mid-cycle, one-shot
+  settle, cleared, despawn/reload — delivers AC 4. Confirm a scene with no animated
+  baked lights leaves the direct atlas byte-identical to pre-change (delivers AC 7).
+- The mover/skinned/billboard consumers are unchanged — they already sample the final
+  `direct_atlas_view` at binding 15.
 
 ### Task 4: Diagnostics
 
 Add a dev-tools isolation for the animated-direct contribution, reusing the existing
-`DirectShDebugOverride` shape (`direct_sh_compose.wgsl` binding 27) so a single
-animated light's added term can be viewed in isolation (parallel to the promotion
-selection override). Confirm `POSTRETRO_GPU_TIMING=1` attributes the added loop to
-the existing `direct_sh_compose` bracket (§12) — no new bracket needed. Extend the
+debug-override shape (Rust `DirectShDebugOverride` / WGSL `DebugOverride` at binding
+27) so a single animated light's added term can be viewed in isolation (parallel to
+the promotion selection override). Confirm `POSTRETRO_GPU_TIMING=1` attributes the
+new Pass B to a timing bracket — extend the existing `direct_sh_compose` bracket to
+span both passes, or add a sibling bracket (§12). Extend the
 forward/mesh lighting-isolation modes only if the existing direct-SH isolation mode
 does not already cover the composed atlas (it does — verify, don't duplicate).
 
@@ -301,8 +340,8 @@ does not already cover the composed atlas (it does — verify, don't duplicate).
 Convert `content/dev/maps/spawner-test.map` entity 7 from `light_dynamic_spot` to a
 baked animated `light_spot` (keep `_tags "alarm_light"`, set `_cone`/`_cone2`/`angles`
 so the closet-door mover sits inside the cone, set `light`/`_falloff_range`). The
-`turnRed` `setLightAnimation` reaction in `spawner-test.ts` is unchanged (queries
-`component: "light"`, matches the spot). Recompile the `.prl` (command in the map
+`turnRed` `setLightAnimation` reaction in `content/dev/scripts/spawner-test.ts` is
+unchanged (queries `component: "light"`, matches the spot). Recompile the `.prl` (command in the map
 header). Add a headless/frame-capture regression asserting the door fragment inside
 the cone reddens with the wall after the plate fires. At promotion, update
 `context/lib/rendering_pipeline.md` §4 (new "Animated direct SH for dynamic
@@ -340,14 +379,16 @@ consume the shipped runtime behavior from Phase 2.
 ## Wire format
 
 `AnimatedDirectShDeltaVolumes` (id 45) mirrors `DeltaShVolumes` (id 27) exactly:
-little-endian; a section-internal `u32`/`u8` version prefix per the id-27 precedent;
+little-endian; a section-internal `u32` version prefix, initial value `1`;
 `affinity_factor = 4`, `affinity_dims = ceil(base grid_dimensions / 4)`;
-`tile_dimension = 6`, `tile_border = 1`; CSR `affinity_offsets` length
-`affinity_cell_count + 1` (trailing total); flat `affinity_lights` grouped by cell,
-entries are **`AnimatedBakedLights` indices**; `delta_subblocks` one dense 64-probe
-`Rgba16Float` (f16×4) octahedral tile sub-block per CSR entry, x-fastest in-cell
-order `local = lx + ly*4 + lz*16`, index-parallel to `affinity_lights`;
-`animation_descriptor_indices` parallel to section 27's (same descriptor slots).
+`tile_dimension = 6`, `tile_border = 1`; its own `animation_descriptor_indices`
+(keyed by `AnimatedBakedLights` index, independent of section 27); CSR
+`affinity_offsets` length `affinity_cell_count + 1` (trailing total); flat
+`affinity_lights` grouped by cell, entries are **`AnimatedBakedLights` indices**;
+`delta_subblocks` one dense 64-probe `Rgba16Float` (f16×4) octahedral tile sub-block
+per CSR entry, x-fastest in-cell order `local = lx + ly*4 + lz*16`, index-parallel to
+`affinity_lights`. The per-probe f16 stride is derived (a method, as on id 27), not
+serialized.
 Empty list encodes as a zero-count CSR (`affinity_offsets = [0]`, empty
 `affinity_lights`/`delta_subblocks`) — the loader treats it as "no animated direct."
 The section is emitted only when `AnimatedBakedLights` is non-empty. It mirrors id 27

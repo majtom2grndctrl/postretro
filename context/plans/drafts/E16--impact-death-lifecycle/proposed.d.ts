@@ -78,20 +78,23 @@ declare module "postretro/proposed" {
     // negative = a big overshoot (gib). Never assume it is >= 0.
     readonly healthAfter: NumberRef;
     readonly maxHealth: NumberRef;                      // from the health descriptor's `max` — for % thresholds
-    readonly level: NumberRef;                          // per-entity stat → a leaf
     despawn(opts?: { afterMs?: number }): Effect;       // consequential; you remove the entity — the engine does NOT auto-remove at 0 HP
     playAnim(clip: string): Effect;                     // presentation; modder-owned (string arg OK — not IR)
     // WALL-NEW (zombie): absolute entity-health write, optionally deferred (stand back up).
     setHealth(amount: NumberValue, opts?: { afterMs?: number }): Effect;
     // WALL-NEW (Doom lifecycle): per-INSTANCE modder-owned state, a number slot keyed by name.
     // The substrate for lifecycle state machines (alive/staggered/downed). Read → IR ref;
-    // write → effect. Open: is this a declared per-entity "script state" component, and how
-    // does it network?
+    // write → effect. Host-authoritative; per-entity replication is deferred (see roadmap).
     state(name: string): NumberRef;
     setState(name: string, value: NumberValue): Effect;
   }
+  const sourceBrand: unique symbol;
+  // Opaque token for the damager. Published in the impact scope, but effects that credit the
+  // SOURCE (grant xp / ammo / health) are DEFERRED — per-player resources need a replication
+  // story first (see roadmap). No v1 methods; the token exists so policies can name the source
+  // and the seam is charted.
   export interface SourceHandle {
-    grant(resource: string, amount: NumberValue): Effect; // consequential
+    readonly [sourceBrand]: true;
   }
 
   // ---- Store slot handle: additive write.
@@ -112,12 +115,14 @@ declare module "postretro/proposed" {
   // ---- The BLESSED HANDLE for a defined impact event. Pure returnable data (goes into a
   //      manifest's `events`), branded so a bare `{ kind: "impact" }` can't be forged. Thread
   //      it across scopes; `override(...)` returns a LINKED override handle to return from the
-  //      overriding scope's manifest (later-declared overrides win for matched entities).
+  //      overriding scope's manifest. Precedence is MOST-RECENTLY-EXECUTED: the last override
+  //      to run for a matched entity wins. The filter narrows the base set by an ADDITIONAL tag
+  //      (an entity may carry several tags), so an override targets a subset the base also matches.
   export interface ImpactEvent {
     readonly kind: "impact";
     readonly [impactEventBrand]: true;
     override(
-      filter: { tag?: string; zone?: string },
+      filter: { tag?: string },
       build: (impact: Impact) => readonly EffectOrGroup[],
     ): ImpactEvent;
   }
@@ -126,7 +131,7 @@ declare module "postretro/proposed" {
   //      is a STANDING selector (spawn-aware — it observes any matching entity's impacts, not a
   //      snapshot). Runs ONCE at load to emit the handle; the builder is not a live callback.
   export function defineImpactEvent(
-    filter: { tag?: string; zone?: string },
+    filter: { tag?: string },
     build: (impact: Impact) => readonly EffectOrGroup[],
   ): ImpactEvent;
 

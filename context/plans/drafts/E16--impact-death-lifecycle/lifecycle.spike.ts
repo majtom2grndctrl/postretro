@@ -35,15 +35,11 @@ const impLifecycle = defineImpactEvent({ tag: "imp" }, (impact) => {
 
   // Mutually-exclusive gated groups (independent evaluation; the author guarantees exclusivity).
   return [
-    // A hit while STAGGERED = a Glory Kill: instant death, drops health + ammo to the source.
+    // A hit while STAGGERED = a Glory Kill: instant death. (Health/ammo drops to the SOURCE are
+    // deferred — grant is out of v1 scope; see roadmap.)
     {
       when: stagger.eq(STAGGERED),
-      do: [
-        t.playAnim("glory_kill"),
-        impact.source.grant("health", 25),
-        impact.source.grant("ammo", 10),
-        t.despawn(),
-      ],
+      do: [t.playAnim("glory_kill"), t.despawn()],
     },
     // First drop below 30% max health, while still alive and not yet a kill → FALTER.
     {
@@ -69,7 +65,7 @@ const zombieLifecycle = defineImpactEvent({ tag: "zombie" }, (impact) => {
   const lethal = t.healthAfter.le(-40); // big overshoot → truly dead (gib)
   const downed = t.healthAfter.le(0).and(lethal.not()); // depleted, not gibbed → flop
   return [
-    { when: lethal, do: [t.playAnim("gib"), impact.source.grant("xp", 100), t.despawn()] },
+    { when: lethal, do: [t.playAnim("gib"), t.despawn()] },
     { when: downed, do: [t.playAnim("down"), t.setHealth(t.maxHealth, { afterMs: 3000 })] }, // resurrect
   ];
 });

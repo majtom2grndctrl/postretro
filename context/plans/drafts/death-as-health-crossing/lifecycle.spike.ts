@@ -17,8 +17,8 @@
 // "postretro" → SHIPPED.  "postretro/proposed" → a WALL.
 
 import {
-  entities,
-  type EventBehavior,
+  defineImpactEvent,
+  type ImpactEvent,
   type LevelManifestWithEvents,
 } from "postretro/proposed";
 
@@ -26,8 +26,8 @@ import {
 const ALIVE = 0;
 const STAGGERED = 1;
 
-function impLifecycle(): EventBehavior {
-  return entities.query({ tag: "imp" }).onImpact((impact) => {
+function impLifecycle(): ImpactEvent {
+  return defineImpactEvent({ tag: "imp" }, (impact) => {
     const t = impact.target;
     const stagger = t.state("stagger");                         // per-instance modder state (IR ref)
 
@@ -72,7 +72,7 @@ export function setupLevel(): LevelManifestWithEvents {
 }
 
 // === GUARDRAILS — these MUST NOT compile. ===================================
-entities.query({ tag: "imp" }).onImpact((impact) => {
+defineImpactEvent({ tag: "imp" }, (impact) => {
   const stagger = impact.target.state("stagger");
   // @ts-expect-error per-entity state is an IR ref — no live JS math (use .plus(), not `+`).
   const bad = stagger + 1;

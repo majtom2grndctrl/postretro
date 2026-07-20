@@ -34,7 +34,7 @@ use crate::combat_positioning::{
 use crate::nav::{NavGraph, distance_xz};
 use postretro_entities::components::brain::{AiStateMap, AiTuning, BrainComponent, LogicalState};
 use postretro_entities::components::health::{
-    DamageContext, HealthComponent, apply_damage_with_context,
+    DamageContext, DamageProducer, HealthComponent, apply_damage_with_context,
 };
 use postretro_entities::components::mesh::{
     SwitchResult, restart_animation_clip, switch_animation_state,
@@ -846,6 +846,7 @@ pub(crate) fn run_ai_tick_with_navigation(
                         attacker: Some(outcome.id),
                         weapon: None,
                         zone: None,
+                        producer: DamageProducer::InTick,
                     },
                 );
             }

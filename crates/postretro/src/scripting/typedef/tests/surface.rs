@@ -508,20 +508,59 @@ fn impact_policy_surface_uses_author_ids_and_closed_effect_union() {
         luau.contains("declare function defineImpactEvent(id: string,"),
         "Luau defineImpactEvent must require an author id"
     );
-    for surface in [&ts, &luau] {
+    // `Effect` intentionally hides its primitive-wire representation. The
+    // author-facing closed vocabulary is the five builders below.
+    assert!(
+        ts.contains("export interface Effect { readonly [effectBrand]: true; }")
+            && luau.contains("export type Effect = { __impactEffectBrand: true }"),
+        "impact Effect must be an opaque branded builder result"
+    );
+
+    let effect_builders = [
+        (
+            "despawn",
+            "despawn(opts?: { afterMs?: number }): Effect;",
+            "despawn: (self: TargetHandle, opts: { afterMs: number? }?) -> Effect,",
+        ),
+        (
+            "playAnim",
+            "playAnim(clip: string): Effect;",
+            "playAnim: (self: TargetHandle, clip: string) -> Effect,",
+        ),
+        (
+            "setHealth",
+            "setHealth(value: NumberValue, opts?: { afterMs?: number }): Effect;",
+            "setHealth: (self: TargetHandle, value: NumberValue, opts: { afterMs: number? }?) -> Effect,",
+        ),
+        (
+            "setState",
+            "setState(name: string, value: NumberValue): Effect;",
+            "setState: (self: TargetHandle, name: string, value: NumberValue) -> Effect,",
+        ),
+        (
+            "slot.add",
+            "export interface NumberSlot { add(delta: NumberValue): Effect; }",
+            "export type NumberSlot = { add: (self: NumberSlot, delta: NumberValue) -> Effect }",
+        ),
+    ];
+    for (builder, ts_signature, luau_signature) in effect_builders {
         assert!(
-            !surface.contains("type Effect = PrimitiveReactionDescriptor | Reaction"),
-            "impact Effect must not advertise the general reaction surface"
+            ts.contains(ts_signature),
+            "TypeScript impact Effect is missing `{builder}` builder"
         );
-        for primitive in ["despawn", "playAnim", "setHealth", "setState"] {
-            assert!(
-                surface.contains(&format!("primitive: \"{primitive}\"")),
-                "impact Effect is missing `{primitive}`"
-            );
-        }
         assert!(
-            surface.contains("slot: string"),
-            "impact Effect must include slot.add's lowered store write"
+            luau.contains(luau_signature),
+            "Luau impact Effect is missing `{builder}` builder"
         );
     }
+    assert_eq!(
+        ts.matches("): Effect;").count(),
+        5,
+        "TypeScript must expose exactly the five closed impact-effect builders"
+    );
+    assert_eq!(
+        luau.matches("-> Effect").count(),
+        5,
+        "Luau must expose exactly the five closed impact-effect builders"
+    );
 }

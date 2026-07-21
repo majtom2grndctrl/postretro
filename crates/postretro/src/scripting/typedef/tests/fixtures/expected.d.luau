@@ -1063,12 +1063,8 @@ export type BoolRef = {
   ["not"]: (self: BoolRef) -> BoolRef,
   select: (self: BoolRef, whenTrue: NumberValue, whenFalse: NumberValue) -> NumberRef,
 }
-export type Effect =
-  { primitive: "despawn", target: "@impact.target", args: { afterMs: number? } }
-  | { primitive: "playAnim", target: "@impact.target", args: { clip: string } }
-  | { primitive: "setHealth", target: "@impact.target", args: { value: any, afterMs: number? } }
-  | { primitive: "setState", target: "@impact.target", args: { name: string, value: any } }
-  | { primitive: "setState", target: nil?, args: { slot: string, value: any } }
+--- Opaque closed impact effect. Construct through TargetHandle or slot(...):add().
+export type Effect = { __impactEffectBrand: true }
 export type GatedEffect = { when: BoolRef?, ["do"]: {Effect} }
 export type EffectOrGroup = Effect | GatedEffect
 export type ImpactEventFilter = { tag: string?, levels: {string}? }

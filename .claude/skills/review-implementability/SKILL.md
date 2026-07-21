@@ -36,7 +36,7 @@ The agent answers two questions, exhaustively:
 - Are earlier phases' outputs identified well enough to find in the tree (the agent can't read their task text)?
 - Is any load-bearing detail stated only in Scope, where a task-only reader misses it?
 - Could a literal reading satisfy the task text while violating the spec's intent?
-- Could the task complete while breaking an Invariants row it establishes or threatens — and would any AC catch it?
+- Could the task complete while breaking an Invariants row it touches, with no AC failing?
 
 **Q2 — per AC:** realistically achievable against the actual codebase, and a sound metric?
 - Verify achievability against source: round-trip claims vs. serde behavior, counters/seams the assertions need (`#[cfg(test)]` gating), whether warns/logs are observable by the harness, fixture literals vs. type choices.

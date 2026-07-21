@@ -42,7 +42,7 @@ Use subagents for exploration — codebase reading, pattern discovery, doc looku
 
 **Oversized-file watch.** Watch source-file size while grounding. Flag any file already past ~800 lines that the plan will extend — a soft smell, not a gate. A cohesive 900-line table is fine; a tangled 600-line module may not be. Carry the flag forward as a split-first task (§3).
 
-**Lifecycle diagram before tasks.** When the plan changes state or timing across seams — latches, deferred effects, cross-frame hand-offs, multi-stage event flows — draw the full lifecycle as a Mermaid diagram before writing tasks: `sequenceDiagram` for cross-seam flows (frame boundaries as explicit participants when timing matters), `stateDiagram-v2` for latch/FSM lifecycles. Every arrow must correspond to a call site verified under the code-grounding rule — no arrow you haven't read. Prose lets a timing gap go unnoticed; a diagram makes it unwritable. Derive the Invariants table (§3) and task boundaries from the diagram. The diagram itself lands in `research.md`, unless it is the clearest statement of a pinned decision — then it belongs in the spec.
+**Lifecycle diagram before tasks.** When the plan changes state or timing across seams — latches, deferred effects, cross-frame hand-offs — diagram the full lifecycle in Mermaid before writing tasks: `sequenceDiagram` for cross-seam flows (frame boundaries as participants when timing matters), `stateDiagram-v2` for latch/FSM lifecycles. No arrow without a read call site — the diagram drives code-grounding. Derive the Invariants table (§3) and task boundaries from it. Diagram goes to `research.md`; keep it in the spec only when it is the clearest statement of a pinned decision.
 
 **Research notes stay out of the spec.** If findings are useful but don't drive decisions, put them in a sibling `research.md` in the plan folder. The spec captures decisions and behavior, not the investigation that produced them.
 
@@ -103,7 +103,7 @@ For each new binary surface, pin: endianness, integer signedness, length-prefix 
 ## Invariants
 (Required when a behavioral guarantee — exactly/at-most-once, ordering, state reachability, timing — is established or preserved across more than one task or seam. Skip otherwise.)
 
-Pin each cross-task invariant once. `/orchestrate` hands this table to every task agent alongside the Goal and AC list — reference rows from task paragraphs instead of restating.
+Pin each cross-task invariant once. `/orchestrate` hands this table to every task agent with the Goal and AC list — task paragraphs reference rows, never restate them.
 
 | Invariant | Established by | Preserved / threatened at | Verified by |
 |---|---|---|---|
@@ -154,7 +154,7 @@ Before committing, walk the spec twice:
 
 - **Task → AC.** For every task line item, ask: "What AC verifies this behavior?" If nothing does, either the AC is missing or the task should drop.
 - **AC → task.** For every AC, ask: "Which task produces the behavior this verifies?" If nothing does, either the task is missing or the AC is aspirational.
-- **Invariant → task + AC.** (When the Invariants table exists.) For every row, ask: "Which task owns each establishing and preserving edit, and which AC verifies the guarantee?" An invariant a task can break without failing any AC is the gap the two walks above can't see.
+- **Invariant → task + AC.** (When the Invariants table exists.) For every row, ask: "Which task owns each establishing edit, and which AC verifies the guarantee?" An invariant breakable without failing any AC is the gap the two walks above miss.
 
 All directions must close. Gaps signal that something was assumed without being written down.
 

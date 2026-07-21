@@ -62,7 +62,7 @@ Create agent worktrees from `feature/<plan-name>`. Integrate completed work back
 
 **For each agent, provide:**
 1. The plan's **Goal** section (one orienting paragraph)
-2. The plan's **Invariants** table, when present — the shared cross-task contract; the agent must not break any row
+2. The plan's **Invariants** table, when present — cross-task contract; break no row
 3. The agent's **specific task** — description, acceptance criteria
 4. Instruction to read relevant `context/lib/` files for architectural guidance
 5. Instruction to follow `context/lib/development_guide.md` conventions

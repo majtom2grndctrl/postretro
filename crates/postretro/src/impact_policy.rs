@@ -3,15 +3,15 @@
 
 use postretro_entities::components::health::{DamageProducer, ImpactDispatch};
 use postretro_entities::{EntityId, ScriptCtx};
-use postretro_foundation::ir::{
-    bind, eval_value, BakedIr, BoundProgram, IrNode, IrType, IrValue, CURRENT_IR_VERSION,
-};
 use postretro_foundation::ImpactEventDescriptor;
+use postretro_foundation::ir::{
+    BakedIr, BoundProgram, CURRENT_IR_VERSION, IrNode, IrType, IrValue, bind, eval_value,
+};
 use postretro_scripting_core::ir_scopes::{EntityOutputHandle, EntityScope};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
 
-use crate::impact_effects::{apply_effect, ImpactEffect};
+use crate::impact_effects::{ImpactEffect, apply_effect};
 
 /// The single consumer of the health chokepoint's impact-dispatch queue.
 ///
@@ -487,14 +487,14 @@ fn number(value: IrValue) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use postretro_entities::Transform;
     use postretro_entities::components::health::{
-        apply_damage_with_context, DamageContext, HealthComponent,
+        DamageContext, HealthComponent, apply_damage_with_context,
     };
     use postretro_entities::data_descriptors::HealthDescriptor;
     use postretro_entities::slot_table::{
         NumericRange, ReplicationScope, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
     };
-    use postretro_entities::Transform;
     use postretro_foundation::DamagePayload;
     use serde_json::json;
 

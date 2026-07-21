@@ -12,6 +12,7 @@ use crate::components::agent::AgentComponent;
 use crate::components::ammo_reserve::AmmoReserve;
 use crate::components::billboard_emitter::BillboardEmitterComponent;
 use crate::components::brain::BrainComponent;
+use crate::components::entity_state::EntityStateComponent;
 use crate::components::fog_volume::FogAnimation;
 use crate::components::health::{HealthComponent, ImpactDispatch};
 use crate::components::kinematic_mover::KinematicMoverComponent;
@@ -123,6 +124,9 @@ pub enum ComponentKind {
     /// Map-authored, fixed-tick enemy-spawn configuration. The resolved
     /// descriptor remains in the session spawn context, not this serde value.
     Spawner = 16,
+    /// Per-instance modder-owned numeric fields. Every entity receives an
+    /// empty component at spawn; fields emerge on first write.
+    EntityState = 17,
 }
 
 impl ComponentKind {
@@ -149,6 +153,7 @@ impl ComponentKind {
             ComponentKind::TriggerVolume,
             ComponentKind::AmmoReserve,
             ComponentKind::Spawner,
+            ComponentKind::EntityState,
         ];
         VARIANTS.len()
     };
@@ -211,6 +216,7 @@ pub enum ComponentValue {
     TriggerVolume(TriggerVolumeComponent),
     AmmoReserve(AmmoReserve),
     Spawner(SpawnerComponent),
+    EntityState(EntityStateComponent),
 }
 
 impl ComponentValue {
@@ -233,6 +239,7 @@ impl ComponentValue {
             ComponentValue::TriggerVolume(_) => ComponentKind::TriggerVolume,
             ComponentValue::AmmoReserve(_) => ComponentKind::AmmoReserve,
             ComponentValue::Spawner(_) => ComponentKind::Spawner,
+            ComponentValue::EntityState(_) => ComponentKind::EntityState,
         }
     }
 }
@@ -559,6 +566,21 @@ impl Component for SpawnerComponent {
     }
 }
 
+impl Component for EntityStateComponent {
+    const KIND: ComponentKind = ComponentKind::EntityState;
+
+    fn from_value(value: &ComponentValue) -> Option<&Self> {
+        match value {
+            ComponentValue::EntityState(state) => Some(state),
+            _ => None,
+        }
+    }
+
+    fn into_value(self) -> ComponentValue {
+        ComponentValue::EntityState(self)
+    }
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum RegistryError {
     #[error("entity {0} does not exist")]
@@ -821,6 +843,8 @@ impl EntityRegistry {
         let id = EntityId::new(index, slot.generation);
         self.components[ComponentKind::Transform as usize][index as usize] =
             Some(ComponentValue::Transform(transform));
+        self.components[ComponentKind::EntityState as usize][index as usize] =
+            Some(ComponentValue::EntityState(EntityStateComponent::default()));
         // Seed previous == current at construction so an entity spawned
         // mid-tick (after the tick's snapshot pass already ran) never pops:
         // its first interpolated transform blends from its own spawn pose.
@@ -1173,6 +1197,14 @@ mod tests {
         pawn
     }
 
+    fn assert_number_approx_eq(actual: f32, expected: f32) {
+        const EPSILON: f32 = 1.0e-6;
+        assert!(
+            (actual - expected).abs() <= EPSILON,
+            "expected {expected} ± {EPSILON}, got {actual}"
+        );
+    }
+
     #[test]
     fn entity_id_display_shows_index_and_generation() {
         let id = EntityId::new(42, 7);
@@ -1186,6 +1218,28 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let id = reg.spawn(sample_transform());
         assert!(reg.exists(id));
+    }
+
+    #[test]
+    fn spawn_creates_empty_per_entity_state() {
+        let mut registry = EntityRegistry::new();
+        let first = registry.spawn(Transform::default());
+        let second = registry.spawn(Transform::default());
+
+        assert_number_approx_eq(
+            registry
+                .get_component::<EntityStateComponent>(first)
+                .expect("every spawn receives state")
+                .get("hits"),
+            0.0,
+        );
+        assert_number_approx_eq(
+            registry
+                .get_component::<EntityStateComponent>(second)
+                .expect("every spawn receives state")
+                .get("hits"),
+            0.0,
+        );
     }
 
     #[test]

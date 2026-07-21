@@ -798,6 +798,7 @@ pub(crate) fn component_kind_discriminant(kind: ComponentKind) -> u16 {
         ComponentKind::AmmoReserve => 15,
         ComponentKind::Spawner => 16,
         ComponentKind::EntityState => 17,
+        ComponentKind::DeferredEffect => 18,
     }
 }
 
@@ -2933,7 +2934,8 @@ mod tests {
                 ComponentKind::TriggerVolume => Some(ComponentKind::AmmoReserve),
                 ComponentKind::AmmoReserve => Some(ComponentKind::Spawner),
                 ComponentKind::Spawner => Some(ComponentKind::EntityState),
-                ComponentKind::EntityState => None,
+                ComponentKind::EntityState => Some(ComponentKind::DeferredEffect),
+                ComponentKind::DeferredEffect => None,
             }
         }
 

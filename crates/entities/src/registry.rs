@@ -12,6 +12,7 @@ use crate::components::agent::AgentComponent;
 use crate::components::ammo_reserve::AmmoReserve;
 use crate::components::billboard_emitter::BillboardEmitterComponent;
 use crate::components::brain::BrainComponent;
+use crate::components::deferred_effect::DeferredEffectComponent;
 use crate::components::entity_state::EntityStateComponent;
 use crate::components::fog_volume::FogAnimation;
 use crate::components::health::{HealthComponent, ImpactDispatch};
@@ -127,6 +128,10 @@ pub enum ComponentKind {
     /// Per-instance modder-owned numeric fields. Every entity receives an
     /// empty component at spawn; fields emerge on first write.
     EntityState = 17,
+    /// Per-entity deferred impact-effect queue and terminal inert flag.
+    /// Every entity receives an empty component at spawn so effects do not
+    /// depend on an AI brain being present.
+    DeferredEffect = 18,
 }
 
 impl ComponentKind {
@@ -154,6 +159,7 @@ impl ComponentKind {
             ComponentKind::AmmoReserve,
             ComponentKind::Spawner,
             ComponentKind::EntityState,
+            ComponentKind::DeferredEffect,
         ];
         VARIANTS.len()
     };
@@ -217,6 +223,7 @@ pub enum ComponentValue {
     AmmoReserve(AmmoReserve),
     Spawner(SpawnerComponent),
     EntityState(EntityStateComponent),
+    DeferredEffect(DeferredEffectComponent),
 }
 
 impl ComponentValue {
@@ -240,6 +247,7 @@ impl ComponentValue {
             ComponentValue::AmmoReserve(_) => ComponentKind::AmmoReserve,
             ComponentValue::Spawner(_) => ComponentKind::Spawner,
             ComponentValue::EntityState(_) => ComponentKind::EntityState,
+            ComponentValue::DeferredEffect(_) => ComponentKind::DeferredEffect,
         }
     }
 }
@@ -581,6 +589,21 @@ impl Component for EntityStateComponent {
     }
 }
 
+impl Component for DeferredEffectComponent {
+    const KIND: ComponentKind = ComponentKind::DeferredEffect;
+
+    fn from_value(value: &ComponentValue) -> Option<&Self> {
+        match value {
+            ComponentValue::DeferredEffect(effects) => Some(effects),
+            _ => None,
+        }
+    }
+
+    fn into_value(self) -> ComponentValue {
+        ComponentValue::DeferredEffect(self)
+    }
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum RegistryError {
     #[error("entity {0} does not exist")]
@@ -633,6 +656,10 @@ pub struct EntityRegistry {
     /// event payload belongs to the health component module, while the registry
     /// owns the single-threaded handoff to impact-policy consumers.
     impact_dispatches: Vec<ImpactDispatch>,
+    /// Entity ids marked by terminal impact effects. The app drains this once
+    /// per frame after presentation/reaction work; game logic never removes an
+    /// entity inline through this channel.
+    end_of_frame_removals: Vec<EntityId>,
     /// A test-only artificial slot ceiling. Production still has exactly the
     /// `u16::MAX` registry capacity promised by `try_spawn`.
     #[cfg(any(test, feature = "test-support"))]
@@ -650,6 +677,7 @@ impl EntityRegistry {
             kvp_table: HashMap::new(),
             local_player_pawn: None,
             impact_dispatches: Vec::new(),
+            end_of_frame_removals: Vec::new(),
             #[cfg(any(test, feature = "test-support"))]
             test_capacity_limit: None,
         }
@@ -845,6 +873,9 @@ impl EntityRegistry {
             Some(ComponentValue::Transform(transform));
         self.components[ComponentKind::EntityState as usize][index as usize] =
             Some(ComponentValue::EntityState(EntityStateComponent::default()));
+        self.components[ComponentKind::DeferredEffect as usize][index as usize] = Some(
+            ComponentValue::DeferredEffect(DeferredEffectComponent::default()),
+        );
         // Seed previous == current at construction so an entity spawned
         // mid-tick (after the tick's snapshot pass already ran) never pops:
         // its first interpolated transform blends from its own spawn pose.
@@ -907,6 +938,21 @@ impl EntityRegistry {
         std::mem::take(&mut self.impact_dispatches)
     }
 
+    /// Stage a live entity for the dedicated frame-end removal pass. Repeated
+    /// marks collapse to one removal attempt while the id remains live.
+    pub fn mark_for_end_of_frame_removal(&mut self, id: EntityId) -> Result<(), RegistryError> {
+        let _ = self.validate(id)?;
+        if !self.end_of_frame_removals.contains(&id) {
+            self.end_of_frame_removals.push(id);
+        }
+        Ok(())
+    }
+
+    /// Drain ids staged for the app-owned frame-end removal pass.
+    pub fn take_end_of_frame_removals(&mut self) -> Vec<EntityId> {
+        std::mem::take(&mut self.end_of_frame_removals)
+    }
+
     /// Despawn every live entity while preserving slot-generation semantics.
     /// Level unload uses this instead of replacing the registry wholesale so
     /// stale `EntityId`s from the old level cannot become valid in a later load.
@@ -927,6 +973,7 @@ impl EntityRegistry {
             let _ = self.despawn(id);
         }
         self.impact_dispatches.clear();
+        self.end_of_frame_removals.clear();
     }
 
     fn validate(&self, id: EntityId) -> Result<usize, RegistryError> {

@@ -354,6 +354,20 @@ impl HealthComponent {
         self.zone_multipliers = desc.zone_multipliers.clone();
     }
 
+    /// Apply an absolute health value from an impact effect.
+    ///
+    /// This is intentionally distinct from damage: it emits no impact dispatch
+    /// and does not touch contributor attribution. Non-finite values resolve to
+    /// the nearest bound so `current` remains within the component's valid
+    /// `[0, max]` range.
+    pub fn set_current_absolute(&mut self, value: f32) {
+        self.current = if value.is_nan() {
+            0.0
+        } else {
+            value.clamp(0.0, self.max)
+        };
+    }
+
     pub fn record_contributor_damage(&mut self, record: ContributorLedgerRecord) {
         self.contributor_ledger.record(record);
     }
@@ -423,6 +437,21 @@ pub fn apply_damage_with_context(
     });
 }
 
+/// Absolute-health chokepoint for impact effects.
+///
+/// Like damage, a stale id or entity without `HealthComponent` is a no-op. The
+/// write is immediate and clamps to `[0, max]`; it deliberately does not
+/// publish a damage impact or alter the death latch, both of which belong to
+/// later policy/lifecycle work.
+pub fn set_health_absolute(registry: &mut EntityRegistry, id: EntityId, value: f32) {
+    let Ok(health) = registry.get_component::<HealthComponent>(id) else {
+        return;
+    };
+    let mut updated = health.clone();
+    updated.set_current_absolute(value);
+    let _ = registry.set_component(id, updated);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -454,6 +483,17 @@ mod tests {
         assert!(!component.death_handled);
         assert!(component.contributor_ledger.entries().is_empty());
         assert!(component.contributor_ledger.overflow().is_none());
+    }
+
+    #[test]
+    fn absolute_health_write_clamps_to_component_bounds() {
+        let mut component = HealthComponent::from_descriptor(&descriptor(80.0));
+
+        component.set_current_absolute(120.0);
+        assert_number_approx_eq(component.current, 80.0);
+
+        component.set_current_absolute(-5.0);
+        assert_number_approx_eq(component.current, 0.0);
     }
 
     #[test]

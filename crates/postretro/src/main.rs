@@ -25,6 +25,7 @@ mod combat_positioning;
 mod frame_timing;
 mod fx;
 mod health;
+mod impact_effects;
 mod input;
 mod kinematic_mover;
 mod movement;
@@ -2296,6 +2297,16 @@ impl ApplicationHandler for App {
                 if !script_ctx.system_commands.is_empty() {
                     self.dispatch_system_commands();
                 }
+
+                // Terminal impact effects stay live through every post-catch-up
+                // presentation/reaction drain above. Reap them exactly once per
+                // rendered frame, before audio/render consume the settled world.
+                // The callback is intentionally empty for now; later lifecycle
+                // work attaches its report-on-removal sink here.
+                impact_effects::run_end_of_frame_removal_pass(
+                    &mut script_ctx.registry.borrow_mut(),
+                    |_| {},
+                );
 
                 // Reconcile the input seam + focus with the modal stack's top
                 // capture mode, now that every command drain this frame has

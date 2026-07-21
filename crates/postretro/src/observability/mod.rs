@@ -49,6 +49,7 @@ const ALL_KINDS: [ComponentKind; ComponentKind::COUNT] = [
     ComponentKind::AmmoReserve,
     ComponentKind::Spawner,
     ComponentKind::EntityState,
+    ComponentKind::DeferredEffect,
 ];
 
 /// Snake_case name for a component kind, matching `ComponentValue`'s serde
@@ -78,6 +79,7 @@ fn component_kind_snake(kind: ComponentKind) -> &'static str {
         ComponentKind::AmmoReserve => "ammo_reserve",
         ComponentKind::Spawner => "spawner",
         ComponentKind::EntityState => "entity_state",
+        ComponentKind::DeferredEffect => "deferred_effect",
     }
 }
 
@@ -343,6 +345,9 @@ mod tests {
             ComponentKind::EntityState => {
                 ComponentValue::EntityState(postretro_entities::EntityStateComponent::default())
             }
+            ComponentKind::DeferredEffect => ComponentValue::DeferredEffect(
+                postretro_entities::DeferredEffectComponent::default(),
+            ),
         }
     }
 

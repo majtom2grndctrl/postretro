@@ -40,7 +40,9 @@ use postretro_entities::components::mesh::{
     SwitchResult, restart_animation_clip, switch_animation_state,
 };
 use postretro_entities::components::player_movement::PlayerMovementComponent;
-use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform};
+use postretro_entities::{
+    ComponentKind, ComponentValue, DeferredEffectComponent, EntityId, EntityRegistry, Transform,
+};
 use postretro_foundation::DamagePayload;
 
 /// Event name fired once per enemy attack that lands this tick. Mirrors the
@@ -514,6 +516,15 @@ pub(crate) fn run_ai_tick_with_navigation(
     let snapshots: Vec<EnemySnapshot> = registry
         .iter_with_kind(ComponentKind::Brain)
         .filter_map(|(id, value)| {
+            // Terminal impact effects leave the id live through the rest of
+            // this frame so a same-group playAnim can address it. AI must not
+            // overwrite that presentation request or keep steering/attacking.
+            if registry
+                .get_component::<DeferredEffectComponent>(id)
+                .is_ok_and(|effects| effects.inert)
+            {
+                return None;
+            }
             let ComponentValue::Brain(brain) = value else {
                 return None;
             };

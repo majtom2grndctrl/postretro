@@ -11,8 +11,8 @@
     "paths": {
       "postretro": ["../../../../sdk/types/postretro.d.ts"],
       "postretro/ui": ["../../../../sdk/types/postretro.d.ts"],
-      "postretro/proposed": ["../../in-progress/E16--impact-policy-substrate/proposed.d.ts"]
+      "postretro/proposed": ["../../done/E16--impact-policy-substrate/proposed.d.ts"]
     }
   },
-  "include": ["*.ts", "../../in-progress/E16--impact-policy-substrate/proposed.d.ts"]
+  "include": ["*.ts", "../../done/E16--impact-policy-substrate/proposed.d.ts"]
 }

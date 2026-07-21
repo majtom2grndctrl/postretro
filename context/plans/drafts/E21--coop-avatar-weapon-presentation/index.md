@@ -69,7 +69,7 @@ Add `third_person_model` and `viewmodel` fields to the weapon descriptor surface
 
 Add `materialize_armed_remote_player` to `remote_materialize.rs`. Mirrors `materialize_armed_remote_enemy`: attaches the descriptor's `MeshComponent` presentation only — never `PlayerMovement`, `Weapon`, or `Health`. Idempotent; unknown class leaves the entity transform-only.
 
-Wire `materialize_armed_remote_player` into the client snapshot-apply path. Currently `materialize_armed_remote_enemy` is called for all non-local entities with a known class. Add a dispatch predicate: if the descriptor carries a `movement` component (the durable signal that it's a player-type descriptor, not a name match), call the player materialization path; otherwise the enemy path. Both share the same presentation-only contract — the player path differs only in that it also sets `shadowOnly` from the descriptor. The local player gets mesh materialization too (for shadow rendering) through the same materialization path; the `shadowOnly` descriptor flag controls forward-pass exclusion at collection time.
+Wire `materialize_armed_remote_player` into the client snapshot-apply path. At the call site in `netcode/mod.rs` where `outcome.remote_enemies` is iterated, resolve the descriptor by `entity_class` from the shared descriptor table. If the resolved descriptor carries a `movement` component (the durable signal that it's a player-type descriptor, not a name match), call the player materialization path; otherwise the enemy path. Rename the outcome field from `remote_enemies` to `remote_entities` — it now carries both player and enemy materializations. Both share the same presentation-only contract — the player path differs only in that it also sets `shadowOnly` from the descriptor. The local player gets mesh materialization too (for shadow rendering) through the same materialization path; the `shadowOnly` descriptor flag controls forward-pass exclusion at collection time.
 
 ### Task 3: Player pose inputs — local + remote
 
@@ -82,7 +82,7 @@ The local player's camera pitch must reach `update_pose_inputs`. The camera stat
 
 Foot-IK ground probes for player pawns activate automatically. The shipped `update_foot_ground_probes` runs for entities with `MeshComponent.pose_inputs` and legs in the pose stack. The exo_red model carries `legL`/`legR`/`footL`/`footR` pose-mask tags on its leg joints, so the loader builds the leg set and the probe loop activates — no entity-type filter to bypass.
 
-Drive client-local locomotion animation from replicated velocity. On each client frame, for each remote player pawn: compute speed from the interpolated velocity, select idle vs walk/run animation state, and set playback rate from `measured_ground_speed / effective_travel_speed` (the existing `update_playback_rate` API). This mirrors the existing enemy locomotion logic — port it rather than re-deriving. The animation state name is already replicated via `WireMeshAnimationState`; client-local locomotion overrides the replicated state for smoother visual transitions (replicated state is the fallback/correction).
+Drive client-local locomotion animation from replicated velocity. On each client frame, for each remote player pawn: compute speed from the interpolated velocity, select idle vs walk/run animation state, and set playback rate from `measured_ground_speed / effective_travel_speed` (the existing `update_playback_rate` API). This mirrors the existing enemy locomotion logic — port it rather than re-deriving. The animation state name is already replicated via `WireMeshAnimationState`. Client-local locomotion is the prediction; replicated state is the authoritative correction. On snapshot delivery, if the replicated state disagrees with the client-local derivation, blend toward the server state over a short window (2-3 frames) rather than snapping. Remote player avatars are visually scrutinized — a snap reads as a hitch. This client-predicted locomotion model sets the precedent for a future port to enemy locomotion.
 
 ### Task 4: Local body shadow-only rendering + descriptor surface
 
@@ -95,7 +95,7 @@ The existing shadow-pass infrastructure does not fully support this. Currently:
 
 This task must make two changes:
 1. Change `ForwardVisibleOnly` to `IncludeShadowOnly` at both the dynamic spot shadow call site and the dynamic cube shadow call site in `renderer_shadow_passes.rs`. Update the `depth_instance_filter_keeps_dynamic_shadows_forward_visible_only` test in `mesh_pass.rs` to reflect that all dynamic slots now use `IncludeShadowOnly`.
-2. Change the frame planner selection so shadow-only instances survive in the plan and SSBO even without promoted-static records.
+2. Always use `plan_mesh_frame` regardless of promoted-static record presence. The `plan_forward_visible_mesh_frame` fast path assumes no shadow-only instances exist; that precondition no longer holds. Remove or bypass it.
 
 Both changes are safe because shadow-only instances are opt-in per descriptor — existing entities default to `shadowOnly: false` and their behavior is unchanged. The widened filter only includes instances that explicitly requested shadow-only rendering.
 
@@ -103,7 +103,7 @@ Single-player mode: the same shadow-only treatment applies. The player body shad
 
 ### Task 5: Third-person weapon at hand socket — runtime attach/detach
 
-Add a runtime attach/detach mechanism for weapon models at bone sockets. The shipped socket system resolves attachments from the descriptor at load time and stores them in `MeshComponent.attachments`. This task adds a host-side mutation path: when a player's active weapon changes (tracked by `WeaponOwners`), the host updates the pawn's `MeshComponent.attachments` to mount the new weapon's `thirdPersonModel` at the `hand_r` socket, replacing any previous weapon attachment at that socket.
+Add a runtime attach/detach mechanism for weapon models at bone sockets. The shipped socket system resolves attachments from the descriptor at load time and stores them in `MeshComponent.attachments`. This task adds a host-side mutation path: when a player's active weapon changes (tracked by `WeaponOwners`), the host updates the pawn's `MeshComponent.attachments` to mount the new weapon's `thirdPersonModel` at the `hand_r` socket, replacing any previous weapon attachment at that socket. The mutation runs in the host command-processing path where `WeaponOwners` is populated, before snapshot production.
 
 On connected clients: the replicated `active_weapon_archetype` (from Task 1) drives attachment resolution. When snapshot apply delivers a changed archetype string, the client resolves the weapon descriptor by canonical name, looks up its `thirdPersonModel` path, and updates the local `MeshComponent.attachments` for the remote player pawn. The attachment model must already be loaded (pre-uploaded as part of the descriptor's model set at level load). Socket binding resolution reuses the existing `AttachmentBinding::Skinned` path — the hand socket is a skin joint.
 
@@ -145,9 +145,9 @@ Single-player mode: the viewmodel renders identically. It reads the local player
 
 **Remote player materialization.** A new `materialize_armed_remote_player` in `remote_materialize.rs` follows the enemy pattern: presentation-only mesh attachment, no gameplay components. The client-apply dispatch in `crate::netcode` branches on whether the descriptor carries a `movement` component (player-type) or not (enemy-type).
 
-**Pose input plumbing.** A branch inside `update_pose_inputs` in `sim/mod.rs` overrides the default write for player pawns. Local player reads camera pitch/yaw; remote player reads interpolated state from the interpolation buffer. Both paths produce the same `PoseInputs` shape consumed by the existing modifier stack — no modifier changes needed. Camera pitch reaches the sim stage via a lightweight per-frame struct or an added parameter to the sim update.
+**Pose input plumbing.** A branch inside `update_pose_inputs` in `sim/mod.rs` overrides the default write for player pawns. Local player reads camera pitch/yaw; remote player reads interpolated state from the interpolation buffer. Both paths produce the same `PoseInputs` shape consumed by the existing modifier stack — no modifier changes needed. Camera pitch reaches the sim stage via a lightweight per-frame struct or an added parameter to `update_pose_inputs` (the function currently takes only `&mut EntityRegistry`). Client-local locomotion is client-predicted with server correction: on snapshot mismatch, blend toward the server state over 2-3 frames rather than snapping.
 
-**Shadow-only body.** The `shadowOnly` descriptor flag threads into `MeshComponent` and controls `forward_visible` at collection time. Dynamic shadow slots widen from `ForwardVisibleOnly` to `IncludeShadowOnly`, matching promoted-static slots. The frame planner includes shadow-only instances in all plan modes.
+**Shadow-only body.** The `shadowOnly` descriptor flag threads into `MeshComponent` and controls `forward_visible` at collection time. Dynamic shadow slots widen from `ForwardVisibleOnly` to `IncludeShadowOnly`, matching promoted-static slots. `plan_mesh_frame` replaces `plan_forward_visible_mesh_frame` unconditionally — shadow-only instances must survive in the plan regardless of promoted-static record presence.
 
 **Viewmodel projection.** The viewmodel renders after the forward color pass, behind a depth-clear, with a near-plane projection (~0.01–2.0 m, ~70° FOV). The mesh pass groups viewmodel instances separately during frame planning and records their draws with the alternate projection bound at group 0. The shared palette/instance SSBO includes viewmodel instances alongside world instances — no separate buffer. The engine composes the viewmodel transform (camera pose + view-feel offsets) at the render-assembly site; the renderer only applies the alternate projection.
 
@@ -222,8 +222,6 @@ export const referencePistolEntity = defineEntity({
 });
 ```
 
-## Open questions
+## Content dependencies
 
-- **Viewmodel asset.** No viewmodel model asset exists for the reference pistol. Phase 3 requires either a dedicated viewmodel mesh or a repurposed third-person model rendered at viewmodel scale. A placeholder (the smg model rendered in camera space) can unblock implementation.
-- **mesh_pass.rs split seams.** Task 6 identifies the split boundary — `record_skinned_depth`, `MeshDepthInstanceFilter`, and depth pipeline construction are the likely extraction targets, but the implementer should evaluate whether frame-plan extraction gives a cleaner cut at the current 3813-line shape.
-- **`viewmodel` casing.** One word of FPS jargon (`viewmodel`) or camelCase (`viewModel`)? The boundary inventory pins `viewmodel` for both Rust and TS. Confirm this is intentional, since the weapon component uses `camelCase` for other fields (`thirdPersonModel`, `fireRateMs`).
+- **Viewmodel asset.** No viewmodel model asset exists for the reference pistol. The smg model rendered in camera space is a sufficient placeholder — the engine is asset-agnostic. A dedicated viewmodel mesh is a content task, not an engine task.

@@ -41,6 +41,19 @@
 -- ```
 -- ---------------------------------------------------------------------
 
+-- Empty Luau tables have no sequence/map distinction. Runtime states provide
+-- mlua's private array metatable while this SDK module loads; capturing it here
+-- preserves only builder-owned descriptor arrays across serde. Standalone SDK
+-- evaluation used by focused tests falls back to ordinary tables.
+local DESCRIPTOR_ARRAY_METATABLE = rawget(_G, "__postretroArrayMetatable")
+
+local function descriptorArray(values: any): any
+  if DESCRIPTOR_ARRAY_METATABLE == nil then
+    return values
+  end
+  return setmetatable(values, DESCRIPTOR_ARRAY_METATABLE)
+end
+
 --- Progress-subscription reaction body: fires `fire` when entities tagged
 --- `tag` cross the kill ratio `at` (0.0–1.0).
 export type ProgressReactionDescriptor = {
@@ -622,7 +635,7 @@ local function denseImpactArrayLength(values: any, context: string): number
 end
 
 lowerImpactPolicy = function(policy: {EffectOrGroup}): {EffectOrGroup}
-  local lowered: {EffectOrGroup} = {}
+  local lowered: {EffectOrGroup} = descriptorArray({})
   local policyLength = denseImpactArrayLength(policy, "impact policy")
   for i = 1, policyLength do
     local entry = policy[i]
@@ -631,7 +644,7 @@ lowerImpactPolicy = function(policy: {EffectOrGroup}): {EffectOrGroup}
     elseif type(entry) == "table" and entry["do"] ~= nil then
       local authoredEffects = entry["do"]
       local effectCount = denseImpactArrayLength(authoredEffects, "impact policy group `do`")
-      local effects = {}
+      local effects = descriptorArray({})
       for effectIndex = 1, effectCount do
         effects[effectIndex] = lowerImpactEffect(authoredEffects[effectIndex])
       end

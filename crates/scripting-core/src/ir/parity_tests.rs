@@ -653,6 +653,7 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
           { when: impact.amount.gt(0), do: [] },
           impact.target.despawn(),
         ]);
+        const empty = defineImpactEvent("salvage:empty", { tag: "empty" }, () => []);
         const wire = (event: ImpactEvent) => {
           const descriptor = event as unknown as {
             kind: "impact";
@@ -671,7 +672,7 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
             levels: descriptor.levels,
           };
         };
-        JSON.stringify({ base: wire(base), override: wire(override), independent: wire(independent) });
+        JSON.stringify({ base: wire(base), override: wire(override), independent: wire(independent), empty: wire(empty) });
     "#;
     const LUAU_FIXTURE: &str = r#"
         local Postretro = require("postretro")
@@ -709,6 +710,9 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
             impact.target:despawn(),
           }
         end)
+        local empty = Postretro.defineImpactEvent("salvage:empty", { tag = "empty" }, function()
+          return {}
+        end)
         local function wire(event)
           return {
             kind = event.kind,
@@ -719,7 +723,7 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
             levels = event.levels,
           }
         end
-        return { base = wire(base), override = wire(override), independent = wire(independent) }
+        return { base = wire(base), override = wire(override), independent = wire(independent), empty = wire(empty) }
     "#;
 
     let typescript = quickjs_fixture_value(TYPESCRIPT_FIXTURE);
@@ -828,6 +832,16 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
         typescript["independent"]["policy"][1]["primitive"],
         "despawn",
         "a valid sibling effect must survive an empty group"
+    );
+    assert_eq!(
+        typescript["independent"]["policy"][1]["args"],
+        serde_json::json!({}),
+        "an empty effect-argument map must not be normalized into an array"
+    );
+    assert_eq!(
+        typescript["empty"]["policy"],
+        serde_json::json!([]),
+        "an empty impact policy must stay an array in both SDKs"
     );
 }
 

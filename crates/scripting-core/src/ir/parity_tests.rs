@@ -614,3 +614,206 @@ fn every_opcode_round_trips_identically_across_runtimes() {
         assert_parity(&expr);
     }
 }
+
+#[test]
+fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
+    // Exercise the shipped root SDK rather than raw runtime builders. The
+    // assertion pins every cross-task leaf/token spelling and proves the
+    // boolean sugar introduces only `select` nodes.
+    const TYPESCRIPT_FIXTURE: &str = r#"
+        import { defineImpactEvent, defineStore, slot } from "postretro";
+        import type { Impact, ImpactEvent } from "postretro";
+
+        const counters = defineStore("impact", {
+          broken: { type: "number", default: 0 },
+        });
+        const breakable = (impact: Impact) => {
+          const hits = impact.target.state("hits");
+          return [
+            impact.target.setState("hits", hits.plus(1)),
+            {
+              when: hits.eq(2).and(impact.amount.gt(0).not()),
+              do: [
+                impact.target.setHealth(
+                  impact.target.healthAfter.clamp(0, impact.target.maxHealth),
+                  { afterMs: 30 },
+                ),
+                impact.target.playAnim("shatter"),
+                slot(counters.state.broken).add(1),
+                impact.target.despawn(),
+              ],
+            },
+          ];
+        };
+        const base = defineImpactEvent({ tag: "crate" }, breakable);
+        const override = base.override({ tag: "reinforced_crate" }, (impact) => [
+          impact.target.despawn({ afterMs: 15 }),
+        ]);
+        const independent = defineImpactEvent({ tag: "vase" }, breakable);
+        const wire = (event: ImpactEvent) => {
+          const descriptor = event as unknown as {
+            kind: "impact";
+            id: string;
+            filter: { tag?: string };
+            policy: unknown[];
+          };
+          return {
+            kind: descriptor.kind,
+            id: descriptor.id,
+            filter: descriptor.filter,
+            policy: descriptor.policy,
+          };
+        };
+        JSON.stringify({ base: wire(base), override: wire(override), independent: wire(independent) });
+    "#;
+    const LUAU_FIXTURE: &str = r#"
+        local Postretro = require("postretro")
+
+        local counters = Postretro.defineStore("impact", {
+          broken = { type = "number", default = 0 },
+        })
+        local function breakable(impact)
+          local hits = impact.target:state("hits")
+          local threshold = hits:eq(2)
+          local positive = impact.amount:gt(0)
+          return {
+            impact.target:setState("hits", hits:plus(1)),
+            {
+              when = threshold["and"](threshold, positive["not"](positive)),
+              ["do"] = {
+                impact.target:setHealth(
+                  impact.target.healthAfter:clamp(0, impact.target.maxHealth),
+                  { afterMs = 30 }
+                ),
+                impact.target:playAnim("shatter"),
+                Postretro.slot(counters.state.broken):add(1),
+                impact.target:despawn(),
+              },
+            },
+          }
+        end
+        local base = Postretro.defineImpactEvent({ tag = "crate" }, breakable)
+        local override = base:override({ tag = "reinforced_crate" }, function(impact)
+          return { impact.target:despawn({ afterMs = 15 }) }
+        end)
+        local independent = Postretro.defineImpactEvent({ tag = "vase" }, breakable)
+        local function wire(event)
+          return {
+            kind = event.kind,
+            id = event.id,
+            filter = event.filter,
+            policy = event.policy,
+          }
+        end
+        return { base = wire(base), override = wire(override), independent = wire(independent) }
+    "#;
+
+    let mut typescript = quickjs_fixture_value(TYPESCRIPT_FIXTURE);
+    let mut luau = luau_fixture_value(LUAU_FIXTURE);
+
+    for values in [&typescript, &luau] {
+        let base_id = values["base"]["id"].as_str().expect("base impact id");
+        let override_id = values["override"]["id"]
+            .as_str()
+            .expect("override impact id");
+        let independent_id = values["independent"]["id"]
+            .as_str()
+            .expect("independent impact id");
+        assert_eq!(
+            base_id, override_id,
+            "override must retain its base identity"
+        );
+        assert_ne!(
+            base_id, independent_id,
+            "independent filters must affect the id"
+        );
+        assert!(
+            base_id.starts_with("reaction_"),
+            "impact ids use the shared FNV-derived reaction_ prefix"
+        );
+    }
+
+    // The existing SDK documents that its TS and Luau FNV implementations do
+    // not promise cross-runtime auto-id equality. Compare the descriptor body
+    // byte-for-byte after removing that implementation-local id.
+    for values in [&mut typescript, &mut luau] {
+        for key in ["base", "override", "independent"] {
+            values[key]
+                .as_object_mut()
+                .expect("impact descriptor object")
+                .remove("id");
+        }
+    }
+    assert_eq!(typescript, luau, "impact policy SDK lowering diverged");
+
+    let base = &typescript["base"];
+    assert_eq!(base["kind"], "impact");
+    assert_eq!(base["filter"], serde_json::json!({ "tag": "crate" }));
+    assert_eq!(
+        base["policy"][0],
+        serde_json::json!({
+            "primitive": "setState",
+            "target": "@impact.target",
+            "args": {
+                "name": "hits",
+                "value": {
+                    "op": "add",
+                    "a": { "op": "input", "name": "@state.hits" },
+                    "b": { "op": "const", "value": 1 },
+                },
+            },
+        })
+    );
+    assert_eq!(
+        base["policy"][1]["when"],
+        serde_json::json!({
+            "op": "select",
+            "cond": {
+                "op": "eq",
+                "a": { "op": "input", "name": "@state.hits" },
+                "b": { "op": "const", "value": 2 },
+            },
+            "a": {
+                "op": "select",
+                "cond": {
+                    "op": "gt",
+                    "a": { "op": "input", "name": "@impact.amount" },
+                    "b": { "op": "const", "value": 0 },
+                },
+                "a": { "op": "const", "value": false },
+                "b": { "op": "const", "value": true },
+            },
+            "b": { "op": "const", "value": false },
+        })
+    );
+    assert_eq!(
+        base["policy"][1]["do"][0],
+        serde_json::json!({
+            "primitive": "setHealth",
+            "target": "@impact.target",
+            "args": {
+                "value": {
+                    "op": "clamp",
+                    "x": { "op": "input", "name": "@impact.healthAfter" },
+                    "lo": { "op": "const", "value": 0 },
+                    "hi": { "op": "input", "name": "@impact.maxHealth" },
+                },
+                "afterMs": 30,
+            },
+        })
+    );
+    assert_eq!(
+        base["policy"][1]["do"][2],
+        serde_json::json!({
+            "primitive": "setState",
+            "args": {
+                "slot": "impact.broken",
+                "value": {
+                    "op": "add",
+                    "a": { "op": "input", "name": "impact.broken" },
+                    "b": { "op": "const", "value": 1 },
+                },
+            },
+        })
+    );
+}

@@ -324,6 +324,51 @@ export type TriggerTarget = { __firedTriggerTarget: true }
 export type TriggerEventParams = { activators: ActivatorsTarget, trigger: TriggerTarget, occupancy: RuntimeRead }
 export type Reaction<S> = NamedReactionDescriptor
 
+--- Impact-policy IR skin. These refs lower to the existing closed runtime IR;
+--- boolean composition is represented exclusively through `select`.
+export type NumberValue = number | NumberRef
+export type BoolValue = boolean | BoolRef
+export type NumberRef = {
+  plus: (self: NumberRef, n: NumberValue) -> NumberRef,
+  minus: (self: NumberRef, n: NumberValue) -> NumberRef,
+  times: (self: NumberRef, n: NumberValue) -> NumberRef,
+  dividedBy: (self: NumberRef, n: NumberValue) -> NumberRef,
+  clamp: (self: NumberRef, lo: NumberValue, hi: NumberValue) -> NumberRef,
+  lerp: (self: NumberRef, to: NumberValue, t: NumberValue) -> NumberRef,
+  lt: (self: NumberRef, n: NumberValue) -> BoolRef,
+  le: (self: NumberRef, n: NumberValue) -> BoolRef,
+  gt: (self: NumberRef, n: NumberValue) -> BoolRef,
+  ge: (self: NumberRef, n: NumberValue) -> BoolRef,
+  eq: (self: NumberRef, n: NumberValue) -> BoolRef,
+  ne: (self: NumberRef, n: NumberValue) -> BoolRef,
+}
+export type BoolRef = {
+  ["and"]: (self: BoolRef, other: BoolValue) -> BoolRef,
+  ["or"]: (self: BoolRef, other: BoolValue) -> BoolRef,
+  ["not"]: (self: BoolRef) -> BoolRef,
+  select: (self: BoolRef, whenTrue: NumberValue, whenFalse: NumberValue) -> NumberRef,
+}
+export type Effect = PrimitiveReactionDescriptor | Reaction<{}>
+export type GatedEffect = { when: BoolRef?, ["do"]: {Effect} }
+export type EffectOrGroup = Effect | GatedEffect
+export type TargetHandle = {
+  healthBefore: NumberRef,
+  healthAfter: NumberRef,
+  maxHealth: NumberRef,
+  despawn: (self: TargetHandle, opts: { afterMs: number? }?) -> Effect,
+  playAnim: (self: TargetHandle, clip: string) -> Effect,
+  setHealth: (self: TargetHandle, value: NumberValue, opts: { afterMs: number? }?) -> Effect,
+  state: (self: TargetHandle, name: string) -> NumberRef,
+  setState: (self: TargetHandle, name: string, value: NumberValue) -> Effect,
+}
+export type SourceHandle = { __impactSourceBrand: true }
+export type NumberSlot = { add: (self: NumberSlot, delta: NumberValue) -> Effect }
+export type Impact = { target: TargetHandle, source: SourceHandle, amount: NumberRef }
+export type ImpactEvent = {
+  kind: "impact",
+  override: (self: ImpactEvent, filter: { tag: string? }, build: (Impact) -> {EffectOrGroup}) -> ImpactEvent,
+}
+
 --- Crossing condition: fires when the watched slot crosses the threshold in
 --- one direction. Exactly one of `below`/`above` is given. `max` is the
 --- denominator the threshold is a fraction of; omit it for a raw-value
@@ -369,6 +414,7 @@ export type CrossingDescriptor = ThresholdCrossingDescriptor | PredicateCrossing
 --- this shape in one pass at level load.
 export type LevelManifest = {
   reactions: {NamedReactionDescriptor},
+  events: {ImpactEvent}?,
   crossings: {CrossingDescriptor}?,
   triggerEvents: {TriggerEventDescriptor}?,
   triggerPools: {TriggerPoolDescriptor}?,
@@ -393,6 +439,10 @@ declare defineReaction: (
   & ((tracer: (TriggerEventParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)) -> Reaction<TriggerEventParams>)
   & ((name: string, tracer: (TriggerEventParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)) -> Reaction<TriggerEventParams>)
 )
+
+--- Define a pure impact-policy descriptor. Register it only by returning it
+--- through a manifest's `events` child.
+declare function defineImpactEvent(filter: { tag: string? }, build: (Impact) -> {EffectOrGroup}): ImpactEvent
 
 export type TriggerEventDescriptor = { tag: string, event: "enter" | "exit", fire: {string}, levels: {string}? }
 --- A seeded trap-pool declaration; exactly one arming form is required.
@@ -615,6 +665,9 @@ export type StoreDefinition = {
 --- `schema` declares slot names and validation rules. Returned declarations
 --- commit atomically only after the mod manifest succeeds.
 declare function defineStore(namespace: string, schema: { [string]: StoreSlotSchema }): StoreDefinition
+
+--- Build an additive write for a writable Number store slot.
+declare function slot(ref: WritableStateRef<number>): NumberSlot
 
 -- ---------------------------------------------------------------------------
 -- UI theme helpers. `defineTheme` accepts nested singular token groups and

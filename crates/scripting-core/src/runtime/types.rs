@@ -13,8 +13,8 @@ use std::path::PathBuf;
 
 use crate::ctx::ScriptCtx;
 use crate::data_descriptors::{
-    EntityTypeDescriptor, ModFontAssets, ModThemeTokens, RegisteredUiTree, TriggerEventDescriptor,
-    TriggerPoolDescriptor,
+    EntityTypeDescriptor, ImpactEventDescriptor, ModFontAssets, ModThemeTokens, RegisteredUiTree,
+    TriggerEventDescriptor, TriggerPoolDescriptor,
 };
 use crate::data_registry::{ScopedCrossing, ScopedReaction};
 pub use crate::foundation_pods::ModMapEntry;
@@ -68,6 +68,10 @@ pub struct ModManifestResult {
     /// Engine-global reaction definitions from the mod manifest's `reactions`
     /// field. Empty when absent. Drained into `DataRegistry` by the boot caller.
     pub reactions: Vec<ScopedReaction>,
+    /// Pure impact-policy declarations from the mod manifest's `events` field.
+    /// Task 5 owns committing and composing these descriptors at the impact
+    /// dispatch chokepoint.
+    pub events: Vec<ImpactEventDescriptor>,
     /// Engine-global crossing definitions from the mod manifest's `crossings`
     /// field. Empty when absent. Drained into `DataRegistry` by the boot caller.
     pub crossings: Vec<ScopedCrossing>,

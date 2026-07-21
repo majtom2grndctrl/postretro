@@ -94,6 +94,8 @@ export type PostretroModule = {
   sequence: typeof(sequence),
   --- Build a named reaction descriptor. Accepts `progress`, `primitive`, or `sequence` body data.
   defineReaction: typeof(defineReaction),
+  --- Define a pure impact-policy descriptor. Register it only through `events`.
+  defineImpactEvent: typeof(defineImpactEvent),
   damage: typeof(damage),
   enemies: typeof(enemies),
   spawner: typeof(spawner),
@@ -112,6 +114,8 @@ export type PostretroModule = {
   defineTriggerPool: typeof(defineTriggerPool),
   --- Pure state-store builder returning `{ declaration, state }`.
   defineStore: typeof(defineStore),
+  --- Build an additive write for a writable Number store slot.
+  slot: typeof(slot),
   emitter: typeof(emitter),
   smokeEmitter: typeof(smokeEmitter),
   sparkEmitter: typeof(sparkEmitter),

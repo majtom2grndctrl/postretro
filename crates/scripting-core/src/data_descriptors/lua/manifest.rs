@@ -46,6 +46,7 @@ impl LevelManifest {
         } else {
             Vec::new()
         };
+        let events = drain_impact_events_lua(&table, "setupLevel")?;
         let trigger_events = drain_trigger_events_lua(&table, "setupLevel")?;
         let trigger_pools = drain_trigger_pools_lua(&table, "setupLevel")?;
 
@@ -53,12 +54,70 @@ impl LevelManifest {
 
         Ok(Self {
             reactions,
+            events,
             crossings,
             trigger_events,
             trigger_pools,
             ui_trees,
         })
     }
+}
+
+/// Drain pure SDK `defineImpactEvent` handles from a manifest. The event
+/// remains opaque policy data here; Task 5 owns validation, merging, and
+/// execution.
+pub fn drain_impact_events_lua(
+    table: &Table,
+    scope: &str,
+) -> Result<Vec<ImpactEventDescriptor>, DescriptorError> {
+    let Some(arr) = optional_manifest_array_lua(table, "events", scope)? else {
+        return Ok(Vec::new());
+    };
+    let len = validate_dense_lua_array(&arr, "`events` field")?;
+    let mut out = Vec::with_capacity(len);
+    for i in 1..=(len as i64) {
+        let value: LuaValue = arr.get(i).map_err(lua_err)?;
+        match impact_event_from_lua(value) {
+            Ok(descriptor) => out.push(descriptor),
+            Err(error) => {
+                log::warn!("[Scripting] {scope}: events[{i}] is malformed and was skipped: {error}")
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn impact_event_from_lua(value: LuaValue) -> Result<ImpactEventDescriptor, DescriptorError> {
+    let item = lua_table(value, "impact-event entry")?;
+    let kind = get_required_string_lua(&item, "kind")?;
+    if kind != "impact" {
+        return Err(DescriptorError::InvalidShape {
+            reason: "impact-event entry `kind` must be `impact`".into(),
+        });
+    }
+
+    let filter: Table = item
+        .get("filter")
+        .map_err(|_| DescriptorError::MissingField { field: "filter" })?;
+    let filter_tag = get_optional_string_lua(&filter, "tag")?;
+
+    let policy: Table = item
+        .get("policy")
+        .map_err(|_| DescriptorError::InvalidShape {
+            reason: "impact-event entry `policy` must be an array".into(),
+        })?;
+    let len = validate_dense_lua_array(&policy, "impact-event entry `policy`")?;
+    let mut policy_json = Vec::with_capacity(len);
+    for i in 1..=(len as i64) {
+        let raw: LuaValue = policy.get(i).map_err(lua_err)?;
+        policy_json.push(conv::lua_to_json(raw).map_err(lua_err)?);
+    }
+
+    Ok(ImpactEventDescriptor {
+        id: get_required_string_lua(&item, "id")?,
+        filter_tag,
+        policy: policy_json,
+    })
 }
 
 /// Drain the `triggerEvents` array from a Luau manifest table. Mirrors

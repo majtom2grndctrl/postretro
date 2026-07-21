@@ -42,6 +42,7 @@ impl LevelManifest {
         } else {
             Vec::new()
         };
+        let events = drain_impact_events_js(ctx, &obj, "setupLevel")?;
         let trigger_events = drain_trigger_events_js(&obj, "setupLevel")?;
         let trigger_pools = drain_trigger_pools_js(&obj, "setupLevel")?;
 
@@ -49,12 +50,83 @@ impl LevelManifest {
 
         Ok(Self {
             reactions,
+            events,
             crossings,
             trigger_events,
             trigger_pools,
             ui_trees,
         })
     }
+}
+
+/// Drain pure SDK `defineImpactEvent` handles from a manifest. Parsing stops at
+/// the descriptor boundary: Task 5 owns policy validation, derived-id merging,
+/// and effect evaluation.
+pub fn drain_impact_events_js<'js>(
+    ctx: &Ctx<'js>,
+    obj: &Object<'js>,
+    scope: &str,
+) -> Result<Vec<ImpactEventDescriptor>, DescriptorError> {
+    let Some(arr) = optional_manifest_array_js(obj, "events", scope)? else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::with_capacity(arr.len());
+    for i in 0..arr.len() {
+        let value: JsValue = arr.get(i).map_err(js_err)?;
+        match impact_event_from_js(ctx, value) {
+            Ok(descriptor) => out.push(descriptor),
+            Err(error) => {
+                log::warn!("[Scripting] {scope}: events[{i}] is malformed and was skipped: {error}")
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn impact_event_from_js<'js>(
+    ctx: &Ctx<'js>,
+    value: JsValue<'js>,
+) -> Result<ImpactEventDescriptor, DescriptorError> {
+    let item = Object::from_value(value).map_err(|_| DescriptorError::InvalidShape {
+        reason: "impact-event entry must be an object".into(),
+    })?;
+    let kind = get_required_string_js(&item, "kind")?;
+    if kind != "impact" {
+        return Err(DescriptorError::InvalidShape {
+            reason: "impact-event entry `kind` must be `impact`".into(),
+        });
+    }
+
+    let filter: Object = item
+        .get("filter")
+        .map_err(|_| DescriptorError::MissingField { field: "filter" })?;
+    let filter_tag = if filter.contains_key("tag").map_err(js_err)? {
+        let raw: JsValue = filter.get("tag").map_err(js_err)?;
+        if raw.is_null() || raw.is_undefined() {
+            None
+        } else {
+            Some(String::from_js_value_required(raw, "tag")?)
+        }
+    } else {
+        None
+    };
+
+    let policy: Array = item
+        .get("policy")
+        .map_err(|_| DescriptorError::InvalidShape {
+            reason: "impact-event entry `policy` must be an array".into(),
+        })?;
+    let mut policy_json = Vec::with_capacity(policy.len());
+    for i in 0..policy.len() {
+        let raw: JsValue = policy.get(i).map_err(js_err)?;
+        policy_json.push(conv::js_to_json(ctx, raw).map_err(js_err)?);
+    }
+
+    Ok(ImpactEventDescriptor {
+        id: get_required_string_js(&item, "id")?,
+        filter_tag,
+        policy: policy_json,
+    })
 }
 
 /// Drain the `triggerEvents` array from a QuickJS manifest object. Mirrors

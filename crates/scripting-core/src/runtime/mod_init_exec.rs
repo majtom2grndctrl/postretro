@@ -9,10 +9,10 @@ use rquickjs::{Array as JsArray, Context as JsContext, Object as JsObject, Value
 use crate::data_descriptors::{
     EntityTypeDescriptor, drain_fonts_js, drain_fonts_lua, drain_frontend_js, drain_frontend_lua,
     drain_global_crossings_js, drain_global_crossings_lua, drain_global_reactions_js,
-    drain_global_reactions_lua, drain_maps_js, drain_maps_lua, drain_theme_js, drain_theme_lua,
-    drain_trigger_events_js, drain_trigger_events_lua, drain_trigger_pools_js,
-    drain_trigger_pools_lua, drain_ui_trees_js, drain_ui_trees_lua, entity_descriptor_from_js,
-    entity_descriptor_from_lua,
+    drain_global_reactions_lua, drain_impact_events_js, drain_impact_events_lua, drain_maps_js,
+    drain_maps_lua, drain_theme_js, drain_theme_lua, drain_trigger_events_js,
+    drain_trigger_events_lua, drain_trigger_pools_js, drain_trigger_pools_lua, drain_ui_trees_js,
+    drain_ui_trees_lua, entity_descriptor_from_js, entity_descriptor_from_lua,
 };
 use crate::error::ScriptError;
 use crate::primitives_registry::ScriptPrimitive;
@@ -251,6 +251,17 @@ pub(super) fn run_mod_init_quickjs(
                 return;
             }
         };
+        let events = match drain_impact_events_js(&ctx, &obj, "default mod manifest export") {
+            Ok(events) => events,
+            Err(e) => {
+                out = Err(ScriptError::InvalidArgument {
+                    reason: format!(
+                        "mod-init: `{source_path}` default mod manifest export `events` invalid: {e}"
+                    ),
+                });
+                return;
+            }
+        };
         let store_declarations = match drain_store_declarations_js(&ctx, &obj) {
             Ok(stores) => stores,
             Err(e) => {
@@ -285,6 +296,7 @@ pub(super) fn run_mod_init_quickjs(
             maps,
             reactions,
             crossings,
+            events,
             trigger_events,
             trigger_pools,
             store_declarations,
@@ -441,6 +453,13 @@ pub(super) fn run_mod_init_luau(
             ),
         }
     })?;
+    let events = drain_impact_events_lua(&table, "returned mod manifest").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` returned mod manifest `events` invalid: {e}"
+            ),
+        }
+    })?;
     let store_declarations =
         drain_store_declarations_lua(&table).map_err(|e| ScriptError::InvalidArgument {
             reason: format!(
@@ -469,6 +488,7 @@ pub(super) fn run_mod_init_luau(
         maps,
         reactions,
         crossings,
+        events,
         trigger_events,
         trigger_pools,
         store_declarations,
@@ -522,5 +542,70 @@ mod tests {
         assert_eq!(pool.tag, "valid_pool");
         assert_eq!(pool.arm, TriggerPoolArm::Count(2));
         assert_eq!(pool.levels, ["campaign"]);
+    }
+
+    #[test]
+    fn mod_init_preserves_impact_event_descriptors_in_both_runtimes() {
+        let registry = PrimitiveRegistry::new();
+        let quickjs = QuickJsSubsystem::new(&registry, &crate::quickjs::QuickJsConfig::default())
+            .expect("QuickJS subsystem should initialize");
+        let js_manifest = run_mod_init_quickjs(
+            &quickjs,
+            r#"
+                globalThis.__postretroModManifest = {
+                    name: "Impact Mod",
+                    events: [{
+                        kind: "impact",
+                        id: "reaction_1234abcd",
+                        filter: { tag: "crate" },
+                        policy: [{
+                            primitive: "setState",
+                            target: "@impact.target",
+                            args: { name: "hits", value: { op: "input", name: "@state.hits" } },
+                        }],
+                    }],
+                };
+            "#,
+            "impact-mod.js",
+        )
+        .expect("QuickJS impact event manifest should parse");
+        let luau_manifest = run_mod_init_luau(
+            &[],
+            r#"
+                return {
+                    name = "Impact Mod",
+                    events = {{
+                        kind = "impact",
+                        id = "reaction_1234abcd",
+                        filter = { tag = "crate" },
+                        policy = {{
+                            primitive = "setState",
+                            target = "@impact.target",
+                            args = { name = "hits", value = { op = "input", name = "@state.hits" } },
+                        }},
+                    }},
+                }
+            "#,
+            "impact-mod.luau",
+            Path::new("."),
+        )
+        .expect("Luau impact event manifest should parse");
+
+        assert_eq!(js_manifest.events, luau_manifest.events);
+        assert_eq!(js_manifest.events.len(), 1);
+        let event = &js_manifest.events[0];
+        assert_eq!(event.id, "reaction_1234abcd");
+        assert_eq!(event.filter_tag.as_deref(), Some("crate"));
+        assert_eq!(
+            event.policy,
+            vec![serde_json::json!({
+                "primitive": "setState",
+                "target": "@impact.target",
+                "args": {
+                    "name": "hits",
+                    "value": { "op": "input", "name": "@state.hits" },
+                },
+            })]
+        );
     }
 }

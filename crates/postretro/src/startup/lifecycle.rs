@@ -3000,6 +3000,7 @@ mod tests {
                 maps: Vec::new(),
                 reactions: Vec::new(),
                 crossings: Vec::new(),
+                events: Vec::new(),
                 trigger_events: Vec::new(),
                 trigger_pools: Vec::new(),
                 ui_trees: vec![RegisteredUiTree {

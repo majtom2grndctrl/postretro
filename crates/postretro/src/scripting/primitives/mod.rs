@@ -596,6 +596,11 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
             "Engine-global reaction definitions. Optional; survive level unload and compose into active level behavior by `levels` tag selectors.",
         )
         .field(
+            "events?",
+            "Vec<ImpactEvent>",
+            "Pure impact-policy declarations. Optional; Task 5 composes base declarations and overrides by their SDK-derived identity at the impact dispatch chokepoint.",
+        )
+        .field(
             "crossings?",
             "Vec<CrossingDescriptor>",
             "Engine-global state-crossing watchers. Optional; survive level unload and compose into active level behavior by `levels` tag selectors.",
@@ -710,6 +715,7 @@ mod tests {
             maps: Vec::new(),
             reactions: Vec::new(),
             crossings: Vec::new(),
+            events: Vec::new(),
             trigger_events: Vec::new(),
             trigger_pools: Vec::new(),
             store_declarations: StoreDeclarationSet::default(),
@@ -724,6 +730,7 @@ mod tests {
             "maps",
             "reactions",
             "crossings",
+            "events",
             "triggerEvents",
             "triggerPools",
             "stores",

@@ -183,6 +183,63 @@ export type TriggerEventParams = {
 }
 export type Reaction<S> = NamedReactionDescriptor
 
+export type NumberValue = number | NumberRef
+export type BoolValue = boolean | BoolRef
+
+export type NumberRef = {
+  plus: (self: NumberRef, n: NumberValue) -> NumberRef,
+  minus: (self: NumberRef, n: NumberValue) -> NumberRef,
+  times: (self: NumberRef, n: NumberValue) -> NumberRef,
+  dividedBy: (self: NumberRef, n: NumberValue) -> NumberRef,
+  clamp: (self: NumberRef, lo: NumberValue, hi: NumberValue) -> NumberRef,
+  lerp: (self: NumberRef, to: NumberValue, t: NumberValue) -> NumberRef,
+  lt: (self: NumberRef, n: NumberValue) -> BoolRef,
+  le: (self: NumberRef, n: NumberValue) -> BoolRef,
+  gt: (self: NumberRef, n: NumberValue) -> BoolRef,
+  ge: (self: NumberRef, n: NumberValue) -> BoolRef,
+  eq: (self: NumberRef, n: NumberValue) -> BoolRef,
+  ne: (self: NumberRef, n: NumberValue) -> BoolRef,
+}
+
+export type BoolRef = {
+  ["and"]: (self: BoolRef, other: BoolValue) -> BoolRef,
+  ["or"]: (self: BoolRef, other: BoolValue) -> BoolRef,
+  ["not"]: (self: BoolRef) -> BoolRef,
+  select: (self: BoolRef, whenTrue: NumberValue, whenFalse: NumberValue) -> NumberRef,
+}
+
+export type Effect = PrimitiveReactionDescriptor | Reaction<{}>
+export type GatedEffect = { when: BoolRef?, ["do"]: {Effect} }
+export type EffectOrGroup = Effect | GatedEffect
+
+export type TargetHandle = {
+  healthBefore: NumberRef,
+  healthAfter: NumberRef,
+  maxHealth: NumberRef,
+  despawn: (self: TargetHandle, opts: { afterMs: number? }?) -> Effect,
+  playAnim: (self: TargetHandle, clip: string) -> Effect,
+  setHealth: (self: TargetHandle, value: NumberValue, opts: { afterMs: number? }?) -> Effect,
+  state: (self: TargetHandle, name: string) -> NumberRef,
+  setState: (self: TargetHandle, name: string, value: NumberValue) -> Effect,
+}
+
+export type SourceHandle = { __impactSourceBrand: true }
+
+export type NumberSlot = {
+  add: (self: NumberSlot, delta: NumberValue) -> Effect,
+}
+
+export type Impact = {
+  target: TargetHandle,
+  source: SourceHandle,
+  amount: NumberRef,
+}
+
+export type ImpactEvent = {
+  kind: "impact",
+  override: (self: ImpactEvent, filter: { tag: string? }, build: (Impact) -> {EffectOrGroup}) -> ImpactEvent,
+}
+
 --- Bundle returned from `setupLevel`. The engine deserializes
 --- this shape in one pass at level load and drops the data-script VM
 --- context after the return.
@@ -190,6 +247,7 @@ export type Reaction<S> = NamedReactionDescriptor
 --- `ModManifest.entities`, not here.
 export type LevelManifest = {
   reactions: {NamedReactionDescriptor},
+  events: {ImpactEvent}?,
   -- State-crossing watchers (HUD dynamics). `CrossingDescriptor` is declared
   -- in postretro.d.luau (the generated SDK-lib type block). See
   -- `onStateCrossing`.
@@ -387,6 +445,182 @@ local function autoReactionId(descriptor: any): string
     hash = bit32.band(hash * 0x01000193, 0xffffffff)
   end
   return string.format("reaction_%08x", hash)
+end
+
+local numberNodes: {[any]: any} = {}
+local boolNodes: {[any]: any} = {}
+local boolRef: (node: any) -> BoolRef
+
+local function constant(value: number | boolean): any
+  return { op = "const", value = value }
+end
+
+local function numberNode(value: NumberValue): any
+  if type(value) == "number" then
+    return constant(value)
+  end
+  return numberNodes[value]
+end
+
+local function boolNode(value: BoolValue): any
+  if type(value) == "boolean" then
+    return constant(value)
+  end
+  return boolNodes[value]
+end
+
+local function numberRef(node: any): NumberRef
+  local ref: any = {}
+  ref.plus = function(_self: NumberRef, n: NumberValue): NumberRef
+    return numberRef({ op = "add", a = node, b = numberNode(n) })
+  end
+  ref.minus = function(_self: NumberRef, n: NumberValue): NumberRef
+    return numberRef({ op = "sub", a = node, b = numberNode(n) })
+  end
+  ref.times = function(_self: NumberRef, n: NumberValue): NumberRef
+    return numberRef({ op = "mul", a = node, b = numberNode(n) })
+  end
+  ref.dividedBy = function(_self: NumberRef, n: NumberValue): NumberRef
+    return numberRef({ op = "div", a = node, b = numberNode(n) })
+  end
+  ref.clamp = function(_self: NumberRef, lo: NumberValue, hi: NumberValue): NumberRef
+    return numberRef({ op = "clamp", x = node, lo = numberNode(lo), hi = numberNode(hi) })
+  end
+  ref.lerp = function(_self: NumberRef, to: NumberValue, t: NumberValue): NumberRef
+    return numberRef({ op = "lerp", a = node, b = numberNode(to), t = numberNode(t) })
+  end
+  ref.lt = function(_self: NumberRef, n: NumberValue): BoolRef
+    return boolRef({ op = "lt", a = node, b = numberNode(n) })
+  end
+  ref.le = function(_self: NumberRef, n: NumberValue): BoolRef
+    return boolRef({ op = "le", a = node, b = numberNode(n) })
+  end
+  ref.gt = function(_self: NumberRef, n: NumberValue): BoolRef
+    return boolRef({ op = "gt", a = node, b = numberNode(n) })
+  end
+  ref.ge = function(_self: NumberRef, n: NumberValue): BoolRef
+    return boolRef({ op = "ge", a = node, b = numberNode(n) })
+  end
+  ref.eq = function(_self: NumberRef, n: NumberValue): BoolRef
+    return boolRef({ op = "eq", a = node, b = numberNode(n) })
+  end
+  ref.ne = function(_self: NumberRef, n: NumberValue): BoolRef
+    return boolRef({ op = "ne", a = node, b = numberNode(n) })
+  end
+  numberNodes[ref] = node
+  return table.freeze(ref) :: any
+end
+
+boolRef = function(node: any): BoolRef
+  local ref: any = {}
+  ref["and"] = function(_self: BoolRef, other: BoolValue): BoolRef
+    return boolRef({ op = "select", cond = node, a = boolNode(other), b = constant(false) })
+  end
+  ref["or"] = function(_self: BoolRef, other: BoolValue): BoolRef
+    return boolRef({ op = "select", cond = node, a = constant(true), b = boolNode(other) })
+  end
+  ref["not"] = function(_self: BoolRef): BoolRef
+    return boolRef({ op = "select", cond = node, a = constant(false), b = constant(true) })
+  end
+  ref.select = function(_self: BoolRef, whenTrue: NumberValue, whenFalse: NumberValue): NumberRef
+    return numberRef({ op = "select", cond = node, a = numberNode(whenTrue), b = numberNode(whenFalse) })
+  end
+  boolNodes[ref] = node
+  return table.freeze(ref) :: any
+end
+
+local function impactEffect(primitive: string, args: { [string]: any }?): PrimitiveReactionDescriptor
+  return { primitive = primitive, target = "@impact.target", args = args } :: any
+end
+
+local IMPACT_TARGET: TargetHandle = table.freeze({
+  healthBefore = numberRef({ op = "input", name = "@impact.healthBefore" }),
+  healthAfter = numberRef({ op = "input", name = "@impact.healthAfter" }),
+  maxHealth = numberRef({ op = "input", name = "@impact.maxHealth" }),
+  despawn = function(_self: TargetHandle, opts: { afterMs: number? }?): Effect
+    return impactEffect("despawn", if opts == nil or opts.afterMs == nil then {} else { afterMs = opts.afterMs })
+  end,
+  playAnim = function(_self: TargetHandle, clip: string): Effect
+    return impactEffect("playAnim", { clip = clip })
+  end,
+  setHealth = function(_self: TargetHandle, value: NumberValue, opts: { afterMs: number? }?): Effect
+    local args: {[string]: any} = { value = numberNode(value) }
+    if opts ~= nil and opts.afterMs ~= nil then
+      args.afterMs = opts.afterMs
+    end
+    return impactEffect("setHealth", args)
+  end,
+  state = function(_self: TargetHandle, name: string): NumberRef
+    return numberRef({ op = "input", name = "@state." .. name })
+  end,
+  setState = function(_self: TargetHandle, name: string, value: NumberValue): Effect
+    return impactEffect("setState", { name = name, value = numberNode(value) })
+  end,
+})
+
+local IMPACT: Impact = table.freeze({
+  target = IMPACT_TARGET,
+  source = table.freeze({}) :: any,
+  amount = numberRef({ op = "input", name = "@impact.amount" }),
+})
+
+local function autoImpactId(filter: { tag: string? }, policy: {EffectOrGroup}): string
+  local serialized = stableStringify({ filter = filter, policy = policy })
+  local hash = 0x811c9dc5
+  for i = 1, #serialized do
+    hash = bit32.bxor(hash, string.byte(serialized, i))
+    hash = bit32.band(hash * 0x01000193, 0xffffffff)
+  end
+  return string.format("reaction_%08x", hash)
+end
+
+local lowerImpactPolicy: (policy: {EffectOrGroup}) -> {EffectOrGroup}
+
+local function impactEvent(id: string, filter: { tag: string? }, policy: {EffectOrGroup}): ImpactEvent
+  local handle: any = { kind = "impact", id = id, filter = filter, policy = policy }
+  handle.override = function(_self: ImpactEvent, overrideFilter: { tag: string? }, build: (Impact) -> {EffectOrGroup}): ImpactEvent
+    return impactEvent(id, table.freeze({ tag = overrideFilter.tag }), lowerImpactPolicy(build(IMPACT)))
+  end
+  return table.freeze(handle) :: any
+end
+
+lowerImpactPolicy = function(policy: {EffectOrGroup}): {EffectOrGroup}
+  local lowered: {EffectOrGroup} = {}
+  for i, entry in ipairs(policy) do
+    if type(entry) == "table" and entry["do"] ~= nil then
+      local group: any = { ["do"] = entry["do"] }
+      if entry.when ~= nil then
+        group.when = boolNode(entry.when)
+      end
+      lowered[i] = group
+    else
+      lowered[i] = entry
+    end
+  end
+  return lowered
+end
+
+function DataScriptSdk.slot(ref: WritableStateRef<number>): NumberSlot
+  return table.freeze({
+    add = function(_self: NumberSlot, delta: NumberValue): Effect
+      return {
+        primitive = "setState",
+        args = {
+          slot = ref.slot,
+          value = { op = "add", a = { op = "input", name = ref.slot }, b = numberNode(delta) },
+        },
+      }
+    end,
+  })
+end
+
+function DataScriptSdk.defineImpactEvent(
+  filter: { tag: string? },
+  build: (Impact) -> {EffectOrGroup}
+): ImpactEvent
+  local eventFilter = table.freeze({ tag = filter.tag })
+  local policy = lowerImpactPolicy(build(IMPACT))
+  return impactEvent(autoImpactId(eventFilter, policy), eventFilter, policy)
 end
 
 --- Build a named reaction descriptor. Pure: returns a plain table, no FFI.

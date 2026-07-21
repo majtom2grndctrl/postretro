@@ -126,6 +126,7 @@ const TRIGGERS_LUAU_FIELDS: &[&str] = &[];
 /// `data_script.luau`.
 const DATA_SCRIPT_FIELDS: &[&str] = &[
     "defineReaction",
+    "defineImpactEvent",
     "onTriggerEvent",
     "damage",
     "enemies",
@@ -138,6 +139,7 @@ const DATA_SCRIPT_FIELDS: &[&str] = &[
     "defineMapCatalog",
     "defineTriggerPool",
     "defineStore",
+    "slot",
 ];
 
 /// UI-reactions SDK fields exported through `require("postretro/ui")`.

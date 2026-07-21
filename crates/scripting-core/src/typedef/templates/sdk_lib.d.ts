@@ -246,6 +246,59 @@
   /** Named reaction with a type-only, contravariant dispatch-scope marker. */
   export type Reaction<S = {}> = NamedReactionDescriptor & { readonly [reactionScopeBrand]?: (scope: S) => void };
 
+  // Impact-policy IR skin. This vocabulary lowers to the existing closed
+  // RuntimeValue op set; boolean composition is represented exclusively with
+  // `select` nodes.
+  const numBrand: unique symbol;
+  const boolBrand: unique symbol;
+  const sourceBrand: unique symbol;
+  const impactEventBrand: unique symbol;
+  export type NumberValue = number | NumberRef;
+  export type BoolValue = boolean | BoolRef;
+  export interface NumberRef {
+    readonly [numBrand]: true;
+    plus(n: NumberValue): NumberRef;
+    minus(n: NumberValue): NumberRef;
+    times(n: NumberValue): NumberRef;
+    dividedBy(n: NumberValue): NumberRef;
+    clamp(lo: NumberValue, hi: NumberValue): NumberRef;
+    lerp(to: NumberValue, t: NumberValue): NumberRef;
+    lt(n: NumberValue): BoolRef;
+    le(n: NumberValue): BoolRef;
+    gt(n: NumberValue): BoolRef;
+    ge(n: NumberValue): BoolRef;
+    eq(n: NumberValue): BoolRef;
+    ne(n: NumberValue): BoolRef;
+  }
+  export interface BoolRef {
+    readonly [boolBrand]: true;
+    and(other: BoolValue): BoolRef;
+    or(other: BoolValue): BoolRef;
+    not(): BoolRef;
+    select(whenTrue: NumberValue, whenFalse: NumberValue): NumberRef;
+  }
+  export type Effect = PrimitiveReactionDescriptor | Reaction<{}>;
+  export type GatedEffect = { when?: BoolRef; do: readonly Effect[] };
+  export type EffectOrGroup = Effect | GatedEffect;
+  export interface TargetHandle {
+    readonly healthBefore: NumberRef;
+    readonly healthAfter: NumberRef;
+    readonly maxHealth: NumberRef;
+    despawn(opts?: { afterMs?: number }): Effect;
+    playAnim(clip: string): Effect;
+    setHealth(value: NumberValue, opts?: { afterMs?: number }): Effect;
+    state(name: string): NumberRef;
+    setState(name: string, value: NumberValue): Effect;
+  }
+  export interface SourceHandle { readonly [sourceBrand]: true; }
+  export interface NumberSlot { add(delta: NumberValue): Effect; }
+  export type Impact = Readonly<{ target: TargetHandle; source: SourceHandle; amount: NumberRef }>;
+  export interface ImpactEvent {
+    readonly kind: "impact";
+    readonly [impactEventBrand]: true;
+    override(filter: { tag?: string }, build: (impact: Impact) => readonly EffectOrGroup[]): ImpactEvent;
+  }
+
   /** Crossing condition: fires when the watched slot crosses the threshold in one direction. Exactly one of `below`/`above` is given. `max` is the denominator the threshold is a fraction of; omit it for a raw-value comparison (`max` defaults to `1.0`). */
   export type CrossingCondition =
     | { below: number; above?: never; max?: number; edge?: "both" }
@@ -283,6 +336,7 @@
   /** Bundle returned from `setupLevel`. The engine deserializes this shape in one pass at level load. */
   export type LevelManifest = {
     reactions: NamedReactionDescriptor[];
+    events?: readonly ImpactEvent[];
     crossings?: CrossingDescriptor[];
     triggerEvents?: TriggerEventDescriptor[];
     triggerPools?: TriggerPoolDescriptor[];
@@ -311,6 +365,12 @@
   export function defineReaction(
     tracer: (params: TriggerEventParams) => ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor,
   ): Reaction<TriggerEventParams>;
+
+  /** Define a pure impact-policy descriptor. Register it only by returning it through `events`. */
+  export function defineImpactEvent(
+    filter: { tag?: string },
+    build: (impact: Impact) => readonly EffectOrGroup[],
+  ): ImpactEvent;
   export function defineReaction(
     name: string,
     descriptor:
@@ -407,6 +467,9 @@
     namespace: string,
     schema: S,
   ): StoreDefinition<S>;
+
+  /** Build an additive write for a writable Number store slot. */
+  export function slot(ref: WritableStateRef<number>): NumberSlot;
 
   // -------------------------------------------------------------------------
   // UI theme helpers. `defineTheme` accepts nested singular token groups and

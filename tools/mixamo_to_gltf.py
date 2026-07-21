@@ -5,25 +5,79 @@ Usage:
     blender --background --python tools/mixamo_to_gltf.py -- \
         --input-dir path/to/fbx_folder \
         --output path/to/output/model.gltf \
-        [--scale 0.01]
+        [--base "Exo Red.fbx"] \
+        [--scale 0.01] \
+        [--no-tag] \
+        [--strip-face]
 
-The first FBX (alphabetically) is treated as the base mesh + armature.
-All other FBXs contribute their animation as named Actions (derived from
-the filename, e.g. "Idle.fbx" -> action named "idle").
+The --base file is treated as the base mesh + armature.  If omitted, the
+first FBX alphabetically is used (which may be an animation-only file —
+pass --base to be explicit).  All other FBXs contribute their animation
+as named Actions (derived from the filename, e.g. "Idle.fbx" -> "idle").
+
+After export the script tags the Mixamo skeleton with engine extras
+(poseMask, aimBendWeight, socket) and sets the skin skeleton root.
+Pass --no-tag to skip.
 
 Output is glTF Separate (.gltf + .bin + textures) ready for the engine.
 """
 
 import bpy
 import sys
+import json
 import argparse
 from pathlib import Path
 from mathutils import Vector
 
 
+# ---------------------------------------------------------------------------
+# Mixamo bone -> engine extras mapping (bone names without "mixamorig:" prefix)
+# ---------------------------------------------------------------------------
+
+MIXAMO_PREFIX = "mixamorig:"
+
+UPPER_BODY = {
+    "Spine", "Spine1", "Spine2",
+    "Neck", "Head", "HeadTop_End",
+    "LeftShoulder", "LeftArm", "LeftForeArm", "LeftHand",
+    "RightShoulder", "RightArm", "RightForeArm", "RightHand",
+    "LeftHandThumb1", "LeftHandThumb2", "LeftHandThumb3", "LeftHandThumb4",
+    "LeftHandIndex1", "LeftHandIndex2", "LeftHandIndex3", "LeftHandIndex4",
+    "LeftHandMiddle1", "LeftHandMiddle2", "LeftHandMiddle3", "LeftHandMiddle4",
+    "LeftHandRing1", "LeftHandRing2", "LeftHandRing3", "LeftHandRing4",
+    "LeftHandPinky1", "LeftHandPinky2", "LeftHandPinky3", "LeftHandPinky4",
+    "RightHandThumb1", "RightHandThumb2", "RightHandThumb3", "RightHandThumb4",
+    "RightHandIndex1", "RightHandIndex2", "RightHandIndex3", "RightHandIndex4",
+    "RightHandMiddle1", "RightHandMiddle2", "RightHandMiddle3", "RightHandMiddle4",
+    "RightHandRing1", "RightHandRing2", "RightHandRing3", "RightHandRing4",
+    "RightHandPinky1", "RightHandPinky2", "RightHandPinky3", "RightHandPinky4",
+}
+
+LOWER_BODY = {
+    "Hips",
+    "LeftUpLeg", "LeftLeg", "LeftFoot", "LeftToeBase", "LeftToe_End",
+    "RightUpLeg", "RightLeg", "RightFoot", "RightToeBase", "RightToe_End",
+}
+
+AIM_SPINE_WEIGHTS = {
+    "Spine": 0.4,
+    "Spine1": 0.7,
+    "Spine2": 1.0,
+}
+
+LEG_L = {"LeftUpLeg", "LeftLeg", "LeftFoot"}
+LEG_R = {"RightUpLeg", "RightLeg", "RightFoot"}
+FOOT_L = {"LeftFoot"}
+FOOT_R = {"RightFoot"}
+
+SOCKETS = {
+    "RightHand": "hand_r",
+    "LeftHand": "hand_l",
+}
+
+
 def parse_args():
     argv = sys.argv
-    # Blender passes everything after "--" to the script
     if "--" in argv:
         argv = argv[argv.index("--") + 1:]
     else:
@@ -39,9 +93,24 @@ def parse_args():
         help="Output path for the .gltf file"
     )
     parser.add_argument(
+        "--base",
+        help="Filename of the FBX to use as the base mesh+armature "
+             "(e.g. 'Exo Red.fbx'). If omitted, the first file "
+             "alphabetically is used."
+    )
+    parser.add_argument(
         "--scale", type=float, default=None,
         help="Import scale override (default: let Blender auto-convert units). "
              "Use 0.01 if your model appears 100x too large after import."
+    )
+    parser.add_argument(
+        "--no-tag", action="store_true",
+        help="Skip auto-tagging the Mixamo skeleton with engine extras"
+    )
+    parser.add_argument(
+        "--strip-face", action="store_true",
+        help="Remove facial bones (eyelids, jaw, tongue, brows, etc.) "
+             "and merge their vertex weights into the Head bone"
     )
     return parser.parse_args(argv)
 
@@ -76,12 +145,8 @@ def get_mesh():
 
 
 def action_name_from_filename(filepath):
-    """Derive a clean action name from the FBX filename."""
     stem = Path(filepath).stem
-    # Mixamo filenames often look like "Walking.fbx" or "Idle_Breathing.fbx"
-    # Convert to lowercase, replace spaces/dots with underscores
     name = stem.lower().replace(" ", "_").replace(".", "_")
-    # Strip common Mixamo prefixes/suffixes
     for prefix in ("mixamo_com_", "mixamo_"):
         if name.startswith(prefix):
             name = name[len(prefix):]
@@ -96,7 +161,6 @@ def get_action_fcurves(action):
             return action.fcurves
         except (TypeError, AttributeError):
             pass
-    # Blender 4.4+ layered animation system
     if hasattr(action, 'layers'):
         for layer in action.layers:
             for strip in layer.strips:
@@ -108,14 +172,13 @@ def get_action_fcurves(action):
 
 
 def fcurve_bone_name(data_path):
-    """Extract the bone name from an F-curve data_path like pose.bones["Hips"].location."""
     prefix = 'pose.bones["'
     if not data_path.startswith(prefix):
         return None
     return data_path[len(prefix):data_path.index('"]')]
 
 
-def merge_animations(input_dir, scale=None):
+def merge_animations(input_dir, scale=None, base=None):
     """Import all FBX files, keeping one armature+mesh and collecting actions."""
     if not Path(input_dir).is_dir():
         print(f"ERROR: Input directory not found: {input_dir}")
@@ -129,11 +192,23 @@ def merge_animations(input_dir, scale=None):
         print(f"ERROR: No .fbx files found in {input_dir}")
         sys.exit(1)
 
+    if base:
+        base_file = None
+        for f in fbx_files:
+            if f.name == base or f.stem == base:
+                base_file = f
+                break
+        if not base_file:
+            print(f"ERROR: Base file '{base}' not found in {input_dir}")
+            print(f"  Available files: {[f.name for f in fbx_files]}")
+            sys.exit(1)
+        fbx_files.remove(base_file)
+        fbx_files.insert(0, base_file)
+
     print(f"Found {len(fbx_files)} FBX file(s):")
     for f in fbx_files:
         print(f"  {f.name}")
 
-    # Import the first file as the base (mesh + armature + first animation)
     base_file = fbx_files[0]
     print(f"\nImporting base: {base_file.name}")
     import_fbx(base_file, scale)
@@ -143,7 +218,6 @@ def merge_animations(input_dir, scale=None):
         print("ERROR: No armature found after importing base FBX")
         sys.exit(1)
 
-    # Rename the base action
     seen_names = set()
     if base_armature.animation_data and base_armature.animation_data.action:
         base_action = base_armature.animation_data.action
@@ -152,10 +226,8 @@ def merge_animations(input_dir, scale=None):
         seen_names.add(base_action.name)
         print(f"  Action: {base_action.name}")
 
-    # Store base bone names for validation
     base_bones = set(bone.name for bone in base_armature.data.bones)
 
-    # Apply transforms on base mesh (deselect first so only the mesh is affected)
     base_mesh = get_mesh()
     if base_mesh:
         bpy.ops.object.select_all(action='DESELECT')
@@ -163,18 +235,18 @@ def merge_animations(input_dir, scale=None):
         base_mesh.select_set(True)
         bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
         base_mesh.select_set(False)
+    else:
+        print("  WARNING: No mesh in base file — output will have no geometry.")
+        print("  If the character mesh is in a different FBX, use --base to select it.")
 
-    # Snapshot all objects that belong to the base model (may include multiple meshes)
     base_objects = set(bpy.data.objects[:])
 
-    # Import remaining files for their animations
     for fbx_file in fbx_files[1:]:
         clip_name = action_name_from_filename(fbx_file)
         print(f"\nImporting clip: {fbx_file.name} -> '{clip_name}'")
 
         import_fbx(fbx_file, scale)
 
-        # Find the newly imported armature (not the base one)
         new_armature = None
         for obj in bpy.data.objects:
             if obj.type == "ARMATURE" and obj != base_armature:
@@ -185,7 +257,6 @@ def merge_animations(input_dir, scale=None):
             print(f"  WARNING: No new armature found, skipping {fbx_file.name}")
             continue
 
-        # Grab the action from the new armature
         if new_armature.animation_data and new_armature.animation_data.action:
             action = new_armature.animation_data.action
             if clip_name in seen_names:
@@ -195,7 +266,6 @@ def merge_animations(input_dir, scale=None):
             action.name = clip_name
             action.use_fake_user = True
 
-            # Validate that the clip's F-curves actually drive base armature bones
             orphaned_channels = []
             matched_any = False
             fcurves = get_action_fcurves(action)
@@ -215,12 +285,10 @@ def merge_animations(input_dir, scale=None):
         else:
             print(f"  WARNING: No animation data in {fbx_file.name}")
 
-        # Delete objects that came with this clip import (not in the base snapshot)
         for obj in list(bpy.data.objects):
             if obj not in base_objects:
                 bpy.data.objects.remove(obj, do_unlink=True)
 
-    # Join all mesh objects into one (engine requires a single mesh node)
     mesh_objects = [obj for obj in bpy.data.objects if obj.type == "MESH"]
     if len(mesh_objects) > 1:
         print(f"\nJoining {len(mesh_objects)} mesh objects into one...")
@@ -230,7 +298,6 @@ def merge_animations(input_dir, scale=None):
         bpy.context.view_layer.objects.active = mesh_objects[0]
         bpy.ops.object.join()
 
-    # Summary
     print(f"\n--- Result ---")
     print(f"Actions in file:")
     for action in bpy.data.actions:
@@ -238,8 +305,81 @@ def merge_animations(input_dir, scale=None):
         print(f"  {action.name}: frames {int(frame_range[0])}-{int(frame_range[1])}")
 
 
+def strip_facial_bones():
+    """Remove facial bones and merge their vertex weights to the Head bone."""
+    armature = get_armature()
+    if not armature:
+        print("\nWARNING: No armature found, skipping facial bone strip")
+        return
+
+    head_bone = armature.data.bones.get(MIXAMO_PREFIX + "Head")
+    if not head_bone:
+        print("\nWARNING: No 'mixamorig:Head' bone found, skipping facial bone strip")
+        return
+
+    keep = {MIXAMO_PREFIX + "HeadTop_End"}
+    face_bone_names = set()
+    for child in head_bone.children_recursive:
+        if child.name not in keep:
+            face_bone_names.add(child.name)
+
+    if not face_bone_names:
+        print("\nNo facial bones found to strip")
+        return
+
+    print(f"\nStripping {len(face_bone_names)} facial bones...")
+
+    mesh = get_mesh()
+    if mesh:
+        head_group = mesh.vertex_groups.get(MIXAMO_PREFIX + "Head")
+        if not head_group:
+            head_group = mesh.vertex_groups.new(name=MIXAMO_PREFIX + "Head")
+
+        face_group_indices = set()
+        for bone_name in face_bone_names:
+            group = mesh.vertex_groups.get(bone_name)
+            if group:
+                face_group_indices.add(group.index)
+
+        if face_group_indices:
+            reassigned = 0
+            for v in mesh.data.vertices:
+                face_weight = 0.0
+                for g in v.groups:
+                    if g.group in face_group_indices:
+                        face_weight += g.weight
+                if face_weight > 0:
+                    head_group.add([v.index], face_weight, 'ADD')
+                    reassigned += 1
+
+            for bone_name in face_bone_names:
+                group = mesh.vertex_groups.get(bone_name)
+                if group:
+                    mesh.vertex_groups.remove(group)
+
+            print(f"  Reassigned weights on {reassigned} vertices to Head")
+
+    bpy.context.view_layer.objects.active = armature
+    bpy.ops.object.mode_set(mode='EDIT')
+    bpy.ops.armature.select_all(action='DESELECT')
+
+    deleted = 0
+    for bone_name in face_bone_names:
+        bone = armature.data.edit_bones.get(bone_name)
+        if bone:
+            bone.select = True
+            bone.select_head = True
+            bone.select_tail = True
+            deleted += 1
+
+    bpy.ops.armature.delete()
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+    remaining = len(armature.data.bones)
+    print(f"  Deleted {deleted} bones, {remaining} remain")
+
+
 def validate_model():
-    """Check the model meets engine requirements."""
     mesh = get_mesh()
     armature = get_armature()
 
@@ -250,7 +390,6 @@ def validate_model():
         print("WARNING: No armature found in scene")
         return
 
-    # Check height (should be ~1.8-2.0m for a human character)
     dims = mesh.dimensions
     height = dims.z
     print(f"\nModel height: {height:.2f}m")
@@ -263,14 +402,12 @@ def validate_model():
     else:
         print("  OK (engine expects ~2m for a human)")
 
-    # Check feet-origin: engine requires the origin between the feet at ground level (z=0)
     min_z = min((mesh.matrix_world @ Vector(corner)).z for corner in mesh.bound_box)
     print(f"  Bounding box min Z: {min_z:.2f}m")
     if abs(min_z) > 0.1:
         print("  WARNING: Origin may not be at feet level. Engine expects the origin "
               "between the feet at ground level (z=0).")
 
-    # Sanity check: merge_animations should have joined all meshes already
     mesh_count = sum(1 for obj in bpy.data.objects if obj.type == "MESH")
     if mesh_count > 1:
         print(f"\n  ERROR: {mesh_count} mesh objects remain after join. Engine loads only one mesh node.")
@@ -278,50 +415,43 @@ def validate_model():
 
 
 def export_gltf(output_path):
-    """Export as glTF Separate format."""
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
 
-    # Ensure we're exporting with the right settings for the engine
     export_kwargs = {
         "filepath": str(output),
-        "export_format": "GLTF_SEPARATE",  # .gltf + .bin + textures
+        "export_format": "GLTF_SEPARATE",
         "export_texcoords": True,
         "export_normals": True,
-        "export_tangents": False,  # Engine: "omit tangents rather than ship near-degenerate ones"
+        "export_tangents": False,
         "export_materials": "EXPORT",
         "export_colors": False,
         "export_cameras": False,
         "export_lights": False,
         "use_selection": False,
         "export_animations": True,
-        "export_nla_strips": True,  # Each NLA track / action as a named clip
+        "export_nla_strips": True,
         "export_animation_mode": "ACTIONS",
         "export_anim_single_armature": True,
     }
 
-    # Push all actions to NLA tracks so they export as separate clips
     armature = get_armature()
     if armature:
         if not armature.animation_data:
             armature.animation_data_create()
         ad = armature.animation_data
 
-        # Clear existing NLA tracks
         for track in list(ad.nla_tracks):
             ad.nla_tracks.remove(track)
 
-        # Create one NLA track per action
         for action in bpy.data.actions:
             track = ad.nla_tracks.new()
             track.name = action.name
             strip = track.strips.new(action.name, int(action.frame_range[0]), action)
             strip.name = action.name
 
-        # Clear the active action so it doesn't double-export
         ad.action = None
 
-    # Filter kwargs to only properties the installed Blender version supports
     valid_props = set(bpy.ops.export_scene.gltf.get_rna_type().properties.keys())
     export_kwargs = {k: v for k, v in export_kwargs.items() if k in valid_props}
 
@@ -329,7 +459,6 @@ def export_gltf(output_path):
     bpy.ops.export_scene.gltf(**export_kwargs)
     print("Done!")
 
-    # List output files
     output_dir = output.parent
     output_stem = output.stem
     print(f"\nOutput files:")
@@ -339,6 +468,85 @@ def export_gltf(output_path):
             print(f"  {f.name} ({size_kb:.1f} KB)")
 
 
+def tag_gltf_skeleton(gltf_path):
+    """Post-process the exported glTF to add engine extras to Mixamo bones."""
+    gltf_path = Path(gltf_path)
+    with open(gltf_path, 'r') as f:
+        gltf = json.load(f)
+
+    nodes = gltf.get("nodes", [])
+    skins = gltf.get("skins", [])
+    tagged = 0
+
+    for i, node in enumerate(nodes):
+        name = node.get("name", "")
+        if not name.startswith(MIXAMO_PREFIX):
+            continue
+        short = name[len(MIXAMO_PREFIX):]
+
+        extras = node.get("extras") or {}
+
+        masks = []
+        if short in UPPER_BODY:
+            masks.append("upperBody")
+        if short in LOWER_BODY:
+            masks.append("lowerBody")
+        if short in AIM_SPINE_WEIGHTS:
+            masks.append("aimSpine")
+            extras["aimBendWeight"] = AIM_SPINE_WEIGHTS[short]
+        if short in LEG_L:
+            masks.append("legL")
+        if short in LEG_R:
+            masks.append("legR")
+        if short in FOOT_L:
+            masks.append("footL")
+        if short in FOOT_R:
+            masks.append("footR")
+
+        if masks:
+            extras["poseMask"] = masks if len(masks) > 1 else masks[0]
+
+        if short in SOCKETS:
+            extras["socket"] = SOCKETS[short]
+
+        if extras:
+            node["extras"] = extras
+            tagged += 1
+
+    hips_idx = None
+    for i, node in enumerate(nodes):
+        if node.get("name") == MIXAMO_PREFIX + "Hips":
+            hips_idx = i
+            break
+    if hips_idx is not None and skins:
+        skins[0]["skeleton"] = hips_idx
+
+    with open(gltf_path, 'w') as f:
+        json.dump(gltf, f, indent='\t')
+
+    print(f"\nTagged {tagged} bones with engine extras")
+    mask_counts = {}
+    socket_count = 0
+    for node in nodes:
+        extras = node.get("extras")
+        if not extras:
+            continue
+        pm = extras.get("poseMask")
+        if pm:
+            for m in (pm if isinstance(pm, list) else [pm]):
+                mask_counts[m] = mask_counts.get(m, 0) + 1
+        if "socket" in extras:
+            socket_count += 1
+    for mask, count in sorted(mask_counts.items()):
+        print(f"  poseMask '{mask}': {count} bone(s)")
+    if socket_count:
+        print(f"  sockets: {socket_count}")
+    weights_str = ", ".join(f"{n}={w}" for n, w in sorted(AIM_SPINE_WEIGHTS.items()))
+    print(f"  aimBendWeight: {weights_str}")
+    if hips_idx is not None:
+        print(f"  skin skeleton root: node {hips_idx} (Hips)")
+
+
 def main():
     args = parse_args()
     print("=" * 60)
@@ -346,9 +554,13 @@ def main():
     print("=" * 60)
 
     clean_scene()
-    merge_animations(args.input_dir, args.scale)
+    merge_animations(args.input_dir, args.scale, args.base)
+    if args.strip_face:
+        strip_facial_bones()
     validate_model()
     export_gltf(args.output)
+    if not args.no_tag:
+        tag_gltf_skeleton(args.output)
 
 
 if __name__ == "__main__":

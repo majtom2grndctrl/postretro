@@ -504,7 +504,7 @@ declare module "postretro" {
     path: string;
     /** Display name shown to players in catalog-driven UI. Required. */
     name: string;
-    /** Authoritative classification tags for filtering plus `levels` selection on mod-global reactions, crossings, trigger events, and trigger pools. Optional; missing/null normalizes to empty. */
+    /** Authoritative classification tags for filtering plus `levels` selection on mod-global reactions, impact events, crossings, trigger events, and trigger pools. Optional; missing/null normalizes to empty. */
     tags?: ReadonlyArray<string>;
   };
 
@@ -556,7 +556,7 @@ declare module "postretro" {
     frontend?: Frontend;
     /** Engine-global reaction definitions. Optional; survive level unload and compose into active level behavior by `levels` tag selectors. */
     reactions?: ReadonlyArray<NamedReactionDescriptor>;
-    /** Pure impact-policy declarations. Optional; base declarations and overrides compose by their author-assigned identity at the impact dispatch chokepoint. */
+    /** Pure mod-global impact-policy declarations. Optional; `levels` selects map tags, setupLevel events append level-local declarations, and base plus matching last-registered override resolve by author-assigned id. Override filters narrow the base filter. */
     events?: ReadonlyArray<ImpactEvent>;
     /** Engine-global state-crossing watchers. Optional; survive level unload and compose into active level behavior by `levels` tag selectors. */
     crossings?: ReadonlyArray<CrossingDescriptor>;

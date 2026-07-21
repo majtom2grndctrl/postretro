@@ -126,7 +126,7 @@ pub(crate) fn simulate_tick(
     gravity: f32,
     active_wieldable: Option<EntityId>,
     anim_time: f64,
-    progress_tracker: &mut ProgressTracker,
+    _progress_tracker: &mut ProgressTracker,
     ai_warned: &mut HashSet<String>,
     mover_colliders: &[MoverCollider],
     mover_tick_states: &mut MoverTickStateTable,
@@ -338,7 +338,7 @@ pub(crate) fn simulate_tick(
     );
     reload_deliveries.extend(local_deliveries);
     weapon.extend(remote_weapon_events);
-    let death = run_death_sweep(&registry, progress_tracker);
+    let death = run_death_sweep(&registry);
 
     TickEvents {
         movement,
@@ -1129,19 +1129,13 @@ fn apply_weapon_impact_damage_with_source(
     );
 }
 
-pub(crate) fn run_death_sweep(
-    registry: &Rc<RefCell<EntityRegistry>>,
-    progress_tracker: &mut ProgressTracker,
-) -> Vec<String> {
+pub(crate) fn run_death_sweep(registry: &Rc<RefCell<EntityRegistry>>) -> Vec<String> {
     let report = {
         let mut registry = registry.borrow_mut();
         scripting_systems::health::sweep_deaths(&mut registry)
     };
 
     let mut events = Vec::new();
-    for tags in &report.killed_tags {
-        events.extend(progress_tracker.on_entity_killed(tags));
-    }
     if report.player_died {
         events.push(scripting_systems::health::PLAYER_DIED_EVENT.to_string());
     }
@@ -1217,6 +1211,7 @@ mod tests {
                     current: 0.0,
                     hitbox: None,
                     death_handled: true,
+                    pending_kill_credit: None,
                     zone_multipliers: Default::default(),
                     contributor_ledger: Default::default(),
                 },
@@ -1622,6 +1617,7 @@ mod tests {
                         current: 100.0,
                         hitbox: None,
                         death_handled: false,
+                        pending_kill_credit: None,
                         zone_multipliers: Default::default(),
                         contributor_ledger: Default::default(),
                     },
@@ -1923,6 +1919,7 @@ mod tests {
                             current: 100.0,
                             hitbox: None,
                             death_handled: false,
+                            pending_kill_credit: None,
                             zone_multipliers: Default::default(),
                             contributor_ledger: Default::default(),
                         },
@@ -2047,6 +2044,7 @@ mod tests {
                         current: 100.0,
                         hitbox: None,
                         death_handled: false,
+                        pending_kill_credit: None,
                         zone_multipliers: Default::default(),
                         contributor_ledger: Default::default(),
                     },
@@ -2759,6 +2757,7 @@ mod tests {
             current: 100.0,
             hitbox: None,
             death_handled: false,
+            pending_kill_credit: None,
             zone_multipliers: Default::default(),
             contributor_ledger: Default::default(),
         };
@@ -2803,6 +2802,7 @@ mod tests {
             current: 100.0,
             hitbox: None,
             death_handled: false,
+            pending_kill_credit: None,
             zone_multipliers: Default::default(),
             contributor_ledger: Default::default(),
         };
@@ -2841,6 +2841,7 @@ mod tests {
                         current: 100.0,
                         hitbox: None,
                         death_handled: false,
+                        pending_kill_credit: None,
                         zone_multipliers: Default::default(),
                         contributor_ledger: Default::default(),
                     },
@@ -2912,7 +2913,7 @@ mod tests {
     }
 
     #[test]
-    fn authorized_remote_hit_damage_can_run_death_sweep_in_same_host_tick() {
+    fn authorized_remote_hit_latches_without_reporting_or_removal_in_same_host_tick() {
         let registry = Rc::new(RefCell::new(EntityRegistry::new()));
         let (weapon_id, attacker, target) = {
             let mut registry = registry.borrow_mut();
@@ -2927,6 +2928,7 @@ mod tests {
                         current: 10.0,
                         hitbox: None,
                         death_handled: false,
+                        pending_kill_credit: None,
                         zone_multipliers: Default::default(),
                         contributor_ledger: Default::default(),
                     },
@@ -2957,13 +2959,22 @@ mod tests {
             );
         }
 
-        let mut progress = ProgressTracker::new();
-        let death_events = run_death_sweep(&registry, &mut progress);
+        let death_events = run_death_sweep(&registry);
 
         assert!(death_events.is_empty());
         assert!(
-            !registry.borrow().exists(target),
-            "the narrow post-HIT sweep removes the zero-HP target before snapshots settle"
+            registry.borrow().exists(target),
+            "the post-HIT sweep leaves a zero-HP target live for authored despawn"
+        );
+        let health = registry
+            .borrow()
+            .get_component::<HealthComponent>(target)
+            .unwrap()
+            .clone();
+        assert!(health.death_handled);
+        assert!(
+            health.pending_kill_credit.is_some(),
+            "the sweep freezes credit but emits no progress event",
         );
     }
 }

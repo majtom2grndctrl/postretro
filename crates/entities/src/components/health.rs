@@ -225,6 +225,18 @@ pub struct ContributorLedger {
     overflow: Option<ContributorLedgerOverflow>,
 }
 
+/// Frozen non-player kill credit captured at the first zero-HP latch.
+///
+/// This lives with the latch rather than in a simulation-side map so a direct
+/// registry despawn drops it with the component and an eventually recycled id
+/// cannot inherit stale credit. The frame-end deferred-removal pass hands a
+/// pre-despawn snapshot to its callback only after successful removal.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PendingKillCredit {
+    pub tags: Vec<String>,
+    pub contributor_ledger: ContributorLedger,
+}
+
 impl ContributorLedger {
     pub fn record(&mut self, record: ContributorLedgerRecord) {
         if !record.damage.is_finite() || record.damage <= 0.0 {
@@ -304,11 +316,16 @@ pub struct HealthComponent {
     pub max: f32,
     pub current: f32,
     pub hitbox: Option<Hitbox>,
-    /// One-shot latch: set when a persisting zero-HP player's death is reported
-    /// so the `playerDied` event fires exactly once. The death sweep
-    /// (`systems/health.rs`) is this field's only writer; nothing here mutates it.
+    /// One-shot latch set on a first zero-HP sweep. It makes `playerDied`
+    /// one-shot for players and freezes non-player kill credit until an authored
+    /// removal or an absolute-health write re-arms the entity.
     #[serde(default)]
     pub death_handled: bool,
+    /// Transient non-player credit frozen with `death_handled`. The deferred
+    /// frame-end removal pass reads it before destruction; direct despawns drop
+    /// it silently. Skipped for serde like the live contributor ledger.
+    #[serde(skip)]
+    pub pending_kill_credit: Option<PendingKillCredit>,
     /// Per-skeletal-zone damage multipliers, tag → factor, materialized from the
     /// descriptor. The damage site scales the payload by `zone_multipliers[tag]`
     /// for the struck zone (absent zone OR absent entry ⇒ `1.0`). Reseeded on
@@ -334,6 +351,7 @@ impl HealthComponent {
                 offset: Vec3::from_array(h.offset.unwrap_or([0.0, 0.0, 0.0])),
             }),
             death_handled: false,
+            pending_kill_credit: None,
             zone_multipliers: desc.zone_multipliers.clone(),
             contributor_ledger: ContributorLedger::default(),
         }
@@ -341,9 +359,9 @@ impl HealthComponent {
 
     /// Hot-reload refresh: `max`, `hitbox`, and `zone_multipliers` reseed from
     /// the new descriptor; `current` clamps to the new max so an authored max
-    /// reduction cannot leave HP above the cap. `death_handled` is live state
-    /// and is preserved. The reseeded multiplier map carries the edit onto live
-    /// entities without a respawn.
+    /// reduction cannot leave HP above the cap. `death_handled` and its frozen
+    /// pending kill credit are live state and are preserved. The reseeded
+    /// multiplier map carries the edit onto live entities without a respawn.
     pub fn refresh_from_descriptor(&mut self, desc: &HealthDescriptor) {
         self.max = desc.max;
         self.current = self.current.min(desc.max);
@@ -441,8 +459,9 @@ pub fn apply_damage_with_context(
 ///
 /// Like damage, a stale id or entity without `HealthComponent` is a no-op. The
 /// write is immediate and clamps to `[0, max]`; it deliberately does not
-/// publish a damage impact. Every write clears the death latch so a resurrected
-/// entity can be observed by the next zero-HP sweep.
+/// publish a damage impact. Every write clears the death latch and frozen credit
+/// so a resurrected entity can be observed by the next zero-HP sweep without
+/// reporting its previous down.
 pub fn set_health_absolute(registry: &mut EntityRegistry, id: EntityId, value: f32) {
     let Ok(health) = registry.get_component::<HealthComponent>(id) else {
         return;
@@ -450,6 +469,7 @@ pub fn set_health_absolute(registry: &mut EntityRegistry, id: EntityId, value: f
     let mut updated = health.clone();
     updated.set_current_absolute(value);
     updated.death_handled = false;
+    updated.pending_kill_credit = None;
     let _ = registry.set_component(id, updated);
 }
 
@@ -482,6 +502,7 @@ mod tests {
         assert_eq!(component.max, 80.0);
         assert!(component.hitbox.is_none());
         assert!(!component.death_handled);
+        assert!(component.pending_kill_credit.is_none());
         assert!(component.contributor_ledger.entries().is_empty());
         assert!(component.contributor_ledger.overflow().is_none());
     }
@@ -498,12 +519,16 @@ mod tests {
     }
 
     #[test]
-    fn absolute_health_write_clears_death_latch() {
+    fn absolute_health_write_clears_death_latch_and_pending_kill_credit() {
         let mut reg = EntityRegistry::new();
         let id = reg.spawn(Transform::default());
         let mut component = HealthComponent::from_descriptor(&descriptor(80.0));
         component.current = 0.0;
         component.death_handled = true;
+        component.pending_kill_credit = Some(PendingKillCredit {
+            tags: vec!["downed".to_string()],
+            contributor_ledger: ContributorLedger::default(),
+        });
         reg.set_component(id, component).unwrap();
 
         set_health_absolute(&mut reg, id, 25.0);
@@ -513,6 +538,10 @@ mod tests {
         assert!(
             !health.death_handled,
             "setHealth must re-arm a resurrected entity's death detection",
+        );
+        assert!(
+            health.pending_kill_credit.is_none(),
+            "setHealth must discard credit for a down that recovered",
         );
     }
 

@@ -1851,8 +1851,16 @@ impl ApplicationHandler for App {
                 // Death-event names accumulate here and drain through the
                 // sequence-aware dispatcher (a separate sibling loop below), so a
                 // `progress` reaction naming a sequence resolves — unlike the
-                // plain `fire_named_event` drains, which would no-op it.
-                let mut pending_death_events: Vec<String> = Vec::new();
+                // plain `fire_named_event` drains, which would no-op it. Frame-end
+                // removals append to the session buffer after this drain, so take
+                // that carryover now rather than running game logic during render.
+                let mut pending_death_events = std::mem::take(
+                    &mut self
+                        .session
+                        .as_mut()
+                        .expect("running session installed")
+                        .pending_death_events,
+                );
 
                 if let Some(snapshot) = gameplay_snapshot.as_ref() {
                     // `player_options` is session-owned; copy the crouch mode out
@@ -2296,7 +2304,17 @@ impl ApplicationHandler for App {
                 // rendered frame, before replication and render observe state.
                 impact_effects::run_end_of_frame_removal_pass(
                     &mut script_ctx.registry.borrow_mut(),
-                    |_| {},
+                    |_, pending_kill_credit| {
+                        let Some(pending_kill_credit) = pending_kill_credit else {
+                            return;
+                        };
+                        let session = self.session.as_mut().expect("running session installed");
+                        session.pending_death_events.extend(
+                            session
+                                .progress_tracker
+                                .on_entity_killed(&pending_kill_credit.tags),
+                        );
+                    },
                 );
 
                 // Host serialize + send after terminal removals, so the
@@ -5111,7 +5129,7 @@ impl App {
             return Vec::new();
         };
         let registry = session.scripting.script_ctx.registry.clone();
-        sim::run_death_sweep(&registry, &mut session.progress_tracker)
+        sim::run_death_sweep(&registry)
     }
 
     fn host_owner_state_projection_due(&self) -> bool {

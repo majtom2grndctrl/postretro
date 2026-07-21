@@ -7,7 +7,7 @@
 // Replay-purity guard: the production replay path (`prediction::replay`) is
 // registry-blind by signature (no `EntityRegistry` parameter), so AI/weapons/death
 // are structurally unreachable. These tests additionally assert it at the seam: a
-// zero-HP bystander entity that the full `simulate_tick` death sweep WOULD despawn
+// zero-HP bystander entity that the full `simulate_tick` death sweep WOULD latch
 // stays alive on both ends through every scenario, proving the movement-only path
 // never ran the registry-wide systems.
 

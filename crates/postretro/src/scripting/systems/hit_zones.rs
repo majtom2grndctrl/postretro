@@ -643,8 +643,8 @@ pub(crate) struct EntityRayHit {
 ///   derived reach bound) so a drawn enemy stays hittable; a trustworthy
 ///   available-pose capsule miss stays a miss (no fallback).
 ///
-/// Zero-HP entities (pending-despawn this tick) are skipped so a corpse cannot
-/// absorb a shot for one frame. `anim_time` is the game-layer animation clock;
+/// Zero-HP entities are skipped so a latched body cannot absorb a shot.
+/// `anim_time` is the game-layer animation clock;
 /// `store` is the per-model hit-zone data ([`HitZoneStore`]). The result's `zone`
 /// carries the struck bone's tag for a capsule hit (the zone-multiplier damage
 /// routing site reads it).
@@ -677,9 +677,8 @@ pub(crate) fn nearest_entity_hit(
         };
         let health = registry.get_component::<HealthComponent>(id).ok();
 
-        // Zero-HP entities are pending-despawn this tick (the death sweep runs
-        // after weapon fire); skip them so a corpse cannot absorb a shot and
-        // block the wall behind it for one frame. The contextual damage
+        // Zero-HP entities are latched after weapon fire; skip them so a body
+        // cannot absorb a shot and block the wall behind it. The contextual damage
         // chokepoint floors `current` at exactly 0.0, so exact equality is sound.
         //
         // This gate is Health-branch-only: mesh-only remote enemies are locally
@@ -2135,6 +2134,7 @@ mod tests {
                 current: 100.0,
                 hitbox: None,
                 death_handled: false,
+                pending_kill_credit: None,
                 zone_multipliers: std::collections::HashMap::new(),
                 contributor_ledger: Default::default(),
             },
@@ -2196,6 +2196,7 @@ mod tests {
                 current: 100.0,
                 hitbox: None,
                 death_handled: false,
+                pending_kill_credit: None,
                 zone_multipliers: std::collections::HashMap::new(),
                 contributor_ledger: Default::default(),
             },
@@ -2222,6 +2223,7 @@ mod tests {
                     offset: Vec3::ZERO,
                 }),
                 death_handled: false,
+                pending_kill_credit: None,
                 zone_multipliers: std::collections::HashMap::new(),
                 contributor_ledger: Default::default(),
             },
@@ -2506,6 +2508,7 @@ mod tests {
                 current: 100.0,
                 hitbox: None,
                 death_handled: false,
+                pending_kill_credit: None,
                 zone_multipliers: std::collections::HashMap::new(),
                 contributor_ledger: Default::default(),
             },
@@ -2592,6 +2595,7 @@ mod tests {
                 current: 100.0,
                 hitbox: None,
                 death_handled: false,
+                pending_kill_credit: None,
                 zone_multipliers: std::collections::HashMap::new(),
                 contributor_ledger: Default::default(),
             },
@@ -2664,6 +2668,7 @@ mod tests {
                 current: 100.0,
                 hitbox: None,
                 death_handled: false,
+                pending_kill_credit: None,
                 zone_multipliers: std::collections::HashMap::new(),
                 contributor_ledger: Default::default(),
             },
@@ -2756,6 +2761,7 @@ mod tests {
                     offset: Vec3::ZERO,
                 }),
                 death_handled: false,
+                pending_kill_credit: None,
                 zone_multipliers: std::collections::HashMap::new(),
                 contributor_ledger: Default::default(),
             },
@@ -2873,6 +2879,7 @@ mod tests {
                 current: 100.0,
                 hitbox: None,
                 death_handled: false,
+                pending_kill_credit: None,
                 zone_multipliers: std::collections::HashMap::new(),
                 contributor_ledger: Default::default(),
             },
@@ -2929,6 +2936,7 @@ mod tests {
                     offset: Vec3::ZERO,
                 }),
                 death_handled: false,
+                pending_kill_credit: None,
                 zone_multipliers: std::collections::HashMap::new(),
                 contributor_ledger: Default::default(),
             },
@@ -2978,6 +2986,7 @@ mod tests {
                     offset: Vec3::ZERO,
                 }),
                 death_handled: false,
+                pending_kill_credit: None,
                 zone_multipliers: std::collections::HashMap::new(),
                 contributor_ledger: Default::default(),
             },
@@ -3023,6 +3032,7 @@ mod tests {
                     offset: Vec3::ZERO,
                 }),
                 death_handled: false,
+                pending_kill_credit: None,
                 zone_multipliers: std::collections::HashMap::new(),
                 contributor_ledger: Default::default(),
             },
@@ -3072,6 +3082,7 @@ mod tests {
                     offset: Vec3::ZERO,
                 }),
                 death_handled: false,
+                pending_kill_credit: None,
                 zone_multipliers: std::collections::HashMap::new(),
                 contributor_ledger: Default::default(),
             },
@@ -3145,6 +3156,7 @@ mod tests {
                 current: 100.0,
                 hitbox: None,
                 death_handled: false,
+                pending_kill_credit: None,
                 zone_multipliers: std::collections::HashMap::new(),
                 contributor_ledger: Default::default(),
             },
@@ -3257,6 +3269,7 @@ mod tests {
                 current: 100.0,
                 hitbox: None,
                 death_handled: false,
+                pending_kill_credit: None,
                 zone_multipliers: std::collections::HashMap::new(),
                 contributor_ledger: Default::default(),
             },
@@ -3400,6 +3413,7 @@ mod tests {
                     offset: Vec3::ZERO,
                 }),
                 death_handled: false,
+                pending_kill_credit: None,
                 zone_multipliers: std::collections::HashMap::new(),
                 contributor_ledger: Default::default(),
             },

@@ -846,8 +846,7 @@ mod tests {
             );
             runtime.evaluate_pending_in_registry(&mut registry);
         }
-        let mut progress = postretro_scripting_core::reaction_dispatch::ProgressTracker::new();
-        let events = crate::sim::run_death_sweep(&ctx.registry, &mut progress);
+        let events = crate::sim::run_death_sweep(&ctx.registry);
 
         assert!(events.is_empty());
         assert!(ctx.registry.borrow().exists(target));

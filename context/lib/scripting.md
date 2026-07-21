@@ -364,7 +364,7 @@ the frontend through the same path as `returnToFrontend()`.
 
 ### 10.5 Damage
 
-`applyDamage` is a tag-targeted reaction primitive: applies a damage amount to every tagged entity carrying health. Negative or non-finite amounts warn and no-op (no healing path); targets without health warn and skip. There is no imperative script damage/health API — runtime damage flows through reactions; engine systems (weapons, future AI) call the Rust damage chokepoint directly. Death resolves in an engine sweep, never in the reaction handler. The player pawn never despawns from damage: HP latches at zero and a one-shot `playerDied` event fires through the reaction system.
+`applyDamage` is a tag-targeted reaction primitive: applies a damage amount to every tagged entity carrying health. Negative or non-finite amounts warn and no-op (no healing path); targets without health warn and skip. There is no imperative script damage/health API — runtime damage flows through reactions; engine systems (weapons, future AI) call the Rust damage chokepoint directly. The engine sweep latches first-zero-HP state, while an authored `despawn` owns non-player removal and the resulting kill report. The player pawn never despawns from damage: HP latches at zero and a one-shot `playerDied` event fires through the reaction system.
 
 ### 10.6 Mover Commands
 

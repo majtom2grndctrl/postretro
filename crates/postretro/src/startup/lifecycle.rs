@@ -1886,6 +1886,7 @@ mod tests {
                     scripting_systems::presentation_cells::PresentationCellStore::new(),
                 state_store_lifecycle: Default::default(),
                 progress_tracker: ProgressTracker::new(),
+                pending_death_events: Vec::new(),
                 crossing_detector: CrossingDetector::new(),
                 classname_dispatch: scripting::builtins::ClassnameDispatch::new(),
                 light_bridge: scripting_systems::light_bridge::LightBridge::new(),

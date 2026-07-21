@@ -109,6 +109,11 @@ pub(crate) struct Session {
     /// Per-tag kill-count subscriptions. See: context/lib/scripting.md §2.
     pub(crate) progress_tracker: ProgressTracker,
 
+    /// Kill-progress events produced by frame-end deferred removals. They seed
+    /// the next frame's game-logic death-event drain so render never runs game
+    /// reactions after removal.
+    pub(crate) pending_death_events: Vec<String>,
+
     /// State-crossing watchers (M13 HUD dynamics). See: context/lib/scripting.md §10.4.
     pub(crate) crossing_detector: CrossingDetector,
 
@@ -452,6 +457,7 @@ impl Session {
             presentation_cells: scripting_systems::presentation_cells::PresentationCellStore::new(),
             state_store_lifecycle: StateStoreLifecycle::default(),
             progress_tracker: ProgressTracker::new(),
+            pending_death_events: Vec::new(),
             crossing_detector: CrossingDetector::new(),
             classname_dispatch,
             light_bridge: scripting_systems::light_bridge::LightBridge::new(),

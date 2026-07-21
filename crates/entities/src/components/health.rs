@@ -441,13 +441,15 @@ pub fn apply_damage_with_context(
 ///
 /// Like damage, a stale id or entity without `HealthComponent` is a no-op. The
 /// write is immediate and clamps to `[0, max]`; it deliberately does not
-/// publish a damage impact or alter the death latch.
+/// publish a damage impact. Every write clears the death latch so a resurrected
+/// entity can be observed by the next zero-HP sweep.
 pub fn set_health_absolute(registry: &mut EntityRegistry, id: EntityId, value: f32) {
     let Ok(health) = registry.get_component::<HealthComponent>(id) else {
         return;
     };
     let mut updated = health.clone();
     updated.set_current_absolute(value);
+    updated.death_handled = false;
     let _ = registry.set_component(id, updated);
 }
 
@@ -493,6 +495,25 @@ mod tests {
 
         component.set_current_absolute(-5.0);
         assert_number_approx_eq(component.current, 0.0);
+    }
+
+    #[test]
+    fn absolute_health_write_clears_death_latch() {
+        let mut reg = EntityRegistry::new();
+        let id = reg.spawn(Transform::default());
+        let mut component = HealthComponent::from_descriptor(&descriptor(80.0));
+        component.current = 0.0;
+        component.death_handled = true;
+        reg.set_component(id, component).unwrap();
+
+        set_health_absolute(&mut reg, id, 25.0);
+
+        let health = reg.get_component::<HealthComponent>(id).unwrap();
+        assert_eq!(health.current, 25.0);
+        assert!(
+            !health.death_handled,
+            "setHealth must re-arm a resurrected entity's death detection",
+        );
     }
 
     #[test]

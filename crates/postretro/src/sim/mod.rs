@@ -58,6 +58,13 @@ pub(crate) struct PostMovementCommand {
     pub(crate) aim_direction: Vec3,
 }
 
+fn player_is_present_for_trigger_occupancy(
+    registry: &EntityRegistry,
+    player: &AuthoritativePlayer,
+) -> bool {
+    registry.exists(player.pawn)
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct RemotePawnCommand {
     pub(crate) pawn: EntityId,
@@ -199,11 +206,7 @@ pub(crate) fn simulate_tick(
             let registry = registry.borrow();
             players
                 .iter()
-                .filter(|player| {
-                    registry
-                        .get_component::<HealthComponent>(player.pawn)
-                        .map_or(true, |health| health.current > 0.0)
-                })
+                .filter(|player| player_is_present_for_trigger_occupancy(&registry, player))
                 .map(|player| player.id)
                 .collect()
         };
@@ -1201,6 +1204,35 @@ mod tests {
     use postretro_scripting_core::reaction_dispatch::fire_prepartitioned_reactions_with_sequences;
     use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
     use std::collections::{BTreeMap, HashMap, HashSet};
+
+    #[test]
+    fn zero_hp_player_remains_present_for_trigger_occupancy_until_despawn() {
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                pawn,
+                HealthComponent {
+                    max: 100.0,
+                    current: 0.0,
+                    hitbox: None,
+                    death_handled: true,
+                    zone_multipliers: Default::default(),
+                    contributor_ledger: Default::default(),
+                },
+            )
+            .unwrap();
+        let player = AuthoritativePlayer {
+            id: PlayerId::Local(pawn),
+            pawn,
+        };
+
+        assert!(player_is_present_for_trigger_occupancy(&registry, &player));
+
+        registry.despawn(pawn).unwrap();
+
+        assert!(!player_is_present_for_trigger_occupancy(&registry, &player));
+    }
 
     #[test]
     fn disconnected_remote_fire_context_keeps_trigger_and_occupancy_but_has_no_activator() {

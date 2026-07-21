@@ -6,7 +6,7 @@
 // requests the mapped animation state. The transition CORE is a pure function
 // over (target position, agent position, tuning, current state) so it is
 // unit-testable without `App` or a GPU; the tick wrapper layers the registry
-// reads/writes, the zero-HP death check, damage, and animation switching on top.
+// reads/writes, damage, and animation switching on top.
 //
 // Architectural decision (M10): an engine-owned Rust FSM with a closed
 // transition set; tuning is declarative; there is no live VM at tick. Scripts
@@ -41,7 +41,8 @@ use postretro_entities::components::mesh::{
 };
 use postretro_entities::components::player_movement::PlayerMovementComponent;
 use postretro_entities::{
-    ComponentKind, ComponentValue, DeferredEffectComponent, EntityId, EntityRegistry, Transform,
+    ComponentKind, ComponentValue, DeferredEffectComponent, DeferredEffectKind, EntityId,
+    EntityRegistry, Transform,
 };
 use postretro_foundation::DamagePayload;
 
@@ -54,10 +55,10 @@ const ENEMY_ATTACK_SOURCE_ID: &str = "enemy.attack";
 
 /// Think-stride bands. Target acquisition is time-sliced by player distance:
 /// near enemies re-evaluate every tick, mid enemies every few ticks, distant
-/// enemies rarely. The cheap retained-target leash check, the
-/// attack-in-range/cooldown check, and the zero-HP death check are NOT strided —
-/// they run every tick regardless, so a strided acquisition gap can never
-/// suppress an in-stride attack, death, or leash escape.
+/// enemies rarely. The cheap retained-target leash check and the
+/// attack-in-range/cooldown check are NOT strided — they run every tick
+/// regardless, so a strided acquisition gap can never suppress an in-stride
+/// attack or leash escape.
 ///
 /// Distances are XZ ground distances (the navmesh plane); the bands are coarse
 /// by design — stride is a cost knob, not a gameplay contract.
@@ -238,8 +239,7 @@ pub(crate) struct TransitionResult {
 /// - `alert` → `idle` when the player leaves `leash_range` (acquisition).
 /// - `alert` → `attack` when the player is within `attack_range`.
 /// - `attack` → `alert` when the player leaves `attack_range`.
-/// - `death` is terminal here (zero-HP death is layered by the caller, never by
-///   this function — it has no HP input).
+/// - `death` is terminal here. It has no HP input and is not HP-reachable.
 ///
 /// `evaluate_acquisition` gates ONLY the detection (`idle`→`alert`) and leash
 /// (`alert`→`idle`) edges — the strided target-acquisition. The attack-range
@@ -310,8 +310,8 @@ pub(crate) fn evaluate_transition(
                 steering: SteeringIntent::Chase,
             }
         }
-        // Terminal: the caller owns the zero-HP transition into death; once here
-        // the FSM holds (despawn is owned by `run_ai_tick`'s death-countdown pass).
+        // Terminal: this state is no longer HP-reachable. An authored deferred
+        // despawn owns removal; once another path enters Death, the FSM holds.
         LogicalState::Death => TransitionResult {
             next_state: LogicalState::Death,
             steering: SteeringIntent::Hold,
@@ -451,11 +451,6 @@ struct EnemyOutcome {
     state_changed: bool,
     /// `true` when an attack landed this tick (damage applied, event raised).
     attacked: bool,
-    /// `true` when this dead enemy's death-despawn countdown has elapsed and the
-    /// AI tick should despawn it. Collected in the apply pass and despawned in a
-    /// final two-pass step (collect-then-despawn) so the registry is never
-    /// written mid-iteration (entity_model.md §3).
-    despawn: bool,
 }
 
 /// Drive every enemy brain one tick. Returns the event names raised this tick
@@ -471,29 +466,14 @@ struct EnemyOutcome {
 ///
 /// Ordering inside the tick, PER enemy:
 /// 1. Tick the attack cooldown down (every tick).
-/// 2. Zero-HP → `Death` (every tick, regardless of stride). Conversely, a brain
-///    still in `Death` whose HP was restored above zero recovers to `Idle` (and
-///    clears the despawn countdown) before the normal FSM runs, so it re-engages
-///    instead of staying a frozen zombie.
-/// 3. Otherwise evaluate the transition core, with acquisition gated by the
+/// 2. Evaluate the transition core, with acquisition gated by the
 ///    think stride (distance-derived). Attack-range edges + the cooldown check
 ///    are NOT strided.
-/// 4. On an attack (in `Attack` with the cooldown elapsed) apply the configured
+/// 3. On an attack (in `Attack` with the cooldown elapsed) apply the configured
 ///    damage to the selected target pawn through the chokepoint and raise the
 ///    attack event.
-/// 5. On a state CHANGE or locomotion stop/resume, request the selected
+/// 4. On a state CHANGE or locomotion stop/resume, request the selected
 ///    animation state.
-///
-/// Death + despawn: a zero-HP enemy enters `Death` (step 2), which seeds a
-/// per-instance death-despawn countdown from `tuning.death_despawn_ms` (clamped
-/// `>= 0`) on the entry tick and decrements it by the tick delta thereafter. The
-/// TIMER is authoritative — the entity despawns after `death_despawn_ms`
-/// regardless of whether the death clip ever resolved (an unresolved death clip
-/// yields `UnknownState` and plays nothing). The despawn itself runs in a final
-/// two-pass collect-then-despawn step so the registry is never written
-/// mid-iteration. The kill was already counted ONCE at the death sweep's
-/// authoritative `death_handled` latch (`systems/health.rs`); this tick owns
-/// only the despawn, never the kill report.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn run_ai_tick(
     registry: &mut EntityRegistry,
@@ -534,12 +514,18 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
     let snapshots: Vec<EnemySnapshot> = registry
         .iter_with_kind(ComponentKind::Brain)
         .filter_map(|(id, value)| {
-            // Terminal impact effects leave the id live through the rest of
-            // this frame so a same-group playAnim can address it. AI must not
+            // A terminal impact effect or queued despawn leaves the id live
+            // long enough for a same-group playAnim to address it. AI must not
             // overwrite that presentation request or keep steering/attacking.
             if registry
                 .get_component::<DeferredEffectComponent>(id)
-                .is_ok_and(|effects| effects.inert)
+                .is_ok_and(|effects| {
+                    effects.inert
+                        || effects
+                            .pending
+                            .iter()
+                            .any(|effect| effect.kind == DeferredEffectKind::Despawn)
+                })
             {
                 return None;
             }
@@ -622,115 +608,57 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         // Stride bookkeeping advances every tick so the gate is deterministic.
         brain.think_stride_counter = brain.think_stride_counter.wrapping_add(1);
 
-        // (2) Zero-HP death check runs EVERY tick, regardless of stride and
-        // regardless of whether a player exists. A dead enemy short-circuits all
-        // targeting/attack logic. Non-finite HP counts as dead too (same predicate
-        // as the death sweep), so a corrupt `current` cannot leave an enemy
-        // immortal — `NaN <= 0.0` is false on its own.
-        let is_dead = registry
-            .get_component::<HealthComponent>(snap.id)
-            .map(|h| h.current <= 0.0 || !h.current.is_finite())
-            .unwrap_or(false);
-
         let mut attacked = false;
-        let mut despawn = false;
         let steering;
-        if is_dead {
-            brain.state = LogicalState::Death;
+        if !brain.aggro_armed {
+            // The aggro gate's v1 disengage policy is hold. A closed brain
+            // neither consults target selection nor evaluates FSM transitions;
+            // clearing its destination sends the agent through steering's
+            // destination-less idle-settle path, which has no separation push.
+            brain.state = LogicalState::Idle;
             brain.acquired_target = None;
-            steering = SteeringIntent::Hold;
+            steering = SteeringIntent::Clear;
+        } else if let Some(target) = target {
+            // The think stride is derived from the CURRENT player distance;
+            // the gate fires when the per-enemy counter aligns with the
+            // band's divisor. Acquisition (detection/leash) is evaluated only
+            // on a think tick; attack-range edges + the cooldown check are
+            // not.
+            let result = evaluate_transition(
+                target.position,
+                snap.position,
+                &brain.tuning,
+                brain.state,
+                evaluate_acquisition,
+            );
+            brain.state = result.next_state;
+            steering = result.steering;
+            if matches!(brain.state, LogicalState::Alert | LogicalState::Attack)
+                && steering == SteeringIntent::Chase
+            {
+                brain.acquired_target = Some(target.entity);
+            } else {
+                brain.acquired_target = None;
+            }
 
-            // Death despawn countdown. Seeded once on entering Death (the
-            // countdown is `None` until now), then decremented by the tick delta
-            // each subsequent tick. The TIMER is authoritative — the entity
-            // despawns after `death_despawn_ms` whether or not the death clip
-            // resolved. A zero/negative configured value is clamped to `0` so the
-            // entity still gets THIS one Death tick (death animation requested on
-            // the state change below) before the despawn pass takes it: the
-            // SEEDING tick never despawns, only a later decrement-to-zero does.
-            match brain.death_despawn_remaining_ms {
-                None => {
-                    brain.death_despawn_remaining_ms = Some(brain.tuning.death_despawn_ms.max(0.0));
-                }
-                Some(remaining) => {
-                    let next = (remaining - dt_ms).max(0.0);
-                    brain.death_despawn_remaining_ms = Some(next);
-                    if next <= 0.0 {
-                        despawn = true;
-                    }
-                }
+            // (4) Attack: in `Attack` with the cooldown elapsed AND the
+            // SELECTED target still alive, apply the configured damage once
+            // and arm the cooldown. Checked every tick. Gating on the
+            // selected target's Health stops attack/event spam against an
+            // already-dead but still-present pawn and prevents damaging a
+            // different co-op pawn than the one this enemy chose.
+            if brain.state == LogicalState::Attack
+                && brain.attack_cooldown_remaining_ms <= 0.0
+                && selected_target_alive(registry, target.entity)
+            {
+                attacked = true;
+                brain.attack_cooldown_remaining_ms = brain.tuning.attack_cooldown_ms;
             }
         } else {
-            // Not dead. Recover from a stale `Death` state BEFORE the normal FSM
-            // runs: if HP was restored above zero (and finite) while the brain
-            // still reads `Death`, reset it to `Idle` and clear the despawn
-            // countdown so the entity re-engages instead of staying a frozen
-            // zombie. `evaluate_transition` treats `Death` as terminal and has no
-            // HP input, so this HP-driven recovery is the tick's responsibility.
-            // Placed before the player-presence split so it runs for BOTH the
-            // player and the no-player branch: with a player the normal
-            // transition below re-acquires to `Alert` (or `Attack`) this same
-            // tick if it is in range; with no player the `else` branch resolves
-            // to `Idle`. The kill was already counted once at the death sweep's
-            // `death_handled` latch; recovery touches only the FSM state, never
-            // the kill accounting (the sweep remains the sole kill authority).
-            if brain.state == LogicalState::Death {
-                brain.state = LogicalState::Idle;
-                brain.death_despawn_remaining_ms = None;
-            }
-
-            if !brain.aggro_armed {
-                // The aggro gate's v1 disengage policy is hold. This deliberately
-                // runs after the death/recovery handling above: sealed enemies
-                // remain damageable and still enter Death/despawn. A closed brain
-                // neither consults target selection nor evaluates FSM transitions;
-                // clearing its destination sends the agent through steering's
-                // destination-less idle-settle path, which has no separation push.
-                brain.state = LogicalState::Idle;
-                brain.acquired_target = None;
-                steering = SteeringIntent::Clear;
-            } else if let Some(target) = target {
-                // The think stride is derived from the CURRENT player distance;
-                // the gate fires when the per-enemy counter aligns with the
-                // band's divisor. Acquisition (detection/leash) is evaluated only
-                // on a think tick; attack-range edges + the cooldown check are
-                // not.
-                let result = evaluate_transition(
-                    target.position,
-                    snap.position,
-                    &brain.tuning,
-                    brain.state,
-                    evaluate_acquisition,
-                );
-                brain.state = result.next_state;
-                steering = result.steering;
-                if matches!(brain.state, LogicalState::Alert | LogicalState::Attack)
-                    && steering == SteeringIntent::Chase
-                {
-                    brain.acquired_target = Some(target.entity);
-                } else {
-                    brain.acquired_target = None;
-                }
-
-                // (4) Attack: in `Attack` with the cooldown elapsed AND the
-                // SELECTED target still alive, apply the configured damage once
-                // and arm the cooldown. Checked every tick. Gating on the
-                // selected target's Health stops attack/event spam against an
-                // already-dead but still-present pawn and prevents damaging a
-                // different co-op pawn than the one this enemy chose.
-                if brain.state == LogicalState::Attack
-                    && brain.attack_cooldown_remaining_ms <= 0.0
-                    && selected_target_alive(registry, target.entity)
-                {
-                    attacked = true;
-                    brain.attack_cooldown_remaining_ms = brain.tuning.attack_cooldown_ms;
-                }
-            } else {
-                // No player to target: idle and clear any stale steering.
-                brain.state = LogicalState::Idle;
-                brain.acquired_target = None;
-                steering = SteeringIntent::Clear;
-            }
+            // No player to target: idle and clear any stale steering.
+            brain.state = LogicalState::Idle;
+            brain.acquired_target = None;
+            steering = SteeringIntent::Clear;
         }
 
         outcomes.push(EnemyOutcome {
@@ -738,7 +666,6 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             target,
             state_changed: brain.state != prior_state,
             attacked,
-            despawn,
             steering,
             combat_slot: None,
             brain,
@@ -747,17 +674,10 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
 
     resolve_combat_slots(&snapshots, &mut outcomes, nav_graph, collision_world);
 
-    // Pass 3 (apply): write back brains, drive steering, apply damage, switch
-    // animation. Mutable borrow only; no iterator held. Death despawns are NOT
-    // applied here — they are collected and run in a final two-pass step below
-    // so the registry is never written mid-iteration (entity_model.md §3, the
-    // `sweep_deaths`/particle-sim precedent).
+    // Pass 3 (apply): write back brains, drive steering, apply damage, and
+    // switch animation. Mutable borrow only; no iterator held.
     let mut events: Vec<&'static str> = Vec::new();
-    let mut to_despawn: Vec<EntityId> = Vec::new();
     for mut outcome in outcomes {
-        if outcome.despawn {
-            to_despawn.push(outcome.id);
-        }
         // Persist the brain (state + timers + stride counter).
         let _ = registry.set_component(outcome.id, outcome.brain.clone());
 
@@ -936,15 +856,6 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         }
         outcome.brain.locomotion_moving = locomotion_intent.moving;
         let _ = registry.set_component(outcome.id, outcome.brain.clone());
-    }
-
-    // Pass 4 (despawn): two-pass collect-then-despawn. The despawn ids were
-    // collected under the mutable apply walk above (never despawned mid-walk);
-    // here, after that walk completes, each dead enemy whose death-despawn timer
-    // elapsed is removed. The kill was already counted at the sweep's
-    // authoritative latch, so despawning here never re-reports it.
-    for id in to_despawn {
-        let _ = registry.despawn(id);
     }
 
     events

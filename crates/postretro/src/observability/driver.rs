@@ -173,6 +173,7 @@ fn run_headless_inner(
             progress_tracker: &mut progress_tracker,
             crossing_detector: &mut crossing_detector,
             slot_accumulator_bindings: &mut session.scripting.slot_accumulator_bindings,
+            impact_policy_runtime: &mut session.scripting.impact_policy_runtime,
             mesh_clip_tables: &mut mesh_clip_tables,
             hit_zone_store: &mut hit_zone_store,
             trigger_pool_policy,
@@ -274,6 +275,7 @@ fn run_headless_inner(
             // routing), so triggers stay inert — declared out-of-frame in the dump.
             None,
         );
+        session.scripting.impact_policy_runtime.evaluate_pending();
         crate::scripting_systems::slot_accumulators::evaluate_slot_accumulators(
             &mut session.scripting.slot_accumulator_bindings,
             TICK_DT,

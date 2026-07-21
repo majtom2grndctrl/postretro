@@ -219,7 +219,8 @@ pub const ENTITY_STATE_INPUT_PREFIX: &str = "@state.";
 #[derive(Clone, Debug)]
 pub enum EntityInputHandle {
     State(usize),
-    Dispatch(DispatchInputHandle),
+    Dispatch(usize),
+    Store(usize),
 }
 
 /// A resolved output in an [`EntityScope`].
@@ -246,6 +247,11 @@ pub struct EntityScope {
     /// Parallel to `state_names`: handles bind to this stable index, and each
     /// fire replaces the values in place without changing those handles.
     snapshot: RefCell<Vec<f32>>,
+    /// Bound bare-store leaves share the same fire-time snapshot as entity
+    /// state. Policy effects must not make a later group observe an earlier
+    /// group's write during the same impact dispatch.
+    store_handles: RefCell<Vec<StoreHandle>>,
+    store_snapshot: RefCell<Vec<IrValue>>,
 }
 
 impl EntityScope {
@@ -261,6 +267,8 @@ impl EntityScope {
             state_names: RefCell::new(Vec::new()),
             target: None,
             snapshot: RefCell::new(Vec::new()),
+            store_handles: RefCell::new(Vec::new()),
+            store_snapshot: RefCell::new(Vec::new()),
         }
     }
 
@@ -288,6 +296,14 @@ impl EntityScope {
         for (index, name) in names.iter().enumerate() {
             snapshot[index] = state.map_or(0.0, |state| state.get(name));
         }
+        drop(snapshot);
+        drop(names);
+
+        let handles = self.store_handles.borrow();
+        let mut store_snapshot = self.store_snapshot.borrow_mut();
+        for (index, handle) in handles.iter().enumerate() {
+            store_snapshot[index] = self.dispatch.store.read(handle);
+        }
     }
 
     fn bind_state_name(&self, name: &str) -> usize {
@@ -298,6 +314,21 @@ impl EntityScope {
         let index = names.len();
         names.push(name.to_string());
         self.snapshot.borrow_mut().push(0.0);
+        index
+    }
+
+    fn bind_store_handle(&self, handle: StoreHandle) -> usize {
+        let mut handles = self.store_handles.borrow_mut();
+        if let Some(index) = handles
+            .iter()
+            .position(|bound| bound.name == handle.name && bound.ir_type == handle.ir_type)
+        {
+            return index;
+        }
+        let index = handles.len();
+        let initial = self.dispatch.store.read(&handle);
+        handles.push(handle);
+        self.store_snapshot.borrow_mut().push(initial);
         index
     }
 
@@ -334,12 +365,18 @@ impl BindingScope for EntityScope {
             });
         }
 
-        self.dispatch
-            .resolve_input(name)
-            .map(|resolved| ResolvedInput {
-                handle: EntityInputHandle::Dispatch(resolved.handle),
+        self.dispatch.resolve_input(name).map(|resolved| {
+            let handle = match resolved.handle {
+                DispatchInputHandle::Dispatch(index) => EntityInputHandle::Dispatch(index),
+                DispatchInputHandle::Store(handle) => {
+                    EntityInputHandle::Store(self.bind_store_handle(handle))
+                }
+            };
+            ResolvedInput {
+                handle,
                 ir_type: resolved.ir_type,
-            })
+            }
+        })
     }
 
     fn resolve_output(&self, name: &str) -> Option<ResolvedOutput<Self::OutputHandle>> {
@@ -369,7 +406,13 @@ impl BindingScope for EntityScope {
             EntityInputHandle::State(index) => {
                 IrValue::Number(self.snapshot.borrow().get(*index).copied().unwrap_or(0.0))
             }
-            EntityInputHandle::Dispatch(handle) => self.dispatch.read(handle),
+            EntityInputHandle::Dispatch(index) => self.dispatch.values[*index],
+            EntityInputHandle::Store(index) => self
+                .store_snapshot
+                .borrow()
+                .get(*index)
+                .copied()
+                .unwrap_or(IrValue::Number(0.0)),
         }
     }
 
@@ -940,6 +983,35 @@ mod tests {
             ),
             3.0,
         );
+
+        scope
+            .seed_impact(&impact(target, 1.0))
+            .expect("next fire seeds");
+        assert_number(eval_value(&reader, &scope), 3.0);
+    }
+
+    #[test]
+    fn entity_scope_reads_store_snapshot_until_the_next_fire() {
+        let ctx = ScriptCtx::new();
+        ctx.slot_table
+            .borrow_mut()
+            .insert("impact.counter".to_string(), number_slot(2.0, false))
+            .expect("test store slot is new");
+        let target = ctx
+            .registry
+            .borrow_mut()
+            .spawn(crate::registry::Transform::default());
+
+        let mut scope = EntityScope::impact(ctx.clone());
+        let reader = bind(&read_only(*input("impact.counter")), &scope).expect("store binds");
+
+        scope.seed_impact(&impact(target, 1.0)).expect("fire seeds");
+        ctx.slot_table
+            .borrow_mut()
+            .get_mut("impact.counter")
+            .expect("test store slot remains present")
+            .value = Some(SlotValue::Number(3.0));
+        assert_number(eval_value(&reader, &scope), 2.0);
 
         scope
             .seed_impact(&impact(target, 1.0))

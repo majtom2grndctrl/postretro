@@ -26,6 +26,7 @@ mod frame_timing;
 mod fx;
 mod health;
 mod impact_effects;
+mod impact_policy;
 mod input;
 mod kinematic_mover;
 mod movement;
@@ -2075,6 +2076,7 @@ impl ApplicationHandler for App {
                                 use_edges: &trigger_use_edges,
                             }),
                         );
+                        session.scripting.impact_policy_runtime.evaluate_pending();
                         // A runtime-spawned host enemy receives a mesh only
                         // after the install-time whole-registry clip resolve.
                         // Drain its one-shot queue now: its archetype model and
@@ -3767,9 +3769,21 @@ impl App {
                         &session.scripting.sequence_registry,
                     )
             };
-            if matches!(outcome, StagedManifestCommitOutcome::Committed { .. })
-                && self.has_installed_level()
-            {
+            let committed = matches!(outcome, StagedManifestCommitOutcome::Committed { .. });
+            if committed {
+                let events = match &result.status {
+                    StagedManifestBuildStatus::Built(manifest) => manifest.events.clone(),
+                    StagedManifestBuildStatus::NoStartScript => Vec::new(),
+                    StagedManifestBuildStatus::Failed => Vec::new(),
+                };
+                if let Some(session) = self.session.as_mut() {
+                    session
+                        .scripting
+                        .impact_policy_runtime
+                        .replace_global_events(events);
+                }
+            }
+            if committed && self.has_installed_level() {
                 if let Some(session) = self.session.as_ref() {
                     session
                         .scripting

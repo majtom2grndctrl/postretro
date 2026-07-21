@@ -445,11 +445,11 @@ def main():
     import_model(input_path, fmt, up_axis=args.up)
 
     remove_non_mesh()
-    clear_parents_keep_transform()
 
     mesh = join_meshes()
 
     strip_skin(mesh)
+    clear_parents_keep_transform()
     remove_armatures()
 
     apply_all_transforms(mesh)

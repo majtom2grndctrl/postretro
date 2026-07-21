@@ -649,7 +649,10 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
         const override = base.override({ tag: "reinforced_crate" }, (impact) => [
           impact.target.despawn({ afterMs: 15 }),
         ]);
-        const independent = defineImpactEvent("salvage:vase-break", { tag: "vase" }, breakable);
+        const independent = defineImpactEvent("salvage:vase-break", { tag: "vase" }, (impact) => [
+          { when: impact.amount.gt(0), do: [] },
+          impact.target.despawn(),
+        ]);
         const wire = (event: ImpactEvent) => {
           const descriptor = event as unknown as {
             kind: "impact";
@@ -700,7 +703,12 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
         local override = base:override({ tag = "reinforced_crate" }, function(impact)
           return { impact.target:despawn({ afterMs = 15 }) }
         end)
-        local independent = Postretro.defineImpactEvent("salvage:vase-break", { tag = "vase" }, breakable)
+        local independent = Postretro.defineImpactEvent("salvage:vase-break", { tag = "vase" }, function(impact)
+          return {
+            { when = impact.amount:gt(0), ["do"] = {} },
+            impact.target:despawn(),
+          }
+        end)
         local function wire(event)
           return {
             kind = event.kind,
@@ -811,4 +819,39 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
             },
         })
     );
+    assert_eq!(
+        typescript["independent"]["policy"][0]["do"],
+        serde_json::json!([]),
+        "an empty gated group must stay an array in both SDKs"
+    );
+    assert_eq!(
+        typescript["independent"]["policy"][1]["primitive"],
+        "despawn",
+        "a valid sibling effect must survive an empty group"
+    );
+}
+
+#[test]
+fn impact_event_builder_id_diagnostics_match_across_runtimes() {
+    const TYPESCRIPT_FIXTURE: &str = r#"
+        import { defineImpactEvent } from "postretro";
+        let message = "";
+        try { defineImpactEvent("not namespaced", {}, () => []); }
+        catch (error) { message = String((error as Error).message); }
+        JSON.stringify({ message });
+    "#;
+    const LUAU_FIXTURE: &str = r#"
+        local Postretro = require("postretro")
+        local ok, message = pcall(function()
+          Postretro.defineImpactEvent("not namespaced", {}, function() return {} end)
+        end)
+        return { message = if ok then "" else tostring(message):gsub("^.-:%d+: ", "") }
+    "#;
+
+    let typescript = quickjs_fixture_value(TYPESCRIPT_FIXTURE);
+    let luau = luau_fixture_value(LUAU_FIXTURE);
+    assert_eq!(typescript, luau);
+    assert!(typescript["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("namespaced ASCII string")));
 }

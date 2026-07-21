@@ -529,6 +529,87 @@ fn impact_event_ids_require_namespaced_portable_strings_in_both_vms() {
     assert_eq!(js.events[0].id, "salvage:valid-id");
 }
 
+// Regression: Luau's empty `do = {}` converted to an object and caused the
+// engine to skip the complete policy, unlike JavaScript's empty array.
+#[test]
+fn empty_impact_group_and_valid_effect_parse_identically_in_both_vms() {
+    let js = eval_js(
+        r#"({ events: [{
+            kind: "impact", id: "salvage:empty-group", filter: { tag: "crate" },
+            policy: [
+                { when: { op: "const", value: true }, do: [] },
+                { primitive: "despawn", target: "@impact.target", args: {} }
+            ]
+        }] })"#,
+        |ctx, value| LevelManifest::from_js_value(ctx, value).unwrap(),
+    );
+    let lua = eval_lua(
+        r#"return { events = {{
+            kind = "impact", id = "salvage:empty-group", filter = { tag = "crate" },
+            policy = {
+                { when = { op = "const", value = true }, ["do"] = {} },
+                { primitive = "despawn", target = "@impact.target", args = {} },
+            },
+        }} }"#,
+        |value| LevelManifest::from_lua_value(value).unwrap(),
+    );
+
+    assert_eq!(js.events, lua.events);
+    assert_eq!(js.events.len(), 1);
+    assert_eq!(js.events[0].policy[0]["do"], serde_json::json!([]));
+    assert_eq!(js.events[0].policy[1]["primitive"], "despawn");
+}
+
+#[test]
+fn sparse_impact_policy_arrays_skip_the_event_in_both_vms() {
+    let js = eval_js(
+        r#"(() => {
+            const policy = [];
+            policy[1] = { primitive: "despawn", target: "@impact.target", args: {} };
+            return { events: [
+                { kind: "impact", id: "salvage:sparse", filter: { tag: "crate" }, policy },
+                { kind: "impact", id: "salvage:valid", filter: { tag: "crate" }, policy: [] }
+            ] };
+        })()"#,
+        |ctx, value| LevelManifest::from_js_value(ctx, value).unwrap(),
+    );
+    let lua = eval_lua(
+        r#"return { events = {
+            { kind = "impact", id = "salvage:sparse", filter = { tag = "crate" }, policy = {
+                [2] = { primitive = "despawn", target = "@impact.target", args = {} },
+            } },
+            { kind = "impact", id = "salvage:valid", filter = { tag = "crate" }, policy = {} },
+        } }"#,
+        |value| LevelManifest::from_lua_value(value).unwrap(),
+    );
+
+    assert_eq!(js.events, lua.events);
+    assert_eq!(js.events.len(), 1);
+    assert_eq!(js.events[0].id, "salvage:valid");
+}
+
+#[test]
+fn tagless_impact_overrides_are_skipped_in_both_vms() {
+    let js = eval_js(
+        r#"({ events: [
+            { kind: "impact", id: "salvage:base", isOverride: true, filter: {}, policy: [] },
+            { kind: "impact", id: "salvage:base", isOverride: true, filter: { tag: "elite" }, policy: [] }
+        ] })"#,
+        |ctx, value| LevelManifest::from_js_value(ctx, value).unwrap(),
+    );
+    let lua = eval_lua(
+        r#"return { events = {
+            { kind = "impact", id = "salvage:base", isOverride = true, filter = {}, policy = {} },
+            { kind = "impact", id = "salvage:base", isOverride = true, filter = { tag = "elite" }, policy = {} },
+        } }"#,
+        |value| LevelManifest::from_lua_value(value).unwrap(),
+    );
+
+    assert_eq!(js.events, lua.events);
+    assert_eq!(js.events.len(), 1);
+    assert_eq!(js.events[0].filter_tag.as_deref(), Some("elite"));
+}
+
 #[test]
 fn trigger_pool_manifests_parse_identically_across_vms() {
     let js = eval_js(

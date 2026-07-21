@@ -145,6 +145,13 @@ impl ImpactPolicyRuntime {
             .chain(&self.level_events)
         {
             let base_filter_tag = if descriptor.is_override {
+                if descriptor.filter_tag.is_none() {
+                    log::warn!(
+                        "[Impact] override `{}` was skipped: override filter requires `tag`",
+                        descriptor.id
+                    );
+                    continue;
+                }
                 let Some(filter) = base_filters.get(&descriptor.id).cloned() else {
                     log::warn!("[Impact] {}", unknown_override_diagnostic(&descriptor.id));
                     continue;
@@ -281,6 +288,9 @@ fn bind_policy(
     base_filter_tag: Option<String>,
     scope: &EntityScope,
 ) -> Result<BoundImpactPolicy, String> {
+    if descriptor.is_override && descriptor.filter_tag.is_none() {
+        return Err("impact override filter requires `tag`".to_string());
+    }
     let mut groups = Vec::with_capacity(descriptor.policy.len());
     for entry in &descriptor.policy {
         groups.push(bind_group(entry, scope)?);
@@ -330,7 +340,11 @@ fn bind_effect(entry: &Value, scope: &EntityScope) -> Result<BoundEffect, String
         .map(|value| object(value, "impact effect args"))
         .transpose()?
         .unwrap_or(&empty_args);
-    let target = effect.get("target").and_then(Value::as_str);
+    let target = match effect.get("target") {
+        None => None,
+        Some(Value::String(target)) => Some(target.as_str()),
+        Some(_) => return Err("impact effect `target` must be a string when present".to_string()),
+    };
 
     match primitive {
         "despawn" => {
@@ -928,6 +942,45 @@ mod tests {
                 "numeric effect operand accepted boolean IR: {malformed}"
             );
         }
+
+        for invalid_target in [json!(null), json!(42), json!({}), json!("@impact.target")] {
+            let malformed = json!({
+                "primitive": "slot.add",
+                "target": invalid_target,
+                "args": { "slot": "impact.total", "delta": number(1.0) },
+            });
+            assert!(
+                bind_effect(&malformed, &scope).is_err(),
+                "slot.add accepted a present target: {malformed}"
+            );
+        }
+
+        for primitive in ["despawn", "playAnim", "setHealth", "setState"] {
+            let malformed = json!({
+                "primitive": primitive,
+                "target": "@impact.source",
+                "args": {},
+            });
+            assert!(
+                bind_effect(&malformed, &scope).is_err(),
+                "target-bearing arm accepted the wrong token: {malformed}"
+            );
+        }
+    }
+
+    #[test]
+    fn engine_binding_rejects_tagless_override_descriptors() {
+        let ctx = ScriptCtx::new();
+        let scope = EntityScope::impact(ctx);
+        let mut descriptor = override_event("salvage:base", "elite", Vec::new());
+        descriptor.filter_tag = None;
+
+        assert_eq!(
+            bind_policy(&descriptor, Some("crate".to_string()), &scope)
+                .err()
+                .unwrap(),
+            "impact override filter requires `tag`"
+        );
     }
 
     #[test]

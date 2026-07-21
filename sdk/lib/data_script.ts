@@ -212,6 +212,7 @@ export interface Effect {
 export type GatedEffect = { when?: BoolRef; do: readonly Effect[] };
 export type EffectOrGroup = Effect | GatedEffect;
 export type ImpactEventFilter = { tag?: string; levels?: readonly string[] };
+export type ImpactEventOverrideFilter = { tag: string; levels?: readonly string[] };
 
 export interface TargetHandle {
   readonly healthBefore: NumberRef;
@@ -244,7 +245,7 @@ export interface ImpactEvent {
   readonly levels?: readonly string[];
   readonly [impactEventBrand]: true;
   override(
-    filter: ImpactEventFilter,
+    filter: ImpactEventOverrideFilter,
     build: (impact: Impact) => readonly EffectOrGroup[],
   ): ImpactEvent;
 }
@@ -364,7 +365,10 @@ function impactEvent(
     filter,
     policy,
     ...(levels === undefined ? {} : { levels }),
-    override(overrideFilter: ImpactEventFilter, build: (impact: Impact) => readonly EffectOrGroup[]) {
+    override(overrideFilter: ImpactEventOverrideFilter, build: (impact: Impact) => readonly EffectOrGroup[]) {
+      if (typeof overrideFilter.tag !== "string") {
+        throw new TypeError("impact-event override filter requires `tag`");
+      }
       return impactEvent(
         id,
         Object.freeze({ tag: overrideFilter.tag }),
@@ -378,9 +382,11 @@ function impactEvent(
 }
 
 function lowerImpactPolicy(policy: readonly EffectOrGroup[]): readonly EffectOrGroup[] {
+  assertDenseImpactArray(policy, "impact policy");
   return policy.map((entry) => {
     if ("do" in entry) {
       const gated = entry as GatedEffect;
+      assertDenseImpactArray(gated.do, "impact policy group `do`");
       const group: { when?: RuntimeValue; do: readonly Effect[] } = { do: gated.do };
       if (gated.when !== undefined) group.when = boolNode(gated.when);
       return group as EffectOrGroup;
@@ -389,12 +395,28 @@ function lowerImpactPolicy(policy: readonly EffectOrGroup[]): readonly EffectOrG
   });
 }
 
+function assertDenseImpactArray(values: readonly unknown[], context: string): void {
+  for (let i = 0; i < values.length; i += 1) {
+    if (!(i in values)) throw new TypeError(`${context} must be a dense array; holes are not allowed`);
+  }
+}
+
+const IMPACT_EVENT_ID_DIAGNOSTIC = "impact-event `id` must be a namespaced ASCII string (for example \"salvage:crate-break\") using only [A-Za-z0-9_.-] within each colon-separated segment, at most 128 bytes";
+
+function validateImpactEventId(id: string): void {
+  const valid = id.length > 0
+    && id.length <= 128
+    && /^[A-Za-z0-9_.-]+(?::[A-Za-z0-9_.-]+)+$/.test(id);
+  if (!valid) throw new TypeError(IMPACT_EVENT_ID_DIAGNOSTIC);
+}
+
 /** Define a pure impact-policy descriptor. Registration occurs only through a manifest's `events`. */
 export function defineImpactEvent(
   id: string,
   filter: ImpactEventFilter,
   build: (impact: Impact) => readonly EffectOrGroup[],
 ): ImpactEvent {
+  validateImpactEventId(id);
   const eventFilter = Object.freeze({ tag: filter.tag });
   const policy = lowerImpactPolicy(build(IMPACT));
   return impactEvent(id, eventFilter, policy, filter.levels, false);
@@ -566,7 +588,7 @@ export function defineEntity(
   return descriptor;
 }
 
-/** Identity builder for the mod manifest consumed from the default export. `config.name` is required; optional arrays include `entities`, `maps`, `uiTrees`, `reactions`, `crossings`, `triggerEvents`, `triggerPools`, and `stores`. Pure: no engine side effects until the manifest is returned and validated. */
+/** Identity builder for the mod manifest consumed from the default export. `config.name` is required; optional arrays include `entities`, `maps`, `uiTrees`, `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and `stores`. Pure: no engine side effects until the manifest is returned and validated. */
 export function defineMod(
   config: import("postretro").ModManifest,
 ): import("postretro").ModManifest {

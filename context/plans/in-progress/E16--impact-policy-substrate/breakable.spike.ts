@@ -102,3 +102,10 @@ defineImpactEvent("salvage:invalid-effect-example", { tag: "crate" }, (impact) =
   void badCmp;
   return [];
 });
+
+// @ts-expect-error an override must narrow its base with an additional tag.
+crateImpactEvent.override({}, breakableAfter(6));
+
+// @ts-expect-error Effect is constructor-produced; a branded-looking record is not an effect.
+const forgedEffect: import("postretro/proposed").Effect = { __impactEffectBrand: true };
+void forgedEffect;

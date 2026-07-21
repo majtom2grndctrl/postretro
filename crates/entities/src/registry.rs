@@ -957,6 +957,21 @@ impl EntityRegistry {
         }
     }
 
+    /// Mutable access to the per-instance modder state column.
+    pub fn entity_state_mut(
+        &mut self,
+        id: EntityId,
+    ) -> Result<&mut EntityStateComponent, RegistryError> {
+        let index = self.validate(id)?;
+        match self.components[ComponentKind::EntityState as usize][index].as_mut() {
+            Some(ComponentValue::EntityState(state)) => Ok(state),
+            _ => Err(RegistryError::ComponentNotFound {
+                id,
+                kind: ComponentKind::EntityState,
+            }),
+        }
+    }
+
     /// Enroll an entity in deferred-effect ticking once. The worklist is
     /// sparse: entities whose engine-managed queue is empty never appear here.
     pub fn activate_deferred_effects(&mut self, id: EntityId) -> Result<(), RegistryError> {

@@ -999,6 +999,7 @@ declare module "postretro" {
   export type GatedEffect = { when?: BoolRef; do: readonly Effect[] };
   export type EffectOrGroup = Effect | GatedEffect;
   export type ImpactEventFilter = { tag?: string; levels?: readonly string[] };
+  export type ImpactEventOverrideFilter = { tag: string; levels?: readonly string[] };
   export interface TargetHandle {
     readonly healthBefore: NumberRef;
     readonly healthAfter: NumberRef;
@@ -1017,7 +1018,7 @@ declare module "postretro" {
     readonly isOverride: boolean;
     readonly levels?: readonly string[];
     readonly [impactEventBrand]: true;
-    override(filter: ImpactEventFilter, build: (impact: Impact) => readonly EffectOrGroup[]): ImpactEvent;
+    override(filter: ImpactEventOverrideFilter, build: (impact: Impact) => readonly EffectOrGroup[]): ImpactEvent;
   }
 
   /** Crossing condition: fires when the watched slot crosses the threshold in one direction. Exactly one of `below`/`above` is given. `max` is the denominator the threshold is a fraction of; omit it for a raw-value comparison (`max` defaults to `1.0`). */
@@ -1225,7 +1226,7 @@ declare module "postretro" {
   };
   /** Pure identity builder for entity-type descriptors. Returned from `ModManifest.entities`; `descriptor` is the full archetype object: optional `canonicalName`, optional `defaultWeapon`, and optional component presets. */
   export function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor;
-  /** Pure identity builder for the mod manifest consumed from the default export. `config.name` is required; optional arrays include `entities`, `maps`, `uiTrees`, `reactions`, `crossings`, `triggerEvents`, `triggerPools`, and `stores`. */
+  /** Pure identity builder for the mod manifest consumed from the default export. `config.name` is required; optional arrays include `entities`, `maps`, `uiTrees`, `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and `stores`. */
   export function defineMod(config: ModManifest): ModManifest;
   /** Pure identity builder for a mod map catalog. Entries require `id`, `path`, and `name`; optional `tags` default to empty and drive filtering plus `levels` selectors. */
   export function defineMapCatalog(entries: ModMapEntry[]): ModMapEntry[];

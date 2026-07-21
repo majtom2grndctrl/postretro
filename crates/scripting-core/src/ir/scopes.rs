@@ -368,14 +368,10 @@ impl EntityScope {
             return;
         };
 
-        let Ok(existing) = registry.get_component::<EntityStateComponent>(target) else {
+        let Ok(state) = registry.entity_state_mut(target) else {
             return;
         };
-        let mut state = existing.clone();
         state.set(name, value);
-        // The target was valid while we read it, and this single-threaded
-        // registry cannot make it stale between the two calls.
-        let _ = registry.set_component(target, state);
     }
 
     /// Apply a bound impact output while the caller owns the live registry.

@@ -5,7 +5,7 @@ use super::super::*;
 
 impl LevelManifest {
     /// Deserialize a top-level table returned from a Luau `setupLevel()` call.
-    /// Its `reactions`, `crossings`, `triggerEvents`, `triggerPools`, and `uiTrees` arrays are optional.
+    /// Its `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and `uiTrees` arrays are optional.
     pub fn from_lua_value(value: LuaValue) -> Result<Self, DescriptorError> {
         let table = match value {
             LuaValue::Table(t) => t,
@@ -133,16 +133,48 @@ fn impact_event_from_lua(value: LuaValue) -> Result<ImpactEventDescriptor, Descr
     let mut policy_json = Vec::with_capacity(len);
     for i in 1..=(len as i64) {
         let raw: LuaValue = policy.get(i).map_err(lua_err)?;
-        policy_json.push(conv::lua_to_json(raw).map_err(lua_err)?);
+        policy_json.push(impact_policy_entry_from_lua(raw)?);
+    }
+
+    let is_override = get_optional_bool_lua(&item, "isOverride")?.unwrap_or(false);
+    if is_override && filter_tag.is_none() {
+        return Err(DescriptorError::InvalidShape {
+            reason: "impact-event override `filter.tag` is required".into(),
+        });
     }
 
     Ok(ImpactEventDescriptor {
         id: validate_impact_event_id(get_required_string_lua(&item, "id")?)?,
-        is_override: get_optional_bool_lua(&item, "isOverride")?.unwrap_or(false),
+        is_override,
         levels: string_array_from_lua(&item, "levels")?,
         filter_tag,
         policy: policy_json,
     })
+}
+
+fn impact_policy_entry_from_lua(raw: LuaValue) -> Result<serde_json::Value, DescriptorError> {
+    let LuaValue::Table(item) = &raw else {
+        return conv::lua_to_json(raw).map_err(lua_err);
+    };
+    if !item.contains_key("do").map_err(lua_err)? {
+        return conv::lua_to_json(raw).map_err(lua_err);
+    }
+
+    let effects: Table = item.get("do").map_err(|_| DescriptorError::InvalidShape {
+        reason: "impact policy group `do` must be an array".into(),
+    })?;
+    let len = validate_dense_lua_array(&effects, "impact policy group `do`")?;
+    let mut json = conv::lua_to_json(raw).map_err(lua_err)?;
+    let json_object = json.as_object_mut().ok_or_else(|| DescriptorError::InvalidShape {
+        reason: "impact policy group must be an object".into(),
+    })?;
+    let mut lowered = Vec::with_capacity(len);
+    for i in 1..=(len as i64) {
+        let effect: LuaValue = effects.get(i).map_err(lua_err)?;
+        lowered.push(conv::lua_to_json(effect).map_err(lua_err)?);
+    }
+    json_object.insert("do".into(), serde_json::Value::Array(lowered));
+    Ok(json)
 }
 
 /// Drain the `triggerEvents` array from a Luau manifest table. Mirrors

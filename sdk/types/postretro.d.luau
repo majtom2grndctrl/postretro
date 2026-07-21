@@ -1063,11 +1063,19 @@ export type BoolRef = {
   ["not"]: (self: BoolRef) -> BoolRef,
   select: (self: BoolRef, whenTrue: NumberValue, whenFalse: NumberValue) -> NumberRef,
 }
---- Opaque closed impact effect. Construct through TargetHandle or slot(...):add().
-export type Effect = { __impactEffectBrand: true }
+type ImpactEffectWire =
+  { primitive: "despawn", target: "@impact.target", args: { afterMs: number? } }
+  | { primitive: "playAnim", target: "@impact.target", args: { clip: string } }
+  | { primitive: "setHealth", target: "@impact.target", args: { value: any, afterMs: number? } }
+  | { primitive: "setState", target: "@impact.target", args: { name: string, value: any } }
+  | { primitive: "slot.add", args: { slot: string, delta: any } }
+type ImpactEffectCapability = { __impactEffectCapability: true }
+--- Closed impact effect lowered only by SDK constructors.
+export type Effect = (ImpactEffectCapability) -> ImpactEffectWire
 export type GatedEffect = { when: BoolRef?, ["do"]: {Effect} }
 export type EffectOrGroup = Effect | GatedEffect
 export type ImpactEventFilter = { tag: string?, levels: {string}? }
+export type ImpactEventOverrideFilter = { tag: string, levels: {string}? }
 export type TargetHandle = {
   healthBefore: NumberRef,
   healthAfter: NumberRef,
@@ -1085,7 +1093,7 @@ export type ImpactEvent = {
   kind: "impact",
   isOverride: boolean,
   levels: {string}?,
-  override: (self: ImpactEvent, filter: ImpactEventFilter, build: (Impact) -> {EffectOrGroup}) -> ImpactEvent,
+  override: (self: ImpactEvent, filter: ImpactEventOverrideFilter, build: (Impact) -> {EffectOrGroup}) -> ImpactEvent,
 }
 
 --- Crossing condition: fires when the watched slot crosses the threshold in
@@ -1198,7 +1206,7 @@ declare function scopeReactions<S>(tags: {string}, list: {Reaction<S>}): {Reacti
 declare function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor
 --- Pure identity builder for the mod manifest consumed from the chunk return.
 --- `config.name` is required; optional arrays include `entities`, `maps`,
---- `uiTrees`, `reactions`, `crossings`, `triggerEvents`, `triggerPools`, and
+--- `uiTrees`, `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and
 --- `stores`.
 declare function defineMod(config: ModManifest): ModManifest
 --- Pure identity builder for a mod map catalog. Entries require `id`, `path`,

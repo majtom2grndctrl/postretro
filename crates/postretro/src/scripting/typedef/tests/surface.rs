@@ -508,12 +508,20 @@ fn impact_policy_surface_uses_author_ids_and_closed_effect_union() {
         luau.contains("declare function defineImpactEvent(id: string,"),
         "Luau defineImpactEvent must require an author id"
     );
-    // `Effect` intentionally hides its primitive-wire representation. The
-    // author-facing closed vocabulary is the five builders below.
+    // Luau uses an SDK-internal lowering capability rather than a forgeable
+    // structural brand. The author-facing vocabulary is the five builders.
     assert!(
         ts.contains("export interface Effect { readonly [effectBrand]: true; }")
-            && luau.contains("export type Effect = { __impactEffectBrand: true }"),
-        "impact Effect must be an opaque branded builder result"
+            && luau.contains(
+                "export type Effect = (ImpactEffectCapability) -> ImpactEffectWire"
+            )
+            && !luau.contains("__impactEffectBrand"),
+        "impact Effect must be an opaque SDK-lowered builder result"
+    );
+    assert!(
+        ts.contains("export type ImpactEventOverrideFilter = { tag: string;")
+            && luau.contains("export type ImpactEventOverrideFilter = { tag: string,"),
+        "impact overrides must require an additional tag in both SDKs"
     );
 
     let effect_builders = [

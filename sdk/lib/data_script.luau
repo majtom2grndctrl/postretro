@@ -208,11 +208,20 @@ export type BoolRef = {
   select: (self: BoolRef, whenTrue: NumberValue, whenFalse: NumberValue) -> NumberRef,
 }
 
--- Opaque closed impact effect. Construct through TargetHandle or slot(...):add().
-export type Effect = { __impactEffectBrand: true }
+type ImpactEffectWire =
+  { primitive: "despawn", target: "@impact.target", args: { afterMs: number? } }
+  | { primitive: "playAnim", target: "@impact.target", args: { clip: string } }
+  | { primitive: "setHealth", target: "@impact.target", args: { value: any, afterMs: number? } }
+  | { primitive: "setState", target: "@impact.target", args: { name: string, value: any } }
+  | { primitive: "slot.add", args: { slot: string, delta: any } }
+type ImpactEffectCapability = { __impactEffectCapability: true }
+-- Constructors retain the only lowering capability. A hand-authored table is
+-- not an Effect, and every value that type-checks lowers to one closed wire arm.
+export type Effect = (ImpactEffectCapability) -> ImpactEffectWire
 export type GatedEffect = { when: BoolRef?, ["do"]: {Effect} }
 export type EffectOrGroup = Effect | GatedEffect
 export type ImpactEventFilter = { tag: string?, levels: {string}? }
+export type ImpactEventOverrideFilter = { tag: string, levels: {string}? }
 
 export type TargetHandle = {
   healthBefore: NumberRef,
@@ -241,7 +250,7 @@ export type ImpactEvent = {
   kind: "impact",
   isOverride: boolean,
   levels: {string}?,
-  override: (self: ImpactEvent, filter: ImpactEventFilter, build: (Impact) -> {EffectOrGroup}) -> ImpactEvent,
+  override: (self: ImpactEvent, filter: ImpactEventOverrideFilter, build: (Impact) -> {EffectOrGroup}) -> ImpactEvent,
 }
 
 --- Bundle returned from `setupLevel`. The engine deserializes
@@ -533,8 +542,20 @@ boolRef = function(node: any): BoolRef
   return table.freeze(ref) :: any
 end
 
+local IMPACT_EFFECT_CAPABILITY: ImpactEffectCapability = table.freeze({ __impactEffectCapability = true })
+
+local function lowerImpactEffect(effect: Effect): ImpactEffectWire
+  return effect(IMPACT_EFFECT_CAPABILITY)
+end
+
 local function impactEffect(primitive: string, args: { [string]: any }?): Effect
-  return { primitive = primitive, target = "@impact.target", args = args } :: any
+  local wire = { primitive = primitive, target = "@impact.target", args = args } :: any
+  return function(capability: ImpactEffectCapability): ImpactEffectWire
+    if capability ~= IMPACT_EFFECT_CAPABILITY then
+      error("impact effects can only be lowered by the SDK", 2)
+    end
+    return wire
+  end
 end
 
 local IMPACT_TARGET: TargetHandle = table.freeze({
@@ -575,17 +596,46 @@ local function impactEvent(id: string, filter: { tag: string? }, policy: {Effect
   if levels ~= nil then
     handle.levels = levels
   end
-  handle.override = function(_self: ImpactEvent, overrideFilter: ImpactEventFilter, build: (Impact) -> {EffectOrGroup}): ImpactEvent
+  handle.override = function(_self: ImpactEvent, overrideFilter: ImpactEventOverrideFilter, build: (Impact) -> {EffectOrGroup}): ImpactEvent
+    if type(overrideFilter.tag) ~= "string" then
+      error("impact-event override filter requires `tag`", 2)
+    end
     return impactEvent(id, table.freeze({ tag = overrideFilter.tag }), lowerImpactPolicy(build(IMPACT)), overrideFilter.levels, true)
   end
   return table.freeze(handle) :: any
 end
 
+local function denseImpactArrayLength(values: any, context: string): number
+  local count = 0
+  local maxIndex = 0
+  for key in pairs(values) do
+    if type(key) ~= "number" or key < 1 or key % 1 ~= 0 then
+      error(context .. " must be a dense array; holes are not allowed", 3)
+    end
+    count += 1
+    maxIndex = math.max(maxIndex, key)
+  end
+  if count ~= maxIndex then
+    error(context .. " must be a dense array; holes are not allowed", 3)
+  end
+  return maxIndex
+end
+
 lowerImpactPolicy = function(policy: {EffectOrGroup}): {EffectOrGroup}
   local lowered: {EffectOrGroup} = {}
-  for i, entry in ipairs(policy) do
-    if type(entry) == "table" and entry["do"] ~= nil then
-      local group: any = { ["do"] = entry["do"] }
+  local policyLength = denseImpactArrayLength(policy, "impact policy")
+  for i = 1, policyLength do
+    local entry = policy[i]
+    if type(entry) == "function" then
+      lowered[i] = lowerImpactEffect(entry :: Effect) :: any
+    elseif type(entry) == "table" and entry["do"] ~= nil then
+      local authoredEffects = entry["do"]
+      local effectCount = denseImpactArrayLength(authoredEffects, "impact policy group `do`")
+      local effects = {}
+      for effectIndex = 1, effectCount do
+        effects[effectIndex] = lowerImpactEffect(authoredEffects[effectIndex])
+      end
+      local group: any = { ["do"] = effects }
       if entry.when ~= nil then
         group.when = boolNode(entry.when)
       end
@@ -600,15 +650,48 @@ end
 function DataScriptSdk.slot(ref: WritableStateRef<number>): NumberSlot
   return table.freeze({
     add = function(_self: NumberSlot, delta: NumberValue): Effect
-      return {
+      local wire = {
         primitive = "slot.add",
         args = {
           slot = ref.slot,
           delta = numberNode(delta),
         },
       } :: any
+      return function(capability: ImpactEffectCapability): ImpactEffectWire
+        if capability ~= IMPACT_EFFECT_CAPABILITY then
+          error("impact effects can only be lowered by the SDK", 2)
+        end
+        return wire
+      end
     end,
   })
+end
+
+local IMPACT_EVENT_ID_DIAGNOSTIC = "impact-event `id` must be a namespaced ASCII string (for example \"salvage:crate-break\") using only [A-Za-z0-9_.-] within each colon-separated segment, at most 128 bytes"
+
+local function validateImpactEventId(id: string)
+  local segments = 1
+  local segmentLength = 0
+  local valid = #id > 0 and #id <= 128
+  for i = 1, #id do
+    local byte = string.byte(id, i)
+    if byte == string.byte(":") then
+      valid = valid and segmentLength > 0
+      segments += 1
+      segmentLength = 0
+    else
+      local allowed = (byte >= 48 and byte <= 57)
+        or (byte >= 65 and byte <= 90)
+        or (byte >= 97 and byte <= 122)
+        or byte == 95 or byte == 46 or byte == 45
+      valid = valid and allowed
+      segmentLength += 1
+    end
+  end
+  valid = valid and segments >= 2 and segmentLength > 0
+  if not valid then
+    error(IMPACT_EVENT_ID_DIAGNOSTIC, 3)
+  end
 end
 
 function DataScriptSdk.defineImpactEvent(
@@ -616,6 +699,7 @@ function DataScriptSdk.defineImpactEvent(
   filter: ImpactEventFilter,
   build: (Impact) -> {EffectOrGroup}
 ): ImpactEvent
+  validateImpactEventId(id)
   local eventFilter = table.freeze({ tag = filter.tag })
   local policy = lowerImpactPolicy(build(IMPACT))
   return impactEvent(id, eventFilter, policy, filter.levels, false)
@@ -710,7 +794,7 @@ end
 
 --- Identity builder for the mod manifest consumed from the chunk return.
 --- `config.name` is required; optional arrays include `entities`, `maps`,
---- `uiTrees`, `reactions`, `crossings`, `triggerEvents`, `triggerPools`, and
+--- `uiTrees`, `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and
 --- `stores`. Pure:
 --- no engine side effects until the manifest is returned and validated.
 function DataScriptSdk.defineMod(config: ModManifest): ModManifest

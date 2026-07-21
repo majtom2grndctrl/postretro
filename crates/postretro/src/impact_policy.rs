@@ -3,16 +3,15 @@
 
 use postretro_entities::components::health::{DamageProducer, ImpactDispatch};
 use postretro_entities::{EntityId, ScriptCtx};
-use postretro_foundation::ImpactEventDescriptor;
 use postretro_foundation::ir::{
-    BakedIr, BindingScope, BoundProgram, CURRENT_IR_VERSION, IrNode, IrType, IrValue, bind,
-    eval_value,
+    bind, eval_value, BakedIr, BoundProgram, IrNode, IrType, IrValue, CURRENT_IR_VERSION,
 };
+use postretro_foundation::ImpactEventDescriptor;
 use postretro_scripting_core::ir_scopes::{EntityOutputHandle, EntityScope};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
 
-use crate::impact_effects::{ImpactEffect, apply_effect};
+use crate::impact_effects::{apply_effect, ImpactEffect};
 
 /// The single consumer of the health chokepoint's impact-dispatch queue.
 ///
@@ -102,15 +101,6 @@ impl ImpactPolicyRuntime {
         self.level_events.clear();
         self.active_level_tags.clear();
         self.rebuild();
-    }
-
-    /// Drain all currently published impact fires. App-drain dispatches are
-    /// deliberately consumed without evaluation: v1 charts that producer at
-    /// the choke point but gives it no impact policy surface.
-    pub(crate) fn evaluate_pending(&mut self) {
-        let registry = self.ctx.registry.clone();
-        let mut registry = registry.borrow_mut();
-        self.evaluate_pending_in_registry(&mut registry);
     }
 
     /// Evaluate every dispatch currently published by one damage call while
@@ -497,14 +487,14 @@ fn number(value: IrValue) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use postretro_entities::Transform;
     use postretro_entities::components::health::{
-        DamageContext, HealthComponent, apply_damage_with_context,
+        apply_damage_with_context, DamageContext, HealthComponent,
     };
     use postretro_entities::data_descriptors::HealthDescriptor;
     use postretro_entities::slot_table::{
         NumericRange, ReplicationScope, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
     };
+    use postretro_entities::Transform;
     use postretro_foundation::DamagePayload;
     use serde_json::json;
 
@@ -593,6 +583,10 @@ mod tests {
         );
     }
 
+    fn evaluate_pending(ctx: &ScriptCtx, runtime: &mut ImpactPolicyRuntime) {
+        runtime.evaluate_pending_in_registry(&mut ctx.registry.borrow_mut());
+    }
+
     fn state(ctx: &ScriptCtx, target: EntityId, name: &str) -> f32 {
         ctx.registry
             .borrow()
@@ -641,17 +635,17 @@ mod tests {
         )]);
 
         hit(&ctx, target, DamageProducer::InTick);
-        runtime.evaluate_pending();
+        evaluate_pending(&ctx, &mut runtime);
         assert_eq!(state(&ctx, target, "hits"), 1.0);
         assert_eq!(store(&ctx, "impact.broken"), 0.0);
 
         hit(&ctx, target, DamageProducer::InTick);
-        runtime.evaluate_pending();
+        evaluate_pending(&ctx, &mut runtime);
         assert_eq!(state(&ctx, target, "hits"), 2.0);
         assert_eq!(store(&ctx, "impact.broken"), 0.0);
 
         hit(&ctx, target, DamageProducer::InTick);
-        runtime.evaluate_pending();
+        evaluate_pending(&ctx, &mut runtime);
         assert_eq!(state(&ctx, target, "hits"), 3.0);
         assert_eq!(store(&ctx, "impact.broken"), 1.0);
         assert!(
@@ -678,7 +672,7 @@ mod tests {
         )]);
 
         hit(&ctx, target, DamageProducer::InTick);
-        runtime.evaluate_pending();
+        evaluate_pending(&ctx, &mut runtime);
 
         assert_eq!(state(&ctx, target, "first"), 1.0);
         assert_eq!(state(&ctx, target, "second"), 1.0);
@@ -735,7 +729,7 @@ mod tests {
         );
 
         hit(&ctx, target, DamageProducer::InTick);
-        runtime.evaluate_pending();
+        evaluate_pending(&ctx, &mut runtime);
 
         assert_eq!(state(&ctx, target, "base_only"), 0.0);
         assert_eq!(state(&ctx, target, "variant"), 3.0);
@@ -756,7 +750,7 @@ mod tests {
         ]);
 
         hit(&ctx, target, DamageProducer::InTick);
-        runtime.evaluate_pending();
+        evaluate_pending(&ctx, &mut runtime);
 
         assert_eq!(state(&ctx, target, "base_only"), 0.0);
         assert_eq!(state(&ctx, target, "variant"), 0.0);
@@ -777,12 +771,12 @@ mod tests {
         runtime.replace_level_events(Vec::new(), &["deathmatch".to_string()]);
 
         hit(&ctx, target, DamageProducer::InTick);
-        runtime.evaluate_pending();
+        evaluate_pending(&ctx, &mut runtime);
         assert_eq!(state(&ctx, target, "campaign"), 0.0);
 
         runtime.replace_level_events(Vec::new(), &["campaign".to_string()]);
         hit(&ctx, target, DamageProducer::InTick);
-        runtime.evaluate_pending();
+        evaluate_pending(&ctx, &mut runtime);
         assert_eq!(state(&ctx, target, "campaign"), 1.0);
     }
 
@@ -858,7 +852,7 @@ mod tests {
         ]);
 
         hit(&ctx, target, DamageProducer::InTick);
-        runtime.evaluate_pending();
+        evaluate_pending(&ctx, &mut runtime);
 
         assert_eq!(state(&ctx, target, "crate"), 1.0);
         assert_eq!(state(&ctx, target, "vase"), 1.0);
@@ -876,7 +870,7 @@ mod tests {
         )]);
 
         hit(&ctx, target, DamageProducer::AppDrain);
-        runtime.evaluate_pending();
+        evaluate_pending(&ctx, &mut runtime);
 
         assert_eq!(state(&ctx, target, "ran"), 0.0);
     }
@@ -892,7 +886,7 @@ mod tests {
         ]);
 
         hit(&ctx, target, DamageProducer::InTick);
-        runtime.evaluate_pending();
+        evaluate_pending(&ctx, &mut runtime);
 
         assert_eq!(state(&ctx, target, "order"), 2.0);
     }

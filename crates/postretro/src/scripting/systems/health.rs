@@ -189,7 +189,7 @@ mod tests {
     use super::*;
     use postretro_entities::components::brain::attach_brain;
     use postretro_entities::components::health::{
-        ContributorLedgerRecord, DamageContext, apply_damage_with_context,
+        ContributorLedgerRecord, DamageContext, DamageProducer, apply_damage_with_context,
     };
     use postretro_entities::components::player_movement::PlayerMovementComponent;
     use postretro_entities::registry::Transform;
@@ -495,7 +495,7 @@ mod tests {
             &mut reg,
             id,
             &DamagePayload { amount: 5.0 },
-            DamageContext::new("script.after-latch"),
+            DamageContext::new("script.after-latch", DamageProducer::InTick),
         );
         let latched_health = reg.get_component::<HealthComponent>(id).unwrap();
         assert_eq!(

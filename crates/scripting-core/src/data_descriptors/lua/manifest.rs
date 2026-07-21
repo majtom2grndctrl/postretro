@@ -5,7 +5,7 @@ use super::super::*;
 
 impl LevelManifest {
     /// Deserialize a top-level table returned from a Luau `setupLevel()` call.
-    /// Its `reactions`, `crossings`, `triggerEvents`, `triggerPools`, and `uiTrees` arrays are optional.
+    /// Its `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and `uiTrees` arrays are optional.
     pub fn from_lua_value(value: LuaValue) -> Result<Self, DescriptorError> {
         let table = match value {
             LuaValue::Table(t) => t,
@@ -46,6 +46,7 @@ impl LevelManifest {
         } else {
             Vec::new()
         };
+        let events = drain_impact_events_lua(&table, "setupLevel")?;
         let trigger_events = drain_trigger_events_lua(&table, "setupLevel")?;
         let trigger_pools = drain_trigger_pools_lua(&table, "setupLevel")?;
 
@@ -53,12 +54,129 @@ impl LevelManifest {
 
         Ok(Self {
             reactions,
+            events,
             crossings,
             trigger_events,
             trigger_pools,
             ui_trees,
         })
     }
+}
+
+/// Drain pure SDK `defineImpactEvent` handles from a manifest. The event
+/// remains opaque policy data here; Task 5 owns validation, merging, and
+/// execution.
+pub fn drain_impact_events_lua(
+    table: &Table,
+    scope: &str,
+) -> Result<Vec<ImpactEventDescriptor>, DescriptorError> {
+    let Some(arr) = optional_manifest_array_lua(table, "events", scope)? else {
+        return Ok(Vec::new());
+    };
+    let mut len = 0usize;
+    for pair in arr.clone().pairs::<LuaValue, LuaValue>() {
+        let (key, _) = pair.map_err(lua_err)?;
+        if let LuaValue::Integer(index) = key
+            && index >= 1
+        {
+            len = len.max(index as usize);
+        }
+    }
+    if len > MAX_IMPACT_EVENT_CONTAINER_ENTRIES {
+        log::warn!(
+            "[Scripting] {scope}: `events` exceeds {MAX_IMPACT_EVENT_CONTAINER_ENTRIES} array slots; ignoring the field"
+        );
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::with_capacity(len);
+    for i in 1..=(len as i64) {
+        let value: LuaValue = match arr.get(i) {
+            Ok(value) => value,
+            Err(error) => {
+                log::warn!(
+                    "[Scripting] {scope}: events[{i}] could not be read and was skipped: {}",
+                    lua_err(error)
+                );
+                continue;
+            }
+        };
+        match impact_event_from_lua(value) {
+            Ok(descriptor) => out.push(descriptor),
+            Err(error) => {
+                log::warn!("[Scripting] {scope}: events[{i}] is malformed and was skipped: {error}")
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn impact_event_from_lua(value: LuaValue) -> Result<ImpactEventDescriptor, DescriptorError> {
+    let item = lua_table(value, "impact-event entry")?;
+    let kind = get_required_string_lua(&item, "kind")?;
+    if kind != "impact" {
+        return Err(DescriptorError::InvalidShape {
+            reason: "impact-event entry `kind` must be `impact`".into(),
+        });
+    }
+
+    let filter: Table = item
+        .get("filter")
+        .map_err(|_| DescriptorError::MissingField { field: "filter" })?;
+    let filter_tag = get_optional_string_lua(&filter, "tag")?;
+
+    let policy: Table = item
+        .get("policy")
+        .map_err(|_| DescriptorError::InvalidShape {
+            reason: "impact-event entry `policy` must be an array".into(),
+        })?;
+    let len = validate_dense_lua_array(&policy, "impact-event entry `policy`")?;
+    let mut policy_json = Vec::with_capacity(len);
+    for i in 1..=(len as i64) {
+        let raw: LuaValue = policy.get(i).map_err(lua_err)?;
+        policy_json.push(impact_policy_entry_from_lua(raw)?);
+    }
+
+    let is_override = get_optional_bool_lua(&item, "isOverride")?.unwrap_or(false);
+    if is_override && filter_tag.is_none() {
+        return Err(DescriptorError::InvalidShape {
+            reason: "impact-event override `filter.tag` is required".into(),
+        });
+    }
+
+    Ok(ImpactEventDescriptor {
+        id: validate_impact_event_id(get_required_string_lua(&item, "id")?)?,
+        is_override,
+        levels: string_array_from_lua(&item, "levels")?,
+        filter_tag,
+        policy: policy_json,
+    })
+}
+
+fn impact_policy_entry_from_lua(raw: LuaValue) -> Result<serde_json::Value, DescriptorError> {
+    let LuaValue::Table(item) = &raw else {
+        return conv::lua_to_json(raw).map_err(lua_err);
+    };
+    if !item.contains_key("do").map_err(lua_err)? {
+        return conv::lua_to_json(raw).map_err(lua_err);
+    }
+
+    let effects: Table = item.get("do").map_err(|_| DescriptorError::InvalidShape {
+        reason: "impact policy group `do` must be an array".into(),
+    })?;
+    let len = validate_dense_lua_array(&effects, "impact policy group `do`")?;
+    let mut json = conv::lua_to_json(raw).map_err(lua_err)?;
+    let json_object = json
+        .as_object_mut()
+        .ok_or_else(|| DescriptorError::InvalidShape {
+            reason: "impact policy group must be an object".into(),
+        })?;
+    let mut lowered = Vec::with_capacity(len);
+    for i in 1..=(len as i64) {
+        let effect: LuaValue = effects.get(i).map_err(lua_err)?;
+        lowered.push(conv::lua_to_json(effect).map_err(lua_err)?);
+    }
+    json_object.insert("do".into(), serde_json::Value::Array(lowered));
+    Ok(json)
 }
 
 /// Drain the `triggerEvents` array from a Luau manifest table. Mirrors

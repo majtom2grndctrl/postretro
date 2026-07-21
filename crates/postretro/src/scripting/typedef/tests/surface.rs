@@ -489,3 +489,84 @@ fn luau_predicate_helpers_are_typed_to_the_value_type() {
         "luau LocalStateHandle:is must be typed `(self, value: T) -> Predicate`"
     );
 }
+
+#[test]
+fn impact_policy_surface_uses_author_ids_and_closed_effect_union() {
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
+
+    let mut registry = PrimitiveRegistry::new();
+    register_all(&mut registry, ScriptCtx::new());
+    let ts = generate_typescript(&registry);
+    let luau = generate_luau(&registry);
+
+    assert!(
+        ts.contains("export function defineImpactEvent(\n    id: string,"),
+        "TypeScript defineImpactEvent must require an author id"
+    );
+    assert!(
+        luau.contains("declare function defineImpactEvent(id: string,"),
+        "Luau defineImpactEvent must require an author id"
+    );
+    // Luau uses an SDK-internal lowering capability rather than a forgeable
+    // structural brand. The author-facing vocabulary is the five builders.
+    assert!(
+        ts.contains("export interface Effect { readonly [effectBrand]: true; }")
+            && luau.contains("export type Effect = (ImpactEffectCapability) -> ImpactEffectWire")
+            && !luau.contains("__impactEffectBrand"),
+        "impact Effect must be an opaque SDK-lowered builder result"
+    );
+    assert!(
+        ts.contains("export type ImpactEventOverrideFilter = { tag: string;")
+            && luau.contains("export type ImpactEventOverrideFilter = { tag: string,"),
+        "impact overrides must require an additional tag in both SDKs"
+    );
+
+    let effect_builders = [
+        (
+            "despawn",
+            "despawn(opts?: { afterMs?: number }): Effect;",
+            "despawn: (self: TargetHandle, opts: { afterMs: number? }?) -> Effect,",
+        ),
+        (
+            "playAnim",
+            "playAnim(clip: string): Effect;",
+            "playAnim: (self: TargetHandle, clip: string) -> Effect,",
+        ),
+        (
+            "setHealth",
+            "setHealth(value: NumberValue, opts?: { afterMs?: number }): Effect;",
+            "setHealth: (self: TargetHandle, value: NumberValue, opts: { afterMs: number? }?) -> Effect,",
+        ),
+        (
+            "setState",
+            "setState(name: string, value: NumberValue): Effect;",
+            "setState: (self: TargetHandle, name: string, value: NumberValue) -> Effect,",
+        ),
+        (
+            "slot.add",
+            "export interface NumberSlot { add(delta: NumberValue): Effect; }",
+            "export type NumberSlot = { add: (self: NumberSlot, delta: NumberValue) -> Effect }",
+        ),
+    ];
+    for (builder, ts_signature, luau_signature) in effect_builders {
+        assert!(
+            ts.contains(ts_signature),
+            "TypeScript impact Effect is missing `{builder}` builder"
+        );
+        assert!(
+            luau.contains(luau_signature),
+            "Luau impact Effect is missing `{builder}` builder"
+        );
+    }
+    assert_eq!(
+        ts.matches("): Effect;").count(),
+        5,
+        "TypeScript must expose exactly the five closed impact-effect builders"
+    );
+    assert_eq!(
+        luau.matches("-> Effect").count(),
+        5,
+        "Luau must expose exactly the five closed impact-effect builders"
+    );
+}

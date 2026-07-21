@@ -25,6 +25,8 @@ mod combat_positioning;
 mod frame_timing;
 mod fx;
 mod health;
+mod impact_effects;
+mod impact_policy;
 mod input;
 mod kinematic_mover;
 mod movement;
@@ -2022,6 +2024,7 @@ impl ApplicationHandler for App {
                         let session = self.session.as_mut().expect("running session installed");
                         let hit_zone_store = &session.hit_zone_store;
                         let progress_tracker = &mut session.progress_tracker;
+                        let impact_policy_runtime = &mut session.scripting.impact_policy_runtime;
                         let trigger_system = &mut session.trigger_system;
                         let trigger_volume_bridge = &session.trigger_volume_bridge;
                         let trigger_bindings = &self.trigger_bindings;
@@ -2073,6 +2076,7 @@ impl ApplicationHandler for App {
                                 script_ctx: Some(script_ctx.clone()),
                                 use_edges: &trigger_use_edges,
                             }),
+                            |registry| impact_policy_runtime.evaluate_pending_in_registry(registry),
                         );
                         // A runtime-spawned host enemy receives a mesh only
                         // after the install-time whole-registry clip resolve.
@@ -2123,12 +2127,7 @@ impl ApplicationHandler for App {
                     }
                 }
 
-                // Host serialize + send (M15 Phase 1): after the catch-up tick
-                // loop, beside the post-loop drains, so the snapshot carries this
-                // frame's fully-settled host-authoritative state. No-op for the
-                // client and single-player. See `context/lib/entity_model.md` §6.
                 let host_owner_state_projected = self.host_owner_state_projection_due();
-                self.net_serialize_and_send();
 
                 // Task 6 client remote interpolation: sample each remote entity's
                 // buffer at `estimated_server_tick - interpolation_delay` and write the
@@ -2249,18 +2248,6 @@ impl ApplicationHandler for App {
                         .player_hud_state
                         .tick_for_role(is_connected_client, active_wieldable);
                 }
-                // Network projection runs before HUD publication. Clear the
-                // one-frame reload endpoints only after both consumers have had
-                // a chance to observe them.
-                if let Some(weapon) = active_wieldable {
-                    sim::clear_reload_feedback_for_weapon(
-                        &mut script_ctx.registry.borrow_mut(),
-                        weapon,
-                    );
-                }
-                if host_owner_state_projected {
-                    sim::clear_all_reload_feedback(&mut script_ctx.registry.borrow_mut());
-                }
                 // Flash-decay state writes the engine-owned `screen.flash`
                 // surface at the same game-logic stage as the HUD publisher, so
                 // the UI snapshot below freezes this frame's flash color. Runs
@@ -2295,6 +2282,38 @@ impl ApplicationHandler for App {
                 let _crossings = frame_order::run_crossing_stage(self, engine_frame, applied);
                 if !script_ctx.system_commands.is_empty() {
                     self.dispatch_system_commands();
+                }
+
+                if let Some(session) = self.session.as_mut() {
+                    session
+                        .scripting
+                        .impact_policy_runtime
+                        .discard_app_drain_pending();
+                }
+
+                // Terminal impact effects stay live through every post-catch-up
+                // presentation/reaction drain above. Reap them exactly once per
+                // rendered frame, before replication and render observe state.
+                impact_effects::run_end_of_frame_removal_pass(
+                    &mut script_ctx.registry.borrow_mut(),
+                    |_| {},
+                );
+
+                // Host serialize + send after terminal removals, so the
+                // authoritative snapshot cannot carry an entity already reaped
+                // this frame. No-op for the client and single-player.
+                self.net_serialize_and_send();
+
+                // HUD publication and network projection have both observed
+                // one-frame reload endpoints. Clear them only now.
+                if let Some(weapon) = active_wieldable {
+                    sim::clear_reload_feedback_for_weapon(
+                        &mut script_ctx.registry.borrow_mut(),
+                        weapon,
+                    );
+                }
+                if host_owner_state_projected {
+                    sim::clear_all_reload_feedback(&mut script_ctx.registry.borrow_mut());
                 }
 
                 // Reconcile the input seam + focus with the modal stack's top
@@ -3756,9 +3775,21 @@ impl App {
                         &session.scripting.sequence_registry,
                     )
             };
-            if matches!(outcome, StagedManifestCommitOutcome::Committed { .. })
-                && self.has_installed_level()
-            {
+            let committed = matches!(outcome, StagedManifestCommitOutcome::Committed { .. });
+            if committed {
+                let events = match &result.status {
+                    StagedManifestBuildStatus::Built(manifest) => manifest.events.clone(),
+                    StagedManifestBuildStatus::NoStartScript => Vec::new(),
+                    StagedManifestBuildStatus::Failed => Vec::new(),
+                };
+                if let Some(session) = self.session.as_mut() {
+                    session
+                        .scripting
+                        .impact_policy_runtime
+                        .replace_global_events(events);
+                }
+            }
+            if committed && self.has_installed_level() {
                 if let Some(session) = self.session.as_ref() {
                     session
                         .scripting
@@ -5045,6 +5076,7 @@ impl App {
         let Some(session) = self.session.as_mut() else {
             return false;
         };
+        let impact_policy_runtime = &mut session.scripting.impact_policy_runtime;
         let Some(netcode::NetEndpoint::Host {
             server,
             allocator,
@@ -5070,6 +5102,7 @@ impl App {
             open_shots,
             pending_hit_declarations,
             *tick,
+            |registry| impact_policy_runtime.evaluate_pending_in_registry(registry),
         )
     }
 
@@ -6143,6 +6176,7 @@ mod tests {
                 },
                 TICK_DURATION.as_secs_f32(),
                 None,
+                |_| {},
             );
             frame_timing.push_state(InterpolableState::new(camera.position));
             pushed_states.push(frame_timing.current_state.position);
@@ -6523,6 +6557,7 @@ mod tests {
             },
             TICK_DURATION.as_secs_f32(),
             None,
+            |_| {},
         );
 
         assert_eq!(resolved_aim_origin, Some(camera.position));
@@ -7206,6 +7241,7 @@ mod tests {
                     maps: Vec::new(),
                     reactions: Vec::new(),
                     crossings: Vec::new(),
+                    events: Vec::new(),
                     trigger_events: Vec::new(),
                     trigger_pools: Vec::new(),
                     ui_trees: vec![staged_tree("hud")],

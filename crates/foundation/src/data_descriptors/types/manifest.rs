@@ -3,6 +3,27 @@
 
 use std::collections::HashMap;
 
+/// A pure impact-policy declaration returned through a manifest's `events`
+/// child. The scripting runtime preserves the policy as JSON-compatible data;
+/// impact-specific validation, merging, binding, and execution belong to the
+/// engine layer that consumes this descriptor.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImpactEventDescriptor {
+    /// Author-assigned stable identity shared by a base declaration and its
+    /// cross-scope overrides.
+    pub id: String,
+    /// Distinguishes a refinement from the base declaration it references.
+    pub is_override: bool,
+    /// Mod-scope map-tag selector. Empty means every level; level-local
+    /// declarations retain this field but apply to their declaring level.
+    pub levels: Vec<String>,
+    /// Optional tag selector for affected entities. No tag means every impact
+    /// is eligible.
+    pub filter_tag: Option<String>,
+    /// Base or override policy emitted by the pure SDK builder.
+    pub policy: Vec<serde_json::Value>,
+}
+
 /// Theme tokens supplied by `ModManifest.theme`. Three
 /// category-scoped maps mirroring the engine theme tables (colors linear-RGBA,
 /// fonts → registered family name, spacing → logical px). Drained into a

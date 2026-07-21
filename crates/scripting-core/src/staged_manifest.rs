@@ -11,10 +11,11 @@ use rquickjs::{
 };
 
 use super::data_descriptors::{
-    EntityTypeDescriptor, ModThemeTokens, RegisteredUiTree, TriggerPoolDescriptor, drain_fonts_js,
-    drain_fonts_lua, drain_frontend_js, drain_frontend_lua, drain_global_crossings_js,
-    drain_global_crossings_lua, drain_global_reactions_js, drain_global_reactions_lua,
-    drain_maps_js, drain_maps_lua, drain_theme_js, drain_theme_lua, drain_trigger_events_js,
+    EntityTypeDescriptor, ImpactEventDescriptor, ModThemeTokens, RegisteredUiTree,
+    TriggerPoolDescriptor, drain_fonts_js, drain_fonts_lua, drain_frontend_js, drain_frontend_lua,
+    drain_global_crossings_js, drain_global_crossings_lua, drain_global_reactions_js,
+    drain_global_reactions_lua, drain_impact_events_js, drain_impact_events_lua, drain_maps_js,
+    drain_maps_lua, drain_theme_js, drain_theme_lua, drain_trigger_events_js,
     drain_trigger_events_lua, drain_trigger_pools_js, drain_trigger_pools_lua, drain_ui_trees_js,
     drain_ui_trees_lua, entity_descriptor_from_js,
 };
@@ -62,6 +63,7 @@ pub struct StagedManifest {
     pub maps: Vec<ModMapEntry>,
     pub reactions: Vec<ScopedReaction>,
     pub crossings: Vec<ScopedCrossing>,
+    pub events: Vec<ImpactEventDescriptor>,
     pub trigger_events: Vec<super::data_descriptors::TriggerEventDescriptor>,
     pub trigger_pools: Vec<TriggerPoolDescriptor>,
     pub ui_trees: Vec<RegisteredUiTree>,
@@ -384,6 +386,7 @@ fn run_staged_manifest_build(
         maps: manifest.maps,
         reactions: manifest.reactions,
         crossings: manifest.crossings,
+        events: manifest.events,
         trigger_events: manifest.trigger_events,
         trigger_pools: manifest.trigger_pools,
         ui_trees: manifest.ui_trees,
@@ -585,6 +588,13 @@ fn manifest_from_js_value<'js>(
                 ),
             }
         })?;
+    let events = drain_impact_events_js(ctx, &obj, "default mod manifest export").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` default mod manifest export `events` invalid: {e}"
+            ),
+        }
+    })?;
     let store_declarations =
         drain_store_declarations_js(ctx, &obj).map_err(|e| ScriptError::InvalidArgument {
             reason: format!(
@@ -614,6 +624,7 @@ fn manifest_from_js_value<'js>(
         maps,
         reactions,
         crossings,
+        events,
         trigger_events,
         trigger_pools,
         store_declarations,
@@ -767,6 +778,13 @@ fn run_staged_mod_init_luau(
             ),
         }
     })?;
+    let events = drain_impact_events_lua(&table, "returned mod manifest").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` returned mod manifest `events` invalid: {e}"
+            ),
+        }
+    })?;
     let store_declarations =
         drain_store_declarations_lua(&table).map_err(|e| ScriptError::InvalidArgument {
             reason: format!(
@@ -795,6 +813,7 @@ fn run_staged_mod_init_luau(
         maps,
         reactions,
         crossings,
+        events,
         trigger_events,
         trigger_pools,
         store_declarations,

@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 use postretro_entities::components::health::{
-    DamageContext, HealthComponent, apply_damage_with_context,
+    DamageContext, DamageProducer, HealthComponent, apply_damage_with_context,
 };
 use postretro_entities::{EntityId, EntityRegistry};
 use postretro_foundation::DamagePayload;
@@ -75,7 +75,13 @@ pub(crate) fn dispatch(
             registry,
             id,
             &payload,
-            DamageContext::new(APPLY_DAMAGE_SOURCE_ID),
+            DamageContext {
+                source_id: APPLY_DAMAGE_SOURCE_ID.to_string(),
+                attacker: None,
+                weapon: None,
+                zone: None,
+                producer: DamageProducer::AppDrain,
+            },
         );
     }
 
@@ -119,6 +125,24 @@ mod tests {
         dispatch(&mut reg, &[a, b], &ApplyDamageArgs { amount: 25.0 }).unwrap();
         assert_eq!(hp(&reg, a), 75.0);
         assert_eq!(hp(&reg, b), 25.0);
+    }
+
+    #[test]
+    fn apply_damage_reaction_marks_impact_dispatch_as_app_drain() {
+        let mut reg = EntityRegistry::new();
+        let target = spawn_health(&mut reg, 100.0);
+
+        dispatch(&mut reg, &[target], &ApplyDamageArgs { amount: 25.0 }).unwrap();
+
+        let impact_dispatches = reg.take_impact_dispatches();
+        assert_eq!(impact_dispatches.len(), 1);
+        assert_eq!(impact_dispatches[0].target, target);
+        assert_eq!(impact_dispatches[0].source, None);
+        assert_eq!(
+            impact_dispatches[0].producer,
+            DamageProducer::AppDrain,
+            "reaction-originated damage must remain observable but policy-gated"
+        );
     }
 
     #[test]

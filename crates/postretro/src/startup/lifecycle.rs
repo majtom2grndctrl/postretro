@@ -89,6 +89,7 @@ impl App {
             session.scripting.command_diagnostics.clear();
             session.scripting.spawn_context.clear();
             session.scripting.slot_accumulator_bindings.clear();
+            session.scripting.impact_policy_runtime.clear_level_events();
             session.fog_volume_bridge.clear();
             session.trigger_volume_bridge.clear();
             session.trigger_system.clear();
@@ -787,6 +788,7 @@ impl App {
             progress_tracker: &mut session.progress_tracker,
             crossing_detector: &mut session.crossing_detector,
             slot_accumulator_bindings: &mut session.scripting.slot_accumulator_bindings,
+            impact_policy_runtime: &mut session.scripting.impact_policy_runtime,
             mesh_clip_tables: &mut session.mesh_clip_tables,
             hit_zone_store: &mut session.hit_zone_store,
             trigger_pool_policy: self.session_boot_config.windowed_trigger_pool_policy(),
@@ -1256,6 +1258,9 @@ pub(crate) struct WorldInstallHandles<'a> {
         &'a mut postretro_scripting_core::state_crossings::CrossingDetector,
     pub(crate) slot_accumulator_bindings:
         &'a mut crate::scripting_systems::slot_accumulators::SlotAccumulatorBindings,
+    /// Runtime-owned impact policy registry. Level descriptors are installed
+    /// after the data script returns its manifest.
+    pub(crate) impact_policy_runtime: &'a mut crate::impact_policy::ImpactPolicyRuntime,
     pub(crate) mesh_clip_tables: &'a mut crate::scripting_systems::mesh_anim::MeshClipTables,
     pub(crate) hit_zone_store: &'a mut crate::scripting_systems::hit_zones::HitZoneStore,
     /// Resolved separately for each install. A pinned seed repeats exactly;
@@ -1308,6 +1313,7 @@ pub(crate) fn install_world_cpu(
         progress_tracker,
         crossing_detector,
         slot_accumulator_bindings,
+        impact_policy_runtime,
         mesh_clip_tables,
         hit_zone_store,
         trigger_pool_policy,
@@ -1393,6 +1399,8 @@ pub(crate) fn install_world_cpu(
                 postretro_ui::modal_stack::ScopeTier::Level,
             );
         }
+        impact_policy_runtime
+            .replace_level_events(std::mem::take(&mut manifest.events), active_level_tags);
         script_ctx
             .data_registry
             .borrow_mut()
@@ -1848,6 +1856,9 @@ mod tests {
                     spawn_context: Default::default(),
                     script_runtime,
                     script_ctx: script_ctx.clone(),
+                    impact_policy_runtime: crate::impact_policy::ImpactPolicyRuntime::new(
+                        script_ctx.clone(),
+                    ),
                     sequence_registry: SequencedPrimitiveRegistry::new(),
                     reaction_registry:
                         scripting::reactions::registry::ReactionPrimitiveRegistry::new(),
@@ -2379,6 +2390,7 @@ mod tests {
                 progress_tracker: &mut session.progress_tracker,
                 crossing_detector: &mut session.crossing_detector,
                 slot_accumulator_bindings: &mut session.scripting.slot_accumulator_bindings,
+                impact_policy_runtime: &mut session.scripting.impact_policy_runtime,
                 mesh_clip_tables: &mut session.mesh_clip_tables,
                 hit_zone_store: &mut session.hit_zone_store,
                 trigger_pool_policy: policy,
@@ -3000,6 +3012,7 @@ mod tests {
                 maps: Vec::new(),
                 reactions: Vec::new(),
                 crossings: Vec::new(),
+                events: Vec::new(),
                 trigger_events: Vec::new(),
                 trigger_pools: Vec::new(),
                 ui_trees: vec![RegisteredUiTree {
@@ -3782,6 +3795,7 @@ mod tests {
                 progress_tracker: &mut session.progress_tracker,
                 crossing_detector: &mut session.crossing_detector,
                 slot_accumulator_bindings: &mut session.scripting.slot_accumulator_bindings,
+                impact_policy_runtime: &mut session.scripting.impact_policy_runtime,
                 mesh_clip_tables: &mut session.mesh_clip_tables,
                 hit_zone_store: &mut session.hit_zone_store,
                 trigger_pool_policy: TriggerPoolSeedPolicy::ArmAll,

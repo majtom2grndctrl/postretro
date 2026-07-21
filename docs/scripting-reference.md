@@ -818,6 +818,23 @@ only when the kill threshold is reached, however many ticks later that is. The
 canonical progress use is a threshold that fires an event of the same name — see
 [the combat-demo walkthrough](../content/dev/maps/combat-demo.README.md).
 
+### Impact policies
+
+`defineImpactEvent("namespace:id", filter, build)` declares what an in-tick hit means. IDs are portable ASCII addresses: colon-separated non-empty segments using letters, digits, `_`, `.`, or `-`, up to 128 bytes. An override must add a `tag`; it can only narrow the base target set.
+
+Every fire evaluates gates and effect operands from one pre-effect snapshot, then applies the selected effects. `healthAfter` is the unfloored result and may be negative even though stored health floors at zero. Unset `target.state(name)` reads `0`. `playAnim(name)` requires that name in the target mesh's declared animation states. `despawn` and `setHealth` accept `{ afterMs }`; omitting it is immediate, while `{ afterMs: 0 }` still enters the deferred queue.
+
+`slot(ref).add(delta)` is snapshot read-modify-write, not an atomic increment. If one fire writes the same slot more than once, every operand reads the same starting value and the last applied write wins. Impact policies currently run only for in-tick weapon and AI damage; `applyDamage` reactions and other app-drain producers run no policy in v1.
+
+The E16 TypeScript spikes are executable when a local TypeScript compiler is available:
+
+```sh
+tsc --project context/plans/in-progress/E16--impact-policy-substrate/tsconfig.json
+tsc --project context/plans/drafts/E16--impact-death-lifecycle/tsconfig.json
+```
+
+The repository does not install or download `tsc`; editor/CI tooling supplies it. The committed `@ts-expect-error` cases make unsafe narrowing and forged effects fail this gate.
+
 ### `armTrigger` and `disarmTrigger`
 
 These tag-targeted primitives take no arguments. The reaction's `tag` selects

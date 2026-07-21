@@ -508,7 +508,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field(
             "tags?",
             "Vec<String>",
-            "Authoritative classification tags for filtering plus `levels` selection on mod-global reactions, crossings, trigger events, and trigger pools. Optional; missing/null normalizes to empty.",
+            "Authoritative classification tags for filtering plus `levels` selection on mod-global reactions, impact events, crossings, trigger events, and trigger pools. Optional; missing/null normalizes to empty.",
         )
         .finish();
     registry
@@ -594,6 +594,11 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
             "reactions?",
             "Vec<NamedReactionDescriptor>",
             "Engine-global reaction definitions. Optional; survive level unload and compose into active level behavior by `levels` tag selectors.",
+        )
+        .field(
+            "events?",
+            "Vec<ImpactEvent>",
+            "Pure mod-global impact-policy declarations. Optional; `levels` selects map tags, setupLevel events append level-local declarations, and base plus matching last-registered override resolve by author-assigned id. Override filters narrow the base filter.",
         )
         .field(
             "crossings?",
@@ -710,6 +715,7 @@ mod tests {
             maps: Vec::new(),
             reactions: Vec::new(),
             crossings: Vec::new(),
+            events: Vec::new(),
             trigger_events: Vec::new(),
             trigger_pools: Vec::new(),
             store_declarations: StoreDeclarationSet::default(),
@@ -724,6 +730,7 @@ mod tests {
             "maps",
             "reactions",
             "crossings",
+            "events",
             "triggerEvents",
             "triggerPools",
             "stores",

@@ -29,7 +29,7 @@ const STAGGERED = 1;
 
 // IMP — the Doom-2016 Glory Kill loop, a per-entity state machine driven by impact. A blessed
 // handle at module scope (pure data), NOT a function that returns one.
-const impLifecycle = defineImpactEvent({ tag: "imp" }, (impact) => {
+const impLifecycle = defineImpactEvent("salvage:imp-lifecycle", { tag: "imp" }, (impact) => {
   const t = impact.target;
   const stagger = t.state("stagger"); // per-instance modder state (IR ref)
 
@@ -62,7 +62,7 @@ const impLifecycle = defineImpactEvent({ tag: "imp" }, (impact) => {
 // ZOMBIE — health<=0 is NOT death. Only a gib-level overshoot kills; otherwise the zombie DOWNS
 // and resurrects. No per-entity state — the unfloored healthAfter carries enough (a large
 // negative = a big overshoot = a gib).
-const zombieLifecycle = defineImpactEvent({ tag: "zombie" }, (impact) => {
+const zombieLifecycle = defineImpactEvent("salvage:zombie-lifecycle", { tag: "zombie" }, (impact) => {
   const t = impact.target;
   // GIB is a LEVEL, DOWN is an EDGE — the asymmetry is deliberate.
   //   lethal: fire whenever the overshoot is this deep, from ANY state — you can gib an
@@ -86,7 +86,7 @@ export function setupLevel(): LevelManifest {
 }
 
 // === GUARDRAILS — these MUST NOT compile. ===================================
-defineImpactEvent({ tag: "imp" }, (impact) => {
+defineImpactEvent("salvage:invalid-imp-effect", { tag: "imp" }, (impact) => {
   const stagger = impact.target.state("stagger");
   // @ts-expect-error per-entity state is an IR ref — no live JS math (use .plus(), not `+`).
   const bad = stagger + 1;

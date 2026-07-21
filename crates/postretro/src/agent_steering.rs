@@ -17,6 +17,7 @@ use glam::Vec3;
 use crate::agent::{AgentCapsule, collide_and_slide};
 use crate::collision::CollisionWorld;
 use crate::nav::{NavGraph, distance_xz, find_path};
+use postretro_entities::DeferredEffectComponent;
 use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform};
 
@@ -323,6 +324,12 @@ pub(crate) fn tick(
     let snapshot: Vec<AgentSnapshot> = registry
         .iter_with_kind(ComponentKind::Agent)
         .filter_map(|(id, value)| {
+            if registry
+                .get_component::<DeferredEffectComponent>(id)
+                .is_ok_and(|effects| effects.inert)
+            {
+                return None;
+            }
             let ComponentValue::Agent(agent) = value else {
                 return None;
             };

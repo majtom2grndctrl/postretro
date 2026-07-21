@@ -1,0 +1,458 @@
+// Command-buffer effects addressed to one live impact target.
+// See: context/lib/scripting.md §11 · context/lib/entity_model.md §5.
+
+#[cfg(test)]
+use postretro_entities::DeferredEffectComponent;
+#[cfg(test)]
+use postretro_entities::components::health::HealthComponent;
+use postretro_entities::components::health::set_health_absolute;
+use postretro_entities::components::mesh::{SwitchResult, switch_animation_state};
+use postretro_entities::{
+    DeferredEffectKind, EntityId, EntityRegistry, MAX_PENDING_EFFECTS_PER_ENTITY, PendingEffect,
+};
+
+/// Closed non-IR impact-effect instructions consumed by the policy evaluator.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum ImpactEffect {
+    Despawn { after_ms: Option<f32> },
+    SetHealth { value: f32, after_ms: Option<f32> },
+    PlayAnimation { state: String },
+}
+
+/// Apply one command-buffer effect to the resolved target id.
+///
+/// The target is the live `EntityId` resolved from the impact's opaque command
+/// target; it is never interpreted as a numeric IR input.
+pub(crate) fn apply_effect(registry: &mut EntityRegistry, target: EntityId, effect: &ImpactEffect) {
+    match effect {
+        ImpactEffect::Despawn { after_ms } => despawn(registry, target, *after_ms),
+        ImpactEffect::SetHealth { value, after_ms } => {
+            set_health(registry, target, *value, *after_ms)
+        }
+        ImpactEffect::PlayAnimation { state } => {
+            let _ = play_animation(registry, target, state);
+        }
+    }
+}
+
+/// Apply or enqueue an absolute health write.
+///
+/// `Some(0.0)` is still deferred: only an absent `afterMs` is immediate. That
+/// distinction makes the first countdown decrement unambiguously belong to a
+/// later game-logic tick.
+pub(crate) fn set_health(
+    registry: &mut EntityRegistry,
+    target: EntityId,
+    value: f32,
+    after_ms: Option<f32>,
+) {
+    let Some(after_ms) = after_ms else {
+        set_health_absolute(registry, target, value);
+        return;
+    };
+
+    enqueue(
+        registry,
+        target,
+        PendingEffect {
+            kind: DeferredEffectKind::SetHealth,
+            remaining_us: delay_micros(after_ms),
+            value: Some(value),
+        },
+    );
+}
+
+/// Apply or enqueue a terminal despawn.
+///
+/// Delayed despawns leave the entity active until their countdown elapses. An
+/// immediate despawn (or an elapsed queued despawn) makes it inert, clears the
+/// whole queue, and stages it for the one app-owned frame-end removal pass.
+pub(crate) fn despawn(registry: &mut EntityRegistry, target: EntityId, after_ms: Option<f32>) {
+    if let Some(after_ms) = after_ms {
+        enqueue(
+            registry,
+            target,
+            PendingEffect {
+                kind: DeferredEffectKind::Despawn,
+                remaining_us: delay_micros(after_ms),
+                value: None,
+            },
+        );
+        return;
+    }
+
+    mark_terminal_despawn(registry, target);
+}
+
+/// Switch a declared mesh animation state synchronously while the target is
+/// still live. This deliberately bypasses tag-targeted reaction/app-drain
+/// dispatch so an in-group `playAnim` following `despawn()` still lands.
+pub(crate) fn play_animation(
+    registry: &mut EntityRegistry,
+    target: EntityId,
+    state: &str,
+) -> SwitchResult {
+    switch_animation_state(registry, target, state)
+}
+
+/// Advance active deferred-effect queues after the weapon and enemy-melee
+/// damage chokepoints. The caller supplies fixed-tick seconds; script-facing
+/// milliseconds are stored as integer microseconds.
+pub(crate) fn tick_deferred_effects(registry: &mut EntityRegistry, tick_dt: f32) {
+    let dt_us = tick_micros(tick_dt);
+    let mut active = registry.take_active_deferred_effects();
+    let mut retained = 0;
+
+    for index in 0..active.len() {
+        let target = active[index];
+        let Ok(component) = registry.deferred_effect_mut(target) else {
+            continue;
+        };
+        if component.inert || component.pending.is_empty() {
+            continue;
+        }
+
+        let mut pending = std::mem::take(&mut component.pending);
+        for effect in &mut pending {
+            effect.remaining_us = effect.remaining_us.saturating_sub(dt_us);
+        }
+
+        let mut terminal = false;
+        let mut pending_index = 0;
+        while pending_index < pending.len() {
+            if pending[pending_index].remaining_us > 0 {
+                pending_index += 1;
+                continue;
+            }
+
+            let effect = pending.remove(pending_index);
+            match effect.kind {
+                DeferredEffectKind::SetHealth => {
+                    set_health_absolute(registry, target, effect.value.unwrap_or(0.0));
+                }
+                DeferredEffectKind::Despawn => {
+                    pending.clear();
+                    terminal = true;
+                    break;
+                }
+            }
+        }
+
+        let Ok(component) = registry.deferred_effect_mut(target) else {
+            continue;
+        };
+        component.pending = pending;
+        component.inert |= terminal;
+        if component.pending.len() < MAX_PENDING_EFFECTS_PER_ENTITY {
+            component.overflow_reported = false;
+        }
+
+        if terminal {
+            let _ = registry.mark_for_end_of_frame_removal(target);
+        } else if !component.pending.is_empty() {
+            active[retained] = target;
+            retained += 1;
+        }
+    }
+
+    active.truncate(retained);
+    registry.replace_active_deferred_effects(active);
+}
+
+/// Reap all terminally marked entities exactly once at the app's frame-end
+/// stage. The callback observes successful removals only; an empty callback
+/// intentionally adds no reporting semantics.
+pub(crate) fn run_end_of_frame_removal_pass(
+    registry: &mut EntityRegistry,
+    mut on_removed: impl FnMut(EntityId),
+) {
+    for target in registry.take_end_of_frame_removals() {
+        if registry.despawn(target).is_ok() {
+            on_removed(target);
+        }
+    }
+}
+
+fn enqueue(registry: &mut EntityRegistry, target: EntityId, effect: PendingEffect) {
+    let Ok(component) = registry.deferred_effect_mut(target) else {
+        return;
+    };
+    if component.inert {
+        return;
+    }
+    if component.pending.len() >= MAX_PENDING_EFFECTS_PER_ENTITY {
+        if !component.overflow_reported {
+            log::warn!(
+                "[Impact] deferred-effect queue for {target:?} reached {MAX_PENDING_EFFECTS_PER_ENTITY}; dropping newest effects until it drains"
+            );
+            component.overflow_reported = true;
+        }
+        return;
+    }
+
+    component.pending.push(effect);
+    let _ = registry.activate_deferred_effects(target);
+}
+
+fn mark_terminal_despawn(registry: &mut EntityRegistry, target: EntityId) {
+    let Ok(component) = registry.deferred_effect_mut(target) else {
+        return;
+    };
+
+    component.inert = true;
+    component.pending.clear();
+    component.overflow_reported = false;
+    let _ = registry.mark_for_end_of_frame_removal(target);
+}
+
+fn delay_micros(after_ms: f32) -> u64 {
+    if after_ms <= 0.0 || after_ms.is_nan() {
+        return 0;
+    }
+    (f64::from(after_ms) * 1_000.0).ceil() as u64
+}
+
+fn tick_micros(tick_dt: f32) -> u64 {
+    if tick_dt <= 0.0 || tick_dt.is_nan() {
+        return 0;
+    }
+    (f64::from(tick_dt) * 1_000_000.0).ceil() as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use postretro_entities::Transform;
+    use postretro_entities::data_descriptors::HealthDescriptor;
+
+    fn health_target(registry: &mut EntityRegistry, max: f32) -> EntityId {
+        let target = registry.spawn(Transform::default());
+        let health = HealthComponent::from_descriptor(&HealthDescriptor {
+            max,
+            hitbox: None,
+            zone_multipliers: Default::default(),
+        });
+        registry
+            .set_component(target, health)
+            .expect("target is live");
+        target
+    }
+
+    fn health(registry: &EntityRegistry, target: EntityId) -> f32 {
+        registry
+            .get_component::<HealthComponent>(target)
+            .expect("health remains attached")
+            .current
+    }
+
+    fn assert_number_approx_eq(actual: f32, expected: f32) {
+        const EPSILON: f32 = 1.0e-6;
+        assert!(
+            (actual - expected).abs() <= EPSILON,
+            "expected {expected} ± {EPSILON}, got {actual}"
+        );
+    }
+
+    #[test]
+    fn deferred_effects_apply_ready_entries_in_insertion_order() {
+        let mut registry = EntityRegistry::new();
+        let target = health_target(&mut registry, 100.0);
+
+        apply_effect(
+            &mut registry,
+            target,
+            &ImpactEffect::SetHealth {
+                value: 15.0,
+                after_ms: Some(0.0),
+            },
+        );
+        set_health(&mut registry, target, 40.0, Some(0.0));
+        tick_deferred_effects(&mut registry, 0.001);
+
+        assert_number_approx_eq(health(&registry, target), 40.0);
+        assert!(
+            registry
+                .get_component::<DeferredEffectComponent>(target)
+                .expect("effect component remains attached")
+                .pending
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn deferred_effect_countdown_starts_on_the_next_tick() {
+        let mut registry = EntityRegistry::new();
+        let target = health_target(&mut registry, 100.0);
+
+        set_health(&mut registry, target, 25.0, Some(100.0));
+        assert_number_approx_eq(
+            registry
+                .get_component::<DeferredEffectComponent>(target)
+                .expect("effect is queued this tick")
+                .pending[0]
+                .remaining_us as f32,
+            100_000.0,
+        );
+
+        tick_deferred_effects(&mut registry, 0.040);
+        assert_number_approx_eq(
+            registry
+                .get_component::<DeferredEffectComponent>(target)
+                .expect("effect remains queued")
+                .pending[0]
+                .remaining_us as f32,
+            60_000.0,
+        );
+        assert_number_approx_eq(health(&registry, target), 100.0);
+    }
+
+    #[test]
+    fn immediate_despawn_marks_then_frame_end_reaps() {
+        let mut registry = EntityRegistry::new();
+        let target = health_target(&mut registry, 100.0);
+
+        apply_effect(
+            &mut registry,
+            target,
+            &ImpactEffect::Despawn { after_ms: None },
+        );
+        assert!(registry.exists(target), "despawn is never inline");
+        assert!(
+            registry
+                .get_component::<DeferredEffectComponent>(target)
+                .expect("target remains live before frame end")
+                .inert
+        );
+
+        let mut removed = Vec::new();
+        run_end_of_frame_removal_pass(&mut registry, |id| removed.push(id));
+        assert_eq!(removed, vec![target]);
+        assert!(!registry.exists(target));
+    }
+
+    // Regression: host snapshots were collected before frame-end impact
+    // removals, briefly recreating terminally removed entities on clients.
+    #[test]
+    fn authoritative_snapshot_after_removal_omits_terminal_entity() {
+        let mut registry = EntityRegistry::new();
+        let target = health_target(&mut registry, 100.0);
+        let mut replicable = crate::netcode::ReplicableSet::new();
+        replicable.register(target);
+
+        despawn(&mut registry, target, None);
+        run_end_of_frame_removal_pass(&mut registry, |_| {});
+
+        let snapshots = crate::netcode::produce_owned_snapshots(
+            &registry,
+            &replicable,
+            &mut crate::netcode::NetworkIdAllocator::new(),
+            &crate::netcode::MovementOwners::new(),
+            &crate::netcode::HostCommandQueues::new(),
+        );
+        assert!(snapshots.is_empty());
+    }
+
+    #[test]
+    fn delayed_despawn_marks_only_after_its_countdown_elapses() {
+        let mut registry = EntityRegistry::new();
+        let target = health_target(&mut registry, 100.0);
+
+        despawn(&mut registry, target, Some(10.0));
+        assert!(
+            !registry
+                .get_component::<DeferredEffectComponent>(target)
+                .expect("target stays active while countdown runs")
+                .inert
+        );
+
+        tick_deferred_effects(&mut registry, 0.005);
+        assert!(registry.exists(target));
+        assert!(
+            !registry
+                .get_component::<DeferredEffectComponent>(target)
+                .expect("countdown is not done")
+                .inert
+        );
+
+        tick_deferred_effects(&mut registry, 0.005);
+        assert!(registry.exists(target), "frame-end removal has not run yet");
+        assert!(
+            registry
+                .get_component::<DeferredEffectComponent>(target)
+                .expect("elapsed despawn makes the target inert")
+                .inert
+        );
+
+        run_end_of_frame_removal_pass(&mut registry, |_| {});
+        assert!(!registry.exists(target));
+    }
+
+    #[test]
+    fn terminal_despawn_cancels_remaining_deferred_effects() {
+        let mut registry = EntityRegistry::new();
+        let target = health_target(&mut registry, 100.0);
+
+        set_health(&mut registry, target, 70.0, Some(0.0));
+        despawn(&mut registry, target, Some(0.0));
+        set_health(&mut registry, target, 5.0, Some(0.0));
+        tick_deferred_effects(&mut registry, 0.001);
+
+        assert_number_approx_eq(health(&registry, target), 70.0);
+        let effects = registry
+            .get_component::<DeferredEffectComponent>(target)
+            .expect("target remains live before frame end");
+        assert!(effects.inert);
+        assert!(effects.pending.is_empty());
+    }
+
+    // Regression: subtracting a fixed-tick f32 from a huge finite delay could
+    // round back to the same countdown forever.
+    #[test]
+    fn huge_finite_delay_makes_integer_progress_each_tick() {
+        let mut registry = EntityRegistry::new();
+        let target = health_target(&mut registry, 100.0);
+
+        set_health(&mut registry, target, 25.0, Some(f32::MAX));
+        let before = registry
+            .get_component::<DeferredEffectComponent>(target)
+            .unwrap()
+            .pending[0]
+            .remaining_us;
+        tick_deferred_effects(&mut registry, 0.001);
+        let after = registry
+            .get_component::<DeferredEffectComponent>(target)
+            .unwrap()
+            .pending[0]
+            .remaining_us;
+
+        assert!(after < before, "every positive tick must advance the delay");
+    }
+
+    // Regression: repeated impacts could grow one entity's queue without a
+    // bound and destabilize fixed-tick work.
+    #[test]
+    fn deferred_queue_drops_newest_overflow_and_preserves_admitted_fifo() {
+        let mut registry = EntityRegistry::new();
+        let target = health_target(&mut registry, 100.0);
+
+        for value in 0..=MAX_PENDING_EFFECTS_PER_ENTITY {
+            set_health(&mut registry, target, value as f32, Some(0.0));
+        }
+        let effects = registry
+            .get_component::<DeferredEffectComponent>(target)
+            .unwrap();
+        assert_eq!(effects.pending.len(), MAX_PENDING_EFFECTS_PER_ENTITY);
+        assert_eq!(effects.pending.first().unwrap().value, Some(0.0));
+        assert_eq!(
+            effects.pending.last().unwrap().value,
+            Some((MAX_PENDING_EFFECTS_PER_ENTITY - 1) as f32),
+            "the newest overflowing request is dropped"
+        );
+
+        tick_deferred_effects(&mut registry, 0.001);
+        assert_number_approx_eq(
+            health(&registry, target),
+            (MAX_PENDING_EFFECTS_PER_ENTITY - 1) as f32,
+        );
+    }
+}

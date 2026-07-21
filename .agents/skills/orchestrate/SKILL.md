@@ -81,19 +81,21 @@ If another crate, runtime stage, shader, cache, or diagnostic path consumes the 
 
 **Sequential:** One `worker` agent at a time. Wait for completion before starting the next.
 
+Run sequential workers on `feature/<plan-name>`. They share its warmed `target/` directory. Review and commit each task before dispatching the next; no merge or worktree is needed.
+
 **Concurrent:** Spawn all independent phase `worker` agents simultaneously via multiple `spawn_agent` calls in one message. Choose `reasoning_effort` per task using the sizing guide above.
 
-> **Cargo under concurrency.** Run concurrent agents in isolated worktrees — separate `target/` dirs, cap 3 (see `development_guide.md`). Separate target dirs have no shared build lock, so each agent runs `cargo check` and focused tests freely. Agents sharing one `target/` must not: they serialize on cargo's build lock and churn the incremental cache. Defer their compile/test to one post-phase pass, as `/fix-review-findings` does.
+> **Cargo under concurrency.** Run concurrent agents in isolated worktrees with separate `target/` dirs. Cap at 3 (see `development_guide.md`). Separate targets avoid Cargo locks. Do not run worker checks in a shared target; defer them to one post-phase pass instead. Sequential work shares the integration branch and its warm target.
 
-Create worker worktrees from `feature/<plan-name>`. Integrate completed work back there.
+Create worktrees only for concurrent workers. Integrate their completed work back to `feature/<plan-name>`.
 
 **For each agent, provide:**
 1. The plan's **Shared Context** section
 2. The agent's **specific task** — description, acceptance criteria
 3. Instruction to read relevant `context/lib/` files for architectural guidance
 4. Instruction to follow `context/lib/development_guide.md` conventions
-5. Instruction to run `cargo check` before considering the task complete (isolated worktrees only — see note above)
-6. Instruction to run focused tests for the touched crate/module/behavior, not a full workspace `cargo test` (concurrent agents: isolated worktrees only). Full workspace tests are the coordinator's final gate. Never run a bare `cargo test -p postretro-level-compiler` (cold `prl-build` bakes, ~1h).
+5. Instruction to run `cargo check` before considering the task complete. For concurrent workers, use their isolated target; for shared-target workers, sequence checks after each task.
+6. Instruction to run focused tests for the touched crate/module/behavior, not a full workspace `cargo test`. Full workspace tests are the coordinator's final gate. Never run a bare `cargo test -p postretro-level-compiler` (cold `prl-build` bakes, ~1h).
 
 For layout or contract tasks, also provide:
 - Existing fields, offsets, bindings, and versions that must remain stable.

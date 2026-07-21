@@ -25,7 +25,7 @@ Death is the first policy domain on the impact-policy substrate (`E16--impact-po
 
 ## Decisions
 
-Pinned semantics (no TBD). The general substrate decisions — tokens-not-leaves, independent gated groups, override precedence, derived identity, producer contexts, effect arms, despawn ordering, unfloored `healthAfter`, level-vs-edge gating, per-entity-state schema, manifest composition — live in `E16--impact-policy-substrate` and are not restated here.
+Pinned semantics (no TBD). The general substrate decisions — tokens-not-leaves, independent gated groups, override precedence, explicit author-assigned ID, producer contexts, effect arms, despawn ordering, unfloored `healthAfter`, level-vs-edge gating, per-entity-state schema, manifest composition — live in `E16--impact-policy-substrate` and are not restated here.
 
 - **FSM coexistence (v1).** (a) The FSM's 0-HP→Death transition and auto-despawn are removed; 0 HP is inert. (b) The FSM retains idle/alert/attack/death, but its `death` state is **no longer HP-reachable**. A modder `despawn` effect quiesces a brain entity by setting the per-entity **inert flag** the AI tick early-outs on (the substrate's effects task builds both) — steering hold, no attack, no animation re-request, so the modder's `playAnim` owns the death presentation — and enqueues removal on the deferred-effect component. It does NOT enter `LogicalState::Death` or use `BrainComponent.death_despawn_remaining_ms`; the FSM `death` state stays defined for future non-HP use. (c) Modder overlay states (stagger/downed) live in per-entity state, invisible to the FSM. (d) Coarse engagement disable for a downed/dead enemy reuses the existing aggro toggle, which resolves by **tag, not instance** (`updateEnemyState`) — v1 can disengage a downed *tag* but not a single downed instance; per-instance downed AI is deferred (Out of scope).
 - **Resurrect & kill re-arm.** The engine's resurrect recovery keys off `brain.state == Death`, not the `death_handled` latch; `death_handled` is set only by the death sweep and is never cleared today. Once 0-HP→Death is removed, the `brain.state` recovery no longer fires from HP restoration — so the load-bearing re-arm is `setHealth` resetting `death_handled`, which re-enables kill detection for a resurrected entity. "Preserve resurrect recovery" means preserve the `death_handled` re-arm, not the now-vestigial FSM-state recovery. Under the kill-report decoupling below, `setHealth` also discards the pending kill credit — a downed entity that stands back up was never killed, so nothing of the down survives to be reported.
@@ -75,7 +75,7 @@ See the fixtures, split by job: `arena-death.spike.ts` (the handle model — gru
 
 ```ts
 // Proposed design — the death policy is data over impact facts.
-const gruntImpactEvent = defineImpactEvent({ tag: "grunt" }, (impact) => [
+const gruntImpactEvent = defineImpactEvent("salvage:grunt-death", { tag: "grunt" }, (impact) => [
   // The KILL EDGE, not the level `healthAfter.le(0)` — else this group re-fires on every hit
   // while the corpse persists through its despawn window, double-counting `deaths` (see the
   // substrate's level-vs-edge decision).
@@ -85,6 +85,6 @@ const gruntImpactEvent = defineImpactEvent({ tag: "grunt" }, (impact) => [
       impact.target.despawn({ afterMs: 1500 }),            // engine does not auto-remove at 0 HP
   ]},
 ]);
-// A map refines the same handle in a different scope; merged by derived id, last-registered wins.
+// A map refines the same handle in a different scope; merged by string-equal author-assigned ID, last-registered wins.
 gruntImpactEvent.override({ tag: "arena_grunt" }, (impact) => [ /* reuse base + extra store write */ ]);
 ```

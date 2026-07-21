@@ -127,6 +127,19 @@ def join_meshes():
         print("ERROR: No mesh objects found after import")
         sys.exit(1)
 
+    has_geometry = [obj for obj in meshes if obj.data and len(obj.data.vertices) > 0]
+    empty = [obj for obj in meshes if obj not in has_geometry]
+    if empty:
+        print(f"  Removing {len(empty)} empty mesh object(s): "
+              f"{[o.name for o in empty]}")
+        for obj in empty:
+            bpy.data.objects.remove(obj, do_unlink=True)
+        meshes = has_geometry
+
+    if not meshes:
+        print("ERROR: No mesh objects with geometry found after import")
+        sys.exit(1)
+
     if len(meshes) == 1:
         print(f"  Single mesh object: {meshes[0].name}")
         return meshes[0]

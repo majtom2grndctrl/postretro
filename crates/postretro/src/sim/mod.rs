@@ -2816,7 +2816,7 @@ mod tests {
                 .unwrap();
             target
         };
-        let mut run_tick = |enqueue_effect: bool| {
+        let run_tick = |enqueue_effect: bool| {
             let world = CollisionWorld::new();
             let hit_zones = HitZoneStore::new();
             let mut progress = ProgressTracker::new();

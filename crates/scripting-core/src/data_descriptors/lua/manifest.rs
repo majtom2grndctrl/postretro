@@ -165,9 +165,11 @@ fn impact_policy_entry_from_lua(raw: LuaValue) -> Result<serde_json::Value, Desc
     })?;
     let len = validate_dense_lua_array(&effects, "impact policy group `do`")?;
     let mut json = conv::lua_to_json(raw).map_err(lua_err)?;
-    let json_object = json.as_object_mut().ok_or_else(|| DescriptorError::InvalidShape {
-        reason: "impact policy group must be an object".into(),
-    })?;
+    let json_object = json
+        .as_object_mut()
+        .ok_or_else(|| DescriptorError::InvalidShape {
+            reason: "impact policy group must be an object".into(),
+        })?;
     let mut lowered = Vec::with_capacity(len);
     for i in 1..=(len as i64) {
         let effect: LuaValue = effects.get(i).map_err(lua_err)?;

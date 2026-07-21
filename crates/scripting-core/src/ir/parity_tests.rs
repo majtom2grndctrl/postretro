@@ -829,8 +829,7 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
         "an empty gated group must stay an array in both SDKs"
     );
     assert_eq!(
-        typescript["independent"]["policy"][1]["primitive"],
-        "despawn",
+        typescript["independent"]["policy"][1]["primitive"], "despawn",
         "a valid sibling effect must survive an empty group"
     );
     assert_eq!(
@@ -865,7 +864,9 @@ fn impact_event_builder_id_diagnostics_match_across_runtimes() {
     let typescript = quickjs_fixture_value(TYPESCRIPT_FIXTURE);
     let luau = luau_fixture_value(LUAU_FIXTURE);
     assert_eq!(typescript, luau);
-    assert!(typescript["message"]
-        .as_str()
-        .is_some_and(|message| message.contains("namespaced ASCII string")));
+    assert!(
+        typescript["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("namespaced ASCII string"))
+    );
 }

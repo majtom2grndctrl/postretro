@@ -512,9 +512,7 @@ fn impact_policy_surface_uses_author_ids_and_closed_effect_union() {
     // structural brand. The author-facing vocabulary is the five builders.
     assert!(
         ts.contains("export interface Effect { readonly [effectBrand]: true; }")
-            && luau.contains(
-                "export type Effect = (ImpactEffectCapability) -> ImpactEffectWire"
-            )
+            && luau.contains("export type Effect = (ImpactEffectCapability) -> ImpactEffectWire")
             && !luau.contains("__impactEffectBrand"),
         "impact Effect must be an opaque SDK-lowered builder result"
     );

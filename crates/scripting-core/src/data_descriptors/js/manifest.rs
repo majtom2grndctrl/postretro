@@ -170,13 +170,17 @@ fn impact_policy_entry_from_js<'js>(
         return conv::js_to_json(ctx, raw).map_err(js_err);
     }
 
-    let effects: Array = object.get("do").map_err(|_| DescriptorError::InvalidShape {
-        reason: "impact policy group `do` must be an array".into(),
-    })?;
+    let effects: Array = object
+        .get("do")
+        .map_err(|_| DescriptorError::InvalidShape {
+            reason: "impact policy group `do` must be an array".into(),
+        })?;
     let mut json = conv::js_to_json(ctx, raw).map_err(js_err)?;
-    let json_object = json.as_object_mut().ok_or_else(|| DescriptorError::InvalidShape {
-        reason: "impact policy group must be an object".into(),
-    })?;
+    let json_object = json
+        .as_object_mut()
+        .ok_or_else(|| DescriptorError::InvalidShape {
+            reason: "impact policy group must be an object".into(),
+        })?;
     let mut lowered = Vec::with_capacity(effects.len());
     for i in 0..effects.len() {
         let effect: JsValue = effects.get(i).map_err(js_err)?;

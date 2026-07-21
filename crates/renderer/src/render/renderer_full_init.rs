@@ -193,13 +193,15 @@ pub(crate) fn build_full_renderer(
         surface_format,
     );
 
+    let scripted_light_capacity = full_lights.len() + RUNTIME_DYNAMIC_LIGHT_RESERVE;
     let sh_volume_resources = ShVolumeResources::new(
         device,
         queue,
         geometry.and_then(|g| g.sh_volume),
         geometry.and_then(|g| g.direct_sh_volume),
         geometry.and_then(|g| g.direct_sh_delta_volumes),
-        level_lights.len() + selected_static.lights.len(),
+        // Runtime-spawned lights append after the full-authored prefix.
+        scripted_light_capacity,
         probe_occlusion_enabled,
     );
 
@@ -538,6 +540,7 @@ pub(crate) fn build_full_renderer(
         uniform_bind_group,
         lighting_bind_group,
         influence_buffer,
+        dynamic_light_capacity: level_lights.len() + RUNTIME_DYNAMIC_LIGHT_RESERVE,
         light_count,
         total_light_count: light_count,
         mesh_dynamic_time: 0.0,
@@ -566,6 +569,7 @@ pub(crate) fn build_full_renderer(
         animated_lightmap,
         lights_buffer,
         last_lights_upload: Vec::new(),
+        last_influence_upload: Vec::new(),
         lights_pack_scratch: Vec::new(),
         influence_pack_scratch: Vec::new(),
         level_lights,

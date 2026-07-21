@@ -95,7 +95,7 @@ pub struct LightComponent {
     /// `MapLight.animated_slot`; never mutated by scripts. The light bridge
     /// keys on this to route `setLightAnimation` writes through the
     /// compose-side path instead of the legacy `is_dynamic`-gated forward
-    /// path.
+    /// path. World-query snapshots omit this internal routing field.
     #[serde(default)]
     pub animated_slot: Option<u32>,
     #[serde(default)]

@@ -41,4 +41,7 @@ swc_ecma_transforms_base = "42"
 swc_ecma_transforms_typescript = "46"
 swc_ecma_visit = "23"
 anyhow.workspace = true
+mlua.workspace = true
+postretro-level-format = { workspace = true, features = ["serde"] }
+rquickjs.workspace = true
 serde_json.workspace = true

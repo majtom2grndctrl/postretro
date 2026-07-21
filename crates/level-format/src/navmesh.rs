@@ -335,6 +335,14 @@ mod tests {
     }
 
     #[test]
+    fn navmesh_version_unchanged_by_erosion_bake_change() {
+        assert_eq!(
+            NAVMESH_VERSION, 1,
+            "erosion changes the bake, not the serialized navmesh layout"
+        );
+    }
+
+    #[test]
     fn stacked_regions_with_portal_round_trip() {
         let section = stacked_region_section();
         let bytes = section.to_bytes();

@@ -164,10 +164,16 @@ fn animated_light_scale(light_index: u32) -> vec3<f32> {
         sample_curve_catmull_rom(desc.brightness_offset, desc.brightness_count, t),
         0.0,
     );
-    let color = max(
-        sample_color_catmull_rom(desc.color_offset, desc.color_count, t, desc.base_color),
-        vec3<f32>(0.0),
-    );
+    var color = desc.base_color;
+    if (desc.color_count > 0u) {
+        // For color-animation descriptors base_color is intensity splatted
+        // across RGB. Delta tiles contain unit-radiance transport, so this is
+        // the single authored-radiance application.
+        color = max(
+            sample_color_catmull_rom(desc.color_offset, desc.color_count, t, vec3<f32>(1.0)),
+            vec3<f32>(0.0),
+        ) * desc.base_color;
+    }
     return color * brightness;
 }
 

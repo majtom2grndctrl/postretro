@@ -634,7 +634,7 @@ impl App {
                 .collect()
         };
 
-        let (level_lights, fgd_sample_float_count) = {
+        let (map_lights, map_light_influences, fgd_sample_float_count) = {
             let renderer = match self.renderer.as_mut() {
                 Some(r) => r,
                 None => {
@@ -687,7 +687,8 @@ impl App {
             }
 
             (
-                renderer.level_lights().to_vec(),
+                world.lights.clone(),
+                world.light_influences.clone(),
                 (renderer.scripted_sample_byte_offset() / 4) as u32,
             )
         };
@@ -705,7 +706,12 @@ impl App {
                 .as_mut()
                 .expect("session installed before level install")
                 .light_bridge
-                .populate_from_level(&level_lights, &mut registry, fgd_sample_float_count);
+                .populate_from_level_with_influences(
+                    &map_lights,
+                    &map_light_influences,
+                    &mut registry,
+                    fgd_sample_float_count,
+                );
         }
 
         // Segment B of the CPU world install: fog-volume entities, trigger-volume

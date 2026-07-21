@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use glam::Vec3;
 use parry3d::math::{Isometry, Point};
 use parry3d::shape::TriMesh;
-use postretro_level_format::navmesh::{NAVMESH_VERSION, NavMeshSection, NavRegion};
+use postretro_level_format::navmesh::{NAVMESH_VERSION, NavMeshSection, NavPortal, NavRegion};
 
 use super::*;
 use crate::agent_steering;
@@ -1963,6 +1963,48 @@ fn closed_enemy_with_no_destination_is_not_separation_nudged() {
     );
 }
 
+#[test]
+fn separation_excludes_the_chase_target_so_enemies_close_to_contact() {
+    // INV3: inter-agent separation keeps ENEMIES apart from each other only.
+    // The player pawn carries PlayerMovement — never an Agent component — so
+    // the steering separation pass (which scans agent snapshots) must not hold
+    // an enemy off its target. Drive a single enemy straight at a player
+    // closer than the separation comfort band (2.5 * radius = 0.875): if the
+    // player were in the separation set the enemy would be pushed AWAY;
+    // instead it must close monotonically into the arrival band.
+    let floor = OpenFloor::new();
+    let world = floor.collision_world();
+    let graph = floor.nav_graph();
+    let mut reg = EntityRegistry::new();
+
+    let player_pos = Vec3::new(20.0, chaser_rest_y(), 20.0);
+    spawn_player(&mut reg, player_pos);
+    let enemy = spawn_chaser(&mut reg, 20.7, 20.0); // inside the would-be comfort band
+    agent_steering::set_destination(&mut reg, enemy, player_pos);
+
+    let mut last = distance_xz(
+        agent_steering::path_state(&reg, enemy).unwrap().position,
+        player_pos,
+    );
+    for tick_index in 0..120 {
+        agent_steering::tick(&mut reg, &world, Some(&graph), STEER_GRAVITY, STEER_DT);
+        let state = agent_steering::path_state(&reg, enemy).unwrap();
+        let dist = distance_xz(state.position, player_pos);
+        assert!(
+            dist <= last + 1.0e-4,
+            "enemy was pushed away from its chase target on tick {tick_index}: {last} -> {dist}"
+        );
+        last = dist;
+        if state.arrived {
+            break;
+        }
+    }
+    assert!(
+        last <= 0.6,
+        "enemy must close into the arrival band of its target, ended at {last}"
+    );
+}
+
 fn small_nav_graph(regions: Vec<NavRegion>) -> NavGraph {
     NavGraph::from_section(&NavMeshSection {
         version: NAVMESH_VERSION,
@@ -2870,5 +2912,218 @@ fn attack_entry_tick_does_not_double_restart_the_clip() {
     assert_eq!(
         anim.previous_state, None,
         "the entry tick switches once; the restart path is guarded off",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// End-to-end pursuit around a corner: the live-play freeze regression.
+//
+// Observed in play: an enemy chasing the player froze mid-pursuit with
+// `state:alert speed:0.00 arrived:false blocked:true has_path:false` after the
+// player rounded a corner (and again when the player moved farther away while
+// still inside leash). Root cause: navmesh erosion leaves a wall-margin band
+// that capsules legitimately occupy (an agent pushed wall-ward by full-speed
+// corner rounding; a player hugging a corner to peek), and `find_path` returned
+// `None` for any endpoint in that band — the steering tick then latched
+// `blocked`, wiped the path, and held position forever. This test drives the
+// REAL loop (FSM tick + steering tick, combat slots active) on a corner arena
+// whose navmesh carries the eroded margin, with the enemy STARTING inside the
+// band and the player peeking back into it, and asserts the pursuit lifecycle
+// end to end.
+// ---------------------------------------------------------------------------
+
+/// Corner arena: a 12x12 floor with a solid box in the +X/-Z corner
+/// (x in [5,12], z in [0,5]), so pursuit from the south-west must round the
+/// box's corner. The navmesh (cell 0.5) leaves a half-unit ERODED MARGIN along
+/// the two exposed box faces — exactly what the capsule-radius erosion bake
+/// produces — so positions hugging those walls are off every region.
+struct CornerArena;
+
+impl CornerArena {
+    const EXTENT: f32 = 12.0;
+    const WALL_X: f32 = 5.0; // box -X face (z in [0, 5])
+    const WALL_Z: f32 = 5.0; // box +Z face (x in [5, 12])
+    const HEIGHT: f32 = 3.0;
+
+    fn collision_world() -> CollisionWorld {
+        let mut points: Vec<Point<f32>> = vec![
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(Self::EXTENT, 0.0, 0.0),
+            Point::new(Self::EXTENT, 0.0, Self::EXTENT),
+            Point::new(0.0, 0.0, Self::EXTENT),
+        ];
+        let mut tris: Vec<[u32; 3]> = vec![[0, 1, 2], [0, 2, 3]];
+
+        let mut push_wall = |x0: f32, z0: f32, x1: f32, z1: f32| {
+            let base = points.len() as u32;
+            points.push(Point::new(x0, 0.0, z0));
+            points.push(Point::new(x1, 0.0, z1));
+            points.push(Point::new(x1, Self::HEIGHT, z1));
+            points.push(Point::new(x0, Self::HEIGHT, z0));
+            tris.push([base, base + 1, base + 2]);
+            tris.push([base, base + 2, base + 3]);
+            tris.push([base, base + 2, base + 1]);
+            tris.push([base, base + 3, base + 2]);
+        };
+        push_wall(Self::WALL_X, 0.0, Self::WALL_X, Self::WALL_Z); // box -X face
+        push_wall(Self::WALL_X, Self::WALL_Z, Self::EXTENT, Self::WALL_Z); // box +Z face
+
+        CollisionWorld {
+            mesh: TriMesh::new(points, tris),
+            isometry: Isometry::identity(),
+        }
+    }
+
+    /// Regions stop half a unit short of the box faces (cell 0.5):
+    ///   region 0 (west lane):  x [0, 4.5],  z [0, 5.5]
+    ///   region 1 (north half): x [0, 12],   z [5.5, 12]
+    /// joined along z = 5.5, x [0, 4.5].
+    fn nav_graph() -> NavGraph {
+        NavGraph::from_section(&NavMeshSection {
+            version: NAVMESH_VERSION,
+            origin: [0.0, 0.0, 0.0],
+            cell_size: 0.5,
+            dim_x: 24,
+            dim_z: 24,
+            agent_radius: 0.35,
+            agent_height: 1.8,
+            step_height: 0.4,
+            max_slope_deg: 45.0,
+            regions: vec![
+                NavRegion {
+                    x0: 0,
+                    z0: 0,
+                    x1: 9,
+                    z1: 11,
+                    floor_y_min: 0.0,
+                    floor_y_max: 0.25,
+                },
+                NavRegion {
+                    x0: 0,
+                    z0: 11,
+                    x1: 24,
+                    z1: 24,
+                    floor_y_min: 0.0,
+                    floor_y_max: 0.25,
+                },
+            ],
+            portals: vec![NavPortal {
+                region_a: 0,
+                region_b: 1,
+                left: [0.0, 0.0, 5.5],
+                right: [4.5, 0.0, 5.5],
+            }],
+        })
+    }
+}
+
+#[test]
+fn e2e_pursuit_around_corner_never_freezes_and_closes_on_the_target() {
+    let world = CornerArena::collision_world();
+    let graph = CornerArena::nav_graph();
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+
+    let ry = chaser_rest_y();
+    // The player: acquired in the open, rounds the corner through the west
+    // lane, then peeks back around it — coming to rest HUGGING the box's +Z
+    // face, inside the eroded margin (off every region) yet physically on
+    // walkable floor, farther from the enemy's start but well inside leash.
+    let player_waypoints = [
+        Vec3::new(1.0, ry, 1.0),
+        Vec3::new(1.5, ry, 6.5),
+        Vec3::new(7.5, ry, 5.3),
+    ];
+    let player = spawn_player(&mut reg, player_waypoints[0]);
+    set_hp(&mut reg, player, 1.0e6); // swings may land; the target must stay live
+
+    // The enemy starts INSIDE the eroded margin beside the box's -X face —
+    // exactly where full-speed corner rounding / collide-and-slide leaves a
+    // pursuing capsule — in Idle, so acquisition is exercised too.
+    let enemy_start = Vec3::new(4.6, ry, 2.0);
+    let enemy = spawn_enemy(
+        &mut reg,
+        enemy_start,
+        brain_with(tuning(), LogicalState::Idle),
+        50.0,
+    );
+
+    // Fixture preconditions: both freeze-inducing positions sit OFF every
+    // region (in the eroded band) — the exact inputs that latched the
+    // permanent blocked state pre-fix.
+    assert_eq!(graph.region_at(enemy_start), None);
+    assert_eq!(graph.region_at(player_waypoints[2]), None);
+
+    let player_speed = 2.0_f32;
+    let player_at = |elapsed: f32| -> Vec3 {
+        let mut budget = elapsed * player_speed;
+        for seg in player_waypoints.windows(2) {
+            let len = distance_xz(seg[0], seg[1]);
+            if budget <= len || len <= 1e-6 {
+                let t = if len <= 1e-6 { 0.0 } else { budget / len };
+                return seg[0].lerp(seg[1], t);
+            }
+            budget -= len;
+        }
+        *player_waypoints.last().unwrap()
+    };
+
+    let attack_range = tuning().attack_range;
+    let leash_range = tuning().leash_range;
+    let mut acquired = false;
+    let mut planned = false;
+    let mut min_distance = f32::INFINITY;
+
+    for tick_index in 0..1200 {
+        let p = player_at(tick_index as f32 * STEER_DT);
+        move_player_to(&mut reg, player, p.x, p.z);
+
+        // The REAL per-tick loop: FSM (with combat-slot selector inputs, as the
+        // sim runs it) then steering.
+        run_ai_tick_with_navigation(&mut reg, &mut warned, STEER_DT, Some(&graph), Some(&world));
+        agent_steering::tick(&mut reg, &world, Some(&graph), STEER_GRAVITY, STEER_DT);
+
+        let state = agent_steering::path_state(&reg, enemy).unwrap();
+        let brain_state = enemy_state(&reg, enemy);
+        let dist = distance_xz(state.position, p);
+        min_distance = min_distance.min(dist);
+        assert!(
+            dist <= leash_range,
+            "fixture must keep the target inside leash (tick {tick_index}, dist {dist})"
+        );
+
+        if brain_state != LogicalState::Idle {
+            acquired = true;
+        }
+        if acquired {
+            // INV6: within leash, a live target never de-aggros.
+            assert_ne!(
+                brain_state,
+                LogicalState::Idle,
+                "enemy dropped aggro inside leash on tick {tick_index}"
+            );
+            // INV1: the frozen state — blocked, no path, not moving — is not a
+            // legal resting state on ANY tick while the target is live and
+            // inside leash. This is the exact HUD signature from live play.
+            let speed_xz =
+                (state.velocity.x * state.velocity.x + state.velocity.z * state.velocity.z).sqrt();
+            let frozen = state.blocked && !state.has_path && speed_xz < 1.0e-3;
+            assert!(
+                !frozen,
+                "enemy froze (blocked, no path, speed 0) on tick {tick_index}: pos={:?}, target={p:?}",
+                state.position,
+            );
+        }
+        if state.has_path {
+            planned = true;
+        }
+    }
+
+    assert!(acquired, "enemy must acquire the target (Idle -> Alert)");
+    assert!(planned, "enemy must plan a route during the pursuit");
+    assert!(
+        min_distance <= attack_range + 0.75,
+        "enemy never closed toward attack range around the corner: \
+         closest approach {min_distance:.3} (attack range {attack_range})"
     );
 }

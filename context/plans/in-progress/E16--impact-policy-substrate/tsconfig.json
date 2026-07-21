@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "ignoreDeprecations": "6.0",
+    "isolatedModules": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "target": "ES2022",
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "postretro": ["../../../../sdk/types/postretro.d.ts"],
+      "postretro/ui": ["../../../../sdk/types/postretro.d.ts"],
+      "postretro/proposed": ["./proposed.d.ts"]
+    }
+  },
+  "include": ["*.ts", "*.d.ts"]
+}

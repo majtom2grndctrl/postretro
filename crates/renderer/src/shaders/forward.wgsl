@@ -188,8 +188,8 @@ struct AnimationDescriptor {
 @group(3) @binding(11) var<storage, read> anim_descriptors: array<AnimationDescriptor>;
 @group(3) @binding(12) var<storage, read> anim_samples: array<f32>;
 
-// One AnimationDescriptor per map light, indexed by the forward light-loop
-// counter `i`. `is_active == 0` → static GpuLight.color used unchanged.
+// One AnimationDescriptor per dynamic-direct light, indexed by the forward
+// light-loop counter `i`. `is_active == 0` → static GpuLight.color used unchanged.
 // Uploaded by `LightBridge::update → Renderer::upload_bridge_descriptors`.
 @group(3) @binding(13) var<storage, read> scripted_light_descriptors: array<AnimationDescriptor>;
 @group(3) @binding(14) var sh_depth_moments: texture_3d<f32>;

@@ -426,6 +426,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     // share the origin/classname extraction but do not participate in BSP
     // construction.
     let mut lights: Vec<MapLight> = Vec::new();
+    let mut light_start_active_defaults = Vec::new();
     // Generic map entities for runtime classname dispatch — non-light point
     // entities only. Brush entities (those with brushes attached) are resolved
     // separately by their dedicated subsystems (e.g. `fog_volume`).
@@ -591,7 +592,16 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
                 )
             })?;
             match quake_map::translate_light(&props, light_origin, &classname) {
-                Ok(light) => lights.push(light),
+                Ok(light) => {
+                    light_start_active_defaults.push(
+                        quake_map::authored_light_start_active(&props).map_err(|error| {
+                            anyhow::anyhow!(
+                                "failed to translate {classname} at {light_origin:?}: {error}"
+                            )
+                        })?,
+                    );
+                    lights.push(light);
+                }
                 Err(e) => {
                     return Err(anyhow::anyhow!(
                         "failed to translate {classname} at {light_origin:?}: {e}"
@@ -777,6 +787,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         entity_brushes: entity_brushes_summary,
         entities,
         lights,
+        light_start_active_defaults,
         data_script,
         map_entities,
         kinematic_movers,

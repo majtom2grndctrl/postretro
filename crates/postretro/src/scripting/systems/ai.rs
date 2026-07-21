@@ -755,11 +755,14 @@ pub(crate) fn run_ai_tick_with_navigation(
                     // Diagnostic read of the steering surface: a chasing enemy
                     // whose agent cannot route to its selected destination (a
                     // combat slot, or the raw target fallback when no slot was
-                    // assigned) is `blocked`. Surface it once per enemy via the
-                    // warn latch so a mis-placed spawn (off the navmesh, or
-                    // behind a wall with no portal) is visible without per-tick
-                    // spam. The steering tick still holds the agent in place;
-                    // this only reports.
+                    // assigned) AND holds no previous path to keep following is
+                    // `blocked`. Surface it once per enemy via the warn latch
+                    // so a genuinely unroutable target (a disconnected region,
+                    // or a spawn far off the navmesh — near-wall positions are
+                    // snap-resolved by pathfinding and never latch this) is
+                    // visible without per-tick spam. The steering tick holds a
+                    // pathless blocked agent in place and keeps retrying under
+                    // its replan cooldown; this only reports.
                     if let Some(state) = path_state.as_ref() {
                         if state.blocked {
                             let key = format!("blocked:{}", outcome.id.to_raw());

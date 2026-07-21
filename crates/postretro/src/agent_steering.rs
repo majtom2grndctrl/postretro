@@ -2,10 +2,11 @@
 // steer along the current path with lookahead, separate from crowding neighbors,
 // and move each agent through the world via the collide-and-slide harness.
 //
-// This is the production caller for `nav::find_path` and the agent component. It
-// owns the replan policy (per-tick budget + per-agent staleness gate), the
-// waypoint-following loop, and the O(n²) separation pass; the actual capsule
-// sweep lives in `agent::collide_and_slide`.
+// This is the primary production caller for `nav::find_path` and the agent
+// component — `combat_positioning` also queries `find_path` when scoring
+// candidate positions. It owns the replan policy (per-tick budget + per-agent
+// staleness gate), the waypoint-following loop, and the O(n²) separation pass;
+// the actual capsule sweep lives in `agent::collide_and_slide`.
 //
 // See: context/lib/build_pipeline.md §Navigation bake (pathfinding query surface)
 //      context/lib/entity_model.md §7 (collision), §5 (fixed-tick game logic)
@@ -45,6 +46,43 @@ const ARRIVAL_RADIUS_FACTOR: f32 = 1.5;
 /// deliberately larger than the hard-stop radius (`ARRIVAL_RADIUS_FACTOR`) so
 /// easing happens before `arrived` zeroes the final low-speed tail.
 const ARRIVAL_SLOWDOWN_RADIUS_FACTOR: f32 = 7.0;
+
+/// Tight collision-scale acceptance band for a mandatory clearance vertex: two
+/// skins, one for the collision-tangent target and one for the fixed-tick landing
+/// slop. Landing THIS band means the agent is essentially on the vertex, and on
+/// that tick [`goal_speed`] zeroes `steer_velocity` to re-establish the outgoing
+/// safe chord (heading restart) before rounding the corner.
+///
+/// It is NOT the only way to advance past a mandatory vertex, though: a chasing
+/// agent on a live heading rarely lands a sub-skin band exactly, so requiring it
+/// would let the agent creep toward an unreachable point forever (a permanent
+/// silent stall). The cursor also advances once the agent has PASSED the vertex
+/// plane toward the next waypoint while inside the ordinary arrival band — it has
+/// rounded the corner — see [`mandatory_waypoint_cleared`]. The clearance intent
+/// is preserved (the plane runs through the vertex, so the agent cannot cut back
+/// inside the corner disk) without making progress hostage to sub-skin precision.
+///
+/// Intermediate mandatory vertices are traversed at full `move_speed` (no arrival
+/// throttle — they are corners to round, not points to settle onto). But near the
+/// vertex the goal-projected forward progress can still legitimately be small for
+/// a tick or two: the heading-restart zeroing above resets the speed to re-accel
+/// from zero, and a hard full-speed turn advances mostly sideways. So while an
+/// agent is inside a mandatory vertex's arrival band the stuck detector measures
+/// progress against a much smaller easing floor rather than accumulating against
+/// the absolute floor (see [`update_stuck_ticks`]) — bounded suppression: a
+/// genuine no-progress wedge at the vertex still escalates to tangent recovery.
+const MANDATORY_WAYPOINT_ARRIVAL_RADIUS: f32 = 2.0 * crate::collision::SKIN_DISTANCE;
+
+/// Goal-projected progress floor used while an agent is inside a mandatory
+/// clearance vertex's arrival band. Rounding a mandatory vertex at full speed can
+/// briefly show tiny forward progress — the heading-restart zeroing re-accelerates
+/// from zero, and a hard turn advances mostly sideways — so measuring against the
+/// absolute `STUCK_PROGRESS_EPSILON` floor would false-trip stuck recovery on a
+/// legitimate corner turn. This far smaller floor still distinguishes a legitimate
+/// turn — which always makes some positive progress — from a genuine WEDGE that
+/// consumes all motion (progress ~= 0), so the suppression is bounded and a real
+/// wedge escalates to recovery.
+const MANDATORY_EASING_PROGRESS_EPSILON: f32 = STUCK_PROGRESS_EPSILON * 0.05;
 
 /// Path-following acceleration/deceleration as "top-speed changes per second".
 /// A value above 1 spans multiple fixed ticks while still letting agents brake
@@ -139,6 +177,14 @@ pub(crate) struct AgentTickResult {
 /// plan (it is waiting for a replan-budget slot) — not stuck, and not a chaser
 /// mid-pursuit (which retains its path). A genuinely unroutable agent reads
 /// `blocked`; an idle one reads `!has_destination`.
+///
+/// `blocked` implies `!has_path` by construction: a FAILED path refresh keeps
+/// the previous route (stale-but-moving) rather than wiping it, so `blocked`
+/// only latches when the agent holds no path at all — its destination is
+/// genuinely unroutable from where it stands (endpoints are snap-resolved by
+/// `find_path`, so the eroded wall margin never causes this). The blocked
+/// state is transient by design: retries ride the replan cooldown plus the
+/// drift/topology/direct-routable admission clauses.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct AgentPathState {
     /// The agent currently has a destination set (`Some`).
@@ -147,7 +193,9 @@ pub(crate) struct AgentPathState {
     pub(crate) has_path: bool,
     /// The agent reached its destination (within the arrival radius).
     pub(crate) arrived: bool,
-    /// The agent has a destination but pathfinding found no route to it.
+    /// The agent has a destination but pathfinding found no route to it AND it
+    /// holds no path to keep following (see the struct doc: a failed refresh
+    /// keeps the previous route, so `blocked` implies `!has_path`).
     pub(crate) blocked: bool,
     /// XZ distance from the agent's current position to its destination.
     /// `0.0` when there is no destination.
@@ -206,6 +254,7 @@ pub(crate) fn clear_destination(registry: &mut EntityRegistry, agent: EntityId) 
     updated.destination = None;
     updated.planned_destination = None;
     updated.path.clear();
+    updated.mandatory_waypoints.clear();
     updated.waypoint_cursor = 0;
     updated.steer_velocity = Vec3::ZERO;
     updated.stuck_ticks = 0;
@@ -357,9 +406,6 @@ pub(crate) fn tick(
         // admission pass above (drift-driven before staleness-only, capped at the
         // budget) — the ONLY place the path is (re)built. An agent that WANTED a
         // replan but lost the prioritized race is simply not in `admitted`.
-        let forced_replan_during_recovery =
-            agent.unstick_window_remaining > 0 && agent.planned_destination.is_none();
-        let mut failed_forced_replan_during_recovery = false;
         if admitted.contains(&current.id) {
             // Admitted: rebuild the path now.
             replans += 1;
@@ -367,29 +413,26 @@ pub(crate) fn tick(
             agent.planned_destination = Some(destination);
             match nav_graph.and_then(|graph| find_path(graph, position, destination)) {
                 Some(path) => {
-                    agent.path = path;
+                    (agent.path, agent.mandatory_waypoints) = path.into_parts();
                     agent.waypoint_cursor = 0;
                     agent.arrived = false;
                     agent.blocked = false;
                 }
                 None => {
-                    // No route: a genuine no-route stop (distinct from a budget
-                    // loss). Drop the path and hold position; do NOT walk toward
-                    // the raw destination. The cooldown (set above) keeps this
-                    // from re-qualifying every tick.
-                    agent.path.clear();
-                    agent.waypoint_cursor = 0;
-                    agent.blocked = true;
-                    if forced_replan_during_recovery {
-                        // A recovery-forced replan can transiently fail while
-                        // the capsule is wedged or just off the navmesh. Keep
-                        // the forced-replan latch open for the bounded recovery
-                        // window so later ticks still retry through the normal
-                        // budget instead of converting the wedge to a held
-                        // blocked state immediately.
-                        agent.planned_destination = None;
-                        failed_forced_replan_during_recovery = true;
-                    }
+                    // No route from the current position. `find_path` already
+                    // snaps eroded-band endpoints onto the graph, so this is a
+                    // GENUINE no-route (a disconnected or far-off-mesh
+                    // destination — or a map with no navmesh at all), never a
+                    // mere near-wall wobble. Path failure must stay TRANSIENT:
+                    // any existing path is KEPT — the agent follows its last
+                    // good route (stale-but-moving) instead of freezing — and
+                    // the cooldown (set above) gates the next retry, with the
+                    // drift / topology / direct-routable admission clauses able
+                    // to retry sooner. `blocked` reports the no-route state
+                    // only when there is nothing left to follow; a pathless
+                    // blocked agent holds position rather than marching into
+                    // geometry toward the raw destination.
+                    agent.blocked = agent.path.is_empty();
                 }
             }
         }
@@ -404,6 +447,13 @@ pub(crate) fn tick(
         let arrival_radius = ARRIVAL_RADIUS_FACTOR * agent.radius;
         let slowdown_radius = ARRIVAL_SLOWDOWN_RADIUS_FACTOR * agent.radius;
         let goal_speed = goal_speed(&mut agent, position, arrival_radius, slowdown_radius);
+        // Is the agent inside a mandatory clearance vertex's arrival band this
+        // tick? It rounds the vertex at full `move_speed`, but the heading-restart
+        // zeroing and hard-turn geometry can make the goal-projected step briefly
+        // small there — legitimate cornering rather than a wedge — so the stuck
+        // detector must not accumulate against it (see below).
+        let easing_onto_mandatory =
+            easing_onto_mandatory_waypoint(&agent, position, arrival_radius);
         let steer_velocity = integrated_steer_velocity(
             &agent,
             position,
@@ -413,32 +463,39 @@ pub(crate) fn tick(
             LOOKAHEAD_DISTANCE_RADIUS_FACTOR * agent.radius,
             dt,
         );
-        let preserve_forced_replan_recovery = forced_replan_during_recovery
-            && agent.unstick_window_remaining > 0
-            && (failed_forced_replan_during_recovery || agent.path.is_empty() || agent.blocked);
         agent.steer_velocity = steer_velocity;
         let mut desired = steer_velocity;
 
         let has_recovery_intent = has_stuck_recovery_intent(&agent, goal_speed, steer_velocity);
         if has_recovery_intent {
             if agent.unstick_window_remaining == 0 && agent.stuck_ticks >= STUCK_TICKS_THRESHOLD {
+                // Fire recovery: clear the plan latch so the next tick's
+                // admission pass treats this agent as drift-driven (a forced,
+                // budgeted replan from the wedged position), and open the
+                // bounded tangent-bias window. A replan that FAILS during the
+                // window keeps the existing path (see the replan block), so
+                // the window keeps running on live steering intent — no
+                // separate latch is needed to survive a failed forced replan.
                 agent.planned_destination = None;
                 agent.unstick_window_remaining = UNSTICK_WINDOW;
                 agent.stuck_ticks = 0;
             }
-        } else if !preserve_forced_replan_recovery {
+        } else {
+            // No live movement intent (idle tail, arrival, or a pathless
+            // blocked agent): there is nothing for recovery to bias, so the
+            // detector and any stale window reset. Blocked retries ride the
+            // replan cooldown, not the recovery window.
             agent.stuck_ticks = 0;
             agent.unstick_window_remaining = 0;
         }
         let recovery_active_this_tick = agent.unstick_window_remaining > 0;
+        // Safe to bias with `steer_velocity` unchecked: the sibling `else`
+        // above zeroes the window the instant intent is lost, so a nonzero
+        // window here means intent was live this tick, i.e. `steer_velocity`
+        // is provably nonzero.
         if recovery_active_this_tick {
-            if has_recovery_intent {
-                desired += recovery_tangent_bias(steer_velocity, agent.move_speed);
-            }
+            desired += recovery_tangent_bias(steer_velocity, agent.move_speed);
             agent.unstick_window_remaining = agent.unstick_window_remaining.saturating_sub(1);
-            if failed_forced_replan_during_recovery && agent.unstick_window_remaining == 0 {
-                agent.planned_destination = Some(destination);
-            }
         }
 
         // Separation: sum pushes from every other agent whose capsule overlaps
@@ -479,6 +536,7 @@ pub(crate) fn tick(
             steer_velocity,
             goal_speed,
             recovery_active_this_tick,
+            easing_onto_mandatory,
         );
 
         // Write back the resolved position and the updated agent state.
@@ -572,7 +630,13 @@ fn destination_topology_changed(
         return false;
     };
 
-    match (graph.region_at(planned), graph.region_at(destination)) {
+    // Resolve through the snapping resolver — the same definition `find_path`
+    // routes with — so a target skirting in and out of the eroded wall margin
+    // does not flap between "routable" and "off-mesh" and force a replan storm.
+    match (
+        graph.resolve_region_at(planned),
+        graph.resolve_region_at(destination),
+    ) {
         (Some(planned_region), Some(destination_region)) => planned_region != destination_region,
         (Some(_), None) | (None, Some(_)) => true,
         (None, None) => false,
@@ -585,6 +649,8 @@ fn blocked_destination_now_directly_routable(
     position: Vec3,
     destination: Vec3,
 ) -> bool {
+    // `!agent.path.is_empty()` is now unreachable under the `blocked ⇒
+    // !has_path` invariant when `agent.blocked` holds; kept as defense-in-depth.
     if !agent.blocked || !agent.path.is_empty() {
         return false;
     }
@@ -593,7 +659,10 @@ fn blocked_destination_now_directly_routable(
         return false;
     };
 
-    match (graph.region_at(position), graph.region_at(destination)) {
+    match (
+        graph.resolve_region_at(position),
+        graph.resolve_region_at(destination),
+    ) {
         (Some(position_region), Some(destination_region)) => position_region == destination_region,
         _ => false,
     }
@@ -613,14 +682,44 @@ fn goal_speed(
         return 0.0;
     }
 
-    // Advance the cursor past every waypoint already within the arrival radius,
-    // so an agent that overshoots several close waypoints in one tick does not
-    // backtrack. Stops at the last waypoint.
-    while agent.waypoint_cursor < agent.path.len() {
+    // Advance the cursor past every waypoint already reached, so an agent that
+    // overshoots several close waypoints in one tick does not backtrack. Stops at
+    // the last waypoint. A plain waypoint counts as reached inside the ordinary
+    // arrival radius; a mandatory clearance vertex counts as reached once the
+    // agent has effectively CLEARED it — see [`mandatory_waypoint_cleared`] — so a
+    // live chase heading is not held hostage to landing the sub-skin band exactly.
+    while agent.waypoint_cursor + 1 < agent.path.len() {
         let target = agent.path[agent.waypoint_cursor];
-        if distance_xz(position, target) <= arrival_radius
-            && agent.waypoint_cursor + 1 < agent.path.len()
-        {
+        let mandatory = agent
+            .mandatory_waypoints
+            .get(agent.waypoint_cursor)
+            .copied()
+            .unwrap_or(false);
+        let reached = if mandatory {
+            mandatory_waypoint_cleared(
+                position,
+                target,
+                agent.path[agent.waypoint_cursor + 1],
+                arrival_radius,
+            )
+        } else {
+            distance_xz(position, target) <= arrival_radius
+        };
+        if reached {
+            if mandatory && distance_xz(position, target) <= MANDATORY_WAYPOINT_ARRIVAL_RADIUS {
+                // Advancing AT the vertex (tight band): a mandatory waypoint is a
+                // hard clearance vertex, not just a position target. Carrying the
+                // incoming smoothed heading into its next leg rounds the corner
+                // back through the endpoint clearance disk. Restart steering so the
+                // outgoing safe chord establishes its own heading on this tick.
+                //
+                // Advancing via the plane-pass clause instead means the agent is
+                // already PAST the vertex moving toward the next waypoint, so its
+                // heading is already outgoing — keep it. Zeroing there would also
+                // erase the momentum the tangent-recovery bias rides on when a
+                // recovery replan lands a fresh funnel path mid-window.
+                agent.steer_velocity = Vec3::ZERO;
+            }
             agent.waypoint_cursor += 1;
         } else {
             break;
@@ -630,6 +729,18 @@ fn goal_speed(
     let target = agent.path[agent.waypoint_cursor.min(agent.path.len() - 1)];
     let is_final = agent.waypoint_cursor + 1 >= agent.path.len();
     let final_distance = distance_xz(position, target);
+    // Intermediate mandatory clearance vertices are traversed at full
+    // `move_speed`: they are corner-offset waypoints a chasing agent must round,
+    // not points it must settle onto. The cursor advances via
+    // [`mandatory_waypoint_cleared`] as soon as the agent is within the ordinary
+    // arrival band AND has passed the vertex plane toward the next leg, so
+    // landing the tight sub-skin band exactly is not required and there is
+    // nothing to "ease onto" — an intermediate throttle only makes the agent
+    // crawl the corner. Arrival deceleration below is reserved for the FINAL
+    // destination. `mandatory && !is_final` therefore falls through to full
+    // speed. (The stuck-suppression gate in `update_stuck_ticks` still treats
+    // this window defensively: a fast turn can show legitimately small forward
+    // progress while the heading swings, so suppression there stays correct.)
     if is_final {
         if final_distance <= arrival_radius {
             agent.arrived = true;
@@ -697,7 +808,7 @@ fn target_point(agent: &AgentComponent, position: Vec3, lookahead_distance: f32)
 
     let mut remaining = lookahead_distance;
     let mut from = Vec3::new(position.x, 0.0, position.z);
-    for waypoint in &agent.path[cursor..] {
+    for (offset, waypoint) in agent.path[cursor..].iter().enumerate() {
         let to = Vec3::new(waypoint.x, 0.0, waypoint.z);
         let segment = to - from;
         let len = segment.length();
@@ -708,6 +819,14 @@ fn target_point(agent: &AgentComponent, position: Vec3, lookahead_distance: f32)
         if remaining <= len {
             let point = from + segment * (remaining / len);
             return Some(Vec3::new(point.x, waypoint.y, point.z));
+        }
+        if agent
+            .mandatory_waypoints
+            .get(cursor + offset)
+            .copied()
+            .unwrap_or(false)
+        {
+            return Some(*waypoint);
         }
         remaining -= len;
         from = to;
@@ -768,6 +887,64 @@ fn recovery_tangent_bias(steer_velocity: Vec3, move_speed: f32) -> Vec3 {
     }
 }
 
+/// True when the agent has effectively cleared a mandatory, non-final clearance
+/// vertex and the cursor may advance past it. Either:
+///   - it is within the tight collision-scale band (`MANDATORY_WAYPOINT_ARRIVAL_RADIUS`),
+///     essentially on the vertex; OR
+///   - it is within the ordinary arrival band of the vertex AND has passed the
+///     vertex plane toward the next waypoint (`(position - vertex) · (next - vertex) >= 0`).
+///
+/// The second clause lets a chasing agent round the corner smoothly without
+/// landing the sub-skin band exactly, while the plane running through the vertex
+/// keeps it from cutting back inside the corner clearance disk. A degenerate
+/// outgoing leg (next == vertex in XZ) falls back to the tight band alone.
+fn mandatory_waypoint_cleared(
+    position: Vec3,
+    vertex: Vec3,
+    next: Vec3,
+    arrival_radius: f32,
+) -> bool {
+    let to_vertex = distance_xz(position, vertex);
+    if to_vertex <= MANDATORY_WAYPOINT_ARRIVAL_RADIUS {
+        return true;
+    }
+    if to_vertex > arrival_radius {
+        return false;
+    }
+    let outgoing = Vec3::new(next.x - vertex.x, 0.0, next.z - vertex.z);
+    if outgoing.length_squared() <= MIN_XZ_LEN_SQ {
+        return false;
+    }
+    let past = Vec3::new(position.x - vertex.x, 0.0, position.z - vertex.z);
+    past.dot(outgoing) >= 0.0
+}
+
+/// True when the agent's current path target is a mandatory clearance vertex it
+/// is inside the arrival band of: mandatory, non-final, and within the ordinary
+/// arrival band (`arrival_radius`). Intermediate mandatory vertices are traversed
+/// at full `move_speed`, but this window still sees legitimately-small forward
+/// progress on a tick or two — the tight-band heading restart in [`goal_speed`]
+/// zeroes and re-accelerates the speed, and a hard full-speed corner turn
+/// advances mostly sideways — so [`update_stuck_ticks`] uses it to select the
+/// smaller easing progress floor there instead of the absolute floor.
+fn easing_onto_mandatory_waypoint(
+    agent: &AgentComponent,
+    position: Vec3,
+    arrival_radius: f32,
+) -> bool {
+    if agent.path.is_empty() {
+        return false;
+    }
+    let cursor = agent.waypoint_cursor.min(agent.path.len() - 1);
+    let is_final = agent.waypoint_cursor + 1 >= agent.path.len();
+    let mandatory = agent
+        .mandatory_waypoints
+        .get(cursor)
+        .copied()
+        .unwrap_or(false);
+    mandatory && !is_final && distance_xz(position, agent.path[cursor]) < arrival_radius
+}
+
 fn update_stuck_ticks(
     agent: &mut AgentComponent,
     start_position: Vec3,
@@ -775,6 +952,7 @@ fn update_stuck_ticks(
     steer_velocity: Vec3,
     goal_speed: f32,
     recovery_active_this_tick: bool,
+    easing_onto_mandatory: bool,
 ) {
     if recovery_active_this_tick {
         return;
@@ -791,7 +969,19 @@ fn update_stuck_ticks(
         resolved_position.z - start_position.z,
     );
     let progress = displacement.dot(goal_dir);
-    if progress < STUCK_PROGRESS_EPSILON {
+    // Inside a mandatory clearance vertex's arrival band the agent runs at full
+    // move_speed, but goal-projected forward progress can briefly be tiny yet
+    // positive — the tight-band heading restart re-accelerates from zero and a
+    // hard corner turn advances mostly sideways. Measure it against the much
+    // smaller easing floor instead of the absolute floor: bounded suppression that
+    // never trips on a real corner turn yet still accumulates — and eventually
+    // escalates to tangent recovery — against a genuine no-progress wedge.
+    let floor = if easing_onto_mandatory {
+        MANDATORY_EASING_PROGRESS_EPSILON
+    } else {
+        STUCK_PROGRESS_EPSILON
+    };
+    if progress < floor {
         agent.stuck_ticks = agent.stuck_ticks.saturating_add(1);
     } else {
         agent.stuck_ticks = 0;

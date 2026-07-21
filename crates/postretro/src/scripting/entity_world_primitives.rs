@@ -860,7 +860,18 @@ mod tests {
     fn world_query_handle_component_exposes_camel_case_keys() {
         // Regression: if `LightComponent`'s serde shape ever reverts to snake_case,
         // scripts silently see `undefined`/`nil` for `lightType`, `falloffModel`, etc.
-        let (ctx, _id) = test_ctx_with_light(true, Some("alpha"));
+        let (ctx, id) = test_ctx_with_light(true, Some("alpha"));
+        {
+            let mut registry = ctx.registry.borrow_mut();
+            let mut component = registry
+                .get_component::<LightComponent>(id)
+                .expect("fixture light exists")
+                .clone();
+            component.animated_slot = Some(5);
+            registry
+                .set_component(id, component)
+                .expect("fixture light updates");
+        }
         let r = registry_for(ctx);
 
         let rt = rquickjs::Runtime::new().unwrap();
@@ -877,24 +888,32 @@ mod tests {
                         falloffModel: c.falloffModel,
                         falloffRange: c.falloffRange,
                         isDynamic: c.isDynamic,
+                        exposesAnimatedSlot: Object.hasOwn(c, "animatedSlot"),
                     })
                     "#,
                 )
                 .unwrap();
             assert_eq!(
                 json,
-                r#"{"lightType":"Point","falloffModel":"InverseSquared","falloffRange":10,"isDynamic":true}"#
+                r#"{"lightType":"Point","falloffModel":"InverseSquared","falloffRange":10,"isDynamic":true,"exposesAnimatedSlot":false}"#
             );
         });
 
         let lua = mlua::Lua::new();
         install_all_lua(&r, &lua);
-        let (light_type, falloff_model, falloff_range, is_dynamic): (String, String, f64, bool) =
-            lua.load(
+        let (light_type, falloff_model, falloff_range, is_dynamic, exposes_animated_slot): (
+            String,
+            String,
+            f64,
+            bool,
+            bool,
+        ) = lua
+            .load(
                 r#"
                 local hs = worldQuery({ component = "light", tag = "alpha" })
                 local c = hs[1].component
-                return c.lightType, c.falloffModel, c.falloffRange, c.isDynamic
+                return c.lightType, c.falloffModel, c.falloffRange, c.isDynamic,
+                    c.animatedSlot ~= nil
                 "#,
             )
             .eval()
@@ -903,6 +922,7 @@ mod tests {
         assert_eq!(falloff_model, "InverseSquared");
         assert!((falloff_range - 10.0).abs() < 1e-5);
         assert!(is_dynamic);
+        assert!(!exposes_animated_slot);
     }
 
     #[test]

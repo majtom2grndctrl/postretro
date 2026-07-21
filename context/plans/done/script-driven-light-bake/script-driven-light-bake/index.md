@@ -1,6 +1,6 @@
 # Script-Driven Light Bake
 
-> **Status:** ready — promoted 2026-07-18 after structural, source-anchor, and implementability
+> **Status:** in progress — promoted 2026-07-18 after structural, source-anchor, and implementability
 > review. Substantively rewritten the same day against the shipped reaction/interactive substrate;
 > the original 2026-07-16 draft assumed the pre-reaction scripting model
 > (`registerHandler`, imperative capture at a synthetic `levelLoad`); that world no longer exists.
@@ -249,8 +249,8 @@ with the hand-rolled parser's existing mode-compat checks (e.g. `--dep-json` is 
   fog volumes best-effort from parsed map data if available; runtime-only kinds (enemies,
   spawner-spawned) return empty with a warning.
 - All other primitives install as non-throwing stubs that log once per name. Store reads return
-  declared defaults where visible, else neutral values. `getGameState()` is FFI-free and works
-  as-is once the generated tree is installed.
+  neutral/nil values because the compiler has no live or persisted store. `getGameState()` is
+  FFI-free and works as-is once the generated tree is installed.
 - Pin `Date`/`Math.random` (QuickJS) and the Luau equivalents for determinism — this pinning
   lives in the manifest emitter, not in `prl-build`.
 - Collect every `setLightAnimation` step from **all** returned reactions (every dispatch

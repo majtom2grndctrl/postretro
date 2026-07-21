@@ -36,6 +36,7 @@ pub mod partition;
 pub mod pipeline;
 pub mod portals;
 pub mod reporter;
+pub mod script_light_membership;
 pub mod sdf_bake;
 pub mod sh_bake;
 pub mod sh_group;
@@ -50,9 +51,15 @@ use std::collections::HashSet;
 use std::fmt::Display;
 use std::io::IsTerminal as _;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
+use anyhow::Context as _;
 use map_format::{DEFAULT_MAP_FORMAT, MapFormat};
+use postretro_level_format::data_script::DataScriptSection;
+use postretro_level_format::light_membership::LightMembershipManifest;
+
+static DATA_SCRIPT_TEMP_DIR_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Resolve the root used by content-relative model handles.
 ///
@@ -793,23 +800,20 @@ fn parse_size(raw: &str) -> anyhow::Result<u64> {
     Ok((value * multiplier as f64) as u64)
 }
 
-/// Locate the `scripts-build` sidecar for compiling worldspawn `.ts` scripts.
+/// Locate the `scripts-build` sidecar for compiling and evaluating worldspawn
+/// data scripts.
 ///
 // TODO(scripting-tools-dedup): duplicates `TsCompilerPath::detect` in
 // `crates/scripting-core/src/watcher.rs`, reached by the engine through a
 // debug-only compatibility re-export. The level-compiler still cannot import
-// the engine-side wrapper. The matching mtime check lives in `js_is_fresh`
-// below; the matching subprocess invocation lives in `run_ts_compiler` in the
-// watcher module. Consolidate into a
+// the engine-side wrapper. The matching subprocess invocation lives in
+// `run_ts_compiler` in the watcher module. Consolidate into a
 // shared `postretro-scripts-tools` crate when the level-compiler gains more
 // scripting integration. See:
 // context/plans/drafts/scripting-tools-dedup/index.md
 fn is_compiler_stale(binary_path: &Path) -> bool {
-    let source_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("script-compiler")
-        .join("src");
-    if !source_dir.is_dir() {
+    let source_dirs = compiler_freshness_roots();
+    if source_dirs.iter().all(|source_dir| !source_dir.is_dir()) {
         return false;
     }
     let sidecar_mtime = match std::fs::metadata(binary_path).and_then(|m| m.modified()) {
@@ -819,7 +823,7 @@ fn is_compiler_stale(binary_path: &Path) -> bool {
 
     // Find newest source mtime recursively
     let mut newest: Option<std::time::SystemTime> = None;
-    let mut stack = vec![source_dir];
+    let mut stack = source_dirs;
     while let Some(d) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&d) else {
             continue;
@@ -840,6 +844,21 @@ fn is_compiler_stale(binary_path: &Path) -> bool {
         Some(newest_mtime) => newest_mtime > sidecar_mtime,
         None => false,
     }
+}
+
+fn compiler_freshness_roots() -> Vec<PathBuf> {
+    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("level compiler lives two directories below the workspace")
+        .to_path_buf();
+    vec![
+        workspace_root.join("crates/script-compiler/src"),
+        // scripts-build embeds and evaluates this SDK source during manifest
+        // derivation. An SDK edit must invalidate the production sidecar even
+        // when the Rust crate itself is unchanged.
+        workspace_root.join("sdk/lib"),
+    ]
 }
 
 /// Return the non-empty streams captured from a child process.
@@ -864,6 +883,33 @@ fn log_captured_command_output(label: &str, stdout: &[u8], stderr: &[u8], level:
     }
 }
 
+fn scripts_build_beside(exe_dir: &Path, name: &str) -> Option<PathBuf> {
+    let profile_binary = exe_dir.parent().map(|parent| parent.join(name));
+
+    // A Cargo unit-test executable lives in `target/<profile>/deps/`. Cargo
+    // builds the standalone sidecar at `target/<profile>/`, while a stale
+    // un-hashed compatibility binary can remain in `deps/`. Prefer the
+    // profile-level sidecar for that test-only layout so a child `cargo build`
+    // is also the binary we subsequently invoke.
+    if exe_dir
+        .file_name()
+        .is_some_and(|component| component == "deps")
+        && let Some(profile_binary) = profile_binary.as_ref()
+        && profile_binary.is_file()
+    {
+        return Some(profile_binary.clone());
+    }
+
+    let adjacent = exe_dir.join(name);
+    if adjacent.is_file() {
+        return Some(adjacent);
+    }
+
+    // A test target without a profile-level sidecar still falls through here,
+    // preserving the normal adjacent-then-parent discovery cascade.
+    profile_binary.filter(|binary| binary.is_file())
+}
+
 fn find_scripts_build() -> Option<PathBuf> {
     let exe_dir = std::env::current_exe()
         .ok()
@@ -874,16 +920,9 @@ fn find_scripts_build() -> Option<PathBuf> {
         "scripts-build"
     };
 
-    let path = if let Some(ref dir) = exe_dir {
-        let candidate = dir.join(name);
-        if candidate.is_file() {
-            Some(candidate)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+    let path = exe_dir
+        .as_deref()
+        .and_then(|dir| scripts_build_beside(dir, name));
 
     let path = path.or_else(|| {
         std::env::var_os("PATH").and_then(|path_var| {
@@ -897,15 +936,26 @@ fn find_scripts_build() -> Option<PathBuf> {
         })
     });
 
-    let needs_build = match &path {
-        None => true,
-        Some(p) => is_compiler_stale(p),
-    };
+    // Cargo does not wire `scripts-build` into this binary test target as a
+    // `CARGO_BIN_EXE_*` dependency. A previous `cargo build` can therefore
+    // leave an older sibling binary in `target/<profile>/` even though the
+    // tests exercise newly compiled `prl-build` code. Rebuild in test builds
+    // so the subprocess has the CLI contract the test target expects. Normal
+    // development and release builds retain the source-mtime freshness check.
+    let needs_build = cfg!(test)
+        || match &path {
+            None => true,
+            Some(p) => is_compiler_stale(p),
+        };
 
     if needs_build {
         log::info!("[prl-build] scripts-build is missing or stale. Rebuilding via cargo...");
         let mut cmd = std::process::Command::new("cargo");
-        cmd.arg("build").arg("-p").arg("postretro-script-compiler");
+        cmd.arg("build")
+            .arg("-p")
+            .arg("postretro-script-compiler")
+            .arg("--bin")
+            .arg("scripts-build");
         if !cfg!(debug_assertions) {
             cmd.arg("--release");
         }
@@ -918,11 +968,10 @@ fn find_scripts_build() -> Option<PathBuf> {
                     log::Level::Info,
                 );
                 log::info!("[prl-build] scripts-build compiled successfully.");
-                if let Some(ref dir) = exe_dir {
-                    let candidate = dir.join(name);
-                    if candidate.is_file() {
-                        return Some(candidate);
-                    }
+                if let Some(ref dir) = exe_dir
+                    && let Some(candidate) = scripts_build_beside(dir, name)
+                {
+                    return Some(candidate);
                 }
             }
             Ok(output) => {
@@ -946,23 +995,131 @@ fn find_scripts_build() -> Option<PathBuf> {
     path
 }
 
-/// Compile the worldspawn `data_script`, if present, and return the
-/// `DataScriptSection` to embed in the PRL.
+/// The compiled PRL payload paired with the sidecar that determined its
+/// compiler-only light membership. The manifest is never serialized into PRL;
+/// it has already been applied before the bake namespaces are formed.
+#[derive(Debug)]
+pub(crate) struct CompiledDataScript {
+    pub(crate) section: DataScriptSection,
+    pub(crate) membership_manifest: LightMembershipManifest,
+}
+
+/// Private staging directory for the JSON sidecars and compiled/pass-through
+/// script output. A directory, rather than predictable filenames in the map
+/// folder, prevents stale sidecars from one build being mistaken for another.
+struct DataScriptTempDir {
+    path: PathBuf,
+    light_table_path: PathBuf,
+    manifest_path: PathBuf,
+    script_output_path: PathBuf,
+    cleaned: bool,
+}
+
+impl DataScriptTempDir {
+    fn create() -> anyhow::Result<Self> {
+        let base = std::env::temp_dir();
+        let process_id = std::process::id();
+        for _ in 0..64 {
+            let sequence = DATA_SCRIPT_TEMP_DIR_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let path = base.join(format!("postretro-prl-build-{process_id}-{sequence}"));
+            match std::fs::create_dir(&path) {
+                Ok(()) => {
+                    return Ok(Self {
+                        light_table_path: path.join("light-table.json"),
+                        manifest_path: path.join("light-membership.json"),
+                        script_output_path: path.join("data-script.out"),
+                        path,
+                        cleaned: false,
+                    });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => {
+                    return Err(anyhow::anyhow!(
+                        "[prl-build] failed to create data-script temporary directory {}: {error}",
+                        path.display()
+                    ));
+                }
+            }
+        }
+        anyhow::bail!(
+            "[prl-build] could not allocate a unique data-script temporary directory under {}",
+            base.display()
+        );
+    }
+
+    fn write_light_table(
+        &self,
+        table: &postretro_level_format::light_membership::LightTable,
+    ) -> anyhow::Result<()> {
+        let bytes = serde_json::to_vec(table)
+            .context("[prl-build] failed to serialize light table for scripts-build")?;
+        std::fs::write(&self.light_table_path, bytes).map_err(|error| {
+            anyhow::anyhow!(
+                "[prl-build] failed to write light table {}: {error}",
+                self.light_table_path.display()
+            )
+        })
+    }
+
+    fn read_manifest(&self) -> anyhow::Result<LightMembershipManifest> {
+        let bytes = std::fs::read(&self.manifest_path).map_err(|error| {
+            anyhow::anyhow!(
+                "[prl-build] scripts-build did not produce light-membership manifest {}: {error}",
+                self.manifest_path.display()
+            )
+        })?;
+        let manifest =
+            serde_json::from_slice::<LightMembershipManifest>(&bytes).map_err(|error| {
+                anyhow::anyhow!(
+                    "[prl-build] malformed light-membership manifest {}: {error}",
+                    self.manifest_path.display()
+                )
+            })?;
+        manifest.validate_version().map_err(|error| {
+            anyhow::anyhow!(
+                "[prl-build] stale or unsupported light-membership manifest {}: {error}",
+                self.manifest_path.display()
+            )
+        })?;
+        Ok(manifest)
+    }
+
+    fn cleanup(mut self) -> anyhow::Result<()> {
+        self.cleaned = true;
+        std::fs::remove_dir_all(&self.path).map_err(|error| {
+            anyhow::anyhow!(
+                "[prl-build] failed to remove data-script temporary directory {}: {error}",
+                self.path.display()
+            )
+        })
+    }
+}
+
+impl Drop for DataScriptTempDir {
+    fn drop(&mut self) {
+        if !self.cleaned
+            && let Err(error) = std::fs::remove_dir_all(&self.path)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            log::warn!(
+                "[prl-build] failed to remove data-script temporary directory {} after an error: {error}",
+                self.path.display()
+            );
+        }
+    }
+}
+
+/// Compile and evaluate the worldspawn `data_script`, if present.
 ///
-/// Behavior matrix:
-/// - `path == None` → returns `Ok(None)`; no section is emitted.
-/// - source file missing → hard error (no `.js` fallback).
-/// - `.luau` source → read raw bytes, no compilation.
-/// - `.ts`/`.js` source → compile via `scripts-build` (or fall back to a
-///   freshly-modified sibling `.js` when the compiler is absent), then read
-///   the resulting `.js` bytes.
-///
-/// The stored `source_path` is the resolved absolute path captured at compile
-/// time, reserved for the future hot-reload watcher.
+/// The same `scripts-build --in/--out` invocation produces the PRL's script
+/// bytes and a mandatory, versioned membership sidecar. An absent KVP remains
+/// the normal no-script path; once a script is present, a missing or malformed
+/// sidecar is a build error rather than a silently unanimated static light.
 fn compile_worldspawn_data_script(
-    map_path: &std::path::Path,
+    map_path: &Path,
     data_script_path: Option<&str>,
-) -> anyhow::Result<Option<postretro_level_format::data_script::DataScriptSection>> {
+    lights: &[map_data::MapLight],
+) -> anyhow::Result<Option<CompiledDataScript>> {
     let Some(rel) = data_script_path else {
         return Ok(None);
     };
@@ -985,95 +1142,83 @@ fn compile_worldspawn_data_script(
         .and_then(|s| s.to_str())
         .map(|s| s.to_ascii_lowercase());
 
-    let compiled_bytes = match extension.as_deref() {
-        Some("luau") => {
-            log::info!(
-                "[prl-build] embedding Luau data script {} (no compilation)",
+    match extension.as_deref() {
+        Some("ts") | Some("js") | Some("luau") => {}
+        Some(other) => anyhow::bail!(
+            "[prl-build] data_script = {rel} has unsupported extension '.{other}' (expected .ts, .js, or .luau)"
+        ),
+        None => anyhow::bail!(
+            "[prl-build] data_script = {rel} has no file extension (expected .ts, .js, or .luau)"
+        ),
+    }
+
+    let temporary = DataScriptTempDir::create()?;
+    let light_table = crate::script_light_membership::light_table_from_lights(lights)?;
+    temporary.write_light_table(&light_table)?;
+
+    // Always stage emitted bytes away from authored content. In particular, a
+    // `.js` input must never select itself as `--out` and be truncated while
+    // scripts-build is still deriving the manifest.
+    let output_path = temporary.script_output_path.clone();
+    let compiler = find_scripts_build().ok_or_else(|| {
+        anyhow::anyhow!(
+            "[prl-build] data_script {} requires scripts-build to derive light membership, but scripts-build was not found or could not be built",
+            source_path.display()
+        )
+    })?;
+    log::info!(
+        "[prl-build] compiling data_script {} -> {} with light-membership sidecar via {}",
+        source_path.display(),
+        output_path.display(),
+        compiler.display()
+    );
+    let output = std::process::Command::new(&compiler)
+        .arg("--in")
+        .arg(&source_path)
+        .arg("--out")
+        .arg(&output_path)
+        .arg("--light-table")
+        .arg(&temporary.light_table_path)
+        .arg("--manifest-out")
+        .arg(&temporary.manifest_path)
+        .arg("--mod-root")
+        .arg(resolve_content_root(map_path))
+        .output()
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "[prl-build] failed to spawn scripts-build at {} for data_script {}: {error}",
+                compiler.display(),
                 source_path.display()
-            );
-            std::fs::read(&source_path).map_err(|e| {
-                anyhow::anyhow!(
-                    "[prl-build] failed to read data_script {}: {e}",
-                    source_path.display()
-                )
-            })?
-        }
-        Some("ts") | Some("js") => {
-            let js_path = source_path.with_extension("js");
-            // For `.js` source `js_path == source_path`; the mtime check passes
-            // trivially and we just read bytes back — no compile needed.
-            let needs_compile = extension.as_deref() == Some("ts")
-                && !matches!(js_is_fresh(&source_path, &js_path), Some(true));
+            )
+        })?;
+    if !output.status.success() {
+        log_captured_command_output(
+            "scripts-build",
+            &output.stdout,
+            &output.stderr,
+            log::Level::Error,
+        );
+        let diagnostic = captured_command_output(&output.stdout, &output.stderr)
+            .into_iter()
+            .map(|(stream, text)| format!("{stream}: {text}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        anyhow::bail!(
+            "[prl-build] scripts-build failed for data_script {}: exit status {}; {}",
+            source_path.display(),
+            output.status,
+            diagnostic
+        );
+    }
 
-            if needs_compile {
-                match find_scripts_build() {
-                    Some(compiler) => {
-                        log::info!(
-                            "[prl-build] compiling data_script {} -> {} via {}",
-                            source_path.display(),
-                            js_path.display(),
-                            compiler.display()
-                        );
-                        let out = std::process::Command::new(&compiler)
-                            .arg("--in")
-                            .arg(&source_path)
-                            .arg("--out")
-                            .arg(&js_path)
-                            .output()
-                            .map_err(|e| {
-                                anyhow::anyhow!(
-                                    "[prl-build] failed to spawn scripts-build at {}: {e}",
-                                    compiler.display()
-                                )
-                            })?;
-                        if !out.status.success() {
-                            let stderr = String::from_utf8_lossy(&out.stderr);
-                            let stdout = String::from_utf8_lossy(&out.stdout);
-                            if !stderr.trim().is_empty() {
-                                log::error!("[prl-build] scripts-build stderr:\n{stderr}");
-                            }
-                            if !stdout.trim().is_empty() {
-                                log::error!("[prl-build] scripts-build stdout:\n{stdout}");
-                            }
-                            anyhow::bail!(
-                                "[prl-build] scripts-build failed for data_script {}: exit status {}",
-                                source_path.display(),
-                                out.status
-                            );
-                        }
-                    }
-                    None => {
-                        if !js_path.is_file() {
-                            anyhow::bail!(
-                                "[prl-build] data_script = {rel} but scripts-build was not found and no compiled .js artifact exists beside the .ts file. Install scripts-build or ship it next to prl-build."
-                            );
-                        }
-                        log::warn!(
-                            "[prl-build] scripts-build not found; embedding existing compiled data_script artifact {}",
-                            js_path.display()
-                        );
-                    }
-                }
-            }
-
-            std::fs::read(&js_path).map_err(|e| {
-                anyhow::anyhow!(
-                    "[prl-build] failed to read compiled data_script {}: {e}",
-                    js_path.display()
-                )
-            })?
-        }
-        Some(other) => {
-            anyhow::bail!(
-                "[prl-build] data_script = {rel} has unsupported extension '.{other}' (expected .ts, .js, or .luau)"
-            );
-        }
-        None => {
-            anyhow::bail!(
-                "[prl-build] data_script = {rel} has no file extension (expected .ts, .js, or .luau)"
-            );
-        }
-    };
+    let membership_manifest = temporary.read_manifest()?;
+    let compiled_bytes = std::fs::read(&output_path).map_err(|error| {
+        anyhow::anyhow!(
+            "[prl-build] failed to read compiled data_script {}: {error}",
+            output_path.display()
+        )
+    })?;
+    temporary.cleanup()?;
 
     let absolute_source_path = std::fs::canonicalize(&source_path)
         .unwrap_or(source_path.clone())
@@ -1086,25 +1231,10 @@ fn compile_worldspawn_data_script(
         absolute_source_path
     );
 
-    Ok(Some(pack::encode_data_script(
-        compiled_bytes,
-        absolute_source_path,
-    )))
-}
-
-/// `>` not `>=`: equal mtimes (same-second write) must trigger recompilation.
-/// mtime is unreliable after `git checkout` and on network filesystems — this
-/// is best-effort, not a correctness gate.
-// TODO(scripting-tools-dedup): mirrors `compile_start_script_if_stale`'s
-// freshness check in `crates/scripting-core/src/runtime/compile.rs`. See the
-// TODO above `find_scripts_build` for the consolidation plan.
-fn js_is_fresh(ts_path: &std::path::Path, js_path: &std::path::Path) -> Option<bool> {
-    if !js_path.is_file() {
-        return Some(false);
-    }
-    let ts_mtime = std::fs::metadata(ts_path).ok()?.modified().ok()?;
-    let js_mtime = std::fs::metadata(js_path).ok()?.modified().ok()?;
-    Some(js_mtime > ts_mtime)
+    Ok(Some(CompiledDataScript {
+        section: pack::encode_data_script(compiled_bytes, absolute_source_path),
+        membership_manifest,
+    }))
 }
 
 #[cfg(test)]
@@ -1139,6 +1269,43 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    #[test]
+    fn scripts_build_beside_test_binary_prefers_profile_sidecar() {
+        let root = unique_temp_dir("scripts-build-resolution");
+        let deps = root.join("debug/deps");
+        std::fs::create_dir_all(&deps).expect("create test executable directory");
+        let name = if cfg!(windows) {
+            "scripts-build.exe"
+        } else {
+            "scripts-build"
+        };
+        let stale_deps_binary = deps.join(name);
+        let current_profile_binary = root.join("debug").join(name);
+        std::fs::write(&stale_deps_binary, "stale").expect("write stale deps sidecar");
+        std::fs::write(&current_profile_binary, "current").expect("write current profile sidecar");
+
+        assert_eq!(
+            scripts_build_beside(&deps, name),
+            Some(current_profile_binary),
+            "a Cargo test binary must ignore a stale deps/scripts-build in favor of the profile sidecar"
+        );
+        std::fs::remove_dir_all(root).expect("remove sidecar-resolution fixture");
+    }
+
+    #[test]
+    fn scripts_build_freshness_tracks_embedded_sdk_sources() {
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("workspace root");
+        let roots = compiler_freshness_roots();
+        assert!(roots.contains(&workspace.join("crates/script-compiler/src")));
+        assert!(
+            roots.contains(&workspace.join("sdk/lib")),
+            "SDK sources embedded by scripts-build must participate in production freshness"
+        );
     }
 
     fn png_bytes(width: u32, height: u32) -> Vec<u8> {
@@ -1851,11 +2018,42 @@ mod tests {
 
     #[test]
     fn data_script_absent_kvp_emits_no_section() {
-        let result = compile_worldspawn_data_script(Path::new("/dev/null/fake.map"), None)
+        let result = compile_worldspawn_data_script(Path::new("/dev/null/fake.map"), None, &[])
             .expect("None KVP must succeed");
         assert!(
             result.is_none(),
             "absent data_script KVP must not emit a DataScript section"
+        );
+    }
+
+    #[test]
+    fn data_script_sidecar_supports_light_membership_flags() {
+        // Regression: a stale sibling `scripts-build` previously accepted the
+        // old CLI but rejected the paired manifest arguments that prl-build
+        // now always supplies for a data script.
+        let compiler =
+            find_scripts_build().expect("scripts-build must resolve for data-script tests");
+        let output = std::process::Command::new(&compiler)
+            .arg("--help")
+            .output()
+            .expect("run resolved scripts-build");
+        assert!(
+            output.status.success(),
+            "resolved scripts-build should print help: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let help = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            help.contains("--light-table"),
+            "resolved scripts-build must support --light-table: {help}"
+        );
+        assert!(
+            help.contains("--manifest-out"),
+            "resolved scripts-build must support --manifest-out: {help}"
+        );
+        assert!(
+            help.contains("--mod-root"),
+            "resolved scripts-build must support runtime-parity Luau module resolution: {help}"
         );
     }
 
@@ -1865,7 +2063,7 @@ mod tests {
         let _ = std::fs::create_dir_all(&tmp_dir);
         let map_path = tmp_dir.join("test.map");
         let _ = std::fs::write(&map_path, "");
-        let result = compile_worldspawn_data_script(&map_path, Some("does-not-exist.ts"));
+        let result = compile_worldspawn_data_script(&map_path, Some("does-not-exist.ts"), &[]);
         assert!(
             result.is_err(),
             "missing data_script file must be a compile error"
@@ -1879,24 +2077,97 @@ mod tests {
 
     #[test]
     fn data_script_luau_passes_through() {
-        let tmp_dir = std::env::temp_dir().join("postretro_data_script_luau");
-        let _ = std::fs::create_dir_all(&tmp_dir);
+        let tmp_dir = unique_temp_dir("data-script-luau");
+        std::fs::create_dir_all(&tmp_dir).unwrap();
         let map_path = tmp_dir.join("test.map");
-        let _ = std::fs::write(&map_path, "");
+        std::fs::write(&map_path, "").unwrap();
         let luau_path = tmp_dir.join("level-data.luau");
-        let luau_source = "return { foo = 1 }";
+        let luau_source = "function setupLevel(_)\n  return { reactions = { defineReaction(\"noop\", { primitive = \"noop\" }) } }\nend\n";
         std::fs::write(&luau_path, luau_source).unwrap();
 
-        let section = compile_worldspawn_data_script(&map_path, Some("level-data.luau"))
+        let compiled = compile_worldspawn_data_script(&map_path, Some("level-data.luau"), &[])
             .expect("luau data_script should compile")
             .expect("section must be emitted");
 
-        assert_eq!(section.compiled_bytes, luau_source.as_bytes());
+        assert_eq!(compiled.section.compiled_bytes, luau_source.as_bytes());
         assert!(
-            section.source_path.ends_with("level-data.luau"),
+            compiled.section.source_path.ends_with("level-data.luau"),
             "source_path should reference the .luau file, got: {}",
-            section.source_path
+            compiled.section.source_path
         );
+        assert!(compiled.membership_manifest.lights.is_empty());
+        std::fs::remove_dir_all(&tmp_dir).unwrap();
+    }
+
+    #[test]
+    fn data_script_javascript_source_is_never_used_as_staged_output() {
+        let tmp_dir = unique_temp_dir("data-script-js-source");
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let map_path = tmp_dir.join("test.map");
+        std::fs::write(&map_path, "").unwrap();
+        let source_path = tmp_dir.join("level-data.js");
+        let source = "globalThis.setupLevel = function() { return { reactions: [] }; };\n";
+        std::fs::write(&source_path, source).unwrap();
+
+        let compiled = compile_worldspawn_data_script(&map_path, Some("level-data.js"), &[])
+            .expect("JavaScript data script should compile")
+            .expect("section must be emitted");
+
+        assert_eq!(
+            std::fs::read_to_string(&source_path).expect("read authored source after compile"),
+            source,
+            "scripts-build output must never overwrite the authored .js input"
+        );
+        assert!(!compiled.section.compiled_bytes.is_empty());
+        std::fs::remove_dir_all(&tmp_dir).unwrap();
+    }
+
+    #[test]
+    fn fixture_keeps_script_and_kvp_animated_lights_distinct() {
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("level compiler lives two directories below the workspace")
+            .to_path_buf();
+        let map_path = workspace.join("content/dev/maps/script_light_membership_fixture.map");
+        let mut map_data = parse::parse_map_file(&map_path, MapFormat::IdTech2)
+            .expect("parse script-membership fixture");
+        let compiled = compile_worldspawn_data_script(
+            &map_path,
+            map_data.data_script.as_deref(),
+            &map_data.lights,
+        )
+        .expect("compile fixture data script")
+        .expect("fixture has data_script KVP");
+
+        let inventory = script_light_membership::apply_manifest(
+            &mut map_data.lights,
+            &map_data.light_start_active_defaults,
+            &compiled.membership_manifest,
+        )
+        .expect("apply fixture membership manifest");
+
+        assert_eq!(map_data.light_start_active_defaults, [false, true, true]);
+        assert_eq!(inventory.derived_static_indices, vec![0]);
+        assert!(
+            map_data.lights[0]
+                .animation
+                .as_ref()
+                .expect("script target receives an animation placeholder")
+                .start_active,
+            "a levelLoad animation defaults to active, overriding the authored _start_inactive fallback"
+        );
+        assert_eq!(
+            light_namespaces::StaticBakedLights::from_lights(&map_data.lights).len(),
+            1,
+            "the steady-light control must remain in the ordinary static namespace"
+        );
+        assert_eq!(
+            light_namespaces::AnimatedBakedLights::from_lights(&map_data.lights).len(),
+            2,
+            "the KVP curve and script target must each reserve animated bake output"
+        );
+        assert!(!compiled.section.compiled_bytes.is_empty());
     }
 
     #[test]

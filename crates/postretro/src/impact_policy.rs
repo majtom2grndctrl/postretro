@@ -590,8 +590,7 @@ mod tests {
     }
 
     fn hit(ctx: &ScriptCtx, target: EntityId, producer: DamageProducer) {
-        let mut context = DamageContext::new("impact-policy-test");
-        context.producer = producer;
+        let context = DamageContext::new("impact-policy-test", producer);
         apply_damage_with_context(
             &mut ctx.registry.borrow_mut(),
             target,
@@ -711,8 +710,7 @@ mod tests {
 
         let mut registry = ctx.registry.borrow_mut();
         for _ in 0..2 {
-            let mut context = DamageContext::new("impact-policy-test");
-            context.producer = DamageProducer::InTick;
+            let context = DamageContext::new("impact-policy-test", DamageProducer::InTick);
             apply_damage_with_context(
                 &mut registry,
                 target,
@@ -825,8 +823,7 @@ mod tests {
 
         {
             let mut registry = ctx.registry.borrow_mut();
-            let mut context = DamageContext::new("impact-policy-test");
-            context.producer = DamageProducer::InTick;
+            let context = DamageContext::new("impact-policy-test", DamageProducer::InTick);
             apply_damage_with_context(
                 &mut registry,
                 target,

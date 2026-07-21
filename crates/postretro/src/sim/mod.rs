@@ -2863,8 +2863,8 @@ mod tests {
                 .get_component::<postretro_entities::DeferredEffectComponent>(target)
                 .unwrap()
                 .pending[0]
-                .countdown_ms,
-            100.0,
+                .remaining_us,
+            100_000,
         );
 
         run_tick(false);
@@ -2874,8 +2874,8 @@ mod tests {
                 .get_component::<postretro_entities::DeferredEffectComponent>(target)
                 .unwrap()
                 .pending[0]
-                .countdown_ms,
-            60.0,
+                .remaining_us,
+            60_000,
         );
     }
 

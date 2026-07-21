@@ -2036,10 +2036,7 @@ fn apply_valid_hit_record(
     let Some(target) = allocator.entity_for_network_id(NetworkId(record.target)) else {
         return false;
     };
-    let Ok(health) = registry.get_component::<HealthComponent>(target) else {
-        return false;
-    };
-    if health.current <= 0.0 {
+    if registry.get_component::<HealthComponent>(target).is_err() {
         return false;
     }
     let point = Vec3::from_array(record.point);
@@ -2687,6 +2684,31 @@ mod tests {
         let entry = health.contributor_ledger.entries().first().unwrap();
         assert_eq!(entry.last_attacker, Some(fixture.pawn));
         assert_eq!(entry.last_weapon, Some(fixture.weapon));
+    }
+
+    // Regression: remote HIT validation rejected persistent zero-HP targets,
+    // so gib policies saw local impacts but never authoritative remote ones.
+    #[test]
+    fn hit_declaration_on_zero_health_target_reaches_common_impact_dispatch() {
+        let mut fixture = HitIngestFixture::new(CollisionWorld::new());
+        let mut health = fixture.target_health();
+        health.current = 0.0;
+        fixture
+            .registry
+            .set_component(fixture.target, health)
+            .unwrap();
+        let declaration = fixture.declaration(vec![fixture.record(Vec3::new(4.0, 0.5, 0.0), None)]);
+
+        let result = fixture.ingest_result(7, &declaration);
+
+        assert!(result.fire_accepted);
+        assert!(result.hit_accepted);
+        assert!(fixture.target_health().current.abs() <= f32::EPSILON);
+        let dispatches = fixture.registry.take_impact_dispatches();
+        assert_eq!(dispatches.len(), 1);
+        assert_eq!(dispatches[0].target, fixture.target);
+        assert!(dispatches[0].health_before.abs() <= f32::EPSILON);
+        assert!((dispatches[0].health_after + 10.0).abs() <= f32::EPSILON);
     }
 
     // Regression: multi-pellet declarations used to batch every damage record

@@ -2127,12 +2127,7 @@ impl ApplicationHandler for App {
                     }
                 }
 
-                // Host serialize + send (M15 Phase 1): after the catch-up tick
-                // loop, beside the post-loop drains, so the snapshot carries this
-                // frame's fully-settled host-authoritative state. No-op for the
-                // client and single-player. See `context/lib/entity_model.md` §6.
                 let host_owner_state_projected = self.host_owner_state_projection_due();
-                self.net_serialize_and_send();
 
                 // Task 6 client remote interpolation: sample each remote entity's
                 // buffer at `estimated_server_tick - interpolation_delay` and write the
@@ -2253,18 +2248,6 @@ impl ApplicationHandler for App {
                         .player_hud_state
                         .tick_for_role(is_connected_client, active_wieldable);
                 }
-                // Network projection runs before HUD publication. Clear the
-                // one-frame reload endpoints only after both consumers have had
-                // a chance to observe them.
-                if let Some(weapon) = active_wieldable {
-                    sim::clear_reload_feedback_for_weapon(
-                        &mut script_ctx.registry.borrow_mut(),
-                        weapon,
-                    );
-                }
-                if host_owner_state_projected {
-                    sim::clear_all_reload_feedback(&mut script_ctx.registry.borrow_mut());
-                }
                 // Flash-decay state writes the engine-owned `screen.flash`
                 // surface at the same game-logic stage as the HUD publisher, so
                 // the UI snapshot below freezes this frame's flash color. Runs
@@ -2310,13 +2293,28 @@ impl ApplicationHandler for App {
 
                 // Terminal impact effects stay live through every post-catch-up
                 // presentation/reaction drain above. Reap them exactly once per
-                // rendered frame, before audio/render consume the settled world.
-                // The callback is intentionally empty for now; later lifecycle
-                // work attaches its report-on-removal sink here.
+                // rendered frame, before replication and render observe state.
                 impact_effects::run_end_of_frame_removal_pass(
                     &mut script_ctx.registry.borrow_mut(),
                     |_| {},
                 );
+
+                // Host serialize + send after terminal removals, so the
+                // authoritative snapshot cannot carry an entity already reaped
+                // this frame. No-op for the client and single-player.
+                self.net_serialize_and_send();
+
+                // HUD publication and network projection have both observed
+                // one-frame reload endpoints. Clear them only now.
+                if let Some(weapon) = active_wieldable {
+                    sim::clear_reload_feedback_for_weapon(
+                        &mut script_ctx.registry.borrow_mut(),
+                        weapon,
+                    );
+                }
+                if host_owner_state_projected {
+                    sim::clear_all_reload_feedback(&mut script_ctx.registry.borrow_mut());
+                }
 
                 // Reconcile the input seam + focus with the modal stack's top
                 // capture mode, now that every command drain this frame has

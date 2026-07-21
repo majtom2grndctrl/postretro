@@ -10,6 +10,7 @@ use postretro_foundation::ir::{
 };
 use postretro_scripting_core::ir_scopes::{EntityOutputHandle, EntityScope};
 use serde_json::{Map, Value};
+use std::collections::HashMap;
 
 use crate::impact_effects::{ImpactEffect, apply_effect};
 
@@ -23,6 +24,7 @@ pub(crate) struct ImpactPolicyRuntime {
     ctx: ScriptCtx,
     global_events: Vec<ImpactEventDescriptor>,
     level_events: Vec<ImpactEventDescriptor>,
+    active_level_tags: Vec<String>,
     scope: EntityScope,
     policies: Vec<BoundImpactPolicy>,
     consequential: Vec<PlannedEffect>,
@@ -31,6 +33,7 @@ pub(crate) struct ImpactPolicyRuntime {
 
 struct BoundImpactPolicy {
     id: String,
+    base_filter_tag: Option<String>,
     filter_tag: Option<String>,
     groups: Vec<BoundGroup>,
 }
@@ -69,6 +72,7 @@ impl ImpactPolicyRuntime {
             ctx,
             global_events: Vec::new(),
             level_events: Vec::new(),
+            active_level_tags: Vec::new(),
             policies: Vec::new(),
             consequential: Vec::new(),
             presentation: Vec::new(),
@@ -84,13 +88,19 @@ impl ImpactPolicyRuntime {
 
     /// Replace the per-level descriptors after `setupLevel()` finishes. Global
     /// entries are intentionally retained and precede these in load order.
-    pub(crate) fn replace_level_events(&mut self, events: Vec<ImpactEventDescriptor>) {
+    pub(crate) fn replace_level_events(
+        &mut self,
+        events: Vec<ImpactEventDescriptor>,
+        active_level_tags: &[String],
+    ) {
         self.level_events = events;
+        self.active_level_tags = active_level_tags.to_vec();
         self.rebuild();
     }
 
     pub(crate) fn clear_level_events(&mut self) {
         self.level_events.clear();
+        self.active_level_tags.clear();
         self.rebuild();
     }
 
@@ -98,20 +108,66 @@ impl ImpactPolicyRuntime {
     /// deliberately consumed without evaluation: v1 charts that producer at
     /// the choke point but gives it no impact policy surface.
     pub(crate) fn evaluate_pending(&mut self) {
-        let dispatches = self.ctx.registry.borrow_mut().take_impact_dispatches();
+        let registry = self.ctx.registry.clone();
+        let mut registry = registry.borrow_mut();
+        self.evaluate_pending_in_registry(&mut registry);
+    }
+
+    /// Evaluate every dispatch currently published by one damage call while
+    /// the fixed-tick producer still owns the registry. Producers call this
+    /// immediately after each hit, never as a post-tick batch.
+    pub(crate) fn evaluate_pending_in_registry(
+        &mut self,
+        registry: &mut postretro_entities::EntityRegistry,
+    ) {
+        let dispatches = registry.take_impact_dispatches();
         for dispatch in dispatches {
             if dispatch.producer != DamageProducer::InTick {
                 continue;
             }
-            self.evaluate_dispatch(dispatch);
+            self.evaluate_dispatch(registry, dispatch);
+        }
+    }
+
+    /// Consume the app-drain producer arm after reaction dispatch settles.
+    /// v1 intentionally runs no policy for these impacts. An in-tick dispatch
+    /// reaching this sink is an ordering bug and is dropped rather than being
+    /// evaluated against a stale post-tick snapshot.
+    pub(crate) fn discard_app_drain_pending(&mut self) {
+        let dispatches = self.ctx.registry.borrow_mut().take_impact_dispatches();
+        for dispatch in dispatches {
+            if dispatch.producer == DamageProducer::InTick {
+                log::error!(
+                    "[Impact] dropped in-tick dispatch that escaped synchronous evaluation"
+                );
+            }
         }
     }
 
     fn rebuild(&mut self) {
         let scope = EntityScope::impact(self.ctx.clone());
         let mut policies = Vec::with_capacity(self.global_events.len() + self.level_events.len());
-        for descriptor in self.global_events.iter().chain(&self.level_events) {
-            match bind_policy(descriptor, &scope) {
+        let mut base_filters = HashMap::<String, Option<String>>::new();
+        for descriptor in self
+            .global_events
+            .iter()
+            .filter(|descriptor| levels_match(&descriptor.levels, &self.active_level_tags))
+            .chain(&self.level_events)
+        {
+            let base_filter_tag = if descriptor.is_override {
+                let Some(filter) = base_filters.get(&descriptor.id).cloned() else {
+                    log::warn!(
+                        "[Impact] override `{}` was skipped because no composed base precedes it",
+                        descriptor.id
+                    );
+                    continue;
+                };
+                filter
+            } else {
+                base_filters.insert(descriptor.id.clone(), descriptor.filter_tag.clone());
+                descriptor.filter_tag.clone()
+            };
+            match bind_policy(descriptor, base_filter_tag, &scope) {
                 Ok(policy) => policies.push(policy),
                 Err(error) => log::warn!(
                     "[Impact] policy `{}` was skipped during bind: {error}",
@@ -123,16 +179,19 @@ impl ImpactPolicyRuntime {
         self.policies = policies;
     }
 
-    fn evaluate_dispatch(&mut self, dispatch: ImpactDispatch) {
+    fn evaluate_dispatch(
+        &mut self,
+        registry: &mut postretro_entities::EntityRegistry,
+        dispatch: ImpactDispatch,
+    ) {
         let tags = {
-            let registry = self.ctx.registry.borrow();
             let Ok(tags) = registry.get_tags(dispatch.target) else {
                 return;
             };
             tags.to_vec()
         };
 
-        if let Err(error) = self.scope.seed_impact(&dispatch) {
+        if let Err(error) = self.scope.seed_impact_from_registry(registry, &dispatch) {
             log::warn!("[Impact] dispatch scope seed failed; skipping impact: {error:?}");
             return;
         }
@@ -141,7 +200,7 @@ impl ImpactPolicyRuntime {
         self.presentation.clear();
 
         // A later matching variant replaces an earlier one with the same
-        // derived id. Removing then appending also makes cross-event execution
+        // author id. Removing then appending also makes cross-event execution
         // follow the selected descriptors' registration order.
         let mut selected: Vec<usize> = Vec::new();
         for (index, policy) in self.policies.iter().enumerate() {
@@ -181,11 +240,16 @@ impl ImpactPolicyRuntime {
             }
         }
 
-        self.apply_planned(dispatch.target, false);
-        self.apply_planned(dispatch.target, true);
+        self.apply_planned(registry, dispatch.target, false);
+        self.apply_planned(registry, dispatch.target, true);
     }
 
-    fn apply_planned(&mut self, target: EntityId, presentation: bool) {
+    fn apply_planned(
+        &mut self,
+        registry: &mut postretro_entities::EntityRegistry,
+        target: EntityId,
+        presentation: bool,
+    ) {
         let effects = if presentation {
             &mut self.presentation
         } else {
@@ -194,9 +258,11 @@ impl ImpactPolicyRuntime {
         effects.reverse();
         while let Some(effect) = effects.pop() {
             match effect {
-                PlannedEffect::Write { handle, value } => self.scope.write(&handle, value),
+                PlannedEffect::Write { handle, value } => {
+                    self.scope.write_with_registry(registry, &handle, value)
+                }
                 PlannedEffect::Command(effect) => {
-                    apply_effect(&mut self.ctx.registry.borrow_mut(), target, &effect);
+                    apply_effect(registry, target, &effect);
                 }
             }
         }
@@ -204,14 +270,24 @@ impl ImpactPolicyRuntime {
 }
 
 fn policy_matches(policy: &BoundImpactPolicy, tags: &[String]) -> bool {
-    policy
-        .filter_tag
-        .as_ref()
-        .is_none_or(|filter| tags.iter().any(|tag| tag == filter))
+    tag_matches(policy.base_filter_tag.as_deref(), tags)
+        && tag_matches(policy.filter_tag.as_deref(), tags)
+}
+
+fn tag_matches(filter: Option<&str>, tags: &[String]) -> bool {
+    filter.is_none_or(|filter| tags.iter().any(|tag| tag == filter))
+}
+
+fn levels_match(levels: &[String], active_level_tags: &[String]) -> bool {
+    levels.is_empty()
+        || levels
+            .iter()
+            .any(|level| active_level_tags.iter().any(|tag| tag == level))
 }
 
 fn bind_policy(
     descriptor: &ImpactEventDescriptor,
+    base_filter_tag: Option<String>,
     scope: &EntityScope,
 ) -> Result<BoundImpactPolicy, String> {
     let mut groups = Vec::with_capacity(descriptor.policy.len());
@@ -220,6 +296,7 @@ fn bind_policy(
     }
     Ok(BoundImpactPolicy {
         id: descriptor.id.clone(),
+        base_filter_tag,
         filter_tag: descriptor.filter_tag.clone(),
         groups,
     })
@@ -434,9 +511,17 @@ mod tests {
     fn event(id: &str, tag: &str, policy: Vec<Value>) -> ImpactEventDescriptor {
         ImpactEventDescriptor {
             id: id.to_string(),
+            is_override: false,
+            levels: Vec::new(),
             filter_tag: Some(tag.to_string()),
             policy,
         }
+    }
+
+    fn override_event(id: &str, tag: &str, policy: Vec<Value>) -> ImpactEventDescriptor {
+        let mut descriptor = event(id, tag, policy);
+        descriptor.is_override = true;
+        descriptor
     }
 
     fn input(name: &str) -> Value {
@@ -600,6 +685,37 @@ mod tests {
     }
 
     #[test]
+    fn consecutive_in_tick_hits_observe_the_previous_fire_effects() {
+        let ctx = ScriptCtx::new();
+        let target = target(&ctx, &["crate"]);
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_global_events(vec![event(
+            "counter",
+            "crate",
+            vec![state_write(
+                "hits",
+                json!({ "op": "add", "a": input("@state.hits"), "b": number(1.0) }),
+            )],
+        )]);
+
+        let mut registry = ctx.registry.borrow_mut();
+        for _ in 0..2 {
+            let mut context = DamageContext::new("impact-policy-test");
+            context.producer = DamageProducer::InTick;
+            apply_damage_with_context(
+                &mut registry,
+                target,
+                &DamagePayload { amount: 1.0 },
+                context,
+            );
+            runtime.evaluate_pending_in_registry(&mut registry);
+        }
+        drop(registry);
+
+        assert_eq!(state(&ctx, target, "hits"), 2.0);
+    }
+
+    #[test]
     fn matching_override_uses_last_registered_policy_only() {
         let ctx = ScriptCtx::new();
         let target = target(&ctx, &["crate", "reinforced"]);
@@ -609,17 +725,118 @@ mod tests {
             "crate",
             vec![state_write("base_only", number(1.0))],
         )]);
-        runtime.replace_level_events(vec![event(
-            "same",
-            "reinforced",
-            vec![state_write("variant", number(3.0))],
-        )]);
+        runtime.replace_level_events(
+            vec![override_event(
+                "same",
+                "reinforced",
+                vec![state_write("variant", number(3.0))],
+            )],
+            &[],
+        );
 
         hit(&ctx, target, DamageProducer::InTick);
         runtime.evaluate_pending();
 
         assert_eq!(state(&ctx, target, "base_only"), 0.0);
         assert_eq!(state(&ctx, target, "variant"), 3.0);
+    }
+
+    #[test]
+    fn override_requires_both_base_and_additional_tags() {
+        let ctx = ScriptCtx::new();
+        let target = target(&ctx, &["reinforced"]);
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_global_events(vec![
+            event("same", "crate", vec![state_write("base_only", number(1.0))]),
+            override_event(
+                "same",
+                "reinforced",
+                vec![state_write("variant", number(3.0))],
+            ),
+        ]);
+
+        hit(&ctx, target, DamageProducer::InTick);
+        runtime.evaluate_pending();
+
+        assert_eq!(state(&ctx, target, "base_only"), 0.0);
+        assert_eq!(state(&ctx, target, "variant"), 0.0);
+    }
+
+    #[test]
+    fn mod_scope_levels_selector_filters_before_level_composition() {
+        let ctx = ScriptCtx::new();
+        let target = target(&ctx, &["crate"]);
+        let mut campaign = event(
+            "campaign-only",
+            "crate",
+            vec![state_write("campaign", number(1.0))],
+        );
+        campaign.levels = vec!["campaign".to_string()];
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_global_events(vec![campaign]);
+        runtime.replace_level_events(Vec::new(), &["deathmatch".to_string()]);
+
+        hit(&ctx, target, DamageProducer::InTick);
+        runtime.evaluate_pending();
+        assert_eq!(state(&ctx, target, "campaign"), 0.0);
+
+        runtime.replace_level_events(Vec::new(), &["campaign".to_string()]);
+        hit(&ctx, target, DamageProducer::InTick);
+        runtime.evaluate_pending();
+        assert_eq!(state(&ctx, target, "campaign"), 1.0);
+    }
+
+    #[test]
+    fn synchronous_impact_effect_runs_before_legacy_death_sweep() {
+        let ctx = ScriptCtx::new();
+        let target = target(&ctx, &["survivor"]);
+        let mut health = ctx
+            .registry
+            .borrow()
+            .get_component::<HealthComponent>(target)
+            .unwrap()
+            .clone();
+        health.current = 1.0;
+        ctx.registry
+            .borrow_mut()
+            .set_component(target, health)
+            .unwrap();
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_global_events(vec![event(
+            "survive",
+            "survivor",
+            vec![json!({
+                "primitive": "setHealth",
+                "target": "@impact.target",
+                "args": { "value": number(10.0) },
+            })],
+        )]);
+
+        {
+            let mut registry = ctx.registry.borrow_mut();
+            let mut context = DamageContext::new("impact-policy-test");
+            context.producer = DamageProducer::InTick;
+            apply_damage_with_context(
+                &mut registry,
+                target,
+                &DamagePayload { amount: 1.0 },
+                context,
+            );
+            runtime.evaluate_pending_in_registry(&mut registry);
+        }
+        let mut progress = postretro_scripting_core::reaction_dispatch::ProgressTracker::new();
+        let events = crate::sim::run_death_sweep(&ctx.registry, &mut progress);
+
+        assert!(events.is_empty());
+        assert!(ctx.registry.borrow().exists(target));
+        assert_eq!(
+            ctx.registry
+                .borrow()
+                .get_component::<HealthComponent>(target)
+                .unwrap()
+                .current,
+            10.0
+        );
     }
 
     #[test]

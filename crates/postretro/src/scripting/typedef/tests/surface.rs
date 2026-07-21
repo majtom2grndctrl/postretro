@@ -489,3 +489,39 @@ fn luau_predicate_helpers_are_typed_to_the_value_type() {
         "luau LocalStateHandle:is must be typed `(self, value: T) -> Predicate`"
     );
 }
+
+#[test]
+fn impact_policy_surface_uses_author_ids_and_closed_effect_union() {
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
+
+    let mut registry = PrimitiveRegistry::new();
+    register_all(&mut registry, ScriptCtx::new());
+    let ts = generate_typescript(&registry);
+    let luau = generate_luau(&registry);
+
+    assert!(
+        ts.contains("export function defineImpactEvent(\n    id: string,"),
+        "TypeScript defineImpactEvent must require an author id"
+    );
+    assert!(
+        luau.contains("declare function defineImpactEvent(id: string,"),
+        "Luau defineImpactEvent must require an author id"
+    );
+    for surface in [&ts, &luau] {
+        assert!(
+            !surface.contains("type Effect = PrimitiveReactionDescriptor | Reaction"),
+            "impact Effect must not advertise the general reaction surface"
+        );
+        for primitive in ["despawn", "playAnim", "setHealth", "setState"] {
+            assert!(
+                surface.contains(&format!("primitive: \"{primitive}\"")),
+                "impact Effect is missing `{primitive}`"
+            );
+        }
+        assert!(
+            surface.contains("slot: string"),
+            "impact Effect must include slot.add's lowered store write"
+        );
+    }
+}

@@ -81,6 +81,7 @@ export type {
   NumberSlot,
   Impact,
   ImpactEvent,
+  ImpactEventFilter,
   StateRef,
   StoreDeclaration,
   StoreDefinition,

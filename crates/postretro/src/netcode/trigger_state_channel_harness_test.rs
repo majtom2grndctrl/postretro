@@ -492,6 +492,7 @@ impl PersistentAtmosphereHarness {
                 script_ctx: Some(self.host_ctx.clone()),
                 use_edges: &use_edges,
             }),
+            |_| {},
         )
     }
 

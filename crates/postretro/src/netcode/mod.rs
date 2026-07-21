@@ -1856,6 +1856,7 @@ pub(crate) fn host_flush_pending_hit_declarations(
     open_shots: &mut OpenAuthorizedShots,
     pending_hit_declarations: &mut PendingHitDeclarations,
     current_tick: u32,
+    mut on_impact: impl FnMut(&mut EntityRegistry),
 ) -> bool {
     open_shots.prune_stale(current_tick);
     let mut accepted_any_hit = false;
@@ -1871,6 +1872,9 @@ pub(crate) fn host_flush_pending_hit_declarations(
             pending.client_id,
             &pending.declaration,
         );
+        if result.hit_accepted {
+            on_impact(registry);
+        }
         send_shot_verdict(
             server,
             pending.client_id,

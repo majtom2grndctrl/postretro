@@ -556,7 +556,9 @@ mod tests {
                     name: "Impact Mod",
                     events: [{
                         kind: "impact",
-                        id: "reaction_1234abcd",
+                        id: "salvage:crate-break",
+                        isOverride: false,
+                        levels: ["campaign"],
                         filter: { tag: "crate" },
                         policy: [{
                             primitive: "setState",
@@ -576,7 +578,9 @@ mod tests {
                     name = "Impact Mod",
                     events = {{
                         kind = "impact",
-                        id = "reaction_1234abcd",
+                        id = "salvage:crate-break",
+                        isOverride = false,
+                        levels = { "campaign" },
                         filter = { tag = "crate" },
                         policy = {{
                             primitive = "setState",
@@ -594,7 +598,9 @@ mod tests {
         assert_eq!(js_manifest.events, luau_manifest.events);
         assert_eq!(js_manifest.events.len(), 1);
         let event = &js_manifest.events[0];
-        assert_eq!(event.id, "reaction_1234abcd");
+        assert_eq!(event.id, "salvage:crate-break");
+        assert!(!event.is_override);
+        assert_eq!(event.levels, ["campaign"]);
         assert_eq!(event.filter_tag.as_deref(), Some("crate"));
         assert_eq!(
             event.policy,

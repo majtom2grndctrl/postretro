@@ -60,7 +60,7 @@ impl LevelManifest {
 }
 
 /// Drain pure SDK `defineImpactEvent` handles from a manifest. Parsing stops at
-/// the descriptor boundary: Task 5 owns policy validation, derived-id merging,
+/// the descriptor boundary: Task 5 owns policy validation, author-id merging,
 /// and effect evaluation.
 pub fn drain_impact_events_js<'js>(
     ctx: &Ctx<'js>,
@@ -124,6 +124,8 @@ fn impact_event_from_js<'js>(
 
     Ok(ImpactEventDescriptor {
         id: get_required_string_js(&item, "id")?,
+        is_override: get_optional_bool_js(&item, "isOverride")?.unwrap_or(false),
+        levels: string_array_from_js(&item, "levels")?,
         filter_tag,
         policy: policy_json,
     })

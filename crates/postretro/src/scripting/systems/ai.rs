@@ -510,6 +510,24 @@ pub(crate) fn run_ai_tick_with_navigation(
     nav_graph: Option<&NavGraph>,
     collision_world: Option<&CollisionWorld>,
 ) -> Vec<&'static str> {
+    run_ai_tick_with_navigation_and_impact(
+        registry,
+        warned,
+        tick_dt,
+        nav_graph,
+        collision_world,
+        |_| {},
+    )
+}
+
+pub(crate) fn run_ai_tick_with_navigation_and_impact(
+    registry: &mut EntityRegistry,
+    warned: &mut HashSet<String>,
+    tick_dt: f32,
+    nav_graph: Option<&NavGraph>,
+    collision_world: Option<&CollisionWorld>,
+    mut on_impact: impl FnMut(&mut EntityRegistry),
+) -> Vec<&'static str> {
     let dt_ms = tick_dt.max(0.0) * 1000.0;
 
     // Pass 1: snapshot every brain-bearing enemy under the immutable borrow.
@@ -860,6 +878,7 @@ pub(crate) fn run_ai_tick_with_navigation(
                         producer: DamageProducer::InTick,
                     },
                 );
+                on_impact(registry);
             }
             events.push(ENEMY_ATTACK_EVENT);
 

@@ -197,9 +197,15 @@ export interface BoolRef {
   select(whenTrue: NumberValue, whenFalse: NumberValue): NumberRef;
 }
 
-export type Effect = PrimitiveReactionDescriptor | Reaction<{}>;
+export type Effect =
+  | { primitive: "despawn"; target: "@impact.target"; args: { afterMs?: number } }
+  | { primitive: "playAnim"; target: "@impact.target"; args: { clip: string } }
+  | { primitive: "setHealth"; target: "@impact.target"; args: { value: RuntimeValue; afterMs?: number } }
+  | { primitive: "setState"; target: "@impact.target"; args: { name: string; value: RuntimeValue } }
+  | { primitive: "setState"; args: { slot: string; value: RuntimeValue }; target?: never };
 export type GatedEffect = { when?: BoolRef; do: readonly Effect[] };
 export type EffectOrGroup = Effect | GatedEffect;
+export type ImpactEventFilter = { tag?: string; levels?: readonly string[] };
 
 export interface TargetHandle {
   readonly healthBefore: NumberRef;
@@ -228,9 +234,11 @@ export type Impact = Readonly<{
 
 export interface ImpactEvent {
   readonly kind: "impact";
+  readonly isOverride: boolean;
+  readonly levels?: readonly string[];
   readonly [impactEventBrand]: true;
   override(
-    filter: { tag?: string },
+    filter: ImpactEventFilter,
     build: (impact: Impact) => readonly EffectOrGroup[],
   ): ImpactEvent;
 }
@@ -288,8 +296,8 @@ function boolRef(node: RuntimeValue): BoolRef {
 function impactEffect(
   primitive: string,
   args?: Record<string, unknown>,
-): PrimitiveReactionDescriptor {
-  return { primitive, target: "@impact.target", args } as unknown as PrimitiveReactionDescriptor;
+): Effect {
+  return { primitive, target: "@impact.target", args } as unknown as Effect;
 }
 
 const IMPACT_TARGET: TargetHandle = Object.freeze({
@@ -336,31 +344,27 @@ export function slot(ref: WritableStateRef<number>): NumberSlot {
   });
 }
 
-function autoImpactId(filter: { tag?: string }, policy: readonly EffectOrGroup[]): string {
-  const serialized = stableStringify({ filter, policy });
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < serialized.length; i++) {
-    hash ^= serialized.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return `reaction_${(hash >>> 0).toString(16).padStart(8, "0")}`;
-}
-
 function impactEvent(
   id: string,
   filter: { tag?: string },
   policy: readonly EffectOrGroup[],
+  levels?: readonly string[],
+  isOverride = false,
 ): ImpactEvent {
   const handle = {
     kind: "impact" as const,
     id,
+    isOverride,
     filter,
     policy,
-    override(overrideFilter: { tag?: string }, build: (impact: Impact) => readonly EffectOrGroup[]) {
+    ...(levels === undefined ? {} : { levels }),
+    override(overrideFilter: ImpactEventFilter, build: (impact: Impact) => readonly EffectOrGroup[]) {
       return impactEvent(
         id,
         Object.freeze({ tag: overrideFilter.tag }),
         lowerImpactPolicy(build(IMPACT)),
+        overrideFilter.levels,
+        true,
       );
     },
   } as ImpactEvent;
@@ -380,12 +384,13 @@ function lowerImpactPolicy(policy: readonly EffectOrGroup[]): readonly EffectOrG
 
 /** Define a pure impact-policy descriptor. Registration occurs only through a manifest's `events`. */
 export function defineImpactEvent(
-  filter: { tag?: string },
+  id: string,
+  filter: ImpactEventFilter,
   build: (impact: Impact) => readonly EffectOrGroup[],
 ): ImpactEvent {
   const eventFilter = Object.freeze({ tag: filter.tag });
   const policy = lowerImpactPolicy(build(IMPACT));
-  return impactEvent(autoImpactId(eventFilter, policy), eventFilter, policy);
+  return impactEvent(id, eventFilter, policy, filter.levels, false);
 }
 
 type ReactionTracer<S> = (params: S) => ReactionBody;

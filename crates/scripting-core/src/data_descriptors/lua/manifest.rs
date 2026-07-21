@@ -115,6 +115,8 @@ fn impact_event_from_lua(value: LuaValue) -> Result<ImpactEventDescriptor, Descr
 
     Ok(ImpactEventDescriptor {
         id: get_required_string_lua(&item, "id")?,
+        is_override: get_optional_bool_lua(&item, "isOverride")?.unwrap_or(false),
+        levels: string_array_from_lua(&item, "levels")?,
         filter_tag,
         policy: policy_json,
     })

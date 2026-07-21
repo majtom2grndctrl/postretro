@@ -274,12 +274,18 @@ fn run_headless_inner(
             // host-authoritative trigger stage is not driven (no use/overlap
             // routing), so triggers stay inert — declared out-of-frame in the dump.
             None,
+            |registry| {
+                session
+                    .scripting
+                    .impact_policy_runtime
+                    .evaluate_pending_in_registry(registry)
+            },
         );
-        session.scripting.impact_policy_runtime.evaluate_pending();
         crate::scripting_systems::slot_accumulators::evaluate_slot_accumulators(
             &mut session.scripting.slot_accumulator_bindings,
             TICK_DT,
         );
+        run_headless_frame_end_removals(&registry);
 
         // Skip building/pushing the owned-string record entirely when the dump
         // won't emit events — `build_output_document` discards this vec wholesale
@@ -323,6 +329,10 @@ fn run_headless_inner(
         )?
     };
     Ok(to_deterministic_json(&doc)?)
+}
+
+fn run_headless_frame_end_removals(registry: &Rc<RefCell<EntityRegistry>>) {
+    crate::impact_effects::run_end_of_frame_removal_pass(&mut registry.borrow_mut(), |_| {});
 }
 
 fn active_level_tags_for_headless_install() -> Vec<String> {
@@ -570,5 +580,21 @@ mod tests {
                 && msg.contains("15")),
             "expected a warn-level log naming the unreachable ticks, got: {captured:?}"
         );
+    }
+
+    #[test]
+    fn headless_frame_end_reaps_impact_marked_entities() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let target = registry
+            .borrow_mut()
+            .spawn(postretro_entities::Transform::default());
+        registry
+            .borrow_mut()
+            .mark_for_end_of_frame_removal(target)
+            .unwrap();
+
+        run_headless_frame_end_removals(&registry);
+
+        assert!(!registry.borrow().exists(target));
     }
 }

@@ -555,7 +555,7 @@ export type ModManifest = {
   frontend: Frontend?,
   --- Engine-global reaction definitions. Optional; survive level unload and compose into active level behavior by `levels` tag selectors.
   reactions: {NamedReactionDescriptor}?,
-  --- Pure impact-policy declarations. Optional; Task 5 composes base declarations and overrides by their SDK-derived identity at the impact dispatch chokepoint.
+  --- Pure impact-policy declarations. Optional; base declarations and overrides compose by their author-assigned identity at the impact dispatch chokepoint.
   events: {ImpactEvent}?,
   --- Engine-global state-crossing watchers. Optional; survive level unload and compose into active level behavior by `levels` tag selectors.
   crossings: {CrossingDescriptor}?,
@@ -1063,9 +1063,15 @@ export type BoolRef = {
   ["not"]: (self: BoolRef) -> BoolRef,
   select: (self: BoolRef, whenTrue: NumberValue, whenFalse: NumberValue) -> NumberRef,
 }
-export type Effect = PrimitiveReactionDescriptor | Reaction<{}>
+export type Effect =
+  { primitive: "despawn", target: "@impact.target", args: { afterMs: number? } }
+  | { primitive: "playAnim", target: "@impact.target", args: { clip: string } }
+  | { primitive: "setHealth", target: "@impact.target", args: { value: any, afterMs: number? } }
+  | { primitive: "setState", target: "@impact.target", args: { name: string, value: any } }
+  | { primitive: "setState", target: nil?, args: { slot: string, value: any } }
 export type GatedEffect = { when: BoolRef?, ["do"]: {Effect} }
 export type EffectOrGroup = Effect | GatedEffect
+export type ImpactEventFilter = { tag: string?, levels: {string}? }
 export type TargetHandle = {
   healthBefore: NumberRef,
   healthAfter: NumberRef,
@@ -1081,7 +1087,9 @@ export type NumberSlot = { add: (self: NumberSlot, delta: NumberValue) -> Effect
 export type Impact = { target: TargetHandle, source: SourceHandle, amount: NumberRef }
 export type ImpactEvent = {
   kind: "impact",
-  override: (self: ImpactEvent, filter: { tag: string? }, build: (Impact) -> {EffectOrGroup}) -> ImpactEvent,
+  isOverride: boolean,
+  levels: {string}?,
+  override: (self: ImpactEvent, filter: ImpactEventFilter, build: (Impact) -> {EffectOrGroup}) -> ImpactEvent,
 }
 
 --- Crossing condition: fires when the watched slot crosses the threshold in
@@ -1157,7 +1165,7 @@ declare defineReaction: (
 
 --- Define a pure impact-policy descriptor. Register it only by returning it
 --- through a manifest's `events` child.
-declare function defineImpactEvent(filter: { tag: string? }, build: (Impact) -> {EffectOrGroup}): ImpactEvent
+declare function defineImpactEvent(id: string, filter: ImpactEventFilter, build: (Impact) -> {EffectOrGroup}): ImpactEvent
 
 export type TriggerEventDescriptor = { tag: string, event: "enter" | "exit", fire: {string}, levels: {string}? }
 --- A seeded trap-pool declaration; exactly one arming form is required.

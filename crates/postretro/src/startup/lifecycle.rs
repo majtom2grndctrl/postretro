@@ -1399,7 +1399,8 @@ pub(crate) fn install_world_cpu(
                 postretro_ui::modal_stack::ScopeTier::Level,
             );
         }
-        impact_policy_runtime.replace_level_events(std::mem::take(&mut manifest.events));
+        impact_policy_runtime
+            .replace_level_events(std::mem::take(&mut manifest.events), active_level_tags);
         script_ctx
             .data_registry
             .borrow_mut()

@@ -2024,6 +2024,7 @@ impl ApplicationHandler for App {
                         let session = self.session.as_mut().expect("running session installed");
                         let hit_zone_store = &session.hit_zone_store;
                         let progress_tracker = &mut session.progress_tracker;
+                        let impact_policy_runtime = &mut session.scripting.impact_policy_runtime;
                         let trigger_system = &mut session.trigger_system;
                         let trigger_volume_bridge = &session.trigger_volume_bridge;
                         let trigger_bindings = &self.trigger_bindings;
@@ -2075,8 +2076,8 @@ impl ApplicationHandler for App {
                                 script_ctx: Some(script_ctx.clone()),
                                 use_edges: &trigger_use_edges,
                             }),
+                            |registry| impact_policy_runtime.evaluate_pending_in_registry(registry),
                         );
-                        session.scripting.impact_policy_runtime.evaluate_pending();
                         // A runtime-spawned host enemy receives a mesh only
                         // after the install-time whole-registry clip resolve.
                         // Drain its one-shot queue now: its archetype model and
@@ -2298,6 +2299,13 @@ impl ApplicationHandler for App {
                 let _crossings = frame_order::run_crossing_stage(self, engine_frame, applied);
                 if !script_ctx.system_commands.is_empty() {
                     self.dispatch_system_commands();
+                }
+
+                if let Some(session) = self.session.as_mut() {
+                    session
+                        .scripting
+                        .impact_policy_runtime
+                        .discard_app_drain_pending();
                 }
 
                 // Terminal impact effects stay live through every post-catch-up
@@ -5070,6 +5078,7 @@ impl App {
         let Some(session) = self.session.as_mut() else {
             return false;
         };
+        let impact_policy_runtime = &mut session.scripting.impact_policy_runtime;
         let Some(netcode::NetEndpoint::Host {
             server,
             allocator,
@@ -5095,6 +5104,7 @@ impl App {
             open_shots,
             pending_hit_declarations,
             *tick,
+            |registry| impact_policy_runtime.evaluate_pending_in_registry(registry),
         )
     }
 
@@ -6168,6 +6178,7 @@ mod tests {
                 },
                 TICK_DURATION.as_secs_f32(),
                 None,
+                |_| {},
             );
             frame_timing.push_state(InterpolableState::new(camera.position));
             pushed_states.push(frame_timing.current_state.position);
@@ -6548,6 +6559,7 @@ mod tests {
             },
             TICK_DURATION.as_secs_f32(),
             None,
+            |_| {},
         );
 
         assert_eq!(resolved_aim_origin, Some(camera.position));

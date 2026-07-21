@@ -128,6 +128,7 @@ pub(crate) fn simulate_tick(
     mut post_movement: impl FnMut(&Rc<RefCell<EntityRegistry>>) -> PostMovementCommand,
     tick_dt: f32,
     trigger_context: Option<TriggerTickContext<'_>>,
+    mut on_impact: impl FnMut(&mut EntityRegistry),
 ) -> TickEvents {
     registry.borrow_mut().snapshot_transforms();
 
@@ -277,12 +278,13 @@ pub(crate) fn simulate_tick(
     }
     let ai = {
         let mut registry = registry.borrow_mut();
-        scripting_systems::ai::run_ai_tick_with_navigation(
+        scripting_systems::ai::run_ai_tick_with_navigation_and_impact(
             &mut registry,
             ai_warned,
             tick_dt,
             nav_graph,
             Some(collision_world),
+            &mut on_impact,
         )
     };
 
@@ -320,6 +322,7 @@ pub(crate) fn simulate_tick(
         hit_zone_store,
         anim_time,
         tick_dt,
+        &mut on_impact,
     );
     reload_deliveries.extend(local_deliveries);
     weapon.extend(remote_weapon_events);
@@ -977,6 +980,7 @@ fn run_local_weapon_command(
     hit_zone_store: &HitZoneStore,
     anim_time: f64,
     tick_dt: f32,
+    on_impact: &mut impl FnMut(&mut EntityRegistry),
 ) -> (Vec<ReloadDelivery>, Vec<&'static str>) {
     let Some(weapon_id) = active_wieldable else {
         return (Vec::new(), Vec::new());
@@ -1016,6 +1020,7 @@ fn run_local_weapon_command(
         weapon::spawn_impact_effect_at(&mut registry, impact.point, impact.normal);
         let attacker = pawn;
         apply_weapon_impact_damage(&mut registry, active_wieldable, attacker, impact);
+        on_impact(&mut registry);
     }
     (deliveries, events.event_names())
 }
@@ -1478,6 +1483,7 @@ mod tests {
             },
             1.0 / 60.0,
             None,
+            |_| {},
         )
     }
 
@@ -1512,6 +1518,7 @@ mod tests {
             },
             tick_dt,
             None,
+            |_| {},
         )
     }
 
@@ -1701,6 +1708,7 @@ mod tests {
                 script_ctx: Some(script_ctx.clone()),
                 use_edges: &use_edges,
             }),
+            |_| {},
         );
 
         assert_eq!(events.trigger_residuals.len(), 1);
@@ -1820,6 +1828,7 @@ mod tests {
                 script_ctx: Some(script_ctx.clone()),
                 use_edges: &use_edges,
             }),
+            |_| {},
         );
         let registry_ref = registry.borrow();
         assert!(
@@ -1954,6 +1963,7 @@ mod tests {
                     script_ctx: Some(script_ctx.clone()),
                     use_edges: &use_edges,
                 }),
+                |_| {},
             );
 
             assert_eq!(
@@ -2506,6 +2516,7 @@ mod tests {
             },
             0.25,
             None,
+            |_| {},
         );
 
         assert_eq!(

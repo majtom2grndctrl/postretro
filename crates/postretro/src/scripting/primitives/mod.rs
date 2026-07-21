@@ -598,7 +598,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field(
             "events?",
             "Vec<ImpactEvent>",
-            "Pure impact-policy declarations. Optional; Task 5 composes base declarations and overrides by their SDK-derived identity at the impact dispatch chokepoint.",
+            "Pure impact-policy declarations. Optional; base declarations and overrides compose by their author-assigned identity at the impact dispatch chokepoint.",
         )
         .field(
             "crossings?",

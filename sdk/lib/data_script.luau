@@ -208,9 +208,15 @@ export type BoolRef = {
   select: (self: BoolRef, whenTrue: NumberValue, whenFalse: NumberValue) -> NumberRef,
 }
 
-export type Effect = PrimitiveReactionDescriptor | Reaction<{}>
+export type Effect =
+  { primitive: "despawn", target: "@impact.target", args: { afterMs: number? } }
+  | { primitive: "playAnim", target: "@impact.target", args: { clip: string } }
+  | { primitive: "setHealth", target: "@impact.target", args: { value: any, afterMs: number? } }
+  | { primitive: "setState", target: "@impact.target", args: { name: string, value: any } }
+  | { primitive: "setState", target: nil?, args: { slot: string, value: any } }
 export type GatedEffect = { when: BoolRef?, ["do"]: {Effect} }
 export type EffectOrGroup = Effect | GatedEffect
+export type ImpactEventFilter = { tag: string?, levels: {string}? }
 
 export type TargetHandle = {
   healthBefore: NumberRef,
@@ -237,7 +243,9 @@ export type Impact = {
 
 export type ImpactEvent = {
   kind: "impact",
-  override: (self: ImpactEvent, filter: { tag: string? }, build: (Impact) -> {EffectOrGroup}) -> ImpactEvent,
+  isOverride: boolean,
+  levels: {string}?,
+  override: (self: ImpactEvent, filter: ImpactEventFilter, build: (Impact) -> {EffectOrGroup}) -> ImpactEvent,
 }
 
 --- Bundle returned from `setupLevel`. The engine deserializes
@@ -529,7 +537,7 @@ boolRef = function(node: any): BoolRef
   return table.freeze(ref) :: any
 end
 
-local function impactEffect(primitive: string, args: { [string]: any }?): PrimitiveReactionDescriptor
+local function impactEffect(primitive: string, args: { [string]: any }?): Effect
   return { primitive = primitive, target = "@impact.target", args = args } :: any
 end
 
@@ -564,22 +572,15 @@ local IMPACT: Impact = table.freeze({
   amount = numberRef({ op = "input", name = "@impact.amount" }),
 })
 
-local function autoImpactId(filter: { tag: string? }, policy: {EffectOrGroup}): string
-  local serialized = stableStringify({ filter = filter, policy = policy })
-  local hash = 0x811c9dc5
-  for i = 1, #serialized do
-    hash = bit32.bxor(hash, string.byte(serialized, i))
-    hash = bit32.band(hash * 0x01000193, 0xffffffff)
-  end
-  return string.format("reaction_%08x", hash)
-end
-
 local lowerImpactPolicy: (policy: {EffectOrGroup}) -> {EffectOrGroup}
 
-local function impactEvent(id: string, filter: { tag: string? }, policy: {EffectOrGroup}): ImpactEvent
-  local handle: any = { kind = "impact", id = id, filter = filter, policy = policy }
-  handle.override = function(_self: ImpactEvent, overrideFilter: { tag: string? }, build: (Impact) -> {EffectOrGroup}): ImpactEvent
-    return impactEvent(id, table.freeze({ tag = overrideFilter.tag }), lowerImpactPolicy(build(IMPACT)))
+local function impactEvent(id: string, filter: { tag: string? }, policy: {EffectOrGroup}, levels: {string}?, isOverride: boolean): ImpactEvent
+  local handle: any = { kind = "impact", id = id, isOverride = isOverride, filter = filter, policy = policy }
+  if levels ~= nil then
+    handle.levels = levels
+  end
+  handle.override = function(_self: ImpactEvent, overrideFilter: ImpactEventFilter, build: (Impact) -> {EffectOrGroup}): ImpactEvent
+    return impactEvent(id, table.freeze({ tag = overrideFilter.tag }), lowerImpactPolicy(build(IMPACT)), overrideFilter.levels, true)
   end
   return table.freeze(handle) :: any
 end
@@ -615,12 +616,13 @@ function DataScriptSdk.slot(ref: WritableStateRef<number>): NumberSlot
 end
 
 function DataScriptSdk.defineImpactEvent(
-  filter: { tag: string? },
+  id: string,
+  filter: ImpactEventFilter,
   build: (Impact) -> {EffectOrGroup}
 ): ImpactEvent
   local eventFilter = table.freeze({ tag = filter.tag })
   local policy = lowerImpactPolicy(build(IMPACT))
-  return impactEvent(autoImpactId(eventFilter, policy), eventFilter, policy)
+  return impactEvent(id, eventFilter, policy, filter.levels, false)
 end
 
 --- Build a named reaction descriptor. Pure: returns a plain table, no FFI.

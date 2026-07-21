@@ -645,23 +645,27 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
             },
           ];
         };
-        const base = defineImpactEvent({ tag: "crate" }, breakable);
+        const base = defineImpactEvent("salvage:crate-break", { tag: "crate", levels: ["campaign"] }, breakable);
         const override = base.override({ tag: "reinforced_crate" }, (impact) => [
           impact.target.despawn({ afterMs: 15 }),
         ]);
-        const independent = defineImpactEvent({ tag: "vase" }, breakable);
+        const independent = defineImpactEvent("salvage:vase-break", { tag: "vase" }, breakable);
         const wire = (event: ImpactEvent) => {
           const descriptor = event as unknown as {
             kind: "impact";
             id: string;
+            isOverride: boolean;
             filter: { tag?: string };
             policy: unknown[];
+            levels?: string[];
           };
           return {
             kind: descriptor.kind,
             id: descriptor.id,
+            isOverride: descriptor.isOverride,
             filter: descriptor.filter,
             policy: descriptor.policy,
+            levels: descriptor.levels,
           };
         };
         JSON.stringify({ base: wire(base), override: wire(override), independent: wire(independent) });
@@ -692,24 +696,26 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
             },
           }
         end
-        local base = Postretro.defineImpactEvent({ tag = "crate" }, breakable)
+        local base = Postretro.defineImpactEvent("salvage:crate-break", { tag = "crate", levels = { "campaign" } }, breakable)
         local override = base:override({ tag = "reinforced_crate" }, function(impact)
           return { impact.target:despawn({ afterMs = 15 }) }
         end)
-        local independent = Postretro.defineImpactEvent({ tag = "vase" }, breakable)
+        local independent = Postretro.defineImpactEvent("salvage:vase-break", { tag = "vase" }, breakable)
         local function wire(event)
           return {
             kind = event.kind,
             id = event.id,
+            isOverride = event.isOverride,
             filter = event.filter,
             policy = event.policy,
+            levels = event.levels,
           }
         end
         return { base = wire(base), override = wire(override), independent = wire(independent) }
     "#;
 
-    let mut typescript = quickjs_fixture_value(TYPESCRIPT_FIXTURE);
-    let mut luau = luau_fixture_value(LUAU_FIXTURE);
+    let typescript = quickjs_fixture_value(TYPESCRIPT_FIXTURE);
+    let luau = luau_fixture_value(LUAU_FIXTURE);
 
     for values in [&typescript, &luau] {
         let base_id = values["base"]["id"].as_str().expect("base impact id");
@@ -725,30 +731,23 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
         );
         assert_ne!(
             base_id, independent_id,
-            "independent filters must affect the id"
+            "independent author ids must remain distinct"
         );
-        assert!(
-            base_id.starts_with("reaction_"),
-            "impact ids use the shared FNV-derived reaction_ prefix"
-        );
+        assert_eq!(base_id, "salvage:crate-break");
+        assert_eq!(independent_id, "salvage:vase-break");
     }
 
-    // The existing SDK documents that its TS and Luau FNV implementations do
-    // not promise cross-runtime auto-id equality. Compare the descriptor body
-    // byte-for-byte after removing that implementation-local id.
-    for values in [&mut typescript, &mut luau] {
-        for key in ["base", "override", "independent"] {
-            values[key]
-                .as_object_mut()
-                .expect("impact descriptor object")
-                .remove("id");
-        }
-    }
-    assert_eq!(typescript, luau, "impact policy SDK lowering diverged");
+    assert_eq!(
+        typescript, luau,
+        "impact ids and policy lowering must match across runtimes"
+    );
 
     let base = &typescript["base"];
     assert_eq!(base["kind"], "impact");
+    assert_eq!(base["isOverride"], false);
+    assert_eq!(typescript["override"]["isOverride"], true);
     assert_eq!(base["filter"], serde_json::json!({ "tag": "crate" }));
+    assert_eq!(base["levels"], serde_json::json!(["campaign"]));
     assert_eq!(
         base["policy"][0],
         serde_json::json!({

@@ -556,7 +556,7 @@ declare module "postretro" {
     frontend?: Frontend;
     /** Engine-global reaction definitions. Optional; survive level unload and compose into active level behavior by `levels` tag selectors. */
     reactions?: ReadonlyArray<NamedReactionDescriptor>;
-    /** Pure impact-policy declarations. Optional; Task 5 composes base declarations and overrides by their SDK-derived identity at the impact dispatch chokepoint. */
+    /** Pure impact-policy declarations. Optional; base declarations and overrides compose by their author-assigned identity at the impact dispatch chokepoint. */
     events?: ReadonlyArray<ImpactEvent>;
     /** Engine-global state-crossing watchers. Optional; survive level unload and compose into active level behavior by `levels` tag selectors. */
     crossings?: ReadonlyArray<CrossingDescriptor>;
@@ -993,9 +993,15 @@ declare module "postretro" {
     not(): BoolRef;
     select(whenTrue: NumberValue, whenFalse: NumberValue): NumberRef;
   }
-  export type Effect = PrimitiveReactionDescriptor | Reaction<{}>;
+  export type Effect =
+    | { primitive: "despawn"; target: "@impact.target"; args: { afterMs?: number } }
+    | { primitive: "playAnim"; target: "@impact.target"; args: { clip: string } }
+    | { primitive: "setHealth"; target: "@impact.target"; args: { value: RuntimeValue; afterMs?: number } }
+    | { primitive: "setState"; target: "@impact.target"; args: { name: string; value: RuntimeValue } }
+    | { primitive: "setState"; args: { slot: string; value: RuntimeValue }; target?: never };
   export type GatedEffect = { when?: BoolRef; do: readonly Effect[] };
   export type EffectOrGroup = Effect | GatedEffect;
+  export type ImpactEventFilter = { tag?: string; levels?: readonly string[] };
   export interface TargetHandle {
     readonly healthBefore: NumberRef;
     readonly healthAfter: NumberRef;
@@ -1011,8 +1017,10 @@ declare module "postretro" {
   export type Impact = Readonly<{ target: TargetHandle; source: SourceHandle; amount: NumberRef }>;
   export interface ImpactEvent {
     readonly kind: "impact";
+    readonly isOverride: boolean;
+    readonly levels?: readonly string[];
     readonly [impactEventBrand]: true;
-    override(filter: { tag?: string }, build: (impact: Impact) => readonly EffectOrGroup[]): ImpactEvent;
+    override(filter: ImpactEventFilter, build: (impact: Impact) => readonly EffectOrGroup[]): ImpactEvent;
   }
 
   /** Crossing condition: fires when the watched slot crosses the threshold in one direction. Exactly one of `below`/`above` is given. `max` is the denominator the threshold is a fraction of; omit it for a raw-value comparison (`max` defaults to `1.0`). */
@@ -1084,7 +1092,8 @@ declare module "postretro" {
 
   /** Define a pure impact-policy descriptor. Register it only by returning it through `events`. */
   export function defineImpactEvent(
-    filter: { tag?: string },
+    id: string,
+    filter: ImpactEventFilter,
     build: (impact: Impact) => readonly EffectOrGroup[],
   ): ImpactEvent;
   export function defineReaction(

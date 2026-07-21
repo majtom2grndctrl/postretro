@@ -15,7 +15,7 @@ One Opus agent, one lens: execution. Not a general spec review — run it only a
 
 ## Premise
 
-`/orchestrate` gives each task agent ONLY: its own task paragraph, the plan's Goal, the plan's AC list, the `context/lib/` router, and source access. No Scope section, no other tasks' text, no full plan document. This review simulates that contract.
+`/orchestrate` gives each task agent ONLY: its own task paragraph, the plan's Goal, the plan's AC list, the plan's Invariants table (when present), the `context/lib/` router, and source access. No Scope section, no other tasks' text, no full plan document. This review simulates that contract.
 
 The contract is defined normatively in `/orchestrate`. If the two disagree, `/orchestrate` wins — update this skill to match.
 
@@ -31,11 +31,12 @@ Inline the full spec content in the prompt — paths drift. Also pass: the locke
 
 The agent answers two questions, exhaustively:
 
-**Q1 — per task:** would a fresh agent with only this paragraph + the plan Goal + the AC list + lib docs + source access build the RIGHT thing?
+**Q1 — per task:** would a fresh agent with only this paragraph + the plan Goal + the AC list + the Invariants table + lib docs + source access build the RIGHT thing?
 - Does the paragraph name every file/seam to touch, or are there unstated call sites to discover?
 - Are earlier phases' outputs identified well enough to find in the tree (the agent can't read their task text)?
 - Is any load-bearing detail stated only in Scope, where a task-only reader misses it?
 - Could a literal reading satisfy the task text while violating the spec's intent?
+- Could the task complete while breaking an Invariants row it establishes or threatens — and would any AC catch it?
 
 **Q2 — per AC:** realistically achievable against the actual codebase, and a sound metric?
 - Verify achievability against source: round-trip claims vs. serde behavior, counters/seams the assertions need (`#[cfg(test)]` gating), whether warns/logs are observable by the harness, fixture literals vs. type choices.

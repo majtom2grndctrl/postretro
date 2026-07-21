@@ -22,6 +22,7 @@ paragraphs; structural rework invalidates them, so sequencing matters.
 
 - Its own task paragraph
 - The plan's acceptance criteria
+- The plan's Invariants table, when present
 - The `context/lib/` router
 - Source access
 
@@ -50,7 +51,7 @@ the prompt; paths drift. Also pass:
 The reviewer answers two questions exhaustively.
 
 **Q1 — Per Task:** would a fresh agent with only this paragraph, the AC list,
-lib docs, and source access build the right thing?
+the Invariants table, lib docs, and source access build the right thing?
 
 - Does the paragraph name every file or seam to touch, or are there unstated
   call sites to discover?
@@ -60,6 +61,8 @@ lib docs, and source access build the right thing?
   misses it?
 - Could a literal reading satisfy the task text while violating the spec's
   intent?
+- Could the task complete while breaking an Invariants row it establishes or
+  threatens — and would any AC catch it?
 
 **Q2 — Per AC:** is each AC realistically achievable against the actual
 codebase, and is it a sound metric?

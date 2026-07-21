@@ -42,6 +42,8 @@ Use subagents for exploration — codebase reading, pattern discovery, doc looku
 
 **Oversized-file watch.** Watch source-file size while grounding. Flag any file already past ~800 lines that the plan will extend — a soft smell, not a gate. A cohesive 900-line table is fine; a tangled 600-line module may not be. Carry the flag forward as a split-first task (§3).
 
+**Lifecycle diagram before tasks.** When the plan changes state or timing across seams — latches, deferred effects, cross-frame hand-offs, multi-stage event flows — draw the full lifecycle as a Mermaid diagram before writing tasks: `sequenceDiagram` for cross-seam flows (frame boundaries as explicit participants when timing matters), `stateDiagram-v2` for latch/FSM lifecycles. Every arrow must correspond to a call site verified under the code-grounding rule — no arrow you haven't read. Prose lets a timing gap go unnoticed; a diagram makes it unwritable. Derive the Invariants table (§3) and task boundaries from the diagram. The diagram itself lands in `research.md`, unless it is the clearest statement of a pinned decision — then it belongs in the spec.
+
 **Research notes stay out of the spec.** If findings are useful but don't drive decisions, put them in a sibling `research.md` in the plan folder. The spec captures decisions and behavior, not the investigation that produced them.
 
 ### 3. Write the spec
@@ -98,6 +100,15 @@ Pin casing and encoding once for every cross-boundary name. Reference this inven
 
 For each new binary surface, pin: endianness, integer signedness, length-prefix integer width, entry-count placement, per-entry field order, empty-list encoding, sentinel/null representation per runtime. State explicitly which existing section the new layout mirrors.
 
+## Invariants
+(Required when a behavioral guarantee — exactly/at-most-once, ordering, state reachability, timing — is established or preserved across more than one task or seam. Skip otherwise.)
+
+Pin each cross-task invariant once. `/orchestrate` hands this table to every task agent alongside the Goal and AC list — reference rows from task paragraphs instead of restating.
+
+| Invariant | Established by | Preserved / threatened at | Verified by |
+|---|---|---|---|
+| (example) Kill reported exactly once, at removal | Task 1 (sweep latch), Task 2 (removal-pass sink) | `setHealth` clears latch + pending credit; direct `registry.despawn` bypasses the sink | AC 7, 8, 9 |
+
 ## Script syntax examples
 Show examples of what scripts authored by modders utilizing this functionality would look like (only use section when applicable).
 
@@ -109,7 +120,7 @@ Unresolved items, risks, alternatives considered, if applicable (only use sectio
 
 **Plumbing rule.** Every "edit X to do Y" instruction must say how X gets access to what it needs. New side-tables need owners. New struct fields need writer call-sites. Function signature changes need their callers enumerated. Don't punt access plumbing to the implementer — the implementer has less context than the spec author.
 
-**Task-paragraph contract.** Each task paragraph is an execution contract: `/orchestrate` hands a task agent only its own paragraph, the plan's Goal, and the AC list — never the Scope section. Don't point at Scope ("the list in Scope"); inline load-bearing enumerations in the task paragraph, or pin them in an AC. The AC list is the only shared channel across tasks.
+**Task-paragraph contract.** Each task paragraph is an execution contract: `/orchestrate` hands a task agent only its own paragraph, the plan's Goal, the AC list, and the Invariants table when present — never the Scope section. Don't point at Scope ("the list in Scope"); inline load-bearing enumerations in the task paragraph, or pin them in an AC. The AC list and Invariants table are the only shared channels across tasks.
 
 **Split-before-extend rule.** When the plan adds functionality to a source file already past ~800 lines, split it first — a behavior-preserving task that breaks the file along seams you already see. Sequence the split right before the task that extends that file; don't drag an off-critical-path file forward. Splitting and extending in one task buries a refactor inside a feature diff — keep them separate.
 
@@ -143,8 +154,9 @@ Before committing, walk the spec twice:
 
 - **Task → AC.** For every task line item, ask: "What AC verifies this behavior?" If nothing does, either the AC is missing or the task should drop.
 - **AC → task.** For every AC, ask: "Which task produces the behavior this verifies?" If nothing does, either the task is missing or the AC is aspirational.
+- **Invariant → task + AC.** (When the Invariants table exists.) For every row, ask: "Which task owns each establishing and preserving edit, and which AC verifies the guarantee?" An invariant a task can break without failing any AC is the gap the two walks above can't see.
 
-Both directions must close. Gaps signal that something was assumed without being written down.
+All directions must close. Gaps signal that something was assumed without being written down.
 
 ### 7. Commit
 

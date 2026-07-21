@@ -3,6 +3,7 @@
 // See: context/lib/scripting.md §2 (Data context lifecycle)
 
 import type { ReadonlyStateRef, WritableStateRef } from "./ui/widgets";
+import type { RuntimeValue } from "postretro";
 
 /** Dispatch values published by a state-crossing fire. */
 export type CrossingParams = Readonly<{
@@ -109,6 +110,8 @@ export type NamedReactionDescriptor = { name: string; levels?: string[] } & (
  */
 export type LevelManifest = {
   reactions: NamedReactionDescriptor[];
+  /** Impact-policy declarations. Registration occurs only through this manifest child. */
+  events?: readonly ImpactEvent[];
   /** State-crossing watchers (HUD dynamics). See `onStateCrossing`. */
   crossings?: import("./ui/reactions").CrossingDescriptor[];
   triggerEvents?: TriggerEventDescriptor[];
@@ -158,6 +161,266 @@ declare const reactionScopeBrand: unique symbol;
 export type Reaction<S = {}> = NamedReactionDescriptor & {
   readonly [reactionScopeBrand]?: (scope: S) => void;
 };
+
+// Impact policies use the shipped, closed runtime IR without widening its
+// evaluator vocabulary. Refs keep the raw node private so only descriptor
+// builders can lower them into manifest data.
+declare const numBrand: unique symbol;
+declare const boolBrand: unique symbol;
+declare const sourceBrand: unique symbol;
+declare const impactEventBrand: unique symbol;
+declare const effectBrand: unique symbol;
+
+export type NumberValue = number | NumberRef;
+export type BoolValue = boolean | BoolRef;
+
+export interface NumberRef {
+  readonly [numBrand]: true;
+  plus(n: NumberValue): NumberRef;
+  minus(n: NumberValue): NumberRef;
+  times(n: NumberValue): NumberRef;
+  dividedBy(n: NumberValue): NumberRef;
+  clamp(lo: NumberValue, hi: NumberValue): NumberRef;
+  lerp(to: NumberValue, t: NumberValue): NumberRef;
+  lt(n: NumberValue): BoolRef;
+  le(n: NumberValue): BoolRef;
+  gt(n: NumberValue): BoolRef;
+  ge(n: NumberValue): BoolRef;
+  eq(n: NumberValue): BoolRef;
+  ne(n: NumberValue): BoolRef;
+}
+
+export interface BoolRef {
+  readonly [boolBrand]: true;
+  and(other: BoolValue): BoolRef;
+  or(other: BoolValue): BoolRef;
+  not(): BoolRef;
+  select(whenTrue: NumberValue, whenFalse: NumberValue): NumberRef;
+}
+
+type ImpactEffectWire =
+  | { primitive: "despawn"; target: "@impact.target"; args: { afterMs?: number } }
+  | { primitive: "playAnim"; target: "@impact.target"; args: { clip: string } }
+  | { primitive: "setHealth"; target: "@impact.target"; args: { value: RuntimeValue; afterMs?: number } }
+  | { primitive: "setState"; target: "@impact.target"; args: { name: string; value: RuntimeValue } }
+  | { primitive: "slot.add"; args: { slot: string; delta: RuntimeValue } };
+
+/** Opaque closed impact effect. Construct through TargetHandle or slot(...).add(). */
+export interface Effect {
+  readonly [effectBrand]: true;
+}
+export type GatedEffect = { when?: BoolRef; do: readonly Effect[] };
+export type EffectOrGroup = Effect | GatedEffect;
+export type ImpactEventFilter = { tag?: string; levels?: readonly string[] };
+export type ImpactEventOverrideFilter = { tag: string; levels?: readonly string[] };
+
+export interface TargetHandle {
+  readonly healthBefore: NumberRef;
+  readonly healthAfter: NumberRef;
+  readonly maxHealth: NumberRef;
+  despawn(opts?: { afterMs?: number }): Effect;
+  playAnim(clip: string): Effect;
+  setHealth(value: NumberValue, opts?: { afterMs?: number }): Effect;
+  state(name: string): NumberRef;
+  setState(name: string, value: NumberValue): Effect;
+}
+
+export interface SourceHandle {
+  readonly [sourceBrand]: true;
+}
+
+export interface NumberSlot {
+  add(delta: NumberValue): Effect;
+}
+
+export type Impact = Readonly<{
+  target: TargetHandle;
+  source: SourceHandle;
+  amount: NumberRef;
+}>;
+
+export interface ImpactEvent {
+  readonly kind: "impact";
+  readonly isOverride: boolean;
+  readonly levels?: readonly string[];
+  readonly [impactEventBrand]: true;
+  override(
+    filter: ImpactEventOverrideFilter,
+    build: (impact: Impact) => readonly EffectOrGroup[],
+  ): ImpactEvent;
+}
+
+const numberNodes = new WeakMap<object, RuntimeValue>();
+const boolNodes = new WeakMap<object, RuntimeValue>();
+
+function constant(value: number | boolean): RuntimeValue {
+  return { op: "const", value };
+}
+
+function numberNode(value: NumberValue): RuntimeValue {
+  return typeof value === "number" ? constant(value) : numberNodes.get(value)!;
+}
+
+function boolNode(value: BoolValue): RuntimeValue {
+  return typeof value === "boolean" ? constant(value) : boolNodes.get(value)!;
+}
+
+function numberRef(node: RuntimeValue): NumberRef {
+  const ref: NumberRef = {
+    plus: (n) => numberRef({ op: "add", a: node, b: numberNode(n) }),
+    minus: (n) => numberRef({ op: "sub", a: node, b: numberNode(n) }),
+    times: (n) => numberRef({ op: "mul", a: node, b: numberNode(n) }),
+    dividedBy: (n) => numberRef({ op: "div", a: node, b: numberNode(n) }),
+    clamp: (lo, hi) => numberRef({ op: "clamp", x: node, lo: numberNode(lo), hi: numberNode(hi) }),
+    lerp: (to, t) => numberRef({ op: "lerp", a: node, b: numberNode(to), t: numberNode(t) }),
+    lt: (n) => boolRef({ op: "lt", a: node, b: numberNode(n) }),
+    le: (n) => boolRef({ op: "le", a: node, b: numberNode(n) }),
+    gt: (n) => boolRef({ op: "gt", a: node, b: numberNode(n) }),
+    ge: (n) => boolRef({ op: "ge", a: node, b: numberNode(n) }),
+    eq: (n) => boolRef({ op: "eq", a: node, b: numberNode(n) }),
+    ne: (n) => boolRef({ op: "ne", a: node, b: numberNode(n) }),
+  } as NumberRef;
+  numberNodes.set(ref, node);
+  return Object.freeze(ref);
+}
+
+function boolRef(node: RuntimeValue): BoolRef {
+  const ref: BoolRef = {
+    and: (other) => boolRef({ op: "select", cond: node, a: boolNode(other), b: constant(false) }),
+    or: (other) => boolRef({ op: "select", cond: node, a: constant(true), b: boolNode(other) }),
+    not: () => boolRef({ op: "select", cond: node, a: constant(false), b: constant(true) }),
+    select: (whenTrue, whenFalse) => numberRef({
+      op: "select",
+      cond: node,
+      a: numberNode(whenTrue),
+      b: numberNode(whenFalse),
+    }),
+  } as BoolRef;
+  boolNodes.set(ref, node);
+  return Object.freeze(ref);
+}
+
+function impactEffect(
+  primitive: string,
+  args?: Record<string, unknown>,
+): Effect {
+  return { primitive, target: "@impact.target", args } as ImpactEffectWire as unknown as Effect;
+}
+
+const IMPACT_TARGET: TargetHandle = Object.freeze({
+  healthBefore: numberRef({ op: "input", name: "@impact.healthBefore" }),
+  healthAfter: numberRef({ op: "input", name: "@impact.healthAfter" }),
+  maxHealth: numberRef({ op: "input", name: "@impact.maxHealth" }),
+  despawn(opts) {
+    return impactEffect("despawn", opts?.afterMs === undefined ? {} : { afterMs: opts.afterMs });
+  },
+  playAnim(clip) {
+    return impactEffect("playAnim", { clip });
+  },
+  setHealth(value, opts) {
+    const args: Record<string, unknown> = { value: numberNode(value) };
+    if (opts?.afterMs !== undefined) args.afterMs = opts.afterMs;
+    return impactEffect("setHealth", args);
+  },
+  state(name) {
+    return numberRef({ op: "input", name: `@state.${name}` });
+  },
+  setState(name, value) {
+    return impactEffect("setState", { name, value: numberNode(value) });
+  },
+});
+
+const IMPACT: Impact = Object.freeze({
+  target: IMPACT_TARGET,
+  source: Object.freeze({}) as SourceHandle,
+  amount: numberRef({ op: "input", name: "@impact.amount" }),
+});
+
+/** Build the closed additive store-write effect. */
+export function slot(ref: WritableStateRef<number>): NumberSlot {
+  return Object.freeze({
+    add(delta: NumberValue): Effect {
+      return {
+        primitive: "slot.add",
+        args: {
+          slot: ref.slot,
+          delta: numberNode(delta),
+        },
+      } as ImpactEffectWire as unknown as Effect;
+    },
+  });
+}
+
+function impactEvent(
+  id: string,
+  filter: { tag?: string },
+  policy: readonly EffectOrGroup[],
+  levels?: readonly string[],
+  isOverride = false,
+): ImpactEvent {
+  const handle = {
+    kind: "impact" as const,
+    id,
+    isOverride,
+    filter,
+    policy,
+    ...(levels === undefined ? {} : { levels }),
+    override(overrideFilter: ImpactEventOverrideFilter, build: (impact: Impact) => readonly EffectOrGroup[]) {
+      if (typeof overrideFilter.tag !== "string") {
+        throw new TypeError("impact-event override filter requires `tag`");
+      }
+      return impactEvent(
+        id,
+        Object.freeze({ tag: overrideFilter.tag }),
+        lowerImpactPolicy(build(IMPACT)),
+        overrideFilter.levels,
+        true,
+      );
+    },
+  } as ImpactEvent;
+  return Object.freeze(handle);
+}
+
+function lowerImpactPolicy(policy: readonly EffectOrGroup[]): readonly EffectOrGroup[] {
+  assertDenseImpactArray(policy, "impact policy");
+  return policy.map((entry) => {
+    if ("do" in entry) {
+      const gated = entry as GatedEffect;
+      assertDenseImpactArray(gated.do, "impact policy group `do`");
+      const group: { when?: RuntimeValue; do: readonly Effect[] } = { do: gated.do };
+      if (gated.when !== undefined) group.when = boolNode(gated.when);
+      return group as EffectOrGroup;
+    }
+    return entry;
+  });
+}
+
+function assertDenseImpactArray(values: readonly unknown[], context: string): void {
+  for (let i = 0; i < values.length; i += 1) {
+    if (!(i in values)) throw new TypeError(`${context} must be a dense array; holes are not allowed`);
+  }
+}
+
+const IMPACT_EVENT_ID_DIAGNOSTIC = "impact-event `id` must be a namespaced ASCII string (for example \"salvage:crate-break\") using only [A-Za-z0-9_.-] within each colon-separated segment, at most 128 bytes";
+
+function validateImpactEventId(id: string): void {
+  const valid = id.length > 0
+    && id.length <= 128
+    && /^[A-Za-z0-9_.-]+(?::[A-Za-z0-9_.-]+)+$/.test(id);
+  if (!valid) throw new TypeError(IMPACT_EVENT_ID_DIAGNOSTIC);
+}
+
+/** Define a pure impact-policy descriptor. Registration occurs only through a manifest's `events`. */
+export function defineImpactEvent(
+  id: string,
+  filter: ImpactEventFilter,
+  build: (impact: Impact) => readonly EffectOrGroup[],
+): ImpactEvent {
+  validateImpactEventId(id);
+  const eventFilter = Object.freeze({ tag: filter.tag });
+  const policy = lowerImpactPolicy(build(IMPACT));
+  return impactEvent(id, eventFilter, policy, filter.levels, false);
+}
 
 type ReactionTracer<S> = (params: S) => ReactionBody;
 
@@ -325,7 +588,7 @@ export function defineEntity(
   return descriptor;
 }
 
-/** Identity builder for the mod manifest consumed from the default export. `config.name` is required; optional arrays include `entities`, `maps`, `uiTrees`, `reactions`, `crossings`, `triggerEvents`, `triggerPools`, and `stores`. Pure: no engine side effects until the manifest is returned and validated. */
+/** Identity builder for the mod manifest consumed from the default export. `config.name` is required; optional arrays include `entities`, `maps`, `uiTrees`, `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and `stores`. Pure: no engine side effects until the manifest is returned and validated. */
 export function defineMod(
   config: import("postretro").ModManifest,
 ): import("postretro").ModManifest {

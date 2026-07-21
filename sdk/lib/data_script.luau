@@ -41,6 +41,19 @@
 -- ```
 -- ---------------------------------------------------------------------
 
+-- Empty Luau tables have no sequence/map distinction. Runtime states provide
+-- mlua's private array metatable while this SDK module loads; capturing it here
+-- preserves only builder-owned descriptor arrays across serde. Standalone SDK
+-- evaluation used by focused tests falls back to ordinary tables.
+local DESCRIPTOR_ARRAY_METATABLE = rawget(_G, "__postretroArrayMetatable")
+
+local function descriptorArray(values: any): any
+  if DESCRIPTOR_ARRAY_METATABLE == nil then
+    return values
+  end
+  return setmetatable(values, DESCRIPTOR_ARRAY_METATABLE)
+end
+
 --- Progress-subscription reaction body: fires `fire` when entities tagged
 --- `tag` cross the kill ratio `at` (0.0–1.0).
 export type ProgressReactionDescriptor = {
@@ -183,6 +196,76 @@ export type TriggerEventParams = {
 }
 export type Reaction<S> = NamedReactionDescriptor
 
+export type NumberValue = number | NumberRef
+export type BoolValue = boolean | BoolRef
+
+export type NumberRef = {
+  plus: (self: NumberRef, n: NumberValue) -> NumberRef,
+  minus: (self: NumberRef, n: NumberValue) -> NumberRef,
+  times: (self: NumberRef, n: NumberValue) -> NumberRef,
+  dividedBy: (self: NumberRef, n: NumberValue) -> NumberRef,
+  clamp: (self: NumberRef, lo: NumberValue, hi: NumberValue) -> NumberRef,
+  lerp: (self: NumberRef, to: NumberValue, t: NumberValue) -> NumberRef,
+  lt: (self: NumberRef, n: NumberValue) -> BoolRef,
+  le: (self: NumberRef, n: NumberValue) -> BoolRef,
+  gt: (self: NumberRef, n: NumberValue) -> BoolRef,
+  ge: (self: NumberRef, n: NumberValue) -> BoolRef,
+  eq: (self: NumberRef, n: NumberValue) -> BoolRef,
+  ne: (self: NumberRef, n: NumberValue) -> BoolRef,
+}
+
+export type BoolRef = {
+  ["and"]: (self: BoolRef, other: BoolValue) -> BoolRef,
+  ["or"]: (self: BoolRef, other: BoolValue) -> BoolRef,
+  ["not"]: (self: BoolRef) -> BoolRef,
+  select: (self: BoolRef, whenTrue: NumberValue, whenFalse: NumberValue) -> NumberRef,
+}
+
+type ImpactEffectWire =
+  { primitive: "despawn", target: "@impact.target", args: { afterMs: number? } }
+  | { primitive: "playAnim", target: "@impact.target", args: { clip: string } }
+  | { primitive: "setHealth", target: "@impact.target", args: { value: any, afterMs: number? } }
+  | { primitive: "setState", target: "@impact.target", args: { name: string, value: any } }
+  | { primitive: "slot.add", args: { slot: string, delta: any } }
+type ImpactEffectCapability = { __impactEffectCapability: true }
+-- Constructors retain the only lowering capability. A hand-authored table is
+-- not an Effect, and every value that type-checks lowers to one closed wire arm.
+export type Effect = (ImpactEffectCapability) -> ImpactEffectWire
+export type GatedEffect = { when: BoolRef?, ["do"]: {Effect} }
+export type EffectOrGroup = Effect | GatedEffect
+export type ImpactEventFilter = { tag: string?, levels: {string}? }
+export type ImpactEventOverrideFilter = { tag: string, levels: {string}? }
+
+export type TargetHandle = {
+  healthBefore: NumberRef,
+  healthAfter: NumberRef,
+  maxHealth: NumberRef,
+  despawn: (self: TargetHandle, opts: { afterMs: number? }?) -> Effect,
+  playAnim: (self: TargetHandle, clip: string) -> Effect,
+  setHealth: (self: TargetHandle, value: NumberValue, opts: { afterMs: number? }?) -> Effect,
+  state: (self: TargetHandle, name: string) -> NumberRef,
+  setState: (self: TargetHandle, name: string, value: NumberValue) -> Effect,
+}
+
+export type SourceHandle = { __impactSourceBrand: true }
+
+export type NumberSlot = {
+  add: (self: NumberSlot, delta: NumberValue) -> Effect,
+}
+
+export type Impact = {
+  target: TargetHandle,
+  source: SourceHandle,
+  amount: NumberRef,
+}
+
+export type ImpactEvent = {
+  kind: "impact",
+  isOverride: boolean,
+  levels: {string}?,
+  override: (self: ImpactEvent, filter: ImpactEventOverrideFilter, build: (Impact) -> {EffectOrGroup}) -> ImpactEvent,
+}
+
 --- Bundle returned from `setupLevel`. The engine deserializes
 --- this shape in one pass at level load and drops the data-script VM
 --- context after the return.
@@ -190,6 +273,7 @@ export type Reaction<S> = NamedReactionDescriptor
 --- `ModManifest.entities`, not here.
 export type LevelManifest = {
   reactions: {NamedReactionDescriptor},
+  events: {ImpactEvent}?,
   -- State-crossing watchers (HUD dynamics). `CrossingDescriptor` is declared
   -- in postretro.d.luau (the generated SDK-lib type block). See
   -- `onStateCrossing`.
@@ -389,6 +473,251 @@ local function autoReactionId(descriptor: any): string
   return string.format("reaction_%08x", hash)
 end
 
+local numberNodes: {[any]: any} = {}
+local boolNodes: {[any]: any} = {}
+local boolRef: (node: any) -> BoolRef
+
+local function constant(value: number | boolean): any
+  return { op = "const", value = value }
+end
+
+local function numberNode(value: NumberValue): any
+  if type(value) == "number" then
+    return constant(value)
+  end
+  return numberNodes[value]
+end
+
+local function boolNode(value: BoolValue): any
+  if type(value) == "boolean" then
+    return constant(value)
+  end
+  return boolNodes[value]
+end
+
+local function numberRef(node: any): NumberRef
+  local ref: any = {}
+  ref.plus = function(_self: NumberRef, n: NumberValue): NumberRef
+    return numberRef({ op = "add", a = node, b = numberNode(n) })
+  end
+  ref.minus = function(_self: NumberRef, n: NumberValue): NumberRef
+    return numberRef({ op = "sub", a = node, b = numberNode(n) })
+  end
+  ref.times = function(_self: NumberRef, n: NumberValue): NumberRef
+    return numberRef({ op = "mul", a = node, b = numberNode(n) })
+  end
+  ref.dividedBy = function(_self: NumberRef, n: NumberValue): NumberRef
+    return numberRef({ op = "div", a = node, b = numberNode(n) })
+  end
+  ref.clamp = function(_self: NumberRef, lo: NumberValue, hi: NumberValue): NumberRef
+    return numberRef({ op = "clamp", x = node, lo = numberNode(lo), hi = numberNode(hi) })
+  end
+  ref.lerp = function(_self: NumberRef, to: NumberValue, t: NumberValue): NumberRef
+    return numberRef({ op = "lerp", a = node, b = numberNode(to), t = numberNode(t) })
+  end
+  ref.lt = function(_self: NumberRef, n: NumberValue): BoolRef
+    return boolRef({ op = "lt", a = node, b = numberNode(n) })
+  end
+  ref.le = function(_self: NumberRef, n: NumberValue): BoolRef
+    return boolRef({ op = "le", a = node, b = numberNode(n) })
+  end
+  ref.gt = function(_self: NumberRef, n: NumberValue): BoolRef
+    return boolRef({ op = "gt", a = node, b = numberNode(n) })
+  end
+  ref.ge = function(_self: NumberRef, n: NumberValue): BoolRef
+    return boolRef({ op = "ge", a = node, b = numberNode(n) })
+  end
+  ref.eq = function(_self: NumberRef, n: NumberValue): BoolRef
+    return boolRef({ op = "eq", a = node, b = numberNode(n) })
+  end
+  ref.ne = function(_self: NumberRef, n: NumberValue): BoolRef
+    return boolRef({ op = "ne", a = node, b = numberNode(n) })
+  end
+  numberNodes[ref] = node
+  return table.freeze(ref) :: any
+end
+
+boolRef = function(node: any): BoolRef
+  local ref: any = {}
+  ref["and"] = function(_self: BoolRef, other: BoolValue): BoolRef
+    return boolRef({ op = "select", cond = node, a = boolNode(other), b = constant(false) })
+  end
+  ref["or"] = function(_self: BoolRef, other: BoolValue): BoolRef
+    return boolRef({ op = "select", cond = node, a = constant(true), b = boolNode(other) })
+  end
+  ref["not"] = function(_self: BoolRef): BoolRef
+    return boolRef({ op = "select", cond = node, a = constant(false), b = constant(true) })
+  end
+  ref.select = function(_self: BoolRef, whenTrue: NumberValue, whenFalse: NumberValue): NumberRef
+    return numberRef({ op = "select", cond = node, a = numberNode(whenTrue), b = numberNode(whenFalse) })
+  end
+  boolNodes[ref] = node
+  return table.freeze(ref) :: any
+end
+
+local IMPACT_EFFECT_CAPABILITY: ImpactEffectCapability = table.freeze({ __impactEffectCapability = true })
+
+local function lowerImpactEffect(effect: Effect): ImpactEffectWire
+  return effect(IMPACT_EFFECT_CAPABILITY)
+end
+
+local function impactEffect(primitive: string, args: { [string]: any }?): Effect
+  local wire = { primitive = primitive, target = "@impact.target", args = args } :: any
+  return function(capability: ImpactEffectCapability): ImpactEffectWire
+    if capability ~= IMPACT_EFFECT_CAPABILITY then
+      error("impact effects can only be lowered by the SDK", 2)
+    end
+    return wire
+  end
+end
+
+local IMPACT_TARGET: TargetHandle = table.freeze({
+  healthBefore = numberRef({ op = "input", name = "@impact.healthBefore" }),
+  healthAfter = numberRef({ op = "input", name = "@impact.healthAfter" }),
+  maxHealth = numberRef({ op = "input", name = "@impact.maxHealth" }),
+  despawn = function(_self: TargetHandle, opts: { afterMs: number? }?): Effect
+    return impactEffect("despawn", if opts == nil or opts.afterMs == nil then {} else { afterMs = opts.afterMs })
+  end,
+  playAnim = function(_self: TargetHandle, clip: string): Effect
+    return impactEffect("playAnim", { clip = clip })
+  end,
+  setHealth = function(_self: TargetHandle, value: NumberValue, opts: { afterMs: number? }?): Effect
+    local args: {[string]: any} = { value = numberNode(value) }
+    if opts ~= nil and opts.afterMs ~= nil then
+      args.afterMs = opts.afterMs
+    end
+    return impactEffect("setHealth", args)
+  end,
+  state = function(_self: TargetHandle, name: string): NumberRef
+    return numberRef({ op = "input", name = "@state." .. name })
+  end,
+  setState = function(_self: TargetHandle, name: string, value: NumberValue): Effect
+    return impactEffect("setState", { name = name, value = numberNode(value) })
+  end,
+})
+
+local IMPACT: Impact = table.freeze({
+  target = IMPACT_TARGET,
+  source = table.freeze({}) :: any,
+  amount = numberRef({ op = "input", name = "@impact.amount" }),
+})
+
+local lowerImpactPolicy: (policy: {EffectOrGroup}) -> {EffectOrGroup}
+
+local function impactEvent(id: string, filter: { tag: string? }, policy: {EffectOrGroup}, levels: {string}?, isOverride: boolean): ImpactEvent
+  local handle: any = { kind = "impact", id = id, isOverride = isOverride, filter = filter, policy = policy }
+  if levels ~= nil then
+    handle.levels = levels
+  end
+  handle.override = function(_self: ImpactEvent, overrideFilter: ImpactEventOverrideFilter, build: (Impact) -> {EffectOrGroup}): ImpactEvent
+    if type(overrideFilter.tag) ~= "string" then
+      error("impact-event override filter requires `tag`", 2)
+    end
+    return impactEvent(id, table.freeze({ tag = overrideFilter.tag }), lowerImpactPolicy(build(IMPACT)), overrideFilter.levels, true)
+  end
+  return table.freeze(handle) :: any
+end
+
+local function denseImpactArrayLength(values: any, context: string): number
+  local count = 0
+  local maxIndex = 0
+  for key in pairs(values) do
+    if type(key) ~= "number" or key < 1 or key % 1 ~= 0 then
+      error(context .. " must be a dense array; holes are not allowed", 3)
+    end
+    count += 1
+    maxIndex = math.max(maxIndex, key)
+  end
+  if count ~= maxIndex then
+    error(context .. " must be a dense array; holes are not allowed", 3)
+  end
+  return maxIndex
+end
+
+lowerImpactPolicy = function(policy: {EffectOrGroup}): {EffectOrGroup}
+  local lowered: {EffectOrGroup} = descriptorArray({})
+  local policyLength = denseImpactArrayLength(policy, "impact policy")
+  for i = 1, policyLength do
+    local entry = policy[i]
+    if type(entry) == "function" then
+      lowered[i] = lowerImpactEffect(entry :: Effect) :: any
+    elseif type(entry) == "table" and entry["do"] ~= nil then
+      local authoredEffects = entry["do"]
+      local effectCount = denseImpactArrayLength(authoredEffects, "impact policy group `do`")
+      local effects = descriptorArray({})
+      for effectIndex = 1, effectCount do
+        effects[effectIndex] = lowerImpactEffect(authoredEffects[effectIndex])
+      end
+      local group: any = { ["do"] = effects }
+      if entry.when ~= nil then
+        group.when = boolNode(entry.when)
+      end
+      lowered[i] = group
+    else
+      lowered[i] = entry
+    end
+  end
+  return lowered
+end
+
+function DataScriptSdk.slot(ref: WritableStateRef<number>): NumberSlot
+  return table.freeze({
+    add = function(_self: NumberSlot, delta: NumberValue): Effect
+      local wire = {
+        primitive = "slot.add",
+        args = {
+          slot = ref.slot,
+          delta = numberNode(delta),
+        },
+      } :: any
+      return function(capability: ImpactEffectCapability): ImpactEffectWire
+        if capability ~= IMPACT_EFFECT_CAPABILITY then
+          error("impact effects can only be lowered by the SDK", 2)
+        end
+        return wire
+      end
+    end,
+  })
+end
+
+local IMPACT_EVENT_ID_DIAGNOSTIC = "impact-event `id` must be a namespaced ASCII string (for example \"salvage:crate-break\") using only [A-Za-z0-9_.-] within each colon-separated segment, at most 128 bytes"
+
+local function validateImpactEventId(id: string)
+  local segments = 1
+  local segmentLength = 0
+  local valid = #id > 0 and #id <= 128
+  for i = 1, #id do
+    local byte = string.byte(id, i)
+    if byte == string.byte(":") then
+      valid = valid and segmentLength > 0
+      segments += 1
+      segmentLength = 0
+    else
+      local allowed = (byte >= 48 and byte <= 57)
+        or (byte >= 65 and byte <= 90)
+        or (byte >= 97 and byte <= 122)
+        or byte == 95 or byte == 46 or byte == 45
+      valid = valid and allowed
+      segmentLength += 1
+    end
+  end
+  valid = valid and segments >= 2 and segmentLength > 0
+  if not valid then
+    error(IMPACT_EVENT_ID_DIAGNOSTIC, 3)
+  end
+end
+
+function DataScriptSdk.defineImpactEvent(
+  id: string,
+  filter: ImpactEventFilter,
+  build: (Impact) -> {EffectOrGroup}
+): ImpactEvent
+  validateImpactEventId(id)
+  local eventFilter = table.freeze({ tag = filter.tag })
+  local policy = lowerImpactPolicy(build(IMPACT))
+  return impactEvent(id, eventFilter, policy, filter.levels, false)
+end
+
 --- Build a named reaction descriptor. Pure: returns a plain table, no FFI.
 --- `descriptor` accepts exactly one body shape: `progress`, `primitive`, or
 --- `sequence`. `name` is optional; when omitted a deterministic, run-stable id
@@ -478,7 +807,7 @@ end
 
 --- Identity builder for the mod manifest consumed from the chunk return.
 --- `config.name` is required; optional arrays include `entities`, `maps`,
---- `uiTrees`, `reactions`, `crossings`, `triggerEvents`, `triggerPools`, and
+--- `uiTrees`, `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and
 --- `stores`. Pure:
 --- no engine side effects until the manifest is returned and validated.
 function DataScriptSdk.defineMod(config: ModManifest): ModManifest

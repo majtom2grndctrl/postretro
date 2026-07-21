@@ -6,9 +6,14 @@
 // model and gates writes by a capability `mode` mirroring the engine-bypass vs
 // script-gated split in `primitives::store`.
 
+use std::cell::RefCell;
+
+use crate::components::entity_state::EntityStateComponent;
+use crate::components::health::{IMPACT_DISPATCH_INPUTS, ImpactDispatch};
 use crate::ctx::ScriptCtx;
 use crate::ir::scope::{BindingScope, ResolvedInput, ResolvedOutput};
 use crate::ir::{IrType, IrValue};
+use crate::registry::{EntityId, EntityRegistry};
 use crate::slot_table::{SlotType, SlotValue};
 use crate::store_bridge::write_store_slot;
 
@@ -202,6 +207,261 @@ impl BindingScope for DispatchScope {
 
     fn write(&mut self, handle: &Self::OutputHandle, value: IrValue) {
         self.store.write(handle, value);
+    }
+}
+
+/// Reserved prefix for per-instance numeric state leaves.
+pub const ENTITY_STATE_INPUT_PREFIX: &str = "@state.";
+
+/// A resolved input in an [`EntityScope`]. State handles keep their name while
+/// impact facts and ambient store reads retain the handles from the dispatch
+/// layer below them.
+#[derive(Clone, Debug)]
+pub enum EntityInputHandle {
+    State(usize),
+    Dispatch(usize),
+    Store(usize),
+}
+
+/// A resolved output in an [`EntityScope`].
+#[derive(Clone, Debug)]
+pub enum EntityOutputHandle {
+    State(String),
+    Store(StoreHandle),
+}
+
+/// Composite scope for an impact policy firing against one target entity.
+///
+/// `@impact.*` facts resolve through the embedded [`DispatchScope`],
+/// `@state.*` resolves to the current target's per-instance state, and bare
+/// names delegate through the dispatch layer to the global store. The target
+/// id is deliberately an ambient per-fire channel rather than an `IrValue`:
+/// entity ids are command-target tokens, not numeric IR inputs.
+pub struct EntityScope {
+    dispatch: DispatchScope,
+    registry: std::rc::Rc<RefCell<EntityRegistry>>,
+    /// The names bound as state leaves. Binding records them once; each impact
+    /// snapshots precisely those fields before its effects can write live state.
+    state_names: RefCell<Vec<String>>,
+    target: Option<EntityId>,
+    /// Parallel to `state_names`: handles bind to this stable index, and each
+    /// fire replaces the values in place without changing those handles.
+    snapshot: RefCell<Vec<f32>>,
+    /// Bound bare-store leaves share the same fire-time snapshot as entity
+    /// state. Policy effects must not make a later group observe an earlier
+    /// group's write during the same impact dispatch.
+    store_handles: RefCell<Vec<StoreHandle>>,
+    store_snapshot: RefCell<Vec<IrValue>>,
+}
+
+impl EntityScope {
+    /// Construct the host-authoritative impact-policy composite scope.
+    ///
+    /// Entity state itself is host-only. Bare global-store outputs still use
+    /// script capability because an impact policy is mod-authored data and
+    /// must not acquire a write handle for readonly engine slots.
+    pub fn impact(ctx: ScriptCtx) -> Self {
+        Self {
+            dispatch: DispatchScope::script(ctx.clone(), &IMPACT_DISPATCH_INPUTS),
+            registry: ctx.registry,
+            state_names: RefCell::new(Vec::new()),
+            target: None,
+            snapshot: RefCell::new(Vec::new()),
+            store_handles: RefCell::new(Vec::new()),
+            store_snapshot: RefCell::new(Vec::new()),
+        }
+    }
+
+    /// Refresh the numeric impact facts and the target command token for one
+    /// impact fire. Bound programs remain valid and observe this new snapshot.
+    pub fn seed_impact(&mut self, dispatch: &ImpactDispatch) -> Result<(), DispatchSeedError> {
+        for (name, value) in dispatch.ir_values() {
+            self.dispatch.seed(name, value)?;
+        }
+        self.seed_target(dispatch.target);
+        Ok(())
+    }
+
+    /// Refresh one impact snapshot from a registry the caller already owns.
+    ///
+    /// The fixed-tick damage seam holds a mutable registry borrow while it
+    /// evaluates the just-published impact. Reading through the captured
+    /// `ScriptCtx` there would re-borrow the same `RefCell`; this explicit path
+    /// preserves the same snapshot contract without aliasing that borrow.
+    pub fn seed_impact_from_registry(
+        &mut self,
+        registry: &EntityRegistry,
+        dispatch: &ImpactDispatch,
+    ) -> Result<(), DispatchSeedError> {
+        for (name, value) in dispatch.ir_values() {
+            self.dispatch.seed(name, value)?;
+        }
+        self.seed_target_from_registry(registry, dispatch.target);
+        Ok(())
+    }
+
+    /// Set the current target through the command-target ambient channel and
+    /// freeze every state field already bound by this scope. This intentionally
+    /// does not use [`DispatchScope::seed`], whose values are only numbers and
+    /// booleans.
+    pub fn seed_target(&mut self, target: EntityId) {
+        let registry = self.registry.clone();
+        let registry = registry.borrow();
+        self.seed_target_from_registry(&registry, target);
+    }
+
+    fn seed_target_from_registry(&mut self, registry: &EntityRegistry, target: EntityId) {
+        self.target = Some(target);
+
+        let names = self.state_names.borrow();
+        let mut snapshot = self.snapshot.borrow_mut();
+        let state = registry.get_component::<EntityStateComponent>(target).ok();
+        for (index, name) in names.iter().enumerate() {
+            snapshot[index] = state.map_or(0.0, |state| state.get(name));
+        }
+        drop(snapshot);
+        drop(names);
+
+        let handles = self.store_handles.borrow();
+        let mut store_snapshot = self.store_snapshot.borrow_mut();
+        for (index, handle) in handles.iter().enumerate() {
+            store_snapshot[index] = self.dispatch.store.read(handle);
+        }
+    }
+
+    fn bind_state_name(&self, name: &str) -> usize {
+        let mut names = self.state_names.borrow_mut();
+        if let Some(index) = names.iter().position(|bound| bound == name) {
+            return index;
+        }
+        let index = names.len();
+        names.push(name.to_string());
+        self.snapshot.borrow_mut().push(0.0);
+        index
+    }
+
+    fn bind_store_handle(&self, handle: StoreHandle) -> usize {
+        let mut handles = self.store_handles.borrow_mut();
+        if let Some(index) = handles
+            .iter()
+            .position(|bound| bound.name == handle.name && bound.ir_type == handle.ir_type)
+        {
+            return index;
+        }
+        let index = handles.len();
+        let initial = self.dispatch.store.read(&handle);
+        handles.push(handle);
+        self.store_snapshot.borrow_mut().push(initial);
+        index
+    }
+
+    fn write_state(
+        registry: &mut EntityRegistry,
+        target: Option<EntityId>,
+        name: &str,
+        value: IrValue,
+    ) {
+        let IrValue::Number(value) = value else {
+            return;
+        };
+        let Some(target) = target else {
+            return;
+        };
+
+        let Ok(state) = registry.entity_state_mut(target) else {
+            return;
+        };
+        state.set(name, value);
+    }
+
+    /// Apply a bound impact output while the caller owns the live registry.
+    pub fn write_with_registry(
+        &mut self,
+        registry: &mut EntityRegistry,
+        handle: &EntityOutputHandle,
+        value: IrValue,
+    ) {
+        match handle {
+            EntityOutputHandle::State(name) => {
+                Self::write_state(registry, self.target, name, value)
+            }
+            EntityOutputHandle::Store(handle) => self.dispatch.write(handle, value),
+        }
+    }
+}
+
+impl BindingScope for EntityScope {
+    type InputHandle = EntityInputHandle;
+    type OutputHandle = EntityOutputHandle;
+
+    fn resolve_input(&self, name: &str) -> Option<ResolvedInput<Self::InputHandle>> {
+        if let Some(state_name) = name.strip_prefix(ENTITY_STATE_INPUT_PREFIX) {
+            let handle = self.bind_state_name(state_name);
+            return Some(ResolvedInput {
+                handle: EntityInputHandle::State(handle),
+                ir_type: IrType::Number,
+            });
+        }
+
+        self.dispatch.resolve_input(name).map(|resolved| {
+            let handle = match resolved.handle {
+                DispatchInputHandle::Dispatch(index) => EntityInputHandle::Dispatch(index),
+                DispatchInputHandle::Store(handle) => {
+                    EntityInputHandle::Store(self.bind_store_handle(handle))
+                }
+            };
+            ResolvedInput {
+                handle,
+                ir_type: resolved.ir_type,
+            }
+        })
+    }
+
+    fn resolve_output(&self, name: &str) -> Option<ResolvedOutput<Self::OutputHandle>> {
+        if let Some(state_name) = name.strip_prefix(ENTITY_STATE_INPUT_PREFIX) {
+            return Some(ResolvedOutput {
+                handle: EntityOutputHandle::State(state_name.to_string()),
+                ir_type: IrType::Number,
+            });
+        }
+        // The remaining reserved names are inputs. Impact facts and
+        // command-target tokens can never fall through to an oddly named store
+        // slot as writable outputs.
+        if name.starts_with('@') {
+            return None;
+        }
+
+        self.dispatch
+            .resolve_output(name)
+            .map(|resolved| ResolvedOutput {
+                handle: EntityOutputHandle::Store(resolved.handle),
+                ir_type: resolved.ir_type,
+            })
+    }
+
+    fn read(&self, handle: &Self::InputHandle) -> IrValue {
+        match handle {
+            EntityInputHandle::State(index) => {
+                IrValue::Number(self.snapshot.borrow().get(*index).copied().unwrap_or(0.0))
+            }
+            EntityInputHandle::Dispatch(index) => self.dispatch.values[*index],
+            EntityInputHandle::Store(index) => self
+                .store_snapshot
+                .borrow()
+                .get(*index)
+                .copied()
+                .unwrap_or(IrValue::Number(0.0)),
+        }
+    }
+
+    fn write(&mut self, handle: &Self::OutputHandle, value: IrValue) {
+        match handle {
+            EntityOutputHandle::State(name) => {
+                let registry = self.registry.clone();
+                Self::write_state(&mut registry.borrow_mut(), self.target, name, value);
+            }
+            EntityOutputHandle::Store(handle) => self.dispatch.write(handle, value),
+        }
     }
 }
 
@@ -635,5 +895,168 @@ mod tests {
             })
         );
         assert_number(eval_value(&program, &scope), 0.25);
+    }
+
+    fn set_entity_state(ctx: &ScriptCtx, entity: EntityId, name: &str, value: f32) {
+        let mut registry = ctx.registry.borrow_mut();
+        let mut state = registry
+            .get_component::<EntityStateComponent>(entity)
+            .expect("spawned entity carries state")
+            .clone();
+        state.set(name, value);
+        registry
+            .set_component(entity, state)
+            .expect("entity remains live during test setup");
+    }
+
+    fn impact(target: EntityId, amount: f32) -> ImpactDispatch {
+        ImpactDispatch {
+            amount,
+            health_before: 10.0,
+            health_after: 5.0,
+            max_health: 10.0,
+            target,
+            source: None,
+            producer: crate::components::health::DamageProducer::InTick,
+        }
+    }
+
+    #[test]
+    fn entity_scope_routes_exact_prefixes_without_store_collision() {
+        let ctx = ScriptCtx::new();
+        ctx.slot_table
+            .borrow_mut()
+            .insert("hits".to_string(), number_slot(40.0, false))
+            .expect("test store slot is new");
+        let target = ctx
+            .registry
+            .borrow_mut()
+            .spawn(crate::registry::Transform::default());
+        set_entity_state(&ctx, target, "hits", 3.0);
+
+        let mut scope = EntityScope::impact(ctx);
+        let state = bind(&read_only(*input("@state.hits")), &scope).expect("state binds");
+        let store = bind(&read_only(*input("hits")), &scope).expect("store binds");
+        let amount = bind(&read_only(*input("@impact.amount")), &scope).expect("fact binds");
+
+        assert_eq!(
+            bind(&read_only(*input("@stateful.hits")), &scope).unwrap_err(),
+            BindError::UnknownInput {
+                name: "@stateful.hits".to_string()
+            },
+            "only the exact @state. prefix belongs to entity state"
+        );
+        for name in ["@impact.target", "@impact.source"] {
+            assert_eq!(
+                bind(&read_only(*input(name)), &scope).unwrap_err(),
+                BindError::UnknownInput {
+                    name: name.to_string()
+                },
+                "command-target tokens never become numeric leaves"
+            );
+        }
+
+        scope
+            .seed_impact(&impact(target, 7.0))
+            .expect("fixed facts seed");
+        assert_number(eval_value(&state, &scope), 3.0);
+        assert_number(eval_value(&store, &scope), 40.0);
+        assert_number(eval_value(&amount, &scope), 7.0);
+    }
+
+    #[test]
+    fn entity_scope_refreshes_bound_state_handle_for_each_impact_target() {
+        let ctx = ScriptCtx::new();
+        let (first, second) = {
+            let mut registry = ctx.registry.borrow_mut();
+            (
+                registry.spawn(crate::registry::Transform::default()),
+                registry.spawn(crate::registry::Transform::default()),
+            )
+        };
+        set_entity_state(&ctx, first, "hits", 2.0);
+
+        let mut scope = EntityScope::impact(ctx);
+        let program = bind(&read_only(*input("@state.hits")), &scope).expect("state binds once");
+
+        scope
+            .seed_impact(&impact(first, 1.0))
+            .expect("first fire seeds");
+        assert_number(eval_value(&program, &scope), 2.0);
+
+        scope
+            .seed_impact(&impact(second, 1.0))
+            .expect("second fire seeds");
+        assert_number(eval_value(&program, &scope), 0.0);
+    }
+
+    #[test]
+    fn entity_scope_reads_the_pre_write_state_snapshot_until_the_next_fire() {
+        let ctx = ScriptCtx::new();
+        let target = ctx
+            .registry
+            .borrow_mut()
+            .spawn(crate::registry::Transform::default());
+        set_entity_state(&ctx, target, "hits", 2.0);
+
+        let mut scope = EntityScope::impact(ctx.clone());
+        let increment = BakedIr {
+            version: CURRENT_IR_VERSION,
+            output: Some("@state.hits".to_string()),
+            root: IrNode::Add {
+                a: input("@state.hits"),
+                b: num(1.0),
+            },
+        };
+        let writer = bind(&increment, &scope).expect("state output binds");
+        let reader = bind(&read_only(*input("@state.hits")), &scope).expect("state read binds");
+
+        scope.seed_impact(&impact(target, 1.0)).expect("fire seeds");
+        assert_number(eval_and_write(&writer, &mut scope), 3.0);
+        assert_number(eval_value(&reader, &scope), 2.0);
+        assert_number(
+            IrValue::Number(
+                ctx.registry
+                    .borrow()
+                    .get_component::<EntityStateComponent>(target)
+                    .expect("target remains live")
+                    .get("hits"),
+            ),
+            3.0,
+        );
+
+        scope
+            .seed_impact(&impact(target, 1.0))
+            .expect("next fire seeds");
+        assert_number(eval_value(&reader, &scope), 3.0);
+    }
+
+    #[test]
+    fn entity_scope_reads_store_snapshot_until_the_next_fire() {
+        let ctx = ScriptCtx::new();
+        ctx.slot_table
+            .borrow_mut()
+            .insert("impact.counter".to_string(), number_slot(2.0, false))
+            .expect("test store slot is new");
+        let target = ctx
+            .registry
+            .borrow_mut()
+            .spawn(crate::registry::Transform::default());
+
+        let mut scope = EntityScope::impact(ctx.clone());
+        let reader = bind(&read_only(*input("impact.counter")), &scope).expect("store binds");
+
+        scope.seed_impact(&impact(target, 1.0)).expect("fire seeds");
+        ctx.slot_table
+            .borrow_mut()
+            .get_mut("impact.counter")
+            .expect("test store slot remains present")
+            .value = Some(SlotValue::Number(3.0));
+        assert_number(eval_value(&reader, &scope), 2.0);
+
+        scope
+            .seed_impact(&impact(target, 1.0))
+            .expect("next fire seeds");
+        assert_number(eval_value(&reader, &scope), 3.0);
     }
 }

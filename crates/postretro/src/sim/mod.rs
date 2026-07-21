@@ -32,7 +32,7 @@ use postretro_entities::PoseInputs;
 use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::components::brain::{BrainComponent, LogicalState};
 use postretro_entities::components::health::{
-    DamageContext, HealthComponent, apply_damage_with_context,
+    DamageContext, DamageProducer, HealthComponent, apply_damage_with_context,
 };
 use postretro_entities::components::mesh::{MeshAnimation, MeshComponent};
 use postretro_entities::components::weapon::{UNKNOWN_WEAPON_CREDIT_SOURCE, WeaponComponent};
@@ -128,8 +128,18 @@ pub(crate) fn simulate_tick(
     mut post_movement: impl FnMut(&Rc<RefCell<EntityRegistry>>) -> PostMovementCommand,
     tick_dt: f32,
     trigger_context: Option<TriggerTickContext<'_>>,
+    mut on_impact: impl FnMut(&mut EntityRegistry),
 ) -> TickEvents {
     registry.borrow_mut().snapshot_transforms();
+
+    // This is the fixed-tick queue boundary. Producers run later in this tick
+    // (AI, local weapon fire, and host remote-hit ingest after simulate_tick),
+    // so every newly queued effect keeps its full authored delay until the
+    // next fixed tick, including in headless simulation.
+    {
+        let mut registry = registry.borrow_mut();
+        crate::impact_effects::tick_deferred_effects(&mut registry, tick_dt);
+    }
 
     {
         let mut registry = registry.borrow_mut();
@@ -277,12 +287,13 @@ pub(crate) fn simulate_tick(
     }
     let ai = {
         let mut registry = registry.borrow_mut();
-        scripting_systems::ai::run_ai_tick_with_navigation(
+        scripting_systems::ai::run_ai_tick_with_navigation_and_impact(
             &mut registry,
             ai_warned,
             tick_dt,
             nav_graph,
             Some(collision_world),
+            &mut on_impact,
         )
     };
 
@@ -320,6 +331,7 @@ pub(crate) fn simulate_tick(
         hit_zone_store,
         anim_time,
         tick_dt,
+        &mut on_impact,
     );
     reload_deliveries.extend(local_deliveries);
     weapon.extend(remote_weapon_events);
@@ -969,6 +981,7 @@ fn run_local_weapon_command(
     hit_zone_store: &HitZoneStore,
     anim_time: f64,
     tick_dt: f32,
+    on_impact: &mut impl FnMut(&mut EntityRegistry),
 ) -> (Vec<ReloadDelivery>, Vec<&'static str>) {
     let Some(weapon_id) = active_wieldable else {
         return (Vec::new(), Vec::new());
@@ -1008,6 +1021,7 @@ fn run_local_weapon_command(
         weapon::spawn_impact_effect_at(&mut registry, impact.point, impact.normal);
         let attacker = pawn;
         apply_weapon_impact_damage(&mut registry, active_wieldable, attacker, impact);
+        on_impact(&mut registry);
     }
     (deliveries, events.event_names())
 }
@@ -1107,6 +1121,7 @@ fn apply_weapon_impact_damage_with_source(
             attacker,
             weapon: Some(weapon_id),
             zone: impact.zone.clone(),
+            producer: DamageProducer::InTick,
         },
     );
 }
@@ -1469,6 +1484,7 @@ mod tests {
             },
             1.0 / 60.0,
             None,
+            |_| {},
         )
     }
 
@@ -1503,6 +1519,7 @@ mod tests {
             },
             tick_dt,
             None,
+            |_| {},
         )
     }
 
@@ -1692,6 +1709,7 @@ mod tests {
                 script_ctx: Some(script_ctx.clone()),
                 use_edges: &use_edges,
             }),
+            |_| {},
         );
 
         assert_eq!(events.trigger_residuals.len(), 1);
@@ -1811,6 +1829,7 @@ mod tests {
                 script_ctx: Some(script_ctx.clone()),
                 use_edges: &use_edges,
             }),
+            |_| {},
         );
         let registry_ref = registry.borrow();
         assert!(
@@ -1945,6 +1964,7 @@ mod tests {
                     script_ctx: Some(script_ctx.clone()),
                     use_edges: &use_edges,
                 }),
+                |_| {},
             );
 
             assert_eq!(
@@ -2497,6 +2517,7 @@ mod tests {
             },
             0.25,
             None,
+            |_| {},
         );
 
         assert_eq!(
@@ -2770,6 +2791,92 @@ mod tests {
         assert_eq!(health.current, 100.0);
         assert!(health.contributor_ledger.entries().is_empty());
         assert!(health.contributor_ledger.overflow().is_none());
+    }
+
+    // Regression: synchronous impact producers queued delayed effects before
+    // the same tick's consumer, shortening every delay by one fixed step.
+    #[test]
+    fn synchronous_producer_queue_waits_until_next_tick_before_first_decrement() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let target = {
+            let mut registry = registry.borrow_mut();
+            let target = registry.spawn(Transform::default());
+            registry
+                .set_component(
+                    target,
+                    HealthComponent {
+                        max: 100.0,
+                        current: 100.0,
+                        hitbox: None,
+                        death_handled: false,
+                        zone_multipliers: Default::default(),
+                        contributor_ledger: Default::default(),
+                    },
+                )
+                .unwrap();
+            target
+        };
+        let run_tick = |enqueue_effect: bool| {
+            let world = CollisionWorld::new();
+            let hit_zones = HitZoneStore::new();
+            let mut progress = ProgressTracker::new();
+            let mut ai_warned = HashSet::new();
+            let mut mover_states = MoverTickStateTable::default();
+            simulate_tick(
+                registry.clone(),
+                &world,
+                &hit_zones,
+                None,
+                -9.81,
+                None,
+                0.0,
+                &mut progress,
+                &mut ai_warned,
+                &[],
+                &mut mover_states,
+                &[],
+                &sim_command(false, false),
+                |registry| {
+                    if enqueue_effect {
+                        crate::impact_effects::set_health(
+                            &mut registry.borrow_mut(),
+                            target,
+                            25.0,
+                            Some(100.0),
+                        );
+                    }
+                    PostMovementCommand {
+                        aim_origin: Vec3::ZERO,
+                        aim_direction: Vec3::NEG_Z,
+                    }
+                },
+                0.040,
+                None,
+                |_| {},
+            );
+        };
+
+        run_tick(true);
+        assert_eq!(
+            registry
+                .borrow()
+                .get_component::<postretro_entities::DeferredEffectComponent>(target)
+                .unwrap()
+                .pending[0]
+                .remaining_us,
+            100_000,
+        );
+
+        run_tick(false);
+        assert_eq!(
+            registry
+                .borrow()
+                .get_component::<postretro_entities::DeferredEffectComponent>(target)
+                .unwrap()
+                .pending[0]
+                .remaining_us,
+            60_000,
+        );
     }
 
     #[test]

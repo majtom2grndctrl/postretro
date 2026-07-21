@@ -18,6 +18,10 @@ pub mod slot_table;
 mod ffi;
 
 pub use components::ammo_reserve::AmmoReserve;
+pub use components::deferred_effect::{
+    DeferredEffectComponent, DeferredEffectKind, MAX_PENDING_EFFECTS_PER_ENTITY, PendingEffect,
+};
+pub use components::entity_state::EntityStateComponent;
 pub use components::kinematic_mover::{KinematicMoverComponent, KinematicMoverMode, MoverCommand};
 pub use components::trigger_volume::{TriggerActivation, TriggerFireMode, TriggerVolumeComponent};
 pub use ctx::ScriptCtx;

@@ -34,13 +34,15 @@ use crate::combat_positioning::{
 use crate::nav::{NavGraph, distance_xz};
 use postretro_entities::components::brain::{AiStateMap, AiTuning, BrainComponent, LogicalState};
 use postretro_entities::components::health::{
-    DamageContext, HealthComponent, apply_damage_with_context,
+    DamageContext, DamageProducer, HealthComponent, apply_damage_with_context,
 };
 use postretro_entities::components::mesh::{
     SwitchResult, restart_animation_clip, switch_animation_state,
 };
 use postretro_entities::components::player_movement::PlayerMovementComponent;
-use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform};
+use postretro_entities::{
+    ComponentKind, ComponentValue, DeferredEffectComponent, EntityId, EntityRegistry, Transform,
+};
 use postretro_foundation::DamagePayload;
 
 /// Event name fired once per enemy attack that lands this tick. Mirrors the
@@ -508,12 +510,39 @@ pub(crate) fn run_ai_tick_with_navigation(
     nav_graph: Option<&NavGraph>,
     collision_world: Option<&CollisionWorld>,
 ) -> Vec<&'static str> {
+    run_ai_tick_with_navigation_and_impact(
+        registry,
+        warned,
+        tick_dt,
+        nav_graph,
+        collision_world,
+        |_| {},
+    )
+}
+
+pub(crate) fn run_ai_tick_with_navigation_and_impact(
+    registry: &mut EntityRegistry,
+    warned: &mut HashSet<String>,
+    tick_dt: f32,
+    nav_graph: Option<&NavGraph>,
+    collision_world: Option<&CollisionWorld>,
+    mut on_impact: impl FnMut(&mut EntityRegistry),
+) -> Vec<&'static str> {
     let dt_ms = tick_dt.max(0.0) * 1000.0;
 
     // Pass 1: snapshot every brain-bearing enemy under the immutable borrow.
     let snapshots: Vec<EnemySnapshot> = registry
         .iter_with_kind(ComponentKind::Brain)
         .filter_map(|(id, value)| {
+            // Terminal impact effects leave the id live through the rest of
+            // this frame so a same-group playAnim can address it. AI must not
+            // overwrite that presentation request or keep steering/attacking.
+            if registry
+                .get_component::<DeferredEffectComponent>(id)
+                .is_ok_and(|effects| effects.inert)
+            {
+                return None;
+            }
             let ComponentValue::Brain(brain) = value else {
                 return None;
             };
@@ -846,8 +875,10 @@ pub(crate) fn run_ai_tick_with_navigation(
                         attacker: Some(outcome.id),
                         weapon: None,
                         zone: None,
+                        producer: DamageProducer::InTick,
                     },
                 );
+                on_impact(registry);
             }
             events.push(ENEMY_ATTACK_EVENT);
 

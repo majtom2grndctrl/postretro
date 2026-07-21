@@ -1,7 +1,7 @@
 // Luau SDK prelude source and export inventory.
 // See: context/lib/scripting.md
 
-use mlua::{Lua, Table};
+use mlua::{Lua, LuaSerdeExt as _, Table};
 
 use super::error::ScriptError;
 use super::luau_virtual_modules::LuauVirtualModuleRegistry;
@@ -55,6 +55,10 @@ const TRIGGERS_LUAU_SRC: &str = include_str!("../../../sdk/lib/entities/triggers
 /// Pure descriptor builders; no FFI happens until the mod manifest or `setupLevel`
 /// returns.
 const DATA_SCRIPT_LUAU_SRC: &str = include_str!("../../../sdk/lib/data_script.luau");
+
+/// Temporary bridge captured by `data_script.luau` so descriptor arrays retain
+/// their sequence shape even when empty. The SDK clears it before author code runs.
+const ARRAY_METATABLE_GLOBAL: &str = "__postretroArrayMetatable";
 
 /// SDK library prelude — `runtime.luau` returns the runtime-value builder table,
 /// promoted whole to global `runtime` (mirroring `world`). Pure data assembly: a
@@ -126,6 +130,7 @@ const TRIGGERS_LUAU_FIELDS: &[&str] = &[];
 /// `data_script.luau`.
 const DATA_SCRIPT_FIELDS: &[&str] = &[
     "defineReaction",
+    "defineImpactEvent",
     "onTriggerEvent",
     "damage",
     "enemies",
@@ -138,6 +143,7 @@ const DATA_SCRIPT_FIELDS: &[&str] = &[
     "defineMapCatalog",
     "defineTriggerPool",
     "defineStore",
+    "slot",
 ];
 
 /// UI-reactions SDK fields exported through `require("postretro/ui")`.
@@ -551,7 +557,14 @@ pub fn evaluate_prelude(
             })?;
     }
 
-    // Step 7: evaluate `data_script.luau` and lift its fields to globals.
+    // Step 7: evaluate `data_script.luau` and lift its fields to globals. The
+    // private array metatable lets pure builders distinguish empty descriptor
+    // arrays from empty descriptor maps when the result crosses through serde.
+    globals
+        .set(ARRAY_METATABLE_GLOBAL, lua.array_metatable())
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: format!("failed to install temporary descriptor-array metatable: {e}"),
+        })?;
     let data_sdk: Table = lua
         .load(DATA_SCRIPT_LUAU_SRC)
         .set_name("postretro/sdk/data_script.luau")
@@ -559,6 +572,11 @@ pub fn evaluate_prelude(
         .map_err(|e| ScriptError::ScriptThrew {
             msg: format!("failed to evaluate SDK prelude `data_script.luau`: {e}"),
             source_name: "sdk/lib/data_script.luau".to_string(),
+        })?;
+    globals
+        .set(ARRAY_METATABLE_GLOBAL, mlua::Value::Nil)
+        .map_err(|e| ScriptError::InvalidArgument {
+            reason: format!("failed to clear temporary descriptor-array metatable: {e}"),
         })?;
     for field in DATA_SCRIPT_FIELDS {
         let value: mlua::Value =

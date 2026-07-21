@@ -159,6 +159,7 @@ impl PrototypeHarness {
             |_| command.to_post_movement_command(),
             DT,
             None,
+            |_| {},
         );
     }
 

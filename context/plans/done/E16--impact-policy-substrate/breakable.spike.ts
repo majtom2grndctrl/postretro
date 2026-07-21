@@ -65,7 +65,7 @@ function breakableAfter(hitsToBreak: number) {
 }
 
 // THE BLESSED HANDLE — defined once at module scope, pure, threadable across scopes.
-const crateImpactEvent = defineImpactEvent({ tag: "crate" }, breakableAfter(3));
+const crateImpactEvent = defineImpactEvent("salvage:crate-break", { tag: "crate" }, breakableAfter(3));
 
 // MOD SCOPE — the baseline: any crate shatters after 3 hits.
 export function setupMod(): ModManifest {
@@ -90,7 +90,7 @@ export function setupLevel(): LevelManifest {
 }
 
 // === GUARDRAILS — these MUST NOT compile. ===================================
-defineImpactEvent({ tag: "crate" }, (impact) => {
+defineImpactEvent("salvage:invalid-effect-example", { tag: "crate" }, (impact) => {
   const hits = impact.target.state("hits");
   // @ts-expect-error per-entity state is an IR ref — no live JS math (use .plus(), not `+`).
   const badMath = hits + 1;
@@ -102,3 +102,10 @@ defineImpactEvent({ tag: "crate" }, (impact) => {
   void badCmp;
   return [];
 });
+
+// @ts-expect-error an override must narrow its base with an additional tag.
+crateImpactEvent.override({}, breakableAfter(6));
+
+// @ts-expect-error Effect is constructor-produced; a branded-looking record is not an effect.
+const forgedEffect: import("postretro/proposed").Effect = { __impactEffectBrand: true };
+void forgedEffect;

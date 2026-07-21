@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::data_descriptors::HealthDescriptor;
 use crate::registry::{EntityId, EntityRegistry};
-use postretro_foundation::DamagePayload;
+use postretro_foundation::{DamagePayload, IrType, IrValue};
 
 /// Maximum number of exact contributor source ids retained per target before
 /// later distinct sources collapse into the overflow bucket.
@@ -61,16 +61,88 @@ pub struct DamageContext {
     pub attacker: Option<EntityId>,
     pub weapon: Option<EntityId>,
     pub zone: Option<String>,
+    /// Identifies which engine arm reached the common damage chokepoint. This
+    /// is evaluator-only data, never an IR input or command-target token.
+    pub producer: DamageProducer,
 }
 
 impl DamageContext {
-    pub fn new(source_id: impl Into<String>) -> Self {
+    pub fn new(source_id: impl Into<String>, producer: DamageProducer) -> Self {
         Self {
             source_id: source_id.into(),
             attacker: None,
             weapon: None,
             zone: None,
+            producer,
         }
+    }
+}
+
+/// The engine arm that applied a damage payload at the health chokepoint.
+///
+/// Impact policies will evaluate only the in-tick arm in v1; the app-drain arm
+/// remains observable so later work has the same authoritative source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DamageProducer {
+    InTick,
+    AppDrain,
+}
+
+/// Exact numeric IR vocabulary published by every impact dispatch.
+///
+/// The command-target tokens are intentionally absent: the IR only carries
+/// numbers and booleans, while entity references travel on a separate channel.
+pub const IMPACT_AMOUNT_INPUT: &str = "@impact.amount";
+pub const IMPACT_HEALTH_BEFORE_INPUT: &str = "@impact.healthBefore";
+pub const IMPACT_HEALTH_AFTER_INPUT: &str = "@impact.healthAfter";
+pub const IMPACT_MAX_HEALTH_INPUT: &str = "@impact.maxHealth";
+
+pub const IMPACT_DISPATCH_INPUTS: [(&str, IrType); 4] = [
+    (IMPACT_AMOUNT_INPUT, IrType::Number),
+    (IMPACT_HEALTH_BEFORE_INPUT, IrType::Number),
+    (IMPACT_HEALTH_AFTER_INPUT, IrType::Number),
+    (IMPACT_MAX_HEALTH_INPUT, IrType::Number),
+];
+
+/// Exact command-target token for the damaged entity in an impact dispatch.
+pub const IMPACT_TARGET_TOKEN: &str = "@impact.target";
+
+/// Exact command-target token for the attacker in an impact dispatch.
+pub const IMPACT_SOURCE_TOKEN: &str = "@impact.source";
+
+/// One observable fire of the damage chokepoint.
+///
+/// Numeric fields bind through [`IMPACT_DISPATCH_INPUTS`]. `target` and
+/// `source` are opaque command-target values keyed by [`IMPACT_TARGET_TOKEN`]
+/// and [`IMPACT_SOURCE_TOKEN`], respectively; they are never IR leaves.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImpactDispatch {
+    pub amount: f32,
+    pub health_before: f32,
+    /// The raw post-subtraction value before the stored health is floored.
+    pub health_after: f32,
+    pub max_health: f32,
+    pub target: EntityId,
+    pub source: Option<EntityId>,
+    pub producer: DamageProducer,
+}
+
+impl ImpactDispatch {
+    /// Values for the numeric half of the impact dispatch scope, ordered by
+    /// the fixed vocabulary so a later consumer can seed a bound scope directly.
+    pub fn ir_values(&self) -> [(&'static str, IrValue); 4] {
+        [
+            (IMPACT_AMOUNT_INPUT, IrValue::Number(self.amount)),
+            (
+                IMPACT_HEALTH_BEFORE_INPUT,
+                IrValue::Number(self.health_before),
+            ),
+            (
+                IMPACT_HEALTH_AFTER_INPUT,
+                IrValue::Number(self.health_after),
+            ),
+            (IMPACT_MAX_HEALTH_INPUT, IrValue::Number(self.max_health)),
+        ]
     }
 }
 
@@ -282,6 +354,20 @@ impl HealthComponent {
         self.zone_multipliers = desc.zone_multipliers.clone();
     }
 
+    /// Apply an absolute health value from an impact effect.
+    ///
+    /// This is intentionally distinct from damage: it emits no impact dispatch
+    /// and does not touch contributor attribution. Non-finite values resolve to
+    /// the nearest bound so `current` remains within the component's valid
+    /// `[0, max]` range.
+    pub fn set_current_absolute(&mut self, value: f32) {
+        self.current = if value.is_nan() {
+            0.0
+        } else {
+            value.clamp(0.0, self.max)
+        };
+    }
+
     pub fn record_contributor_damage(&mut self, record: ContributorLedgerRecord) {
         self.contributor_ledger.record(record);
     }
@@ -326,7 +412,10 @@ pub fn apply_damage_with_context(
         return;
     };
     let mut updated = health.clone();
-    updated.current = (updated.current - payload.amount).max(0.0);
+    let health_before = updated.current;
+    let health_after = health_before - payload.amount;
+    let max_health = health.max;
+    updated.current = health_after.max(0.0);
     if !updated.death_handled && payload.amount.is_finite() && payload.amount > 0.0 {
         let mut record = ContributorLedgerRecord::new(context.source_id, payload.amount);
         record.zone = context.zone;
@@ -336,6 +425,29 @@ pub fn apply_damage_with_context(
     }
     // `set_component` only fails on a stale id, which `get_component` already
     // ruled out above.
+    let _ = registry.set_component(id, updated);
+    registry.push_impact_dispatch(ImpactDispatch {
+        amount: payload.amount,
+        health_before,
+        health_after,
+        max_health,
+        target: id,
+        source: context.attacker,
+        producer: context.producer,
+    });
+}
+
+/// Absolute-health chokepoint for impact effects.
+///
+/// Like damage, a stale id or entity without `HealthComponent` is a no-op. The
+/// write is immediate and clamps to `[0, max]`; it deliberately does not
+/// publish a damage impact or alter the death latch.
+pub fn set_health_absolute(registry: &mut EntityRegistry, id: EntityId, value: f32) {
+    let Ok(health) = registry.get_component::<HealthComponent>(id) else {
+        return;
+    };
+    let mut updated = health.clone();
+    updated.set_current_absolute(value);
     let _ = registry.set_component(id, updated);
 }
 
@@ -353,6 +465,14 @@ mod tests {
         }
     }
 
+    fn assert_number_approx_eq(actual: f32, expected: f32) {
+        const EPSILON: f32 = 1.0e-6;
+        assert!(
+            (actual - expected).abs() <= EPSILON,
+            "expected {expected} ± {EPSILON}, got {actual}"
+        );
+    }
+
     #[test]
     fn from_descriptor_initializes_current_to_max() {
         let component = HealthComponent::from_descriptor(&descriptor(80.0));
@@ -362,6 +482,17 @@ mod tests {
         assert!(!component.death_handled);
         assert!(component.contributor_ledger.entries().is_empty());
         assert!(component.contributor_ledger.overflow().is_none());
+    }
+
+    #[test]
+    fn absolute_health_write_clamps_to_component_bounds() {
+        let mut component = HealthComponent::from_descriptor(&descriptor(80.0));
+
+        component.set_current_absolute(120.0);
+        assert_number_approx_eq(component.current, 80.0);
+
+        component.set_current_absolute(-5.0);
+        assert_number_approx_eq(component.current, 0.0);
     }
 
     #[test]
@@ -412,7 +543,7 @@ mod tests {
             &mut reg,
             id,
             &DamagePayload { amount: 25.0 },
-            DamageContext::new("test.health"),
+            DamageContext::new("test.health", DamageProducer::InTick),
         );
 
         assert_eq!(
@@ -432,7 +563,7 @@ mod tests {
             &mut reg,
             id,
             &DamagePayload { amount: 999.0 },
-            DamageContext::new("test.health"),
+            DamageContext::new("test.health", DamageProducer::InTick),
         );
 
         assert_eq!(
@@ -440,6 +571,85 @@ mod tests {
             0.0,
             "HP never goes negative"
         );
+    }
+
+    #[test]
+    fn damage_chokepoint_dispatches_exact_facts_tokens_and_unfloored_health() {
+        let mut reg = EntityRegistry::new();
+        let target = reg.spawn(Transform::default());
+        let attacker = reg.spawn(Transform::default());
+        reg.set_component(target, HealthComponent::from_descriptor(&descriptor(10.0)))
+            .unwrap();
+
+        apply_damage_with_context(
+            &mut reg,
+            target,
+            &DamagePayload { amount: 25.0 },
+            DamageContext {
+                source_id: "weapon.test".to_string(),
+                attacker: Some(attacker),
+                weapon: None,
+                zone: None,
+                producer: DamageProducer::InTick,
+            },
+        );
+
+        assert_number_approx_eq(
+            reg.get_component::<HealthComponent>(target)
+                .unwrap()
+                .current,
+            0.0,
+        );
+        assert_eq!(
+            IMPACT_DISPATCH_INPUTS,
+            [
+                ("@impact.amount", IrType::Number),
+                ("@impact.healthBefore", IrType::Number),
+                ("@impact.healthAfter", IrType::Number),
+                ("@impact.maxHealth", IrType::Number),
+            ],
+            "only the four numeric facts enter the IR vocabulary"
+        );
+        assert_eq!(IMPACT_TARGET_TOKEN, "@impact.target");
+        assert_eq!(IMPACT_SOURCE_TOKEN, "@impact.source");
+
+        let dispatches = reg.take_impact_dispatches();
+        assert_eq!(dispatches.len(), 1);
+        let dispatch = &dispatches[0];
+        assert_eq!(dispatch.target, target);
+        assert_eq!(dispatch.source, Some(attacker));
+        assert_eq!(dispatch.producer, DamageProducer::InTick);
+        assert_number_approx_eq(dispatch.amount, 25.0);
+        assert_number_approx_eq(dispatch.health_before, 10.0);
+        assert_number_approx_eq(dispatch.health_after, -15.0);
+        assert_number_approx_eq(dispatch.max_health, 10.0);
+        let [
+            (amount_name, IrValue::Number(amount)),
+            (health_before_name, IrValue::Number(health_before)),
+            (health_after_name, IrValue::Number(health_after)),
+            (max_health_name, IrValue::Number(max_health)),
+        ] = dispatch.ir_values()
+        else {
+            panic!("impact dispatch must carry only numeric IR facts");
+        };
+        assert_eq!(
+            [
+                amount_name,
+                health_before_name,
+                health_after_name,
+                max_health_name,
+            ],
+            [
+                IMPACT_AMOUNT_INPUT,
+                IMPACT_HEALTH_BEFORE_INPUT,
+                IMPACT_HEALTH_AFTER_INPUT,
+                IMPACT_MAX_HEALTH_INPUT,
+            ]
+        );
+        assert_number_approx_eq(amount, 25.0);
+        assert_number_approx_eq(health_before, 10.0);
+        assert_number_approx_eq(health_after, -15.0);
+        assert_number_approx_eq(max_health, 10.0);
     }
 
     #[test]
@@ -460,6 +670,7 @@ mod tests {
                 attacker: Some(attacker),
                 weapon: Some(weapon),
                 zone: Some("torso".to_string()),
+                producer: DamageProducer::InTick,
             },
         );
         apply_damage_with_context(
@@ -471,6 +682,7 @@ mod tests {
                 attacker: Some(attacker),
                 weapon: Some(weapon),
                 zone: Some("head".to_string()),
+                producer: DamageProducer::InTick,
             },
         );
 
@@ -507,6 +719,7 @@ mod tests {
                 attacker: None,
                 weapon: None,
                 zone: None,
+                producer: DamageProducer::InTick,
             },
         );
 
@@ -578,7 +791,7 @@ mod tests {
             &mut reg,
             id,
             &DamagePayload { amount: 25.0 },
-            DamageContext::new("test.health"),
+            DamageContext::new("test.health", DamageProducer::InTick),
         );
 
         assert!(reg.get_component::<HealthComponent>(id).is_err());

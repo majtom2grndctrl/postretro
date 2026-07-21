@@ -4,7 +4,7 @@
 use super::super::*;
 
 impl LevelManifest {
-    /// Deserialize a top-level `{ reactions, crossings, triggerEvents, triggerPools, uiTrees }`
+    /// Deserialize a top-level `{ reactions, events, crossings, triggerEvents, triggerPools, uiTrees }`
     /// object returned from a QuickJS `setupLevel()` call. Each array field is optional.
     pub fn from_js_value<'js>(
         ctx: &Ctx<'js>,
@@ -42,6 +42,7 @@ impl LevelManifest {
         } else {
             Vec::new()
         };
+        let events = drain_impact_events_js(ctx, &obj, "setupLevel")?;
         let trigger_events = drain_trigger_events_js(&obj, "setupLevel")?;
         let trigger_pools = drain_trigger_pools_js(&obj, "setupLevel")?;
 
@@ -49,12 +50,150 @@ impl LevelManifest {
 
         Ok(Self {
             reactions,
+            events,
             crossings,
             trigger_events,
             trigger_pools,
             ui_trees,
         })
     }
+}
+
+/// Drain pure SDK `defineImpactEvent` handles from a manifest. Parsing stops at
+/// the descriptor boundary: Task 5 owns policy validation, author-id merging,
+/// and effect evaluation.
+pub fn drain_impact_events_js<'js>(
+    ctx: &Ctx<'js>,
+    obj: &Object<'js>,
+    scope: &str,
+) -> Result<Vec<ImpactEventDescriptor>, DescriptorError> {
+    let Some(arr) = optional_manifest_array_js(obj, "events", scope)? else {
+        return Ok(Vec::new());
+    };
+    if arr.len() > MAX_IMPACT_EVENT_CONTAINER_ENTRIES {
+        log::warn!(
+            "[Scripting] {scope}: `events` exceeds {MAX_IMPACT_EVENT_CONTAINER_ENTRIES} array slots; ignoring the field"
+        );
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::with_capacity(arr.len());
+    for i in 0..arr.len() {
+        let value: JsValue = match arr.get(i) {
+            Ok(value) => value,
+            Err(error) => {
+                log::warn!(
+                    "[Scripting] {scope}: events[{i}] could not be read and was skipped: {}",
+                    js_err(error)
+                );
+                continue;
+            }
+        };
+        match impact_event_from_js(ctx, value) {
+            Ok(descriptor) => out.push(descriptor),
+            Err(error) => {
+                log::warn!("[Scripting] {scope}: events[{i}] is malformed and was skipped: {error}")
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn impact_event_from_js<'js>(
+    ctx: &Ctx<'js>,
+    value: JsValue<'js>,
+) -> Result<ImpactEventDescriptor, DescriptorError> {
+    let item = Object::from_value(value).map_err(|_| DescriptorError::InvalidShape {
+        reason: "impact-event entry must be an object".into(),
+    })?;
+    let kind = get_required_string_js(&item, "kind")?;
+    if kind != "impact" {
+        return Err(DescriptorError::InvalidShape {
+            reason: "impact-event entry `kind` must be `impact`".into(),
+        });
+    }
+
+    let filter: Object = item
+        .get("filter")
+        .map_err(|_| DescriptorError::MissingField { field: "filter" })?;
+    let filter_tag = if filter.contains_key("tag").map_err(js_err)? {
+        let raw: JsValue = filter.get("tag").map_err(js_err)?;
+        if raw.is_null() || raw.is_undefined() {
+            None
+        } else {
+            Some(String::from_js_value_required(raw, "tag")?)
+        }
+    } else {
+        None
+    };
+
+    let policy: Array = item
+        .get("policy")
+        .map_err(|_| DescriptorError::InvalidShape {
+            reason: "impact-event entry `policy` must be an array".into(),
+        })?;
+    let mut policy_json = Vec::with_capacity(policy.len());
+    for i in 0..policy.len() {
+        let raw: JsValue = policy.get(i).map_err(js_err)?;
+        if raw.is_undefined() {
+            return Err(DescriptorError::InvalidShape {
+                reason: "impact-event entry `policy` must be a dense array; holes are not allowed"
+                    .into(),
+            });
+        }
+        policy_json.push(impact_policy_entry_from_js(ctx, raw)?);
+    }
+
+    let is_override = get_optional_bool_js(&item, "isOverride")?.unwrap_or(false);
+    if is_override && filter_tag.is_none() {
+        return Err(DescriptorError::InvalidShape {
+            reason: "impact-event override `filter.tag` is required".into(),
+        });
+    }
+
+    Ok(ImpactEventDescriptor {
+        id: validate_impact_event_id(get_required_string_js(&item, "id")?)?,
+        is_override,
+        levels: string_array_from_js(&item, "levels")?,
+        filter_tag,
+        policy: policy_json,
+    })
+}
+
+fn impact_policy_entry_from_js<'js>(
+    ctx: &Ctx<'js>,
+    raw: JsValue<'js>,
+) -> Result<serde_json::Value, DescriptorError> {
+    let Some(object) = raw.as_object() else {
+        return conv::js_to_json(ctx, raw).map_err(js_err);
+    };
+    if !object.contains_key("do").map_err(js_err)? {
+        return conv::js_to_json(ctx, raw).map_err(js_err);
+    }
+
+    let effects: Array = object
+        .get("do")
+        .map_err(|_| DescriptorError::InvalidShape {
+            reason: "impact policy group `do` must be an array".into(),
+        })?;
+    let mut json = conv::js_to_json(ctx, raw).map_err(js_err)?;
+    let json_object = json
+        .as_object_mut()
+        .ok_or_else(|| DescriptorError::InvalidShape {
+            reason: "impact policy group must be an object".into(),
+        })?;
+    let mut lowered = Vec::with_capacity(effects.len());
+    for i in 0..effects.len() {
+        let effect: JsValue = effects.get(i).map_err(js_err)?;
+        if effect.is_undefined() {
+            return Err(DescriptorError::InvalidShape {
+                reason: "impact policy group `do` must be a dense array; holes are not allowed"
+                    .into(),
+            });
+        }
+        lowered.push(conv::js_to_json(ctx, effect).map_err(js_err)?);
+    }
+    json_object.insert("do".into(), serde_json::Value::Array(lowered));
+    Ok(json)
 }
 
 /// Drain the `triggerEvents` array from a QuickJS manifest object. Mirrors

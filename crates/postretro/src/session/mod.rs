@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use postretro_entities::ScriptCtx;
 
+use crate::impact_policy::ImpactPolicyRuntime;
 use crate::input;
 #[cfg(feature = "dev-tools")]
 use crate::render;
@@ -214,6 +215,10 @@ pub(crate) struct ScriptingCore {
     /// runtime. Outlives the renderer so device resets preserve scripted light
     /// state. See: context/lib/scripting.md.
     pub(crate) script_ctx: ScriptCtx,
+
+    /// Runtime-owned descriptor registry and bind-once evaluator for the
+    /// impact policy surface.
+    pub(crate) impact_policy_runtime: ImpactPolicyRuntime,
 
     /// Consulted by `fire_named_event_with_sequences` for `Sequence` steps.
     /// See: context/lib/scripting.md §2.
@@ -561,6 +566,7 @@ fn build_scripting_core(
         command_diagnostics,
         spawn_context,
         script_runtime,
+        impact_policy_runtime: ImpactPolicyRuntime::new(script_ctx.clone()),
         script_ctx,
         sequence_registry,
         reaction_registry,
@@ -591,24 +597,29 @@ impl ScriptingCore {
     /// that case up front via [`require_headless_mod_manifest`].
     /// See: context/lib/boot_sequence.md §3, context/lib/scripting.md §2.
     pub(crate) fn drain_manifest_registrations(&mut self) {
-        let Some(manifest) = self.script_runtime.mod_manifest_mut() else {
-            return;
+        let events = {
+            let Some(manifest) = self.script_runtime.mod_manifest_mut() else {
+                return;
+            };
+            // `manifest` borrows `self.script_runtime`; `data_registry` and
+            // `sequence_registry` are disjoint fields, so all three coexist.
+            let mut data_registry = self.script_ctx.data_registry.borrow_mut();
+            for desc in std::mem::take(&mut manifest.entities) {
+                data_registry.upsert_entity_type(desc);
+            }
+            data_registry.replace_maps(std::mem::take(&mut manifest.maps));
+            let global_reactions = validate_scoped_sequence_primitives(
+                std::mem::take(&mut manifest.reactions),
+                &self.sequence_registry,
+            );
+            data_registry.replace_global_reactions(global_reactions);
+            data_registry.replace_global_crossings(std::mem::take(&mut manifest.crossings));
+            data_registry
+                .replace_global_trigger_events(std::mem::take(&mut manifest.trigger_events));
+            data_registry.replace_global_trigger_pools(std::mem::take(&mut manifest.trigger_pools));
+            std::mem::take(&mut manifest.events)
         };
-        // `manifest` borrows `self.script_runtime`; `data_registry` and
-        // `sequence_registry` are disjoint fields, so all three coexist.
-        let mut data_registry = self.script_ctx.data_registry.borrow_mut();
-        for desc in std::mem::take(&mut manifest.entities) {
-            data_registry.upsert_entity_type(desc);
-        }
-        data_registry.replace_maps(std::mem::take(&mut manifest.maps));
-        let global_reactions = validate_scoped_sequence_primitives(
-            std::mem::take(&mut manifest.reactions),
-            &self.sequence_registry,
-        );
-        data_registry.replace_global_reactions(global_reactions);
-        data_registry.replace_global_crossings(std::mem::take(&mut manifest.crossings));
-        data_registry.replace_global_trigger_events(std::mem::take(&mut manifest.trigger_events));
-        data_registry.replace_global_trigger_pools(std::mem::take(&mut manifest.trigger_pools));
+        self.impact_policy_runtime.replace_global_events(events);
     }
 }
 

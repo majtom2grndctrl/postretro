@@ -12,8 +12,10 @@ use crate::components::agent::AgentComponent;
 use crate::components::ammo_reserve::AmmoReserve;
 use crate::components::billboard_emitter::BillboardEmitterComponent;
 use crate::components::brain::BrainComponent;
+use crate::components::deferred_effect::DeferredEffectComponent;
+use crate::components::entity_state::EntityStateComponent;
 use crate::components::fog_volume::FogAnimation;
-use crate::components::health::HealthComponent;
+use crate::components::health::{HealthComponent, ImpactDispatch};
 use crate::components::kinematic_mover::KinematicMoverComponent;
 use crate::components::light::LightComponent;
 use crate::components::mesh::MeshComponent;
@@ -123,6 +125,13 @@ pub enum ComponentKind {
     /// Map-authored, fixed-tick enemy-spawn configuration. The resolved
     /// descriptor remains in the session spawn context, not this serde value.
     Spawner = 16,
+    /// Per-instance modder-owned numeric fields. Every entity receives an
+    /// empty component at spawn; fields emerge on first write.
+    EntityState = 17,
+    /// Per-entity deferred impact-effect queue and terminal inert flag.
+    /// Every entity receives an empty component at spawn so effects do not
+    /// depend on an AI brain being present.
+    DeferredEffect = 18,
 }
 
 impl ComponentKind {
@@ -149,6 +158,8 @@ impl ComponentKind {
             ComponentKind::TriggerVolume,
             ComponentKind::AmmoReserve,
             ComponentKind::Spawner,
+            ComponentKind::EntityState,
+            ComponentKind::DeferredEffect,
         ];
         VARIANTS.len()
     };
@@ -211,6 +222,8 @@ pub enum ComponentValue {
     TriggerVolume(TriggerVolumeComponent),
     AmmoReserve(AmmoReserve),
     Spawner(SpawnerComponent),
+    EntityState(EntityStateComponent),
+    DeferredEffect(DeferredEffectComponent),
 }
 
 impl ComponentValue {
@@ -233,6 +246,8 @@ impl ComponentValue {
             ComponentValue::TriggerVolume(_) => ComponentKind::TriggerVolume,
             ComponentValue::AmmoReserve(_) => ComponentKind::AmmoReserve,
             ComponentValue::Spawner(_) => ComponentKind::Spawner,
+            ComponentValue::EntityState(_) => ComponentKind::EntityState,
+            ComponentValue::DeferredEffect(_) => ComponentKind::DeferredEffect,
         }
     }
 }
@@ -559,6 +574,36 @@ impl Component for SpawnerComponent {
     }
 }
 
+impl Component for EntityStateComponent {
+    const KIND: ComponentKind = ComponentKind::EntityState;
+
+    fn from_value(value: &ComponentValue) -> Option<&Self> {
+        match value {
+            ComponentValue::EntityState(state) => Some(state),
+            _ => None,
+        }
+    }
+
+    fn into_value(self) -> ComponentValue {
+        ComponentValue::EntityState(self)
+    }
+}
+
+impl Component for DeferredEffectComponent {
+    const KIND: ComponentKind = ComponentKind::DeferredEffect;
+
+    fn from_value(value: &ComponentValue) -> Option<&Self> {
+        match value {
+            ComponentValue::DeferredEffect(effects) => Some(effects),
+            _ => None,
+        }
+    }
+
+    fn into_value(self) -> ComponentValue {
+        ComponentValue::DeferredEffect(self)
+    }
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum RegistryError {
     #[error("entity {0} does not exist")]
@@ -607,6 +652,17 @@ pub struct EntityRegistry {
     /// Phase 0 sim command. Not script-visible and not a tag/KVP, so it cannot
     /// affect world queries or authored entity properties.
     local_player_pawn: Option<EntityId>,
+    /// Fires from the health chokepoint after each accepted damage call. The
+    /// event payload belongs to the health component module, while the registry
+    /// owns the single-threaded handoff to impact-policy consumers.
+    impact_dispatches: Vec<ImpactDispatch>,
+    /// Sparse worklist for entities with non-empty deferred-effect queues.
+    /// Ownership returns here after every tick so the allocation is reused.
+    active_deferred_effects: Vec<EntityId>,
+    /// Entity ids marked by terminal impact effects. The app drains this once
+    /// per frame after presentation/reaction work; game logic never removes an
+    /// entity inline through this channel.
+    end_of_frame_removals: Vec<EntityId>,
     /// A test-only artificial slot ceiling. Production still has exactly the
     /// `u16::MAX` registry capacity promised by `try_spawn`.
     #[cfg(any(test, feature = "test-support"))]
@@ -623,6 +679,9 @@ impl EntityRegistry {
             tags: Vec::new(),
             kvp_table: HashMap::new(),
             local_player_pawn: None,
+            impact_dispatches: Vec::new(),
+            active_deferred_effects: Vec::new(),
+            end_of_frame_removals: Vec::new(),
             #[cfg(any(test, feature = "test-support"))]
             test_capacity_limit: None,
         }
@@ -816,6 +875,11 @@ impl EntityRegistry {
         let id = EntityId::new(index, slot.generation);
         self.components[ComponentKind::Transform as usize][index as usize] =
             Some(ComponentValue::Transform(transform));
+        self.components[ComponentKind::EntityState as usize][index as usize] =
+            Some(ComponentValue::EntityState(EntityStateComponent::default()));
+        self.components[ComponentKind::DeferredEffect as usize][index as usize] = Some(
+            ComponentValue::DeferredEffect(DeferredEffectComponent::default()),
+        );
         // Seed previous == current at construction so an entity spawned
         // mid-tick (after the tick's snapshot pass already ran) never pops:
         // its first interpolated transform blends from its own spawn pose.
@@ -866,6 +930,84 @@ impl EntityRegistry {
         }
     }
 
+    /// Publish one damage-chokepoint dispatch for the engine's impact-policy
+    /// consumer. This is intentionally separate from component columns: it is
+    /// ephemeral per-fire data, not persistent entity state.
+    pub(crate) fn push_impact_dispatch(&mut self, dispatch: ImpactDispatch) {
+        self.impact_dispatches.push(dispatch);
+    }
+
+    /// Drain every impact dispatch published since the previous consumer pass.
+    pub fn take_impact_dispatches(&mut self) -> Vec<ImpactDispatch> {
+        std::mem::take(&mut self.impact_dispatches)
+    }
+
+    /// Mutable access to the engine-managed deferred-effect storage.
+    pub fn deferred_effect_mut(
+        &mut self,
+        id: EntityId,
+    ) -> Result<&mut DeferredEffectComponent, RegistryError> {
+        let index = self.validate(id)?;
+        match self.components[ComponentKind::DeferredEffect as usize][index].as_mut() {
+            Some(ComponentValue::DeferredEffect(effects)) => Ok(effects),
+            _ => Err(RegistryError::ComponentNotFound {
+                id,
+                kind: ComponentKind::DeferredEffect,
+            }),
+        }
+    }
+
+    /// Mutable access to the per-instance modder state column.
+    pub fn entity_state_mut(
+        &mut self,
+        id: EntityId,
+    ) -> Result<&mut EntityStateComponent, RegistryError> {
+        let index = self.validate(id)?;
+        match self.components[ComponentKind::EntityState as usize][index].as_mut() {
+            Some(ComponentValue::EntityState(state)) => Ok(state),
+            _ => Err(RegistryError::ComponentNotFound {
+                id,
+                kind: ComponentKind::EntityState,
+            }),
+        }
+    }
+
+    /// Enroll an entity in deferred-effect ticking once. The worklist is
+    /// sparse: entities whose engine-managed queue is empty never appear here.
+    pub fn activate_deferred_effects(&mut self, id: EntityId) -> Result<(), RegistryError> {
+        let _ = self.validate(id)?;
+        if !self.active_deferred_effects.contains(&id) {
+            self.active_deferred_effects.push(id);
+        }
+        Ok(())
+    }
+
+    /// Temporarily transfer the sparse worklist to the fixed-tick executor.
+    pub fn take_active_deferred_effects(&mut self) -> Vec<EntityId> {
+        std::mem::take(&mut self.active_deferred_effects)
+    }
+
+    /// Return the compacted worklist after a tick, retaining its allocation.
+    pub fn replace_active_deferred_effects(&mut self, active: Vec<EntityId>) {
+        debug_assert!(self.active_deferred_effects.is_empty());
+        self.active_deferred_effects = active;
+    }
+
+    /// Stage a live entity for the dedicated frame-end removal pass. Repeated
+    /// marks collapse to one removal attempt while the id remains live.
+    pub fn mark_for_end_of_frame_removal(&mut self, id: EntityId) -> Result<(), RegistryError> {
+        let _ = self.validate(id)?;
+        if !self.end_of_frame_removals.contains(&id) {
+            self.end_of_frame_removals.push(id);
+        }
+        Ok(())
+    }
+
+    /// Drain ids staged for the app-owned frame-end removal pass.
+    pub fn take_end_of_frame_removals(&mut self) -> Vec<EntityId> {
+        std::mem::take(&mut self.end_of_frame_removals)
+    }
+
     /// Despawn every live entity while preserving slot-generation semantics.
     /// Level unload uses this instead of replacing the registry wholesale so
     /// stale `EntityId`s from the old level cannot become valid in a later load.
@@ -885,6 +1027,9 @@ impl EntityRegistry {
         for id in live_ids {
             let _ = self.despawn(id);
         }
+        self.impact_dispatches.clear();
+        self.active_deferred_effects.clear();
+        self.end_of_frame_removals.clear();
     }
 
     fn validate(&self, id: EntityId) -> Result<usize, RegistryError> {
@@ -1155,6 +1300,14 @@ mod tests {
         pawn
     }
 
+    fn assert_number_approx_eq(actual: f32, expected: f32) {
+        const EPSILON: f32 = 1.0e-6;
+        assert!(
+            (actual - expected).abs() <= EPSILON,
+            "expected {expected} ± {EPSILON}, got {actual}"
+        );
+    }
+
     #[test]
     fn entity_id_display_shows_index_and_generation() {
         let id = EntityId::new(42, 7);
@@ -1168,6 +1321,28 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let id = reg.spawn(sample_transform());
         assert!(reg.exists(id));
+    }
+
+    #[test]
+    fn spawn_creates_empty_per_entity_state() {
+        let mut registry = EntityRegistry::new();
+        let first = registry.spawn(Transform::default());
+        let second = registry.spawn(Transform::default());
+
+        assert_number_approx_eq(
+            registry
+                .get_component::<EntityStateComponent>(first)
+                .expect("every spawn receives state")
+                .get("hits"),
+            0.0,
+        );
+        assert_number_approx_eq(
+            registry
+                .get_component::<EntityStateComponent>(second)
+                .expect("every spawn receives state")
+                .get("hits"),
+            0.0,
+        );
     }
 
     #[test]

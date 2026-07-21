@@ -503,7 +503,7 @@ export type ModMapEntry = {
   path: string,
   --- Display name shown to players in catalog-driven UI. Required.
   name: string,
-  --- Authoritative classification tags for filtering plus `levels` selection on mod-global reactions, crossings, trigger events, and trigger pools. Optional; missing/null normalizes to empty.
+  --- Authoritative classification tags for filtering plus `levels` selection on mod-global reactions, impact events, crossings, trigger events, and trigger pools. Optional; missing/null normalizes to empty.
   tags: {string}?,
 }
 
@@ -555,6 +555,8 @@ export type ModManifest = {
   frontend: Frontend?,
   --- Engine-global reaction definitions. Optional; survive level unload and compose into active level behavior by `levels` tag selectors.
   reactions: {NamedReactionDescriptor}?,
+  --- Pure mod-global impact-policy declarations. Optional; `levels` selects map tags, setupLevel events append level-local declarations, and base plus matching last-registered override resolve by author-assigned id. Override filters narrow the base filter.
+  events: {ImpactEvent}?,
   --- Engine-global state-crossing watchers. Optional; survive level unload and compose into active level behavior by `levels` tag selectors.
   crossings: {CrossingDescriptor}?,
   --- Trigger-volume enter/exit observers. Optional; compose by level tags.
@@ -1037,6 +1039,63 @@ export type TriggerTarget = { __firedTriggerTarget: true }
 export type TriggerEventParams = { activators: ActivatorsTarget, trigger: TriggerTarget, occupancy: RuntimeRead }
 export type Reaction<S> = NamedReactionDescriptor
 
+--- Impact-policy IR skin. These refs lower to the existing closed runtime IR;
+--- boolean composition is represented exclusively through `select`.
+export type NumberValue = number | NumberRef
+export type BoolValue = boolean | BoolRef
+export type NumberRef = {
+  plus: (self: NumberRef, n: NumberValue) -> NumberRef,
+  minus: (self: NumberRef, n: NumberValue) -> NumberRef,
+  times: (self: NumberRef, n: NumberValue) -> NumberRef,
+  dividedBy: (self: NumberRef, n: NumberValue) -> NumberRef,
+  clamp: (self: NumberRef, lo: NumberValue, hi: NumberValue) -> NumberRef,
+  lerp: (self: NumberRef, to: NumberValue, t: NumberValue) -> NumberRef,
+  lt: (self: NumberRef, n: NumberValue) -> BoolRef,
+  le: (self: NumberRef, n: NumberValue) -> BoolRef,
+  gt: (self: NumberRef, n: NumberValue) -> BoolRef,
+  ge: (self: NumberRef, n: NumberValue) -> BoolRef,
+  eq: (self: NumberRef, n: NumberValue) -> BoolRef,
+  ne: (self: NumberRef, n: NumberValue) -> BoolRef,
+}
+export type BoolRef = {
+  ["and"]: (self: BoolRef, other: BoolValue) -> BoolRef,
+  ["or"]: (self: BoolRef, other: BoolValue) -> BoolRef,
+  ["not"]: (self: BoolRef) -> BoolRef,
+  select: (self: BoolRef, whenTrue: NumberValue, whenFalse: NumberValue) -> NumberRef,
+}
+type ImpactEffectWire =
+  { primitive: "despawn", target: "@impact.target", args: { afterMs: number? } }
+  | { primitive: "playAnim", target: "@impact.target", args: { clip: string } }
+  | { primitive: "setHealth", target: "@impact.target", args: { value: any, afterMs: number? } }
+  | { primitive: "setState", target: "@impact.target", args: { name: string, value: any } }
+  | { primitive: "slot.add", args: { slot: string, delta: any } }
+type ImpactEffectCapability = { __impactEffectCapability: true }
+--- Closed impact effect lowered only by SDK constructors.
+export type Effect = (ImpactEffectCapability) -> ImpactEffectWire
+export type GatedEffect = { when: BoolRef?, ["do"]: {Effect} }
+export type EffectOrGroup = Effect | GatedEffect
+export type ImpactEventFilter = { tag: string?, levels: {string}? }
+export type ImpactEventOverrideFilter = { tag: string, levels: {string}? }
+export type TargetHandle = {
+  healthBefore: NumberRef,
+  healthAfter: NumberRef,
+  maxHealth: NumberRef,
+  despawn: (self: TargetHandle, opts: { afterMs: number? }?) -> Effect,
+  playAnim: (self: TargetHandle, clip: string) -> Effect,
+  setHealth: (self: TargetHandle, value: NumberValue, opts: { afterMs: number? }?) -> Effect,
+  state: (self: TargetHandle, name: string) -> NumberRef,
+  setState: (self: TargetHandle, name: string, value: NumberValue) -> Effect,
+}
+export type SourceHandle = { __impactSourceBrand: true }
+export type NumberSlot = { add: (self: NumberSlot, delta: NumberValue) -> Effect }
+export type Impact = { target: TargetHandle, source: SourceHandle, amount: NumberRef }
+export type ImpactEvent = {
+  kind: "impact",
+  isOverride: boolean,
+  levels: {string}?,
+  override: (self: ImpactEvent, filter: ImpactEventOverrideFilter, build: (Impact) -> {EffectOrGroup}) -> ImpactEvent,
+}
+
 --- Crossing condition: fires when the watched slot crosses the threshold in
 --- one direction. Exactly one of `below`/`above` is given. `max` is the
 --- denominator the threshold is a fraction of; omit it for a raw-value
@@ -1082,6 +1141,7 @@ export type CrossingDescriptor = ThresholdCrossingDescriptor | PredicateCrossing
 --- this shape in one pass at level load.
 export type LevelManifest = {
   reactions: {NamedReactionDescriptor},
+  events: {ImpactEvent}?,
   crossings: {CrossingDescriptor}?,
   triggerEvents: {TriggerEventDescriptor}?,
   triggerPools: {TriggerPoolDescriptor}?,
@@ -1106,6 +1166,10 @@ declare defineReaction: (
   & ((tracer: (TriggerEventParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)) -> Reaction<TriggerEventParams>)
   & ((name: string, tracer: (TriggerEventParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)) -> Reaction<TriggerEventParams>)
 )
+
+--- Define a pure impact-policy descriptor. Register it only by returning it
+--- through a manifest's `events` child.
+declare function defineImpactEvent(id: string, filter: ImpactEventFilter, build: (Impact) -> {EffectOrGroup}): ImpactEvent
 
 export type TriggerEventDescriptor = { tag: string, event: "enter" | "exit", fire: {string}, levels: {string}? }
 --- A seeded trap-pool declaration; exactly one arming form is required.
@@ -1142,7 +1206,7 @@ declare function scopeReactions<S>(tags: {string}, list: {Reaction<S>}): {Reacti
 declare function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor
 --- Pure identity builder for the mod manifest consumed from the chunk return.
 --- `config.name` is required; optional arrays include `entities`, `maps`,
---- `uiTrees`, `reactions`, `crossings`, `triggerEvents`, `triggerPools`, and
+--- `uiTrees`, `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and
 --- `stores`.
 declare function defineMod(config: ModManifest): ModManifest
 --- Pure identity builder for a mod map catalog. Entries require `id`, `path`,
@@ -1194,6 +1258,9 @@ export type StoreDefinition = {
 --- `schema` declares slot names and validation rules. Returned declarations
 --- commit atomically only after the mod manifest succeeds.
 declare function defineStore(namespace: string, schema: { [string]: StoreSlotSchema }): StoreDefinition
+
+--- Build an additive write for a writable Number store slot.
+declare function slot(ref: WritableStateRef<number>): NumberSlot
 
 -- ---------------------------------------------------------------------------
 -- UI theme helpers. `defineTheme` accepts nested singular token groups and
@@ -1633,6 +1700,8 @@ export type PostretroModule = {
   sequence: typeof(sequence),
   --- Build a named reaction descriptor. Accepts `progress`, `primitive`, or `sequence` body data.
   defineReaction: typeof(defineReaction),
+  --- Define a pure impact-policy descriptor. Register it only through `events`.
+  defineImpactEvent: typeof(defineImpactEvent),
   damage: typeof(damage),
   enemies: typeof(enemies),
   spawner: typeof(spawner),
@@ -1651,6 +1720,8 @@ export type PostretroModule = {
   defineTriggerPool: typeof(defineTriggerPool),
   --- Pure state-store builder returning `{ declaration, state }`.
   defineStore: typeof(defineStore),
+  --- Build an additive write for a writable Number store slot.
+  slot: typeof(slot),
   emitter: typeof(emitter),
   smokeEmitter: typeof(smokeEmitter),
   sparkEmitter: typeof(sparkEmitter),

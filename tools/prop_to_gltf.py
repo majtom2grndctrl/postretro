@@ -189,6 +189,25 @@ def apply_all_transforms(mesh):
     bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
 
 
+def strip_skin(mesh):
+    """Remove armature modifiers and vertex groups so the mesh exports as rigid."""
+    removed_mods = 0
+    for mod in list(mesh.modifiers):
+        if mod.type == "ARMATURE":
+            bpy.ops.object.select_all(action="DESELECT")
+            mesh.select_set(True)
+            bpy.context.view_layer.objects.active = mesh
+            bpy.ops.object.modifier_apply(modifier=mod.name)
+            removed_mods += 1
+
+    removed_groups = len(mesh.vertex_groups)
+    mesh.vertex_groups.clear()
+
+    if removed_mods or removed_groups:
+        print(f"  Stripped skin: {removed_mods} armature modifier(s), "
+              f"{removed_groups} vertex group(s)")
+
+
 def remove_armatures():
     """Remove any armature objects (props are rigid)."""
     armatures = [obj for obj in bpy.data.objects if obj.type == "ARMATURE"]
@@ -348,6 +367,26 @@ def postprocess_gltf(gltf_path, sockets=None):
     if has_tangent:
         print("\nStripped TANGENT attributes from mesh primitives")
 
+    has_skin_attrs = False
+    for mesh in meshes:
+        for prim in mesh.get("primitives", []):
+            attrs = prim.get("attributes", {})
+            for attr in list(attrs.keys()):
+                if attr.startswith("JOINTS_") or attr.startswith("WEIGHTS_"):
+                    del attrs[attr]
+                    has_skin_attrs = True
+                    modified = True
+    if "skins" in gltf:
+        del gltf["skins"]
+        modified = True
+        has_skin_attrs = True
+    for node in nodes:
+        if "skin" in node:
+            del node["skin"]
+            modified = True
+    if has_skin_attrs:
+        print("Stripped skin data (JOINTS, WEIGHTS, skins)")
+
     print(f"\n--- glTF Summary ---")
     print(f"Nodes: {len(nodes)}")
     print(f"Meshes: {len(meshes)}")
@@ -410,6 +449,7 @@ def main():
 
     mesh = join_meshes()
 
+    strip_skin(mesh)
     remove_armatures()
 
     apply_all_transforms(mesh)

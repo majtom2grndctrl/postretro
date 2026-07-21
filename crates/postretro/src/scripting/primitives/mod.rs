@@ -508,7 +508,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field(
             "tags?",
             "Vec<String>",
-            "Authoritative classification tags for filtering plus `levels` selection on mod-global reactions, crossings, trigger events, and trigger pools. Optional; missing/null normalizes to empty.",
+            "Authoritative classification tags for filtering plus `levels` selection on mod-global reactions, impact events, crossings, trigger events, and trigger pools. Optional; missing/null normalizes to empty.",
         )
         .finish();
     registry
@@ -598,7 +598,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field(
             "events?",
             "Vec<ImpactEvent>",
-            "Pure impact-policy declarations. Optional; base declarations and overrides compose by their author-assigned identity at the impact dispatch chokepoint.",
+            "Pure mod-global impact-policy declarations. Optional; `levels` selects map tags, setupLevel events append level-local declarations, and base plus matching last-registered override resolve by author-assigned id. Override filters narrow the base filter.",
         )
         .field(
             "crossings?",

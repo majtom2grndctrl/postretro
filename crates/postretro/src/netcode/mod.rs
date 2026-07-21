@@ -1871,10 +1871,8 @@ pub(crate) fn host_flush_pending_hit_declarations(
             },
             pending.client_id,
             &pending.declaration,
+            &mut on_impact,
         );
-        if result.hit_accepted {
-            on_impact(registry);
-        }
         send_shot_verdict(
             server,
             pending.client_id,
@@ -1969,6 +1967,7 @@ fn ingest_hit_declaration(
     context: HostHitIngestContext<'_>,
     client_id: u64,
     declaration: &wire::HitDeclaration,
+    mut on_impact: impl FnMut(&mut EntityRegistry),
 ) -> HitDeclarationResult {
     let shot_id = ShotId::from_raw(declaration.shot_id);
     let Some(open) = context.open_shots.get(shot_id) else {
@@ -1996,7 +1995,7 @@ fn ingest_hit_declaration(
 
     let mut hit_accepted = false;
     for record in declaration.records.iter().take(pellet_count) {
-        hit_accepted |= apply_valid_hit_record(
+        let accepted = apply_valid_hit_record(
             context.registry,
             context.collision_world,
             context.allocator,
@@ -2007,6 +2006,13 @@ fn ingest_hit_declaration(
             open.shot.credit_source.clone(),
             record,
         );
+        if accepted {
+            // One remote pellet is one impact fire. Its policy effects must
+            // settle before validation and damage for the next record observe
+            // the target again.
+            on_impact(context.registry);
+            hit_accepted = true;
+        }
     }
 
     HitDeclarationResult {
@@ -2470,6 +2476,7 @@ mod tests {
                 },
                 client_id,
                 declaration,
+                |_| {},
             )
         }
 
@@ -2680,6 +2687,53 @@ mod tests {
         let entry = health.contributor_ledger.entries().first().unwrap();
         assert_eq!(entry.last_attacker, Some(fixture.pawn));
         assert_eq!(entry.last_weapon, Some(fixture.weapon));
+    }
+
+    // Regression: multi-pellet declarations used to batch every damage record
+    // before running impact policy, so later pellets observed stale policy state.
+    #[test]
+    fn hit_declaration_runs_impact_consumer_after_each_accepted_pellet() {
+        let mut fixture = HitIngestFixture::new(CollisionWorld::new());
+        fixture.open_shots.retire(fixture.shot_id);
+        let mut shot = authorized_test_shot(
+            fixture.shot_id,
+            fixture.pawn,
+            fixture.weapon,
+            99,
+            10.0,
+            10.0,
+        );
+        shot.pellet_count = 2;
+        fixture.open_shots.record(shot, 7);
+        let declaration = fixture.declaration(vec![
+            fixture.record(Vec3::new(4.0, 0.5, 0.0), None),
+            fixture.record(Vec3::new(4.0, 0.5, 0.0), None),
+        ]);
+        let target = fixture.target;
+        let mut health_seen_by_consumer = Vec::new();
+
+        let result = ingest_hit_declaration(
+            HostHitIngestContext {
+                registry: &mut fixture.registry,
+                collision_world: &fixture.collision_world,
+                allocator: &fixture.allocator,
+                owners: &fixture.owners,
+                open_shots: &mut fixture.open_shots,
+            },
+            7,
+            &declaration,
+            |registry| {
+                health_seen_by_consumer.push(
+                    registry
+                        .get_component::<HealthComponent>(target)
+                        .expect("target stays live")
+                        .current,
+                );
+            },
+        );
+
+        assert!(result.hit_accepted);
+        assert_eq!(health_seen_by_consumer, [90.0, 80.0]);
     }
 
     #[test]

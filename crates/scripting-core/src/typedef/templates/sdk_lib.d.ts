@@ -253,6 +253,7 @@
   const boolBrand: unique symbol;
   const sourceBrand: unique symbol;
   const impactEventBrand: unique symbol;
+  const effectBrand: unique symbol;
   export type NumberValue = number | NumberRef;
   export type BoolValue = boolean | BoolRef;
   export interface NumberRef {
@@ -277,12 +278,8 @@
     not(): BoolRef;
     select(whenTrue: NumberValue, whenFalse: NumberValue): NumberRef;
   }
-  export type Effect =
-    | { primitive: "despawn"; target: "@impact.target"; args: { afterMs?: number } }
-    | { primitive: "playAnim"; target: "@impact.target"; args: { clip: string } }
-    | { primitive: "setHealth"; target: "@impact.target"; args: { value: RuntimeValue; afterMs?: number } }
-    | { primitive: "setState"; target: "@impact.target"; args: { name: string; value: RuntimeValue } }
-    | { primitive: "setState"; args: { slot: string; value: RuntimeValue }; target?: never };
+  /** Opaque closed impact effect. Construct through TargetHandle or slot(...).add(). */
+  export interface Effect { readonly [effectBrand]: true; }
   export type GatedEffect = { when?: BoolRef; do: readonly Effect[] };
   export type EffectOrGroup = Effect | GatedEffect;
   export type ImpactEventFilter = { tag?: string; levels?: readonly string[] };

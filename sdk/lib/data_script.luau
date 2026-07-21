@@ -208,12 +208,8 @@ export type BoolRef = {
   select: (self: BoolRef, whenTrue: NumberValue, whenFalse: NumberValue) -> NumberRef,
 }
 
-export type Effect =
-  { primitive: "despawn", target: "@impact.target", args: { afterMs: number? } }
-  | { primitive: "playAnim", target: "@impact.target", args: { clip: string } }
-  | { primitive: "setHealth", target: "@impact.target", args: { value: any, afterMs: number? } }
-  | { primitive: "setState", target: "@impact.target", args: { name: string, value: any } }
-  | { primitive: "setState", target: nil?, args: { slot: string, value: any } }
+-- Opaque closed impact effect. Construct through TargetHandle or slot(...):add().
+export type Effect = { __impactEffectBrand: true }
 export type GatedEffect = { when: BoolRef?, ["do"]: {Effect} }
 export type EffectOrGroup = Effect | GatedEffect
 export type ImpactEventFilter = { tag: string?, levels: {string}? }
@@ -605,12 +601,12 @@ function DataScriptSdk.slot(ref: WritableStateRef<number>): NumberSlot
   return table.freeze({
     add = function(_self: NumberSlot, delta: NumberValue): Effect
       return {
-        primitive = "setState",
+        primitive = "slot.add",
         args = {
           slot = ref.slot,
-          value = { op = "add", a = { op = "input", name = ref.slot }, b = numberNode(delta) },
+          delta = numberNode(delta),
         },
-      }
+      } :: any
     end,
   })
 end

@@ -146,10 +146,7 @@ impl ImpactPolicyRuntime {
         {
             let base_filter_tag = if descriptor.is_override {
                 let Some(filter) = base_filters.get(&descriptor.id).cloned() else {
-                    log::warn!(
-                        "[Impact] override `{}` was skipped because no composed base precedes it",
-                        descriptor.id
-                    );
+                    log::warn!("[Impact] {}", unknown_override_diagnostic(&descriptor.id));
                     continue;
                 };
                 filter
@@ -275,6 +272,10 @@ fn levels_match(levels: &[String], active_level_tags: &[String]) -> bool {
             .any(|level| active_level_tags.iter().any(|tag| tag == level))
 }
 
+fn unknown_override_diagnostic(id: &str) -> String {
+    format!("override targets unknown event \"{id}\"")
+}
+
 fn bind_policy(
     descriptor: &ImpactEventDescriptor,
     base_filter_tag: Option<String>,
@@ -364,18 +365,22 @@ fn bind_effect(entry: &Value, scope: &EntityScope) -> Result<BoundEffect, String
             let value = args
                 .get("value")
                 .ok_or_else(|| "target setState args is missing `value`".to_string())?;
-            bind_write(format!("@state.{name}"), value, scope).map(BoundEffect::Write)
+            bind_number_write(format!("@state.{name}"), value, scope).map(BoundEffect::Write)
         }
-        "setState" if target.is_none() => {
-            let slot = required_string(args, "slot", "slot setState args")?;
-            let value = args
-                .get("value")
-                .ok_or_else(|| "slot setState args is missing `value`".to_string())?;
-            bind_write(slot.to_string(), value, scope).map(BoundEffect::Write)
+        "slot.add" if target.is_none() => {
+            let slot = required_string(args, "slot", "slot.add args")?;
+            let delta = args
+                .get("delta")
+                .ok_or_else(|| "slot.add args is missing `delta`".to_string())?;
+            let value = serde_json::json!({
+                "op": "add",
+                "a": { "op": "input", "name": slot },
+                "b": delta,
+            });
+            bind_number_write(slot.to_string(), &value, scope).map(BoundEffect::Write)
         }
-        "setState" => {
-            Err("setState may target only @impact.target or a bare store slot".to_string())
-        }
+        "setState" => Err("setState must target @impact.target".to_string()),
+        "slot.add" => Err("slot.add must not carry a target".to_string()),
         _ => Err(format!("unsupported impact primitive `{primitive}`")),
     }
 }
@@ -410,6 +415,18 @@ fn bind_write(
         scope,
     )
     .map_err(|error| error.to_string())
+}
+
+fn bind_number_write(
+    output: String,
+    value: &Value,
+    scope: &EntityScope,
+) -> Result<BoundProgram<EntityScope>, String> {
+    let program = bind_write(output, value, scope)?;
+    if program.root_type != IrType::Number {
+        return Err("impact effect operand must evaluate to a number".to_string());
+    }
+    Ok(program)
 }
 
 fn plan_effect(effect: &BoundEffect, scope: &EntityScope) -> PlannedEffect {
@@ -530,10 +547,10 @@ mod tests {
         })
     }
 
-    fn store_write(slot: &str, value: Value) -> Value {
+    fn slot_add(slot: &str, delta: Value) -> Value {
         json!({
-            "primitive": "setState",
-            "args": { "slot": slot, "value": value },
+            "primitive": "slot.add",
+            "args": { "slot": slot, "delta": delta },
         })
     }
 
@@ -627,7 +644,7 @@ mod tests {
                 json!({
                     "when": { "op": "eq", "a": input("@state.hits"), "b": number(2.0) },
                     "do": [
-                        store_write("impact.broken", json!({ "op": "add", "a": input("impact.broken"), "b": number(1.0) })),
+                        slot_add("impact.broken", number(1.0)),
                         { "primitive": "despawn", "target": "@impact.target", "args": {} },
                     ],
                 }),
@@ -873,6 +890,55 @@ mod tests {
         evaluate_pending(&ctx, &mut runtime);
 
         assert_eq!(state(&ctx, target, "ran"), 0.0);
+    }
+
+    #[test]
+    fn impact_effect_wire_rejects_raw_store_assignment_and_boolean_operands() {
+        let ctx = ScriptCtx::new();
+        ctx.slot_table
+            .borrow_mut()
+            .insert("impact.total".into(), number_slot(0.0))
+            .expect("new slot");
+        let scope = EntityScope::impact(ctx);
+
+        let raw_assignment = json!({
+            "primitive": "setState",
+            "args": { "slot": "impact.total", "value": number(99.0) },
+        });
+        assert_eq!(
+            bind_effect(&raw_assignment, &scope).err().unwrap(),
+            "setState must target @impact.target"
+        );
+
+        for malformed in [
+            json!({
+                "primitive": "setHealth",
+                "target": "@impact.target",
+                "args": { "value": { "op": "const", "value": true } },
+            }),
+            json!({
+                "primitive": "setState",
+                "target": "@impact.target",
+                "args": { "name": "bad", "value": { "op": "const", "value": true } },
+            }),
+            json!({
+                "primitive": "slot.add",
+                "args": { "slot": "impact.total", "delta": { "op": "const", "value": true } },
+            }),
+        ] {
+            assert!(
+                bind_effect(&malformed, &scope).is_err(),
+                "numeric effect operand accepted boolean IR: {malformed}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_override_diagnostic_names_author_id_in_documented_form() {
+        assert_eq!(
+            unknown_override_diagnostic("salvage:crate-break"),
+            "override targets unknown event \"salvage:crate-break\""
+        );
     }
 
     #[test]

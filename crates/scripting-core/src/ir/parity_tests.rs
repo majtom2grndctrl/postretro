@@ -804,14 +804,10 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
     assert_eq!(
         base["policy"][1]["do"][2],
         serde_json::json!({
-            "primitive": "setState",
+            "primitive": "slot.add",
             "args": {
                 "slot": "impact.broken",
-                "value": {
-                    "op": "add",
-                    "a": { "op": "input", "name": "impact.broken" },
-                    "b": { "op": "const", "value": 1 },
-                },
+                "delta": { "op": "const", "value": 1 },
             },
         })
     );

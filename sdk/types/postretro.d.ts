@@ -504,7 +504,7 @@ declare module "postretro" {
     path: string;
     /** Display name shown to players in catalog-driven UI. Required. */
     name: string;
-    /** Authoritative classification tags for filtering plus `levels` selection on mod-global reactions, crossings, trigger events, and trigger pools. Optional; missing/null normalizes to empty. */
+    /** Authoritative classification tags for filtering plus `levels` selection on mod-global reactions, impact events, crossings, trigger events, and trigger pools. Optional; missing/null normalizes to empty. */
     tags?: ReadonlyArray<string>;
   };
 
@@ -556,7 +556,7 @@ declare module "postretro" {
     frontend?: Frontend;
     /** Engine-global reaction definitions. Optional; survive level unload and compose into active level behavior by `levels` tag selectors. */
     reactions?: ReadonlyArray<NamedReactionDescriptor>;
-    /** Pure impact-policy declarations. Optional; base declarations and overrides compose by their author-assigned identity at the impact dispatch chokepoint. */
+    /** Pure mod-global impact-policy declarations. Optional; `levels` selects map tags, setupLevel events append level-local declarations, and base plus matching last-registered override resolve by author-assigned id. Override filters narrow the base filter. */
     events?: ReadonlyArray<ImpactEvent>;
     /** Engine-global state-crossing watchers. Optional; survive level unload and compose into active level behavior by `levels` tag selectors. */
     crossings?: ReadonlyArray<CrossingDescriptor>;
@@ -969,6 +969,7 @@ declare module "postretro" {
   const boolBrand: unique symbol;
   const sourceBrand: unique symbol;
   const impactEventBrand: unique symbol;
+  const effectBrand: unique symbol;
   export type NumberValue = number | NumberRef;
   export type BoolValue = boolean | BoolRef;
   export interface NumberRef {
@@ -993,12 +994,8 @@ declare module "postretro" {
     not(): BoolRef;
     select(whenTrue: NumberValue, whenFalse: NumberValue): NumberRef;
   }
-  export type Effect =
-    | { primitive: "despawn"; target: "@impact.target"; args: { afterMs?: number } }
-    | { primitive: "playAnim"; target: "@impact.target"; args: { clip: string } }
-    | { primitive: "setHealth"; target: "@impact.target"; args: { value: RuntimeValue; afterMs?: number } }
-    | { primitive: "setState"; target: "@impact.target"; args: { name: string; value: RuntimeValue } }
-    | { primitive: "setState"; args: { slot: string; value: RuntimeValue }; target?: never };
+  /** Opaque closed impact effect. Construct through TargetHandle or slot(...).add(). */
+  export interface Effect { readonly [effectBrand]: true; }
   export type GatedEffect = { when?: BoolRef; do: readonly Effect[] };
   export type EffectOrGroup = Effect | GatedEffect;
   export type ImpactEventFilter = { tag?: string; levels?: readonly string[] };

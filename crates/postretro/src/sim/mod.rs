@@ -132,6 +132,15 @@ pub(crate) fn simulate_tick(
 ) -> TickEvents {
     registry.borrow_mut().snapshot_transforms();
 
+    // This is the fixed-tick queue boundary. Producers run later in this tick
+    // (AI, local weapon fire, and host remote-hit ingest after simulate_tick),
+    // so every newly queued effect keeps its full authored delay until the
+    // next fixed tick, including in headless simulation.
+    {
+        let mut registry = registry.borrow_mut();
+        crate::impact_effects::tick_deferred_effects(&mut registry, tick_dt);
+    }
+
     {
         let mut registry = registry.borrow_mut();
         kinematic_mover::run_kinematic_mover_tick(&mut registry, mover_tick_states, tick_dt);
@@ -326,14 +335,6 @@ pub(crate) fn simulate_tick(
     );
     reload_deliveries.extend(local_deliveries);
     weapon.extend(remote_weapon_events);
-    // Deferred impact effects advance only after both in-tick damage producers:
-    // enemy melee ran in the AI stage above and weapon fire just completed.
-    // Effects enqueued by either producer therefore take their first countdown
-    // decrement on the next fixed tick.
-    {
-        let mut registry = registry.borrow_mut();
-        crate::impact_effects::tick_deferred_effects(&mut registry, tick_dt);
-    }
     let death = run_death_sweep(&registry, progress_tracker);
 
     TickEvents {
@@ -2790,6 +2791,92 @@ mod tests {
         assert_eq!(health.current, 100.0);
         assert!(health.contributor_ledger.entries().is_empty());
         assert!(health.contributor_ledger.overflow().is_none());
+    }
+
+    // Regression: synchronous impact producers queued delayed effects before
+    // the same tick's consumer, shortening every delay by one fixed step.
+    #[test]
+    fn synchronous_producer_queue_waits_until_next_tick_before_first_decrement() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let target = {
+            let mut registry = registry.borrow_mut();
+            let target = registry.spawn(Transform::default());
+            registry
+                .set_component(
+                    target,
+                    HealthComponent {
+                        max: 100.0,
+                        current: 100.0,
+                        hitbox: None,
+                        death_handled: false,
+                        zone_multipliers: Default::default(),
+                        contributor_ledger: Default::default(),
+                    },
+                )
+                .unwrap();
+            target
+        };
+        let mut run_tick = |enqueue_effect: bool| {
+            let world = CollisionWorld::new();
+            let hit_zones = HitZoneStore::new();
+            let mut progress = ProgressTracker::new();
+            let mut ai_warned = HashSet::new();
+            let mut mover_states = MoverTickStateTable::default();
+            simulate_tick(
+                registry.clone(),
+                &world,
+                &hit_zones,
+                None,
+                -9.81,
+                None,
+                0.0,
+                &mut progress,
+                &mut ai_warned,
+                &[],
+                &mut mover_states,
+                &[],
+                &sim_command(false, false),
+                |registry| {
+                    if enqueue_effect {
+                        crate::impact_effects::set_health(
+                            &mut registry.borrow_mut(),
+                            target,
+                            25.0,
+                            Some(100.0),
+                        );
+                    }
+                    PostMovementCommand {
+                        aim_origin: Vec3::ZERO,
+                        aim_direction: Vec3::NEG_Z,
+                    }
+                },
+                0.040,
+                None,
+                |_| {},
+            );
+        };
+
+        run_tick(true);
+        assert_eq!(
+            registry
+                .borrow()
+                .get_component::<postretro_entities::DeferredEffectComponent>(target)
+                .unwrap()
+                .pending[0]
+                .countdown_ms,
+            100.0,
+        );
+
+        run_tick(false);
+        assert_eq!(
+            registry
+                .borrow()
+                .get_component::<postretro_entities::DeferredEffectComponent>(target)
+                .unwrap()
+                .pending[0]
+                .countdown_ms,
+            60.0,
+        );
     }
 
     #[test]

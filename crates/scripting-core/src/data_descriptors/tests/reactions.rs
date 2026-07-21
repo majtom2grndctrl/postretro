@@ -470,6 +470,65 @@ fn trigger_event_manifests_parse_identically_and_drop_unknown_events() {
     assert_eq!(js.trigger_events[0].fire, ["zap", "once"]);
 }
 
+// Regression: Luau rejected the whole `events` field for a sparse table while
+// QuickJS skipped only the malformed slots and retained valid siblings.
+#[test]
+fn sparse_and_malformed_impact_events_keep_valid_siblings_in_both_vms() {
+    let js = eval_js(
+        r#"(() => {
+            const events = [];
+            events[0] = { kind: "impact", id: "salvage:first", filter: {}, policy: [] };
+            events[2] = 42;
+            events[3] = { kind: "impact", id: "salvage:last", filter: {}, policy: [] };
+            return { events };
+        })()"#,
+        |ctx, value| LevelManifest::from_js_value(ctx, value).unwrap(),
+    );
+    let lua = eval_lua(
+        r#"return { events = {
+            [1] = { kind = "impact", id = "salvage:first", filter = {}, policy = {} },
+            [3] = 42,
+            [4] = { kind = "impact", id = "salvage:last", filter = {}, policy = {} },
+        } }"#,
+        |value| LevelManifest::from_lua_value(value).unwrap(),
+    );
+
+    assert_eq!(js.events, lua.events);
+    assert_eq!(
+        js.events
+            .iter()
+            .map(|event| event.id.as_str())
+            .collect::<Vec<_>>(),
+        ["salvage:first", "salvage:last"]
+    );
+}
+
+#[test]
+fn impact_event_ids_require_namespaced_portable_strings_in_both_vms() {
+    let js = eval_js(
+        r#"({ events: [
+            { kind: "impact", id: "salvage:valid-id", filter: {}, policy: [] },
+            { kind: "impact", id: "not-namespaced", filter: {}, policy: [] },
+            { kind: "impact", id: ":missing", filter: {}, policy: [] },
+            { kind: "impact", id: "bad space:id", filter: {}, policy: [] }
+        ] })"#,
+        |ctx, value| LevelManifest::from_js_value(ctx, value).unwrap(),
+    );
+    let lua = eval_lua(
+        r#"return { events = {
+            { kind = "impact", id = "salvage:valid-id", filter = {}, policy = {} },
+            { kind = "impact", id = "not-namespaced", filter = {}, policy = {} },
+            { kind = "impact", id = ":missing", filter = {}, policy = {} },
+            { kind = "impact", id = "bad space:id", filter = {}, policy = {} },
+        } }"#,
+        |value| LevelManifest::from_lua_value(value).unwrap(),
+    );
+
+    assert_eq!(js.events, lua.events);
+    assert_eq!(js.events.len(), 1);
+    assert_eq!(js.events[0].id, "salvage:valid-id");
+}
+
 #[test]
 fn trigger_pool_manifests_parse_identically_across_vms() {
     let js = eval_js(

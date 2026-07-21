@@ -70,9 +70,24 @@ pub fn drain_impact_events_js<'js>(
     let Some(arr) = optional_manifest_array_js(obj, "events", scope)? else {
         return Ok(Vec::new());
     };
+    if arr.len() > MAX_IMPACT_EVENT_CONTAINER_ENTRIES {
+        log::warn!(
+            "[Scripting] {scope}: `events` exceeds {MAX_IMPACT_EVENT_CONTAINER_ENTRIES} array slots; ignoring the field"
+        );
+        return Ok(Vec::new());
+    }
     let mut out = Vec::with_capacity(arr.len());
     for i in 0..arr.len() {
-        let value: JsValue = arr.get(i).map_err(js_err)?;
+        let value: JsValue = match arr.get(i) {
+            Ok(value) => value,
+            Err(error) => {
+                log::warn!(
+                    "[Scripting] {scope}: events[{i}] could not be read and was skipped: {}",
+                    js_err(error)
+                );
+                continue;
+            }
+        };
         match impact_event_from_js(ctx, value) {
             Ok(descriptor) => out.push(descriptor),
             Err(error) => {
@@ -123,7 +138,7 @@ fn impact_event_from_js<'js>(
     }
 
     Ok(ImpactEventDescriptor {
-        id: get_required_string_js(&item, "id")?,
+        id: validate_impact_event_id(get_required_string_js(&item, "id")?)?,
         is_override: get_optional_bool_js(&item, "isOverride")?.unwrap_or(false),
         levels: string_array_from_js(&item, "levels")?,
         filter_tag,

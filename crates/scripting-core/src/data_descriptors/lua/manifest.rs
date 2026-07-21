@@ -73,10 +73,33 @@ pub fn drain_impact_events_lua(
     let Some(arr) = optional_manifest_array_lua(table, "events", scope)? else {
         return Ok(Vec::new());
     };
-    let len = validate_dense_lua_array(&arr, "`events` field")?;
+    let mut len = 0usize;
+    for pair in arr.clone().pairs::<LuaValue, LuaValue>() {
+        let (key, _) = pair.map_err(lua_err)?;
+        if let LuaValue::Integer(index) = key
+            && index >= 1
+        {
+            len = len.max(index as usize);
+        }
+    }
+    if len > MAX_IMPACT_EVENT_CONTAINER_ENTRIES {
+        log::warn!(
+            "[Scripting] {scope}: `events` exceeds {MAX_IMPACT_EVENT_CONTAINER_ENTRIES} array slots; ignoring the field"
+        );
+        return Ok(Vec::new());
+    }
     let mut out = Vec::with_capacity(len);
     for i in 1..=(len as i64) {
-        let value: LuaValue = arr.get(i).map_err(lua_err)?;
+        let value: LuaValue = match arr.get(i) {
+            Ok(value) => value,
+            Err(error) => {
+                log::warn!(
+                    "[Scripting] {scope}: events[{i}] could not be read and was skipped: {}",
+                    lua_err(error)
+                );
+                continue;
+            }
+        };
         match impact_event_from_lua(value) {
             Ok(descriptor) => out.push(descriptor),
             Err(error) => {
@@ -114,7 +137,7 @@ fn impact_event_from_lua(value: LuaValue) -> Result<ImpactEventDescriptor, Descr
     }
 
     Ok(ImpactEventDescriptor {
-        id: get_required_string_lua(&item, "id")?,
+        id: validate_impact_event_id(get_required_string_lua(&item, "id")?)?,
         is_override: get_optional_bool_lua(&item, "isOverride")?.unwrap_or(false),
         levels: string_array_from_lua(&item, "levels")?,
         filter_tag,

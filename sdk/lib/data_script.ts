@@ -169,6 +169,7 @@ declare const numBrand: unique symbol;
 declare const boolBrand: unique symbol;
 declare const sourceBrand: unique symbol;
 declare const impactEventBrand: unique symbol;
+declare const effectBrand: unique symbol;
 
 export type NumberValue = number | NumberRef;
 export type BoolValue = boolean | BoolRef;
@@ -197,12 +198,17 @@ export interface BoolRef {
   select(whenTrue: NumberValue, whenFalse: NumberValue): NumberRef;
 }
 
-export type Effect =
+type ImpactEffectWire =
   | { primitive: "despawn"; target: "@impact.target"; args: { afterMs?: number } }
   | { primitive: "playAnim"; target: "@impact.target"; args: { clip: string } }
   | { primitive: "setHealth"; target: "@impact.target"; args: { value: RuntimeValue; afterMs?: number } }
   | { primitive: "setState"; target: "@impact.target"; args: { name: string; value: RuntimeValue } }
-  | { primitive: "setState"; args: { slot: string; value: RuntimeValue }; target?: never };
+  | { primitive: "slot.add"; args: { slot: string; delta: RuntimeValue } };
+
+/** Opaque closed impact effect. Construct through TargetHandle or slot(...).add(). */
+export interface Effect {
+  readonly [effectBrand]: true;
+}
 export type GatedEffect = { when?: BoolRef; do: readonly Effect[] };
 export type EffectOrGroup = Effect | GatedEffect;
 export type ImpactEventFilter = { tag?: string; levels?: readonly string[] };
@@ -297,7 +303,7 @@ function impactEffect(
   primitive: string,
   args?: Record<string, unknown>,
 ): Effect {
-  return { primitive, target: "@impact.target", args } as unknown as Effect;
+  return { primitive, target: "@impact.target", args } as ImpactEffectWire as unknown as Effect;
 }
 
 const IMPACT_TARGET: TargetHandle = Object.freeze({
@@ -329,17 +335,17 @@ const IMPACT: Impact = Object.freeze({
   amount: numberRef({ op: "input", name: "@impact.amount" }),
 });
 
-/** Build a store-slot additive write as a self-referential closed IR tree. */
+/** Build the closed additive store-write effect. */
 export function slot(ref: WritableStateRef<number>): NumberSlot {
   return Object.freeze({
     add(delta: NumberValue): Effect {
       return {
-        primitive: "setState",
+        primitive: "slot.add",
         args: {
           slot: ref.slot,
-          value: { op: "add", a: { op: "input", name: ref.slot }, b: numberNode(delta) },
+          delta: numberNode(delta),
         },
-      };
+      } as ImpactEffectWire as unknown as Effect;
     },
   });
 }
@@ -374,8 +380,9 @@ function impactEvent(
 function lowerImpactPolicy(policy: readonly EffectOrGroup[]): readonly EffectOrGroup[] {
   return policy.map((entry) => {
     if ("do" in entry) {
-      const group: { when?: RuntimeValue; do: readonly Effect[] } = { do: entry.do };
-      if (entry.when !== undefined) group.when = boolNode(entry.when);
+      const gated = entry as GatedEffect;
+      const group: { when?: RuntimeValue; do: readonly Effect[] } = { do: gated.do };
+      if (gated.when !== undefined) group.when = boolNode(gated.when);
       return group as EffectOrGroup;
     }
     return entry;

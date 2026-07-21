@@ -42,9 +42,9 @@ Use subagents for exploration — codebase reading, pattern discovery, doc looku
 
 **Oversized-file watch.** Watch source-file size while grounding. Flag any file already past ~800 lines that the plan will extend — a soft smell, not a gate. A cohesive 900-line table is fine; a tangled 600-line module may not be. Carry the flag forward as a split-first task (§3).
 
-**Lifecycle diagram before tasks.** When the plan changes state or timing across seams — latches, deferred effects, cross-frame hand-offs — diagram the full lifecycle in Mermaid before writing tasks: `sequenceDiagram` for cross-seam flows (frame boundaries as participants when timing matters), `stateDiagram-v2` for latch/FSM lifecycles. No arrow without a read call site — the diagram drives code-grounding. Derive the Invariants table (§3) and task boundaries from it. Diagram goes to `research.md`; keep it in the spec only when it is the clearest statement of a pinned decision.
-
 **Research notes stay out of the spec.** If findings are useful but don't drive decisions, put them in a sibling `research.md` in the plan folder. The spec captures decisions and behavior, not the investigation that produced them.
+
+**Lifecycle diagram before tasks.** When the plan changes state or timing across seams — latches, deferred effects, cross-frame hand-offs — diagram the full lifecycle in Mermaid before writing tasks: `sequenceDiagram` for cross-seam flows (frame boundaries as participants when timing matters), `stateDiagram-v2` for latch/FSM lifecycles. No arrow without a read call site — the diagram drives code-grounding. Derive the Invariants table (§3) and task boundaries from it. Diagram goes to `research.md`; keep it in the spec only when it is the clearest statement of a pinned decision.
 
 ### 3. Write the spec
 
@@ -150,11 +150,11 @@ One phase per line. No per-task sub-bullets unless a dependency needs calling ou
 
 ### 6. Cross-check
 
-Before committing, walk the spec twice:
+Before committing, walk the spec:
 
 - **Task → AC.** For every task line item, ask: "What AC verifies this behavior?" If nothing does, either the AC is missing or the task should drop.
 - **AC → task.** For every AC, ask: "Which task produces the behavior this verifies?" If nothing does, either the task is missing or the AC is aspirational.
-- **Invariant → task + AC.** (When the Invariants table exists.) For every row, ask: "Which task owns each establishing edit, and which AC verifies the guarantee?" An invariant breakable without failing any AC is the gap the two walks above miss.
+- **Invariant → task + AC.** (When the Invariants table exists.) For every row, ask: "Which tasks own the establishing and preserving edits, and which AC verifies the guarantee?" An invariant breakable without failing any AC is the gap the two walks above miss.
 
 All directions must close. Gaps signal that something was assumed without being written down.
 

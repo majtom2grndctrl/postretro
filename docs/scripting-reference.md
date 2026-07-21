@@ -803,8 +803,11 @@ and each match takes the hit. This is the only non-weapon damage producer — us
 it to script scene damage (a trap, a collapsing floor, a retaliation strike).
 
 `amount` must be **finite and `>= 0`** (the chokepoint only ever reduces HP;
-healing is out of scope). The handler never despawns — a target driven to zero HP
-is resolved by the next death sweep, the same path a weapon kill takes.
+healing is out of scope). The handler never despawns. Reaching zero HP does not
+remove the entity or choose its lifecycle; the death sweep only latches one-shot
+player death or non-player kill credit. Authors must arrange an explicit
+lifecycle action, such as `despawn` in an applicable impact policy, or another
+reaction or game-flow action appropriate to the damage source.
 
 Name the reaction (the first `defineReaction` argument) to match its event. A
 `progress` reaction can fire it, or a `trigger_volume` can name it through
@@ -824,13 +827,15 @@ canonical progress use is a threshold that fires an event of the same name — s
 
 Every fire evaluates gates and effect operands from one pre-effect snapshot, then applies the selected effects. `healthAfter` is the unfloored result and may be negative even though stored health floors at zero. Unset `target.state(name)` reads `0`. `playAnim(name)` requires that name in the target mesh's declared animation states. `despawn` and `setHealth` accept `{ afterMs }`; omitting it is immediate, while `{ afterMs: 0 }` still enters the deferred queue.
 
+`setHealth` clamps its evaluated value to `[0, maxHealth]`. Only a finite positive stored result counts as recovery: it re-arms death detection and clears pending and live kill credit from the recovered down. A value stored as zero leaves the target down and preserves its one-shot latch and credit. Numeric literals must be finite. If IR arithmetic produces a non-finite result, the total evaluator converts it to zero before `setHealth` runs.
+
 `slot(ref).add(delta)` is snapshot read-modify-write, not an atomic increment. If one fire writes the same slot more than once, every operand reads the same starting value and the last applied write wins. Impact policies currently run only for in-tick weapon and AI damage; `applyDamage` reactions and other app-drain producers run no policy in v1.
 
 The E16 TypeScript spikes are executable when a local TypeScript compiler is available:
 
 ```sh
-tsc --project context/plans/in-progress/E16--impact-policy-substrate/tsconfig.json
-tsc --project context/plans/drafts/E16--impact-death-lifecycle/tsconfig.json
+tsc --project context/plans/done/E16--impact-policy-substrate/tsconfig.json
+tsc --project context/plans/in-progress/E16--impact-death-lifecycle/tsconfig.json
 ```
 
 The repository does not install or download `tsc`; editor/CI tooling supplies it. The committed `@ts-expect-error` cases make unsafe narrowing and forged effects fail this gate.

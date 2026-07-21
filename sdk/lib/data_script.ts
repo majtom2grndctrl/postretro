@@ -220,6 +220,7 @@ export interface TargetHandle {
   readonly maxHealth: NumberRef;
   despawn(opts?: { afterMs?: number }): Effect;
   playAnim(clip: string): Effect;
+  /** Clamp to the health range. Only a positive stored result recovers and re-arms; zero stays down. Literals must be finite, and non-finite IR arithmetic resolves to zero. */
   setHealth(value: NumberValue, opts?: { afterMs?: number }): Effect;
   state(name: string): NumberRef;
   setState(name: string, value: NumberValue): Effect;

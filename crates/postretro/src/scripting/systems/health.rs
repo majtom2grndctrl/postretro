@@ -36,9 +36,9 @@ pub(crate) struct DeathReport {
     pub(crate) player_contributor_ledger: Option<ContributorLedgerSnapshot>,
 }
 
-/// Owned clone of a target's contributor ledger at the instant death is
-/// reported. This is fact data only; later combat-event/reward policy consumes
-/// it outside this sweep.
+/// Owned contributor facts handed to report consumers. Player credit is cloned
+/// by this sweep; non-player credit is frozen at first-zero HP and converted
+/// from the pending component state when deferred removal succeeds.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct ContributorLedgerSnapshot {
     pub(crate) entries: Vec<ContributorLedgerEntry>,
@@ -177,6 +177,7 @@ mod tests {
     use postretro_entities::components::brain::attach_brain;
     use postretro_entities::components::health::{
         ContributorLedgerRecord, DamageContext, DamageProducer, apply_damage_with_context,
+        set_health_absolute,
     };
     use postretro_entities::components::player_movement::PlayerMovementComponent;
     use postretro_entities::registry::Transform;
@@ -401,6 +402,27 @@ mod tests {
     }
 
     #[test]
+    fn zero_health_write_preserves_player_died_one_shot_latch() {
+        let mut reg = EntityRegistry::new();
+        let id = spawn_health_entity(&mut reg, 100.0, 0.0, &[]);
+        make_player(&mut reg, id);
+
+        assert!(sweep_deaths(&mut reg).player_died);
+        set_health_absolute(&mut reg, id, 0.0);
+
+        assert_eq!(
+            sweep_deaths(&mut reg),
+            DeathReport::default(),
+            "setHealth(0) must not re-arm playerDied",
+        );
+        assert!(
+            reg.get_component::<HealthComponent>(id)
+                .unwrap()
+                .death_handled
+        );
+    }
+
+    #[test]
     fn multiple_dead_nonplayers_all_latch_without_a_report() {
         let mut reg = EntityRegistry::new();
         let a = spawn_health_entity(&mut reg, 10.0, 0.0, &["a"]);
@@ -484,7 +506,7 @@ mod tests {
             reg.get_component::<HealthComponent>(id)
                 .unwrap()
                 .death_handled,
-            "the death_handled latch must be set after reporting"
+            "the death_handled latch must be set when the sweep freezes credit"
         );
 
         apply_damage_with_context(
@@ -506,15 +528,71 @@ mod tests {
                 .is_none()
         );
 
-        // The enemy persists at zero HP. A later sweep must NOT re-count or
-        // re-report the kill (latch holds).
+        // The enemy persists at zero HP. A later sweep must NOT re-latch or
+        // re-freeze credit (latch holds).
         let second = sweep_deaths(&mut reg);
         assert_eq!(
             second,
             DeathReport::default(),
-            "a latched brain kill must not re-report on a later sweep"
+            "a latched brain must not re-latch or re-freeze credit on a later sweep"
         );
         assert!(reg.exists(id), "still awaiting an authored despawn");
+    }
+
+    // Regression: a second impact before the later sweep could overwrite the
+    // first-zero-HP contributor set.
+    #[test]
+    fn two_impacts_before_sweep_latch_only_the_lethal_hit_credit() {
+        let mut reg = EntityRegistry::new();
+        let id = spawn_health_entity(&mut reg, 10.0, 10.0, &["grunt"]);
+
+        apply_damage_with_context(
+            &mut reg,
+            id,
+            &DamagePayload { amount: 10.0 },
+            DamageContext::new("weapon.lethal", DamageProducer::InTick),
+        );
+        apply_damage_with_context(
+            &mut reg,
+            id,
+            &DamagePayload { amount: 25.0 },
+            DamageContext::new("weapon.corpse-hit", DamageProducer::InTick),
+        );
+
+        let report = sweep_deaths(&mut reg);
+
+        assert_eq!(report, DeathReport::default());
+        let health = reg.get_component::<HealthComponent>(id).unwrap();
+        assert!(health.death_handled);
+        let credit = health
+            .pending_kill_credit
+            .as_ref()
+            .expect("the sweep latches pending credit once");
+        assert_eq!(credit.tags, vec!["grunt".to_string()]);
+        assert_eq!(credit.contributor_ledger.entries().len(), 1);
+        assert_eq!(
+            credit.contributor_ledger.entries()[0].source_id,
+            "weapon.lethal"
+        );
+        assert_eq!(credit.contributor_ledger.entries()[0].hit_count, 1);
+        assert!(
+            credit
+                .contributor_ledger
+                .recorded_damage_by_source("weapon.corpse-hit")
+                .is_none()
+        );
+
+        assert_eq!(sweep_deaths(&mut reg), DeathReport::default());
+        let credit_after_second_sweep = reg
+            .get_component::<HealthComponent>(id)
+            .unwrap()
+            .pending_kill_credit
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            credit_after_second_sweep.contributor_ledger.entries().len(),
+            1
+        );
     }
 
     #[test]

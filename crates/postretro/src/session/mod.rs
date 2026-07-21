@@ -111,7 +111,8 @@ pub(crate) struct Session {
 
     /// Kill-progress events produced by frame-end deferred removals. They seed
     /// the next frame's game-logic death-event drain so render never runs game
-    /// reactions after removal.
+    /// reactions after removal. Level unload clears the carryover before a new
+    /// level can install.
     pub(crate) pending_death_events: Vec<String>,
 
     /// State-crossing watchers (M13 HUD dynamics). See: context/lib/scripting.md §10.4.

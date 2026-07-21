@@ -1179,6 +1179,8 @@ mod tests {
     use crate::trigger_system::TriggerEventEdge;
     use crate::weapon::FireButtonState;
     use glam::Vec2;
+    use postretro_entities::components::agent::AgentComponent;
+    use postretro_entities::components::brain::{AiStateMap, AiTuning};
     use postretro_entities::components::mesh::{
         AnimationState, DEFAULT_CROSSFADE_MS, InterruptPolicy, MeshAnimation, MeshComponent,
         resolve_pending_animation_stamps,
@@ -2909,6 +2911,114 @@ mod tests {
                 .pending[0]
                 .remaining_us,
             60_000,
+        );
+    }
+
+    // Regression: the AI brain skipped a queued despawn, but the later
+    // fixed-tick steering stage still followed its retained path.
+    #[test]
+    fn fixed_tick_queued_despawn_quiesces_brain_agent_steering() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (enemy, start) = {
+            let mut registry = registry.borrow_mut();
+            let start = Transform {
+                position: Vec3::new(2.0, 1.0, 2.0),
+                ..Transform::default()
+            };
+            let enemy = registry.spawn(start);
+
+            let destination = Vec3::new(12.0, 1.0, 2.0);
+            let mut agent = AgentComponent::new(0.35, 1.8, 0.4, 4.0);
+            agent.path = vec![destination];
+            agent.mandatory_waypoints = vec![false];
+            agent.destination = Some(destination);
+            agent.planned_destination = Some(destination);
+            agent.replan_cooldown_ticks = 10;
+            registry.set_component(enemy, agent).unwrap();
+            registry
+                .set_component(
+                    enemy,
+                    BrainComponent {
+                        state: LogicalState::Alert,
+                        attack_cooldown_remaining_ms: 0.0,
+                        think_stride_counter: 0,
+                        death_despawn_remaining_ms: None,
+                        locomotion_moving: false,
+                        aggro_armed: true,
+                        acquired_target: None,
+                        combat_slot: None,
+                        combat_slot_hold_ticks: 0,
+                        tuning: AiTuning {
+                            detection_range: 18.0,
+                            attack_range: 2.0,
+                            leash_range: 26.0,
+                            attack_damage: 8.0,
+                            attack_cooldown_ms: 1000.0,
+                            move_speed: 4.0,
+                            death_despawn_ms: 500.0,
+                            states: AiStateMap {
+                                idle: "idle".into(),
+                                alert: "walk".into(),
+                                attack: "attack".into(),
+                                death: "death".into(),
+                            },
+                        },
+                    },
+                )
+                .unwrap();
+            crate::impact_effects::despawn(&mut registry, enemy, Some(500.0));
+            (enemy, start)
+        };
+
+        let world = CollisionWorld::new();
+        let hit_zones = HitZoneStore::new();
+        let mut progress = ProgressTracker::new();
+        let mut ai_warned = HashSet::new();
+        let mut mover_states = MoverTickStateTable::default();
+        let events = simulate_tick(
+            registry.clone(),
+            &world,
+            &hit_zones,
+            None,
+            0.0,
+            None,
+            0.0,
+            &mut progress,
+            &mut ai_warned,
+            &[],
+            &mut mover_states,
+            &[],
+            &sim_command(false, false),
+            |_| PostMovementCommand {
+                aim_origin: Vec3::ZERO,
+                aim_direction: Vec3::NEG_Z,
+            },
+            0.1,
+            None,
+            |_| {},
+        );
+
+        assert!(events.ai.is_empty(), "queued despawn must suppress attacks");
+        let registry = registry.borrow();
+        assert_eq!(
+            registry.get_component::<Transform>(enemy).unwrap().position,
+            start.position,
+            "the real fixed-tick steering stage must not move a queued-despawn brain",
+        );
+        let agent = registry.get_component::<AgentComponent>(enemy).unwrap();
+        assert_eq!(agent.velocity, Vec3::ZERO);
+        assert_eq!(agent.destination, Some(Vec3::new(12.0, 1.0, 2.0)));
+        let effects = registry
+            .get_component::<postretro_entities::DeferredEffectComponent>(enemy)
+            .unwrap();
+        assert!(
+            !effects.inert,
+            "the delayed removal countdown is still active"
+        );
+        assert!(
+            effects.pending[0].remaining_us.abs_diff(400_000) <= 1,
+            "one 0.1s fixed tick leaves about 400ms; got {}us",
+            effects.pending[0].remaining_us,
         );
     }
 

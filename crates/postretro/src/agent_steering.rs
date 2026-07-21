@@ -17,9 +17,9 @@ use glam::Vec3;
 use crate::agent::{AgentCapsule, collide_and_slide};
 use crate::collision::CollisionWorld;
 use crate::nav::{NavGraph, distance_xz, find_path};
-use postretro_entities::DeferredEffectComponent;
 use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform};
+use postretro_entities::{DeferredEffectComponent, DeferredEffectKind};
 
 /// Maximum number of agents that may recompute a path in a single tick. Bounds
 /// the per-frame pathfinding cost regardless of how many agents simultaneously
@@ -326,7 +326,13 @@ pub(crate) fn tick(
         .filter_map(|(id, value)| {
             if registry
                 .get_component::<DeferredEffectComponent>(id)
-                .is_ok_and(|effects| effects.inert)
+                .is_ok_and(|effects| {
+                    effects.inert
+                        || effects
+                            .pending
+                            .iter()
+                            .any(|effect| effect.kind == DeferredEffectKind::Despawn)
+                })
             {
                 return None;
             }

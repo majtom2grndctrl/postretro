@@ -88,7 +88,8 @@ pub(crate) fn set_health(
 
 /// Apply or enqueue a terminal despawn.
 ///
-/// Delayed despawns leave the entity active until their countdown elapses. An
+/// Delayed despawns leave the entity live until their countdown elapses, while
+/// brain and agent ticks quiesce it for the authored removal window. An
 /// immediate despawn (or an elapsed queued despawn) makes it inert, clears the
 /// whole queue, and stages it for the one app-owned frame-end removal pass.
 pub(crate) fn despawn(registry: &mut EntityRegistry, target: EntityId, after_ms: Option<f32>) {
@@ -445,8 +446,10 @@ mod tests {
         );
     }
 
+    // Regression: resurrection cleared the frozen wrapper but retained the live
+    // contributor ledger, so the later removal credited both downs.
     #[test]
-    fn absolute_health_write_discards_old_credit_and_rekill_reports_fresh_credit() {
+    fn resurrected_rekill_removal_reports_only_new_lethal_contributor() {
         let mut registry = EntityRegistry::new();
         let target = health_target(&mut registry, 100.0);
         latch_nonplayer_kill_credit(&mut registry, target, &["first-down"], "weapon.first");
@@ -466,6 +469,32 @@ mod tests {
             reports[0].1.as_ref().unwrap().tags,
             vec!["second-down".to_string()],
             "the revived entity reports only its re-kill's freshly latched credit",
+        );
+        let ledger = &reports[0].1.as_ref().unwrap().contributor_ledger;
+        assert_eq!(ledger.entries.len(), 1);
+        assert_eq!(ledger.entries[0].source_id, "weapon.second");
+        assert!(ledger.overflow.is_none());
+    }
+
+    #[test]
+    fn zero_health_effect_preserves_latched_death_and_pending_credit() {
+        let mut registry = EntityRegistry::new();
+        let target = health_target(&mut registry, 100.0);
+        latch_nonplayer_kill_credit(&mut registry, target, &["downed"], "weapon.first");
+
+        set_health(&mut registry, target, 0.0, None);
+
+        let health = registry.get_component::<HealthComponent>(target).unwrap();
+        assert_eq!(health.current, 0.0);
+        assert!(health.death_handled);
+        let credit = health
+            .pending_kill_credit
+            .as_ref()
+            .expect("setHealth(0) must preserve the frozen down credit");
+        assert_eq!(credit.tags, vec!["downed".to_string()]);
+        assert_eq!(
+            credit.contributor_ledger.entries()[0].source_id,
+            "weapon.first"
         );
     }
 

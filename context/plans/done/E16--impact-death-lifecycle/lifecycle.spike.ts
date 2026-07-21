@@ -35,11 +35,12 @@ const impLifecycle = defineImpactEvent("salvage:imp-lifecycle", { tag: "imp" }, 
 
   // Mutually-exclusive gated groups (independent evaluation; the author guarantees exclusivity).
   return [
-    // A hit while STAGGERED = a Glory Kill: instant death. (Health/ammo drops to the SOURCE are
-    // deferred — grant is out of v1 scope; see roadmap.)
+    // A hit while STAGGERED = a Glory Kill. Store zero HP before removal so the death sweep
+    // latches kill credit; despawn then owns the authored lifecycle and report. (Health/ammo
+    // drops to the SOURCE are deferred — grant is out of v1 scope; see roadmap.)
     {
       when: stagger.eq(STAGGERED),
-      do: [t.playAnim("glory_kill"), t.despawn()],
+      do: [t.setHealth(0), t.playAnim("glory_kill"), t.despawn()],
     },
     // First drop below 30% max health, while still alive and not yet a kill → FALTER.
     {

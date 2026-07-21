@@ -318,7 +318,8 @@ pub struct HealthComponent {
     pub hitbox: Option<Hitbox>,
     /// One-shot latch set on a first zero-HP sweep. It makes `playerDied`
     /// one-shot for players and freezes non-player kill credit until an authored
-    /// removal or an absolute-health write re-arms the entity.
+    /// removal or an absolute-health write stores positive HP and re-arms the
+    /// entity.
     #[serde(default)]
     pub death_handled: bool,
     /// Transient non-player credit frozen with `death_handled`. The deferred
@@ -434,7 +435,16 @@ pub fn apply_damage_with_context(
     let health_after = health_before - payload.amount;
     let max_health = health.max;
     updated.current = health_after.max(0.0);
-    if !updated.death_handled && payload.amount.is_finite() && payload.amount > 0.0 {
+    // The sweep owns the death latch and report timing, but attribution must
+    // stop at the lethal transition itself. Multiple impacts can land before
+    // that later sweep; only hits whose pre-impact HP was still alive belong
+    // to this down.
+    if !updated.death_handled
+        && health_before.is_finite()
+        && health_before > 0.0
+        && payload.amount.is_finite()
+        && payload.amount > 0.0
+    {
         let mut record = ContributorLedgerRecord::new(context.source_id, payload.amount);
         record.zone = context.zone;
         record.attacker = context.attacker;
@@ -459,17 +469,20 @@ pub fn apply_damage_with_context(
 ///
 /// Like damage, a stale id or entity without `HealthComponent` is a no-op. The
 /// write is immediate and clamps to `[0, max]`; it deliberately does not
-/// publish a damage impact. Every write clears the death latch and frozen credit
-/// so a resurrected entity can be observed by the next zero-HP sweep without
-/// reporting its previous down.
+/// publish a damage impact. A finite, positive stored result re-arms the death
+/// latch and discards all credit from the recovered down. A zero, negative, or
+/// NaN result preserves the one-shot death state.
 pub fn set_health_absolute(registry: &mut EntityRegistry, id: EntityId, value: f32) {
     let Ok(health) = registry.get_component::<HealthComponent>(id) else {
         return;
     };
     let mut updated = health.clone();
     updated.set_current_absolute(value);
-    updated.death_handled = false;
-    updated.pending_kill_credit = None;
+    if updated.current.is_finite() && updated.current > 0.0 {
+        updated.death_handled = false;
+        updated.pending_kill_credit = None;
+        updated.contributor_ledger = ContributorLedger::default();
+    }
     let _ = registry.set_component(id, updated);
 }
 
@@ -516,33 +529,85 @@ mod tests {
 
         component.set_current_absolute(-5.0);
         assert_number_approx_eq(component.current, 0.0);
+
+        component.set_current_absolute(f32::INFINITY);
+        assert_number_approx_eq(component.current, 80.0);
+
+        component.set_current_absolute(f32::NEG_INFINITY);
+        assert_number_approx_eq(component.current, 0.0);
+
+        component.set_current_absolute(f32::NAN);
+        assert_number_approx_eq(component.current, 0.0);
     }
 
     #[test]
-    fn absolute_health_write_clears_death_latch_and_pending_kill_credit() {
-        let mut reg = EntityRegistry::new();
-        let id = reg.spawn(Transform::default());
-        let mut component = HealthComponent::from_descriptor(&descriptor(80.0));
-        component.current = 0.0;
-        component.death_handled = true;
-        component.pending_kill_credit = Some(PendingKillCredit {
-            tags: vec!["downed".to_string()],
-            contributor_ledger: ContributorLedger::default(),
-        });
-        reg.set_component(id, component).unwrap();
+    fn positive_stored_absolute_health_rearms_and_clears_all_down_credit() {
+        for (value, expected) in [(25.0, 25.0), (120.0, 80.0), (f32::INFINITY, 80.0)] {
+            let mut reg = EntityRegistry::new();
+            let id = reg.spawn(Transform::default());
+            let mut component = HealthComponent::from_descriptor(&descriptor(80.0));
+            component.current = 0.0;
+            component.death_handled = true;
+            component.record_contributor_damage(ContributorLedgerRecord::new("weapon.old", 80.0));
+            component.pending_kill_credit = Some(PendingKillCredit {
+                tags: vec!["downed".to_string()],
+                contributor_ledger: component.contributor_ledger.clone(),
+            });
+            reg.set_component(id, component).unwrap();
 
-        set_health_absolute(&mut reg, id, 25.0);
+            set_health_absolute(&mut reg, id, value);
 
-        let health = reg.get_component::<HealthComponent>(id).unwrap();
-        assert_eq!(health.current, 25.0);
-        assert!(
-            !health.death_handled,
-            "setHealth must re-arm a resurrected entity's death detection",
-        );
-        assert!(
-            health.pending_kill_credit.is_none(),
-            "setHealth must discard credit for a down that recovered",
-        );
+            let health = reg.get_component::<HealthComponent>(id).unwrap();
+            assert_number_approx_eq(health.current, expected);
+            assert!(
+                !health.death_handled,
+                "setHealth({value:?}) must re-arm after storing positive HP",
+            );
+            assert!(
+                health.pending_kill_credit.is_none(),
+                "setHealth({value:?}) must discard frozen credit for the recovered down",
+            );
+            assert!(
+                health.contributor_ledger.entries().is_empty(),
+                "setHealth({value:?}) must discard live contributors from the recovered down",
+            );
+            assert!(health.contributor_ledger.overflow().is_none());
+        }
+    }
+
+    #[test]
+    fn non_resurrecting_absolute_health_writes_preserve_death_latch_and_credit() {
+        for value in [0.0, -5.0, f32::NAN, f32::NEG_INFINITY] {
+            let mut reg = EntityRegistry::new();
+            let id = reg.spawn(Transform::default());
+            let mut component = HealthComponent::from_descriptor(&descriptor(80.0));
+            component.current = 0.0;
+            component.death_handled = true;
+            component.record_contributor_damage(ContributorLedgerRecord::new("weapon.old", 80.0));
+            component.pending_kill_credit = Some(PendingKillCredit {
+                tags: vec!["downed".to_string()],
+                contributor_ledger: component.contributor_ledger.clone(),
+            });
+            reg.set_component(id, component).unwrap();
+
+            set_health_absolute(&mut reg, id, value);
+
+            let health = reg.get_component::<HealthComponent>(id).unwrap();
+            assert_eq!(health.current, 0.0);
+            assert!(
+                health.death_handled,
+                "setHealth({value:?}) must preserve the one-shot death latch",
+            );
+            assert!(
+                health.pending_kill_credit.is_some(),
+                "setHealth({value:?}) must preserve frozen kill credit",
+            );
+            assert_eq!(health.contributor_ledger.entries().len(), 1);
+            assert_eq!(
+                health.contributor_ledger.entries()[0].source_id,
+                "weapon.old"
+            );
+        }
     }
 
     #[test]
@@ -783,6 +848,48 @@ mod tests {
             "latched deaths must not accumulate later contributors"
         );
         assert!(health.contributor_ledger.overflow().is_none());
+    }
+
+    // Regression: a corpse hit arriving before the death sweep could steal
+    // attribution because `death_handled` had not latched yet.
+    #[test]
+    fn apply_damage_freezes_contributors_at_first_zero_hp_transition() {
+        let mut reg = EntityRegistry::new();
+        let target = reg.spawn(Transform::default());
+        reg.set_component(target, HealthComponent::from_descriptor(&descriptor(10.0)))
+            .unwrap();
+
+        apply_damage_with_context(
+            &mut reg,
+            target,
+            &DamagePayload { amount: 10.0 },
+            DamageContext::new("weapon.lethal", DamageProducer::InTick),
+        );
+        apply_damage_with_context(
+            &mut reg,
+            target,
+            &DamagePayload { amount: 50.0 },
+            DamageContext::new("weapon.corpse-hit", DamageProducer::InTick),
+        );
+
+        let health = reg.get_component::<HealthComponent>(target).unwrap();
+        assert_eq!(health.current, 0.0);
+        assert_eq!(health.contributor_ledger.entries().len(), 1);
+        assert_eq!(
+            health.contributor_ledger.entries()[0].source_id,
+            "weapon.lethal"
+        );
+        assert_eq!(health.contributor_ledger.entries()[0].hit_count, 1);
+        assert!(
+            health
+                .contributor_ledger
+                .recorded_damage_by_source("weapon.corpse-hit")
+                .is_none()
+        );
+        assert!(
+            !health.death_handled,
+            "damage freezes attribution without moving the later sweep latch",
+        );
     }
 
     #[test]

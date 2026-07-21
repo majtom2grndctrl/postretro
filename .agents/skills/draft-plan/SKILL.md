@@ -44,6 +44,8 @@ Use subagents for exploration — codebase reading, pattern discovery, doc looku
 
 **Research notes stay out of the spec.** If findings are useful but don't drive decisions, put them in a sibling `research.md` in the plan folder. The spec captures decisions and behavior, not the investigation that produced them.
 
+**Lifecycle diagram before tasks.** When the plan changes state or timing across seams — latches, deferred effects, cross-frame hand-offs — diagram the full lifecycle in Mermaid before writing tasks: `sequenceDiagram` for cross-seam flows (frame boundaries as participants when timing matters), `stateDiagram-v2` for latch/FSM lifecycles. No arrow without a read call site — the diagram drives code-grounding. Derive the Invariants table (§3) and task boundaries from it. Diagram goes to `research.md`; keep it in the spec only when it is the clearest statement of a pinned decision.
+
 ### 3. Write the spec
 
 Create `context/plans/drafts/<feature-name>/index.md`.
@@ -98,6 +100,15 @@ Pin casing and encoding once for every cross-boundary name. Reference this inven
 
 For each new binary surface, pin: endianness, integer signedness, length-prefix integer width, entry-count placement, per-entry field order, empty-list encoding, sentinel/null representation per runtime. State explicitly which existing section the new layout mirrors.
 
+## Invariants
+(Required when a behavioral guarantee — exactly/at-most-once, ordering, state reachability, timing — is established or preserved across more than one task or seam. Skip otherwise.)
+
+Pin each cross-task invariant once. `orchestrate` hands this table to every task agent with the shared context and AC list — task paragraphs reference rows, never restate them.
+
+| Invariant | Established by | Preserved / threatened at | Verified by |
+|---|---|---|---|
+| (example) Kill reported exactly once, at removal | Task 1 (sweep latch), Task 2 (removal-pass sink) | `setHealth` clears latch + pending credit; direct `registry.despawn` bypasses the sink | AC 7, 8, 9 |
+
 ## Open questions
 Unresolved items, risks, alternatives considered.
 ```
@@ -134,12 +145,13 @@ One phase per line. No per-task sub-bullets unless a dependency needs calling ou
 
 ### 6. Cross-check
 
-Before committing, walk the spec twice:
+Before committing, walk the spec:
 
 - **Task → AC.** For every task line item, ask: "What AC verifies this behavior?" If nothing does, either the AC is missing or the task should drop.
 - **AC → task.** For every AC, ask: "Which task produces the behavior this verifies?" If nothing does, either the task is missing or the AC is aspirational.
+- **Invariant → task + AC.** (When the Invariants table exists.) For every row, ask: "Which tasks own the establishing and preserving edits, and which AC verifies the guarantee?" An invariant breakable without failing any AC is the gap the two walks above miss.
 
-Both directions must close. Gaps signal that something was assumed without being written down.
+All directions must close. Gaps signal that something was assumed without being written down.
 
 ### 7. Commit
 

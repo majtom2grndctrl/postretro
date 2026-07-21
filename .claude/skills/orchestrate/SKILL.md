@@ -62,11 +62,12 @@ Create agent worktrees from `feature/<plan-name>`. Integrate completed work back
 
 **For each agent, provide:**
 1. The plan's **Goal** section (one orienting paragraph)
-2. The agent's **specific task** — description, acceptance criteria
-3. Instruction to read relevant `context/lib/` files for architectural guidance
-4. Instruction to follow `context/lib/development_guide.md` conventions
-5. Instruction to run `cargo check` before considering the task complete (isolated worktrees only — see note above)
-6. Instruction to run **focused** tests for the touched crate/module/behavior — not a full workspace or full-crate `cargo test` (concurrent agents: isolated worktrees only). Full-suite runs are the coordinator's final gate, not a per-task step. Prefer `cargo test -p <crate> <name_filter>` (`--lib` skips integration tests). WARN agents: the `postretro-level-compiler` `tests/` integration suite shells out to `prl-build` for cold SH/lightmap bakes (~1h) — never run a bare `cargo test -p postretro-level-compiler`, and never compile `stress-warren*`/`campaign-test` in a routine test.
+2. The plan's **Invariants** table, when present — cross-task contract; break no row
+3. The agent's **specific task** — description, acceptance criteria
+4. Instruction to read relevant `context/lib/` files for architectural guidance
+5. Instruction to follow `context/lib/development_guide.md` conventions
+6. Instruction to run `cargo check` before considering the task complete (isolated worktrees only — see note above)
+7. Instruction to run **focused** tests for the touched crate/module/behavior — not a full workspace or full-crate `cargo test` (concurrent agents: isolated worktrees only). Full-suite runs are the coordinator's final gate, not a per-task step. Prefer `cargo test -p <crate> <name_filter>` (`--lib` skips integration tests). WARN agents: the `postretro-level-compiler` `tests/` integration suite shells out to `prl-build` for cold SH/lightmap bakes (~1h) — never run a bare `cargo test -p postretro-level-compiler`, and never compile `stress-warren*`/`campaign-test` in a routine test.
 
 **Do NOT provide:**
 - Other tasks' details (the agent doesn't need them)

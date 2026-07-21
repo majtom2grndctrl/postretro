@@ -91,11 +91,12 @@ Create worktrees only for concurrent workers. Integrate their completed work bac
 
 **For each agent, provide:**
 1. The plan's **Shared Context** section
-2. The agent's **specific task** — description, acceptance criteria
-3. Instruction to read relevant `context/lib/` files for architectural guidance
-4. Instruction to follow `context/lib/development_guide.md` conventions
-5. Instruction to run `cargo check` before considering the task complete. For concurrent workers, use their isolated target; for shared-target workers, sequence checks after each task.
-6. Instruction to run focused tests for the touched crate/module/behavior, not a full workspace `cargo test`. Full workspace tests are the coordinator's final gate. Never run a bare `cargo test -p postretro-level-compiler` (cold `prl-build` bakes, ~1h).
+2. The plan's **Invariants** table, when present — cross-task contract; break no row
+3. The agent's **specific task** — description, acceptance criteria
+4. Instruction to read relevant `context/lib/` files for architectural guidance
+5. Instruction to follow `context/lib/development_guide.md` conventions
+6. Instruction to run `cargo check` before considering the task complete. For concurrent workers, use their isolated target; for shared-target workers, sequence checks after each task.
+7. Instruction to run focused tests for the touched crate/module/behavior, not a full workspace `cargo test`. Full workspace tests are the coordinator's final gate. Never run a bare `cargo test -p postretro-level-compiler` (cold `prl-build` bakes, ~1h).
 
 For layout or contract tasks, also provide:
 - Existing fields, offsets, bindings, and versions that must remain stable.

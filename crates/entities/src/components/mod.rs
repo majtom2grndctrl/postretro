@@ -6,6 +6,7 @@ pub mod ammo_reserve;
 pub mod animation;
 pub mod billboard_emitter;
 pub mod brain;
+pub mod entity_state;
 pub mod fog_volume;
 pub mod health;
 pub mod kinematic_mover;

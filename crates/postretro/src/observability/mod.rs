@@ -48,6 +48,7 @@ const ALL_KINDS: [ComponentKind; ComponentKind::COUNT] = [
     ComponentKind::TriggerVolume,
     ComponentKind::AmmoReserve,
     ComponentKind::Spawner,
+    ComponentKind::EntityState,
 ];
 
 /// Snake_case name for a component kind, matching `ComponentValue`'s serde
@@ -76,6 +77,7 @@ fn component_kind_snake(kind: ComponentKind) -> &'static str {
         ComponentKind::TriggerVolume => "trigger_volume",
         ComponentKind::AmmoReserve => "ammo_reserve",
         ComponentKind::Spawner => "spawner",
+        ComponentKind::EntityState => "entity_state",
     }
 }
 
@@ -337,6 +339,9 @@ mod tests {
                     count: 0,
                     resolved: false,
                 })
+            }
+            ComponentKind::EntityState => {
+                ComponentValue::EntityState(postretro_entities::EntityStateComponent::default())
             }
         }
     }

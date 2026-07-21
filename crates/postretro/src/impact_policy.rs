@@ -5,11 +5,11 @@ use postretro_entities::components::health::{DamageProducer, ImpactDispatch};
 use postretro_entities::{EntityId, ScriptCtx};
 use postretro_foundation::ImpactEventDescriptor;
 use postretro_foundation::ir::{
-    BakedIr, BindingScope, BoundProgram, CURRENT_IR_VERSION, IrNode, IrType, IrValue, bind,
-    eval_value,
+    BakedIr, BoundProgram, CURRENT_IR_VERSION, IrNode, IrType, IrValue, bind, eval_value,
 };
 use postretro_scripting_core::ir_scopes::{EntityOutputHandle, EntityScope};
 use serde_json::{Map, Value};
+use std::collections::HashMap;
 
 use crate::impact_effects::{ImpactEffect, apply_effect};
 
@@ -23,6 +23,7 @@ pub(crate) struct ImpactPolicyRuntime {
     ctx: ScriptCtx,
     global_events: Vec<ImpactEventDescriptor>,
     level_events: Vec<ImpactEventDescriptor>,
+    active_level_tags: Vec<String>,
     scope: EntityScope,
     policies: Vec<BoundImpactPolicy>,
     consequential: Vec<PlannedEffect>,
@@ -31,6 +32,7 @@ pub(crate) struct ImpactPolicyRuntime {
 
 struct BoundImpactPolicy {
     id: String,
+    base_filter_tag: Option<String>,
     filter_tag: Option<String>,
     groups: Vec<BoundGroup>,
 }
@@ -69,6 +71,7 @@ impl ImpactPolicyRuntime {
             ctx,
             global_events: Vec::new(),
             level_events: Vec::new(),
+            active_level_tags: Vec::new(),
             policies: Vec::new(),
             consequential: Vec::new(),
             presentation: Vec::new(),
@@ -84,34 +87,81 @@ impl ImpactPolicyRuntime {
 
     /// Replace the per-level descriptors after `setupLevel()` finishes. Global
     /// entries are intentionally retained and precede these in load order.
-    pub(crate) fn replace_level_events(&mut self, events: Vec<ImpactEventDescriptor>) {
+    pub(crate) fn replace_level_events(
+        &mut self,
+        events: Vec<ImpactEventDescriptor>,
+        active_level_tags: &[String],
+    ) {
         self.level_events = events;
+        self.active_level_tags = active_level_tags.to_vec();
         self.rebuild();
     }
 
     pub(crate) fn clear_level_events(&mut self) {
         self.level_events.clear();
+        self.active_level_tags.clear();
         self.rebuild();
     }
 
-    /// Drain all currently published impact fires. App-drain dispatches are
-    /// deliberately consumed without evaluation: v1 charts that producer at
-    /// the choke point but gives it no impact policy surface.
-    pub(crate) fn evaluate_pending(&mut self) {
-        let dispatches = self.ctx.registry.borrow_mut().take_impact_dispatches();
+    /// Evaluate every dispatch currently published by one damage call while
+    /// the fixed-tick producer still owns the registry. Producers call this
+    /// immediately after each hit, never as a post-tick batch.
+    pub(crate) fn evaluate_pending_in_registry(
+        &mut self,
+        registry: &mut postretro_entities::EntityRegistry,
+    ) {
+        let dispatches = registry.take_impact_dispatches();
         for dispatch in dispatches {
             if dispatch.producer != DamageProducer::InTick {
                 continue;
             }
-            self.evaluate_dispatch(dispatch);
+            self.evaluate_dispatch(registry, dispatch);
+        }
+    }
+
+    /// Consume the app-drain producer arm after reaction dispatch settles.
+    /// v1 intentionally runs no policy for these impacts. An in-tick dispatch
+    /// reaching this sink is an ordering bug and is dropped rather than being
+    /// evaluated against a stale post-tick snapshot.
+    pub(crate) fn discard_app_drain_pending(&mut self) {
+        let dispatches = self.ctx.registry.borrow_mut().take_impact_dispatches();
+        for dispatch in dispatches {
+            if dispatch.producer == DamageProducer::InTick {
+                log::error!(
+                    "[Impact] dropped in-tick dispatch that escaped synchronous evaluation"
+                );
+            }
         }
     }
 
     fn rebuild(&mut self) {
         let scope = EntityScope::impact(self.ctx.clone());
         let mut policies = Vec::with_capacity(self.global_events.len() + self.level_events.len());
-        for descriptor in self.global_events.iter().chain(&self.level_events) {
-            match bind_policy(descriptor, &scope) {
+        let mut base_filters = HashMap::<String, Option<String>>::new();
+        for descriptor in self
+            .global_events
+            .iter()
+            .filter(|descriptor| levels_match(&descriptor.levels, &self.active_level_tags))
+            .chain(&self.level_events)
+        {
+            let base_filter_tag = if descriptor.is_override {
+                if descriptor.filter_tag.is_none() {
+                    log::warn!(
+                        "[Impact] override `{}` was skipped: override filter requires `tag`",
+                        descriptor.id
+                    );
+                    continue;
+                }
+                let Some(filter) = base_filters.get(&descriptor.id).cloned() else {
+                    log::warn!("[Impact] {}", unknown_override_diagnostic(&descriptor.id));
+                    continue;
+                };
+                filter
+            } else {
+                base_filters.insert(descriptor.id.clone(), descriptor.filter_tag.clone());
+                descriptor.filter_tag.clone()
+            };
+            match bind_policy(descriptor, base_filter_tag, &scope) {
                 Ok(policy) => policies.push(policy),
                 Err(error) => log::warn!(
                     "[Impact] policy `{}` was skipped during bind: {error}",
@@ -123,16 +173,19 @@ impl ImpactPolicyRuntime {
         self.policies = policies;
     }
 
-    fn evaluate_dispatch(&mut self, dispatch: ImpactDispatch) {
+    fn evaluate_dispatch(
+        &mut self,
+        registry: &mut postretro_entities::EntityRegistry,
+        dispatch: ImpactDispatch,
+    ) {
         let tags = {
-            let registry = self.ctx.registry.borrow();
             let Ok(tags) = registry.get_tags(dispatch.target) else {
                 return;
             };
             tags.to_vec()
         };
 
-        if let Err(error) = self.scope.seed_impact(&dispatch) {
+        if let Err(error) = self.scope.seed_impact_from_registry(registry, &dispatch) {
             log::warn!("[Impact] dispatch scope seed failed; skipping impact: {error:?}");
             return;
         }
@@ -141,7 +194,7 @@ impl ImpactPolicyRuntime {
         self.presentation.clear();
 
         // A later matching variant replaces an earlier one with the same
-        // derived id. Removing then appending also makes cross-event execution
+        // author id. Removing then appending also makes cross-event execution
         // follow the selected descriptors' registration order.
         let mut selected: Vec<usize> = Vec::new();
         for (index, policy) in self.policies.iter().enumerate() {
@@ -181,11 +234,16 @@ impl ImpactPolicyRuntime {
             }
         }
 
-        self.apply_planned(dispatch.target, false);
-        self.apply_planned(dispatch.target, true);
+        self.apply_planned(registry, dispatch.target, false);
+        self.apply_planned(registry, dispatch.target, true);
     }
 
-    fn apply_planned(&mut self, target: EntityId, presentation: bool) {
+    fn apply_planned(
+        &mut self,
+        registry: &mut postretro_entities::EntityRegistry,
+        target: EntityId,
+        presentation: bool,
+    ) {
         let effects = if presentation {
             &mut self.presentation
         } else {
@@ -194,9 +252,11 @@ impl ImpactPolicyRuntime {
         effects.reverse();
         while let Some(effect) = effects.pop() {
             match effect {
-                PlannedEffect::Write { handle, value } => self.scope.write(&handle, value),
+                PlannedEffect::Write { handle, value } => {
+                    self.scope.write_with_registry(registry, &handle, value)
+                }
                 PlannedEffect::Command(effect) => {
-                    apply_effect(&mut self.ctx.registry.borrow_mut(), target, &effect);
+                    apply_effect(registry, target, &effect);
                 }
             }
         }
@@ -204,22 +264,40 @@ impl ImpactPolicyRuntime {
 }
 
 fn policy_matches(policy: &BoundImpactPolicy, tags: &[String]) -> bool {
-    policy
-        .filter_tag
-        .as_ref()
-        .is_none_or(|filter| tags.iter().any(|tag| tag == filter))
+    tag_matches(policy.base_filter_tag.as_deref(), tags)
+        && tag_matches(policy.filter_tag.as_deref(), tags)
+}
+
+fn tag_matches(filter: Option<&str>, tags: &[String]) -> bool {
+    filter.is_none_or(|filter| tags.iter().any(|tag| tag == filter))
+}
+
+fn levels_match(levels: &[String], active_level_tags: &[String]) -> bool {
+    levels.is_empty()
+        || levels
+            .iter()
+            .any(|level| active_level_tags.iter().any(|tag| tag == level))
+}
+
+fn unknown_override_diagnostic(id: &str) -> String {
+    format!("override targets unknown event \"{id}\"")
 }
 
 fn bind_policy(
     descriptor: &ImpactEventDescriptor,
+    base_filter_tag: Option<String>,
     scope: &EntityScope,
 ) -> Result<BoundImpactPolicy, String> {
+    if descriptor.is_override && descriptor.filter_tag.is_none() {
+        return Err("impact override filter requires `tag`".to_string());
+    }
     let mut groups = Vec::with_capacity(descriptor.policy.len());
     for entry in &descriptor.policy {
         groups.push(bind_group(entry, scope)?);
     }
     Ok(BoundImpactPolicy {
         id: descriptor.id.clone(),
+        base_filter_tag,
         filter_tag: descriptor.filter_tag.clone(),
         groups,
     })
@@ -262,7 +340,11 @@ fn bind_effect(entry: &Value, scope: &EntityScope) -> Result<BoundEffect, String
         .map(|value| object(value, "impact effect args"))
         .transpose()?
         .unwrap_or(&empty_args);
-    let target = effect.get("target").and_then(Value::as_str);
+    let target = match effect.get("target") {
+        None => None,
+        Some(Value::String(target)) => Some(target.as_str()),
+        Some(_) => return Err("impact effect `target` must be a string when present".to_string()),
+    };
 
     match primitive {
         "despawn" => {
@@ -297,18 +379,22 @@ fn bind_effect(entry: &Value, scope: &EntityScope) -> Result<BoundEffect, String
             let value = args
                 .get("value")
                 .ok_or_else(|| "target setState args is missing `value`".to_string())?;
-            bind_write(format!("@state.{name}"), value, scope).map(BoundEffect::Write)
+            bind_number_write(format!("@state.{name}"), value, scope).map(BoundEffect::Write)
         }
-        "setState" if target.is_none() => {
-            let slot = required_string(args, "slot", "slot setState args")?;
-            let value = args
-                .get("value")
-                .ok_or_else(|| "slot setState args is missing `value`".to_string())?;
-            bind_write(slot.to_string(), value, scope).map(BoundEffect::Write)
+        "slot.add" if target.is_none() => {
+            let slot = required_string(args, "slot", "slot.add args")?;
+            let delta = args
+                .get("delta")
+                .ok_or_else(|| "slot.add args is missing `delta`".to_string())?;
+            let value = serde_json::json!({
+                "op": "add",
+                "a": { "op": "input", "name": slot },
+                "b": delta,
+            });
+            bind_number_write(slot.to_string(), &value, scope).map(BoundEffect::Write)
         }
-        "setState" => {
-            Err("setState may target only @impact.target or a bare store slot".to_string())
-        }
+        "setState" => Err("setState must target @impact.target".to_string()),
+        "slot.add" => Err("slot.add must not carry a target".to_string()),
         _ => Err(format!("unsupported impact primitive `{primitive}`")),
     }
 }
@@ -343,6 +429,18 @@ fn bind_write(
         scope,
     )
     .map_err(|error| error.to_string())
+}
+
+fn bind_number_write(
+    output: String,
+    value: &Value,
+    scope: &EntityScope,
+) -> Result<BoundProgram<EntityScope>, String> {
+    let program = bind_write(output, value, scope)?;
+    if program.root_type != IrType::Number {
+        return Err("impact effect operand must evaluate to a number".to_string());
+    }
+    Ok(program)
 }
 
 fn plan_effect(effect: &BoundEffect, scope: &EntityScope) -> PlannedEffect {
@@ -434,9 +532,17 @@ mod tests {
     fn event(id: &str, tag: &str, policy: Vec<Value>) -> ImpactEventDescriptor {
         ImpactEventDescriptor {
             id: id.to_string(),
+            is_override: false,
+            levels: Vec::new(),
             filter_tag: Some(tag.to_string()),
             policy,
         }
+    }
+
+    fn override_event(id: &str, tag: &str, policy: Vec<Value>) -> ImpactEventDescriptor {
+        let mut descriptor = event(id, tag, policy);
+        descriptor.is_override = true;
+        descriptor
     }
 
     fn input(name: &str) -> Value {
@@ -455,10 +561,10 @@ mod tests {
         })
     }
 
-    fn store_write(slot: &str, value: Value) -> Value {
+    fn slot_add(slot: &str, delta: Value) -> Value {
         json!({
-            "primitive": "setState",
-            "args": { "slot": slot, "value": value },
+            "primitive": "slot.add",
+            "args": { "slot": slot, "delta": delta },
         })
     }
 
@@ -498,14 +604,17 @@ mod tests {
     }
 
     fn hit(ctx: &ScriptCtx, target: EntityId, producer: DamageProducer) {
-        let mut context = DamageContext::new("impact-policy-test");
-        context.producer = producer;
+        let context = DamageContext::new("impact-policy-test", producer);
         apply_damage_with_context(
             &mut ctx.registry.borrow_mut(),
             target,
             &DamagePayload { amount: 1.0 },
             context,
         );
+    }
+
+    fn evaluate_pending(ctx: &ScriptCtx, runtime: &mut ImpactPolicyRuntime) {
+        runtime.evaluate_pending_in_registry(&mut ctx.registry.borrow_mut());
     }
 
     fn state(ctx: &ScriptCtx, target: EntityId, name: &str) -> f32 {
@@ -548,7 +657,7 @@ mod tests {
                 json!({
                     "when": { "op": "eq", "a": input("@state.hits"), "b": number(2.0) },
                     "do": [
-                        store_write("impact.broken", json!({ "op": "add", "a": input("impact.broken"), "b": number(1.0) })),
+                        slot_add("impact.broken", number(1.0)),
                         { "primitive": "despawn", "target": "@impact.target", "args": {} },
                     ],
                 }),
@@ -556,17 +665,17 @@ mod tests {
         )]);
 
         hit(&ctx, target, DamageProducer::InTick);
-        runtime.evaluate_pending();
+        evaluate_pending(&ctx, &mut runtime);
         assert_eq!(state(&ctx, target, "hits"), 1.0);
         assert_eq!(store(&ctx, "impact.broken"), 0.0);
 
         hit(&ctx, target, DamageProducer::InTick);
-        runtime.evaluate_pending();
+        evaluate_pending(&ctx, &mut runtime);
         assert_eq!(state(&ctx, target, "hits"), 2.0);
         assert_eq!(store(&ctx, "impact.broken"), 0.0);
 
         hit(&ctx, target, DamageProducer::InTick);
-        runtime.evaluate_pending();
+        evaluate_pending(&ctx, &mut runtime);
         assert_eq!(state(&ctx, target, "hits"), 3.0);
         assert_eq!(store(&ctx, "impact.broken"), 1.0);
         assert!(
@@ -593,10 +702,40 @@ mod tests {
         )]);
 
         hit(&ctx, target, DamageProducer::InTick);
-        runtime.evaluate_pending();
+        evaluate_pending(&ctx, &mut runtime);
 
         assert_eq!(state(&ctx, target, "first"), 1.0);
         assert_eq!(state(&ctx, target, "second"), 1.0);
+    }
+
+    #[test]
+    fn consecutive_in_tick_hits_observe_the_previous_fire_effects() {
+        let ctx = ScriptCtx::new();
+        let target = target(&ctx, &["crate"]);
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_global_events(vec![event(
+            "counter",
+            "crate",
+            vec![state_write(
+                "hits",
+                json!({ "op": "add", "a": input("@state.hits"), "b": number(1.0) }),
+            )],
+        )]);
+
+        let mut registry = ctx.registry.borrow_mut();
+        for _ in 0..2 {
+            let context = DamageContext::new("impact-policy-test", DamageProducer::InTick);
+            apply_damage_with_context(
+                &mut registry,
+                target,
+                &DamagePayload { amount: 1.0 },
+                context,
+            );
+            runtime.evaluate_pending_in_registry(&mut registry);
+        }
+        drop(registry);
+
+        assert_eq!(state(&ctx, target, "hits"), 2.0);
     }
 
     #[test]
@@ -609,17 +748,117 @@ mod tests {
             "crate",
             vec![state_write("base_only", number(1.0))],
         )]);
-        runtime.replace_level_events(vec![event(
-            "same",
-            "reinforced",
-            vec![state_write("variant", number(3.0))],
-        )]);
+        runtime.replace_level_events(
+            vec![override_event(
+                "same",
+                "reinforced",
+                vec![state_write("variant", number(3.0))],
+            )],
+            &[],
+        );
 
         hit(&ctx, target, DamageProducer::InTick);
-        runtime.evaluate_pending();
+        evaluate_pending(&ctx, &mut runtime);
 
         assert_eq!(state(&ctx, target, "base_only"), 0.0);
         assert_eq!(state(&ctx, target, "variant"), 3.0);
+    }
+
+    #[test]
+    fn override_requires_both_base_and_additional_tags() {
+        let ctx = ScriptCtx::new();
+        let target = target(&ctx, &["reinforced"]);
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_global_events(vec![
+            event("same", "crate", vec![state_write("base_only", number(1.0))]),
+            override_event(
+                "same",
+                "reinforced",
+                vec![state_write("variant", number(3.0))],
+            ),
+        ]);
+
+        hit(&ctx, target, DamageProducer::InTick);
+        evaluate_pending(&ctx, &mut runtime);
+
+        assert_eq!(state(&ctx, target, "base_only"), 0.0);
+        assert_eq!(state(&ctx, target, "variant"), 0.0);
+    }
+
+    #[test]
+    fn mod_scope_levels_selector_filters_before_level_composition() {
+        let ctx = ScriptCtx::new();
+        let target = target(&ctx, &["crate"]);
+        let mut campaign = event(
+            "campaign-only",
+            "crate",
+            vec![state_write("campaign", number(1.0))],
+        );
+        campaign.levels = vec!["campaign".to_string()];
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_global_events(vec![campaign]);
+        runtime.replace_level_events(Vec::new(), &["deathmatch".to_string()]);
+
+        hit(&ctx, target, DamageProducer::InTick);
+        evaluate_pending(&ctx, &mut runtime);
+        assert_eq!(state(&ctx, target, "campaign"), 0.0);
+
+        runtime.replace_level_events(Vec::new(), &["campaign".to_string()]);
+        hit(&ctx, target, DamageProducer::InTick);
+        evaluate_pending(&ctx, &mut runtime);
+        assert_eq!(state(&ctx, target, "campaign"), 1.0);
+    }
+
+    #[test]
+    fn synchronous_impact_effect_runs_before_legacy_death_sweep() {
+        let ctx = ScriptCtx::new();
+        let target = target(&ctx, &["survivor"]);
+        let mut health = ctx
+            .registry
+            .borrow()
+            .get_component::<HealthComponent>(target)
+            .unwrap()
+            .clone();
+        health.current = 1.0;
+        ctx.registry
+            .borrow_mut()
+            .set_component(target, health)
+            .unwrap();
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_global_events(vec![event(
+            "survive",
+            "survivor",
+            vec![json!({
+                "primitive": "setHealth",
+                "target": "@impact.target",
+                "args": { "value": number(10.0) },
+            })],
+        )]);
+
+        {
+            let mut registry = ctx.registry.borrow_mut();
+            let context = DamageContext::new("impact-policy-test", DamageProducer::InTick);
+            apply_damage_with_context(
+                &mut registry,
+                target,
+                &DamagePayload { amount: 1.0 },
+                context,
+            );
+            runtime.evaluate_pending_in_registry(&mut registry);
+        }
+        let mut progress = postretro_scripting_core::reaction_dispatch::ProgressTracker::new();
+        let events = crate::sim::run_death_sweep(&ctx.registry, &mut progress);
+
+        assert!(events.is_empty());
+        assert!(ctx.registry.borrow().exists(target));
+        assert_eq!(
+            ctx.registry
+                .borrow()
+                .get_component::<HealthComponent>(target)
+                .unwrap()
+                .current,
+            10.0
+        );
     }
 
     #[test]
@@ -641,7 +880,7 @@ mod tests {
         ]);
 
         hit(&ctx, target, DamageProducer::InTick);
-        runtime.evaluate_pending();
+        evaluate_pending(&ctx, &mut runtime);
 
         assert_eq!(state(&ctx, target, "crate"), 1.0);
         assert_eq!(state(&ctx, target, "vase"), 1.0);
@@ -659,9 +898,97 @@ mod tests {
         )]);
 
         hit(&ctx, target, DamageProducer::AppDrain);
-        runtime.evaluate_pending();
+        evaluate_pending(&ctx, &mut runtime);
 
         assert_eq!(state(&ctx, target, "ran"), 0.0);
+    }
+
+    #[test]
+    fn impact_effect_wire_rejects_raw_store_assignment_and_boolean_operands() {
+        let ctx = ScriptCtx::new();
+        ctx.slot_table
+            .borrow_mut()
+            .insert("impact.total".into(), number_slot(0.0))
+            .expect("new slot");
+        let scope = EntityScope::impact(ctx);
+
+        let raw_assignment = json!({
+            "primitive": "setState",
+            "args": { "slot": "impact.total", "value": number(99.0) },
+        });
+        assert_eq!(
+            bind_effect(&raw_assignment, &scope).err().unwrap(),
+            "setState must target @impact.target"
+        );
+
+        for malformed in [
+            json!({
+                "primitive": "setHealth",
+                "target": "@impact.target",
+                "args": { "value": { "op": "const", "value": true } },
+            }),
+            json!({
+                "primitive": "setState",
+                "target": "@impact.target",
+                "args": { "name": "bad", "value": { "op": "const", "value": true } },
+            }),
+            json!({
+                "primitive": "slot.add",
+                "args": { "slot": "impact.total", "delta": { "op": "const", "value": true } },
+            }),
+        ] {
+            assert!(
+                bind_effect(&malformed, &scope).is_err(),
+                "numeric effect operand accepted boolean IR: {malformed}"
+            );
+        }
+
+        for invalid_target in [json!(null), json!(42), json!({}), json!("@impact.target")] {
+            let malformed = json!({
+                "primitive": "slot.add",
+                "target": invalid_target,
+                "args": { "slot": "impact.total", "delta": number(1.0) },
+            });
+            assert!(
+                bind_effect(&malformed, &scope).is_err(),
+                "slot.add accepted a present target: {malformed}"
+            );
+        }
+
+        for primitive in ["despawn", "playAnim", "setHealth", "setState"] {
+            let malformed = json!({
+                "primitive": primitive,
+                "target": "@impact.source",
+                "args": {},
+            });
+            assert!(
+                bind_effect(&malformed, &scope).is_err(),
+                "target-bearing arm accepted the wrong token: {malformed}"
+            );
+        }
+    }
+
+    #[test]
+    fn engine_binding_rejects_tagless_override_descriptors() {
+        let ctx = ScriptCtx::new();
+        let scope = EntityScope::impact(ctx);
+        let mut descriptor = override_event("salvage:base", "elite", Vec::new());
+        descriptor.filter_tag = None;
+
+        assert_eq!(
+            bind_policy(&descriptor, Some("crate".to_string()), &scope)
+                .err()
+                .unwrap(),
+            "impact override filter requires `tag`"
+        );
+    }
+
+    #[test]
+    fn unknown_override_diagnostic_names_author_id_in_documented_form() {
+        assert_eq!(
+            unknown_override_diagnostic("salvage:crate-break"),
+            "override targets unknown event \"salvage:crate-break\""
+        );
     }
 
     #[test]
@@ -675,7 +1002,7 @@ mod tests {
         ]);
 
         hit(&ctx, target, DamageProducer::InTick);
-        runtime.evaluate_pending();
+        evaluate_pending(&ctx, &mut runtime);
 
         assert_eq!(state(&ctx, target, "order"), 2.0);
     }

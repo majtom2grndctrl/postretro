@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PendingEffect {
     pub kind: DeferredEffectKind,
-    pub countdown_ms: f32,
+    /// Integer time avoids large finite script delays becoming stuck when a
+    /// floating-point subtraction is smaller than the value's ULP.
+    pub remaining_us: u64,
     /// The absolute health value carried by a deferred `setHealth` write.
     /// `despawn` has no payload.
     pub value: Option<f32>,
@@ -35,7 +37,13 @@ pub enum DeferredEffectKind {
 pub struct DeferredEffectComponent {
     pub pending: Vec<PendingEffect>,
     pub inert: bool,
+    /// Suppresses repeated diagnostics while this queue remains saturated.
+    pub overflow_reported: bool,
 }
+
+/// Hard per-entity work bound. Overflow drops the newest request, preserving
+/// every already-admitted entry and its FIFO order.
+pub const MAX_PENDING_EFFECTS_PER_ENTITY: usize = 64;
 
 #[cfg(test)]
 mod tests {
@@ -45,6 +53,7 @@ mod tests {
     fn default_component_is_active_and_has_no_pending_effects() {
         let effects = DeferredEffectComponent::default();
         assert!(!effects.inert);
+        assert!(!effects.overflow_reported);
         assert!(effects.pending.is_empty());
     }
 }

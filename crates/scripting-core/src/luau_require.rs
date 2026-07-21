@@ -185,7 +185,6 @@ fn resolve_require_path(mod_root: &Path, path: &str) -> Result<PathBuf, String> 
 mod tests {
     use super::*;
     use crate::luau::build_lua_state_with_require_tracking;
-    use crate::luau_prelude::{POSTRETRO_ROOT_MODULE_EXPORTS, POSTRETRO_UI_MODULE_EXPORTS};
     use crate::luau_virtual_modules::LuauVirtualModuleRegistry;
     use mlua::Table;
     use std::collections::BTreeSet;
@@ -421,8 +420,82 @@ mod tests {
             .eval()
             .unwrap();
 
-        assert_exact_string_keys(&root, POSTRETRO_ROOT_MODULE_EXPORTS);
-        assert_exact_string_keys(&ui, POSTRETRO_UI_MODULE_EXPORTS);
+        assert_exact_string_keys(
+            &root,
+            &[
+                "world",
+                "runtime",
+                "getGameState",
+                "timeline",
+                "sequence",
+                "defineReaction",
+                "defineImpactEvent",
+                "onTriggerEvent",
+                "damage",
+                "enemies",
+                "spawner",
+                "armTrigger",
+                "disarmTrigger",
+                "scopeReactions",
+                "defineEntity",
+                "defineMod",
+                "defineMapCatalog",
+                "defineTriggerPool",
+                "defineStore",
+                "slot",
+                "emitter",
+                "smokeEmitter",
+                "sparkEmitter",
+                "dustEmitter",
+            ],
+        );
+        assert_exact_string_keys(
+            &ui,
+            &[
+                "Text",
+                "Panel",
+                "Image",
+                "Spacer",
+                "Button",
+                "Slider",
+                "Bar",
+                "Announce",
+                "VStack",
+                "HStack",
+                "Grid",
+                "Tree",
+                "defineUiTree",
+                "getGameState",
+                "bindState",
+                "stateEquals",
+                "createLocalState",
+                "ui",
+                "Switch",
+                "defineTheme",
+                "getDesignTokens",
+                "onStateCrossing",
+                "playSound",
+                "rumble",
+                "flashScreen",
+                "vignette",
+                "screenShake",
+                "showDialog",
+                "openMenu",
+                "closeDialog",
+                "openTextEntry",
+                "KEYBOARD_TREE",
+                "CLOSE_DIALOG_ACTION",
+                "EXIT_TO_DESKTOP_ACTION",
+                "QUIT_TO_MENU_ACTION",
+                "loadLevel",
+                "restartLevel",
+                "returnToFrontend",
+                "updateState",
+                "appendText",
+                "backspaceText",
+                "clearText",
+            ],
+        );
 
         assert!(
             same_root,

@@ -652,10 +652,13 @@ pub struct EntityRegistry {
     /// Phase 0 sim command. Not script-visible and not a tag/KVP, so it cannot
     /// affect world queries or authored entity properties.
     local_player_pawn: Option<EntityId>,
-    /// Fires from the health chokepoint after each successful decrement. The
+    /// Fires from the health chokepoint after each accepted damage call. The
     /// event payload belongs to the health component module, while the registry
     /// owns the single-threaded handoff to impact-policy consumers.
     impact_dispatches: Vec<ImpactDispatch>,
+    /// Sparse worklist for entities with non-empty deferred-effect queues.
+    /// Ownership returns here after every tick so the allocation is reused.
+    active_deferred_effects: Vec<EntityId>,
     /// Entity ids marked by terminal impact effects. The app drains this once
     /// per frame after presentation/reaction work; game logic never removes an
     /// entity inline through this channel.
@@ -677,6 +680,7 @@ impl EntityRegistry {
             kvp_table: HashMap::new(),
             local_player_pawn: None,
             impact_dispatches: Vec::new(),
+            active_deferred_effects: Vec::new(),
             end_of_frame_removals: Vec::new(),
             #[cfg(any(test, feature = "test-support"))]
             test_capacity_limit: None,
@@ -929,13 +933,64 @@ impl EntityRegistry {
     /// Publish one damage-chokepoint dispatch for the engine's impact-policy
     /// consumer. This is intentionally separate from component columns: it is
     /// ephemeral per-fire data, not persistent entity state.
-    pub fn push_impact_dispatch(&mut self, dispatch: ImpactDispatch) {
+    pub(crate) fn push_impact_dispatch(&mut self, dispatch: ImpactDispatch) {
         self.impact_dispatches.push(dispatch);
     }
 
     /// Drain every impact dispatch published since the previous consumer pass.
     pub fn take_impact_dispatches(&mut self) -> Vec<ImpactDispatch> {
         std::mem::take(&mut self.impact_dispatches)
+    }
+
+    /// Mutable access to the engine-managed deferred-effect storage.
+    pub fn deferred_effect_mut(
+        &mut self,
+        id: EntityId,
+    ) -> Result<&mut DeferredEffectComponent, RegistryError> {
+        let index = self.validate(id)?;
+        match self.components[ComponentKind::DeferredEffect as usize][index].as_mut() {
+            Some(ComponentValue::DeferredEffect(effects)) => Ok(effects),
+            _ => Err(RegistryError::ComponentNotFound {
+                id,
+                kind: ComponentKind::DeferredEffect,
+            }),
+        }
+    }
+
+    /// Mutable access to the per-instance modder state column.
+    pub fn entity_state_mut(
+        &mut self,
+        id: EntityId,
+    ) -> Result<&mut EntityStateComponent, RegistryError> {
+        let index = self.validate(id)?;
+        match self.components[ComponentKind::EntityState as usize][index].as_mut() {
+            Some(ComponentValue::EntityState(state)) => Ok(state),
+            _ => Err(RegistryError::ComponentNotFound {
+                id,
+                kind: ComponentKind::EntityState,
+            }),
+        }
+    }
+
+    /// Enroll an entity in deferred-effect ticking once. The worklist is
+    /// sparse: entities whose engine-managed queue is empty never appear here.
+    pub fn activate_deferred_effects(&mut self, id: EntityId) -> Result<(), RegistryError> {
+        let _ = self.validate(id)?;
+        if !self.active_deferred_effects.contains(&id) {
+            self.active_deferred_effects.push(id);
+        }
+        Ok(())
+    }
+
+    /// Temporarily transfer the sparse worklist to the fixed-tick executor.
+    pub fn take_active_deferred_effects(&mut self) -> Vec<EntityId> {
+        std::mem::take(&mut self.active_deferred_effects)
+    }
+
+    /// Return the compacted worklist after a tick, retaining its allocation.
+    pub fn replace_active_deferred_effects(&mut self, active: Vec<EntityId>) {
+        debug_assert!(self.active_deferred_effects.is_empty());
+        self.active_deferred_effects = active;
     }
 
     /// Stage a live entity for the dedicated frame-end removal pass. Repeated
@@ -973,6 +1028,7 @@ impl EntityRegistry {
             let _ = self.despawn(id);
         }
         self.impact_dispatches.clear();
+        self.active_deferred_effects.clear();
         self.end_of_frame_removals.clear();
     }
 

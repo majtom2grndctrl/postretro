@@ -61,7 +61,7 @@ function baseGruntDeath(impact: Impact): readonly EffectOrGroup[] {
 }
 
 // THE BLESSED HANDLE — defined ONCE at module scope, pure, threadable across application scopes.
-const gruntImpactEvent = defineImpactEvent({ tag: "grunt" }, baseGruntDeath);
+const gruntImpactEvent = defineImpactEvent("salvage:grunt-death", { tag: "grunt" }, baseGruntDeath);
 
 // MOD SCOPE — register the baseline behavior mod-wide by returning the handle.
 export function setupMod(): ModManifest {
@@ -93,7 +93,7 @@ export function setupLevel(): LevelManifest {
 }
 
 // === GUARDRAILS — these MUST NOT compile. ===================================
-defineImpactEvent({ tag: "grunt" }, (impact) => {
+defineImpactEvent("salvage:invalid-grunt-effect", { tag: "grunt" }, (impact) => {
   // @ts-expect-error live JS math on an IR ref — use .times(), not `*`.
   const badMath = 200 * impact.target.healthAfter;
   void badMath;

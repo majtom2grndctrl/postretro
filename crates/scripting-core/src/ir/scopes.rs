@@ -282,16 +282,39 @@ impl EntityScope {
         Ok(())
     }
 
+    /// Refresh one impact snapshot from a registry the caller already owns.
+    ///
+    /// The fixed-tick damage seam holds a mutable registry borrow while it
+    /// evaluates the just-published impact. Reading through the captured
+    /// `ScriptCtx` there would re-borrow the same `RefCell`; this explicit path
+    /// preserves the same snapshot contract without aliasing that borrow.
+    pub fn seed_impact_from_registry(
+        &mut self,
+        registry: &EntityRegistry,
+        dispatch: &ImpactDispatch,
+    ) -> Result<(), DispatchSeedError> {
+        for (name, value) in dispatch.ir_values() {
+            self.dispatch.seed(name, value)?;
+        }
+        self.seed_target_from_registry(registry, dispatch.target);
+        Ok(())
+    }
+
     /// Set the current target through the command-target ambient channel and
     /// freeze every state field already bound by this scope. This intentionally
     /// does not use [`DispatchScope::seed`], whose values are only numbers and
     /// booleans.
     pub fn seed_target(&mut self, target: EntityId) {
+        let registry = self.registry.clone();
+        let registry = registry.borrow();
+        self.seed_target_from_registry(&registry, target);
+    }
+
+    fn seed_target_from_registry(&mut self, registry: &EntityRegistry, target: EntityId) {
         self.target = Some(target);
 
         let names = self.state_names.borrow();
         let mut snapshot = self.snapshot.borrow_mut();
-        let registry = self.registry.borrow();
         let state = registry.get_component::<EntityStateComponent>(target).ok();
         for (index, name) in names.iter().enumerate() {
             snapshot[index] = state.map_or(0.0, |state| state.get(name));
@@ -332,23 +355,38 @@ impl EntityScope {
         index
     }
 
-    fn write_state(&mut self, name: &str, value: IrValue) {
+    fn write_state(
+        registry: &mut EntityRegistry,
+        target: Option<EntityId>,
+        name: &str,
+        value: IrValue,
+    ) {
         let IrValue::Number(value) = value else {
             return;
         };
-        let Some(target) = self.target else {
+        let Some(target) = target else {
             return;
         };
 
-        let mut registry = self.registry.borrow_mut();
-        let Ok(existing) = registry.get_component::<EntityStateComponent>(target) else {
+        let Ok(state) = registry.entity_state_mut(target) else {
             return;
         };
-        let mut state = existing.clone();
         state.set(name, value);
-        // The target was valid while we read it, and this single-threaded
-        // registry cannot make it stale between the two calls.
-        let _ = registry.set_component(target, state);
+    }
+
+    /// Apply a bound impact output while the caller owns the live registry.
+    pub fn write_with_registry(
+        &mut self,
+        registry: &mut EntityRegistry,
+        handle: &EntityOutputHandle,
+        value: IrValue,
+    ) {
+        match handle {
+            EntityOutputHandle::State(name) => {
+                Self::write_state(registry, self.target, name, value)
+            }
+            EntityOutputHandle::Store(handle) => self.dispatch.write(handle, value),
+        }
     }
 }
 
@@ -418,7 +456,10 @@ impl BindingScope for EntityScope {
 
     fn write(&mut self, handle: &Self::OutputHandle, value: IrValue) {
         match handle {
-            EntityOutputHandle::State(name) => self.write_state(name, value),
+            EntityOutputHandle::State(name) => {
+                let registry = self.registry.clone();
+                Self::write_state(&mut registry.borrow_mut(), self.target, name, value);
+            }
             EntityOutputHandle::Store(handle) => self.dispatch.write(handle, value),
         }
     }

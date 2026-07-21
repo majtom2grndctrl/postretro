@@ -67,13 +67,13 @@ pub struct DamageContext {
 }
 
 impl DamageContext {
-    pub fn new(source_id: impl Into<String>) -> Self {
+    pub fn new(source_id: impl Into<String>, producer: DamageProducer) -> Self {
         Self {
             source_id: source_id.into(),
             attacker: None,
             weapon: None,
             zone: None,
-            producer: DamageProducer::InTick,
+            producer,
         }
     }
 }
@@ -441,8 +441,7 @@ pub fn apply_damage_with_context(
 ///
 /// Like damage, a stale id or entity without `HealthComponent` is a no-op. The
 /// write is immediate and clamps to `[0, max]`; it deliberately does not
-/// publish a damage impact or alter the death latch, both of which belong to
-/// later policy/lifecycle work.
+/// publish a damage impact or alter the death latch.
 pub fn set_health_absolute(registry: &mut EntityRegistry, id: EntityId, value: f32) {
     let Ok(health) = registry.get_component::<HealthComponent>(id) else {
         return;
@@ -544,7 +543,7 @@ mod tests {
             &mut reg,
             id,
             &DamagePayload { amount: 25.0 },
-            DamageContext::new("test.health"),
+            DamageContext::new("test.health", DamageProducer::InTick),
         );
 
         assert_eq!(
@@ -564,7 +563,7 @@ mod tests {
             &mut reg,
             id,
             &DamagePayload { amount: 999.0 },
-            DamageContext::new("test.health"),
+            DamageContext::new("test.health", DamageProducer::InTick),
         );
 
         assert_eq!(
@@ -792,7 +791,7 @@ mod tests {
             &mut reg,
             id,
             &DamagePayload { amount: 25.0 },
-            DamageContext::new("test.health"),
+            DamageContext::new("test.health", DamageProducer::InTick),
         );
 
         assert!(reg.get_component::<HealthComponent>(id).is_err());

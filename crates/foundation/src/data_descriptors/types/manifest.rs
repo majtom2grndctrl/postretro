@@ -9,9 +9,14 @@ use std::collections::HashMap;
 /// engine layer that consumes this descriptor.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImpactEventDescriptor {
-    /// SDK-derived stable identity shared by a base declaration and its
+    /// Author-assigned stable identity shared by a base declaration and its
     /// cross-scope overrides.
     pub id: String,
+    /// Distinguishes a refinement from the base declaration it references.
+    pub is_override: bool,
+    /// Mod-scope map-tag selector. Empty means every level; level-local
+    /// declarations retain this field but apply to their declaring level.
+    pub levels: Vec<String>,
     /// Optional tag selector for affected entities. No tag means every impact
     /// is eligible.
     pub filter_tag: Option<String>,

@@ -184,6 +184,7 @@ impl SimHarness {
             |_| command.to_post_movement_command(),
             DT,
             None,
+            |_| {},
         );
         if self.force_post_tick_rounding {
             self.force_round_post_tick_state();

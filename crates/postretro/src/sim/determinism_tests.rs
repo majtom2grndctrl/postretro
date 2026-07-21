@@ -558,6 +558,7 @@ impl SimHarness {
                 script_ctx: Some(self.trigger_script_ctx.clone()),
                 use_edges: &trigger_use_edges,
             }),
+            |_| {},
         );
         evaluate_slot_accumulators(&mut self.slot_accumulator_bindings, DT);
         let predicate_crossing_fires = self
@@ -1175,6 +1176,7 @@ fn run_driven_agent_sim_tick(
         },
         DT,
         None,
+        |_| {},
     );
 }
 
@@ -2893,6 +2895,7 @@ fn simulate_tick_uses_sim_command_fire_button_with_callback_aim() {
         },
         DT,
         None,
+        |_| {},
     );
 
     assert!(
@@ -2964,6 +2967,7 @@ fn simulate_tick_normalizes_callback_aim_direction_before_weapon_fire() {
         },
         DT,
         None,
+        |_| {},
     );
 
     assert_eq!(
@@ -3041,6 +3045,7 @@ fn simulate_tick_noops_weapon_fire_for_invalid_callback_aim_direction() {
         },
         DT,
         None,
+        |_| {},
     );
 
     assert!(
@@ -3123,6 +3128,7 @@ fn simulate_tick_noops_weapon_fire_for_non_finite_callback_aim_origin() {
         },
         DT,
         None,
+        |_| {},
     );
 
     assert!(

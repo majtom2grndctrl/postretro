@@ -27,10 +27,10 @@ pub struct RegisteredUiTree {
 pub struct LevelManifest {
     pub reactions: Vec<NamedReaction>,
     /// Level-local impact-policy declarations. Task 5 composes these after
-    /// mod-global declarations and performs the derived-id merge.
+    /// mod-global declarations and performs the author-id merge.
     pub events: Vec<ImpactEventDescriptor>,
     /// State-crossing watchers (M13 HUD dynamics). Parsed alongside `reactions`
-    /// from the widened `{ reactions, crossings, triggerEvents, triggerPools }` setup-manifest return and
+    /// from the widened `{ reactions, events, crossings, triggerEvents, triggerPools }` setup-manifest return and
     /// drained into the per-level `DataRegistry`; cleared on level unload.
     pub crossings: Vec<CrossingDescriptor>,
     /// Trigger-volume enter/exit watchers declared via the `triggerEvents`

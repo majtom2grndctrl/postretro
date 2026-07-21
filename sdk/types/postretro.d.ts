@@ -504,7 +504,7 @@ declare module "postretro" {
     path: string;
     /** Display name shown to players in catalog-driven UI. Required. */
     name: string;
-    /** Authoritative classification tags for filtering plus `levels` selection on mod-global reactions, crossings, trigger events, and trigger pools. Optional; missing/null normalizes to empty. */
+    /** Authoritative classification tags for filtering plus `levels` selection on mod-global reactions, impact events, crossings, trigger events, and trigger pools. Optional; missing/null normalizes to empty. */
     tags?: ReadonlyArray<string>;
   };
 
@@ -556,7 +556,7 @@ declare module "postretro" {
     frontend?: Frontend;
     /** Engine-global reaction definitions. Optional; survive level unload and compose into active level behavior by `levels` tag selectors. */
     reactions?: ReadonlyArray<NamedReactionDescriptor>;
-    /** Pure impact-policy declarations. Optional; Task 5 composes base declarations and overrides by their SDK-derived identity at the impact dispatch chokepoint. */
+    /** Pure mod-global impact-policy declarations. Optional; `levels` selects map tags, setupLevel events append level-local declarations, and base plus matching last-registered override resolve by author-assigned id. Override filters narrow the base filter. */
     events?: ReadonlyArray<ImpactEvent>;
     /** Engine-global state-crossing watchers. Optional; survive level unload and compose into active level behavior by `levels` tag selectors. */
     crossings?: ReadonlyArray<CrossingDescriptor>;
@@ -969,6 +969,7 @@ declare module "postretro" {
   const boolBrand: unique symbol;
   const sourceBrand: unique symbol;
   const impactEventBrand: unique symbol;
+  const effectBrand: unique symbol;
   export type NumberValue = number | NumberRef;
   export type BoolValue = boolean | BoolRef;
   export interface NumberRef {
@@ -993,9 +994,12 @@ declare module "postretro" {
     not(): BoolRef;
     select(whenTrue: NumberValue, whenFalse: NumberValue): NumberRef;
   }
-  export type Effect = PrimitiveReactionDescriptor | Reaction<{}>;
+  /** Opaque closed impact effect. Construct through TargetHandle or slot(...).add(). */
+  export interface Effect { readonly [effectBrand]: true; }
   export type GatedEffect = { when?: BoolRef; do: readonly Effect[] };
   export type EffectOrGroup = Effect | GatedEffect;
+  export type ImpactEventFilter = { tag?: string; levels?: readonly string[] };
+  export type ImpactEventOverrideFilter = { tag: string; levels?: readonly string[] };
   export interface TargetHandle {
     readonly healthBefore: NumberRef;
     readonly healthAfter: NumberRef;
@@ -1011,8 +1015,10 @@ declare module "postretro" {
   export type Impact = Readonly<{ target: TargetHandle; source: SourceHandle; amount: NumberRef }>;
   export interface ImpactEvent {
     readonly kind: "impact";
+    readonly isOverride: boolean;
+    readonly levels?: readonly string[];
     readonly [impactEventBrand]: true;
-    override(filter: { tag?: string }, build: (impact: Impact) => readonly EffectOrGroup[]): ImpactEvent;
+    override(filter: ImpactEventOverrideFilter, build: (impact: Impact) => readonly EffectOrGroup[]): ImpactEvent;
   }
 
   /** Crossing condition: fires when the watched slot crosses the threshold in one direction. Exactly one of `below`/`above` is given. `max` is the denominator the threshold is a fraction of; omit it for a raw-value comparison (`max` defaults to `1.0`). */
@@ -1084,7 +1090,8 @@ declare module "postretro" {
 
   /** Define a pure impact-policy descriptor. Register it only by returning it through `events`. */
   export function defineImpactEvent(
-    filter: { tag?: string },
+    id: string,
+    filter: ImpactEventFilter,
     build: (impact: Impact) => readonly EffectOrGroup[],
   ): ImpactEvent;
   export function defineReaction(
@@ -1219,7 +1226,7 @@ declare module "postretro" {
   };
   /** Pure identity builder for entity-type descriptors. Returned from `ModManifest.entities`; `descriptor` is the full archetype object: optional `canonicalName`, optional `defaultWeapon`, and optional component presets. */
   export function defineEntity(descriptor: EntityTypeDescriptor): EntityTypeDescriptor;
-  /** Pure identity builder for the mod manifest consumed from the default export. `config.name` is required; optional arrays include `entities`, `maps`, `uiTrees`, `reactions`, `crossings`, `triggerEvents`, `triggerPools`, and `stores`. */
+  /** Pure identity builder for the mod manifest consumed from the default export. `config.name` is required; optional arrays include `entities`, `maps`, `uiTrees`, `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, and `stores`. */
   export function defineMod(config: ModManifest): ModManifest;
   /** Pure identity builder for a mod map catalog. Entries require `id`, `path`, and `name`; optional `tags` default to empty and drive filtering plus `levels` selectors. */
   export function defineMapCatalog(entries: ModMapEntry[]): ModMapEntry[];

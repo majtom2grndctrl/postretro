@@ -43,7 +43,7 @@ Remote players render as skinned character models with aim tracking, foot planti
 - [ ] The local player sees a first-person viewmodel of the equipped weapon. The viewmodel never clips into nearby world geometry.
 - [ ] The local player's body does not appear in the first-person view but casts shadows from lights that already have shadow pools (dynamic or promoted-static). Lights without shadow pools (low-power, bake-only) are unaffected.
 - [ ] In single-player, the viewmodel still renders and the player body still casts shadows — the presentation is not gated on netcode being active.
-- [ ] The wire-version bumps gate the new fields behind the two-gate handshake. A pre-bump client cannot connect to a post-bump host.
+- [ ] The wire-version bumps gate the new fields behind the two-gate handshake. Mismatched peers (pre-bump client to post-bump host or post-bump client to pre-bump host) cannot connect.
 - [ ] The behavior-preserving split of `mesh_pass.rs` (Task 6) does not change any test result or visual output.
 - [ ] A descriptor with `shadowOnly: true` on its mesh block renders into shadow-depth passes only; `shadowOnly: false` (the default) preserves current behavior for all existing entities.
 
@@ -51,13 +51,13 @@ Remote players render as skinned character models with aim tracking, foot planti
 
 ### Task 1: Wire bump — aim pitch + weapon archetype identity
 
-Add `aim_pitch: f32` to `WireMovementInput` (alongside `facing_yaw`). The client packs camera pitch into the input command; the host receives it, stores it alongside movement state, and echoes it to other clients.
+Add `aim_pitch: f32` to `WireMovementInput` (after `use_pressed`, the current last field). The client packs camera pitch into the input command; the host receives it, stores it alongside movement state, and echoes it to other clients.
 
 Add `aim_pitch: f32` to `WirePlayerMovementState`. The host writes the latest received aim pitch from the owning client's input command. Clients consume it for pose-modifier input on remote player pawns.
 
 Extend the client-side interpolation buffer to retain replicated aim pitch alongside position. The client snapshot-apply path currently captures remote-pawn velocity into `TransformSample` but discards `PlayerMovementState` for non-local entities. Add `aim_pitch: f32` to the per-entity interpolation sample so it interpolates smoothly between snapshots, matching position interpolation. The interpolated aim pitch feeds `PoseInputs` in Task 3.
 
-Add `active_weapon_archetype: Option<String>` to the entity record metadata, valid on non-despawn records carrying `PlayerMovementState` (the same validity gate as `local_player` and `last_processed_client_tick`). The host populates it from the `WeaponOwners` pawn→weapon lookup → weapon entity's descriptor `canonicalName`. Clients consume it for third-person weapon attachment resolution. `None` means no weapon equipped.
+Add `active_weapon_archetype: Option<String>` to the entity record metadata, valid on non-despawn records carrying `PlayerMovementState` (the same validity gate as `local_player` and `last_processed_client_tick`). The host populates it from the `WeaponOwners` pawn→weapon lookup → weapon entity's descriptor `canonicalName`. Clients consume it for third-person weapon attachment resolution. `None` means no weapon equipped. On `RawEntityRecord`, encode as `has_active_weapon_archetype: bool` + `active_weapon_archetype: String`, mirroring the `has_entity_class`/`entity_class` flag pair. `validate` rejects a `false` flag paired with a non-empty string (`MalformedActiveWeaponMetadata`), a `true` flag with an empty string, and any active-weapon metadata on a despawn record (`MetadataOnDespawn`).
 
 Bump `WIRE_VERSION` and `SNAPSHOT_VERSION`. These are layout changes to existing wire types, not vocabulary changes (no new message variant), so the app-protocol constant is untouched. Update the drift-guard tests on both sides of the crate boundary.
 
@@ -78,7 +78,7 @@ Write `PoseInputs` for player mesh entities. The existing `update_pose_inputs` i
 - **Local player:** write `aim_pitch` from the camera's current pitch, `aim_yaw` from the camera's current yaw, `heading_yaw` from the pawn's movement-facing direction. These feed the aim-bend and upper/lower-split modifiers so the local body shadow tracks the player's aim.
 - **Remote player:** write `aim_pitch` from the interpolated aim pitch in the interpolation buffer (Task 1), `aim_yaw` from the interpolated transform's yaw, `heading_yaw` derived from the interpolated velocity direction (or transform yaw when stationary). These drive the aim presentation on the remote avatar.
 
-The local player's camera pitch must reach `update_pose_inputs`. The camera state is resolved in the main loop at the render-assembly site. Thread the current camera pitch and yaw into the game-logic stage — either via a lightweight per-frame struct passed to the sim update, or by reading from the same camera-follow state `update_pose_inputs` already has access to.
+The local player's camera pitch must reach `update_pose_inputs`. The camera state is resolved in the main loop at the render-assembly site. `update_pose_inputs` currently takes only `&mut EntityRegistry` and has no camera access. Thread the current camera pitch and yaw into the game-logic stage via a lightweight per-frame struct passed to the sim update, or by adding a camera-aim parameter to `update_pose_inputs` (and threading it through `simulate_tick`). The camera pitch/yaw is captured from `Session.camera` before the tick loop and passed down.
 
 Foot-IK ground probes for player pawns activate automatically. The shipped `update_foot_ground_probes` runs for entities with `MeshComponent.pose_inputs` and legs in the pose stack. The exo_red model carries `legL`/`legR`/`footL`/`footR` pose-mask tags on its leg joints, so the loader builds the leg set and the probe loop activates — no entity-type filter to bypass.
 
@@ -94,7 +94,7 @@ The existing shadow-pass infrastructure does not fully support this. Currently:
 - When no promoted-static records exist, the frame planner uses `plan_forward_visible_mesh_frame`, which drops shadow-only instances from the plan and SSBO entirely.
 
 This task must make two changes:
-1. Change dynamic shadow slots to use `IncludeShadowOnly` (matching promoted-static), so shadow-only bodies cast into all active shadow pools. Update the test that pins `ForwardVisibleOnly` on dynamic slots.
+1. Change `ForwardVisibleOnly` to `IncludeShadowOnly` at both the dynamic spot shadow call site and the dynamic cube shadow call site in `renderer_shadow_passes.rs`. Update the `depth_instance_filter_keeps_dynamic_shadows_forward_visible_only` test in `mesh_pass.rs` to reflect that all dynamic slots now use `IncludeShadowOnly`.
 2. Change the frame planner selection so shadow-only instances survive in the plan and SSBO even without promoted-static records.
 
 Both changes are safe because shadow-only instances are opt-in per descriptor — existing entities default to `shadowOnly: false` and their behavior is unchanged. The widened filter only includes instances that explicitly requested shadow-only rendering.
@@ -125,6 +125,8 @@ The viewmodel instance is a `MeshInstanceInput` with a flag or variant distingui
 
 View-feel integration: the engine composes the viewmodel's camera-space transform at the render-assembly site in the main loop, applying view-feel bob and tilt offsets to the camera pose. The composed transform is handed through the mesh collector as the instance transform. The renderer applies only the alternate projection — it does not read view-feel state.
 
+Shadow exclusion: the viewmodel instance is excluded from all shadow-depth passes — it does not cast shadows. Only the forward color pass draws it, with the alternate near-plane projection. The viewmodel's camera-space projection is incompatible with world-space shadow maps.
+
 Weapon switch: when the local player's weapon changes, the viewmodel swaps to the new weapon's `viewmodel` asset. If the asset is not yet loaded (hot-swap edge case), the viewmodel disappears until the load completes — no stale weapon frame.
 
 Single-player mode: the viewmodel renders identically. It reads the local player's weapon from the entity registry (direct lookup), not from the wire.
@@ -143,7 +145,7 @@ Single-player mode: the viewmodel renders identically. It reads the local player
 
 **Remote player materialization.** A new `materialize_armed_remote_player` in `remote_materialize.rs` follows the enemy pattern: presentation-only mesh attachment, no gameplay components. The client-apply dispatch in `crate::netcode` branches on whether the descriptor carries a `movement` component (player-type) or not (enemy-type).
 
-**Pose input plumbing.** A branch inside `update_pose_inputs` in `sim/mod.rs` overrides the default write for player pawns. Local player reads camera pitch/yaw; remote player reads interpolated state from the interpolation buffer. Both paths produce the same `PoseInputs` shape consumed by the existing modifier stack — no modifier changes needed. Camera pitch reaches the sim stage via the same camera-follow state the function already accesses.
+**Pose input plumbing.** A branch inside `update_pose_inputs` in `sim/mod.rs` overrides the default write for player pawns. Local player reads camera pitch/yaw; remote player reads interpolated state from the interpolation buffer. Both paths produce the same `PoseInputs` shape consumed by the existing modifier stack — no modifier changes needed. Camera pitch reaches the sim stage via a lightweight per-frame struct or an added parameter to the sim update.
 
 **Shadow-only body.** The `shadowOnly` descriptor flag threads into `MeshComponent` and controls `forward_visible` at collection time. Dynamic shadow slots widen from `ForwardVisibleOnly` to `IncludeShadowOnly`, matching promoted-static slots. The frame planner includes shadow-only instances in all plan modes.
 
@@ -165,7 +167,7 @@ Single-player mode: the viewmodel renders identically. It reads the local player
 
 Three additions to existing wire surfaces — no new section or message type.
 
-**`WireMovementInput`** gains `aim_pitch: f32` after `facing_yaw`. Client-to-server on the Input channel. Bitcode layout change bumps `WIRE_VERSION`.
+**`WireMovementInput`** gains `aim_pitch: f32` after `use_pressed` (the current last field). Client-to-server on the Input channel. Bitcode layout change bumps `WIRE_VERSION`.
 
 **`WirePlayerMovementState`** gains `aim_pitch: f32` after `capsule_eye_height`. Server-to-client on the Snapshot channel. Bitcode layout change bumps `SNAPSHOT_VERSION`.
 

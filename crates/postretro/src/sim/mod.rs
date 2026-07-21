@@ -323,6 +323,14 @@ pub(crate) fn simulate_tick(
     );
     reload_deliveries.extend(local_deliveries);
     weapon.extend(remote_weapon_events);
+    // Deferred impact effects advance only after both in-tick damage producers:
+    // enemy melee ran in the AI stage above and weapon fire just completed.
+    // Effects enqueued by either producer therefore take their first countdown
+    // decrement on the next fixed tick.
+    {
+        let mut registry = registry.borrow_mut();
+        crate::impact_effects::tick_deferred_effects(&mut registry, tick_dt);
+    }
     let death = run_death_sweep(&registry, progress_tracker);
 
     TickEvents {

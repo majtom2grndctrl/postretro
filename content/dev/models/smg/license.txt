@@ -1,0 +1,16 @@
+Model Information:
+* title:	Cyberpunk Guns Asset Pack — SMG
+* source:	https://ab8b.itch.io/cyberpunk-guns-asset-pack
+* author:	ab8b (https://ab8b.itch.io)
+
+Model License:
+* license type:	itch.io asset pack license
+* requirements:	Free to use in personal and commercial projects.
+                	Do not redistribute or resell the raw assets.
+                	See asset pack page for full terms.
+
+Packaging notes (PostRetro):
+* Weapon model extracted from the Cyberpunk Guns Asset Pack, converted to
+  external glTF layout (model.gltf + model.bin + texture) via prop_to_gltf.py
+  for the engine's glTF model pipeline.
+* Grip point placed at the weapon's handle origin for socket attachment.

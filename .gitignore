@@ -58,3 +58,4 @@ tools/local-bin/
 # Compiled script artifacts (source is .ts/.lua; outputs are generated)
 *.js
 *.lua
+__pycache__/

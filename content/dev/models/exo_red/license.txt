@@ -1,0 +1,18 @@
+Model Information:
+* title:	Exo Red
+* source:	https://www.mixamo.com/
+* author:	Adobe Mixamo (https://www.mixamo.com)
+
+Model License:
+* license type:	Mixamo Service Terms (https://www.adobe.com/legal/terms.html)
+* requirements:	Free to use in projects for Mixamo account holders.
+                	Mixamo characters and animations may be used in commercial and
+                	non-commercial projects. Redistribution of the raw assets
+                	outside of a project is not permitted.
+
+Packaging notes (PostRetro):
+* Character downloaded from Adobe Mixamo as FBX, converted to external glTF
+  layout (model.gltf + model.bin + textures) via mixamo_to_gltf.py for the
+  engine's glTF model pipeline.
+* Textures exported as separate PNG files (diffuse, normal, specular maps for
+  body, brow, and exo parts).

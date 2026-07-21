@@ -526,6 +526,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                             .iter()
                             .any(|effect| effect.kind == DeferredEffectKind::Despawn)
                 })
+                || crate::impact_effects::is_downed_for_recovery(registry, id)
             {
                 return None;
             }

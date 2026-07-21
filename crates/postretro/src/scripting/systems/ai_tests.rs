@@ -1547,7 +1547,8 @@ fn no_player_pawn_leaves_enemy_idle_and_clears_steering() {
 }
 
 // ---------------------------------------------------------------------------
-// Acceptance: zero HP is inert; only a queued despawn quiesces a brain.
+// Acceptance: a queued positive-health recovery gives a zero-HP brain an
+// explicit nonterminal downed state; bare zero HP remains active.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1559,8 +1560,9 @@ fn zero_hp_brain_remains_active_without_despawn() {
         &mut reg,
         Vec3::ZERO,
         brain_with(tuning(), LogicalState::Alert),
-        0.0,
+        50.0,
     );
+    set_hp(&mut reg, enemy, 0.0);
 
     let events = run_ai_tick(&mut reg, &mut warned, 0.016);
 
@@ -1614,7 +1616,7 @@ fn queued_despawn_quiesces_brain_without_overwriting_animation() {
 }
 
 #[test]
-fn queued_set_health_does_not_quiesce_brain() {
+fn queued_positive_health_recovery_quiesces_zero_hp_brain() {
     let mut reg = EntityRegistry::new();
     let mut warned = HashSet::new();
     let pawn = spawn_player(&mut reg, Vec3::new(1.0, 0.0, 0.0));
@@ -1622,7 +1624,41 @@ fn queued_set_health_does_not_quiesce_brain() {
         &mut reg,
         Vec3::ZERO,
         brain_with(tuning(), LogicalState::Attack),
-        0.0,
+        50.0,
+    );
+    set_hp(&mut reg, enemy, 0.0);
+    crate::impact_effects::play_animation(&mut reg, enemy, "death");
+    crate::impact_effects::set_health(&mut reg, enemy, 25.0, Some(500.0));
+
+    let events = run_ai_tick(&mut reg, &mut warned, 0.016);
+
+    assert!(events.is_empty(), "a downed enemy must not attack");
+    assert_eq!(player_hp(&reg, pawn), 100.0);
+    assert_eq!(
+        enemy_animation(&reg, enemy),
+        "death",
+        "AI must not overwrite the downed enemy's death presentation",
+    );
+    assert!(
+        reg.get_component::<postretro_entities::DeferredEffectComponent>(enemy)
+            .unwrap()
+            .pending
+            .iter()
+            .all(|effect| effect.kind != postretro_entities::DeferredEffectKind::Despawn),
+        "the downed recovery carries no terminal despawn",
+    );
+}
+
+#[test]
+fn queued_health_change_does_not_quiesce_live_brain() {
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+    let pawn = spawn_player(&mut reg, Vec3::new(1.0, 0.0, 0.0));
+    let enemy = spawn_enemy(
+        &mut reg,
+        Vec3::ZERO,
+        brain_with(tuning(), LogicalState::Attack),
+        50.0,
     );
     crate::impact_effects::set_health(&mut reg, enemy, 25.0, Some(500.0));
 
@@ -1630,13 +1666,66 @@ fn queued_set_health_does_not_quiesce_brain() {
 
     assert_eq!(events, vec![ENEMY_ATTACK_EVENT]);
     assert_eq!(player_hp(&reg, pawn), 92.0);
+}
+
+#[test]
+fn elapsed_health_recovery_reactivates_downed_brain() {
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+    let pawn = spawn_player(&mut reg, Vec3::new(1.0, 0.0, 0.0));
+    let enemy = spawn_enemy(
+        &mut reg,
+        Vec3::ZERO,
+        brain_with(tuning(), LogicalState::Attack),
+        50.0,
+    );
+    set_hp(&mut reg, enemy, 0.0);
+    crate::impact_effects::play_animation(&mut reg, enemy, "death");
+    crate::impact_effects::set_health(&mut reg, enemy, 25.0, Some(10.0));
+
     assert!(
-        reg.get_component::<postretro_entities::DeferredEffectComponent>(enemy)
-            .unwrap()
-            .pending
-            .iter()
-            .all(|effect| effect.kind != postretro_entities::DeferredEffectKind::Despawn),
-        "this control carries only the pending setHealth effect",
+        run_ai_tick(&mut reg, &mut warned, 0.016).is_empty(),
+        "the recovery delay keeps the zero-HP brain downed",
+    );
+    crate::impact_effects::tick_deferred_effects(&mut reg, 0.010);
+    assert_eq!(
+        enemy_animation(&reg, enemy),
+        "idle",
+        "recovery must immediately leave the death pose before AI movement resumes",
+    );
+
+    let events = run_ai_tick(&mut reg, &mut warned, 0.016);
+    assert_eq!(events, vec![ENEMY_ATTACK_EVENT]);
+    assert_eq!(player_hp(&reg, pawn), 92.0);
+    assert_eq!(
+        enemy_animation(&reg, enemy),
+        "attack",
+        "the resumed Attack brain must replace the recovery idle pose",
+    );
+}
+
+#[test]
+fn elapsed_health_recovery_reselects_moving_alert_animation() {
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+    spawn_player(&mut reg, Vec3::new(10.0, 0.0, 0.0));
+    let mut brain = brain_with(tuning(), LogicalState::Alert);
+    brain.locomotion_moving = true;
+    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 50.0);
+    set_agent_velocity(&mut reg, enemy, Vec3::new(1.0, 0.0, 0.0));
+    set_hp(&mut reg, enemy, 0.0);
+    crate::impact_effects::play_animation(&mut reg, enemy, "death");
+    crate::impact_effects::set_health(&mut reg, enemy, 25.0, Some(10.0));
+
+    crate::impact_effects::tick_deferred_effects(&mut reg, 0.010);
+    assert_eq!(enemy_animation(&reg, enemy), "idle");
+
+    run_ai_tick(&mut reg, &mut warned, 0.016);
+    assert_eq!(enemy_state(&reg, enemy), LogicalState::Alert);
+    assert_eq!(
+        enemy_animation(&reg, enemy),
+        "locomotion",
+        "the resumed moving Alert brain must replace the recovery idle pose",
     );
 }
 

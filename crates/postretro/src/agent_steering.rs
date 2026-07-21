@@ -333,6 +333,7 @@ pub(crate) fn tick(
                             .iter()
                             .any(|effect| effect.kind == DeferredEffectKind::Despawn)
                 })
+                || crate::impact_effects::is_downed_for_recovery(registry, id)
             {
                 return None;
             }

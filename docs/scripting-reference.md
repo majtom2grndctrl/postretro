@@ -835,7 +835,7 @@ The E16 TypeScript spikes are executable when a local TypeScript compiler is ava
 
 ```sh
 tsc --project context/plans/done/E16--impact-policy-substrate/tsconfig.json
-tsc --project context/plans/in-progress/E16--impact-death-lifecycle/tsconfig.json
+tsc --project context/plans/done/E16--impact-death-lifecycle/tsconfig.json
 ```
 
 The repository does not install or download `tsc`; editor/CI tooling supplies it. The committed `@ts-expect-error` cases make unsafe narrowing and forged effects fail this gate.

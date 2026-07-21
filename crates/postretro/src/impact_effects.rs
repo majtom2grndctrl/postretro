@@ -1,14 +1,14 @@
 // Command-buffer effects addressed to one live impact target.
 // See: context/lib/scripting.md §11 · context/lib/entity_model.md §5.
 
-#[cfg(test)]
-use postretro_entities::DeferredEffectComponent;
+use postretro_entities::components::brain::BrainComponent;
 use postretro_entities::components::health::{
     HealthComponent, PendingKillCredit, set_health_absolute,
 };
 use postretro_entities::components::mesh::{SwitchResult, switch_animation_state};
 use postretro_entities::{
-    DeferredEffectKind, EntityId, EntityRegistry, MAX_PENDING_EFFECTS_PER_ENTITY, PendingEffect,
+    DeferredEffectComponent, DeferredEffectKind, EntityId, EntityRegistry,
+    MAX_PENDING_EFFECTS_PER_ENTITY, PendingEffect,
 };
 
 use crate::scripting_systems::health::ContributorLedgerSnapshot;
@@ -120,6 +120,50 @@ pub(crate) fn play_animation(
     switch_animation_state(registry, target, state)
 }
 
+/// Whether a zero-HP entity is waiting for an authored positive-health recovery.
+///
+/// This is the nonterminal "downed" lifecycle: it keeps the entity present and
+/// targetable, but AI and steering must hold still until the queued recovery
+/// writes health back above zero. A bare zero-HP entity remains active; only an
+/// explicit deferred recovery opts into this behavior.
+pub(crate) fn is_downed_for_recovery(registry: &EntityRegistry, target: EntityId) -> bool {
+    let Ok(health) = registry.get_component::<HealthComponent>(target) else {
+        return false;
+    };
+    if health.current > 0.0 {
+        return false;
+    }
+
+    registry
+        .get_component::<DeferredEffectComponent>(target)
+        .is_ok_and(|effects| {
+            effects.pending.iter().any(|effect| {
+                effect.kind == DeferredEffectKind::SetHealth
+                    && effect
+                        .value
+                        .is_some_and(|value| value.is_finite() && value > 0.0)
+            })
+        })
+}
+
+/// Restore a downed brain's baseline presentation when its delayed health
+/// recovery lands. The normal AI tick owns the later idle/walk/attack choice;
+/// this only prevents a revived enemy from remaining frozen in its death pose
+/// until that tick observes movement.
+fn resume_recovered_brain_presentation(registry: &mut EntityRegistry, target: EntityId) {
+    let Ok(mut brain) = registry.get_component::<BrainComponent>(target).cloned() else {
+        return;
+    };
+    let idle = brain.tuning.states.idle.clone();
+    // The deferred period preserves the last locomotion velocity and FSM state.
+    // Invalidate the animation latch so the following AI tick reselects the
+    // state-appropriate idle, walk, or attack clip instead of leaving this
+    // one-tick baseline pose in place indefinitely.
+    brain.locomotion_moving = !brain.locomotion_moving;
+    let _ = registry.set_component(target, brain);
+    let _ = play_animation(registry, target, &idle);
+}
+
 /// Advance active deferred-effect queues after the weapon and enemy-melee
 /// damage chokepoints. The caller supplies fixed-tick seconds; script-facing
 /// milliseconds are stored as integer microseconds.
@@ -153,7 +197,16 @@ pub(crate) fn tick_deferred_effects(registry: &mut EntityRegistry, tick_dt: f32)
             let effect = pending.remove(pending_index);
             match effect.kind {
                 DeferredEffectKind::SetHealth => {
+                    let was_downed = registry
+                        .get_component::<HealthComponent>(target)
+                        .is_ok_and(|health| health.current <= 0.0);
                     set_health_absolute(registry, target, effect.value.unwrap_or(0.0));
+                    let recovered = registry
+                        .get_component::<HealthComponent>(target)
+                        .is_ok_and(|health| health.current.is_finite() && health.current > 0.0);
+                    if was_downed && recovered {
+                        resume_recovered_brain_presentation(registry, target);
+                    }
                 }
                 DeferredEffectKind::Despawn => {
                     pending.clear();

@@ -9,6 +9,10 @@ import { referenceEntities } from "../../sdk/behaviors/reference/entities";
 import { hud, hudTheme, reloadMeterTree, reticle } from "./scripts/hud";
 import { pauseMenu } from "./scripts/pause-menu";
 import { frontendMenu, frontendReactions, mapCatalog } from "./scripts/frontend-menu";
+import {
+  combatDummyLifecycle,
+  combatZombieLifecycle,
+} from "./scripts/combat-lifecycle";
 
 export default defineMod({
   name: "dev",
@@ -25,6 +29,9 @@ export default defineMod({
   uiTrees: [hud, reticle, reloadMeterTree, pauseMenu, frontendMenu],
   theme: hudTheme,
   reactions: frontendReactions,
+  // The combat demo's unique target tags make these mod-global policies work
+  // for both catalog and direct CLI map loads.
+  events: [combatDummyLifecycle, combatZombieLifecycle],
   // Fixture-only mod-global tier: this composes on the tagged trap-pools map
   // while its level-local script owns the independent closet_trap count pool.
   triggerPools: [

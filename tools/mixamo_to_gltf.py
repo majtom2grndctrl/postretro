@@ -248,11 +248,10 @@ def merge_animations(input_dir, scale=None, base=None):
 
     base_mesh = get_mesh()
     if base_mesh:
-        # Apply the same transform to the mesh.  The mesh may have had its own
-        # copy of the armature's scale/rotation (FBX importer varies), or it
-        # may have been identity and relied on the parent.  Either way, after
-        # the armature is now identity the mesh needs the full transform baked
-        # into its vertices so scale and orientation match the skeleton.
+        # Clear the stale parent-inverse Blender stored at parenting time
+        # (arm_basis⁻¹).  Without this, matrix_world ≠ matrix_basis and the
+        # glTF exporter sees a residual 100× scale on the mesh node.
+        base_mesh.matrix_parent_inverse = Matrix.Identity(4)
         base_mesh.matrix_basis = baked_transform
         bpy.ops.object.select_all(action='DESELECT')
         bpy.context.view_layer.objects.active = base_mesh

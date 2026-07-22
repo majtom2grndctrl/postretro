@@ -117,6 +117,12 @@ const STUCK_INTENT_SPEED_EPSILON: f32 = 0.05;
 /// gate above.
 const STUCK_PROGRESS_EPSILON: f32 = 0.005;
 
+/// Fraction of the requested per-tick travel that an ordinary path segment must
+/// achieve before it counts as useful goal progress. This scales the detector
+/// with author-defined movement speed and arrival easing while still treating a
+/// blocked agent's near-zero movement as stuck.
+const STUCK_PROGRESS_INTENT_FRACTION: f32 = 0.1;
+
 /// Weight of the +90deg XZ tangent relative to the retained goal component
 /// during recovery.
 const TANGENT_BIAS: f32 = 1.0;
@@ -549,6 +555,7 @@ pub(crate) fn tick(
             result.position,
             steer_velocity,
             goal_speed,
+            dt,
             recovery_active_this_tick,
             easing_onto_mandatory,
         );
@@ -965,6 +972,7 @@ fn update_stuck_ticks(
     resolved_position: Vec3,
     steer_velocity: Vec3,
     goal_speed: f32,
+    dt: f32,
     recovery_active_this_tick: bool,
     easing_onto_mandatory: bool,
 ) {
@@ -993,7 +1001,7 @@ fn update_stuck_ticks(
     let floor = if easing_onto_mandatory {
         MANDATORY_EASING_PROGRESS_EPSILON
     } else {
-        STUCK_PROGRESS_EPSILON
+        goal_speed * dt * STUCK_PROGRESS_INTENT_FRACTION
     };
     if progress < floor {
         agent.stuck_ticks = agent.stuck_ticks.saturating_add(1);

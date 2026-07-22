@@ -412,10 +412,6 @@ def merge_animations(input_dir, scale=None, base=None, exclude_meshes=None):
     #
     # No depsgraph round-trip — pure math, no stale-parent corruption.
 
-    # Extract the rotation-only part of flip_z (it's already pure rotation,
-    # but be explicit to avoid any scale contamination)
-    flip_z_rot = flip_z.to_quaternion().to_matrix().to_4x4()
-
     for pbone in base_armature.pose.bones:
         pbone.rotation_mode = 'QUATERNION'
 
@@ -454,9 +450,16 @@ def merge_animations(input_dir, scale=None, base=None, exclude_meshes=None):
                     old_rest = old_rest_local[pbone.name]
                     pose_delta = old_rest.inverted() @ old_local
                 else:
-                    # Root bone: "local" is the armature-space matrix.
-                    # Apply flip_z rotation, then compute delta from new rest.
-                    new_local = flip_z_rot @ old_local
+                    # Root bone: "local" IS the armature-space matrix.
+                    # Convert from old armature space (cm, original orientation)
+                    # to new armature space (meters, flipped) via baked_transform.
+                    # baked_transform carries arm_world's 0.01 scale, but
+                    # transform_apply normalized that out of rest poses — so
+                    # strip scale to match.
+                    raw = baked_transform @ old_local
+                    new_loc = raw.to_translation()
+                    new_rot = raw.to_quaternion()
+                    new_local = Matrix.Translation(new_loc) @ new_rot.to_matrix().to_4x4()
                     new_rest = new_rest_local[pbone.name]
                     pose_delta = new_rest.inverted() @ new_local
 

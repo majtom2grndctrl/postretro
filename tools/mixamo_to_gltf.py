@@ -341,10 +341,14 @@ def merge_animations(input_dir, scale=None, base=None, exclude_meshes=None):
     # --- Phase 3: Apply armature + mesh transforms ------------------------
     # The engine never reads the Armature node (only skin joints), so ALL
     # transforms must be baked into bone rest positions AND mesh vertices.
-    # A 180-deg Z flip is also needed: Mixamo characters face Blender +Y,
-    # which the glTF exporter maps to -Z, but the engine expects +Z forward
-    # (pose_modifier.rs, mesh_pass.rs).
-    flip_z = Matrix.Rotation(math.pi, 4, 'Z')
+    #
+    # No forward-facing rotation is applied. Mixamo characters face Blender
+    # -Y, which the glTF exporter (Z-up -> Y-up) maps directly to +Z, exactly
+    # the forward the engine expects (pose_modifier.rs, mesh_pass.rs). An
+    # earlier 180-deg Z flip here was based on a wrong premise (that the
+    # source faces Blender +Y) and left the whole model reversed: brows, eyes,
+    # cornea, and toes all pointed -Z. Identity keeps the model facing +Z.
+    flip_z = Matrix.Identity(4)
 
     arm_world = base_armature.matrix_world.copy()
     baked_transform = flip_z @ arm_world
@@ -403,12 +407,13 @@ def merge_animations(input_dir, scale=None, base=None, exclude_meshes=None):
     # same local transforms produce the correct pose.
     #
     # For the ROOT bone (no parent), the "local" is the armature-space
-    # matrix itself, which needs the flip_z rotation applied (the rest pose
-    # was flipped, so the animated pose must be too).
+    # matrix itself, which is carried through baked_transform (the cm->m
+    # scale) into the new rest space. flip_z is identity now, so no rotation
+    # is introduced here — only the scale conversion.
     #
     # We compute pose deltas (Blender's pbone TRS = offset from rest):
     #   child:  pose_delta = old_rest_local.inv() @ old_anim_local
-    #   root:   pose_delta = new_rest_local.inv() @ (flip_z_rot @ old_anim_local)
+    #   root:   pose_delta = new_rest_local.inv() @ (baked_transform @ old_anim_local, scale-stripped)
     #
     # No depsgraph round-trip — pure math, no stale-parent corruption.
 
@@ -451,11 +456,11 @@ def merge_animations(input_dir, scale=None, base=None, exclude_meshes=None):
                     pose_delta = old_rest.inverted() @ old_local
                 else:
                     # Root bone: "local" IS the armature-space matrix.
-                    # Convert from old armature space (cm, original orientation)
-                    # to new armature space (meters, flipped) via baked_transform.
-                    # baked_transform carries arm_world's 0.01 scale, but
-                    # transform_apply normalized that out of rest poses — so
-                    # strip scale to match.
+                    # Convert from old armature space (cm) to new armature
+                    # space (meters) via baked_transform. baked_transform
+                    # carries arm_world's 0.01 scale, but transform_apply
+                    # normalized that out of rest poses — so strip scale to
+                    # match. (flip_z is identity, so no rotation is applied.)
                     raw = baked_transform @ old_local
                     new_loc = raw.to_translation()
                     new_rot = raw.to_quaternion()

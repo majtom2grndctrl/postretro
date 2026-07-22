@@ -18,7 +18,7 @@ Code-grounding digest for the spec. Line numbers as of drafting; treat as epheme
 - Facing: only when `aggro_armed && state ∈ {Alert, Attack}`; slew at `FACING_TURN_RATE = MAX_TURN_RATE * 2`.
 - Aggro gate: `aggro_armed` (serde default true, spawn-seeded from `enabled_on_spawn` KVP) — closed forces Idle, clears target/steering; toggled only by `updateEnemyState` reaction (`reactions/enemy_state.rs`).
 - Host authority: connected clients `continue` before `simulate_tick` (`main.rs:1956-2010`) — graph evaluation is host-only with no new work.
-- Descriptor: `AiDescriptor` (`foundation/data_descriptors/types/combat.rs:250`, camelCase, all fields required, `validate()` finiteness/positivity); twin parsers both funnel `serde_json::from_value` + `validate()` (`scripting-core js/entity.rs:103`, `lua/entity.rs:136`) so they cannot diverge. Attach site: `data_archetype.rs:479-499` (`attach_brain` → aggro seed → `attach_agent(move_speed)` → `validate_brain_animation_states`).
+- Descriptor: `AiDescriptor` (`foundation/data_descriptors/types/combat.rs:250`, camelCase, all fields required, `validate()` finiteness/positivity); twin parsers both funnel `serde_json::from_value` + `validate()` (`scripting-core/data_descriptors/js/entity.rs:103`, `scripting-core/data_descriptors/lua/entity.rs:136`) so they cannot diverge. Attach site: `data_archetype.rs:479-499` (`attach_brain` → aggro seed → `attach_agent(move_speed)` → `validate_brain_animation_states`).
 
 ## IR substrate facts
 
@@ -54,7 +54,7 @@ sequenceDiagram
     Drain->>Drain: fire_named_event per name
 ```
 
-Reads for every arrow exist today except: `select_transition` (new, Task 5), scope refresh (new, Task 3), `on_enter` queue (new, Task 5 — widens the `Vec<&'static str>` return to owned names for the one caller at `sim/mod.rs:293`).
+Reads for every arrow exist today except: `select_transition` (new, Task 5), scope refresh (new, Task 3), `on_enter` queue (new, Task 5 — widens the `Vec<&'static str>` return to `Vec<Cow<'static, str>>` for the one caller at `sim/mod.rs:293`).
 
 ## Alternatives considered
 

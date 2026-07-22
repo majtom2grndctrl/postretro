@@ -2,7 +2,7 @@
 // See: context/lib/rendering_pipeline.md §7.1, §7.6
 
 use super::*;
-use crate::render::mesh_pass::MeshDepthInstanceFilter;
+use crate::render::mesh_depth::MeshDepthInstanceFilter;
 
 fn wireframe_draws_leaf(
     mode: WorldWireframeMode,

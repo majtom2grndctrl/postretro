@@ -549,16 +549,17 @@ pub(crate) fn tick(
 
         agent.velocity = result.velocity;
         agent.is_grounded = result.grounded;
-        update_stuck_ticks(
-            &mut agent,
-            position,
-            result.position,
-            steer_velocity,
-            goal_speed,
-            dt,
-            recovery_active_this_tick,
-            easing_onto_mandatory,
-        );
+        if !recovery_active_this_tick {
+            update_stuck_ticks(
+                &mut agent,
+                position,
+                result.position,
+                steer_velocity,
+                goal_speed * dt,
+                has_recovery_intent,
+                easing_onto_mandatory,
+            );
+        }
 
         // Write back the resolved position and the updated agent state.
         if let Ok(transform) = registry.get_component::<Transform>(current.id) {
@@ -971,15 +972,11 @@ fn update_stuck_ticks(
     start_position: Vec3,
     resolved_position: Vec3,
     steer_velocity: Vec3,
-    goal_speed: f32,
-    dt: f32,
-    recovery_active_this_tick: bool,
+    expected_goal_progress: f32,
+    has_recovery_intent: bool,
     easing_onto_mandatory: bool,
 ) {
-    if recovery_active_this_tick {
-        return;
-    }
-    if !has_stuck_recovery_intent(agent, goal_speed, steer_velocity) {
+    if !has_recovery_intent {
         agent.stuck_ticks = 0;
         return;
     }
@@ -1001,7 +998,7 @@ fn update_stuck_ticks(
     let floor = if easing_onto_mandatory {
         MANDATORY_EASING_PROGRESS_EPSILON
     } else {
-        goal_speed * dt * STUCK_PROGRESS_INTENT_FRACTION
+        expected_goal_progress * STUCK_PROGRESS_INTENT_FRACTION
     };
     if progress < floor {
         agent.stuck_ticks = agent.stuck_ticks.saturating_add(1);

@@ -56,7 +56,7 @@ mod trigger_state_channel_harness_test;
 #[cfg(test)]
 mod enemy_replication_harness_test;
 
-pub(crate) use client::ClientReplication;
+pub(crate) use client::{ClientPresentationInputs, ClientReplication};
 pub(crate) use command_queue::{
     HostCommandQueues, MovementOwners, ResolvedPawnCommand, WeaponOwners,
     host_resolve_remote_commands,
@@ -1009,6 +1009,43 @@ pub(crate) fn client_receive_and_apply(
             });
             let materialized = if matches!(descriptor, Some(descriptor) if descriptor.movement.is_some())
             {
+                let player_locomotion = descriptor.and_then(|descriptor| {
+                    let movement = descriptor.movement.as_ref()?;
+                    let mesh = descriptor.mesh.as_ref()?;
+                    let idle_state = mesh.default_state.clone()?;
+                    let walk_state = ["walk_forward", "walk"]
+                        .into_iter()
+                        .find(|state| mesh.animations.contains_key(*state))?
+                        .to_string();
+                    let run_state = mesh
+                        .animations
+                        .contains_key("run")
+                        .then(|| "run".to_string());
+                    let derived_travel_speed = |state_name: &str| {
+                        let state = mesh.animations.get(state_name)?;
+                        hit_zone_store
+                            .get(&postretro_model::ModelHandle::from(mesh.model.clone()))
+                            .and_then(|model| {
+                                model
+                                    .clips
+                                    .iter()
+                                    .find(|clip| clip.name == state.clip)
+                                    .and_then(|clip| clip.travel_speed)
+                            })
+                    };
+                    Some(client::RemotePlayerLocomotionReference {
+                        idle_state,
+                        walk_derived_travel_speed: derived_travel_speed(&walk_state),
+                        run_derived_travel_speed: run_state
+                            .as_deref()
+                            .and_then(derived_travel_speed),
+                        walk_state,
+                        run_state,
+                        walk_speed: movement.ground.speed.walk,
+                        run_speed: movement.ground.speed.run,
+                    })
+                });
+                replication.cache_remote_player_locomotion(remote.network_id, player_locomotion);
                 remote_materialize::materialize_armed_remote_player(
                     remote,
                     descriptors,
@@ -1299,12 +1336,13 @@ pub(crate) fn client_sample_interpolation(
     interpolation_delay: &mut InterpolationDelayState,
     frame_dt_secs: f64,
     frame_anim_time: f64,
-) {
+) -> ClientPresentationInputs {
     // No estimate yet: retain the last-applied pose until the clock initializes,
     // while deriving walk playback from that held (zero-speed) presentation.
     let Some(estimated_tick) = time_sync.estimated_server_tick() else {
         replication.apply_held_remote_enemy_walk_playback_rates(registry, frame_anim_time);
-        return;
+        replication.apply_held_remote_player_locomotion(registry, frame_anim_time);
+        return ClientPresentationInputs::default();
     };
     // Jitter is available whenever the estimate is; default to 0 defensively.
     let jitter = time_sync.jitter_micros().unwrap_or(0.0);
@@ -1314,6 +1352,7 @@ pub(crate) fn client_sample_interpolation(
     if stats.presented > 0 {
         interpolation_delay.observe_sampled_frame(stats.starvation_feedback > 0, frame_dt_secs);
     }
+    replication.presented_player_inputs().clone()
 }
 
 /// Microseconds per server sim tick (60 Hz), used to derive the telemetry-only

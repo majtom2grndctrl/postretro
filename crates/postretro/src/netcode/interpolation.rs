@@ -253,6 +253,10 @@ pub(crate) struct PresentedPose {
     /// Transform-only enemies derive it from their bracketing samples, and held
     /// poses report zero because the client is visibly stationary.
     pub(crate) speed_xz: f32,
+    /// Horizontal world-space motion represented by this presentation sample.
+    /// Avatar pose uses its direction for lower-body heading; held poses report
+    /// zero so callers fall back to the displayed transform yaw.
+    pub(crate) horizontal_velocity: Vec3,
     /// Interpolated remote camera pitch for avatar pose presentation.
     pub(crate) aim_pitch: f32,
 }
@@ -338,6 +342,7 @@ impl EntityBuffer {
                 transform: oldest.transform,
                 source: PoseSource::HeldOldest,
                 speed_xz: 0.0,
+                horizontal_velocity: Vec3::ZERO,
                 aim_pitch: oldest.aim_pitch,
             });
         }
@@ -366,6 +371,7 @@ impl EntityBuffer {
                     transform: lerp_transform(&a.transform, &b.transform, alpha),
                     source: PoseSource::Interpolated,
                     speed_xz: xz_speed_between(a, b),
+                    horizontal_velocity: xz_velocity_between(a, b),
                     aim_pitch: a.aim_pitch + (b.aim_pitch - a.aim_pitch) * alpha,
                 });
             }
@@ -377,6 +383,7 @@ impl EntityBuffer {
             transform: newest.transform,
             source: PoseSource::HeldNewest,
             speed_xz: 0.0,
+            horizontal_velocity: Vec3::ZERO,
             aim_pitch: newest.aim_pitch,
         })
     }
@@ -404,6 +411,7 @@ impl EntityBuffer {
                     transform: predicted,
                     source: PoseSource::Extrapolated,
                     speed_xz: xz_speed(velocity),
+                    horizontal_velocity: Vec3::new(velocity.x, 0.0, velocity.z),
                     aim_pitch: newest.aim_pitch,
                 }
             }
@@ -413,6 +421,7 @@ impl EntityBuffer {
                 transform: newest.transform,
                 source: PoseSource::HeldNewest,
                 speed_xz: 0.0,
+                horizontal_velocity: Vec3::ZERO,
                 aim_pitch: newest.aim_pitch,
             },
         }
@@ -447,12 +456,20 @@ fn xz_speed(vector: Vec3) -> f32 {
 /// tick samples are merged on insert, but retain the zero fallback as a defensive
 /// guard against malformed in-memory test data.
 fn xz_speed_between(a: &TransformSample, b: &TransformSample) -> f32 {
+    xz_velocity_between(a, b).length()
+}
+
+/// Average world-space velocity across two samples, projected to the gameplay
+/// ground plane. Kept alongside [`xz_speed_between`] so avatar lower-body heading
+/// and locomotion rate derive from exactly the same presented segment.
+fn xz_velocity_between(a: &TransformSample, b: &TransformSample) -> Vec3 {
     let tick_span = b.server_tick.saturating_sub(a.server_tick);
     if tick_span == 0 {
-        return 0.0;
+        return Vec3::ZERO;
     }
     let span_secs = tick_span as f32 * crate::netcode::SERVER_TICK_MICROS as f32 / 1_000_000.0;
-    xz_speed(b.transform.position - a.transform.position) / span_secs
+    let displacement = b.transform.position - a.transform.position;
+    Vec3::new(displacement.x / span_secs, 0.0, displacement.z / span_secs)
 }
 
 /// Per-remote-entity interpolation buffers, keyed by `NetworkId`. Receives

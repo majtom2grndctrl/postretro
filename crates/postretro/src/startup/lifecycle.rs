@@ -1923,6 +1923,7 @@ mod tests {
                 #[cfg(feature = "dev-tools")]
                 debug_ui: None,
             }),
+            remote_player_presentation: crate::netcode::ClientPresentationInputs::default(),
             crouch_toggle_active: false,
             ai_warned: std::collections::HashSet::new(),
             cursor_pos: None,

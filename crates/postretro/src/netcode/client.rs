@@ -89,6 +89,46 @@ struct RemoteEnemyWalkPlayback {
     derived_travel_speed: Option<f32>,
 }
 
+/// Descriptor-derived locomotion data for a remote player avatar. Remote player
+/// meshes deliberately remain presentation-only; this cache lets the client derive
+/// idle/walk/run from the interpolated pose without attaching PlayerMovement.
+#[derive(Debug, Clone)]
+struct RemotePlayerLocomotion {
+    idle_state: String,
+    walk_state: String,
+    run_state: Option<String>,
+    walk_speed: f32,
+    run_speed: f32,
+    walk_derived_travel_speed: Option<f32>,
+    run_derived_travel_speed: Option<f32>,
+    /// Last state selected from the displayed remote velocity. Snapshot application
+    /// compares its authoritative state against this prediction before correcting.
+    client_derived_state: Option<String>,
+}
+
+/// Immutable descriptor values needed for a remote player avatar's client-local
+/// locomotion. The descriptor-aware receive glue builds this while model metadata is
+/// available; the replication state owns the resulting per-network-id cache.
+#[derive(Debug, Clone)]
+pub(crate) struct RemotePlayerLocomotionReference {
+    pub(crate) idle_state: String,
+    pub(crate) walk_state: String,
+    pub(crate) run_state: Option<String>,
+    pub(crate) walk_speed: f32,
+    pub(crate) run_speed: f32,
+    pub(crate) walk_derived_travel_speed: Option<f32>,
+    pub(crate) run_derived_travel_speed: Option<f32>,
+}
+
+/// Per-frame interpolation results consumed by the presentation pose-input pass.
+/// The maps retain `NetworkId` identity until the caller joins them to the client
+/// mapping, keeping remote avatar state outside the entity component vocabulary.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ClientPresentationInputs {
+    pub(crate) aim_pitches: HashMap<NetworkId, f32>,
+    pub(crate) heading_yaws: HashMap<NetworkId, f32>,
+}
+
 /// A wire payload the client received but deliberately did not apply, recorded as a
 /// typed diagnostic rather than silently dropped. Phase 2's dumb mover is
 /// `Transform`-only; a `PlayerMovementState` payload on an unmapped full baseline
@@ -158,6 +198,14 @@ pub(crate) struct ClientReplication {
     /// beside the interpolation buffers because it is consumed by the same
     /// per-frame client presentation step, but never crosses the wire.
     remote_enemy_walk_playback: HashMap<NetworkId, RemoteEnemyWalkPlayback>,
+    /// Descriptor-derived player locomotion references keyed by remote identity.
+    /// Presence is also the durable signal that a transform-only remote mesh is a
+    /// player avatar rather than an AI presentation.
+    remote_player_locomotion: HashMap<NetworkId, RemotePlayerLocomotion>,
+    /// Current-frame aim and lower-body heading extracted from the exact presented
+    /// interpolation poses. Cleared before each sample pass and copied to App after
+    /// interpolation so the later pose-input pass shares this frame's trajectory.
+    presented_player_inputs: ClientPresentationInputs,
     /// The local predicted pawn's `NetworkId`, once a `local_player` record has armed
     /// it (M15 Phase 3 Task 5). The local pawn is driven by client-side prediction +
     /// reconciliation, NOT the remote interpolation path: it is excluded from the
@@ -408,6 +456,8 @@ impl ClientReplication {
         self.pending_repairs.clear();
         self.interp = RemoteInterpolationBuffer::default();
         self.remote_enemy_walk_playback.clear();
+        self.remote_player_locomotion.clear();
+        self.presented_player_inputs = ClientPresentationInputs::default();
         self.local_pawn = None;
         self.mover_network_ids.clear();
         self.mover_history.clear();
@@ -909,6 +959,7 @@ impl ClientReplication {
         self.local_pawn = Some(network_id);
         self.interp.forget(network_id);
         self.remote_enemy_walk_playback.remove(&network_id);
+        self.remote_player_locomotion.remove(&network_id);
         self.mover_network_ids.remove(&network_id);
         outcome.armed_local_pawn = Some(ArmedLocalPawn {
             network_id,
@@ -985,6 +1036,7 @@ impl ClientReplication {
         // NetworkId starts with an empty buffer.
         self.interp.forget(network_id);
         self.remote_enemy_walk_playback.remove(&network_id);
+        self.remote_player_locomotion.remove(&network_id);
         self.mover_network_ids.remove(&network_id);
         // If the local predicted pawn despawned, forget it: prediction re-arms off a
         // future `local_player` baseline (a fresh NetworkId).
@@ -1169,8 +1221,16 @@ impl ClientReplication {
                     }
                 }
                 ComponentPayload::MeshAnimationState(wire) => {
-                    let switched =
-                        apply_mesh_animation_state(registry, id, &wire.current_state, true);
+                    let switched = if self.remote_player_locomotion.contains_key(&network_id) {
+                        self.apply_remote_player_animation_correction(
+                            registry,
+                            network_id,
+                            id,
+                            &wire.current_state,
+                        )
+                    } else {
+                        apply_mesh_animation_state(registry, id, &wire.current_state, true)
+                    };
                     if !switched {
                         log::trace!(
                             "[Net] deferred mesh animation state `{}` for {network_id:?}",
@@ -1265,7 +1325,11 @@ impl ClientReplication {
         render_server_tick: f64,
         frame_anim_time: f64,
     ) -> InterpolationSampleStats {
+        const MIN_HORIZONTAL_LEN_SQ: f32 = 1.0e-8;
+
         let mut stats = InterpolationSampleStats::default();
+        self.presented_player_inputs.aim_pitches.clear();
+        self.presented_player_inputs.heading_yaws.clear();
         // Collect (network_id, entity_id) first to avoid borrowing `self.map` while
         // writing back through the registry.
         let mapped: Vec<(NetworkId, EntityId)> = self.map.iter().map(|(&n, &e)| (n, e)).collect();
@@ -1293,6 +1357,30 @@ impl ClientReplication {
                 pose.speed_xz,
                 frame_anim_time,
             );
+            if self.remote_player_locomotion.contains_key(&network_id) {
+                if pose.aim_pitch.is_finite() {
+                    self.presented_player_inputs
+                        .aim_pitches
+                        .insert(network_id, pose.aim_pitch);
+                }
+                let velocity = pose.horizontal_velocity;
+                let horizontal_len_sq = velocity.x * velocity.x + velocity.z * velocity.z;
+                if velocity.is_finite() && horizontal_len_sq > MIN_HORIZONTAL_LEN_SQ {
+                    let heading_yaw = velocity.x.atan2(velocity.z);
+                    if heading_yaw.is_finite() {
+                        self.presented_player_inputs
+                            .heading_yaws
+                            .insert(network_id, heading_yaw);
+                    }
+                }
+                self.update_remote_player_locomotion(
+                    registry,
+                    network_id,
+                    entity_id,
+                    pose.speed_xz,
+                    frame_anim_time,
+                );
+            }
             // Diagnostic: a HeldNewest after sustained starvation is the visible
             // freeze the buffer falls back to; logged sparingly at trace.
             if matches!(pose.source, PoseSource::HeldNewest) {
@@ -1336,6 +1424,32 @@ impl ClientReplication {
         }
     }
 
+    /// Before time sync can name a presentation tick, remote avatars hold their
+    /// baseline pose. Their client-local locomotion therefore resolves idle too.
+    pub(crate) fn apply_held_remote_player_locomotion(
+        &mut self,
+        registry: &mut EntityRegistry,
+        frame_anim_time: f64,
+    ) {
+        let mapped: Vec<(NetworkId, EntityId)> = self.map.iter().map(|(&n, &e)| (n, e)).collect();
+        for (network_id, entity_id) in mapped {
+            if !registry.exists(entity_id)
+                || self.local_pawn == Some(network_id)
+                || self.mover_network_ids.contains_key(&network_id)
+                || !self.remote_player_locomotion.contains_key(&network_id)
+            {
+                continue;
+            }
+            self.update_remote_player_locomotion(
+                registry,
+                network_id,
+                entity_id,
+                0.0,
+                frame_anim_time,
+            );
+        }
+    }
+
     /// Record (or clear) the immutable descriptor data used to derive a remote
     /// enemy's walk playback rate. Called by descriptor-aware receive glue, while
     /// all per-frame registry writes remain in [`Self::sample_into_registry`].
@@ -1359,6 +1473,59 @@ impl ClientReplication {
                 self.remote_enemy_walk_playback.remove(&network_id);
             }
         }
+    }
+
+    /// Record immutable descriptor locomotion data after remote-player mesh
+    /// materialization. `None` leaves an unusual/meshless descriptor transform-only
+    /// and prevents it from being mistaken for an avatar by the pose-input pass.
+    pub(crate) fn cache_remote_player_locomotion(
+        &mut self,
+        network_id: NetworkId,
+        reference: Option<RemotePlayerLocomotionReference>,
+    ) {
+        match reference {
+            Some(reference) => {
+                self.remote_player_locomotion.insert(
+                    network_id,
+                    RemotePlayerLocomotion {
+                        idle_state: reference.idle_state,
+                        walk_state: reference.walk_state,
+                        run_state: reference.run_state,
+                        walk_speed: reference.walk_speed,
+                        run_speed: reference.run_speed,
+                        walk_derived_travel_speed: reference.walk_derived_travel_speed,
+                        run_derived_travel_speed: reference.run_derived_travel_speed,
+                        client_derived_state: None,
+                    },
+                );
+            }
+            None => {
+                self.remote_player_locomotion.remove(&network_id);
+            }
+        }
+    }
+
+    /// Apply host animation authority for a remote player. A disagreement with the
+    /// client-local velocity prediction deliberately enters through the normal
+    /// transition API, preserving the descriptor's short avatar crossfade instead
+    /// of replacing the displayed pose with a hard snap.
+    fn apply_remote_player_animation_correction(
+        &self,
+        registry: &mut EntityRegistry,
+        network_id: NetworkId,
+        entity_id: EntityId,
+        authoritative_state: &str,
+    ) -> bool {
+        let predicted_state = self
+            .remote_player_locomotion
+            .get(&network_id)
+            .and_then(|reference| reference.client_derived_state.as_deref());
+        if predicted_state.is_some_and(|predicted| predicted != authoritative_state) {
+            log::trace!(
+                "[Net] remote player {network_id:?} correcting locomotion {predicted_state:?} -> {authoritative_state}"
+            );
+        }
+        apply_mesh_animation_state(registry, entity_id, authoritative_state, true)
     }
 
     /// Apply the rate for one presented remote pose. Only an enemy whose current
@@ -1416,6 +1583,101 @@ impl ClientReplication {
         };
         animation.update_playback_rate(raw_ratio, frame_anim_time);
         let _ = registry.set_component(entity_id, mesh);
+    }
+
+    /// Derive one remote avatar's locomotion state and rate from the exact
+    /// interpolated pose rendered this frame. The host's mesh state remains the
+    /// correction authority; this is only the responsive between-snapshot path.
+    fn update_remote_player_locomotion(
+        &mut self,
+        registry: &mut EntityRegistry,
+        network_id: NetworkId,
+        entity_id: EntityId,
+        speed_xz: f32,
+        frame_anim_time: f64,
+    ) {
+        const MOVING_SPEED_EPSILON: f32 = 1.0e-4;
+
+        let Some(reference) = self.remote_player_locomotion.get_mut(&network_id) else {
+            return;
+        };
+        let moving = speed_xz.is_finite() && speed_xz > MOVING_SPEED_EPSILON;
+        let (target_state, derived_travel_speed, fallback_speed) = if !moving {
+            (reference.idle_state.clone(), None, 1.0)
+        } else if let Some(run_state) = reference
+            .run_state
+            .as_ref()
+            .filter(|_| speed_xz > reference.walk_speed)
+        {
+            (
+                run_state.clone(),
+                reference.run_derived_travel_speed,
+                reference.run_speed,
+            )
+        } else {
+            (
+                reference.walk_state.clone(),
+                reference.walk_derived_travel_speed,
+                reference.walk_speed,
+            )
+        };
+        reference.client_derived_state = Some(target_state.clone());
+
+        let current_state = registry
+            .get_component::<MeshComponent>(entity_id)
+            .ok()
+            .and_then(|mesh| mesh.animation.as_ref())
+            .map(|animation| animation.current_state.clone());
+        if current_state.as_deref() != Some(target_state.as_str()) {
+            let _ = switch_animation_state(registry, entity_id, &target_state);
+        }
+
+        let raw_ratio = registry
+            .get_component::<MeshComponent>(entity_id)
+            .ok()
+            .and_then(|mesh| mesh.animation.as_ref())
+            .and_then(|animation| {
+                if !moving || animation.current_state != target_state || !animation.speed_scale {
+                    return Some(1.0);
+                }
+                let state = animation.states.get(&target_state)?;
+                let effective = state.effective_travel_speed(derived_travel_speed);
+                Some(MeshAnimation::locomotion_rate_ratio(
+                    speed_xz.max(0.0),
+                    effective,
+                    fallback_speed,
+                ))
+            });
+        let Some(raw_ratio) = raw_ratio else {
+            return;
+        };
+        let needs_rebase = registry
+            .get_component::<MeshComponent>(entity_id)
+            .ok()
+            .and_then(|mesh| mesh.animation.as_ref())
+            .is_some_and(|animation| animation.playback_rate_needs_update(raw_ratio));
+        if !needs_rebase {
+            return;
+        }
+        let Ok(mut mesh) = registry.get_component::<MeshComponent>(entity_id).cloned() else {
+            return;
+        };
+        let Some(animation) = mesh.animation.as_mut() else {
+            return;
+        };
+        animation.update_playback_rate(raw_ratio, frame_anim_time);
+        let _ = registry.set_component(entity_id, mesh);
+    }
+
+    /// Maps each live client-local entity id back to its network identity for the
+    /// pose-input pass. The map is copied at the App boundary so the presentation
+    /// system remains a registry-only CPU path.
+    pub(crate) fn entity_network_ids(&self) -> HashMap<EntityId, NetworkId> {
+        self.reverse_map.clone()
+    }
+
+    pub(crate) fn presented_player_inputs(&self) -> &ClientPresentationInputs {
+        &self.presented_player_inputs
     }
 
     /// Whether `network_id` is awaiting a baseline refresh (tests / diagnostics).
@@ -1833,6 +2095,30 @@ mod tests {
         states.insert("attack".to_string(), unresolved("Attack"));
         MeshComponent::animated(
             "models/remote_enemy/scene.gltf".to_string(),
+            MeshAnimation::new(states, "idle".to_string()),
+        )
+    }
+
+    fn remote_player_mesh() -> MeshComponent {
+        use postretro_entities::components::mesh::{AnimationState, InterruptPolicy};
+        use std::collections::HashMap;
+
+        let state = |clip: &str, travel_speed: Option<f32>, clip_index| AnimationState {
+            clip: clip.to_string(),
+            looping: true,
+            crossfade_ms: 50.0,
+            interrupt: InterruptPolicy::Smooth,
+            travel_speed,
+            clip_index: Some(clip_index),
+        };
+        let mut states = HashMap::new();
+        states.insert("idle".to_string(), state("idle", None, 0));
+        states.insert(
+            "walk_forward".to_string(),
+            state("walk_forward", Some(60.0), 1),
+        );
+        MeshComponent::animated(
+            "models/remote_player/scene.gltf".to_string(),
             MeshAnimation::new(states, "idle".to_string()),
         )
     }
@@ -3025,6 +3311,88 @@ mod tests {
         client.sample_into_registry(&mut registry, 105.0, 1.0);
         let after = registry.get_component::<MeshComponent>(id).expect("mesh");
         assert_eq!(after, &before, "non-walk state must not rebase or write");
+    }
+
+    #[test]
+    fn remote_player_locomotion_uses_presented_velocity_and_crossfades_authoritative_mismatch() {
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                100,
+                vec![full_baseline(
+                    7,
+                    1,
+                    vec![
+                        transform_payload(0.0),
+                        movement_payload_with_velocity([60.0, 0.0, 0.0]),
+                    ],
+                )],
+            ),
+        );
+        let id = *client.map().get(&NetworkId(7)).expect("remote mapped");
+        registry.set_component(id, remote_player_mesh()).unwrap();
+        client.cache_remote_player_locomotion(
+            NetworkId(7),
+            Some(RemotePlayerLocomotionReference {
+                idle_state: "idle".to_string(),
+                walk_state: "walk_forward".to_string(),
+                run_state: None,
+                walk_speed: 60.0,
+                run_speed: 60.0,
+                walk_derived_travel_speed: None,
+                run_derived_travel_speed: None,
+            }),
+        );
+
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                1,
+                110,
+                vec![delta(
+                    7,
+                    1,
+                    2,
+                    vec![
+                        transform_payload(10.0),
+                        movement_payload_with_velocity([60.0, 0.0, 0.0]),
+                    ],
+                )],
+            ),
+        );
+        client.sample_into_registry(&mut registry, 105.0, 1.0);
+        let walking = registry
+            .get_component::<MeshComponent>(id)
+            .unwrap()
+            .animation
+            .as_ref()
+            .unwrap();
+        assert_eq!(walking.current_state, "walk_forward");
+        assert!((walking.rate - 1.0).abs() <= EPSILON);
+
+        // Give the client-derived walk a resolved entry stamp so correction has an
+        // outgoing pose to blend rather than a pending same-frame transition.
+        resolve_pending_animation_stamps(&mut registry, 1.0);
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                2,
+                111,
+                vec![delta(7, 2, 3, vec![mesh_animation_payload("idle")])],
+            ),
+        );
+        let corrected = registry
+            .get_component::<MeshComponent>(id)
+            .unwrap()
+            .animation
+            .as_ref()
+            .unwrap();
+        assert_eq!(corrected.current_state, "idle");
+        assert_eq!(corrected.previous_state.as_deref(), Some("walk_forward"));
+        assert_eq!(corrected.states["idle"].crossfade_ms, 50.0);
     }
 
     // --- Starvation after sampling: a Transform-only remote (no velocity) holds its

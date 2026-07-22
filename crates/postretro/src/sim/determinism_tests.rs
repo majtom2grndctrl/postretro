@@ -1806,7 +1806,13 @@ fn pose_inputs_fallbacks_and_vertical_targets_remain_finite() {
         };
         registry.set_component(entity, brain).unwrap();
 
-        super::update_pose_inputs(&mut registry);
+        super::update_pose_inputs(
+            &mut registry,
+            (0.0, 0.0),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
         registry
             .get_component::<MeshComponent>(entity)
             .unwrap()
@@ -1834,6 +1840,78 @@ fn pose_inputs_fallbacks_and_vertical_targets_remain_finite() {
     assert!(coincident.aim_pitch.abs() <= 1.0e-6);
     assert!((straight_up.aim_pitch - std::f32::consts::FRAC_PI_2).abs() <= 1.0e-6);
     assert!((straight_down.aim_pitch + std::f32::consts::FRAC_PI_2).abs() <= 1.0e-6);
+}
+
+#[test]
+fn local_player_pose_inputs_use_camera_aim_and_movement_heading() {
+    let (mut registry, pawn, _) = leg_probe_fixture(Vec3::ZERO, -0.4);
+    let mut movement = PlayerMovementComponent::from_descriptor(&player_descriptor());
+    movement.velocity = Vec3::X * 3.0;
+    registry.set_component(pawn, movement).unwrap();
+    registry.mark_local_player_pawn(pawn).unwrap();
+
+    super::update_pose_inputs(
+        &mut registry,
+        (-0.35, 1.1),
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+    );
+
+    let inputs = registry
+        .get_component::<MeshComponent>(pawn)
+        .unwrap()
+        .pose_inputs
+        .unwrap();
+    assert!((inputs.aim_pitch + 0.35).abs() <= 1.0e-6);
+    assert!((inputs.aim_yaw - 1.1).abs() <= 1.0e-6);
+    assert!((inputs.heading_yaw - std::f32::consts::FRAC_PI_2).abs() <= 1.0e-6);
+}
+
+#[test]
+fn remote_player_pose_inputs_use_interpolated_aim_and_velocity_heading_fallback() {
+    let transform_yaw = 0.6;
+    let (mut registry, pawn, _) = leg_probe_fixture(Vec3::ZERO, transform_yaw);
+    let network_id = postretro_net::wire::NetworkId(77);
+    let mut remote_network_ids = HashMap::new();
+    remote_network_ids.insert(pawn, network_id);
+    let mut remote_aim_pitches = HashMap::new();
+    remote_aim_pitches.insert(network_id, -0.25);
+    let mut remote_heading_yaws = HashMap::new();
+    remote_heading_yaws.insert(network_id, -1.2);
+
+    super::update_pose_inputs(
+        &mut registry,
+        (0.0, 0.0),
+        &remote_aim_pitches,
+        &remote_heading_yaws,
+        &remote_network_ids,
+    );
+    let moving = registry
+        .get_component::<MeshComponent>(pawn)
+        .unwrap()
+        .pose_inputs
+        .unwrap();
+    assert!((moving.aim_pitch + 0.25).abs() <= 1.0e-6);
+    assert!((moving.aim_yaw - transform_yaw).abs() <= 1.0e-6);
+    assert!((moving.heading_yaw + 1.2).abs() <= 1.0e-6);
+
+    super::update_pose_inputs(
+        &mut registry,
+        (0.0, 0.0),
+        &remote_aim_pitches,
+        &HashMap::new(),
+        &remote_network_ids,
+    );
+    let stationary = registry
+        .get_component::<MeshComponent>(pawn)
+        .unwrap()
+        .pose_inputs
+        .unwrap();
+    assert!(
+        (stationary.heading_yaw - transform_yaw).abs() <= 1.0e-6,
+        "stationary remote avatar falls back to displayed transform yaw"
+    );
 }
 
 /// One leg model: hip → knee → ankle, composed ankle resting at model (0,-0.7,0),
@@ -1916,6 +1994,10 @@ fn probe_leg_entity_in(
         &mover_states,
         &store,
         0.0,
+        (0.0, 0.0),
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
     );
 
     registry
@@ -2044,6 +2126,10 @@ fn connected_client_presentation_probes_freshly_displayed_remote_transform() {
         &MoverTickStateTable::default(),
         &store,
         0.0,
+        (0.0, 0.0),
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
     );
 
     let inputs = registry
@@ -2065,7 +2151,18 @@ fn unavailable_probe_inputs_clear_stale_feet_and_publish_zero_count() {
     let (mut registry, entity, store) = leg_probe_fixture(Vec3::new(0.0, 1.0, 0.0), 0.0);
     let mover_states = MoverTickStateTable::default();
     let run = |registry: &mut EntityRegistry| {
-        super::update_presentation_pose_inputs(registry, &world, &[], &mover_states, &store, 0.0);
+        super::update_presentation_pose_inputs(
+            registry,
+            &world,
+            &[],
+            &mover_states,
+            &store,
+            0.0,
+            (0.0, 0.0),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
     };
     let assert_cleared = |registry: &EntityRegistry, reason: &str| {
         let inputs = registry

@@ -35,11 +35,13 @@ use postretro_entities::components::health::{
     DamageContext, DamageProducer, HealthComponent, apply_damage_with_context,
 };
 use postretro_entities::components::mesh::{MeshAnimation, MeshComponent};
+use postretro_entities::components::player_movement::PlayerMovementComponent;
 use postretro_entities::components::weapon::{UNKNOWN_WEAPON_CREDIT_SOURCE, WeaponComponent};
 use postretro_entities::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, ScriptCtx, SlotTable,
 };
 use postretro_foundation::pose::{FootProbe, MAX_FEET};
+use postretro_net::wire::NetworkId;
 use postretro_scripting_core::reaction_dispatch::ProgressTracker;
 
 #[derive(Debug, Clone)]
@@ -117,7 +119,7 @@ pub(crate) struct TriggerCommandFire {
     pub(crate) commands: Vec<crate::trigger_bindings::BoundTriggerCommandKind>,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, dead_code)]
 pub(crate) fn simulate_tick(
     registry: Rc<RefCell<EntityRegistry>>,
     collision_world: &CollisionWorld,
@@ -126,6 +128,52 @@ pub(crate) fn simulate_tick(
     gravity: f32,
     active_wieldable: Option<EntityId>,
     anim_time: f64,
+    _progress_tracker: &mut ProgressTracker,
+    ai_warned: &mut HashSet<String>,
+    mover_colliders: &[MoverCollider],
+    mover_tick_states: &mut MoverTickStateTable,
+    remote_pawn_commands: &[RemotePawnCommand],
+    command: &SimCommand,
+    post_movement: impl FnMut(&Rc<RefCell<EntityRegistry>>) -> PostMovementCommand,
+    tick_dt: f32,
+    trigger_context: Option<TriggerTickContext<'_>>,
+    on_impact: impl FnMut(&mut EntityRegistry),
+) -> TickEvents {
+    simulate_tick_with_presentation_aim(
+        registry,
+        collision_world,
+        hit_zone_store,
+        nav_graph,
+        gravity,
+        active_wieldable,
+        anim_time,
+        (0.0, 0.0),
+        _progress_tracker,
+        ai_warned,
+        mover_colliders,
+        mover_tick_states,
+        remote_pawn_commands,
+        command,
+        post_movement,
+        tick_dt,
+        trigger_context,
+        on_impact,
+    )
+}
+
+/// Fixed-tick simulation with the render-assembly camera aim captured by the App.
+/// Headless callers retain the wrapper above and intentionally use the neutral
+/// camera; production local-player presentation passes the live camera aim here.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn simulate_tick_with_presentation_aim(
+    registry: Rc<RefCell<EntityRegistry>>,
+    collision_world: &CollisionWorld,
+    hit_zone_store: &HitZoneStore,
+    nav_graph: Option<&NavGraph>,
+    gravity: f32,
+    active_wieldable: Option<EntityId>,
+    anim_time: f64,
+    presentation_camera_aim: (f32, f32),
     _progress_tracker: &mut ProgressTracker,
     ai_warned: &mut HashSet<String>,
     mover_colliders: &[MoverCollider],
@@ -314,6 +362,10 @@ pub(crate) fn simulate_tick(
             &*mover_tick_states,
             hit_zone_store,
             anim_time,
+            presentation_camera_aim,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
         );
     }
 
@@ -480,8 +532,18 @@ pub(crate) fn update_presentation_pose_inputs(
     mover_poses: &dyn MoverPoseSource,
     hit_zone_store: &HitZoneStore,
     anim_time: f64,
+    camera_aim: (f32, f32),
+    remote_aim_pitches: &HashMap<NetworkId, f32>,
+    remote_heading_yaws: &HashMap<NetworkId, f32>,
+    remote_network_ids: &HashMap<EntityId, NetworkId>,
 ) {
-    update_pose_inputs(registry);
+    update_pose_inputs(
+        registry,
+        camera_aim,
+        remote_aim_pitches,
+        remote_heading_yaws,
+        remote_network_ids,
+    );
     update_foot_ground_probes(
         registry,
         collision_world,
@@ -496,7 +558,13 @@ pub(crate) fn update_presentation_pose_inputs(
 /// entity's target and body rotation. Every animated mesh receives a finite
 /// value; entities without a live acquired target hold their body heading with
 /// zero pitch, making pose modifiers a visual no-op.
-fn update_pose_inputs(registry: &mut EntityRegistry) {
+fn update_pose_inputs(
+    registry: &mut EntityRegistry,
+    camera_aim: (f32, f32),
+    remote_aim_pitches: &HashMap<NetworkId, f32>,
+    remote_heading_yaws: &HashMap<NetworkId, f32>,
+    remote_network_ids: &HashMap<EntityId, NetworkId>,
+) {
     const MIN_HORIZONTAL_LEN_SQ: f32 = 1e-8;
 
     let animated: Vec<EntityId> = registry
@@ -535,7 +603,7 @@ fn update_pose_inputs(registry: &mut EntityRegistry) {
                     .map(|transform| transform.position)
             });
 
-        let (aim_pitch, aim_yaw) = target_position
+        let (default_aim_pitch, default_aim_yaw) = target_position
             .map(|target| target - transform.position)
             .filter(|direction| direction.is_finite())
             .map(|direction| {
@@ -560,6 +628,58 @@ fn update_pose_inputs(registry: &mut EntityRegistry) {
                 )
             })
             .unwrap_or((0.0, heading_yaw));
+
+        let (aim_pitch, aim_yaw, heading_yaw) = if registry.local_player_movement_pawn() == Some(id)
+        {
+            let player_heading = registry
+                .get_component::<PlayerMovementComponent>(id)
+                .ok()
+                .map(|movement| movement.velocity)
+                .filter(|velocity| velocity.is_finite())
+                .and_then(|velocity| {
+                    let horizontal_len_sq = velocity.x * velocity.x + velocity.z * velocity.z;
+                    (horizontal_len_sq > MIN_HORIZONTAL_LEN_SQ)
+                        .then(|| velocity.x.atan2(velocity.z))
+                })
+                .filter(|yaw| yaw.is_finite())
+                .unwrap_or(heading_yaw);
+            let aim_pitch = camera_aim
+                .0
+                .clamp(-std::f32::consts::FRAC_PI_2, std::f32::consts::FRAC_PI_2);
+            let aim_yaw = camera_aim.1;
+            (
+                if aim_pitch.is_finite() {
+                    aim_pitch
+                } else {
+                    0.0
+                },
+                if aim_yaw.is_finite() {
+                    aim_yaw
+                } else {
+                    player_heading
+                },
+                player_heading,
+            )
+        } else if let Some(network_id) = remote_network_ids.get(&id)
+            && let Some(&aim_pitch) = remote_aim_pitches.get(network_id)
+        {
+            let remote_heading = remote_heading_yaws
+                .get(network_id)
+                .copied()
+                .filter(|yaw| yaw.is_finite())
+                .unwrap_or(heading_yaw);
+            (
+                if aim_pitch.is_finite() {
+                    aim_pitch
+                } else {
+                    0.0
+                },
+                heading_yaw,
+                remote_heading,
+            )
+        } else {
+            (default_aim_pitch, default_aim_yaw, heading_yaw)
+        };
 
         // Single borrow serves both the change check and the clone source, so a
         // stationary/idle crowd whose inputs haven't moved skips the write

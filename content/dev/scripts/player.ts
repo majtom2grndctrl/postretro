@@ -17,8 +17,13 @@ export const playerEntity = defineEntity({
       shadowOnly: true,
       // exo_red declares a `hand_r` socket for the runtime third-person weapon.
       animations: {
-        idle: { clip: "idle", loop: true },
-        walk_forward: { clip: "walk_forward", loop: true, travelSpeed: 7.0 },
+        idle: { clip: "idle", loop: true, crossfadeMs: 50 },
+        walk_forward: {
+          clip: "walk_forward",
+          loop: true,
+          crossfadeMs: 50,
+          travelSpeed: 7.0,
+        },
       },
       defaultState: "idle",
       locomotion: { speedScale: true },

@@ -498,6 +498,11 @@ pub(crate) struct App {
     /// See: context/lib/boot_sequence.md §1.
     session: Option<session::Session>,
 
+    /// Current-frame interpolation-derived remote-avatar inputs. These are kept on
+    /// the App between the interpolation and presentation assembly stages so remote
+    /// aim/heading follows the exact transform the renderer receives.
+    remote_player_presentation: netcode::ClientPresentationInputs,
+
     /// Persistent crouch toggle latch for `CrouchMode::Toggle`. Flipped on each
     /// `Action::Crouch` press rising edge by the input layer; fed into
     /// `MovementInput::crouch_intent`. Lives on `App` (the input layer), NEVER on
@@ -2036,10 +2041,11 @@ impl ApplicationHandler for App {
                         let trigger_system = &mut session.trigger_system;
                         let trigger_volume_bridge = &session.trigger_volume_bridge;
                         let trigger_bindings = &self.trigger_bindings;
+                        let presentation_camera_aim = (self.camera.pitch, self.camera.yaw);
                         let camera = &mut self.camera;
                         #[cfg(feature = "dev-tools")]
                         let debug_chase_agent = self.debug_chase_agent;
-                        let tick_events = sim::simulate_tick(
+                        let tick_events = sim::simulate_tick_with_presentation_aim(
                             script_ctx.registry.clone(),
                             &self.collision_world,
                             hit_zone_store,
@@ -2047,6 +2053,7 @@ impl ApplicationHandler for App {
                             script_ctx.gravity.get(),
                             self.active_wieldable,
                             frame_anim_time,
+                            presentation_camera_aim,
                             progress_tracker,
                             &mut self.ai_warned,
                             &self.kinematic_mover_colliders,
@@ -4938,27 +4945,30 @@ impl App {
         else {
             return;
         };
-        let Some(netcode::NetEndpoint::Client {
-            replication,
-            time_sync,
-            interpolation_delay,
-            ..
-        }) = self
-            .session
-            .as_mut()
-            .and_then(|session| session.net_endpoint.as_mut())
-        else {
-            return;
+        let presentation = {
+            let Some(netcode::NetEndpoint::Client {
+                replication,
+                time_sync,
+                interpolation_delay,
+                ..
+            }) = self
+                .session
+                .as_mut()
+                .and_then(|session| session.net_endpoint.as_mut())
+            else {
+                return;
+            };
+            let mut registry = script_ctx.registry.borrow_mut();
+            netcode::client_sample_interpolation(
+                &mut registry,
+                replication,
+                time_sync,
+                interpolation_delay,
+                f64::from(frame_dt),
+                frame_anim_time,
+            )
         };
-        let mut registry = script_ctx.registry.borrow_mut();
-        netcode::client_sample_interpolation(
-            &mut registry,
-            replication,
-            time_sync,
-            interpolation_delay,
-            f64::from(frame_dt),
-            frame_anim_time,
-        );
+        self.remote_player_presentation = presentation;
     }
 
     fn update_client_presentation_pose_inputs(&mut self, frame_anim_time: f64) {
@@ -4968,6 +4978,17 @@ impl App {
         let Some(session) = self.session.as_ref() else {
             return;
         };
+        let remote_network_ids = session
+            .net_endpoint
+            .as_ref()
+            .and_then(|endpoint| match endpoint {
+                netcode::NetEndpoint::Client { replication, .. } => {
+                    Some(replication.entity_network_ids())
+                }
+                netcode::NetEndpoint::Host { .. } => None,
+            })
+            .unwrap_or_default();
+        let camera_aim = (self.camera.pitch, self.camera.yaw);
         let mut registry = session.scripting.script_ctx.registry.borrow_mut();
         sim::update_presentation_pose_inputs(
             &mut registry,
@@ -4976,6 +4997,10 @@ impl App {
             &self.kinematic_mover_tick_states,
             &session.hit_zone_store,
             frame_anim_time,
+            camera_aim,
+            &self.remote_player_presentation.aim_pitches,
+            &self.remote_player_presentation.heading_yaws,
+            &remote_network_ids,
         );
     }
 

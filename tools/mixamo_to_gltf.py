@@ -385,6 +385,13 @@ def merge_animations(input_dir, scale=None, base=None):
     for pbone in base_armature.pose.bones:
         pbone.rotation_mode = 'QUATERNION'
 
+    # Sort pose bones parent-before-child so pbone.matrix decomposition
+    # always sees the updated parent matrix, not the previous frame's.
+    sorted_pbones = sorted(
+        base_armature.pose.bones,
+        key=lambda pb: len(pb.parent_recursive),
+    )
+
     for action in all_actions:
         if action.name not in action_poses:
             continue
@@ -398,11 +405,11 @@ def merge_animations(input_dir, scale=None, base=None):
         for frame in range(frame_start, frame_end + 1):
             bpy.context.scene.frame_set(frame)
             bone_matrices = poses_by_frame[frame]
-            for pbone in base_armature.pose.bones:
+            for pbone in sorted_pbones:
                 if pbone.name in bone_matrices:
-                    pbone.matrix = arm_world_inv @ bone_matrices[pbone.name]
+                    pbone.matrix = arm_world_inv @ flip_z @ bone_matrices[pbone.name]
             bpy.context.view_layer.update()
-            for pbone in base_armature.pose.bones:
+            for pbone in sorted_pbones:
                 if pbone.name in bone_matrices:
                     pbone.keyframe_insert(data_path="location", frame=frame)
                     pbone.keyframe_insert(data_path="rotation_quaternion", frame=frame)

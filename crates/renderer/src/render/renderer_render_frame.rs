@@ -246,24 +246,12 @@ impl Renderer {
             // run, drop any overflow past the fixed budget. GPU-free. A selected
             // static-light gate may have already built the all-instance CPU plan
             // above so promotion ranking sees the same renderable/overflow
-            // result as the upload path. If no promoted slot exists after
-            // ranking, discard shadow-only retained instances before pose
-            // sampling and buffer upload; only promoted static slots can consume
-            // them.
-            let plan = if self.full().promoted_static_records.is_empty() {
-                mesh_instances::plan_forward_visible_mesh_frame(
-                    &self.full().mesh_draws,
-                    &self.full().mesh_pass,
-                )
-            } else {
-                match promotion_mesh_frame_plan {
-                    Some(plan) => plan,
-                    None => mesh_instances::plan_mesh_frame(
-                        &self.full().mesh_draws,
-                        &self.full().mesh_pass,
-                    ),
-                }
-            };
+            // result as the upload path. Dynamic shadow pools also consume
+            // descriptor-authored shadow-only instances, so every frame keeps
+            // them in the shared palette and instance buffers.
+            let plan = promotion_mesh_frame_plan.unwrap_or_else(|| {
+                mesh_instances::plan_mesh_frame(&self.full().mesh_draws, &self.full().mesh_pass)
+            });
 
             // Overflow drops excess instances rather than corrupting the
             // palette or panicking — rate-limited warning. Covers BOTH the

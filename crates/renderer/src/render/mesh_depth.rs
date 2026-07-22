@@ -15,20 +15,14 @@ pub(super) const SKINNED_DEPTH_SHADER_SOURCE: &str = include_str!("../shaders/sk
 /// Which planned mesh instances a shadow-depth pass may consume.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MeshDepthInstanceFilter {
-    /// Ordinary dynamic-light shadow maps keep the historical path: only meshes
-    /// visible to the forward pass cast entity shadows.
-    ForwardVisibleOnly,
-    /// Promoted static-light slots may use the forward-visible set plus
-    /// shadow-only retained instances selected for static-light relevance.
+    /// Dynamic and promoted-static shadow slots include descriptor-authored
+    /// shadow-only instances alongside forward-visible mesh casters.
     IncludeShadowOnly,
 }
 
 impl MeshDepthInstanceFilter {
-    fn includes(self, instance: &postretro_render_cpu::mesh_instances::PlannedInstance) -> bool {
-        match self {
-            MeshDepthInstanceFilter::ForwardVisibleOnly => instance.forward_visible,
-            MeshDepthInstanceFilter::IncludeShadowOnly => true,
-        }
+    fn includes(self, _instance: &postretro_render_cpu::mesh_instances::PlannedInstance) -> bool {
+        true
     }
 }
 
@@ -287,7 +281,7 @@ mod tests {
     }
 
     #[test]
-    fn depth_instance_filter_keeps_dynamic_shadows_forward_visible_only() {
+    fn depth_instance_filter_includes_shadow_only_casters() {
         let visible = PlannedInstance {
             transform: glam::Mat4::IDENTITY,
             shadow_bias_scale: 1.0,
@@ -306,8 +300,6 @@ mod tests {
             ..visible.clone()
         };
 
-        assert!(MeshDepthInstanceFilter::ForwardVisibleOnly.includes(&visible));
-        assert!(!MeshDepthInstanceFilter::ForwardVisibleOnly.includes(&shadow_only));
         assert!(MeshDepthInstanceFilter::IncludeShadowOnly.includes(&visible));
         assert!(MeshDepthInstanceFilter::IncludeShadowOnly.includes(&shadow_only));
     }

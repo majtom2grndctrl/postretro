@@ -82,9 +82,9 @@ fn should_resample(distance: f32, frame_index: u64, seed: u32, force: bool) -> b
 /// reads the registry + the world + this frame's visible-cell set, applies the
 /// pure `mesh_pass::mesh_visible` cull, and emits per-instance draw inputs
 /// (model handle + interpolated world transform). Forward-visible instances draw
-/// in the color pass; non-forward instances are retained only when they intersect
-/// a compiler-selected static entity-shadow light, so they can cast into promoted
-/// static shadow maps without drawing forward. It never touches wgpu — the
+/// in the color pass; descriptor-authored shadow-only instances stay in the
+/// shadow plan without drawing forward. Off-PVS instances are retained only when
+/// they intersect a compiler-selected static entity-shadow light. It never touches wgpu — the
 /// renderer consumes [`instances`] and owns the GPU upload + draw recording.
 ///
 /// [`instances`]: MeshRenderCollector::instances
@@ -275,7 +275,8 @@ impl MeshRenderCollector {
                 continue;
             };
             let current_model_position = current.position + mesh.origin_offset;
-            let forward_visible = mesh_visible(world, visible, current_model_position);
+            let portal_visible = mesh_visible(world, visible, current_model_position);
+            let forward_visible = portal_visible && !mesh.shadow_only;
             let handle = ModelHandle::from(mesh.model.clone());
             let current_model_transform = glam::Mat4::from_scale_rotation_translation(
                 current.scale,
@@ -287,7 +288,7 @@ impl MeshRenderCollector {
                 .transformed(&current_model_transform);
             let selected_static_shadow_relevant =
                 selected_static_shadow_light_reaches_bounds(world, &current_model_bounds);
-            if !forward_visible && !selected_static_shadow_relevant {
+            if !portal_visible && !selected_static_shadow_relevant {
                 continue;
             }
             // Draw at the interpolated transform (smooth between ticks). Fall
@@ -674,6 +675,10 @@ mod tests {
         // Translation column carries the entity position; handle preserved.
         let inst = &collector.instances()[0];
         assert_eq!(inst.model.as_str(), "decraniated");
+        assert!(
+            inst.forward_visible,
+            "the default mesh component remains visible to the forward pass",
+        );
         let t = inst.transform.w_axis;
         assert_eq!([t.x, t.y, t.z], [1.0, 2.0, 3.0]);
     }
@@ -1728,6 +1733,63 @@ mod tests {
         assert!(
             collector.instances()[0].forward_visible,
             "a visible mesh remains in the shared forward/shadow plan",
+        );
+    }
+
+    #[test]
+    fn collect_keeps_shadow_only_mesh_planned_but_out_of_forward_draws() {
+        struct OneJointModel;
+
+        impl postretro_render_cpu::mesh_instances::JointCounts for OneJointModel {
+            fn joint_count(&self, _model: &postretro_model::ModelHandle) -> Option<u32> {
+                Some(1)
+            }
+
+            fn model_bounds(
+                &self,
+                _model: &postretro_model::ModelHandle,
+            ) -> postretro_render_data::cone_frustum::Aabb {
+                Default::default()
+            }
+        }
+
+        let mut registry = EntityRegistry::new();
+        let id = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                id,
+                MeshComponent::stateless("local-body".into()).with_shadow_only(true),
+            )
+            .unwrap();
+
+        let mut collector = MeshRenderCollector::new();
+        collector.collect(
+            &registry,
+            &single_cell_world(),
+            &VisibleCells::DrawAll,
+            1.0,
+            0.0,
+            &MeshClipTables::new(),
+            Vec3::ZERO,
+        );
+
+        assert_eq!(collector.instances().len(), 1);
+        assert!(
+            !collector.instances()[0].forward_visible,
+            "shadowOnly must suppress the forward draw while retaining the body",
+        );
+
+        let plan = postretro_render_cpu::mesh_instances::plan_mesh_frame(
+            collector.instances(),
+            &OneJointModel,
+        );
+        assert_eq!(
+            plan.instance_count, 1,
+            "shadow-only body reaches the SSBO plan"
+        );
+        assert!(
+            !plan.groups[0].instances[0].forward_visible,
+            "the planned body remains excluded from the forward draw",
         );
     }
 

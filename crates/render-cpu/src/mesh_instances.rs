@@ -228,24 +228,12 @@ pub fn plan_mesh_frame(
     instances: &[MeshInstanceInput],
     joints: &impl JointCounts,
 ) -> MeshFramePlan {
-    plan_grouped_mesh_frame(instances, joints, false)
-}
-
-/// Plan only forward-visible instances, using the same cache/budget behavior as
-/// [`plan_mesh_frame`]. Used when shadow-only retained instances cannot be
-/// consumed by any promoted static slot this frame; dynamic-light shadow passes
-/// and the forward mesh pass then keep the pre-promotion cost profile.
-pub fn plan_forward_visible_mesh_frame(
-    instances: &[MeshInstanceInput],
-    joints: &impl JointCounts,
-) -> MeshFramePlan {
-    plan_grouped_mesh_frame(instances, joints, true)
+    plan_grouped_mesh_frame(instances, joints)
 }
 
 fn plan_grouped_mesh_frame(
     instances: &[MeshInstanceInput],
     joints: &impl JointCounts,
-    forward_only: bool,
 ) -> MeshFramePlan {
     let mut groups: Vec<ModelDrawGroup> = Vec::new();
     let mut palette_cursor: usize = 0;
@@ -256,10 +244,6 @@ fn plan_grouped_mesh_frame(
     // forward group. Collector output keeps each holder immediately followed by
     // its attachments, so two scans preserve group order without an allocation.
     for group_is_forward in [true, false] {
-        if forward_only && !group_is_forward {
-            break;
-        }
-
         let mut group_start = 0;
         while group_start < instances.len() {
             let holder_group = instances[group_start].palette_cache_key.holder_group();
@@ -479,7 +463,7 @@ mod tests {
     }
 
     #[test]
-    fn planners_carry_pose_inputs_verbatim() {
+    fn planner_carries_pose_inputs_verbatim() {
         let joints = joints(&[("grunt", 10)]);
         let expected = PoseInputs {
             aim_pitch: 0.25,
@@ -492,9 +476,6 @@ mod tests {
 
         let full = plan_mesh_frame(std::slice::from_ref(&input), &joints);
         assert_eq!(full.groups[0].instances[0].pose_inputs, Some(expected));
-
-        let forward = plan_forward_visible_mesh_frame(&[input], &joints);
-        assert_eq!(forward.groups[0].instances[0].pose_inputs, Some(expected));
     }
 
     #[test]
@@ -719,33 +700,6 @@ mod tests {
                 .flat_map(|g| &g.instances)
                 .all(|i| i.forward_visible),
             "only forward-visible instances survived the budget squeeze",
-        );
-    }
-
-    #[test]
-    fn forward_visible_plan_excludes_shadow_only_instances_before_upload() {
-        let joints = joints(&[("grunt", 10)]);
-        let instances = [
-            instance("grunt", 1.0, 0),
-            non_forward_instance("grunt", 2.0, 1),
-            instance("grunt", 3.0, 2),
-        ];
-        let plan = plan_forward_visible_mesh_frame(&instances, &joints);
-
-        let seeds: Vec<u32> = plan
-            .groups
-            .iter()
-            .flat_map(|g| g.instances.iter().map(|i| i.phase_seed))
-            .collect();
-        assert_eq!(seeds, vec![0, 2]);
-        assert_eq!(plan.instance_count, 2);
-        assert_eq!(plan.dropped, 0);
-        assert!(
-            plan.groups
-                .iter()
-                .flat_map(|g| &g.instances)
-                .all(|i| i.forward_visible),
-            "forward-only upload plan must not contain shadow-only instances",
         );
     }
 

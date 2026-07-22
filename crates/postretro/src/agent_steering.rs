@@ -112,10 +112,16 @@ const UNSTICK_WINDOW: u32 = 10;
 /// move." Speeds below this are arrival/idle tails, not stuck evidence.
 const STUCK_INTENT_SPEED_EPSILON: f32 = 0.05;
 
-/// Per-tick goal-projected displacement below this counts as no useful
-/// progress. This is a distance, intentionally distinct from the intent-speed
-/// gate above.
+/// Base absolute progress floor for mandatory-waypoint easing. Ordinary
+/// segments scale with intended travel; this stays distinct from the
+/// intent-speed gate because cornering can permit only tiny real movement.
 const STUCK_PROGRESS_EPSILON: f32 = 0.005;
+
+/// Fraction of the requested per-tick travel that an ordinary path segment must
+/// achieve before it counts as useful goal progress. This scales the detector
+/// with author-defined movement speed and arrival easing while still treating a
+/// blocked agent's near-zero movement as stuck.
+const STUCK_PROGRESS_INTENT_FRACTION: f32 = 0.1;
 
 /// Weight of the +90deg XZ tangent relative to the retained goal component
 /// during recovery.
@@ -543,15 +549,17 @@ pub(crate) fn tick(
 
         agent.velocity = result.velocity;
         agent.is_grounded = result.grounded;
-        update_stuck_ticks(
-            &mut agent,
-            position,
-            result.position,
-            steer_velocity,
-            goal_speed,
-            recovery_active_this_tick,
-            easing_onto_mandatory,
-        );
+        if !recovery_active_this_tick {
+            update_stuck_ticks(
+                &mut agent,
+                position,
+                result.position,
+                steer_velocity,
+                goal_speed * dt,
+                has_recovery_intent,
+                easing_onto_mandatory,
+            );
+        }
 
         // Write back the resolved position and the updated agent state.
         if let Ok(transform) = registry.get_component::<Transform>(current.id) {
@@ -939,8 +947,8 @@ fn mandatory_waypoint_cleared(
 /// at full `move_speed`, but this window still sees legitimately-small forward
 /// progress on a tick or two — the tight-band heading restart in [`goal_speed`]
 /// zeroes and re-accelerates the speed, and a hard full-speed corner turn
-/// advances mostly sideways — so [`update_stuck_ticks`] uses it to select the
-/// smaller easing progress floor there instead of the absolute floor.
+/// advances mostly sideways — so [`update_stuck_ticks`] uses it to preserve the
+/// dedicated absolute easing floor instead of the ordinary intent-relative one.
 fn easing_onto_mandatory_waypoint(
     agent: &AgentComponent,
     position: Vec3,
@@ -964,14 +972,11 @@ fn update_stuck_ticks(
     start_position: Vec3,
     resolved_position: Vec3,
     steer_velocity: Vec3,
-    goal_speed: f32,
-    recovery_active_this_tick: bool,
+    expected_goal_progress: f32,
+    has_recovery_intent: bool,
     easing_onto_mandatory: bool,
 ) {
-    if recovery_active_this_tick {
-        return;
-    }
-    if !has_stuck_recovery_intent(agent, goal_speed, steer_velocity) {
+    if !has_recovery_intent {
         agent.stuck_ticks = 0;
         return;
     }
@@ -987,13 +992,13 @@ fn update_stuck_ticks(
     // move_speed, but goal-projected forward progress can briefly be tiny yet
     // positive — the tight-band heading restart re-accelerates from zero and a
     // hard corner turn advances mostly sideways. Measure it against the much
-    // smaller easing floor instead of the absolute floor: bounded suppression that
-    // never trips on a real corner turn yet still accumulates — and eventually
+    // smaller easing floor instead of the ordinary intent-relative floor: bounded
+    // suppression that never trips on a real corner turn yet still accumulates — and eventually
     // escalates to tangent recovery — against a genuine no-progress wedge.
     let floor = if easing_onto_mandatory {
         MANDATORY_EASING_PROGRESS_EPSILON
     } else {
-        STUCK_PROGRESS_EPSILON
+        expected_goal_progress * STUCK_PROGRESS_INTENT_FRACTION
     };
     if progress < floor {
         agent.stuck_ticks = agent.stuck_ticks.saturating_add(1);

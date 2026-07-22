@@ -584,13 +584,24 @@ pub(crate) fn attach_descriptor_components(
 /// Materialize the descriptor-owned mesh presentation shared by local spawns
 /// and connected-client remote enemies. Descriptor state maps already carry
 /// validated `travelSpeed` overrides; this seam also applies the shared
-/// absent-`speedScale` default and AI render-origin offset.
+/// absent-`speedScale` default and capsule-center-to-feet render-origin offset
+/// for AI and movement pawns.
 pub(crate) fn descriptor_mesh_component(
     descriptor: &EntityTypeDescriptor,
     agent_params: Option<NavAgentParams>,
 ) -> Option<MeshComponent> {
     let mesh_desc = descriptor.mesh.as_ref()?;
-    let origin_offset = if descriptor.ai.is_some() {
+    let origin_offset = if let Some(movement) = descriptor.movement.as_ref() {
+        // Player transforms are their collision-capsule centers, while player
+        // meshes are authored at their feet. `half_height` names the distance
+        // from the center to each spherical-cap center, so the total capsule
+        // height is twice `(half_height + radius)`.
+        let capsule = &movement.capsule;
+        capsule_center_to_feet_origin_offset(
+            capsule.radius,
+            2.0 * (capsule.half_height + capsule.radius),
+        )
+    } else if descriptor.ai.is_some() {
         let params = agent_params.unwrap_or(DEFAULT_AGENT_PARAMS);
         capsule_center_to_feet_origin_offset(params.radius, params.height)
     } else {
@@ -986,6 +997,47 @@ mod tests {
 
         let provenance = reg.get_component::<DescriptorProvenance>(id).unwrap();
         assert!(provenance.owns(DescriptorComponentKind::Mesh));
+    }
+
+    #[test]
+    fn descriptor_mesh_offsets_capsule_center_to_feet_for_movement_and_ai_only() {
+        let mesh_only = mesh_descriptor("prop", false);
+        assert_eq!(
+            descriptor_mesh_component(&mesh_only, None)
+                .expect("mesh-only descriptor materializes")
+                .origin_offset,
+            Vec3::ZERO,
+            "mesh-only descriptors keep their authored transform origin"
+        );
+
+        let mut movement = mesh_descriptor("player", false);
+        let movement_params = movement_descriptor();
+        let expected_movement_offset = capsule_center_to_feet_origin_offset(
+            movement_params.capsule.radius,
+            2.0 * (movement_params.capsule.half_height + movement_params.capsule.radius),
+        );
+        movement.movement = Some(movement_params);
+        assert_eq!(
+            descriptor_mesh_component(&movement, None)
+                .expect("movement descriptor materializes")
+                .origin_offset,
+            expected_movement_offset,
+            "movement-pawn meshes are authored at feet while transforms are capsule centers"
+        );
+
+        let ai = ai_enemy_descriptor("grunt");
+        let agent_params = NavAgentParams {
+            radius: 0.2,
+            height: 2.0,
+            ..DEFAULT_AGENT_PARAMS
+        };
+        assert_eq!(
+            descriptor_mesh_component(&ai, Some(agent_params))
+                .expect("AI descriptor materializes")
+                .origin_offset,
+            capsule_center_to_feet_origin_offset(agent_params.radius, agent_params.height),
+            "AI descriptors retain the established nav-agent offset"
+        );
     }
 
     #[test]

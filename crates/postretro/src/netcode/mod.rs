@@ -2366,12 +2366,11 @@ pub(crate) const REMOTE_CAPSULE_RADIUS: f32 = 0.4;
 #[cfg(feature = "dev-tools")]
 pub(crate) const REMOTE_CAPSULE_HALF_HEIGHT: f32 = 0.8;
 
-/// Collect the world-space positions of every replicated entity for the
-/// debug wireframe (M15 Phase 1 visibility aid). On the CLIENT, returns the
-/// `Transform.position` of each `EntityId` in its `NetworkId -> EntityId` map. On
-/// the HOST (issue 3a), returns the position of each `EntityId` in the authoritative
-/// `ReplicableSet` — the host has no client map, so it draws its own replicated
-/// entities (slot/client pawns plus its own pawn). Empty for single-player.
+/// Collect world-space positions for meshless replicated-entity debug wireframes.
+/// On the CLIENT, checks each non-local `NetworkId -> EntityId` mapping. On the HOST,
+/// checks the authoritative `ReplicableSet`. Entities with a `MeshComponent` already
+/// have their presentation, so capsules remain only a fallback for meshless or
+/// unresolved replicated entities. Empty for single-player.
 ///
 /// Read-only: borrows the registry immutably and never touches wgpu — the
 /// caller hands these positions to the renderer, which owns the capsule draw
@@ -2379,11 +2378,9 @@ pub(crate) const REMOTE_CAPSULE_HALF_HEIGHT: f32 = 0.8;
 /// the pawn `Transform.position` convention (the collision capsule is symmetric
 /// about it; see `movement/substrate.rs`).
 ///
-/// The overlay draws replicated gameplay entities, not only players: mapped
-/// client remotes and host `ReplicableSet` entries can include map-placed or runtime-spawned
-/// AI enemies, pawns, movers, and other networked gameplay objects. The debug
-/// marker still uses standing-player capsule dimensions, so non-player enemies
-/// get an approximate marker until a later debug shape path specializes them.
+/// The overlay can cover AI enemies, pawns, movers, and other networked gameplay
+/// objects. It uses standing-player dimensions only for its meshless fallback, so
+/// an unresolved non-player entity gets an approximate marker rather than no aid.
 ///
 /// `dev-tools`-gated: the sole consumer is the client debug-capsule draw behind
 /// that feature (the debug-line renderer is `dev-tools` only).
@@ -2399,10 +2396,16 @@ pub(crate) fn remote_entity_positions(
         NetEndpoint::Client { replication, .. } => replication
             .remote_debug_entity_ids()
             .filter_map(|id| {
-                registry
-                    .get_component::<Transform>(id)
-                    .ok()
-                    .map(|t| t.position)
+                (!registry
+                    .has_component_kind(id, ComponentKind::Mesh)
+                    .unwrap_or(false))
+                .then(|| {
+                    registry
+                        .get_component::<Transform>(id)
+                        .ok()
+                        .map(|t| t.position)
+                })
+                .flatten()
             })
             .collect(),
         // Host: there is no client `NetworkId -> EntityId` map, so source the overlay
@@ -2413,10 +2416,16 @@ pub(crate) fn remote_entity_positions(
         NetEndpoint::Host { replicable, .. } => replicable
             .iter()
             .filter_map(|id| {
-                registry
-                    .get_component::<Transform>(id)
-                    .ok()
-                    .map(|t| t.position)
+                (!registry
+                    .has_component_kind(id, ComponentKind::Mesh)
+                    .unwrap_or(false))
+                .then(|| {
+                    registry
+                        .get_component::<Transform>(id)
+                        .ok()
+                        .map(|t| t.position)
+                })
+                .flatten()
             })
             .collect(),
     }
@@ -3753,8 +3762,8 @@ mod tests {
 
         // The record is a VALID non-local movement record on the wire: ingest into the
         // tracker and encode for a sample recipient. `local_player` must be false (the
-        // recipient is not the owner — there is no owner). Validation accepts a movement
-        // record with None ack + local_player false + entity_class present-or-absent.
+        // recipient is not the owner — there is no owner) and the boot pawn's descriptor
+        // class must be present so the client can materialize its remote avatar.
         const RECIPIENT: u64 = 7;
         let mut replication = ServerReplication::new();
         replication.register_client(RECIPIENT);
@@ -3774,14 +3783,58 @@ mod tests {
                 _ => false,
             })
             .expect("the host pawn reaches the recipient as a valid record");
-        let local_player = match host_record {
-            EntityRecord::FullBaseline { local_player, .. }
-            | EntityRecord::Delta { local_player, .. } => *local_player,
+        let (local_player, entity_class) = match host_record {
+            EntityRecord::FullBaseline {
+                local_player,
+                entity_class,
+                ..
+            }
+            | EntityRecord::Delta {
+                local_player,
+                entity_class,
+                ..
+            } => (*local_player, entity_class.clone()),
             _ => panic!("host pawn record is a movement baseline/delta"),
         };
         assert!(
             !local_player,
             "the host pawn is NEVER marked local_player for any recipient"
+        );
+        assert_eq!(
+            entity_class.as_deref(),
+            Some("player"),
+            "the host boot pawn carries the descriptor class needed for remote presentation"
+        );
+
+        let mut client_registry = EntityRegistry::new();
+        let mut client_replication = ClientReplication::new();
+        let client_outcome = client_replication.apply_snapshot(
+            &mut client_registry,
+            &SnapshotMessage {
+                sequence: 1,
+                server_tick: 1,
+                records,
+                state_schema_fingerprint: [0u8; 32],
+                state_records: Vec::new(),
+            },
+        );
+        let remote = client_outcome
+            .remote_entities
+            .first()
+            .expect("host pawn baseline asks the client to materialize its remote presentation");
+        assert_eq!(remote.entity_class, "player");
+        assert!(remote_materialize::materialize_armed_remote_player(
+            remote,
+            &[host_player_descriptor()],
+            &mut client_registry,
+            None,
+        ));
+        let mesh = client_registry
+            .get_component::<MeshComponent>(remote.entity_id)
+            .expect("client materializes the host pawn descriptor mesh");
+        assert!(
+            !mesh.shadow_only,
+            "the peer-facing host avatar is forward-visible rather than owner shadow-only"
         );
     }
 
@@ -3931,6 +3984,18 @@ mod tests {
             netcode_remote_positions(&client, &registry).is_empty(),
             "a client with no mapped entities draws nothing (client-map path, not host)"
         );
+
+        registry
+            .set_component(
+                a,
+                MeshComponent::stateless("models/avatar.gltf".to_string()),
+            )
+            .expect("host fixture entity remains live");
+        assert_eq!(
+            netcode_remote_positions(&host, &registry),
+            vec![Vec3::new(-4.0, 0.0, 5.0)],
+            "a rendered host avatar does not also receive a fallback capsule"
+        );
     }
 
     // Regression: the client dev-tools overlay used to draw every mapped entity,
@@ -3946,68 +4011,86 @@ mod tests {
         .expect("client endpoint constructs")
         .expect("connect role yields an endpoint");
 
-        let NetEndpoint::Client { replication, .. } = &mut client else {
-            panic!("from_role(Connect) must yield a Client endpoint");
-        };
-        replication.apply_snapshot(
-            &mut registry,
-            &SnapshotMessage {
-                sequence: 0,
-                server_tick: 10,
-                records: vec![
-                    postretro_net::wire::EntityRecord::FullBaseline {
-                        network_id: 7,
-                        baseline_id: 1,
-                        last_processed_client_tick: None,
-                        local_player: true,
-                        entity_class: Some("player".to_string()),
-                        active_weapon_archetype: None,
-                        components: vec![
-                            ComponentPayload::Transform(WireTransform {
-                                position: [3.0, 0.0, 0.0],
+        let remote = {
+            let NetEndpoint::Client { replication, .. } = &mut client else {
+                panic!("from_role(Connect) must yield a Client endpoint");
+            };
+            replication.apply_snapshot(
+                &mut registry,
+                &SnapshotMessage {
+                    sequence: 0,
+                    server_tick: 10,
+                    records: vec![
+                        postretro_net::wire::EntityRecord::FullBaseline {
+                            network_id: 7,
+                            baseline_id: 1,
+                            last_processed_client_tick: None,
+                            local_player: true,
+                            entity_class: Some("player".to_string()),
+                            active_weapon_archetype: None,
+                            components: vec![
+                                ComponentPayload::Transform(WireTransform {
+                                    position: [3.0, 0.0, 0.0],
+                                    rotation: [0.0, 0.0, 0.0, 1.0],
+                                    scale: [1.0, 1.0, 1.0],
+                                }),
+                                ComponentPayload::PlayerMovementState(WirePlayerMovementState {
+                                    velocity: [0.0, 0.0, 0.0],
+                                    ground: postretro_net::wire::WireGroundRef::World,
+                                    air_jumps_remaining: 1,
+                                    air_dashes_remaining: 1,
+                                    dash_cooldown_ms: 0.0,
+                                    air_ticks: 0,
+                                    movement_state: WireMovementState::Normal,
+                                    coyote_timer_ms: 0.0,
+                                    jump_buffer_timer_ms: 0.0,
+                                    jump_spent: false,
+                                    capsule_half_height: 0.8,
+                                    capsule_eye_height: 1.5,
+                                    aim_pitch: 0.0,
+                                }),
+                            ],
+                        },
+                        postretro_net::wire::EntityRecord::FullBaseline {
+                            network_id: 8,
+                            baseline_id: 1,
+                            last_processed_client_tick: None,
+                            local_player: false,
+                            entity_class: None,
+                            active_weapon_archetype: None,
+                            components: vec![ComponentPayload::Transform(WireTransform {
+                                position: [9.0, 0.0, 0.0],
                                 rotation: [0.0, 0.0, 0.0, 1.0],
                                 scale: [1.0, 1.0, 1.0],
-                            }),
-                            ComponentPayload::PlayerMovementState(WirePlayerMovementState {
-                                velocity: [0.0, 0.0, 0.0],
-                                ground: postretro_net::wire::WireGroundRef::World,
-                                air_jumps_remaining: 1,
-                                air_dashes_remaining: 1,
-                                dash_cooldown_ms: 0.0,
-                                air_ticks: 0,
-                                movement_state: WireMovementState::Normal,
-                                coyote_timer_ms: 0.0,
-                                jump_buffer_timer_ms: 0.0,
-                                jump_spent: false,
-                                capsule_half_height: 0.8,
-                                capsule_eye_height: 1.5,
-                                aim_pitch: 0.0,
-                            }),
-                        ],
-                    },
-                    postretro_net::wire::EntityRecord::FullBaseline {
-                        network_id: 8,
-                        baseline_id: 1,
-                        last_processed_client_tick: None,
-                        local_player: false,
-                        entity_class: None,
-                        active_weapon_archetype: None,
-                        components: vec![ComponentPayload::Transform(WireTransform {
-                            position: [9.0, 0.0, 0.0],
-                            rotation: [0.0, 0.0, 0.0, 1.0],
-                            scale: [1.0, 1.0, 1.0],
-                        })],
-                    },
-                ],
-                state_schema_fingerprint: [0u8; 32],
-                state_records: Vec::new(),
-            },
-        );
+                            })],
+                        },
+                    ],
+                    state_schema_fingerprint: [0u8; 32],
+                    state_records: Vec::new(),
+                },
+            );
+            replication
+                .map()
+                .get(&NetworkId(8))
+                .copied()
+                .expect("remote baseline mapped")
+        };
 
         assert_eq!(
             netcode_remote_positions(&client, &registry),
             vec![Vec3::new(9.0, 0.0, 0.0)],
             "client remote overlay excludes the local predicted pawn"
+        );
+
+        registry
+            .set_component(
+                remote,
+                MeshComponent::stateless("models/avatar.gltf".to_string()),
+            )
+            .expect("remote remains live after materialization");
+        assert!(
+            netcode_remote_positions(&client, &registry).is_empty(),
+            "a remote with a materialized mesh no longer needs a diagnostic capsule"
         );
     }
 

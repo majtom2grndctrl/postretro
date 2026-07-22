@@ -12,6 +12,7 @@ use parry3d::math::{Isometry, Point, Vector};
 use parry3d::query::RayCast;
 use parry3d::shape::{Ball, Capsule};
 
+use postretro_entities::DeferredEffectComponent;
 use postretro_entities::components::health::{HealthComponent, Hitbox};
 use postretro_entities::components::mesh::{MeshAnimation, MeshComponent};
 use postretro_entities::registry::{ComponentKind, EntityId, EntityRegistry, Transform};
@@ -643,8 +644,10 @@ pub(crate) struct EntityRayHit {
 ///   derived reach bound) so a drawn enemy stays hittable; a trustworthy
 ///   available-pose capsule miss stays a miss (no fallback).
 ///
-/// Zero-HP entities (pending-despawn this tick) are skipped so a corpse cannot
-/// absorb a shot for one frame. `anim_time` is the game-layer animation clock;
+/// Entities already made terminally inert for frame-end removal are skipped.
+/// Zero HP alone has no targeting meaning: authored policy may keep a downed
+/// entity hittable for a later impact.
+/// `anim_time` is the game-layer animation clock;
 /// `store` is the per-model hit-zone data ([`HitZoneStore`]). The result's `zone`
 /// carries the struck bone's tag for a capsule hit (the zone-multiplier damage
 /// routing site reads it).
@@ -677,15 +680,12 @@ pub(crate) fn nearest_entity_hit(
         };
         let health = registry.get_component::<HealthComponent>(id).ok();
 
-        // Zero-HP entities are pending-despawn this tick (the death sweep runs
-        // after weapon fire); skip them so a corpse cannot absorb a shot and
-        // block the wall behind it for one frame. The contextual damage
-        // chokepoint floors `current` at exactly 0.0, so exact equality is sound.
-        //
-        // This gate is Health-branch-only: mesh-only remote enemies are locally
-        // hittable for feel but remain non-damageable because they carry no
-        // Health.
-        if health.is_some_and(|health| health.current == 0.0) {
+        // Terminal despawn keeps the id live through presentation and reaps it
+        // at frame end, but it must stop intercepting later hit queries.
+        if registry
+            .get_component::<DeferredEffectComponent>(id)
+            .is_ok_and(|effects| effects.inert)
+        {
             return;
         }
 
@@ -2135,6 +2135,7 @@ mod tests {
                 current: 100.0,
                 hitbox: None,
                 death_handled: false,
+                pending_kill_credit: None,
                 zone_multipliers: std::collections::HashMap::new(),
                 contributor_ledger: Default::default(),
             },
@@ -2196,6 +2197,7 @@ mod tests {
                 current: 100.0,
                 hitbox: None,
                 death_handled: false,
+                pending_kill_credit: None,
                 zone_multipliers: std::collections::HashMap::new(),
                 contributor_ledger: Default::default(),
             },
@@ -2222,6 +2224,7 @@ mod tests {
                     offset: Vec3::ZERO,
                 }),
                 death_handled: false,
+                pending_kill_credit: None,
                 zone_multipliers: std::collections::HashMap::new(),
                 contributor_ledger: Default::default(),
             },
@@ -2290,13 +2293,11 @@ mod tests {
     }
 
     #[test]
-    fn zero_hp_health_mesh_entity_is_not_revisited_as_mesh_candidate() {
+    fn terminally_inert_health_mesh_entity_is_not_revisited_as_mesh_candidate() {
         let mut reg = EntityRegistry::new();
         let store = store_with("mob", swinging_limb_model());
         let id = spawn_zone_entity(&mut reg, "mob", Vec3::ZERO);
-        let mut health = reg.get_component::<HealthComponent>(id).unwrap().clone();
-        health.current = 0.0;
-        reg.set_component(id, health).unwrap();
+        reg.deferred_effect_mut(id).unwrap().inert = true;
 
         let hit = nearest_entity_hit(
             &reg,
@@ -2309,7 +2310,7 @@ mod tests {
 
         assert!(
             hit.is_none(),
-            "zero-HP Health+Mesh entities keep the Health corpse skip and are not hit again via Mesh"
+            "terminally inert Health+Mesh entities are not hit again via Mesh"
         );
     }
 
@@ -2506,6 +2507,7 @@ mod tests {
                 current: 100.0,
                 hitbox: None,
                 death_handled: false,
+                pending_kill_credit: None,
                 zone_multipliers: std::collections::HashMap::new(),
                 contributor_ledger: Default::default(),
             },
@@ -2592,6 +2594,7 @@ mod tests {
                 current: 100.0,
                 hitbox: None,
                 death_handled: false,
+                pending_kill_credit: None,
                 zone_multipliers: std::collections::HashMap::new(),
                 contributor_ledger: Default::default(),
             },
@@ -2664,6 +2667,7 @@ mod tests {
                 current: 100.0,
                 hitbox: None,
                 death_handled: false,
+                pending_kill_credit: None,
                 zone_multipliers: std::collections::HashMap::new(),
                 contributor_ledger: Default::default(),
             },
@@ -2756,6 +2760,7 @@ mod tests {
                     offset: Vec3::ZERO,
                 }),
                 death_handled: false,
+                pending_kill_credit: None,
                 zone_multipliers: std::collections::HashMap::new(),
                 contributor_ledger: Default::default(),
             },
@@ -2873,6 +2878,7 @@ mod tests {
                 current: 100.0,
                 hitbox: None,
                 death_handled: false,
+                pending_kill_credit: None,
                 zone_multipliers: std::collections::HashMap::new(),
                 contributor_ledger: Default::default(),
             },
@@ -2929,6 +2935,7 @@ mod tests {
                     offset: Vec3::ZERO,
                 }),
                 death_handled: false,
+                pending_kill_credit: None,
                 zone_multipliers: std::collections::HashMap::new(),
                 contributor_ledger: Default::default(),
             },
@@ -2978,6 +2985,7 @@ mod tests {
                     offset: Vec3::ZERO,
                 }),
                 death_handled: false,
+                pending_kill_credit: None,
                 zone_multipliers: std::collections::HashMap::new(),
                 contributor_ledger: Default::default(),
             },
@@ -3023,6 +3031,7 @@ mod tests {
                     offset: Vec3::ZERO,
                 }),
                 death_handled: false,
+                pending_kill_credit: None,
                 zone_multipliers: std::collections::HashMap::new(),
                 contributor_ledger: Default::default(),
             },
@@ -3072,6 +3081,7 @@ mod tests {
                     offset: Vec3::ZERO,
                 }),
                 death_handled: false,
+                pending_kill_credit: None,
                 zone_multipliers: std::collections::HashMap::new(),
                 contributor_ledger: Default::default(),
             },
@@ -3145,6 +3155,7 @@ mod tests {
                 current: 100.0,
                 hitbox: None,
                 death_handled: false,
+                pending_kill_credit: None,
                 zone_multipliers: std::collections::HashMap::new(),
                 contributor_ledger: Default::default(),
             },
@@ -3257,6 +3268,7 @@ mod tests {
                 current: 100.0,
                 hitbox: None,
                 death_handled: false,
+                pending_kill_credit: None,
                 zone_multipliers: std::collections::HashMap::new(),
                 contributor_ledger: Default::default(),
             },
@@ -3341,10 +3353,10 @@ mod tests {
         assert_eq!(hit2.zone, None, "an AABB hit reports no zone tag");
     }
 
-    /// AC: the zero-HP corpse skip holds for the facility too — a zero-HP zone
-    /// entity on the ray is not hit.
+    /// Regression: zero HP was treated as an engine-owned corpse state, which
+    /// prevented authored downed/gib policies from receiving a later impact.
     #[test]
-    fn zero_hp_zone_entity_is_skipped() {
+    fn zero_hp_zone_entity_remains_hittable_for_authored_lifecycle_policy() {
         let mut reg = EntityRegistry::new();
         let store = store_with("mob", swinging_limb_model());
         let id = spawn_zone_entity(&mut reg, "mob", Vec3::ZERO);
@@ -3359,8 +3371,10 @@ mod tests {
             Vec3::new(5.0, 0.0, 10.0),
             Vec3::new(0.0, 0.0, -1.0),
             100.0,
-        );
-        assert!(hit.is_none(), "a zero-HP zone entity (corpse) is skipped");
+        )
+        .expect("a downed zero-HP entity remains targetable");
+        assert_eq!(hit.target, id);
+        assert_eq!(hit.zone.as_deref(), Some("hand"));
     }
 
     /// AC: an entity whose model has NO zone tags falls back to AABB behavior
@@ -3400,6 +3414,7 @@ mod tests {
                     offset: Vec3::ZERO,
                 }),
                 death_handled: false,
+                pending_kill_credit: None,
                 zone_multipliers: std::collections::HashMap::new(),
                 contributor_ledger: Default::default(),
             },

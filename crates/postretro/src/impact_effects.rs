@@ -1,15 +1,39 @@
 // Command-buffer effects addressed to one live impact target.
 // See: context/lib/scripting.md §11 · context/lib/entity_model.md §5.
 
-#[cfg(test)]
-use postretro_entities::DeferredEffectComponent;
-#[cfg(test)]
-use postretro_entities::components::health::HealthComponent;
-use postretro_entities::components::health::set_health_absolute;
+use postretro_entities::components::brain::BrainComponent;
+use postretro_entities::components::health::{
+    HealthComponent, PendingKillCredit, set_health_absolute,
+};
 use postretro_entities::components::mesh::{SwitchResult, switch_animation_state};
 use postretro_entities::{
-    DeferredEffectKind, EntityId, EntityRegistry, MAX_PENDING_EFFECTS_PER_ENTITY, PendingEffect,
+    DeferredEffectComponent, DeferredEffectKind, EntityId, EntityRegistry,
+    MAX_PENDING_EFFECTS_PER_ENTITY, PendingEffect,
 };
+
+use crate::scripting_systems::health::ContributorLedgerSnapshot;
+
+/// Postretro-side kill-report facts handed out by the deferred-removal seam.
+///
+/// `PendingKillCredit` remains entities-resident because it is component state;
+/// this snapshot is deliberately made after reading that state and before its
+/// destruction, so downstream report consumers cannot retain a component type.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct KillReportCredit {
+    pub(crate) tags: Vec<String>,
+    pub(crate) contributor_ledger: ContributorLedgerSnapshot,
+}
+
+impl From<&PendingKillCredit> for KillReportCredit {
+    fn from(pending: &PendingKillCredit) -> Self {
+        Self {
+            tags: pending.tags.clone(),
+            contributor_ledger: ContributorLedgerSnapshot::from_contributor_ledger(
+                &pending.contributor_ledger,
+            ),
+        }
+    }
+}
 
 /// Closed non-IR impact-effect instructions consumed by the policy evaluator.
 #[derive(Clone, Debug, PartialEq)]
@@ -64,7 +88,8 @@ pub(crate) fn set_health(
 
 /// Apply or enqueue a terminal despawn.
 ///
-/// Delayed despawns leave the entity active until their countdown elapses. An
+/// Delayed despawns leave the entity live until their countdown elapses, while
+/// brain and agent ticks quiesce it for the authored removal window. An
 /// immediate despawn (or an elapsed queued despawn) makes it inert, clears the
 /// whole queue, and stages it for the one app-owned frame-end removal pass.
 pub(crate) fn despawn(registry: &mut EntityRegistry, target: EntityId, after_ms: Option<f32>) {
@@ -93,6 +118,50 @@ pub(crate) fn play_animation(
     state: &str,
 ) -> SwitchResult {
     switch_animation_state(registry, target, state)
+}
+
+/// Whether a zero-HP entity is waiting for an authored positive-health recovery.
+///
+/// This is the nonterminal "downed" lifecycle: it keeps the entity present and
+/// targetable, but AI and steering must hold still until the queued recovery
+/// writes health back above zero. A bare zero-HP entity remains active; only an
+/// explicit deferred recovery opts into this behavior.
+pub(crate) fn is_downed_for_recovery(registry: &EntityRegistry, target: EntityId) -> bool {
+    let Ok(health) = registry.get_component::<HealthComponent>(target) else {
+        return false;
+    };
+    if health.current > 0.0 {
+        return false;
+    }
+
+    registry
+        .get_component::<DeferredEffectComponent>(target)
+        .is_ok_and(|effects| {
+            effects.pending.iter().any(|effect| {
+                effect.kind == DeferredEffectKind::SetHealth
+                    && effect
+                        .value
+                        .is_some_and(|value| value.is_finite() && value > 0.0)
+            })
+        })
+}
+
+/// Restore a downed brain's baseline presentation when its delayed health
+/// recovery lands. The normal AI tick owns the later idle/walk/attack choice;
+/// this only prevents a revived enemy from remaining frozen in its death pose
+/// until that tick observes movement.
+fn resume_recovered_brain_presentation(registry: &mut EntityRegistry, target: EntityId) {
+    let Ok(mut brain) = registry.get_component::<BrainComponent>(target).cloned() else {
+        return;
+    };
+    let idle = brain.tuning.states.idle.clone();
+    // The deferred period preserves the last locomotion velocity and FSM state.
+    // Invalidate the animation latch so the following AI tick reselects the
+    // state-appropriate idle, walk, or attack clip instead of leaving this
+    // one-tick baseline pose in place indefinitely.
+    brain.locomotion_moving = !brain.locomotion_moving;
+    let _ = registry.set_component(target, brain);
+    let _ = play_animation(registry, target, &idle);
 }
 
 /// Advance active deferred-effect queues after the weapon and enemy-melee
@@ -128,7 +197,16 @@ pub(crate) fn tick_deferred_effects(registry: &mut EntityRegistry, tick_dt: f32)
             let effect = pending.remove(pending_index);
             match effect.kind {
                 DeferredEffectKind::SetHealth => {
+                    let was_downed = registry
+                        .get_component::<HealthComponent>(target)
+                        .is_ok_and(|health| health.current <= 0.0);
                     set_health_absolute(registry, target, effect.value.unwrap_or(0.0));
+                    let recovered = registry
+                        .get_component::<HealthComponent>(target)
+                        .is_ok_and(|health| health.current.is_finite() && health.current > 0.0);
+                    if was_downed && recovered {
+                        resume_recovered_brain_presentation(registry, target);
+                    }
                 }
                 DeferredEffectKind::Despawn => {
                     pending.clear();
@@ -160,15 +238,26 @@ pub(crate) fn tick_deferred_effects(registry: &mut EntityRegistry, tick_dt: f32)
 }
 
 /// Reap all terminally marked entities exactly once at the app's frame-end
-/// stage. The callback observes successful removals only; an empty callback
-/// intentionally adds no reporting semantics.
+/// stage. The callback observes successful removals only and receives the
+/// non-player credit snapshot captured before `despawn` drops the component.
+/// A missing snapshot means this was an above-zero despawn and must not report
+/// a kill.
 pub(crate) fn run_end_of_frame_removal_pass(
     registry: &mut EntityRegistry,
-    mut on_removed: impl FnMut(EntityId),
+    mut on_removed: impl FnMut(EntityId, Option<KillReportCredit>),
 ) {
     for target in registry.take_end_of_frame_removals() {
+        let pending_kill_credit = registry
+            .get_component::<HealthComponent>(target)
+            .ok()
+            .and_then(|health| {
+                health
+                    .pending_kill_credit
+                    .as_ref()
+                    .map(KillReportCredit::from)
+            });
         if registry.despawn(target).is_ok() {
-            on_removed(target);
+            on_removed(target, pending_kill_credit);
         }
     }
 }
@@ -223,6 +312,7 @@ fn tick_micros(tick_dt: f32) -> u64 {
 mod tests {
     use super::*;
     use postretro_entities::Transform;
+    use postretro_entities::components::health::ContributorLedgerRecord;
     use postretro_entities::data_descriptors::HealthDescriptor;
 
     fn health_target(registry: &mut EntityRegistry, max: f32) -> EntityId {
@@ -243,6 +333,32 @@ mod tests {
             .get_component::<HealthComponent>(target)
             .expect("health remains attached")
             .current
+    }
+
+    fn latch_nonplayer_kill_credit(
+        registry: &mut EntityRegistry,
+        target: EntityId,
+        tags: &[&str],
+        source_id: &str,
+    ) {
+        registry
+            .set_tags(target, tags.iter().map(|tag| (*tag).to_string()).collect())
+            .expect("target is live");
+        let mut health = registry
+            .get_component::<HealthComponent>(target)
+            .expect("target has health")
+            .clone();
+        health.current = 0.0;
+        health.record_contributor_damage(ContributorLedgerRecord::new(source_id, health.max));
+        registry
+            .set_component(target, health)
+            .expect("target is live");
+
+        assert_eq!(
+            crate::scripting_systems::health::sweep_deaths(registry),
+            crate::scripting_systems::health::DeathReport::default(),
+            "zero HP latches credit but does not report a kill",
+        );
     }
 
     fn assert_number_approx_eq(actual: f32, expected: f32) {
@@ -325,9 +441,114 @@ mod tests {
         );
 
         let mut removed = Vec::new();
-        run_end_of_frame_removal_pass(&mut registry, |id| removed.push(id));
-        assert_eq!(removed, vec![target]);
+        run_end_of_frame_removal_pass(&mut registry, |id, credit| removed.push((id, credit)));
+        assert_eq!(removed, vec![(target, None)]);
         assert!(!registry.exists(target));
+    }
+
+    #[test]
+    fn latched_kill_credit_reports_once_at_successful_frame_end_removal() {
+        let mut registry = EntityRegistry::new();
+        let target = health_target(&mut registry, 100.0);
+        latch_nonplayer_kill_credit(&mut registry, target, &["wave"], "weapon.first");
+
+        despawn(&mut registry, target, None);
+        let mut reports = Vec::new();
+        run_end_of_frame_removal_pass(&mut registry, |id, credit| reports.push((id, credit)));
+
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].0, target);
+        let credit = reports[0].1.as_ref().expect("latched kill carries credit");
+        assert_eq!(credit.tags, vec!["wave".to_string()]);
+        assert_eq!(
+            credit.contributor_ledger.entries[0].source_id,
+            "weapon.first"
+        );
+        assert!(!registry.exists(target));
+
+        run_end_of_frame_removal_pass(&mut registry, |id, credit| reports.push((id, credit)));
+        assert_eq!(
+            reports.len(),
+            1,
+            "a successful removal reports exactly once"
+        );
+    }
+
+    #[test]
+    fn delayed_despawn_reports_latched_credit_only_when_removed() {
+        let mut registry = EntityRegistry::new();
+        let target = health_target(&mut registry, 100.0);
+        latch_nonplayer_kill_credit(&mut registry, target, &["wave"], "weapon.delayed");
+
+        despawn(&mut registry, target, Some(10.0));
+        tick_deferred_effects(&mut registry, 0.005);
+        let mut reports = Vec::new();
+        run_end_of_frame_removal_pass(&mut registry, |id, credit| reports.push((id, credit)));
+        assert!(registry.exists(target));
+        assert!(
+            reports.is_empty(),
+            "the unelapsed delay cannot report a kill"
+        );
+
+        tick_deferred_effects(&mut registry, 0.005);
+        run_end_of_frame_removal_pass(&mut registry, |id, credit| reports.push((id, credit)));
+        assert_eq!(reports.len(), 1);
+        assert_eq!(
+            reports[0].1.as_ref().unwrap().tags,
+            vec!["wave".to_string()]
+        );
+    }
+
+    // Regression: resurrection cleared the frozen wrapper but retained the live
+    // contributor ledger, so the later removal credited both downs.
+    #[test]
+    fn resurrected_rekill_removal_reports_only_new_lethal_contributor() {
+        let mut registry = EntityRegistry::new();
+        let target = health_target(&mut registry, 100.0);
+        latch_nonplayer_kill_credit(&mut registry, target, &["first-down"], "weapon.first");
+
+        set_health(&mut registry, target, 100.0, None);
+        let resurrected = registry.get_component::<HealthComponent>(target).unwrap();
+        assert!(!resurrected.death_handled);
+        assert!(resurrected.pending_kill_credit.is_none());
+
+        latch_nonplayer_kill_credit(&mut registry, target, &["second-down"], "weapon.second");
+        despawn(&mut registry, target, None);
+        let mut reports = Vec::new();
+        run_end_of_frame_removal_pass(&mut registry, |id, credit| reports.push((id, credit)));
+
+        assert_eq!(reports.len(), 1);
+        assert_eq!(
+            reports[0].1.as_ref().unwrap().tags,
+            vec!["second-down".to_string()],
+            "the revived entity reports only its re-kill's freshly latched credit",
+        );
+        let ledger = &reports[0].1.as_ref().unwrap().contributor_ledger;
+        assert_eq!(ledger.entries.len(), 1);
+        assert_eq!(ledger.entries[0].source_id, "weapon.second");
+        assert!(ledger.overflow.is_none());
+    }
+
+    #[test]
+    fn zero_health_effect_preserves_latched_death_and_pending_credit() {
+        let mut registry = EntityRegistry::new();
+        let target = health_target(&mut registry, 100.0);
+        latch_nonplayer_kill_credit(&mut registry, target, &["downed"], "weapon.first");
+
+        set_health(&mut registry, target, 0.0, None);
+
+        let health = registry.get_component::<HealthComponent>(target).unwrap();
+        assert_eq!(health.current, 0.0);
+        assert!(health.death_handled);
+        let credit = health
+            .pending_kill_credit
+            .as_ref()
+            .expect("setHealth(0) must preserve the frozen down credit");
+        assert_eq!(credit.tags, vec!["downed".to_string()]);
+        assert_eq!(
+            credit.contributor_ledger.entries()[0].source_id,
+            "weapon.first"
+        );
     }
 
     // Regression: host snapshots were collected before frame-end impact
@@ -340,7 +561,7 @@ mod tests {
         replicable.register(target);
 
         despawn(&mut registry, target, None);
-        run_end_of_frame_removal_pass(&mut registry, |_| {});
+        run_end_of_frame_removal_pass(&mut registry, |_, _| {});
 
         let snapshots = crate::netcode::produce_owned_snapshots(
             &registry,
@@ -383,7 +604,7 @@ mod tests {
                 .inert
         );
 
-        run_end_of_frame_removal_pass(&mut registry, |_| {});
+        run_end_of_frame_removal_pass(&mut registry, |_, _| {});
         assert!(!registry.exists(target));
     }
 

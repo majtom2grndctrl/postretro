@@ -290,6 +290,7 @@ mod tests {
                 current: 1.0,
                 hitbox: None,
                 death_handled: false,
+                pending_kill_credit: None,
                 zone_multipliers: HashMap::new(),
                 contributor_ledger: Default::default(),
             }),
@@ -390,6 +391,7 @@ mod tests {
             current: 100.0,
             hitbox: None,
             death_handled: false,
+            pending_kill_credit: None,
             zone_multipliers,
             contributor_ledger: Default::default(),
         })

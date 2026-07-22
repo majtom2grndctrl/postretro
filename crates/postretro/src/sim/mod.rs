@@ -58,6 +58,13 @@ pub(crate) struct PostMovementCommand {
     pub(crate) aim_direction: Vec3,
 }
 
+fn player_is_present_for_trigger_occupancy(
+    registry: &EntityRegistry,
+    player: &AuthoritativePlayer,
+) -> bool {
+    registry.exists(player.pawn)
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct RemotePawnCommand {
     pub(crate) pawn: EntityId,
@@ -119,7 +126,7 @@ pub(crate) fn simulate_tick(
     gravity: f32,
     active_wieldable: Option<EntityId>,
     anim_time: f64,
-    progress_tracker: &mut ProgressTracker,
+    _progress_tracker: &mut ProgressTracker,
     ai_warned: &mut HashSet<String>,
     mover_colliders: &[MoverCollider],
     mover_tick_states: &mut MoverTickStateTable,
@@ -199,11 +206,7 @@ pub(crate) fn simulate_tick(
             let registry = registry.borrow();
             players
                 .iter()
-                .filter(|player| {
-                    registry
-                        .get_component::<HealthComponent>(player.pawn)
-                        .map_or(true, |health| health.current > 0.0)
-                })
+                .filter(|player| player_is_present_for_trigger_occupancy(&registry, player))
                 .map(|player| player.id)
                 .collect()
         };
@@ -335,7 +338,7 @@ pub(crate) fn simulate_tick(
     );
     reload_deliveries.extend(local_deliveries);
     weapon.extend(remote_weapon_events);
-    let death = run_death_sweep(&registry, progress_tracker);
+    let death = run_death_sweep(&registry);
 
     TickEvents {
         movement,
@@ -1126,19 +1129,13 @@ fn apply_weapon_impact_damage_with_source(
     );
 }
 
-pub(crate) fn run_death_sweep(
-    registry: &Rc<RefCell<EntityRegistry>>,
-    progress_tracker: &mut ProgressTracker,
-) -> Vec<String> {
+pub(crate) fn run_death_sweep(registry: &Rc<RefCell<EntityRegistry>>) -> Vec<String> {
     let report = {
         let mut registry = registry.borrow_mut();
         scripting_systems::health::sweep_deaths(&mut registry)
     };
 
     let mut events = Vec::new();
-    for tags in &report.killed_tags {
-        events.extend(progress_tracker.on_entity_killed(tags));
-    }
     if report.player_died {
         events.push(scripting_systems::health::PLAYER_DIED_EVENT.to_string());
     }
@@ -1182,6 +1179,8 @@ mod tests {
     use crate::trigger_system::TriggerEventEdge;
     use crate::weapon::FireButtonState;
     use glam::Vec2;
+    use postretro_entities::components::agent::AgentComponent;
+    use postretro_entities::components::brain::{AiStateMap, AiTuning};
     use postretro_entities::components::mesh::{
         AnimationState, DEFAULT_CROSSFADE_MS, InterruptPolicy, MeshAnimation, MeshComponent,
         resolve_pending_animation_stamps,
@@ -1201,6 +1200,36 @@ mod tests {
     use postretro_scripting_core::reaction_dispatch::fire_prepartitioned_reactions_with_sequences;
     use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
     use std::collections::{BTreeMap, HashMap, HashSet};
+
+    #[test]
+    fn zero_hp_player_remains_present_for_trigger_occupancy_until_despawn() {
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                pawn,
+                HealthComponent {
+                    max: 100.0,
+                    current: 0.0,
+                    hitbox: None,
+                    death_handled: true,
+                    pending_kill_credit: None,
+                    zone_multipliers: Default::default(),
+                    contributor_ledger: Default::default(),
+                },
+            )
+            .unwrap();
+        let player = AuthoritativePlayer {
+            id: PlayerId::Local(pawn),
+            pawn,
+        };
+
+        assert!(player_is_present_for_trigger_occupancy(&registry, &player));
+
+        registry.despawn(pawn).unwrap();
+
+        assert!(!player_is_present_for_trigger_occupancy(&registry, &player));
+    }
 
     #[test]
     fn disconnected_remote_fire_context_keeps_trigger_and_occupancy_but_has_no_activator() {
@@ -1590,6 +1619,7 @@ mod tests {
                         current: 100.0,
                         hitbox: None,
                         death_handled: false,
+                        pending_kill_credit: None,
                         zone_multipliers: Default::default(),
                         contributor_ledger: Default::default(),
                     },
@@ -1891,6 +1921,7 @@ mod tests {
                             current: 100.0,
                             hitbox: None,
                             death_handled: false,
+                            pending_kill_credit: None,
                             zone_multipliers: Default::default(),
                             contributor_ledger: Default::default(),
                         },
@@ -2015,6 +2046,7 @@ mod tests {
                         current: 100.0,
                         hitbox: None,
                         death_handled: false,
+                        pending_kill_credit: None,
                         zone_multipliers: Default::default(),
                         contributor_ledger: Default::default(),
                     },
@@ -2727,6 +2759,7 @@ mod tests {
             current: 100.0,
             hitbox: None,
             death_handled: false,
+            pending_kill_credit: None,
             zone_multipliers: Default::default(),
             contributor_ledger: Default::default(),
         };
@@ -2771,6 +2804,7 @@ mod tests {
             current: 100.0,
             hitbox: None,
             death_handled: false,
+            pending_kill_credit: None,
             zone_multipliers: Default::default(),
             contributor_ledger: Default::default(),
         };
@@ -2809,6 +2843,7 @@ mod tests {
                         current: 100.0,
                         hitbox: None,
                         death_handled: false,
+                        pending_kill_credit: None,
                         zone_multipliers: Default::default(),
                         contributor_ledger: Default::default(),
                     },
@@ -2879,8 +2914,116 @@ mod tests {
         );
     }
 
+    // Regression: the AI brain skipped a queued despawn, but the later
+    // fixed-tick steering stage still followed its retained path.
     #[test]
-    fn authorized_remote_hit_damage_can_run_death_sweep_in_same_host_tick() {
+    fn fixed_tick_queued_despawn_quiesces_brain_agent_steering() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let (enemy, start) = {
+            let mut registry = registry.borrow_mut();
+            let start = Transform {
+                position: Vec3::new(2.0, 1.0, 2.0),
+                ..Transform::default()
+            };
+            let enemy = registry.spawn(start);
+
+            let destination = Vec3::new(12.0, 1.0, 2.0);
+            let mut agent = AgentComponent::new(0.35, 1.8, 0.4, 4.0);
+            agent.path = vec![destination];
+            agent.mandatory_waypoints = vec![false];
+            agent.destination = Some(destination);
+            agent.planned_destination = Some(destination);
+            agent.replan_cooldown_ticks = 10;
+            registry.set_component(enemy, agent).unwrap();
+            registry
+                .set_component(
+                    enemy,
+                    BrainComponent {
+                        state: LogicalState::Alert,
+                        attack_cooldown_remaining_ms: 0.0,
+                        think_stride_counter: 0,
+                        death_despawn_remaining_ms: None,
+                        locomotion_moving: false,
+                        aggro_armed: true,
+                        acquired_target: None,
+                        combat_slot: None,
+                        combat_slot_hold_ticks: 0,
+                        tuning: AiTuning {
+                            detection_range: 18.0,
+                            attack_range: 2.0,
+                            leash_range: 26.0,
+                            attack_damage: 8.0,
+                            attack_cooldown_ms: 1000.0,
+                            move_speed: 4.0,
+                            death_despawn_ms: 500.0,
+                            states: AiStateMap {
+                                idle: "idle".into(),
+                                alert: "walk".into(),
+                                attack: "attack".into(),
+                                death: "death".into(),
+                            },
+                        },
+                    },
+                )
+                .unwrap();
+            crate::impact_effects::despawn(&mut registry, enemy, Some(500.0));
+            (enemy, start)
+        };
+
+        let world = CollisionWorld::new();
+        let hit_zones = HitZoneStore::new();
+        let mut progress = ProgressTracker::new();
+        let mut ai_warned = HashSet::new();
+        let mut mover_states = MoverTickStateTable::default();
+        let events = simulate_tick(
+            registry.clone(),
+            &world,
+            &hit_zones,
+            None,
+            0.0,
+            None,
+            0.0,
+            &mut progress,
+            &mut ai_warned,
+            &[],
+            &mut mover_states,
+            &[],
+            &sim_command(false, false),
+            |_| PostMovementCommand {
+                aim_origin: Vec3::ZERO,
+                aim_direction: Vec3::NEG_Z,
+            },
+            0.1,
+            None,
+            |_| {},
+        );
+
+        assert!(events.ai.is_empty(), "queued despawn must suppress attacks");
+        let registry = registry.borrow();
+        assert_eq!(
+            registry.get_component::<Transform>(enemy).unwrap().position,
+            start.position,
+            "the real fixed-tick steering stage must not move a queued-despawn brain",
+        );
+        let agent = registry.get_component::<AgentComponent>(enemy).unwrap();
+        assert_eq!(agent.velocity, Vec3::ZERO);
+        assert_eq!(agent.destination, Some(Vec3::new(12.0, 1.0, 2.0)));
+        let effects = registry
+            .get_component::<postretro_entities::DeferredEffectComponent>(enemy)
+            .unwrap();
+        assert!(
+            !effects.inert,
+            "the delayed removal countdown is still active"
+        );
+        assert!(
+            effects.pending[0].remaining_us.abs_diff(400_000) <= 1,
+            "one 0.1s fixed tick leaves about 400ms; got {}us",
+            effects.pending[0].remaining_us,
+        );
+    }
+
+    #[test]
+    fn authorized_remote_hit_latches_without_reporting_or_removal_in_same_host_tick() {
         let registry = Rc::new(RefCell::new(EntityRegistry::new()));
         let (weapon_id, attacker, target) = {
             let mut registry = registry.borrow_mut();
@@ -2895,6 +3038,7 @@ mod tests {
                         current: 10.0,
                         hitbox: None,
                         death_handled: false,
+                        pending_kill_credit: None,
                         zone_multipliers: Default::default(),
                         contributor_ledger: Default::default(),
                     },
@@ -2925,13 +3069,22 @@ mod tests {
             );
         }
 
-        let mut progress = ProgressTracker::new();
-        let death_events = run_death_sweep(&registry, &mut progress);
+        let death_events = run_death_sweep(&registry);
 
         assert!(death_events.is_empty());
         assert!(
-            !registry.borrow().exists(target),
-            "the narrow post-HIT sweep removes the zero-HP target before snapshots settle"
+            registry.borrow().exists(target),
+            "the post-HIT sweep leaves a zero-HP target live for authored despawn"
+        );
+        let health = registry
+            .borrow()
+            .get_component::<HealthComponent>(target)
+            .unwrap()
+            .clone();
+        assert!(health.death_handled);
+        assert!(
+            health.pending_kill_credit.is_some(),
+            "the sweep freezes credit but emits no progress event",
         );
     }
 }

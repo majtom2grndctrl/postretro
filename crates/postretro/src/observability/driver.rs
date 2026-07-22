@@ -203,8 +203,12 @@ fn run_headless_inner(
         .map(|aim| yaw_from_direction(aim.direction))
         .unwrap_or(0.0);
     let mut events: Vec<TickEventRecord> = Vec::new();
+    // Deferred removals report after a tick's game-logic event collection, so
+    // their progress events become observable in the following tick's dump.
+    let mut pending_death_events: Vec<String> = Vec::new();
 
     for tick in 0..runspec.ticks {
+        let mut death_events_for_tick = std::mem::take(&mut pending_death_events);
         // Sparse command timeline: the active entry is the last one whose tick has
         // arrived; the effective aim is the most recent aim among arrived entries
         // (aim carries no neutral — it persists until overridden).
@@ -285,7 +289,12 @@ fn run_headless_inner(
             &mut session.scripting.slot_accumulator_bindings,
             TICK_DT,
         );
-        run_headless_frame_end_removals(&registry);
+        run_headless_frame_end_removals(
+            &registry,
+            &mut progress_tracker,
+            &mut pending_death_events,
+        );
+        death_events_for_tick.extend(tick_events.death.iter().cloned());
 
         // Skip building/pushing the owned-string record entirely when the dump
         // won't emit events — `build_output_document` discards this vec wholesale
@@ -304,7 +313,7 @@ fn run_headless_inner(
                 movement: to_owned_strings(&tick_events.movement),
                 ai: to_owned_strings(&tick_events.ai),
                 weapon: weapon_events,
-                death: tick_events.death.clone(),
+                death: death_events_for_tick,
             });
         }
 
@@ -331,8 +340,21 @@ fn run_headless_inner(
     Ok(to_deterministic_json(&doc)?)
 }
 
-fn run_headless_frame_end_removals(registry: &Rc<RefCell<EntityRegistry>>) {
-    crate::impact_effects::run_end_of_frame_removal_pass(&mut registry.borrow_mut(), |_| {});
+fn run_headless_frame_end_removals(
+    registry: &Rc<RefCell<EntityRegistry>>,
+    progress_tracker: &mut ProgressTracker,
+    next_tick_death_events: &mut Vec<String>,
+) {
+    crate::impact_effects::run_end_of_frame_removal_pass(
+        &mut registry.borrow_mut(),
+        |_, pending_kill_credit| {
+            let Some(pending_kill_credit) = pending_kill_credit else {
+                return;
+            };
+            next_tick_death_events
+                .extend(progress_tracker.on_entity_killed(&pending_kill_credit.tags));
+        },
+    );
 }
 
 fn active_level_tags_for_headless_install() -> Vec<String> {
@@ -440,6 +462,10 @@ fn build_player_summary(registry: &EntityRegistry, facing_yaw: f32) -> Option<Pl
 #[cfg(test)]
 mod tests {
     use super::*;
+    use postretro_entities::DataRegistry;
+    use postretro_entities::data_descriptors::{
+        HealthDescriptor, NamedReaction, ProgressDescriptor, ReactionDescriptor,
+    };
 
     #[test]
     fn headless_install_keeps_direct_prl_paths_untagged() {
@@ -593,8 +619,68 @@ mod tests {
             .mark_for_end_of_frame_removal(target)
             .unwrap();
 
-        run_headless_frame_end_removals(&registry);
+        let mut progress_tracker = ProgressTracker::new();
+        let mut next_tick_death_events = Vec::new();
+        run_headless_frame_end_removals(
+            &registry,
+            &mut progress_tracker,
+            &mut next_tick_death_events,
+        );
 
         assert!(!registry.borrow().exists(target));
+    }
+
+    #[test]
+    fn headless_removal_queues_kill_progress_for_the_next_tick() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        let target = registry.borrow_mut().spawn(Transform::default());
+        registry
+            .borrow_mut()
+            .set_tags(target, vec!["wave".to_string()])
+            .unwrap();
+        let mut health = HealthComponent::from_descriptor(&HealthDescriptor {
+            max: 10.0,
+            hitbox: None,
+            zone_multipliers: Default::default(),
+        });
+        health.current = 0.0;
+        registry.borrow_mut().set_component(target, health).unwrap();
+
+        let mut data = DataRegistry::new();
+        data.populate_level(
+            vec![NamedReaction {
+                name: "wave_done".to_string(),
+                descriptor: ReactionDescriptor::Progress(ProgressDescriptor {
+                    tag: "wave".to_string(),
+                    at: 1.0,
+                    fire: "wave_complete".to_string(),
+                }),
+            }],
+            Vec::new(),
+            &[],
+        );
+        let mut progress_tracker = ProgressTracker::new();
+        progress_tracker.initialize(&data, &registry.borrow());
+
+        assert_eq!(
+            crate::scripting_systems::health::sweep_deaths(&mut registry.borrow_mut()),
+            crate::scripting_systems::health::DeathReport::default(),
+            "the zero-HP sweep itself must not queue kill progress",
+        );
+        crate::impact_effects::despawn(&mut registry.borrow_mut(), target, None);
+
+        let mut next_tick_death_events = Vec::new();
+        run_headless_frame_end_removals(
+            &registry,
+            &mut progress_tracker,
+            &mut next_tick_death_events,
+        );
+        assert_eq!(next_tick_death_events, vec!["wave_complete".to_string()]);
+
+        let death_events_for_next_tick = std::mem::take(&mut next_tick_death_events);
+        assert_eq!(
+            death_events_for_next_tick,
+            vec!["wave_complete".to_string()]
+        );
     }
 }

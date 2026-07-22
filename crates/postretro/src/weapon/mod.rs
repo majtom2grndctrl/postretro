@@ -862,6 +862,7 @@ mod tests {
                         offset,
                     }),
                     death_handled: false,
+                    pending_kill_credit: None,
                     zone_multipliers: std::collections::HashMap::new(),
                     contributor_ledger: Default::default(),
                 },
@@ -1636,13 +1637,13 @@ mod tests {
         assert_vec3_approx(impact.point, Vec3::new(0.0, 0.0, -5.0));
     }
 
-    // Regression: a zero-HP entity that has not yet been swept from the registry
-    // (death sweep runs after weapon fire) was absorbing shots for one frame,
-    // blocking the wall behind it.
+    // Regression: a zero-HP entity stays targetable until an authored lifecycle
+    // action makes it terminally inert, so a downed target can receive a later
+    // impact (for example, the zombie gib policy).
     #[test]
-    fn zero_hp_entity_on_ray_is_not_targeted_wall_behind_wins() {
+    fn zero_hp_entity_on_ray_remains_targetable_before_terminal_removal() {
         // Entity with current == 0.0 sits directly on the ray in front of the
-        // wall. The wall should win; the corpse must not absorb the shot.
+        // wall. Zero HP alone does not let the wall win the ray.
         let mut registry = EntityRegistry::new();
         let weapon_id = spawn_weapon(&mut registry, weapon_component(FireMode::Semi, 100.0));
         let corpse = spawn_hitbox_entity(
@@ -1651,7 +1652,8 @@ mod tests {
             Vec3::splat(0.5),
             Vec3::ZERO,
         );
-        // Drive health to zero to simulate the pending-despawn state.
+        // Drive health to zero to simulate a downed entity before its authored
+        // lifecycle decides whether it resurrects or despawns.
         let mut health = registry
             .get_component::<HealthComponent>(corpse)
             .expect("health component should exist")
@@ -1675,9 +1677,9 @@ mod tests {
             1.0 / 60.0,
         );
 
-        let impact = events.impact.expect("wall hit should emit impact");
-        assert_eq!(impact.target, None, "zero-HP corpse is skipped; wall wins");
-        assert_vec3_approx(impact.point, Vec3::new(0.0, 0.0, -5.0));
+        let impact = events.impact.expect("downed target should emit impact");
+        assert_eq!(impact.target, Some(corpse));
+        assert_vec3_approx(impact.point, Vec3::new(0.0, 0.0, -2.5));
     }
 
     // --- Skeletal hit-zone delegation ---------------------------------------
@@ -1761,6 +1763,7 @@ mod tests {
                     current: 100.0,
                     hitbox: None,
                     death_handled: false,
+                    pending_kill_credit: None,
                     zone_multipliers: std::collections::HashMap::new(),
                     contributor_ledger: Default::default(),
                 },

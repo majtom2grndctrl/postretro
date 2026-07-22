@@ -152,7 +152,7 @@
 "classname" "reference_enemy"
 "origin" "944 256 16"
 "angles" "0 180 0"
-"_tags" "enemy"
+"_tags" "enemy combat-zombie"
 }
 // entity 9
 {

@@ -7,7 +7,8 @@
 //
 // This file declares the two reactions that close the combat loop end to end:
 //
-//   1. A `progress` reaction over the `dummy` spawn tag. Its denominator (the
+//   1. A `progress` reaction named `combatDummyProgress` over the `dummy` spawn
+//      tag. Its denominator (the
 //      number of tagged `target_dummy` entities) is captured at level load; as
 //      the player shoots dummies dead, the death sweep feeds each kill into the
 //      progress tracker. When `killed / total >= at` (here 0.5 — half the
@@ -43,9 +44,9 @@ const KILL_FRACTION = 0.5;
 // One finite, positive hit. Sized so the drop is obvious on the HUD without
 // killing the player (player max is 100).
 const RETALIATION_DAMAGE = 35;
-// The event name the progress threshold fires AND the name the applyDamage
-// reaction is registered under. They must be identical for the chain to close.
+// The event name fired by progress and handled by the applyDamage reaction.
 const RETALIATION_EVENT = "dummiesCleared";
+const PROGRESS_REACTION = "combatDummyProgress";
 
 export function setupLevel(_ctx: unknown): { reactions: NamedReactionDescriptor[] } {
   const reactions: NamedReactionDescriptor[] = [];
@@ -53,7 +54,7 @@ export function setupLevel(_ctx: unknown): { reactions: NamedReactionDescriptor[
   // (a) Progress threshold over the dummy tag. `fire` names the event emitted
   //     when `killed / total >= at`.
   reactions.push(
-    defineReaction(RETALIATION_EVENT, {
+    defineReaction(PROGRESS_REACTION, {
       progress: { tag: "dummy", at: KILL_FRACTION, fire: RETALIATION_EVENT },
     }),
   );

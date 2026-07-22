@@ -70,7 +70,7 @@ All entities update each fixed-timestep game logic tick. See section 5 for updat
 Entities are destroyed when:
 
 - A scripted or engine bridge condition fires (expired particle, emitter despawn, level unload).
-- Health reaches zero: a per-tick death sweep despawns non-player entities at zero HP (and reports kills to the progress tracker). The player pawn never despawns from damage — HP latches at zero and a one-shot death event fires. Brain-bearing entities are a third case: the sweep counts the kill once via a latch, then defers despawn to the AI tick so a death clip can play out.
+- A scripted `despawn` effect reaches the end-of-frame removal pass. Health reaching zero only latches the entity and freezes non-player kill credit; it neither removes nor reports the entity. Successful scripted removal reports that frozen credit, while the player pawn instead remains present and emits one `playerDied` event at its first zero-HP latch.
 - Level unloads (all entities destroyed).
 
 Destruction is immediate: the entity's slot is cleared and its generation bumped (or the slot retired on generation overflow) in the same call that removes the entity. Callers must not hold entity IDs across points where destruction can occur.

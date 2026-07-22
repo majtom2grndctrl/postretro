@@ -738,6 +738,78 @@ mod tests {
         assert_eq!(state(&ctx, target, "hits"), 2.0);
     }
 
+    // Regression: the entity raycast treated zero HP as an engine-owned corpse
+    // state, so a downed target could never reach a later gib policy.
+    #[test]
+    fn downed_target_ray_hit_reaches_later_impact_policy() {
+        use crate::scripting_systems::hit_zones::{HitZoneStore, nearest_entity_hit};
+        use glam::Vec3;
+        use postretro_entities::components::health::Hitbox;
+
+        let ctx = ScriptCtx::new();
+        let target = target(&ctx, &["zombie"]);
+        let mut health = ctx
+            .registry
+            .borrow()
+            .get_component::<HealthComponent>(target)
+            .unwrap()
+            .clone();
+        health.current = 0.0;
+        health.death_handled = true;
+        health.hitbox = Some(Hitbox {
+            half_extents: Vec3::splat(0.5),
+            offset: Vec3::ZERO,
+        });
+        ctx.registry
+            .borrow_mut()
+            .set_component(target, health)
+            .unwrap();
+
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_global_events(vec![event(
+            "gib-downed",
+            "zombie",
+            vec![json!({
+                "when": {
+                    "op": "le",
+                    "a": input("@impact.healthAfter"),
+                    "b": number(-40.0),
+                },
+                "do": [state_write("gibbed", number(1.0))],
+            })],
+        )]);
+
+        let hit = nearest_entity_hit(
+            &ctx.registry.borrow(),
+            &HitZoneStore::new(),
+            0.0,
+            Vec3::new(0.0, 0.0, 5.0),
+            Vec3::NEG_Z,
+            10.0,
+        )
+        .expect("the downed target remains on the weapon ray");
+        assert_eq!(hit.target, target);
+
+        apply_damage_with_context(
+            &mut ctx.registry.borrow_mut(),
+            hit.target,
+            &DamagePayload { amount: 50.0 },
+            DamageContext::new("weapon.gib", DamageProducer::InTick),
+        );
+        evaluate_pending(&ctx, &mut runtime);
+
+        assert_eq!(state(&ctx, target, "gibbed"), 1.0);
+        assert_eq!(
+            ctx.registry
+                .borrow()
+                .get_component::<HealthComponent>(target)
+                .unwrap()
+                .current,
+            0.0,
+            "stored HP remains floored while healthAfter carries the gib overshoot",
+        );
+    }
+
     #[test]
     fn matching_override_uses_last_registered_policy_only() {
         let ctx = ScriptCtx::new();
@@ -846,8 +918,7 @@ mod tests {
             );
             runtime.evaluate_pending_in_registry(&mut registry);
         }
-        let mut progress = postretro_scripting_core::reaction_dispatch::ProgressTracker::new();
-        let events = crate::sim::run_death_sweep(&ctx.registry, &mut progress);
+        let events = crate::sim::run_death_sweep(&ctx.registry);
 
         assert!(events.is_empty());
         assert!(ctx.registry.borrow().exists(target));
@@ -858,6 +929,56 @@ mod tests {
                 .unwrap()
                 .current,
             10.0
+        );
+    }
+
+    #[test]
+    fn non_finite_set_health_expression_resolves_to_zero_without_rearming() {
+        let ctx = ScriptCtx::new();
+        let target = target(&ctx, &["downed"]);
+        let mut health = ctx
+            .registry
+            .borrow()
+            .get_component::<HealthComponent>(target)
+            .unwrap()
+            .clone();
+        health.current = 0.0;
+        health.death_handled = true;
+        ctx.registry
+            .borrow_mut()
+            .set_component(target, health)
+            .unwrap();
+
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_global_events(vec![event(
+            "non-finite-health",
+            "downed",
+            vec![json!({
+                "primitive": "setHealth",
+                "target": "@impact.target",
+                "args": {
+                    "value": {
+                        "op": "mul",
+                        "a": number(1.0e30),
+                        "b": number(1.0e30),
+                    },
+                },
+            })],
+        )]);
+
+        hit(&ctx, target, DamageProducer::InTick);
+        evaluate_pending(&ctx, &mut runtime);
+
+        let health = ctx
+            .registry
+            .borrow()
+            .get_component::<HealthComponent>(target)
+            .unwrap()
+            .clone();
+        assert_eq!(health.current, 0.0);
+        assert!(
+            health.death_handled,
+            "IR non-finite arithmetic coerces to zero, which must not resurrect",
         );
     }
 

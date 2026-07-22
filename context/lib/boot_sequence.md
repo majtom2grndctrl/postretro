@@ -138,7 +138,7 @@ Clear-on-unload contract:
 | Light bridge, fog bridge, collision world | Slot table |
 | Level sounds, sprite collections | Entity-type registry and mod map catalog |
 | Active per-level reactions/crossings and accumulator bindings, level-local reaction/crossing definitions, UI registrations, and presentation cells | Mod-global reaction/crossing definitions and persisted-state save path |
-| Progress tracker, active wieldable, camera pose | Rust-side primitive/classname registries |
+| Progress tracker, frame-end death-event carryover, active wieldable, camera pose | Rust-side primitive/classname registries |
 
 Frontend is a no-level steady state. Renderer and audio may exist, but world, collision, fog, level sounds, and per-level registries are empty. Frontend rendering uses a world-less clear and skips gameplay/HUD reads that require a level.
 
@@ -163,7 +163,7 @@ Platform suspend is a separate path: it clears renderer/window/fog/collision and
 | `data_registry.entities` (entity-type descriptors from `ModManifest.entities`) | Engine-global. Survives level unload; survives platform suspend. |
 | `data_registry.maps` (mod map catalog from `ModManifest.maps`) | Engine-global. Survives level unload; survives platform suspend. |
 | `data_registry.global_reactions` / `global_crossings` / `global_trigger_events` / `global_trigger_pools` (definitions from `ModManifest.reactions` / `crossings` / `triggerEvents` / `triggerPools`) | Engine-global. Survive level unload; survive platform suspend. |
-| Active per-level reactions/crossings/trigger events/trigger pools (`data_registry.reactions` / `crossings` / `trigger_events` / `trigger_pools`), accumulator bindings, and level-scope UI trees | Level unload. Active sets recompose on the next level load from current globals plus that level's catalog tags. |
+| Active per-level reactions/crossings/trigger events/trigger pools (`data_registry.reactions` / `crossings` / `trigger_events` / `trigger_pools`), accumulator bindings, level-scope UI trees, and frame-end death-event carryover | Level unload. Active sets recompose on the next level load from current globals plus that level's catalog tags. |
 | Level world, collision world, fog bridge, light bridge, level sounds, sprite collections, per-level GPU resources | Level unload; also cleared/dropped by suspend or exit as applicable. |
 | Renderer device/queue, window | Dropped on exit; cleared on suspend and rebuilt on resume. (Audio is session-owned — see the session-lifetime row; it survives suspend.) |
 

@@ -1,5 +1,5 @@
-// Per-tick death sweep: resolves zero-HP entities after damage settles.
-// Non-players at zero HP despawn (and report their tags); the player pawn
+// Per-tick death sweep: latches zero-HP entities after damage settles.
+// Zero HP alone never removes an entity; the player pawn
 // latches at zero and reports `playerDied` exactly once. Component-only state
 // (HP, `death_handled`) lives in `components/health.rs`; this is the system
 // half of that split, mirroring the components/systems separation of
@@ -7,16 +7,14 @@
 //
 // Brain-bearing enemies are a THIRD case, layered between player and plain
 // non-player: at zero HP they latch (reusing `HealthComponent.death_handled`)
-// and report the kill exactly ONCE — at the false→true latch transition — but
-// are NOT despawned here. The AI tick (`systems/ai.rs`) owns the brain death:
-// it plays the death animation on entering Death and despawns the entity after
-// `death_despawn_ms`. This is the single authoritative kill latch for a brain;
-// the FSM never re-reports the kill, so a brain death is counted exactly once.
+// and freeze kill credit, but are NOT reported or despawned here. An authored
+// deferred `despawn` owns eventual removal and kill reporting.
 //
 // See: context/lib/entity_model.md §3 (Destruction)
 
 use postretro_entities::components::health::{
-    ContributorLedgerEntry, ContributorLedgerOverflow, HealthComponent,
+    ContributorLedger, ContributorLedgerEntry, ContributorLedgerOverflow, HealthComponent,
+    PendingKillCredit,
 };
 use postretro_entities::registry::{ComponentKind, ComponentValue, EntityId, EntityRegistry};
 
@@ -25,24 +23,11 @@ use postretro_entities::registry::{ComponentKind, ComponentValue, EntityId, Enti
 pub(crate) const PLAYER_DIED_EVENT: &str = "playerDied";
 
 /// What one death sweep observed, returned to the caller because the sweep
-/// cannot reach the progress tracker or the event-dispatch path itself. The
-/// caller feeds `killed_tags` through `ProgressTracker::on_entity_killed` and
-/// fires the resulting events (plus `PLAYER_DIED_EVENT` when `player_died`) via
-/// the death-event drain. Owned data: every reported entity is despawned (or
-/// latched) inside the sweep, so no `EntityId` crosses the boundary.
+/// cannot reach the event-dispatch path itself. Non-player kill credit stays on
+/// `HealthComponent` until a deferred removal actually succeeds; only the
+/// player branch still produces a zero-HP event here.
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct DeathReport {
-    /// Tags of every entity KILLED this sweep, one entry per killed entity (tag
-    /// lists are not deduplicated across entities). A non-brain non-player is
-    /// despawned in this sweep and its tags captured first; a brain-bearing
-    /// enemy's tags are captured at its kill latch (it is NOT despawned here —
-    /// the AI tick despawns it later) so the kill is counted by the progress
-    /// tracker exactly once. Empty when no non-player died.
-    pub(crate) killed_tags: Vec<Vec<String>>,
-    /// Contributor ledgers captured for the same killed entities as
-    /// `killed_tags`. Index-aligned: `killed_contributor_ledgers[i]` describes
-    /// the entity whose tags are in `killed_tags[i]`.
-    pub(crate) killed_contributor_ledgers: Vec<ContributorLedgerSnapshot>,
     /// Set once on the tick the player pawn first reaches zero HP. The
     /// `death_handled` latch guarantees later sweeps leave this `false`.
     pub(crate) player_died: bool,
@@ -51,9 +36,9 @@ pub(crate) struct DeathReport {
     pub(crate) player_contributor_ledger: Option<ContributorLedgerSnapshot>,
 }
 
-/// Owned clone of a target's contributor ledger at the instant death is
-/// reported. This is fact data only; later combat-event/reward policy consumes
-/// it outside this sweep.
+/// Owned contributor facts handed to report consumers. Player credit is cloned
+/// by this sweep; non-player credit is frozen at first-zero HP and converted
+/// from the pending component state when deferred removal succeeds.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct ContributorLedgerSnapshot {
     pub(crate) entries: Vec<ContributorLedgerEntry>,
@@ -62,33 +47,36 @@ pub(crate) struct ContributorLedgerSnapshot {
 
 impl ContributorLedgerSnapshot {
     fn from_health(health: &HealthComponent) -> Self {
+        Self::from_contributor_ledger(&health.contributor_ledger)
+    }
+
+    pub(crate) fn from_contributor_ledger(contributor_ledger: &ContributorLedger) -> Self {
         Self {
-            entries: health.contributor_ledger.entries().to_vec(),
-            overflow: health.contributor_ledger.overflow().cloned(),
+            entries: contributor_ledger.entries().to_vec(),
+            overflow: contributor_ledger.overflow().cloned(),
         }
     }
 }
 
 /// Resolve every entity at zero HP. Two-pass like `particle_sim`: collect the
-/// dead ids under an immutable borrow, then mutate (despawn / latch) so the
+/// dead ids under an immutable borrow, then mutate (latch) so the
 /// registry is never written mid-walk.
 ///
 /// - **Player** (carries `PlayerMovement`): never despawn. If `death_handled`
 ///   is already set, skip entirely (the one-shot latch). Otherwise set the
 ///   latch and report `player_died`.
-/// - **Brain enemy** (carries `Brain`, not `PlayerMovement`): never despawn
-///   here. If `death_handled` is already set, skip (the one-shot latch holds
-///   while the AI tick counts down to despawn). Otherwise set the latch and
-///   capture its tags into `killed_tags` — the single authoritative kill report.
-///   The AI tick owns the eventual despawn.
-/// - **Plain non-player** (neither `PlayerMovement` nor `Brain`): capture its
-///   tags, despawn it immediately, and record the tags in `killed_tags`.
+/// - **Brain enemy** (carries `Brain`, not `PlayerMovement`): if
+///   `death_handled` is already set, skip. Otherwise set the latch and freeze
+///   its tags plus contributor ledger on the health component.
+/// - **Plain non-player** (neither `PlayerMovement` nor `Brain`): follows the
+///   same latch-and-credit behavior. Neither branch removes the entity; an
+///   authored deferred `despawn` owns removal.
 ///
 /// Frame ordering: runs in the game-logic stage after the weapon fire tick, so
 /// damage applied this frame is resolved before render reads entity state.
 pub(crate) fn sweep_deaths(registry: &mut EntityRegistry) -> DeathReport {
     // Pass 1: collect ids at zero HP under the immutable iterator borrow, which
-    // must be dropped before the despawn/latch writes below.
+    // must be dropped before the latch writes below.
     let mut dead: Vec<EntityId> = Vec::new();
     for (id, value) in registry.iter_with_kind(ComponentKind::Health) {
         let ComponentValue::Health(health) = value else {
@@ -98,8 +86,7 @@ pub(crate) fn sweep_deaths(registry: &mut EntityRegistry) -> DeathReport {
         // exactly `0.0`, so today HP never goes negative or non-finite.
         // The guard defends against a future direct write that could: a negative
         // OR a NaN `current` (`NaN <= 0.0` is false, which would otherwise leave a
-        // corrupt entity immortal). The AI tick's death check (`ai.rs`) uses the
-        // same predicate, so the kill-latch and despawn agree on "dead".
+        // corrupt entity immortal).
         if health.current <= 0.0 || !health.current.is_finite() {
             dead.push(id);
         }
@@ -124,19 +111,17 @@ pub(crate) fn sweep_deaths(registry: &mut EntityRegistry) -> DeathReport {
             if health.death_handled {
                 continue;
             }
-            let ledger = ContributorLedgerSnapshot::from_health(health);
             let mut updated = health.clone();
             updated.death_handled = true;
+            let ledger = ContributorLedgerSnapshot::from_health(&updated);
             let _ = registry.set_component(id, updated);
             report.player_died = true;
             report.player_contributor_ledger = Some(ledger);
             continue;
         }
 
-        // A brain-bearing enemy is the single authoritative kill latch: it
-        // latches and reports the kill once here, but is NOT despawned by the
-        // sweep — the AI tick despawns it after `death_despawn_ms`. The FSM
-        // never re-reports the kill, so a brain death is counted exactly once.
+        // A brain-bearing enemy latches credit once here. It persists until an
+        // authored deferred despawn removes and reports it.
         let is_brain = registry
             .has_component_kind(id, ComponentKind::Brain)
             .unwrap_or(false);
@@ -145,40 +130,42 @@ pub(crate) fn sweep_deaths(registry: &mut EntityRegistry) -> DeathReport {
                 continue;
             };
             if health.death_handled {
-                // Latch holds: the enemy persists at zero HP while the AI tick
-                // counts down to despawn. Do not re-count or re-despawn.
+                // Latch holds: do not re-count an entity that persists at zero HP.
                 continue;
             }
-            let ledger = ContributorLedgerSnapshot::from_health(health);
             let mut updated = health.clone();
             updated.death_handled = true;
-            let _ = registry.set_component(id, updated);
-            // Capture tags for the progress tracker; the entity lives on, so the
-            // tags are still readable next sweep but the latch suppresses a
-            // re-report.
             let tags = registry
                 .get_tags(id)
-                .map(|t| t.to_vec())
+                .map(|tags| tags.to_vec())
                 .unwrap_or_default();
-            report.killed_tags.push(tags);
-            report.killed_contributor_ledgers.push(ledger);
+            updated.pending_kill_credit = Some(PendingKillCredit {
+                tags,
+                contributor_ledger: updated.contributor_ledger.clone(),
+            });
+            let _ = registry.set_component(id, updated);
             continue;
         }
 
-        // Plain non-player: capture tags and ledger before despawn clears them.
-        // Stale-id reads default to no tags/ledger rather than aborting the sweep.
-        let ledger = registry
-            .get_component::<HealthComponent>(id)
-            .ok()
-            .map(ContributorLedgerSnapshot::from_health)
-            .unwrap_or_default();
+        // Plain non-player: just like a brain, latch before freezing credit.
+        // It persists at zero HP, so the latch suppresses later changes.
+        let Ok(health) = registry.get_component::<HealthComponent>(id) else {
+            continue;
+        };
+        if health.death_handled {
+            continue;
+        }
+        let mut updated = health.clone();
+        updated.death_handled = true;
         let tags = registry
             .get_tags(id)
-            .map(|t| t.to_vec())
+            .map(|tags| tags.to_vec())
             .unwrap_or_default();
-        let _ = registry.despawn(id);
-        report.killed_tags.push(tags);
-        report.killed_contributor_ledgers.push(ledger);
+        updated.pending_kill_credit = Some(PendingKillCredit {
+            tags,
+            contributor_ledger: updated.contributor_ledger.clone(),
+        });
+        let _ = registry.set_component(id, updated);
     }
 
     report
@@ -190,6 +177,7 @@ mod tests {
     use postretro_entities::components::brain::attach_brain;
     use postretro_entities::components::health::{
         ContributorLedgerRecord, DamageContext, DamageProducer, apply_damage_with_context,
+        set_health_absolute,
     };
     use postretro_entities::components::player_movement::PlayerMovementComponent;
     use postretro_entities::registry::Transform;
@@ -315,38 +303,53 @@ mod tests {
     }
 
     #[test]
-    fn nonplayer_at_zero_is_despawned_and_tags_reported() {
+    fn nonplayer_at_zero_persists_latches_and_freezes_credit_without_a_report() {
         let mut reg = EntityRegistry::new();
         let id = spawn_health_entity(&mut reg, 50.0, 0.0, &["reactorMonster", "wave1"]);
         record_contributor(&mut reg, id, "weapon.test", 50.0);
 
         let report = sweep_deaths(&mut reg);
 
-        assert!(!reg.exists(id), "dead non-player must be despawned");
         assert!(
-            reg.get_component::<HealthComponent>(id).is_err(),
-            "despawn drops the health component and its live contributor ledger"
+            reg.exists(id),
+            "zero HP alone must not despawn a non-player"
+        );
+        assert!(
+            reg.get_component::<HealthComponent>(id)
+                .unwrap()
+                .death_handled,
+            "a persisting non-player must latch after its first zero-HP sweep"
         );
         assert_eq!(
-            report.killed_tags,
-            vec![vec!["reactorMonster".to_string(), "wave1".to_string()]]
+            report,
+            DeathReport::default(),
+            "zero HP emits no kill report"
         );
+        let credit = reg
+            .get_component::<HealthComponent>(id)
+            .unwrap()
+            .pending_kill_credit
+            .as_ref()
+            .expect("first zero-HP latch freezes pending credit");
         assert_eq!(
-            report.killed_contributor_ledgers.len(),
-            report.killed_tags.len(),
-            "killed ledger snapshots must be index-aligned with killed tags"
+            credit.tags,
+            vec!["reactorMonster".to_string(), "wave1".to_string()]
         );
-        assert_eq!(report.killed_contributor_ledgers[0].entries.len(), 1);
+        assert_eq!(credit.contributor_ledger.entries().len(), 1);
         assert_eq!(
-            report.killed_contributor_ledgers[0].entries[0].source_id,
+            credit.contributor_ledger.entries()[0].source_id,
             "weapon.test"
         );
         assert_eq!(
-            report.killed_contributor_ledgers[0].entries[0].accumulated_damage,
+            credit.contributor_ledger.entries()[0].accumulated_damage,
             50.0
         );
-        assert!(!report.player_died);
-        assert!(report.player_contributor_ledger.is_none());
+
+        assert_eq!(
+            sweep_deaths(&mut reg),
+            DeathReport::default(),
+            "the latch must suppress repeated reports while the entity persists",
+        );
     }
 
     #[test]
@@ -370,14 +373,6 @@ mod tests {
         let first = sweep_deaths(&mut reg);
         assert!(reg.exists(id), "player pawn must never despawn from damage");
         assert!(first.player_died, "first zero-HP sweep reports playerDied");
-        assert!(
-            first.killed_tags.is_empty(),
-            "the player is not a kill — no tags reported"
-        );
-        assert!(
-            first.killed_contributor_ledgers.is_empty(),
-            "the player is not a kill — no killed ledger reported"
-        );
         assert!(
             first.player_contributor_ledger.is_some(),
             "player death report captures the player's contributor ledger"
@@ -407,7 +402,28 @@ mod tests {
     }
 
     #[test]
-    fn multiple_dead_nonplayers_all_reported() {
+    fn zero_health_write_preserves_player_died_one_shot_latch() {
+        let mut reg = EntityRegistry::new();
+        let id = spawn_health_entity(&mut reg, 100.0, 0.0, &[]);
+        make_player(&mut reg, id);
+
+        assert!(sweep_deaths(&mut reg).player_died);
+        set_health_absolute(&mut reg, id, 0.0);
+
+        assert_eq!(
+            sweep_deaths(&mut reg),
+            DeathReport::default(),
+            "setHealth(0) must not re-arm playerDied",
+        );
+        assert!(
+            reg.get_component::<HealthComponent>(id)
+                .unwrap()
+                .death_handled
+        );
+    }
+
+    #[test]
+    fn multiple_dead_nonplayers_all_latch_without_a_report() {
         let mut reg = EntityRegistry::new();
         let a = spawn_health_entity(&mut reg, 10.0, 0.0, &["a"]);
         let b = spawn_health_entity(&mut reg, 10.0, 0.0, &["b"]);
@@ -418,51 +434,52 @@ mod tests {
 
         let report = sweep_deaths(&mut reg);
 
-        assert!(!reg.exists(a));
-        assert!(!reg.exists(b));
+        assert!(reg.exists(a));
+        assert!(reg.exists(b));
         assert!(reg.exists(alive));
         assert!(!report.player_died);
-        assert_eq!(report.killed_tags.len(), 2, "both dead entities reported");
-        assert_eq!(
-            report.killed_contributor_ledgers.len(),
-            report.killed_tags.len(),
-            "each killed tag set has an index-aligned ledger snapshot"
-        );
-        assert!(report.killed_tags.contains(&vec!["a".to_string()]));
-        assert!(report.killed_tags.contains(&vec!["b".to_string()]));
-        for (tags, ledger) in report
-            .killed_tags
-            .iter()
-            .zip(report.killed_contributor_ledgers.iter())
-        {
-            let entry = ledger.entries.first().expect("ledger entry");
-            match tags.as_slice() {
-                [tag] if tag == "a" => assert_eq!(entry.source_id, "source.a"),
-                [tag] if tag == "b" => assert_eq!(entry.source_id, "source.b"),
-                _ => panic!("unexpected killed tags: {tags:?}"),
-            }
+        assert_eq!(report, DeathReport::default());
+        for (id, tag, source) in [(a, "a", "source.a"), (b, "b", "source.b")] {
+            let credit = reg
+                .get_component::<HealthComponent>(id)
+                .unwrap()
+                .pending_kill_credit
+                .as_ref()
+                .expect("zero-HP non-player freezes credit");
+            assert_eq!(credit.tags, vec![tag.to_string()]);
+            assert_eq!(credit.contributor_ledger.entries()[0].source_id, source);
         }
     }
 
     #[test]
-    fn untagged_dead_nonplayer_reports_empty_tag_list() {
+    fn untagged_dead_nonplayer_freezes_empty_tag_credit_without_a_report() {
         let mut reg = EntityRegistry::new();
         let id = spawn_health_entity(&mut reg, 10.0, 0.0, &[]);
 
         let report = sweep_deaths(&mut reg);
 
-        assert!(!reg.exists(id));
-        assert_eq!(report.killed_tags, vec![Vec::<String>::new()]);
-        assert_eq!(report.killed_contributor_ledgers.len(), 1);
-        assert!(report.killed_contributor_ledgers[0].entries.is_empty());
-        assert!(report.killed_contributor_ledgers[0].overflow.is_none());
+        assert!(reg.exists(id));
+        assert!(
+            reg.get_component::<HealthComponent>(id)
+                .unwrap()
+                .death_handled
+        );
+        assert_eq!(report, DeathReport::default());
+        let credit = reg
+            .get_component::<HealthComponent>(id)
+            .unwrap()
+            .pending_kill_credit
+            .as_ref()
+            .expect("zero-HP non-player freezes credit");
+        assert!(credit.tags.is_empty());
+        assert!(credit.contributor_ledger.entries().is_empty());
+        assert!(credit.contributor_ledger.overflow().is_none());
     }
 
     #[test]
-    fn brain_at_zero_latches_reports_kill_once_and_stops_late_ledger_recording() {
-        // A brain-bearing enemy at zero HP is the single authoritative kill
-        // latch: latched and tags reported ONCE (so progress counts it), but
-        // NOT despawned — the AI tick owns the despawn.
+    fn brain_at_zero_latches_freezes_credit_and_stops_late_ledger_recording() {
+        // A brain-bearing enemy at zero HP latches its credit but reports only
+        // after an authored deferred despawn actually removes it.
         let mut reg = EntityRegistry::new();
         let id = spawn_health_entity(&mut reg, 30.0, 0.0, &["grunt", "wave1"]);
         record_contributor(&mut reg, id, "weapon.before-latch", 30.0);
@@ -471,24 +488,25 @@ mod tests {
         let first = sweep_deaths(&mut reg);
         assert!(
             reg.exists(id),
-            "a brain enemy is not despawned by the sweep; the AI tick owns that"
+            "a brain enemy is not despawned by the sweep"
         );
+        assert_eq!(first, DeathReport::default());
+        let credit = reg
+            .get_component::<HealthComponent>(id)
+            .unwrap()
+            .pending_kill_credit
+            .as_ref()
+            .expect("zero-HP brain freezes credit");
+        assert_eq!(credit.tags, vec!["grunt".to_string(), "wave1".to_string()]);
         assert_eq!(
-            first.killed_tags,
-            vec![vec!["grunt".to_string(), "wave1".to_string()]],
-            "the kill's tags flow to the progress tracker exactly once"
-        );
-        assert_eq!(first.killed_contributor_ledgers.len(), 1);
-        assert_eq!(
-            first.killed_contributor_ledgers[0].entries[0].source_id,
+            credit.contributor_ledger.entries()[0].source_id,
             "weapon.before-latch"
         );
-        assert!(!first.player_died);
         assert!(
             reg.get_component::<HealthComponent>(id)
                 .unwrap()
                 .death_handled,
-            "the death_handled latch must be set after reporting"
+            "the death_handled latch must be set when the sweep freezes credit"
         );
 
         apply_damage_with_context(
@@ -510,22 +528,75 @@ mod tests {
                 .is_none()
         );
 
-        // The enemy persists at zero HP (awaiting the AI tick's despawn). A
-        // later sweep must NOT re-count or re-report the kill (latch holds).
+        // The enemy persists at zero HP. A later sweep must NOT re-latch or
+        // re-freeze credit (latch holds).
         let second = sweep_deaths(&mut reg);
         assert_eq!(
             second,
             DeathReport::default(),
-            "a latched brain kill must not re-report on a later sweep"
+            "a latched brain must not re-latch or re-freeze credit on a later sweep"
         );
-        assert!(reg.exists(id), "still awaiting the AI tick's despawn");
+        assert!(reg.exists(id), "still awaiting an authored despawn");
+    }
+
+    // Regression: a second impact before the later sweep could overwrite the
+    // first-zero-HP contributor set.
+    #[test]
+    fn two_impacts_before_sweep_latch_only_the_lethal_hit_credit() {
+        let mut reg = EntityRegistry::new();
+        let id = spawn_health_entity(&mut reg, 10.0, 10.0, &["grunt"]);
+
+        apply_damage_with_context(
+            &mut reg,
+            id,
+            &DamagePayload { amount: 10.0 },
+            DamageContext::new("weapon.lethal", DamageProducer::InTick),
+        );
+        apply_damage_with_context(
+            &mut reg,
+            id,
+            &DamagePayload { amount: 25.0 },
+            DamageContext::new("weapon.corpse-hit", DamageProducer::InTick),
+        );
+
+        let report = sweep_deaths(&mut reg);
+
+        assert_eq!(report, DeathReport::default());
+        let health = reg.get_component::<HealthComponent>(id).unwrap();
+        assert!(health.death_handled);
+        let credit = health
+            .pending_kill_credit
+            .as_ref()
+            .expect("the sweep latches pending credit once");
+        assert_eq!(credit.tags, vec!["grunt".to_string()]);
+        assert_eq!(credit.contributor_ledger.entries().len(), 1);
+        assert_eq!(
+            credit.contributor_ledger.entries()[0].source_id,
+            "weapon.lethal"
+        );
+        assert_eq!(credit.contributor_ledger.entries()[0].hit_count, 1);
+        assert!(
+            credit
+                .contributor_ledger
+                .recorded_damage_by_source("weapon.corpse-hit")
+                .is_none()
+        );
+
+        assert_eq!(sweep_deaths(&mut reg), DeathReport::default());
+        let credit_after_second_sweep = reg
+            .get_component::<HealthComponent>(id)
+            .unwrap()
+            .pending_kill_credit
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            credit_after_second_sweep.contributor_ledger.entries().len(),
+            1
+        );
     }
 
     #[test]
-    fn two_brain_kills_report_each_tag_set_once() {
-        // Two brain enemies die this sweep → both tag sets flow to the progress
-        // tracker once. A second sweep (both still awaiting AI-tick despawn)
-        // reports NONE — the latch guarantees the single report per kill.
+    fn two_brain_kills_latch_each_credit_once_without_reports() {
         let mut reg = EntityRegistry::new();
         let a = spawn_health_entity(&mut reg, 30.0, 0.0, &["grunt"]);
         make_brain(&mut reg, a);
@@ -533,11 +604,18 @@ mod tests {
         make_brain(&mut reg, b);
 
         let report = sweep_deaths(&mut reg);
-        assert_eq!(
-            report.killed_tags,
-            vec![vec!["grunt".to_string()], vec!["grunt".to_string()]],
-            "each brain kill's tags flow to the progress tracker exactly once",
-        );
+        assert_eq!(report, DeathReport::default());
+        for id in [a, b] {
+            assert_eq!(
+                reg.get_component::<HealthComponent>(id)
+                    .unwrap()
+                    .pending_kill_credit
+                    .as_ref()
+                    .expect("zero-HP brain freezes credit")
+                    .tags,
+                vec!["grunt".to_string()]
+            );
+        }
 
         let second = sweep_deaths(&mut reg);
         assert_eq!(
@@ -548,16 +626,31 @@ mod tests {
     }
 
     #[test]
-    fn nonbrain_nonplayer_still_despawns_immediately() {
-        // Regression guard: an entity with neither PlayerMovement nor Brain at
-        // zero HP keeps the original immediate-despawn behavior.
+    fn nonbrain_nonplayer_persists_and_latches() {
+        // An entity with neither PlayerMovement nor Brain has the same one-shot
+        // latch behavior as a brain and awaits an authored despawn.
         let mut reg = EntityRegistry::new();
         let id = spawn_health_entity(&mut reg, 10.0, 0.0, &["barrel"]);
 
         let report = sweep_deaths(&mut reg);
 
-        assert!(!reg.exists(id), "plain non-player despawns in the sweep");
-        assert_eq!(report.killed_tags, vec![vec!["barrel".to_string()]]);
+        assert!(reg.exists(id), "plain non-player persists at zero HP");
+        assert!(
+            reg.get_component::<HealthComponent>(id)
+                .unwrap()
+                .death_handled,
+            "plain non-player latches its first zero-HP sweep",
+        );
+        assert_eq!(report, DeathReport::default());
+        assert_eq!(
+            reg.get_component::<HealthComponent>(id)
+                .unwrap()
+                .pending_kill_credit
+                .as_ref()
+                .expect("zero-HP non-player freezes credit")
+                .tags,
+            vec!["barrel".to_string()]
+        );
     }
 
     #[test]
@@ -570,7 +663,12 @@ mod tests {
 
         let report = sweep_deaths(&mut reg);
 
-        assert!(!reg.exists(id), "a NaN-HP entity is swept as dead");
-        assert_eq!(report.killed_tags, vec![vec!["barrel".to_string()]]);
+        assert!(reg.exists(id), "a NaN-HP entity is latched but not removed");
+        assert!(
+            reg.get_component::<HealthComponent>(id)
+                .unwrap()
+                .death_handled
+        );
+        assert_eq!(report, DeathReport::default());
     }
 }

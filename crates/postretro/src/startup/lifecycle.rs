@@ -117,7 +117,7 @@ impl App {
     /// | level sounds, sprite collections, `emitter_bridge`, `mesh_render`, `mesh_clip_tables`, `hit_zone_store` | entity-type registry (`data_registry.entities`), mod map catalog (`data_registry.maps`) |
     /// | `data_registry` reactions + crossings, accumulator bindings, presentation cells | persisted-state save path |
     /// | level-scope UI trees (`modal_stack` `ScopeTier::Level`) | |
-    /// | progress tracker, active wieldable, client weapon prediction state, camera pose | |
+    /// | progress tracker, death-event carryover, active wieldable, client weapon prediction state, camera pose | |
     pub(crate) fn unload_level(&mut self) {
         // `net_endpoint` and `audio` are session-owned; reset/release them through
         // the session borrow.
@@ -152,6 +152,7 @@ impl App {
             session.mesh_render.clear();
             session.emitter_bridge.clear();
             session.progress_tracker.clear();
+            session.pending_death_events.clear();
             session.crossing_detector.clear();
             session
                 .scripting
@@ -1886,6 +1887,7 @@ mod tests {
                     scripting_systems::presentation_cells::PresentationCellStore::new(),
                 state_store_lifecycle: Default::default(),
                 progress_tracker: ProgressTracker::new(),
+                pending_death_events: Vec::new(),
                 crossing_detector: CrossingDetector::new(),
                 classname_dispatch: scripting::builtins::ClassnameDispatch::new(),
                 light_bridge: scripting_systems::light_bridge::LightBridge::new(),
@@ -2644,6 +2646,29 @@ mod tests {
                 .presentation_cells
                 .snapshot()
                 .is_empty()
+        );
+    }
+
+    // Regression: a frame-end removal from the old level could dispatch its
+    // carried kill event after the next level installed.
+    #[test]
+    fn unload_level_clears_pending_death_event_carryover() {
+        let mut app = test_app();
+        app.session
+            .as_mut()
+            .expect("test app session installed")
+            .pending_death_events
+            .push("oldLevelKill".to_string());
+
+        app.unload_level();
+
+        assert!(
+            app.session
+                .as_ref()
+                .expect("test app session installed")
+                .pending_death_events
+                .is_empty(),
+            "level unload must discard deferred death events from the old level",
         );
     }
 

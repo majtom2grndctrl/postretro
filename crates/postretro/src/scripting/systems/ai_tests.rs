@@ -169,6 +169,7 @@ fn spawn_player(reg: &mut EntityRegistry, pos: Vec3) -> EntityId {
             current: 100.0,
             hitbox: None,
             death_handled: false,
+            pending_kill_credit: None,
             zone_multipliers: std::collections::HashMap::new(),
             contributor_ledger: Default::default(),
         },
@@ -206,6 +207,7 @@ fn spawn_enemy(
             current: enemy_hp,
             hitbox: None,
             death_handled: false,
+            pending_kill_credit: None,
             zone_multipliers: std::collections::HashMap::new(),
             contributor_ledger: Default::default(),
         },
@@ -220,14 +222,6 @@ fn player_hp(reg: &EntityRegistry, pawn: EntityId) -> f32 {
 
 fn enemy_state(reg: &EntityRegistry, enemy: EntityId) -> LogicalState {
     reg.get_component::<BrainComponent>(enemy).unwrap().state
-}
-
-/// The brain's death-despawn countdown — `None` until the brain enters `Death`,
-/// reset back to `None` when it recovers.
-fn enemy_despawn_remaining(reg: &EntityRegistry, enemy: EntityId) -> Option<f32> {
-    reg.get_component::<BrainComponent>(enemy)
-        .unwrap()
-        .death_despawn_remaining_ms
 }
 
 /// Overwrite an entity's current HP (the recovery tests heal a dead enemy back
@@ -836,7 +830,7 @@ fn closing_mid_chase_clears_steering_and_holds_idempotently() {
 }
 
 #[test]
-fn gated_enemy_still_enters_death_and_despawns() {
+fn gated_zero_hp_enemy_remains_present_and_idle() {
     let mut reg = EntityRegistry::new();
     let mut warned = HashSet::new();
     let mut brain = brain_with(tuning(), LogicalState::Idle);
@@ -844,20 +838,18 @@ fn gated_enemy_still_enters_death_and_despawns() {
     let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 0.0);
     spawn_player(&mut reg, Vec3::new(1.0, 0.0, 0.0));
 
-    run_ai_tick(&mut reg, &mut warned, 1.0);
-    assert_eq!(enemy_state(&reg, enemy), LogicalState::Death);
+    for _ in 0..3 {
+        run_ai_tick(&mut reg, &mut warned, 1.0);
+    }
+
+    assert_eq!(enemy_state(&reg, enemy), LogicalState::Idle);
     assert_eq!(enemy_acquired_target(&reg, enemy), None);
     assert!(
         !agent_steering::path_state(&reg, enemy)
             .expect("agent present")
             .has_destination,
     );
-    run_ai_tick(&mut reg, &mut warned, 1.0);
-    run_ai_tick(&mut reg, &mut warned, 1.0);
-    assert!(
-        !reg.exists(enemy),
-        "death/despawn remains live while gate is closed"
-    );
+    assert!(reg.exists(enemy), "zero HP must not despawn a gated brain");
 }
 
 #[test]
@@ -1213,6 +1205,7 @@ fn no_attack_or_event_when_player_already_dead() {
             current: 0.0,
             hitbox: None,
             death_handled: false,
+            pending_kill_credit: None,
             zone_multipliers: std::collections::HashMap::new(),
             contributor_ledger: Default::default(),
         },
@@ -1272,14 +1265,6 @@ fn each_logical_state_switches_to_mapped_animation() {
     run_ai_tick(&mut reg, &mut warned, 0.016);
     assert_eq!(enemy_state(&reg, enemy), LogicalState::Idle);
     assert_eq!(enemy_animation(&reg, enemy), "idle");
-
-    // Zero HP → DEATH selects "death" (every tick, regardless of range).
-    let mut h = reg.get_component::<HealthComponent>(enemy).unwrap().clone();
-    h.current = 0.0;
-    reg.set_component(enemy, h).unwrap();
-    run_ai_tick(&mut reg, &mut warned, 0.016);
-    assert_eq!(enemy_state(&reg, enemy), LogicalState::Death);
-    assert_eq!(enemy_animation(&reg, enemy), "death");
 }
 
 #[test]
@@ -1428,7 +1413,7 @@ fn unresolved_locomotion_switch_still_persists_latch() {
 }
 
 // ---------------------------------------------------------------------------
-// Acceptance: stride gating does not suppress in-stride attack or death
+// Acceptance: stride gating does not suppress in-stride attacks
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1456,10 +1441,10 @@ fn near_enemy_evaluates_detection_every_tick() {
 }
 
 #[test]
-fn distant_enemy_strides_detection_but_attack_and_death_still_fire() {
+fn distant_enemy_strides_detection_but_attack_still_fires() {
     // A distant enemy (far band, stride 12) does NOT re-acquire detection every
-    // tick. But the attack-in-range/cooldown and zero-HP death checks run every
-    // tick regardless: even mid-stride-gap they must fire.
+    // tick. The attack-in-range/cooldown check still runs every tick, even in a
+    // mid-stride gap.
 
     // 1) Stride-gated detection: a far enemy in IDLE with the player far (but
     // inside detection) does NOT flip to alert on the first (non-think) tick.
@@ -1488,8 +1473,7 @@ fn distant_enemy_strides_detection_but_attack_and_death_still_fire() {
         );
     }
 
-    // 2) In-stride DEATH still fires: a far enemy at zero HP transitions to
-    // death on a non-think tick (death is not strided).
+    // 2) Zero HP does not force the FSM into Death, even on a non-think tick.
     {
         let mut reg = EntityRegistry::new();
         let mut warned = HashSet::new();
@@ -1503,8 +1487,8 @@ fn distant_enemy_strides_detection_but_attack_and_death_still_fire() {
         run_ai_tick(&mut reg, &mut warned, 0.016);
         assert_eq!(
             enemy_state(&reg, enemy),
-            LogicalState::Death,
-            "zero-HP death fires every tick regardless of stride",
+            LogicalState::Alert,
+            "zero HP leaves the brain's normal FSM state untouched",
         );
     }
 
@@ -1563,253 +1547,185 @@ fn no_player_pawn_leaves_enemy_idle_and_clears_steering() {
 }
 
 // ---------------------------------------------------------------------------
-// Acceptance: brain death despawn — the AI tick owns the despawn, timer is
-// authoritative, and despawn happens after `death_despawn_ms`.
+// Acceptance: a queued positive-health recovery gives a zero-HP brain an
+// explicit nonterminal downed state; bare zero HP remains active.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn dead_enemy_is_despawned_after_death_despawn_ms_timer_authoritative() {
-    // A killed enemy enters Death, plays its death clip, and is despawned by the
-    // AI tick only AFTER `death_despawn_ms` elapses: alive just before the timer,
-    // gone just after. `death_despawn_ms = 1500` (from `tuning()`), `dt = 0.5s`
-    // (500ms): seed on tick 1, 1500→1000 on tick 2, →500 on tick 3, →0 on tick 4
-    // (despawn). The entity survives ticks 1–3 and is gone after tick 4.
+fn zero_hp_brain_remains_active_without_despawn() {
     let mut reg = EntityRegistry::new();
     let mut warned = HashSet::new();
+    let pawn = spawn_player(&mut reg, Vec3::new(1.0, 0.0, 0.0));
     let enemy = spawn_enemy(
         &mut reg,
         Vec3::ZERO,
         brain_with(tuning(), LogicalState::Alert),
-        0.0, // dead at spawn
+        50.0,
     );
-    // No player needed; the zero-HP death check runs regardless.
+    set_hp(&mut reg, enemy, 0.0);
 
-    let dt = 0.5; // 500ms per tick
+    let events = run_ai_tick(&mut reg, &mut warned, 0.016);
 
-    // Tick 1: enters Death, seeds the countdown to 1500ms, plays death anim.
-    run_ai_tick(&mut reg, &mut warned, dt);
-    assert!(reg.exists(enemy), "alive on the Death-entry (seed) tick");
-    assert_eq!(enemy_state(&reg, enemy), LogicalState::Death);
+    assert!(reg.exists(enemy), "zero HP alone must not remove the brain");
+    assert_eq!(
+        enemy_state(&reg, enemy),
+        LogicalState::Attack,
+        "zero HP must not force LogicalState::Death",
+    );
+    assert_eq!(events, vec![ENEMY_ATTACK_EVENT]);
+    assert_eq!(player_hp(&reg, pawn), 92.0);
+    assert_eq!(
+        reg.get_component::<BrainComponent>(enemy)
+            .unwrap()
+            .death_despawn_remaining_ms,
+        None,
+        "the AI tick must not seed the removed death-despawn countdown",
+    );
+}
+
+#[test]
+fn queued_despawn_quiesces_brain_without_overwriting_animation() {
+    let mut reg = EntityRegistry::new();
+    let mut warned = HashSet::new();
+    spawn_player(&mut reg, Vec3::new(1.0, 0.0, 0.0));
+    let enemy = spawn_enemy(
+        &mut reg,
+        Vec3::ZERO,
+        brain_with(tuning(), LogicalState::Alert),
+        50.0,
+    );
+    agent_steering::set_destination(&mut reg, enemy, Vec3::new(5.0, 0.0, 0.0));
+    crate::impact_effects::play_animation(&mut reg, enemy, "death");
+    crate::impact_effects::despawn(&mut reg, enemy, Some(500.0));
+
+    let events = run_ai_tick(&mut reg, &mut warned, 0.016);
+
+    assert!(events.is_empty(), "a queued despawn must stop attacks");
+    assert_eq!(enemy_state(&reg, enemy), LogicalState::Alert);
     assert_eq!(
         enemy_animation(&reg, enemy),
         "death",
-        "the death animation is requested on entering Death",
+        "AI must not overwrite the modder-owned death presentation",
     );
-
-    // Ticks 2 and 3: countdown 1500→1000→500. Still alive.
-    run_ai_tick(&mut reg, &mut warned, dt);
     assert!(
-        reg.exists(enemy),
-        "alive while the timer counts down (1000ms left)"
-    );
-    run_ai_tick(&mut reg, &mut warned, dt);
-    assert!(
-        reg.exists(enemy),
-        "alive just before the timer (500ms left)"
-    );
-
-    // Tick 4: countdown 500→0 → despawn.
-    run_ai_tick(&mut reg, &mut warned, dt);
-    assert!(
-        !reg.exists(enemy),
-        "despawned by the AI tick after death_despawn_ms elapsed",
+        agent_steering::path_state(&reg, enemy)
+            .expect("agent present")
+            .has_destination,
+        "a queued despawn must hold steering",
     );
 }
 
 #[test]
-fn dead_enemy_despawns_on_timer_even_with_unresolved_death_clip() {
-    // The TIMER is authoritative: an enemy whose death animation name is NOT
-    // declared on its mesh (an unresolved death clip — `switch_animation_state`
-    // returns UnknownState and plays nothing) is STILL despawned after
-    // `death_despawn_ms`. Here the mesh is stateless (no animation block), so
-    // every state name is unresolved.
+fn queued_positive_health_recovery_quiesces_zero_hp_brain() {
     let mut reg = EntityRegistry::new();
     let mut warned = HashSet::new();
+    let pawn = spawn_player(&mut reg, Vec3::new(1.0, 0.0, 0.0));
     let enemy = spawn_enemy(
         &mut reg,
         Vec3::ZERO,
-        brain_with(tuning(), LogicalState::Alert),
-        0.0,
+        brain_with(tuning(), LogicalState::Attack),
+        50.0,
     );
-    // Replace the four-state mesh with a stateless one: the death clip can never
-    // resolve, so animation playback is a no-op — but the timer still fires.
-    reg.set_component(enemy, MeshComponent::stateless("grunt".into()))
-        .unwrap();
+    set_hp(&mut reg, enemy, 0.0);
+    crate::impact_effects::play_animation(&mut reg, enemy, "death");
+    crate::impact_effects::set_health(&mut reg, enemy, 25.0, Some(500.0));
 
-    let dt = 0.5;
-    // 1500ms / 500ms = seed + 3 decrements → despawn on the 4th tick.
-    run_ai_tick(&mut reg, &mut warned, dt); // seed
-    run_ai_tick(&mut reg, &mut warned, dt); // 1000
-    run_ai_tick(&mut reg, &mut warned, dt); // 500
-    assert!(reg.exists(enemy), "alive until the timer elapses");
-    run_ai_tick(&mut reg, &mut warned, dt); // 0 → despawn
+    let events = run_ai_tick(&mut reg, &mut warned, 0.016);
+
+    assert!(events.is_empty(), "a downed enemy must not attack");
+    assert_eq!(player_hp(&reg, pawn), 100.0);
+    assert_eq!(
+        enemy_animation(&reg, enemy),
+        "death",
+        "AI must not overwrite the downed enemy's death presentation",
+    );
     assert!(
-        !reg.exists(enemy),
-        "the despawn timer is authoritative even with an unresolved death clip",
+        reg.get_component::<postretro_entities::DeferredEffectComponent>(enemy)
+            .unwrap()
+            .pending
+            .iter()
+            .all(|effect| effect.kind != postretro_entities::DeferredEffectKind::Despawn),
+        "the downed recovery carries no terminal despawn",
     );
 }
 
 #[test]
-fn zero_death_despawn_ms_still_gives_one_death_tick_before_despawn() {
-    // A zero (or negative) configured death-despawn delay is clamped to >= 0 so
-    // the enemy still gets ONE Death tick (death animation requested) before the
-    // despawn pass removes it: seeded to 0 on the entry tick (no despawn), then
-    // despawned on the next tick when the decrement keeps it at 0.
+fn queued_health_change_does_not_quiesce_live_brain() {
     let mut reg = EntityRegistry::new();
     let mut warned = HashSet::new();
-    let mut t = tuning();
-    t.death_despawn_ms = 0.0;
+    let pawn = spawn_player(&mut reg, Vec3::new(1.0, 0.0, 0.0));
     let enemy = spawn_enemy(
         &mut reg,
         Vec3::ZERO,
-        brain_with(t, LogicalState::Alert),
-        0.0,
+        brain_with(tuning(), LogicalState::Attack),
+        50.0,
     );
+    crate::impact_effects::set_health(&mut reg, enemy, 25.0, Some(500.0));
 
-    // Tick 1: enters Death, seeds countdown to 0 — but the SEED tick never
-    // despawns, so the entity survives this tick and plays the death anim.
-    run_ai_tick(&mut reg, &mut warned, 0.016);
-    assert!(
-        reg.exists(enemy),
-        "the entity gets one Death tick before despawn"
-    );
-    assert_eq!(enemy_state(&reg, enemy), LogicalState::Death);
+    let events = run_ai_tick(&mut reg, &mut warned, 0.016);
 
-    // Tick 2: the countdown is already 0; the decrement keeps it at 0 → despawn.
-    run_ai_tick(&mut reg, &mut warned, 0.016);
-    assert!(
-        !reg.exists(enemy),
-        "despawned on the tick after the single Death tick"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Acceptance: an enemy that recovers HP before the despawn timer elapses leaves
-// the terminal `Death` state and re-engages (forward-looking heal/revive
-// robustness — no heal path exists in the engine today). The recovery runs in
-// the not-dead path before the player-presence split, so it fires WITH a player
-// (re-acquiring) and WITHOUT one (resolving to Idle); the control confirms an
-// un-healed enemy still despawns on the timer.
-// ---------------------------------------------------------------------------
-
-#[test]
-fn healed_enemy_recovers_from_death_and_reacquires_player() {
-    let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
-
-    // Player inside detection (10 units) but outside attack range (2): a
-    // recovered enemy re-acquires to Alert, not Attack.
-    let pawn = spawn_player(&mut reg, Vec3::new(10.0, 0.0, 0.0));
-    let enemy = spawn_enemy(
-        &mut reg,
-        Vec3::ZERO,
-        brain_with(tuning(), LogicalState::Alert),
-        0.0, // dead at spawn
-    );
-
-    // Tick 1: zero HP → Death, despawn countdown seeded (death_despawn_ms 1500).
-    run_ai_tick(&mut reg, &mut warned, 0.016);
-    assert_eq!(enemy_state(&reg, enemy), LogicalState::Death);
-    assert_eq!(
-        enemy_despawn_remaining(&reg, enemy),
-        Some(1500.0),
-        "entering Death seeds the despawn countdown",
-    );
-
-    // Heal the enemy back above zero BEFORE the timer elapses.
-    set_hp(&mut reg, enemy, 30.0);
-
-    // Tick 2: recovers from Death and, with the player in detection range,
-    // re-acquires to Alert this same tick (recovery resets to Idle, then the
-    // normal transition runs).
-    run_ai_tick(&mut reg, &mut warned, 0.016);
-    assert_ne!(
-        enemy_state(&reg, enemy),
-        LogicalState::Death,
-        "a healed enemy must leave the terminal Death state",
-    );
-    assert_eq!(
-        enemy_state(&reg, enemy),
-        LogicalState::Alert,
-        "with a player in detection range the recovered enemy re-acquires",
-    );
-    assert_eq!(
-        enemy_despawn_remaining(&reg, enemy),
-        None,
-        "recovery clears the despawn countdown",
-    );
-    assert!(reg.exists(enemy), "the recovered enemy is not despawned");
-
-    // Sanity: the recovered enemy is the live chase target again.
-    let _ = player_hp(&reg, pawn);
+    assert_eq!(events, vec![ENEMY_ATTACK_EVENT]);
+    assert_eq!(player_hp(&reg, pawn), 92.0);
 }
 
 #[test]
-fn healed_enemy_recovers_from_death_with_no_player() {
-    // Recovery must run even with no player to target: the not-dead path resets
-    // Death → Idle before the player-presence split, and the no-player `else`
-    // branch then resolves the enemy to Idle (not stuck in Death).
+fn elapsed_health_recovery_reactivates_downed_brain() {
     let mut reg = EntityRegistry::new();
     let mut warned = HashSet::new();
-
+    let pawn = spawn_player(&mut reg, Vec3::new(1.0, 0.0, 0.0));
     let enemy = spawn_enemy(
         &mut reg,
         Vec3::ZERO,
-        brain_with(tuning(), LogicalState::Alert),
-        0.0, // dead at spawn
+        brain_with(tuning(), LogicalState::Attack),
+        50.0,
     );
+    set_hp(&mut reg, enemy, 0.0);
+    crate::impact_effects::play_animation(&mut reg, enemy, "death");
+    crate::impact_effects::set_health(&mut reg, enemy, 25.0, Some(10.0));
 
-    // Tick 1 (no player): zero HP → Death, countdown seeded.
-    run_ai_tick(&mut reg, &mut warned, 0.016);
-    assert_eq!(enemy_state(&reg, enemy), LogicalState::Death);
-    assert_eq!(enemy_despawn_remaining(&reg, enemy), Some(1500.0));
-
-    // Heal before the timer elapses.
-    set_hp(&mut reg, enemy, 30.0);
-
-    // Tick 2 (still no player): recovers to Idle, countdown cleared, alive.
-    run_ai_tick(&mut reg, &mut warned, 0.016);
+    assert!(
+        run_ai_tick(&mut reg, &mut warned, 0.016).is_empty(),
+        "the recovery delay keeps the zero-HP brain downed",
+    );
+    crate::impact_effects::tick_deferred_effects(&mut reg, 0.010);
     assert_eq!(
-        enemy_state(&reg, enemy),
-        LogicalState::Idle,
-        "with no player the recovered enemy resolves to Idle",
+        enemy_animation(&reg, enemy),
+        "idle",
+        "recovery must immediately leave the death pose before AI movement resumes",
     );
+
+    let events = run_ai_tick(&mut reg, &mut warned, 0.016);
+    assert_eq!(events, vec![ENEMY_ATTACK_EVENT]);
+    assert_eq!(player_hp(&reg, pawn), 92.0);
     assert_eq!(
-        enemy_despawn_remaining(&reg, enemy),
-        None,
-        "recovery clears the despawn countdown even with no player",
+        enemy_animation(&reg, enemy),
+        "attack",
+        "the resumed Attack brain must replace the recovery idle pose",
     );
-    assert!(reg.exists(enemy), "the recovered enemy is not despawned");
 }
 
 #[test]
-fn unhealed_dead_enemy_still_despawns_on_timer() {
-    // Control: an enemy left at zero HP (never healed) still despawns when the
-    // death-despawn timer elapses — the recovery path does not affect the
-    // existing despawn behavior. dt = 0.5s, death_despawn_ms = 1500: seed on
-    // tick 1, 1500→1000→500→0 (despawn) on tick 4.
+fn elapsed_health_recovery_reselects_moving_alert_animation() {
     let mut reg = EntityRegistry::new();
     let mut warned = HashSet::new();
-    let enemy = spawn_enemy(
-        &mut reg,
-        Vec3::ZERO,
-        brain_with(tuning(), LogicalState::Alert),
-        0.0,
-    );
+    spawn_player(&mut reg, Vec3::new(10.0, 0.0, 0.0));
+    let mut brain = brain_with(tuning(), LogicalState::Alert);
+    brain.locomotion_moving = true;
+    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 50.0);
+    set_agent_velocity(&mut reg, enemy, Vec3::new(1.0, 0.0, 0.0));
+    set_hp(&mut reg, enemy, 0.0);
+    crate::impact_effects::play_animation(&mut reg, enemy, "death");
+    crate::impact_effects::set_health(&mut reg, enemy, 25.0, Some(10.0));
 
-    let dt = 0.5;
-    for _ in 0..3 {
-        run_ai_tick(&mut reg, &mut warned, dt);
-        assert!(
-            reg.exists(enemy),
-            "un-healed enemy alive while the timer runs"
-        );
-        assert_eq!(enemy_state(&reg, enemy), LogicalState::Death);
-    }
-    run_ai_tick(&mut reg, &mut warned, dt);
-    assert!(
-        !reg.exists(enemy),
-        "an un-healed enemy still despawns on the timer as before",
+    crate::impact_effects::tick_deferred_effects(&mut reg, 0.010);
+    assert_eq!(enemy_animation(&reg, enemy), "idle");
+
+    run_ai_tick(&mut reg, &mut warned, 0.016);
+    assert_eq!(enemy_state(&reg, enemy), LogicalState::Alert);
+    assert_eq!(
+        enemy_animation(&reg, enemy),
+        "locomotion",
+        "the resumed moving Alert brain must replace the recovery idle pose",
     );
 }
 

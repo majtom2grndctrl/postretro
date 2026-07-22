@@ -1082,6 +1082,9 @@ export type TargetHandle = {
   maxHealth: NumberRef,
   despawn: (self: TargetHandle, opts: { afterMs: number? }?) -> Effect,
   playAnim: (self: TargetHandle, clip: string) -> Effect,
+  --- Clamp to the health range. Only a positive stored result recovers and
+  --- re-arms; zero stays down. Literals must be finite, and non-finite IR
+  --- arithmetic resolves to zero.
   setHealth: (self: TargetHandle, value: NumberValue, opts: { afterMs: number? }?) -> Effect,
   state: (self: TargetHandle, name: string) -> NumberRef,
   setState: (self: TargetHandle, name: string, value: NumberValue) -> Effect,

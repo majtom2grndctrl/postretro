@@ -1345,6 +1345,7 @@ mod tests {
                     current: 100.0,
                     hitbox: None,
                     death_handled: false,
+                    pending_kill_credit: None,
                     zone_multipliers: Default::default(),
                     contributor_ledger: Default::default(),
                 },

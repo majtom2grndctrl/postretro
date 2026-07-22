@@ -1,31 +1,23 @@
 // DEMO CONTENT — `target_dummy` descriptor (M10 entity health + damage).
 //
 // A map-placeable shooting target: a descriptor carrying `components.health`
-// with a `max` HP ceiling, a `hitbox`, AND per-zone damage multipliers. The
-// shipped weapon's ray hits it, routes damage through the `apply_damage`
-// chokepoint, and the death sweep despawns it once HP reaches zero.
+// with a `max` HP ceiling. The
+// shipped weapon's ray hits it and routes damage through the `apply_damage`
+// chokepoint. The dev mod's impact policy, not the health component, decides
+// whether the target downs, recovers, or despawns.
 //
 // It reuses the only shipped skinned model (`scene.gltf`) for a visible body,
 // mirroring `anim-demo-grunt.ts`. No animation state map is declared — the mesh
 // loops clip 0 on the animation clock.
 //
-// Hit zones (M10): the model's joints are tagged via glTF `extras`, so this is a
-// zone-bearing entity. For such entities the engine raycasts against posed bone
-// capsules (broad-phased by a clip-derived bound), and the authored `hitbox`
-// below is SUPERSEDED — kept only as documentation / the fallback shape were the
-// zone tags removed. Only tagged joints register hits; per-zone multipliers
-// scale the damage by where the ray lands.
-//
 // Sizing:
 //   - `max: 30`. The shipped `reference_pistol` deals 12 damage per hitscan hit
-//     (see content/dev/scripts/reference-pistol.ts), so a dummy dies in three
-//     shots (12 + 12 + 12 = 36 ≥ 30) — enough to *observe* per-hit HP loss
-//     before the despawn, not a one-shot.
-//   - `hitbox.halfExtents: [0.4, 0.9, 0.4]` → a 0.8 m × 1.8 m × 0.8 m box, a
-//     rough human silhouette matching the retro-pixel model. Engine is Y-up, so
-//     the middle component is the vertical half-height.
-//   - `hitbox.offset: [0, 0.9, 0]` lifts the box center up by its half-height so
-//     the box rises from the model's foot-level transform origin to head height.
+//     (see content/dev/scripts/reference-pistol.ts), so a dummy downs in three
+//     shots (12 + 12 + 12 = 36 ≥ 30), then a fourth shot demonstrates the
+//     authored follow-up finisher.
+//   - The model supplies its own torso/head/limb hit-zone capsules. The demo
+//     uses those authored zones directly, so aiming at its torso is the most
+//     reliable way to demonstrate the fixed 12-damage pistol hits.
 //
 // See content/dev/maps/combat-demo.README.md for the full end-to-end loop.
 
@@ -43,17 +35,6 @@ export const targetDummyEntity = defineEntity({
     },
     health: {
       max: 30,
-      hitbox: {
-        halfExtents: [0.4, 0.9, 0.4],
-        offset: [0, 0.9, 0],
-      },
-      // Per-zone damage multipliers. The model's joints are tagged
-      // head/torso/arm/leg via glTF `extras`; tags omitted here (torso, arm)
-      // apply 1.0. A headshot deals 2.5x, a leg shot 0.5x.
-      zoneMultipliers: {
-        head: 2.5,
-        leg: 0.5,
-      },
     },
   },
 });

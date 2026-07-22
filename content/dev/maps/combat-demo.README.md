@@ -1,16 +1,18 @@
-# combat-demo — M10 entity health + damage AND enemy AI / pathfinding demo
+# combat-demo — impact lifecycle, health + damage, and enemy AI / pathfinding
 
 DEMO CONTENT exercising two M10 loops end to end:
 
-1. **Health + damage.** A descriptor-declared health+hitbox entity is placed in a
-   map, shot by the shipped weapon's hitscan ray, takes damage per hit through the
-   `apply_damage` chokepoint, and despawns at zero HP — and killing a fraction of
-   the tagged dummies fires a `progress` event that drives an `applyDamage`
-   reaction on the player, so the player's HP (and the readonly `player.health`
-   HUD slot) drops.
+1. **Impact-derived lifecycle.** A descriptor-declared health+hitbox entity is
+   placed in a map and hit by the shipped weapon. A **mod-global** impact policy
+   chooses what lethal damage means: ordinary lethal damage downs the dummy and
+   queues recovery; a follow-up hit gibs it. Only removal reports a
+   kill, so killing a fraction of the tagged dummies fires a `progress` event that
+   drives an `applyDamage` reaction on the player, and the readonly
+   `player.health` HUD slot drops.
 
-2. **Enemy AI + pathfinding.** The `reference_enemy` (far east) and the
-   `player_spawn` (far west) sit at opposite ends of one large open arena, with
+2. **Zombie enemy lifecycle + pathfinding.** The `reference_enemy` (far east)
+   uses its authored death animation while downed, recovers after a delay, and
+   sits with the `player_spawn` (far west) at opposite ends of one large arena, with
    three free-standing full-height pillars strung along the centerline between
    them. The straight line from the enemy to the player is blocked by the center
    pillar, so the enemy must route AROUND it — A* over the baked navmesh regions,
@@ -58,16 +60,14 @@ to reach you.
 ## Files
 
 - `content/dev/scripts/target-dummy.ts` — `defineEntity({ canonicalName:
-  "target_dummy", components: { mesh, health: { max, hitbox, zoneMultipliers } } })`.
-  The `max` HP ceiling makes it shootable; `zoneMultipliers` scales damage by
-  where the ray lands. Registered into the mod via `content/dev/start-script.ts`'s
-  `ModManifest.entities`.
-- `content/dev/models/decraniated_low_poly_retro_pixel/scene.gltf` — the skinned
-  body. Its joint nodes carry `extras` zone tags (`head`, `torso`, `arm`, `leg`
-  with per-joint `hitZoneRadius`), making `target_dummy` a **zone-bearing** entity:
-  the engine raycasts against posed bone capsules (broad-phased by a clip-derived
-  bound), and the authored `hitbox` AABB is superseded. Only tagged joints
-  register hits.
+  "target_dummy", components: { mesh, health: { max } } })`. The `max`
+  HP ceiling makes it shootable; its skinned model supplies the targetable
+  hit-zone capsules. Registered into the mod via
+  `content/dev/start-script.ts`'s `ModManifest.entities`.
+- `content/dev/models/decraniated_low_poly_retro_pixel/scene.gltf` — the visible
+  skinned body. The current asset supplies one looping animation clip and
+  torso/head/limb hit-zone capsules. The demo has no zone damage multipliers,
+  so every successful hit uses the pistol's base damage.
 - `content/dev/scripts/player.ts` — the player archetype, which carries
   `health: { max: 100 }` and DELIBERATELY no `hitbox` (the player is not
   ray-targetable; this also forecloses self-hit). Its HP is driven only through
@@ -76,11 +76,15 @@ to reach you.
   (`setupLevel`). Returns a `progress` reaction over the `dummy` tag firing
   `dummiesCleared`, and an `applyDamage` reaction NAMED `dummiesCleared` targeting
   the `player` tag. Wired into the map via the worldspawn `data_script` KVP.
+- `content/dev/scripts/combat-lifecycle.ts` — a **mod-global**
+  `defineImpactEvent` registered from `start-script.ts`. `target_dummy` is
+  exclusive to combat-demo, so it works when the map is opened from the catalog
+  or directly by CLI while still composing with the level-local progress reactions.
 - `content/dev/maps/combat-demo.map` — one large open arena (axis-aligned box
   brushes, plane style mirrored from `campaign-test.map`) with a `player_spawn`
   tagged `player` (far west), four `target_dummy` instances tagged `dummy` (just
-  east of the player, in front of it), a `reference_enemy` tagged `enemy` (far
-  east), three free-standing full-height pillars near the centerline, and seven
+  east of the player, in front of it), a `reference_enemy` tagged `enemy` and
+  `combat-zombie` (far east), three free-standing full-height pillars near the centerline, and seven
   `light`s spread across the enlarged space. The center pillar blocks the straight
   player→enemy line, so the pathfinding has to route around it; the wide ≥160-unit
   clearance on every side keeps the agent from wedging. See the floor plan above.
@@ -108,25 +112,34 @@ cargo run -p postretro -- content/dev/maps/combat-demo.prl
 
 ## What this demo proves
 
-The descriptor → `components.health` (hitbox authored; superseded by posed-bone capsules for zone-bearing entities) → spawn → hitscan target →
-`apply_damage` chokepoint → death sweep path, end to end:
+The descriptor → `components.health` → model-authored hit-zone capsules → spawn → hitscan target →
+`apply_damage` chokepoint → mod-global impact policy → authored lifecycle, end to end:
 
 - Each `target_dummy` (max 30 HP) spawns standing in front of the player. Aiming
   the reference pistol (12 damage/hit) at one and firing **takes 12 HP per hit**,
-  routed through the `apply_damage` chokepoint, and the dummy **despawns on the
-  third hit** (12 + 12 + 12 = 36 ≥ 30). Seeing it vanish is the proof that the
-  posed-bone capsules (zone-bearing path) made it ray-targetable, the damage flowed
-  through the chokepoint, and the death sweep despawned it at zero HP.
+  routed through the `apply_damage` chokepoint. Three torso hits down it
+  (12 + 12 + 12 = 36 ≥ 30), but **do not remove it**: the mod-global policy queues
+  `setHealth(maxHealth, { afterMs: 3000 })`. The target remains ray-targetable at
+  zero HP, then re-arms when it recovers. This is the foundation for future
+  stagger, revive, glory-kill, reward, and presentation policies.
 
-- **Hit zones (M10 skeletal hit zones).** Because the model's joints are tagged,
-  damage scales by where you hit: a **headshot deals 2.5×** (12 → 30, a one-shot
-  kill of the 30-HP dummy), a **leg shot 0.5×** (12 → 6), and torso/arm hits apply
-  1.0× (12). Aiming at the head vs. a leg and watching the HP drop differ — or the
-  dummy drop in one headshot vs. three torso shots — is the proof the posed-capsule
-  raycast and per-zone multiplier are live. Note hits register only on the tagged
-  limbs (head/torso/arms/legs); a ray between limbs misses even inside the body's
-  bounding box (the two-phase narrow test). There is no in-game capsule overlay —
-  verification is by observed damage, not a debug draw.
+- While a dummy is down, land a **fourth shot**. That follow-up hit reaches -12;
+  the policy's level gate calls `despawn()`, so the dummy disappears and only then
+  contributes its frozen kill credit to progress.
+  There is no distinct down animation in the current single-clip fixture model;
+  verify the down/recovery loop by waiting three seconds and downing it again.
+
+- The far `reference_enemy` is the visual companion demo. Five body shots
+  (60 HP at 12 damage per pistol hit) down it; its declared `death` state plays
+  and its brain and navigation agent pause while the same three-second recovery
+  is queued. Recovery immediately returns it to its idle pose, then normal AI
+  resumes and selects its walk animation as it pursues. A sixth body shot while
+  down reaches -12 and gibs it. The `combat-zombie` tag scopes this policy to
+  this map, so other reference-enemy fixtures retain their existing behavior.
+
+- **Model-authored hit zones.** The dummy uses the visible model's torso, head,
+  arm, and leg capsules. Aim at the torso for the most reliable 12-damage pistol
+  hits; the demo deliberately defines no zone damage multipliers.
 
 - The `progress` reaction's denominator (4 tagged dummies) is captured at level
   load. At `at: 0.5`, killing **two** dummies crosses the threshold and fires the
@@ -166,10 +179,11 @@ named retaliation reaction.
   onto the spawned player pawn (`spawn_descriptor_instance` →
   `try_spawn(transform, &entity.tags)`), so `"_tags" "player"` lands on the pawn
   and the `applyDamage` reaction's `tag: "player"` resolves to it.
-- **Reaction trigger shape:** reactions are surfaced through `setupLevel`'s
-  returned `LevelManifest` (`{ reactions }`), NOT through the mod manifest. This file
-  uses a `ProgressReactionDescriptor` (`{ progress: { tag, at, fire } }`) and a
-  `PrimitiveReactionDescriptor` (`{ primitive, tag, args }`).
+- **Composition shape:** the map data script returns level-local `reactions`, while
+  the dev mod's `ModManifest.events` contributes the impact policies. Their scopes
+  compose at level install; the `dummy` and `combat-zombie` tags are exclusive to
+  this map, so both policies work for catalog and direct CLI loading without
+  changing other maps.
 - **Descriptor placement:** a descriptor carrying `components.health` is directly
   map-placeable via `"classname" "target_dummy"`, resolved by the level loader's
   dispatch sweep against `canonicalName`.

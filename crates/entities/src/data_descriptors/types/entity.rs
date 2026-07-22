@@ -98,6 +98,19 @@ pub struct RawAnimationState {
     pub travel_speed: Option<f32>,
 }
 
+/// Parsed mesh fields supplied by the JS and Luau descriptor bridges before
+/// shared validation turns them into a [`MeshDescriptor`].
+pub struct RawMeshDescriptor {
+    pub model: String,
+    pub attachments: HashMap<String, String>,
+    pub states: Vec<RawAnimationState>,
+    pub default_state: Option<String>,
+    pub animations_present: bool,
+    pub locomotion: Option<LocomotionDescriptor>,
+    pub shadow_bias_scale: Option<f32>,
+    pub shadow_only: bool,
+}
+
 impl MeshDescriptor {
     /// Effective locomotion rate-scaling toggle. Omitting either the block or
     /// its field preserves the shared default (`true`).
@@ -119,16 +132,17 @@ impl MeshDescriptor {
     /// None). `shadowOnly` is optional on the wire and defaults to `false`.
     /// `shadowBiasScale` is optional on the wire, defaults to 1.0, and must be
     /// finite in 0.0..=4.0.
-    pub fn build(
-        model: String,
-        attachments: HashMap<String, String>,
-        states: Vec<RawAnimationState>,
-        default_state: Option<String>,
-        animations_present: bool,
-        locomotion: Option<LocomotionDescriptor>,
-        shadow_bias_scale: Option<f32>,
-        shadow_only: bool,
-    ) -> Result<Self, DescriptorError> {
+    pub fn build(raw: RawMeshDescriptor) -> Result<Self, DescriptorError> {
+        let RawMeshDescriptor {
+            model,
+            attachments,
+            states,
+            default_state,
+            animations_present,
+            locomotion,
+            shadow_bias_scale,
+            shadow_only,
+        } = raw;
         if model.is_empty() {
             return Err(DescriptorError::InvalidShape {
                 reason: "`components.mesh.model` must be a non-empty string".to_string(),

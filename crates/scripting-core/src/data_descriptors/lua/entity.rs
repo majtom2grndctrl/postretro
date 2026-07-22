@@ -317,7 +317,7 @@ pub fn mesh_descriptor_from_lua(table: &Table) -> Result<MeshDescriptor, Descrip
         None
     };
 
-    MeshDescriptor::build(
+    MeshDescriptor::build(RawMeshDescriptor {
         model,
         attachments,
         states,
@@ -326,7 +326,7 @@ pub fn mesh_descriptor_from_lua(table: &Table) -> Result<MeshDescriptor, Descrip
         locomotion,
         shadow_bias_scale,
         shadow_only,
-    )
+    })
 }
 
 /// Gather one animation-state entry from a Luau table. Mirrors

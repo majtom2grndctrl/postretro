@@ -1994,10 +1994,12 @@ fn probe_leg_entity_in(
         &mover_states,
         &store,
         0.0,
-        (0.0, 0.0),
-        &HashMap::new(),
-        &HashMap::new(),
-        &HashMap::new(),
+        super::PresentationPoseInputs {
+            camera_aim: (0.0, 0.0),
+            remote_aim_pitches: &HashMap::new(),
+            remote_heading_yaws: &HashMap::new(),
+            remote_network_ids: &HashMap::new(),
+        },
     );
 
     registry
@@ -2126,10 +2128,12 @@ fn connected_client_presentation_probes_freshly_displayed_remote_transform() {
         &MoverTickStateTable::default(),
         &store,
         0.0,
-        (0.0, 0.0),
-        &HashMap::new(),
-        &HashMap::new(),
-        &HashMap::new(),
+        super::PresentationPoseInputs {
+            camera_aim: (0.0, 0.0),
+            remote_aim_pitches: &HashMap::new(),
+            remote_heading_yaws: &HashMap::new(),
+            remote_network_ids: &HashMap::new(),
+        },
     );
 
     let inputs = registry
@@ -2158,10 +2162,12 @@ fn unavailable_probe_inputs_clear_stale_feet_and_publish_zero_count() {
             &mover_states,
             &store,
             0.0,
-            (0.0, 0.0),
-            &HashMap::new(),
-            &HashMap::new(),
-            &HashMap::new(),
+            super::PresentationPoseInputs {
+                camera_aim: (0.0, 0.0),
+                remote_aim_pitches: &HashMap::new(),
+                remote_heading_yaws: &HashMap::new(),
+                remote_network_ids: &HashMap::new(),
+            },
         );
     };
     let assert_cleared = |registry: &EntityRegistry, reason: &str| {

@@ -5115,10 +5115,12 @@ impl App {
             &self.kinematic_mover_tick_states,
             &session.hit_zone_store,
             frame_anim_time,
-            camera_aim,
-            &self.remote_player_presentation.aim_pitches,
-            &self.remote_player_presentation.heading_yaws,
-            &remote_network_ids,
+            sim::PresentationPoseInputs {
+                camera_aim,
+                remote_aim_pitches: &self.remote_player_presentation.aim_pitches,
+                remote_heading_yaws: &self.remote_player_presentation.heading_yaws,
+                remote_network_ids: &remote_network_ids,
+            },
         );
     }
 
@@ -5463,11 +5465,13 @@ impl App {
             &mut registry,
             client,
             prediction,
-            command,
-            aim_pitch,
-            &combined_collision,
-            gravity,
-            tick_dt,
+            netcode::ClientPredictionTickContext {
+                command,
+                aim_pitch,
+                collision: &combined_collision,
+                gravity,
+                tick_dt,
+            },
         ))
     }
 

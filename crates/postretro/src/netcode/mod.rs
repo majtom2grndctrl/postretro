@@ -1226,16 +1226,27 @@ fn snapshot_requires_descriptor_table(snapshot: &SnapshotMessage) -> bool {
 ///
 /// Game-logic-owned: the mutable registry borrow is threaded in by the caller so
 /// this module never reaches into `App`.
-pub(crate) fn client_predict_tick(
+pub(crate) struct ClientPredictionTickContext<'a, C: MovementCollisionSource> {
+    pub(crate) command: &'a SimCommand,
+    pub(crate) aim_pitch: f32,
+    pub(crate) collision: &'a C,
+    pub(crate) gravity: f32,
+    pub(crate) tick_dt: f32,
+}
+
+pub(crate) fn client_predict_tick<C: MovementCollisionSource>(
     registry: &mut EntityRegistry,
     client: &mut NetClient,
     prediction: &mut ClientPrediction,
-    command: &SimCommand,
-    aim_pitch: f32,
-    collision: &impl MovementCollisionSource,
-    gravity: f32,
-    tick_dt: f32,
+    context: ClientPredictionTickContext<'_, C>,
 ) -> u32 {
+    let ClientPredictionTickContext {
+        command,
+        aim_pitch,
+        collision,
+        gravity,
+        tick_dt,
+    } = context;
     // 1. Send exactly one Input command for this predicted tick, stamped with the
     //    next monotonic client_tick. Sent even before the baseline arms prediction
     //    so the host's command stream starts immediately on connect.

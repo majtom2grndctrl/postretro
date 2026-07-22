@@ -362,10 +362,12 @@ pub(crate) fn simulate_tick_with_presentation_aim(
             &*mover_tick_states,
             hit_zone_store,
             anim_time,
-            presentation_camera_aim,
-            &HashMap::new(),
-            &HashMap::new(),
-            &HashMap::new(),
+            PresentationPoseInputs {
+                camera_aim: presentation_camera_aim,
+                remote_aim_pitches: &HashMap::new(),
+                remote_heading_yaws: &HashMap::new(),
+                remote_network_ids: &HashMap::new(),
+            },
         );
     }
 
@@ -525,6 +527,13 @@ fn effective_travel_speed(
 /// transforms. The fixed tick calls this after steering; connected clients call
 /// it after remote interpolation because they intentionally skip `simulate_tick`.
 /// This mutates presentation-only mesh inputs and never enters replication.
+pub(crate) struct PresentationPoseInputs<'a> {
+    pub(crate) camera_aim: (f32, f32),
+    pub(crate) remote_aim_pitches: &'a HashMap<NetworkId, f32>,
+    pub(crate) remote_heading_yaws: &'a HashMap<NetworkId, f32>,
+    pub(crate) remote_network_ids: &'a HashMap<EntityId, NetworkId>,
+}
+
 pub(crate) fn update_presentation_pose_inputs(
     registry: &mut EntityRegistry,
     collision_world: &CollisionWorld,
@@ -532,11 +541,14 @@ pub(crate) fn update_presentation_pose_inputs(
     mover_poses: &dyn MoverPoseSource,
     hit_zone_store: &HitZoneStore,
     anim_time: f64,
-    camera_aim: (f32, f32),
-    remote_aim_pitches: &HashMap<NetworkId, f32>,
-    remote_heading_yaws: &HashMap<NetworkId, f32>,
-    remote_network_ids: &HashMap<EntityId, NetworkId>,
+    presentation: PresentationPoseInputs<'_>,
 ) {
+    let PresentationPoseInputs {
+        camera_aim,
+        remote_aim_pitches,
+        remote_heading_yaws,
+        remote_network_ids,
+    } = presentation;
     update_pose_inputs(
         registry,
         camera_aim,

@@ -105,6 +105,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
             "Optional socket-name → content-relative prop-model map. Both socket names and model paths must be non-empty. Attachments are presentation-only and follow their holder's authored socket.",
         )
         .field("shadowBiasScale?", "number", "Per-model skinned pool-shadow receiver-bias multiplier. Defaults to 1.0; must be finite and in 0.0..=4.0. Set 0.0 to disable the receiver offset for this model.")
+        .field("shadowOnly?", "bool", "When true, renders this mesh into shadow-depth passes only. Optional; defaults to false, preserving normal forward visibility.")
         .field(
             "animations?",
             "MeshAnimationStates",
@@ -312,6 +313,8 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("fireMode", "FireMode", "Semi or automatic input gate.")
         .field("resolution", "ResolutionMode", "Shot resolution mode. Currently supports hitscan only.")
         .field("creditSource?", "String", "Optional combat attribution source id for this weapon. Must be non-empty ASCII, at most 64 bytes, and use only [A-Za-z0-9_.:-]. Omit to use the resolved canonical weapon name at spawn.")
+        .field("thirdPersonModel?", "String", "Optional content-relative rigid prop model mounted in a remote or local player's third-person hand socket.")
+        .field("viewmodel?", "String", "Optional content-relative model rendered as this weapon's first-person viewmodel.")
         .field("resource?", "WeaponResource", "Optional weapon resource tuning. Omit to preserve unlimited-fire behavior.")
         .finish();
     registry

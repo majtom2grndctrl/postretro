@@ -258,7 +258,7 @@ pub fn mesh_descriptor_from_js<'js>(obj: &Object<'js>) -> Result<MeshDescriptor,
         None
     };
 
-    MeshDescriptor::build(
+    MeshDescriptor::build(RawMeshDescriptor {
         model,
         attachments,
         states,
@@ -267,7 +267,7 @@ pub fn mesh_descriptor_from_js<'js>(obj: &Object<'js>) -> Result<MeshDescriptor,
         locomotion,
         shadow_bias_scale,
         shadow_only,
-    )
+    })
 }
 
 /// Gather one animation-state entry from a JS object. `loop` defaults to

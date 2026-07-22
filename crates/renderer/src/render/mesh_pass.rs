@@ -60,6 +60,8 @@ use postretro_render_cpu::mesh_instances::{
     MAX_INSTANCES, MAX_PALETTE_ENTRIES, MeshFramePlan, MeshPaletteCacheKey,
 };
 
+use super::UNIFORM_SIZE;
+
 /// Byte size of one `BonePaletteEntry` (mat4x4<f32> = 64 B).
 const BONE_PALETTE_ENTRY_SIZE: usize = std::mem::size_of::<BonePaletteEntry>();
 
@@ -879,6 +881,13 @@ pub struct MeshPass {
     /// bind group is built once at init.
     pub(super) instance_bind_group: wgpu::BindGroup,
 
+    /// Camera-compatible group-0 bind group whose buffer carries only the
+    /// alternate first-person projection. It reuses the unchanged world camera
+    /// layout and the skinned mesh pipeline; the renderer selects it only for
+    /// the dedicated viewmodel pass.
+    viewmodel_uniform_buffer: wgpu::Buffer,
+    viewmodel_uniform_bind_group: wgpu::BindGroup,
+
     /// Group 2 BGL (runtime direct lighting). Pinned binding map (see
     /// [`MeshPass::new`]): b0 dynamic-tier records plus promoted static records,
     /// b1 per-light influence volumes, b2 scripted-animation descriptors, b3
@@ -1273,6 +1282,25 @@ impl MeshPass {
             ],
         });
 
+        // The shared group-0 layout does not require a full `FrameUniforms`
+        // payload for the mesh shader (it reads only `view_proj`), but retain the
+        // existing 128-byte allocation so the bind group stays exactly compatible
+        // with the renderer-wide camera contract.
+        let viewmodel_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Viewmodel Projection Uniform"),
+            size: UNIFORM_SIZE as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let viewmodel_uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Viewmodel Projection Bind Group"),
+            layout: camera_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: viewmodel_uniform_buffer.as_entire_binding(),
+            }],
+        });
+
         // Group 2 binding 4 params uniform (`MeshLightParams`). Fixed-size, owned
         // here, written per frame; rebound by reference into every rebuilt group-2
         // bind group. The group-2 bind group itself is left `None` until the
@@ -1298,6 +1326,8 @@ impl MeshPass {
             palette_buffer,
             instance_buffer,
             instance_bind_group,
+            viewmodel_uniform_buffer,
+            viewmodel_uniform_bind_group,
             light_bind_group_layout,
             light_bind_group: None,
             light_params_buffer,
@@ -1619,10 +1649,10 @@ impl MeshPass {
     pub fn plan_and_upload(
         &mut self,
         queue: &wgpu::Queue,
-        plan: &MeshFramePlan,
+        plans: &[&MeshFramePlan],
         scratch: &mut Vec<BonePaletteEntry>,
     ) {
-        if plan.groups.is_empty() {
+        if plans.iter().all(|plan| plan.groups.is_empty()) {
             self.snapshot_store
                 .retain_active_snapshot_fades(&HashMap::new());
             self.palette_cache.end_frame();
@@ -1650,90 +1680,97 @@ impl MeshPass {
         let mut sample_elapsed = std::time::Duration::ZERO;
         let mut active_snapshot_fades: HashMap<u32, SnapshotTag> = HashMap::new();
 
-        for group in &plan.groups {
-            let Some(model) = models.get(&group.model) else {
-                // Planner only emits groups for cached models, but guard anyway.
-                continue;
-            };
-            let clips = model_clips.get(&group.model);
-            let resolve_clip = |idx: usize| clips.and_then(|c| c.get(idx));
+        for plan in plans {
+            for group in &plan.groups {
+                let Some(model) = models.get(&group.model) else {
+                    // Planner only emits groups for cached models, but guard anyway.
+                    continue;
+                };
+                let clips = model_clips.get(&group.model);
+                let resolve_clip = |idx: usize| clips.and_then(|c| c.get(idx));
 
-            for (i, inst) in group.instances.iter().enumerate() {
-                let instance_index = group.instance_offset as usize + i;
-                let entry =
-                    build_instance_entry(inst.transform, inst.palette_base, inst.shadow_bias_scale);
-                queue.write_buffer(
-                    instance_buffer,
-                    (instance_index * INSTANCE_ENTRY_SIZE) as u64,
-                    &entry,
-                );
-
-                // Evaluate the one-time `"smooth"` capture (if any) into the store
-                // BEFORE sampling, so this frame's snapshot fade resolves against
-                // it. Idempotent by tag — a re-emission evaluates nothing.
-                if let Some(capture) = &inst.capture {
-                    snapshot_store.apply_capture(
-                        capture,
-                        &model.skeleton,
-                        resolve_clip,
-                        capture_scratch,
+                for (i, inst) in group.instances.iter().enumerate() {
+                    let instance_index = group.instance_offset as usize + i;
+                    let entry = build_instance_entry(
+                        inst.transform,
+                        inst.palette_base,
+                        inst.shadow_bias_scale,
                     );
-                }
-
-                // Retention mark: the capture above just installed the matching
-                // entry on a capture frame, so this frame's snapshot fade can
-                // sample it below and keep it at frame end. Missing/stale tags are
-                // left unmarked and will fall back during sampling, then evict.
-                if let Some(FadeSource::Snapshot { tag, .. }) = inst.sample.fade.map(|f| f.from) {
-                    if snapshot_store.matching(inst.phase_seed, tag).is_some() {
-                        active_snapshot_fades.insert(inst.phase_seed, tag);
-                    }
-                }
-
-                // Time-slicing decision. Sample when the collector asked
-                // for a resample OR the cache misses (a re-entering instance with
-                // no cached run must sample, never show a stale pose). Otherwise
-                // re-upload the cached run with no sampling.
-                if palette_cache.must_sample(inst.palette_cache_key, inst.resample) {
-                    // RESAMPLE: sample this instance's pose, upload it, and refresh
-                    // the cache with the freshly sampled run.
-                    let started = measure.then(std::time::Instant::now);
-                    let sampled = sample_instance(
-                        InstancePoseSample {
-                            params: &inst.sample,
-                            pose_inputs: inst.pose_inputs.as_ref(),
-                            seed: inst.phase_seed,
-                        },
-                        &model.skeleton,
-                        &model.pose_stack,
-                        snapshot_store,
-                        &resolve_clip,
-                        scratch,
+                    queue.write_buffer(
+                        instance_buffer,
+                        (instance_index * INSTANCE_ENTRY_SIZE) as u64,
+                        &entry,
                     );
-                    if let Some(started) = started {
-                        sampled_instances += 1;
-                        sample_elapsed += started.elapsed();
-                    }
-                    if sampled && !scratch.is_empty() {
-                        queue.write_buffer(
-                            palette_buffer,
-                            inst.palette_base as u64 * BONE_PALETTE_ENTRY_SIZE as u64,
-                            bytemuck::cast_slice(scratch),
+
+                    // Evaluate the one-time `"smooth"` capture (if any) into the store
+                    // BEFORE sampling, so this frame's snapshot fade resolves against
+                    // it. Idempotent by tag — a re-emission evaluates nothing.
+                    if let Some(capture) = &inst.capture {
+                        snapshot_store.apply_capture(
+                            capture,
+                            &model.skeleton,
+                            resolve_clip,
+                            capture_scratch,
                         );
-                        // Refresh the cache so a future skipped frame re-uploads
-                        // THIS pose. Reuses the entry's `Vec` storage in place.
-                        palette_cache.store(inst.palette_cache_key, scratch);
                     }
-                } else if let Some(cached) = palette_cache.touch_cached(inst.palette_cache_key) {
-                    // SKIP: re-upload the cached run at this frame's palette base
-                    // (the base can move frame to frame as the dense plan repacks).
-                    // No sampling, no allocation.
-                    if !cached.is_empty() {
-                        queue.write_buffer(
-                            palette_buffer,
-                            inst.palette_base as u64 * BONE_PALETTE_ENTRY_SIZE as u64,
-                            bytemuck::cast_slice(cached),
+
+                    // Retention mark: the capture above just installed the matching
+                    // entry on a capture frame, so this frame's snapshot fade can
+                    // sample it below and keep it at frame end. Missing/stale tags are
+                    // left unmarked and will fall back during sampling, then evict.
+                    if let Some(FadeSource::Snapshot { tag, .. }) = inst.sample.fade.map(|f| f.from)
+                    {
+                        if snapshot_store.matching(inst.phase_seed, tag).is_some() {
+                            active_snapshot_fades.insert(inst.phase_seed, tag);
+                        }
+                    }
+
+                    // Time-slicing decision. Sample when the collector asked
+                    // for a resample OR the cache misses (a re-entering instance with
+                    // no cached run must sample, never show a stale pose). Otherwise
+                    // re-upload the cached run with no sampling.
+                    if palette_cache.must_sample(inst.palette_cache_key, inst.resample) {
+                        // RESAMPLE: sample this instance's pose, upload it, and refresh
+                        // the cache with the freshly sampled run.
+                        let started = measure.then(std::time::Instant::now);
+                        let sampled = sample_instance(
+                            InstancePoseSample {
+                                params: &inst.sample,
+                                pose_inputs: inst.pose_inputs.as_ref(),
+                                seed: inst.phase_seed,
+                            },
+                            &model.skeleton,
+                            &model.pose_stack,
+                            snapshot_store,
+                            &resolve_clip,
+                            scratch,
                         );
+                        if let Some(started) = started {
+                            sampled_instances += 1;
+                            sample_elapsed += started.elapsed();
+                        }
+                        if sampled && !scratch.is_empty() {
+                            queue.write_buffer(
+                                palette_buffer,
+                                inst.palette_base as u64 * BONE_PALETTE_ENTRY_SIZE as u64,
+                                bytemuck::cast_slice(scratch),
+                            );
+                            // Refresh the cache so a future skipped frame re-uploads
+                            // THIS pose. Reuses the entry's `Vec` storage in place.
+                            palette_cache.store(inst.palette_cache_key, scratch);
+                        }
+                    } else if let Some(cached) = palette_cache.touch_cached(inst.palette_cache_key)
+                    {
+                        // SKIP: re-upload the cached run at this frame's palette base
+                        // (the base can move frame to frame as the dense plan repacks).
+                        // No sampling, no allocation.
+                        if !cached.is_empty() {
+                            queue.write_buffer(
+                                palette_buffer,
+                                inst.palette_base as u64 * BONE_PALETTE_ENTRY_SIZE as u64,
+                                bytemuck::cast_slice(cached),
+                            );
+                        }
                     }
                 }
             }
@@ -1753,6 +1790,22 @@ impl MeshPass {
         if let Some(stats) = pose_sample_stats.as_mut() {
             stats.record_frame(sampled_instances, sample_elapsed);
         }
+    }
+
+    /// Upload the camera-space projection used exclusively by the viewmodel pass.
+    /// `skinned_mesh.wgsl` reads only the leading `mat4x4`, while the buffer keeps
+    /// the existing group-0 allocation size/layout for bind-group compatibility.
+    pub(super) fn write_viewmodel_projection(&self, queue: &wgpu::Queue, projection: glam::Mat4) {
+        let mut data = [0u8; UNIFORM_SIZE];
+        for (index, value) in projection.to_cols_array().iter().enumerate() {
+            let offset = index * std::mem::size_of::<f32>();
+            data[offset..offset + std::mem::size_of::<f32>()].copy_from_slice(&value.to_ne_bytes());
+        }
+        queue.write_buffer(&self.viewmodel_uniform_buffer, 0, &data);
+    }
+
+    pub(super) fn viewmodel_uniform_bind_group(&self) -> &wgpu::BindGroup {
+        &self.viewmodel_uniform_bind_group
     }
 
     /// Record the forward skinned-mesh draws from the already-uploaded buffers.

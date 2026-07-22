@@ -31,6 +31,44 @@ fn renderer_threads_ambient_floor_into_mesh_write_light_params() {
     );
 }
 
+#[test]
+fn viewmodel_pass_follows_world_mesh_and_is_excluded_from_shadow_depth() {
+    let src = include_str!("../renderer_render_frame.rs");
+    let world_mesh_pass = src
+        .find("label: Some(\"Skinned Mesh Pass\")")
+        .expect("world skinned mesh pass must exist");
+    let viewmodel_pass = src
+        .find("label: Some(\"Skinned Viewmodel Pass\")")
+        .expect("dedicated viewmodel pass must exist");
+    assert!(
+        world_mesh_pass < viewmodel_pass,
+        "viewmodel must composite after the normal world forward mesh pass"
+    );
+
+    for shadow_call in [
+        "record_spot_shadow_depth(encoder, world_mesh_frame_plan)",
+        "record_cube_shadow_depth(encoder, world_mesh_frame_plan)",
+    ] {
+        let shadow = src.find(shadow_call).unwrap_or_else(|| {
+            panic!("shadow path must consume only the world plan: {shadow_call}")
+        });
+        assert!(
+            shadow < viewmodel_pass,
+            "the viewmodel pass must not feed shadow depth: {shadow_call}"
+        );
+    }
+
+    let viewmodel_region = &src[viewmodel_pass..];
+    assert!(
+        viewmodel_region.contains("wgpu::LoadOp::Clear(1.0)"),
+        "viewmodel pass must clear world depth to prevent nearby world clipping"
+    );
+    assert!(
+        viewmodel_region.contains("viewmodel_uniform_bind_group()"),
+        "viewmodel pass must bind its projection-only camera uniform"
+    );
+}
+
 // Regression: the forward "Textured Pipeline Layout" grew a fragment-stage
 // sampled-texture binding (the SH direct atlas, group-3 binding 15) but the
 // hand-maintained device-limit constant was not bumped, so

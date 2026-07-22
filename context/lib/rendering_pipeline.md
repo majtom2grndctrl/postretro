@@ -282,6 +282,8 @@ The skinned-mesh render pass owns all wgpu for skinned models. It uploads a mesh
 
 The mesh is not in the world depth pre-pass, so it depth-tests `Less` against the world depth *and* writes its own depth (self-occludes correctly), in a dedicated render pass that loads the existing depth attachment writably. Instance culling is the caller's job — a pure cell-membership test (does the instance's located cell fall in the frame's visible-cell set) mirroring the world path, decided CPU-side before the draw is recorded.
 
+**First-person viewmodels.** The CPU planner partitions `MeshInstanceInput` values into world and viewmodel plans while packing both into the same palette and instance storage buffers. Shadow-depth passes receive only the world plan. The viewmodel plan draws in a final mesh pass with a projection-only group-0 uniform (roughly 70° FOV, 0.01–2 m clip range) and clears the shared depth attachment first, so nearby world geometry cannot clip the local weapon. The renderer receives only a camera-space transform; game-side render assembly owns view-feel bob and tilt composition.
+
 ### Bind-group allocation (differs from §10)
 
 The skinned pass owns its **own pipeline layout**, so its group mapping is independent of the world-geometry mapping in §10 — no runtime collision. Its groups:

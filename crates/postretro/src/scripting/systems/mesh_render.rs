@@ -122,6 +122,10 @@ pub(crate) struct MeshRenderCollector {
     /// Persistent path-to-handle cache for attachment draw inputs. ModelHandle
     /// paths are interned here so steady-state collection does not allocate.
     attachment_model_handles: HashMap<String, ModelHandle>,
+    /// Persistent path-to-handle cache for the camera-space weapon presentation.
+    /// This stays separate from attachment handles because a viewmodel is never a
+    /// holder attachment and must enter the planner's dedicated plan.
+    viewmodel_model_handles: HashMap<String, ModelHandle>,
 }
 
 impl MeshRenderCollector {
@@ -134,6 +138,7 @@ impl MeshRenderCollector {
             resample_count: 0,
             attachment_world_pose: Vec::new(),
             attachment_model_handles: HashMap::new(),
+            viewmodel_model_handles: HashMap::new(),
         }
     }
 
@@ -144,6 +149,7 @@ impl MeshRenderCollector {
         self.resample_count = 0;
         self.attachment_world_pose.clear();
         self.attachment_model_handles.clear();
+        self.viewmodel_model_handles.clear();
     }
 
     /// Walk `ComponentKind::Mesh` entities, cull each against the frame's
@@ -337,6 +343,7 @@ impl MeshRenderCollector {
                 // the holder remains immediately before its attachments.
                 resample: false,
                 forward_visible,
+                is_viewmodel: false,
             });
             let has_skinned_attachment = attachments::emit_for_holder(
                 &mut self.instances,
@@ -375,6 +382,37 @@ impl MeshRenderCollector {
     /// The per-instance draw inputs to plan this frame (cull already applied).
     pub(crate) fn instances(&self) -> &[MeshInstanceInput] {
         &self.instances
+    }
+
+    /// Append the local weapon's camera-space presentation after world collection.
+    /// The caller owns camera/view-feel composition and descriptor lookup; this
+    /// collector only carries the finished transform across the renderer boundary.
+    /// A viewmodel deliberately has no attachments, no world cull, and no shadow
+    /// relevance: planner partitioning keeps it out of every depth plan.
+    pub(crate) fn collect_viewmodel(
+        &mut self,
+        model: &str,
+        transform: glam::Mat4,
+        weapon_seed: u32,
+    ) {
+        let handle = self
+            .viewmodel_model_handles
+            .entry(model.to_owned())
+            .or_insert_with(|| ModelHandle::from(model))
+            .clone();
+        self.instances.push(MeshInstanceInput {
+            model: handle,
+            transform,
+            shadow_bias_scale: 1.0,
+            phase_seed: weapon_seed,
+            palette_cache_key: MeshPaletteCacheKey::Entity(weapon_seed),
+            sample: MeshSampleParams::rigid(),
+            pose_inputs: None,
+            capture: None,
+            resample: false,
+            forward_visible: true,
+            is_viewmodel: true,
+        });
     }
 
     /// Count of instances that resampled their pose this frame. The
@@ -681,6 +719,23 @@ mod tests {
         );
         let t = inst.transform.w_axis;
         assert_eq!([t.x, t.y, t.z], [1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn collect_viewmodel_appends_only_a_camera_space_viewmodel_instance() {
+        let mut collector = MeshRenderCollector::new();
+        let transform = glam::Mat4::from_translation(Vec3::new(0.3, -0.2, -0.6));
+
+        collector.collect_viewmodel("models/pistol/view.gltf", transform, 42);
+
+        let instances = collector.instances();
+        assert_eq!(instances.len(), 1);
+        assert!(instances[0].is_viewmodel);
+        assert!(instances[0].forward_visible);
+        assert_eq!(instances[0].model.as_str(), "models/pistol/view.gltf");
+        assert_eq!(instances[0].transform, transform);
+        assert_eq!(instances[0].phase_seed, 42);
+        assert!(instances[0].pose_inputs.is_none());
     }
 
     // Regression: default-only fixtures let dropped collector/planner copies preserve 1.0.

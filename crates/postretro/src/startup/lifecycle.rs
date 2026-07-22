@@ -14,7 +14,7 @@ use crate::scripting::builtins::{
     PLAYER_START_CLASSNAME, apply_classname_dispatch, apply_data_archetype_dispatch,
     deferred_remote_player_mesh_models, descriptor_materializes_ai_enemy,
     filter_out_client_ai_enemies, spawn_from_player_starts, suppressed_ai_enemy_mesh_models,
-    weapon_third_person_models,
+    weapon_presentation_models,
 };
 use crate::startup::{
     BootState, InFlightLevelLoad, LevelLoadEntry, LevelRequest, LevelSource, LoadOutcome,
@@ -1487,9 +1487,9 @@ pub(crate) fn install_world_cpu(
         Vec::new()
     };
     // Wieldable weapon instances have no MeshComponent of their own. Preload every
-    // declared third-person prop so host and client attachment changes never trigger
-    // runtime model loads or leave a transient placeholder.
-    let third_person_weapon_models = weapon_third_person_models(&descriptors);
+    // declared third- and first-person model so attachment/viewmodel changes never
+    // trigger runtime model loads or leave a transient placeholder.
+    let weapon_presentation_models = weapon_presentation_models(&descriptors);
     let (active_wieldable, active_wieldable_descriptor, first_spawn) = {
         let mut registry = script_ctx.registry.borrow_mut();
         let mut map_entities = map_entities;
@@ -1620,7 +1620,7 @@ pub(crate) fn install_world_cpu(
                 models.push(model.clone());
             }
         }
-        for model in &third_person_weapon_models {
+        for model in &weapon_presentation_models {
             if seen.insert(model.clone()) {
                 models.push(model.clone());
             }

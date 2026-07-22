@@ -95,7 +95,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use glam::Vec3;
+use glam::{Quat, Vec3};
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, DeviceId, KeyEvent, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
@@ -987,6 +987,54 @@ fn followed_player_pawn(
     registry: &postretro_entities::EntityRegistry,
 ) -> Option<postretro_entities::EntityId> {
     registry.local_player_movement_pawn()
+}
+
+/// Resolve a local first-person asset strictly through the host-local weapon
+/// ownership relationship. The descriptor is local content, not replicated
+/// presentation state; a missing/uncached model simply never enters the plan.
+fn local_viewmodel_asset<'a>(
+    registry: &postretro_entities::EntityRegistry,
+    local_pawn: postretro_entities::EntityId,
+    weapon_owners: &netcode::WeaponOwners,
+    descriptors: &'a [postretro_entities::EntityTypeDescriptor],
+) -> Option<(postretro_entities::EntityId, &'a str)> {
+    let weapon = weapon_owners.weapon_of(local_pawn)?;
+    let provenance = registry
+        .get_component::<postretro_entities::provenance::DescriptorProvenance>(weapon)
+        .ok()?;
+    let archetype = provenance.canonical_name.as_str();
+    let viewmodel = descriptors
+        .iter()
+        .find(|descriptor| descriptor.canonical_name.as_deref() == Some(archetype))?
+        .weapon
+        .as_ref()?
+        .viewmodel
+        .as_deref()?
+        .trim();
+    (!viewmodel.is_empty()).then_some((weapon, viewmodel))
+}
+
+/// Camera-space placement of the first-person model. World camera yaw/pitch
+/// intentionally do not appear here: the viewmodel pass binds a projection-only
+/// camera uniform. Render-rate bob, sway, and tilt are composed at this game-side
+/// assembly seam before the instance crosses into the renderer.
+fn viewmodel_camera_space_transform(
+    camera_right: Vec3,
+    view_feel_eye_offset: Vec3,
+    view_feel_roll: f32,
+    view_feel_yaw: f32,
+    view_feel_pitch: f32,
+) -> glam::Mat4 {
+    const BASE_OFFSET: Vec3 = Vec3::new(0.32, -0.28, -0.62);
+    let bob_offset = Vec3::new(
+        view_feel_eye_offset.dot(camera_right),
+        view_feel_eye_offset.y,
+        0.0,
+    );
+    let rotation = Quat::from_rotation_y(view_feel_yaw)
+        * Quat::from_rotation_x(view_feel_pitch)
+        * Quat::from_rotation_z(view_feel_roll);
+    glam::Mat4::from_scale_rotation_translation(Vec3::ONE, rotation, BASE_OFFSET + bob_offset)
 }
 
 /// Follow the camera to the local pawn's eye. `presentation_offset` is the M15
@@ -2697,6 +2745,7 @@ impl ApplicationHandler for App {
                         render_eye_position,
                         self.script_time as f32,
                     );
+                    renderer.update_viewmodel_projection(self.camera.aspect());
 
                     // This gameplay block runs only in Running (the redraw
                     // path reaches here solely when `boot_state == Running`,
@@ -2761,6 +2810,60 @@ impl ApplicationHandler for App {
                             interp.position,
                             &session.hit_zone_store,
                         );
+
+                        // The first-person model is not an entity attachment and
+                        // never uses replicated weapon metadata. Resolve the local
+                        // pawn through `WeaponOwners` into its descriptor-local
+                        // `viewmodel` path, then hand the already camera-space,
+                        // view-feel-composed transform to the collector. A missing
+                        // cached asset is dropped by the planner this same frame;
+                        // because collection starts from an empty list, no stale
+                        // weapon can survive a descriptor/model hot-swap.
+                        let mut single_player_weapon_owners = netcode::WeaponOwners::new();
+                        if let (Some(local_pawn), Some(active_weapon)) =
+                            (followed_player_pawn(&registry), self.active_wieldable)
+                        {
+                            single_player_weapon_owners.set(local_pawn, active_weapon);
+                        }
+                        let descriptors = script_ctx.data_registry.borrow();
+                        if let Some(local_pawn) = followed_player_pawn(&registry) {
+                            let host_viewmodel =
+                                session
+                                    .net_endpoint
+                                    .as_ref()
+                                    .and_then(|endpoint| match endpoint {
+                                        netcode::NetEndpoint::Host { weapon_owners, .. } => {
+                                            local_viewmodel_asset(
+                                                &registry,
+                                                local_pawn,
+                                                weapon_owners,
+                                                &descriptors.entities,
+                                            )
+                                        }
+                                        netcode::NetEndpoint::Client { .. } => None,
+                                    });
+                            let viewmodel = host_viewmodel.or_else(|| {
+                                local_viewmodel_asset(
+                                    &registry,
+                                    local_pawn,
+                                    &single_player_weapon_owners,
+                                    &descriptors.entities,
+                                )
+                            });
+                            if let Some((weapon, model)) = viewmodel {
+                                session.mesh_render.collect_viewmodel(
+                                    model,
+                                    viewmodel_camera_space_transform(
+                                        camera_right,
+                                        vf_eye_offset,
+                                        vf_roll,
+                                        vf_yaw_offset,
+                                        vf_pitch_offset,
+                                    ),
+                                    weapon.to_raw(),
+                                );
+                            }
+                        }
                         renderer.set_mesh_draws(session.mesh_render.instances());
 
                         self.kinematic_mover_render.collect(
@@ -5771,6 +5874,112 @@ mod tests {
         // The lifecycle gate still suppresses the save before commit/restore.
         assert!(!should_save_persisted_state(false, false));
         assert!(!should_save_persisted_state(false, true));
+    }
+
+    fn weapon_viewmodel_descriptor(
+        canonical_name: &str,
+        viewmodel: Option<&str>,
+    ) -> postretro_entities::EntityTypeDescriptor {
+        postretro_entities::EntityTypeDescriptor {
+            canonical_name: Some(canonical_name.to_owned()),
+            default_weapon: None,
+            light: None,
+            emitter: None,
+            movement: None,
+            weapon: Some(postretro_foundation::WeaponDescriptor {
+                damage: 1.0,
+                range: 1.0,
+                cooldown_ms: 1.0,
+                fire_mode: postretro_foundation::FireMode::Semi,
+                resolution: postretro_foundation::ResolutionMode::Hitscan,
+                credit_source: None,
+                third_person_model: None,
+                viewmodel: viewmodel.map(str::to_owned),
+                resource: None,
+            }),
+            mesh: None,
+            health: None,
+            ai: None,
+        }
+    }
+
+    #[test]
+    fn local_viewmodel_asset_uses_weapon_owner_and_weapon_provenance() {
+        use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
+        use postretro_entities::{EntityRegistry, Transform};
+
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let weapon = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                weapon,
+                DescriptorProvenance {
+                    canonical_name: "reference_pistol".to_owned(),
+                    owned_components: Default::default(),
+                    map_overrides: Default::default(),
+                    spawn_path: DescriptorSpawnPath::DefaultWeapon,
+                },
+            )
+            .unwrap();
+        let mut owners = netcode::WeaponOwners::new();
+        owners.set(pawn, weapon);
+        let descriptors = vec![weapon_viewmodel_descriptor(
+            "reference_pistol",
+            Some("models/pistol/view.gltf"),
+        )];
+
+        assert_eq!(
+            local_viewmodel_asset(&registry, pawn, &owners, &descriptors),
+            Some((weapon, "models/pistol/view.gltf")),
+        );
+    }
+
+    #[test]
+    fn missing_viewmodel_descriptor_drops_local_presentation_without_stale_asset() {
+        use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
+        use postretro_entities::{EntityRegistry, Transform};
+
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let weapon = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                weapon,
+                DescriptorProvenance {
+                    canonical_name: "reference_pistol".to_owned(),
+                    owned_components: Default::default(),
+                    map_overrides: Default::default(),
+                    spawn_path: DescriptorSpawnPath::DefaultWeapon,
+                },
+            )
+            .unwrap();
+        let mut owners = netcode::WeaponOwners::new();
+        owners.set(pawn, weapon);
+
+        assert!(
+            local_viewmodel_asset(
+                &registry,
+                pawn,
+                &owners,
+                &[weapon_viewmodel_descriptor("reference_pistol", None)],
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn viewmodel_transform_applies_view_feel_offsets_without_world_camera_rotation() {
+        let transform =
+            viewmodel_camera_space_transform(Vec3::X, Vec3::new(0.1, 0.2, 0.3), 0.1, 0.2, -0.3);
+        let translation = transform.w_axis.truncate();
+
+        assert_eq!(translation, Vec3::new(0.42, -0.08, -0.62));
+        assert_ne!(
+            transform.x_axis.truncate(),
+            Vec3::X,
+            "view-feel tilt must rotate the camera-space model"
+        );
     }
 
     #[test]

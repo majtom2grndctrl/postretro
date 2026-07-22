@@ -119,6 +119,7 @@ pub(crate) fn emit_for_holder(
             // cache miss, then reuses it; rigid props never need pose updates.
             resample: false,
             forward_visible,
+            is_viewmodel: false,
         });
     }
 

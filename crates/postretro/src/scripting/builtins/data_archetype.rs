@@ -418,24 +418,29 @@ pub(crate) fn deferred_remote_player_mesh_models(
     ordered
 }
 
-/// Collect third-person prop models declared by weapon descriptors. Wieldable
-/// instances intentionally have no `MeshComponent`, so a registry-driven sweep cannot
-/// discover them. Every role may present an active weapon, therefore this list is
-/// always unioned into the level-load model sweep rather than being client-only.
-pub(crate) fn weapon_third_person_models(descriptors: &[EntityTypeDescriptor]) -> Vec<String> {
+/// Collect third- and first-person models declared by weapon descriptors.
+/// Wieldable instances intentionally have no `MeshComponent`, so a registry-driven
+/// sweep cannot discover either presentation asset. Every role may present an
+/// active weapon, therefore this list is always unioned into the level-load model
+/// sweep rather than being client-only.
+pub(crate) fn weapon_presentation_models(descriptors: &[EntityTypeDescriptor]) -> Vec<String> {
     let mut seen = HashSet::new();
     let mut ordered = Vec::new();
     for descriptor in descriptors {
-        let Some(model) = descriptor
-            .weapon
-            .as_ref()
-            .and_then(|weapon| weapon.third_person_model.as_deref())
-            .filter(|model| !model.is_empty())
-        else {
+        let Some(weapon) = descriptor.weapon.as_ref() else {
             continue;
         };
-        if seen.insert(model.to_string()) {
-            ordered.push(model.to_string());
+        for model in [
+            weapon.third_person_model.as_deref(),
+            weapon.viewmodel.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .filter(|model| !model.is_empty())
+        {
+            if seen.insert(model.to_string()) {
+                ordered.push(model.to_string());
+            }
         }
     }
     ordered
@@ -2497,13 +2502,15 @@ mod tests {
     }
 
     #[test]
-    fn weapon_third_person_models_collects_only_nonempty_weapon_props_once() {
+    fn weapon_presentation_models_collects_nonempty_third_and_first_person_paths_once() {
         let mut pistol = weapon_descriptor("pistol");
         pistol.weapon.as_mut().unwrap().third_person_model =
             Some("models/pistol/model.gltf".to_string());
+        pistol.weapon.as_mut().unwrap().viewmodel = Some("models/pistol/view.gltf".to_string());
         let mut duplicate = weapon_descriptor("pistol_variant");
         duplicate.weapon.as_mut().unwrap().third_person_model =
             Some("models/pistol/model.gltf".to_string());
+        duplicate.weapon.as_mut().unwrap().viewmodel = Some("models/pistol/view.gltf".to_string());
         let mut rifle = weapon_descriptor("rifle");
         rifle.weapon.as_mut().unwrap().third_person_model =
             Some("models/rifle/model.gltf".to_string());
@@ -2511,7 +2518,7 @@ mod tests {
         empty.weapon.as_mut().unwrap().third_person_model = Some(String::new());
 
         assert_eq!(
-            weapon_third_person_models(&[
+            weapon_presentation_models(&[
                 pistol,
                 mesh_descriptor("scenery", false),
                 duplicate,
@@ -2520,9 +2527,10 @@ mod tests {
             ]),
             vec![
                 "models/pistol/model.gltf".to_string(),
+                "models/pistol/view.gltf".to_string(),
                 "models/rifle/model.gltf".to_string(),
             ],
-            "only declared weapon props participate, preserving descriptor order and deduping paths"
+            "declared weapon presentation models preserve descriptor order and dedupe paths"
         );
     }
 

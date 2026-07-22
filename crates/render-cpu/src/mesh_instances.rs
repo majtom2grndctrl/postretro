@@ -105,6 +105,10 @@ pub struct MeshInstanceInput {
     /// casters may be retained with this `false`; the forward draw filters them
     /// out while shadow depth passes may still consume them.
     pub forward_visible: bool,
+    /// First-person weapon presentation. Viewmodels are planned separately from
+    /// world instances so they use the shared palette/instance buffers without
+    /// ever entering world shadow-depth passes.
+    pub is_viewmodel: bool,
 }
 
 /// One instance's resolved placement in the frame plan: its world transform, the
@@ -179,6 +183,18 @@ pub struct MeshFramePlan {
     pub dropped: u32,
 }
 
+/// The two control-flow plans sharing this frame's palette and instance SSBOs.
+///
+/// World instances receive the first budget admission so gameplay presentation
+/// cannot evict the world/shadow set. The viewmodel plan's palette bases and
+/// instance offsets continue after the world plan; neither plan owns a separate
+/// GPU buffer.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MeshFramePlans {
+    pub world: MeshFramePlan,
+    pub viewmodel: MeshFramePlan,
+}
+
 /// Per-model lookups the GPU-free frame planner needs from the renderer's model
 /// cache: the skeleton's joint count (the palette-run length) and the model's
 /// local-space bound (stamped onto each `PlannedInstance` for the caster cull).
@@ -228,16 +244,53 @@ pub fn plan_mesh_frame(
     instances: &[MeshInstanceInput],
     joints: &impl JointCounts,
 ) -> MeshFramePlan {
-    plan_grouped_mesh_frame(instances, joints)
+    let mut palette_cursor = 0;
+    let mut instance_cursor = 0;
+    plan_grouped_mesh_frame(
+        instances,
+        joints,
+        |_| true,
+        &mut palette_cursor,
+        &mut instance_cursor,
+    )
+}
+
+/// Partition world and first-person viewmodel instances into plans that share
+/// one dense palette/instance allocation. The structural split means callers
+/// pass only [`MeshFramePlans::world`] into shadow-depth recording; no depth
+/// filter has to recognize a viewmodel group.
+pub fn plan_mesh_frame_plans(
+    instances: &[MeshInstanceInput],
+    joints: &impl JointCounts,
+) -> MeshFramePlans {
+    let mut palette_cursor = 0;
+    let mut instance_cursor = 0;
+    let world = plan_grouped_mesh_frame(
+        instances,
+        joints,
+        |instance| !instance.is_viewmodel,
+        &mut palette_cursor,
+        &mut instance_cursor,
+    );
+    let viewmodel = plan_grouped_mesh_frame(
+        instances,
+        joints,
+        |instance| instance.is_viewmodel,
+        &mut palette_cursor,
+        &mut instance_cursor,
+    );
+    MeshFramePlans { world, viewmodel }
 }
 
 fn plan_grouped_mesh_frame(
     instances: &[MeshInstanceInput],
     joints: &impl JointCounts,
+    include: impl Fn(&MeshInstanceInput) -> bool,
+    palette_cursor: &mut usize,
+    instance_cursor: &mut usize,
 ) -> MeshFramePlan {
     let mut groups: Vec<ModelDrawGroup> = Vec::new();
-    let mut palette_cursor: usize = 0;
-    let mut instance_count: usize = 0;
+    let plan_instance_start = *instance_cursor as u32;
     let mut dropped: u32 = 0;
 
     // Budget forward-visible groups first so shadow-only inputs never evict a
@@ -254,6 +307,14 @@ fn plan_grouped_mesh_frame(
                 group_end += 1;
             }
             let input_group = &instances[group_start..group_end];
+            if !include(&input_group[0]) {
+                group_start = group_end;
+                continue;
+            }
+            debug_assert!(
+                input_group.iter().all(&include),
+                "a holder and its attachments must share the world/viewmodel plan"
+            );
             let forward_visible = input_group.iter().any(|instance| instance.forward_visible);
             if forward_visible == group_is_forward {
                 plan_instance_group(
@@ -261,8 +322,8 @@ fn plan_grouped_mesh_frame(
                     forward_visible,
                     joints,
                     &mut groups,
-                    &mut palette_cursor,
-                    &mut instance_count,
+                    palette_cursor,
+                    instance_cursor,
                     &mut dropped,
                 );
             }
@@ -272,15 +333,17 @@ fn plan_grouped_mesh_frame(
 
     // Assign dense instance offsets in group order so the flat SSBO is filled
     // group-by-group; each group draws `instance_offset..+len`.
-    let mut instance_offset: u32 = 0;
+    let mut instance_offset = plan_instance_start;
     for group in &mut groups {
         group.instance_offset = instance_offset;
         instance_offset += group.instances.len() as u32;
     }
+    let instance_count = instance_offset - plan_instance_start;
+    *instance_cursor = instance_offset as usize;
 
     MeshFramePlan {
         groups,
-        instance_count: instance_offset,
+        instance_count,
         dropped,
     }
 }
@@ -292,7 +355,7 @@ fn plan_instance_group(
     joints: &impl JointCounts,
     groups: &mut Vec<ModelDrawGroup>,
     palette_cursor: &mut usize,
-    instance_count: &mut usize,
+    planned_instance_count: &mut usize,
     dropped: &mut u32,
 ) {
     let Some(holder_joints) = input_group
@@ -319,7 +382,7 @@ fn plan_instance_group(
         available_instances += 1;
     }
 
-    let instance_budget_overflows = available_instances > MAX_INSTANCES - *instance_count;
+    let instance_budget_overflows = available_instances > MAX_INSTANCES - *planned_instance_count;
     let palette_budget_overflows = palette_entries > MAX_PALETTE_ENTRIES - *palette_cursor;
     if instance_budget_overflows || palette_budget_overflows {
         *dropped = (*dropped).saturating_add(available_instances as u32);
@@ -336,7 +399,7 @@ fn plan_instance_group(
         };
         let palette_base = *palette_cursor as u32;
         *palette_cursor += run;
-        *instance_count += 1;
+        *planned_instance_count += 1;
 
         let planned = PlannedInstance {
             transform: instance.transform,
@@ -430,6 +493,7 @@ mod tests {
             capture: None,
             resample: true,
             forward_visible: true,
+            is_viewmodel: false,
         }
     }
 
@@ -714,6 +778,46 @@ mod tests {
         assert_eq!(plan.dropped, 0, "an uncached model is not a budget drop");
         assert_eq!(plan.groups.len(), 1);
         assert_eq!(plan.groups[0].model.as_str(), "grunt");
+    }
+
+    #[test]
+    fn plans_partition_world_and_viewmodel_with_shared_buffer_offsets() {
+        let joints = joints(&[("world", 3), ("viewmodel", 4)]);
+        let mut viewmodel = instance("viewmodel", 0.0, 2);
+        viewmodel.is_viewmodel = true;
+        let instances = [
+            instance("world", 1.0, 0),
+            instance("world", 2.0, 1),
+            viewmodel,
+        ];
+
+        let plans = plan_mesh_frame_plans(&instances, &joints);
+
+        assert_eq!(plans.world.instance_count, 2);
+        assert_eq!(plans.viewmodel.instance_count, 1);
+        assert_eq!(plans.world.groups[0].model.as_str(), "world");
+        assert_eq!(plans.viewmodel.groups[0].model.as_str(), "viewmodel");
+
+        let world_group = &plans.world.groups[0];
+        let viewmodel_group = &plans.viewmodel.groups[0];
+        assert_eq!(world_group.instance_offset, 0);
+        assert_eq!(viewmodel_group.instance_offset, 2);
+        assert_eq!(world_group.instances[0].palette_base, 0);
+        assert_eq!(world_group.instances[1].palette_base, 3);
+        assert_eq!(viewmodel_group.instances[0].palette_base, 6);
+    }
+
+    #[test]
+    fn missing_viewmodel_asset_leaves_no_viewmodel_plan_to_draw() {
+        let joints = joints(&[("world", 2)]);
+        let mut missing_viewmodel = instance("missing-viewmodel", 0.0, 2);
+        missing_viewmodel.is_viewmodel = true;
+
+        let plans = plan_mesh_frame_plans(&[instance("world", 1.0, 1), missing_viewmodel], &joints);
+
+        assert_eq!(plans.world.instance_count, 1);
+        assert!(plans.viewmodel.groups.is_empty());
+        assert_eq!(plans.viewmodel.dropped, 0);
     }
 
     #[test]

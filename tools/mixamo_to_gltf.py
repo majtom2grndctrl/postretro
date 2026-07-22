@@ -229,64 +229,11 @@ def merge_animations(input_dir, scale=None, base=None):
 
     base_bones = set(bone.name for bone in base_armature.data.bones)
 
-    # The armature carries Mixamo import transforms (cm scale, Z-up→Y-up
-    # rotation).  The engine never reads the Armature node (only skin joints),
-    # so ALL transforms must be baked into bone rest positions AND mesh
-    # vertices.  A 180° Z flip is also needed: Mixamo characters face Blender
-    # +Y, which the glTF exporter maps to -Z, but the engine expects +Z
-    # forward (pose_modifier.rs, mesh_pass.rs).
-    flip_z = Matrix.Rotation(math.pi, 4, 'Z')
-
-    # Capture BEFORE we modify anything — matrix_world is the ground truth
-    # regardless of how Blender decomposed it (parent_inverse, basis, parent).
-    arm_world = base_armature.matrix_world.copy()
-    baked_transform = flip_z @ arm_world
-
-    mesh_objects = [obj for obj in bpy.data.objects if obj.type == "MESH"]
-    mesh_worlds = {obj.name: obj.matrix_world.copy() for obj in mesh_objects}
-
-    print(f"\n  Armature scale: {[round(x, 4) for x in arm_world.to_scale()]}"
-          f"  rotation: {[round(math.degrees(x), 1) for x in arm_world.to_euler()]}")
-    print(f"  Mesh objects to transform: {len(mesh_objects)}"
-          f" [{', '.join(obj.name for obj in mesh_objects)}]")
-
-    base_armature.matrix_basis = baked_transform
-    bpy.ops.object.select_all(action='DESELECT')
-    bpy.context.view_layer.objects.active = base_armature
-    base_armature.select_set(True)
-    bpy.ops.object.transform_apply(location=False, rotation=True, scale=True)
-    base_armature.select_set(False)
-
-    if mesh_objects:
-        for mesh_obj in mesh_objects:
-            obj_world = mesh_worlds[mesh_obj.name]
-            mesh_bake = flip_z @ obj_world
-
-            verts = mesh_obj.data.vertices
-            if verts:
-                zs = [v.co.z for v in verts]
-                print(f"  {mesh_obj.name}: {len(verts)} verts,"
-                      f" Z[{min(zs):.2f}, {max(zs):.2f}] before bake")
-
-            mesh_obj.matrix_parent_inverse = Matrix.Identity(4)
-            mesh_obj.matrix_basis = mesh_bake
-
-            bpy.ops.object.select_all(action='DESELECT')
-            bpy.context.view_layer.objects.active = mesh_obj
-            mesh_obj.select_set(True)
-            bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
-            mesh_obj.select_set(False)
-
-        all_verts_z = []
-        for mesh_obj in mesh_objects:
-            for v in mesh_obj.data.vertices:
-                all_verts_z.append(v.co.z)
-        if all_verts_z:
-            print(f"  All meshes AFTER bake: Z[{min(all_verts_z):.4f}, {max(all_verts_z):.4f}]")
-            print(f"  (expected: Z ~ [0.0, 1.8])")
-    else:
-        print("  WARNING: No mesh in base file — output will have no geometry.")
-        print("  If the character mesh is in a different FBX, use --base to select it.")
+    # --- Phase 1: Import all clip FBXes and collect actions ----------------
+    # Clips must be imported BEFORE the armature transform so we can sample
+    # their world-space bone poses against the original (FBX-imported) rest
+    # pose.  After transform_apply the rest pose changes, and F-curve values
+    # authored for the old rest pose produce wrong results.
 
     base_objects = set(bpy.data.objects[:])
 
@@ -337,6 +284,136 @@ def merge_animations(input_dir, scale=None, base=None):
         for obj in list(bpy.data.objects):
             if obj not in base_objects:
                 bpy.data.objects.remove(obj, do_unlink=True)
+
+    # --- Phase 2: Sample world-space bone poses for every action ----------
+    # Before we transform the armature, evaluate each action on the base
+    # armature (which still carries the original FBX transform) and record
+    # each bone's world matrix at every keyframe.  These world matrices are
+    # the ground truth that the re-bake in Phase 4 will reproduce.
+
+    all_actions = [a for a in bpy.data.actions if a.users > 0 or a.use_fake_user]
+    action_poses = {}
+
+    if not base_armature.animation_data:
+        base_armature.animation_data_create()
+
+    for action in all_actions:
+        base_armature.animation_data.action = action
+        frame_start = int(action.frame_range[0])
+        frame_end = int(action.frame_range[1])
+        poses_by_frame = {}
+        for frame in range(frame_start, frame_end + 1):
+            bpy.context.scene.frame_set(frame)
+            bpy.context.view_layer.update()
+            bone_matrices = {}
+            for pbone in base_armature.pose.bones:
+                bone_matrices[pbone.name] = (base_armature.matrix_world @ pbone.matrix).copy()
+            poses_by_frame[frame] = bone_matrices
+        action_poses[action.name] = (frame_start, frame_end, poses_by_frame)
+
+    base_armature.animation_data.action = None
+    bpy.context.scene.frame_set(0)
+
+    print(f"\n  Sampled {len(action_poses)} action(s) for re-bake")
+
+    # --- Phase 3: Apply armature + mesh transforms ------------------------
+    # The engine never reads the Armature node (only skin joints), so ALL
+    # transforms must be baked into bone rest positions AND mesh vertices.
+    # A 180-deg Z flip is also needed: Mixamo characters face Blender +Y,
+    # which the glTF exporter maps to -Z, but the engine expects +Z forward
+    # (pose_modifier.rs, mesh_pass.rs).
+    flip_z = Matrix.Rotation(math.pi, 4, 'Z')
+
+    arm_world = base_armature.matrix_world.copy()
+    baked_transform = flip_z @ arm_world
+
+    mesh_objects = [obj for obj in bpy.data.objects if obj.type == "MESH"]
+    mesh_worlds = {obj.name: obj.matrix_world.copy() for obj in mesh_objects}
+
+    print(f"\n  Armature scale: {[round(x, 4) for x in arm_world.to_scale()]}"
+          f"  rotation: {[round(math.degrees(x), 1) for x in arm_world.to_euler()]}")
+    print(f"  Mesh objects to transform: {len(mesh_objects)}"
+          f" [{', '.join(obj.name for obj in mesh_objects)}]")
+
+    base_armature.matrix_basis = baked_transform
+    bpy.ops.object.select_all(action='DESELECT')
+    bpy.context.view_layer.objects.active = base_armature
+    base_armature.select_set(True)
+    bpy.ops.object.transform_apply(location=False, rotation=True, scale=True)
+    base_armature.select_set(False)
+
+    if mesh_objects:
+        for mesh_obj in mesh_objects:
+            obj_world = mesh_worlds[mesh_obj.name]
+            mesh_bake = flip_z @ obj_world
+
+            verts = mesh_obj.data.vertices
+            if verts:
+                zs = [v.co.z for v in verts]
+                print(f"  {mesh_obj.name}: {len(verts)} verts,"
+                      f" Z[{min(zs):.2f}, {max(zs):.2f}] before bake")
+
+            mesh_obj.matrix_parent_inverse = Matrix.Identity(4)
+            mesh_obj.matrix_basis = mesh_bake
+
+            bpy.ops.object.select_all(action='DESELECT')
+            bpy.context.view_layer.objects.active = mesh_obj
+            mesh_obj.select_set(True)
+            bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+            mesh_obj.select_set(False)
+
+        all_verts_z = []
+        for mesh_obj in mesh_objects:
+            for v in mesh_obj.data.vertices:
+                all_verts_z.append(v.co.z)
+        if all_verts_z:
+            print(f"  All meshes AFTER bake: Z[{min(all_verts_z):.4f}, {max(all_verts_z):.4f}]")
+            print(f"  (expected: Z ~ [0.0, 1.8])")
+    else:
+        print("  WARNING: No mesh in base file — output will have no geometry.")
+        print("  If the character mesh is in a different FBX, use --base to select it.")
+
+    # --- Phase 4: Re-bake animations into the new rest pose ---------------
+    # The armature's rest pose changed (transform_apply baked scale+rotation
+    # into edit bones), but F-curve values still target the old rest pose.
+    # Re-write each action using the world-space bone matrices we sampled in
+    # Phase 2: set each bone's pose matrix (Blender auto-decomposes into
+    # the correct local TRS for the new rest pose), then insert keyframes.
+
+    arm_world_inv = base_armature.matrix_world.inverted()
+
+    for pbone in base_armature.pose.bones:
+        pbone.rotation_mode = 'QUATERNION'
+
+    for action in all_actions:
+        if action.name not in action_poses:
+            continue
+        frame_start, frame_end, poses_by_frame = action_poses[action.name]
+
+        base_armature.animation_data.action = action
+        fcurves = get_action_fcurves(action)
+        for fc in list(fcurves):
+            fcurves.remove(fc)
+
+        for frame in range(frame_start, frame_end + 1):
+            bpy.context.scene.frame_set(frame)
+            bone_matrices = poses_by_frame[frame]
+            for pbone in base_armature.pose.bones:
+                if pbone.name in bone_matrices:
+                    pbone.matrix = arm_world_inv @ bone_matrices[pbone.name]
+            bpy.context.view_layer.update()
+            for pbone in base_armature.pose.bones:
+                if pbone.name in bone_matrices:
+                    pbone.keyframe_insert(data_path="location", frame=frame)
+                    pbone.keyframe_insert(data_path="rotation_quaternion", frame=frame)
+                    pbone.keyframe_insert(data_path="scale", frame=frame)
+
+        print(f"  Re-baked '{action.name}': {frame_end - frame_start + 1} frames")
+
+    base_armature.animation_data.action = None
+    bpy.context.scene.frame_set(0)
+
+    # --- Phase 5: Join meshes ---------------------------------------------
 
     mesh_objects = [obj for obj in bpy.data.objects if obj.type == "MESH"]
     if len(mesh_objects) > 1:

@@ -968,13 +968,17 @@ impl ClientReplication {
         {
             return;
         }
+        let cached_weapon = self.active_weapon_archetypes.get(&network_id).cloned();
         outcome.remote_entities.push(RemoteEntityMaterialize {
             network_id,
             entity_id,
             entity_class: class.to_string(),
             initial_animation_state: first_mesh_animation_state(components),
-            active_weapon_archetype: None,
-            weapon_attachment_changed: false,
+            active_weapon_archetype: cached_weapon.clone().flatten(),
+            // A recovered mesh has no attachment regardless of whether identity
+            // changed. Reapply even cached `None` so binding resolution observes the
+            // newly materialized (initially unarmed) presentation surface.
+            weapon_attachment_changed: cached_weapon.is_some(),
         });
     }
 
@@ -1079,6 +1083,23 @@ impl ClientReplication {
             // guarantees `local_player: true` only rides a movement record.
             return;
         };
+        let mesh_missing = !registry
+            .has_component_kind(entity_id, ComponentKind::Mesh)
+            .unwrap_or(false);
+        if mesh_missing
+            && !outcome
+                .local_weapon_attachments
+                .iter()
+                .any(|update| update.entity_id == entity_id)
+            && let Some(cached_weapon) = self.active_weapon_archetypes.get(&network_id)
+        {
+            outcome
+                .local_weapon_attachments
+                .push(LocalWeaponAttachmentUpdate {
+                    entity_id,
+                    active_weapon_archetype: cached_weapon.clone(),
+                });
+        }
         // Mark the mapped entity as the local player pawn so camera follow, the
         // movement-pawn lookup, and prediction all converge on the same EntityId.
         if let Err(err) = registry.mark_local_player_pawn(entity_id) {
@@ -4228,6 +4249,9 @@ mod tests {
             Some("reference_pistol"),
             "recipient-local viewmodel identity survives the arming record"
         );
+        registry
+            .set_component(local_id, MeshComponent::stateless("player".to_string()))
+            .unwrap();
 
         let mut unchanged_local = delta(8, 1, 2, vec![movement_payload()]);
         let EntityRecord::Delta {
@@ -4251,11 +4275,36 @@ mod tests {
             Some("reference_pistol")
         );
 
+        registry
+            .remove_component::<MeshComponent>(local_id)
+            .unwrap();
+        let mut recovered_local = delta(8, 2, 3, vec![movement_payload()]);
+        let EntityRecord::Delta {
+            local_player,
+            active_weapon_archetype,
+            ..
+        } = &mut recovered_local
+        else {
+            unreachable!();
+        };
+        *local_player = true;
+        *active_weapon_archetype = Some("reference_pistol".to_string());
+        let recovered_local =
+            client.apply_snapshot(&mut registry, &snapshot(4, 14, vec![recovered_local]));
+        assert_eq!(
+            recovered_local.local_weapon_attachments,
+            vec![LocalWeaponAttachmentUpdate {
+                entity_id: local_id,
+                active_weapon_archetype: Some("reference_pistol".to_string()),
+            }],
+            "a recovered local mesh reapplies cached active-weapon presentation"
+        );
+
         client.apply_snapshot(
             &mut registry,
             &snapshot(
-                4,
-                14,
+                5,
+                15,
                 vec![EntityRecord::Despawn {
                     network_id: 8,
                     tombstone_id: 9,
@@ -4267,6 +4316,81 @@ mod tests {
             client.local_active_weapon_archetype(),
             None,
             "despawn clears recipient-local weapon presentation with its mapping"
+        );
+    }
+
+    // Regression: archetype identity can remain unchanged while the descriptor mesh
+    // is recovered after a failed/removed presentation component. The new mesh still
+    // needs its dynamic hand attachment and binding pass.
+    #[test]
+    fn recovered_player_mesh_reapplies_cached_weapon_attachment_identity() {
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+
+        let mut baseline = remote_enemy_baseline(
+            7,
+            1,
+            "player",
+            vec![transform_payload(0.0), movement_payload()],
+        );
+        let EntityRecord::FullBaseline {
+            active_weapon_archetype,
+            ..
+        } = &mut baseline
+        else {
+            unreachable!();
+        };
+        *active_weapon_archetype = Some("reference_pistol".to_string());
+        let initial = client.apply_snapshot(&mut registry, &snapshot(0, 10, vec![baseline]));
+        let pawn = initial.remote_entities[0].entity_id;
+        registry
+            .set_component(pawn, MeshComponent::stateless("player".to_string()))
+            .unwrap();
+        registry.remove_component::<MeshComponent>(pawn).unwrap();
+
+        let mut unchanged = remote_enemy_delta(
+            7,
+            1,
+            2,
+            "player",
+            vec![transform_payload(1.0), movement_payload()],
+        );
+        let EntityRecord::Delta {
+            active_weapon_archetype,
+            ..
+        } = &mut unchanged
+        else {
+            unreachable!();
+        };
+        *active_weapon_archetype = Some("reference_pistol".to_string());
+        let recovered = client.apply_snapshot(&mut registry, &snapshot(1, 11, vec![unchanged]));
+
+        assert_eq!(recovered.remote_entities.len(), 1);
+        assert_eq!(
+            recovered.remote_entities[0]
+                .active_weapon_archetype
+                .as_deref(),
+            Some("reference_pistol")
+        );
+        assert!(recovered.remote_entities[0].weapon_attachment_changed);
+    }
+
+    #[test]
+    fn initially_unarmed_local_mesh_materialization_surfaces_binding_resolution() {
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+        let baseline =
+            local_player_baseline(8, 1, vec![transform_payload(0.0), movement_payload()]);
+
+        let outcome = client.apply_snapshot(&mut registry, &snapshot(0, 10, vec![baseline]));
+        let pawn = outcome.armed_local_pawn.as_ref().unwrap().entity_id;
+        assert_eq!(
+            outcome.local_weapon_attachments,
+            vec![LocalWeaponAttachmentUpdate {
+                entity_id: pawn,
+                active_weapon_archetype: None,
+            }],
+            "initial unarmed state still schedules the new mesh's binding pass"
         );
     }
 

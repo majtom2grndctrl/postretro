@@ -31,7 +31,8 @@ pub struct MeshDescriptor {
     pub model: String,
     /// When true, this mesh is collected only for shadow-depth presentation.
     /// `shadowOnly` on the script surface; omission preserves normal forward
-    /// rendering. The renderer consumes the materialized component flag.
+    /// rendering. Player materialization retains the bit only for the owning
+    /// local viewer and clears it for peer-visible avatars.
     pub shadow_only: bool,
     /// Named holder socket → content-relative prop model path. The spawn path
     /// materializes these into transiently unresolved mesh attachments; level
@@ -130,6 +131,8 @@ impl MeshDescriptor {
     /// state. An empty-but-present `animations` block is rejected; a wholly absent
     /// one yields a stateless descriptor (`animations` empty, `default_state`
     /// None). `shadowOnly` is optional descriptor input and defaults to `false`.
+    /// Player presentation treats it as an owning-view exception: the local body
+    /// remains shadow-only while peer viewers render the same avatar forward.
     /// `shadowBiasScale` is optional on the wire, defaults to 1.0, and must be
     /// finite in 0.0..=4.0.
     pub fn build(raw: RawMeshDescriptor) -> Result<Self, DescriptorError> {

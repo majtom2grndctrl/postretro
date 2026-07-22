@@ -1,5 +1,5 @@
-// Client-apply call-site glue: routes applied snapshots to the descriptor-presentation
-// materialization seam for both local and remote entities.
+// Shared descriptor-presentation materialization and runtime attachment updates
+// for local and remote player entities.
 // See: context/lib/networking.md
 
 use postretro_entities::components::mesh::{MeshAttachment, MeshComponent};
@@ -50,6 +50,25 @@ fn apply_player_viewer_role(
         mesh.shadow_only = shadow_only;
         let _ = registry.set_component(id, mesh);
     }
+}
+
+/// Apply the peer-view policy to a descriptor-backed player mesh that another
+/// host-side spawn path already materialized. Listen-host slot pawns use the full
+/// authoritative descriptor spawn, so they need this presentation-only override
+/// without re-materializing any gameplay components.
+pub(super) fn apply_remote_player_viewer_role(
+    entity_class: &str,
+    descriptors: &[EntityTypeDescriptor],
+    registry: &mut EntityRegistry,
+    id: EntityId,
+) {
+    apply_player_viewer_role(
+        entity_class,
+        descriptors,
+        registry,
+        id,
+        PlayerViewerRole::Remote,
+    );
 }
 
 /// Replace the dynamic active-weapon attachment on a player mesh. The descriptor
@@ -127,8 +146,11 @@ pub(super) fn materialize_armed_local_pawn(
     armed: &ArmedLocalPawn,
     descriptors: &[EntityTypeDescriptor],
     registry: &mut EntityRegistry,
-) {
+) -> bool {
     let entity_class = armed.entity_class.as_deref().unwrap_or("player");
+    let had_mesh = registry
+        .has_component_kind(armed.entity_id, postretro_entities::ComponentKind::Mesh)
+        .unwrap_or(false);
     crate::scripting::builtins::net_descriptor::materialize_net_local_movement_component(
         entity_class,
         descriptors,
@@ -149,6 +171,10 @@ pub(super) fn materialize_armed_local_pawn(
         armed.entity_id,
         PlayerViewerRole::Local,
     );
+    !had_mesh
+        && registry
+            .has_component_kind(armed.entity_id, postretro_entities::ComponentKind::Mesh)
+            .unwrap_or(false)
 }
 
 /// Materialize a remote descriptor-backed player as presentation only. The player

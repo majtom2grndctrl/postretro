@@ -5012,7 +5012,6 @@ impl App {
         else {
             return;
         };
-        let descriptors = script_ctx.data_registry.borrow().entities.clone();
         let Some(session) = self.session.as_mut() else {
             return;
         };
@@ -5048,18 +5047,21 @@ impl App {
         {
             let mut registry = script_ctx.registry.borrow_mut();
             netcode::host_drive_demo_mover(&mut registry, demo_mover, allocator, replicable, *tick);
-            let changed_pawns = netcode::synchronize_weapon_owner_attachments(
-                &mut registry,
-                weapon_owners,
-                &descriptors,
-                hit_zone_store,
-            );
-            crate::resolve_mesh_entity_bindings_for_entities(
-                &mut registry,
-                mesh_clip_tables,
-                hit_zone_store,
-                changed_pawns,
-            );
+            if weapon_owners.has_attachment_changes() {
+                let descriptors = script_ctx.data_registry.borrow();
+                let changed_pawns = netcode::synchronize_weapon_owner_attachments(
+                    &mut registry,
+                    weapon_owners,
+                    &descriptors.entities,
+                    hit_zone_store,
+                );
+                crate::resolve_mesh_entity_bindings_for_entities(
+                    &mut registry,
+                    mesh_clip_tables,
+                    hit_zone_store,
+                    changed_pawns,
+                );
+            }
         }
 
         {
@@ -5362,10 +5364,11 @@ impl App {
     /// Thin delegation: reads `local_player_pawn` from the registry and hands it to
     /// `netcode::host_register_own_pawn`, which stamps a `NetworkId`, registers it for
     /// replication with NO owner mapping (never `local_player` on any recipient), and
-    /// tracks it so a level reload unregisters the stale pawn. No-op for single-player,
-    /// the client, and a host whose map has no `player_spawn` (no local pawn to
-    /// replicate). The host pawn stays driven locally by `simulate_tick` — this only
-    /// replicates its Transform + PlayerMovementState outbound.
+    /// tracks it so a level reload unregisters the stale pawn. Single-player and the
+    /// client are inert; a host map with no `player_spawn` clears any prior host-pawn
+    /// replication and weapon ownership. The host pawn stays driven locally by
+    /// `simulate_tick` — this only replicates its Transform + PlayerMovementState
+    /// outbound.
     fn host_register_own_pawn_after_install(&mut self) {
         let active_weapon = self.active_wieldable;
         let Some(script_ctx) = self
@@ -5394,12 +5397,17 @@ impl App {
         };
         let Some(pawn) = pawn else {
             // A host on a map with no player_spawn has no own pawn to replicate.
+            netcode::host_unregister_own_pawn(allocator, replicable, host_pawn, weapon_owners);
             return;
         };
-        netcode::host_register_own_pawn(allocator, replicable, host_pawn, pawn);
-        if let Some(weapon) = active_weapon {
-            weapon_owners.set(pawn, weapon);
-        }
+        netcode::host_register_own_pawn(
+            allocator,
+            replicable,
+            host_pawn,
+            weapon_owners,
+            pawn,
+            active_weapon,
+        );
     }
 
     /// Register the listen host's networked AI enemies for outbound replication after a

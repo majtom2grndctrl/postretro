@@ -56,7 +56,7 @@ declare module "postretro" {
     attachments?: { readonly [socket: string]: string };
     /** Per-model skinned pool-shadow receiver-bias multiplier. Defaults to 1.0; must be finite and in 0.0..=4.0. Set 0.0 to disable the receiver offset for this model. */
     shadowBiasScale?: number;
-    /** When true, renders this mesh into shadow-depth passes only. Optional; defaults to false, preserving normal forward visibility. */
+    /** When true, renders this mesh into shadow-depth passes only. Optional; defaults to false. For player descriptors this applies only to the owning local view; peer viewers render the avatar forward. */
     shadowOnly?: boolean;
     /** Declared animation states keyed by author-defined state name (e.g. idle/locomotion/attack/death). Optional; when present, must be non-empty and accompanied by a `defaultState` naming one of these states. Omit for a stateless mesh. */
     animations?: { readonly [state: string]: AnimationStateDescriptor };
@@ -268,9 +268,9 @@ declare module "postretro" {
     resolution: ResolutionMode;
     /** Optional combat attribution source id for this weapon. Must be non-empty ASCII, at most 64 bytes, and use only [A-Za-z0-9_.:-]. Omit to use the resolved canonical weapon name at spawn. */
     creditSource?: string;
-    /** Optional content-relative rigid prop model mounted in a remote or local player's third-person hand socket. */
+    /** Optional content-relative rigid prop model mounted in a remote or local player's third-person hand socket. Must be non-empty when supplied. */
     thirdPersonModel?: string;
-    /** Optional content-relative model rendered as this weapon's first-person viewmodel. */
+    /** Optional content-relative model rendered as this weapon's first-person viewmodel. Must be non-empty when supplied. */
     viewmodel?: string;
     /** Optional weapon resource tuning. Omit to preserve unlimited-fire behavior. */
     resource?: WeaponResource;

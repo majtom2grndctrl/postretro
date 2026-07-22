@@ -169,8 +169,9 @@ policies govern resolution:
 - **Hold-then-neutral gap policy.** When the exact next tick is missing, the host holds
   the last resolved command for up to `INPUT_HOLD_TICKS` (rides out a brief gap of
   dropped or late packets), then synthesizes neutral input (a disconnected-but-not-yet-closed client
-  cannot coast on stale intent). A client that has never sent a command resolves to
-  nothing — its pawn holds its authoritative pose.
+  cannot coast on stale intent). Neutralization clears movement, use, and fire but
+  retains the latest finite aim pitch for remote-avatar presentation. A client that
+  has never sent a command resolves to nothing — its pawn holds its authoritative pose.
 
 - **Bounded playout buffer with depth-keyed catch-up.** Drain-rate equals produce-rate
   (both 60 Hz) and the cursor advances +1 per tick, so any backlog in the pending queue

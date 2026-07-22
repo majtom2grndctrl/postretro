@@ -30,7 +30,7 @@
 // seam (`sim::host_movement`). Intake runs `wire_convert::sanitize_input_command`
 // before queueing — an invalid command never mutates a queue.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use postretro_net::wire::InputCommand;
 
@@ -81,6 +81,7 @@ impl MovementOwners {
 #[derive(Debug, Default)]
 pub(crate) struct WeaponOwners {
     weapons: HashMap<EntityId, EntityId>,
+    attachment_dirty: HashSet<EntityId>,
 }
 
 impl WeaponOwners {
@@ -90,7 +91,9 @@ impl WeaponOwners {
 
     /// Record `weapon` as the active weapon for `pawn`.
     pub(crate) fn set(&mut self, pawn: EntityId, weapon: EntityId) {
-        self.weapons.insert(pawn, weapon);
+        if self.weapons.insert(pawn, weapon) != Some(weapon) {
+            self.attachment_dirty.insert(pawn);
+        }
     }
 
     /// The active weapon for `pawn`, if one was materialized.
@@ -98,16 +101,26 @@ impl WeaponOwners {
         self.weapons.get(&pawn).copied()
     }
 
-    /// Iterate the host-authoritative pawn-to-active-weapon bindings. Presentation
-    /// synchronization reads this immediately before snapshot production; gameplay
-    /// continues to resolve authority through [`weapon_of`](Self::weapon_of).
-    pub(crate) fn iter(&self) -> impl Iterator<Item = (EntityId, EntityId)> + '_ {
-        self.weapons.iter().map(|(&pawn, &weapon)| (pawn, weapon))
-    }
-
     /// Forget a pawn's active weapon (on slot close / despawn). Idempotent.
     pub(crate) fn remove_pawn(&mut self, pawn: EntityId) {
-        self.weapons.remove(&pawn);
+        if self.weapons.remove(&pawn).is_some() {
+            self.attachment_dirty.insert(pawn);
+        }
+    }
+
+    /// Drain pawn bindings whose authoritative weapon assignment changed. The
+    /// relationship map remains intact for snapshot provenance and combat lookup;
+    /// only the presentation work queue is consumed.
+    pub(crate) fn take_attachment_changes(&mut self) -> Vec<(EntityId, Option<EntityId>)> {
+        let dirty: Vec<EntityId> = self.attachment_dirty.drain().collect();
+        dirty
+            .into_iter()
+            .map(|pawn| (pawn, self.weapons.get(&pawn).copied()))
+            .collect()
+    }
+
+    pub(crate) fn has_attachment_changes(&self) -> bool {
+        !self.attachment_dirty.is_empty()
     }
 }
 
@@ -157,6 +170,10 @@ struct ClientCommandState {
     /// [`INPUT_HOLD_TICKS`] consecutive missing ticks before neutral takes over.
     /// `None` before the first command and after a hold lapses to neutral.
     last_resolved: Option<InputCommand>,
+    /// Latest finite aim pitch accepted by authoritative command playout. Movement,
+    /// fire, and use neutralize after a long outage, but torso aim is presentation
+    /// state and remains at the last valid orientation until a newer real command.
+    latest_aim_pitch: Option<f32>,
     /// Consecutive ticks the previous command has been held across a gap. Reset to 0
     /// whenever a real command resolves; once it reaches [`INPUT_HOLD_TICKS`] the gap
     /// policy synthesizes neutral input.
@@ -393,6 +410,7 @@ impl HostCommandQueues {
         // Exact-tick hit: a real command resolves this tick.
         if let Some(cmd) = state.take_exact(expected) {
             let mut sim = input_command_to_sim(&cmd);
+            state.latest_aim_pitch = Some(cmd.movement.aim_pitch);
             state.last_resolved = Some(cmd);
             state.held_ticks = 0;
             state.resolved_cursor = Some(expected);
@@ -439,14 +457,12 @@ impl HostCommandQueues {
         self.clients.get(&client_id).and_then(|s| s.resolved_cursor)
     }
 
-    /// Latest finite aim pitch associated with the owner's current resolved input.
-    /// A held gap keeps the last received pitch; after the hold policy falls back to
-    /// neutral there is no current remote aim and snapshot production uses zero.
+    /// Latest finite aim pitch accepted by authoritative command playout. Input
+    /// neutralization does not reset presentation orientation during an outage.
     pub(crate) fn current_aim_pitch(&self, client_id: u64) -> Option<f32> {
         self.clients
             .get(&client_id)
-            .and_then(|state| state.last_resolved.as_ref())
-            .map(|command| command.movement.aim_pitch)
+            .and_then(|state| state.latest_aim_pitch)
     }
 
     /// Drop a client's queue + cursor on slot close. Idempotent.
@@ -608,10 +624,15 @@ mod tests {
         assert!(queues.resolve_tick(CLIENT).is_some());
         assert_eq!(queues.current_aim_pitch(CLIENT), Some(-0.42));
 
-        // A short gap holds the input (and the matching presentation aim) rather
-        // than snapping the remote avatar to a synthetic neutral direction.
-        assert!(queues.resolve_tick(CLIENT).is_some());
+        // Regression: an outage longer than INPUT_HOLD_TICKS neutralizes gameplay
+        // intent but must not snap the remote torso back to zero pitch.
+        for _ in 0..=INPUT_HOLD_TICKS + 2 {
+            assert!(queues.resolve_tick(CLIENT).is_some());
+        }
         assert_eq!(queues.current_aim_pitch(CLIENT), Some(-0.42));
+        let neutral = queues.resolve_tick(CLIENT).expect("playout stays active");
+        assert_eq!(neutral.source, ResolutionSource::Neutral);
+        assert!(neutral.command.movement.wish_dir.length_squared() <= EPSILON);
     }
 
     #[test]

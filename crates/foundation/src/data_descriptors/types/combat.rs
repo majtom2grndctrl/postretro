@@ -61,10 +61,10 @@ pub struct WeaponDescriptor {
     pub resolution: ResolutionMode,
     #[serde(default, rename = "creditSource")]
     pub credit_source: Option<String>,
-    /// Optional rigid prop model mounted at the pawn's third-person hand socket.
+    /// Optional non-empty rigid prop model mounted at the pawn's third-person hand socket.
     #[serde(default, rename = "thirdPersonModel")]
     pub third_person_model: Option<String>,
-    /// Optional model rendered by the first-person viewmodel pass.
+    /// Optional non-empty model rendered by the first-person viewmodel pass.
     #[serde(default)]
     pub viewmodel: Option<String>,
     #[serde(default)]
@@ -399,6 +399,29 @@ mod tests {
         };
         assert_eq!(ammo.cost_per_shot, 1);
         assert_eq!(ammo.reload_ms, 1000);
+    }
+
+    #[test]
+    fn optional_weapon_model_paths_must_be_non_empty_when_supplied() {
+        let mut third_person = weapon_descriptor(None);
+        third_person.third_person_model = Some(String::new());
+        assert!(
+            third_person
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("thirdPersonModel")
+        );
+
+        let mut viewmodel = weapon_descriptor(None);
+        viewmodel.viewmodel = Some(String::new());
+        assert!(
+            viewmodel
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("viewmodel")
+        );
     }
 
     #[test]

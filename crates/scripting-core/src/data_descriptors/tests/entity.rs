@@ -204,6 +204,22 @@ fn weapon_model_paths_have_js_luau_parity() {
 }
 
 #[test]
+fn optional_weapon_model_paths_reject_empty_js_and_luau_values() {
+    for field in ["thirdPersonModel", "viewmodel"] {
+        let js = format!(
+            r#"({{ components: {{ weapon: {{ damage: 12, range: 64, fireRateMs: 180, fireMode: "semi", resolution: "hitscan", {field}: "" }} }} }})"#
+        );
+        let lua = format!(
+            r#"return {{ components = {{ weapon = {{ damage = 12, range = 64, fireRateMs = 180, fireMode = "semi", resolution = "hitscan", {field} = "" }} }} }}"#
+        );
+        let js_error = eval_js(&js, entity_descriptor_from_js).unwrap_err();
+        let lua_error = eval_lua(&lua, entity_descriptor_from_lua).unwrap_err();
+        assert!(js_error.to_string().contains("non-empty model path"));
+        assert!(lua_error.to_string().contains("non-empty model path"));
+    }
+}
+
+#[test]
 fn paired_weapon_ammo_resource_defaults_match() {
     let js = ammo_resource(
         parse_js_ammo_resource(

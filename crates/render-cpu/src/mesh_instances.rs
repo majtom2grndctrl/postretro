@@ -53,7 +53,9 @@ pub enum MeshPaletteCacheKey {
 }
 
 impl MeshPaletteCacheKey {
-    /// Stable holder group used for atomic frame-budget admission.
+    /// Stable raw holder group used for atomic frame-budget admission. Plan
+    /// membership completes the group identity because a connected client's
+    /// body and viewmodel may deliberately share this id.
     fn holder_group(self) -> u32 {
         match self {
             Self::Entity(entity) => entity,
@@ -229,8 +231,9 @@ pub trait JointCounts {
 /// across all instances of all groups. A holder and its contiguous attachment
 /// inputs are reserved atomically. Their palette-cache identities carry one
 /// shared holder id, so the planner rejects the whole group before assigning
-/// any run. A rejected group's members are all counted in `dropped` when EITHER
-/// budget would overflow:
+/// any run. World and viewmodel membership is also part of atomic identity, so
+/// the same raw holder id cannot merge both plans. A rejected group's members
+/// are all counted in `dropped` when EITHER budget would overflow:
 /// - its palette run would push the cursor past [`MAX_PALETTE_ENTRIES`] (a
 ///   partial run would corrupt skinning), or
 /// - the running instance count would reach [`MAX_INSTANCES`] (the per-frame
@@ -275,20 +278,52 @@ pub fn plan_mesh_frame_plans(
 ) -> MeshFramePlans {
     let mut palette_cursor = 0;
     let mut instance_cursor = 0;
-    let world = plan_grouped_mesh_frame(
-        instances,
-        joints,
-        |instance| !instance.is_viewmodel,
-        &mut palette_cursor,
-        &mut instance_cursor,
-    );
-    let viewmodel = plan_grouped_mesh_frame(
-        instances,
-        joints,
-        |instance| instance.is_viewmodel,
-        &mut palette_cursor,
-        &mut instance_cursor,
-    );
+
+    // The collector appends its small viewmodel set after world instances. Find
+    // that boundary once so each priority scan visits only its own plan. Keep a
+    // filtered fallback because this public CPU contract still accepts mixed
+    // input order.
+    let first_viewmodel = instances.iter().position(|instance| instance.is_viewmodel);
+    let viewmodels_are_a_suffix = first_viewmodel.is_none_or(|start| {
+        instances[start..]
+            .iter()
+            .all(|instance| instance.is_viewmodel)
+    });
+    let (world, viewmodel) = if viewmodels_are_a_suffix {
+        let split = first_viewmodel.unwrap_or(instances.len());
+        let (world_instances, viewmodel_instances) = instances.split_at(split);
+        let world = plan_grouped_mesh_frame(
+            world_instances,
+            joints,
+            |_| true,
+            &mut palette_cursor,
+            &mut instance_cursor,
+        );
+        let viewmodel = plan_grouped_mesh_frame(
+            viewmodel_instances,
+            joints,
+            |_| true,
+            &mut palette_cursor,
+            &mut instance_cursor,
+        );
+        (world, viewmodel)
+    } else {
+        let world = plan_grouped_mesh_frame(
+            instances,
+            joints,
+            |instance| !instance.is_viewmodel,
+            &mut palette_cursor,
+            &mut instance_cursor,
+        );
+        let viewmodel = plan_grouped_mesh_frame(
+            instances,
+            joints,
+            |instance| instance.is_viewmodel,
+            &mut palette_cursor,
+            &mut instance_cursor,
+        );
+        (world, viewmodel)
+    };
     MeshFramePlans { world, viewmodel }
 }
 
@@ -311,9 +346,11 @@ fn plan_grouped_mesh_frame(
         let mut group_start = 0;
         while group_start < instances.len() {
             let holder_group = instances[group_start].palette_cache_key.holder_group();
+            let is_viewmodel = instances[group_start].is_viewmodel;
             let mut group_end = group_start + 1;
             while group_end < instances.len()
                 && instances[group_end].palette_cache_key.holder_group() == holder_group
+                && instances[group_end].is_viewmodel == is_viewmodel
             {
                 group_end += 1;
             }
@@ -866,6 +903,72 @@ mod tests {
         assert_eq!(world_group.instances[0].palette_base, 0);
         assert_eq!(world_group.instances[1].palette_base, 3);
         assert_eq!(viewmodel_group.instances[0].palette_base, 6);
+    }
+
+    #[test]
+    fn plans_separate_adjacent_same_holder_world_and_viewmodel_inputs() {
+        // Regression: connected clients can seed the local body and viewmodel
+        // with the same raw id. Holder-only grouping merged their adjacent
+        // inputs, tripping the plan-consistency assertion in debug builds and
+        // routing both through one plan in release builds.
+        let holder = 42;
+        let joints = joints(&[
+            ("world-body", 3),
+            ("viewmodel-weapon", 1),
+            ("world-other", 2),
+        ]);
+        let world = instance("world-body", 1.0, holder);
+        let mut viewmodel = attachment_instance("viewmodel-weapon", 2.0, holder, usize::MAX);
+        viewmodel.is_viewmodel = true;
+        viewmodel.dynamic_shadow_visible = false;
+        // Force the mixed-order fallback so this test exercises plan-aware
+        // atomic grouping rather than only the collector's suffix fast path.
+        let world_other = instance("world-other", 3.0, 77);
+
+        let plans = plan_mesh_frame_plans(&[world, viewmodel, world_other], &joints);
+
+        assert_eq!(plans.world.instance_count, 2);
+        assert_eq!(plans.viewmodel.instance_count, 1);
+        assert_eq!(plans.world.groups[0].model.as_str(), "world-body");
+        assert_eq!(plans.viewmodel.groups[0].model.as_str(), "viewmodel-weapon");
+        assert!(plans.world.groups[0].instances[0].forward_visible);
+        assert!(plans.viewmodel.groups[0].instances[0].forward_visible);
+        assert_eq!(plans.world.groups[0].instance_offset, 0);
+        assert_eq!(plans.viewmodel.groups[0].instance_offset, 2);
+        assert_eq!(plans.world.groups[0].instances[0].palette_base, 0);
+        assert_eq!(plans.viewmodel.groups[0].instances[0].palette_base, 5);
+        assert!(
+            plans
+                .world
+                .groups
+                .iter()
+                .all(|group| group.model.as_str() != "viewmodel-weapon"),
+            "the world plan is the shadow-depth plan, so it must contain no viewmodel entry",
+        );
+    }
+
+    #[test]
+    fn plans_without_viewmodels_keep_world_priority_and_empty_viewmodel_plan() {
+        let joints = joints(&[("static-only", 1), ("dynamic", 1), ("forward", 1)]);
+        let inputs = [
+            non_forward_instance("static-only", 1.0, 1),
+            dynamic_shadow_instance("dynamic", 2.0, 2),
+            instance("forward", 3.0, 3),
+        ];
+
+        let plans = plan_mesh_frame_plans(&inputs, &joints);
+        let planned_models: Vec<_> = plans
+            .world
+            .groups
+            .iter()
+            .map(|group| group.model.as_str())
+            .collect();
+
+        assert_eq!(planned_models, ["forward", "dynamic", "static-only"]);
+        assert_eq!(plans.world.instance_count, 3);
+        assert!(plans.viewmodel.groups.is_empty());
+        assert_eq!(plans.viewmodel.instance_count, 0);
+        assert_eq!(plans.viewmodel.dropped, 0);
     }
 
     #[test]

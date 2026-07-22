@@ -34,7 +34,7 @@ use postretro_entities::components::brain::{BrainComponent, LogicalState};
 use postretro_entities::components::health::{
     DamageContext, DamageProducer, HealthComponent, apply_damage_with_context,
 };
-use postretro_entities::components::mesh::{MeshAnimation, MeshComponent};
+use postretro_entities::components::mesh::{MeshAnimation, MeshComponent, switch_animation_state};
 use postretro_entities::components::player_movement::PlayerMovementComponent;
 use postretro_entities::components::weapon::{UNKNOWN_WEAPON_CREDIT_SOURCE, WeaponComponent};
 use postretro_entities::{
@@ -364,6 +364,7 @@ pub(crate) fn simulate_tick_with_presentation_aim(
         let mut registry = registry.borrow_mut();
         // AgentTickResult only carries a diagnostic `replans` counter, not observable sim state, so the return value is intentionally discarded.
         let _ = agent_steering::tick(&mut registry, collision_world, nav_graph, gravity, tick_dt);
+        update_player_animation_locomotion(&mut registry, hit_zone_store, anim_time);
         update_brain_animation_playback_rates(&mut registry, hit_zone_store, anim_time);
         update_presentation_pose_inputs(
             &mut registry,
@@ -439,6 +440,96 @@ fn trigger_fire_context(
         fired_trigger: Some(event.fire.trigger),
         activator,
         occupancy,
+    }
+}
+
+/// Select authoritative player locomotion after movement resolves. Remote-owned host
+/// pawns carry no brain, so without this pass their descriptor default (`idle`) would
+/// be serialized forever and repeatedly correct the client's velocity prediction.
+/// State selection and rate calibration intentionally match the client presentation
+/// path; ordinary switches use the authored crossfade, preserving no-snap correction.
+pub(crate) fn update_player_animation_locomotion(
+    registry: &mut EntityRegistry,
+    hit_zone_store: &HitZoneStore,
+    anim_time: f64,
+) {
+    const MOVING_SPEED_EPSILON: f32 = 1.0e-4;
+
+    let players: Vec<EntityId> = registry
+        .iter_with_kind(ComponentKind::PlayerMovement)
+        .map(|(id, _)| id)
+        .collect();
+    for id in players {
+        let Ok(movement) = registry.get_component::<PlayerMovementComponent>(id) else {
+            continue;
+        };
+        let speed_xz = Vec3::new(movement.velocity.x, 0.0, movement.velocity.z).length();
+        let walk_speed = movement.ground_params.speed.walk;
+        let run_speed = movement.ground_params.speed.run;
+
+        let Ok(mesh) = registry.get_component::<MeshComponent>(id) else {
+            continue;
+        };
+        let Some(animation) = mesh.animation.as_ref() else {
+            continue;
+        };
+        let Some(idle_state) = animation.states.contains_key("idle").then_some("idle") else {
+            continue;
+        };
+        let Some(walk_state) = ["walk_forward", "walk"]
+            .into_iter()
+            .find(|state| animation.states.contains_key(*state))
+        else {
+            continue;
+        };
+        let run_state = animation.states.contains_key("run").then_some("run");
+        let moving = speed_xz.is_finite() && speed_xz > MOVING_SPEED_EPSILON;
+        let (target_state, fallback_speed) = if !moving {
+            (idle_state, 1.0)
+        } else if speed_xz > walk_speed && run_state.is_some() {
+            (run_state.expect("checked above"), run_speed)
+        } else {
+            (walk_state, walk_speed)
+        };
+        let current_state = animation.current_state.clone();
+        if current_state != target_state {
+            let _ = switch_animation_state(registry, id, target_state);
+        }
+
+        let rate_input = registry
+            .get_component::<MeshComponent>(id)
+            .ok()
+            .and_then(|mesh| {
+                let animation = mesh.animation.as_ref()?;
+                if !moving || animation.current_state != target_state || !animation.speed_scale {
+                    return Some(1.0);
+                }
+                let effective = effective_travel_speed(animation, mesh, hit_zone_store);
+                Some(MeshAnimation::locomotion_rate_ratio(
+                    speed_xz.max(0.0),
+                    effective,
+                    fallback_speed,
+                ))
+            });
+        let Some(rate_input) = rate_input else {
+            continue;
+        };
+        let needs_rebase = registry
+            .get_component::<MeshComponent>(id)
+            .ok()
+            .and_then(|mesh| mesh.animation.as_ref())
+            .is_some_and(|animation| animation.playback_rate_needs_update(rate_input));
+        if !needs_rebase {
+            continue;
+        }
+        let Ok(mut mesh) = registry.get_component::<MeshComponent>(id).cloned() else {
+            continue;
+        };
+        let Some(animation) = mesh.animation.as_mut() else {
+            continue;
+        };
+        animation.update_playback_rate(rate_input, anim_time);
+        let _ = registry.set_component(id, mesh);
     }
 }
 

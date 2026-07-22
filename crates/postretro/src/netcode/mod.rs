@@ -123,17 +123,20 @@ use crate::weapon::{self, ActivationOutcome, WeaponImpact};
 /// pawn mesh so the host body and outgoing snapshot describe the same weapon.
 pub(crate) fn synchronize_weapon_owner_attachments(
     registry: &mut EntityRegistry,
-    weapon_owners: &WeaponOwners,
+    weapon_owners: &mut WeaponOwners,
     descriptors: &[EntityTypeDescriptor],
     hit_zone_store: &crate::scripting_systems::hit_zones::HitZoneStore,
 ) -> Vec<EntityId> {
     weapon_owners
-        .iter()
+        .take_attachment_changes()
+        .into_iter()
         .filter_map(|(pawn, weapon)| {
-            let active_weapon_archetype = registry
-                .get_component::<DescriptorProvenance>(weapon)
-                .ok()
-                .map(|provenance| provenance.canonical_name.clone());
+            let active_weapon_archetype = weapon.and_then(|weapon| {
+                registry
+                    .get_component::<DescriptorProvenance>(weapon)
+                    .ok()
+                    .map(|provenance| provenance.canonical_name.clone())
+            });
             remote_materialize::update_active_weapon_attachment(
                 registry,
                 pawn,
@@ -1044,7 +1047,8 @@ pub(crate) fn client_receive_and_apply(
         // `remote_materialize` (the focused seam also materializes remote enemies).
         if let Some(armed) = &outcome.armed_local_pawn {
             prediction.arm(armed.network_id, armed.entity_id);
-            remote_materialize::materialize_armed_local_pawn(armed, descriptors, registry);
+            frame_outcome.materialized_remote_entity_presentation |=
+                remote_materialize::materialize_armed_local_pawn(armed, descriptors, registry);
             frame_outcome.armed_local_pawn = Some(ClientArmedLocalPawn {
                 entity_id: armed.entity_id,
                 entity_class: armed.entity_class.clone(),
@@ -1696,6 +1700,17 @@ pub(crate) fn host_handle_accept_descriptor(
     );
 
     if let Some((pawn, _net_id, active_weapon)) = spawned {
+        let entity_class = placement
+            .key_values
+            .get("entity_class")
+            .map(String::as_str)
+            .unwrap_or("player");
+        remote_materialize::apply_remote_player_viewer_role(
+            entity_class,
+            descriptors,
+            registry,
+            pawn,
+        );
         // Record the owner mapping (pawn -> client_id) so snapshot production can stamp
         // `owner_client_id` and the resolved cursor. The client's command queue is
         // created lazily on its first ingested command.
@@ -1711,7 +1726,7 @@ pub(crate) fn host_handle_accept_descriptor(
 /// issue 3b): without this, the host pawn never enters the `ReplicableSet`, so
 /// `produce_owned_snapshots` never emits it and clients see no host capsule.
 ///
-/// This is replication-only. The host pawn keeps being driven LOCALLY by
+/// This is replication/presentation bookkeeping only. The host pawn keeps being driven LOCALLY by
 /// `simulate_tick`/`local_movement_pawn` — it is deliberately NOT recorded in
 /// `MovementOwners`, NOT command-queued, and NOT predicted/reconciled. Because it has
 /// no `owner_client_id`, its per-recipient `local_player` flag is false for every
@@ -1720,16 +1735,18 @@ pub(crate) fn host_handle_accept_descriptor(
 /// Idempotent and reload-safe: registering the same pawn twice is a no-op (the set and
 /// the allocator are both stable per `EntityId`). On a level reload the freshly-spawned
 /// pawn is a distinct `EntityId`, so the previously-tracked host pawn (if any) is
-/// unregistered first — never leaving a stale id in the replicable set. Pass the
-/// `Host` variant's `host_pawn` tracking slot; the helper updates it.
+/// unregistered and removed from `WeaponOwners` first. The new active weapon binding
+/// is recorded here so ownership and host-pawn identity change atomically.
 ///
 /// Game-logic-owned: it reads the registry through the borrow the caller threads in and
-/// only touches the replication bookkeeping; it never reaches into `App`.
+/// only touches host bookkeeping; it never reaches into `App`.
 pub(crate) fn host_register_own_pawn(
     allocator: &mut NetworkIdAllocator,
     replicable: &mut ReplicableSet,
     host_pawn: &mut Option<EntityId>,
+    weapon_owners: &mut WeaponOwners,
     pawn: EntityId,
+    active_weapon: Option<EntityId>,
 ) {
     // A level reload spawns a fresh host pawn (distinct EntityId). Drop the stale
     // registration before registering the new one so the replicable set never names a
@@ -1738,6 +1755,7 @@ pub(crate) fn host_register_own_pawn(
         if previous != pawn {
             replicable.unregister(previous);
             allocator.forget(previous);
+            weapon_owners.remove_pawn(previous);
         }
     }
     // Stamp the stable session-monotonic NetworkId and register for replication,
@@ -1746,7 +1764,28 @@ pub(crate) fn host_register_own_pawn(
     let net_id = allocator.stamp(pawn);
     replicable.register(pawn);
     *host_pawn = Some(pawn);
+    if let Some(weapon) = active_weapon {
+        weapon_owners.set(pawn, weapon);
+    } else {
+        weapon_owners.remove_pawn(pawn);
+    }
     log::info!("[Net] host registered own pawn {pawn:?} as {net_id:?} (outbound replication only)");
+}
+
+/// Remove the listen host's prior local pawn from replication and weapon ownership.
+/// Level install calls this when the replacement map has no player spawn, so stale
+/// ownership cannot survive merely because there is no new pawn to register.
+pub(crate) fn host_unregister_own_pawn(
+    allocator: &mut NetworkIdAllocator,
+    replicable: &mut ReplicableSet,
+    host_pawn: &mut Option<EntityId>,
+    weapon_owners: &mut WeaponOwners,
+) -> Option<EntityId> {
+    let previous = host_pawn.take()?;
+    replicable.unregister(previous);
+    allocator.forget(previous);
+    weapon_owners.remove_pawn(previous);
+    Some(previous)
 }
 
 /// Apply this frame's slot lifecycle transitions to the host's remote-pawn state
@@ -2488,11 +2527,16 @@ mod tests {
 
         let changed = synchronize_weapon_owner_attachments(
             &mut registry,
-            &weapon_owners,
+            &mut weapon_owners,
             &descriptors,
             &crate::scripting_systems::hit_zones::HitZoneStore::new(),
         );
         assert_eq!(changed, vec![pawn]);
+        assert_eq!(
+            weapon_owners.weapon_of(pawn),
+            Some(weapon),
+            "draining presentation changes preserves snapshot/combat provenance"
+        );
         assert!(
             registry
                 .get_component::<MeshComponent>(pawn)
@@ -2500,6 +2544,16 @@ mod tests {
                 .attachments
                 .is_empty(),
             "an unavailable third-person descriptor model clears the old hand prop"
+        );
+        assert!(
+            synchronize_weapon_owner_attachments(
+                &mut registry,
+                &mut weapon_owners,
+                &descriptors,
+                &crate::scripting_systems::hit_zones::HitZoneStore::new(),
+            )
+            .is_empty(),
+            "unchanged ownership performs no per-frame mesh synchronization"
         );
     }
 
@@ -3576,6 +3630,52 @@ mod tests {
         pawn
     }
 
+    // Regression: the listen host used full descriptor materialization for joined
+    // slot pawns, retaining the local-view `shadowOnly` bit and hiding every peer
+    // avatar from the host's forward pass.
+    #[test]
+    fn listen_host_joined_player_avatar_is_forward_visible() {
+        let mut registry = EntityRegistry::new();
+        let mut allocator = NetworkIdAllocator::new();
+        let mut replicable = ReplicableSet::new();
+        let mut slot_pawns = SlotPawns::new();
+        let mut queues = HostCommandQueues::new();
+        let mut owners = MovementOwners::new();
+        let mut weapon_owners = WeaponOwners::new();
+        let mut open_shots = OpenAuthorizedShots::default();
+        let mut pending_hits = PendingHitDeclarations::default();
+        let mut weaponless_logged = std::collections::HashSet::new();
+        let descriptors = [host_player_descriptor()];
+        let spawn_points = [host_player_spawn_placement()];
+        const CLIENT_ID: u64 = 77;
+
+        host_handle_accept_descriptor(
+            &mut registry,
+            &mut allocator,
+            &mut replicable,
+            &mut slot_pawns,
+            &mut queues,
+            &mut owners,
+            &mut weapon_owners,
+            &mut open_shots,
+            &mut pending_hits,
+            &mut weaponless_logged,
+            CLIENT_ID,
+            &spawn_points,
+            &descriptors,
+            None,
+        );
+
+        let pawn = slot_pawns.pawn_for(CLIENT_ID).expect("join spawns pawn");
+        assert!(
+            !registry
+                .get_component::<MeshComponent>(pawn)
+                .expect("joined player carries descriptor mesh")
+                .shadow_only,
+            "shadowOnly is a local-view exception; the listen host sees joined peers forward"
+        );
+    }
+
     // Issue 3b: after host setup the host's own pawn is registered in the ReplicableSet
     // with a NetworkId, and `produce_owned_snapshots` emits a VALID NON-local movement
     // record for it — owner None (so `local_player` false for any recipient), no ack
@@ -3590,10 +3690,18 @@ mod tests {
         let mut allocator = NetworkIdAllocator::new();
         let mut replicable = ReplicableSet::new();
         let mut host_pawn: Option<EntityId> = None;
+        let mut weapon_owners = WeaponOwners::new();
 
         // Register the host's own pawn for outbound replication (the production seam:
         // `App::host_register_own_pawn_after_install`).
-        host_register_own_pawn(&mut allocator, &mut replicable, &mut host_pawn, pawn);
+        host_register_own_pawn(
+            &mut allocator,
+            &mut replicable,
+            &mut host_pawn,
+            &mut weapon_owners,
+            pawn,
+            None,
+        );
 
         // It is in the replicable set, tracked, and carries an allocated NetworkId.
         assert!(
@@ -3686,14 +3794,31 @@ mod tests {
         let mut allocator = NetworkIdAllocator::new();
         let mut replicable = ReplicableSet::new();
         let mut host_pawn: Option<EntityId> = None;
+        let mut weapon_owners = WeaponOwners::new();
 
         // First install.
         let first = spawn_host_boot_pawn(&mut registry);
-        host_register_own_pawn(&mut allocator, &mut replicable, &mut host_pawn, first);
+        let first_weapon = registry.spawn(Transform::default());
+        host_register_own_pawn(
+            &mut allocator,
+            &mut replicable,
+            &mut host_pawn,
+            &mut weapon_owners,
+            first,
+            Some(first_weapon),
+        );
         assert!(replicable.contains(first));
+        assert_eq!(weapon_owners.weapon_of(first), Some(first_weapon));
 
         // Re-registering the SAME pawn (idempotent install) keeps exactly one entry.
-        host_register_own_pawn(&mut allocator, &mut replicable, &mut host_pawn, first);
+        host_register_own_pawn(
+            &mut allocator,
+            &mut replicable,
+            &mut host_pawn,
+            &mut weapon_owners,
+            first,
+            Some(first_weapon),
+        );
         let count_after_idempotent = replicable.iter().count();
         assert_eq!(
             count_after_idempotent, 1,
@@ -3706,7 +3831,14 @@ mod tests {
         let second = spawn_host_boot_pawn(&mut registry);
         assert_ne!(first, second, "the reloaded host pawn is a distinct entity");
 
-        host_register_own_pawn(&mut allocator, &mut replicable, &mut host_pawn, second);
+        host_register_own_pawn(
+            &mut allocator,
+            &mut replicable,
+            &mut host_pawn,
+            &mut weapon_owners,
+            second,
+            None,
+        );
         assert_eq!(host_pawn, Some(second), "tracks the fresh host pawn");
         assert!(
             !replicable.contains(first),
@@ -3717,10 +3849,39 @@ mod tests {
             "the fresh host pawn is registered"
         );
         assert_eq!(
+            weapon_owners.weapon_of(first),
+            None,
+            "reload removes the old local pawn's weapon ownership"
+        );
+        assert_eq!(
             replicable.iter().count(),
             1,
             "exactly one host pawn is registered after reload"
         );
+
+        let second_weapon = registry.spawn(Transform::default());
+        host_register_own_pawn(
+            &mut allocator,
+            &mut replicable,
+            &mut host_pawn,
+            &mut weapon_owners,
+            second,
+            Some(second_weapon),
+        );
+        assert_eq!(weapon_owners.weapon_of(second), Some(second_weapon));
+        assert_eq!(
+            host_unregister_own_pawn(
+                &mut allocator,
+                &mut replicable,
+                &mut host_pawn,
+                &mut weapon_owners,
+            ),
+            Some(second),
+            "a replacement map without a player spawn unregisters the old host pawn"
+        );
+        assert_eq!(host_pawn, None);
+        assert_eq!(weapon_owners.weapon_of(second), None);
+        assert!(!replicable.contains(second));
     }
 
     // Issue 3a: `remote_entity_positions` for a Host endpoint sources the overlay from

@@ -385,15 +385,11 @@ pub(crate) fn suppressed_ai_enemy_mesh_models(
     ordered
 }
 
-/// Collect every movement descriptor's holder and attachment models for the
-/// connected-client boot-pawn deferral path. Such a client has no locally
-/// spawned movement pawn during the level-load model sweep, but later receives
-/// remote movement pawns in snapshots. Snapshot materialization selects the
-/// player presentation path with the same `movement.is_some()` predicate, so
-/// upload precisely that descriptor set up front.
-pub(crate) fn deferred_remote_player_mesh_models(
-    descriptors: &[EntityTypeDescriptor],
-) -> Vec<String> {
+/// Collect every movement descriptor's holder and attachment models. A listen
+/// host may select any such descriptor for an accepted net-slot pawn, while a
+/// connected client receives those pawns through snapshots. Neither path may
+/// upload models during gameplay, so install preloads the full descriptor set.
+pub(crate) fn movement_descriptor_mesh_models(descriptors: &[EntityTypeDescriptor]) -> Vec<String> {
     let mut seen = HashSet::new();
     let mut ordered = Vec::new();
     for descriptor in descriptors {
@@ -2521,10 +2517,10 @@ mod tests {
     }
 
     #[test]
-    fn deferred_remote_player_mesh_models_collects_movement_descriptor_models() {
-        // Connected clients defer the local boot pawn, but snapshots can later
-        // materialize any descriptor with `movement`. Preload its holder and
-        // attachment models; unrelated mesh-only descriptors must not leak in.
+    fn movement_descriptor_mesh_models_collects_every_player_presentation() {
+        // Hosts may assign any movement descriptor to a joining slot, and clients
+        // receive the same set through snapshots. Preload holder and attachment
+        // models; unrelated mesh-only descriptors must not leak in.
         let mut avatar = player_with_movement("co_op_avatar");
         avatar.mesh = mesh_descriptor("co_op_avatar", false).mesh;
         let mesh = avatar.mesh.as_mut().expect("fixture supplies a mesh");
@@ -2536,7 +2532,7 @@ mod tests {
         .into_iter()
         .collect();
 
-        let models = deferred_remote_player_mesh_models(&[
+        let models = movement_descriptor_mesh_models(&[
             avatar,
             mesh_descriptor("scenery", false),
             player_with_movement("invisible_player"),

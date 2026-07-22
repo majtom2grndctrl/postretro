@@ -174,6 +174,9 @@ struct ClientCommandState {
     /// fire, and use neutralize after a long outage, but torso aim is presentation
     /// state and remains at the last valid orientation until a newer real command.
     latest_aim_pitch: Option<f32>,
+    /// Latest finite facing yaw accepted by authoritative command playout. Long
+    /// outages neutralize gameplay intent without snapping the replicated body aim.
+    latest_facing_yaw: Option<f32>,
     /// Consecutive ticks the previous command has been held across a gap. Reset to 0
     /// whenever a real command resolves; once it reaches [`INPUT_HOLD_TICKS`] the gap
     /// policy synthesizes neutral input.
@@ -411,6 +414,7 @@ impl HostCommandQueues {
         if let Some(cmd) = state.take_exact(expected) {
             let mut sim = input_command_to_sim(&cmd);
             state.latest_aim_pitch = Some(cmd.movement.aim_pitch);
+            state.latest_facing_yaw = Some(cmd.movement.facing_yaw);
             state.last_resolved = Some(cmd);
             state.held_ticks = 0;
             state.resolved_cursor = Some(expected);
@@ -432,13 +436,19 @@ impl HostCommandQueues {
                 }
                 // No previous command to hold (cursor advanced via neutral only):
                 // neutral immediately.
-                None => (neutral_sim_command(), ResolutionSource::Neutral),
+                None => (
+                    neutral_sim_command(state.latest_facing_yaw.unwrap_or(0.0)),
+                    ResolutionSource::Neutral,
+                ),
             }
         } else {
             // Hold lapsed: neutral. Clear the held command so a later real command at
             // a still-higher tick resumes cleanly rather than re-holding stale intent.
             state.last_resolved = None;
-            (neutral_sim_command(), ResolutionSource::Neutral)
+            (
+                neutral_sim_command(state.latest_facing_yaw.unwrap_or(0.0)),
+                ResolutionSource::Neutral,
+            )
         };
 
         state.resolved_cursor = Some(expected);
@@ -504,12 +514,9 @@ pub(crate) fn host_resolve_remote_commands(
     commands
 }
 
-/// A neutral (no-intent) sim command: no wish direction, no buttons, facing held at
-/// zero. The deterministic fallback when the gap policy exhausts the hold window.
-/// Facing 0.0 is acceptable for Phase 3's movement-only scope — a neutral tick
-/// applies no locomotion, so the held facing does not visibly snap; Task 5/6 may
-/// refine to hold the last facing if needed.
-fn neutral_sim_command() -> SimCommand {
+/// A neutral (no-intent) sim command: no wish direction or buttons, with the last
+/// finite facing yaw retained for remote-avatar presentation.
+fn neutral_sim_command(facing_yaw: f32) -> SimCommand {
     use crate::movement::MovementInput;
     use crate::weapon::FireButtonState;
     use glam::Vec2;
@@ -520,7 +527,7 @@ fn neutral_sim_command() -> SimCommand {
             dash_pressed: false,
             running: false,
             crouch_intent: false,
-            facing_yaw: 0.0,
+            facing_yaw,
             use_pressed: false,
         },
         fire_button: FireButtonState {
@@ -633,6 +640,10 @@ mod tests {
         let neutral = queues.resolve_tick(CLIENT).expect("playout stays active");
         assert_eq!(neutral.source, ResolutionSource::Neutral);
         assert!(neutral.command.movement.wish_dir.length_squared() <= EPSILON);
+        assert!(
+            (neutral.command.movement.facing_yaw - 0.5).abs() <= EPSILON,
+            "neutral gameplay input retains the last finite facing yaw"
+        );
     }
 
     #[test]

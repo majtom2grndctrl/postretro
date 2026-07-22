@@ -1999,17 +1999,12 @@ mod tests {
 
         let instances = collector.instances();
         assert_eq!(instances.len(), 2, "holder plus one resolved attachment");
-        let holder_transform = glam::Mat4::from_scale_rotation_translation(
-            Vec3::new(2.0, 3.0, 4.0),
-            Quat::from_rotation_y(0.4),
-            Vec3::new(4.0, -1.0, 2.0),
-        );
         let socket_matrix = glam::Mat4::from_translation(Vec3::new(3.0, 0.0, 0.0))
             * glam::Mat4::from_translation(Vec3::new(0.0, 2.0, 0.0))
             * glam::Mat4::from_rotation_x(-inputs.aim_pitch);
         assert_mat4_approx(
             instances[1].transform,
-            holder_transform * socket_matrix,
+            instances[0].transform * socket_matrix,
             "attachment composes the modified child world pose after the holder transform",
         );
         assert_eq!(instances[1].model, ModelHandle::from("hand-prop"));

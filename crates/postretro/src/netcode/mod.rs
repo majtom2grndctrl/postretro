@@ -1645,7 +1645,8 @@ pub(crate) fn host_handle_accept(
 /// `spawn_points` are the level's `player_spawn` placements; `descriptors` the
 /// registered entity descriptors; `agent_params` the navmesh capsule (or `None`).
 /// Game-logic-owned: the spawn flows through `EntityRegistry::spawn`; the caller
-/// threads in the mutable registry borrow.
+/// threads in the mutable registry borrow. Returns the materialized pawn so the
+/// caller can resolve presentation bindings against the level-installed tables.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn host_handle_accept_descriptor(
     registry: &mut EntityRegistry,
@@ -1662,7 +1663,7 @@ pub(crate) fn host_handle_accept_descriptor(
     spawn_points: &[crate::scripting::map_entity::MapEntity],
     descriptors: &[EntityTypeDescriptor],
     agent_params: Option<NavAgentParams>,
-) {
+) -> Option<EntityId> {
     cleanup_stale_slot_replacement(
         registry,
         allocator,
@@ -1682,7 +1683,7 @@ pub(crate) fn host_handle_accept_descriptor(
         log::warn!(
             "[Net] slot {client_id} accepted but the map has no player_spawn placements; no pawn spawned"
         );
-        return;
+        return None;
     };
     let placement = &spawn_points[idx];
 
@@ -1719,7 +1720,9 @@ pub(crate) fn host_handle_accept_descriptor(
             weapon_owners.set(pawn, weapon);
         }
         let _ = command_queues;
+        return Some(pawn);
     }
+    None
 }
 
 /// Register the listen host's OWN player pawn for OUTBOUND replication (M15 Phase 3,
@@ -2382,7 +2385,7 @@ pub(crate) const REMOTE_CAPSULE_HALF_HEIGHT: f32 = 0.8;
 /// objects. It uses standing-player dimensions only for its meshless fallback, so
 /// an unresolved non-player entity gets an approximate marker rather than no aid.
 ///
-/// `dev-tools`-gated: the sole consumer is the client debug-capsule draw behind
+/// `dev-tools`-gated: the sole consumer is the host/client debug-capsule draw behind
 /// that feature (the debug-line renderer is `dev-tools` only).
 #[cfg(feature = "dev-tools")]
 pub(crate) fn remote_entity_positions(

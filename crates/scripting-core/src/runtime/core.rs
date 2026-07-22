@@ -26,10 +26,11 @@ use super::types::{
     ReloadSummary, ScriptRuntime, ScriptRuntimeConfig, StagedManifestCommitOutcome,
 };
 
-/// Mesh descriptors are installed with the level: their models are pre-uploaded,
-/// spawner caches retain the resolved descriptor, and live components carry
-/// transient animation and attachment bindings. Staged hot reload cannot update
-/// those consumers atomically, so preserve the active mesh block until reload.
+/// Mesh and weapon-presentation descriptors are installed with the level: their
+/// models are pre-uploaded, spawner caches retain resolved descriptors, and live
+/// components carry transient animation and attachment bindings. Staged hot reload
+/// cannot update those consumers atomically, so preserve presentation paths until
+/// reload while still applying ordinary weapon tuning changes immediately.
 #[cfg(debug_assertions)]
 fn defer_mesh_descriptor_refreshes(
     old_descriptors: &[crate::data_descriptors::EntityTypeDescriptor],
@@ -40,20 +41,51 @@ fn defer_mesh_descriptor_refreshes(
         let Some(name) = next.canonical_name.as_deref() else {
             continue;
         };
-        let old_mesh = old_descriptors
+        let old_descriptor = old_descriptors
             .iter()
-            .find(|old| old.canonical_name.as_deref() == Some(name))
-            .and_then(|old| old.mesh.clone());
+            .find(|old| old.canonical_name.as_deref() == Some(name));
+        let old_mesh = old_descriptor.and_then(|old| old.mesh.clone());
         if next.mesh == old_mesh {
+            // Keep checking the weapon presentation fields below.
+        } else {
+            deferred = true;
+
+            log::warn!(
+                "[Scripting] staged descriptor refresh deferred components.mesh for `{name}`; active mesh bindings and model uploads remain in use until the next level load"
+            );
+            next.mesh = old_mesh;
+        }
+
+        let old_weapon = old_descriptor.and_then(|old| old.weapon.as_ref());
+        let presentation_paths = |weapon: Option<&crate::data_descriptors::WeaponDescriptor>| {
+            weapon.and_then(|weapon| {
+                (weapon.third_person_model.is_some() || weapon.viewmodel.is_some())
+                    .then(|| (weapon.third_person_model.clone(), weapon.viewmodel.clone()))
+            })
+        };
+        let old_presentation = presentation_paths(old_weapon);
+        let next_presentation = presentation_paths(next.weapon.as_ref());
+        if next_presentation == old_presentation {
             continue;
         }
 
         deferred = true;
-
         log::warn!(
-            "[Scripting] staged descriptor refresh deferred components.mesh for `{name}`; active mesh bindings and model uploads remain in use until the next level load"
+            "[Scripting] staged descriptor refresh deferred components.weapon presentation models for `{name}`; active model uploads and socket bindings remain in use until the next level load"
         );
-        next.mesh = old_mesh;
+        if let Some(next_weapon) = next.weapon.as_mut() {
+            if let Some(old_weapon) = old_weapon {
+                next_weapon.third_person_model = old_weapon.third_person_model.clone();
+                next_weapon.viewmodel = old_weapon.viewmodel.clone();
+            } else {
+                next_weapon.third_person_model = None;
+                next_weapon.viewmodel = None;
+            }
+        } else if let Some(old_weapon) = old_weapon {
+            // Removing a weapon with live presentation models would leave its
+            // holder attachment stale. Keep the full descriptor until reload.
+            next.weapon = Some(old_weapon.clone());
+        }
     }
     deferred
 }
@@ -196,8 +228,8 @@ impl ScriptRuntime {
         }
     }
 
-    /// Promote mesh descriptor changes deferred by a staged hot reload before
-    /// the next level's model and attachment install sweep reads descriptors.
+    /// Promote presentation descriptor changes deferred by a staged hot reload
+    /// before the next level's model and attachment install sweep reads descriptors.
     /// Live components intentionally keep their existing bindings until then.
     pub fn install_deferred_mesh_descriptors(&mut self, ctx: &ScriptCtx) -> bool {
         #[cfg(debug_assertions)]
@@ -522,7 +554,9 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::*;
-    use crate::data_descriptors::{EntityTypeDescriptor, MeshDescriptor};
+    use crate::data_descriptors::{
+        EntityTypeDescriptor, FireMode, MeshDescriptor, ResolutionMode, WeaponDescriptor,
+    };
     use crate::staged_manifest::{StagedManifestBuildConfig, build_staged_manifest};
 
     fn temp_mod_root(name: &str) -> PathBuf {
@@ -551,6 +585,24 @@ mod tests {
         }
     }
 
+    fn weapon_descriptor(
+        damage: f32,
+        third_person_model: Option<&str>,
+        viewmodel: Option<&str>,
+    ) -> WeaponDescriptor {
+        WeaponDescriptor {
+            damage,
+            range: 64.0,
+            cooldown_ms: 100.0,
+            fire_mode: FireMode::Semi,
+            resolution: ResolutionMode::Hitscan,
+            credit_source: None,
+            third_person_model: third_person_model.map(str::to_string),
+            viewmodel: viewmodel.map(str::to_string),
+            resource: None,
+        }
+    }
+
     fn descriptor(
         name: &str,
         mesh: Option<MeshDescriptor>,
@@ -570,11 +622,11 @@ mod tests {
     }
 
     #[test]
-    fn staged_refresh_defers_mesh_attachments_but_commits_non_mesh_fields() {
+    fn staged_refresh_defers_mesh_and_weapon_presentation_but_commits_tuning() {
         // Regression: committing a refreshed attachment descriptor while a level
         // still holds old mesh bindings left remote materialization pointing at a
         // prop model the level never uploaded.
-        let old = vec![
+        let mut old = vec![
             descriptor(
                 "remote_enemy",
                 Some(mesh_descriptor("models/old_prop.gltf")),
@@ -586,6 +638,11 @@ mod tests {
                 None,
             ),
         ];
+        old[0].weapon = Some(weapon_descriptor(
+            10.0,
+            Some("models/old_weapon.gltf"),
+            Some("models/old_view.gltf"),
+        ));
         let mut next = vec![
             descriptor(
                 "remote_enemy",
@@ -600,6 +657,11 @@ mod tests {
             ),
         ];
 
+        next[0].weapon = Some(weapon_descriptor(
+            25.0,
+            Some("models/new_weapon.gltf"),
+            Some("models/new_view.gltf"),
+        ));
         let incoming = next.clone();
         assert!(defer_mesh_descriptor_refreshes(&old, &mut next));
 
@@ -611,6 +673,29 @@ mod tests {
             next[0].default_weapon.as_deref(),
             Some("new_weapon"),
             "unrelated descriptor refreshes remain available"
+        );
+        let active_weapon = next[0].weapon.as_ref().unwrap();
+        assert_eq!(
+            active_weapon.damage, 25.0,
+            "weapon tuning still hot reloads"
+        );
+        assert_eq!(
+            active_weapon.third_person_model.as_deref(),
+            Some("models/old_weapon.gltf")
+        );
+        assert_eq!(
+            active_weapon.viewmodel.as_deref(),
+            Some("models/old_view.gltf")
+        );
+        assert_eq!(
+            incoming[0]
+                .weapon
+                .as_ref()
+                .unwrap()
+                .third_person_model
+                .as_deref(),
+            Some("models/new_weapon.gltf"),
+            "the next-level snapshot retains new presentation paths"
         );
         assert!(
             next[1].mesh.is_some(),

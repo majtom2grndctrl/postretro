@@ -1469,6 +1469,69 @@ mod tests {
         );
     }
 
+    // Regression: the listen host used to derive `player.health`'s range from its
+    // materialized boot pawn while a connected client suppressed that pawn. Their
+    // otherwise-identical slot tables then produced different fingerprints and the
+    // client dropped every replicated state record.
+    #[test]
+    fn descriptor_health_range_is_role_invariant_and_accepts_first_baseline() {
+        use crate::scripting::map_entity::MapEntity;
+        use crate::startup::lifecycle::install_descriptor_player_health_range;
+
+        let mut descriptors =
+            crate::netcode::predict_reconcile_harness_test_fixtures::entity_descriptors();
+        descriptors[0].health = Some(HealthDescriptor {
+            max: 137.0,
+            hitbox: None,
+            zone_multipliers: std::collections::HashMap::new(),
+        });
+        let spawn_points = [MapEntity {
+            classname: "player_spawn".to_string(),
+            origin: glam::Vec3::ZERO,
+            angles: glam::Vec3::ZERO,
+            key_values: std::collections::HashMap::new(),
+            tags: Vec::new(),
+        }];
+
+        let mut host_table = owner_private_player_table();
+        let mut client_table = owner_private_player_table();
+        install_descriptor_player_health_range(&mut host_table, &spawn_points, &descriptors);
+        install_descriptor_player_health_range(&mut client_table, &spawn_points, &descriptors);
+
+        let host_schema = ReplicatedSlotSchema::build(&host_table);
+        let client_schema = ReplicatedSlotSchema::build(&client_table);
+        assert_eq!(host_schema.fingerprint(), client_schema.fingerprint());
+        assert_eq!(
+            host_table.get("player.health").unwrap().schema.range,
+            Some(NumericRange {
+                min: 0.0,
+                max: 137.0,
+            })
+        );
+
+        let (registry, owners, _pawn) = registry_with_owned_health(CLIENT_A, 75.0, 137.0);
+        let mut host = HostStateReplication::new();
+        host.register_client(CLIENT_A);
+        let fingerprint = host.fingerprint(&host_table);
+        host.ingest_frame(&host_table, &registry, &owners, &WeaponOwners::new());
+        let records = host
+            .produce_for_client(CLIENT_A, 0)
+            .expect("registered client produces descriptor state");
+
+        let outcome = ClientStateApply::new().apply_snapshot_state(
+            &mut client_table,
+            0,
+            &fingerprint,
+            &records,
+        );
+        assert_eq!(outcome.slot_baselines.len(), records.len());
+        assert_eq!(
+            client_table.get("player.health").unwrap().value,
+            Some(SlotValue::Number(75.0)),
+            "matching descriptor-derived schemas accept the state baseline"
+        );
+    }
+
     #[test]
     fn weapon_cooldown_projects_through_owned_weapon_map() {
         let host_table = owner_private_player_table();

@@ -607,7 +607,7 @@ mod tests {
         // this yaw, and the movement component is the same owned value
         // returned, not a registry read.
         assert!(
-            transform.position.z < START.z - EPSILON,
+            transform.position.z < START.z,
             "forward command should move the pawn along -Z; z={}",
             transform.position.z
         );

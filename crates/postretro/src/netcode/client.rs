@@ -853,11 +853,11 @@ impl ClientReplication {
                     return false;
                 }
                 // E10 Task 6: a non-local baseline carrying a descriptor class is a
-                // remote enemy. Surface a presentation-materialization request for the
+                // remote entity. Surface a presentation-materialization request for the
                 // caller (descriptor tables are not in scope here). Later mapped
                 // descriptor records surface a retry only while the entity is still
                 // meshless. The local pawn is excluded: its descriptor presentation
-                // rides `armed_local_pawn` on the movement path, never the remote-enemy
+                // rides `armed_local_pawn` on the movement path, never the remote-entity
                 // mesh path.
                 if !local_player {
                     if let Some(class) = entity_class {
@@ -1525,14 +1525,13 @@ impl ClientReplication {
                         .insert(network_id, pose.aim_pitch);
                 }
                 let velocity = pose.horizontal_velocity;
-                let horizontal_len_sq = velocity.x * velocity.x + velocity.z * velocity.z;
-                if velocity.is_finite() && horizontal_len_sq > MIN_HORIZONTAL_LEN_SQ {
-                    let heading_yaw = velocity.x.atan2(velocity.z);
-                    if heading_yaw.is_finite() {
-                        self.presented_player_inputs
-                            .heading_yaws
-                            .insert(network_id, heading_yaw);
-                    }
+                if velocity.is_finite()
+                    && velocity.x * velocity.x + velocity.z * velocity.z > MIN_HORIZONTAL_LEN_SQ
+                {
+                    let heading_yaw = crate::sim::player_travel_heading_yaw(velocity, 0.0);
+                    self.presented_player_inputs
+                        .heading_yaws
+                        .insert(network_id, heading_yaw);
                 }
                 self.update_remote_player_locomotion(
                     registry,
@@ -3983,8 +3982,8 @@ mod tests {
         );
     }
 
-    // A non-local full baseline carrying a descriptor class (a remote enemy).
-    fn remote_enemy_baseline(
+    // A non-local full baseline carrying a descriptor class (a remote entity).
+    fn remote_entity_baseline(
         network_id: u32,
         baseline_id: u32,
         entity_class: &str,
@@ -4001,7 +4000,7 @@ mod tests {
         }
     }
 
-    fn remote_enemy_delta(
+    fn remote_entity_delta(
         network_id: u32,
         baseline_ref: u32,
         new_baseline_id: u32,
@@ -4022,9 +4021,9 @@ mod tests {
 
     // --- E10 Task 6: an unmapped, non-local full baseline carrying an `entity_class`
     // spawns Transform-only, maps the id (joins interpolation), and surfaces ONE
-    // remote-enemy materialize request carrying the mapped EntityId + class. ---
+    // remote-entity materialize request carrying the mapped EntityId + class. ---
     #[test]
-    fn non_local_class_bearing_baseline_surfaces_remote_enemy_materialize() {
+    fn non_local_class_bearing_baseline_surfaces_remote_entity_materialize() {
         let mut registry = EntityRegistry::new();
         let mut client = ClientReplication::new();
 
@@ -4033,7 +4032,7 @@ mod tests {
             &snapshot(
                 0,
                 10,
-                vec![remote_enemy_baseline(
+                vec![remote_entity_baseline(
                     7,
                     1,
                     "decraniated_mob",
@@ -4045,14 +4044,14 @@ mod tests {
         let id = *client
             .map()
             .get(&NetworkId(7))
-            .expect("remote enemy mapped");
+            .expect("remote entity mapped");
         // The entity spawned Transform-only at the baseline pose and joined the
         // interpolation path (it is mapped, non-local).
         assert!((entity_pos(&registry, id).x - 3.0).abs() < EPSILON);
         // It is NOT marked the local pawn and reports no armed local pair.
         assert_eq!(registry.local_player_pawn(), None);
         assert!(out.armed_local_pawn.is_none());
-        // Exactly one remote-enemy materialize request, carrying the mapped id + class.
+        // Exactly one remote-entity materialize request, carrying the mapped id + class.
         assert_eq!(
             out.remote_entities,
             vec![RemoteEntityMaterialize {
@@ -4063,12 +4062,12 @@ mod tests {
                 active_weapon_archetype: None,
                 weapon_attachment_changed: false,
             }],
-            "first spawn surfaces one remote-enemy materialize request"
+            "first spawn surfaces one remote-entity materialize request"
         );
     }
 
     #[test]
-    fn remote_enemy_spawn_surfaces_initial_mesh_animation_state() {
+    fn remote_entity_spawn_surfaces_initial_mesh_animation_state() {
         let mut registry = EntityRegistry::new();
         let mut client = ClientReplication::new();
 
@@ -4077,7 +4076,7 @@ mod tests {
             &snapshot(
                 0,
                 10,
-                vec![remote_enemy_baseline(
+                vec![remote_entity_baseline(
                     7,
                     1,
                     "decraniated_mob",
@@ -4089,7 +4088,7 @@ mod tests {
         let id = *client
             .map()
             .get(&NetworkId(7))
-            .expect("remote enemy mapped");
+            .expect("remote entity mapped");
         assert_eq!(
             out.remote_entities,
             vec![RemoteEntityMaterialize {
@@ -4107,7 +4106,7 @@ mod tests {
     // --- E10 Task 6: a non-local baseline WITHOUT an entity_class surfaces no
     // materialize request (the Phase 2 dumb mover stays mesh-less). ---
     #[test]
-    fn non_local_classless_baseline_surfaces_no_remote_enemy() {
+    fn non_local_classless_baseline_surfaces_no_remote_entity() {
         let mut registry = EntityRegistry::new();
         let mut client = ClientReplication::new();
 
@@ -4126,14 +4125,14 @@ mod tests {
         );
         assert!(
             out.remote_entities.is_empty(),
-            "a classless baseline surfaces no remote-enemy materialize request"
+            "a classless baseline surfaces no remote-entity materialize request"
         );
     }
 
-    // --- E10 Task 6: the local pawn is excluded from the remote-enemy path even if a
+    // --- E10 Task 6: the local pawn is excluded from the remote-entity path even if a
     // class rides its baseline — its descriptor presentation rides `armed_local_pawn`. ---
     #[test]
-    fn local_player_baseline_surfaces_no_remote_enemy() {
+    fn local_player_baseline_surfaces_no_remote_entity() {
         let mut registry = EntityRegistry::new();
         let mut client = ClientReplication::new();
 
@@ -4156,7 +4155,7 @@ mod tests {
         );
         assert!(
             out.remote_entities.is_empty(),
-            "the local pawn never rides the remote-enemy materialize path"
+            "the local pawn never rides the remote-entity materialize path"
         );
     }
 
@@ -4165,7 +4164,7 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let mut client = ClientReplication::new();
 
-        let mut remote_baseline = remote_enemy_baseline(
+        let mut remote_baseline = remote_entity_baseline(
             7,
             1,
             "player",
@@ -4195,7 +4194,7 @@ mod tests {
             "the initial shared weapon identity rides the descriptor-aware remote outcome"
         );
 
-        let mut remote_delta = remote_enemy_delta(
+        let mut remote_delta = remote_entity_delta(
             7,
             1,
             2,
@@ -4327,7 +4326,7 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let mut client = ClientReplication::new();
 
-        let mut baseline = remote_enemy_baseline(
+        let mut baseline = remote_entity_baseline(
             7,
             1,
             "player",
@@ -4348,7 +4347,7 @@ mod tests {
             .unwrap();
         registry.remove_component::<MeshComponent>(pawn).unwrap();
 
-        let mut unchanged = remote_enemy_delta(
+        let mut unchanged = remote_entity_delta(
             7,
             1,
             2,
@@ -4397,7 +4396,7 @@ mod tests {
     // --- E10 Task 6: a later delta and a re-baseline for the same NetworkId do NOT
     // re-surface a materialize request (no duplicate spawn, no reset of mesh state). ---
     #[test]
-    fn remote_enemy_delta_and_rebaseline_do_not_resurface_materialize() {
+    fn remote_entity_delta_and_rebaseline_do_not_resurface_materialize() {
         let mut registry = EntityRegistry::new();
         let mut client = ClientReplication::new();
 
@@ -4407,7 +4406,7 @@ mod tests {
             &snapshot(
                 0,
                 10,
-                vec![remote_enemy_baseline(
+                vec![remote_entity_baseline(
                     7,
                     1,
                     "decraniated_mob",
@@ -4427,7 +4426,7 @@ mod tests {
             &snapshot(
                 1,
                 11,
-                vec![remote_enemy_delta(
+                vec![remote_entity_delta(
                     7,
                     1,
                     2,
@@ -4443,7 +4442,7 @@ mod tests {
         );
         assert!(
             delta_out.remote_entities.is_empty(),
-            "a delta for a mapped remote enemy surfaces no new materialize request"
+            "a delta for a mapped remote entity surfaces no new materialize request"
         );
 
         // A re-baseline (mapped + live) for the same id also surfaces nothing.
@@ -4452,7 +4451,7 @@ mod tests {
             &snapshot(
                 2,
                 12,
-                vec![remote_enemy_baseline(
+                vec![remote_entity_baseline(
                     7,
                     9,
                     "decraniated_mob",
@@ -4467,7 +4466,7 @@ mod tests {
         );
         assert!(
             rebaseline.remote_entities.is_empty(),
-            "a re-baseline for a mapped remote enemy surfaces no new materialize request"
+            "a re-baseline for a mapped remote entity surfaces no new materialize request"
         );
     }
 
@@ -4475,7 +4474,7 @@ mod tests {
     // materialization could not attach a mesh, a later re-baseline must retry instead
     // of leaving the mapped entity transform-only forever.
     #[test]
-    fn remote_enemy_rebaseline_retries_when_mapped_entity_still_lacks_mesh() {
+    fn remote_entity_rebaseline_retries_when_mapped_entity_still_lacks_mesh() {
         let mut registry = EntityRegistry::new();
         let mut client = ClientReplication::new();
 
@@ -4484,7 +4483,7 @@ mod tests {
             &snapshot(
                 0,
                 10,
-                vec![remote_enemy_baseline(
+                vec![remote_entity_baseline(
                     7,
                     1,
                     "decraniated_mob",
@@ -4505,7 +4504,7 @@ mod tests {
             &snapshot(
                 1,
                 11,
-                vec![remote_enemy_baseline(
+                vec![remote_entity_baseline(
                     7,
                     2,
                     "decraniated_mob",
@@ -4532,7 +4531,7 @@ mod tests {
     // the same receive batch can arrive before clip indices resolve. The declared
     // state name must be staged instead of dropped.
     #[test]
-    fn remote_enemy_delta_applies_declared_animation_before_clips_resolve() {
+    fn remote_entity_delta_applies_declared_animation_before_clips_resolve() {
         let mut registry = EntityRegistry::new();
         let mut client = ClientReplication::new();
 
@@ -4541,7 +4540,7 @@ mod tests {
             &snapshot(
                 0,
                 10,
-                vec![remote_enemy_baseline(
+                vec![remote_entity_baseline(
                     7,
                     1,
                     "decraniated_mob",
@@ -4559,7 +4558,7 @@ mod tests {
             &snapshot(
                 1,
                 11,
-                vec![remote_enemy_delta(
+                vec![remote_entity_delta(
                     7,
                     1,
                     2,

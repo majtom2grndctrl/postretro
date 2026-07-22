@@ -356,8 +356,9 @@ impl EntityBuffer {
         // Bracketed: find the adjacent pair (a, b) with a.tick <= target <= b.tick.
         // Samples are tick-ordered, so the first sample with tick >= target is `b`
         // and its predecessor is `a`.
-        for window in self.samples.iter().collect::<Vec<_>>().windows(2) {
-            let (a, b) = (window[0], window[1]);
+        let mut samples = self.samples.iter();
+        let mut a = samples.next().expect("non-empty buffer has a first sample");
+        for b in samples {
             if f64::from(a.server_tick) <= target_tick && target_tick <= f64::from(b.server_tick) {
                 let span = f64::from(b.server_tick) - f64::from(a.server_tick);
                 // Equal-tick neighbors (span 0) cannot happen — insert dedupes ticks —
@@ -375,6 +376,7 @@ impl EntityBuffer {
                     aim_pitch: a.aim_pitch + (b.aim_pitch - a.aim_pitch) * alpha,
                 });
             }
+            a = b;
         }
 
         // Unreachable: target is strictly between oldest and newest, so some adjacent
@@ -903,6 +905,21 @@ mod tests {
         let quarter = buf.presented_pose(id, 102.5).expect("bracketed");
         assert!((quarter.transform.position.x - 2.5).abs() < POS_EPS);
         assert!((quarter.aim_pitch - (-0.35)).abs() < POS_EPS);
+    }
+
+    #[test]
+    fn interpolation_finds_a_later_adjacent_sample_pair() {
+        let mut buf = RemoteInterpolationBuffer::new();
+        let id = NetworkId(1);
+        buf.record(id, sample(100, 0.0));
+        buf.record(id, sample(110, 10.0));
+        buf.record(id, sample(120, 30.0));
+
+        // The target belongs to the second pair, not the first. This protects the
+        // allocation-free adjacent traversal from failing to advance its left sample.
+        let pose = buf.presented_pose(id, 115.0).expect("bracketed");
+        assert_eq!(pose.source, PoseSource::Interpolated);
+        assert!((pose.transform.position.x - 20.0).abs() < POS_EPS);
     }
 
     #[test]

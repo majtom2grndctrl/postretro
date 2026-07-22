@@ -267,8 +267,9 @@ impl Renderer {
         if let Some(plans) = &mesh_frame_plans {
             // Overflow drops excess instances rather than corrupting the
             // palette or panicking — rate-limited warning. Covers BOTH the
-            // palette-slot cap and the instance-count cap (the latter is what
-            // fires for rigid / zero-joint props, which consume no slots).
+            // palette-slot cap and the instance-count cap. Rigid / zero-joint
+            // props still reserve one identity palette entry, so either cap
+            // can reject them.
             let dropped = plans.world.dropped.saturating_add(plans.viewmodel.dropped);
             if dropped > 0 {
                 let now = now_seconds as f32;

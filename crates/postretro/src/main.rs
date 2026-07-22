@@ -353,6 +353,18 @@ fn resolve_mesh_entity_bindings_for_entities(
     }
 }
 
+/// Resolve presentation attached by the listen-host accept lifecycle after the
+/// install-time model sweep. Kept as a named seam so acceptance cannot depend on
+/// a later weapon-attachment change to make the body animation usable.
+fn resolve_accepted_host_pawn_presentation(
+    registry: &mut postretro_entities::EntityRegistry,
+    tables: &scripting_systems::mesh_anim::MeshClipTables,
+    hit_zone_store: &scripting_systems::hit_zones::HitZoneStore,
+    pawn: postretro_entities::EntityId,
+) {
+    resolve_mesh_entity_bindings_for_entities(registry, tables, hit_zone_store, [pawn]);
+}
+
 /// Level-load cross-check: for every archetype that declares both a mesh model
 /// and `health.zoneMultipliers`, warn ONCE per archetype per declared tag that
 /// names no zone on the spawned model. The unknown set is computed by the pure,
@@ -3113,13 +3125,12 @@ impl ApplicationHandler for App {
                             renderer,
                             &agent_overlay_geometry,
                         );
-                        // Remote-entity wireframe (M15 Phase 1): on the client
-                        // path only, draw a capsule at each replicated remote
-                        // entity so the host's moving pawn is visible rather
-                        // than an invisible bare-Transform ghost. Thin
-                        // delegation — `netcode` collects the centers
-                        // (registry read, no wgpu), the renderer owns the draw.
-                        // No-op for single-player and the host.
+                        // Replicated-entity fallback wireframe: on a host or client,
+                        // draw capsules only for replicated entities that still lack
+                        // mesh presentation. Thin delegation — `netcode` collects
+                        // centers (registry read, no wgpu); the renderer owns the draw.
+                        // No-op in single-player and once every replicated entity here
+                        // has materialized its descriptor mesh.
                         if let Some(endpoint) = session.net_endpoint.as_ref() {
                             let registry = script_ctx.registry.borrow();
                             let centers = netcode::remote_entity_positions(endpoint, &registry);
@@ -4610,6 +4621,7 @@ impl App {
             return;
         };
         let hit_zone_store = &session.hit_zone_store;
+        let mesh_clip_tables = &session.mesh_clip_tables;
         let mut armed_local_pawn = None;
         match session.net_endpoint.as_mut() {
             None => {}
@@ -4675,22 +4687,35 @@ impl App {
                                             // Phase 3 movement session: materialize the
                                             // descriptor-backed remote PlayerMovement pawn
                                             // from the slot's assigned placement.
-                                            netcode::host_handle_accept_descriptor(
-                                                &mut registry,
-                                                allocator,
-                                                replicable,
-                                                slot_pawns,
-                                                command_queues,
-                                                owners,
-                                                weapon_owners,
-                                                open_shots,
-                                                pending_hit_declarations,
-                                                weaponless_fire_logged,
-                                                *client_id,
-                                                &host_spawn_points,
-                                                &net_descriptors,
-                                                host_agent_params,
-                                            );
+                                            if let Some(pawn) =
+                                                netcode::host_handle_accept_descriptor(
+                                                    &mut registry,
+                                                    allocator,
+                                                    replicable,
+                                                    slot_pawns,
+                                                    command_queues,
+                                                    owners,
+                                                    weapon_owners,
+                                                    open_shots,
+                                                    pending_hit_declarations,
+                                                    weaponless_fire_logged,
+                                                    *client_id,
+                                                    &host_spawn_points,
+                                                    &net_descriptors,
+                                                    host_agent_params,
+                                                )
+                                            {
+                                                // The accepted pawn materializes after the
+                                                // level-wide model sweep. Resolve its clips and
+                                                // sockets now even when it has no weapon model;
+                                                // later weapon changes resolve only the new prop.
+                                                resolve_accepted_host_pawn_presentation(
+                                                    &mut registry,
+                                                    mesh_clip_tables,
+                                                    hit_zone_store,
+                                                    pawn,
+                                                );
+                                            }
                                         }
                                     }
                                     HandshakeOutcome::Rejected { client_id, reason } => {
@@ -8106,19 +8131,17 @@ mod tests {
 
         let mut registry = EntityRegistry::new();
         let id = registry.spawn(Transform::default());
+        let unresolved_mesh = MeshComponent {
+            model: "models/descriptor_mob/scene.gltf".to_string(),
+            animation: Some(MeshAnimation::new(states, "idle".to_string())),
+            origin_offset: glam::Vec3::ZERO,
+            shadow_bias_scale: 1.0,
+            shadow_only: false,
+            attachments: Vec::new(),
+            pose_inputs: None,
+        };
         registry
-            .set_component(
-                id,
-                MeshComponent {
-                    model: "models/descriptor_mob/scene.gltf".to_string(),
-                    animation: Some(MeshAnimation::new(states, "idle".to_string())),
-                    origin_offset: glam::Vec3::ZERO,
-                    shadow_bias_scale: 1.0,
-                    shadow_only: false,
-                    attachments: Vec::new(),
-                    pose_inputs: None,
-                },
-            )
+            .set_component(id, unresolved_mesh.clone())
             .expect("freshly spawned id is live");
 
         // Before resolve, the descriptor mesh's model is already visible to the
@@ -8159,6 +8182,28 @@ mod tests {
             .expect("animation block present");
         assert_eq!(anim.states.get("idle").unwrap().clip_index, Some(0));
         assert_eq!(anim.states.get("attack").unwrap().clip_index, Some(1));
+
+        // Regression: a listen-host net-slot pawn materializes after this whole-
+        // registry install sweep. Its body must resolve immediately even when no
+        // weapon exists to trigger the later attachment-change path.
+        let accepted_pawn = registry.spawn(Transform::default());
+        registry
+            .set_component(accepted_pawn, unresolved_mesh)
+            .expect("accepted pawn materializes its descriptor mesh");
+        resolve_accepted_host_pawn_presentation(
+            &mut registry,
+            &tables,
+            &hit_zone_store,
+            accepted_pawn,
+        );
+        let accepted_animation = registry
+            .get_component::<MeshComponent>(accepted_pawn)
+            .unwrap()
+            .animation
+            .as_ref()
+            .unwrap();
+        assert_eq!(accepted_animation.states["idle"].clip_index, Some(0));
+        assert_eq!(accepted_animation.states["attack"].clip_index, Some(1));
     }
 
     #[test]

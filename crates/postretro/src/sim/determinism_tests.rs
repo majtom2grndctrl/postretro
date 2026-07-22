@@ -36,7 +36,7 @@ use postretro_entities::components::brain::{AiStateMap, AiTuning, BrainComponent
 use postretro_entities::components::health::{HealthComponent, Hitbox};
 use postretro_entities::components::mesh::{
     AnimationState, InterruptPolicy, MeshAnimation, MeshComponent, RATE_CHANGE_EPSILON, RATE_MAX,
-    RATE_MIN,
+    RATE_MIN, resolve_pending_animation_stamps,
 };
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::{
@@ -1655,6 +1655,9 @@ fn host_player_locomotion_selects_walk_and_calibrates_rate_before_replication() 
             ),
         )
         .unwrap();
+    // The normal frame path resolves the descriptor's initial animation stamp
+    // before locomotion can crossfade away from it.
+    resolve_pending_animation_stamps(&mut registry, 0.5);
 
     super::update_player_animation_locomotion(&mut registry, &HitZoneStore::new(), 1.0);
 
@@ -1944,7 +1947,7 @@ fn local_player_pose_inputs_use_camera_aim_and_movement_heading() {
         .unwrap();
     assert!((inputs.aim_pitch + 0.35).abs() <= 1.0e-6);
     assert!((inputs.aim_yaw - 1.1).abs() <= 1.0e-6);
-    assert!((inputs.heading_yaw - std::f32::consts::FRAC_PI_2).abs() <= 1.0e-6);
+    assert!((inputs.heading_yaw + std::f32::consts::FRAC_PI_2).abs() <= 1.0e-6);
 }
 
 #[test]
@@ -2001,6 +2004,16 @@ fn listen_host_remote_player_pose_inputs_use_resolved_client_camera_aim() {
     let mut movement = PlayerMovementComponent::from_descriptor(&player_descriptor());
     movement.velocity = Vec3::X * 3.0;
     registry.set_component(pawn, movement).unwrap();
+    // The registry treats the first movement pawn as local for old maps. Mark a
+    // separate pawn so this fixture exercises the listen-host remote-pawn path.
+    let local_pawn = registry.spawn(Transform::default());
+    registry
+        .set_component(
+            local_pawn,
+            PlayerMovementComponent::from_descriptor(&player_descriptor()),
+        )
+        .unwrap();
+    registry.mark_local_player_pawn(local_pawn).unwrap();
     let mut remote_player_aims = HashMap::new();
     remote_player_aims.insert(pawn, (-0.4, 1.2));
 
@@ -2020,7 +2033,7 @@ fn listen_host_remote_player_pose_inputs_use_resolved_client_camera_aim() {
         .unwrap();
     assert!((inputs.aim_pitch + 0.4).abs() <= 1.0e-6);
     assert!((inputs.aim_yaw - 1.2).abs() <= 1.0e-6);
-    assert!((inputs.heading_yaw - std::f32::consts::FRAC_PI_2).abs() <= 1.0e-6);
+    assert!((inputs.heading_yaw + std::f32::consts::FRAC_PI_2).abs() <= 1.0e-6);
 }
 
 /// One leg model: hip → knee → ankle, composed ankle resting at model (0,-0.7,0),

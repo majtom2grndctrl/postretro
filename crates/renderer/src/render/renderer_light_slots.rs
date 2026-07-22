@@ -395,10 +395,10 @@ impl Renderer {
     ///   blind spot where point lights only ever showed `NONE:not_spot`). NOTE
     ///   these read the STATIC load-time `shadow_candidate_lights` — a scripted
     ///   sweep light's animated position/cone is NOT reflected here.
-    /// - `casters`: `in_pvs` vs `off_pvs` from collected mesh draw inputs.
-    ///   `off_pvs` can include shadow-only casters retained because a selected
-    ///   static entity-shadow light reaches them, even when they are not
-    ///   forward-visible.
+    /// - `casters`: `forward` vs `non_forward` collected mesh draw inputs.
+    ///   `non_forward` includes explicit dynamic `shadowOnly` casters and the
+    ///   broader promoted-static shadow-relevance set; `forward` is a mesh-pass
+    ///   classification, not a raw PVS count.
     pub(super) fn emit_shadow_debug(
         &mut self,
         view_proj: Mat4,

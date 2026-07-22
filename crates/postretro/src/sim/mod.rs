@@ -467,22 +467,30 @@ pub(crate) fn update_player_animation_locomotion(
         let walk_speed = movement.ground_params.speed.walk;
         let run_speed = movement.ground_params.speed.run;
 
-        let Ok(mesh) = registry.get_component::<MeshComponent>(id) else {
-            continue;
+        let (idle_state, walk_state, run_state, current_state) = {
+            let Ok(mesh) = registry.get_component::<MeshComponent>(id) else {
+                continue;
+            };
+            let Some(animation) = mesh.animation.as_ref() else {
+                continue;
+            };
+            let walk_state = ["walk_forward", "walk"]
+                .into_iter()
+                .find(|state| animation.states.contains_key(*state))
+                .map(str::to_string);
+            let Some(walk_state) = walk_state else {
+                continue;
+            };
+            (
+                animation.default_state.clone(),
+                walk_state,
+                animation
+                    .states
+                    .contains_key("run")
+                    .then(|| "run".to_string()),
+                animation.current_state.clone(),
+            )
         };
-        let Some(animation) = mesh.animation.as_ref() else {
-            continue;
-        };
-        let Some(idle_state) = animation.states.contains_key("idle").then_some("idle") else {
-            continue;
-        };
-        let Some(walk_state) = ["walk_forward", "walk"]
-            .into_iter()
-            .find(|state| animation.states.contains_key(*state))
-        else {
-            continue;
-        };
-        let run_state = animation.states.contains_key("run").then_some("run");
         let moving = speed_xz.is_finite() && speed_xz > MOVING_SPEED_EPSILON;
         let (target_state, fallback_speed) = if !moving {
             (idle_state, 1.0)
@@ -491,9 +499,8 @@ pub(crate) fn update_player_animation_locomotion(
         } else {
             (walk_state, walk_speed)
         };
-        let current_state = animation.current_state.clone();
         if current_state != target_state {
-            let _ = switch_animation_state(registry, id, target_state);
+            let _ = switch_animation_state(registry, id, &target_state);
         }
 
         let rate_input = registry
@@ -754,12 +761,7 @@ fn update_pose_inputs(
                 .ok()
                 .map(|movement| movement.velocity)
                 .filter(|velocity| velocity.is_finite())
-                .and_then(|velocity| {
-                    let horizontal_len_sq = velocity.x * velocity.x + velocity.z * velocity.z;
-                    (horizontal_len_sq > MIN_HORIZONTAL_LEN_SQ)
-                        .then(|| velocity.x.atan2(velocity.z))
-                })
-                .filter(|yaw| yaw.is_finite())
+                .map(|velocity| player_travel_heading_yaw(velocity, heading_yaw))
                 .unwrap_or(heading_yaw);
             let aim_pitch = camera_aim
                 .0
@@ -784,12 +786,7 @@ fn update_pose_inputs(
                 .ok()
                 .map(|movement| movement.velocity)
                 .filter(|velocity| velocity.is_finite())
-                .and_then(|velocity| {
-                    let horizontal_len_sq = velocity.x * velocity.x + velocity.z * velocity.z;
-                    (horizontal_len_sq > MIN_HORIZONTAL_LEN_SQ)
-                        .then(|| velocity.x.atan2(velocity.z))
-                })
-                .filter(|yaw| yaw.is_finite())
+                .map(|velocity| player_travel_heading_yaw(velocity, heading_yaw))
                 .unwrap_or(heading_yaw);
             (
                 if aim_pitch.is_finite() {
@@ -850,6 +847,20 @@ fn update_pose_inputs(
         mesh.pose_inputs = Some(new_pose_inputs);
         let _ = registry.set_component(id, mesh);
     }
+}
+
+/// Convert player travel velocity to the engine's yaw convention, where yaw zero
+/// faces `-Z`. Stationary or non-finite input retains the supplied body heading.
+pub(crate) fn player_travel_heading_yaw(velocity: Vec3, fallback: f32) -> f32 {
+    const MIN_HORIZONTAL_LEN_SQ: f32 = 1e-8;
+    let horizontal_len_sq = velocity.x * velocity.x + velocity.z * velocity.z;
+    if velocity.is_finite() && horizontal_len_sq > MIN_HORIZONTAL_LEN_SQ {
+        let yaw = (-velocity.x).atan2(-velocity.z);
+        if yaw.is_finite() {
+            return yaw;
+        }
+    }
+    fallback
 }
 
 /// Model-space downward reach of each foot ground probe, in model units. Ground
@@ -1694,6 +1705,69 @@ mod tests {
             "test_model".to_string(),
             MeshAnimation::new(states, "idle".into()),
         )
+    }
+
+    #[test]
+    fn player_travel_heading_uses_negative_z_as_yaw_zero() {
+        let epsilon = 1.0e-5;
+        assert!(player_travel_heading_yaw(Vec3::NEG_Z, 9.0).abs() < epsilon);
+        assert!(
+            (player_travel_heading_yaw(Vec3::X, 9.0) + std::f32::consts::FRAC_PI_2).abs() < epsilon
+        );
+        assert_eq!(player_travel_heading_yaw(Vec3::ZERO, 0.75), 0.75);
+    }
+
+    // Regression: host locomotion hard-coded an `idle` state while connected clients
+    // used the descriptor's valid `defaultState`, causing perpetual correction for
+    // descriptors whose rest state had another author-defined name.
+    #[test]
+    fn player_locomotion_uses_descriptor_default_state_as_idle_contract() {
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        registry.set_component(pawn, trigger_movement()).unwrap();
+
+        let state = |clip: &str, clip_index| AnimationState {
+            clip: clip.to_string(),
+            looping: true,
+            crossfade_ms: DEFAULT_CROSSFADE_MS,
+            interrupt: InterruptPolicy::Smooth,
+            travel_speed: None,
+            clip_index: Some(clip_index),
+        };
+        let states = HashMap::from([
+            ("stand".to_string(), state("stand", 0)),
+            ("walk_forward".to_string(), state("walk", 1)),
+        ]);
+        let mut animation = MeshAnimation::new(states, "stand".to_string());
+        animation.current_state = "walk_forward".to_string();
+        registry
+            .set_component(
+                pawn,
+                MeshComponent::animated("player".to_string(), animation),
+            )
+            .unwrap();
+
+        assert_eq!(
+            registry
+                .get_component::<PlayerMovementComponent>(pawn)
+                .unwrap()
+                .velocity,
+            Vec3::ZERO,
+            "the descriptor default state applies only when the player is stationary"
+        );
+
+        update_player_animation_locomotion(&mut registry, &HitZoneStore::new(), 0.0);
+
+        assert_eq!(
+            registry
+                .get_component::<MeshComponent>(pawn)
+                .unwrap()
+                .animation
+                .as_ref()
+                .unwrap()
+                .current_state,
+            "stand"
+        );
     }
 
     fn trigger_component(on_fire: &str, armed: bool) -> TriggerVolumeComponent {

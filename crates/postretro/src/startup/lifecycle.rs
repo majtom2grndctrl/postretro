@@ -12,8 +12,8 @@ use crate::frame_timing::InterpolableState;
 use crate::render;
 use crate::scripting::builtins::{
     PLAYER_START_CLASSNAME, apply_classname_dispatch, apply_data_archetype_dispatch,
-    deferred_remote_player_mesh_models, descriptor_materializes_ai_enemy,
-    filter_out_client_ai_enemies, spawn_from_player_starts, suppressed_ai_enemy_mesh_models,
+    descriptor_materializes_ai_enemy, filter_out_client_ai_enemies,
+    movement_descriptor_mesh_models, spawn_from_player_starts, suppressed_ai_enemy_mesh_models,
     weapon_presentation_models,
 };
 use crate::startup::{
@@ -581,7 +581,7 @@ impl App {
             .install_deferred_mesh_descriptors(&script_ctx)
         {
             log::info!(
-                "[Scripting] installed deferred mesh descriptors for the next level model sweep"
+                "[Scripting] installed deferred presentation descriptors for the next level model sweep"
             );
         }
         // Segment A of the CPU world install: seed gravity from the level's
@@ -1304,6 +1304,51 @@ pub(crate) struct WorldInstallHandles<'a> {
     pub(crate) suppress_boot_pawn: bool,
 }
 
+/// Attach the descriptor-authored `player.health` validation range before either
+/// network role builds its replicated-state schema. The selected descriptor matches
+/// `spawn_from_player_starts`: placements are visited in map order, `entity_class`
+/// defaults to `"player"`, unknown/non-movement descriptors do not become the local
+/// movement pawn, and the first movement descriptor is authoritative.
+///
+/// This deliberately resolves from shared authoring data rather than the registry.
+/// Connected clients suppress their boot pawn until the host baseline arrives, but
+/// must still fingerprint the same range as the listen host.
+pub(crate) fn install_descriptor_player_health_range(
+    slot_table: &mut postretro_entities::SlotTable,
+    spawn_points: &[crate::scripting::map_entity::MapEntity],
+    descriptors: &[postretro_entities::EntityTypeDescriptor],
+) {
+    for spawn in spawn_points {
+        let entity_class = spawn
+            .key_values
+            .get("entity_class")
+            .map(String::as_str)
+            .unwrap_or("player");
+        let Some(descriptor) = descriptors
+            .iter()
+            .find(|descriptor| descriptor.canonical_name.as_deref() == Some(entity_class))
+        else {
+            continue;
+        };
+        if descriptor.movement.is_none() {
+            continue;
+        }
+        let Some(health) = descriptor.health.as_ref() else {
+            return;
+        };
+        if let Err(err) = slot_table.set_engine_numeric_range(
+            "player.health",
+            postretro_entities::NumericRange {
+                min: 0.0,
+                max: health.max,
+            },
+        ) {
+            log::warn!("[Loader] failed to set player.health range: {err}");
+        }
+        return;
+    }
+}
+
 /// Segment B of the CPU world install (renderer-free): fog-volume entities,
 /// collision world + kinematic movers, classname dispatch, the data script, the
 /// data-archetype sweep (incl. player-pawn spawn), the mesh sweep's CPU half
@@ -1477,15 +1522,19 @@ pub(crate) fn install_world_cpu(
     // cannot see them; unioned into the mesh model list below so the host-replicated
     // remote enemy is drawable. Empty off a connected client.
     let mut suppressed_enemy_models: Vec<String> = Vec::new();
-    // A connected client defers its boot pawn until the host baseline arrives,
-    // leaving movement descriptor meshes out of the registry sweep. Remote
-    // snapshot materialization uses `movement.is_some()` for the player path,
-    // so preload the same descriptor category here.
-    let deferred_remote_player_models = if suppress_boot_pawn {
-        deferred_remote_player_mesh_models(&descriptors)
-    } else {
-        Vec::new()
-    };
+    // Runtime net-slot materialization may select any movement descriptor on a
+    // listen host, while a connected client receives the same set by snapshot.
+    // Preload the whole category for every role; gameplay never uploads models.
+    let movement_descriptor_models = movement_descriptor_mesh_models(&descriptors);
+    // Replicated state schema must be role-invariant before the first snapshot is
+    // validated. Resolve the authored player-health range from the shared map
+    // placement + descriptor table, not from a role-specific materialized pawn: a
+    // connected client intentionally suppresses its boot pawn.
+    install_descriptor_player_health_range(
+        &mut script_ctx.slot_table.borrow_mut(),
+        &spawn_points,
+        &descriptors,
+    );
     // Wieldable weapon instances have no MeshComponent of their own. Preload every
     // declared third- and first-person model so attachment/viewmodel changes never
     // trigger runtime model loads or leave a transient placeholder.
@@ -1542,24 +1591,6 @@ pub(crate) fn install_world_cpu(
             (None, None)
         };
 
-        // Attach the `player.health` slot's declared range `[0, max]` now the pawn
-        // (and its health component) has materialized. `max` is mod data, so it
-        // cannot be declared at `SlotTable` construction.
-        if let Some((_, health)) =
-            postretro_entities::components::health::pawn_with_health(&registry)
-        {
-            use postretro_entities::NumericRange;
-            if let Err(err) = script_ctx.slot_table.borrow_mut().set_engine_numeric_range(
-                "player.health",
-                NumericRange {
-                    min: 0.0,
-                    max: health.max,
-                },
-            ) {
-                log::warn!("[Loader] failed to set player.health range: {err}");
-            }
-        }
-
         (active_wieldable, active_wieldable_descriptor, first_spawn)
     };
     let spawner_diagnostics = {
@@ -1615,7 +1646,7 @@ pub(crate) fn install_world_cpu(
                 models.push(model.clone());
             }
         }
-        for model in &deferred_remote_player_models {
+        for model in &movement_descriptor_models {
             if seen.insert(model.clone()) {
                 models.push(model.clone());
             }

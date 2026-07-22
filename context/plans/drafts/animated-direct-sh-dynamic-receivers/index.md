@@ -33,7 +33,9 @@ last direct-light gap for moving receivers under authored script animation.
   animated baked lights (no static `DirectShVolume`) still gets a direct atlas.
 - Fixture: align `content/dev/maps/spawner-test.map` with the feature's premise —
   the tagged `alarm_light` becomes a baked animated `light_spot` in whose cone the
-  closet-door mover sits.
+  closet-door mover sits, plus a `prop_mesh` (skinned-mesh receiver) and a
+  `billboard_emitter` (billboard receiver) placed in the same cone so all three
+  dynamic-receiver classes are exercised by one golden (AC2).
 
 ### Out of scope
 
@@ -202,10 +204,11 @@ the executor which gate applies.
       the light red, the mover reddens together with the adjacent static wall (no dark
       mover beside a lit wall). (Satisfied by Task 5's fixture golden — door reddens with
       wall — not a separate scene.)
-- [ ] **AC2** `[golden]` + `[review]` A skinned mesh and a billboard in the same cone
-      receive the same animated direct term (shared composed atlas); "no per-receiver
-      wiring beyond the compose pass" is a review gate (consumers unchanged, still sample
-      binding 15).
+- [ ] **AC2** `[golden]` + `[review]` The `prop_mesh` (skinned mesh) and
+      `billboard_emitter` (billboard) added to the Task 5 fixture cone receive the same
+      animated direct term as the door mover (shared composed atlas) — the golden asserts
+      both redden with the wall when the plate fires. "No per-receiver wiring beyond the
+      compose pass" is a review gate (consumers unchanged, still sample binding 15).
 - [ ] **AC3** `[unit]` The animated light's direct is counted exactly once on each
       receiver: absent from the `DirectShVolume` base atlas, absent from the dynamic-direct
       light buffer, absent from promotion selection — a compiler namespace-partition test
@@ -412,11 +415,21 @@ Convert `content/dev/maps/spawner-test.map` entity 7 from `light_dynamic_spot` t
 baked animated `light_spot` (keep `_tags "alarm_light"`, set `_cone`/`_cone2`/`angles`
 so the closet-door mover sits inside the cone, set `light`/`_falloff_range`). The
 `turnRed` `setLightAnimation` reaction in `content/dev/scripts/spawner-test.ts` is
-unchanged (queries `component: "light"`, matches the spot). Recompile the `.prl` (command in the map
+unchanged (queries `component: "light"`, matches the spot). Add two more dynamic
+receivers inside the same cone so AC2's golden is buildable: a `prop_mesh` (skinned-mesh
+receiver — set `model` to an existing dev asset, e.g.
+`models/decraniated_low_poly_retro_pixel/scene.gltf`, and `origin`/`angles` so it stands
+in the cone beside the door) and a `billboard_emitter` (billboard receiver — `sprite`
+`smoke_puff` or similar, `origin` in the cone). Cone/aim tuning so all three receivers
+sit inside the cone is ordinary Task-5 detail; keep both new receivers clear of the
+`entity_spawner` origin and the doorway walk-out path so the E18 spawner behavior (AC10)
+stays unaffected. Recompile the `.prl` (command in the map
 header). Add a frame-capture golden regression (via the `--capture` driver + GPU golden
-harness) asserting the door fragment inside the cone reddens with the wall after the plate
-fires — note this is a **GPU-adapter-gated, threshold-based** golden (the harness self-skips
-without an adapter), not a deterministic headless assert. At promotion, update
+harness) asserting the door fragment, the `prop_mesh`, and the `billboard_emitter`'s
+sprite inside the cone all redden with the wall after the plate fires (satisfies AC1 for
+the door and AC2 for the skinned mesh + billboard) — note this is a **GPU-adapter-gated,
+threshold-based** golden (the harness self-skips without an adapter), not a deterministic
+headless assert. At promotion, update
 `context/lib/rendering_pipeline.md` §4 (new "Animated direct SH for dynamic
 receivers" paragraph + the receiver matrix), `context/lib/build_pipeline.md` PRL
 section table (id 45), and the FGD comment on the baked-`Light` base class noting

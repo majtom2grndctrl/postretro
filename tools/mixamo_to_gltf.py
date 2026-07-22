@@ -292,17 +292,27 @@ def merge_animations(input_dir, scale=None, base=None, exclude_meshes=None):
             if obj not in base_objects:
                 bpy.data.objects.remove(obj, do_unlink=True)
 
-    # --- Phase 2: Sample world-space bone poses for every action ----------
+    # --- Phase 2: Sample armature-space bone poses for every action --------
     # Before we transform the armature, evaluate each action on the base
-    # armature (which still carries the original FBX transform) and record
-    # each bone's world matrix at every keyframe.  These world matrices are
-    # the ground truth that the re-bake in Phase 4 will reproduce.
+    # armature and record each bone's LOCAL transform (relative to parent)
+    # at every keyframe.  We sample in armature space (pbone.matrix), NOT
+    # world space, to avoid entangling the armature's cm-to-m scale with
+    # the bone poses.  The local transforms are scale-free and transfer
+    # directly to the new rest pose.
 
     all_actions = [a for a in bpy.data.actions if a.users > 0 or a.use_fake_user]
     action_poses = {}
 
     if not base_armature.animation_data:
         base_armature.animation_data_create()
+
+    # Cache old rest-pose local transforms (before transform_apply)
+    old_rest_local = {}
+    for pbone in base_armature.pose.bones:
+        if pbone.parent:
+            old_rest_local[pbone.name] = pbone.parent.bone.matrix_local.inverted() @ pbone.bone.matrix_local
+        else:
+            old_rest_local[pbone.name] = pbone.bone.matrix_local.copy()
 
     for action in all_actions:
         base_armature.animation_data.action = action
@@ -312,10 +322,15 @@ def merge_animations(input_dir, scale=None, base=None, exclude_meshes=None):
         for frame in range(frame_start, frame_end + 1):
             bpy.context.scene.frame_set(frame)
             bpy.context.view_layer.update()
-            bone_matrices = {}
+            bone_locals = {}
             for pbone in base_armature.pose.bones:
-                bone_matrices[pbone.name] = (base_armature.matrix_world @ pbone.matrix).copy()
-            poses_by_frame[frame] = bone_matrices
+                # pbone.matrix is in armature space.  Derive local transform.
+                if pbone.parent:
+                    local = pbone.parent.matrix.inverted() @ pbone.matrix
+                else:
+                    local = pbone.matrix.copy()
+                bone_locals[pbone.name] = local
+            poses_by_frame[frame] = bone_locals
         action_poses[action.name] = (frame_start, frame_end, poses_by_frame)
 
     base_armature.animation_data.action = None
@@ -381,39 +396,36 @@ def merge_animations(input_dir, scale=None, base=None, exclude_meshes=None):
         print("  If the character mesh is in a different FBX, use --base to select it.")
 
     # --- Phase 4: Re-bake animations into the new rest pose ---------------
-    # The armature's rest pose changed (transform_apply baked scale+rotation
-    # into edit bones), but F-curve values still target the old rest pose.
+    # Phase 2 sampled each bone's LOCAL transform (parent.inv() @ bone) in
+    # the old armature space.  For child bones, local transforms are
+    # independent of the armature's world transform — they represent joint
+    # angles/positions relative to the parent.  After transform_apply, the
+    # same local transforms produce the correct pose.
     #
-    # IMPORTANT: We must NOT use pbone.matrix assignment + depsgraph update,
-    # because Blender's depsgraph decomposes pbone.matrix against the
-    # parent's matrix from the LAST evaluation, producing corrupt keyframes
-    # at the start of every clip.
+    # For the ROOT bone (no parent), the "local" is the armature-space
+    # matrix itself, which needs the flip_z rotation applied (the rest pose
+    # was flipped, so the animated pose must be too).
     #
-    # Instead we compute each bone's new local TRS purely from math:
-    #   new_arm_space[bone] = arm_world_inv @ flip_z @ sampled_world[bone]
-    #   new_local = new_arm_space[parent].inv() @ new_arm_space[bone]
-    #   pose_delta = rest_local.inv() @ new_local
-    # Then decompose pose_delta into loc/rot/scale and key directly on the
-    # pose bone — no depsgraph round-trip needed.
+    # We compute pose deltas (Blender's pbone TRS = offset from rest):
+    #   child:  pose_delta = old_rest_local.inv() @ old_anim_local
+    #   root:   pose_delta = new_rest_local.inv() @ (flip_z_rot @ old_anim_local)
+    #
+    # No depsgraph round-trip — pure math, no stale-parent corruption.
 
-    arm_world_inv = base_armature.matrix_world.inverted()
+    # Extract the rotation-only part of flip_z (it's already pure rotation,
+    # but be explicit to avoid any scale contamination)
+    flip_z_rot = flip_z.to_quaternion().to_matrix().to_4x4()
 
     for pbone in base_armature.pose.bones:
         pbone.rotation_mode = 'QUATERNION'
 
-    # Cache the NEW rest pose (after transform_apply): each bone's local
-    # transform relative to its parent, in armature space.
-    bone_rest_local = {}
-    bone_parent = {}
+    # Cache the NEW rest-pose local transforms (after transform_apply)
+    new_rest_local = {}
     for pbone in base_armature.pose.bones:
-        parent_name = pbone.parent.name if pbone.parent else None
-        bone_parent[pbone.name] = parent_name
-        if parent_name:
-            parent_rest_arm = pbone.parent.bone.matrix_local
-            bone_rest_arm = pbone.bone.matrix_local
-            bone_rest_local[pbone.name] = parent_rest_arm.inverted() @ bone_rest_arm
+        if pbone.parent:
+            new_rest_local[pbone.name] = pbone.parent.bone.matrix_local.inverted() @ pbone.bone.matrix_local
         else:
-            bone_rest_local[pbone.name] = pbone.bone.matrix_local.copy()
+            new_rest_local[pbone.name] = pbone.bone.matrix_local.copy()
 
     for action in all_actions:
         if action.name not in action_poses:
@@ -428,28 +440,25 @@ def merge_animations(input_dir, scale=None, base=None, exclude_meshes=None):
         scale_ok = True
         for frame in range(frame_start, frame_end + 1):
             bpy.context.scene.frame_set(frame)
-            bone_matrices = poses_by_frame[frame]
-
-            # Compute new armature-space matrix for every sampled bone
-            new_arm_space = {}
-            for bone_name, sampled_world in bone_matrices.items():
-                new_arm_space[bone_name] = arm_world_inv @ flip_z @ sampled_world
+            bone_locals = poses_by_frame[frame]
 
             for pbone in base_armature.pose.bones:
-                if pbone.name not in new_arm_space:
+                if pbone.name not in bone_locals:
                     continue
 
-                # New local = parent_arm_inv @ bone_arm
-                parent_name = bone_parent[pbone.name]
-                if parent_name and parent_name in new_arm_space:
-                    new_local = new_arm_space[parent_name].inverted() @ new_arm_space[pbone.name]
-                else:
-                    new_local = new_arm_space[pbone.name]
+                old_local = bone_locals[pbone.name]
 
-                # Pose delta = what Blender's pose TRS represents:
-                # the offset from the rest-pose local transform.
-                rest_local = bone_rest_local[pbone.name]
-                pose_delta = rest_local.inverted() @ new_local
+                if pbone.parent:
+                    # Child bone: local transform is armature-independent.
+                    # Pose delta = change from old rest to old animated.
+                    old_rest = old_rest_local[pbone.name]
+                    pose_delta = old_rest.inverted() @ old_local
+                else:
+                    # Root bone: "local" is the armature-space matrix.
+                    # Apply flip_z rotation, then compute delta from new rest.
+                    new_local = flip_z_rot @ old_local
+                    new_rest = new_rest_local[pbone.name]
+                    pose_delta = new_rest.inverted() @ new_local
 
                 loc = pose_delta.to_translation()
                 rot = pose_delta.to_quaternion()

@@ -235,9 +235,18 @@ def merge_animations(input_dir, scale=None, base=None):
     # vertices.  A 180° Z flip is also needed: Mixamo characters face Blender
     # +Y, which the glTF exporter maps to -Z, but the engine expects +Z
     # forward (pose_modifier.rs, mesh_pass.rs).
-    arm_basis = base_armature.matrix_basis.copy()
     flip_z = Matrix.Rotation(math.pi, 4, 'Z')
-    baked_transform = flip_z @ arm_basis
+
+    # Capture BEFORE we modify anything — matrix_world is the ground truth
+    # regardless of how Blender decomposed it (parent_inverse, basis, parent).
+    arm_world = base_armature.matrix_world.copy()
+    baked_transform = flip_z @ arm_world
+
+    base_mesh = get_mesh()
+    mesh_world_original = base_mesh.matrix_world.copy() if base_mesh else None
+
+    print(f"\n  Armature scale: {[round(x, 4) for x in arm_world.to_scale()]}"
+          f"  rotation: {[round(math.degrees(x), 1) for x in arm_world.to_euler()]}")
 
     base_armature.matrix_basis = baked_transform
     bpy.ops.object.select_all(action='DESELECT')
@@ -246,18 +255,38 @@ def merge_animations(input_dir, scale=None, base=None):
     bpy.ops.object.transform_apply(location=False, rotation=True, scale=True)
     base_armature.select_set(False)
 
-    base_mesh = get_mesh()
     if base_mesh:
-        # Clear the stale parent-inverse Blender stored at parenting time
-        # (arm_basis⁻¹).  Without this, matrix_world ≠ matrix_basis and the
-        # glTF exporter sees a residual 100× scale on the mesh node.
+        print(f"  Mesh basis scale: {[round(x, 4) for x in base_mesh.matrix_basis.to_scale()]}"
+              f"  parent_inv scale: {[round(x, 4) for x in base_mesh.matrix_parent_inverse.to_scale()]}")
+        print(f"  Mesh world (pre-modify) scale: {[round(x, 4) for x in mesh_world_original.to_scale()]}"
+              f"  translation: {[round(x, 4) for x in mesh_world_original.to_translation()]}")
+
+        verts = base_mesh.data.vertices
+        if verts:
+            ys = [v.co.y for v in verts]
+            zs = [v.co.z for v in verts]
+            print(f"  Vertex bounds BEFORE bake: Y[{min(ys):.2f}, {max(ys):.2f}]"
+                  f" Z[{min(zs):.2f}, {max(zs):.2f}]")
+
+        # Use the mesh's original world matrix + flip.  This captures
+        # whatever scale/rotation the FBX importer distributed across
+        # parent_inverse, basis, and the parent chain.
+        mesh_bake = flip_z @ mesh_world_original
         base_mesh.matrix_parent_inverse = Matrix.Identity(4)
-        base_mesh.matrix_basis = baked_transform
+        base_mesh.matrix_basis = mesh_bake
+
         bpy.ops.object.select_all(action='DESELECT')
         bpy.context.view_layer.objects.active = base_mesh
         base_mesh.select_set(True)
         bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
         base_mesh.select_set(False)
+
+        if verts:
+            ys = [v.co.y for v in verts]
+            zs = [v.co.z for v in verts]
+            print(f"  Vertex bounds AFTER bake:  Y[{min(ys):.2f}, {max(ys):.2f}]"
+                  f" Z[{min(zs):.2f}, {max(zs):.2f}]")
+            print(f"  (expected: Y ~ [-0.3, 0.3]  Z ~ [0.0, 1.8])")
     else:
         print("  WARNING: No mesh in base file — output will have no geometry.")
         print("  If the character mesh is in a different FBX, use --base to select it.")

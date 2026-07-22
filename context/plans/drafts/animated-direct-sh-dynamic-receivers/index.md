@@ -35,7 +35,8 @@ last direct-light gap for moving receivers under authored script animation.
   the tagged `alarm_light` becomes a baked animated `light_spot` in whose cone the
   closet-door mover sits, plus a `prop_mesh` (skinned-mesh receiver) and a
   `billboard_emitter` (billboard receiver) placed in the same cone so all three
-  dynamic-receiver classes are exercised by one golden (AC2).
+  dynamic-receiver classes are exercised by one manual-GPU check (AC2); the automated
+  capture golden is deferred to a follow-up spec.
 
 ### Out of scope
 
@@ -199,32 +200,39 @@ byte-feeding loader test, `[golden]` GPU-adapter-gated threshold image, `[review
 grep/read gate, `[manual GPU]` env-var run. Not every AC is a unit test — the tag tells
 the executor which gate applies.
 
-- [ ] **AC1** `[golden]` A kinematic mover fully inside a script-animated `light_spot`'s
-      cone receives the light's animated direct illumination; when the alarm curve drives
-      the light red, the mover reddens together with the adjacent static wall (no dark
-      mover beside a lit wall). (Satisfied by Task 5's fixture golden — door reddens with
-      wall — not a separate scene.)
-- [ ] **AC2** `[golden]` + `[review]` The `prop_mesh` (skinned mesh) and
+- [ ] **AC1** `[manual GPU]` A kinematic mover fully inside a script-animated
+      `light_spot`'s cone receives the light's animated direct illumination; when the alarm
+      curve drives the light red, the mover reddens together with the adjacent static wall
+      (no dark mover beside a lit wall). Verified by the Task 5 manual-GPU check (run the
+      engine, fire the plate, confirm the door reddens with the wall) — the automated
+      capture golden is deferred to the follow-up capture-extension spec (see Task 5),
+      because the static `--capture` harness renders no dynamic receivers and cannot reach
+      the fired state.
+- [ ] **AC2** `[manual GPU]` + `[review]` The `prop_mesh` (skinned mesh) and
       `billboard_emitter` (billboard) added to the Task 5 fixture cone receive the same
-      animated direct term as the door mover (shared composed atlas) — the golden asserts
-      both redden with the wall when the plate fires. "No per-receiver wiring beyond the
-      compose pass" is a review gate (consumers unchanged, still sample binding 15).
+      animated direct term as the door mover (shared composed atlas) — the manual-GPU check
+      confirms both redden with the wall when the plate fires. "No per-receiver wiring
+      beyond the compose pass" is a review gate (consumers unchanged, still sample binding
+      15). Automated capture golden deferred to the follow-up spec.
 - [ ] **AC3** `[unit]` The animated light's direct is counted exactly once on each
       receiver: absent from the `DirectShVolume` base atlas, absent from the dynamic-direct
       light buffer, absent from promotion selection — a compiler namespace-partition test
       that a script-animated baked light produces an `AnimatedDirectShDeltaVolumes` entry
       and no `EntityShadowLights`/base-direct contribution. (Certifies pre-existing
       namespace exclusion; kept as a guard.)
-- [ ] **AC4** `[unit]` (per-state scale math via the CPU scale seam) + `[golden]` (no
+- [ ] **AC4** `[unit]` (per-state scale math via the CPU scale seam) + `[manual GPU]` (no
       brightness pop, despawn/reload drops cleanly): initial-active lights the mover from
       frame 0; initial-inactive (`startActive: false`) dark; a trigger-installed curve
       lights it on fire; a looping curve animates each cycle; a one-shot settles/holds the
       final keyframe with no pop; clearing (`setLightAnimation(null)`) holds authored
-      radiance; despawn/reload drops the contribution cleanly.
-- [ ] **AC5** `[unit]` (direction-safe/no-NaN bake) + `[golden]` (brightness/RGB animate):
-      brightness and RGB color animate the mover-direct term; direction animation does not
-      rotate it (documented v1 limitation, not a test) and does not crash or corrupt the
-      atlas.
+      radiance; despawn/reload drops the contribution cleanly. The unit test covers the
+      per-state scale math; the no-pop / clean-drop visuals are the manual-GPU check
+      (automated capture golden deferred to the follow-up spec).
+- [ ] **AC5** `[unit]` (direction-safe/no-NaN bake) + `[manual GPU]` (brightness/RGB
+      animate): brightness and RGB color animate the mover-direct term; direction animation
+      does not rotate it (documented v1 limitation, not a test) and does not crash or
+      corrupt the atlas. The bake-safety unit test is automated; the brightness/RGB visual
+      is the manual-GPU check (automated capture golden deferred to the follow-up spec).
 - [ ] **AC6** `[unit]` (dispatch predicate is a pure fn) + `[manual GPU]` (allocation /
       `has_direct` need an adapter) + `[review]` (no-new-dispatch is a code-path/timing gate,
       not a pixel golden — a captured PNG cannot expose dispatch counts): a map with
@@ -244,10 +252,11 @@ the executor which gate applies.
 - [ ] **AC9** `[manual GPU]` + `[review]` `POSTRETRO_GPU_TIMING=1` attributes the animated
       additive cost to the `direct_sh_compose` bracket (TIMESTAMP_QUERY GPU); a dev-tools
       control isolates the animated-direct contribution for inspection.
-- [ ] **AC10** `[unit]` (prl-build recompile) + `[golden]` (door reddens) + `[review]` (E18
-      unaffected): `content/dev/maps/spawner-test.map` recompiles with the alarm light as a
-      baked animated `light_spot`; the closet door visibly reddens inside the cone when the
-      plate fires, and the E18 spawner behavior (enemies spawn on the floor and walk out) is
+- [ ] **AC10** `[unit]` (prl-build recompile) + `[manual GPU]` (door reddens) + `[review]`
+      (E18 unaffected): `content/dev/maps/spawner-test.map` recompiles with the alarm light
+      as a baked animated `light_spot`; the closet door visibly reddens inside the cone when
+      the plate fires (manual-GPU check — automated capture golden deferred to the follow-up
+      spec), and the E18 spawner behavior (enemies spawn on the floor and walk out) is
       unaffected.
 - [ ] **AC11** `[review]` `context/lib/rendering_pipeline.md` §4 (new paragraph + the
       receiver matrix), `context/lib/build_pipeline.md` PRL section table (id 45), and
@@ -439,12 +448,15 @@ in the cone beside the door) and a `billboard_emitter` (billboard receiver — `
 sit inside the cone is ordinary Task-5 detail; keep both new receivers clear of the
 `entity_spawner` origin and the doorway walk-out path so the E18 spawner behavior (AC10)
 stays unaffected. Recompile the `.prl` (command in the map
-header). Add a frame-capture golden regression (via the `--capture` driver + GPU golden
-harness) asserting the door fragment, the `prop_mesh`, and the `billboard_emitter`'s
-sprite inside the cone all redden with the wall after the plate fires (satisfies AC1 for
-the door and AC2 for the skinned mesh + billboard) — note this is a **GPU-adapter-gated,
-threshold-based** golden (the harness self-skips without an adapter), not a deterministic
-headless assert. At promotion, update
+header). Verification is a **manual-GPU check**, not an automated capture golden: run the
+engine on `spawner-test.prl`, fire the closet plate, and confirm the door fragment, the
+`prop_mesh`, and the `billboard_emitter`'s sprite inside the cone all redden with the wall
+(satisfies the manual-GPU halves of AC1, AC2, and AC10). The automated frame-capture
+golden is **deferred to a follow-up spec** (`context/plans/drafts/capture-animated-direct-receiver-goldens`):
+the current static `--capture` harness renders no dynamic receivers (movers / skinned /
+billboard) and has no way to advance to the fired animation state, so it cannot assert
+this today. Do not add a capture-scene golden in this task — that work is scoped to the
+follow-up. At promotion, update
 `context/lib/rendering_pipeline.md` §4 (new "Animated direct SH for dynamic
 receivers" paragraph + the receiver matrix), `context/lib/build_pipeline.md` PRL
 section table (id 45), and the FGD comment on the baked-`Light` base class noting

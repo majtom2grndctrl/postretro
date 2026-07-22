@@ -226,15 +226,19 @@ the executor which gate applies.
       rotate it (documented v1 limitation, not a test) and does not crash or corrupt the
       atlas.
 - [ ] **AC6** `[unit]` (dispatch predicate is a pure fn) + `[manual GPU]` (allocation /
-      `has_direct` need an adapter) + `[golden]` (no-dispatch byte-identity): a map with
+      `has_direct` need an adapter) + `[review]` (no-new-dispatch is a code-path/timing gate,
+      not a pixel golden — a captured PNG cannot expose dispatch counts): a map with
       **only** animated baked lights (no static `DirectShVolume`) still allocates a composed
       direct atlas, sets `has_direct`, and lights movers; a map with **zero** animated baked
-      lights keeps the promotion-only compose cadence and shows no per-frame compose
-      dispatch attributable to this feature.
-- [ ] **AC7** `[golden]` + `[review]` Static world surfaces render unchanged (still
-      `lm_anim`-based); a scene with no animated baked lights is byte-identical on the
-      direct atlas to pre-change (Case-1 path untouched — review + golden diff, not a unit
-      test).
+      lights keeps the promotion-only compose cadence (Case-1 predicate unchanged) and issues
+      no per-frame compose dispatch attributable to this feature.
+- [ ] **AC7** `[golden]` (visible scene color) + `[review]` (Case-1 code path): Static
+      world surfaces render unchanged (still `lm_anim`-based) — the visible-scene golden
+      covers this. The stronger "byte-identical on the direct atlas" claim is a `[review]`
+      code-path gate, not a pixel golden: the direct atlas is an internal GPU texture the
+      capture harness never reads back, so atlas identity is guaranteed by leaving the
+      Case-1 branch (section 45 absent) byte-for-byte unchanged, verified by review, not by
+      diffing a PNG.
 - [ ] **AC8** `[loader unit]` Loader rejects a malformed or partial section 45 by cleanly
       disabling the animated-direct term (no crash), mirroring the id-41 soft-drop.
 - [ ] **AC9** `[manual GPU]` + `[review]` `POSTRETRO_GPU_TIMING=1` attributes the animated
@@ -260,8 +264,9 @@ Add PRL section `SectionId::AnimatedDirectShDeltaVolumes = 45` in
 field-for-field — its eight stored fields `affinity_factor`, `affinity_dims`,
 `tile_dimension`, `tile_border`, `animation_descriptor_indices`, `affinity_offsets`,
 `affinity_lights`, `delta_subblocks` (dense 64-probe RGBA16F octahedral sub-block per
-CSR entry) — plus a section-internal `u32` version constant
-`ANIMATED_DIRECT_SH_DELTA_VOLUMES_VERSION = 1`.
+CSR entry) — plus a section-internal `u8` version constant
+`ANIMATED_DIRECT_SH_DELTA_VOLUMES_VERSION = 1`, written as the first payload byte
+exactly as id-27's `DELTA_SH_VOLUMES_VERSION: u8` is (a true field-for-field mirror).
 Note `delta_probe_f16_stride` is a **derived method** on id 27, not a stored field —
 carry it as the same derived accessor, do not serialize it. Section 45 serializes its
 **own** `animation_descriptor_indices` copy (it does not reference section 27's, so it
@@ -273,12 +278,15 @@ Add loader validation in `crates/level-loader/src/prl_loader.rs`. Mirror the **i
 `validate_delta_sh` for the self-describing struct decode (NOT `validate_direct_sh_delta`,
 whose base-grid + selection-count cross-checks section 45 does not share), but wire the
 loader block with the **id-41 soft-drop** pattern — warn + clear, never id-27's hard `?`
-(a hard error would brick the load and violate AC 8). Validate internal consistency only:
-CSR offsets monotone, `affinity_lights` within the animated-light count,
-`animation_descriptor_indices` length matches the `AnimatedBakedLights` count (the
-index space the copy is keyed by). Cross-section descriptor resolvability need
-not be a hard load check — an out-of-range index is a no-op at runtime via the shader's
-existing `INVALID_DESCRIPTOR_INDEX` (`0xffffffff`) sentinel guard. Malformed or partial →
+(a hard error would brick the load and violate AC 8). Validate internal consistency only, using bounds the section carries in itself (the
+loader has no cross-section `AnimatedBakedLights` count to check against): CSR
+`affinity_offsets` monotone with trailing total equal to `affinity_lights.len()`, and
+every `affinity_lights` entry `< animation_descriptor_indices.len()` (the in-section
+per-animated-light index space). Do **not** add a hard check that
+`animation_descriptor_indices` length equals some external light count — no in-section
+source exists for it. Cross-section descriptor resolvability is likewise not a hard load
+check — an out-of-range descriptor index is a no-op at runtime via the shader's existing
+`INVALID_DESCRIPTOR_INDEX` (`0xffffffff`) sentinel guard. Malformed or partial →
 drop the whole section (animated-direct disabled).
 
 ### Task 2: Compiler bake — animated direct-SH delta
@@ -304,7 +312,14 @@ deviation from the mirror: `delta_sh_bake` calls `decompose_affinity` over the a
 envelope; this bake calls `decompose_affinity_for_lights` over the single-light slice. Emit section 45
 with its own `animation_descriptor_indices` (same `AnimatedBakedLights` index space
 section 27 uses). Wire into `pipeline.rs` to run whenever `AnimatedBakedLights` is
-non-empty. Tests: bake determinism (seeded soft visibility); per-light separability
+non-empty. **Own the emission seam:** the section is only written to the `.prl` by
+`pack::build_prl` (`crates/level-compiler/src/pack.rs`) — add a new
+`Option<&AnimatedDirectShDeltaVolumesSection>` parameter to `build_prl`, thread the baked
+section from `pipeline.rs` into it, and add a matching
+`append_optional_section(SectionId::AnimatedDirectShDeltaVolumes, …)` call, mirroring how
+`delta_sh_volumes` (id 27) and `direct_sh_delta_volumes` (id 41) are threaded and appended
+there. Without this the section is baked but never serialized, and every downstream loader
+and golden test silently sees an absent section. Tests: bake determinism (seeded soft visibility); per-light separability
 (single-light sub-block equals that light's share); **no-double-count** — a
 script-animated baked light produces a section-45 entry and contributes nothing to
 the `DirectShVolume` base atlas or `EntityShadowLights` selection (delivers AC 3);
@@ -468,7 +483,7 @@ consume the shipped runtime behavior from Phase 2.
 ## Wire format
 
 `AnimatedDirectShDeltaVolumes` (id 45) mirrors `DeltaShVolumes` (id 27) exactly:
-little-endian; a section-internal `u32` version prefix,
+little-endian; a section-internal `u8` version byte (first payload byte, as id 27),
 `ANIMATED_DIRECT_SH_DELTA_VOLUMES_VERSION = 1`;
 `affinity_factor = 4`, `affinity_dims = ceil(base grid_dimensions / 4)`;
 `tile_dimension = 6`, `tile_border = 1`; its own `animation_descriptor_indices`

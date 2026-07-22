@@ -296,7 +296,9 @@ per-animated-light index space). Do **not** add a hard check that
 source exists for it. Cross-section descriptor resolvability is likewise not a hard load
 check — an out-of-range descriptor index is a no-op at runtime via the shader's existing
 `INVALID_DESCRIPTOR_INDEX` (`0xffffffff`) sentinel guard. Malformed or partial →
-drop the whole section (animated-direct disabled).
+drop the whole section (animated-direct disabled). Tests: wire encode/decode + round-trip
+test; a loader soft-drop test feeding malformed/partial section-45 bytes, asserting the
+section is cleared and the load still succeeds (delivers AC 8).
 
 ### Task 2: Compiler bake — animated direct-SH delta
 
@@ -416,18 +418,20 @@ Plumbing:
   headless test (no GPU) over it covering each descriptor state: initial-active,
   initial-inactive (`is_active == 0` → 0), looping mid-cycle, one-shot settle, cleared,
   despawn/reload — delivers AC 4's per-state scale math. The GPU-visible "no brightness pop"
-  and "despawn/reload drops cleanly" are integration properties left to the golden/review
-  gate (see AC 4), not this unit test.
+  and "despawn/reload drops cleanly" are integration properties left to the manual-GPU /
+  review gate (see AC 4), not this unit test.
 - The mover/skinned/billboard consumers are unchanged — they sample `direct_atlas_view`
   at binding 15.
 
 ### Task 4: Diagnostics
 
 Add a dev-tools isolation for the animated-direct contribution: a **new Pass-B override**
-buffer/uniform modeled on the existing debug-override shape (Rust `DirectShDebugOverride` /
-WGSL `DebugOverride`), keyed by `AnimatedBakedLights` index, isolating one animated light's
-added term. It is a second override living on Pass B — not the same binding-27 buffer,
-which is promotion-selection-keyed on Pass A. Confirm `POSTRETRO_GPU_TIMING=1` attributes the
+uniform buffer (like the existing `DebugOverride`, not a storage buffer — it stays off the
+compute stage's storage-buffer budget so Pass B remains at 6 of 8), modeled on the existing
+debug-override shape (Rust `DirectShDebugOverride` / WGSL `DebugOverride`), keyed by
+`AnimatedBakedLights` index, isolating one animated light's added term. It is a second
+override living on Pass B — not the same binding-27 buffer, which is promotion-selection-keyed
+on Pass A. Confirm `POSTRETRO_GPU_TIMING=1` attributes the
 new Pass B to a timing bracket — extend the existing `direct_sh_compose` bracket to
 span both passes, or add a sibling bracket (§12). Extend the
 forward/mesh lighting-isolation modes only if the existing direct-SH isolation mode
@@ -440,7 +444,8 @@ baked animated `light_spot` (keep `_tags "alarm_light"`, set `_cone`/`_cone2`/`a
 so the closet-door mover sits inside the cone, set `light`/`_falloff_range`). The
 `turnRed` `setLightAnimation` reaction in `content/dev/scripts/spawner-test.ts` is
 unchanged (queries `component: "light"`, matches the spot). Add two more dynamic
-receivers inside the same cone so AC2's golden is buildable: a `prop_mesh` (skinned-mesh
+receivers inside the same cone so AC2's manual-GPU check exercises all three receiver
+classes: a `prop_mesh` (skinned-mesh
 receiver — set `model` to an existing dev asset, e.g.
 `models/decraniated_low_poly_retro_pixel/scene.gltf`, and `origin`/`angles` so it stands
 in the cone beside the door) and a `billboard_emitter` (billboard receiver — `sprite`
@@ -451,14 +456,20 @@ stays unaffected. Recompile the `.prl` (command in the map
 header). Verification is a **manual-GPU check**, not an automated capture golden: run the
 engine on `spawner-test.prl`, fire the closet plate, and confirm the door fragment, the
 `prop_mesh`, and the `billboard_emitter`'s sprite inside the cone all redden with the wall
-(satisfies the manual-GPU halves of AC1, AC2, and AC10). The automated frame-capture
+(satisfies the manual-GPU halves of AC1, AC2, and AC10). The same manual-GPU run also
+confirms: (AC4) no brightness pop on one-shot settle, the settled light holds its final
+keyframe, and despawn/reload drops the contribution cleanly; (AC5) brightness and RGB
+color visibly pulse the receivers; (AC6) a 45-only map (no static `DirectShVolume`) still
+allocates the composed atlas and lights the movers. The automated frame-capture
 golden is **deferred to a follow-up spec** (`context/plans/drafts/capture-animated-direct-receiver-goldens`):
 the current static `--capture` harness renders no dynamic receivers (movers / skinned /
 billboard) and has no way to advance to the fired animation state, so it cannot assert
 this today. Do not add a capture-scene golden in this task — that work is scoped to the
 follow-up. At promotion, update
 `context/lib/rendering_pipeline.md` §4 (new "Animated direct SH for dynamic
-receivers" paragraph + the receiver matrix), `context/lib/build_pipeline.md` PRL
+receivers" paragraph + the receiver matrix; also correct §4's sampler list, which
+currently names only skinned meshes and billboards, to include the kinematic mover as
+a direct-SH atlas (binding 15) sampler), `context/lib/build_pipeline.md` PRL
 section table (id 45), and the FGD comment on the baked-`Light` base class noting
 that script-animated baked lights now reach moving receivers' direct term. Add one
 line of authoring guidance (FGD comment and/or `docs/`): pulse/color animation →

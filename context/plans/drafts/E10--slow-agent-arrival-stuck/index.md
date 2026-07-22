@@ -17,24 +17,24 @@ recovery makes them visibly jink sideways a few tenths of a metre from their goa
 Stuck detection mixes an ABSOLUTE spatial floor with an INTENDED-speed arming gate,
 and the two disagree for slow agents. All in `crates/postretro/src/agent_steering.rs`.
 
-- **Absolute progress floor.** `update_stuck_ticks` increments `stuck_ticks` when the
-  goal-projected per-tick displacement is below `STUCK_PROGRESS_EPSILON` (0.005 m/tick,
-  agent_steering.rs:92). At the 60 Hz fixed tick (`DT = 1/60`) that floor is ≈ 0.3 m/s
+- **Absolute progress floor.** `update_stuck_ticks` (:962) increments `stuck_ticks` when
+  the goal-projected per-tick displacement is below `STUCK_PROGRESS_EPSILON` (0.005 m/tick,
+  `agent_steering.rs:118`). At the 60 Hz fixed tick (`DT = 1/60`) that floor is ≈ 0.3 m/s
   of intended speed. It is a distance, deliberately independent of the agent's speed.
-- **Intent arming gate.** `has_stuck_recovery_intent` (:894) arms accumulation only
-  when `goal_speed > STUCK_INTENT_SPEED_EPSILON` (0.05 m/s, :87).
+- **Intent arming gate.** `has_stuck_recovery_intent` (:1005) arms accumulation only
+  when `goal_speed > STUCK_INTENT_SPEED_EPSILON` (0.05 m/s, :113).
 - **The mismatch band.** An agent whose intended `goal_speed` sits between ~0.05 and
   ~0.3 m/s is "trying" (intent armed) yet its own intended per-tick step is already
   below the absolute floor — so it accumulates `stuck_ticks` toward
-  `STUCK_TICKS_THRESHOLD` (20, :80) with nothing blocking it.
+  `STUCK_TICKS_THRESHOLD` (20, :106) with nothing blocking it.
 - **Arrival deceleration drives the agent into that band.** The `is_final` slowdown
-  branch of `goal_speed` (:683-692) returns
+  branch of `goal_speed` (:758-766) returns
   `move_speed * (final_distance / slowdown_radius).clamp(0,1)`, where
   `slowdown_radius = ARRIVAL_SLOWDOWN_RADIUS_FACTOR (7.0) * arrival_radius` and
   `arrival_radius = ARRIVAL_RADIUS_FACTOR (1.5) * radius`. For the canonical radius
   0.35 m: `arrival_radius = 0.525`, `slowdown_radius = 3.675`. At `move_speed = 1.0`,
   `goal_speed` drops below 0.3 m/s once `final_distance < ~1.1 m`, while `arrived` only
-  latches at `final_distance <= arrival_radius` (0.525 m, :684). That leaves a
+  latches at `final_distance <= arrival_radius` (0.525 m, :759). That leaves a
   ~0.575 m tail — roughly 130+ consecutive sub-floor ticks — far exceeding the
   20-tick threshold. The canonical 4.0 m/s agent never enters the band: it stays above
   0.3 m/s until inside `arrival_radius`, where `arrived` latches first.
@@ -50,28 +50,33 @@ and the two disagree for slow agents. All in `crates/postretro/src/agent_steerin
 ### Prior art (out of scope, the pattern to generalize)
 
 E10 already fixed the SAME class of false-stuck at a mandatory clearance vertex (funnel
-corner-offset waypoint). `easing_onto_mandatory_waypoint` (:834) detects an agent easing
-onto an un-arrived mandatory vertex, and a gate in `update_stuck_ticks` (:864-874)
-zeroes `stuck_ticks` for those ticks. That gate is narrow: it covers ONLY mandatory
-clearance vertices, whose tight collision-scale band forces sub-`move_speed` easing.
+corner-offset waypoint). `easing_onto_mandatory_waypoint` (:944) detects an agent easing
+onto an un-arrived mandatory vertex, and a branch in `update_stuck_ticks` (:993-998)
+relaxes the stuck floor to `MANDATORY_EASING_PROGRESS_EPSILON` for those ticks (so the
+eased-but-progressing agent stays above the floor and does not accumulate). That gate is
+narrow: it covers ONLY mandatory clearance vertices, whose tight collision-scale band
+forces sub-`move_speed` easing.
 This issue is the GENERAL case — the same absolute-floor-vs-intended-speed mismatch
 during ordinary arrival deceleration at ANY destination, for any slow-enough agent.
 
 ### Current state of the regression instrument
 
-`slow_agent_funnel_path_routes_concave_corner_without_stuck_detection`
-(`crates/postretro/src/agent_steering/tests.rs:688`) drives a `move_speed = 1.0` agent
-around the `ConcaveCorner` fixture and asserts `stuck_ticks < STUCK_TICKS_THRESHOLD`
-every tick until `arrived`. As committed it **fails** at the final destination — around
-tick 837, ~0.64 m from goal (5,5), inside the `is_final` slowdown band (not on a
-mandatory vertex). The mandatory-vertex ticks earlier in the same route already pass via
-the E10 gate; only the final arrival deceleration is unfixed. (This is the un-narrowed,
-currently-red form of the instrument the E10 review referenced.)
+The in-crate test has been **narrowed** to
+`slow_agent_clears_mandatory_clearance_vertices_without_stuck_detection`
+(`crates/postretro/src/agent_steering/tests.rs:846`), which is **green**. It drives a
+`move_speed = 1.0` agent around the `ConcaveCorner` fixture but stops asserting once the
+cursor passes the last mandatory waypoint — its own comment defers the final
+arrival-slowdown crawl to this spec by name. So on the current branch there is **no
+red instrument in the tree** for the final-arrival case; the mandatory-vertex regime the
+E10 branch actually fixed is what the :846 test guards.
 
-A verbatim copy of this test, with its observed-failure signature, is preserved
-adjacent to this spec in [`failing-test-reference.md`](./failing-test-reference.md)
-— the E10 branch narrows the in-crate test to the clearance-vertex regression, so
-the reference captures the full-traversal form this spec exists to make pass.
+The full-traversal form — which loops to `arrived` and therefore also asserts a
+stuck-free FINAL arrival — is preserved verbatim in
+[`failing-test-reference.md`](./failing-test-reference.md). Restored into `tests.rs`, it
+**fails** at the final destination — around tick 837, ~0.64 m from goal (5,5), inside the
+`is_final` slowdown band (not on a mandatory vertex). Re-introducing that form and making
+it pass is this spec's headline instrument; the mandatory-vertex ticks earlier in the same
+route already pass via the E10 gate, so only the final arrival deceleration is unfixed.
 
 ## Scope
 
@@ -79,6 +84,12 @@ the reference captures the full-traversal form this spec exists to make pass.
 
 - Remove the false stuck accumulation for a slow agent decelerating into a destination
   on a clear route, across the `is_final` arrival-slowdown band.
+- Also remove it for a very slow agent cruising a long CLEAR route below the absolute
+  floor mid-route — not only in the arrival tail. `move_speed` has no authored lower
+  bound (see below), so an arbitrarily-slow-but-clear cruise (intended `goal_speed` under
+  the ~0.3 m/s absolute-floor equivalent, e.g. `move_speed ≈ 0.2`) is a representable,
+  supported configuration that today false-trips the same way. Covering it is what selects
+  the progress-relative-to-intent fix over an arrival-band-only patch (see Rough sketch).
 - Keep genuine wall-wedge detection for slow agents — an agent that intends to move but
   cannot must still reach `STUCK_TICKS_THRESHOLD` and fire recovery.
 - Widen/extend the stuck-signal regression coverage to assert clean slow-agent arrival
@@ -101,11 +112,19 @@ the reference captures the full-traversal form this spec exists to make pass.
 - [ ] A `move_speed = 1.0` agent following the `ConcaveCorner` funnel route reaches
       `arrived` with `stuck_ticks` never reaching `STUCK_TICKS_THRESHOLD` and
       `unstick_window_remaining` never leaving 0 — the entire arrival deceleration, not
-      just the mandatory-vertex ticks (the currently-red tests.rs:688 test passes).
+      just the mandatory-vertex ticks. Restore the full-traversal form from
+      [`failing-test-reference.md`](./failing-test-reference.md) (absent in-tree today; the
+      in-crate test is narrowed to the green `tests.rs:846` clearance-vertex case) and make
+      it pass.
 - [ ] A slow agent (`move_speed = 1.0`) crossing an open floor with NO mandatory
       waypoints decelerates into its destination and latches `arrived` without stuck
       accumulation reaching the threshold (runnable stuck-signal test; proves the fix is
       general arrival behavior, independent of the mandatory-waypoint machinery).
+- [ ] A very slow agent (`move_speed ≈ 0.2` — intended cruise step below the absolute
+      floor for the whole traverse) crossing a long, CLEAR, straight open route at full
+      intended speed never accumulates `stuck_ticks` to `STUCK_TICKS_THRESHOLD` (proves the
+      fix covers sub-floor cruise mid-route, not only the arrival tail — the case that
+      distinguishes the progress-relative-to-intent fix from an arrival-band-only patch).
 - [ ] A slow agent (`move_speed = 1.0`) driven into a wall with sustained goal intent
       still reaches `STUCK_TICKS_THRESHOLD` and fires recovery (`unstick_window_remaining`
       becomes nonzero). Real wedges remain detectable at low speed.
@@ -118,26 +137,33 @@ the reference captures the full-traversal form this spec exists to make pass.
 ## Rough sketch
 
 The fix lives entirely in the stuck detector (`update_stuck_ticks` /
-`has_stuck_recovery_intent` / their constants). Three directions, with trade-offs — pick
-during implementation; each must satisfy every AC above.
+`has_stuck_recovery_intent` / their constants). **Direction 1 (progress-relative-to-intent)
+is the approach**; Directions 2 and 3 are documented fallbacks, taken only if the
+wall-wedge discriminator cannot be made to trip cleanly under Direction 1. The root cause is
+precisely an ABSOLUTE floor compared against a SPEED-dependent intended step, so the fix that
+compares achieved progress against the agent's OWN intended step dissolves the bug class
+rather than patching around it — and it is the only direction that covers the sub-floor
+mid-route cruise scope item for free. Whichever is chosen must satisfy every AC above.
 
-1. **Progress-relative-to-intent (most principled).** Flag stuck only when actual
+1. **Progress-relative-to-intent (the chosen approach).** Flag stuck only when actual
    per-tick progress falls far below the agent's OWN intended step (`goal_speed * DT`),
    e.g. progress below some fraction of intended, rather than below a fixed absolute
-   epsilon. Naturally scales with `move_speed` and with arrival easing. Risk: a genuinely
-   blocked agent still "intends" to move, so the relative test must compare achieved vs.
-   intended and still trip when achieved ≈ 0 while intended > 0 — the wall-wedge AC is
-   the guard. Touches the core detector; most general.
-2. **Suspend/relax accumulation in the intended arrival-deceleration band.** Extend the
-   E10 gate pattern: when the agent is in the `is_final` slowdown branch (intended
-   `goal_speed` throttled below the absolute floor by arrival easing, not by a block),
-   hold `stuck_ticks` clear — analogous to `easing_onto_mandatory_waypoint`. Narrower,
-   lower-risk, composes cleanly with the existing gate, but a targeted patch rather than a
-   root fix (a slow agent cruising a long open corridor below the floor mid-route would
-   still be mis-flagged — see open questions).
-3. **Scale the floor by speed.** Make `STUCK_PROGRESS_EPSILON` a function of `move_speed`
-   (or `goal_speed`). Simplest change, but couples a spatial floor to a kinematic
-   parameter and picks a slope that must still catch a slow wedge.
+   epsilon. Naturally scales with `move_speed` and with arrival easing, and covers
+   sub-floor cruise as well as the arrival tail. Risk: a genuinely blocked agent still
+   "intends" to move, so the relative test must compare achieved vs. intended and still
+   trip when achieved ≈ 0 while intended > 0 — the wall-wedge AC is the guard. Touches the
+   core detector; most general.
+2. **(Fallback) Suspend/relax accumulation in the intended arrival-deceleration band.**
+   Extend the E10 gate pattern: when the agent is in the `is_final` slowdown branch
+   (intended `goal_speed` throttled below the absolute floor by arrival easing, not by a
+   block), hold `stuck_ticks` clear — analogous to `easing_onto_mandatory_waypoint`.
+   Narrower, lower-risk, composes cleanly with the existing gate, but a targeted patch that
+   does NOT satisfy the sub-floor-cruise AC (a slow agent cruising a long open corridor
+   below the floor mid-route is still mis-flagged) — the reason it is a fallback, not the
+   pick.
+3. **(Fallback) Scale the floor by speed.** Make `STUCK_PROGRESS_EPSILON` a function of
+   `move_speed` (or `goal_speed`). Simplest change, but couples a spatial floor to a
+   kinematic parameter and picks a slope that must still catch a slow wedge.
 
 Interaction constraints for any choice: must not regress the canonical ~4.0 m/s agent;
 must still catch real wall-wedge stalls (the reason recovery exists — AC 3/4); must
@@ -161,33 +187,23 @@ open-floor arrival and slow-wedge cases.
 
 ## Open questions
 
-- **Tangential/jittering wedge at a mandatory vertex escapes escalation (E10 review
-  panel finding).** The prior-art gate this spec composes with has its own latent gap,
-  the mirror image of this spec's false positive. `update_stuck_ticks` only accumulates
-  `stuck_ticks` when a tick's progress falls under the active floor — inside a mandatory
-  vertex's arrival band that floor is `MANDATORY_EASING_PROGRESS_EPSILON`
-  (`STUCK_PROGRESS_EPSILON * 0.05`, ≈0.00025 m/tick) — and escalation needs
-  `STUCK_TICKS_THRESHOLD` (20) CONSECUTIVE sub-floor ticks. A wedge that jitters even
-  occasionally above that floor (numerical jitter from `collide_and_slide`, or a shallow
-  slide along a wall that yields a small positive goal-projected step) resets
-  `stuck_ticks` to 0 on those ticks and never arms recovery — a silent permanent stall,
-  masked by the same easing gate that exists to let a legitimate corner turn through.
-  Fix direction, not a prescription: accumulate against NET progress over a bounded
-  window instead of a single-tick floor, or cap how many consecutive easing-suppressed
-  ticks are allowed before falling back to the absolute floor — either way a genuine
-  wedge must still escalate. Needs a repro test constructing a mandatory vertex the
-  capsule cannot plane-pass while still sliding along it; no such test exists today. This
-  is unresolved: whether a real jittering wedge sustains occasional above-floor ticks
-  (resetting the counter) or settles sub-floor (escalating) is not established — a repro
-  test constructing an unclearable-but-sliding mandatory vertex is the arbiter; resolve it
-  there before deciding this needs a code change.
-- **Slow cruise below the absolute floor mid-route.** Direction 2 only relaxes the
-  arrival band; a `move_speed < ~0.3 m/s` agent cruising a long straight corridor at full
-  intended speed is ALSO below the absolute floor and would still false-trip. Is such an
-  agent in scope? Directions 1 and 3 cover it; direction 2 does not. Decide whether the
-  spec must cover arbitrarily-slow cruise or only the arrival tail. (Note: `move_speed`
-  has no authored lower bound, so arbitrarily-slow cruise is representable.)
-- **Threshold vs. epsilon tuning.** Whichever direction, the new relative fraction /
-  scaled floor / band predicate needs a value proven by the slow-wedge discriminator test
-  to still trip within a bounded tick budget. Left as an implementation decision anchored
-  by the AC.
+- **Threshold vs. epsilon tuning.** The new relative fraction (progress vs. intended step)
+  needs a value proven by the slow-wedge discriminator test to still trip within a bounded
+  tick budget. Left as an implementation decision anchored by the AC — not a blocker.
+
+### Resolved / spun out
+
+- **Slow cruise below the absolute floor mid-route — resolved: in scope.** `move_speed`
+  has no authored lower bound, so arbitrarily-slow-but-clear cruise is a representable,
+  supported configuration; it is now covered (the sub-floor-cruise In-scope bullet and its
+  AC) and is precisely why Direction 1 is the pick rather than the arrival-band-only
+  Direction 2.
+- **Tangential/jittering wedge at a mandatory vertex escapes escalation — spun out.** This
+  is the MIRROR IMAGE defect: a false NEGATIVE in the prior-art E10 mandatory-waypoint gate
+  (a real wedge that never escalates), not the false positive this spec removes. It needs
+  its own nav-geometry repro fixture (a mandatory vertex the capsule cannot plane-pass while
+  still sliding along it — none exists today), and folding it in would drag an
+  opposite-signed bug into a tidy detector fix. Tracked separately in
+  [`../E10--mandatory-vertex-wedge-escapes/`](../E10--mandatory-vertex-wedge-escapes/index.md).
+  Constraint retained here: any fix there must compose with this spec's arrival-band
+  relaxation without the two jointly masking a mandatory-vertex wedge.

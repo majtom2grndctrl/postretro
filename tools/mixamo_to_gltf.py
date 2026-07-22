@@ -113,6 +113,13 @@ def parse_args():
         help="Remove facial bones (eyelids, jaw, tongue, brows, etc.) "
              "and merge their vertex weights into the Head bone"
     )
+    parser.add_argument(
+        "--exclude-meshes", nargs="+", default=[],
+        metavar="NAME",
+        help="Drop named mesh objects before join (e.g. --exclude-meshes EXO_Body). "
+             "Names are matched case-insensitively against Blender object names. "
+             "Use to remove hidden geometry that causes z-fighting."
+    )
     return parser.parse_args(argv)
 
 
@@ -179,7 +186,7 @@ def fcurve_bone_name(data_path):
     return data_path[len(prefix):data_path.index('"]')]
 
 
-def merge_animations(input_dir, scale=None, base=None):
+def merge_animations(input_dir, scale=None, base=None, exclude_meshes=None):
     """Import all FBX files, keeping one armature+mesh and collecting actions."""
     if not Path(input_dir).is_dir():
         print(f"ERROR: Input directory not found: {input_dir}")
@@ -420,7 +427,15 @@ def merge_animations(input_dir, scale=None, base=None):
     base_armature.animation_data.action = None
     bpy.context.scene.frame_set(0)
 
-    # --- Phase 5: Join meshes ---------------------------------------------
+    # --- Phase 5: Exclude meshes, then join ---------------------------------
+
+    if exclude_meshes:
+        exclude_lower = {n.lower() for n in exclude_meshes}
+        mesh_objects = [obj for obj in bpy.data.objects if obj.type == "MESH"]
+        for obj in mesh_objects:
+            if obj.name.lower() in exclude_lower:
+                print(f"  Excluding mesh: {obj.name} ({len(obj.data.vertices)} verts)")
+                bpy.data.objects.remove(obj, do_unlink=True)
 
     mesh_objects = [obj for obj in bpy.data.objects if obj.type == "MESH"]
     if len(mesh_objects) > 1:
@@ -693,7 +708,7 @@ def main():
     print("=" * 60)
 
     clean_scene()
-    merge_animations(args.input_dir, args.scale, args.base)
+    merge_animations(args.input_dir, args.scale, args.base, args.exclude_meshes)
     if args.strip_face:
         strip_facial_bones()
     validate_model()

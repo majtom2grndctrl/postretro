@@ -67,7 +67,10 @@ The prompt's seven decisions, resolved:
 1. **Receiver scope (v1).** Kinematic movers required. Skinned meshes and
    billboards **included**, not deferred — all three bind the composed direct atlas
    (`sh_direct_atlas`, binding 15) via `sample_sh_direct`, so once the compose pass
-   writes the animated term they receive it for free. Billboards evaluate direct SH
+   writes the animated term they receive it for free. Verified: `sample_sh_direct` at
+   binding 15 is read in `kinematic_brush.wgsl` (movers), `skinned_mesh.wgsl`, and
+   `billboard.wgsl` — the "producer-side only" claim is anchored to these three call
+   sites. Billboards evaluate direct SH
    per vertex (one sample per sprite); the animated pulse is coarse there, matching
    the already-accepted per-vertex approximation for their other lighting channels.
 
@@ -197,7 +200,8 @@ the executor which gate applies.
 - [ ] **AC1** `[golden]` A kinematic mover fully inside a script-animated `light_spot`'s
       cone receives the light's animated direct illumination; when the alarm curve drives
       the light red, the mover reddens together with the adjacent static wall (no dark
-      mover beside a lit wall).
+      mover beside a lit wall). (Satisfied by Task 5's fixture golden — door reddens with
+      wall — not a separate scene.)
 - [ ] **AC2** `[golden]` + `[review]` A skinned mesh and a billboard in the same cone
       receive the same animated direct term (shared composed atlas); "no per-receiver
       wiring beyond the compose pass" is a review gate (consumers unchanged, still sample
@@ -238,6 +242,9 @@ the executor which gate applies.
       baked animated `light_spot`; the closet door visibly reddens inside the cone when the
       plate fires, and the E18 spawner behavior (enemies spawn on the floor and walk out) is
       unaffected.
+- [ ] **AC11** `[review]` `context/lib/rendering_pipeline.md` §4 (new paragraph + the
+      receiver matrix), `context/lib/build_pipeline.md` PRL section table (id 45), and
+      the FGD comment on the baked-`Light` base class are updated per Task 5.
 
 ## Tasks
 
@@ -250,7 +257,8 @@ Add PRL section `SectionId::AnimatedDirectShDeltaVolumes = 45` in
 field-for-field — its eight stored fields `affinity_factor`, `affinity_dims`,
 `tile_dimension`, `tile_border`, `animation_descriptor_indices`, `affinity_offsets`,
 `affinity_lights`, `delta_subblocks` (dense 64-probe RGBA16F octahedral sub-block per
-CSR entry) — plus a section-internal `u32` version constant (initial value `1`).
+CSR entry) — plus a section-internal `u32` version constant
+`ANIMATED_DIRECT_SH_DELTA_VOLUMES_VERSION = 1`.
 Note `delta_probe_f16_stride` is a **derived method** on id 27, not a stored field —
 carry it as the same derived accessor, do not serialize it. Section 45 serializes its
 **own** `animation_descriptor_indices` copy (it does not reference section 27's, so it
@@ -264,7 +272,8 @@ whose base-grid + selection-count cross-checks section 45 does not share), but w
 loader block with the **id-41 soft-drop** pattern — warn + clear, never id-27's hard `?`
 (a hard error would brick the load and violate AC 8). Validate internal consistency only:
 CSR offsets monotone, `affinity_lights` within the animated-light count,
-`animation_descriptor_indices` length matches. Cross-section descriptor resolvability need
+`animation_descriptor_indices` length matches the `AnimatedBakedLights` count (the
+index space the copy is keyed by). Cross-section descriptor resolvability need
 not be a hard load check — an out-of-range index is a no-op at runtime via the shader's
 existing `INVALID_DESCRIPTOR_INDEX` (`0xffffffff`) sentinel guard. Malformed or partial →
 drop the whole section (animated-direct disabled).
@@ -366,7 +375,10 @@ Plumbing:
   (`renderer_render_frame.rs`, where `promoted_static_weights` currently feeds it). Widen
   that computed `active` to also cover "any section-45 descriptor active" — a **new CPU
   accessor** over the section-45 descriptor-index set (`AnimatedLightBuffers` has no
-  any-active query today). The Case-2 pair shares this one predicate — both passes fire
+  any-active query today): it iterates section-45's `animation_descriptor_indices` and
+  tests each resolved descriptor's `is_active` against the same shared `descriptors`
+  state the compose pass reads (the state `AnimatedLightBuffers` receives the
+  section-45 index set into). The Case-2 pair shares this one predicate — both passes fire
   together, including the initial copy-through. Case 1 keeps the unchanged promotion-only
   predicate. A 45-present map with all descriptors inactive and no promotion change does not
   dispatch (final retains its last value); a 45-absent map dispatches nothing beyond today's
@@ -443,7 +455,8 @@ consume the shipped runtime behavior from Phase 2.
 ## Wire format
 
 `AnimatedDirectShDeltaVolumes` (id 45) mirrors `DeltaShVolumes` (id 27) exactly:
-little-endian; a section-internal `u32` version prefix, initial value `1`;
+little-endian; a section-internal `u32` version prefix,
+`ANIMATED_DIRECT_SH_DELTA_VOLUMES_VERSION = 1`;
 `affinity_factor = 4`, `affinity_dims = ceil(base grid_dimensions / 4)`;
 `tile_dimension = 6`, `tile_border = 1`; its own `animation_descriptor_indices`
 (keyed by `AnimatedBakedLights` index, independent of section 27); CSR

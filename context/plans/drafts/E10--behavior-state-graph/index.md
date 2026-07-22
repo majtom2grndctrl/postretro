@@ -24,7 +24,7 @@ Replace the engine-closed four-state enemy FSM with an authored **behavior state
 - Parallel layers (separate locomotion/action graphs), hierarchical sub-states, squad blackboard — named extensions; the descriptor envelope must not preclude them (a graph is one layer of a future set) but none ships now.
 - Graph-authored writes (`onEnter` `setState`, guard side effects) — guards are read-only; per-entity state is written by impact policies and reactions, read by guards.
 - New perception inputs (LOS, sound, alert propagation) — the roadmap's line-of-sight bullet and `research/enemy-aggro-model.md`; they land as new BrainScope inputs later, no graph-shape change.
-- `and`/`or`/`not` IR opcodes — boolean composition stays `select`-only (substrate rule); lowering builds `select` trees Rust-side. Additive opcodes are a substrate follow-up, not this plan.
+- `and`/`or`/`not` IR opcodes — additive substrate follow-up, not this plan. Lowering builds `select` trees Rust-side until the opcodes land; authored guards benefit from them once available.
 - Multi-attack (`E10--enemy-multi-attack`) and stagger (`E10--enemy-stagger`) — both re-target onto this graph after it lands (stagger = impact policy writing `@state.*` + an authored interrupt; multi-attack enriches the action vocabulary). Their drafts are not edited here.
 - Wire/replication changes — graph state is host-only sim state; clients keep consuming replicated animation state.
 - Removing `deathDespawnMs` / the vestigial `death` state map entry — parsed and lowered as today; cleanup is separate.
@@ -155,8 +155,8 @@ export const grunt = defineEntity({
 });
 ```
 
-## Open questions
+## Resolved questions
 
-- `behavior.moveSpeed` vs. reusing an agent block: v1 mirrors legacy (`moveSpeed` on the behavior block feeding `attach_agent`); revisit if the agent surface grows its own descriptor.
-- Whether `select`-only boolean composition is acceptable author ergonomics for guards, or whether `and`/`or`/`not` opcodes (additive, no version bump) should land in the substrate first. Deferred to first real authoring feedback; lowering is unaffected (Rust-side tree construction).
-- `E10--enemy-stagger` and `E10--enemy-multi-attack` drafts predate this plan and are written as enum widenings; both need a re-target pass once this promotes (stagger becomes an impact policy + authored interrupt; multi-attack becomes action-vocabulary growth). Flagged, not edited here.
+- **`behavior.moveSpeed`**: v1 mirrors legacy — `moveSpeed` on the behavior block feeds `attach_agent`. Revisit if the agent surface grows its own descriptor.
+- **`and`/`or`/`not` opcodes**: confirmed as a desired substrate follow-up. Lowering builds `select` trees Rust-side until the opcodes land; authored guards use them once available. Graph evaluator is opcode-agnostic — no graph-side work needed when they arrive.
+- **Sibling drafts**: `E10--enemy-stagger` and `E10--enemy-multi-attack` re-targeted onto the behavior graph substrate (stagger = impact policy + authored interrupt; multi-attack = action-vocabulary growth).

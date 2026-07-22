@@ -231,7 +231,7 @@ def merge_animations(input_dir, scale=None, base=None):
     bpy.ops.object.select_all(action='DESELECT')
     bpy.context.view_layer.objects.active = base_armature
     base_armature.select_set(True)
-    bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
     base_armature.select_set(False)
 
     base_mesh = get_mesh()

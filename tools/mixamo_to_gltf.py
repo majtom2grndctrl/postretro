@@ -242,11 +242,13 @@ def merge_animations(input_dir, scale=None, base=None):
     arm_world = base_armature.matrix_world.copy()
     baked_transform = flip_z @ arm_world
 
-    base_mesh = get_mesh()
-    mesh_world_original = base_mesh.matrix_world.copy() if base_mesh else None
+    mesh_objects = [obj for obj in bpy.data.objects if obj.type == "MESH"]
+    mesh_worlds = {obj.name: obj.matrix_world.copy() for obj in mesh_objects}
 
     print(f"\n  Armature scale: {[round(x, 4) for x in arm_world.to_scale()]}"
           f"  rotation: {[round(math.degrees(x), 1) for x in arm_world.to_euler()]}")
+    print(f"  Mesh objects to transform: {len(mesh_objects)}"
+          f" [{', '.join(obj.name for obj in mesh_objects)}]")
 
     base_armature.matrix_basis = baked_transform
     bpy.ops.object.select_all(action='DESELECT')
@@ -255,38 +257,33 @@ def merge_animations(input_dir, scale=None, base=None):
     bpy.ops.object.transform_apply(location=False, rotation=True, scale=True)
     base_armature.select_set(False)
 
-    if base_mesh:
-        print(f"  Mesh basis scale: {[round(x, 4) for x in base_mesh.matrix_basis.to_scale()]}"
-              f"  parent_inv scale: {[round(x, 4) for x in base_mesh.matrix_parent_inverse.to_scale()]}")
-        print(f"  Mesh world (pre-modify) scale: {[round(x, 4) for x in mesh_world_original.to_scale()]}"
-              f"  translation: {[round(x, 4) for x in mesh_world_original.to_translation()]}")
+    if mesh_objects:
+        for mesh_obj in mesh_objects:
+            obj_world = mesh_worlds[mesh_obj.name]
+            mesh_bake = flip_z @ obj_world
 
-        verts = base_mesh.data.vertices
-        if verts:
-            ys = [v.co.y for v in verts]
-            zs = [v.co.z for v in verts]
-            print(f"  Vertex bounds BEFORE bake: Y[{min(ys):.2f}, {max(ys):.2f}]"
-                  f" Z[{min(zs):.2f}, {max(zs):.2f}]")
+            verts = mesh_obj.data.vertices
+            if verts:
+                zs = [v.co.z for v in verts]
+                print(f"  {mesh_obj.name}: {len(verts)} verts,"
+                      f" Z[{min(zs):.2f}, {max(zs):.2f}] before bake")
 
-        # Use the mesh's original world matrix + flip.  This captures
-        # whatever scale/rotation the FBX importer distributed across
-        # parent_inverse, basis, and the parent chain.
-        mesh_bake = flip_z @ mesh_world_original
-        base_mesh.matrix_parent_inverse = Matrix.Identity(4)
-        base_mesh.matrix_basis = mesh_bake
+            mesh_obj.matrix_parent_inverse = Matrix.Identity(4)
+            mesh_obj.matrix_basis = mesh_bake
 
-        bpy.ops.object.select_all(action='DESELECT')
-        bpy.context.view_layer.objects.active = base_mesh
-        base_mesh.select_set(True)
-        bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
-        base_mesh.select_set(False)
+            bpy.ops.object.select_all(action='DESELECT')
+            bpy.context.view_layer.objects.active = mesh_obj
+            mesh_obj.select_set(True)
+            bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+            mesh_obj.select_set(False)
 
-        if verts:
-            ys = [v.co.y for v in verts]
-            zs = [v.co.z for v in verts]
-            print(f"  Vertex bounds AFTER bake:  Y[{min(ys):.2f}, {max(ys):.2f}]"
-                  f" Z[{min(zs):.2f}, {max(zs):.2f}]")
-            print(f"  (expected: Y ~ [-0.3, 0.3]  Z ~ [0.0, 1.8])")
+        all_verts_z = []
+        for mesh_obj in mesh_objects:
+            for v in mesh_obj.data.vertices:
+                all_verts_z.append(v.co.z)
+        if all_verts_z:
+            print(f"  All meshes AFTER bake: Z[{min(all_verts_z):.4f}, {max(all_verts_z):.4f}]")
+            print(f"  (expected: Z ~ [0.0, 1.8])")
     else:
         print("  WARNING: No mesh in base file — output will have no geometry.")
         print("  If the character mesh is in a different FBX, use --base to select it.")

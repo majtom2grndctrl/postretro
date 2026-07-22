@@ -422,7 +422,13 @@ def validate_model():
 
 def export_gltf(output_path):
     output = Path(output_path)
-    output.parent.mkdir(parents=True, exist_ok=True)
+    output_dir = output.parent
+    if output_dir.exists():
+        for f in output_dir.iterdir():
+            if f.suffix.lower() in (".gltf", ".glb", ".bin", ".png", ".jpg", ".jpeg"):
+                f.unlink()
+                print(f"  Removed stale: {f.name}")
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     export_kwargs = {
         "filepath": str(output),

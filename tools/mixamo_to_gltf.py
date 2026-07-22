@@ -383,21 +383,37 @@ def merge_animations(input_dir, scale=None, base=None, exclude_meshes=None):
     # --- Phase 4: Re-bake animations into the new rest pose ---------------
     # The armature's rest pose changed (transform_apply baked scale+rotation
     # into edit bones), but F-curve values still target the old rest pose.
-    # Re-write each action using the world-space bone matrices we sampled in
-    # Phase 2: set each bone's pose matrix (Blender auto-decomposes into
-    # the correct local TRS for the new rest pose), then insert keyframes.
+    #
+    # IMPORTANT: We must NOT use pbone.matrix assignment + depsgraph update,
+    # because Blender's depsgraph decomposes pbone.matrix against the
+    # parent's matrix from the LAST evaluation, producing corrupt keyframes
+    # at the start of every clip.
+    #
+    # Instead we compute each bone's new local TRS purely from math:
+    #   new_arm_space[bone] = arm_world_inv @ flip_z @ sampled_world[bone]
+    #   new_local = new_arm_space[parent].inv() @ new_arm_space[bone]
+    #   pose_delta = rest_local.inv() @ new_local
+    # Then decompose pose_delta into loc/rot/scale and key directly on the
+    # pose bone — no depsgraph round-trip needed.
 
     arm_world_inv = base_armature.matrix_world.inverted()
 
     for pbone in base_armature.pose.bones:
         pbone.rotation_mode = 'QUATERNION'
 
-    # Sort pose bones parent-before-child so pbone.matrix decomposition
-    # always sees the updated parent matrix, not the previous frame's.
-    sorted_pbones = sorted(
-        base_armature.pose.bones,
-        key=lambda pb: len(pb.parent_recursive),
-    )
+    # Cache the NEW rest pose (after transform_apply): each bone's local
+    # transform relative to its parent, in armature space.
+    bone_rest_local = {}
+    bone_parent = {}
+    for pbone in base_armature.pose.bones:
+        parent_name = pbone.parent.name if pbone.parent else None
+        bone_parent[pbone.name] = parent_name
+        if parent_name:
+            parent_rest_arm = pbone.parent.bone.matrix_local
+            bone_rest_arm = pbone.bone.matrix_local
+            bone_rest_local[pbone.name] = parent_rest_arm.inverted() @ bone_rest_arm
+        else:
+            bone_rest_local[pbone.name] = pbone.bone.matrix_local.copy()
 
     for action in all_actions:
         if action.name not in action_poses:
@@ -409,20 +425,52 @@ def merge_animations(input_dir, scale=None, base=None, exclude_meshes=None):
         for fc in list(fcurves):
             fcurves.remove(fc)
 
+        scale_ok = True
         for frame in range(frame_start, frame_end + 1):
             bpy.context.scene.frame_set(frame)
             bone_matrices = poses_by_frame[frame]
-            for pbone in sorted_pbones:
-                if pbone.name in bone_matrices:
-                    pbone.matrix = arm_world_inv @ flip_z @ bone_matrices[pbone.name]
-            bpy.context.view_layer.update()
-            for pbone in sorted_pbones:
-                if pbone.name in bone_matrices:
-                    pbone.keyframe_insert(data_path="location", frame=frame)
-                    pbone.keyframe_insert(data_path="rotation_quaternion", frame=frame)
-                    pbone.keyframe_insert(data_path="scale", frame=frame)
 
-        print(f"  Re-baked '{action.name}': {frame_end - frame_start + 1} frames")
+            # Compute new armature-space matrix for every sampled bone
+            new_arm_space = {}
+            for bone_name, sampled_world in bone_matrices.items():
+                new_arm_space[bone_name] = arm_world_inv @ flip_z @ sampled_world
+
+            for pbone in base_armature.pose.bones:
+                if pbone.name not in new_arm_space:
+                    continue
+
+                # New local = parent_arm_inv @ bone_arm
+                parent_name = bone_parent[pbone.name]
+                if parent_name and parent_name in new_arm_space:
+                    new_local = new_arm_space[parent_name].inverted() @ new_arm_space[pbone.name]
+                else:
+                    new_local = new_arm_space[pbone.name]
+
+                # Pose delta = what Blender's pose TRS represents:
+                # the offset from the rest-pose local transform.
+                rest_local = bone_rest_local[pbone.name]
+                pose_delta = rest_local.inverted() @ new_local
+
+                loc = pose_delta.to_translation()
+                rot = pose_delta.to_quaternion()
+                scl = pose_delta.to_scale()
+
+                pbone.location = loc
+                pbone.rotation_quaternion = rot
+                pbone.scale = scl
+
+                pbone.keyframe_insert(data_path="location", frame=frame)
+                pbone.keyframe_insert(data_path="rotation_quaternion", frame=frame)
+                pbone.keyframe_insert(data_path="scale", frame=frame)
+
+                if abs(scl[0] - 1.0) > 0.05 or abs(scl[1] - 1.0) > 0.05 or abs(scl[2] - 1.0) > 0.05:
+                    if scale_ok:
+                        print(f"  WARNING: non-unit scale on '{pbone.name}' frame {frame}: "
+                              f"({scl[0]:.4f}, {scl[1]:.4f}, {scl[2]:.4f})")
+                        scale_ok = False
+
+        print(f"  Re-baked '{action.name}': {frame_end - frame_start + 1} frames"
+              + ("" if scale_ok else " (scale warnings)"))
 
     base_armature.animation_data.action = None
     bpy.context.scene.frame_set(0)

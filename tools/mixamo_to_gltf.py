@@ -27,7 +27,8 @@ import sys
 import json
 import argparse
 from pathlib import Path
-from mathutils import Vector
+import math
+from mathutils import Matrix, Vector
 
 
 # ---------------------------------------------------------------------------
@@ -228,8 +229,30 @@ def merge_animations(input_dir, scale=None, base=None):
 
     base_bones = set(bone.name for bone in base_armature.data.bones)
 
+    # The armature carries Mixamo import transforms (cm scale, Z-up→Y-up
+    # rotation).  The engine never reads the Armature node (only skin joints),
+    # so ALL transforms must be baked into bone rest positions AND mesh
+    # vertices.  A 180° Z flip is also needed: Mixamo characters face Blender
+    # +Y, which the glTF exporter maps to -Z, but the engine expects +Z
+    # forward (pose_modifier.rs, mesh_pass.rs).
+    arm_basis = base_armature.matrix_basis.copy()
+    flip_z = Matrix.Rotation(math.pi, 4, 'Z')
+    baked_transform = flip_z @ arm_basis
+
+    base_armature.matrix_basis = baked_transform
+    bpy.ops.object.select_all(action='DESELECT')
+    bpy.context.view_layer.objects.active = base_armature
+    base_armature.select_set(True)
+    bpy.ops.object.transform_apply(location=False, rotation=True, scale=True)
+    base_armature.select_set(False)
+
     base_mesh = get_mesh()
     if base_mesh:
+        # Clear the stale parent-inverse Blender stored at parenting time
+        # (arm_basis⁻¹).  Without this, matrix_world ≠ matrix_basis and the
+        # glTF exporter sees a residual 100× scale on the mesh node.
+        base_mesh.matrix_parent_inverse = Matrix.Identity(4)
+        base_mesh.matrix_basis = baked_transform
         bpy.ops.object.select_all(action='DESELECT')
         bpy.context.view_layer.objects.active = base_mesh
         base_mesh.select_set(True)
@@ -416,7 +439,13 @@ def validate_model():
 
 def export_gltf(output_path):
     output = Path(output_path)
-    output.parent.mkdir(parents=True, exist_ok=True)
+    output_dir = output.parent
+    if output_dir.exists():
+        for f in output_dir.iterdir():
+            if f.suffix.lower() in (".gltf", ".glb", ".bin", ".png", ".jpg", ".jpeg"):
+                f.unlink()
+                print(f"  Removed stale: {f.name}")
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     export_kwargs = {
         "filepath": str(output),

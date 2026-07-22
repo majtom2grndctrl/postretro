@@ -104,6 +104,10 @@ struct RemotePlayerLocomotion {
     /// Last state selected from the displayed remote velocity. Snapshot application
     /// compares its authoritative state against this prediction before correcting.
     client_derived_state: Option<String>,
+    /// Server state currently being honored through its authored crossfade window.
+    /// The render-order velocity derivation must not switch away from this state in
+    /// the same frame that snapshot apply entered it.
+    authoritative_correction_state: Option<String>,
 }
 
 /// Immutable descriptor values needed for a remote player avatar's client-local
@@ -518,6 +522,16 @@ impl ClientReplication {
     /// baseline has armed prediction.
     pub(crate) fn local_pawn_network_id(&self) -> Option<NetworkId> {
         self.local_pawn
+    }
+
+    /// Shared-visible active weapon for the recipient-local pawn. Connected clients
+    /// have no host-side weapon entity or `WeaponOwners` entry, so first-person
+    /// presentation resolves the descriptor directly from this replicated identity.
+    pub(crate) fn local_active_weapon_archetype(&self) -> Option<&str> {
+        let local_pawn = self.local_pawn?;
+        self.active_weapon_archetypes
+            .get(&local_pawn)
+            .and_then(|archetype| archetype.as_deref())
     }
 
     /// Resolve a replicated `NetworkId` to the current client-local entity.
@@ -1078,7 +1092,6 @@ impl ClientReplication {
         self.interp.forget(network_id);
         self.remote_enemy_walk_playback.remove(&network_id);
         self.remote_player_locomotion.remove(&network_id);
-        self.active_weapon_archetypes.remove(&network_id);
         self.mover_network_ids.remove(&network_id);
         outcome.armed_local_pawn = Some(ArmedLocalPawn {
             network_id,
@@ -1156,6 +1169,7 @@ impl ClientReplication {
         self.interp.forget(network_id);
         self.remote_enemy_walk_playback.remove(&network_id);
         self.remote_player_locomotion.remove(&network_id);
+        self.active_weapon_archetypes.remove(&network_id);
         self.mover_network_ids.remove(&network_id);
         // If the local predicted pawn despawned, forget it: prediction re-arms off a
         // future `local_player` baseline (a fresh NetworkId).
@@ -1167,9 +1181,15 @@ impl ClientReplication {
     fn insert_mapping(&mut self, network_id: NetworkId, entity_id: EntityId) {
         if let Some(previous_entity) = self.map.insert(network_id, entity_id) {
             self.reverse_map.remove(&previous_entity);
+            if previous_entity != entity_id {
+                self.active_weapon_archetypes.remove(&network_id);
+            }
         }
         if let Some(previous_network) = self.reverse_map.insert(entity_id, network_id) {
             self.map.remove(&previous_network);
+            if previous_network != network_id {
+                self.active_weapon_archetypes.remove(&previous_network);
+            }
         }
     }
 
@@ -1616,6 +1636,7 @@ impl ClientReplication {
                         walk_derived_travel_speed: reference.walk_derived_travel_speed,
                         run_derived_travel_speed: reference.run_derived_travel_speed,
                         client_derived_state: None,
+                        authoritative_correction_state: None,
                     },
                 );
             }
@@ -1630,7 +1651,7 @@ impl ClientReplication {
     /// transition API, preserving the descriptor's short avatar crossfade instead
     /// of replacing the displayed pose with a hard snap.
     fn apply_remote_player_animation_correction(
-        &self,
+        &mut self,
         registry: &mut EntityRegistry,
         network_id: NetworkId,
         entity_id: EntityId,
@@ -1640,12 +1661,20 @@ impl ClientReplication {
             .remote_player_locomotion
             .get(&network_id)
             .and_then(|reference| reference.client_derived_state.as_deref());
-        if predicted_state.is_some_and(|predicted| predicted != authoritative_state) {
+        let correcting = predicted_state.is_some_and(|predicted| predicted != authoritative_state);
+        if correcting {
             log::trace!(
                 "[Net] remote player {network_id:?} correcting locomotion {predicted_state:?} -> {authoritative_state}"
             );
         }
-        apply_mesh_animation_state(registry, entity_id, authoritative_state, true)
+        let applied = apply_mesh_animation_state(registry, entity_id, authoritative_state, true);
+        if applied
+            && correcting
+            && let Some(reference) = self.remote_player_locomotion.get_mut(&network_id)
+        {
+            reference.authoritative_correction_state = Some(authoritative_state.to_string());
+        }
+        applied
     }
 
     /// Apply the rate for one presented remote pose. Only an enemy whose current
@@ -1743,12 +1772,26 @@ impl ClientReplication {
         };
         reference.client_derived_state = Some(target_state.clone());
 
-        let current_state = registry
+        let animation_state = registry
             .get_component::<MeshComponent>(entity_id)
             .ok()
             .and_then(|mesh| mesh.animation.as_ref())
-            .map(|animation| animation.current_state.clone());
-        if current_state.as_deref() != Some(target_state.as_str()) {
+            .map(|animation| {
+                (
+                    animation.current_state.clone(),
+                    animation.entered_at.is_none() || animation.previous_state.is_some(),
+                )
+            });
+        let correction_in_flight = reference
+            .authoritative_correction_state
+            .as_deref()
+            .zip(animation_state.as_ref())
+            .is_some_and(|(authoritative, (current, fading))| authoritative == current && *fading);
+        if !correction_in_flight {
+            reference.authoritative_correction_state = None;
+        }
+        let current_state = animation_state.as_ref().map(|(state, _)| state.as_str());
+        if !correction_in_flight && current_state != Some(target_state.as_str()) {
             let _ = switch_animation_state(registry, entity_id, &target_state);
         }
 
@@ -3504,6 +3547,10 @@ mod tests {
                 vec![delta(7, 2, 3, vec![mesh_animation_payload("idle")])],
             ),
         );
+        // Regression: normal frame ordering applies snapshots, then samples remote
+        // interpolation before render resolves animation stamps. Velocity derivation
+        // must not switch straight back to walk in this same frame.
+        client.sample_into_registry(&mut registry, 105.0, 1.0);
         let corrected = registry
             .get_component::<MeshComponent>(id)
             .unwrap()
@@ -3513,6 +3560,33 @@ mod tests {
         assert_eq!(corrected.current_state, "idle");
         assert_eq!(corrected.previous_state.as_deref(), Some("walk_forward"));
         assert_eq!(corrected.states["idle"].crossfade_ms, 50.0);
+
+        resolve_pending_animation_stamps(&mut registry, 1.0);
+        client.sample_into_registry(&mut registry, 105.0, 1.02);
+        assert_eq!(
+            registry
+                .get_component::<MeshComponent>(id)
+                .unwrap()
+                .animation
+                .as_ref()
+                .unwrap()
+                .current_state,
+            "idle",
+            "client locomotion holds through the configured server crossfade"
+        );
+        resolve_pending_animation_stamps(&mut registry, 1.06);
+        client.sample_into_registry(&mut registry, 105.0, 1.06);
+        assert_eq!(
+            registry
+                .get_component::<MeshComponent>(id)
+                .unwrap()
+                .animation
+                .as_ref()
+                .unwrap()
+                .current_state,
+            "walk_forward",
+            "velocity derivation resumes after the correction crossfade completes"
+        );
     }
 
     // --- Starvation after sampling: a Transform-only remote (no velocity) holds its
@@ -4148,6 +4222,51 @@ mod tests {
                 active_weapon_archetype: Some("reference_pistol".to_string()),
             }],
             "the recipient-local shadow body receives the same third-person weapon update"
+        );
+        assert_eq!(
+            client.local_active_weapon_archetype(),
+            Some("reference_pistol"),
+            "recipient-local viewmodel identity survives the arming record"
+        );
+
+        let mut unchanged_local = delta(8, 1, 2, vec![movement_payload()]);
+        let EntityRecord::Delta {
+            local_player,
+            active_weapon_archetype,
+            ..
+        } = &mut unchanged_local
+        else {
+            unreachable!("fixture creates a delta");
+        };
+        *local_player = true;
+        *active_weapon_archetype = Some("reference_pistol".to_string());
+        let unchanged =
+            client.apply_snapshot(&mut registry, &snapshot(3, 13, vec![unchanged_local]));
+        assert!(
+            unchanged.local_weapon_attachments.is_empty(),
+            "an unchanged applied record does not tear down and recreate presentation state"
+        );
+        assert_eq!(
+            client.local_active_weapon_archetype(),
+            Some("reference_pistol")
+        );
+
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                4,
+                14,
+                vec![EntityRecord::Despawn {
+                    network_id: 8,
+                    tombstone_id: 9,
+                    reason: 0,
+                }],
+            ),
+        );
+        assert_eq!(
+            client.local_active_weapon_archetype(),
+            None,
+            "despawn clears recipient-local weapon presentation with its mapping"
         );
     }
 

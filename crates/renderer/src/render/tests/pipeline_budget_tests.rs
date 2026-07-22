@@ -2,6 +2,10 @@
 // See: context/lib/testing_guide.md
 
 use super::super::*;
+use glam::Mat4;
+use postretro_model::{ModelHandle, sample_params::MeshSampleParams};
+use postretro_render_cpu::mesh_instances::{JointCounts, MeshInstanceInput, MeshPaletteCacheKey};
+use postretro_render_data::cone_frustum::Aabb;
 
 // Regression guard for the exact bug this fix closes: the renderer must thread
 // the renderer-owned `ambient_floor` into the mesh `write_light_params` call so
@@ -32,40 +36,66 @@ fn renderer_threads_ambient_floor_into_mesh_write_light_params() {
 }
 
 #[test]
-fn viewmodel_pass_follows_world_mesh_and_is_excluded_from_shadow_depth() {
-    let src = include_str!("../renderer_render_frame.rs");
-    let world_mesh_pass = src
-        .find("label: Some(\"Skinned Mesh Pass\")")
-        .expect("world skinned mesh pass must exist");
-    let viewmodel_pass = src
-        .find("label: Some(\"Skinned Viewmodel Pass\")")
-        .expect("dedicated viewmodel pass must exist");
-    assert!(
-        world_mesh_pass < viewmodel_pass,
-        "viewmodel must composite after the normal world forward mesh pass"
-    );
+fn frame_plan_routes_viewmodels_away_from_shadow_depth() {
+    struct TestJoints;
 
-    for shadow_call in [
-        "record_spot_shadow_depth(encoder, world_mesh_frame_plan)",
-        "record_cube_shadow_depth(encoder, world_mesh_frame_plan)",
-    ] {
-        let shadow = src.find(shadow_call).unwrap_or_else(|| {
-            panic!("shadow path must consume only the world plan: {shadow_call}")
-        });
-        assert!(
-            shadow < viewmodel_pass,
-            "the viewmodel pass must not feed shadow depth: {shadow_call}"
-        );
+    impl JointCounts for TestJoints {
+        fn joint_count(&self, _model: &ModelHandle) -> Option<u32> {
+            Some(1)
+        }
+
+        fn model_bounds(&self, _model: &ModelHandle) -> Aabb {
+            Aabb::default()
+        }
     }
 
-    let viewmodel_region = &src[viewmodel_pass..];
-    assert!(
-        viewmodel_region.contains("wgpu::LoadOp::Clear(1.0)"),
-        "viewmodel pass must clear world depth to prevent nearby world clipping"
+    fn instance(model: &str, seed: u32, is_viewmodel: bool) -> MeshInstanceInput {
+        MeshInstanceInput {
+            model: ModelHandle::from(model),
+            transform: Mat4::IDENTITY,
+            shadow_bias_scale: 1.0,
+            phase_seed: seed,
+            palette_cache_key: MeshPaletteCacheKey::Entity(seed),
+            sample: MeshSampleParams::stateless(0.0),
+            pose_inputs: None,
+            capture: None,
+            resample: true,
+            forward_visible: true,
+            dynamic_shadow_visible: !is_viewmodel,
+            is_viewmodel,
+        }
+    }
+
+    let plans = mesh_instances::plan_mesh_frame_plans(
+        &[
+            instance("world-body", 1, false),
+            instance("world-weapon", 2, false),
+            instance("viewmodel-weapon", 3, true),
+        ],
+        &TestJoints,
     );
+    let (shadow_depth_plan, viewmodel_plan) =
+        super::super::renderer_render_frame::mesh_frame_plans_for_passes(Some(&plans));
+    let shadow_depth_plan = shadow_depth_plan.expect("world instances require a shadow plan");
+    let viewmodel_plan = viewmodel_plan.expect("viewmodel instance requires a viewmodel plan");
+
+    fn models<'a>(plan: &'a mesh_instances::MeshFramePlan) -> Vec<&'a str> {
+        plan.groups
+            .iter()
+            .map(|group| group.model.as_str())
+            .collect::<Vec<_>>()
+    }
+    assert_eq!(models(shadow_depth_plan), ["world-body", "world-weapon"]);
+    assert_eq!(models(viewmodel_plan), ["viewmodel-weapon"]);
+    assert_eq!(shadow_depth_plan.instance_count, 2);
+    assert_eq!(viewmodel_plan.instance_count, 1);
+    assert_eq!(viewmodel_plan.groups[0].instance_offset, 2);
+
+    // Shadow recorders consume `shadow_depth_plan`, which comes only from the
+    // world partition. The viewmodel has no route into that plan.
     assert!(
-        viewmodel_region.contains("viewmodel_uniform_bind_group()"),
-        "viewmodel pass must bind its projection-only camera uniform"
+        !models(shadow_depth_plan).contains(&"viewmodel-weapon"),
+        "viewmodel instances must be structurally excluded before shadow recording"
     );
 }
 

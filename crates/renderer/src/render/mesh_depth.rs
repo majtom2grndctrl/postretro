@@ -15,14 +15,20 @@ pub(super) const SKINNED_DEPTH_SHADER_SOURCE: &str = include_str!("../shaders/sk
 /// Which planned mesh instances a shadow-depth pass may consume.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MeshDepthInstanceFilter {
-    /// Dynamic and promoted-static shadow slots include descriptor-authored
-    /// shadow-only instances alongside forward-visible mesh casters.
-    IncludeShadowOnly,
+    /// Dynamic slots include portal-visible casters plus explicit
+    /// descriptor-authored shadow-only casters, including those outside PVS.
+    DynamicCasters,
+    /// Promoted-static slots consume the broader collection retained by static
+    /// light relevance, including off-PVS meshes that are not dynamic casters.
+    AllRetained,
 }
 
 impl MeshDepthInstanceFilter {
-    fn includes(self, _instance: &postretro_render_cpu::mesh_instances::PlannedInstance) -> bool {
-        true
+    fn includes(self, instance: &postretro_render_cpu::mesh_instances::PlannedInstance) -> bool {
+        match self {
+            Self::DynamicCasters => instance.dynamic_shadow_visible,
+            Self::AllRetained => true,
+        }
     }
 }
 
@@ -119,9 +125,9 @@ pub(super) fn create_skinned_depth_pipeline(
 impl MeshPass {
     /// Record skinned ENTITY occluders into a shadow map through the
     /// parameterized depth-only path, culled per-slot by the slot's cone frustum.
-    /// `filter` controls whether the pass uses only forward-visible instances
-    /// (ordinary dynamic-light slots) or includes shadow-only retained instances
-    /// (promoted static-light slots).
+    /// `filter` keeps ordinary dynamic slots to portal-visible or explicitly
+    /// shadow-only casters while promoted-static slots may use the broader
+    /// static-relevance collection.
     /// `light_space_bind_group` + `dynamic_offset` select the per-render
     /// light-space matrix at group 0 (the spot path passes the renderer's
     /// `shadow_vs_bind_group` and the per-slot offset; a cube path would pass a
@@ -281,7 +287,7 @@ mod tests {
     }
 
     #[test]
-    fn depth_instance_filter_includes_shadow_only_casters() {
+    fn depth_instance_filter_separates_dynamic_and_promoted_static_relevance() {
         let visible = PlannedInstance {
             transform: glam::Mat4::IDENTITY,
             shadow_bias_scale: 1.0,
@@ -294,13 +300,20 @@ mod tests {
             capture: None,
             resample: true,
             forward_visible: true,
+            dynamic_shadow_visible: true,
         };
         let shadow_only = PlannedInstance {
             forward_visible: false,
             ..visible.clone()
         };
+        let static_relevance_only = PlannedInstance {
+            dynamic_shadow_visible: false,
+            ..shadow_only.clone()
+        };
 
-        assert!(MeshDepthInstanceFilter::IncludeShadowOnly.includes(&visible));
-        assert!(MeshDepthInstanceFilter::IncludeShadowOnly.includes(&shadow_only));
+        assert!(MeshDepthInstanceFilter::DynamicCasters.includes(&visible));
+        assert!(MeshDepthInstanceFilter::DynamicCasters.includes(&shadow_only));
+        assert!(!MeshDepthInstanceFilter::DynamicCasters.includes(&static_relevance_only));
+        assert!(MeshDepthInstanceFilter::AllRetained.includes(&static_relevance_only));
     }
 }

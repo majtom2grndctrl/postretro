@@ -69,6 +69,7 @@ pub(crate) fn emit_for_holder(
     holder_shadow_bias_scale: f32,
     holder_seed: u32,
     forward_visible: bool,
+    dynamic_shadow_visible: bool,
     attachments: &[MeshAttachment],
 ) -> bool {
     if attachments.is_empty() {
@@ -119,6 +120,7 @@ pub(crate) fn emit_for_holder(
             // cache miss, then reuses it; rigid props never need pose updates.
             resample: false,
             forward_visible,
+            dynamic_shadow_visible,
             is_viewmodel: false,
         });
     }

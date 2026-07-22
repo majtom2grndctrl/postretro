@@ -10,6 +10,24 @@ use super::*;
 const RENDERER_NEAR_CLIP: f32 = 0.1;
 const RENDERER_FAR_CLIP: f32 = 4096.0;
 
+/// Select the non-empty mesh plans for their structurally separate pass paths.
+/// Shadow-depth recording receives the world plan; the viewmodel plan is only
+/// consumed by its dedicated forward pass.
+pub(super) fn mesh_frame_plans_for_passes(
+    plans: Option<&mesh_instances::MeshFramePlans>,
+) -> (
+    Option<&mesh_instances::MeshFramePlan>,
+    Option<&mesh_instances::MeshFramePlan>,
+) {
+    let world = plans
+        .filter(|plans| !plans.world.groups.is_empty())
+        .map(|plans| &plans.world);
+    let viewmodel = plans
+        .filter(|plans| !plans.viewmodel.groups.is_empty())
+        .map(|plans| &plans.viewmodel);
+    (world, viewmodel)
+}
+
 impl Renderer {
     #[allow(clippy::too_many_arguments)]
     pub fn render_frame_indirect(
@@ -281,14 +299,8 @@ impl Renderer {
                 );
             }
         }
-        let world_mesh_frame_plan = mesh_frame_plans
-            .as_ref()
-            .filter(|plans| !plans.world.groups.is_empty())
-            .map(|plans| &plans.world);
-        let viewmodel_mesh_frame_plan = mesh_frame_plans
-            .as_ref()
-            .filter(|plans| !plans.viewmodel.groups.is_empty())
-            .map(|plans| &plans.viewmodel);
+        let (world_mesh_frame_plan, viewmodel_mesh_frame_plan) =
+            mesh_frame_plans_for_passes(mesh_frame_plans.as_ref());
 
         if render_world {
             let full = self.full_mut();

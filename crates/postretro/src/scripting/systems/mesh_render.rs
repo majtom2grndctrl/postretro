@@ -81,10 +81,10 @@ fn should_resample(distance: f32, frame_index: u64, seed: u32, force: bool) -> b
 /// Runs in the render-frame collection sub-stage (NOT the game-logic tick): it
 /// reads the registry + the world + this frame's visible-cell set, applies the
 /// pure `mesh_pass::mesh_visible` cull, and emits per-instance draw inputs
-/// (model handle + interpolated world transform). Forward-visible instances draw
-/// in the color pass; descriptor-authored shadow-only instances stay in the
-/// shadow plan without drawing forward. Off-PVS instances are retained only when
-/// they intersect a compiler-selected static entity-shadow light. It never touches wgpu — the
+/// (model handle + interpolated world transform). Forward visibility, dynamic
+/// shadow eligibility, and promoted-static relevance remain distinct. Explicit
+/// shadow-only instances stay eligible for dynamic depth even outside camera PVS;
+/// other off-PVS instances are retained only for selected static lights. It never touches wgpu — the
 /// renderer consumes [`instances`] and owns the GPU upload + draw recording.
 ///
 /// [`instances`]: MeshRenderCollector::instances
@@ -122,7 +122,7 @@ pub(crate) struct MeshRenderCollector {
     /// Persistent path-to-handle cache for attachment draw inputs. ModelHandle
     /// paths are interned here so steady-state collection does not allocate.
     attachment_model_handles: HashMap<String, ModelHandle>,
-    /// Persistent path-to-handle cache for the camera-space weapon presentation.
+    /// Persistent path-to-handle cache for the first-person weapon presentation.
     /// This stays separate from attachment handles because a viewmodel is never a
     /// holder attachment and must enter the planner's dedicated plan.
     viewmodel_model_handles: HashMap<String, ModelHandle>,
@@ -283,10 +283,15 @@ impl MeshRenderCollector {
             let current_model_position = current.position + mesh.origin_offset;
             let portal_visible = mesh_visible(world, visible, current_model_position);
             let forward_visible = portal_visible && !mesh.shadow_only;
+            let dynamic_shadow_visible = portal_visible || mesh.shadow_only;
             let handle = ModelHandle::from(mesh.model.clone());
+            let current_presentation_rotation = presentation_body_rotation(
+                current.rotation,
+                mesh.pose_inputs.map(|inputs| inputs.heading_yaw),
+            );
             let current_model_transform = glam::Mat4::from_scale_rotation_translation(
                 current.scale,
-                current.rotation,
+                current_presentation_rotation,
                 current_model_position,
             );
             let current_model_bounds = tables
@@ -294,7 +299,7 @@ impl MeshRenderCollector {
                 .transformed(&current_model_transform);
             let selected_static_shadow_relevant =
                 selected_static_shadow_light_reaches_bounds(world, &current_model_bounds);
-            if !portal_visible && !selected_static_shadow_relevant {
+            if !dynamic_shadow_visible && !selected_static_shadow_relevant {
                 continue;
             }
             // Draw at the interpolated transform (smooth between ticks). Fall
@@ -325,7 +330,10 @@ impl MeshRenderCollector {
             };
             let holder_transform = glam::Mat4::from_scale_rotation_translation(
                 transform.scale,
-                transform.rotation,
+                presentation_body_rotation(
+                    transform.rotation,
+                    mesh.pose_inputs.map(|inputs| inputs.heading_yaw),
+                ),
                 transform.position + mesh.origin_offset,
             );
             let holder_index = self.instances.len();
@@ -343,6 +351,7 @@ impl MeshRenderCollector {
                 // the holder remains immediately before its attachments.
                 resample: false,
                 forward_visible,
+                dynamic_shadow_visible,
                 is_viewmodel: false,
             });
             let has_skinned_attachment = attachments::emit_for_holder(
@@ -357,6 +366,7 @@ impl MeshRenderCollector {
                 mesh.shadow_bias_scale,
                 seed,
                 forward_visible,
+                dynamic_shadow_visible,
                 &mesh.attachments,
             );
             let force = state_changed
@@ -384,9 +394,10 @@ impl MeshRenderCollector {
         &self.instances
     }
 
-    /// Append the local weapon's camera-space presentation after world collection.
-    /// The caller owns camera/view-feel composition and descriptor lookup; this
-    /// collector only carries the finished transform across the renderer boundary.
+    /// Append the local weapon's world-space presentation after world collection.
+    /// The caller owns camera/view-feel composition, camera-to-world conversion,
+    /// and descriptor lookup; this collector only carries the finished transform
+    /// across the renderer boundary.
     /// A viewmodel deliberately has no attachments, no world cull, and no shadow
     /// relevance: planner partitioning keeps it out of every depth plan.
     pub(crate) fn collect_viewmodel(
@@ -395,22 +406,32 @@ impl MeshRenderCollector {
         transform: glam::Mat4,
         weapon_seed: u32,
     ) {
-        let handle = self
-            .viewmodel_model_handles
-            .entry(model.to_owned())
-            .or_insert_with(|| ModelHandle::from(model))
-            .clone();
+        let handle = if let Some(handle) = self.viewmodel_model_handles.get(model) {
+            handle.clone()
+        } else {
+            let handle = ModelHandle::from(model);
+            self.viewmodel_model_handles
+                .insert(model.to_owned(), handle.clone());
+            handle
+        };
         self.instances.push(MeshInstanceInput {
             model: handle,
             transform,
             shadow_bias_scale: 1.0,
             phase_seed: weapon_seed,
-            palette_cache_key: MeshPaletteCacheKey::Entity(weapon_seed),
+            // A connected client may use its pawn id as the stable seed because it
+            // intentionally has no weapon entity. Keep the viewmodel in a distinct
+            // cache-key namespace so it cannot alias the body palette.
+            palette_cache_key: MeshPaletteCacheKey::Attachment {
+                holder: weapon_seed,
+                attachment_index: usize::MAX,
+            },
             sample: MeshSampleParams::rigid(),
             pose_inputs: None,
             capture: None,
             resample: false,
             forward_visible: true,
+            dynamic_shadow_visible: false,
             is_viewmodel: true,
         });
     }
@@ -427,6 +448,20 @@ impl MeshRenderCollector {
     pub(crate) fn resample_count(&self) -> u32 {
         self.resample_count
     }
+}
+
+/// Pose split inputs are world-space: render the model root at lower-body heading,
+/// then let the modifier rotate the upper body by `aim_yaw - heading_yaw`. Gameplay
+/// and replicated transforms retain aim yaw; only mesh presentation receives this
+/// travel-facing root override.
+fn presentation_body_rotation(
+    transform_rotation: glam::Quat,
+    heading_yaw: Option<f32>,
+) -> glam::Quat {
+    heading_yaw
+        .filter(|yaw| yaw.is_finite())
+        .map(glam::Quat::from_rotation_y)
+        .unwrap_or(transform_rotation)
 }
 
 fn selected_static_shadow_light_reaches_bounds(world: &LevelWorld, bounds: &Aabb) -> bool {
@@ -722,7 +757,7 @@ mod tests {
     }
 
     #[test]
-    fn collect_viewmodel_appends_only_a_camera_space_viewmodel_instance() {
+    fn collect_viewmodel_appends_only_a_world_space_viewmodel_instance() {
         let mut collector = MeshRenderCollector::new();
         let transform = glam::Mat4::from_translation(Vec3::new(0.3, -0.2, -0.6));
 
@@ -732,9 +767,17 @@ mod tests {
         assert_eq!(instances.len(), 1);
         assert!(instances[0].is_viewmodel);
         assert!(instances[0].forward_visible);
+        assert!(!instances[0].dynamic_shadow_visible);
         assert_eq!(instances[0].model.as_str(), "models/pistol/view.gltf");
         assert_eq!(instances[0].transform, transform);
         assert_eq!(instances[0].phase_seed, 42);
+        assert_eq!(
+            instances[0].palette_cache_key,
+            MeshPaletteCacheKey::Attachment {
+                holder: 42,
+                attachment_index: usize::MAX,
+            }
+        );
         assert!(instances[0].pose_inputs.is_none());
     }
 
@@ -1243,6 +1286,15 @@ mod tests {
         );
 
         assert_eq!(collector.instances()[0].pose_inputs, Some(expected));
+        let rendered_forward = collector.instances()[0]
+            .transform
+            .transform_vector3(-Vec3::Z)
+            .normalize();
+        let expected_forward = glam::Quat::from_rotation_y(expected.heading_yaw) * -Vec3::Z;
+        assert!(
+            rendered_forward.distance(expected_forward) <= 1.0e-5,
+            "the mesh root follows lower-body travel heading while aim yaw remains in pose inputs"
+        );
     }
 
     #[test]
@@ -1724,6 +1776,10 @@ mod tests {
             !collector.instances()[0].forward_visible,
             "selected static-light shadow casters outside the forward set must not draw forward",
         );
+        assert!(
+            !collector.instances()[0].dynamic_shadow_visible,
+            "static relevance alone must not admit an off-PVS mesh to dynamic depth",
+        );
     }
 
     #[test]
@@ -1833,6 +1889,7 @@ mod tests {
             !collector.instances()[0].forward_visible,
             "shadowOnly must suppress the forward draw while retaining the body",
         );
+        assert!(collector.instances()[0].dynamic_shadow_visible);
 
         let plan = postretro_render_cpu::mesh_instances::plan_mesh_frame(
             collector.instances(),
@@ -1845,6 +1902,39 @@ mod tests {
         assert!(
             !plan.groups[0].instances[0].forward_visible,
             "the planned body remains excluded from the forward draw",
+        );
+        assert!(plan.groups[0].instances[0].dynamic_shadow_visible);
+    }
+
+    #[test]
+    fn collect_keeps_off_pvs_shadow_only_mesh_for_dynamic_depth() {
+        // Regression: collection dropped the local descriptor shadow-only body
+        // before dynamic-light cone culling whenever its cell was outside PVS.
+        let mut registry = EntityRegistry::new();
+        let id = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                id,
+                MeshComponent::stateless("local-body".into()).with_shadow_only(true),
+            )
+            .unwrap();
+        let mut collector = MeshRenderCollector::new();
+
+        collector.collect(
+            &registry,
+            &single_cell_world(),
+            &VisibleCells::Culled(vec![1]),
+            1.0,
+            0.0,
+            &MeshClipTables::new(),
+            Vec3::ZERO,
+        );
+
+        assert_eq!(collector.instances().len(), 1);
+        assert!(!collector.instances()[0].forward_visible);
+        assert!(
+            collector.instances()[0].dynamic_shadow_visible,
+            "explicit shadow-only intent survives absent PVS for per-light cone culling",
         );
     }
 
@@ -2065,6 +2155,12 @@ mod tests {
         assert!(
             instances.iter().all(|instance| !instance.forward_visible),
             "holder and prop share the same shadow-only visibility class",
+        );
+        assert!(
+            instances
+                .iter()
+                .all(|instance| !instance.dynamic_shadow_visible),
+            "promoted-static relevance must not leak into dynamic depth",
         );
     }
 

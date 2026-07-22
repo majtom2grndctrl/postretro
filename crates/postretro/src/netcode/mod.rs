@@ -79,8 +79,6 @@ pub(crate) use prediction::{
 pub(crate) use reconcile::reconcile_local_pawn;
 #[cfg(test)]
 pub(crate) use replication::produce_owned_snapshots;
-#[cfg(test)]
-pub(crate) use replication::produce_owned_snapshots_with_weapons;
 pub(crate) use replication::{
     ReplicableSet, host_register_loaded_movers, host_register_map_enemies,
 };
@@ -1545,18 +1543,20 @@ pub(crate) fn host_replicate(
     owners: &MovementOwners,
     weapon_owners: &WeaponOwners,
     command_queues: &HostCommandQueues,
+    host_aim: Option<(EntityId, f32)>,
     tick: u32,
 ) {
     // Owned post-tick snapshot rule: copy replicable state into owned mirrors keyed
     // by NetworkId while borrowing the registry, then release before the net call.
     // Owned movement pawns also carry their owner id + resolved cursor (Phase 3).
-    let owned = replication::produce_owned_snapshots_with_weapons(
+    let owned = replication::produce_owned_snapshots_with_host_aim(
         registry,
         replicable,
         allocator,
         owners,
         weapon_owners,
         command_queues,
+        host_aim,
     );
     replication.ingest_tick(owned);
 

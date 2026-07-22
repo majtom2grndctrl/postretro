@@ -76,6 +76,7 @@ pub(crate) struct RemotePawnCommand {
     pub(crate) fire_tick: u32,
     #[allow(dead_code)]
     pub(crate) client_tick: u32,
+    pub(crate) aim_pitch: f32,
     pub(crate) command: SimCommand,
 }
 
@@ -204,6 +205,15 @@ pub(crate) fn simulate_tick_with_presentation_aim(
     let remote_pawn_inputs: Vec<(EntityId, MovementInput)> = remote_pawn_commands
         .iter()
         .map(|remote| (remote.pawn, remote.command.movement.clone()))
+        .collect();
+    let remote_player_aims: HashMap<EntityId, (f32, f32)> = remote_pawn_commands
+        .iter()
+        .map(|remote| {
+            (
+                remote.pawn,
+                (remote.aim_pitch, remote.command.movement.facing_yaw),
+            )
+        })
         .collect();
 
     let combined_collision =
@@ -364,6 +374,7 @@ pub(crate) fn simulate_tick_with_presentation_aim(
             anim_time,
             PresentationPoseInputs {
                 camera_aim: presentation_camera_aim,
+                remote_player_aims: &remote_player_aims,
                 remote_aim_pitches: &HashMap::new(),
                 remote_heading_yaws: &HashMap::new(),
                 remote_network_ids: &HashMap::new(),
@@ -529,6 +540,7 @@ fn effective_travel_speed(
 /// This mutates presentation-only mesh inputs and never enters replication.
 pub(crate) struct PresentationPoseInputs<'a> {
     pub(crate) camera_aim: (f32, f32),
+    pub(crate) remote_player_aims: &'a HashMap<EntityId, (f32, f32)>,
     pub(crate) remote_aim_pitches: &'a HashMap<NetworkId, f32>,
     pub(crate) remote_heading_yaws: &'a HashMap<NetworkId, f32>,
     pub(crate) remote_network_ids: &'a HashMap<EntityId, NetworkId>,
@@ -545,6 +557,7 @@ pub(crate) fn update_presentation_pose_inputs(
 ) {
     let PresentationPoseInputs {
         camera_aim,
+        remote_player_aims,
         remote_aim_pitches,
         remote_heading_yaws,
         remote_network_ids,
@@ -552,6 +565,7 @@ pub(crate) fn update_presentation_pose_inputs(
     update_pose_inputs(
         registry,
         camera_aim,
+        remote_player_aims,
         remote_aim_pitches,
         remote_heading_yaws,
         remote_network_ids,
@@ -573,6 +587,7 @@ pub(crate) fn update_presentation_pose_inputs(
 fn update_pose_inputs(
     registry: &mut EntityRegistry,
     camera_aim: (f32, f32),
+    remote_player_aims: &HashMap<EntityId, (f32, f32)>,
     remote_aim_pitches: &HashMap<NetworkId, f32>,
     remote_heading_yaws: &HashMap<NetworkId, f32>,
     remote_network_ids: &HashMap<EntityId, NetworkId>,
@@ -669,6 +684,32 @@ fn update_pose_inputs(
                     aim_yaw
                 } else {
                     player_heading
+                },
+                player_heading,
+            )
+        } else if let Some(&(aim_pitch, aim_yaw)) = remote_player_aims.get(&id) {
+            let player_heading = registry
+                .get_component::<PlayerMovementComponent>(id)
+                .ok()
+                .map(|movement| movement.velocity)
+                .filter(|velocity| velocity.is_finite())
+                .and_then(|velocity| {
+                    let horizontal_len_sq = velocity.x * velocity.x + velocity.z * velocity.z;
+                    (horizontal_len_sq > MIN_HORIZONTAL_LEN_SQ)
+                        .then(|| velocity.x.atan2(velocity.z))
+                })
+                .filter(|yaw| yaw.is_finite())
+                .unwrap_or(heading_yaw);
+            (
+                if aim_pitch.is_finite() {
+                    aim_pitch.clamp(-std::f32::consts::FRAC_PI_2, std::f32::consts::FRAC_PI_2)
+                } else {
+                    0.0
+                },
+                if aim_yaw.is_finite() {
+                    aim_yaw
+                } else {
+                    heading_yaw
                 },
                 player_heading,
             )
@@ -1615,6 +1656,7 @@ mod tests {
             shot_id: Some(ShotId::from_parts(NetworkId(network_id), client_tick)),
             fire_tick: 33,
             client_tick,
+            aim_pitch: 0.0,
             command: sim_command(fire, reload),
         }
     }

@@ -12,6 +12,46 @@ use super::client::{ArmedLocalPawn, RemoteEntityMaterialize};
 /// attachments on other sockets remain untouched when an active weapon changes.
 pub(super) const ACTIVE_WEAPON_SOCKET: &str = "hand_r";
 
+/// Whether a descriptor-backed player body is being presented to its owning
+/// viewer or to another client. `shadowOnly` is authored for the first-person
+/// owner view; peers must still see that same descriptor as a forward avatar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlayerViewerRole {
+    Local,
+    Remote,
+}
+
+impl PlayerViewerRole {
+    fn shadow_only(self, descriptor_shadow_only: bool) -> bool {
+        descriptor_shadow_only && matches!(self, Self::Local)
+    }
+}
+
+fn apply_player_viewer_role(
+    entity_class: &str,
+    descriptors: &[EntityTypeDescriptor],
+    registry: &mut EntityRegistry,
+    id: EntityId,
+    role: PlayerViewerRole,
+) {
+    let Some(descriptor_shadow_only) = descriptors
+        .iter()
+        .find(|descriptor| descriptor.canonical_name.as_deref() == Some(entity_class))
+        .and_then(|descriptor| descriptor.mesh.as_ref())
+        .map(|mesh| mesh.shadow_only)
+    else {
+        return;
+    };
+    let Ok(mut mesh) = registry.get_component::<MeshComponent>(id).cloned() else {
+        return;
+    };
+    let shadow_only = role.shadow_only(descriptor_shadow_only);
+    if mesh.shadow_only != shadow_only {
+        mesh.shadow_only = shadow_only;
+        let _ = registry.set_component(id, mesh);
+    }
+}
+
 /// Replace the dynamic active-weapon attachment on a player mesh. The descriptor
 /// lookup deliberately resolves only the shared-visible canonical archetype; no
 /// owner-private weapon component state crosses this presentation seam.
@@ -102,6 +142,13 @@ pub(super) fn materialize_armed_local_pawn(
         armed.entity_id,
         None,
     );
+    apply_player_viewer_role(
+        entity_class,
+        descriptors,
+        registry,
+        armed.entity_id,
+        PlayerViewerRole::Local,
+    );
 }
 
 /// Materialize a remote descriptor-backed player as presentation only. The player
@@ -116,13 +163,24 @@ pub(super) fn materialize_armed_remote_player(
     registry: &mut EntityRegistry,
     agent_params: Option<NavAgentParams>,
 ) -> bool {
-    crate::scripting::builtins::net_descriptor::materialize_net_mesh_presentation(
-        &remote.entity_class,
-        descriptors,
-        registry,
-        remote.entity_id,
-        agent_params,
-    )
+    let materialized =
+        crate::scripting::builtins::net_descriptor::materialize_net_mesh_presentation(
+            &remote.entity_class,
+            descriptors,
+            registry,
+            remote.entity_id,
+            agent_params,
+        );
+    if materialized {
+        apply_player_viewer_role(
+            &remote.entity_class,
+            descriptors,
+            registry,
+            remote.entity_id,
+            PlayerViewerRole::Remote,
+        );
+    }
+    materialized
 }
 
 /// Materialize the descriptor-backed *presentation* for a non-local remote enemy a
@@ -428,7 +486,7 @@ mod tests {
     }
 
     #[test]
-    fn materialize_armed_remote_player_attaches_shadow_only_mesh_without_authority() {
+    fn materialize_armed_remote_player_is_forward_visible_without_authority() {
         let descriptors = vec![player_mesh_descriptor("co_op_avatar")];
         let mut reg = EntityRegistry::new();
         let id = spawn_transform_only(&mut reg);
@@ -447,7 +505,10 @@ mod tests {
             &mut reg,
             None,
         ));
-        assert!(reg.get_component::<MeshComponent>(id).unwrap().shadow_only);
+        assert!(
+            !reg.get_component::<MeshComponent>(id).unwrap().shadow_only,
+            "descriptor shadowOnly applies to the owning viewer, not remote peers",
+        );
         for kind in [
             ComponentKind::PlayerMovement,
             ComponentKind::Weapon,
@@ -494,6 +555,10 @@ mod tests {
                 .unwrap()
                 .current_state,
             "moved"
+        );
+        assert!(
+            !reg.get_component::<MeshComponent>(id).unwrap().shadow_only,
+            "re-materialization must preserve remote-view forward visibility",
         );
 
         let unknown_id = spawn_transform_only(&mut reg);

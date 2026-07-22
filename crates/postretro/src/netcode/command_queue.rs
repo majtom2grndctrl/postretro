@@ -297,6 +297,9 @@ pub(crate) struct ResolvedPawnCommand {
     pub(crate) pawn: EntityId,
     pub(crate) client_id: u64,
     pub(crate) command: SimCommand,
+    /// Camera pitch from the resolved, host-authorized input command. Presentation
+    /// consumes it locally; snapshot production reads the same queue state.
+    pub(crate) aim_pitch: f32,
     pub(crate) client_tick: u32,
     #[allow(dead_code)]
     pub(crate) source: ResolutionSource,
@@ -471,10 +474,12 @@ pub(crate) fn host_resolve_remote_commands(
     let owner_pairs: Vec<(EntityId, u64)> = owners.iter().collect();
     for (pawn, client_id) in owner_pairs {
         if let Some(resolved) = command_queues.resolve_tick(client_id) {
+            let aim_pitch = command_queues.current_aim_pitch(client_id).unwrap_or(0.0);
             commands.push(ResolvedPawnCommand {
                 pawn,
                 client_id,
                 command: resolved.command,
+                aim_pitch,
                 client_tick: resolved.client_tick,
                 source: resolved.source,
             });

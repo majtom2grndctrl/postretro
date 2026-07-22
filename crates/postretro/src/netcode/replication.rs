@@ -107,25 +107,29 @@ pub(crate) fn produce_owned_snapshots(
     owners: &MovementOwners,
     command_queues: &HostCommandQueues,
 ) -> Vec<EntitySnapshot> {
-    produce_owned_snapshots_with_weapons(
+    produce_owned_snapshots_with_host_aim(
         registry,
         set,
         allocator,
         owners,
         &WeaponOwners::new(),
         command_queues,
+        None,
     )
 }
 
-/// As [`produce_owned_snapshots`], but includes the host's active-weapon owner map
-/// so movement-pawn records carry shared-visible weapon archetype metadata.
-pub(crate) fn produce_owned_snapshots_with_weapons(
+/// Production listen-host variant. Remote-owned pawn pitch comes from the resolved
+/// command queue; the host pawn has no `MovementOwners` entry and therefore receives
+/// its directly-authorized local camera pitch through this explicit source.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn produce_owned_snapshots_with_host_aim(
     registry: &EntityRegistry,
     set: &ReplicableSet,
     allocator: &mut NetworkIdAllocator,
     owners: &MovementOwners,
     weapon_owners: &WeaponOwners,
     command_queues: &HostCommandQueues,
+    host_aim: Option<(EntityId, f32)>,
 ) -> Vec<EntitySnapshot> {
     let mut snapshots = Vec::new();
     for id in set.iter() {
@@ -136,9 +140,13 @@ pub(crate) fn produce_owned_snapshots_with_weapons(
             continue;
         }
         let owner_client_id = owners.owner_of(id);
-        let aim_pitch = owner_client_id
-            .and_then(|client_id| command_queues.current_aim_pitch(client_id))
-            .unwrap_or(0.0);
+        let aim_pitch = if host_aim.is_some_and(|(host_pawn, _)| host_pawn == id) {
+            host_aim.map_or(0.0, |(_, pitch)| pitch)
+        } else {
+            owner_client_id
+                .and_then(|client_id| command_queues.current_aim_pitch(client_id))
+                .unwrap_or(0.0)
+        };
         let components = collect_payloads(registry, id, aim_pitch);
         let network_id = allocator.stamp(id).0;
         // Movement-authority metadata (M15 Phase 3): a pawn owned by a client carries

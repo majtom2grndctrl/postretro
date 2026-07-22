@@ -881,8 +881,8 @@ pub struct MeshPass {
     /// bind group is built once at init.
     pub(super) instance_bind_group: wgpu::BindGroup,
 
-    /// Camera-compatible group-0 bind group whose buffer carries only the
-    /// alternate first-person projection. It reuses the unchanged world camera
+    /// Camera-compatible group-0 bind group whose buffer carries the alternate
+    /// first-person view-projection. It reuses the unchanged world camera
     /// layout and the skinned mesh pipeline; the renderer selects it only for
     /// the dedicated viewmodel pass.
     viewmodel_uniform_buffer: wgpu::Buffer,
@@ -1287,13 +1287,13 @@ impl MeshPass {
         // existing 128-byte allocation so the bind group stays exactly compatible
         // with the renderer-wide camera contract.
         let viewmodel_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Viewmodel Projection Uniform"),
+            label: Some("Viewmodel View-Projection Uniform"),
             size: UNIFORM_SIZE as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let viewmodel_uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Viewmodel Projection Bind Group"),
+            label: Some("Viewmodel View-Projection Bind Group"),
             layout: camera_bgl,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
@@ -1792,12 +1792,16 @@ impl MeshPass {
         }
     }
 
-    /// Upload the camera-space projection used exclusively by the viewmodel pass.
+    /// Upload the tight view-projection used exclusively by the viewmodel pass.
     /// `skinned_mesh.wgsl` reads only the leading `mat4x4`, while the buffer keeps
     /// the existing group-0 allocation size/layout for bind-group compatibility.
-    pub(super) fn write_viewmodel_projection(&self, queue: &wgpu::Queue, projection: glam::Mat4) {
+    pub(super) fn write_viewmodel_view_projection(
+        &self,
+        queue: &wgpu::Queue,
+        view_projection: glam::Mat4,
+    ) {
         let mut data = [0u8; UNIFORM_SIZE];
-        for (index, value) in projection.to_cols_array().iter().enumerate() {
+        for (index, value) in view_projection.to_cols_array().iter().enumerate() {
             let offset = index * std::mem::size_of::<f32>();
             data[offset..offset + std::mem::size_of::<f32>()].copy_from_slice(&value.to_ne_bytes());
         }

@@ -129,7 +129,7 @@ impl MeshDescriptor {
     /// any state is declared — a present `defaultState` that names a declared
     /// state. An empty-but-present `animations` block is rejected; a wholly absent
     /// one yields a stateless descriptor (`animations` empty, `default_state`
-    /// None). `shadowOnly` is optional on the wire and defaults to `false`.
+    /// None). `shadowOnly` is optional descriptor input and defaults to `false`.
     /// `shadowBiasScale` is optional on the wire, defaults to 1.0, and must be
     /// finite in 0.0..=4.0.
     pub fn build(raw: RawMeshDescriptor) -> Result<Self, DescriptorError> {

@@ -101,10 +101,16 @@ pub struct MeshInstanceInput {
     /// upgrades a miss to a resample regardless of this flag). A `Copy` bool —
     /// no per-instance heap.
     pub resample: bool,
-    /// In the camera's portal-visible cell set. Selected static-light shadow
-    /// casters may be retained with this `false`; the forward draw filters them
-    /// out while shadow depth passes may still consume them.
+    /// Eligible for the forward color pass after combining portal visibility
+    /// with descriptor shadow-only policy. Shadow casters may be retained with
+    /// this `false`; the forward draw filters them out.
     pub forward_visible: bool,
+    /// Eligible for dynamic shadow depth: either portal-visible or explicitly
+    /// descriptor-authored as shadow-only. This stays separate from
+    /// [`forward_visible`](Self::forward_visible) because promoted-static
+    /// relevance may retain additional off-PVS meshes that dynamic slots must
+    /// not admit.
+    pub dynamic_shadow_visible: bool,
     /// First-person weapon presentation. Viewmodels are planned separately from
     /// world instances so they use the shared palette/instance buffers without
     /// ever entering world shadow-depth passes.
@@ -148,9 +154,13 @@ pub struct PlannedInstance {
     /// bool — no per-instance heap.
     pub resample: bool,
     /// Carried verbatim from [`MeshInstanceInput::forward_visible`]. `record_draws`
-    /// filters this flag so selected static-light shadow casters outside the
-    /// forward-visible set do not draw in the color pass.
+    /// filters this flag so shadow-only and retained off-PVS casters do not draw
+    /// in the color pass.
     pub forward_visible: bool,
+    /// Carried verbatim from [`MeshInstanceInput::dynamic_shadow_visible`].
+    /// Dynamic shadow passes filter on this while promoted-static passes may use
+    /// every retained planned instance.
+    pub dynamic_shadow_visible: bool,
 }
 
 /// All instances of one model, batched for a single instanced `draw_indexed` per
@@ -233,10 +243,10 @@ pub trait JointCounts {
 /// silently omitted and are not counted as budget drops; a missing holder still
 /// suppresses its holder group.
 ///
-/// The mesh collector may emit mixed forward/non-forward instances when a
-/// non-forward mesh is relevant to a selected static-light shadow. The
-/// forward-visible set is budgeted first so shadow-only instances cannot evict
-/// drawable meshes.
+/// The mesh collector may emit forward-visible, dynamic-shadow-only, and
+/// promoted-static-only instances. They are budgeted in that order so broader
+/// static relevance cannot evict an explicitly opted dynamic caster, and
+/// neither shadow class can evict drawable meshes.
 ///
 /// The returned plan's groups carry dense instance offsets so the GPU layer can
 /// write one flat instance SSBO and issue one instanced draw per group.
@@ -293,10 +303,11 @@ fn plan_grouped_mesh_frame(
     let plan_instance_start = *instance_cursor as u32;
     let mut dropped: u32 = 0;
 
-    // Budget forward-visible groups first so shadow-only inputs never evict a
-    // forward group. Collector output keeps each holder immediately followed by
-    // its attachments, so two scans preserve group order without an allocation.
-    for group_is_forward in [true, false] {
+    // Budget forward-visible groups first, then dynamic-shadow casters, then the
+    // broader promoted-static-only relevance set. Collector output keeps each
+    // holder immediately followed by its attachments, so three scans preserve
+    // group order without an allocation.
+    for visibility_priority in 0..3 {
         let mut group_start = 0;
         while group_start < instances.len() {
             let holder_group = instances[group_start].palette_cache_key.holder_group();
@@ -316,10 +327,21 @@ fn plan_grouped_mesh_frame(
                 "a holder and its attachments must share the world/viewmodel plan"
             );
             let forward_visible = input_group.iter().any(|instance| instance.forward_visible);
-            if forward_visible == group_is_forward {
+            let dynamic_shadow_visible = input_group
+                .iter()
+                .any(|instance| instance.dynamic_shadow_visible);
+            let priority = if forward_visible {
+                0
+            } else if dynamic_shadow_visible {
+                1
+            } else {
+                2
+            };
+            if priority == visibility_priority {
                 plan_instance_group(
                     input_group,
                     forward_visible,
+                    dynamic_shadow_visible,
                     joints,
                     &mut groups,
                     palette_cursor,
@@ -352,6 +374,7 @@ fn plan_grouped_mesh_frame(
 fn plan_instance_group(
     input_group: &[MeshInstanceInput],
     forward_visible: bool,
+    dynamic_shadow_visible: bool,
     joints: &impl JointCounts,
     groups: &mut Vec<ModelDrawGroup>,
     palette_cursor: &mut usize,
@@ -415,6 +438,7 @@ fn plan_instance_group(
             // Holder visibility is a group contract. Normalize every member so
             // forward and shadow draws cannot split malformed mixed inputs.
             forward_visible,
+            dynamic_shadow_visible,
         };
 
         if let Some(group) = groups
@@ -493,6 +517,7 @@ mod tests {
             capture: None,
             resample: true,
             forward_visible: true,
+            dynamic_shadow_visible: true,
             is_viewmodel: false,
         }
     }
@@ -727,6 +752,13 @@ mod tests {
     fn non_forward_instance(model: &str, x: f32, seed: u32) -> MeshInstanceInput {
         let mut i = instance(model, x, seed);
         i.forward_visible = false;
+        i.dynamic_shadow_visible = false;
+        i
+    }
+
+    fn dynamic_shadow_instance(model: &str, x: f32, seed: u32) -> MeshInstanceInput {
+        let mut i = non_forward_instance(model, x, seed);
+        i.dynamic_shadow_visible = true;
         i
     }
 
@@ -765,6 +797,35 @@ mod tests {
                 .all(|i| i.forward_visible),
             "only forward-visible instances survived the budget squeeze",
         );
+    }
+
+    #[test]
+    fn plan_budgets_explicit_dynamic_caster_before_static_relevance() {
+        // Regression: a broad promoted-static retention set could consume the
+        // palette before an off-PVS descriptor shadow-only body reached dynamic
+        // per-light cone culling.
+        let per = (MAX_PALETTE_ENTRIES / 2) as u32;
+        let joints = joints(&[("grunt", per)]);
+        let instances = [
+            non_forward_instance("grunt", 99.0, 2),
+            dynamic_shadow_instance("grunt", 1.0, 0),
+            dynamic_shadow_instance("grunt", 2.0, 1),
+        ];
+
+        let plan = plan_mesh_frame(&instances, &joints);
+        let survivors: Vec<_> = plan
+            .groups
+            .iter()
+            .flat_map(|group| &group.instances)
+            .collect();
+
+        assert_eq!(survivors.len(), 2);
+        assert!(
+            survivors
+                .iter()
+                .all(|instance| instance.dynamic_shadow_visible)
+        );
+        assert!(survivors.iter().all(|instance| !instance.forward_visible));
     }
 
     #[test]
@@ -888,6 +949,7 @@ mod tests {
             capture: None,
             resample: true,
             forward_visible: true,
+            dynamic_shadow_visible: true,
         };
         assert!(
             instance_casts_into_cone(&inside, &planes),
@@ -908,6 +970,7 @@ mod tests {
             capture: None,
             resample: true,
             forward_visible: true,
+            dynamic_shadow_visible: true,
         };
         assert!(
             !instance_casts_into_cone(&outside, &planes),
@@ -966,6 +1029,7 @@ mod tests {
             capture: None,
             resample: true,
             forward_visible: true,
+            dynamic_shadow_visible: true,
         };
         assert!(
             instance_casts_into_cone(&inst, &planes),

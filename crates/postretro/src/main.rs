@@ -1003,6 +1003,16 @@ fn local_viewmodel_asset<'a>(
         .get_component::<postretro_entities::provenance::DescriptorProvenance>(weapon)
         .ok()?;
     let archetype = provenance.canonical_name.as_str();
+    let viewmodel = viewmodel_asset_for_archetype(archetype, descriptors)?;
+    Some((weapon, viewmodel))
+}
+
+/// Resolve optional first-person presentation from a shared weapon archetype.
+/// Connected clients use this without constructing a host-only weapon entity.
+fn viewmodel_asset_for_archetype<'a>(
+    archetype: &str,
+    descriptors: &'a [postretro_entities::EntityTypeDescriptor],
+) -> Option<&'a str> {
     let viewmodel = descriptors
         .iter()
         .find(|descriptor| descriptor.canonical_name.as_deref() == Some(archetype))?
@@ -1011,13 +1021,13 @@ fn local_viewmodel_asset<'a>(
         .viewmodel
         .as_deref()?
         .trim();
-    (!viewmodel.is_empty()).then_some((weapon, viewmodel))
+    (!viewmodel.is_empty()).then_some(viewmodel)
 }
 
 /// Camera-space placement of the first-person model. World camera yaw/pitch
-/// intentionally do not appear here: the viewmodel pass binds a projection-only
-/// camera uniform. Render-rate bob, sway, and tilt are composed at this game-side
-/// assembly seam before the instance crosses into the renderer.
+/// intentionally do not appear here: [`viewmodel_world_transform`] applies the
+/// render camera afterward. Render-rate bob, sway, and tilt are composed at this
+/// game-side assembly seam before the instance crosses into the renderer.
 fn viewmodel_camera_space_transform(
     camera_right: Vec3,
     view_feel_eye_offset: Vec3,
@@ -1035,6 +1045,28 @@ fn viewmodel_camera_space_transform(
         * Quat::from_rotation_x(view_feel_pitch)
         * Quat::from_rotation_z(view_feel_roll);
     glam::Mat4::from_scale_rotation_translation(Vec3::ONE, rotation, BASE_OFFSET + bob_offset)
+}
+
+/// Convert camera-relative weapon placement to a world transform. The dedicated
+/// viewmodel camera later applies the same view matrix with its tight projection,
+/// preserving camera-space clip placement while shared mesh shading receives a
+/// genuine world position.
+fn viewmodel_world_transform(
+    view_matrix: glam::Mat4,
+    camera_right: Vec3,
+    view_feel_eye_offset: Vec3,
+    view_feel_roll: f32,
+    view_feel_yaw: f32,
+    view_feel_pitch: f32,
+) -> glam::Mat4 {
+    view_matrix.inverse()
+        * viewmodel_camera_space_transform(
+            camera_right,
+            view_feel_eye_offset,
+            view_feel_roll,
+            view_feel_yaw,
+            view_feel_pitch,
+        )
 }
 
 /// Follow the camera to the local pawn's eye. `presentation_offset` is the M15
@@ -2745,7 +2777,10 @@ impl ApplicationHandler for App {
                         render_eye_position,
                         self.script_time as f32,
                     );
-                    renderer.update_viewmodel_projection(self.camera.aspect());
+                    renderer.update_viewmodel_view_projection(
+                        self.camera.aspect(),
+                        render_camera.view_matrix,
+                    );
 
                     // This gameplay block runs only in Running (the redraw
                     // path reaches here solely when `boot_state == Running`,
@@ -2811,14 +2846,11 @@ impl ApplicationHandler for App {
                             &session.hit_zone_store,
                         );
 
-                        // The first-person model is not an entity attachment and
-                        // never uses replicated weapon metadata. Resolve the local
-                        // pawn through `WeaponOwners` into its descriptor-local
-                        // `viewmodel` path, then hand the already camera-space,
-                        // view-feel-composed transform to the collector. A missing
-                        // cached asset is dropped by the planner this same frame;
-                        // because collection starts from an empty list, no stale
-                        // weapon can survive a descriptor/model hot-swap.
+                        // The first-person model is not an entity attachment. Host and
+                        // single-player resolve through their weapon entity; a connected
+                        // client resolves the recipient-local replicated archetype
+                        // directly because it intentionally owns no gameplay weapon.
+                        // Missing descriptors/models degrade to no instance this frame.
                         let mut single_player_weapon_owners = netcode::WeaponOwners::new();
                         if let (Some(local_pawn), Some(active_weapon)) =
                             (followed_player_pawn(&registry), self.active_wieldable)
@@ -2827,7 +2859,7 @@ impl ApplicationHandler for App {
                         }
                         let descriptors = script_ctx.data_registry.borrow();
                         if let Some(local_pawn) = followed_player_pawn(&registry) {
-                            let host_viewmodel =
+                            let network_viewmodel =
                                 session
                                     .net_endpoint
                                     .as_ref()
@@ -2839,28 +2871,41 @@ impl ApplicationHandler for App {
                                                 weapon_owners,
                                                 &descriptors.entities,
                                             )
+                                            .map(|(weapon, model)| (weapon.to_raw(), model))
                                         }
-                                        netcode::NetEndpoint::Client { .. } => None,
+                                        netcode::NetEndpoint::Client { replication, .. } => {
+                                            replication
+                                                .local_active_weapon_archetype()
+                                                .and_then(|archetype| {
+                                                    viewmodel_asset_for_archetype(
+                                                        archetype,
+                                                        &descriptors.entities,
+                                                    )
+                                                })
+                                                .map(|model| (local_pawn.to_raw(), model))
+                                        }
                                     });
-                            let viewmodel = host_viewmodel.or_else(|| {
+                            let viewmodel = network_viewmodel.or_else(|| {
                                 local_viewmodel_asset(
                                     &registry,
                                     local_pawn,
                                     &single_player_weapon_owners,
                                     &descriptors.entities,
                                 )
+                                .map(|(weapon, model)| (weapon.to_raw(), model))
                             });
-                            if let Some((weapon, model)) = viewmodel {
+                            if let Some((weapon_seed, model)) = viewmodel {
                                 session.mesh_render.collect_viewmodel(
                                     model,
-                                    viewmodel_camera_space_transform(
+                                    viewmodel_world_transform(
+                                        render_camera.view_matrix,
                                         camera_right,
                                         vf_eye_offset,
                                         vf_roll,
                                         vf_yaw_offset,
                                         vf_pitch_offset,
                                     ),
-                                    weapon.to_raw(),
+                                    weapon_seed,
                                 );
                             }
                         }
@@ -4957,6 +5002,7 @@ impl App {
     /// sends each accepted client a per-client delta snapshot over the snapshot
     /// channel. No-op for single-player and the client.
     fn net_serialize_and_send(&mut self) {
+        let host_aim_pitch = self.camera.pitch;
         // Session-owned `ScriptCtx` cloned before the `net_endpoint` borrow (this
         // method stays on `App`). See: context/lib/boot_sequence.md §1.
         let Some(script_ctx) = self
@@ -4985,7 +5031,7 @@ impl App {
             open_shots: _,
             pending_hit_declarations: _,
             weaponless_fire_logged: _,
-            host_pawn: _,
+            host_pawn,
             map_enemies: _,
             loaded_movers: _,
             demo_mover,
@@ -5038,6 +5084,7 @@ impl App {
                 owners,
                 weapon_owners,
                 command_queues,
+                (*host_pawn).map(|pawn| (pawn, host_aim_pitch)),
                 *tick,
             );
         }
@@ -5117,6 +5164,7 @@ impl App {
             frame_anim_time,
             sim::PresentationPoseInputs {
                 camera_aim,
+                remote_player_aims: &HashMap::new(),
                 remote_aim_pitches: &self.remote_player_presentation.aim_pitches,
                 remote_heading_yaws: &self.remote_player_presentation.heading_yaws,
                 remote_network_ids: &remote_network_ids,
@@ -5213,6 +5261,7 @@ impl App {
             shot_id,
             fire_tick,
             client_tick: resolved.client_tick,
+            aim_pitch: resolved.aim_pitch,
             command: resolved.command.clone(),
         }
     }
@@ -5973,6 +6022,26 @@ mod tests {
     }
 
     #[test]
+    fn replicated_weapon_archetype_resolves_viewmodel_without_weapon_entity() {
+        let descriptors = vec![weapon_viewmodel_descriptor(
+            "reference_pistol",
+            Some("models/pistol/view.gltf"),
+        )];
+        assert_eq!(
+            viewmodel_asset_for_archetype("reference_pistol", &descriptors),
+            Some("models/pistol/view.gltf")
+        );
+        assert!(viewmodel_asset_for_archetype("missing", &descriptors).is_none());
+        assert!(
+            viewmodel_asset_for_archetype(
+                "reference_pistol",
+                &[weapon_viewmodel_descriptor("reference_pistol", None)],
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
     fn viewmodel_transform_applies_view_feel_offsets_without_world_camera_rotation() {
         let transform =
             viewmodel_camera_space_transform(Vec3::X, Vec3::new(0.1, 0.2, 0.3), 0.1, 0.2, -0.3);
@@ -5983,6 +6052,24 @@ mod tests {
             transform.x_axis.truncate(),
             Vec3::X,
             "view-feel tilt must rotate the camera-space model"
+        );
+    }
+
+    #[test]
+    fn viewmodel_world_transform_keeps_shared_shader_positions_in_world_space() {
+        let view =
+            glam::Mat4::look_at_rh(Vec3::new(6.0, 2.0, 4.0), Vec3::new(5.0, 2.5, 3.0), Vec3::Y);
+        let camera_space = viewmodel_camera_space_transform(Vec3::X, Vec3::ZERO, 0.0, 0.0, 0.0);
+        let world = viewmodel_world_transform(view, Vec3::X, Vec3::ZERO, 0.0, 0.0, 0.0);
+        let model_point = Vec3::new(0.1, 0.2, -0.3).extend(1.0);
+
+        assert!(
+            (view * world * model_point).distance(camera_space * model_point) < 1.0e-5,
+            "world-space instance data must map back to authored camera-relative placement",
+        );
+        assert!(
+            (world.w_axis.truncate() - camera_space.w_axis.truncate()).length() > 1.0,
+            "shared shader world_position must not receive raw camera-space coordinates",
         );
     }
 

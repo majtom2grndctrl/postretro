@@ -5,8 +5,8 @@
 use super::*;
 
 /// First-person weapon projection. Kept renderer-owned because this is a GPU
-/// pass contract; game assembly supplies the already-composed camera-space model
-/// transform and never needs a wgpu type.
+/// pass contract; game assembly supplies a world-space model transform plus the
+/// matching render-camera view and never needs a wgpu type.
 const VIEWMODEL_HFOV_RADIANS: f32 = 70.0_f32.to_radians();
 const VIEWMODEL_NEAR_CLIP: f32 = 0.01;
 const VIEWMODEL_FAR_CLIP: f32 = 2.0;
@@ -303,16 +303,18 @@ impl Renderer {
             .upload_descriptors_if_dirty(queue);
     }
 
-    /// Upload the dedicated first-person weapon projection. This never reads
-    /// game-side view-feel state: the caller has already folded that into the
-    /// camera-space `MeshInstanceInput` transform.
-    pub fn update_viewmodel_projection(&mut self, aspect: f32) {
-        let projection = viewmodel_projection(aspect);
+    /// Upload the dedicated first-person weapon view-projection. This never
+    /// reads game-side view-feel state: the caller has already folded that into
+    /// the world-space `MeshInstanceInput` transform and supplies the matching
+    /// render-camera view matrix.
+    pub fn update_viewmodel_view_projection(&mut self, aspect: f32, view_matrix: Mat4) {
+        let view_projection = viewmodel_projection(aspect) * view_matrix;
         let Self { queue, full, .. } = self;
         let full = full
             .as_ref()
-            .expect("update_viewmodel_projection requires full-ready renderer");
-        full.mesh_pass.write_viewmodel_projection(queue, projection);
+            .expect("update_viewmodel_view_projection requires full-ready renderer");
+        full.mesh_pass
+            .write_viewmodel_view_projection(queue, view_projection);
     }
 }
 
@@ -331,6 +333,23 @@ mod tests {
                 clip.z / clip.w
             );
         }
+    }
+
+    #[test]
+    fn viewmodel_world_transform_preserves_camera_space_clip_placement() {
+        let projection = viewmodel_projection(16.0 / 9.0);
+        let view = Mat4::look_at_rh(Vec3::new(4.0, 2.0, 7.0), Vec3::new(3.0, 2.5, 6.0), Vec3::Y);
+        let camera_space_model = Mat4::from_translation(Vec3::new(0.3, -0.2, -0.6));
+        let world_model = view.inverse() * camera_space_model;
+        let model_point = Vec3::new(0.1, 0.05, -0.2).extend(1.0);
+
+        let camera_space_clip = projection * camera_space_model * model_point;
+        let world_space_clip = projection * view * world_model * model_point;
+
+        assert!(
+            camera_space_clip.distance(world_space_clip) < 1.0e-5,
+            "world-space shading placement must preserve the dedicated viewmodel clip placement",
+        );
     }
 }
 

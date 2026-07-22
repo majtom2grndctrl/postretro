@@ -76,13 +76,14 @@ The net crate emits typed snapshots and **never mutates the registry.** All regi
 
 On every client game-logic frame, apply received snapshots before state-crossing detection. Snapshot apply mints a frame-stamped `SnapshotsApplied` witness; crossing detection consumes it after game logic settles same-frame local slot writes. The witness cannot be forged or reused from a prior frame, so crossings always observe received replicated state before they inspect the slot table.
 
-Current component payloads are `Transform`, `PlayerMovementState`, `MeshAnimationState`, and `KinematicMoverState`, added in `ComponentKind` numeric order. `MeshAnimationState` carries the current animation state name; descriptor mesh data stays local. `KinematicMoverState` carries phase only: `mover_id`, segment index, direction, mode, elapsed/wait milliseconds, started/completed flags, velocity, and an optional target segment for a move-and-hold command. Static path data stays in PRL `KinematicGeometry`.
+Current component payloads are `Transform`, `PlayerMovementState`, `MeshAnimationState`, and `KinematicMoverState`, added in `ComponentKind` numeric order. `PlayerMovementState` includes presentation-only `aim_pitch` for remote-avatar pose presentation. `MeshAnimationState` carries the current animation state name; descriptor mesh data stays local. `KinematicMoverState` carries phase only: `mover_id`, segment index, direction, mode, elapsed/wait milliseconds, started/completed flags, velocity, and an optional target segment for a move-and-hold command. Static path data stays in PRL `KinematicGeometry`.
 
 Player movement grounding is a widened ground reference (`Airborne`, `World`, or `Mover(mover_id)`) rather than a bare boolean. The net crate validates only the enum shape and finite numeric fields; resolving a mover id to a loaded local mover is engine-owned client apply.
 
-Two distinct metadata validity gates apply:
+Three distinct metadata validity gates apply:
 
 - **Movement-authority metadata** (`local_player`, `last_processed_client_tick`): valid only on records carrying `PlayerMovementState`. No other record type may carry these fields.
+- **Active-weapon metadata** (`active_weapon_archetype`): valid only on records carrying `PlayerMovementState`. `None` means no weapon is equipped.
 - **Descriptor `entity_class`**: valid on any non-despawn entity record (`FullBaseline` or `Delta`) that carries at least one finite `Transform` payload — it no longer requires `PlayerMovementState`. On despawn records, `entity_class` (and all metadata) remains invalid.
 
 Despawn records carry tombstone metadata only, never component payloads.

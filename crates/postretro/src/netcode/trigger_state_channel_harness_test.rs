@@ -476,6 +476,7 @@ impl PersistentAtmosphereHarness {
                 shot_id: None,
                 fire_tick: 0,
                 client_tick: 0,
+                aim_pitch: 0.0,
                 command: idle_command(),
             }],
             &idle_command(),

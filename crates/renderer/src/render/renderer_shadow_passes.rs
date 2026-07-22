@@ -341,7 +341,7 @@ impl Renderer {
                             let submitted = full.mesh_pass.record_skinned_depth(
                                 &mut pass,
                                 mesh_plan,
-                                MeshDepthInstanceFilter::IncludeShadowOnly,
+                                MeshDepthInstanceFilter::AllRetained,
                                 &full.shadow_vs_bind_group,
                                 slot * stride,
                                 &cone_planes,
@@ -421,7 +421,7 @@ impl Renderer {
                         let submitted = full.mesh_pass.record_skinned_depth(
                             &mut pass,
                             plan,
-                            MeshDepthInstanceFilter::IncludeShadowOnly,
+                            MeshDepthInstanceFilter::DynamicCasters,
                             &full.shadow_vs_bind_group,
                             slot * stride,
                             &cone_planes,
@@ -602,7 +602,7 @@ impl Renderer {
                             let submitted = full.mesh_pass.record_skinned_depth(
                                 &mut pass,
                                 mesh_plan,
-                                MeshDepthInstanceFilter::IncludeShadowOnly,
+                                MeshDepthInstanceFilter::AllRetained,
                                 &full.cube_shadow_vs_bind_group,
                                 layer as u32 * stride,
                                 &face_planes,
@@ -685,7 +685,7 @@ impl Renderer {
                         let submitted = full.mesh_pass.record_skinned_depth(
                             &mut pass,
                             plan,
-                            MeshDepthInstanceFilter::IncludeShadowOnly,
+                            MeshDepthInstanceFilter::DynamicCasters,
                             &full.cube_shadow_vs_bind_group,
                             layer as u32 * stride,
                             &face_planes,

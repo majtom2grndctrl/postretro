@@ -531,6 +531,7 @@ impl SimHarness {
             shot_id: None,
             fire_tick: 0,
             client_tick: 0,
+            aim_pitch: 0.0,
             command: command.to_sim_command(),
         }];
         let trigger_use_edges = HashMap::new();
@@ -1812,6 +1813,7 @@ fn pose_inputs_fallbacks_and_vertical_targets_remain_finite() {
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
+            &HashMap::new(),
         );
         registry
             .get_component::<MeshComponent>(entity)
@@ -1856,6 +1858,7 @@ fn local_player_pose_inputs_use_camera_aim_and_movement_heading() {
         &HashMap::new(),
         &HashMap::new(),
         &HashMap::new(),
+        &HashMap::new(),
     );
 
     let inputs = registry
@@ -1883,6 +1886,7 @@ fn remote_player_pose_inputs_use_interpolated_aim_and_velocity_heading_fallback(
     super::update_pose_inputs(
         &mut registry,
         (0.0, 0.0),
+        &HashMap::new(),
         &remote_aim_pitches,
         &remote_heading_yaws,
         &remote_network_ids,
@@ -1899,6 +1903,7 @@ fn remote_player_pose_inputs_use_interpolated_aim_and_velocity_heading_fallback(
     super::update_pose_inputs(
         &mut registry,
         (0.0, 0.0),
+        &HashMap::new(),
         &remote_aim_pitches,
         &HashMap::new(),
         &remote_network_ids,
@@ -1912,6 +1917,34 @@ fn remote_player_pose_inputs_use_interpolated_aim_and_velocity_heading_fallback(
         (stationary.heading_yaw - transform_yaw).abs() <= 1.0e-6,
         "stationary remote avatar falls back to displayed transform yaw"
     );
+}
+
+#[test]
+fn listen_host_remote_player_pose_inputs_use_resolved_client_camera_aim() {
+    let (mut registry, pawn, _) = leg_probe_fixture(Vec3::ZERO, 0.0);
+    let mut movement = PlayerMovementComponent::from_descriptor(&player_descriptor());
+    movement.velocity = Vec3::X * 3.0;
+    registry.set_component(pawn, movement).unwrap();
+    let mut remote_player_aims = HashMap::new();
+    remote_player_aims.insert(pawn, (-0.4, 1.2));
+
+    super::update_pose_inputs(
+        &mut registry,
+        (0.0, 0.0),
+        &remote_player_aims,
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+    );
+
+    let inputs = registry
+        .get_component::<MeshComponent>(pawn)
+        .unwrap()
+        .pose_inputs
+        .unwrap();
+    assert!((inputs.aim_pitch + 0.4).abs() <= 1.0e-6);
+    assert!((inputs.aim_yaw - 1.2).abs() <= 1.0e-6);
+    assert!((inputs.heading_yaw - std::f32::consts::FRAC_PI_2).abs() <= 1.0e-6);
 }
 
 /// One leg model: hip → knee → ankle, composed ankle resting at model (0,-0.7,0),
@@ -1996,6 +2029,7 @@ fn probe_leg_entity_in(
         0.0,
         super::PresentationPoseInputs {
             camera_aim: (0.0, 0.0),
+            remote_player_aims: &HashMap::new(),
             remote_aim_pitches: &HashMap::new(),
             remote_heading_yaws: &HashMap::new(),
             remote_network_ids: &HashMap::new(),
@@ -2130,6 +2164,7 @@ fn connected_client_presentation_probes_freshly_displayed_remote_transform() {
         0.0,
         super::PresentationPoseInputs {
             camera_aim: (0.0, 0.0),
+            remote_player_aims: &HashMap::new(),
             remote_aim_pitches: &HashMap::new(),
             remote_heading_yaws: &HashMap::new(),
             remote_network_ids: &HashMap::new(),
@@ -2164,6 +2199,7 @@ fn unavailable_probe_inputs_clear_stale_feet_and_publish_zero_count() {
             0.0,
             super::PresentationPoseInputs {
                 camera_aim: (0.0, 0.0),
+                remote_player_aims: &HashMap::new(),
                 remote_aim_pitches: &HashMap::new(),
                 remote_heading_yaws: &HashMap::new(),
                 remote_network_ids: &HashMap::new(),

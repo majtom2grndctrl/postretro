@@ -97,6 +97,7 @@ use glam::{Quat, Vec3};
 use parry3d::math::{Point, Vector};
 
 use postretro_entities::components::health::HealthComponent;
+use postretro_entities::provenance::DescriptorProvenance;
 use postretro_entities::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, EntityTypeDescriptor, SlotTable,
     Transform,
@@ -117,6 +118,60 @@ use crate::collision::{self, CollisionWorld};
 use crate::movement::MovementCollisionSource;
 use crate::sim::SimCommand;
 use crate::weapon::{self, ActivationOutcome, WeaponImpact};
+
+/// Synchronize the host's active-weapon table into third-person presentation
+/// attachments immediately before snapshot production. The table remains the
+/// authority source; this only mirrors its canonical descriptor identity onto the
+/// pawn mesh so the host body and outgoing snapshot describe the same weapon.
+pub(crate) fn synchronize_weapon_owner_attachments(
+    registry: &mut EntityRegistry,
+    weapon_owners: &WeaponOwners,
+    descriptors: &[EntityTypeDescriptor],
+    hit_zone_store: &crate::scripting_systems::hit_zones::HitZoneStore,
+) -> Vec<EntityId> {
+    weapon_owners
+        .iter()
+        .filter_map(|(pawn, weapon)| {
+            let active_weapon_archetype = registry
+                .get_component::<DescriptorProvenance>(weapon)
+                .ok()
+                .map(|provenance| provenance.canonical_name.clone());
+            remote_materialize::update_active_weapon_attachment(
+                registry,
+                pawn,
+                descriptors,
+                active_weapon_archetype.as_deref(),
+                hit_zone_store,
+            )
+            .then_some(pawn)
+        })
+        .collect()
+}
+
+/// Synchronize one local pawn's third-person attachment from its active weapon.
+/// Single-player has no [`WeaponOwners`] table, and the listen host installs its
+/// own pawn before the regular pre-snapshot synchronization can run.
+pub(crate) fn synchronize_weapon_attachment_for_pawn(
+    registry: &mut EntityRegistry,
+    pawn: EntityId,
+    active_weapon: Option<EntityId>,
+    descriptors: &[EntityTypeDescriptor],
+    hit_zone_store: &crate::scripting_systems::hit_zones::HitZoneStore,
+) -> bool {
+    let active_weapon_archetype = active_weapon.and_then(|weapon| {
+        registry
+            .get_component::<DescriptorProvenance>(weapon)
+            .ok()
+            .map(|provenance| provenance.canonical_name.clone())
+    });
+    remote_materialize::update_active_weapon_attachment(
+        registry,
+        pawn,
+        descriptors,
+        active_weapon_archetype.as_deref(),
+        hit_zone_store,
+    )
+}
 
 /// Default listen port for `--host` when no port is supplied.
 pub(crate) const DEFAULT_HOST_PORT: u16 = 27015;
@@ -997,6 +1052,19 @@ pub(crate) fn client_receive_and_apply(
                 entity_class: armed.entity_class.clone(),
             });
         }
+        // The local pawn's world body is shadow-only, but it still needs the same
+        // third-person weapon silhouette as peers see. Its viewmodel remains separate
+        // from this presentation-only attachment path.
+        for update in &outcome.local_weapon_attachments {
+            frame_outcome.materialized_remote_entity_presentation |=
+                remote_materialize::update_active_weapon_attachment(
+                    registry,
+                    update.entity_id,
+                    descriptors,
+                    update.active_weapon_archetype.as_deref(),
+                    hit_zone_store,
+                );
+        }
         // Each non-local baseline that just spawned a descriptor-class-bearing entity gets
         // its presentation materialized here, where the shared descriptor table is in scope
         // (the net-facing apply is descriptor-blind). A descriptor's `movement` block is the
@@ -1085,7 +1153,16 @@ pub(crate) fn client_receive_and_apply(
                     client::apply_mesh_animation_state(registry, remote.entity_id, state, true);
                 }
             }
-            frame_outcome.materialized_remote_entity_presentation |= materialized;
+            let attachment_changed = remote.weapon_attachment_changed
+                && remote_materialize::update_active_weapon_attachment(
+                    registry,
+                    remote.entity_id,
+                    descriptors,
+                    remote.active_weapon_archetype.as_deref(),
+                    hit_zone_store,
+                );
+            frame_outcome.materialized_remote_entity_presentation |=
+                materialized || attachment_changed;
         }
         // M15 Phase 3 Task 5: reconcile the local predicted pawn against the
         // authoritative record this snapshot delivered — merge the movement subset,
@@ -2300,7 +2377,9 @@ mod tests {
     use super::*;
     use parry3d::math::{Isometry, Point};
     use parry3d::shape::TriMesh;
+    use postretro_entities::components::mesh::MeshAttachment;
     use postretro_entities::components::weapon::WeaponComponent;
+    use postretro_entities::provenance::{DescriptorComponentKind, DescriptorSpawnPath};
     use postretro_foundation::{FireMode, ResolutionMode, WeaponDescriptor};
 
     // Float epsilon for transform round-trips (testing_guide §Floating-point:
@@ -2347,6 +2426,70 @@ mod tests {
             viewmodel: None,
             resource: None,
         })
+    }
+
+    #[test]
+    fn host_weapon_owner_sync_reads_weapon_provenance_and_clears_unloaded_prop() {
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let mut mesh = MeshComponent::stateless("models/player/model.gltf".to_string());
+        mesh.attachments.push(MeshAttachment::unresolved(
+            remote_materialize::ACTIVE_WEAPON_SOCKET.to_string(),
+            "models/old_weapon/model.gltf".to_string(),
+        ));
+        registry.set_component(pawn, mesh).unwrap();
+
+        let weapon = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                weapon,
+                DescriptorProvenance {
+                    canonical_name: "reference_pistol".to_string(),
+                    owned_components: [DescriptorComponentKind::Weapon].into_iter().collect(),
+                    map_overrides: Default::default(),
+                    spawn_path: DescriptorSpawnPath::DefaultWeapon,
+                },
+            )
+            .unwrap();
+        let descriptors = vec![EntityTypeDescriptor {
+            canonical_name: Some("reference_pistol".to_string()),
+            default_weapon: None,
+            light: None,
+            emitter: None,
+            movement: None,
+            weapon: Some(WeaponDescriptor {
+                damage: 1.0,
+                range: 1.0,
+                cooldown_ms: 1.0,
+                fire_mode: FireMode::Semi,
+                resolution: ResolutionMode::Hitscan,
+                credit_source: None,
+                third_person_model: Some("models/pistol/model.gltf".to_string()),
+                viewmodel: None,
+                resource: None,
+            }),
+            mesh: None,
+            health: None,
+            ai: None,
+        }];
+        let mut weapon_owners = WeaponOwners::new();
+        weapon_owners.set(pawn, weapon);
+
+        let changed = synchronize_weapon_owner_attachments(
+            &mut registry,
+            &weapon_owners,
+            &descriptors,
+            &crate::scripting_systems::hit_zones::HitZoneStore::new(),
+        );
+        assert_eq!(changed, vec![pawn]);
+        assert!(
+            registry
+                .get_component::<MeshComponent>(pawn)
+                .unwrap()
+                .attachments
+                .is_empty(),
+            "an unavailable third-person descriptor model clears the old hand prop"
+        );
     }
 
     fn authorized_test_shot(

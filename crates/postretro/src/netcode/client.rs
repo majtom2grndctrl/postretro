@@ -176,6 +176,10 @@ pub(crate) struct ClientReplication {
     /// each mapped entity; a `Delta`'s `baseline_ref` must match this to apply, and a
     /// successful apply advances it. Kept in lockstep with `map`.
     baselines: HashMap<NetworkId, u32>,
+    /// Last active-weapon archetype applied for each replicated movement pawn. This
+    /// is presentation state only: it detects shared-visible equip changes without
+    /// deriving a weapon from owner-private data or mutating gameplay components.
+    active_weapon_archetypes: HashMap<NetworkId, Option<String>>,
     /// Entities awaiting a full-baseline refresh, keyed by `NetworkId`. An entry here
     /// resends a `BaselineRefreshRequest` on the 5 Hz cadence; the matching
     /// `FullBaseline` apply clears it.
@@ -360,6 +364,22 @@ pub(crate) struct RemoteEntityMaterialize {
     /// applied after descriptor mesh materialization so a client joining an already
     /// active enemy does not miss the initial non-default animation state.
     pub(crate) initial_animation_state: Option<String>,
+    /// A changed shared-visible active-weapon archetype, including an initial
+    /// unarmed `None`, requires the descriptor-aware caller to refresh the dynamic
+    /// `hand_r` attachment after it materializes the mesh.
+    pub(crate) active_weapon_archetype: Option<String>,
+    /// Distinguishes an attachment update to `None` (clear the hand socket) from a
+    /// normal mesh-materialization request with no weapon state change.
+    pub(crate) weapon_attachment_changed: bool,
+}
+
+/// An applied local-player active-weapon update. The local pawn's body is not a
+/// `remote_entities` materialization request, but its shadow-only third-person mesh
+/// must receive the same dynamic `hand_r` attachment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LocalWeaponAttachmentUpdate {
+    pub(crate) entity_id: EntityId,
+    pub(crate) active_weapon_archetype: Option<String>,
 }
 
 /// The local-pawn baseline an `apply_snapshot` armed this snapshot (M15 Phase 3): the
@@ -414,6 +434,10 @@ pub(crate) struct ApplyOutcome {
     /// descriptor lookup deliberately does NOT happen here — descriptor tables are not
     /// in scope in this descriptor-blind apply path.
     pub(crate) remote_entities: Vec<RemoteEntityMaterialize>,
+    /// Active-weapon updates for the client-local pawn. Remote updates ride their
+    /// corresponding [`remote_entities`](Self::remote_entities) entry so descriptor
+    /// mesh materialization and attachment replacement remain ordered together.
+    pub(crate) local_weapon_attachments: Vec<LocalWeaponAttachmentUpdate>,
     /// Per-snapshot mover correction magnitudes in metres, surfaced so harnesses
     /// can assert corrections stay bounded and non-accumulating.
     pub(crate) mover_corrections: Vec<MoverCorrection>,
@@ -453,6 +477,7 @@ impl ClientReplication {
         self.map.clear();
         self.reverse_map.clear();
         self.baselines.clear();
+        self.active_weapon_archetypes.clear();
         self.pending_repairs.clear();
         self.interp = RemoteInterpolationBuffer::default();
         self.remote_enemy_walk_playback.clear();
@@ -564,7 +589,7 @@ impl ClientReplication {
                     local_player,
                     last_processed_client_tick,
                     entity_class,
-                    active_weapon_archetype: _,
+                    active_weapon_archetype,
                 } => {
                     if self.apply_full_baseline(
                         registry,
@@ -580,6 +605,14 @@ impl ClientReplication {
                         &mut outcome,
                     ) {
                         acked_baselines.push((*network_id, *baseline_id));
+                        self.maybe_surface_active_weapon_attachment(
+                            NetworkId(*network_id),
+                            *local_player,
+                            entity_class.as_deref(),
+                            active_weapon_archetype.clone(),
+                            components,
+                            &mut outcome,
+                        );
                         self.maybe_arm_local_pawn(
                             registry,
                             NetworkId(*network_id),
@@ -605,7 +638,7 @@ impl ClientReplication {
                     local_player,
                     last_processed_client_tick,
                     entity_class,
-                    active_weapon_archetype: _,
+                    active_weapon_archetype,
                 } => {
                     if self.apply_delta(
                         registry,
@@ -622,6 +655,14 @@ impl ClientReplication {
                         &mut outcome,
                     ) {
                         acked_baselines.push((*network_id, *new_baseline_id));
+                        self.maybe_surface_active_weapon_attachment(
+                            NetworkId(*network_id),
+                            *local_player,
+                            entity_class.as_deref(),
+                            active_weapon_archetype.clone(),
+                            components,
+                            &mut outcome,
+                        );
                         self.maybe_arm_local_pawn(
                             registry,
                             NetworkId(*network_id),
@@ -811,6 +852,8 @@ impl ClientReplication {
                             entity_id: id,
                             entity_class: class.to_string(),
                             initial_animation_state: first_mesh_animation_state(components),
+                            active_weapon_archetype: None,
+                            weapon_attachment_changed: false,
                         });
                     }
                 }
@@ -916,6 +959,81 @@ impl ClientReplication {
             entity_id,
             entity_class: class.to_string(),
             initial_animation_state: first_mesh_animation_state(components),
+            active_weapon_archetype: None,
+            weapon_attachment_changed: false,
+        });
+    }
+
+    /// Compare shared-visible active-weapon identity after a record has applied.
+    /// The wire validator already guarantees a non-`None` value only rides a
+    /// movement record; the component check below also makes the unarmed `None`
+    /// initial population unambiguous without tracking transform-only entities.
+    fn maybe_surface_active_weapon_attachment(
+        &mut self,
+        network_id: NetworkId,
+        local_player: bool,
+        entity_class: Option<&str>,
+        active_weapon_archetype: Option<String>,
+        components: &[ComponentPayload],
+        outcome: &mut ApplyOutcome,
+    ) {
+        if !components
+            .iter()
+            .any(|payload| matches!(payload, ComponentPayload::PlayerMovementState(_)))
+        {
+            return;
+        }
+
+        let changed = match self.active_weapon_archetypes.entry(network_id) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(active_weapon_archetype.clone());
+                true
+            }
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                if entry.get() == &active_weapon_archetype {
+                    false
+                } else {
+                    entry.insert(active_weapon_archetype.clone());
+                    true
+                }
+            }
+        };
+        if !changed {
+            return;
+        }
+
+        let Some(&entity_id) = self.map.get(&network_id) else {
+            return;
+        };
+        if local_player {
+            outcome
+                .local_weapon_attachments
+                .push(LocalWeaponAttachmentUpdate {
+                    entity_id,
+                    active_weapon_archetype,
+                });
+            return;
+        }
+
+        let Some(entity_class) = entity_class else {
+            return;
+        };
+        if let Some(remote) = outcome
+            .remote_entities
+            .iter_mut()
+            .find(|remote| remote.entity_id == entity_id)
+        {
+            remote.active_weapon_archetype = active_weapon_archetype;
+            remote.weapon_attachment_changed = true;
+            return;
+        }
+        outcome.remote_entities.push(RemoteEntityMaterialize {
+            network_id,
+            entity_id,
+            entity_class: entity_class.to_string(),
+            initial_animation_state: None,
+            active_weapon_archetype,
+            weapon_attachment_changed: true,
         });
     }
 
@@ -960,6 +1078,7 @@ impl ClientReplication {
         self.interp.forget(network_id);
         self.remote_enemy_walk_playback.remove(&network_id);
         self.remote_player_locomotion.remove(&network_id);
+        self.active_weapon_archetypes.remove(&network_id);
         self.mover_network_ids.remove(&network_id);
         outcome.armed_local_pawn = Some(ArmedLocalPawn {
             network_id,
@@ -1057,6 +1176,7 @@ impl ClientReplication {
     fn remove_mapping(&mut self, network_id: NetworkId) -> Option<EntityId> {
         let entity_id = self.map.remove(&network_id)?;
         self.reverse_map.remove(&entity_id);
+        self.active_weapon_archetypes.remove(&network_id);
         Some(entity_id)
     }
 
@@ -3845,6 +3965,8 @@ mod tests {
                 entity_id: id,
                 entity_class: "decraniated_mob".to_string(),
                 initial_animation_state: None,
+                active_weapon_archetype: None,
+                weapon_attachment_changed: false,
             }],
             "first spawn surfaces one remote-enemy materialize request"
         );
@@ -3880,6 +4002,8 @@ mod tests {
                 entity_id: id,
                 entity_class: "decraniated_mob".to_string(),
                 initial_animation_state: Some("attack".to_string()),
+                active_weapon_archetype: None,
+                weapon_attachment_changed: false,
             }],
             "the spawn request carries the baseline's initial mesh animation state"
         );
@@ -3938,6 +4062,92 @@ mod tests {
         assert!(
             out.remote_entities.is_empty(),
             "the local pawn never rides the remote-enemy materialize path"
+        );
+    }
+
+    #[test]
+    fn movement_weapon_identity_surfaces_remote_and_local_attachment_updates() {
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+
+        let mut remote_baseline = remote_enemy_baseline(
+            7,
+            1,
+            "player",
+            vec![transform_payload(0.0), movement_payload()],
+        );
+        let EntityRecord::FullBaseline {
+            active_weapon_archetype,
+            ..
+        } = &mut remote_baseline
+        else {
+            unreachable!("fixture creates a baseline");
+        };
+        *active_weapon_archetype = Some("reference_pistol".to_string());
+
+        let remote = client.apply_snapshot(&mut registry, &snapshot(0, 10, vec![remote_baseline]));
+        let remote_id = *client.map().get(&NetworkId(7)).expect("remote pawn mapped");
+        assert_eq!(
+            remote.remote_entities,
+            vec![RemoteEntityMaterialize {
+                network_id: NetworkId(7),
+                entity_id: remote_id,
+                entity_class: "player".to_string(),
+                initial_animation_state: None,
+                active_weapon_archetype: Some("reference_pistol".to_string()),
+                weapon_attachment_changed: true,
+            }],
+            "the initial shared weapon identity rides the descriptor-aware remote outcome"
+        );
+
+        let mut remote_delta = remote_enemy_delta(
+            7,
+            1,
+            2,
+            "player",
+            vec![transform_payload(1.0), movement_payload()],
+        );
+        let EntityRecord::Delta {
+            active_weapon_archetype,
+            ..
+        } = &mut remote_delta
+        else {
+            unreachable!("fixture creates a delta");
+        };
+        *active_weapon_archetype = None;
+        let unequipped = client.apply_snapshot(&mut registry, &snapshot(1, 11, vec![remote_delta]));
+        assert_eq!(
+            unequipped.remote_entities,
+            vec![RemoteEntityMaterialize {
+                network_id: NetworkId(7),
+                entity_id: remote_id,
+                entity_class: "player".to_string(),
+                initial_animation_state: None,
+                active_weapon_archetype: None,
+                weapon_attachment_changed: true,
+            }],
+            "a change to None explicitly clears the remote hand attachment"
+        );
+
+        let mut local_baseline =
+            local_player_baseline(8, 1, vec![transform_payload(2.0), movement_payload()]);
+        let EntityRecord::FullBaseline {
+            active_weapon_archetype,
+            ..
+        } = &mut local_baseline
+        else {
+            unreachable!("fixture creates a baseline");
+        };
+        *active_weapon_archetype = Some("reference_pistol".to_string());
+        let local = client.apply_snapshot(&mut registry, &snapshot(2, 12, vec![local_baseline]));
+        let local_id = *client.map().get(&NetworkId(8)).expect("local pawn mapped");
+        assert_eq!(
+            local.local_weapon_attachments,
+            vec![LocalWeaponAttachmentUpdate {
+                entity_id: local_id,
+                active_weapon_archetype: Some("reference_pistol".to_string()),
+            }],
+            "the recipient-local shadow body receives the same third-person weapon update"
         );
     }
 
@@ -4068,6 +4278,8 @@ mod tests {
                 entity_id: id,
                 entity_class: "decraniated_mob".to_string(),
                 initial_animation_state: Some("attack".to_string()),
+                active_weapon_archetype: None,
+                weapon_attachment_changed: false,
             }],
             "mapped descriptor remotes without Mesh retry materialization"
         );

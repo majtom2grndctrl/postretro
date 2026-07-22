@@ -418,6 +418,29 @@ pub(crate) fn deferred_remote_player_mesh_models(
     ordered
 }
 
+/// Collect third-person prop models declared by weapon descriptors. Wieldable
+/// instances intentionally have no `MeshComponent`, so a registry-driven sweep cannot
+/// discover them. Every role may present an active weapon, therefore this list is
+/// always unioned into the level-load model sweep rather than being client-only.
+pub(crate) fn weapon_third_person_models(descriptors: &[EntityTypeDescriptor]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut ordered = Vec::new();
+    for descriptor in descriptors {
+        let Some(model) = descriptor
+            .weapon
+            .as_ref()
+            .and_then(|weapon| weapon.third_person_model.as_deref())
+            .filter(|model| !model.is_empty())
+        else {
+            continue;
+        };
+        if seen.insert(model.to_string()) {
+            ordered.push(model.to_string());
+        }
+    }
+    ordered
+}
+
 /// Attach descriptor components to an already-spawned entity. `initial_*` KVP
 /// overrides are applied to `emitter` and `light` before attachment;
 /// `movement` receives descriptor values verbatim. Weapon attachment is opt-in
@@ -2470,6 +2493,36 @@ mod tests {
                 "models/smg/model.gltf".to_string(),
             ],
             "only movement descriptors contribute and attachments retain deterministic socket order"
+        );
+    }
+
+    #[test]
+    fn weapon_third_person_models_collects_only_nonempty_weapon_props_once() {
+        let mut pistol = weapon_descriptor("pistol");
+        pistol.weapon.as_mut().unwrap().third_person_model =
+            Some("models/pistol/model.gltf".to_string());
+        let mut duplicate = weapon_descriptor("pistol_variant");
+        duplicate.weapon.as_mut().unwrap().third_person_model =
+            Some("models/pistol/model.gltf".to_string());
+        let mut rifle = weapon_descriptor("rifle");
+        rifle.weapon.as_mut().unwrap().third_person_model =
+            Some("models/rifle/model.gltf".to_string());
+        let mut empty = weapon_descriptor("empty");
+        empty.weapon.as_mut().unwrap().third_person_model = Some(String::new());
+
+        assert_eq!(
+            weapon_third_person_models(&[
+                pistol,
+                mesh_descriptor("scenery", false),
+                duplicate,
+                empty,
+                rifle,
+            ]),
+            vec![
+                "models/pistol/model.gltf".to_string(),
+                "models/rifle/model.gltf".to_string(),
+            ],
+            "only declared weapon props participate, preserving descriptor order and deduping paths"
         );
     }
 

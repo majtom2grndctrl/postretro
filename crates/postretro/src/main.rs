@@ -4863,6 +4863,12 @@ impl App {
         else {
             return;
         };
+        let descriptors = script_ctx.data_registry.borrow().entities.clone();
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        let mesh_clip_tables = &session.mesh_clip_tables;
+        let hit_zone_store = &session.hit_zone_store;
         let Some(netcode::NetEndpoint::Host {
             server,
             allocator,
@@ -4881,10 +4887,7 @@ impl App {
             loaded_movers: _,
             demo_mover,
             state_slots,
-        }) = self
-            .session
-            .as_mut()
-            .and_then(|session| session.net_endpoint.as_mut())
+        }) = session.net_endpoint.as_mut()
         else {
             return;
         };
@@ -4896,6 +4899,18 @@ impl App {
         {
             let mut registry = script_ctx.registry.borrow_mut();
             netcode::host_drive_demo_mover(&mut registry, demo_mover, allocator, replicable, *tick);
+            let changed_pawns = netcode::synchronize_weapon_owner_attachments(
+                &mut registry,
+                weapon_owners,
+                &descriptors,
+                hit_zone_store,
+            );
+            crate::resolve_mesh_entity_bindings_for_entities(
+                &mut registry,
+                mesh_clip_tables,
+                hit_zone_store,
+                changed_pawns,
+            );
         }
 
         {
@@ -5198,6 +5213,7 @@ impl App {
     /// replicate). The host pawn stays driven locally by `simulate_tick` — this only
     /// replicates its Transform + PlayerMovementState outbound.
     fn host_register_own_pawn_after_install(&mut self) {
+        let active_weapon = self.active_wieldable;
         let Some(script_ctx) = self
             .session
             .as_ref()
@@ -5209,6 +5225,7 @@ impl App {
             allocator,
             replicable,
             host_pawn,
+            weapon_owners,
             ..
         }) = self
             .session
@@ -5226,6 +5243,9 @@ impl App {
             return;
         };
         netcode::host_register_own_pawn(allocator, replicable, host_pawn, pawn);
+        if let Some(weapon) = active_weapon {
+            weapon_owners.set(pawn, weapon);
+        }
     }
 
     /// Register the listen host's networked AI enemies for outbound replication after a

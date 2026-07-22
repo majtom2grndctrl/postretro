@@ -14,6 +14,7 @@ use crate::scripting::builtins::{
     PLAYER_START_CLASSNAME, apply_classname_dispatch, apply_data_archetype_dispatch,
     deferred_remote_player_mesh_models, descriptor_materializes_ai_enemy,
     filter_out_client_ai_enemies, spawn_from_player_starts, suppressed_ai_enemy_mesh_models,
+    weapon_third_person_models,
 };
 use crate::startup::{
     BootState, InFlightLevelLoad, LevelLoadEntry, LevelRequest, LevelSource, LoadOutcome,
@@ -814,6 +815,35 @@ impl App {
         self.active_wieldable = products.active_wieldable;
         self.active_wieldable_descriptor = products.active_wieldable_descriptor;
 
+        // The boot pawn exists before the regular host snapshot cadence (and in
+        // single-player there is no `WeaponOwners` table at all), so establish its
+        // shadow-only third-person weapon prop at install time. The model sweep above
+        // has already built both CPU tables; resolve only this changed pawn through
+        // the standard socket-binding path.
+        let local_pawn = script_ctx.registry.borrow().local_player_pawn();
+        let descriptors = script_ctx.data_registry.borrow().entities.clone();
+        if let Some(pawn) = local_pawn {
+            let session = self
+                .session
+                .as_mut()
+                .expect("session installed before local weapon presentation install");
+            let mut registry = script_ctx.registry.borrow_mut();
+            if crate::netcode::synchronize_weapon_attachment_for_pawn(
+                &mut registry,
+                pawn,
+                self.active_wieldable,
+                &descriptors,
+                &session.hit_zone_store,
+            ) {
+                crate::resolve_mesh_entity_bindings_for_entities(
+                    &mut registry,
+                    &session.mesh_clip_tables,
+                    &session.hit_zone_store,
+                    [pawn],
+                );
+            }
+        }
+
         // E10 Task 4 / M15 Phase 3: register this level's map-placed AI enemies and
         // PRL-loaded movers for outbound replication. Host-gated (a no-op off a
         // listen host) and reload-safe; each takes its own registry borrow.
@@ -1456,6 +1486,10 @@ pub(crate) fn install_world_cpu(
     } else {
         Vec::new()
     };
+    // Wieldable weapon instances have no MeshComponent of their own. Preload every
+    // declared third-person prop so host and client attachment changes never trigger
+    // runtime model loads or leave a transient placeholder.
+    let third_person_weapon_models = weapon_third_person_models(&descriptors);
     let (active_wieldable, active_wieldable_descriptor, first_spawn) = {
         let mut registry = script_ctx.registry.borrow_mut();
         let mut map_entities = map_entities;
@@ -1582,6 +1616,11 @@ pub(crate) fn install_world_cpu(
             }
         }
         for model in &deferred_remote_player_models {
+            if seen.insert(model.clone()) {
+                models.push(model.clone());
+            }
+        }
+        for model in &third_person_weapon_models {
             if seen.insert(model.clone()) {
                 models.push(model.clone());
             }

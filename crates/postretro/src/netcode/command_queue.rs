@@ -98,6 +98,13 @@ impl WeaponOwners {
         self.weapons.get(&pawn).copied()
     }
 
+    /// Iterate the host-authoritative pawn-to-active-weapon bindings. Presentation
+    /// synchronization reads this immediately before snapshot production; gameplay
+    /// continues to resolve authority through [`weapon_of`](Self::weapon_of).
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (EntityId, EntityId)> + '_ {
+        self.weapons.iter().map(|(&pawn, &weapon)| (pawn, weapon))
+    }
+
     /// Forget a pawn's active weapon (on slot close / despawn). Idempotent.
     pub(crate) fn remove_pawn(&mut self, pawn: EntityId) {
         self.weapons.remove(&pawn);

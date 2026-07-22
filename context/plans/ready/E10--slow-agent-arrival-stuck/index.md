@@ -1,7 +1,8 @@
 # E10 — Slow-Agent Arrival Stuck False-Positive
 
-> **Draft.** Deferred out of `E10--navmesh-capsule-clearance` review. Generalizes the
-> E10 mandatory-waypoint stuck gate to the ordinary arrival-deceleration case.
+> **Ready.** Promoted from drafts after structural + implementability review. Deferred
+> out of `E10--navmesh-capsule-clearance` review; generalizes the E10 mandatory-waypoint
+> stuck gate to the ordinary arrival-deceleration case.
 
 ## Goal
 
@@ -221,6 +222,6 @@ pattern with `move_speed = 1.0`.
   its own nav-geometry repro fixture (a mandatory vertex the capsule cannot plane-pass while
   still sliding along it — none exists today), and folding it in would drag an
   opposite-signed bug into a tidy detector fix. Tracked separately in
-  [`../E10--mandatory-vertex-wedge-escapes/`](../E10--mandatory-vertex-wedge-escapes/index.md).
+  [`drafts/E10--mandatory-vertex-wedge-escapes/`](../../drafts/E10--mandatory-vertex-wedge-escapes/index.md).
   Constraint retained here: any fix there must compose with this spec's arrival-band
   relaxation without the two jointly masking a mandatory-vertex wedge.

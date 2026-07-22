@@ -205,7 +205,6 @@ pub(crate) fn forward_command(dash_pressed: bool) -> SimCommand {
             crouch_intent: false,
             facing_yaw: 0.0,
             use_pressed: false,
-            aim_pitch: 0.0,
         },
         fire_button: FireButtonState {
             pressed: false,
@@ -260,6 +259,7 @@ pub(crate) fn input_at(client_tick: u32, wish_forward: f32) -> InputCommand {
             crouch_intent: false,
             facing_yaw: 0.0,
             use_pressed: false,
+            aim_pitch: 0.0,
         },
         fire_button: WireFireButtonState {
             pressed: false,

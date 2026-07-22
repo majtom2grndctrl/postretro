@@ -1161,6 +1161,7 @@ fn stale_snapshot_for(h: &LoopbackHarness) -> postretro_net::wire::SnapshotMessa
             // A synthetic STALE fixture rejected by the sequence guard before apply;
             // it never exercises client materialization, so no class is stamped.
             entity_class: None,
+            active_weapon_archetype: None,
         }],
         state_schema_fingerprint: [0u8; 32],
         state_records: Vec::new(),

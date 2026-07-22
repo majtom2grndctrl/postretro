@@ -12,6 +12,17 @@ export const playerEntity = defineEntity({
     // producer, its `[0, max]` slot range, and any player-damage reaction all
     // silently no-op. `max: 100` is the conventional full-health baseline.
     health: { max: 100 },
+    mesh: {
+      model: "models/exo_red/model.gltf",
+      shadowOnly: true,
+      // exo_red declares a `hand_r` socket for the runtime third-person weapon.
+      animations: {
+        idle: { clip: "idle", loop: true },
+        walk_forward: { clip: "walk_forward", loop: true, travelSpeed: 7.0 },
+      },
+      defaultState: "idle",
+      locomotion: { speedScale: true },
+    },
     movement: {
       capsule: { radius: 0.2, halfHeight: 0.8, eyeHeight: 0.5 },
       ground: {

@@ -385,6 +385,39 @@ pub(crate) fn suppressed_ai_enemy_mesh_models(
     ordered
 }
 
+/// Collect every movement descriptor's holder and attachment models for the
+/// connected-client boot-pawn deferral path. Such a client has no locally
+/// spawned movement pawn during the level-load model sweep, but later receives
+/// remote movement pawns in snapshots. Snapshot materialization selects the
+/// player presentation path with the same `movement.is_some()` predicate, so
+/// upload precisely that descriptor set up front.
+pub(crate) fn deferred_remote_player_mesh_models(
+    descriptors: &[EntityTypeDescriptor],
+) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut ordered = Vec::new();
+    for descriptor in descriptors {
+        if descriptor.movement.is_none() {
+            continue;
+        }
+        let Some(mesh) = descriptor.mesh.as_ref() else {
+            continue;
+        };
+        if !mesh.model.is_empty() && seen.insert(mesh.model.clone()) {
+            ordered.push(mesh.model.clone());
+        }
+        let mut attachment_models: Vec<&str> =
+            mesh.attachments.values().map(String::as_str).collect();
+        attachment_models.sort_unstable();
+        for attachment_model in attachment_models {
+            if !attachment_model.is_empty() && seen.insert(attachment_model.to_string()) {
+                ordered.push(attachment_model.to_string());
+            }
+        }
+    }
+    ordered
+}
+
 /// Attach descriptor components to an already-spawned entity. `initial_*` KVP
 /// overrides are applied to `emitter` and `light` before attachment;
 /// `movement` receives descriptor values verbatim. Weapon attachment is opt-in
@@ -555,7 +588,8 @@ pub(crate) fn descriptor_mesh_component(
         component
             .with_attachments(attachments)
             .with_origin_offset(origin_offset)
-            .with_shadow_bias_scale(mesh_desc.shadow_bias_scale),
+            .with_shadow_bias_scale(mesh_desc.shadow_bias_scale)
+            .with_shadow_only(mesh_desc.shadow_only),
     )
 }
 
@@ -1874,6 +1908,8 @@ mod tests {
                 fire_mode: FireMode::Semi,
                 resolution: ResolutionMode::Hitscan,
                 credit_source: None,
+                third_person_model: None,
+                viewmodel: None,
                 resource: None,
             }),
             mesh: None,
@@ -2402,6 +2438,39 @@ mod tests {
         let placements = vec![placement("crate", &[]), placement("mystery", &[])];
 
         assert!(suppressed_ai_enemy_mesh_models(&placements, &descriptors).is_empty());
+    }
+
+    #[test]
+    fn deferred_remote_player_mesh_models_collects_movement_descriptor_models() {
+        // Connected clients defer the local boot pawn, but snapshots can later
+        // materialize any descriptor with `movement`. Preload its holder and
+        // attachment models; unrelated mesh-only descriptors must not leak in.
+        let mut avatar = player_with_movement("co_op_avatar");
+        avatar.mesh = mesh_descriptor("co_op_avatar", false).mesh;
+        let mesh = avatar.mesh.as_mut().expect("fixture supplies a mesh");
+        mesh.model = "models/exo_red/model.gltf".to_string();
+        mesh.attachments = [
+            ("hand_r".to_string(), "models/smg/model.gltf".to_string()),
+            ("back".to_string(), "models/backpack/model.gltf".to_string()),
+        ]
+        .into_iter()
+        .collect();
+
+        let models = deferred_remote_player_mesh_models(&[
+            avatar,
+            mesh_descriptor("scenery", false),
+            player_with_movement("invisible_player"),
+        ]);
+
+        assert_eq!(
+            models,
+            vec![
+                "models/exo_red/model.gltf".to_string(),
+                "models/backpack/model.gltf".to_string(),
+                "models/smg/model.gltf".to_string(),
+            ],
+            "only movement descriptors contribute and attachments retain deterministic socket order"
+        );
     }
 
     #[test]

@@ -187,6 +187,7 @@ pub(crate) mod test_support {
                 animation: Some(two_state_animation()),
                 origin_offset: Vec3::ZERO,
                 shadow_bias_scale: 1.0,
+                shadow_only: false,
                 attachments: Vec::new(),
                 pose_inputs: None,
             },

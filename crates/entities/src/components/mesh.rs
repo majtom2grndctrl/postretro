@@ -77,6 +77,10 @@ pub struct MeshComponent {
         skip_serializing_if = "shadow_bias_scale_is_default"
     )]
     pub shadow_bias_scale: f32,
+    /// Descriptor-authored forward-visibility opt-out. Shadow-depth collection
+    /// retains this mesh while the forward collector excludes it.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub shadow_only: bool,
     /// Descriptor-authored prop models mounted at named holder sockets. Socket
     /// names and model handles persist; the resolved binding does not.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -96,6 +100,7 @@ impl MeshComponent {
             animation: None,
             origin_offset: Vec3::ZERO,
             shadow_bias_scale: 1.0,
+            shadow_only: false,
             attachments: Vec::new(),
             pose_inputs: None,
         }
@@ -107,6 +112,7 @@ impl MeshComponent {
             animation: Some(animation),
             origin_offset: Vec3::ZERO,
             shadow_bias_scale: 1.0,
+            shadow_only: false,
             attachments: Vec::new(),
             pose_inputs: None,
         }
@@ -119,6 +125,11 @@ impl MeshComponent {
 
     pub fn with_shadow_bias_scale(mut self, shadow_bias_scale: f32) -> Self {
         self.shadow_bias_scale = shadow_bias_scale;
+        self
+    }
+
+    pub fn with_shadow_only(mut self, shadow_only: bool) -> Self {
+        self.shadow_only = shadow_only;
         self
     }
 
@@ -147,6 +158,10 @@ fn default_shadow_bias_scale() -> f32 {
 
 fn shadow_bias_scale_is_default(value: &f32) -> bool {
     *value == default_shadow_bias_scale()
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 pub fn capsule_center_to_feet_origin_offset(radius: f32, height: f32) -> Vec3 {
@@ -180,5 +195,22 @@ mod tests {
             AttachmentBinding::Unresolved,
             "deserialization must never retain a stale resolved binding"
         );
+    }
+
+    #[test]
+    fn shadow_only_defaults_false_and_serializes_when_enabled() {
+        let default = MeshComponent::stateless("models/holder.gltf".to_string());
+        assert!(!default.shadow_only);
+        assert!(
+            serde_json::to_value(&default)
+                .unwrap()
+                .get("shadow_only")
+                .is_none(),
+            "the default preserves existing serialized mesh payloads"
+        );
+
+        let shadow_only = default.with_shadow_only(true);
+        let serialized = serde_json::to_value(&shadow_only).unwrap();
+        assert_eq!(serialized["shadow_only"], true);
     }
 }

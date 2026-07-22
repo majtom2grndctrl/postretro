@@ -370,7 +370,7 @@ pub(crate) enum NetEndpoint {
 
 #[derive(Debug, Default)]
 pub(crate) struct ClientApplyFrameOutcome {
-    pub(crate) materialized_remote_enemy_presentation: bool,
+    pub(crate) materialized_remote_entity_presentation: bool,
     pub(crate) armed_local_pawn: Option<ClientArmedLocalPawn>,
     pub(crate) owner_private_weapon_cooldown_fresh: bool,
 }
@@ -908,7 +908,7 @@ pub(crate) fn decode_snapshot(bytes: &[u8]) -> Result<SnapshotMessage, SnapshotD
 /// The mutable registry borrow is threaded in by the caller (`main.rs`), so this
 /// module never reaches into `App`.
 ///
-/// Returns `true` when this receive pass materialized at least one remote-enemy
+/// Returns `true` when this receive pass materialized at least one remote
 /// presentation mesh, allowing the caller to resolve late-spawned animation clip
 /// indices against the already-loaded model tables.
 #[allow(clippy::too_many_arguments)]
@@ -998,23 +998,29 @@ pub(crate) fn client_receive_and_apply(
             });
         }
         // Each non-local baseline that just spawned a descriptor-class-bearing entity gets
-        // its remote-enemy presentation materialized here, where the descriptor
-        // table is in scope (the net-facing apply is descriptor-blind). The helper attaches
-        // ONLY the descriptor's mesh — no Brain/Agent/Health/Weapon/PlayerMovement — and is
-        // idempotent + unknown-class-tolerant (leaves the entity transform-only, never
-        // rejects the snapshot). The entity is already mapped, so it interpolates regardless
-        // of whether a mesh attached. Runs before the frame renders (Game-logic stage).
-        for remote in &outcome.remote_enemies {
-            // Remote AI has no local AgentComponent, so derive its walk rate from
-            // exactly the motion this client presents. The shared descriptor supplies
-            // the immutable reference speed and alert-mapped locomotion state; neither
-            // belongs on the snapshot wire format.
-            let walk_reference = descriptors
-                .iter()
-                .find(|descriptor| {
-                    descriptor.canonical_name.as_deref() == Some(remote.entity_class.as_str())
-                })
-                .and_then(|descriptor| {
+        // its presentation materialized here, where the shared descriptor table is in scope
+        // (the net-facing apply is descriptor-blind). A descriptor's `movement` block is the
+        // durable player-type signal; names are author-controlled. Both paths attach ONLY the
+        // descriptor mesh — no Brain/Agent/Health/Weapon/PlayerMovement — and are idempotent
+        // plus unknown-class-tolerant, so a failed presentation still interpolates transform.
+        for remote in &outcome.remote_entities {
+            let descriptor = descriptors.iter().find(|descriptor| {
+                descriptor.canonical_name.as_deref() == Some(remote.entity_class.as_str())
+            });
+            let materialized = if matches!(descriptor, Some(descriptor) if descriptor.movement.is_some())
+            {
+                remote_materialize::materialize_armed_remote_player(
+                    remote,
+                    descriptors,
+                    registry,
+                    agent_params,
+                )
+            } else {
+                // Remote AI has no local AgentComponent, so derive its walk rate from
+                // exactly the motion this client presents. The shared descriptor supplies
+                // the immutable reference speed and alert-mapped locomotion state; neither
+                // belongs on the snapshot wire format.
+                let walk_reference = descriptor.and_then(|descriptor| {
                     let ai = descriptor.ai.as_ref()?;
                     let mesh = descriptor.mesh.as_ref()?;
                     let state = mesh.animations.get(&ai.states.alert)?;
@@ -1029,19 +1035,20 @@ pub(crate) fn client_receive_and_apply(
                         });
                     Some((ai.move_speed, ai.states.alert.clone(), derived_travel_speed))
                 });
-            replication.cache_remote_enemy_walk_playback(remote.network_id, walk_reference);
-            let materialized = remote_materialize::materialize_armed_remote_enemy(
-                remote,
-                descriptors,
-                registry,
-                agent_params,
-            );
+                replication.cache_remote_enemy_walk_playback(remote.network_id, walk_reference);
+                remote_materialize::materialize_armed_remote_enemy(
+                    remote,
+                    descriptors,
+                    registry,
+                    agent_params,
+                )
+            };
             if materialized {
                 if let Some(state) = remote.initial_animation_state.as_deref() {
                     client::apply_mesh_animation_state(registry, remote.entity_id, state, true);
                 }
             }
-            frame_outcome.materialized_remote_enemy_presentation |= materialized;
+            frame_outcome.materialized_remote_entity_presentation |= materialized;
         }
         // M15 Phase 3 Task 5: reconcile the local predicted pawn against the
         // authoritative record this snapshot delivered — merge the movement subset,
@@ -2297,6 +2304,8 @@ mod tests {
             fire_mode: FireMode::Semi,
             resolution: ResolutionMode::Hitscan,
             credit_source: Some("weapon.test.net".to_string()),
+            third_person_model: None,
+            viewmodel: None,
             resource: None,
         })
     }
@@ -3278,7 +3287,8 @@ mod tests {
 
     use crate::scripting::builtins::spawn_from_player_starts;
     use crate::scripting::map_entity::MapEntity;
-    use postretro_entities::EntityTypeDescriptor;
+    use postretro_entities::components::mesh::MeshComponent;
+    use postretro_entities::{EntityTypeDescriptor, MeshDescriptor};
     use postretro_foundation::{
         AirParams, CapsuleParams, FallParams, GroundParams, PlayerMovementDescriptor, SpeedParams,
     };
@@ -3330,7 +3340,15 @@ mod tests {
                 view_feel: None,
             }),
             weapon: None,
-            mesh: None,
+            mesh: Some(MeshDescriptor {
+                model: "models/exo_red/model.gltf".to_string(),
+                shadow_only: true,
+                attachments: Default::default(),
+                shadow_bias_scale: 1.0,
+                animations: Default::default(),
+                default_state: None,
+                locomotion: None,
+            }),
             health: None,
             ai: None,
         }
@@ -3352,9 +3370,17 @@ mod tests {
         let descriptors = [host_player_descriptor()];
         let placement = [host_player_spawn_placement()];
         spawn_from_player_starts(&placement, &descriptors, registry, None);
-        registry
+        let pawn = registry
             .local_player_pawn()
-            .expect("the host boot pawn is marked the local player")
+            .expect("the host boot pawn is marked the local player");
+        assert!(
+            registry
+                .get_component::<MeshComponent>(pawn)
+                .expect("descriptor player mesh materializes without a snapshot")
+                .shadow_only,
+            "the single-player/listen-host descriptor path attaches the body shadow mesh"
+        );
+        pawn
     }
 
     // Issue 3b: after host setup the host's own pawn is registered in the ReplicableSet

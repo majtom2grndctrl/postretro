@@ -178,6 +178,32 @@ fn js_weapon_descriptor_without_credit_source_parses_as_none() {
 }
 
 #[test]
+fn weapon_model_paths_have_js_luau_parity() {
+    let js = eval_js(
+        r#"({ components: { weapon: {
+            damage: 12, range: 64, fireRateMs: 180, fireMode: "semi", resolution: "hitscan",
+            thirdPersonModel: "models/smg/model.gltf", viewmodel: "models/smg/model.gltf"
+        } } })"#,
+        |ctx, v| entity_descriptor_from_js(ctx, v).unwrap(),
+    );
+    let lua = eval_lua(
+        r#"return { components = { weapon = {
+            damage = 12, range = 64, fireRateMs = 180, fireMode = "semi", resolution = "hitscan",
+            thirdPersonModel = "models/smg/model.gltf", viewmodel = "models/smg/model.gltf"
+        } } }"#,
+        |v| entity_descriptor_from_lua(v).unwrap(),
+    );
+    let js = js.weapon.unwrap();
+    let lua = lua.weapon.unwrap();
+    assert_eq!(js.third_person_model, lua.third_person_model);
+    assert_eq!(js.viewmodel, lua.viewmodel);
+    assert_eq!(
+        js.third_person_model.as_deref(),
+        Some("models/smg/model.gltf")
+    );
+}
+
+#[test]
 fn paired_weapon_ammo_resource_defaults_match() {
     let js = ammo_resource(
         parse_js_ammo_resource(

@@ -744,6 +744,8 @@ mod tests {
             fire_mode,
             resolution: ResolutionMode::Hitscan,
             credit_source: None,
+            third_person_model: None,
+            viewmodel: None,
             resource: None,
         })
     }
@@ -773,6 +775,8 @@ mod tests {
             fire_mode,
             resolution: ResolutionMode::Hitscan,
             credit_source: None,
+            third_person_model: None,
+            viewmodel: None,
             resource: None,
         }
     }

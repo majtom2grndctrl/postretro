@@ -4652,7 +4652,7 @@ impl App {
                     }
                 }
                 armed_local_pawn = apply_outcome.armed_local_pawn;
-                if apply_outcome.materialized_remote_enemy_presentation {
+                if apply_outcome.materialized_remote_entity_presentation {
                     // `mesh_clip_tables` is a disjoint field of the same `session`
                     // bound for the `net_endpoint` match above.
                     resolve_mesh_entity_bindings(
@@ -7761,6 +7761,7 @@ mod tests {
                     animation: Some(MeshAnimation::new(states, "idle".to_string())),
                     origin_offset: glam::Vec3::ZERO,
                     shadow_bias_scale: 1.0,
+                    shadow_only: false,
                     attachments: Vec::new(),
                     pose_inputs: None,
                 },
@@ -8035,6 +8036,7 @@ mod tests {
             weapon: None,
             mesh: Some(MeshDescriptor {
                 model: "models/remote_enemy/scene.gltf".to_string(),
+                shadow_only: false,
                 attachments: [("hand".to_string(), "models/remote_prop.gltf".to_string())]
                     .into_iter()
                     .collect(),
@@ -8049,7 +8051,7 @@ mod tests {
 
         let mut registry = EntityRegistry::new();
         let id = registry.spawn(Transform::default());
-        crate::scripting::builtins::net_descriptor::materialize_net_remote_enemy_presentation(
+        crate::scripting::builtins::net_descriptor::materialize_net_mesh_presentation(
             "remote_enemy",
             &descriptors,
             &mut registry,

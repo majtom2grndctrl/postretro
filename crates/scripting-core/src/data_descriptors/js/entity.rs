@@ -237,6 +237,7 @@ pub fn mesh_descriptor_from_js<'js>(obj: &Object<'js>) -> Result<MeshDescriptor,
     };
 
     let shadow_bias_scale = get_optional_f32_js(obj, "shadowBiasScale")?;
+    let shadow_only = get_optional_bool_js(obj, "shadowOnly")?.unwrap_or(false);
 
     // Optional `locomotion` block: `{ speedScale?: bool }`. Absent block ⇒ None
     // ⇒ the runtime `speed_scale = true` default; `speedScale` itself defaults
@@ -265,6 +266,7 @@ pub fn mesh_descriptor_from_js<'js>(obj: &Object<'js>) -> Result<MeshDescriptor,
         animations_present,
         locomotion,
         shadow_bias_scale,
+        shadow_only,
     )
 }
 

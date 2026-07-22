@@ -29,6 +29,10 @@ pub use postretro_foundation::data_descriptors::LightDescriptor;
 #[derive(Debug, Clone, PartialEq)]
 pub struct MeshDescriptor {
     pub model: String,
+    /// When true, this mesh is collected only for shadow-depth presentation.
+    /// `shadowOnly` on the script surface; omission preserves normal forward
+    /// rendering. The renderer consumes the materialized component flag.
+    pub shadow_only: bool,
     /// Named holder socket → content-relative prop model path. The spawn path
     /// materializes these into transiently unresolved mesh attachments; level
     /// load resolves their holder-side binding from the loaded glTF sockets.
@@ -112,8 +116,9 @@ impl MeshDescriptor {
     /// any state is declared — a present `defaultState` that names a declared
     /// state. An empty-but-present `animations` block is rejected; a wholly absent
     /// one yields a stateless descriptor (`animations` empty, `default_state`
-    /// None). `shadowBiasScale` is optional on the wire, defaults to 1.0, and must
-    /// be finite in 0.0..=4.0.
+    /// None). `shadowOnly` is optional on the wire and defaults to `false`.
+    /// `shadowBiasScale` is optional on the wire, defaults to 1.0, and must be
+    /// finite in 0.0..=4.0.
     pub fn build(
         model: String,
         attachments: HashMap<String, String>,
@@ -122,6 +127,7 @@ impl MeshDescriptor {
         animations_present: bool,
         locomotion: Option<LocomotionDescriptor>,
         shadow_bias_scale: Option<f32>,
+        shadow_only: bool,
     ) -> Result<Self, DescriptorError> {
         if model.is_empty() {
             return Err(DescriptorError::InvalidShape {
@@ -252,6 +258,7 @@ impl MeshDescriptor {
 
         Ok(MeshDescriptor {
             model,
+            shadow_only,
             attachments,
             shadow_bias_scale,
             animations,

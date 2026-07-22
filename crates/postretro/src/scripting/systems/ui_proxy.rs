@@ -228,6 +228,8 @@ mod tests {
             fire_mode: FireMode::Semi,
             resolution: ResolutionMode::Hitscan,
             credit_source: None,
+            third_person_model: None,
+            viewmodel: None,
             resource: Some(WeaponResource::Ammo(AmmoResource {
                 ammo_type: "bullets.light".to_string(),
                 magazine: 12,
@@ -459,6 +461,8 @@ mod tests {
                         fire_mode: FireMode::Semi,
                         resolution: ResolutionMode::Hitscan,
                         credit_source: None,
+                        third_person_model: None,
+                        viewmodel: None,
                         resource: None,
                     }),
                 )

@@ -961,6 +961,8 @@ fn spawn_weapon(registry: &mut EntityRegistry) -> EntityId {
                 fire_mode: FireMode::Semi,
                 resolution: ResolutionMode::Hitscan,
                 credit_source: None,
+                third_person_model: None,
+                viewmodel: None,
                 resource: None,
             }),
         )
@@ -1950,6 +1952,7 @@ fn leg_probe_fixture(position: Vec3, yaw: f32) -> (EntityRegistry, EntityId, Hit
                 animation: Some(MeshAnimation::new(states, "idle".into())),
                 origin_offset: Vec3::ZERO,
                 shadow_bias_scale: 1.0,
+                shadow_only: false,
                 attachments: Vec::new(),
                 pose_inputs: None,
             },

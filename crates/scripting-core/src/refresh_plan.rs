@@ -784,6 +784,8 @@ mod tests {
                 fire_mode: FireMode::Semi,
                 resolution: ResolutionMode::Hitscan,
                 credit_source: None,
+                third_person_model: None,
+                viewmodel: None,
                 resource: None,
             }),
             mesh: None,
@@ -1568,6 +1570,7 @@ mod tests {
 
         let mesh_descriptor = MeshDescriptor {
             model: "decraniated".into(),
+            shadow_only: false,
             attachments: Default::default(),
             shadow_bias_scale: 1.0,
             animations: descriptor_states,
@@ -1645,6 +1648,7 @@ mod tests {
             animation: Some(live_anim),
             origin_offset: glam::Vec3::ZERO,
             shadow_bias_scale: 1.0,
+            shadow_only: false,
             attachments: Vec::new(),
             pose_inputs: None,
         };

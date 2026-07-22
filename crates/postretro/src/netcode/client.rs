@@ -284,21 +284,21 @@ pub(crate) struct LocalReconcileInput {
 }
 
 /// A non-local, descriptor-class-bearing entity an `apply_snapshot` first spawned this
-/// snapshot, surfaced for the caller to materialize remote-enemy presentation (E10
-/// Task 6). `ClientReplication` spawns the entity Transform-only and maps its
+/// snapshot, surfaced for the caller to materialize descriptor presentation. The
+/// `ClientReplication` spawns the entity Transform-only and maps its
 /// `NetworkId` (so it joins the remote interpolation path), but the descriptor tables
 /// are not in scope here — the net-facing apply is descriptor-blind. The caller
 /// (`client_receive_and_apply`, where the descriptor table is in scope) calls
-/// `materialize_net_remote_enemy_presentation` to attach ONLY the descriptor's mesh.
+/// `materialize_net_mesh_presentation` to attach ONLY the descriptor's mesh.
 ///
 /// Surfaced on the unmapped first-spawn of a non-local record carrying an
 /// `entity_class`, and on later descriptor-class records only while the mapped entity
 /// is still missing `Mesh`. The helper is idempotent, so retry repairs a
 /// transform-only remote without resetting an already-materialized mesh. The local
 /// predicted pawn is excluded: it has its own `armed_local_pawn` movement-path
-/// materialization and is never a remote enemy.
+/// materialization and is never a remote presentation entity.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RemoteEnemyMaterialize {
+pub(crate) struct RemoteEntityMaterialize {
     /// Host-assigned identity for the mapped remote entity. The descriptor-aware
     /// receive glue uses this to cache its immutable locomotion reference data.
     pub(crate) network_id: NetworkId,
@@ -359,13 +359,13 @@ pub(crate) struct ApplyOutcome {
     /// full baseline or a delta), not only the arming one — reconcile runs on every
     /// authoritative local update; the arming case is just the first.
     pub(crate) local_reconcile: Option<LocalReconcileInput>,
-    /// Non-local, descriptor-class-bearing entities that need remote-enemy mesh
+    /// Non-local, descriptor-class-bearing entities that need mesh
     /// presentation. Usually one entry per spawn; mapped re-baselines or deltas can
     /// surface another entry only while the entity is still meshless, so retry can
     /// repair a failed materialization without duplicating an already-live mesh. The
     /// descriptor lookup deliberately does NOT happen here — descriptor tables are not
     /// in scope in this descriptor-blind apply path.
-    pub(crate) remote_enemies: Vec<RemoteEnemyMaterialize>,
+    pub(crate) remote_entities: Vec<RemoteEntityMaterialize>,
     /// Per-snapshot mover correction magnitudes in metres, surfaced so harnesses
     /// can assert corrections stay bounded and non-accumulating.
     pub(crate) mover_corrections: Vec<MoverCorrection>,
@@ -656,7 +656,7 @@ impl ClientReplication {
                 ) {
                     return false;
                 }
-                self.maybe_surface_remote_enemy_materialize(
+                self.maybe_surface_remote_entity_materialize(
                     registry,
                     existing,
                     local_player,
@@ -756,7 +756,7 @@ impl ClientReplication {
                 // mesh path.
                 if !local_player {
                     if let Some(class) = entity_class {
-                        outcome.remote_enemies.push(RemoteEnemyMaterialize {
+                        outcome.remote_entities.push(RemoteEntityMaterialize {
                             network_id,
                             entity_id: id,
                             entity_class: class.to_string(),
@@ -818,7 +818,7 @@ impl ClientReplication {
         ) {
             return false;
         }
-        self.maybe_surface_remote_enemy_materialize(
+        self.maybe_surface_remote_entity_materialize(
             registry,
             id,
             local_player,
@@ -834,7 +834,7 @@ impl ClientReplication {
         true
     }
 
-    fn maybe_surface_remote_enemy_materialize(
+    fn maybe_surface_remote_entity_materialize(
         &self,
         registry: &EntityRegistry,
         entity_id: EntityId,
@@ -861,7 +861,7 @@ impl ClientReplication {
         {
             return;
         }
-        outcome.remote_enemies.push(RemoteEnemyMaterialize {
+        outcome.remote_entities.push(RemoteEntityMaterialize {
             network_id,
             entity_id,
             entity_class: class.to_string(),
@@ -3471,8 +3471,8 @@ mod tests {
         assert!(out.armed_local_pawn.is_none());
         // Exactly one remote-enemy materialize request, carrying the mapped id + class.
         assert_eq!(
-            out.remote_enemies,
-            vec![RemoteEnemyMaterialize {
+            out.remote_entities,
+            vec![RemoteEntityMaterialize {
                 network_id: NetworkId(7),
                 entity_id: id,
                 entity_class: "decraniated_mob".to_string(),
@@ -3506,8 +3506,8 @@ mod tests {
             .get(&NetworkId(7))
             .expect("remote enemy mapped");
         assert_eq!(
-            out.remote_enemies,
-            vec![RemoteEnemyMaterialize {
+            out.remote_entities,
+            vec![RemoteEntityMaterialize {
                 network_id: NetworkId(7),
                 entity_id: id,
                 entity_class: "decraniated_mob".to_string(),
@@ -3538,7 +3538,7 @@ mod tests {
             "still spawns + maps (interpolation)"
         );
         assert!(
-            out.remote_enemies.is_empty(),
+            out.remote_entities.is_empty(),
             "a classless baseline surfaces no remote-enemy materialize request"
         );
     }
@@ -3568,7 +3568,7 @@ mod tests {
             "the local pawn arms on the movement path"
         );
         assert!(
-            out.remote_enemies.is_empty(),
+            out.remote_entities.is_empty(),
             "the local pawn never rides the remote-enemy materialize path"
         );
     }
@@ -3595,7 +3595,7 @@ mod tests {
             ),
         );
         let id = *client.map().get(&NetworkId(7)).unwrap();
-        assert_eq!(spawn.remote_enemies.len(), 1);
+        assert_eq!(spawn.remote_entities.len(), 1);
         registry
             .set_component(id, MeshComponent::stateless("remote_enemy".to_string()))
             .expect("test marks remote as already materialized");
@@ -3621,7 +3621,7 @@ mod tests {
             "delta mutates the same entity, no respawn"
         );
         assert!(
-            delta_out.remote_enemies.is_empty(),
+            delta_out.remote_entities.is_empty(),
             "a delta for a mapped remote enemy surfaces no new materialize request"
         );
 
@@ -3645,7 +3645,7 @@ mod tests {
             "re-baseline updates in place, no respawn"
         );
         assert!(
-            rebaseline.remote_enemies.is_empty(),
+            rebaseline.remote_entities.is_empty(),
             "a re-baseline for a mapped remote enemy surfaces no new materialize request"
         );
     }
@@ -3672,7 +3672,7 @@ mod tests {
             ),
         );
         let id = *client.map().get(&NetworkId(7)).unwrap();
-        assert_eq!(spawn.remote_enemies.len(), 1);
+        assert_eq!(spawn.remote_entities.len(), 1);
         assert_eq!(
             registry.has_component_kind(id, ComponentKind::Mesh),
             Ok(false),
@@ -3694,8 +3694,8 @@ mod tests {
         );
 
         assert_eq!(
-            rebaseline.remote_enemies,
-            vec![RemoteEnemyMaterialize {
+            rebaseline.remote_entities,
+            vec![RemoteEntityMaterialize {
                 network_id: NetworkId(7),
                 entity_id: id,
                 entity_class: "decraniated_mob".to_string(),
@@ -3726,7 +3726,7 @@ mod tests {
                 )],
             ),
         );
-        let id = spawn.remote_enemies[0].entity_id;
+        let id = spawn.remote_entities[0].entity_id;
         registry
             .set_component(id, unresolved_mesh())
             .expect("test simulates descriptor materialization before clip resolve");

@@ -1073,6 +1073,7 @@ mod tests {
                 animation: Some(MeshAnimation::new(states, "idle".into())),
                 origin_offset: Vec3::ZERO,
                 shadow_bias_scale: 1.0,
+                shadow_only: false,
                 attachments: Vec::new(),
                 pose_inputs: None,
             },
@@ -2001,6 +2002,7 @@ mod tests {
             weapon: None,
             mesh: Some(MeshDescriptor {
                 model: "remote-holder-model".to_string(),
+                shadow_only: false,
                 attachments: [("socket".to_string(), "remote-prop".to_string())]
                     .into_iter()
                     .collect(),
@@ -2013,7 +2015,7 @@ mod tests {
             ai: None,
         };
         assert!(
-            crate::scripting::builtins::net_descriptor::materialize_net_remote_enemy_presentation(
+            crate::scripting::builtins::net_descriptor::materialize_net_mesh_presentation(
                 "remote-holder",
                 &[descriptor],
                 &mut registry,

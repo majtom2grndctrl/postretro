@@ -61,6 +61,12 @@ pub struct WeaponDescriptor {
     pub resolution: ResolutionMode,
     #[serde(default, rename = "creditSource")]
     pub credit_source: Option<String>,
+    /// Optional rigid prop model mounted at the pawn's third-person hand socket.
+    #[serde(default, rename = "thirdPersonModel")]
+    pub third_person_model: Option<String>,
+    /// Optional model rendered by the first-person viewmodel pass.
+    #[serde(default)]
+    pub viewmodel: Option<String>,
     #[serde(default)]
     pub resource: Option<WeaponResource>,
 }
@@ -93,6 +99,16 @@ impl WeaponDescriptor {
         }
         if let Some(credit_source) = self.credit_source.as_deref() {
             validate_credit_source(credit_source)?;
+        }
+        for (field, path) in [
+            ("thirdPersonModel", self.third_person_model.as_deref()),
+            ("viewmodel", self.viewmodel.as_deref()),
+        ] {
+            if matches!(path, Some("")) {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!("`components.weapon.{field}` must be a non-empty model path"),
+                });
+            }
         }
         if let Some(WeaponResource::Ammo(ammo)) = self.resource.as_ref() {
             validate_ascii_identifier("resource.type", &ammo.ammo_type)?;
@@ -317,6 +333,8 @@ mod tests {
             fire_mode: FireMode::Semi,
             resolution: ResolutionMode::Hitscan,
             credit_source: credit_source.map(str::to_string),
+            third_person_model: None,
+            viewmodel: None,
             resource: None,
         }
     }

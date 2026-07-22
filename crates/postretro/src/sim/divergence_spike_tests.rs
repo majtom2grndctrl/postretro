@@ -253,6 +253,8 @@ fn spawn_weapon(registry: &mut EntityRegistry) -> EntityId {
                 fire_mode: FireMode::Semi,
                 resolution: ResolutionMode::Hitscan,
                 credit_source: None,
+                third_person_model: None,
+                viewmodel: None,
                 resource: None,
             }),
         )

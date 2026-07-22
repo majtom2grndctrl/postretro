@@ -180,6 +180,7 @@ mod tests {
             animation: Some(animation),
             origin_offset: Vec3::ZERO,
             shadow_bias_scale: 1.0,
+            shadow_only: false,
             attachments: Vec::new(),
             pose_inputs: Some(crate::PoseInputs {
                 aim_pitch: 0.25,
@@ -237,6 +238,7 @@ mod tests {
             animation: Some(two_state_animation()),
             origin_offset: Vec3::ZERO,
             shadow_bias_scale: 1.0,
+            shadow_only: false,
             attachments: Vec::new(),
             pose_inputs: None,
         };

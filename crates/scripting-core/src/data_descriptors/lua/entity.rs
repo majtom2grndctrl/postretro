@@ -292,6 +292,7 @@ pub fn mesh_descriptor_from_lua(table: &Table) -> Result<MeshDescriptor, Descrip
     };
 
     let shadow_bias_scale = get_optional_f32_lua(table, "shadowBiasScale")?;
+    let shadow_only = get_optional_bool_lua(table, "shadowOnly")?.unwrap_or(false);
 
     // Optional `locomotion` block: `{ speedScale?: bool }`. Absent block ⇒ None
     // ⇒ the runtime `speed_scale = true` default; `speedScale` itself defaults
@@ -324,6 +325,7 @@ pub fn mesh_descriptor_from_lua(table: &Table) -> Result<MeshDescriptor, Descrip
         animations_present,
         locomotion,
         shadow_bias_scale,
+        shadow_only,
     )
 }
 

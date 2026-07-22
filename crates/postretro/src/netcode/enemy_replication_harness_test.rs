@@ -72,7 +72,7 @@ use postretro_net::wire::{
     WireMeshAnimationState, WireTransform,
 };
 
-use super::client::{ClientReplication, RemoteEnemyMaterialize};
+use super::client::{ClientReplication, RemoteEntityMaterialize};
 use super::interpolation::{MAX_DELAY_MICROS, PoseSource};
 use super::remote_materialize::materialize_armed_remote_enemy;
 use super::replication::{ReplicableSet, host_register_map_enemies, produce_owned_snapshots};
@@ -181,7 +181,7 @@ fn agent_params() -> postretro_foundation::NavAgentParams {
 }
 
 fn materialize_remote_enemy_presentation(
-    remote: &RemoteEnemyMaterialize,
+    remote: &RemoteEntityMaterialize,
     descriptors: &[EntityTypeDescriptor],
     registry: &mut EntityRegistry,
 ) {
@@ -276,6 +276,7 @@ fn enemy_descriptor(class: &str) -> EntityTypeDescriptor {
         weapon: None,
         mesh: Some(MeshDescriptor {
             model: "decraniated".to_string(),
+            shadow_only: false,
             attachments: Default::default(),
             shadow_bias_scale: 1.0,
             animations: states,
@@ -344,6 +345,7 @@ fn prop_descriptor(class: &str) -> EntityTypeDescriptor {
         weapon: None,
         mesh: Some(MeshDescriptor {
             model: "crate_mesh".to_string(),
+            shadow_only: false,
             attachments: Default::default(),
             shadow_bias_scale: 1.0,
             animations: states,
@@ -463,7 +465,7 @@ impl EnemyReplicationHarness {
                 .apply_snapshot(&mut self.client_registry, &snapshot);
             // Task 6 seam: materialize the descriptor presentation for each remote
             // enemy this snapshot first spawned (mesh only — never AI state).
-            for remote in &outcome.remote_enemies {
+            for remote in &outcome.remote_entities {
                 materialize_remote_enemy_presentation(
                     remote,
                     &self.descriptors,
@@ -543,7 +545,7 @@ impl EnemyReplicationHarness {
         let outcome = self
             .client_replication
             .apply_snapshot(&mut self.client_registry, snapshot);
-        for remote in &outcome.remote_enemies {
+        for remote in &outcome.remote_entities {
             materialize_remote_enemy_presentation(
                 remote,
                 &self.descriptors,
@@ -988,11 +990,11 @@ fn remote_enemy_spawn_baseline_applies_initial_mesh_animation_state() {
     let outcome = h.inject_snapshot_to_client(&snapshot);
 
     assert_eq!(
-        outcome.remote_enemies.len(),
+        outcome.remote_entities.len(),
         1,
         "the spawn baseline surfaces one remote enemy materialization request"
     );
-    let remote = outcome.remote_enemies[0].entity_id;
+    let remote = outcome.remote_entities[0].entity_id;
     let mesh = h
         .client_registry
         .get_component::<MeshComponent>(remote)
@@ -1358,7 +1360,7 @@ fn late_joining_client_receives_only_live_enemies_including_runtime_spawn() {
                 continue;
             };
             let outcome = client_replication.apply_snapshot(&mut client_registry, &snapshot);
-            for remote in &outcome.remote_enemies {
+            for remote in &outcome.remote_entities {
                 materialize_remote_enemy_presentation(remote, &descriptors, &mut client_registry);
             }
             if let Some(ack) = outcome.ack {
@@ -1403,11 +1405,11 @@ fn late_joining_client_receives_only_live_enemies_including_runtime_spawn() {
 // ---------------------------------------------------------------------------
 
 // A full-baseline re-delivery for a NetworkId the client has already mapped+materialized
-// must NOT surface a second `RemoteEnemyMaterialize` request and must NOT reset the
+// must NOT surface a second `RemoteEntityMaterialize` request and must NOT reset the
 // enemy's live mesh-animation state. The entity stays exactly as it was: one mesh,
 // unchanged animation current_state, no Brain/Agent. This exercises the
 // `apply_full_baseline` branch for an already-mapped, already-live entity, which applies
-// components in place (no respawn) and deliberately omits the `remote_enemies` push.
+// components in place (no respawn) and deliberately omits the `remote_entities` push.
 #[test]
 fn remote_enemy_rebaseline_does_not_resurface_materialize_or_reset_animation() {
     let mut h = EnemyReplicationHarness::new(perfect_link());
@@ -1478,15 +1480,18 @@ fn remote_enemy_rebaseline_does_not_resurface_materialize_or_reset_animation() {
     };
     let outcome = h.inject_snapshot_to_client(&rebaseline_snapshot);
 
-    // CORE ASSERTION (a1): the apply does NOT surface a second RemoteEnemyMaterialize
+    // CORE ASSERTION (a1): the apply does NOT surface a second RemoteEntityMaterialize
     // for this NetworkId. The `apply_full_baseline` already-mapped-and-live branch
-    // never pushes to `remote_enemies`.
+    // never pushes to `remote_entities`.
     assert!(
-        outcome.remote_enemies.iter().all(|r| r.entity_id != remote),
-        "re-baseline must not surface a second RemoteEnemyMaterialize for the already-materialized enemy"
+        outcome
+            .remote_entities
+            .iter()
+            .all(|r| r.entity_id != remote),
+        "re-baseline must not surface a second RemoteEntityMaterialize for the already-materialized enemy"
     );
     assert!(
-        outcome.remote_enemies.is_empty(),
+        outcome.remote_entities.is_empty(),
         "the re-baseline snapshot carries only one record and it must not trigger materialization"
     );
 

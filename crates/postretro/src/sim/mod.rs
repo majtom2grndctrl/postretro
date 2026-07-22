@@ -1297,6 +1297,8 @@ mod tests {
             fire_mode: FireMode::Semi,
             resolution: ResolutionMode::Hitscan,
             credit_source: Some(credit_source.to_string()),
+            third_person_model: None,
+            viewmodel: None,
             resource: None,
         })
     }
@@ -1314,6 +1316,8 @@ mod tests {
             fire_mode: FireMode::Semi,
             resolution: ResolutionMode::Hitscan,
             credit_source: Some(credit_source.to_string()),
+            third_person_model: None,
+            viewmodel: None,
             resource: Some(WeaponResource::Ammo(AmmoResource {
                 ammo_type: "bullets.light".to_string(),
                 magazine: capacity,

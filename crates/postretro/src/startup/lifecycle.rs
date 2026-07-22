@@ -12,8 +12,8 @@ use crate::frame_timing::InterpolableState;
 use crate::render;
 use crate::scripting::builtins::{
     PLAYER_START_CLASSNAME, apply_classname_dispatch, apply_data_archetype_dispatch,
-    descriptor_materializes_ai_enemy, filter_out_client_ai_enemies, spawn_from_player_starts,
-    suppressed_ai_enemy_mesh_models,
+    deferred_remote_player_mesh_models, descriptor_materializes_ai_enemy,
+    filter_out_client_ai_enemies, spawn_from_player_starts, suppressed_ai_enemy_mesh_models,
 };
 use crate::startup::{
     BootState, InFlightLevelLoad, LevelLoadEntry, LevelRequest, LevelSource, LoadOutcome,
@@ -1447,6 +1447,15 @@ pub(crate) fn install_world_cpu(
     // cannot see them; unioned into the mesh model list below so the host-replicated
     // remote enemy is drawable. Empty off a connected client.
     let mut suppressed_enemy_models: Vec<String> = Vec::new();
+    // A connected client defers its boot pawn until the host baseline arrives,
+    // leaving movement descriptor meshes out of the registry sweep. Remote
+    // snapshot materialization uses `movement.is_some()` for the player path,
+    // so preload the same descriptor category here.
+    let deferred_remote_player_models = if suppress_boot_pawn {
+        deferred_remote_player_mesh_models(&descriptors)
+    } else {
+        Vec::new()
+    };
     let (active_wieldable, active_wieldable_descriptor, first_spawn) = {
         let mut registry = script_ctx.registry.borrow_mut();
         let mut map_entities = map_entities;
@@ -1557,9 +1566,10 @@ pub(crate) fn install_world_cpu(
 
     // Mesh model sweep, CPU half. Runs AFTER both dispatch sweeps so it sees every
     // mesh entity. Reset the game-side tables, compute the distinct model list
-    // (unioning the suppressed remote-enemy models), then the renderer-coupled
-    // upload + clip-table build runs via the injected hook, followed by the CPU
-    // hit-zone build, clip-index resolve, and zone-multiplier cross-check.
+    // (unioning models missing due to connected-client suppression), then the
+    // renderer-coupled upload + clip-table build runs via the injected hook,
+    // followed by the CPU hit-zone build, clip-index resolve, and zone-multiplier
+    // cross-check.
     mesh_clip_tables.clear();
     hit_zone_store.clear();
     let models = {
@@ -1567,6 +1577,11 @@ pub(crate) fn install_world_cpu(
         let mut models = crate::distinct_mesh_models(&registry);
         let mut seen: std::collections::HashSet<String> = models.iter().cloned().collect();
         for model in &suppressed_enemy_models {
+            if seen.insert(model.clone()) {
+                models.push(model.clone());
+            }
+        }
+        for model in &deferred_remote_player_models {
             if seen.insert(model.clone()) {
                 models.push(model.clone());
             }

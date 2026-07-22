@@ -540,6 +540,7 @@ mod tests {
     fn mesh_descriptor(attachment_model: &str) -> MeshDescriptor {
         MeshDescriptor {
             model: "models/holder.gltf".to_string(),
+            shadow_only: false,
             attachments: [("hand".to_string(), attachment_model.to_string())]
                 .into_iter()
                 .collect(),

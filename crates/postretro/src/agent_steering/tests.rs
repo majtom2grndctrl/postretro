@@ -844,11 +844,9 @@ fn full_speed_agent_rounds_concave_corner_mandatory_vertices_without_crawling() 
 
 #[test]
 fn slow_agent_funnel_path_routes_concave_corner_without_stuck_detection() {
-    // Regression: the mandatory-waypoint easing band was silently calibrated to
-    // move_speed ~= 4.0. An author-defined slower enemy eases onto a mandatory
-    // clearance vertex with per-tick goal-projected progress below
-    // STUCK_PROGRESS_EPSILON (an absolute distance), which used to trip false
-    // stuck recovery at the clearance vertex this machinery exists to smooth.
+    // Regression: the absolute progress floor mismatched a 1.0 m/s agent's
+    // intended speed both while easing onto mandatory clearance vertices and
+    // during final-arrival slowdown, causing false stuck recovery.
     //
     let corner = ConcaveCorner::fixture();
     let world = corner.collision_world();
@@ -979,8 +977,10 @@ fn slow_agent_arrives_on_open_floor_without_stuck_detection() {
     let world = corner.collision_world();
     let params = agent_params();
     let mut registry = EntityRegistry::new();
-    let id = spawn_agent(&mut registry, -1.0, -1.0, &params);
-    let destination = Vec3::new(-1.0, rest_y(&params), 5.0);
+    // x=1 stays west of the x=2 wall, so this route remains on the fixture
+    // floor without crossing either wall segment or any mandatory waypoint.
+    let id = spawn_agent(&mut registry, 1.0, 1.0, &params);
+    let destination = Vec3::new(1.0, rest_y(&params), 7.0);
     set_manual_path(&mut registry, id, vec![destination]);
     {
         let mut agent = registry
@@ -1013,11 +1013,13 @@ fn very_slow_agent_cruises_on_open_floor_without_stuck_detection() {
     let world = corner.collision_world();
     let params = agent_params();
     let mut registry = EntityRegistry::new();
-    let id = spawn_agent(&mut registry, -1.0, -1.0, &params);
+    // This six-metre route stays in the clear west lane. At 0.2 m/s, its
+    // 1200-tick window cannot reach the final-arrival band.
+    let id = spawn_agent(&mut registry, 1.0, 1.0, &params);
     set_manual_path(
         &mut registry,
         id,
-        vec![Vec3::new(-1.0, rest_y(&params), 7.0)],
+        vec![Vec3::new(1.0, rest_y(&params), 7.0)],
     );
     {
         let mut agent = registry

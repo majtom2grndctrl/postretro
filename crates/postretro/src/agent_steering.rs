@@ -112,9 +112,9 @@ const UNSTICK_WINDOW: u32 = 10;
 /// move." Speeds below this are arrival/idle tails, not stuck evidence.
 const STUCK_INTENT_SPEED_EPSILON: f32 = 0.05;
 
-/// Per-tick goal-projected displacement below this counts as no useful
-/// progress. This is a distance, intentionally distinct from the intent-speed
-/// gate above.
+/// Base absolute progress floor for mandatory-waypoint easing. Ordinary
+/// segments scale with intended travel; this stays distinct from the
+/// intent-speed gate because cornering can permit only tiny real movement.
 const STUCK_PROGRESS_EPSILON: f32 = 0.005;
 
 /// Fraction of the requested per-tick travel that an ordinary path segment must

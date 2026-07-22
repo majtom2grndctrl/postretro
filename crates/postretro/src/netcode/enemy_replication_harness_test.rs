@@ -971,6 +971,7 @@ fn remote_enemy_spawn_baseline_applies_initial_mesh_animation_state() {
             last_processed_client_tick: None,
             local_player: false,
             entity_class: Some(ENEMY_CLASS.to_string()),
+            active_weapon_archetype: None,
             components: vec![
                 ComponentPayload::Transform(WireTransform {
                     position: [0.0, 0.0, 0.0],
@@ -1467,6 +1468,7 @@ fn remote_enemy_rebaseline_does_not_resurface_materialize_or_reset_animation() {
             last_processed_client_tick: None,
             local_player: false,
             entity_class: Some(ENEMY_CLASS.to_string()),
+            active_weapon_archetype: None,
             components: vec![ComponentPayload::Transform(WireTransform {
                 position: [5.0, 0.0, 0.0],
                 rotation: [0.0, 0.0, 0.0, 1.0],

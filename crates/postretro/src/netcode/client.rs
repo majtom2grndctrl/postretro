@@ -514,6 +514,7 @@ impl ClientReplication {
                     local_player,
                     last_processed_client_tick,
                     entity_class,
+                    active_weapon_archetype: _,
                 } => {
                     if self.apply_full_baseline(
                         registry,
@@ -554,6 +555,7 @@ impl ClientReplication {
                     local_player,
                     last_processed_client_tick,
                     entity_class,
+                    active_weapon_archetype: _,
                 } => {
                     if self.apply_delta(
                         registry,
@@ -1030,12 +1032,12 @@ impl ClientReplication {
         // interpolation sample so a Transform-bearing record can extrapolate on
         // starvation. The Phase 2 dumb mover carries no movement payload, so this stays
         // None and its starvation path holds the last pose.
-        let record_velocity = components.iter().find_map(|p| match p {
-            ComponentPayload::PlayerMovementState(m) if payload_is_finite(p) => {
-                Some(Vec3::from_array(m.velocity))
-            }
+        let record_movement = components.iter().find_map(|payload| match payload {
+            ComponentPayload::PlayerMovementState(m) if payload_is_finite(payload) => Some(*m),
             _ => None,
         });
+        let record_velocity = record_movement.map(|movement| Vec3::from_array(movement.velocity));
+        let record_aim_pitch = record_movement.map_or(0.0, |movement| movement.aim_pitch);
 
         // The local predicted pawn is reconcile-driven: its authoritative pose +
         // movement subset are captured by `capture_local_reconcile` and the reconcile
@@ -1133,6 +1135,7 @@ impl ClientReplication {
                                 server_tick,
                                 transform,
                                 velocity: record_velocity,
+                                aim_pitch: record_aim_pitch,
                             },
                         );
                     }
@@ -1751,6 +1754,7 @@ mod tests {
             jump_spent: false,
             capsule_half_height: 0.8,
             capsule_eye_height: 1.5,
+            aim_pitch: 0.0,
         })
     }
 
@@ -1847,6 +1851,7 @@ mod tests {
             local_player: false,
             // Generic (non-local) baseline fixture: no descriptor class.
             entity_class: None,
+            active_weapon_archetype: None,
             components,
         }
     }
@@ -1866,6 +1871,7 @@ mod tests {
             local_player: false,
             // Generic (non-local) delta fixture: no descriptor class.
             entity_class: None,
+            active_weapon_archetype: None,
             components,
         }
     }
@@ -3230,6 +3236,7 @@ mod tests {
             // A local movement pawn baseline names the descriptor class the host
             // materialized it from; the client materializes the matching component.
             entity_class: Some("player".to_string()),
+            active_weapon_archetype: None,
             components,
         }
     }
@@ -3248,6 +3255,7 @@ mod tests {
             last_processed_client_tick: acked_tick,
             local_player: true,
             entity_class: Some("player".to_string()),
+            active_weapon_archetype: None,
             components,
         }
     }
@@ -3405,6 +3413,7 @@ mod tests {
             last_processed_client_tick: None,
             local_player: false,
             entity_class: Some(entity_class.to_string()),
+            active_weapon_archetype: None,
             components,
         }
     }
@@ -3423,6 +3432,7 @@ mod tests {
             last_processed_client_tick: None,
             local_player: false,
             entity_class: Some(entity_class.to_string()),
+            active_weapon_archetype: None,
             components,
         }
     }

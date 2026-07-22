@@ -429,6 +429,16 @@ impl HostCommandQueues {
         self.clients.get(&client_id).and_then(|s| s.resolved_cursor)
     }
 
+    /// Latest finite aim pitch associated with the owner's current resolved input.
+    /// A held gap keeps the last received pitch; after the hold policy falls back to
+    /// neutral there is no current remote aim and snapshot production uses zero.
+    pub(crate) fn current_aim_pitch(&self, client_id: u64) -> Option<f32> {
+        self.clients
+            .get(&client_id)
+            .and_then(|state| state.last_resolved.as_ref())
+            .map(|command| command.movement.aim_pitch)
+    }
+
     /// Drop a client's queue + cursor on slot close. Idempotent.
     pub(crate) fn remove_client(&mut self, client_id: u64) {
         self.clients.remove(&client_id);
@@ -532,6 +542,7 @@ mod tests {
                 crouch_intent: false,
                 facing_yaw: 0.5,
                 use_pressed: false,
+                aim_pitch: 0.0,
             },
             fire_button: WireFireButtonState {
                 pressed: false,
@@ -574,6 +585,21 @@ mod tests {
         let resolved = queues.resolve_tick(CLIENT).expect("a command resolves");
         assert!((resolved.command.movement.wish_dir.x - (-1.0)).abs() < EPSILON);
         assert!((resolved.command.movement.wish_dir.y - 1.0).abs() < EPSILON);
+    }
+
+    #[test]
+    fn current_aim_pitch_tracks_the_last_resolved_input() {
+        let mut queues = HostCommandQueues::new();
+        let mut input = command(0, 1.0);
+        input.movement.aim_pitch = -0.42;
+        assert!(queues.ingest(CLIENT, &input));
+        assert!(queues.resolve_tick(CLIENT).is_some());
+        assert_eq!(queues.current_aim_pitch(CLIENT), Some(-0.42));
+
+        // A short gap holds the input (and the matching presentation aim) rather
+        // than snapping the remote avatar to a synthetic neutral direction.
+        assert!(queues.resolve_tick(CLIENT).is_some());
+        assert_eq!(queues.current_aim_pitch(CLIENT), Some(-0.42));
     }
 
     #[test]

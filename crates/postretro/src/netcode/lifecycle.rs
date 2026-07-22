@@ -227,7 +227,7 @@ mod tests {
     use postretro_net::replication::{EntitySnapshot, typed_records};
     use postretro_net::wire::EntityRecord;
 
-    use crate::netcode::produce_owned_snapshots;
+    use crate::netcode::{produce_owned_snapshots, produce_owned_snapshots_with_weapons};
 
     // A short helper: drive a host replication tick from the registry + replicable
     // set, ingest into the tracker, and return the encoded records for a client.
@@ -782,6 +782,24 @@ mod tests {
             registry.has_component_kind(weapon, ComponentKind::Weapon),
             Ok(true)
         ));
+
+        let snapshots = produce_owned_snapshots_with_weapons(
+            &registry,
+            &replicable,
+            &mut allocator,
+            &owners,
+            &weapon_owners,
+            &command_queues,
+        );
+        let pawn_snapshot = snapshots
+            .iter()
+            .find(|snapshot| snapshot.network_id == pawn_net.0)
+            .expect("the active-weapon pawn is replicated");
+        assert_eq!(
+            pawn_snapshot.active_weapon_archetype,
+            Some("reference_pistol".to_string()),
+            "WeaponOwners resolves the weapon descriptor's canonical name onto the pawn record"
+        );
 
         crate::netcode::host_handle_lifecycle(
             &mut registry,

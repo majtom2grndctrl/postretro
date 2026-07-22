@@ -230,12 +230,14 @@ fn adaptive_interpolation_delay_ticks(
 /// One buffered remote pose, stamped by the server tick it was valid at. `velocity`
 /// is the last-known world-space velocity from a movement payload, used only for
 /// bounded forward extrapolation on starvation; `None` for `Transform`-only entities
-/// (the Phase 2 dumb mover), whose starvation path holds immediately.
+/// (the Phase 2 dumb mover), whose starvation path holds immediately. `aim_pitch`
+/// is the presentation pitch sampled with the transform from the same snapshot.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct TransformSample {
     pub(crate) server_tick: u32,
     pub(crate) transform: Transform,
     pub(crate) velocity: Option<Vec3>,
+    pub(crate) aim_pitch: f32,
 }
 
 /// The pose the state machine resolved for a render target, plus which branch
@@ -251,6 +253,8 @@ pub(crate) struct PresentedPose {
     /// Transform-only enemies derive it from their bracketing samples, and held
     /// poses report zero because the client is visibly stationary.
     pub(crate) speed_xz: f32,
+    /// Interpolated remote camera pitch for avatar pose presentation.
+    pub(crate) aim_pitch: f32,
 }
 
 /// Which branch of the sample state machine produced a [`PresentedPose`].
@@ -334,6 +338,7 @@ impl EntityBuffer {
                 transform: oldest.transform,
                 source: PoseSource::HeldOldest,
                 speed_xz: 0.0,
+                aim_pitch: oldest.aim_pitch,
             });
         }
 
@@ -361,6 +366,7 @@ impl EntityBuffer {
                     transform: lerp_transform(&a.transform, &b.transform, alpha),
                     source: PoseSource::Interpolated,
                     speed_xz: xz_speed_between(a, b),
+                    aim_pitch: a.aim_pitch + (b.aim_pitch - a.aim_pitch) * alpha,
                 });
             }
         }
@@ -371,6 +377,7 @@ impl EntityBuffer {
             transform: newest.transform,
             source: PoseSource::HeldNewest,
             speed_xz: 0.0,
+            aim_pitch: newest.aim_pitch,
         })
     }
 
@@ -397,6 +404,7 @@ impl EntityBuffer {
                     transform: predicted,
                     source: PoseSource::Extrapolated,
                     speed_xz: xz_speed(velocity),
+                    aim_pitch: newest.aim_pitch,
                 }
             }
             // No velocity (Transform-only mover) or past the extrapolation window:
@@ -405,6 +413,7 @@ impl EntityBuffer {
                 transform: newest.transform,
                 source: PoseSource::HeldNewest,
                 speed_xz: 0.0,
+                aim_pitch: newest.aim_pitch,
             },
         }
     }
@@ -581,6 +590,7 @@ mod tests {
                 scale: Vec3::ONE,
             },
             velocity: None,
+            aim_pitch: 0.0,
         }
     }
 
@@ -859,17 +869,23 @@ mod tests {
     fn two_sample_interpolation_midpoint_lands_halfway() {
         let mut buf = RemoteInterpolationBuffer::new();
         let id = NetworkId(1);
-        buf.record(id, sample(100, 0.0));
-        buf.record(id, sample(110, 10.0));
+        let mut first = sample(100, 0.0);
+        first.aim_pitch = -0.6;
+        let mut second = sample(110, 10.0);
+        second.aim_pitch = 0.4;
+        buf.record(id, first);
+        buf.record(id, second);
 
         // Midpoint tick 105 -> alpha 0.5 -> x = 5.0.
         let pose = buf.presented_pose(id, 105.0).expect("bracketed");
         assert_eq!(pose.source, PoseSource::Interpolated);
         assert!((pose.transform.position.x - 5.0).abs() < POS_EPS);
+        assert!((pose.aim_pitch - (-0.1)).abs() < POS_EPS);
 
         // A quarter of the way (tick 102.5) -> x = 2.5.
         let quarter = buf.presented_pose(id, 102.5).expect("bracketed");
         assert!((quarter.transform.position.x - 2.5).abs() < POS_EPS);
+        assert!((quarter.aim_pitch - (-0.35)).abs() < POS_EPS);
     }
 
     #[test]
@@ -942,6 +958,7 @@ mod tests {
                 scale: Vec3::ONE,
             },
             velocity: Some(Vec3::new(3.0, 10.0, 4.0)),
+            aim_pitch: 0.0,
         };
         // A prior sample so the buffer is not single-sample (does not change the
         // starvation branch, but mirrors real traffic).
@@ -990,6 +1007,7 @@ mod tests {
                 scale: Vec3::ONE,
             },
             velocity: Some(Vec3::new(2.0, 0.0, 0.0)),
+            aim_pitch: 0.0,
         };
         buf.record(id, moving);
 

@@ -4783,11 +4783,13 @@ impl App {
         };
         if let Some(resolution) = resolution {
             if let Some(command) = zero_tick_fire_command.as_ref() {
+                let aim_pitch = self.camera.pitch;
                 let sent_tick = netcode::client_send_input_command(
                     self.session
                         .as_mut()
                         .and_then(|session| session.net_endpoint.as_mut()),
                     command,
+                    aim_pitch,
                 );
                 if sent_tick != Some(resolution.client_tick) {
                     return;
@@ -5288,6 +5290,7 @@ impl App {
         command: &sim::SimCommand,
         tick_dt: f32,
     ) -> Option<u32> {
+        let aim_pitch = self.camera.pitch;
         let script_ctx = self
             .session
             .as_ref()
@@ -5313,6 +5316,7 @@ impl App {
             client,
             prediction,
             command,
+            aim_pitch,
             &combined_collision,
             gravity,
             tick_dt,
@@ -6447,6 +6451,7 @@ mod tests {
                     crouch_intent: false,
                     facing_yaw: 0.0,
                     use_pressed: false,
+                    aim_pitch: 0.0,
                 },
                 fire_button: postretro_net::wire::WireFireButtonState {
                     pressed: true,

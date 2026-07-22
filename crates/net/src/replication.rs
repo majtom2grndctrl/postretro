@@ -69,6 +69,10 @@ pub struct EntitySnapshot {
     /// string id — the tracker stays registry-blind and never resolves it. Excluded
     /// from dirty detection because a class never changes for a live entity.
     pub entity_class: Option<String>,
+    /// Opaque canonical name of this movement pawn's active weapon, or `None` when
+    /// unarmed. Shared-visible presentation metadata; a change advances the entity
+    /// baseline so recipients observe an equip/unequip within one snapshot interval.
+    pub active_weapon_archetype: Option<String>,
 }
 
 impl EntitySnapshot {
@@ -83,6 +87,7 @@ impl EntitySnapshot {
             owner_client_id: None,
             last_processed_client_tick: None,
             entity_class: None,
+            active_weapon_archetype: None,
         }
     }
 }
@@ -131,6 +136,9 @@ struct EntityState {
     /// into the per-recipient record's `entity_class`; refreshed every ingest like the
     /// rest of the authority metadata.
     entity_class: Option<String>,
+    /// Active weapon canonical name for a movement pawn. Unlike immutable class and
+    /// authority metadata, a change makes the snapshot dirty and advances its baseline.
+    active_weapon_archetype: Option<String>,
 }
 
 /// A despawned entity awaiting per-client tombstone acks. Held until every client
@@ -272,15 +280,21 @@ impl ServerReplication {
             // A re-appearing entity clears any pending tombstone for its id.
             self.tombstones.remove(&snap.network_id);
             match self.entities.get_mut(&snap.network_id) {
-                Some(existing) if existing.components == snap.components => {
+                Some(existing)
+                    if existing.components == snap.components
+                        && existing.active_weapon_archetype == snap.active_weapon_archetype =>
+                {
                     // Unchanged pose/movement mirrors: keep the baseline id so acked
                     // clients are omitted. The authority metadata still refreshes —
                     // the resolved cursor advances every tick a command resolves even
                     // when the pawn did not visibly move, and the metadata rides the
-                    // record without bumping the baseline.
+                    // record without bumping the baseline. Active-weapon identity is
+                    // deliberately part of the condition above: equip changes must
+                    // reach remote presentation even when pose is unchanged.
                     existing.owner_client_id = snap.owner_client_id;
                     existing.last_processed_client_tick = snap.last_processed_client_tick;
                     existing.entity_class = snap.entity_class;
+                    existing.active_weapon_archetype = snap.active_weapon_archetype;
                 }
                 Some(existing) => {
                     existing.baseline_id = self.next_baseline_id;
@@ -288,6 +302,7 @@ impl ServerReplication {
                     existing.owner_client_id = snap.owner_client_id;
                     existing.last_processed_client_tick = snap.last_processed_client_tick;
                     existing.entity_class = snap.entity_class;
+                    existing.active_weapon_archetype = snap.active_weapon_archetype;
                     self.next_baseline_id = self.next_baseline_id.wrapping_add(1);
                 }
                 None => {
@@ -301,6 +316,7 @@ impl ServerReplication {
                             owner_client_id: snap.owner_client_id,
                             last_processed_client_tick: snap.last_processed_client_tick,
                             entity_class: snap.entity_class,
+                            active_weapon_archetype: snap.active_weapon_archetype,
                         },
                     );
                 }
@@ -519,6 +535,8 @@ impl ServerReplication {
                         local_player: authority.local_player,
                         has_entity_class: authority.has_entity_class,
                         entity_class: authority.entity_class.clone(),
+                        has_active_weapon_archetype: authority.has_active_weapon_archetype,
+                        active_weapon_archetype: authority.active_weapon_archetype.clone(),
                         components: entity.components.iter().map(raw_from_payload).collect(),
                     });
                 }
@@ -535,6 +553,8 @@ impl ServerReplication {
                         local_player: authority.local_player,
                         has_entity_class: authority.has_entity_class,
                         entity_class: authority.entity_class.clone(),
+                        has_active_weapon_archetype: authority.has_active_weapon_archetype,
+                        active_weapon_archetype: authority.active_weapon_archetype.clone(),
                         components: entity.components.iter().map(raw_from_payload).collect(),
                     });
                 }
@@ -564,6 +584,8 @@ impl ServerReplication {
                 local_player: false,
                 has_entity_class: false,
                 entity_class: String::new(),
+                has_active_weapon_archetype: false,
+                active_weapon_archetype: String::new(),
                 components: Vec::new(),
             });
         }
@@ -600,6 +622,11 @@ struct MovementAuthority {
     /// The descriptor-class identifier; meaningful only when `has_entity_class` is
     /// `true`. Cloned into the record (the only allocation on the encode path here).
     entity_class: String,
+    /// Whether the active-weapon metadata carries a canonical name. Unlike
+    /// `entity_class`, it is valid only on a movement record.
+    has_active_weapon_archetype: bool,
+    /// Active weapon canonical name, empty when the flag is false.
+    active_weapon_archetype: String,
 }
 
 impl MovementAuthority {
@@ -643,6 +670,14 @@ impl MovementAuthority {
         } else {
             None
         };
+        let active_weapon_archetype = if carries_movement {
+            entity
+                .active_weapon_archetype
+                .as_deref()
+                .filter(|archetype| !archetype.is_empty())
+        } else {
+            None
+        };
         Self {
             has_tick: carries_movement && entity.last_processed_client_tick.is_some(),
             tick: if carries_movement {
@@ -653,6 +688,8 @@ impl MovementAuthority {
             local_player: carries_movement && entity.owner_client_id == Some(recipient),
             has_entity_class: entity_class.is_some(),
             entity_class: entity_class.unwrap_or_default().to_string(),
+            has_active_weapon_archetype: active_weapon_archetype.is_some(),
+            active_weapon_archetype: active_weapon_archetype.unwrap_or_default().to_string(),
         }
     }
 }
@@ -734,6 +771,7 @@ mod tests {
             jump_spent: false,
             capsule_half_height: 0.8,
             capsule_eye_height: 1.5,
+            aim_pitch: 0.0,
         })
     }
 
@@ -756,6 +794,7 @@ mod tests {
             owner_client_id: Some(owner),
             last_processed_client_tick: last_tick,
             entity_class: Some("player".to_string()),
+            active_weapon_archetype: None,
         }
     }
 
@@ -1521,6 +1560,40 @@ mod tests {
         }
     }
 
+    #[test]
+    fn active_weapon_archetype_is_shared_visible_and_dirties_a_movement_baseline() {
+        let mut server = ServerReplication::new();
+        server.register_client(CLIENT_A);
+        let mut pistol = owned_movement(1, CLIENT_A, Some(1), 0.0);
+        pistol.active_weapon_archetype = Some("reference_pistol".to_string());
+        server.ingest_tick(vec![pistol]);
+
+        let first = server.encode_for_client(CLIENT_A, 60).unwrap();
+        let EntityRecord::FullBaseline {
+            baseline_id,
+            active_weapon_archetype,
+            ..
+        } = record_for(&first, 1).expect("initial pawn baseline")
+        else {
+            panic!("expected a full baseline");
+        };
+        assert_eq!(active_weapon_archetype.as_deref(), Some("reference_pistol"));
+        server.apply_ack(CLIENT_A, first.sequence, &[(1, baseline_id)], &[]);
+
+        let mut rifle = owned_movement(1, CLIENT_A, Some(2), 0.0);
+        rifle.active_weapon_archetype = Some("pulse_rifle".to_string());
+        server.ingest_tick(vec![rifle]);
+        let changed = server.encode_for_client(CLIENT_A, 61).unwrap();
+        let EntityRecord::Delta {
+            active_weapon_archetype,
+            ..
+        } = record_for(&changed, 1).expect("weapon change produces delta")
+        else {
+            panic!("expected a delta");
+        };
+        assert_eq!(active_weapon_archetype.as_deref(), Some("pulse_rifle"));
+    }
+
     /// A host-authoritative map enemy snapshot: a Transform-only entity carrying an
     /// `entity_class` but NO `PlayerMovementState`, unowned by any client — the shape the
     /// E10 host enemy-registration glue produces.
@@ -1531,6 +1604,7 @@ mod tests {
             owner_client_id: None,
             last_processed_client_tick: None,
             entity_class: Some(class.to_string()),
+            active_weapon_archetype: None,
         }
     }
 
@@ -1591,6 +1665,7 @@ mod tests {
             owner_client_id: None,
             last_processed_client_tick: None,
             entity_class: Some(String::new()),
+            active_weapon_archetype: None,
         }]);
 
         let snap = server.encode_for_client(CLIENT_A, 60).unwrap();
@@ -1648,6 +1723,7 @@ mod tests {
             owner_client_id: Some(CLIENT_A),
             last_processed_client_tick: Some(3),
             entity_class: Some("grunt".to_string()),
+            active_weapon_archetype: None,
         }]);
 
         let snap = server.encode_for_client(CLIENT_A, 60).unwrap();

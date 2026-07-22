@@ -77,8 +77,12 @@ pub(crate) use prediction::{
 #[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use reconcile::reconcile_local_pawn;
+#[cfg(test)]
+pub(crate) use replication::produce_owned_snapshots;
+#[cfg(test)]
+pub(crate) use replication::produce_owned_snapshots_with_weapons;
 pub(crate) use replication::{
-    ReplicableSet, host_register_loaded_movers, host_register_map_enemies, produce_owned_snapshots,
+    ReplicableSet, host_register_loaded_movers, host_register_map_enemies,
 };
 pub(crate) use wire_convert::sim_command_to_input;
 
@@ -880,6 +884,7 @@ fn player_movement_is_finite(m: &WirePlayerMovementState) -> bool {
         && m.jump_buffer_timer_ms.is_finite()
         && m.capsule_half_height.is_finite()
         && m.capsule_eye_height.is_finite()
+        && m.aim_pitch.is_finite()
         && state_finite
 }
 
@@ -1105,6 +1110,7 @@ pub(crate) fn client_predict_tick(
     client: &mut NetClient,
     prediction: &mut ClientPrediction,
     command: &SimCommand,
+    aim_pitch: f32,
     collision: &impl MovementCollisionSource,
     gravity: f32,
     tick_dt: f32,
@@ -1113,7 +1119,7 @@ pub(crate) fn client_predict_tick(
     //    next monotonic client_tick. Sent even before the baseline arms prediction
     //    so the host's command stream starts immediately on connect.
     let client_tick = prediction.next_client_tick();
-    let input = sim_command_to_input(command, client_tick);
+    let input = sim_command_to_input(command, client_tick, aim_pitch);
     client.send_input(wire::encode(&wire::ClientMessage::Input(input)));
 
     // 2. Before the local baseline arms prediction, drive no provisional pawn.
@@ -1182,6 +1188,7 @@ pub(crate) fn client_peek_next_command_tick(endpoint: Option<&NetEndpoint>) -> O
 pub(crate) fn client_send_input_command(
     endpoint: Option<&mut NetEndpoint>,
     command: &SimCommand,
+    aim_pitch: f32,
 ) -> Option<u32> {
     let Some(NetEndpoint::Client {
         client, prediction, ..
@@ -1190,7 +1197,7 @@ pub(crate) fn client_send_input_command(
         return None;
     };
     let client_tick = prediction.next_client_tick();
-    let input = sim_command_to_input(command, client_tick);
+    let input = sim_command_to_input(command, client_tick, aim_pitch);
     client.send_input(wire::encode(&wire::ClientMessage::Input(input)));
     Some(client_tick)
 }
@@ -1409,7 +1416,14 @@ pub(crate) fn host_replicate(
     // Owned post-tick snapshot rule: copy replicable state into owned mirrors keyed
     // by NetworkId while borrowing the registry, then release before the net call.
     // Owned movement pawns also carry their owner id + resolved cursor (Phase 3).
-    let owned = produce_owned_snapshots(registry, replicable, allocator, owners, command_queues);
+    let owned = replication::produce_owned_snapshots_with_weapons(
+        registry,
+        replicable,
+        allocator,
+        owners,
+        weapon_owners,
+        command_queues,
+    );
     replication.ingest_tick(owned);
 
     // Snapshots emit at 30 Hz (every second 60 Hz tick); ingest ran every tick above.
@@ -2955,6 +2969,7 @@ mod tests {
             last_processed_client_tick: None,
             local_player: false,
             entity_class: Some("grunt".to_string()),
+            active_weapon_archetype: None,
             components: vec![ComponentPayload::Transform(sample_wire_transform())],
         });
         let classless = snapshot_with_record(EntityRecord::FullBaseline {
@@ -2963,6 +2978,7 @@ mod tests {
             last_processed_client_tick: None,
             local_player: false,
             entity_class: None,
+            active_weapon_archetype: None,
             components: vec![ComponentPayload::Transform(sample_wire_transform())],
         });
 
@@ -3189,6 +3205,7 @@ mod tests {
                     last_processed_client_tick: None,
                     local_player: false,
                     entity_class: None,
+                    active_weapon_archetype: None,
                     components: vec![ComponentPayload::Transform(WireTransform {
                         position: [4.0, 0.0, 0.0],
                         rotation: [0.0, 0.0, 0.0, 1.0],
@@ -3564,6 +3581,7 @@ mod tests {
                         last_processed_client_tick: None,
                         local_player: true,
                         entity_class: Some("player".to_string()),
+                        active_weapon_archetype: None,
                         components: vec![
                             ComponentPayload::Transform(WireTransform {
                                 position: [3.0, 0.0, 0.0],
@@ -3583,6 +3601,7 @@ mod tests {
                                 jump_spent: false,
                                 capsule_half_height: 0.8,
                                 capsule_eye_height: 1.5,
+                                aim_pitch: 0.0,
                             }),
                         ],
                     },
@@ -3592,6 +3611,7 @@ mod tests {
                         last_processed_client_tick: None,
                         local_player: false,
                         entity_class: None,
+                        active_weapon_archetype: None,
                         components: vec![ComponentPayload::Transform(WireTransform {
                             position: [9.0, 0.0, 0.0],
                             rotation: [0.0, 0.0, 0.0, 1.0],

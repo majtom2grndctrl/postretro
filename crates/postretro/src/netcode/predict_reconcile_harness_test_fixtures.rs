@@ -205,6 +205,7 @@ pub(crate) fn forward_command(dash_pressed: bool) -> SimCommand {
             crouch_intent: false,
             facing_yaw: 0.0,
             use_pressed: false,
+            aim_pitch: 0.0,
         },
         fire_button: FireButtonState {
             pressed: false,
@@ -506,7 +507,7 @@ impl LoopbackHarness {
     /// send-then-predict order without needing a live `NetClient`.
     pub(crate) fn client_predict_and_send(&mut self, command: &SimCommand) {
         let client_tick = self.prediction.next_client_tick();
-        let input = sim_command_to_input(command, client_tick);
+        let input = sim_command_to_input(command, client_tick, 0.0);
 
         self.client_registry.snapshot_transforms();
         run_kinematic_mover_tick(&mut self.client_registry, &mut self.client_mover_states, DT);

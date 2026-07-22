@@ -29,15 +29,16 @@ and the two disagree for slow agents. All in `crates/postretro/src/agent_steerin
   `STUCK_TICKS_THRESHOLD` (20, :106) with nothing blocking it.
 - **Arrival deceleration drives the agent into that band.** The `is_final` slowdown
   branch of `goal_speed` (:758-766) returns
-  `move_speed * (final_distance / slowdown_radius).clamp(0,1)`, where
-  `slowdown_radius = ARRIVAL_SLOWDOWN_RADIUS_FACTOR (7.0) * arrival_radius` and
-  `arrival_radius = ARRIVAL_RADIUS_FACTOR (1.5) * radius`. For the canonical radius
-  0.35 m: `arrival_radius = 0.525`, `slowdown_radius = 3.675`. At `move_speed = 1.0`,
-  `goal_speed` drops below 0.3 m/s once `final_distance < ~1.1 m`, while `arrived` only
+  `move_speed * (final_distance / slowdown_radius).clamp(0,1)`, where BOTH radii scale
+  off the capsule radius: `slowdown_radius = ARRIVAL_SLOWDOWN_RADIUS_FACTOR (7.0) * radius`
+  and `arrival_radius = ARRIVAL_RADIUS_FACTOR (1.5) * radius` (:461-462). For the canonical
+  radius 0.35 m: `arrival_radius = 0.525`, `slowdown_radius = 2.45`. At `move_speed = 1.0`,
+  `goal_speed` drops below 0.3 m/s once `final_distance < ~0.735 m`, while `arrived` only
   latches at `final_distance <= arrival_radius` (0.525 m, :759). That leaves a
-  ~0.575 m tail — roughly 130+ consecutive sub-floor ticks — far exceeding the
-  20-tick threshold. The canonical 4.0 m/s agent never enters the band: it stays above
-  0.3 m/s until inside `arrival_radius`, where `arrived` latches first.
+  ~0.21 m tail — roughly 50 consecutive sub-floor ticks — comfortably exceeding the
+  20-tick threshold (consistent with the observed ~0.64 m failure point, which sits inside
+  that 0.735→0.525 m band). The canonical 4.0 m/s agent never enters the band: it stays
+  above 0.3 m/s until inside `arrival_radius`, where `arrived` latches first.
 - **Slow enemies are supported, not misconfigured.** `move_speed` is authored on
   `AiDescriptor` (`crates/foundation/src/data_descriptors/types/combat.rs`, wire key
   `moveSpeed`), validated only as finite and `> 0` — no lower bound, no coupling to the
@@ -127,12 +128,21 @@ route already pass via the E10 gate, so only the final arrival deceleration is u
       distinguishes the progress-relative-to-intent fix from an arrival-band-only patch).
 - [ ] A slow agent (`move_speed = 1.0`) driven into a wall with sustained goal intent
       still reaches `STUCK_TICKS_THRESHOLD` and fires recovery (`unstick_window_remaining`
-      becomes nonzero). Real wedges remain detectable at low speed.
+      becomes nonzero). Real wedges remain detectable at low speed. Follow the canonical
+      fire-next-tick pattern (`stuck_detection_reaches_threshold_then_recovery_fires_next_tick`):
+      recovery arms the tick AFTER the threshold is reached, so the test ticks once past
+      threshold before asserting `unstick_window_remaining != 0`.
 - [ ] The canonical 4.0 m/s agent is unchanged: existing steering tests stay green,
       including `funnel_path_routes_concave_corner_without_stuck_detection` and
       `stuck_detection_reaches_threshold_then_recovery_fires_next_tick`.
-- [ ] The E10 mandatory-waypoint gate still holds: its easing/no-stuck tests stay green
-      and the new detector logic does not double-count or bypass that gate.
+- [ ] The E10 mandatory-waypoint gate still holds:
+      `slow_agent_clears_mandatory_clearance_vertices_without_stuck_detection`
+      (`agent_steering/tests.rs:846`) stays green as the required anchor, and the new
+      detector logic does not double-count or bypass that gate. Concretely: KEEP the
+      mandatory-easing branch (the `MANDATORY_EASING_PROGRESS_EPSILON` floor) intact and
+      relax only the non-mandatory (`else`) floor — a unified relative test that drops the
+      mandatory branch as "redundant" re-opens the exact false positive that branch fixed
+      (a slow agent's legitimate goal-projected dip while rounding a mandatory vertex).
 
 ## Rough sketch
 
@@ -173,7 +183,14 @@ masks a mandatory-vertex wedge.
 
 Validation instruments already exist: the `ConcaveCorner` fixture and the `stuck_ticks` /
 `unstick_window_remaining` signals in `agent_steering/tests.rs`. Reuse them; add the
-open-floor arrival and slow-wedge cases.
+open-floor arrival and slow-wedge cases. Note there is NO wall-free fixture in the tree
+today (both `ConcaveCorner` and `LWall` carry walls), so the AC2/AC3 open-floor route must
+be constructed — either a wall-free route through `ConcaveCorner`'s floor (e.g. `x = 5`,
+`z` from `-1 → 7`, clear of the walls) driven via `set_manual_path` (which clears
+`mandatory_waypoints`), or a trivial floor-only `CollisionWorld` quad. Either is small;
+the AC4 wall-wedge case can reuse the existing
+`stuck_detection_reaches_threshold_then_recovery_fires_next_tick` straight-into-wall
+pattern with `move_speed = 1.0`.
 
 ## Related observations
 

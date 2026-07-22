@@ -947,8 +947,8 @@ fn mandatory_waypoint_cleared(
 /// at full `move_speed`, but this window still sees legitimately-small forward
 /// progress on a tick or two — the tight-band heading restart in [`goal_speed`]
 /// zeroes and re-accelerates the speed, and a hard full-speed corner turn
-/// advances mostly sideways — so [`update_stuck_ticks`] uses it to select the
-/// smaller easing progress floor there instead of the absolute floor.
+/// advances mostly sideways — so [`update_stuck_ticks`] uses it to preserve the
+/// dedicated absolute easing floor instead of the ordinary intent-relative one.
 fn easing_onto_mandatory_waypoint(
     agent: &AgentComponent,
     position: Vec3,
@@ -992,8 +992,8 @@ fn update_stuck_ticks(
     // move_speed, but goal-projected forward progress can briefly be tiny yet
     // positive — the tight-band heading restart re-accelerates from zero and a
     // hard corner turn advances mostly sideways. Measure it against the much
-    // smaller easing floor instead of the absolute floor: bounded suppression that
-    // never trips on a real corner turn yet still accumulates — and eventually
+    // smaller easing floor instead of the ordinary intent-relative floor: bounded
+    // suppression that never trips on a real corner turn yet still accumulates — and eventually
     // escalates to tangent recovery — against a genuine no-progress wedge.
     let floor = if easing_onto_mandatory {
         MANDATORY_EASING_PROGRESS_EPSILON

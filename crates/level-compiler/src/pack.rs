@@ -10,6 +10,7 @@ use postretro_level_format::alpha_lights::{
     ALPHA_LIGHT_LEAF_UNASSIGNED, AlphaFalloffModel, AlphaLightRecord, AlphaLightType,
     AlphaLightsSection, AlphaShadowType,
 };
+use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
 use postretro_level_format::animated_light_chunks::AnimatedLightChunksSection;
 use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
 use postretro_level_format::bsp::BspLeavesSection;
@@ -531,7 +532,7 @@ fn locator_child(child: &BspChild) -> CellLocatorChild {
 /// lightmap, chunk light list, SH volume, and FogVolumes) and conditionally
 /// write optional sections (direct SH volume, animated-light chunks and weight
 /// maps, light tags, delta SH volumes, data script, map entities, and fog cell
-/// masks) when their arguments are non-`None`. The direct SH volume is `None`
+/// masks, and animated direct-SH deltas) when their arguments are non-`None`. The direct SH volume is `None`
 /// only when the map has no static (baked) lights at all — the loader treats
 /// absence as direct = 0, so animated-only maps emit no direct section. A map
 /// whose static-baked lights are all `ShadowType::Sdf` still emits a PRESENT
@@ -579,6 +580,7 @@ pub fn pack_and_write_portals(
     // Already-encoded because the bake is gated on non-empty BVH leaves upstream;
     // emission is independent of portal presence.
     cell_draw_index_bytes: Option<Vec<u8>>,
+    animated_direct_sh_delta_volumes: Option<&AnimatedDirectShDeltaVolumesSection>,
 ) -> anyhow::Result<()> {
     let geometry_bytes = geo_result.geometry.to_bytes();
     let texture_names_bytes = geo_result.texture_names.to_bytes();
@@ -636,6 +638,8 @@ pub fn pack_and_write_portals(
     let animated_light_weight_maps_bytes = animated_light_weight_maps.map(|s| s.to_bytes());
     let light_tags_bytes = light_tags.map(|s| s.to_bytes());
     let delta_sh_volumes_bytes = delta_sh_volumes.map(|s| s.to_bytes());
+    let animated_direct_sh_delta_volumes_bytes =
+        animated_direct_sh_delta_volumes.map(|section| section.to_bytes());
     let data_script_bytes = data_script.map(|s| s.to_bytes());
     let map_entities_bytes = map_entities.map(|s| s.to_bytes());
     let fog_volumes_bytes = fog_volumes.to_bytes();
@@ -746,6 +750,11 @@ pub fn pack_and_write_portals(
         &mut sections,
         SectionId::DeltaShVolumes as u32,
         delta_sh_volumes_bytes.clone(),
+    );
+    append_optional_section(
+        &mut sections,
+        SectionId::AnimatedDirectShDeltaVolumes as u32,
+        animated_direct_sh_delta_volumes_bytes.clone(),
     );
     append_optional_section(
         &mut sections,
@@ -866,6 +875,17 @@ pub fn pack_and_write_portals(
         log::info!(
             "  DirectShDeltaVolumes: {} bytes ({} CSR entries)",
             bytes.len(),
+            section.affinity_lights.len(),
+        );
+    }
+    if let (Some(section), Some(bytes)) = (
+        animated_direct_sh_delta_volumes,
+        &animated_direct_sh_delta_volumes_bytes,
+    ) {
+        log::info!(
+            "  AnimatedDirectShDeltaVolumes: {} bytes ({} animated light(s), {} CSR entries)",
+            bytes.len(),
+            section.animation_descriptor_indices.len(),
             section.affinity_lights.len(),
         );
     }
@@ -1303,6 +1323,21 @@ mod tests {
         }
     }
 
+    fn minimal_animated_direct_sh_delta_volumes() -> AnimatedDirectShDeltaVolumesSection {
+        use postretro_level_format::delta_sh_volumes::DEFAULT_DELTA_PROBE_F16_STRIDE;
+
+        AnimatedDirectShDeltaVolumesSection {
+            affinity_factor: AFFINITY_FACTOR,
+            affinity_dims: [1, 1, 1],
+            tile_dimension: postretro_level_format::octahedral::DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            tile_border: postretro_level_format::octahedral::DEFAULT_IRRADIANCE_TILE_BORDER,
+            animation_descriptor_indices: vec![0],
+            affinity_offsets: vec![0, 1],
+            affinity_lights: vec![0],
+            delta_subblocks: vec![0; PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE],
+        }
+    }
+
     fn placeholder_lightmap() -> LightmapSection {
         LightmapSection::placeholder()
     }
@@ -1417,6 +1452,7 @@ mod tests {
 
         let alpha_lights = empty_alpha_lights();
         let texture_cache_keys: HashMap<String, [u8; 32]> = HashMap::new();
+        let animated_direct_sh_delta_volumes = minimal_animated_direct_sh_delta_volumes();
         pack_and_write_portals(
             &output,
             &geo_result,
@@ -1449,6 +1485,7 @@ mod tests {
             None,
             None,
             Some(sample_cell_draw_index_bytes()),
+            Some(&animated_direct_sh_delta_volumes),
         )
         .expect("pack_and_write_portals should succeed");
 
@@ -1457,8 +1494,9 @@ mod tests {
 
         let mut cursor = Cursor::new(&data);
         let meta = read_container(&mut cursor).expect("should read container");
-        // Baseline modern sections plus always-emitted FogVolumes and required CellDrawIndex.
-        assert_eq!(meta.header.section_count, 14);
+        // Baseline modern sections plus section 45, always-emitted FogVolumes,
+        // and the required CellDrawIndex.
+        assert_eq!(meta.header.section_count, 15);
 
         assert!(meta.find_section(SectionId::Geometry as u32).is_some());
         assert!(meta.find_section(SectionId::TextureNames as u32).is_some());
@@ -1483,6 +1521,11 @@ mod tests {
                 .is_some()
         );
         assert!(meta.find_section(SectionId::Lightmap as u32).is_some());
+        assert!(
+            meta.find_section(SectionId::AnimatedDirectShDeltaVolumes as u32)
+                .is_some(),
+            "the baked animated direct delta must reach PRL serialization"
+        );
 
         let _ = std::fs::remove_file(&output);
     }
@@ -1531,6 +1574,7 @@ mod tests {
             Some(&kinematic),
             None,
             Some(sample_cell_draw_index_bytes()),
+            None,
         )
         .expect("pack should succeed");
 
@@ -1589,6 +1633,7 @@ mod tests {
                 None,
                 None,
                 Some(sample_cell_draw_index_bytes()),
+                None,
             )
             .expect("pack should succeed");
         }
@@ -1699,6 +1744,7 @@ mod tests {
                 None,
                 None,
                 Some(sample_cell_draw_index_bytes()),
+                None,
             )
             .expect("pack should succeed");
         }
@@ -1814,6 +1860,7 @@ mod tests {
                 None,
                 None,
                 Some(sample_cell_draw_index_bytes()),
+                None,
             )
             .expect("pack should succeed");
         }
@@ -1906,6 +1953,7 @@ mod tests {
                 None,
                 None,
                 Some(sample_cell_draw_index_bytes()),
+                None,
             )
             .expect("pack should succeed");
         }
@@ -2007,6 +2055,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         let msg = result.expect_err("non-empty BVH without CellDrawIndex must fail");
@@ -2060,6 +2109,7 @@ mod tests {
             None,
             None,
             &FogVolumesSection::default(),
+            None,
             None,
             None,
             None,
@@ -2122,6 +2172,7 @@ mod tests {
             None,
             None,
             Some(sample_cell_draw_index_bytes()),
+            None,
         );
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
@@ -2219,6 +2270,7 @@ mod tests {
             None,
             None,
             cell_draw_index_bytes,
+            None,
         )
         .expect("full pipeline portal pack should succeed");
 

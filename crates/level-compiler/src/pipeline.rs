@@ -13,11 +13,12 @@ use crate::{
     resolve_texture_root,
 };
 use crate::{
-    animated_light_chunks, animated_light_weight_maps, bvh_build, cache, cell_draw_index_bake,
-    chunk_light_list_bake, delta_sh_bake, direct_sh_bake, entity_shadow_select, fog_cell_masks,
-    geometry, kinematic_geometry, light_namespaces, lightmap_bake, lightmap_layer, map_data,
-    navmesh_bake, pack, parse, partition, portals, sdf_bake, sh_bake, sh_group, shadowmask_bake,
-    texture_mips, texture_validation, trigger_volumes, visibility,
+    animated_direct_sh_bake, animated_light_chunks, animated_light_weight_maps, bvh_build, cache,
+    cell_draw_index_bake, chunk_light_list_bake, delta_sh_bake, direct_sh_bake,
+    entity_shadow_select, fog_cell_masks, geometry, kinematic_geometry, light_namespaces,
+    lightmap_bake, lightmap_layer, map_data, navmesh_bake, pack, parse, partition, portals,
+    sdf_bake, sh_bake, sh_group, shadowmask_bake, texture_mips, texture_validation,
+    trigger_volumes, visibility,
 };
 
 fn begin_stage(reporter: &dyn Reporter, id: StageId) -> Instant {
@@ -55,6 +56,7 @@ pub enum StageId {
     ShBake,
     DeltaShBake,
     DirectShBake,
+    AnimatedDirectShBake,
     EntityShadowLights,
     DirectShDeltaBake,
     ShadowmaskAtlas,
@@ -89,6 +91,7 @@ impl StageId {
             Self::ShBake => "SH Bake",
             Self::DeltaShBake => "Delta SH Bake",
             Self::DirectShBake => "Direct SH Bake",
+            Self::AnimatedDirectShBake => "Animated Direct SH Bake",
             Self::EntityShadowLights => "EntityShadowLights",
             Self::DirectShDeltaBake => "Direct SH Delta Bake",
             Self::ShadowmaskAtlas => "ShadowmaskAtlas",
@@ -115,6 +118,7 @@ impl StageId {
             Self::ShBake => "SH volume bake...",
             Self::DeltaShBake => "Delta SH volume bake...",
             Self::DirectShBake => "Direct SH volume bake...",
+            Self::AnimatedDirectShBake => "Animated direct SH delta bake...",
             Self::EntityShadowLights => "Entity shadow light selection...",
             Self::DirectShDeltaBake => "Direct SH delta volume bake...",
             Self::ShadowmaskAtlas => "Shadowmask atlas bake...",
@@ -128,7 +132,7 @@ impl StageId {
     }
 }
 
-const ORDERED_STAGES: [StageId; 21] = [
+const ORDERED_STAGES: [StageId; 22] = [
     StageId::Parsing,
     StageId::DataScript,
     StageId::TextureValidation,
@@ -141,6 +145,7 @@ const ORDERED_STAGES: [StageId; 21] = [
     StageId::ShBake,
     StageId::DeltaShBake,
     StageId::DirectShBake,
+    StageId::AnimatedDirectShBake,
     StageId::EntityShadowLights,
     StageId::DirectShDeltaBake,
     StageId::ShadowmaskAtlas,
@@ -844,6 +849,43 @@ fn run_after_parsing(
         direct_sh_present,
     );
 
+    let stage_start = begin_stage(reporter.as_ref(), StageId::AnimatedDirectShBake);
+    let animated_direct_sh_progress = StageProgress::indeterminate();
+    reporter.declare_progress(
+        StageId::AnimatedDirectShBake,
+        animated_direct_sh_progress.clone(),
+    );
+    let animated_direct_sh_control =
+        BakeControl::new(Arc::clone(&governor), &animated_direct_sh_progress);
+    let animated_direct_sh_delta_volumes_section = if animated_baked_lights.is_empty() {
+        None
+    } else {
+        let inputs = animated_direct_sh_bake::AnimatedDirectShBakeInputs {
+            sh_ctx: &sh_ctx,
+            portals: &generated_portals,
+            animated_lights: &animated_baked_lights,
+        };
+        animated_direct_sh_bake::bake_animated_direct_sh_delta_volumes_controlled(
+            &inputs,
+            &sh_config,
+            &animated_direct_sh_control,
+        )
+    };
+    finish_stage(
+        &mut timings,
+        reporter.as_ref(),
+        StageId::AnimatedDirectShBake,
+        stage_start,
+        animated_direct_sh_delta_volumes_section.is_some(),
+    );
+    if args.verbose {
+        if let Some(ref section) = animated_direct_sh_delta_volumes_section {
+            animated_direct_sh_bake::log_stats(section);
+        } else {
+            log::info!("AnimatedDirectShDeltaVolumes: skipped (no animated lights or probe grid)");
+        }
+    }
+
     let stage_start = begin_stage(reporter.as_ref(), StageId::EntityShadowLights);
     let raw_entity_shadow_lights_section = direct_sh_volume_section.as_ref().and_then(|_| {
         let inputs = entity_shadow_select::EntityShadowSelectionInputs {
@@ -1274,6 +1316,7 @@ fn run_after_parsing(
         kinematic_geometry_section.as_ref(),
         trigger_volumes_section.as_ref(),
         cell_draw_index_bytes,
+        animated_direct_sh_delta_volumes_section.as_ref(),
     )?;
     finish_stage(
         &mut timings,
@@ -1297,8 +1340,8 @@ mod tests {
         let without_sdf = planned_stages_for_sdf(false);
         let with_sdf = planned_stages_for_sdf(true);
 
-        assert_eq!(without_sdf.len(), 21);
-        assert_eq!(with_sdf.len(), 21);
+        assert_eq!(without_sdf.len(), 22);
+        assert_eq!(with_sdf.len(), 22);
         assert_eq!(
             without_sdf
                 .iter()
@@ -1317,6 +1360,7 @@ mod tests {
                 "SH Bake",
                 "Delta SH Bake",
                 "Direct SH Bake",
+                "Animated Direct SH Bake",
                 "EntityShadowLights",
                 "Direct SH Delta Bake",
                 "ShadowmaskAtlas",
@@ -1334,7 +1378,7 @@ mod tests {
                 .filter(|stage| stage.id != StageId::SdfAtlasBake)
                 .all(|stage| stage.predicted_present)
         );
-        assert!(!without_sdf[18].predicted_present);
-        assert!(with_sdf[18].predicted_present);
+        assert!(!without_sdf[19].predicted_present);
+        assert!(with_sdf[19].predicted_present);
     }
 }

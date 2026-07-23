@@ -18,7 +18,7 @@ pub(super) fn bare_segment(normalized: &str) -> &str {
 
 pub(super) fn build_name_to_path_map(texture_root: &Path) -> HashMap<String, PathBuf> {
     let mut map = HashMap::new();
-    let mut stem_owner = HashMap::new();
+    let mut stem_owner: HashMap<String, PathBuf> = HashMap::new();
     let mut ambiguous_stems = HashSet::new();
     let collections = match std::fs::read_dir(texture_root) {
         Ok(entries) => entries,

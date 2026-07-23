@@ -1,7 +1,7 @@
 // PRM ("Postretro Mip") texture sidecar file format.
 //
 // One `.prm` file per source PNG texture: it carries the precomputed mip chain
-// for that texture's three material slots (diffuse, specular, normal), baked
+// for that texture's four material slots (diffuse, specular, normal, emissive), baked
 // at compile time by `prl-build` and uploaded directly at runtime by the
 // renderer. Normal slots may use BC5 block compression (format_tag 3); diffuse
 // and specular stay uncompressed. Loading is still a header parse plus memcpy —
@@ -12,14 +12,14 @@
 //   -- header (43 bytes)
 //   [u8; 4]  magic                = b"PRM\x01"
 //   u8       stage_version        -- equals STAGE_VERSION
-//   u8       slot_mask            -- bit 0 diffuse, 1 specular, 2 normal, 3 emissive (reserved)
+//   u8       slot_mask            -- bit 0 diffuse, 1 specular, 2 normal, 3 emissive
 //   u8       reserved             = 0
 //   [u8; 32] bundle_hash          -- blake3 over slot_mask + per-present-slot
 //                                    (bit_index_byte, source_png_file_bytes)
 //   u32      total_body_bytes     -- Σ across present slots of
 //                                    (12-byte per-slot header + payload_bytes)
 //
-//   -- per present slot, in wire order diffuse → specular → normal
+//   -- per present slot, in wire order diffuse → specular → normal → emissive
 //   u8       format_tag           -- 0 Rgba8UnormSrgb, 1 Rgba8Unorm, 2 R8Unorm,
 //                                    3 Bc5RgUnorm (normal slot only)
 //   u8       reserved             = 0
@@ -38,9 +38,9 @@ use bitflags::bitflags;
 use thiserror::Error;
 
 /// Wire-format version of the `.prm` sidecar. The fourth byte of the magic
-/// (`b"PRM\x01"`) and this constant are bumped in lockstep when the layout
-/// changes; the reader rejects mismatches with `UnsupportedVersion` /
-/// `StageVersionMismatch`.
+/// (`b"PRM\x01"`) and this constant are bumped in lockstep for incompatible
+/// layout changes; additively-gated slots keep this version so old sidecars
+/// remain readable.
 pub const STAGE_VERSION: u8 = 2;
 
 /// Cache filename stem for a `.prm` sidecar keyed by `key`. The compile-time
@@ -70,13 +70,14 @@ const SLOT_HEADER_SIZE: usize = 12;
 const MAX_DIMENSION: u16 = 4096;
 
 bitflags! {
-    /// Material slots present in a `.prm` bundle. Bits 3–7 are reserved; the
+    /// Material slots present in a `.prm` bundle. Bits 4–7 are reserved; the
     /// reader rejects files with any reserved bit set or with `slot_mask == 0`.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct PrmSlots: u8 {
         const DIFFUSE  = 0b0000_0001;
         const SPECULAR = 0b0000_0010;
         const NORMAL   = 0b0000_0100;
+        const EMISSIVE = 0b0000_1000;
     }
 }
 
@@ -162,9 +163,9 @@ pub struct PrmSlot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrmFile {
     pub header: PrmHeader,
-    /// Slots indexed by wire order: 0 diffuse, 1 specular, 2 normal. A slot
+    /// Slots indexed by wire order: 0 diffuse, 1 specular, 2 normal, 3 emissive. A slot
     /// is `Some` iff the corresponding bit in `header.slot_mask` is set.
-    pub slots: [Option<PrmSlot>; 3],
+    pub slots: [Option<PrmSlot>; 4],
 }
 
 /// Errors returned by the `.prm` reader. Header-level errors abort the parse;
@@ -283,7 +284,7 @@ fn expected_payload_bytes(format: PrmFormat, width: u16, height: u16, level_coun
 
 impl PrmFile {
     /// Serialize the file to bytes. Slots are written in wire order
-    /// (diffuse, specular, normal); only those marked present in
+    /// (diffuse, specular, normal, emissive); only those marked present in
     /// `header.slot_mask` are emitted. `header.total_body_bytes` is recomputed
     /// from the actual slot payloads, so callers may leave it as `0`.
     ///
@@ -292,10 +293,15 @@ impl PrmFile {
     /// (wire index 2).
     pub fn to_bytes(&self) -> Result<Vec<u8>, PrmWriteError> {
         // Guard the BC5-on-normal-slot-only invariant before emitting anything.
-        // The normal slot is wire index 2 (`[0 diffuse, 1 specular, 2 normal]`).
-        for (i, bit) in [PrmSlots::DIFFUSE, PrmSlots::SPECULAR, PrmSlots::NORMAL]
-            .iter()
-            .enumerate()
+        // The normal slot is wire index 2 (`[0 diffuse, 1 specular, 2 normal, 3 emissive]`).
+        for (i, bit) in [
+            PrmSlots::DIFFUSE,
+            PrmSlots::SPECULAR,
+            PrmSlots::NORMAL,
+            PrmSlots::EMISSIVE,
+        ]
+        .iter()
+        .enumerate()
         {
             if !self.header.slot_mask.contains(*bit) {
                 continue;
@@ -310,9 +316,14 @@ impl PrmFile {
         // Recompute total_body_bytes from present slots so writers don't have
         // to keep it in sync manually.
         let mut total_body: u32 = 0;
-        for (i, bit) in [PrmSlots::DIFFUSE, PrmSlots::SPECULAR, PrmSlots::NORMAL]
-            .iter()
-            .enumerate()
+        for (i, bit) in [
+            PrmSlots::DIFFUSE,
+            PrmSlots::SPECULAR,
+            PrmSlots::NORMAL,
+            PrmSlots::EMISSIVE,
+        ]
+        .iter()
+        .enumerate()
         {
             if self.header.slot_mask.contains(*bit) {
                 if let Some(slot) = &self.slots[i] {
@@ -335,9 +346,14 @@ impl PrmFile {
         debug_assert_eq!(buf.len(), HEADER_SIZE);
 
         // -- per-slot --
-        for (i, bit) in [PrmSlots::DIFFUSE, PrmSlots::SPECULAR, PrmSlots::NORMAL]
-            .iter()
-            .enumerate()
+        for (i, bit) in [
+            PrmSlots::DIFFUSE,
+            PrmSlots::SPECULAR,
+            PrmSlots::NORMAL,
+            PrmSlots::EMISSIVE,
+        ]
+        .iter()
+        .enumerate()
         {
             if !self.header.slot_mask.contains(*bit) {
                 continue;
@@ -365,12 +381,12 @@ impl PrmFile {
     /// to placeholders per-slot rather than discard the whole bundle.
     ///
     /// Slot positions in the returned array follow wire order: 0 diffuse,
-    /// 1 specular, 2 normal. Absent slots are `Err(NotPresent)`.
+    /// 1 specular, 2 normal, 3 emissive. Absent slots are `Err(NotPresent)`.
     pub fn from_bytes_partial(
         data: &[u8],
     ) -> (
         Result<PrmHeader, PrmReadError>,
-        [Result<PrmSlot, PrmReadError>; 3],
+        [Result<PrmSlot, PrmReadError>; 4],
     ) {
         let header = match parse_header(data) {
             Ok(h) => h,
@@ -378,6 +394,7 @@ impl PrmFile {
                 return (
                     Err(e),
                     [
+                        Err(PrmReadError::NotPresent),
                         Err(PrmReadError::NotPresent),
                         Err(PrmReadError::NotPresent),
                         Err(PrmReadError::NotPresent),
@@ -389,7 +406,8 @@ impl PrmFile {
         // Walk body, advancing `cursor` through each present slot.
         let body = &data[HEADER_SIZE..];
         let mut cursor: usize = 0;
-        let mut slot_results: [Result<PrmSlot, PrmReadError>; 3] = [
+        let mut slot_results: [Result<PrmSlot, PrmReadError>; 4] = [
+            Err(PrmReadError::NotPresent),
             Err(PrmReadError::NotPresent),
             Err(PrmReadError::NotPresent),
             Err(PrmReadError::NotPresent),
@@ -401,9 +419,14 @@ impl PrmFile {
         let mut expected_total: u32 = 0;
         let mut all_present_ok = true;
 
-        for (i, bit) in [PrmSlots::DIFFUSE, PrmSlots::SPECULAR, PrmSlots::NORMAL]
-            .iter()
-            .enumerate()
+        for (i, bit) in [
+            PrmSlots::DIFFUSE,
+            PrmSlots::SPECULAR,
+            PrmSlots::NORMAL,
+            PrmSlots::EMISSIVE,
+        ]
+        .iter()
+        .enumerate()
         {
             if !header.slot_mask.contains(*bit) {
                 continue;
@@ -468,7 +491,7 @@ fn parse_header(data: &[u8]) -> Result<PrmHeader, PrmReadError> {
     }
 
     let raw_mask = data[5];
-    // PrmSlots::from_bits returns None if any reserved bit is set; we also
+    // PrmSlots::from_bits returns None if bits 4–7 are set; we also
     // reject `0` because a `.prm` with no slots is meaningless.
     let slot_mask = match PrmSlots::from_bits(raw_mask) {
         Some(m) if !m.is_empty() => m,
@@ -607,8 +630,8 @@ fn parse_slot(
 mod tests {
     use super::*;
 
-    /// Build a fully-populated `PrmFile` with three slots at modest sizes.
-    fn make_three_slot_file() -> PrmFile {
+    /// Build a fully-populated `PrmFile` with four slots at modest sizes.
+    fn make_four_slot_file() -> PrmFile {
         // Pick dimensions whose mip math is easy to reason about. The normal
         // slot uses the legacy Rgba8Unorm format here to exercise reader
         // parsing of pre-BC5 files — it is not what prl-build now emits for
@@ -616,14 +639,18 @@ mod tests {
         let diffuse = make_slot(PrmFormat::Rgba8UnormSrgb, 4, 4);
         let specular = make_slot(PrmFormat::R8Unorm, 2, 2);
         let normal = make_slot(PrmFormat::Rgba8Unorm, 8, 8);
+        let emissive = make_slot(PrmFormat::Rgba8UnormSrgb, 2, 2);
         PrmFile {
             header: PrmHeader {
                 stage_version: STAGE_VERSION,
-                slot_mask: PrmSlots::DIFFUSE | PrmSlots::SPECULAR | PrmSlots::NORMAL,
+                slot_mask: PrmSlots::DIFFUSE
+                    | PrmSlots::SPECULAR
+                    | PrmSlots::NORMAL
+                    | PrmSlots::EMISSIVE,
                 bundle_hash: [0xAB; 32],
                 total_body_bytes: 0, // recomputed by to_bytes
             },
-            slots: [Some(diffuse), Some(specular), Some(normal)],
+            slots: [Some(diffuse), Some(specular), Some(normal), Some(emissive)],
         }
     }
 
@@ -657,8 +684,8 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_three_slots() {
-        let file = make_three_slot_file();
+    fn round_trip_four_slots() {
+        let file = make_four_slot_file();
         let bytes = file.to_bytes().expect("valid fixture should serialize");
         let (header, slots) = PrmFile::from_bytes_partial(&bytes);
         let header = header.expect("header parse should succeed");
@@ -666,7 +693,7 @@ mod tests {
         assert_eq!(header.stage_version, STAGE_VERSION);
         assert_eq!(
             header.slot_mask,
-            PrmSlots::DIFFUSE | PrmSlots::SPECULAR | PrmSlots::NORMAL
+            PrmSlots::DIFFUSE | PrmSlots::SPECULAR | PrmSlots::NORMAL | PrmSlots::EMISSIVE
         );
         assert_eq!(header.bundle_hash, [0xAB; 32]);
 
@@ -677,6 +704,29 @@ mod tests {
         }
     }
 
+    #[test]
+    fn existing_three_slot_file_parses_with_absent_emissive() {
+        let diffuse = make_slot(PrmFormat::Rgba8UnormSrgb, 4, 4);
+        let specular = make_slot(PrmFormat::R8Unorm, 2, 2);
+        let normal = make_slot(PrmFormat::Rgba8Unorm, 8, 8);
+        let file = PrmFile {
+            header: PrmHeader {
+                stage_version: STAGE_VERSION,
+                slot_mask: PrmSlots::DIFFUSE | PrmSlots::SPECULAR | PrmSlots::NORMAL,
+                bundle_hash: [0x3A; 32],
+                total_body_bytes: 0,
+            },
+            slots: [Some(diffuse), Some(specular), Some(normal), None],
+        };
+        let bytes = file.to_bytes().expect("three-slot fixture serializes");
+        let (header, slots) = PrmFile::from_bytes_partial(&bytes);
+        assert_eq!(
+            header.expect("three-slot header parses").slot_mask,
+            PrmSlots::DIFFUSE | PrmSlots::SPECULAR | PrmSlots::NORMAL,
+        );
+        assert!(matches!(slots[3], Err(PrmReadError::NotPresent)));
+    }
+
     /// Per-slot fallback isolation regression guard: truncating the specular
     /// slot must surface `Truncated` for that slot only, leaving the diffuse
     /// slot (parsed earlier) intact. The normal slot (which followed the
@@ -684,7 +734,7 @@ mod tests {
     /// load-bearing assertion here is that the diffuse slot survives.
     #[test]
     fn specular_truncation_isolated() {
-        let file = make_three_slot_file();
+        let file = make_four_slot_file();
         let mut bytes = file.to_bytes().expect("valid fixture should serialize");
 
         // Locate the specular slot in the body. After the header, slot order
@@ -739,18 +789,39 @@ mod tests {
     }
 
     #[test]
-    fn reserved_slot_bits_are_rejected() {
+    fn emissive_slot_bit_is_accepted() {
+        let emissive = make_slot(PrmFormat::Rgba8UnormSrgb, 1, 1);
+        let file = PrmFile {
+            header: PrmHeader {
+                stage_version: STAGE_VERSION,
+                slot_mask: PrmSlots::EMISSIVE,
+                bundle_hash: [0xE0; 32],
+                total_body_bytes: 0,
+            },
+            slots: [None, None, None, Some(emissive.clone())],
+        };
+        let bytes = file.to_bytes().expect("emissive-only fixture serializes");
+        let (header_result, slots) = PrmFile::from_bytes_partial(&bytes);
+        assert!(
+            matches!(header_result, Ok(ref header) if header.slot_mask == PrmSlots::EMISSIVE),
+            "emissive-only header must parse, got {header_result:?}"
+        );
+        assert_eq!(slots[3].as_ref().expect("emissive parses"), &emissive);
+    }
+
+    #[test]
+    fn high_reserved_slot_bits_are_rejected() {
         let mut bytes = vec![0u8; HEADER_SIZE];
         bytes[0..4].copy_from_slice(b"PRM\x01");
         bytes[4] = STAGE_VERSION;
-        bytes[5] = 0b0000_1000; // bit 3 reserved (emissive placeholder)
+        bytes[5] = 0b0001_0000;
         let (header_result, _) = PrmFile::from_bytes_partial(&bytes);
         assert!(
             matches!(
                 header_result,
-                Err(PrmReadError::ReservedSlotBitsSet { mask: 0b0000_1000 })
+                Err(PrmReadError::ReservedSlotBitsSet { mask: 0b0001_0000 })
             ),
-            "expected ReservedSlotBitsSet, got {header_result:?}"
+            "bits 4–7 must stay reserved, got {header_result:?}"
         );
     }
 
@@ -867,7 +938,7 @@ mod tests {
                 bundle_hash: [0x5C; 32],
                 total_body_bytes: 0, // recomputed by to_bytes
             },
-            slots: [None, None, Some(normal.clone())],
+            slots: [None, None, Some(normal.clone()), None],
         };
 
         let bytes = file.to_bytes().expect("valid BC5 fixture should serialize");
@@ -893,7 +964,7 @@ mod tests {
                 bundle_hash: [0; 32],
                 total_body_bytes: 0,
             },
-            slots: [Some(make_bc5_slot(8, 8)), None, None],
+            slots: [Some(make_bc5_slot(8, 8)), None, None, None],
         };
         assert!(
             matches!(
@@ -911,7 +982,7 @@ mod tests {
                 bundle_hash: [0; 32],
                 total_body_bytes: 0,
             },
-            slots: [None, Some(make_bc5_slot(8, 8)), None],
+            slots: [None, Some(make_bc5_slot(8, 8)), None, None],
         };
         assert!(
             matches!(
@@ -929,7 +1000,7 @@ mod tests {
                 bundle_hash: [0; 32],
                 total_body_bytes: 0,
             },
-            slots: [None, None, Some(make_bc5_slot(8, 8))],
+            slots: [None, None, Some(make_bc5_slot(8, 8)), None],
         };
         assert!(
             normal_bc5.to_bytes().is_ok(),
@@ -941,7 +1012,7 @@ mod tests {
     /// must return `TotalBodyBytesMismatch`.
     #[test]
     fn mutated_total_body_bytes_header_field_is_rejected() {
-        let file = make_three_slot_file();
+        let file = make_four_slot_file();
         let mut bytes = file.to_bytes().expect("valid fixture should serialize");
 
         // `total_body_bytes` is a little-endian u32 at header bytes 39..43.
@@ -963,7 +1034,7 @@ mod tests {
     /// `BodySizeMismatch` (actual buffer length != declared total_body_bytes).
     #[test]
     fn stray_trailing_bytes_produce_body_size_mismatch() {
-        let file = make_three_slot_file();
+        let file = make_four_slot_file();
         let mut bytes = file.to_bytes().expect("valid fixture should serialize");
 
         // Append 16 stray bytes — the header still declares the original size.

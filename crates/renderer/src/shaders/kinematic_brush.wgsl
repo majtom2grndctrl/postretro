@@ -10,11 +10,13 @@ struct CameraUniforms {
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 
 @group(1) @binding(0) var base_texture: texture_2d<f32>;
+@group(1) @binding(1) var emissive_texture: texture_2d<f32>;
 @group(1) @binding(2) var spec_texture: texture_2d<f32>;
 
 struct MaterialUniform {
     shininess: f32,
-    _pad: vec3<f32>,
+    emissive_strength: f32,
+    _pad: vec2<f32>,
 };
 @group(1) @binding(3) var<uniform> material: MaterialUniform;
 @group(1) @binding(4) var t_normal: texture_2d<f32>;
@@ -360,5 +362,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         lighting = indirect;
     }
     lighting = vec3<f32>(kinematic_light_params.ambient_floor) + lighting + dynamic;
-    return vec4<f32>(base_color.rgb * lighting, base_color.a);
+    let emissive = sample_post_retro(emissive_texture, aniso_sampler, in.uv, ddx, ddy).rgb;
+    return vec4<f32>(base_color.rgb * lighting + emissive * material.emissive_strength, base_color.a);
 }

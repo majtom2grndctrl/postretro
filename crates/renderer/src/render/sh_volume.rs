@@ -787,7 +787,7 @@ impl ShVolumeResources {
 /// dynamic-direct params uniform (binding 16, FRAGMENT). The mesh shader binds
 /// every entry by lexical name; the shared entries it does not read are legal
 /// to carry in the layout.
-fn mesh_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
+pub(super) fn mesh_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
     let mut entries = sh_bind_group_layout_entries();
     entries.push(wgpu::BindGroupLayoutEntry {
         binding: BIND_DYNAMIC_DIRECT_PARAMS,

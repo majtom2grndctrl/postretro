@@ -45,6 +45,21 @@ impl Material {
         }
     }
 
+    /// Static emissive multiplier for this material prefix. The texture carries
+    /// the per-texel pattern; this keeps v1 authoring prefix-driven like
+    /// `shininess()` without introducing gameplay material properties.
+    pub fn emissive_strength(self) -> f32 {
+        match self {
+            Material::Neon => 4.0,
+            Material::Metal
+            | Material::Concrete
+            | Material::Grate
+            | Material::Glass
+            | Material::Wood
+            | Material::Default => 0.0,
+        }
+    }
+
     /// Property flags for this material variant.
     #[allow(dead_code)]
     pub fn properties(self) -> MaterialProperties {

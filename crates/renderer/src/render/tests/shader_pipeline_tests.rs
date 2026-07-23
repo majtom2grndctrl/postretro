@@ -3,6 +3,19 @@
 
 use super::super::*;
 
+#[test]
+fn world_material_uniform_mirrors_shininess_and_emissive_strength_packing() {
+    let forward = include_str!("../../shaders/forward.wgsl");
+    let kinematic = include_str!("../../shaders/kinematic_brush.wgsl");
+    for shader in [forward, kinematic] {
+        assert!(shader.contains("shininess: f32,"));
+        assert!(shader.contains("emissive_strength: f32,"));
+        assert!(shader.contains("_pad: vec2<f32>,"));
+    }
+    assert!(forward.contains("@group(1) @binding(1) var emissive_texture"));
+    assert!(kinematic.contains("@group(1) @binding(1) var emissive_texture"));
+}
+
 /// Regression: every storage/uniform buffer binding in `forward.wgsl` must
 /// receive a payload large enough to satisfy wgpu's minimum-binding-size
 /// validation. The original bug was `anim_descriptors` bound with 16 B while

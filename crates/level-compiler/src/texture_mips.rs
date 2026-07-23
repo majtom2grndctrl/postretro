@@ -2,7 +2,7 @@
 // See: context/lib/build_pipeline.md §Baked texture mips
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use postretro_level_format::prm::{
     PrmFile, PrmFormat, PrmHeader, PrmSlot, PrmSlots, STAGE_VERSION, bc5_level_count,
@@ -436,8 +436,8 @@ pub fn bake_diffuse_texture(diffuse_path: &Path, cache_root: &Path) -> anyhow::R
             diffuse_path.display()
         )
     })?;
-    let filename_key = filename_key_for(Some(&diffuse_bytes), None, None);
-    let bundle_hash = bundle_hash_for(Some(&diffuse_bytes), None, None);
+    let filename_key = filename_key_for(Some(&diffuse_bytes), None, None, None);
+    let bundle_hash = bundle_hash_for(Some(&diffuse_bytes), None, None, None);
     let prm_path = cache_root.join(format!("{}.prm", cache_filename_for_key(&filename_key)));
 
     // A richer world bundle can share this diffuse-addressed filename. Keep it
@@ -480,6 +480,7 @@ pub fn bake_diffuse_texture(diffuse_path: &Path, cache_root: &Path) -> anyhow::R
             }),
             None,
             None,
+            None,
         ],
     };
 
@@ -520,7 +521,7 @@ pub fn bake_texture_mips(
 
         // Resolve the diffuse against the normalized relative name first; on a
         // miss, fall back to the bare last path segment (back-compat alias).
-        // Sibling `_s`/`_n` keys append to the SAME form that resolved the
+        // Sibling `_s`/`_n`/`_e` keys append to the SAME form that resolved the
         // diffuse, so siblings come from the same collection.
         let (diff_path, resolved_base) = match name_to_path.get(&normalized) {
             Some(p) => (Some(p.clone()), normalized.clone()),
@@ -531,6 +532,7 @@ pub fn bake_texture_mips(
         };
         let spec_path = name_to_path.get(&format!("{resolved_base}_s")).cloned();
         let norm_path = name_to_path.get(&format!("{resolved_base}_n")).cloned();
+        let emissive_path = name_to_path.get(&format!("{resolved_base}_e")).cloned();
 
         // Read raw bytes (needed for both filename key and bundle hash).
         let diff_bytes = match diff_path.as_ref() {
@@ -551,15 +553,26 @@ pub fn bake_texture_mips(
             })?),
             None => None,
         };
+        let emissive_bytes = match emissive_path.as_ref() {
+            Some(p) => Some(std::fs::read(p).map_err(|e| {
+                anyhow::anyhow!("failed to read emissive {} for '{name}': {e}", p.display())
+            })?),
+            None => None,
+        };
 
         let filename_key = filename_key_for(
             diff_bytes.as_deref(),
             spec_bytes.as_deref(),
             norm_bytes.as_deref(),
+            emissive_bytes.as_deref(),
         );
 
         // All-absent: nothing to bake.
-        if diff_bytes.is_none() && spec_bytes.is_none() && norm_bytes.is_none() {
+        if diff_bytes.is_none()
+            && spec_bytes.is_none()
+            && norm_bytes.is_none()
+            && emissive_bytes.is_none()
+        {
             out.insert(name.clone(), [0u8; 32]);
             continue;
         }
@@ -568,6 +581,7 @@ pub fn bake_texture_mips(
             diff_bytes.as_deref(),
             spec_bytes.as_deref(),
             norm_bytes.as_deref(),
+            emissive_bytes.as_deref(),
         );
 
         let prm_path = cache_root.join(format!("{}.prm", cache_filename_for_key(&filename_key)));
@@ -588,9 +602,9 @@ pub fn bake_texture_mips(
         }
 
         // Build slots. We only emit a slot for the diffuse if the source PNG
-        // actually exists; same for specular and normal. Dimensions across
+        // actually exists; same for specular, normal, and emissive. Dimensions across
         // slots are not required to match here (the runtime checks).
-        let mut slots_arr: [Option<PrmSlot>; 3] = [None, None, None];
+        let mut slots_arr: [Option<PrmSlot>; 4] = [None, None, None, None];
         let mut slot_mask = PrmSlots::empty();
 
         if let (Some(b), Some(p)) = (diff_bytes.as_deref(), diff_path.as_ref()) {
@@ -645,6 +659,18 @@ pub fn bake_texture_mips(
                 slot_mask |= PrmSlots::NORMAL;
             }
         }
+        if let (Some(b), Some(p)) = (emissive_bytes.as_deref(), emissive_path.as_ref()) {
+            let (rgba, w, h) = decode_png_rgba(b, p)?;
+            let payload = build_diffuse_chain(&rgba, w, h, &lut);
+            slots_arr[3] = Some(PrmSlot {
+                format: PrmFormat::Rgba8UnormSrgb,
+                width: w as u16,
+                height: h as u16,
+                level_count: expected_level_count(w as u16, h as u16),
+                payload,
+            });
+            slot_mask |= PrmSlots::EMISSIVE;
+        }
 
         let prm = PrmFile {
             header: PrmHeader {
@@ -672,6 +698,7 @@ pub fn bake_texture_mips(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn unique_temp_dir(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -735,6 +762,7 @@ mod tests {
         assert_eq!(diffuse.format, PrmFormat::Rgba8UnormSrgb);
         assert!(slots[1].is_err());
         assert!(slots[2].is_err());
+        assert!(slots[3].is_err());
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -749,12 +777,12 @@ mod tests {
         let source_bytes = png_bytes(4, 4);
         std::fs::write(&diffuse_path, &source_bytes).unwrap();
 
-        let key = filename_key_for(Some(&source_bytes), None, None);
+        let key = filename_key_for(Some(&source_bytes), None, None, None);
         let cached = PrmFile {
             header: PrmHeader {
                 stage_version: STAGE_VERSION,
                 slot_mask: PrmSlots::DIFFUSE,
-                bundle_hash: bundle_hash_for(Some(&source_bytes), None, None),
+                bundle_hash: bundle_hash_for(Some(&source_bytes), None, None, None),
                 total_body_bytes: 0,
             },
             slots: [
@@ -765,6 +793,7 @@ mod tests {
                     level_count: 1,
                     payload: vec![1, 2, 3, 4],
                 }),
+                None,
                 None,
                 None,
             ],
@@ -796,6 +825,7 @@ mod tests {
         std::fs::write(&diffuse_path, png_bytes(8, 8)).unwrap();
         std::fs::write(collection.join("surface_s.png"), png_bytes(8, 8)).unwrap();
         std::fs::write(collection.join("surface_n.png"), png_bytes(8, 8)).unwrap();
+        std::fs::write(collection.join("surface_e.png"), png_bytes(8, 8)).unwrap();
 
         let world_keys =
             bake_texture_mips(&["shared/surface".to_string()], &texture_root, &cache_root).unwrap();
@@ -1039,7 +1069,7 @@ mod tests {
                 bundle_hash: [0x42; 32],
                 total_body_bytes: 0,
             },
-            slots: [None, None, Some(slot)],
+            slots: [None, None, Some(slot), None],
         };
 
         let bytes = file.to_bytes().expect("BC5 normal slot should serialize");
@@ -1092,7 +1122,7 @@ mod tests {
                 bundle_hash: [0x7; 32],
                 total_body_bytes: 0,
             },
-            slots: [None, None, Some(slot)],
+            slots: [None, None, Some(slot), None],
         };
 
         let bytes = file
@@ -1159,9 +1189,46 @@ mod tests {
     /// (0x00/0x01/0x02) tags which slot the bytes belong to.
     #[test]
     fn bundle_hash_distinguishes_slot_assignment() {
-        let a = bundle_hash_for(None, Some(b"alpha"), Some(b"beta"));
-        let b = bundle_hash_for(None, Some(b"beta"), Some(b"alpha"));
+        let a = bundle_hash_for(None, Some(b"alpha"), Some(b"beta"), None);
+        let b = bundle_hash_for(None, Some(b"beta"), Some(b"alpha"), None);
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn bake_emissive_sibling_writes_srgb_fourth_slot_and_changes_bundle_hash() {
+        let root = unique_temp_dir("emissive-slot");
+        let texture_root = root.join("textures");
+        let collection = texture_root.join("neon");
+        let cache_root = root.join("cache");
+        std::fs::create_dir_all(&collection).unwrap();
+        std::fs::write(collection.join("neon_panel.png"), png_bytes(4, 4)).unwrap();
+        std::fs::write(collection.join("neon_panel_e.png"), png_bytes(4, 4)).unwrap();
+
+        let keys = bake_texture_mips(&["neon/neon_panel".to_string()], &texture_root, &cache_root)
+            .unwrap();
+        let key = keys["neon/neon_panel"];
+        let bytes = std::fs::read(cache_root.join(format!("{}.prm", cache_filename_for_key(&key))))
+            .unwrap();
+        let (header, slots) = PrmFile::from_bytes_partial(&bytes);
+        let header = header.expect("emissive bundle parses");
+        assert!(header.slot_mask.contains(PrmSlots::EMISSIVE));
+        assert_eq!(
+            slots[3].as_ref().expect("emissive slot parses").format,
+            PrmFormat::Rgba8UnormSrgb,
+        );
+
+        let diffuse = std::fs::read(collection.join("neon_panel.png")).unwrap();
+        let emissive = std::fs::read(collection.join("neon_panel_e.png")).unwrap();
+        assert_ne!(
+            header.bundle_hash,
+            bundle_hash_for(Some(&diffuse), None, None, None),
+            "the emissive sibling must participate in the bundle hash",
+        );
+        assert_eq!(
+            header.bundle_hash,
+            bundle_hash_for(Some(&diffuse), None, None, Some(&emissive)),
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Filename key falls back to specular when diffuse is missing, but the
@@ -1170,14 +1237,14 @@ mod tests {
     #[test]
     fn filename_key_specular_fallback_does_not_collide_with_diffuse() {
         let bytes: &[u8] = b"identical-payload";
-        let diff_only = filename_key_for(Some(bytes), None, None);
-        let spec_only = filename_key_for(None, Some(bytes), None);
+        let diff_only = filename_key_for(Some(bytes), None, None, None);
+        let spec_only = filename_key_for(None, Some(bytes), None, None);
         assert_ne!(diff_only, spec_only);
     }
 
     #[test]
     fn all_absent_key_is_zero() {
-        assert_eq!(filename_key_for(None, None, None), [0u8; 32]);
+        assert_eq!(filename_key_for(None, None, None, None), [0u8; 32]);
     }
 
     /// Resolver coverage: a collection subdir with a diffuse, a `_s` specular
@@ -1336,7 +1403,7 @@ mod tests {
             0xd0, 0x01, 0x49, 0xe8, 0x68, 0xc3, 0x89, 0xd5, 0xa9, 0xcb, 0x57, 0xc8, 0xb2, 0x04,
             0x7c, 0xc1, 0x7b, 0xbe,
         ];
-        let got = bundle_hash_for(Some(&[0xAAu8, 0xBB]), None, None);
+        let got = bundle_hash_for(Some(&[0xAAu8, 0xBB]), None, None, None);
         assert_eq!(got, expected);
     }
 }

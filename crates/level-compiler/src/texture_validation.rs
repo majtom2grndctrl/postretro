@@ -8,6 +8,7 @@
 // |------------|----------------------|---------------------|
 // | `_n.png`   | Linear               | Fail build          |
 // | `_s.png`   | Linear               | Fail build          |
+// | `_e.png`   | sRGB color (no enforcement) | —            |
 // | (diffuse)  | sRGB (no enforcement)| —                   |
 //
 // "Linear" is defined as: no `sRGB` PNG chunk, no `iCCP` chunk, and either
@@ -100,7 +101,7 @@ fn detect_color_space(path: &Path) -> anyhow::Result<DetectedColorSpace> {
 }
 
 /// Build a flat list of PNG file paths under `texture_root` whose stem
-/// matches one of the surface-map suffixes (`_s`, `_n`).
+/// matches one of the surface-map suffixes (`_s`, `_n`, `_e`).
 ///
 /// Walks one collection level deep (`<root>/<collection>/<file>.png`),
 /// matching the authoring convention described in
@@ -141,6 +142,8 @@ fn collect_sibling_pngs(texture_root: &Path) -> std::io::Result<Vec<(PathBuf, &'
                 "_n.png"
             } else if stem_lower.ends_with("_s") {
                 "_s.png"
+            } else if stem_lower.ends_with("_e") {
+                "_e.png"
             } else {
                 continue;
             };
@@ -150,8 +153,9 @@ fn collect_sibling_pngs(texture_root: &Path) -> std::io::Result<Vec<(PathBuf, &'
     Ok(out)
 }
 
-/// Validate every `_n.png` and `_s.png` under `texture_root` for linear
-/// color-space metadata. Logs each load at `info` level.
+/// Validate `_n.png` and `_s.png` under `texture_root` for linear color-space
+/// metadata. `_e.png` is discovered and logged but deliberately exempt: emissive
+/// is authored as color and validly arrives either untagged or sRGB-tagged.
 ///
 /// Returns an aggregate error naming every offender. The validator surfaces
 /// every violation at once rather than failing on the first, so a single
@@ -173,7 +177,7 @@ pub fn validate_sibling_color_spaces(texture_root: &Path) -> anyhow::Result<()> 
                     path.display(),
                     cs.describe()
                 );
-                if !cs.is_linear() {
+                if *suffix != "_e.png" && !cs.is_linear() {
                     violations.push(format!(
                         "  {}: detected {}, required linear (suffix `{suffix}`)",
                         path.display(),
@@ -360,6 +364,7 @@ mod tests {
         let png = build_test_png(&[]);
         std::fs::write(coll.join("wall_s.png"), &png).unwrap();
         std::fs::write(coll.join("wall_n.png"), &png).unwrap();
+        std::fs::write(coll.join("wall_e.png"), &png).unwrap();
         validate_sibling_color_spaces(&dir).unwrap();
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -395,6 +400,24 @@ mod tests {
         let srgb = build_test_png(&[(b"sRGB", vec![0u8])]);
         std::fs::write(coll.join("wall.png"), &srgb).unwrap();
         validate_sibling_color_spaces(&dir).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn validate_accepts_srgb_and_untagged_emissive_siblings() {
+        let dir = std::env::temp_dir().join(format!(
+            "prl-build-tex-validate-emissive-{}",
+            std::process::id()
+        ));
+        let coll = dir.join("collection");
+        std::fs::create_dir_all(&coll).unwrap();
+        let srgb = build_test_png(&[(b"sRGB", vec![0u8])]);
+        let untagged = build_test_png(&[]);
+        std::fs::write(coll.join("wall_e.png"), &srgb).unwrap();
+        std::fs::write(coll.join("panel_e.png"), &untagged).unwrap();
+
+        validate_sibling_color_spaces(&dir)
+            .expect("emissive color siblings must be exempt from linear validation");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -228,14 +228,23 @@ pub(crate) fn uniform_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry
     }]
 }
 
-// Group 1: 0=diffuse(sRGB), 2=specular(R8), 3=shininess, 4=normal(Rgba8Unorm,
-// NOT sRGB; n = sample.rgb*2-1), 5=material sampler (filtering selected per material).
-// Binding 1 is intentionally vacated (former nearest sampler); the shared sampler
-// binding stays at 5 — non-contiguous bindings are valid.
-pub(crate) fn material_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 5] {
+// Group 1: 0=diffuse(sRGB), 1=emissive(sRGB), 2=specular(R8),
+// 3=material uniform, 4=normal(Rgba8Unorm, NOT sRGB; n = sample.rgb*2-1),
+// 5=material sampler (filtering selected per material).
+pub(crate) fn material_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 6] {
     [
         wgpu::BindGroupLayoutEntry {
             binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 1,
             visibility: wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Texture {
                 sample_type: wgpu::TextureSampleType::Float { filterable: true },
@@ -402,7 +411,7 @@ pub(crate) fn forward_pipeline_sampled_texture_count(cube_array_supported: bool)
     // Groups 0 (uniform) and 2 (lighting) carry no textures, but include them so
     // adding a texture entry to either BGL is caught here automatically. Group 5's
     // count is feature-conditional: the cube-array point-shadow texture (binding 5)
-    // is present only when `cube_array_supported` (15 total with it, 14 without).
+    // is present only when `cube_array_supported` (16 total with it, 15 without).
     fragment_sampled_textures(&uniform_bind_group_layout_entries())
         + fragment_sampled_textures(&material_bind_group_layout_entries())
         + fragment_sampled_textures(&lighting_bind_group_layout_entries())

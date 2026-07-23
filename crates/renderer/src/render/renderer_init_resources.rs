@@ -514,11 +514,10 @@ pub(crate) fn build_uniform_bind_groups(
         }],
     });
 
-    // Group 1: 0=diffuse(sRGB), 2=specular(R8), 3=shininess,
+    // Group 1: 0=diffuse(sRGB), 1=emissive(sRGB), 2=specular(R8), 3=material uniform,
     //          4=normal(Rgba8Unorm, NOT sRGB; n = sample.rgb*2-1),
     //          5=selected filtering material sampler.
-    // Binding 1 is intentionally vacated (former nearest sampler). Binding 5
-    // is shared: world/movers use linear+anisotropic; skinned models use nearest mag.
+    // Binding 5 is shared: world/movers use linear+anisotropic; skinned models use nearest mag.
     let texture_bind_group_layout =
         device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Material Bind Group Layout"),

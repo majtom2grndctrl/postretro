@@ -1034,6 +1034,41 @@ mod tests {
     }
 
     #[test]
+    fn kinematic_pipeline_fragment_texture_budget_includes_emissive() {
+        let total = |cube_array_supported| {
+            let per_group = [
+                fragment_sampled_textures(&uniform_bind_group_layout_entries()),
+                fragment_sampled_textures(&material_bind_group_layout_entries()),
+                fragment_sampled_textures(&light_bind_group_layout_entries(cube_array_supported)),
+                0, // group 3 instance storage buffer
+                fragment_sampled_textures(&sh_volume::sh_bind_group_layout_entries()),
+            ];
+            (per_group, per_group.iter().sum::<u32>())
+        };
+
+        let (cube_groups, cube_total) = total(true);
+        assert_eq!(cube_groups, [0, 4, 2, 0, 3]);
+        assert_eq!(cube_total, 9);
+        assert!(cube_total <= 16);
+
+        let (no_cube_groups, no_cube_total) = total(false);
+        assert_eq!(no_cube_groups, [0, 4, 1, 0, 3]);
+        assert_eq!(no_cube_total, 8);
+        assert!(no_cube_total <= 16);
+    }
+
+    #[test]
+    fn kinematic_material_uniform_mirrors_emissive_layout() {
+        let shader = include_str!("../shaders/kinematic_brush.wgsl");
+        assert!(shader.contains("shininess: f32,"));
+        assert!(shader.contains("emissive_strength: f32,"));
+        assert!(shader.contains("emissive_texture"));
+        assert!(
+            shader.contains("base_color.rgb * lighting + emissive * material.emissive_strength")
+        );
+    }
+
+    #[test]
     fn kinematic_light_layout_keeps_storage_fragment_only() {
         let entries = light_bind_group_layout_entries(true);
         let storage_count = entries

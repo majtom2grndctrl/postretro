@@ -1951,6 +1951,10 @@ fn clip_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render::{
+        pipeline_layout::{material_bind_group_layout_entries, uniform_bind_group_layout_entries},
+        sh_volume,
+    };
     use glam::Vec3;
 
     #[test]
@@ -2510,6 +2514,32 @@ mod tests {
             fragment_sampled_textures(&cube) <= 16,
             "mesh group-2 sampled-texture count must stay under the spec floor of 16",
         );
+    }
+
+    #[test]
+    fn skinned_mesh_pipeline_fragment_texture_budget_includes_shared_emissive_binding() {
+        let total = |cube_array_supported| {
+            let per_group = [
+                fragment_sampled_textures(&uniform_bind_group_layout_entries()),
+                fragment_sampled_textures(&material_bind_group_layout_entries()),
+                fragment_sampled_textures(&mesh_light_bind_group_layout_entries(
+                    cube_array_supported,
+                )),
+                0, // group 3 palette + instance storage buffers
+                fragment_sampled_textures(&sh_volume::mesh_bind_group_layout_entries()),
+            ];
+            (per_group, per_group.iter().sum::<u32>())
+        };
+
+        let (cube_groups, cube_total) = total(true);
+        assert_eq!(cube_groups, [0, 4, 2, 0, 3]);
+        assert_eq!(cube_total, 9);
+        assert!(cube_total <= 16);
+
+        let (no_cube_groups, no_cube_total) = total(false);
+        assert_eq!(no_cube_groups, [0, 4, 1, 0, 3]);
+        assert_eq!(no_cube_total, 8);
+        assert!(no_cube_total <= 16);
     }
 
     // --- Cache-side clip query seam (GPU-free) ----------------------------------

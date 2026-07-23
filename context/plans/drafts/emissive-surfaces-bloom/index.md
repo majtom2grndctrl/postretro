@@ -77,8 +77,10 @@ sRGB format to `Rgba16Float` (the forward "Textured" pipeline, kinematic brush,
 skinned mesh, smoke/billboard, fog composite, wireframe, debug lines, UI — each
 pipeline's color-target `format` must match, plus the `scene_color` texture
 itself). Insert a **tonemap** operator into the resolve: the resolve now reads the
-HDR `scene_color`, applies a tonemap curve mapping HDR → [0,1], **then** the
-existing flash/vignette/shake, writing the sRGB swapchain. Reconcile E20 capture —
+HDR `scene_color`, applies a **near-neutral / soft-knee** tonemap (passes in-range
+[0,1] values through near-untouched, compresses only the >1.0 overshoot — retro-punch
+preserved, not a filmic ACES recolor; see Decisions), **then** the existing
+flash/vignette/shake, writing the sRGB swapchain. Reconcile E20 capture —
 the readback assumes 4 bytes/px from an Rgba8 `scene_color`; keep the deterministic
 Rgba8 PNG path by having capture read a **tonemapped LDR** copy (capture already
 returns before the resolve, so add a tonemap-to-LDR step the capture path reads),
@@ -102,13 +104,17 @@ the linear `_s`/`_n` requirement). Renderer: widen `TextureSlotPlan.consume` to 
 `make_emissive_placeholder` (1×1 `Rgba8UnormSrgb` black) used on absence; add the
 `Emissive` slot upload; add the emissive texture to the group-1 BGL at the **vacated
 binding 1** and to `build_material_bind_group` (all 4 call sites) — and update the
-sampled-texture budget test, which now sits at **exactly 16/16 fragment textures,
-zero headroom** (Open questions). World + kinematic-brush shaders: declare and
-sample the emissive texture, decode sRGB→linear, and add `emissive * strength`
-additively to the final HDR color after `total_light`; strength is a per-material
-uniform field (beside shininess) with a default that overshoots 1.0 for bloom.
-Emissive is **never** written into any light buffer (invariant: no light-loop feed).
-Depends on Task 1. Concurrent with Task 3.
+sampled-texture budget test, which now sits at **exactly 16/16 fragment textures**
+(the closed material vocabulary complete by design; see Decisions). World +
+kinematic-brush shaders: declare and sample the emissive texture, decode sRGB→linear,
+and add `emissive * strength` additively to the final HDR color after `total_light`.
+**Emissive strength is prefix-driven:** it becomes a `MaterialProperties` field on
+the `Material` enum (`crates/render-data/src/material.rs`, beside `shininess()`),
+resolved from the texture prefix and packed into the group-1 material uniform — the
+`Neon` variant (today property-less) gets a high strength so `neon_` textures
+self-light with no new authoring surface. Emissive is **never** written into any
+light buffer (invariant: no light-loop feed). Depends on Task 1. Concurrent with
+Task 3.
 
 ### Task 3: Bloom pass
 A renderer-owned bloom pass: a bright-pass extracting HDR luminance above a
@@ -123,9 +129,9 @@ material/format/world-shader path).
 
 ### Task 4: Tooling, generalization, verification, docs
 `tools/gen_emissive.py` mirroring `gen_specular.py`/`gen_normal.py`, emitting sRGB
-`_e.png` siblings (masking bright/neon diffuse regions or a prefix heuristic) that
-pass the Task 2 validation arm. Wire an emissive-strength heuristic (e.g. `neon_` →
-higher strength) into the per-material strength Task 2 added. Add a dev-map emissive
+`_e.png` siblings (masking bright/neon diffuse regions) that pass the Task 2
+validation arm. Populate the prefix→strength values on the `Material` variants Task 2
+added (`neon_` high; others as content needs). Add a dev-map emissive
 surface (`_e.png` on a dev texture, placed) and a tolerance-scoped E20 scripted
 capture proving self-lit + bloom. Docs: flip `resource_management.md §4.5` to
 implemented, update the §3 material-table emissive row and the §4 sibling
@@ -182,27 +188,42 @@ already disambiguates; a bump only adds an explicit signal.
 | Existing 3-slot `.prm` files stay valid | Task 2 (reader accepts bit 3 but never requires it; hash regenerates) | the slot-widening must keep bit-3-unset files parsing | AC 5 |
 | All HDR/tonemap/bloom stays in `postretro-renderer` | Task 1, Task 3 | Renderer-owns-GPU (`index.md §2`) | structural (`cargo tree`) |
 
+## Decisions
+
+Resolved against the project's north stars (cyberpunk-neon as a product-identity
+pillar; the lean, closed material vocabulary; the retro-punchy — not filmic — look;
+prefix-driven modder-friendly materials; ship a visible, testable slice):
+
+- **One spec, not split.** A HDR/tonemap-only Phase 1 has no visible outcome
+  (tonemapping in-range content is near-invisible), and splitting risks shipping the
+  plumbing while the neon look — a product pillar — lags. The visible, testable ship
+  is "neon surfaces glow," which needs all three layers. Phase 1 stays the clean pause
+  point if capacity demands one.
+- **Near-neutral tonemap, not filmic.** The retro-punchy palette and "retro filters
+  used sparingly" rule out an ACES-style recolor; the base image stays punchy and only
+  the emissive/bright overshoot is compressed so it blooms. This also sets a tight
+  parity tolerance (in-range content ≈ today).
+- **Accept 16/16.** The material vocabulary is closed by design (PBR is a non-goal);
+  emissive *completes* it rather than crowding it. Env-map reflections, if ever built,
+  bind as an atlas/probe, not a per-material forward slot, so they don't compete for
+  this budget.
+- **Prefix-driven strength.** Emissive strength lives on the `Material` enum keyed by
+  texture prefix (like `shininess()`), giving the property-less `Neon` variant real
+  meaning and adding zero authoring surface. A per-material KVP defers until content
+  proves prefix granularity insufficient.
+
 ## Open questions
 
-- **Split option.** Task 1 (HDR + tonemap) is a self-contained renderer foundation,
-  independently valuable (bloom/tonemap for any bright content). It could ship as its
-  own spec with the emissive slot + bloom as a dependent second spec. Recommend
-  keeping them together — emissive-without-HDR is a half-feature (the whole point is
-  *additive HDR*). Decision for the owner.
-- **Tonemap curve + parity bar.** Reinhard / ACES / a near-neutral curve — any real
-  tonemap alters mid-tones, so "visual parity within tolerance" needs a defined
-  tolerance and curve. Implementation choice; flag that it is a deliberate,
-  visible change to already-shipped content, not byte-identical.
-- **Sampled-texture budget at the ceiling.** Emissive puts group-1 fragment textures
-  at **exactly 16/16** (the design floor, zero headroom). Any future material texture
-  (env-map, detail) would then force a consolidation. Accept, or reclaim a slot now?
-- **Emissive-strength authoring.** v1 uses a per-material default + a `neon_`-style
-  prefix heuristic. A per-material FGD/descriptor strength KVP is a later refinement.
-- **Oversized files.** `texture_mips.rs` (1553) and `forward.wgsl` (1328) are the
-  tangled extensions; `pipeline.rs`, `renderer_types.rs`, `prm.rs`,
-  `renderer_render_frame.rs` are all >800 but localized. Split-first
-  `texture_mips.rs` / `forward.wgsl` if the emissive diff sprawls; the rest as-is.
-- **Follow-up (named): runtime-animated emissive.** The button/trigger surface-glow
-  consumer needs per-surface (or per-mesh-entity) emissive-intensity runtime state +
-  a GPU feed — net-new, no existing seam. Draft after v1 lands; the light-brightness
-  bridge is the closest conceptual template but does not transfer to static surfaces.
+- **Oversized files (implementer judgment).** `texture_mips.rs` (1553) and
+  `forward.wgsl` (1328) are the tangled extensions; `pipeline.rs`, `renderer_types.rs`,
+  `prm.rs`, `renderer_render_frame.rs` are all >800 but localized. Per the dev guide's
+  "soft smell, not a gate," split-first `texture_mips.rs` / `forward.wgsl` only if the
+  emissive diff sprawls; the rest stay as-is. Left flexible by intent.
+- **Follow-up — runtime-animated emissive (the theatrical bridge).** The button/trigger
+  surface-glow consumer needs per-surface (or per-mesh-entity) emissive-intensity
+  runtime state + a GPU feed — net-new, no existing seam (the light-brightness bridge
+  is the closest template but does not transfer to static surfaces). This is **not**
+  speculative polish: scripted reveals and reactive set-pieces are a stated product
+  pillar, and this is the bridge from v1 emissive to E18 co-op set-pieces and the
+  activation-feedback thread that motivated this spec. Sequence it with intent as that
+  bridge once v1 lands, not as an open-ended someday.

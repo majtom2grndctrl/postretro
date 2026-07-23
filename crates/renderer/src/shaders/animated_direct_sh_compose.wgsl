@@ -38,6 +38,17 @@ struct GridDims {
     _pad1: u32,
 };
 
+struct DebugOverride {
+    enabled: u32,
+    light_index: u32,
+    _pad0: u32,
+    _pad1: u32,
+    weight: f32,
+    _pad2: f32,
+    _pad3: f32,
+    _pad4: f32,
+};
+
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
 
 @group(1) @binding(0) var direct_intermediate_atlas: texture_2d_array<f32>;
@@ -50,6 +61,9 @@ struct GridDims {
 @group(1) @binding(23) var<storage, read> anim_samples: array<f32>;
 @group(1) @binding(24) var<storage, read> affinity_lights: array<u32>;
 @group(1) @binding(25) var<storage, read> animation_descriptor_indices: array<u32>;
+// Pass-B-only uniform: `light_index` is an AnimatedBakedLights index, unlike
+// Pass A's binding-27 promotion-selection override.
+@group(1) @binding(26) var<uniform> debug_override: DebugOverride;
 
 const AFFINITY_FACTOR: u32 = 4u;
 const PROBES_PER_CELL: u32 = 64u;
@@ -124,6 +138,9 @@ fn read_delta_texel(entry: u32, local_probe: u32, tile_texel: vec2<u32>) -> vec4
 }
 
 fn animated_light_scale(light_index: u32) -> vec3<f32> {
+    if (debug_override.enabled != 0u && light_index != debug_override.light_index) {
+        return vec3<f32>(0.0);
+    }
     let descriptor_index = animation_descriptor_indices[light_index];
     if (descriptor_index == INVALID_DESCRIPTOR_INDEX || descriptor_index >= arrayLength(&descriptors)) {
         return vec3<f32>(0.0);
@@ -148,7 +165,12 @@ fn animated_light_scale(light_index: u32) -> vec3<f32> {
             vec3<f32>(0.0),
         ) * desc.base_color;
     }
-    return color * brightness;
+    let debug_weight = select(
+        1.0,
+        clamp(debug_override.weight, 0.0, 1.0),
+        debug_override.enabled != 0u,
+    );
+    return color * brightness * debug_weight;
 }
 
 @compute @workgroup_size(8, 8, 1)

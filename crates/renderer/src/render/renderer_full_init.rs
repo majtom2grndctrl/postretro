@@ -619,6 +619,8 @@ pub(crate) fn build_full_renderer(
         promoted_depth_cache_timing_open: false,
         #[cfg(feature = "dev-tools")]
         direct_sh_debug_override: DirectShDebugOverride::default(),
+        #[cfg(feature = "dev-tools")]
+        animated_direct_sh_debug_override: AnimatedDirectShDebugOverride::default(),
         cube_shadow_vs_uniform_buffer,
         cube_shadow_vs_bind_group,
         shadow_vs_uniform_buffer,

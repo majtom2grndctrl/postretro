@@ -724,6 +724,8 @@ pub(super) struct FullRenderer {
     pub(super) promoted_depth_cache_timing_open: bool,
     #[cfg(feature = "dev-tools")]
     pub(super) direct_sh_debug_override: DirectShDebugOverride,
+    #[cfg(feature = "dev-tools")]
+    pub(super) animated_direct_sh_debug_override: AnimatedDirectShDebugOverride,
     /// Per-(cube slot, face) light-space matrix uniforms, dynamic-offset like
     /// `shadow_vs_uniform_buffer`. Slot `slot*6 + face` carries that face's
     /// matrix; the skinned-depth pass selects it by dynamic offset.

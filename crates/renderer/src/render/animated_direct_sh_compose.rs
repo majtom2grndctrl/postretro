@@ -15,9 +15,48 @@ use super::direct_sh_compose::{
 };
 use super::sh_volume::ShVolumeResources;
 
+/// Pass-B-only dev-tools override. Its `light_index` is in the
+/// `AnimatedBakedLights` namespace used by section 45, not the promotion
+/// selection namespace consumed by Pass A.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct AnimatedDirectShDebugOverride {
+    pub enabled: bool,
+    pub light_index: u32,
+    pub weight: f32,
+}
+
+impl Default for AnimatedDirectShDebugOverride {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            light_index: 0,
+            weight: 0.0,
+        }
+    }
+}
+
+impl AnimatedDirectShDebugOverride {
+    pub fn active(self) -> bool {
+        self.enabled && self.weight > 0.0
+    }
+
+    pub(super) fn bytes(self) -> [u8; ANIMATED_DEBUG_OVERRIDE_SIZE] {
+        let mut bytes = [0u8; ANIMATED_DEBUG_OVERRIDE_SIZE];
+        bytes[0..4].copy_from_slice(&(self.enabled as u32).to_ne_bytes());
+        bytes[4..8].copy_from_slice(&self.light_index.to_ne_bytes());
+        bytes[16..20].copy_from_slice(&self.weight.clamp(0.0, 1.0).to_ne_bytes());
+        bytes
+    }
+}
+
+const BIND_ANIMATED_DEBUG_OVERRIDE: u32 = 26;
+const ANIMATED_DEBUG_OVERRIDE_SIZE: usize = 32;
+
 pub(super) struct AnimatedDirectShComposePipeline {
     pub(super) pipeline: wgpu::ComputePipeline,
     pub(super) bind_group: wgpu::BindGroup,
+    pub(super) debug_override_buffer: wgpu::Buffer,
+    pub(super) last_debug_override_bytes: [u8; ANIMATED_DEBUG_OVERRIDE_SIZE],
 }
 
 pub(super) fn build_animated_direct_pass(
@@ -70,6 +109,12 @@ pub(super) fn build_animated_direct_pass(
             affinity_dims: buffers.affinity_dims,
         }),
         usage: wgpu::BufferUsages::UNIFORM,
+    });
+    let debug_override_bytes = AnimatedDirectShDebugOverride::default().bytes();
+    let debug_override_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Animated Direct SH Compose Debug Override"),
+        contents: &debug_override_bytes,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
 
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -145,12 +190,18 @@ pub(super) fn build_animated_direct_pass(
                 binding: BIND_ANIMATION_DESCRIPTOR_INDICES,
                 resource: descriptor_indices_buffer.as_entire_binding(),
             },
+            wgpu::BindGroupEntry {
+                binding: BIND_ANIMATED_DEBUG_OVERRIDE,
+                resource: debug_override_buffer.as_entire_binding(),
+            },
         ],
     });
 
     AnimatedDirectShComposePipeline {
         pipeline,
         bind_group,
+        debug_override_buffer,
+        last_debug_override_bytes: debug_override_bytes,
     }
 }
 
@@ -166,6 +217,7 @@ fn animated_compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
         storage_bgl_entry(BIND_ANIMATION_SAMPLES),
         storage_bgl_entry(BIND_AFFINITY_LIGHTS),
         storage_bgl_entry(BIND_ANIMATION_DESCRIPTOR_INDICES),
+        uniform_bgl_entry(BIND_ANIMATED_DEBUG_OVERRIDE),
     ]
 }
 
@@ -199,6 +251,33 @@ mod tests {
                 BIND_ANIMATION_DESCRIPTOR_INDICES,
             ]
         );
+        assert!(animated_compose_bgl_entries().into_iter().any(|entry| {
+            entry.binding == BIND_ANIMATED_DEBUG_OVERRIDE
+                && matches!(
+                    entry.ty,
+                    wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        ..
+                    }
+                )
+        }));
+    }
+
+    #[test]
+    fn animated_debug_override_bytes_encode_animated_baked_light_index() {
+        let bytes = AnimatedDirectShDebugOverride {
+            enabled: true,
+            light_index: 13,
+            weight: 0.5,
+        }
+        .bytes();
+
+        assert_eq!(bytes.len(), ANIMATED_DEBUG_OVERRIDE_SIZE);
+        assert_eq!(u32::from_ne_bytes(bytes[0..4].try_into().unwrap()), 1);
+        assert_eq!(u32::from_ne_bytes(bytes[4..8].try_into().unwrap()), 13);
+        assert!((f32::from_ne_bytes(bytes[16..20].try_into().unwrap()) - 0.5).abs() < f32::EPSILON);
+        assert!(bytes[8..16].iter().all(|&byte| byte == 0));
+        assert!(bytes[20..32].iter().all(|&byte| byte == 0));
     }
 
     #[test]

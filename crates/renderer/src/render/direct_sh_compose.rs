@@ -10,7 +10,7 @@ use postretro_render_cpu::sh_compose::{
 };
 
 use super::animated_direct_sh_compose::{
-    AnimatedDirectShComposePipeline, build_animated_direct_pass,
+    AnimatedDirectShComposePipeline, AnimatedDirectShDebugOverride, build_animated_direct_pass,
 };
 use super::sh_volume::ShVolumeResources;
 
@@ -218,7 +218,9 @@ impl DirectShComposeResources {
         uniform_bind_group: &wgpu::BindGroup,
         active: bool,
         debug_override: DirectShDebugOverride,
+        animated_debug_override: AnimatedDirectShDebugOverride,
         timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
+        animated_timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
     ) {
         let Some(pipeline) = self.pipeline.as_mut() else {
             return;
@@ -228,6 +230,17 @@ impl DirectShComposeResources {
         if debug_bytes != pipeline.last_debug_override_bytes {
             queue.write_buffer(&pipeline.debug_override_buffer, 0, &debug_bytes);
             pipeline.last_debug_override_bytes = debug_bytes;
+        }
+        if let Some(animated_add) = pipeline.animated_add.as_mut() {
+            let animated_debug_bytes = animated_debug_override.bytes();
+            if animated_debug_bytes != animated_add.last_debug_override_bytes {
+                queue.write_buffer(
+                    &animated_add.debug_override_buffer,
+                    0,
+                    &animated_debug_bytes,
+                );
+                animated_add.last_debug_override_bytes = animated_debug_bytes;
+            }
         }
 
         if !direct_compose_should_dispatch(
@@ -253,7 +266,7 @@ impl DirectShComposeResources {
         if let Some(animated_add) = &pipeline.animated_add {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("Animated Direct SH Compose"),
-                timestamp_writes: None,
+                timestamp_writes: animated_timestamp_writes,
             });
             pass.set_pipeline(&animated_add.pipeline);
             pass.set_bind_group(0, uniform_bind_group, &[]);

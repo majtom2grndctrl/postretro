@@ -83,6 +83,7 @@ use postretro_render_data::influence::LightInfluence;
 use postretro_render_data::material::Material;
 use postretro_visibility::{CameraCullVisibility, VisibilityPath, VisibleCells};
 
+use animated_direct_sh_compose::AnimatedDirectShDebugOverride;
 use direct_sh_compose::{DirectShComposeResources, DirectShDebugOverride};
 use fog_pass::FogPass;
 use frame_timing::FrameTiming;

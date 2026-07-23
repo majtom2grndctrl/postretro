@@ -206,6 +206,24 @@ impl Renderer {
         self.full_mut().direct_sh_debug_override = value;
     }
 
+    #[cfg(feature = "dev-tools")]
+    pub(crate) fn animated_direct_sh_debug_override(&self) -> AnimatedDirectShDebugOverride {
+        self.full().animated_direct_sh_debug_override
+    }
+
+    #[cfg(feature = "dev-tools")]
+    pub(crate) fn set_animated_direct_sh_debug_override(
+        &mut self,
+        value: AnimatedDirectShDebugOverride,
+    ) {
+        let value = AnimatedDirectShDebugOverride {
+            enabled: value.enabled,
+            light_index: value.light_index,
+            weight: value.weight.clamp(0.0, 1.0),
+        };
+        self.full_mut().animated_direct_sh_debug_override = value;
+    }
+
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     pub fn probe_occlusion_enabled(&self) -> bool {
         self.full().probe_occlusion_enabled

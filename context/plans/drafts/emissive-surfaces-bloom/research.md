@@ -6,11 +6,12 @@ identifiers/line numbers verified against source at draft time; they drift.
 ## Headline finding: the pipeline is LDR end-to-end
 
 `scene_color` is allocated at the **surface format** (sRGB, `Rgba8UnormSrgb`-class),
-**not** `Rgba16Float`. The forward pass writes lit color straight into it
-(`forward.wgsl:1327` `return vec4(rgb, base_color.a)`, `rgb = base_color.rgb * total_light`,
-`:1272`). The resolve is an **identity blit + flash/vignette/shake — no tonemap**
-(`render/screen_effects.rs`, `shaders/screen_effects.wgsl`). Emissive > 1.0 would
-clamp in 8-bit sRGB.
+**not** `Rgba16Float` (`screen_effects.rs:245`). The forward pass writes lit color
+straight into it (`forward.wgsl:1331` `return vec4(rgb, base_color.a)`,
+`rgb = base_color.rgb * total_light`, `:1276`). The resolve is an **identity blit +
+flash/vignette/shake — no tonemap** (`render/screen_effects.rs:18` documents the
+sRGB byte-identity contract, `shaders/screen_effects.wgsl:6` "identity blit"). Emissive
+> 1.0 would clamp in 8-bit sRGB. (Confirmed intact post-merge.)
 
 The roadmap/`resource_management.md §4.5` phrasing ("scene_color is the HDR target
 with a tonemap") is **aspirational, not current**. Additive HDR emissive + bloom
@@ -18,18 +19,23 @@ requires:
 - forward + all scene-pass color targets and `scene_color` → `Rgba16Float`;
 - a tonemap operator (HDR → sRGB) inserted at/before the resolve;
 - rewriting the documented sRGB byte-identity resolve contract
-  (`screen_effects.rs:18-31`, `screen_effects.wgsl:13-17`);
+  (`screen_effects.rs:18`, `screen_effects.wgsl:6` "identity blit");
 - reconciling E20 capture — `read_texture_rgba8` assumes 4 bytes/px
-  (`render/renderer_frame.rs:18-20`), PNG write is `ColorType::Rgba8`
-  (`capture/driver.rs:348`), offscreen `capture_format = Rgba8UnormSrgb`
-  (`render/renderer_init.rs:109`).
+  (`render/renderer_frame.rs:29`, `checked_mul(4)` `:37`), PNG write is `ColorType::Rgba8`
+  (`crates/postretro/src/capture/driver.rs:348`), offscreen `capture_format =
+  Rgba8UnormSrgb` (`render/renderer_init.rs:109`).
 
-Frame-graph order (`render/renderer_render_frame.rs`, `record_scene_passes`):
-pre-scene compute → direct_sh_compose → shadows → depth+SDF → **Forward** (`:382`)
-→ Kinematic Brush (`:453`) → Skinned Mesh (`:508`) → Smoke (`:566`) → **Fog
-Composite** (`:639-699`) → *[capture returns `:703`]* → Wireframe → debug_lines →
-UI → **resolve** (`:862`). **Bloom slots after fog composite (`:699`), before
-resolve (`:862`).**
+Frame-graph order (`render/renderer_render_frame.rs`, **1001 lines**,
+`record_scene_passes`) — **rebaselined against merged main** (animated-direct-sh
+landed; the pre-merge anchors below drifted +82 lines):
+pre-scene compute → direct_sh_compose → shadows → depth+SDF → **Forward** (`:414`)
+→ Kinematic Brush (`:493`) → Skinned Mesh (`:556`) → Smoke (`:599`) → **Fog
+Composite** (`:706-722`) → *[capture returns `:728`]* → Wireframe → debug_lines →
+**Viewmodel** (`:774`, new post-merge) → UI → **resolve** (`encode_resolve`, `:945`).
+**Bloom must composite into `scene_color` after fog composite (`:722`) and BEFORE the
+capture return (`:728`)** — so E20 captures include the bloom (AC 3/AC 4 agree) and the
+overlay passes (wireframe/debug/viewmodel/UI) are left un-bloomed. The looser "before
+resolve" span is wrong: it straddles the capture return.
 
 ## `.prm` format — hardcoded 3 slots
 
@@ -53,18 +59,21 @@ resolve (`:862`).**
 
 ## Bake pipeline — `crates/level-compiler/` (log tag `[prl-build]`)
 
-- `texture_mips.rs` (**1553 lines** ⚠️): `bake_texture_mips` (`:715`); sibling
-  discovery `:736-744` (`{base}_s`/`{base}_n` via `name_to_path`); slot-build
-  cascade `:804-858` (`slot_mask |= …` per present sibling); Mitchell-Netravali
-  `mitchell_netravali` (`:279`, `MN_B=MN_C=1/3`); `bundle_hash_for` (`:169`),
-  `filename_key_for` (`:203`), `cache_entry_has_valid_declared_slots` (`:226`) —
-  each enumerates the 3 slots and needs an emissive arm.
-- `texture_validation.rs` (400 lines): `collect_sibling_pngs` suffix match
-  (`:140-145`, `_n`/`_s` only), required-colorspace table (`:5-10`),
+- `texture_mips.rs` (**1553 lines** ⚠️, unchanged by merge — Task 5 split rationale
+  intact): `bake_texture_mips` (`:715`); sibling discovery `:743-744` (`{base}_s`/
+  `{base}_n`; the map is built by `build_name_to_path_map` `:57`, `name_to_path` is a
+  local var `:720`); slot-build cascade `slot_mask |= …` at `:817/:832/:856`;
+  per-slot chain builders `build_diffuse_chain` (`:422`), `build_specular_chain`
+  (`:470`), `build_normal_bc5_chain` (`:505`); Mitchell-Netravali `mitchell_netravali`
+  (`:279`, `MN_B=MN_C=1/3`); `bundle_hash_for` (`:169`), `filename_key_for` (`:203`),
+  `cache_entry_has_valid_declared_slots` (`:226`) — each enumerates the 3 slots and
+  needs an emissive arm.
+- `texture_validation.rs` (400 lines): `collect_sibling_pngs` (`:108`, suffix match
+  `:140`, `_n`/`_s` only), required-colorspace table (`:9-10`),
   `validate_sibling_color_spaces` (`:159`). Emissive is **sRGB** — a semantic new
   arm, not a copy of the linear `_s`/`_n` arms.
-- `pipeline.rs` (**1340 lines** ⚠️): calls `bake_texture_mips` (`:1231`),
-  `validate_sibling_color_spaces` (`:279`).
+- `pipeline.rs` (**1392 lines** ⚠️, +52 post-merge): calls `bake_texture_mips`
+  (`:1281`), `validate_sibling_color_spaces` (`:284`).
 
 ## Renderer material path — `crates/renderer/`
 
@@ -75,21 +84,27 @@ resolve (`:862`).**
   (`:189`, 1×1 Rgba8 neutral). Emissive → `make_emissive_placeholder` (1×1
   `Rgba8UnormSrgb` black `[0,0,0,255]`). Upload: `load_textures` (`:228-328`),
   `upload_slot_or_placeholder` (`:401-445`), `enum Slot{Diffuse,Specular,Normal}`
-  (`:394`).
+  (`:395`).
 - `render-cpu/src/loaded_texture.rs` (217): `TextureSlotPlan.consume: [bool;3]`
   (`:66-70`) → widen to `[bool;4]`; `WorldBundle` consumes emissive,
   `ModelDiffuseOnly` does not.
-- **Group 1 material bindings** (`shaders/forward.wgsl:72-98`; BGL
-  `render/pipeline_layout.rs:233-282`): 0=diffuse, **1=VACATED (free — the emissive
-  slot)**, 2=specular(R8), 3=shininess uniform, 4=normal, 5=sampler.
+- **Group 1 material bindings** (`shaders/forward.wgsl:72-98`, vacated-binding-1
+  comment `:97`; BGL `render/pipeline_layout.rs:234`, `[_;5]`): 0=diffuse, **1=VACATED
+  (free — the emissive slot; confirmed still free post-merge — the animated-direct
+  atlas bound at group-3 binding 15, not group-1)**, 2=specular(R8), 3=shininess
+  uniform, 4=normal, 5=sampler.
 - **Sampled-texture budget at the ceiling.** `forward_pipeline_sampled_texture_count`
-  (`pipeline_layout.rs:399-411`) = **15** with cube support, against a **16** design
-  floor. Emissive → group 1 = 4, total = **16/16, zero headroom**.
-  `tests/pipeline_budget_tests.rs` hardcodes `[0,3,0,3,5,4]==15` — update.
-- `build_material_bind_group` (`render/material_plan.rs:80-123`) `[_;5]→[_;6]`; 4
-  call sites: `renderer_init_resources.rs:607`, `renderer_models.rs:65/84/345`.
-- Shaders sharing group 1: `forward.wgsl` (**1328** ⚠️), `kinematic_brush.wgsl`
-  (360) — both add emissive sampling + additive term. `skinned_mesh.wgsl` declares
+  (`pipeline_layout.rs:400`) = **15** with cube support (confirmed unchanged
+  post-merge), against a **16** design floor. Emissive → group 1 = 4, total =
+  **16/16, zero headroom**. `crates/renderer/src/render/tests/pipeline_budget_tests.rs`
+  hardcodes `[0,3,0,3,5,4]==15` (`:144/:148`) — update. Emissive also joins the
+  **shared** group-1 BGL, so verify the kinematic-brush (and, if it shares this BGL,
+  skinned-mesh) fragment budgets too, not only forward.
+- `build_material_bind_group` (`render/material_plan.rs:80`, shininess packed `:88`)
+  `[_;5]→[_;6]`; 4 call sites: `renderer_init_resources.rs:608`,
+  `renderer_models.rs:65/84/345`.
+- Shaders sharing group 1: `forward.wgsl` (**1332** ⚠️), `kinematic_brush.wgsl`
+  (364) — both add emissive sampling + additive term. `skinned_mesh.wgsl` declares
   only bindings 0,5 (legal subset) — unchanged; **model emissive out of scope**.
 
 ## Animation-channel seam — net-new, deferred
@@ -118,35 +133,46 @@ footstep/impact/ricochet only and is **not** wired to the slot mask. Emissive is
 texture-slot property, independent of this enum. (Prefix heuristics for
 `gen_emissive.py` may still key on `neon_`.)
 
+**Wiring nuance for emissive_strength.** A `MaterialProperties` struct **already
+exists** (`:24`) but carries gameplay-only `ricochet: bool`, is `#[allow(dead_code)]`
+via `properties()`, and is **never fed to the GPU**. The value that *is* GPU-fed is
+`shininess()` — a **standalone method**, not a `MaterialProperties` field — packed into
+the group-1 material uniform at `material_plan.rs:88`. So `emissive_strength` must
+follow the **`shininess()` path** (a standalone `Material` method packed into the
+uniform), **not** be added as a `MaterialProperties` field; the latter would be net-new
+GPU wiring, not the parallel it looks like.
+
 ## Oversized files this work extends (split-first candidates)
 
 | File | Lines | Edit |
 |---|---|---|
 | `crates/level-compiler/src/texture_mips.rs` | 1553 | emissive sibling arm across ~6 fns |
-| `crates/level-compiler/src/pipeline.rs` | 1340 | 2 call sites (localized) |
-| `crates/renderer/src/shaders/forward.wgsl` | 1328 | emissive sample + additive term |
+| `crates/level-compiler/src/pipeline.rs` | 1392 | 2 call sites (localized) |
+| `crates/renderer/src/shaders/forward.wgsl` | 1332 | emissive sample + additive term |
 | `crates/renderer/src/render/renderer_types.rs` | 1079 | bloom/tonemap pass fields |
 | `crates/level-format/src/prm.rs` | 1012 | slot 3→4 (localized, ~6 sites) |
-| `crates/renderer/src/render/renderer_render_frame.rs` | 919 | bloom insertion + capture |
+| `crates/renderer/src/render/renderer_render_frame.rs` | 1001 | bloom insertion + capture |
 
 Only `texture_mips.rs` has an edit that genuinely **tangles across functions** (the
 emissive arm threads through ~6) → split-first (Task 5). `forward.wgsl`'s emissive
 edit is **localized** (one binding declaration + one additive term), despite the
-file's size — no split warranted, and it is shared with the in-flight
-`animated-direct-sh` work. The rest take localized/coherent edits.
+file's size — no split warranted. The rest take localized/coherent edits.
 
-## Coordination — `plans/ready/animated-direct-sh-dynamic-receivers`
+## Coordination — `plans/done/animated-direct-sh-dynamic-receivers` (MERGED)
 
-In-flight work on how movers/skinned/billboards receive a baked light's animated
-**direct** term. Verified against its `index.md`:
+Work on how movers/skinned/billboards receive a baked light's animated **direct**
+term. **Merged into main**; this draft's branch is rebased onto it. Verified against
+merged source:
 - Producer-side only: consumers (`kinematic_brush.wgsl`, `skinned_mesh.wgsl`,
   `billboard.wgsl`) unchanged — they already sample the composed direct atlas at
-  binding 15. So no shader conflict with emissive's post-`total_light` additive term.
+  **group-3 binding 15**. So no shader conflict with emissive's post-`total_light`
+  additive term, **and group-1 binding 1 stayed vacated** for emissive.
 - Composes its animated-direct atlas in `Rgba16Float` (like all lighting atlases) —
   Task 1's HDR scene target completes that HDR lighting path, not a bolt-on.
 - Shared-file merge points (different regions): `pipeline.rs`, `forward.wgsl`,
-  `renderer_render_frame.rs`. That plan is in `ready/` (ahead of this draft) → likely
-  lands first; rebaseline the file:line facts above on the landed result.
+  `renderer_render_frame.rs`. That plan landed first; the file:line facts above are
+  **rebaselined onto the merged result** (renderer_render_frame.rs 919→1001, pipeline.rs
+  1340→1392, forward.wgsl 1328→1332, new viewmodel pass at `:774`). Budget still 15.
 - Movers bind the world-material bundle (`rendering_pipeline.md §7.3`) → emissive
   reaches movers with no mover-path work (serves the button-as-`kinematic_mover` case).
 - Shadowing is orthogonal: emissive is self-illumination, casts/receives no shadow.

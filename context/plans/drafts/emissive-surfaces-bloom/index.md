@@ -52,7 +52,10 @@ compositor foundation, the emissive material slot, and the bloom pass.
 
 - [ ] A world surface with an `_e.png` sibling renders visibly self-lit — brighter
   than its lit-only appearance and readable in an unlit area — with **no change to
-  neighboring surfaces' brightness**.
+  neighboring surfaces' shaded (lit) contribution**. This is the no-light-injection
+  bar (emissive adds nothing to the lightmap/SH), tested **with bloom disabled**; the
+  post-bloom screen halo of AC 3 is a separate screen-space effect and is expressly
+  not a violation of this criterion.
 - [ ] A material with **no** `_e.png` renders identically to today's material path
   (absent emissive = 1×1 black placeholder = additive-of-zero no-op).
 - [ ] Emissive texels authored bright enough exceed 1.0 in the HDR scene target and
@@ -80,11 +83,22 @@ itself). Insert a **tonemap** operator into the resolve: the resolve now reads t
 HDR `scene_color`, applies a **near-neutral / soft-knee** tonemap (passes in-range
 [0,1] values through near-untouched, compresses only the >1.0 overshoot — retro-punch
 preserved, not a filmic ACES recolor; see Decisions), **then** the existing
-flash/vignette/shake, writing the sRGB swapchain. Reconcile E20 capture —
-the readback assumes 4 bytes/px from an Rgba8 `scene_color`; keep the deterministic
-Rgba8 PNG path by having capture read a **tonemapped LDR** copy (capture already
-returns before the resolve, so add a tonemap-to-LDR step the capture path reads),
-not the raw HDR texture. Update the documented sRGB byte-identity resolve contract.
+flash/vignette/shake, writing the sRGB swapchain. **Color-encoding pin:** an
+`Rgba16Float` `scene_color` stores **raw linear** (no hardware sRGB encode on store),
+so (a) the scene passes write linear as they do today but the store no longer encodes;
+(b) the resolve samples `scene_color` through a **linear (non-sRGB) view** and writes
+the **sRGB-format swapchain**, where the hardware performs the single sRGB encode on
+store; (c) the UI pass (now storing into linear float) is in-range content, so the
+near-neutral tonemap leaves it within tolerance — no per-pass pre-encode is added.
+(If a future filmic tonemap is ever adopted, UI must move **after** the resolve; not
+now.) Reconcile E20 capture — the readback assumes 4 bytes/px from an Rgba8
+`scene_color`; keep the deterministic Rgba8 PNG path by having capture read a
+**tonemapped LDR** copy: add a **capture-path-only** tonemap-to-LDR step targeting an
+`Rgba8UnormSrgb` texture (capture already returns before the resolve; this step is
+gated to the capture path, not run every frame), which the existing `read_texture_rgba8`
+consumes unchanged. Task 1 makes only the minimal note that the byte-identity resolve
+contract is superseded; the full `rendering_pipeline.md §7.8` rewrite is owned by Task 4
+(single owner, avoids a concurrent double-edit).
 Because tonemap is deliberately not identity, the parity bar becomes **visual
 tolerance**, not byte-identity: in-range (≤1.0) content must render within tolerance
 of today, verified by tolerance-scoped capture goldens. Blocks Tasks 2 and 3.
@@ -101,8 +115,9 @@ architecture.
 Widen the material path from 3 slots to 4, end to end. `.prm`: add
 `PrmSlots::EMISSIVE` (bit 3), widen `PrmFile.slots` and `from_bytes_partial` to 4,
 widen the wire-order iteration arrays, set the emissive slot format to
-`Rgba8UnormSrgb`, and invert the reserved-bit-3 rejection test; existing bit-3-unset
-files must still parse. Baker (`level-compiler`): discover `{base}_e` siblings, bake
+`Rgba8UnormSrgb`, and **narrow the reserved-bit guard to permit bit 3 while still
+rejecting bits 4-7** (invert only the bit-3 case of `reserved_slot_bits_are_rejected`,
+not the whole `from_bits` guard); existing bit-3-unset files must still parse. Baker (`level-compiler`): discover `{base}_e` siblings, bake
 them as sRGB color (decode→filter linear→re-encode, like diffuse), set the emissive
 mask bit, and extend the bundle-hash / filename-key / cache-validation helpers.
 Color-space validation: add an emissive arm that **accepts sRGB** (the opposite of
@@ -112,36 +127,57 @@ the linear `_s`/`_n` requirement). Renderer: widen `TextureSlotPlan.consume` to 
 `make_emissive_placeholder` (1×1 `Rgba8UnormSrgb` black) used on absence; add the
 `Emissive` slot upload; add the emissive texture to the group-1 BGL at the **vacated
 binding 1** and to `build_material_bind_group` (all 4 call sites) — and update the
-sampled-texture budget test, which now sits at **exactly 16/16 fragment textures**
-(the closed material vocabulary complete by design; see Decisions). World +
+sampled-texture budget test. Emissive joins the **shared** group-1 BGL, so the
+fragment sampled-texture count rises for **every** pipeline that binds it, not just
+forward: verify and adjust the budget assertions for the kinematic-brush pipeline as
+well, and confirm whether the skinned-mesh pipeline binds this same widened BGL or a
+distinct subset BGL (it samples only bindings 0/5) — if shared, its budget rises too
+even though it never reads emissive. Forward reaches **exactly 16/16 fragment
+textures** (the closed material vocabulary complete by design; see Decisions). World +
 kinematic-brush shaders: declare and sample the emissive texture, decode sRGB→linear,
 and add `emissive * strength` additively to the final HDR color after `total_light`.
-**Emissive strength is prefix-driven:** it becomes a `MaterialProperties` field on
-the `Material` enum (`crates/render-data/src/material.rs`, beside `shininess()`),
-resolved from the texture prefix and packed into the group-1 material uniform — the
-`Neon` variant (today property-less) gets a high strength so `neon_` textures
-self-light with no new authoring surface. Emissive is **never** written into any
+**Emissive strength is prefix-driven**, following the existing `shininess()`
+mechanism — **not** the gameplay-only `MaterialProperties` struct
+(`crates/render-data/src/material.rs`, which carries `ricochet` and is never GPU-fed).
+Add an `emissive_strength()` method on the `Material` enum beside `shininess()`,
+resolved from the texture prefix and packed into the group-1 material uniform
+alongside shininess via the same `material_plan.rs` `build_material_bind_group` path —
+the `Neon` variant gets a high strength so `neon_` textures self-light with no new
+authoring surface. Widening that uniform ripples to the material-uniform struct
+declared in the **forward** and **kinematic-brush** shaders (skinned declares only
+bindings 0/5 and is unaffected); pin the new uniform layout when implementing. Emissive is **never** written into any
 light buffer (invariant: no light-loop feed). Depends on Task 1. Concurrent with
 Task 3.
 
 ### Task 3: Bloom pass
 A renderer-owned bloom pass: a bright-pass extracting HDR luminance above a
 threshold, a separable Gaussian down/up-sample chain, and an additive composite back
-into the HDR `scene_color`. Insert it into the frame graph after fog composite and
-before the resolve. New `render/bloom.rs` + bloom shaders; pass state on the full
-renderer. Threshold and intensity are tunable constants. Testable against any HDR
-input (a bright dynamic light or a debug constant) — independent of the emissive
-authoring path. Depends on Task 1 (needs the HDR `scene_color`). Concurrent with
-Task 2 (disjoint files: bloom owns the frame graph + its shaders; emissive owns the
-material/format/world-shader path).
+into the HDR `scene_color`. **Insertion point (pinned):** bloom must composite into
+`scene_color` **immediately after the fog composite (`renderer_render_frame.rs:722`)
+and BEFORE the E20 capture return (`:728`)** — not the looser "before resolve" window,
+which spans the capture return and the overlay passes. This placement makes the bloom
+part of the captured scene (so AC 3's halo and AC 4's capture agree) and leaves the
+overlay passes (wireframe, debug lines, the post-merge viewmodel pass at `:774`, UI)
+**un-bloomed**. New `render/bloom.rs` + bloom shaders; pass state on the full
+renderer. Register a `bloom` entry in the `POSTRETRO_GPU_TIMING` pass list (§12), plus
+a `tonemap` entry if that resolve step is bracketed separately. Threshold and
+intensity are tunable constants; the reference `Neon` emissive strength (Task 4) is
+set so `emissive * strength` clears this threshold (see Invariants). Testable against
+any HDR input (a bright dynamic light or a debug constant) — independent of the
+emissive authoring path. Depends on Task 1 (needs the HDR `scene_color`). Concurrent
+with Task 2 (disjoint files: bloom owns the frame graph + its shaders; emissive owns
+the material/format/world-shader path).
 
 ### Task 4: Tooling, generalization, verification, docs
 `tools/gen_emissive.py` mirroring `gen_specular.py`/`gen_normal.py`, emitting sRGB
 `_e.png` siblings (masking bright/neon diffuse regions) that pass the Task 2
-validation arm. Populate the prefix→strength values on the `Material` variants Task 2
-added (`neon_` high; others as content needs). Add a dev-map emissive
+validation arm. Populate the `emissive_strength()` values on the `Material` variants Task 2
+added (`neon_` high; others as content needs), with the reference `Neon` strength
+set so `emissive * strength` clears the Task 3 bloom threshold (and exceeds 1.0) —
+otherwise the capture below cannot show bloom. Add a dev-map emissive
 surface (`_e.png` on a dev texture, placed) and a tolerance-scoped E20 scripted
-capture proving self-lit + bloom. Docs: flip `resource_management.md §4.5` to
+capture proving self-lit + bloom (the capture asserts the neon surface both self-lights
+and produces the bloom halo). Docs: flip `resource_management.md §4.5` to
 implemented, update the §3 material-table emissive row and the §4 sibling
 convention with `_e`, and update `rendering_pipeline.md §7.8` for the HDR
 `scene_color` + tonemap + bloom compositor. Depends on Tasks 1-3.
@@ -207,17 +243,20 @@ already disambiguates; a bump only adds an explicit signal.
 | Invariant | Established by | Threatened at | Verified by |
 |---|---|---|---|
 | Additive only, never lighting-replacement | Task 2 (`base*light + emissive`, never a replace) | any future strength/prefix change to the world-shader composite | AC 1, AC 3 |
+| Reference `Neon` strength clears the bloom threshold (`emissive*strength` > threshold > 1.0) | Task 4 (strength values) against Task 3 (threshold constant) | either value edited in isolation → non-blooming neon, AC 3 silently unmet | AC 3, Task 4 E20 capture |
 | Emissive never feeds the light loop (no double-count) | Task 2 (screen-space additive term on the emitting fragment; never written to any light buffer) | a future attempt to make emissive illuminate neighbors (out of scope) | AC 1 (neighbors unchanged) |
 | Absent `_e` → true no-op | Task 2 (1×1 black placeholder + additive-of-zero) | placeholder must be black sRGB; strength must not lift a black sample | AC 2 |
 | Existing 3-slot `.prm` files stay valid | Task 2 (reader accepts bit 3 but never requires it; hash regenerates) | the slot-widening must keep bit-3-unset files parsing | AC 5 |
 | All HDR/tonemap/bloom stays in `postretro-renderer` | Task 1, Task 3 | Renderer-owns-GPU (`index.md §2`) | structural (`cargo tree`) |
 
-## Coordination with in-flight lighting work
+## Coordination with the (now-landed) lighting work
 
-`plans/ready/animated-direct-sh-dynamic-receivers` (how kinematic movers, skinned
-meshes, and billboards receive a baked light's animated **direct** term) is in flight
-and touches adjacent ground. Four intersections, none blocking — three reassure the
-design, one is a merge-ordering note:
+`plans/done/animated-direct-sh-dynamic-receivers` (how kinematic movers, skinned
+meshes, and billboards receive a baked light's animated **direct** term) **has merged
+into main** (this draft's branch is rebased onto it). It touched adjacent ground; the
+verification below confirms its landing left this spec's load-bearing assumptions
+intact. Four intersections, none blocking — three reassure the design, one was the
+merge-ordering note now discharged:
 
 - **No shader-consumer conflict.** That plan is *producer-side only* — movers already
   sample the composed direct atlas at binding 15 and its consumers (`kinematic_brush.wgsl`,
@@ -235,13 +274,16 @@ design, one is a merge-ordering note:
   button-as-kinematic-mover motivation (co-op-triggers research §4.2). v1 emissive is
   **static** per-texel, so the mover glows constantly; activation-driven glow is the
   named runtime-emissive follow-up.
-- **Merge ordering (the one real coordination).** Both plans edit `pipeline.rs`,
-  `forward.wgsl`, and `renderer_render_frame.rs` in different regions. `animated-direct`
-  is already in `ready/`, ahead of this draft — so it likely orchestrates first, and
-  emissive should **rebaseline its `research.md` file:line grounding** on the landed
-  result (those files grow). Do not split the renderer-side oversized files here (see
-  Decisions → oversized files): that plan is actively rewriting them, and a duplicate
-  split would collide.
+- **Merge ordering (now discharged).** Both plans edit `pipeline.rs`, `forward.wgsl`,
+  and `renderer_render_frame.rs` in different regions. `animated-direct` landed first, so
+  this draft's `research.md` file:line grounding is **rebaselined onto the merged
+  result** — the merge grew `renderer_render_frame.rs` (919→1001), `pipeline.rs`
+  (1340→1392), `forward.wgsl` (1328→1332) and added a new viewmodel pass, but left the
+  two load-bearing premises intact: group-1 **binding 1 is still vacated** (the new
+  animated-direct atlas bound at group-3 binding 15, not group-1) and the
+  **sampled-texture budget is still 15** (so emissive's 16/16 math holds). The
+  renderer-side split-deferral now rests on the localized-edits read alone (Decisions →
+  oversized files), not on any live-rewrite collision.
 
 Emissive is also **orthogonal to shadowing**: it is self-illumination, not a light —
 it neither casts nor receives shadows, and an emissive surface in shadow still glows
@@ -274,14 +316,17 @@ prefix-driven modder-friendly materials; ship a visible, testable slice):
 - **Oversized files: split one, defer the rest.** Of the six files >800 lines this
   plan touches, only `texture_mips.rs` (1553) has an emissive edit that genuinely
   tangles across functions — split it first (Task 5). The renderer-side files
-  (`forward.wgsl`, `renderer_render_frame.rs`, `renderer_types.rs`) take **localized**
-  edits (one binding + one term; one pass insertion; a few fields) *and* are being
-  actively rewritten by the in-flight `animated-direct-sh` work — splitting them here
-  would bury a refactor for no blast-radius win and collide with that plan. Let that
-  work land and carry the renderer-side split hygiene. `prm.rs`/`pipeline.rs` take
-  coherent-localized edits (the 3→4 slot widening; two bake call sites), not buried
-  refactors. Per the dev guide's "soft smell, not a gate," that is the disciplined
-  read, not a punt.
+  (`forward.wgsl` 1332, `renderer_render_frame.rs` 1001, `renderer_types.rs`) take
+  **localized** edits (one binding + one additive term; one pass insertion before the
+  capture return; a few fields), so per the dev guide's "soft smell, not a gate; a
+  cohesive large file is fine" they do not warrant a split-before-extend — the split
+  would bury a refactor in a feature diff for no blast-radius win. (The earlier draft
+  also deferred these because the in-flight `animated-direct-sh` work was rewriting
+  them; that work has since **merged into main**, so the rationale now rests on the
+  localized-edits read alone — which is unchanged by the merge. Those files did grow in
+  the merge; the file:line anchors are rebaselined in `research.md`.) `prm.rs` and
+  `pipeline.rs` take coherent-localized edits (the 3→4 slot widening; two bake call
+  sites), not buried refactors.
 
 ## Open questions
 

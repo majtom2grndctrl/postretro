@@ -386,6 +386,28 @@ fn direct_sh_compose_debug_override_isolates_single_selection() {
     );
 }
 
+#[test]
+fn animated_direct_sh_compose_debug_override_isolates_one_animated_baked_light() {
+    let src = include_str!("../../shaders/animated_direct_sh_compose.wgsl");
+    let scale_start = src
+        .find("fn animated_light_scale(")
+        .expect("animated compose shader should declare animated_light_scale");
+    let scale = &src[scale_start..];
+
+    assert!(
+        src.contains("@group(1) @binding(26) var<uniform> debug_override: DebugOverride;"),
+        "Pass B must use its own uniform override binding",
+    );
+    assert!(
+        scale.contains("light_index != debug_override.light_index"),
+        "Pass B override must suppress every non-selected AnimatedBakedLights entry",
+    );
+    assert!(
+        scale.contains("clamp(debug_override.weight, 0.0, 1.0)"),
+        "Pass B override must retain the selected light's inspectable weight",
+    );
+}
+
 /// Task 5 (sdf-static-occluder-shadows): the forward shader must parse
 /// cleanly with the new SDF shadow-factor bindings (`sdf_shadow_factor` and
 /// `sdf_shadow_depth` on group 5 bindings 3 and 4) and must declare the

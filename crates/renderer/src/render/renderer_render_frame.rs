@@ -229,12 +229,21 @@ impl Renderer {
             let direct_sh_debug_override = self.full().direct_sh_debug_override;
             #[cfg(not(feature = "dev-tools"))]
             let direct_sh_debug_override = DirectShDebugOverride::default();
+            #[cfg(feature = "dev-tools")]
+            let animated_direct_sh_debug_override = self.full().animated_direct_sh_debug_override;
+            #[cfg(not(feature = "dev-tools"))]
+            let animated_direct_sh_debug_override = AnimatedDirectShDebugOverride::default();
             let direct_sh_active = self
                 .full()
                 .promoted_static_weights
                 .iter()
                 .any(|weight| *weight > 0.0)
-                || direct_sh_debug_override.active();
+                || self
+                    .full()
+                    .sh_volume_resources
+                    .animated_direct_has_active_descriptor()
+                || direct_sh_debug_override.active()
+                || animated_direct_sh_debug_override.active();
             {
                 let Self { queue, full, .. } = self;
                 let full = full
@@ -244,12 +253,23 @@ impl Renderer {
                     .frame_timing
                     .as_ref()
                     .map(|t| t.compute_pass_writes(TIMING_PAIR_DIRECT_SH_COMPOSE));
+                let animated_direct_sh_ts = full
+                    .frame_timing
+                    .as_ref()
+                    .map(|t| t.compute_pass_writes(TIMING_PAIR_ANIMATED_DIRECT_SH_COMPOSE));
                 full.direct_sh_compose.dispatch_if_needed(
                     queue,
                     encoder,
+                    &full.uniform_bind_group,
                     direct_sh_active,
-                    direct_sh_debug_override,
-                    direct_sh_ts,
+                    DirectShComposeDebugOverrides {
+                        promotion: direct_sh_debug_override,
+                        animated: animated_direct_sh_debug_override,
+                    },
+                    DirectShComposeTimestampWrites {
+                        promotion: direct_sh_ts,
+                        animated: animated_direct_sh_ts,
+                    },
                 );
             }
         }

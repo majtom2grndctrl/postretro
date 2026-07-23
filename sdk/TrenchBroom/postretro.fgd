@@ -104,6 +104,8 @@
     // whose brightness or color a script changes at runtime. For a map data
     // script, this is normally automatic: any `setLightAnimation` step that
     // reaches the light derives the same reservation during the level bake.
+    // Script-animated baked lights also reach kinematic movers, skinned meshes,
+    // and billboards through the composed direct-SH atlas.
     // Set this only when there is no such map-script step (for example, a
     // mod-global reaction), or when reserving the slot deliberately. Valid on
     // baked-tier static lights only; it also admits `color_curve`.
@@ -146,6 +148,9 @@
     // authored as their own entities (light_dynamic / light_dynamic_spot),
     // which set is_dynamic by classname.
     // See context/lib/rendering_pipeline.md §4.
+    // Author pulse or color animation as a baked animated light: it is cheap
+    // and reaches movers. For a cone that must live-sweep its direction across
+    // moving receivers, author light_dynamic_spot instead.
     _shadow_type(choices) : "How this baked light's static-geometry shadow resolves. Lightmap = baked, soft, cheap (the default). SDF = runtime-traced, sharper, tweakable without a re-bake. Separate from _cast_entity_shadows (the moving-entity toggle on dynamic lights)." : "static_light_map" =
     [
         "static_light_map" : "Static Lightmap - baked, soft, free at runtime, fixed at bake time. The default for nearly all static lights."

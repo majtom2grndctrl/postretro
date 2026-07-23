@@ -203,6 +203,7 @@ PRL header `version` is 4. Loading a file with any other version fails.
 | ShadowmaskAtlas | 42 | When usable `EntityShadowLights` are emitted; per-selected-light baked world-visibility masks packed into RGBA channels, with `0xFF` channel entries for globally dropped masks |
 | KinematicGeometry | 43 | When the map has at least one `kinematic_mover`; origin-relative mover vertices/indices/face metadata plus `kinematic_waypoint` records |
 | TriggerVolumes | 44 | When the map has at least one `trigger_volume`; invisible trigger AABBs, direct mover commands, and named enter/exit events |
+| AnimatedDirectShDeltaVolumes | 45 | When the map has animated baked lights; sparse per-animated-light direct-SH delta tiles composed into the dynamic-receiver atlas |
 
 **Lightmap (id 22):** versioned section carrying the baked irradiance and dominant-direction atlases. Irradiance is BC6H (`Bc6hRgbUfloat`) at rest by default — ~8× smaller than the uncompressed `Rgba16Float` debug path, hardware-decoded and -filterable; direction stays `Rgba8Unorm` octahedral on a nearest sampler (octahedral lerp ≠ slerp, so it is never compressed or linearly filtered). Both atlases are `texture_2d_array`: charts that overflow one 8192²-capped layer spill into additional layers rather than failing the bake. BC6H is lossy, so the lightmap stage is exempt from the byte-identical determinism invariant (correctness is round-trip within tolerance; the cache keys on inputs regardless).
 

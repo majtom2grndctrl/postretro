@@ -637,7 +637,7 @@ impl App {
                 .collect()
         };
 
-        let (map_lights, map_light_influences, fgd_sample_float_count) = {
+        let (map_lights, map_light_influences, baked_light_descriptors, fgd_sample_float_count) = {
             let renderer = match self.renderer.as_mut() {
                 Some(r) => r,
                 None => {
@@ -692,6 +692,11 @@ impl App {
             (
                 world.lights.clone(),
                 world.light_influences.clone(),
+                world
+                    .sh_volume
+                    .as_ref()
+                    .map(|section| section.animation_descriptors.clone())
+                    .unwrap_or_default(),
                 (renderer.scripted_sample_byte_offset() / 4) as u32,
             )
         };
@@ -712,6 +717,7 @@ impl App {
                 .populate_from_level_with_influences(
                     &map_lights,
                     &map_light_influences,
+                    &baked_light_descriptors,
                     &mut registry,
                     fgd_sample_float_count,
                 );
@@ -2364,6 +2370,7 @@ mod tests {
             delta_sh_volumes: None,
             direct_sh_volume: None,
             direct_sh_delta_volumes: None,
+            animated_direct_sh_delta_volumes: None,
             entity_shadow_lights: vec![],
             shadowmask_atlas: None,
             data_script: None,

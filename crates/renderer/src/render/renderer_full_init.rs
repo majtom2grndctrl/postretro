@@ -197,9 +197,12 @@ pub(crate) fn build_full_renderer(
     let sh_volume_resources = ShVolumeResources::new(
         device,
         queue,
-        geometry.and_then(|g| g.sh_volume),
-        geometry.and_then(|g| g.direct_sh_volume),
-        geometry.and_then(|g| g.direct_sh_delta_volumes),
+        ShVolumeSections {
+            sh: geometry.and_then(|g| g.sh_volume),
+            direct: geometry.and_then(|g| g.direct_sh_volume),
+            direct_delta: geometry.and_then(|g| g.direct_sh_delta_volumes),
+            animated_direct_delta: geometry.and_then(|g| g.animated_direct_sh_delta_volumes),
+        },
         // Runtime-spawned lights append after the full-authored prefix.
         scripted_light_capacity,
         probe_occlusion_enabled,
@@ -518,7 +521,9 @@ pub(crate) fn build_full_renderer(
         &sh_volume_resources,
         geometry.and_then(|g| g.direct_sh_volume),
         geometry.and_then(|g| g.direct_sh_delta_volumes),
+        geometry.and_then(|g| g.animated_direct_sh_delta_volumes),
         &promoted_static_weight_buffer,
+        &uniform_bind_group_layout,
     );
     // Only allocate the promoted-slot depth cache when the map has a non-empty
     // entity-shadow selection; an empty/absent selection can never promote a
@@ -616,6 +621,8 @@ pub(crate) fn build_full_renderer(
         promoted_depth_cache_timing_open: false,
         #[cfg(feature = "dev-tools")]
         direct_sh_debug_override: DirectShDebugOverride::default(),
+        #[cfg(feature = "dev-tools")]
+        animated_direct_sh_debug_override: AnimatedDirectShDebugOverride::default(),
         cube_shadow_vs_uniform_buffer,
         cube_shadow_vs_bind_group,
         shadow_vs_uniform_buffer,

@@ -9,229 +9,13 @@ use postretro_level_format::prm::{
     cache_filename_for_key, expected_level_count,
 };
 
-/// Normalize a texture name read verbatim from a `.map` into the canonical
-/// lookup form used by [`build_name_to_path_map`]: lowercase, backslashes
-/// converted to forward slashes, and a leading `textures/` stripped (a no-op
-/// when absent). TrenchBroom may emit either `collection/stem` or the
-/// root-inclusive `textures/collection/stem`; both normalize to
-/// `collection/stem`. A bare `stem` normalizes to itself.
-///
-/// Collection directories with spaces (e.g. `Level Eleven Games Sci-Fi Texture
-/// Pack v1`) index under their lowercased, space-preserving relative key, so a
-/// space-containing name matches on disk. The compiler's parse boundary
-/// (`parse::decode_brush_texture`) already restores spaces, so names reach here
-/// with real spaces — no sentinel decoding happens at this layer.
-fn normalize_map_texture_name(name: &str) -> String {
-    let lowered = name.to_lowercase().replace('\\', "/");
-    lowered
-        .strip_prefix("textures/")
-        .map(str::to_owned)
-        .unwrap_or(lowered)
-}
+mod bake;
+mod cache;
+mod resolution;
 
-/// The bare last path segment of an already-normalized name (the substring
-/// after the last `/`), used as the back-compat bare-stem lookup fallback.
-fn bare_segment(normalized: &str) -> &str {
-    match normalized.rsplit_once('/') {
-        Some((_, stem)) => stem,
-        None => normalized,
-    }
-}
-
-/// Build a case-insensitive lookup from texture name to PNG path, scanning
-/// every collection directory under `texture_root`. The compiler owns this
-/// helper so it does not depend on the runtime crate.
-///
-/// TrenchBroom identifies materials by their path relative to the textures
-/// root, so the `.map` may carry a **collection-qualified** name (e.g.
-/// `50-free-textures/concrete_pavement_036`) rather than the bare stem. Each
-/// PNG is therefore indexed under its path **relative to `texture_root`**,
-/// forward-slashed, lowercased, with the `.png` extension stripped (e.g.
-/// `50-free-textures/concrete_pavement_036`).
-///
-/// For back-compat with hand-authored maps that use bare stems, a **bare-stem
-/// alias** is also inserted — but only when that stem is unique across all
-/// collections. On a stem collision the alias is dropped (and a warning logged
-/// naming both paths) so a bare name never silently resolves to the wrong
-/// collection. The collection-qualified key always resolves unambiguously.
-fn build_name_to_path_map(texture_root: &Path) -> HashMap<String, PathBuf> {
-    let mut map: HashMap<String, PathBuf> = HashMap::new();
-    // Tracks bare stems that are ambiguous (seen in more than one collection)
-    // so we can avoid inserting a misleading bare-stem alias.
-    let mut stem_owner: HashMap<String, PathBuf> = HashMap::new();
-    let mut ambiguous_stems: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-    let collections = match std::fs::read_dir(texture_root) {
-        Ok(entries) => entries,
-        Err(err) => {
-            log::warn!(
-                "[prl-build] cannot read texture root {}: {err}",
-                texture_root.display()
-            );
-            return map;
-        }
-    };
-
-    // Collect collection dirs, sorted for deterministic warning order.
-    let mut collection_dirs: Vec<PathBuf> = collections
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.is_dir())
-        .collect();
-    collection_dirs.sort();
-
-    for collection_path in collection_dirs {
-        let collection_name = match collection_path.file_name().and_then(|s| s.to_str()) {
-            Some(s) => s.to_lowercase(),
-            None => continue,
-        };
-
-        let files = match std::fs::read_dir(&collection_path) {
-            Ok(entries) => entries,
-            Err(_) => continue,
-        };
-
-        // Sort files for deterministic relative-key collision resolution.
-        let mut file_paths: Vec<PathBuf> = files.flatten().map(|e| e.path()).collect();
-        file_paths.sort();
-
-        for file_path in file_paths {
-            let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
-            if !ext.eq_ignore_ascii_case("png") {
-                continue;
-            }
-            let stem = match file_path.file_stem().and_then(|s| s.to_str()) {
-                Some(s) => s.to_lowercase(),
-                None => continue,
-            };
-
-            // Primary key: path relative to texture_root, forward-slashed,
-            // lowercased, no extension (e.g. `collection/stem`).
-            let rel_key = format!("{collection_name}/{stem}");
-            if let Some(existing) = map.get(&rel_key) {
-                log::warn!(
-                    "[prl-build] duplicate texture path '{rel_key}': found in {} and {}, using first found",
-                    existing.display(),
-                    file_path.display(),
-                );
-            } else {
-                map.insert(rel_key, file_path.clone());
-            }
-
-            // Track bare-stem ownership for the back-compat alias. A stem seen
-            // in two or more collections is ambiguous and gets no alias.
-            match stem_owner.get(&stem) {
-                Some(first) => {
-                    if !ambiguous_stems.contains(&stem) {
-                        log::warn!(
-                            "[prl-build] bare texture name '{stem}' exists in multiple collections \
-                             ({} and {}); the bare-stem alias is disabled — qualify it as \
-                             'collection/{stem}' to resolve",
-                            first.display(),
-                            file_path.display(),
-                        );
-                        ambiguous_stems.insert(stem.clone());
-                    }
-                }
-                None => {
-                    stem_owner.insert(stem.clone(), file_path.clone());
-                }
-            }
-        }
-    }
-
-    // Insert bare-stem aliases only for stems unique across all collections.
-    // A relative key already occupying a bare-stem slot (a PNG sitting at the
-    // texture root with no collection — not the documented layout) is left
-    // intact rather than overwritten.
-    for (stem, path) in stem_owner {
-        if ambiguous_stems.contains(&stem) {
-            continue;
-        }
-        map.entry(stem).or_insert(path);
-    }
-
-    map
-}
-
-/// Build the per-texture bundle hash: covers the slot-mask byte plus, for each
-/// present slot in diffuse→specular→normal order, a `(0x00 | 0x01 | 0x02)`
-/// disambiguator byte followed by the raw PNG file bytes.
-///
-/// Hash input starts with the `slot_mask` byte so slot deletion is an
-/// unambiguous fingerprint change, followed by `(bit_index_byte, png_bytes)`
-/// for every present slot in canonical order.
-///
-/// The `.prm` filename key (computed separately) intentionally uses a cheaper
-/// recipe so files with identical diffuse content collide; this bundle hash
-/// changes whenever any sibling changes, forcing a rebake even on a filename
-/// hit.
-fn bundle_hash_for(
-    diffuse: Option<&[u8]>,
-    specular: Option<&[u8]>,
-    normal: Option<&[u8]>,
-) -> [u8; 32] {
-    let mut mask: u8 = 0;
-    if diffuse.is_some() {
-        mask |= 0b001;
-    }
-    if specular.is_some() {
-        mask |= 0b010;
-    }
-    if normal.is_some() {
-        mask |= 0b100;
-    }
-    let mut h = blake3::Hasher::new();
-    h.update(&[mask]);
-    if let Some(b) = diffuse {
-        h.update(&[0x00]);
-        h.update(b);
-    }
-    if let Some(b) = specular {
-        h.update(&[0x01]);
-        h.update(b);
-    }
-    if let Some(b) = normal {
-        h.update(&[0x02]);
-        h.update(b);
-    }
-    *h.finalize().as_bytes()
-}
-
-/// Filename-key recipe (NOT the bundle hash). Distinct from the bundle hash by
-/// design — see module-level docs.
-fn filename_key_for(
-    diffuse: Option<&[u8]>,
-    specular: Option<&[u8]>,
-    normal: Option<&[u8]>,
-) -> [u8; 32] {
-    match (diffuse, specular, normal) {
-        (Some(d), _, _) => *blake3::hash(d).as_bytes(),
-        (None, Some(s), _) => {
-            let mut h = blake3::Hasher::new();
-            h.update(&[0x01]);
-            h.update(s);
-            *h.finalize().as_bytes()
-        }
-        (None, None, Some(n)) => {
-            let mut h = blake3::Hasher::new();
-            h.update(&[0x02]);
-            h.update(n);
-            *h.finalize().as_bytes()
-        }
-        (None, None, None) => [0u8; 32],
-    }
-}
-
-fn cache_entry_has_valid_declared_slots(
-    header: &PrmHeader,
-    slots: &[Result<PrmSlot, postretro_level_format::prm::PrmReadError>; 3],
-) -> bool {
-    [PrmSlots::DIFFUSE, PrmSlots::SPECULAR, PrmSlots::NORMAL]
-        .iter()
-        .enumerate()
-        .all(|(index, slot)| !header.slot_mask.contains(*slot) || slots[index].is_ok())
-}
+use bake::{build_diffuse_chain, build_normal_bc5_chain, build_specular_chain};
+use cache::{bundle_hash_for, cache_entry_has_valid_declared_slots, filename_key_for};
+use resolution::{bare_segment, build_name_to_path_map, normalize_map_texture_name};
 
 // -- Gamma helpers --------------------------------------------------------
 
@@ -419,7 +203,12 @@ fn downsample_2x_f32(src: &[f32], src_w: u32, src_h: u32, channels: usize) -> (V
 /// Build a diffuse mip chain (RGBA8, sRGB-tagged). Filtering happens in linear
 /// space via the supplied sRGB → linear LUT; alpha is filtered linearly
 /// without LUT application.
-fn build_diffuse_chain(rgba: &[u8], width: u32, height: u32, lut: &[f32; 256]) -> Vec<u8> {
+pub(super) fn build_diffuse_chain_impl(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    lut: &[f32; 256],
+) -> Vec<u8> {
     let channels = 4;
     let level_count = expected_level_count(width as u16, height as u16) as u32;
 
@@ -467,7 +256,7 @@ fn encode_diffuse_into(linear: &[f32], out: &mut Vec<u8>) {
 /// Build a specular mip chain (R8Unorm). Input bytes are interpreted as the
 /// red channel of an authored PNG (we accept either L8 or the R channel of
 /// RGBA8 — the caller flattens before calling this).
-fn build_specular_chain(r8: &[u8], width: u32, height: u32) -> Vec<u8> {
+pub(super) fn build_specular_chain_impl(r8: &[u8], width: u32, height: u32) -> Vec<u8> {
     let channels = 1;
     let level_count = expected_level_count(width as u16, height as u16) as u32;
 
@@ -502,7 +291,7 @@ fn build_specular_chain(r8: &[u8], width: u32, height: u32) -> Vec<u8> {
 /// per level, so sub-4 mips are dropped. The concatenated output exactly
 /// matches the reader's `expected_payload_bytes(Bc5RgUnorm, w, h, level_count)`
 /// contract: `ceil(w_n/4) * ceil(h_n/4) * 16` bytes per level.
-fn build_normal_bc5_chain(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
+pub(super) fn build_normal_bc5_chain_impl(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
     let channels = 4;
     let level_count = bc5_level_count(width as u16, height as u16) as u32;
 

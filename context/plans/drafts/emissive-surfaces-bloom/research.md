@@ -6,7 +6,8 @@ identifiers/line numbers verified against source at draft time; they drift.
 ## Headline finding: the pipeline is LDR end-to-end
 
 `scene_color` is allocated at the **surface format** (sRGB, `Rgba8UnormSrgb`-class),
-**not** `Rgba16Float` (`screen_effects.rs:245`). The forward pass writes lit color
+**not** `Rgba16Float` (allocated in `create_scene_color`, `screen_effects.rs:251`, from
+the `ScreenEffectsPass` `format` field that today doubles as the resolve `surface_format`). The forward pass writes lit color
 straight into it (`forward.wgsl:1331` `return vec4(rgb, base_color.a)`,
 `rgb = base_color.rgb * total_light`, `:1276`). The resolve is an **identity blit +
 flash/vignette/shake — no tonemap** (`render/screen_effects.rs:18` documents the

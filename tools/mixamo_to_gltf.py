@@ -8,7 +8,8 @@ Usage:
         [--base "Exo Red.fbx"] \
         [--scale 0.01] \
         [--no-tag] \
-        [--strip-face]
+        [--strip-face] \
+        [--fix-eyes]
 
 The --base file is treated as the base mesh + armature.  If omitted, the
 first FBX alphabetically is used (which may be an animation-only file —
@@ -112,6 +113,15 @@ def parse_args():
         "--strip-face", action="store_true",
         help="Remove facial bones (eyelids, jaw, tongue, brows, etc.) "
              "and merge their vertex weights into the Head bone"
+    )
+    parser.add_argument(
+        "--fix-eyes", action="store_true",
+        help="Rotate each eyeball 180 deg about its own vertical axis so the "
+             "iris faces the front of the head. Mixamo exo eyes are authored "
+             "with the pupil on the rear hemisphere (visible only from inside "
+             "the skull). Eyes are skinned 100%% to the Head joint, so a "
+             "whole-model flip cannot correct this — the eye sphere must be "
+             "spun in place."
     )
     parser.add_argument(
         "--exclude-meshes", nargs="+", default=[],
@@ -341,14 +351,11 @@ def merge_animations(input_dir, scale=None, base=None, exclude_meshes=None):
     # --- Phase 3: Apply armature + mesh transforms ------------------------
     # The engine never reads the Armature node (only skin joints), so ALL
     # transforms must be baked into bone rest positions AND mesh vertices.
-    #
-    # No forward-facing rotation is applied. Mixamo characters face Blender
-    # -Y, which the glTF exporter (Z-up -> Y-up) maps directly to +Z, exactly
-    # the forward the engine expects (pose_modifier.rs, mesh_pass.rs). An
-    # earlier 180-deg Z flip here was based on a wrong premise (that the
-    # source faces Blender +Y) and left the whole model reversed: brows, eyes,
-    # cornea, and toes all pointed -Z. Identity keeps the model facing +Z.
-    flip_z = Matrix.Identity(4)
+    # A 180-deg Z flip is also needed: as imported, the character faces the
+    # wrong way for the engine's +Z-forward convention (pose_modifier.rs,
+    # mesh_pass.rs). Confirmed empirically: without this flip the whole model
+    # (body and feet) renders facing away from its movement direction.
+    flip_z = Matrix.Rotation(math.pi, 4, 'Z')
 
     arm_world = base_armature.matrix_world.copy()
     baked_transform = flip_z @ arm_world
@@ -407,13 +414,12 @@ def merge_animations(input_dir, scale=None, base=None, exclude_meshes=None):
     # same local transforms produce the correct pose.
     #
     # For the ROOT bone (no parent), the "local" is the armature-space
-    # matrix itself, which is carried through baked_transform (the cm->m
-    # scale) into the new rest space. flip_z is identity now, so no rotation
-    # is introduced here — only the scale conversion.
+    # matrix itself, which needs the flip_z rotation applied (the rest pose
+    # was flipped, so the animated pose must be too).
     #
     # We compute pose deltas (Blender's pbone TRS = offset from rest):
     #   child:  pose_delta = old_rest_local.inv() @ old_anim_local
-    #   root:   pose_delta = new_rest_local.inv() @ (baked_transform @ old_anim_local, scale-stripped)
+    #   root:   pose_delta = new_rest_local.inv() @ (flip_z_rot @ old_anim_local)
     #
     # No depsgraph round-trip — pure math, no stale-parent corruption.
 
@@ -456,11 +462,11 @@ def merge_animations(input_dir, scale=None, base=None, exclude_meshes=None):
                     pose_delta = old_rest.inverted() @ old_local
                 else:
                     # Root bone: "local" IS the armature-space matrix.
-                    # Convert from old armature space (cm) to new armature
-                    # space (meters) via baked_transform. baked_transform
-                    # carries arm_world's 0.01 scale, but transform_apply
-                    # normalized that out of rest poses — so strip scale to
-                    # match. (flip_z is identity, so no rotation is applied.)
+                    # Convert from old armature space (cm, original orientation)
+                    # to new armature space (meters, flipped) via baked_transform.
+                    # baked_transform carries arm_world's 0.01 scale, but
+                    # transform_apply normalized that out of rest poses — so
+                    # strip scale to match.
                     raw = baked_transform @ old_local
                     new_loc = raw.to_translation()
                     new_rot = raw.to_quaternion()
@@ -516,6 +522,101 @@ def merge_animations(input_dir, scale=None, base=None, exclude_meshes=None):
     for action in bpy.data.actions:
         frame_range = action.frame_range
         print(f"  {action.name}: frames {int(frame_range[0])}-{int(frame_range[1])}")
+
+
+def flip_eye_geometry():
+    """Rotate each eyeball 180 deg about its own vertical axis so the iris
+    faces the front of the head.
+
+    Mixamo's exo eyeballs are authored with the iris/pupil on the REAR
+    hemisphere of the eye sphere: the pupil vertex sits at the into-skull
+    extreme while the face points the other way, so the iris is only visible
+    from inside the head. The eyes are skinned 100% to the Head joint, so no
+    whole-model transform can correct this — the iris is 180 deg off relative
+    to the face regardless of which way the body points. We spin each eye
+    sphere in place about the vertical (Blender Z) axis through its own
+    center: the pupil swings from back to front, the eye stays in its socket,
+    and its Head skinning is untouched. Run this AFTER the meshes are joined
+    so all eye material slots live on one object.
+    """
+    mesh_obj = get_mesh()
+    if not mesh_obj:
+        print("\n  --fix-eyes: no mesh found, skipping")
+        return
+    mesh = mesh_obj.data
+
+    eye_slots = {
+        i for i, slot in enumerate(mesh_obj.material_slots)
+        if slot.material and "eye" in slot.material.name.lower()
+    }
+    if not eye_slots:
+        print("\n  --fix-eyes: no 'Eye' material on the mesh, skipping")
+        return
+
+    eye_loop_idx = []
+    eye_vert_idx = set()
+    for poly in mesh.polygons:
+        if poly.material_index in eye_slots:
+            for li in poly.loop_indices:
+                eye_loop_idx.append(li)
+                eye_vert_idx.add(mesh.loops[li].vertex_index)
+    if not eye_vert_idx:
+        print("\n  --fix-eyes: no eye geometry found, skipping")
+        return
+
+    verts = mesh.vertices
+
+    # Capture the existing (computed) split normals so the eye ones can be
+    # rotated too; a 180 deg turn about vertical maps (nx,ny,nz)->(-nx,-ny,nz).
+    # API differs across Blender versions; failure is non-fatal (positions are
+    # the visible fix, and recomputed normals on a rotated sphere are correct).
+    loop_normals = None
+    try:
+        mesh.calc_normals_split()
+        loop_normals = [list(loop.normal) for loop in mesh.loops]
+    except Exception:
+        try:
+            loop_normals = [list(cn.vector) for cn in mesh.corner_normals]
+        except Exception as exc:
+            print(f"  --fix-eyes: split-normal capture skipped ({exc})")
+
+    # Split into left/right eyeballs by X sign about the mean, so each sphere
+    # rotates about its OWN center — no socket swap, no per-eye texture swap.
+    mean_x = sum(verts[i].co.x for i in eye_vert_idx) / len(eye_vert_idx)
+    clusters = {"L": [], "R": []}
+    for i in eye_vert_idx:
+        clusters["L" if verts[i].co.x < mean_x else "R"].append(i)
+
+    total = 0
+    for name, idxs in clusters.items():
+        if not idxs:
+            continue
+        cx = sum(verts[i].co.x for i in idxs) / len(idxs)
+        cy = sum(verts[i].co.y for i in idxs) / len(idxs)
+        for i in idxs:
+            co = verts[i].co
+            # 180 deg about vertical (Z) through (cx, cy): negate the X and Y
+            # offsets from the eye center, keep Z (height) unchanged.
+            co.x = 2.0 * cx - co.x
+            co.y = 2.0 * cy - co.y
+        total += len(idxs)
+        print(f"  --fix-eyes: spun {name} eye ({len(idxs)} verts) about "
+              f"(x={cx:.3f}, y={cy:.3f})")
+
+    if loop_normals is not None:
+        for li in eye_loop_idx:
+            nx, ny, nz = loop_normals[li]
+            loop_normals[li] = (-nx, -ny, nz)
+        try:
+            if hasattr(mesh, "use_auto_smooth"):
+                mesh.use_auto_smooth = True
+            mesh.normals_split_custom_set(loop_normals)
+        except Exception as exc:
+            print(f"  --fix-eyes: could not write split normals ({exc}); "
+                  f"relying on recomputed normals")
+
+    mesh.update()
+    print(f"  --fix-eyes: done ({total} eye verts; iris now faces front)")
 
 
 def strip_facial_bones():
@@ -774,6 +875,8 @@ def main():
 
     clean_scene()
     merge_animations(args.input_dir, args.scale, args.base, args.exclude_meshes)
+    if args.fix_eyes:
+        flip_eye_geometry()
     if args.strip_face:
         strip_facial_bones()
     validate_model()

@@ -2,6 +2,7 @@
 // See: context/lib/build_pipeline.md §PRL Compilation, §Baked texture mips
 
 pub mod alpha_lights;
+pub mod animated_direct_sh_delta_volumes;
 pub mod animated_light_chunks;
 pub mod animated_light_weight_maps;
 pub mod bsp;
@@ -258,6 +259,11 @@ pub enum SectionId {
     KinematicGeometry = 43,
     /// Invisible AABB brush triggers with declarative mover commands.
     TriggerVolumes = 44,
+
+    /// Per-animated-baked-light sparse direct-SH delta tiles, indexed by
+    /// affinity cell. See
+    /// `animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection`.
+    AnimatedDirectShDeltaVolumes = 45,
 }
 
 impl SectionId {
@@ -295,6 +301,7 @@ impl SectionId {
             42 => Some(Self::ShadowmaskAtlas),
             43 => Some(Self::KinematicGeometry),
             44 => Some(Self::TriggerVolumes),
+            45 => Some(Self::AnimatedDirectShDeltaVolumes),
             _ => None,
         }
     }

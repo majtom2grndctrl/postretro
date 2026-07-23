@@ -9,6 +9,8 @@ use glam::Vec3;
 #[cfg(feature = "load-prl")]
 use postretro_level_format as prl_format;
 #[cfg(feature = "load-prl")]
+use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
+#[cfg(feature = "load-prl")]
 use postretro_level_format::animated_light_chunks::AnimatedLightChunksSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
@@ -485,6 +487,10 @@ pub struct LevelWorld {
     /// Missing or unusable deltas also clear `entity_shadow_lights`.
     #[cfg(feature = "load-prl")]
     pub direct_sh_delta_volumes: Option<DirectShDeltaVolumesSection>,
+    /// Sparse direct-SH deltas for animated baked lights. `None` when the map
+    /// has no animated baked lights or the optional section is malformed.
+    #[cfg(feature = "load-prl")]
+    pub animated_direct_sh_delta_volumes: Option<AnimatedDirectShDeltaVolumesSection>,
     /// Runtime level-light indices selected by the compiler for static-light
     /// entity-shadow promotion. Empty for maps without direct SH/static lights,
     /// maps whose compiler selection found no eligible lights, or maps whose
@@ -614,6 +620,8 @@ impl LevelWorld {
             direct_sh_volume: None,
             #[cfg(feature = "load-prl")]
             direct_sh_delta_volumes: None,
+            #[cfg(feature = "load-prl")]
+            animated_direct_sh_delta_volumes: None,
             #[cfg(feature = "load-prl")]
             entity_shadow_lights: Vec::new(),
             #[cfg(feature = "load-prl")]
@@ -1078,6 +1086,7 @@ mod tests {
     use postretro_level_format::portals::{PortalRecord, PortalsSection};
     use postretro_render_data::geometry::BvhLeaf;
 
+    use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
     use postretro_level_format::delta_sh_volumes::{
         AFFINITY_FACTOR, DEFAULT_DELTA_PROBE_F16_STRIDE, DeltaShVolumesSection, PROBES_PER_CELL,
     };
@@ -1128,6 +1137,28 @@ mod tests {
                     * DEFAULT_DELTA_PROBE_F16_STRIDE
             ],
             affinity_lights,
+        }
+    }
+
+    fn animated_direct_delta_section_for(
+        affinity_dims: [u32; 3],
+    ) -> AnimatedDirectShDeltaVolumesSection {
+        let cell_count = (affinity_dims[0] * affinity_dims[1] * affinity_dims[2]) as usize;
+        let mut offsets = vec![0u32; cell_count + 1];
+        for offset in offsets.iter_mut().skip(1) {
+            *offset = 1;
+        }
+        AnimatedDirectShDeltaVolumesSection {
+            affinity_factor: AFFINITY_FACTOR,
+            affinity_dims,
+            tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            // The runtime no-op sentinel must not require an external
+            // descriptor-resolution check during level load.
+            animation_descriptor_indices: vec![u32::MAX],
+            affinity_offsets: offsets,
+            affinity_lights: vec![0],
+            delta_subblocks: vec![0u16; PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE],
         }
     }
 
@@ -1423,6 +1454,7 @@ mod tests {
             delta_sh_volumes: None,
             direct_sh_volume: None,
             direct_sh_delta_volumes: None,
+            animated_direct_sh_delta_volumes: None,
             entity_shadow_lights: Vec::new(),
             shadowmask_atlas: None,
             data_script: None,
@@ -1515,6 +1547,7 @@ mod tests {
             delta_sh_volumes: None,
             direct_sh_volume: None,
             direct_sh_delta_volumes: None,
+            animated_direct_sh_delta_volumes: None,
             entity_shadow_lights: Vec::new(),
             shadowmask_atlas: None,
             data_script: None,
@@ -1561,6 +1594,7 @@ mod tests {
             delta_sh_volumes: None,
             direct_sh_volume: None,
             direct_sh_delta_volumes: None,
+            animated_direct_sh_delta_volumes: None,
             entity_shadow_lights: Vec::new(),
             shadowmask_atlas: None,
             data_script: None,
@@ -1934,6 +1968,16 @@ mod tests {
     fn direct_sh_delta_blob(section: DirectShDeltaVolumesSection) -> prl_format::SectionBlob {
         prl_format::SectionBlob {
             section_id: SectionId::DirectShDeltaVolumes as u32,
+            version: 1,
+            data: section.to_bytes(),
+        }
+    }
+
+    fn animated_direct_sh_delta_blob(
+        section: AnimatedDirectShDeltaVolumesSection,
+    ) -> prl_format::SectionBlob {
+        prl_format::SectionBlob {
+            section_id: SectionId::AnimatedDirectShDeltaVolumes as u32,
             version: 1,
             data: section.to_bytes(),
         }
@@ -4803,6 +4847,95 @@ mod tests {
             world.direct_sh_volume.is_none(),
             "mismatched DirectShVolume must be cleared before reaching LevelWorld"
         );
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_parses_animated_direct_sh_deltas_without_static_direct_sh() {
+        let base_dims = [1, 1, 1];
+        let section =
+            animated_direct_delta_section_for(expected_affinity_dims(base_dims, AFFINITY_FACTOR));
+        let sections = vec![
+            geometry_blob(sample_geometry()),
+            bvh_blob(sample_bvh_section()),
+            octahedral_sh_volume_blob(base_octahedral_section(base_dims)),
+            animated_direct_sh_delta_blob(section.clone()),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+
+        let tmp = write_prl_fixture(
+            sections,
+            "postretro_test_animated_direct_sh_delta_round_trip.prl",
+        );
+        let world =
+            load_prl(tmp.to_str().unwrap()).expect("valid AnimatedDirectShDeltaVolumes must load");
+
+        assert_eq!(
+            world.animated_direct_sh_delta_volumes,
+            Some(section),
+            "the animated direct delta must load independently of DirectShVolume"
+        );
+        assert!(world.direct_sh_volume.is_none());
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_soft_drops_malformed_animated_direct_sh_deltas() {
+        let sections = vec![
+            geometry_blob(sample_geometry()),
+            bvh_blob(sample_bvh_section()),
+            prl_format::SectionBlob {
+                section_id: SectionId::AnimatedDirectShDeltaVolumes as u32,
+                version: 1,
+                data: vec![0],
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+
+        let tmp = write_prl_fixture(
+            sections,
+            "postretro_test_animated_direct_sh_delta_malformed.prl",
+        );
+        let world = load_prl(tmp.to_str().unwrap())
+            .expect("malformed AnimatedDirectShDeltaVolumes must not fail level load");
+
+        assert!(world.animated_direct_sh_delta_volumes.is_none());
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_soft_drops_partial_animated_direct_sh_deltas() {
+        let base_dims = [1, 1, 1];
+        let section =
+            animated_direct_delta_section_for(expected_affinity_dims(base_dims, AFFINITY_FACTOR));
+        let mut partial_data = section.to_bytes();
+        partial_data.truncate(partial_data.len() - 2);
+        let sections = vec![
+            geometry_blob(sample_geometry()),
+            bvh_blob(sample_bvh_section()),
+            octahedral_sh_volume_blob(base_octahedral_section(base_dims)),
+            prl_format::SectionBlob {
+                section_id: SectionId::AnimatedDirectShDeltaVolumes as u32,
+                version: 1,
+                data: partial_data,
+            },
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+
+        let tmp = write_prl_fixture(
+            sections,
+            "postretro_test_animated_direct_sh_delta_partial.prl",
+        );
+        let world = load_prl(tmp.to_str().unwrap())
+            .expect("partial AnimatedDirectShDeltaVolumes must not fail level load");
+
+        assert!(world.animated_direct_sh_delta_volumes.is_none());
 
         std::fs::remove_file(&tmp).ok();
     }

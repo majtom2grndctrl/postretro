@@ -9,6 +9,7 @@ use postretro_level_format::alpha_lights::ALPHA_LIGHT_LEAF_UNASSIGNED;
 use postretro_level_format::alpha_lights::{
     AlphaFalloffModel, AlphaLightType, AlphaLightsSection, AlphaShadowType,
 };
+use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
 use postretro_level_format::animated_light_chunks::AnimatedLightChunksSection;
 use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
 use postretro_level_format::bvh::{BVH_NODE_FLAG_LEAF, BvhSection};
@@ -402,6 +403,120 @@ pub(crate) fn validate_delta_sh(
             base_dimension: base.tile_dimension,
             base_border: base.tile_border,
         });
+    }
+
+    Ok(())
+}
+
+/// Validate the animated direct-SH delta section against the base SH layout and
+/// its own CSR contract. Unlike promotion deltas (ID 41), this section has no
+/// external selected-light namespace to cross-check: its light indices are
+/// bounded by its own descriptor-index table.
+pub(crate) fn validate_animated_direct_sh_delta(
+    section: &AnimatedDirectShDeltaVolumesSection,
+    base: Option<&OctahedralShVolumeSection>,
+) -> Result<(), PrlLoadError> {
+    const SECTION: &str = "AnimatedDirectShDeltaVolumes";
+
+    if section.affinity_factor != AFFINITY_FACTOR {
+        return Err(section_validation(
+            SECTION,
+            format!(
+                "affinity_factor {} does not match runtime factor {AFFINITY_FACTOR}",
+                section.affinity_factor
+            ),
+        ));
+    }
+
+    let Some(base) = base else {
+        return Err(section_validation(
+            SECTION,
+            "section requires an OctahedralShVolume base grid",
+        ));
+    };
+    let expected_dims = expected_affinity_dims(base.grid_dimensions, AFFINITY_FACTOR);
+    if section.affinity_dims != expected_dims {
+        return Err(section_validation(
+            SECTION,
+            format!(
+                "affinity_dims {:?} do not match ceil(base grid {:?} / {AFFINITY_FACTOR}) = {expected_dims:?}",
+                section.affinity_dims, base.grid_dimensions
+            ),
+        ));
+    }
+    if section.tile_dimension != base.tile_dimension || section.tile_border != base.tile_border {
+        return Err(section_validation(
+            SECTION,
+            format!(
+                "tile geometry {} + border {} does not match OctahedralShVolume {} + border {}",
+                section.tile_dimension, section.tile_border, base.tile_dimension, base.tile_border,
+            ),
+        ));
+    }
+
+    let affinity_cell_count = (section.affinity_dims[0] as usize)
+        .checked_mul(section.affinity_dims[1] as usize)
+        .and_then(|count| count.checked_mul(section.affinity_dims[2] as usize))
+        .ok_or_else(|| {
+            section_validation(SECTION, "affinity_dims overflow the runtime cell count")
+        })?;
+    let expected_offsets_len = affinity_cell_count
+        .checked_add(1)
+        .ok_or_else(|| section_validation(SECTION, "affinity offset count overflows usize"))?;
+    if section.affinity_offsets.len() != expected_offsets_len {
+        return Err(section_validation(
+            SECTION,
+            format!(
+                "affinity_offsets has length {}, expected {expected_offsets_len}",
+                section.affinity_offsets.len()
+            ),
+        ));
+    }
+    if section.affinity_offsets.first().copied() != Some(0) {
+        return Err(section_validation(
+            SECTION,
+            "affinity_offsets[0] must be 0 for CSR data",
+        ));
+    }
+    for (index, offsets) in section.affinity_offsets.windows(2).enumerate() {
+        if offsets[0] > offsets[1] {
+            return Err(section_validation(
+                SECTION,
+                format!(
+                    "affinity_offsets[{index}] ({}) > affinity_offsets[{}] ({}): offsets must be non-decreasing",
+                    offsets[0],
+                    index + 1,
+                    offsets[1],
+                ),
+            ));
+        }
+    }
+    let trailing_total = section
+        .affinity_offsets
+        .last()
+        .copied()
+        .expect("expected_offsets_len is always at least one");
+    let light_count = u32::try_from(section.affinity_lights.len()).map_err(|_| {
+        section_validation(SECTION, "affinity_lights length exceeds the u32 wire range")
+    })?;
+    if trailing_total != light_count {
+        return Err(section_validation(
+            SECTION,
+            format!(
+                "affinity_offsets trailing total {trailing_total} does not match affinity_lights length {light_count}"
+            ),
+        ));
+    }
+    for (entry, &light_index) in section.affinity_lights.iter().enumerate() {
+        if light_index as usize >= section.animation_descriptor_indices.len() {
+            return Err(section_validation(
+                SECTION,
+                format!(
+                    "affinity_lights[{entry}] AnimatedBakedLights index {light_index} is out of range for {} descriptor index entries",
+                    section.animation_descriptor_indices.len()
+                ),
+            ));
+        }
     }
 
     Ok(())
@@ -1856,6 +1971,47 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         None => None,
     };
 
+    // Optional — malformed or stale animated-direct deltas disable only this
+    // additive term. They must never prevent the rest of the level from loading.
+    let animated_direct_sh_delta_volumes: Option<AnimatedDirectShDeltaVolumesSection> =
+        match prl_format::read_section_data(
+            &mut cursor,
+            &meta,
+            SectionId::AnimatedDirectShDeltaVolumes as u32,
+        )? {
+            Some(data) => match AnimatedDirectShDeltaVolumesSection::from_bytes(&data) {
+                Ok(section) => {
+                    match validate_animated_direct_sh_delta(&section, sh_volume.as_ref()) {
+                        Ok(()) => {
+                            log::info!(
+                                "[PRL] AnimatedDirectShDeltaVolumes: {} animated light(s), affinity grid {}×{}×{} ({} CSR entr(y/ies), {} delta subblock halves)",
+                                section.animation_descriptor_indices.len(),
+                                section.affinity_dims[0],
+                                section.affinity_dims[1],
+                                section.affinity_dims[2],
+                                section.affinity_lights.len(),
+                                section.delta_subblocks.len(),
+                            );
+                            Some(section)
+                        }
+                        Err(err) => {
+                            log::warn!(
+                                "[PRL] AnimatedDirectShDeltaVolumes unusable; disabling animated direct SH: {err}"
+                            );
+                            None
+                        }
+                    }
+                }
+                Err(err) => {
+                    log::warn!(
+                        "[PRL] AnimatedDirectShDeltaVolumes malformed; disabling animated direct SH: {err}"
+                    );
+                    None
+                }
+            },
+            None => None,
+        };
+
     // Optional — absent when the map has no static direct SH/static lights.
     // Dynamic objects fall back to indirect-only.
     let direct_sh_volume: Option<DirectShVolumeSection> = match prl_format::read_section_data(
@@ -2339,6 +2495,7 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
         delta_sh_volumes,
         direct_sh_volume,
         direct_sh_delta_volumes,
+        animated_direct_sh_delta_volumes,
         entity_shadow_lights,
         shadowmask_atlas,
         data_script,

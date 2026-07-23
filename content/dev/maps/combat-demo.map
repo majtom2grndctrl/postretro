@@ -89,6 +89,18 @@
 ( 784 304 0 ) ( 720 304 128 ) ( 720 304 0 ) concrete_pavement_036 0 0 0 1 1
 ( 784 208 0 ) ( 784 304 128 ) ( 784 304 0 ) concrete_pavement_036 0 0 0 1 1
 }
+// Emissive bloom fixture: directly ahead of the player spawn.
+// The neon prefix selects the HDR emissive multiplier; its `_e` sibling carries
+// the per-texel glow pattern. Use POSTRETRO_BLOOM=0 to inspect self-light only.
+// brush 9
+{
+( 192 320 32 ) ( 192 192 112 ) ( 192 192 32 ) neon/neon_glow_panel 0 0 0 1 1
+( 192 192 32 ) ( 208 192 112 ) ( 208 192 32 ) neon/neon_glow_panel 0 0 0 1 1
+( 192 192 32 ) ( 208 320 32 ) ( 192 320 32 ) neon/neon_glow_panel 0 0 0 1 1
+( 192 320 112 ) ( 208 192 112 ) ( 192 192 112 ) neon/neon_glow_panel 0 0 0 1 1
+( 208 320 32 ) ( 192 320 112 ) ( 192 320 32 ) neon/neon_glow_panel 0 0 0 1 1
+( 208 192 32 ) ( 208 320 112 ) ( 208 320 32 ) neon/neon_glow_panel 0 0 0 1 1
+}
 }
 // entity 1
 {

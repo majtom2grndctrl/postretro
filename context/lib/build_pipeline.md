@@ -48,7 +48,7 @@ TrenchBroom identifies materials by their path **relative to the textures root**
 
 - The name→PNG index (`build_name_to_path_map`) keys each PNG under its path **relative to the texture root** — forward-slashed, lowercased, extension stripped (e.g. `50-free-textures/concrete_pavement_036`). It also inserts a **bare-stem alias** (`concrete_pavement_036`) for back-compat, but only when that stem is unique across all collections. On a stem collision the alias is dropped and a `warn!` names both paths, so a bare name never silently resolves to the wrong collection.
 - The incoming map name is normalized (lowercase, `\`→`/`, leading `textures/` stripped) so both `collection/stem` and root-inclusive `textures/collection/stem` map to the relative key. Lookup tries the normalized relative name, then falls back to the bare last path segment.
-- `_s`/`_n` siblings are derived by appending to **the same form that resolved the diffuse**, so siblings come from the same collection.
+- `_s`/`_n`/`_e` siblings are derived by appending to **the same form that resolved the diffuse**, so siblings come from the same collection.
 
 A material name with a space (e.g. a collection dir `Level Eleven Games Sci-Fi Texture Pack v1`) is double-quoted in the `.map` by TrenchBroom. shalrath has no quote handling, so the parser (`crates/level-compiler/src/parse.rs`) runs a pre-parse pass that strips the quotes and swaps interior spaces for a path-illegal sentinel byte, keeping the material field one token. The sentinel is decoded back to a real space at the single texture-read boundary, so every downstream stage sees the human-readable name.
 
@@ -316,11 +316,25 @@ Disk-backed content-hash cache that lets `prl-build` skip cached bake work when 
 
 Per-texture mip-chain sidecars are **runtime-required compiled output** living under the top-level `baked/materials/` tree — not in the disposable `.build-caches/` stage cache (see §Build Cache). prl-build writes them; the engine reads them at level load.
 
-**`.prm` files.** Each sidecar bundles up to three material slots — diffuse, specular, and normal — each optional. Content-addressed by `blake3(diffuse PNG content)` when a diffuse slot is present; otherwise `blake3(tag_byte || first_present_PNG)`. The `tag_byte` prevents hash collisions between specular-only and normal-only single-slot textures. Stored at `<workspace>/baked/materials/<hex>.prm`. Cross-mod dedupe is intended: identical PNG bytes produce the same `.prm` regardless of which mod authored them.
+**`.prm` files.** Each sidecar bundles up to four material slots — diffuse,
+specular, normal, and emissive — each optional. Content-addressed by
+`blake3(diffuse PNG content)` when a diffuse slot is present; otherwise
+`blake3(tag_byte || first_present_PNG)`. The `tag_byte` distinguishes
+specular-only, normal-only, and emissive-only single-slot textures. The header
+bundle hash covers the slot mask and every present slot's raw PNG bytes, so
+adding an `_e` sibling invalidates a diffuse-addressed bundle. Stored at
+`<workspace>/baked/materials/<hex>.prm`. Cross-mod dedupe is intended:
+identical PNG bytes produce the same `.prm` regardless of which mod authored
+them.
 
 **Wire format.** Header + per-slot blocks + packed mip payload. Wire layout lives in `postretro-level-format::prm`. Note: `.prm` uses a `u8` exact-match format epoch (not the stage-cache `u32` convention) — the header owns its own version semantics.
 
-**Filtering.** Mitchell-Netravali separable filter (B = C = 1/3) in linear space throughout. sRGB diffuse decoded via 256-entry LUT before filtering, re-encoded via IEC 61966-2-1. Specular filtered as linear R8. Normal filtered linearly then renormalised per output texel; `(0, 0, 1)` substituted when magnitude < 1e-4. Output is then BC5-encoded (RG channels only; the shader reconstructs Z).
+**Filtering.** Mitchell-Netravali separable filter (B = C = 1/3) in linear
+space throughout. sRGB diffuse and emissive color decode via a 256-entry LUT
+before filtering and re-encode via IEC 61966-2-1. Specular filters as linear
+R8. Normal filters linearly then renormalises per output texel; `(0, 0, 1)`
+substitutes when magnitude < 1e-4. Output is then BC5-encoded (RG channels
+only; the shader reconstructs Z).
 
 **Cache invalidation.** Filename keys on diffuse content only (stable addressing). `bundle_hash` in the header covers `slot_mask` + every present slot's raw PNG bytes. A world-material cache hit requires a matching bundle hash and structurally valid payload for every declared slot; truncated or corrupt declared slots trigger a full rebake and atomic overwrite (tempfile `<hex>.prm.tmp.<pid>` → `std::fs::rename`). Model baking preserves a structurally valid richer world bundle at the shared diffuse address even though its bundle hash includes sibling slots. A version mismatch in the header triggers rebake. To force a full retexture rebuild, delete `baked/materials/` (the next bake repopulates it; doing so leaves the runtime without world-material mips until then).
 

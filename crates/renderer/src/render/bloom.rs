@@ -598,6 +598,17 @@ fn encode_fullscreen_pass(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use postretro_render_data::material::Material;
+
+    #[test]
+    fn neon_emissive_strength_clears_the_bloom_threshold() {
+        let strength = Material::Neon.emissive_strength();
+        assert!(strength > 1.0, "neon must produce HDR emissive output");
+        assert!(
+            strength > BLOOM_THRESHOLD,
+            "neon authored at full emissive value must pass the bloom bright-pass"
+        );
+    }
 
     #[test]
     fn bloom_levels_keep_nonzero_dimensions() {

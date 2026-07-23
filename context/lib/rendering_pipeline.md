@@ -247,9 +247,30 @@ Spatial diagnostics use this pass for CPU-authored structural overlays:
 
 Spatial visible-cell coloring is derived from the drawable `VisibleCells` result that feeds world rendering, not from fog/light reachability masks. The wider `fog_reachable` / light-reachable sets include empty cells for volume and dynamic-light isolation and must not drive first-pass Spatial visibility colors.
 
-### 7.8 Screen-space effects resolve pass
+### 7.8 HDR scene color, bloom, and screen-space resolve
 
-The renderer owns a `scene_color` offscreen target: linear `Rgba16Float`, single-sample, surface-sized. Every gameplay scene pass and gameplay UI pass writes into `scene_color`; the resolve pass is the sole swapchain writer for the gameplay path — it runs every frame as a fullscreen-triangle HDR-to-sRGB resolve from `scene_color` into the swapchain. The boot-splash path is separate from the gameplay resolve: it writes directly to the swapchain `view`, never touching `scene_color`, the UI pass, `UiReadSnapshot`, or the screen-effects compose. Startup records black/logo splash timing only after the renderer reports that command submission reached a successful present path.
+The renderer owns a single-sample, surface-sized linear `Rgba16Float`
+`scene_color` target. Every gameplay scene pass and gameplay UI pass writes
+there; the fullscreen resolve is the sole swapchain writer for the gameplay
+path. It samples `scene_color`, applies the near-neutral soft-knee tonemap,
+then the flash, vignette, and shake effects, and writes the sRGB swapchain.
+The target stores raw linear values; sampling it does not decode sRGB, and the
+swapchain store performs the one display encode. This preserves in-range
+content closely while compressing HDR overshoot rather than hard-clipping it.
+
+The renderer-owned bloom compositor runs after fog and before capture,
+wireframe/debug/viewmodel overlays, and gameplay UI. It extracts HDR luminance
+above `BLOOM_THRESHOLD`, filters a five-level downsample/blur/upsample chain,
+then additively composites the result back into `scene_color`. As a result,
+emissive texels and other HDR-bright scene content make a soft screen-space
+halo without changing any lighting buffer or causing overlays/UI to bloom. Set
+`POSTRETRO_BLOOM=0` to disable the pass for the manual no-bloom emissive check.
+
+The boot-splash path is separate from the gameplay resolve: it writes directly
+to the swapchain `view`, never touching `scene_color`, the UI pass,
+`UiReadSnapshot`, or the screen-effects compose. Startup records black/logo
+splash timing only after the renderer reports that command submission reached a
+successful present path.
 
 **Renderer boot/full phase split.** Renderer init is two phases so first pixels reach the window before the heavy pipelines build. The **boot phase** (`Renderer::new`) creates the instance, surface, adapter, device, queue, surface config, and the renderer-owned boot splash pass; device creation requests the full feature/limit set because wgpu features can't be added after the device exists. The **full phase** builds the steady-state renderer — world buffers, lighting/shadow resources, screen effects, mesh/UI/fog passes, debug lines. `is_boot_ready` gates splash painting; `is_full_ready` gates Frontend, Loading completion, Running, the UI pass, and scene rendering. Full init is idempotent/restartable across surface recreation, so a suspend→resume that recreated the surface reruns it without re-running deferred session init. See `boot_sequence.md` §1.
 
@@ -257,7 +278,12 @@ The renderer owns a `scene_color` offscreen target: linear `Rgba16Float`, single
 
 The resolve applies a near-neutral soft-knee tonemap before the existing flash (over-blend toward a tint color, weighted by `flash.a`), vignette (edge darken/tint, strength-scaled radial blend), and shake (pure UV offset applied before the sample). All three are packed CPU-side from the frame's `UiReadSnapshot` into a per-frame `EffectUniform` (binding 2 of group 0). The former byte-identity resolve contract is superseded: in-range content remains a visual-parity/manual-GPU gate. The resolve sampler is NEAREST / pixel-aligned. See `crates/renderer/src/render/screen_effects.rs` and `crates/renderer/src/shaders/screen_effects.wgsl`.
 
-**Frame capture (Epic 20, shipped).** Headless capture reads a capture-only `Rgba8UnormSrgb` tonemap resolve of `scene_color`, so PNG bytes stay deterministic RGBA8 while excluding transient effects. Renderer owns the readback (per the boundary rule); surfaceless-renderer construction and full design: `plans/done/E20--frame-capture`.
+**Frame capture (Epic 20, shipped).** Headless capture runs the same soft-knee
+tonemap into a capture-only `Rgba8UnormSrgb` target after the bloom composite,
+then reads it back. PNG bytes therefore stay deterministic RGBA8 while capture
+includes scene bloom and excludes transient screen effects. Renderer owns the
+readback (per the boundary rule); surfaceless-renderer construction and full
+design: `plans/done/E20--frame-capture`.
 
 ---
 

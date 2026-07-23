@@ -16,6 +16,15 @@ build pipeline.
 Helper for producing normal maps from height/source data. Run with `python3
 tools/gen_normal.py --help` for usage.
 
+### `gen_emissive.py`
+
+Generates static emissive `_e.png` siblings from diffuse textures. It retains
+bright source-color texels as sRGB content, with `neon_` textures using a lower
+default cutoff. Output PNGs are deliberately untagged (no `sRGB`, `gAMA`, or
+`iCCP` chunk); `_e` is an sRGB-content convention and `prl-build` accepts it
+regardless of PNG color-space metadata. Run with `python3 tools/gen_emissive.py
+--help` for usage.
+
 ### `blender_model_rebake.py`
 
 Turns a downloaded high-poly source glTF (Sketchfab, Rodin, etc.) into an
@@ -46,8 +55,8 @@ Placeholder for future automation scripts (e.g. `new-mod.sh`, `new-level.sh`). S
 
 ## Python tool setup
 
-Both `gen_specular.py` and `gen_normal.py` require a `uv`-managed virtual environment.
-Run once from the repo root:
+The `gen_specular.py`, `gen_normal.py`, and `gen_emissive.py` helpers require a
+`uv`-managed virtual environment. Run once from the repo root:
 
 ```sh
 uv venv && source .venv/bin/activate
@@ -59,6 +68,7 @@ uv pip install Pillow numpy   # numpy only required by gen_normal.py
 ```sh
 python3 tools/gen_specular.py --input <path> --recursive
 python3 tools/gen_normal.py   --input <path> --recursive
+python3 tools/gen_emissive.py --input <path> --recursive
 ```
 
 Pass `--help` to either script for full option reference.

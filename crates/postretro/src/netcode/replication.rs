@@ -8,11 +8,13 @@ use postretro_net::replication::EntitySnapshot;
 use postretro_net::wire::{ComponentPayload, WireKinematicMoverState, WireMeshAnimationState};
 
 use postretro_entities::components::mesh::MeshComponent;
+use postretro_entities::provenance::DescriptorProvenance;
 use postretro_entities::{
     ComponentKind, EntityId, EntityRegistry, KinematicMoverComponent, KinematicMoverMode, Transform,
 };
 use postretro_foundation::PlayerMovementComponent;
 
+use super::WeaponOwners;
 use super::descriptor_class::{descriptor_entity_class, is_networked_ai_enemy};
 use super::movement_state::movement_state_to_wire;
 use super::{
@@ -97,12 +99,37 @@ pub(crate) fn is_replicable(set: &ReplicableSet, id: EntityId) -> bool {
 /// Stamps each replicable `EntityId` to its stable `NetworkId` via the allocator.
 /// Only registered entities are produced; component payload order is stable so the
 /// net crate's wire-mirror equality dirty-check is order-stable.
+#[cfg(test)]
 pub(crate) fn produce_owned_snapshots(
     registry: &EntityRegistry,
     set: &ReplicableSet,
     allocator: &mut NetworkIdAllocator,
     owners: &MovementOwners,
     command_queues: &HostCommandQueues,
+) -> Vec<EntitySnapshot> {
+    produce_owned_snapshots_with_host_aim(
+        registry,
+        set,
+        allocator,
+        owners,
+        &WeaponOwners::new(),
+        command_queues,
+        None,
+    )
+}
+
+/// Production listen-host variant. Remote-owned pawn pitch comes from the resolved
+/// command queue; the host pawn has no `MovementOwners` entry and therefore receives
+/// its directly-authorized local camera pitch through this explicit source.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn produce_owned_snapshots_with_host_aim(
+    registry: &EntityRegistry,
+    set: &ReplicableSet,
+    allocator: &mut NetworkIdAllocator,
+    owners: &MovementOwners,
+    weapon_owners: &WeaponOwners,
+    command_queues: &HostCommandQueues,
+    host_aim: Option<(EntityId, f32)>,
 ) -> Vec<EntitySnapshot> {
     let mut snapshots = Vec::new();
     for id in set.iter() {
@@ -112,12 +139,19 @@ pub(crate) fn produce_owned_snapshots(
             // logic's job; the predicate just does not produce a payload).
             continue;
         }
-        let components = collect_payloads(registry, id);
+        let owner_client_id = owners.owner_of(id);
+        let aim_pitch = if host_aim.is_some_and(|(host_pawn, _)| host_pawn == id) {
+            host_aim.map_or(0.0, |(_, pitch)| pitch)
+        } else {
+            owner_client_id
+                .and_then(|client_id| command_queues.current_aim_pitch(client_id))
+                .unwrap_or(0.0)
+        };
+        let components = collect_payloads(registry, id, aim_pitch);
         let network_id = allocator.stamp(id).0;
         // Movement-authority metadata (M15 Phase 3): a pawn owned by a client carries
         // its owner id + resolved command cursor. Unowned entities (the Transform-only
         // fixtures, the demo mover) carry neither — produced as an `unowned` snapshot.
-        let owner_client_id = owners.owner_of(id);
         let last_processed_client_tick =
             owner_client_id.and_then(|cid| command_queues.resolved_cursor(cid));
         // Descriptor class the entity was materialized from (M15 Phase 3 Task 7 / E10
@@ -127,12 +161,15 @@ pub(crate) fn produce_owned_snapshots(
         // `"player"`); a networked AI enemy stamps its descriptor class on any record
         // carrying finite `Transform` data. A non-descriptor entity stays `None`.
         let entity_class = descriptor_entity_class(registry, id, &components);
+        let active_weapon_archetype =
+            active_weapon_archetype(registry, id, &components, weapon_owners);
         snapshots.push(EntitySnapshot {
             network_id,
             components,
             owner_client_id,
             last_processed_client_tick,
             entity_class,
+            active_weapon_archetype,
         });
     }
     snapshots
@@ -142,7 +179,11 @@ pub(crate) fn produce_owned_snapshots(
 /// `Transform` first, then `PlayerMovementState` and mesh animation state if
 /// present. Descriptor-owned presentation data is never collected; the mesh
 /// payload carries only the current authoritative animation state.
-fn collect_payloads(registry: &EntityRegistry, id: EntityId) -> Vec<ComponentPayload> {
+fn collect_payloads(
+    registry: &EntityRegistry,
+    id: EntityId,
+    aim_pitch: f32,
+) -> Vec<ComponentPayload> {
     let mut payloads = Vec::new();
     if let Ok(transform) = registry.get_component::<Transform>(id) {
         // Pull only the wire-bound authoritative state: transform, optional
@@ -163,7 +204,8 @@ fn collect_payloads(registry: &EntityRegistry, id: EntityId) -> Vec<ComponentPay
     // still emit Transform alone. `movement_state_to_wire` extracts only the mutable
     // tick subset; descriptor tuning stays local on both peers.
     if let Ok(movement) = registry.get_component::<PlayerMovementComponent>(id) {
-        let payload = ComponentPayload::PlayerMovementState(movement_state_to_wire(movement));
+        let payload =
+            ComponentPayload::PlayerMovementState(movement_state_to_wire(movement, aim_pitch));
         debug_assert_eq!(
             component_kind_discriminant(ComponentKind::PlayerMovement),
             payload.kind(),
@@ -194,6 +236,31 @@ fn collect_payloads(registry: &EntityRegistry, id: EntityId) -> Vec<ComponentPay
         }
     }
     payloads
+}
+
+/// Shared-visible active-weapon identity for a replicated movement pawn. The
+/// host-only `WeaponOwners` map provides the pawn-to-weapon relationship; the
+/// weapon's descriptor provenance provides the canonical archetype name clients use
+/// for presentation. A missing map entry, missing provenance, or empty name means no
+/// equipped weapon on the wire.
+fn active_weapon_archetype(
+    registry: &EntityRegistry,
+    pawn: EntityId,
+    components: &[ComponentPayload],
+    weapon_owners: &WeaponOwners,
+) -> Option<String> {
+    let carries_movement = components
+        .iter()
+        .any(|component| matches!(component, ComponentPayload::PlayerMovementState(_)));
+    if !carries_movement {
+        return None;
+    }
+    let weapon = weapon_owners.weapon_of(pawn)?;
+    registry
+        .get_component::<DescriptorProvenance>(weapon)
+        .ok()
+        .map(|provenance| provenance.canonical_name.clone())
+        .filter(|archetype| !archetype.is_empty())
 }
 
 pub(crate) fn kinematic_mover_state_to_wire(

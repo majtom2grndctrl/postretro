@@ -101,6 +101,7 @@ fn enemy_mesh() -> MeshComponent {
         animation: Some(MeshAnimation::new(states, "idle".into())),
         origin_offset: Vec3::ZERO,
         shadow_bias_scale: 1.0,
+        shadow_only: false,
         attachments: Vec::new(),
         pose_inputs: None,
     }

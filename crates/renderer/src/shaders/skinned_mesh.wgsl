@@ -453,7 +453,11 @@ fn accumulate_dynamic_direct(
         var effective_color = light.color_and_falloff_model.xyz;
         var effective_aim = light.direction_and_range.xyz;
         if scripted_desc.is_active != 0u {
-            let cycle_t = fract(mesh_light_params.time / max(scripted_desc.period, 0.0001) + scripted_desc.phase);
+            let cycle_t = animation_curve_t(
+                scripted_desc.period,
+                scripted_desc.phase,
+                mesh_light_params.time,
+            );
             // Catmull-Rom overshoot can dip below zero; clamp so an animated
             // light never emits negative, sign-flipped light.
             if scripted_desc.color_count > 0u {

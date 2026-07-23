@@ -222,6 +222,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
         // group, net endpoint) is built post-first-pixel by
         // `PendingSessionInit::install`; `None` through the boot phase.
         session: None,
+        remote_player_presentation: crate::netcode::ClientPresentationInputs::default(),
         crouch_toggle_active: false,
         ai_warned: std::collections::HashSet::new(),
         cursor_pos: None,

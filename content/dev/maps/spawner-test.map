@@ -199,13 +199,16 @@
 }
 // entity 7
 {
-"classname" "light_dynamic_spot"
+"classname" "light_spot"
 "origin" "24 -216 104"
 "angles" "-30 50 0"
+"_cone" "50"
+"_cone2" "65"
 "_falloff_range" "400"
 "light" "350"
 "style" ""
 "_tags" "alarm_light"
+"_shadow_type" "static_light_map"
 }
 // entity 8
 {
@@ -214,4 +217,23 @@
 "light" "50"
 "_falloff_range" "50"
 "angles" "0 0 0"
+}
+// entity 9
+// Both receiver fixtures stay in the main room, away from the closet doorway
+// and the spawner's local +X fan-out, but inside alarm_light's cone.
+{
+"classname" "prop_mesh"
+"origin" "104 -112 0"
+"angles" "0 45 0"
+"model" "models/decraniated_low_poly_retro_pixel/scene.gltf"
+}
+// entity 10
+{
+"classname" "billboard_emitter"
+"origin" "112 -72 32"
+"sprite" "smoke_puff"
+"rate" "2.0"
+"lifetime" "2.0"
+"spread" "0.2"
+"buoyancy" "0.0"
 }

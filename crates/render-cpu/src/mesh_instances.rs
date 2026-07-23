@@ -53,7 +53,9 @@ pub enum MeshPaletteCacheKey {
 }
 
 impl MeshPaletteCacheKey {
-    /// Stable holder group used for atomic frame-budget admission.
+    /// Stable raw holder group used for atomic frame-budget admission. Plan
+    /// membership completes the group identity because a connected client's
+    /// body and viewmodel may deliberately share this id.
     fn holder_group(self) -> u32 {
         match self {
             Self::Entity(entity) => entity,
@@ -101,10 +103,20 @@ pub struct MeshInstanceInput {
     /// upgrades a miss to a resample regardless of this flag). A `Copy` bool —
     /// no per-instance heap.
     pub resample: bool,
-    /// In the camera's portal-visible cell set. Selected static-light shadow
-    /// casters may be retained with this `false`; the forward draw filters them
-    /// out while shadow depth passes may still consume them.
+    /// Eligible for the forward color pass after combining portal visibility
+    /// with descriptor shadow-only policy. Shadow casters may be retained with
+    /// this `false`; the forward draw filters them out.
     pub forward_visible: bool,
+    /// Eligible for dynamic shadow depth: either portal-visible or explicitly
+    /// descriptor-authored as shadow-only. This stays separate from
+    /// [`forward_visible`](Self::forward_visible) because promoted-static
+    /// relevance may retain additional off-PVS meshes that dynamic slots must
+    /// not admit.
+    pub dynamic_shadow_visible: bool,
+    /// First-person weapon presentation. Viewmodels are planned separately from
+    /// world instances so they use the shared palette/instance buffers without
+    /// ever entering world shadow-depth passes.
+    pub is_viewmodel: bool,
 }
 
 /// One instance's resolved placement in the frame plan: its world transform, the
@@ -144,9 +156,13 @@ pub struct PlannedInstance {
     /// bool — no per-instance heap.
     pub resample: bool,
     /// Carried verbatim from [`MeshInstanceInput::forward_visible`]. `record_draws`
-    /// filters this flag so selected static-light shadow casters outside the
-    /// forward-visible set do not draw in the color pass.
+    /// filters this flag so shadow-only and retained off-PVS casters do not draw
+    /// in the color pass.
     pub forward_visible: bool,
+    /// Carried verbatim from [`MeshInstanceInput::dynamic_shadow_visible`].
+    /// Dynamic shadow passes filter on this while promoted-static passes may use
+    /// every retained planned instance.
+    pub dynamic_shadow_visible: bool,
 }
 
 /// All instances of one model, batched for a single instanced `draw_indexed` per
@@ -179,6 +195,18 @@ pub struct MeshFramePlan {
     pub dropped: u32,
 }
 
+/// The two control-flow plans sharing this frame's palette and instance SSBOs.
+///
+/// Budget admission is global across both plans: all forward-visible groups are
+/// considered before dynamic-shadow-only and promoted-static-only groups. Dense
+/// instance offsets still place the viewmodel after the world plan; neither plan
+/// owns a separate GPU buffer.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MeshFramePlans {
+    pub world: MeshFramePlan,
+    pub viewmodel: MeshFramePlan,
+}
+
 /// Per-model lookups the GPU-free frame planner needs from the renderer's model
 /// cache: the skeleton's joint count (the palette-run length) and the model's
 /// local-space bound (stamped onto each `PlannedInstance` for the caster cull).
@@ -203,8 +231,9 @@ pub trait JointCounts {
 /// across all instances of all groups. A holder and its contiguous attachment
 /// inputs are reserved atomically. Their palette-cache identities carry one
 /// shared holder id, so the planner rejects the whole group before assigning
-/// any run. A rejected group's members are all counted in `dropped` when EITHER
-/// budget would overflow:
+/// any run. World and viewmodel membership is also part of atomic identity, so
+/// the same raw holder id cannot merge both plans. A rejected group's members
+/// are all counted in `dropped` when EITHER budget would overflow:
 /// - its palette run would push the cursor past [`MAX_PALETTE_ENTRIES`] (a
 ///   partial run would corrupt skinning), or
 /// - the running instance count would reach [`MAX_INSTANCES`] (the per-frame
@@ -217,10 +246,10 @@ pub trait JointCounts {
 /// silently omitted and are not counted as budget drops; a missing holder still
 /// suppresses its holder group.
 ///
-/// The mesh collector may emit mixed forward/non-forward instances when a
-/// non-forward mesh is relevant to a selected static-light shadow. The
-/// forward-visible set is budgeted first so shadow-only instances cannot evict
-/// drawable meshes.
+/// The mesh collector may emit forward-visible, dynamic-shadow-only, and
+/// promoted-static-only instances. They are budgeted in that order so broader
+/// static relevance cannot evict an explicitly opted dynamic caster, and
+/// neither shadow class can evict drawable meshes.
 ///
 /// The returned plan's groups carry dense instance offsets so the GPU layer can
 /// write one flat instance SSBO and issue one instanced draw per group.
@@ -228,87 +257,181 @@ pub fn plan_mesh_frame(
     instances: &[MeshInstanceInput],
     joints: &impl JointCounts,
 ) -> MeshFramePlan {
-    plan_grouped_mesh_frame(instances, joints, false)
+    let mut palette_cursor = 0;
+    let mut instance_cursor = 0;
+    let mut plan = MeshFramePlan::default();
+    for visibility_priority in 0..3 {
+        plan_mesh_priority(
+            instances,
+            joints,
+            &|_| true,
+            visibility_priority,
+            &mut palette_cursor,
+            &mut instance_cursor,
+            &mut plan,
+        );
+    }
+    let mut offset_cursor = 0;
+    assign_dense_instance_offsets(&mut plan, &mut offset_cursor);
+    plan
 }
 
-/// Plan only forward-visible instances, using the same cache/budget behavior as
-/// [`plan_mesh_frame`]. Used when shadow-only retained instances cannot be
-/// consumed by any promoted static slot this frame; dynamic-light shadow passes
-/// and the forward mesh pass then keep the pre-promotion cost profile.
-pub fn plan_forward_visible_mesh_frame(
+/// Partition world and first-person viewmodel instances into plans that share
+/// one dense palette/instance allocation. The structural split means callers
+/// pass only [`MeshFramePlans::world`] into shadow-depth recording; no depth
+/// filter has to recognize a viewmodel group.
+pub fn plan_mesh_frame_plans(
     instances: &[MeshInstanceInput],
     joints: &impl JointCounts,
-) -> MeshFramePlan {
-    plan_grouped_mesh_frame(instances, joints, true)
-}
+) -> MeshFramePlans {
+    let mut palette_cursor = 0;
+    let mut instance_cursor = 0;
+    let mut world = MeshFramePlan::default();
+    let mut viewmodel = MeshFramePlan::default();
 
-fn plan_grouped_mesh_frame(
-    instances: &[MeshInstanceInput],
-    joints: &impl JointCounts,
-    forward_only: bool,
-) -> MeshFramePlan {
-    let mut groups: Vec<ModelDrawGroup> = Vec::new();
-    let mut palette_cursor: usize = 0;
-    let mut instance_count: usize = 0;
-    let mut dropped: u32 = 0;
-
-    // Budget forward-visible groups first so shadow-only inputs never evict a
-    // forward group. Collector output keeps each holder immediately followed by
-    // its attachments, so two scans preserve group order without an allocation.
-    for group_is_forward in [true, false] {
-        if forward_only && !group_is_forward {
-            break;
+    // The collector appends its small viewmodel set after world instances. Find
+    // that boundary once so each priority scan visits only its own plan. Keep a
+    // filtered fallback because this public CPU contract still accepts mixed
+    // input order.
+    let first_viewmodel = instances.iter().position(|instance| instance.is_viewmodel);
+    let viewmodels_are_a_suffix = first_viewmodel.is_none_or(|start| {
+        instances[start..]
+            .iter()
+            .all(|instance| instance.is_viewmodel)
+    });
+    if viewmodels_are_a_suffix {
+        let split = first_viewmodel.unwrap_or(instances.len());
+        let (world_instances, viewmodel_instances) = instances.split_at(split);
+        for visibility_priority in 0..3 {
+            plan_mesh_priority(
+                world_instances,
+                joints,
+                &|_| true,
+                visibility_priority,
+                &mut palette_cursor,
+                &mut instance_cursor,
+                &mut world,
+            );
+            plan_mesh_priority(
+                viewmodel_instances,
+                joints,
+                &|_| true,
+                visibility_priority,
+                &mut palette_cursor,
+                &mut instance_cursor,
+                &mut viewmodel,
+            );
         }
-
-        let mut group_start = 0;
-        while group_start < instances.len() {
-            let holder_group = instances[group_start].palette_cache_key.holder_group();
-            let mut group_end = group_start + 1;
-            while group_end < instances.len()
-                && instances[group_end].palette_cache_key.holder_group() == holder_group
-            {
-                group_end += 1;
-            }
-            let input_group = &instances[group_start..group_end];
-            let forward_visible = input_group.iter().any(|instance| instance.forward_visible);
-            if forward_visible == group_is_forward {
-                plan_instance_group(
-                    input_group,
-                    forward_visible,
-                    joints,
-                    &mut groups,
-                    &mut palette_cursor,
-                    &mut instance_count,
-                    &mut dropped,
-                );
-            }
-            group_start = group_end;
+    } else {
+        for visibility_priority in 0..3 {
+            plan_mesh_priority(
+                instances,
+                joints,
+                &|instance| !instance.is_viewmodel,
+                visibility_priority,
+                &mut palette_cursor,
+                &mut instance_cursor,
+                &mut world,
+            );
+            plan_mesh_priority(
+                instances,
+                joints,
+                &|instance| instance.is_viewmodel,
+                visibility_priority,
+                &mut palette_cursor,
+                &mut instance_cursor,
+                &mut viewmodel,
+            );
         }
     }
 
+    let mut offset_cursor = 0;
+    assign_dense_instance_offsets(&mut world, &mut offset_cursor);
+    assign_dense_instance_offsets(&mut viewmodel, &mut offset_cursor);
+    MeshFramePlans { world, viewmodel }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn plan_mesh_priority(
+    instances: &[MeshInstanceInput],
+    joints: &impl JointCounts,
+    include: &impl Fn(&MeshInstanceInput) -> bool,
+    visibility_priority: u8,
+    palette_cursor: &mut usize,
+    instance_cursor: &mut usize,
+    plan: &mut MeshFramePlan,
+) {
+    // Budget forward-visible groups first, then dynamic-shadow casters, then the
+    // broader promoted-static-only relevance set. Collector output keeps each
+    // holder immediately followed by its attachments, so three scans preserve
+    // group order without an allocation.
+    let mut group_start = 0;
+    while group_start < instances.len() {
+        let holder_group = instances[group_start].palette_cache_key.holder_group();
+        let is_viewmodel = instances[group_start].is_viewmodel;
+        let mut group_end = group_start + 1;
+        while group_end < instances.len()
+            && instances[group_end].palette_cache_key.holder_group() == holder_group
+            && instances[group_end].is_viewmodel == is_viewmodel
+        {
+            group_end += 1;
+        }
+        let input_group = &instances[group_start..group_end];
+        if !include(&input_group[0]) {
+            group_start = group_end;
+            continue;
+        }
+        debug_assert!(
+            input_group.iter().all(include),
+            "a holder and its attachments must share the world/viewmodel plan"
+        );
+        let forward_visible = input_group.iter().any(|instance| instance.forward_visible);
+        let dynamic_shadow_visible = input_group
+            .iter()
+            .any(|instance| instance.dynamic_shadow_visible);
+        let priority = if forward_visible {
+            0
+        } else if dynamic_shadow_visible {
+            1
+        } else {
+            2
+        };
+        if priority == visibility_priority {
+            plan_instance_group(
+                input_group,
+                forward_visible,
+                dynamic_shadow_visible,
+                joints,
+                &mut plan.groups,
+                palette_cursor,
+                instance_cursor,
+                &mut plan.dropped,
+            );
+        }
+        group_start = group_end;
+    }
+}
+
+fn assign_dense_instance_offsets(plan: &mut MeshFramePlan, instance_cursor: &mut u32) {
+    let plan_instance_start = *instance_cursor;
     // Assign dense instance offsets in group order so the flat SSBO is filled
     // group-by-group; each group draws `instance_offset..+len`.
-    let mut instance_offset: u32 = 0;
-    for group in &mut groups {
-        group.instance_offset = instance_offset;
-        instance_offset += group.instances.len() as u32;
+    for group in &mut plan.groups {
+        group.instance_offset = *instance_cursor;
+        *instance_cursor += group.instances.len() as u32;
     }
-
-    MeshFramePlan {
-        groups,
-        instance_count: instance_offset,
-        dropped,
-    }
+    plan.instance_count = *instance_cursor - plan_instance_start;
 }
 
 #[allow(clippy::too_many_arguments)]
 fn plan_instance_group(
     input_group: &[MeshInstanceInput],
     forward_visible: bool,
+    dynamic_shadow_visible: bool,
     joints: &impl JointCounts,
     groups: &mut Vec<ModelDrawGroup>,
     palette_cursor: &mut usize,
-    instance_count: &mut usize,
+    planned_instance_count: &mut usize,
     dropped: &mut u32,
 ) {
     let Some(holder_joints) = input_group
@@ -335,7 +458,7 @@ fn plan_instance_group(
         available_instances += 1;
     }
 
-    let instance_budget_overflows = available_instances > MAX_INSTANCES - *instance_count;
+    let instance_budget_overflows = available_instances > MAX_INSTANCES - *planned_instance_count;
     let palette_budget_overflows = palette_entries > MAX_PALETTE_ENTRIES - *palette_cursor;
     if instance_budget_overflows || palette_budget_overflows {
         *dropped = (*dropped).saturating_add(available_instances as u32);
@@ -352,7 +475,7 @@ fn plan_instance_group(
         };
         let palette_base = *palette_cursor as u32;
         *palette_cursor += run;
-        *instance_count += 1;
+        *planned_instance_count += 1;
 
         let planned = PlannedInstance {
             transform: instance.transform,
@@ -368,6 +491,7 @@ fn plan_instance_group(
             // Holder visibility is a group contract. Normalize every member so
             // forward and shadow draws cannot split malformed mixed inputs.
             forward_visible,
+            dynamic_shadow_visible,
         };
 
         if let Some(group) = groups
@@ -446,6 +570,8 @@ mod tests {
             capture: None,
             resample: true,
             forward_visible: true,
+            dynamic_shadow_visible: true,
+            is_viewmodel: false,
         }
     }
 
@@ -479,7 +605,7 @@ mod tests {
     }
 
     #[test]
-    fn planners_carry_pose_inputs_verbatim() {
+    fn planner_carries_pose_inputs_verbatim() {
         let joints = joints(&[("grunt", 10)]);
         let expected = PoseInputs {
             aim_pitch: 0.25,
@@ -492,9 +618,6 @@ mod tests {
 
         let full = plan_mesh_frame(std::slice::from_ref(&input), &joints);
         assert_eq!(full.groups[0].instances[0].pose_inputs, Some(expected));
-
-        let forward = plan_forward_visible_mesh_frame(&[input], &joints);
-        assert_eq!(forward.groups[0].instances[0].pose_inputs, Some(expected));
     }
 
     #[test]
@@ -682,6 +805,13 @@ mod tests {
     fn non_forward_instance(model: &str, x: f32, seed: u32) -> MeshInstanceInput {
         let mut i = instance(model, x, seed);
         i.forward_visible = false;
+        i.dynamic_shadow_visible = false;
+        i
+    }
+
+    fn dynamic_shadow_instance(model: &str, x: f32, seed: u32) -> MeshInstanceInput {
+        let mut i = non_forward_instance(model, x, seed);
+        i.dynamic_shadow_visible = true;
         i
     }
 
@@ -723,30 +853,32 @@ mod tests {
     }
 
     #[test]
-    fn forward_visible_plan_excludes_shadow_only_instances_before_upload() {
-        let joints = joints(&[("grunt", 10)]);
+    fn plan_budgets_explicit_dynamic_caster_before_static_relevance() {
+        // Regression: a broad promoted-static retention set could consume the
+        // palette before an off-PVS descriptor shadow-only body reached dynamic
+        // per-light cone culling.
+        let per = (MAX_PALETTE_ENTRIES / 2) as u32;
+        let joints = joints(&[("grunt", per)]);
         let instances = [
-            instance("grunt", 1.0, 0),
-            non_forward_instance("grunt", 2.0, 1),
-            instance("grunt", 3.0, 2),
+            non_forward_instance("grunt", 99.0, 2),
+            dynamic_shadow_instance("grunt", 1.0, 0),
+            dynamic_shadow_instance("grunt", 2.0, 1),
         ];
-        let plan = plan_forward_visible_mesh_frame(&instances, &joints);
 
-        let seeds: Vec<u32> = plan
+        let plan = plan_mesh_frame(&instances, &joints);
+        let survivors: Vec<_> = plan
             .groups
             .iter()
-            .flat_map(|g| g.instances.iter().map(|i| i.phase_seed))
+            .flat_map(|group| &group.instances)
             .collect();
-        assert_eq!(seeds, vec![0, 2]);
-        assert_eq!(plan.instance_count, 2);
-        assert_eq!(plan.dropped, 0);
+
+        assert_eq!(survivors.len(), 2);
         assert!(
-            plan.groups
+            survivors
                 .iter()
-                .flat_map(|g| &g.instances)
-                .all(|i| i.forward_visible),
-            "forward-only upload plan must not contain shadow-only instances",
+                .all(|instance| instance.dynamic_shadow_visible)
         );
+        assert!(survivors.iter().all(|instance| !instance.forward_visible));
     }
 
     #[test]
@@ -760,6 +892,154 @@ mod tests {
         assert_eq!(plan.dropped, 0, "an uncached model is not a budget drop");
         assert_eq!(plan.groups.len(), 1);
         assert_eq!(plan.groups[0].model.as_str(), "grunt");
+    }
+
+    #[test]
+    fn plans_partition_world_and_viewmodel_with_shared_buffer_offsets() {
+        let joints = joints(&[("world", 3), ("viewmodel", 4)]);
+        let mut viewmodel = instance("viewmodel", 0.0, 2);
+        viewmodel.is_viewmodel = true;
+        let instances = [
+            instance("world", 1.0, 0),
+            instance("world", 2.0, 1),
+            viewmodel,
+        ];
+
+        let plans = plan_mesh_frame_plans(&instances, &joints);
+
+        assert_eq!(plans.world.instance_count, 2);
+        assert_eq!(plans.viewmodel.instance_count, 1);
+        assert_eq!(plans.world.groups[0].model.as_str(), "world");
+        assert_eq!(plans.viewmodel.groups[0].model.as_str(), "viewmodel");
+
+        let world_group = &plans.world.groups[0];
+        let viewmodel_group = &plans.viewmodel.groups[0];
+        assert_eq!(world_group.instance_offset, 0);
+        assert_eq!(viewmodel_group.instance_offset, 2);
+        assert_eq!(world_group.instances[0].palette_base, 0);
+        assert_eq!(world_group.instances[1].palette_base, 3);
+        assert_eq!(viewmodel_group.instances[0].palette_base, 6);
+    }
+
+    // Regression: planning every world priority before the viewmodel let a
+    // shadow-only world group evict the forward-visible first-person weapon.
+    #[test]
+    fn plans_apply_visibility_priority_globally_across_world_and_viewmodel() {
+        let per = (MAX_PALETTE_ENTRIES / 3) as u32;
+        let joints = joints(&[
+            ("static-only", per),
+            ("dynamic", per),
+            ("world-forward", per),
+            ("viewmodel", per),
+        ]);
+        let mut viewmodel = instance("viewmodel", 4.0, 4);
+        viewmodel.is_viewmodel = true;
+        viewmodel.dynamic_shadow_visible = false;
+        let inputs = [
+            non_forward_instance("static-only", 1.0, 1),
+            dynamic_shadow_instance("dynamic", 2.0, 2),
+            instance("world-forward", 3.0, 3),
+            viewmodel,
+        ];
+
+        let plans = plan_mesh_frame_plans(&inputs, &joints);
+        let world_models: Vec<_> = plans
+            .world
+            .groups
+            .iter()
+            .map(|group| group.model.as_str())
+            .collect();
+
+        assert_eq!(world_models, ["world-forward", "dynamic"]);
+        assert_eq!(plans.world.instance_count, 2);
+        assert_eq!(plans.world.dropped, 1, "promoted-static-only drops last");
+        assert_eq!(plans.viewmodel.instance_count, 1);
+        assert_eq!(plans.viewmodel.dropped, 0, "forward viewmodel survives");
+        assert_eq!(plans.world.groups[0].instances[0].palette_base, 0);
+        assert_eq!(plans.viewmodel.groups[0].instances[0].palette_base, per);
+        assert_eq!(plans.world.groups[1].instances[0].palette_base, per * 2);
+        assert_eq!(plans.world.groups[0].instance_offset, 0);
+        assert_eq!(plans.world.groups[1].instance_offset, 1);
+        assert_eq!(plans.viewmodel.groups[0].instance_offset, 2);
+    }
+
+    #[test]
+    fn plans_separate_adjacent_same_holder_world_and_viewmodel_inputs() {
+        // Regression: connected clients can seed the local body and viewmodel
+        // with the same raw id. Holder-only grouping merged their adjacent
+        // inputs, tripping the plan-consistency assertion in debug builds and
+        // routing both through one plan in release builds.
+        let holder = 42;
+        let joints = joints(&[
+            ("world-body", 3),
+            ("viewmodel-weapon", 1),
+            ("world-other", 2),
+        ]);
+        let world = instance("world-body", 1.0, holder);
+        let mut viewmodel = attachment_instance("viewmodel-weapon", 2.0, holder, usize::MAX);
+        viewmodel.is_viewmodel = true;
+        viewmodel.dynamic_shadow_visible = false;
+        // Force the mixed-order fallback so this test exercises plan-aware
+        // atomic grouping rather than only the collector's suffix fast path.
+        let world_other = instance("world-other", 3.0, 77);
+
+        let plans = plan_mesh_frame_plans(&[world, viewmodel, world_other], &joints);
+
+        assert_eq!(plans.world.instance_count, 2);
+        assert_eq!(plans.viewmodel.instance_count, 1);
+        assert_eq!(plans.world.groups[0].model.as_str(), "world-body");
+        assert_eq!(plans.viewmodel.groups[0].model.as_str(), "viewmodel-weapon");
+        assert!(plans.world.groups[0].instances[0].forward_visible);
+        assert!(plans.viewmodel.groups[0].instances[0].forward_visible);
+        assert_eq!(plans.world.groups[0].instance_offset, 0);
+        assert_eq!(plans.viewmodel.groups[0].instance_offset, 2);
+        assert_eq!(plans.world.groups[0].instances[0].palette_base, 0);
+        assert_eq!(plans.viewmodel.groups[0].instances[0].palette_base, 5);
+        assert!(
+            plans
+                .world
+                .groups
+                .iter()
+                .all(|group| group.model.as_str() != "viewmodel-weapon"),
+            "the world plan is the shadow-depth plan, so it must contain no viewmodel entry",
+        );
+    }
+
+    #[test]
+    fn plans_without_viewmodels_keep_world_priority_and_empty_viewmodel_plan() {
+        let joints = joints(&[("static-only", 1), ("dynamic", 1), ("forward", 1)]);
+        let inputs = [
+            non_forward_instance("static-only", 1.0, 1),
+            dynamic_shadow_instance("dynamic", 2.0, 2),
+            instance("forward", 3.0, 3),
+        ];
+
+        let plans = plan_mesh_frame_plans(&inputs, &joints);
+        let planned_models: Vec<_> = plans
+            .world
+            .groups
+            .iter()
+            .map(|group| group.model.as_str())
+            .collect();
+
+        assert_eq!(planned_models, ["forward", "dynamic", "static-only"]);
+        assert_eq!(plans.world.instance_count, 3);
+        assert!(plans.viewmodel.groups.is_empty());
+        assert_eq!(plans.viewmodel.instance_count, 0);
+        assert_eq!(plans.viewmodel.dropped, 0);
+    }
+
+    #[test]
+    fn missing_viewmodel_asset_leaves_no_viewmodel_plan_to_draw() {
+        let joints = joints(&[("world", 2)]);
+        let mut missing_viewmodel = instance("missing-viewmodel", 0.0, 2);
+        missing_viewmodel.is_viewmodel = true;
+
+        let plans = plan_mesh_frame_plans(&[instance("world", 1.0, 1), missing_viewmodel], &joints);
+
+        assert_eq!(plans.world.instance_count, 1);
+        assert!(plans.viewmodel.groups.is_empty());
+        assert_eq!(plans.viewmodel.dropped, 0);
     }
 
     #[test]
@@ -830,6 +1110,7 @@ mod tests {
             capture: None,
             resample: true,
             forward_visible: true,
+            dynamic_shadow_visible: true,
         };
         assert!(
             instance_casts_into_cone(&inside, &planes),
@@ -850,6 +1131,7 @@ mod tests {
             capture: None,
             resample: true,
             forward_visible: true,
+            dynamic_shadow_visible: true,
         };
         assert!(
             !instance_casts_into_cone(&outside, &planes),
@@ -908,6 +1190,7 @@ mod tests {
             capture: None,
             resample: true,
             forward_visible: true,
+            dynamic_shadow_visible: true,
         };
         assert!(
             instance_casts_into_cone(&inst, &planes),

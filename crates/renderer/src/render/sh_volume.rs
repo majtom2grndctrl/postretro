@@ -1,6 +1,8 @@
 // SH irradiance volume GPU resources: octahedral atlas textures, grid-info uniform, bind group (group 3).
 // See: context/lib/rendering_pipeline.md §4, §8
 
+use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
+use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
 use postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H;
 use postretro_level_format::sh_volume::{
@@ -47,11 +49,11 @@ pub struct ShVolumeResources {
     /// Mesh-only dynamic-direct params uniform buffer. Written each frame by the
     /// renderer (`write_dynamic_direct_params`); referenced by `mesh_bind_group`.
     dynamic_direct_params_buffer: wgpu::Buffer,
-    /// Whether a usable baked DIRECT SH section is present this level. Drives the
-    /// `has_direct` flag the dynamic shaders use to gate the direct sample off
-    /// (direct = 0) when absent. Owned here; the renderer embeds it in the camera
-    /// `Uniforms` buffer (billboard reads it from group 0) and writes it into the
-    /// mesh `DynamicDirectParams` uniform each frame.
+    /// Whether a usable baked DIRECT SH section or animated-direct delta section
+    /// is present this level. Drives the `has_direct` flag the dynamic shaders use
+    /// to gate the direct sample off (direct = 0) when absent. Owned here; the
+    /// renderer embeds it in the camera `Uniforms` buffer (billboard reads it from
+    /// group 0) and writes it into the mesh `DynamicDirectParams` uniform each frame.
     pub has_direct: bool,
     #[allow(dead_code)]
     pub present: bool,
@@ -93,13 +95,21 @@ pub struct ShVolumeResources {
     /// the composed `Rgba16Float` atlas.
     pub direct_base_atlas_view: wgpu::TextureView,
     /// Storage-write view over the optional composed direct atlas. `None` when
-    /// no selected static-light direct deltas are present, so maps without
-    /// direct deltas allocate no composed direct-atlas VRAM and keep sampling
-    /// the base atlas.
+    /// neither selected static-light direct deltas nor animated-direct deltas
+    /// are present, so maps without compose inputs keep sampling the base atlas.
     pub direct_composed_storage_view: Option<wgpu::TextureView>,
+    /// Pass-A storage target for section-45 maps. This exists only in Case 2;
+    /// Case 1 continues writing the final sampled direct atlas directly.
+    pub direct_intermediate_storage_view: Option<wgpu::TextureView>,
+    /// Pass-B sampled input for the Case-2 intermediate direct atlas.
+    pub direct_intermediate_sampled_view: Option<wgpu::TextureView>,
     /// Owned here but shared with the compose pass — one upload, two bind groups.
     /// CPU mirror kept alongside so per-frame `active` edits patch bytes and flush in one `write_buffer`.
     pub animation: AnimatedLightBuffers,
+    /// Section-45's independent AnimatedBakedLights → descriptor mapping.
+    /// Retained on CPU so the frame dispatcher can see whether Pass B has an
+    /// active contribution without aliasing the section-27 mapping.
+    animated_direct_descriptor_indices: Vec<u32>,
     /// Fixed-capacity, zero-initialized forward descriptor buffer. Authored
     /// lights plus the runtime-spawn reserve fit without a GPU rebind. The
     /// dynamic-direct loop reads only its compact `light_count` prefix.
@@ -139,6 +149,13 @@ pub struct ShVolumeResources {
     pub total_atlas_texture: wgpu::Texture,
 }
 
+pub(super) struct ShVolumeSections<'a> {
+    pub sh: Option<&'a OctahedralShVolumeSection>,
+    pub direct: Option<&'a DirectShVolumeSection>,
+    pub direct_delta: Option<&'a DirectShDeltaVolumesSection>,
+    pub animated_direct_delta: Option<&'a AnimatedDirectShDeltaVolumesSection>,
+}
+
 /// Per-animated-light delta volume placement, mirrored on CPU for diagnostics.
 /// Sourced from the same `DeltaShVolumesSection` `sh_compose` consumes.
 #[cfg(feature = "dev-tools")]
@@ -175,6 +192,16 @@ impl AnimatedLightBuffers {
     #[allow(dead_code)]
     pub fn animated_light_count(&self) -> u32 {
         self.animated_light_count
+    }
+
+    /// True when any valid descriptor referenced by this section's independent
+    /// index map is active in the same CPU mirror uploaded to the GPU.
+    pub fn any_active_for_descriptor_indices(&self, descriptor_indices: &[u32]) -> bool {
+        descriptor_indices_have_active(
+            &self.descriptor_mirror,
+            self.animated_light_count,
+            descriptor_indices,
+        )
     }
 
     /// Overwrite the entire 48-byte `ANIMATION_DESCRIPTOR` for an animated
@@ -247,6 +274,23 @@ impl AnimatedLightBuffers {
     }
 }
 
+fn descriptor_indices_have_active(
+    descriptor_mirror: &[u8],
+    descriptor_count: u32,
+    descriptor_indices: &[u32],
+) -> bool {
+    descriptor_indices.iter().copied().any(|descriptor_index| {
+        if descriptor_index == u32::MAX || descriptor_index >= descriptor_count {
+            return false;
+        }
+        let offset = descriptor_index as usize * ANIMATION_DESCRIPTOR_SIZE
+            + ANIMATION_DESCRIPTOR_ACTIVE_OFFSET;
+        descriptor_mirror
+            .get(offset..offset + 4)
+            .is_some_and(|bytes| u32::from_ne_bytes(bytes.try_into().unwrap()) != 0)
+    })
+}
+
 impl ShVolumeResources {
     /// Build group 3 (SH volume) resources. `section` is `None` when the PRL
     /// file had no `OctahedralShVolume` section — in that case dummy 1×1
@@ -256,14 +300,16 @@ impl ShVolumeResources {
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        section: Option<&OctahedralShVolumeSection>,
-        direct_section: Option<&DirectShVolumeSection>,
-        direct_delta_section: Option<
-            &postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection,
-        >,
+        sections: ShVolumeSections<'_>,
         scripted_light_capacity: usize,
         probe_occlusion_enabled: bool,
     ) -> Self {
+        let ShVolumeSections {
+            sh: section,
+            direct: direct_section,
+            direct_delta: direct_delta_section,
+            animated_direct_delta: animated_direct_delta_section,
+        } = sections;
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("SH Volume Bind Group Layout"),
             entries: &sh_bind_group_layout_entries(),
@@ -478,37 +524,73 @@ impl ShVolumeResources {
         // Absent/disabled section → a 4×4 BC6H zero-block dummy (valid for
         // `Bc6hRgbUfloat`, never sampled because `has_direct` gates the sample off).
         let direct_section = direct_section_when_base_present(present, direct_section);
-        let direct_usage = resolve_direct_atlas_usage(direct_section, direct_delta_section);
-        let (direct_atlas_texture, has_direct) =
+        let direct_usage = resolve_direct_atlas_usage(
+            direct_section,
+            direct_delta_section,
+            animated_direct_delta_section,
+            usable,
+        );
+        let (direct_atlas_texture, has_direct_base) =
             upload_direct_atlas_texture(device, queue, direct_section);
+        let has_animated_direct = animated_direct_delta_section.is_some() && usable.is_some();
+        let has_direct = direct_atlas_present(has_direct_base, has_animated_direct);
         let direct_base_atlas_view =
             direct_atlas_texture.create_view(&wgpu::TextureViewDescriptor {
                 label: Some("SH Direct Octahedral Base Atlas View"),
                 dimension: Some(wgpu::TextureViewDimension::D2Array),
                 ..Default::default()
             });
-        let (direct_atlas_view, direct_composed_storage_view) =
-            if has_direct && direct_usage.needs_composed_atlas {
-                let texture = create_direct_composed_atlas_texture(
+        let (
+            direct_atlas_view,
+            direct_composed_storage_view,
+            direct_intermediate_storage_view,
+            direct_intermediate_sampled_view,
+        ) = if has_direct && direct_usage.needs_composed_atlas {
+            let texture = create_direct_composed_atlas_texture(
+                device,
+                direct_usage.atlas_dimensions,
+                direct_usage.layer_count,
+                "SH Direct Composed Octahedral Atlas",
+            );
+            let sampled = texture.create_view(&wgpu::TextureViewDescriptor {
+                label: Some("SH Direct Composed Octahedral Atlas Sampled View"),
+                dimension: Some(wgpu::TextureViewDimension::D2Array),
+                ..Default::default()
+            });
+            let storage = texture.create_view(&wgpu::TextureViewDescriptor {
+                label: Some("SH Direct Composed Octahedral Atlas Storage View"),
+                dimension: Some(wgpu::TextureViewDimension::D2Array),
+                ..Default::default()
+            });
+            if direct_usage.needs_intermediate_atlas {
+                let intermediate = create_direct_composed_atlas_texture(
                     device,
                     direct_usage.atlas_dimensions,
                     direct_usage.layer_count,
-                    "SH Direct Composed Octahedral Atlas",
+                    "SH Direct Compose Intermediate Atlas",
                 );
-                let sampled = texture.create_view(&wgpu::TextureViewDescriptor {
-                    label: Some("SH Direct Composed Octahedral Atlas Sampled View"),
+                let intermediate_storage = intermediate.create_view(&wgpu::TextureViewDescriptor {
+                    label: Some("SH Direct Compose Intermediate Atlas Storage View"),
                     dimension: Some(wgpu::TextureViewDimension::D2Array),
                     ..Default::default()
                 });
-                let storage = texture.create_view(&wgpu::TextureViewDescriptor {
-                    label: Some("SH Direct Composed Octahedral Atlas Storage View"),
+                let intermediate_sampled = intermediate.create_view(&wgpu::TextureViewDescriptor {
+                    label: Some("SH Direct Compose Intermediate Atlas Sampled View"),
                     dimension: Some(wgpu::TextureViewDimension::D2Array),
                     ..Default::default()
                 });
-                (sampled, Some(storage))
+                (
+                    sampled,
+                    Some(storage),
+                    Some(intermediate_storage),
+                    Some(intermediate_sampled),
+                )
             } else {
-                (direct_base_atlas_view.clone(), None)
-            };
+                (sampled, Some(storage), None, None)
+            }
+        } else {
+            (direct_base_atlas_view.clone(), None, None, None)
+        };
 
         // Mesh-only dynamic-direct params uniform (binding 16). Seeded to the
         // production default (full scale, Combined, has_direct from the section);
@@ -627,7 +709,12 @@ impl ShVolumeResources {
             direct_atlas_view,
             direct_base_atlas_view,
             direct_composed_storage_view,
+            direct_intermediate_storage_view,
+            direct_intermediate_sampled_view,
             animation,
+            animated_direct_descriptor_indices: animated_direct_delta_section
+                .map(|section| section.animation_descriptor_indices.clone())
+                .unwrap_or_default(),
             scripted_light_descriptors: scripted_light_descriptors_buffer,
             scripted_light_count: scripted_light_capacity as u32,
             scripted_sample_byte_offset,
@@ -662,6 +749,14 @@ impl ShVolumeResources {
     pub fn write_dynamic_direct_params(&self, queue: &wgpu::Queue, scale: f32, isolation: u32) {
         let bytes = build_dynamic_direct_params_bytes(scale, isolation, self.has_direct);
         queue.write_buffer(&self.dynamic_direct_params_buffer, 0, &bytes);
+    }
+
+    /// The Case-2 dispatch gate: true only when section 45 names an active
+    /// shared animation descriptor. Its own descriptor index map is never
+    /// substituted with the indirect section-27 mapping.
+    pub fn animated_direct_has_active_descriptor(&self) -> bool {
+        self.animation
+            .any_active_for_descriptor_indices(&self.animated_direct_descriptor_indices)
     }
 
     pub fn set_probe_occlusion_enabled(&mut self, queue: &wgpu::Queue, enabled: bool) {
@@ -1021,9 +1116,14 @@ fn direct_section_when_base_present(
     direct_section.filter(|_| base_present)
 }
 
+fn direct_atlas_present(has_direct_base: bool, has_animated_direct: bool) -> bool {
+    has_direct_base || has_animated_direct
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct DirectAtlasUsage {
     needs_composed_atlas: bool,
+    needs_intermediate_atlas: bool,
     atlas_dimensions: [u32; 2],
     layer_count: u32,
 }
@@ -1033,17 +1133,27 @@ fn resolve_direct_atlas_usage(
     direct_delta_section: Option<
         &postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection,
     >,
+    animated_direct_delta_section: Option<&AnimatedDirectShDeltaVolumesSection>,
+    sh_section: Option<&OctahedralShVolumeSection>,
 ) -> DirectAtlasUsage {
     let has_deltas = direct_delta_section
         .map(|section| !section.affinity_lights.is_empty())
         .unwrap_or(false);
-    let Some(section) = direct_section.filter(|_| has_deltas) else {
+    let has_animated_direct = animated_direct_delta_section.is_some();
+    if !has_deltas && !has_animated_direct {
+        return DirectAtlasUsage::default();
+    }
+    let layout = direct_section
+        .map(|section| (section.atlas_dimensions, section.layer_count))
+        .or_else(|| sh_section.map(|section| (section.atlas_dimensions, section.layer_count)));
+    let Some((atlas_dimensions, layer_count)) = layout else {
         return DirectAtlasUsage::default();
     };
     DirectAtlasUsage {
         needs_composed_atlas: true,
-        atlas_dimensions: section.atlas_dimensions,
-        layer_count: section.layer_count,
+        needs_intermediate_atlas: has_animated_direct,
+        atlas_dimensions,
+        layer_count,
     }
 }
 
@@ -1475,14 +1585,67 @@ mod tests {
                 ..empty_delta.clone()
             };
 
-        assert!(!resolve_direct_atlas_usage(Some(&direct), None).needs_composed_atlas);
+        assert!(!resolve_direct_atlas_usage(Some(&direct), None, None, None).needs_composed_atlas);
         assert!(
-            !resolve_direct_atlas_usage(Some(&direct), Some(&empty_delta)).needs_composed_atlas
+            !resolve_direct_atlas_usage(Some(&direct), Some(&empty_delta), None, None)
+                .needs_composed_atlas
         );
-        let usage = resolve_direct_atlas_usage(Some(&direct), Some(&nonempty_delta));
+        let usage = resolve_direct_atlas_usage(Some(&direct), Some(&nonempty_delta), None, None);
         assert!(usage.needs_composed_atlas);
+        assert!(!usage.needs_intermediate_atlas);
         assert_eq!(usage.atlas_dimensions, [6, 6]);
         assert_eq!(usage.layer_count, 1);
+    }
+
+    #[test]
+    fn animated_direct_only_enables_direct_composed_and_intermediate_atlas() {
+        let mut sh = OctahedralShVolumeSection::placeholder();
+        sh.atlas_dimensions = [12, 6];
+        sh.layer_count = 2;
+        let animated = AnimatedDirectShDeltaVolumesSection {
+            affinity_factor: postretro_level_format::delta_sh_volumes::AFFINITY_FACTOR,
+            affinity_dims: [1, 1, 1],
+            tile_dimension: 6,
+            tile_border: 1,
+            animation_descriptor_indices: vec![0],
+            affinity_offsets: vec![0, 1],
+            affinity_lights: vec![0],
+            delta_subblocks: vec![
+                0;
+                postretro_level_format::delta_sh_volumes::PROBES_PER_CELL
+                    * postretro_level_format::delta_sh_volumes::DEFAULT_DELTA_PROBE_F16_STRIDE
+            ],
+        };
+
+        let usage = resolve_direct_atlas_usage(None, None, Some(&animated), Some(&sh));
+        assert!(direct_atlas_present(false, true));
+        assert!(usage.needs_composed_atlas);
+        assert!(usage.needs_intermediate_atlas);
+        assert_eq!(usage.atlas_dimensions, sh.atlas_dimensions);
+        assert_eq!(usage.layer_count, sh.layer_count);
+    }
+
+    #[test]
+    fn descriptor_activity_uses_only_valid_section45_descriptor_indices() {
+        let mut descriptors = vec![0u8; 2 * ANIMATION_DESCRIPTOR_SIZE];
+        let active_offset = ANIMATION_DESCRIPTOR_SIZE + ANIMATION_DESCRIPTOR_ACTIVE_OFFSET;
+        descriptors[active_offset..active_offset + 4].copy_from_slice(&1u32.to_ne_bytes());
+
+        assert!(descriptor_indices_have_active(
+            &descriptors,
+            2,
+            &[u32::MAX, 1]
+        ));
+        assert!(!descriptor_indices_have_active(
+            &descriptors,
+            1,
+            &[u32::MAX, 1]
+        ));
+        assert!(!descriptor_indices_have_active(
+            &descriptors,
+            2,
+            &[u32::MAX, 8]
+        ));
     }
 
     #[test]

@@ -175,6 +175,20 @@ fn count_split_shader_consumers_use_expected_loop_bounds() {
 }
 
 #[test]
+fn skinned_shader_projects_and_shades_the_same_world_position() {
+    // Regression: the viewmodel used to provide a camera-space model transform
+    // to this shared shader while binding projection-only at group 0. Clip
+    // placement looked correct, but SH, dynamic lights, and shadow receipt all
+    // consumed the camera-space value as `world_position`.
+    let mesh_src = include_str!("../../shaders/skinned_mesh.wgsl");
+    assert!(mesh_src.contains("let world_pos = instance.model * skinned_pos;"));
+    assert!(mesh_src.contains("out.clip_position = camera.view_proj * world_pos;"));
+    assert!(mesh_src.contains("out.world_position = world_pos.xyz;"));
+    assert!(mesh_src.contains("sample_sh_indirect(in.world_position"));
+    assert!(mesh_src.contains("accumulate_dynamic_direct(\n        in.world_position,"));
+}
+
+#[test]
 fn forward_shader_shadowmask_union_uses_promoted_count_and_safe_metadata_tail() {
     let src = include_str!("../../shaders/forward.wgsl");
     let start = src
@@ -369,6 +383,28 @@ fn direct_sh_compose_debug_override_isolates_single_selection() {
     assert!(
         debug_branch.contains("return 0.0;"),
         "debug override must suppress all other selected lights",
+    );
+}
+
+#[test]
+fn animated_direct_sh_compose_debug_override_isolates_one_animated_baked_light() {
+    let src = include_str!("../../shaders/animated_direct_sh_compose.wgsl");
+    let scale_start = src
+        .find("fn animated_light_scale(")
+        .expect("animated compose shader should declare animated_light_scale");
+    let scale = &src[scale_start..];
+
+    assert!(
+        src.contains("@group(1) @binding(26) var<uniform> debug_override: DebugOverride;"),
+        "Pass B must use its own uniform override binding",
+    );
+    assert!(
+        scale.contains("light_index != debug_override.light_index"),
+        "Pass B override must suppress every non-selected AnimatedBakedLights entry",
+    );
+    assert!(
+        scale.contains("clamp(debug_override.weight, 0.0, 1.0)"),
+        "Pass B override must retain the selected light's inspectable weight",
     );
 }
 

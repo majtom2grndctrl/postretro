@@ -77,8 +77,8 @@ pub use vm_adapters::*;
 pub use postretro_entities::data_descriptors::{
     CrossingCondition, CrossingDescriptor, EntityTypeDescriptor, LocomotionDescriptor,
     MeshDescriptor, NamedReaction, PrimitiveDescriptor, ProgressDescriptor, RawAnimationState,
-    ReactionDescriptor, SequenceStep, SequenceTarget, TriggerEventDescriptor, TriggerPoolArm,
-    TriggerPoolDescriptor, build_crossing, build_predicate_crossing,
+    RawMeshDescriptor, ReactionDescriptor, SequenceStep, SequenceTarget, TriggerEventDescriptor,
+    TriggerPoolArm, TriggerPoolDescriptor, build_crossing, build_predicate_crossing,
 };
 pub use postretro_foundation::data_descriptors::LightDescriptor;
 pub use postretro_foundation::data_descriptors::types::{combat::*, manifest::*, movement::*};

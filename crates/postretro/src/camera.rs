@@ -26,6 +26,10 @@ pub const SPRINT_MULTIPLIER: f32 = 2.0;
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RenderCamera {
     pub(crate) eye_position: Vec3,
+    /// World-to-camera transform paired with `view_projection`. Viewmodel
+    /// assembly uses its inverse to keep model/shading positions in world space
+    /// while the renderer applies a dedicated tight projection.
+    pub(crate) view_matrix: Mat4,
     pub(crate) view_projection: Mat4,
 }
 
@@ -50,6 +54,7 @@ impl RenderCamera {
 
         Self {
             eye_position,
+            view_matrix: view,
             view_projection: projection * view,
         }
     }

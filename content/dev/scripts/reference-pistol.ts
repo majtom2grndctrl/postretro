@@ -9,6 +9,8 @@ export const referencePistolEntity = defineEntity({
       fireRateMs: 180.0,
       fireMode: "semi",
       resolution: "hitscan",
+      thirdPersonModel: "models/smg/model.gltf",
+      viewmodel: "models/smg/model.gltf",
       resource: {
         kind: "ammo",
         type: "bullets.light",

@@ -372,6 +372,7 @@ mod tests {
                 crouch_intent: false,
                 facing_yaw: 0.0,
                 use_pressed: false,
+                aim_pitch: 0.0,
             },
             fire_button: WireFireButtonState {
                 pressed: false,
@@ -392,6 +393,7 @@ mod tests {
                 crouch_intent: false,
                 facing_yaw: 0.0,
                 use_pressed: false,
+                aim_pitch: 0.0,
             },
             fire_button: WireFireButtonState {
                 pressed: false,
@@ -404,7 +406,7 @@ mod tests {
     /// The authoritative movement wire payload for a fresh grounded pawn (the host's
     /// resolved state). Velocity zeroed so the merge is observable.
     fn authoritative_movement() -> WirePlayerMovementState {
-        let mut wire = movement_state_to_wire(&component());
+        let mut wire = movement_state_to_wire(&component(), 0.0);
         wire.velocity = [0.0, 0.0, 0.0];
         wire.ground = WireGroundRef::World;
         wire.movement_state = WireMovementState::Normal;

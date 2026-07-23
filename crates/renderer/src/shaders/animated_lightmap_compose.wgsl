@@ -192,7 +192,7 @@ fn compose_main(
         if (desc.is_active == 0u) {
             continue;
         }
-        let t = fract(uniforms.time / max(desc.period, 1.0e-6) + desc.phase);
+        let t = animation_curve_t(desc.period, desc.phase, uniforms.time);
         // Clamp non-negative — Catmull-Rom overshoot can dip below zero between
         // keyframes; a negative brightness/color would subtract light.
         let b = max(sample_curve_catmull_rom(desc.brightness_offset, desc.brightness_count, t), 0.0);

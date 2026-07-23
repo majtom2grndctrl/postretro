@@ -19,6 +19,7 @@ use postretro_foundation::{GroundRef, MovementState, PlayerMovementComponent};
 // consumed by Task 5 reconciliation.
 pub(crate) fn movement_state_to_wire(
     component: &PlayerMovementComponent,
+    aim_pitch: f32,
 ) -> WirePlayerMovementState {
     WirePlayerMovementState {
         velocity: [
@@ -37,6 +38,7 @@ pub(crate) fn movement_state_to_wire(
         jump_spent: component.jump_spent,
         capsule_half_height: component.capsule.half_height,
         capsule_eye_height: component.capsule.eye_height,
+        aim_pitch,
     }
 }
 
@@ -215,6 +217,7 @@ mod tests {
             jump_spent: true,
             capsule_half_height: 0.4,
             capsule_eye_height: 0.25,
+            aim_pitch: 0.75,
         }
     }
 
@@ -236,7 +239,7 @@ mod tests {
         component.capsule.half_height = 0.4;
         component.capsule.eye_height = 0.25;
 
-        let wire = movement_state_to_wire(&component);
+        let wire = movement_state_to_wire(&component, 0.75);
         let mut rebuilt = PlayerMovementComponent::from_descriptor(&rich_descriptor());
         assert!(merge_wire_into_movement_state_checked(
             &mut rebuilt,

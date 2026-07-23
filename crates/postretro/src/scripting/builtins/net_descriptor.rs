@@ -184,12 +184,11 @@ pub(crate) fn materialize_net_local_movement_component(
     true
 }
 
-/// Materialize the presentation-only components for a client's REMOTE enemy pawn
-/// (E10). A connected client does not simulate host-owned enemies: the host owns
-/// their AI, steering, damage, death, and despawn, and replicates finite Transform
-/// plus optional current mesh animation state. The client attaches only the
-/// descriptor's *presentation* surface locally so the remote enemy renders, but it
-/// must carry NO hidden authoritative state.
+/// Materialize the presentation-only components for a client's remote descriptor
+/// entity. A connected client does not simulate the remote entity's authoritative
+/// state: the host owns its movement, AI (when any), combat, health, and despawn,
+/// while the client receives a finite Transform plus optional mesh animation state.
+/// The client attaches only the descriptor's presentation surface locally.
 ///
 /// This attaches ONLY the descriptor's mesh block (`MeshComponent`, including its
 /// declared animation states + default state and any descriptor-driven render-origin
@@ -199,7 +198,7 @@ pub(crate) fn materialize_net_local_movement_component(
 ///
 /// `entity_class` is the descriptor class the host stamped on the wire. An
 /// unregistered class, or a descriptor with no mesh block, leaves the entity
-/// transform-only (logged, not rejected) — a remote enemy with no mesh simply does
+/// transform-only (logged, not rejected) — a remote entity with no mesh simply does
 /// not render, exactly as a stateless transform.
 ///
 /// Idempotent: an entity already carrying a `MeshComponent` is left untouched, so a
@@ -207,7 +206,7 @@ pub(crate) fn materialize_net_local_movement_component(
 ///
 /// Returns `true` if a mesh presentation is now present (materialized this call or
 /// already there), `false` if the descriptor is unregistered or has no mesh block.
-pub(crate) fn materialize_net_remote_enemy_presentation(
+pub(crate) fn materialize_net_mesh_presentation(
     entity_class: &str,
     descriptors: &[EntityTypeDescriptor],
     registry: &mut EntityRegistry,
@@ -225,15 +224,15 @@ pub(crate) fn materialize_net_remote_enemy_presentation(
 
     let Some(descriptor) = find_descriptor(descriptors, entity_class) else {
         log::warn!(
-            "[Net] remote enemy entity_class `{entity_class}` not registered; \
-             leaving remote pawn transform-only (will not render)"
+            "[Net] remote entity_class `{entity_class}` not registered; \
+             leaving remote entity transform-only (will not render)"
         );
         return false;
     };
     if descriptor.mesh.is_none() {
         log::debug!(
-            "[Net] remote enemy entity_class `{entity_class}` has no mesh block; \
-             leaving remote pawn transform-only (will not render)"
+            "[Net] remote entity_class `{entity_class}` has no mesh block; \
+             leaving remote entity transform-only (will not render)"
         );
         return false;
     };
@@ -300,6 +299,7 @@ mod tests {
             weapon: None,
             mesh: Some(MeshDescriptor {
                 model: "decraniated".to_string(),
+                shadow_only: false,
                 attachments: Default::default(),
                 shadow_bias_scale: 1.0,
                 animations,
@@ -331,13 +331,8 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let id = spawn_transform_only(&mut reg);
 
-        let attached = materialize_net_remote_enemy_presentation(
-            "decraniated_mob",
-            &descriptors,
-            &mut reg,
-            id,
-            None,
-        );
+        let attached =
+            materialize_net_mesh_presentation("decraniated_mob", &descriptors, &mut reg, id, None);
         assert!(
             attached,
             "mesh-bearing descriptor materializes presentation"
@@ -382,7 +377,7 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let id = spawn_transform_only(&mut reg);
 
-        assert!(materialize_net_remote_enemy_presentation(
+        assert!(materialize_net_mesh_presentation(
             "decraniated_mob",
             &[descriptor],
             &mut reg,
@@ -428,7 +423,7 @@ mod tests {
             max_slope_deg: 45.0,
         };
 
-        assert!(materialize_net_remote_enemy_presentation(
+        assert!(materialize_net_mesh_presentation(
             "decraniated_mob",
             &descriptors,
             &mut reg,
@@ -453,7 +448,7 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let id = spawn_transform_only(&mut reg);
 
-        assert!(materialize_net_remote_enemy_presentation(
+        assert!(materialize_net_mesh_presentation(
             "prop_enemy",
             &descriptors,
             &mut reg,
@@ -474,13 +469,7 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let id = spawn_transform_only(&mut reg);
 
-        materialize_net_remote_enemy_presentation(
-            "decraniated_mob",
-            &descriptors,
-            &mut reg,
-            id,
-            None,
-        );
+        materialize_net_mesh_presentation("decraniated_mob", &descriptors, &mut reg, id, None);
 
         // A connected client carries no hidden authoritative state for a remote
         // enemy: only presentation (mesh) is attached.
@@ -505,7 +494,7 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let id = spawn_transform_only(&mut reg);
 
-        assert!(materialize_net_remote_enemy_presentation(
+        assert!(materialize_net_mesh_presentation(
             "decraniated_mob",
             &descriptors,
             &mut reg,
@@ -523,13 +512,7 @@ mod tests {
         }
 
         assert!(
-            materialize_net_remote_enemy_presentation(
-                "decraniated_mob",
-                &descriptors,
-                &mut reg,
-                id,
-                None
-            ),
+            materialize_net_mesh_presentation("decraniated_mob", &descriptors, &mut reg, id, None),
             "a second apply reports presentation present"
         );
 
@@ -547,13 +530,8 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let id = spawn_transform_only(&mut reg);
 
-        let attached = materialize_net_remote_enemy_presentation(
-            "not_a_class",
-            &descriptors,
-            &mut reg,
-            id,
-            None,
-        );
+        let attached =
+            materialize_net_mesh_presentation("not_a_class", &descriptors, &mut reg, id, None);
         assert!(!attached, "unknown class attaches nothing");
         assert_eq!(
             reg.has_component_kind(id, ComponentKind::Mesh),
@@ -644,6 +622,8 @@ mod tests {
                 fire_mode: FireMode::Semi,
                 resolution: ResolutionMode::Hitscan,
                 credit_source: None,
+                third_person_model: None,
+                viewmodel: None,
                 resource: None,
             }),
             mesh: None,

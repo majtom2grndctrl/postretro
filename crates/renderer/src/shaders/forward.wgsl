@@ -1156,7 +1156,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         var effective_color = light.color_and_falloff_model.xyz;
         var effective_aim = light.direction_and_range.xyz;
         if scripted_desc.is_active != 0u {
-            let cycle_t = fract(uniforms.time / max(scripted_desc.period, 0.0001) + scripted_desc.phase);
+            let cycle_t = animation_curve_t(
+                scripted_desc.period,
+                scripted_desc.phase,
+                uniforms.time,
+            );
             // Color curves set hue; the static light slot carries intensity.
             // Brightness curves multiply whichever color path is active.
             // Clamp non-negative: Catmull-Rom overshoot between keyframes can go

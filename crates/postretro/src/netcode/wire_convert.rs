@@ -14,9 +14,14 @@ use crate::weapon::FireButtonState;
 /// Convert a `SimCommand` plus the issuing client's command-frame tick into the
 /// wire `InputCommand`. `wish_dir` mirrors the engine `Vec2` (`x = right,
 /// y = forward`) into the wire's `[right, forward]` array; the buttons and
-/// `facing_yaw` carry through verbatim, and fire/reload intent are preserved
-/// for downstream simulation.
-pub(crate) fn sim_command_to_input(cmd: &SimCommand, client_tick: u32) -> InputCommand {
+/// `facing_yaw` carries through verbatim; `aim_pitch` is sampled from the camera at
+/// the command send seam because movement simulation deliberately has no pitch
+/// field. Fire/reload intent is preserved for downstream simulation.
+pub(crate) fn sim_command_to_input(
+    cmd: &SimCommand,
+    client_tick: u32,
+    aim_pitch: f32,
+) -> InputCommand {
     InputCommand {
         client_tick,
         movement: WireMovementInput {
@@ -27,6 +32,7 @@ pub(crate) fn sim_command_to_input(cmd: &SimCommand, client_tick: u32) -> InputC
             crouch_intent: cmd.movement.crouch_intent,
             facing_yaw: cmd.movement.facing_yaw,
             use_pressed: cmd.use_pressed,
+            aim_pitch,
         },
         fire_button: WireFireButtonState {
             pressed: cmd.fire_button.pressed,
@@ -71,8 +77,8 @@ pub(crate) fn input_command_to_sim(input: &InputCommand) -> SimCommand {
 ///
 /// Rules:
 /// - Reject (`None`) a non-finite `wish_dir` component or a non-finite
-///   `facing_yaw`. A NaN/inf would poison the host movement math, and an
-///   untrusted peer can send either.
+///   `facing_yaw`, or a non-finite `aim_pitch`. A NaN/inf would poison host
+///   movement or presentation math, and an untrusted peer can send either.
 /// - Clamp each finite `wish_dir` component into `[-1.0, 1.0]` — `MovementInput`
 ///   documents that the raw x/y drive magnitude-sensitive threshold checks, so an
 ///   out-of-range diagonal must be reined in before it reaches the tick.
@@ -83,7 +89,10 @@ pub(crate) fn input_command_to_sim(input: &InputCommand) -> SimCommand {
 // Called by Task 4's host command-queue intake (`command_queue::HostCommandQueues::ingest`).
 pub(crate) fn sanitize_input_command(cmd: &InputCommand) -> Option<InputCommand> {
     let [wish_right, wish_forward] = cmd.movement.wish_dir;
-    if !wish_right.is_finite() || !wish_forward.is_finite() || !cmd.movement.facing_yaw.is_finite()
+    if !wish_right.is_finite()
+        || !wish_forward.is_finite()
+        || !cmd.movement.facing_yaw.is_finite()
+        || !cmd.movement.aim_pitch.is_finite()
     {
         return None;
     }
@@ -141,8 +150,9 @@ mod tests {
     #[test]
     fn sim_command_round_trips_through_input_command() {
         let original = sample_sim_command();
-        let input = sim_command_to_input(&original, 4_242);
+        let input = sim_command_to_input(&original, 4_242, -0.3);
         assert_eq!(input.client_tick, 4_242);
+        assert!((input.movement.aim_pitch - (-0.3)).abs() < EPSILON);
         let rebuilt = input_command_to_sim(&input);
         assert_sim_eq(&original, &rebuilt);
     }
@@ -150,7 +160,7 @@ mod tests {
     #[test]
     fn sim_command_to_input_maps_wish_dir_right_forward_order() {
         let cmd = sample_sim_command();
-        let input = sim_command_to_input(&cmd, 0);
+        let input = sim_command_to_input(&cmd, 0, -0.3);
         // Engine Vec2 (x = right, y = forward) -> wire [right, forward].
         assert!((input.movement.wish_dir[0] - cmd.movement.wish_dir.x).abs() < EPSILON);
         assert!((input.movement.wish_dir[1] - cmd.movement.wish_dir.y).abs() < EPSILON);
@@ -159,10 +169,10 @@ mod tests {
     #[test]
     fn sanitize_rejects_non_finite_wish_dir_component() {
         for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-            let mut cmd = sim_command_to_input(&sample_sim_command(), 1);
+            let mut cmd = sim_command_to_input(&sample_sim_command(), 1, -0.3);
             cmd.movement.wish_dir[0] = bad;
             assert!(sanitize_input_command(&cmd).is_none());
-            let mut cmd = sim_command_to_input(&sample_sim_command(), 1);
+            let mut cmd = sim_command_to_input(&sample_sim_command(), 1, -0.3);
             cmd.movement.wish_dir[1] = bad;
             assert!(sanitize_input_command(&cmd).is_none());
         }
@@ -171,15 +181,23 @@ mod tests {
     #[test]
     fn sanitize_rejects_non_finite_facing_yaw() {
         for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-            let mut cmd = sim_command_to_input(&sample_sim_command(), 1);
+            let mut cmd = sim_command_to_input(&sample_sim_command(), 1, -0.3);
             cmd.movement.facing_yaw = bad;
             assert!(sanitize_input_command(&cmd).is_none());
         }
     }
 
     #[test]
+    fn sanitize_rejects_non_finite_aim_pitch() {
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let cmd = sim_command_to_input(&sample_sim_command(), 1, bad);
+            assert!(sanitize_input_command(&cmd).is_none());
+        }
+    }
+
+    #[test]
     fn sanitize_clamps_out_of_range_finite_wish_dir() {
-        let mut cmd = sim_command_to_input(&sample_sim_command(), 1);
+        let mut cmd = sim_command_to_input(&sample_sim_command(), 1, -0.3);
         cmd.movement.wish_dir = [5.0, -3.0];
         let sanitized = sanitize_input_command(&cmd).expect("finite wish_dir is accepted");
         assert!((sanitized.movement.wish_dir[0] - 1.0).abs() < EPSILON);
@@ -188,13 +206,14 @@ mod tests {
 
     #[test]
     fn sanitize_preserves_in_range_wish_dir_and_facing_yaw() {
-        let cmd = sim_command_to_input(&sample_sim_command(), 1);
+        let cmd = sim_command_to_input(&sample_sim_command(), 1, -0.3);
         let sanitized = sanitize_input_command(&cmd).expect("finite in-range command is accepted");
         assert!((sanitized.movement.wish_dir[0] - cmd.movement.wish_dir[0]).abs() < EPSILON);
         assert!((sanitized.movement.wish_dir[1] - cmd.movement.wish_dir[1]).abs() < EPSILON);
         // facing_yaw is intentionally unconstrained: a finite value passes through
         // unchanged, with no wrapping.
         assert!((sanitized.movement.facing_yaw - cmd.movement.facing_yaw).abs() < EPSILON);
+        assert!((sanitized.movement.aim_pitch - cmd.movement.aim_pitch).abs() < EPSILON);
         assert_eq!(sanitized.reload, cmd.reload);
     }
 }

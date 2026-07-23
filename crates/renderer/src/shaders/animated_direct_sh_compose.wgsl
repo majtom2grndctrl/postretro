@@ -1,0 +1,223 @@
+// Pass B of direct SH composition: adds animated baked direct transport.
+// `curve_eval.wgsl` is concatenated after this source at pipeline build time.
+
+struct Uniforms {
+    view_proj: mat4x4<f32>,
+    camera_position: vec3<f32>,
+    ambient_floor: f32,
+    light_count: u32,
+    time: f32,
+    lighting_isolation: u32,
+    _pad: u32,
+};
+
+struct AnimationDescriptor {
+    period: f32,
+    phase: f32,
+    brightness_offset: u32,
+    brightness_count: u32,
+    base_color: vec3<f32>,
+    color_offset: u32,
+    color_count: u32,
+    is_active: u32,
+    direction_offset: u32,
+    direction_count: u32,
+};
+
+struct GridDims {
+    grid_dimensions: vec3<u32>,
+    tile_dimension: u32,
+    atlas_dimensions: vec2<u32>,
+    tile_border: u32,
+    delta_probe_f16_stride: u32,
+    affinity_dims: vec3<u32>,
+    atlas_tiles_per_row: u32,
+    tiles_per_layer: u32,
+    atlas_layer_count: u32,
+    _pad0: u32,
+    _pad1: u32,
+};
+
+struct DebugOverride {
+    enabled: u32,
+    light_index: u32,
+    _pad0: u32,
+    _pad1: u32,
+    weight: f32,
+    _pad2: f32,
+    _pad3: f32,
+    _pad4: f32,
+};
+
+@group(0) @binding(0) var<uniform> uniforms: Uniforms;
+
+@group(1) @binding(0) var direct_intermediate_atlas: texture_2d_array<f32>;
+@group(1) @binding(2) var intermediate_sampler: sampler;
+@group(1) @binding(1) var direct_composed_atlas: texture_storage_2d_array<rgba16float, write>;
+@group(1) @binding(18) var<uniform> grid: GridDims;
+@group(1) @binding(20) var<storage, read> delta_subblocks: array<u32>;
+@group(1) @binding(21) var<storage, read> affinity_offsets: array<u32>;
+@group(1) @binding(22) var<storage, read> descriptors: array<AnimationDescriptor>;
+@group(1) @binding(23) var<storage, read> anim_samples: array<f32>;
+@group(1) @binding(24) var<storage, read> affinity_lights: array<u32>;
+@group(1) @binding(25) var<storage, read> animation_descriptor_indices: array<u32>;
+// Pass-B-only uniform: `light_index` is an AnimatedBakedLights index, unlike
+// Pass A's binding-27 promotion-selection override.
+@group(1) @binding(26) var<uniform> debug_override: DebugOverride;
+
+const AFFINITY_FACTOR: u32 = 4u;
+const PROBES_PER_CELL: u32 = 64u;
+const INVALID_DESCRIPTOR_INDEX: u32 = 0xffffffffu;
+
+struct AtlasTexelMapping {
+    probe: vec3<u32>,
+    tile_texel: vec2<u32>,
+    in_grid: bool,
+};
+
+fn map_atlas_texel(atlas_texel: vec3<u32>) -> AtlasTexelMapping {
+    let tile_dim = max(grid.tile_dimension, 1u);
+    let tile = atlas_texel.xy / vec2<u32>(tile_dim);
+    let tile_texel = atlas_texel.xy % vec2<u32>(tile_dim);
+    let total_probes = grid.grid_dimensions.x * grid.grid_dimensions.y * grid.grid_dimensions.z;
+    let tiles_per_row = max(grid.atlas_tiles_per_row, 1u);
+    let tiles_per_layer = max(grid.tiles_per_layer, 1u);
+    let tile_slot = tile.x + tile.y * tiles_per_row;
+    let probe_index = atlas_texel.z * tiles_per_layer + tile_slot;
+    if (
+        total_probes == 0u
+        || atlas_texel.z >= grid.atlas_layer_count
+        || tile.x >= tiles_per_row
+        || tile_slot >= tiles_per_layer
+        || probe_index >= total_probes
+        || grid.grid_dimensions.x == 0u
+        || grid.grid_dimensions.y == 0u
+    ) {
+        return AtlasTexelMapping(vec3<u32>(0u), tile_texel, false);
+    }
+
+    let xy = grid.grid_dimensions.x * grid.grid_dimensions.y;
+    let z = probe_index / xy;
+    let rem = probe_index - z * xy;
+    return AtlasTexelMapping(
+        vec3<u32>(rem % grid.grid_dimensions.x, rem / grid.grid_dimensions.x, z),
+        tile_texel,
+        true,
+    );
+}
+
+struct AffinityMapping {
+    cell_index: u32,
+    local_probe: u32,
+    in_range: bool,
+};
+
+fn map_probe_to_affinity(probe: vec3<u32>) -> AffinityMapping {
+    let cell = probe / vec3<u32>(AFFINITY_FACTOR);
+    if (any(cell >= grid.affinity_dims)) {
+        return AffinityMapping(0u, 0u, false);
+    }
+    let local_coord = probe - cell * vec3<u32>(AFFINITY_FACTOR);
+    let local = local_coord.x
+        + local_coord.y * AFFINITY_FACTOR
+        + local_coord.z * AFFINITY_FACTOR * AFFINITY_FACTOR;
+    let cell_index = cell.x
+        + cell.y * grid.affinity_dims.x
+        + cell.z * grid.affinity_dims.x * grid.affinity_dims.y;
+    return AffinityMapping(cell_index, local, true);
+}
+
+fn read_delta_texel(entry: u32, local_probe: u32, tile_texel: vec2<u32>) -> vec4<f32> {
+    let texel_index = tile_texel.y * grid.tile_dimension + tile_texel.x;
+    let half_base = (entry * PROBES_PER_CELL + local_probe) * grid.delta_probe_f16_stride
+        + texel_index * 4u;
+    let word_base = half_base / 2u;
+    let rg = unpack2x16float(delta_subblocks[word_base]);
+    let ba = unpack2x16float(delta_subblocks[word_base + 1u]);
+    return vec4<f32>(rg.x, rg.y, ba.x, ba.y);
+}
+
+fn animated_light_scale(light_index: u32) -> vec3<f32> {
+    if (debug_override.enabled != 0u && light_index != debug_override.light_index) {
+        return vec3<f32>(0.0);
+    }
+    let descriptor_index = animation_descriptor_indices[light_index];
+    if (descriptor_index == INVALID_DESCRIPTOR_INDEX || descriptor_index >= arrayLength(&descriptors)) {
+        return vec3<f32>(0.0);
+    }
+    let desc = descriptors[descriptor_index];
+    if (desc.is_active == 0u) {
+        return vec3<f32>(0.0);
+    }
+
+    let t = animation_curve_t(desc.period, desc.phase, uniforms.time);
+    let brightness = max(
+        sample_curve_catmull_rom(desc.brightness_offset, desc.brightness_count, t),
+        0.0,
+    );
+    var color = desc.base_color;
+    if (desc.color_count > 0u) {
+        // For color-animation descriptors base_color is intensity splatted
+        // across RGB. Delta tiles contain unit-radiance transport, so this is
+        // the single authored-radiance application.
+        color = max(
+            sample_color_catmull_rom(desc.color_offset, desc.color_count, t, vec3<f32>(1.0)),
+            vec3<f32>(0.0),
+        ) * desc.base_color;
+    }
+    let debug_weight = select(
+        1.0,
+        clamp(debug_override.weight, 0.0, 1.0),
+        debug_override.enabled != 0u,
+    );
+    return color * brightness * debug_weight;
+}
+
+@compute @workgroup_size(8, 8, 1)
+fn animated_compose_main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if (
+        gid.x >= grid.atlas_dimensions.x
+        || gid.y >= grid.atlas_dimensions.y
+        || gid.z >= grid.atlas_layer_count
+    ) {
+        return;
+    }
+
+    let p = vec2<i32>(i32(gid.x), i32(gid.y));
+    let layer = i32(gid.z);
+    let uv = (vec2<f32>(p) + 0.5) / vec2<f32>(textureDimensions(direct_intermediate_atlas));
+    let intermediate = textureSampleLevel(
+        direct_intermediate_atlas,
+        intermediate_sampler,
+        uv,
+        layer,
+        0.0,
+    );
+    let atlas_mapping = map_atlas_texel(gid);
+    if (!atlas_mapping.in_grid) {
+        textureStore(direct_composed_atlas, p, layer, intermediate);
+        return;
+    }
+
+    let affinity = map_probe_to_affinity(atlas_mapping.probe);
+    if (!affinity.in_range) {
+        textureStore(direct_composed_atlas, p, layer, intermediate);
+        return;
+    }
+
+    let start = affinity_offsets[affinity.cell_index];
+    let end = affinity_offsets[affinity.cell_index + 1u];
+    var accum = intermediate.rgb;
+    for (var entry: u32 = start; entry < end; entry = entry + 1u) {
+        let light_index = affinity_lights[entry];
+        let scale = animated_light_scale(light_index);
+        let delta = read_delta_texel(entry, affinity.local_probe, atlas_mapping.tile_texel);
+        accum = accum + delta.rgb * scale;
+    }
+    textureStore(
+        direct_composed_atlas,
+        p,
+        layer,
+        vec4<f32>(max(accum, vec3<f32>(0.0)), intermediate.a),
+    );
+}

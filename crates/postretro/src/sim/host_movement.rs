@@ -14,7 +14,7 @@
 // but it adds no networking branch to `movement::tick` — the per-pawn input is
 // already resolved by the netcode command queue before this seam runs.
 
-use glam::Vec3;
+use glam::{Quat, Vec3};
 
 use crate::movement::{MovementCollisionSource, MovementInput, tick as movement_tick};
 use postretro_entities::{EntityId, EntityRegistry, Transform};
@@ -76,6 +76,12 @@ pub(crate) fn run_host_movement_tick(
         if let Ok(transform) = registry.get_component::<Transform>(id) {
             let mut t = *transform;
             t.position = new_pos;
+            // Transform yaw is the authoritative aim direction. Lower-body travel
+            // heading is a render-only override derived from velocity, so snapshots
+            // retain the controlling camera yaw for upper-body presentation.
+            if input.facing_yaw.is_finite() {
+                t.rotation = Quat::from_rotation_y(input.facing_yaw);
+            }
             let _ = registry.set_component(id, t);
         }
         let _ = registry.set_component(id, component);
@@ -234,6 +240,21 @@ mod tests {
             (after_untouched - before_untouched).length() < EPSILON,
             "a pawn absent from the input list is never moved"
         );
+    }
+
+    #[test]
+    fn movement_transform_yaw_tracks_aim_while_stationary() {
+        let mut registry = EntityRegistry::new();
+        let world = floor_world();
+        let pawn = spawn_pawn(&mut registry, Vec3::new(0.0, 1.21, 0.0));
+        let mut input = idle_input();
+        input.facing_yaw = 0.8;
+
+        let _ = run_host_movement_tick(&mut registry, &world, GRAVITY, &[(pawn, input)], DT);
+
+        let transform = registry.get_component::<Transform>(pawn).unwrap();
+        let (yaw, _, _) = transform.rotation.to_euler(glam::EulerRot::YXZ);
+        assert!((yaw - 0.8).abs() <= EPSILON);
     }
 
     // Multiple pawns advance independently in one tick, each by its own input.

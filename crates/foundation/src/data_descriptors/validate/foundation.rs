@@ -156,6 +156,30 @@ pub fn is_catalog_path_relative_to_content_root(path: &str) -> bool {
     })
 }
 
+/// Weapon presentation assets are opened with `content_root.join(path)` on the
+/// host platform. Accept only portable forward-slash paths that remain inside
+/// that root. The raw Windows checks matter on Unix, where drive prefixes and
+/// backslashes would otherwise be treated as ordinary filename characters.
+pub fn is_portable_content_relative_asset_path(path: &str) -> bool {
+    if path.is_empty() || path.contains('\\') {
+        return false;
+    }
+    let bytes = path.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        return false;
+    }
+    let path = Path::new(path);
+    if path.is_absolute() {
+        return false;
+    }
+    path.components().all(|component| {
+        !matches!(
+            component,
+            Component::ParentDir | Component::Prefix(_) | Component::RootDir
+        )
+    })
+}
+
 pub fn validate_finite_f32(value: f32, field: &str) -> Result<f32, DescriptorError> {
     if value.is_finite() {
         Ok(value)

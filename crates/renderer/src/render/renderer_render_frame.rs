@@ -262,10 +262,14 @@ impl Renderer {
                     encoder,
                     &full.uniform_bind_group,
                     direct_sh_active,
-                    direct_sh_debug_override,
-                    animated_direct_sh_debug_override,
-                    direct_sh_ts,
-                    animated_direct_sh_ts,
+                    DirectShComposeDebugOverrides {
+                        promotion: direct_sh_debug_override,
+                        animated: animated_direct_sh_debug_override,
+                    },
+                    DirectShComposeTimestampWrites {
+                        promotion: direct_sh_ts,
+                        animated: animated_direct_sh_ts,
+                    },
                 );
             }
         }

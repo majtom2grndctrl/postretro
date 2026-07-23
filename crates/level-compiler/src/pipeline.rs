@@ -295,6 +295,14 @@ fn run_after_parsing(
         light_namespaces::AnimatedBakedLights::from_lights(&map_data.lights);
     let alpha_lights_ns = light_namespaces::AlphaLightsNs::from_lights(&map_data.lights);
 
+    if static_baked_lights.is_empty() {
+        log::warn!(
+            "[Compiler] No non-animated baked lights: static world geometry will use a white \
+             lightmap placeholder. Add at least one static baked light so world lightmaps render \
+             correctly. The build will continue."
+        );
+    }
+
     let stage_start = begin_stage(reporter.as_ref(), StageId::Partitioning);
     let result = partition::partition(&map_data.brush_volumes)?;
     finish_stage(

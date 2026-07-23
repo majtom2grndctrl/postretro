@@ -1,5 +1,5 @@
-// Animated-direct SH addition pass. Kept separate from promotion composition so
-// section-45 resources and bindings stay isolated from the legacy Case 1 path.
+// Animated-direct SH addition pass. See `context/lib/rendering_pipeline.md` §4,
+// “Animated direct SH for dynamic receivers”; separate from promotion composition so section-45 resources and bindings stay isolated from legacy Case 1.
 
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
 use postretro_render_cpu::sh_compose::{

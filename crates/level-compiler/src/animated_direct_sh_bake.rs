@@ -83,8 +83,8 @@ pub fn bake_animated_direct_sh_delta_volumes_controlled(
         portals: inputs.portals,
         probe_spacing: config.probe_spacing,
     };
-    // Direct reach uses the individual light's cone/falloff and portal flood,
-    // not delta-SH's broader indirect-bounce envelope.
+    // Direct reach clips to each light's falloff-sphere AABB, then portal-floods
+    // from its source leaf; spotlight cones intentionally do not clip this cull.
     let decomposition = decompose_affinity_for_lights(&reach, &lights);
     let affinity_dims = decomposition.affinity_dims;
     let (affinity_offsets, affinity_lights) = build_csr(
@@ -413,11 +413,14 @@ mod tests {
 
     #[test]
     fn script_animated_light_routes_only_to_animated_direct_delta() {
-        let mut lights = vec![{
+        let script_animated_light = {
             let mut light = animated_light(DVec3::new(0.0, 1.0, 0.0));
             light.animation = None;
             light
-        }];
+        };
+        let mut static_light = animated_light(DVec3::new(1.0, 1.0, 0.0));
+        static_light.animation = None;
+        let mut lights = vec![script_animated_light, static_light];
         let manifest = LightMembershipManifest::new(
             vec![LightMembershipRecord {
                 index: 0,
@@ -427,7 +430,7 @@ mod tests {
             }],
             Vec::new(),
         );
-        script_light_membership::apply_manifest(&mut lights, &[true], &manifest)
+        script_light_membership::apply_manifest(&mut lights, &[true, true], &manifest)
             .expect("script membership must reserve the baked animation slot");
 
         let direct_delta = bake(&lights);
@@ -440,8 +443,13 @@ mod tests {
         let (bvh, primitives, _) = build_bvh(&geometry).expect("test geometry must build a BVH");
         let static_lights = StaticBakedLights::from_lights(&lights);
         let alpha_lights = AlphaLightsNs::from_lights(&lights);
-        assert!(
-            static_lights.is_empty(),
+        assert_eq!(
+            static_lights
+                .entries()
+                .iter()
+                .map(|entry| entry.source_index)
+                .collect::<Vec<_>>(),
+            vec![1],
             "script-animated light must be absent from DirectShVolume's static base namespace"
         );
         let selected = select_entity_shadow_lights(&EntityShadowSelectionInputs {
@@ -452,9 +460,32 @@ mod tests {
             alpha_lights: &alpha_lights,
             params: EntityShadowParams::default(),
         });
-        assert!(
-            selected.light_indices.is_empty(),
-            "script-animated light must not enter EntityShadowLights promotion"
+        assert_eq!(
+            selected.light_indices,
+            vec![1],
+            "the promotable static light must select in AlphaLights slot 1"
+        );
+
+        // StaticBakedLights normally filters the script placeholder first. Keep
+        // `is_animated` while removing that placeholder so this assertion drives
+        // the selector's independent no-double-count exclusion.
+        let mut selector_lights = lights.clone();
+        selector_lights[0].animation = None;
+        selector_lights[0].is_animated = true;
+        let selector_static_lights = StaticBakedLights::from_lights(&selector_lights);
+        let selector_alpha_lights = AlphaLightsNs::from_lights(&selector_lights);
+        let selected = select_entity_shadow_lights(&EntityShadowSelectionInputs {
+            bvh: &bvh,
+            primitives: &primitives,
+            geometry: &geometry,
+            static_lights: &selector_static_lights,
+            alpha_lights: &selector_alpha_lights,
+            params: EntityShadowParams::default(),
+        });
+        assert_eq!(
+            selected.light_indices,
+            vec![1],
+            "the animated light must not enter EntityShadowLights promotion"
         );
     }
 

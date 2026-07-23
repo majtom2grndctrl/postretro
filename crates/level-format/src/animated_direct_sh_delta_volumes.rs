@@ -68,11 +68,13 @@ impl AnimatedDirectShDeltaVolumesSection {
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
-        debug_assert_eq!(self.affinity_offsets.len(), self.affinity_cell_count() + 1);
-        debug_assert_eq!(
-            self.delta_subblocks.len(),
-            self.affinity_lights.len() * PROBES_PER_CELL * self.delta_probe_f16_stride()
-        );
+        self.try_to_bytes()
+            .expect("AnimatedDirectShDeltaVolumesSection must satisfy its wire contract")
+    }
+
+    /// Encode only a canonical, internally consistent section.
+    pub fn try_to_bytes(&self) -> crate::Result<Vec<u8>> {
+        self.validate_wire_contract()?;
 
         let mut buf = Vec::new();
         buf.push(ANIMATED_DIRECT_SH_DELTA_VOLUMES_VERSION);
@@ -96,7 +98,89 @@ impl AnimatedDirectShDeltaVolumesSection {
         for half in &self.delta_subblocks {
             buf.extend_from_slice(&half.to_le_bytes());
         }
-        buf
+        Ok(buf)
+    }
+
+    fn validate_wire_contract(&self) -> crate::Result<()> {
+        validate_tile_geometry(self.tile_dimension, self.tile_border)?;
+
+        let affinity_cell_count = (self.affinity_dims[0] as usize)
+            .checked_mul(self.affinity_dims[1] as usize)
+            .and_then(|count| count.checked_mul(self.affinity_dims[2] as usize))
+            .ok_or_else(|| {
+                invalid_data(format!(
+                    "animated direct sh delta volumes affinity_dims {:?} overflow: cell count exceeds usize",
+                    self.affinity_dims
+                ))
+            })?;
+        let expected_offsets_len = affinity_cell_count.checked_add(1).ok_or_else(|| {
+            invalid_data(
+                "animated direct sh delta volumes affinity offset count exceeds usize".into(),
+            )
+        })?;
+        if self.affinity_offsets.len() != expected_offsets_len {
+            return Err(invalid_data(format!(
+                "animated direct sh delta volumes affinity_offsets length {}, expected {expected_offsets_len}",
+                self.affinity_offsets.len()
+            )));
+        }
+        if self.affinity_offsets.first().copied() != Some(0) {
+            return Err(invalid_data(
+                "animated direct sh delta volumes affinity_offsets[0] must be 0".into(),
+            ));
+        }
+        for (index, offsets) in self.affinity_offsets.windows(2).enumerate() {
+            if offsets[0] > offsets[1] {
+                return Err(invalid_data(format!(
+                    "animated direct sh delta volumes affinity_offsets[{index}] ({}) > affinity_offsets[{}] ({}): offsets must be non-decreasing",
+                    offsets[0],
+                    index + 1,
+                    offsets[1],
+                )));
+            }
+        }
+        let trailing_total = self
+            .affinity_offsets
+            .last()
+            .copied()
+            .expect("validated offset table is non-empty") as usize;
+        if trailing_total != self.affinity_lights.len() {
+            return Err(invalid_data(format!(
+                "animated direct sh delta volumes affinity_offsets trailing total {trailing_total} does not match affinity_lights length {}",
+                self.affinity_lights.len()
+            )));
+        }
+        for (entry, &light) in self.affinity_lights.iter().enumerate() {
+            if light as usize >= self.animation_descriptor_indices.len() {
+                return Err(invalid_data(format!(
+                    "animated direct sh delta volumes affinity_lights[{entry}] entry {light} out of range (animated_light_count = {})",
+                    self.animation_descriptor_indices.len()
+                )));
+            }
+        }
+
+        let probe_f16_stride = delta_probe_f16_stride_checked(self.tile_dimension)?;
+        let expected_subblock_count = self
+            .affinity_lights
+            .len()
+            .checked_mul(PROBES_PER_CELL)
+            .and_then(|count| count.checked_mul(probe_f16_stride))
+            .ok_or_else(|| {
+                invalid_data(
+                    "animated direct sh delta volumes delta_subblocks count exceeds usize".into(),
+                )
+            })?;
+        if self.delta_subblocks.len() != expected_subblock_count {
+            return Err(invalid_data(format!(
+                "animated direct sh delta volumes delta_subblocks length {}, expected {expected_subblock_count}",
+                self.delta_subblocks.len()
+            )));
+        }
+
+        u32::try_from(self.animation_descriptor_indices.len()).map_err(|_| {
+            invalid_data("animated direct sh delta volumes animated light count exceeds u32".into())
+        })?;
+        Ok(())
     }
 
     pub fn from_bytes(data: &[u8]) -> crate::Result<Self> {
@@ -179,6 +263,11 @@ impl AnimatedDirectShDeltaVolumesSection {
             affinity_offsets.push(read_u32(data, offset));
             offset += 4;
         }
+        if affinity_offsets.first().copied() != Some(0) {
+            return Err(invalid_data(
+                "animated direct sh delta volumes affinity_offsets[0] must be 0".into(),
+            ));
+        }
         for index in 0..affinity_offsets.len() - 1 {
             if affinity_offsets[index] > affinity_offsets[index + 1] {
                 return Err(invalid_data(format!(
@@ -240,8 +329,14 @@ impl AnimatedDirectShDeltaVolumesSection {
             delta_subblocks.push(read_u16(data, offset));
             offset += 2;
         }
+        if offset != data.len() {
+            return Err(invalid_data(format!(
+                "animated direct sh delta volumes has {} trailing byte(s)",
+                data.len() - offset
+            )));
+        }
 
-        Ok(Self {
+        let section = Self {
             affinity_factor,
             affinity_dims,
             tile_dimension,
@@ -250,7 +345,9 @@ impl AnimatedDirectShDeltaVolumesSection {
             affinity_offsets,
             affinity_lights,
             delta_subblocks,
-        })
+        };
+        section.validate_wire_contract()?;
+        Ok(section)
     }
 }
 
@@ -384,14 +481,80 @@ mod tests {
             tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
             animation_descriptor_indices: vec![0],
             affinity_offsets: vec![0, 1],
-            affinity_lights: vec![1],
+            affinity_lights: vec![0],
             delta_subblocks: sample_subblock(3),
         };
+        let mut bytes = section.to_bytes();
+        let affinity_light_offset = 1 + 1 + 12 + 4 + 4 + 4 + 4 + 8;
+        bytes[affinity_light_offset..affinity_light_offset + 4]
+            .copy_from_slice(&1u32.to_le_bytes());
 
-        let error = AnimatedDirectShDeltaVolumesSection::from_bytes(&section.to_bytes())
+        let error = AnimatedDirectShDeltaVolumesSection::from_bytes(&bytes)
             .expect_err("out-of-range AnimatedBakedLights index must be rejected");
 
         assert!(error.to_string().contains("out of range"));
+    }
+
+    #[test]
+    fn animated_direct_sh_delta_volumes_rejects_trailing_bytes() {
+        let section = AnimatedDirectShDeltaVolumesSection {
+            affinity_factor: AFFINITY_FACTOR,
+            affinity_dims: [1, 1, 1],
+            tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            animation_descriptor_indices: vec![0],
+            affinity_offsets: vec![0, 1],
+            affinity_lights: vec![0],
+            delta_subblocks: sample_subblock(5),
+        };
+        let mut bytes = section.to_bytes();
+        bytes.push(0);
+
+        let error = AnimatedDirectShDeltaVolumesSection::from_bytes(&bytes)
+            .expect_err("section payload must be consumed exactly");
+
+        assert!(error.to_string().contains("trailing byte"));
+    }
+
+    #[test]
+    fn animated_direct_sh_delta_volumes_pack_rejects_invalid_csr_shapes() {
+        let valid = AnimatedDirectShDeltaVolumesSection {
+            affinity_factor: AFFINITY_FACTOR,
+            affinity_dims: [1, 1, 1],
+            tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            animation_descriptor_indices: vec![0],
+            affinity_offsets: vec![0, 1],
+            affinity_lights: vec![0],
+            delta_subblocks: sample_subblock(7),
+        };
+
+        let mut cases = Vec::new();
+        let mut bad_offset_len = valid.clone();
+        bad_offset_len.affinity_offsets.pop();
+        cases.push(bad_offset_len);
+        let mut bad_first_offset = valid.clone();
+        bad_first_offset.affinity_offsets[0] = 1;
+        cases.push(bad_first_offset);
+        let mut non_monotonic = valid.clone();
+        non_monotonic.affinity_dims = [2, 1, 1];
+        non_monotonic.affinity_offsets = vec![0, 1, 0];
+        non_monotonic.affinity_lights.clear();
+        non_monotonic.delta_subblocks.clear();
+        cases.push(non_monotonic);
+        let mut bad_trailing_offset = valid.clone();
+        bad_trailing_offset.affinity_offsets[1] = 0;
+        cases.push(bad_trailing_offset);
+        let mut bad_subblock_len = valid;
+        bad_subblock_len.delta_subblocks.pop();
+        cases.push(bad_subblock_len);
+
+        for section in cases {
+            assert!(
+                section.try_to_bytes().is_err(),
+                "invalid constructible CSR must not serialize"
+            );
+        }
     }
 
     #[test]

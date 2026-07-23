@@ -48,6 +48,16 @@ impl DirectShDebugOverride {
     }
 }
 
+pub(super) struct DirectShComposeDebugOverrides {
+    pub(super) promotion: DirectShDebugOverride,
+    pub(super) animated: AnimatedDirectShDebugOverride,
+}
+
+pub(super) struct DirectShComposeTimestampWrites<'a> {
+    pub(super) promotion: Option<wgpu::ComputePassTimestampWrites<'a>>,
+    pub(super) animated: Option<wgpu::ComputePassTimestampWrites<'a>>,
+}
+
 struct DirectShComposePipeline {
     pipeline: wgpu::ComputePipeline,
     bind_group: wgpu::BindGroup,
@@ -217,22 +227,20 @@ impl DirectShComposeResources {
         encoder: &mut wgpu::CommandEncoder,
         uniform_bind_group: &wgpu::BindGroup,
         active: bool,
-        debug_override: DirectShDebugOverride,
-        animated_debug_override: AnimatedDirectShDebugOverride,
-        timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
-        animated_timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
+        debug_overrides: DirectShComposeDebugOverrides,
+        timestamp_writes: DirectShComposeTimestampWrites<'_>,
     ) {
         let Some(pipeline) = self.pipeline.as_mut() else {
             return;
         };
 
-        let debug_bytes = debug_override_bytes(debug_override);
+        let debug_bytes = debug_override_bytes(debug_overrides.promotion);
         if debug_bytes != pipeline.last_debug_override_bytes {
             queue.write_buffer(&pipeline.debug_override_buffer, 0, &debug_bytes);
             pipeline.last_debug_override_bytes = debug_bytes;
         }
         if let Some(animated_add) = pipeline.animated_add.as_mut() {
-            let animated_debug_bytes = animated_debug_override.bytes();
+            let animated_debug_bytes = debug_overrides.animated.bytes();
             if animated_debug_bytes != animated_add.last_debug_override_bytes {
                 queue.write_buffer(
                     &animated_add.debug_override_buffer,
@@ -257,7 +265,7 @@ impl DirectShComposeResources {
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("Direct SH Compose"),
-                timestamp_writes,
+                timestamp_writes: timestamp_writes.promotion,
             });
             pass.set_pipeline(&pipeline.pipeline);
             pass.set_bind_group(0, &pipeline.bind_group, &[]);
@@ -266,7 +274,7 @@ impl DirectShComposeResources {
         if let Some(animated_add) = &pipeline.animated_add {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("Animated Direct SH Compose"),
-                timestamp_writes: animated_timestamp_writes,
+                timestamp_writes: timestamp_writes.animated,
             });
             pass.set_pipeline(&animated_add.pipeline);
             pass.set_bind_group(0, uniform_bind_group, &[]);

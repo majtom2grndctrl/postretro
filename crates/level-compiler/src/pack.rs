@@ -638,8 +638,12 @@ pub fn pack_and_write_portals(
     let animated_light_weight_maps_bytes = animated_light_weight_maps.map(|s| s.to_bytes());
     let light_tags_bytes = light_tags.map(|s| s.to_bytes());
     let delta_sh_volumes_bytes = delta_sh_volumes.map(|s| s.to_bytes());
-    let animated_direct_sh_delta_volumes_bytes =
-        animated_direct_sh_delta_volumes.map(|section| section.to_bytes());
+    let animated_direct_sh_delta_volumes_bytes = animated_direct_sh_delta_volumes
+        .map(AnimatedDirectShDeltaVolumesSection::try_to_bytes)
+        .transpose()
+        .map_err(|error| {
+            anyhow::anyhow!("AnimatedDirectShDeltaVolumes violates its wire contract: {error}")
+        })?;
     let data_script_bytes = data_script.map(|s| s.to_bytes());
     let map_entities_bytes = map_entities.map(|s| s.to_bytes());
     let fog_volumes_bytes = fog_volumes.to_bytes();
@@ -1525,6 +1529,11 @@ mod tests {
             meta.find_section(SectionId::AnimatedDirectShDeltaVolumes as u32)
                 .is_some(),
             "the baked animated direct delta must reach PRL serialization"
+        );
+        assert!(
+            meta.find_section(SectionId::DirectShVolume as u32)
+                .is_none(),
+            "the section-45-only path must not require a static direct-SH base"
         );
 
         let _ = std::fs::remove_file(&output);

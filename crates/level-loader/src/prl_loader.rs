@@ -18,7 +18,9 @@ use postretro_level_format::cell_locator::CellLocatorSection;
 use postretro_level_format::cells::CellsSection;
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
 use postretro_level_format::data_script::DataScriptSection;
-use postretro_level_format::delta_sh_volumes::{AFFINITY_FACTOR, DeltaShVolumesSection};
+use postretro_level_format::delta_sh_volumes::{
+    AFFINITY_FACTOR, DeltaShVolumesSection, PROBES_PER_CELL,
+};
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
 use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
@@ -517,6 +519,21 @@ pub(crate) fn validate_animated_direct_sh_delta(
                 ),
             ));
         }
+    }
+    let expected_subblock_len = section
+        .affinity_lights
+        .len()
+        .checked_mul(PROBES_PER_CELL)
+        .and_then(|count| count.checked_mul(section.delta_probe_f16_stride()))
+        .ok_or_else(|| section_validation(SECTION, "delta_subblocks length overflows usize"))?;
+    if section.delta_subblocks.len() != expected_subblock_len {
+        return Err(section_validation(
+            SECTION,
+            format!(
+                "delta_subblocks has length {}, expected {expected_subblock_len}",
+                section.delta_subblocks.len()
+            ),
+        ));
     }
 
     Ok(())

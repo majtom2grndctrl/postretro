@@ -2,6 +2,7 @@
 // See: context/lib/rendering_pipeline.md §4, §8
 
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
+use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
 use postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H;
 use postretro_level_format::sh_volume::{
@@ -148,6 +149,13 @@ pub struct ShVolumeResources {
     pub total_atlas_texture: wgpu::Texture,
 }
 
+pub(super) struct ShVolumeSections<'a> {
+    pub sh: Option<&'a OctahedralShVolumeSection>,
+    pub direct: Option<&'a DirectShVolumeSection>,
+    pub direct_delta: Option<&'a DirectShDeltaVolumesSection>,
+    pub animated_direct_delta: Option<&'a AnimatedDirectShDeltaVolumesSection>,
+}
+
 /// Per-animated-light delta volume placement, mirrored on CPU for diagnostics.
 /// Sourced from the same `DeltaShVolumesSection` `sh_compose` consumes.
 #[cfg(feature = "dev-tools")]
@@ -292,15 +300,16 @@ impl ShVolumeResources {
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        section: Option<&OctahedralShVolumeSection>,
-        direct_section: Option<&DirectShVolumeSection>,
-        direct_delta_section: Option<
-            &postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection,
-        >,
-        animated_direct_delta_section: Option<&AnimatedDirectShDeltaVolumesSection>,
+        sections: ShVolumeSections<'_>,
         scripted_light_capacity: usize,
         probe_occlusion_enabled: bool,
     ) -> Self {
+        let ShVolumeSections {
+            sh: section,
+            direct: direct_section,
+            direct_delta: direct_delta_section,
+            animated_direct_delta: animated_direct_delta_section,
+        } = sections;
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("SH Volume Bind Group Layout"),
             entries: &sh_bind_group_layout_entries(),

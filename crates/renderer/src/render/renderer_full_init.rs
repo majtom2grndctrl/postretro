@@ -197,10 +197,12 @@ pub(crate) fn build_full_renderer(
     let sh_volume_resources = ShVolumeResources::new(
         device,
         queue,
-        geometry.and_then(|g| g.sh_volume),
-        geometry.and_then(|g| g.direct_sh_volume),
-        geometry.and_then(|g| g.direct_sh_delta_volumes),
-        geometry.and_then(|g| g.animated_direct_sh_delta_volumes),
+        ShVolumeSections {
+            sh: geometry.and_then(|g| g.sh_volume),
+            direct: geometry.and_then(|g| g.direct_sh_volume),
+            direct_delta: geometry.and_then(|g| g.direct_sh_delta_volumes),
+            animated_direct_delta: geometry.and_then(|g| g.animated_direct_sh_delta_volumes),
+        },
         // Runtime-spawned lights append after the full-authored prefix.
         scripted_light_capacity,
         probe_occlusion_enabled,

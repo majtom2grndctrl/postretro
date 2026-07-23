@@ -84,7 +84,10 @@ use postretro_render_data::material::Material;
 use postretro_visibility::{CameraCullVisibility, VisibilityPath, VisibleCells};
 
 use animated_direct_sh_compose::AnimatedDirectShDebugOverride;
-use direct_sh_compose::{DirectShComposeResources, DirectShDebugOverride};
+use direct_sh_compose::{
+    DirectShComposeDebugOverrides, DirectShComposeResources, DirectShComposeTimestampWrites,
+    DirectShDebugOverride,
+};
 use fog_pass::FogPass;
 use frame_timing::FrameTiming;
 use promoted_depth_cache::{PromotedDepthCache, PromotedDepthCacheFramePlan};
@@ -92,7 +95,7 @@ use screen_effects::ScreenEffectsPass;
 use sdf_atlas::SdfAtlasResources;
 use sdf_shadow::{SdfShadowFrameInputs, SdfShadowPass, SdfShadowShGrid};
 use sh_compose::ShComposeResources;
-use sh_volume::ShVolumeResources;
+use sh_volume::{ShVolumeResources, ShVolumeSections};
 use smoke::SmokePass;
 
 use postretro_render_cpu::smoke::SpriteFrame;

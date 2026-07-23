@@ -50,9 +50,10 @@ pub struct LightAnimation {
     /// `None` = loop forever.
     #[serde(default)]
     pub play_count: Option<u32>,
-    /// `None` = "no animation on this channel; hold the static value". The
-    /// bridge signals absence with `Some(false)` at the GPU descriptor's
-    /// `active` slot.
+    /// Initial active state for this installed descriptor. `None` defaults to
+    /// active; `Some(false)` makes every channel contribute zero until an
+    /// explicit script mutation replaces or clears the descriptor. Clearing
+    /// the animation restores the light's authored static radiance.
     #[serde(default)]
     pub start_active: Option<bool>,
     #[serde(default)]

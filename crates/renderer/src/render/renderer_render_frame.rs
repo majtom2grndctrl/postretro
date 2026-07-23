@@ -726,6 +726,23 @@ impl Renderer {
             composite.draw(0..3, 0..1); // fullscreen triangle from vertex_index — no vertex buffer
         }
 
+        // Bloom samples HDR scene color after fog and adds the blurred bright
+        // contribution back before capture. The capture return below therefore
+        // sees bloom, while wireframe/debug/viewmodel/UI remain un-bloomed.
+        if self.full().bloom.enabled() {
+            let Self { queue, full, .. } = self;
+            let full = full
+                .as_mut()
+                .expect("renderer full-init must complete before full-ready paths run");
+            if let Some(timing) = &full.frame_timing {
+                timing.write_encoder_start(encoder, TIMING_PAIR_BLOOM);
+            }
+            full.bloom.record(queue, encoder, &scene_color);
+            if let Some(timing) = &full.frame_timing {
+                timing.write_encoder_end(encoder, TIMING_PAIR_BLOOM);
+            }
+        }
+
         // Offscreen capture stops after the world scene. The windowed-only
         // wireframe/debug/UI/resolve tail below must never enter capture bytes.
         let Some(view) = swapchain_view else {

@@ -558,6 +558,7 @@ pub(crate) fn build_frame_timing(
         pass_labels[TIMING_PAIR_PROMOTED_DEPTH_CACHE] = "promoted_depth_cache_upper";
         pass_labels[TIMING_PAIR_SMOKE] = "smoke";
         pass_labels[TIMING_PAIR_ANIMATED_DIRECT_SH_COMPOSE] = "animated_direct_sh_compose";
+        pass_labels[TIMING_PAIR_BLOOM] = "bloom";
         Some(FrameTiming::new(device, queue, pass_labels))
     } else {
         None

@@ -5,6 +5,21 @@
 use super::*;
 
 impl Renderer {
+    /// Runtime bloom state. `POSTRETRO_BLOOM=0` seeds this false for the
+    /// manual no-bloom observation; dev-tools can then change it live.
+    #[cfg(feature = "dev-tools")]
+    pub fn bloom_enabled(&self) -> bool {
+        self.full().bloom.enabled()
+    }
+
+    #[cfg(feature = "dev-tools")]
+    pub fn set_bloom_enabled(&mut self, enabled: bool) {
+        if self.full().bloom.enabled() != enabled {
+            self.full_mut().bloom.set_enabled(enabled);
+            log::info!("[Renderer] Bloom: {enabled}");
+        }
+    }
+
     /// Direct setter used by the debug-panel dropdown. Logs only on actual
     /// transition so spam-clicks on the current mode stay quiet.
     #[cfg(feature = "dev-tools")]

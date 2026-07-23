@@ -191,6 +191,12 @@ pub(crate) fn build_full_renderer(
         surface_config.height,
         surface_format,
     );
+    let bloom = BloomPass::new(
+        device,
+        surface_config.width,
+        surface_config.height,
+        screen_effects.scene_color_texture(),
+    );
 
     let scripted_light_capacity = full_lights.len() + RUNTIME_DYNAMIC_LIGHT_RESERVE;
     let sh_volume_resources = ShVolumeResources::new(
@@ -620,6 +626,7 @@ pub(crate) fn build_full_renderer(
         shadow_vs_stride,
         depth_view,
         screen_effects,
+        bloom,
         gpu_textures,
         bvh_leaves,
         cell_draw_index,

@@ -746,6 +746,10 @@ pub(super) struct FullRenderer {
     /// resize alongside `depth_view`. See `render/screen_effects.rs`.
     pub(super) screen_effects: ScreenEffectsPass,
 
+    /// HDR bloom chain. Samples the post-fog `scene_color` target and
+    /// composites before capture and presentation resolve.
+    pub(super) bloom: BloomPass,
+
     /// GPU textures indexed by texture index.
     pub(super) gpu_textures: Vec<GpuTexture>,
     pub(super) bvh_leaves: Vec<postretro_render_data::geometry::BvhLeaf>,

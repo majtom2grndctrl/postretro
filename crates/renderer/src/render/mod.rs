@@ -2,6 +2,7 @@
 // See: context/lib/rendering_pipeline.md
 mod animated_direct_sh_compose;
 mod animated_lightmap;
+mod bloom;
 #[cfg(feature = "dev-tools")]
 mod debug_lines;
 #[cfg(feature = "dev-tools")]
@@ -87,6 +88,7 @@ use postretro_render_data::material::Material;
 use postretro_visibility::{CameraCullVisibility, VisibilityPath, VisibleCells};
 
 use animated_direct_sh_compose::AnimatedDirectShDebugOverride;
+use bloom::BloomPass;
 use direct_sh_compose::{
     DirectShComposeDebugOverrides, DirectShComposeResources, DirectShComposeTimestampWrites,
     DirectShDebugOverride,

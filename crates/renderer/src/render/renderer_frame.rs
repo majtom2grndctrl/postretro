@@ -190,6 +190,12 @@ impl Renderer {
         // `scene_color` is surface-sized; recreate it (and rebuild the resolve
         // bind group) alongside the depth target.
         full.screen_effects.resize(device, width, height);
+        full.bloom.resize(
+            device,
+            width,
+            height,
+            full.screen_effects.scene_color_texture(),
+        );
         full.fog.resize(device, width, height, &full.depth_view);
         // SDF shadow target is half-res relative to the surface; the depth view
         // also changed, so the pass bind group has to be rebuilt.

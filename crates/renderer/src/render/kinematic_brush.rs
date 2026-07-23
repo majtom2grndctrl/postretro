@@ -283,7 +283,6 @@ fn material_index(texture_index: u32, material_count: usize) -> usize {
 impl KinematicBrushPass {
     pub fn new(
         device: &wgpu::Device,
-        surface_format: wgpu::TextureFormat,
         depth_format: wgpu::TextureFormat,
         camera_bgl: &wgpu::BindGroupLayout,
         material_bgl: &wgpu::BindGroupLayout,
@@ -381,7 +380,7 @@ impl KinematicBrushPass {
                 module: &shader,
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: surface_format,
+                    format: SCENE_COLOR_FORMAT,
                     blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],

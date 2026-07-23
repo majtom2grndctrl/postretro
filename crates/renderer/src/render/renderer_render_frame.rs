@@ -119,14 +119,18 @@ impl Renderer {
 
         let width = self.surface_config.width;
         let height = self.surface_config.height;
-        let scene_color = self.scene_color_texture();
-        self.read_texture_rgba8(scene_color, width, height, encoder)
-    }
-
-    /// Reach the full renderer's capture source without exposing wgpu resources
-    /// across the renderer boundary.
-    fn scene_color_texture(&self) -> &wgpu::Texture {
-        self.full().screen_effects.scene_color_texture()
+        // `scene_color` is HDR Rgba16Float, while the established PNG path
+        // reads tightly packed RGBA8. Resolve to a capture-only LDR texture
+        // first; it shares the window resolve's soft-knee tonemap but keeps
+        // transient flash/vignette/shake at rest.
+        let capture_color = self.full().screen_effects.encode_capture_tonemap(
+            &self.device,
+            &self.queue,
+            &mut encoder,
+            width,
+            height,
+        );
+        self.read_texture_rgba8(&capture_color, width, height, encoder)
     }
 
     /// Record the world-scene passes shared by windowed gameplay and offscreen

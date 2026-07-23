@@ -65,6 +65,9 @@ use glam::{Mat4, Vec3};
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
+/// Linear HDR target shared by every gameplay scene pass.
+pub(super) const SCENE_COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+
 use crate::compute_cull::ComputeCullPipeline;
 use crate::lighting::lightmap::LightmapResources;
 use crate::lighting::spot_shadow::SpotShadowPool;

@@ -183,9 +183,8 @@ pub(crate) fn build_full_renderer(
     let (_depth_texture, depth_view) =
         create_depth_texture(device, surface_config.width, surface_config.height);
 
-    // Post-scene compositor seam: `scene_color` offscreen target + identity
-    // resolve. Allocated at the sRGB surface format / surface size /
-    // single-sample for byte-identical resolve (see `screen_effects.rs`).
+    // Post-scene compositor seam: a linear HDR `scene_color` target + sRGB
+    // resolve. The scene target is independent from the swapchain format.
     let screen_effects = ScreenEffectsPass::new(
         device,
         surface_config.width,
@@ -355,7 +354,6 @@ pub(crate) fn build_full_renderer(
         shadow_depth_pipeline,
     } = build_renderer_pipelines(
         device,
-        surface_format,
         &uniform_bind_group_layout,
         &texture_bind_group_layout,
         &lighting_bind_group_layout,
@@ -384,7 +382,6 @@ pub(crate) fn build_full_renderer(
     // See: context/lib/rendering_pipeline.md §7.4
     let smoke_pass = SmokePass::new(
         device,
-        surface_format,
         DEPTH_FORMAT,
         &uniform_bind_group_layout,
         &lighting_bind_group_layout,
@@ -398,7 +395,6 @@ pub(crate) fn build_full_renderer(
     // depth loop; `record_draws` then records the forward draw.
     let mut mesh_pass = mesh_pass::MeshPass::new(
         device,
-        surface_format,
         DEPTH_FORMAT,
         // The depth-only skinned pipeline writes the shadow-map depth format
         // and binds the world spot-shadow `shadow_vs_bgl` at group 0 (the
@@ -442,7 +438,6 @@ pub(crate) fn build_full_renderer(
     );
     let mut kinematic_brush = kinematic_brush::KinematicBrushPass::new(
         device,
-        surface_format,
         DEPTH_FORMAT,
         &uniform_bind_group_layout,
         &texture_bind_group_layout,
@@ -470,7 +465,7 @@ pub(crate) fn build_full_renderer(
     // UI quad / 9-slice + text pass — sibling to fog. Owns all UI GPU state
     // (quad pipeline, glyphon atlas/renderer, white texel). The splash phase
     // and the gameplay path both record through it.
-    let ui = ui::UiPass::new(device, queue, surface_format);
+    let ui = ui::UiPass::new(device, queue, SCENE_COLOR_FORMAT);
 
     let mut fog = FogPass::new(
         device,
@@ -483,8 +478,7 @@ pub(crate) fn build_full_renderer(
         &spot_shadow_bgl,
         cube_array_supported,
     );
-    // Swapchain may differ from the hardcoded Rgba8UnormSrgb default.
-    fog.rebuild_composite_for_format(device, surface_format);
+    fog.rebuild_composite_for_scene_color(device);
 
     if has_geometry {
         log::info!(
@@ -502,13 +496,8 @@ pub(crate) fn build_full_renderer(
     }
 
     #[cfg(feature = "dev-tools")]
-    let debug_lines = debug_lines::DebugLineRenderer::new(
-        device,
-        surface_format,
-        DEPTH_FORMAT,
-        1,
-        &uniform_bind_group_layout,
-    );
+    let debug_lines =
+        debug_lines::DebugLineRenderer::new(device, DEPTH_FORMAT, 1, &uniform_bind_group_layout);
 
     let promoted_static_weight_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("Promoted Static Light Weights"),

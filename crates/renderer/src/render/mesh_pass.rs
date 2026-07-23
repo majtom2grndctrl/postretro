@@ -1049,7 +1049,6 @@ impl MeshPass {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         device: &wgpu::Device,
-        surface_format: wgpu::TextureFormat,
         depth_format: wgpu::TextureFormat,
         shadow_depth_format: wgpu::TextureFormat,
         camera_bgl: &wgpu::BindGroupLayout,
@@ -1230,7 +1229,7 @@ impl MeshPass {
                 module: &shader,
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: surface_format,
+                    format: super::SCENE_COLOR_FORMAT,
                     blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],

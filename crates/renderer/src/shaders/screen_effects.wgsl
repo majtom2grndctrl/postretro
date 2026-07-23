@@ -3,18 +3,16 @@
 // swapchain. The sole swapchain writer for the gameplay path — runs every
 // frame, never skipped at rest.
 //
-// Composes screen effects (flash / vignette / shake) on top of an identity blit.
+// Tonemaps HDR scene color, then composes screen effects (flash / vignette /
+// shake) on top.
 // The effect values arrive in `EffectUniform`, packed CPU-side from the frame's
 // `screen.flash` / `screen.vignette` / `screen.shake` slots (see
 // render/screen_effects.rs::pack_effect_uniform). At rest every term is an exact
-// no-op, so the resolve collapses to a bit-identical identity blit and the parity
-// gate holds for both the unbound and at-rest paths.
+// no-op, so only the near-neutral tonemap changes an at-rest scene.
 //
-// sRGB byte-identity: `scene_color` is the sRGB surface format at single sample,
-// and the resolve sampler is NEAREST / pixel-aligned, so each source texel maps
-// 1:1 to its swapchain texel with no resample. The per-pass sRGB-encode + 8-bit
-// quantize that landed in `scene_color` round-trips losslessly to the swapchain.
-// See context/lib/rendering_pipeline.md §7.8 and the M13 Goal SE plan.
+// `scene_color` is linear Rgba16Float. This shader samples it without an sRGB
+// decode and writes an sRGB target, which performs the sole store conversion.
+// See context/lib/rendering_pipeline.md §7.8.
 
 @group(0) @binding(0) var scene_color_tex: texture_2d<f32>;
 @group(0) @binding(1) var scene_color_sampler: sampler;
@@ -50,6 +48,22 @@ fn vs_main(@builtin(vertex_index) vid: u32) -> VsOut {
     return out;
 }
 
+// Preserve the palette below a very late knee, then compress HDR overshoot by
+// the scene's peak channel so hue remains stable. The 0.98 knee is within one
+// percent of unity at 1.0, but avoids a hard clip and asymptotically approaches
+// the display ceiling for bright emissive/bloom content.
+fn soft_knee_tonemap(color: vec3<f32>) -> vec3<f32> {
+    let peak = max(max(color.r, color.g), color.b);
+    let knee_start = 0.98;
+    if peak <= knee_start {
+        return color;
+    }
+    let knee_width = 1.0 - knee_start;
+    let excess = peak - knee_start;
+    let compressed_peak = knee_start + knee_width * excess / (excess + knee_width);
+    return color * (compressed_peak / peak);
+}
+
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // Shake: pure UV add (px→UV conversion already done CPU-side). At rest
@@ -59,7 +73,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // resolve sampler is ClampToEdge with no over-render margin.
     let sample_uv = in.uv + effect.shake;
     let scene = textureSample(scene_color_tex, scene_color_sampler, sample_uv);
-    var color = scene.rgb;
+    var color = soft_knee_tonemap(scene.rgb);
 
     // Vignette: tint/darken toward `vignette.rgb` near the edges, center
     // unaffected. The radial falloff is 0 at the center and rises toward the
@@ -79,7 +93,6 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // otherwise extrapolate past the flash color.
     color = mix(color, effect.flash.xyz, clamp(effect.flash.a, 0.0, 1.0));
 
-    // Preserve the sampled alpha so the at-rest path is byte-identical to the
-    // pre-SE identity blit (which returned the full sampled RGBA).
+    // Alpha is not part of the HDR tonemap; preserve the sampled coverage.
     return vec4<f32>(color, scene.a);
 }

@@ -34,10 +34,10 @@ use super::types::{
 #[cfg(debug_assertions)]
 fn defer_mesh_descriptor_refreshes(
     old_descriptors: &[crate::data_descriptors::EntityTypeDescriptor],
-    next_descriptors: &mut [crate::data_descriptors::EntityTypeDescriptor],
+    next_descriptors: &mut Vec<crate::data_descriptors::EntityTypeDescriptor>,
 ) -> bool {
     let mut deferred = false;
-    for next in next_descriptors {
+    for next in next_descriptors.iter_mut() {
         let Some(name) = next.canonical_name.as_deref() else {
             continue;
         };
@@ -86,6 +86,36 @@ fn defer_mesh_descriptor_refreshes(
             // holder attachment stale. Keep the full descriptor until reload.
             next.weapon = Some(old_weapon.clone());
         }
+    }
+
+    // Descriptor-backed network presentation and runtime spawners do not all
+    // carry enough provenance to prove whether a removed descriptor has a live
+    // holder. Treat the installed descriptor/resource snapshot as the lifetime
+    // boundary: a completely removed presentation-bearing descriptor remains
+    // addressable for this level even when no holder is currently observed.
+    // Pure tuning descriptors have no such dependency and delete immediately.
+    for old in old_descriptors {
+        let Some(name) = old.canonical_name.as_deref() else {
+            continue;
+        };
+        if next_descriptors
+            .iter()
+            .any(|next| next.canonical_name.as_deref() == Some(name))
+        {
+            continue;
+        }
+        let weapon_presentation_installed = old.weapon.as_ref().is_some_and(|weapon| {
+            weapon.third_person_model.is_some() || weapon.viewmodel.is_some()
+        });
+        if old.mesh.is_none() && !weapon_presentation_installed {
+            continue;
+        }
+
+        deferred = true;
+        log::warn!(
+            "[Scripting] staged descriptor deletion deferred for presentation-bearing `{name}`; active model uploads and bindings remain addressable until the next level load"
+        );
+        next_descriptors.push(old.clone());
     }
     deferred
 }
@@ -721,13 +751,48 @@ mod tests {
     }
 
     #[test]
+    fn staged_refresh_defers_complete_presentation_deletion_without_an_observed_holder() {
+        // Regression: complete snapshot deletion bypassed field-level deferral,
+        // dropping descriptor lookup while the current level retained its models.
+        let mesh_backed = descriptor(
+            "mesh_backed",
+            Some(mesh_descriptor("models/prop.gltf")),
+            None,
+        );
+        let mut weapon_backed = descriptor("weapon_backed", None, None);
+        weapon_backed.weapon = Some(weapon_descriptor(
+            10.0,
+            Some("models/weapon.gltf"),
+            Some("models/view.gltf"),
+        ));
+        let mut tuning_only = descriptor("tuning_only", None, None);
+        tuning_only.weapon = Some(weapon_descriptor(10.0, None, None));
+        let old = vec![mesh_backed.clone(), weapon_backed.clone(), tuning_only];
+        let mut next = Vec::new();
+
+        assert!(defer_mesh_descriptor_refreshes(&old, &mut next));
+        assert_eq!(
+            next,
+            vec![mesh_backed, weapon_backed],
+            "installed presentation descriptors remain addressable even when no live holder is observable; tuning-only deletion remains immediate"
+        );
+    }
+
+    #[test]
     fn level_install_promotes_the_latest_deferred_mesh_snapshot() {
         let ctx = ScriptCtx::new();
-        let active = vec![descriptor(
-            "remote_enemy",
-            Some(mesh_descriptor("models/old_prop.gltf")),
-            None,
-        )];
+        let active = vec![
+            descriptor(
+                "remote_enemy",
+                Some(mesh_descriptor("models/old_prop.gltf")),
+                None,
+            ),
+            descriptor(
+                "deleted_remote_enemy",
+                Some(mesh_descriptor("models/deleted_prop.gltf")),
+                None,
+            ),
+        ];
         let incoming = vec![
             descriptor(
                 "remote_enemy",
@@ -753,7 +818,7 @@ mod tests {
         assert_eq!(
             ctx.data_registry.borrow().entities,
             incoming,
-            "the next level sees attachment edits and added mesh descriptors"
+            "the next level sees attachment edits, additions, and complete presentation-descriptor deletion"
         );
         assert!(
             !runtime.install_deferred_mesh_descriptors(&ctx),

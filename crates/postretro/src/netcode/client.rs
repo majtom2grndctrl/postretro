@@ -774,11 +774,10 @@ impl ClientReplication {
                 true
             }
             // Mapped but the entity is stale/missing: the map is corrupt for this id.
-            // Drop the stale mapping, mark pending, and request a refresh. Leave all
-            // other registry state untouched. Not acked.
+            // Drop every cache owned by the stale identity before repair can respawn
+            // the same NetworkId. Unrelated registry state remains untouched. Not acked.
             Some(_) => {
-                self.remove_mapping(network_id);
-                self.baselines.remove(&network_id);
+                self.clear_identity_state(network_id);
                 self.queue_repair(
                     &mut outcome.refresh_requests,
                     sequence,
@@ -1175,28 +1174,34 @@ impl ClientReplication {
     /// or already-despawned `NetworkId` is a no-op (the registry `despawn` of a stale
     /// id errors, which we swallow).
     fn apply_despawn(&mut self, registry: &mut EntityRegistry, network_id: NetworkId) {
-        if let Some(id) = self.map.remove(&network_id) {
-            self.reverse_map.remove(&id);
+        if let Some(id) = self.clear_identity_state(network_id) {
             // `despawn` errors on a stale id; the entity may already be gone. Either
             // way the post-state is "despawned", so the error is ignored.
             let _ = registry.despawn(id);
         }
-        self.baselines.remove(&network_id);
         // A despawn also clears any pending repair for the entity: there is nothing
         // to repair once it is gone.
         self.pending_repairs.remove(&network_id);
-        // Drop the entity's interpolation buffer; a later re-spawn under a fresh
-        // NetworkId starts with an empty buffer.
+    }
+
+    /// Drop every registry-backed cache owned by one network identity. Used by both
+    /// ordinary despawn and stale-map repair so a later mapping starts clean.
+    fn clear_identity_state(&mut self, network_id: NetworkId) -> Option<EntityId> {
+        let entity_id = self.remove_mapping(network_id);
+        self.baselines.remove(&network_id);
         self.interp.forget(network_id);
         self.remote_enemy_walk_playback.remove(&network_id);
         self.remote_player_locomotion.remove(&network_id);
+        self.presented_player_inputs.aim_pitches.remove(&network_id);
+        self.presented_player_inputs
+            .heading_yaws
+            .remove(&network_id);
         self.active_weapon_archetypes.remove(&network_id);
         self.mover_network_ids.remove(&network_id);
-        // If the local predicted pawn despawned, forget it: prediction re-arms off a
-        // future `local_player` baseline (a fresh NetworkId).
         if self.local_pawn == Some(network_id) {
             self.local_pawn = None;
         }
+        entity_id
     }
 
     fn insert_mapping(&mut self, network_id: NetworkId, entity_id: EntityId) {
@@ -1585,12 +1590,15 @@ impl ClientReplication {
     }
 
     /// Before time sync can name a presentation tick, remote avatars hold their
-    /// baseline pose. Their client-local locomotion therefore resolves idle too.
-    pub(crate) fn apply_held_remote_player_locomotion(
+    /// newest applied pose. Preserve that pose's pitch, clear motion-derived heading,
+    /// and resolve client-local locomotion to idle.
+    pub(crate) fn apply_held_remote_player_presentation(
         &mut self,
         registry: &mut EntityRegistry,
         frame_anim_time: f64,
     ) {
+        self.presented_player_inputs.aim_pitches.clear();
+        self.presented_player_inputs.heading_yaws.clear();
         let mapped: Vec<(NetworkId, EntityId)> = self.map.iter().map(|(&n, &e)| (n, e)).collect();
         for (network_id, entity_id) in mapped {
             if !registry.exists(entity_id)
@@ -1599,6 +1607,11 @@ impl ClientReplication {
                 || !self.remote_player_locomotion.contains_key(&network_id)
             {
                 continue;
+            }
+            if let Some(aim_pitch) = self.interp.newest_aim_pitch(network_id) {
+                self.presented_player_inputs
+                    .aim_pitches
+                    .insert(network_id, aim_pitch);
             }
             self.update_remote_player_locomotion(
                 registry,
@@ -2186,6 +2199,13 @@ mod tests {
     }
 
     fn movement_payload_with_velocity(velocity: [f32; 3]) -> ComponentPayload {
+        movement_payload_with_velocity_and_pitch(velocity, 0.0)
+    }
+
+    fn movement_payload_with_velocity_and_pitch(
+        velocity: [f32; 3],
+        aim_pitch: f32,
+    ) -> ComponentPayload {
         ComponentPayload::PlayerMovementState(WirePlayerMovementState {
             velocity,
             ground: WireGroundRef::World,
@@ -2199,7 +2219,7 @@ mod tests {
             jump_spent: false,
             capsule_half_height: 0.8,
             capsule_eye_height: 1.5,
-            aim_pitch: 0.0,
+            aim_pitch,
         })
     }
 
@@ -2813,6 +2833,103 @@ mod tests {
         assert!(registry.exists(id8));
         assert_eq!(client.stored_baseline(NetworkId(8)), Some(2));
         assert!((entity_pos(&registry, id8).x - 2.0).abs() < EPSILON);
+    }
+
+    // Regression: stale-map repair removed the IDs but retained interpolation,
+    // locomotion, and weapon state for the NetworkId reused by the repair spawn.
+    #[test]
+    fn stale_mapping_repair_respawn_reuses_network_id_with_clean_presentation_state() {
+        let baseline = |baseline_id, x, aim_pitch| EntityRecord::FullBaseline {
+            network_id: 7,
+            baseline_id,
+            last_processed_client_tick: None,
+            local_player: false,
+            entity_class: Some("player".to_string()),
+            active_weapon_archetype: Some("reference_pistol".to_string()),
+            components: vec![
+                transform_payload(x),
+                movement_payload_with_velocity_and_pitch([12.0, 0.0, 4.0], aim_pitch),
+            ],
+        };
+        let locomotion = || RemotePlayerLocomotionReference {
+            idle_state: "idle".to_string(),
+            walk_state: "walk_forward".to_string(),
+            run_state: None,
+            walk_speed: 60.0,
+            run_speed: 60.0,
+            walk_derived_travel_speed: None,
+            run_derived_travel_speed: None,
+        };
+
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(0, 100, vec![baseline(1, 1.0, 0.25)]),
+        );
+        let stale_id = *client.map().get(&NetworkId(7)).expect("initial mapping");
+        client.cache_remote_player_locomotion(NetworkId(7), Some(locomotion()));
+        client.sample_into_registry(&mut registry, 100.0, 0.0);
+        assert_eq!(client.sample_count(NetworkId(7)), 1);
+        assert!(client.remote_player_locomotion.contains_key(&NetworkId(7)));
+        assert!(client.active_weapon_archetypes.contains_key(&NetworkId(7)));
+        assert!(
+            client
+                .presented_player_inputs
+                .aim_pitches
+                .contains_key(&NetworkId(7))
+        );
+
+        registry.despawn(stale_id).expect("mapped entity was live");
+        let unrelated = registry.spawn(Transform::default());
+        let stale = client.apply_snapshot(
+            &mut registry,
+            &snapshot(1, 110, vec![baseline(5, 2.0, 0.5)]),
+        );
+
+        assert!(stale.ack.unwrap().entity_baselines.is_empty());
+        assert!(client.is_pending_repair(NetworkId(7)));
+        assert_eq!(client.sample_count(NetworkId(7)), 0);
+        assert!(!client.remote_player_locomotion.contains_key(&NetworkId(7)));
+        assert!(!client.active_weapon_archetypes.contains_key(&NetworkId(7)));
+        assert!(
+            !client
+                .presented_player_inputs
+                .aim_pitches
+                .contains_key(&NetworkId(7))
+        );
+
+        let repaired = client.apply_snapshot(
+            &mut registry,
+            &snapshot(2, 120, vec![baseline(5, 3.0, 0.75)]),
+        );
+        let repaired_id = *client.map().get(&NetworkId(7)).expect("repair remapped");
+
+        assert_ne!(
+            repaired_id, stale_id,
+            "repair uses a live-generation EntityId"
+        );
+        assert!(
+            registry.exists(unrelated),
+            "repair preserves the reused slot owner"
+        );
+        assert_eq!(client.sample_count(NetworkId(7)), 1);
+        assert!(!client.remote_player_locomotion.contains_key(&NetworkId(7)));
+        assert_eq!(
+            client
+                .active_weapon_archetypes
+                .get(&NetworkId(7))
+                .and_then(|archetype| archetype.as_deref()),
+            Some("reference_pistol")
+        );
+        assert!(
+            repaired.remote_entities.iter().any(|remote| {
+                remote.network_id == NetworkId(7)
+                    && remote.weapon_attachment_changed
+                    && remote.active_weapon_archetype.as_deref() == Some("reference_pistol")
+            }),
+            "unchanged weapon identity is re-applied to the repaired presentation"
+        );
     }
 
     // --- A refresh response (FullBaseline) clears the pending repair and re-maps. ---
@@ -4129,8 +4246,7 @@ mod tests {
         );
     }
 
-    // --- E10 Task 6: the local pawn is excluded from the remote-entity path even if a
-    // class rides its baseline — its descriptor presentation rides `armed_local_pawn`. ---
+    // --- Local player baselines bypass remote-entity materialization. ---
     #[test]
     fn local_player_baseline_surfaces_no_remote_entity() {
         let mut registry = EntityRegistry::new();

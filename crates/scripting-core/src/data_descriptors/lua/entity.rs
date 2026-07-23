@@ -110,6 +110,9 @@ pub fn entity_descriptor_from_lua(
             if components_table.contains_key("weapon").map_err(lua_err)? {
                 let raw: LuaValue = components_table.get("weapon").map_err(lua_err)?;
                 if !matches!(raw, LuaValue::Nil) {
+                    if let LuaValue::Table(weapon_table) = &raw {
+                        validate_optional_weapon_model_paths_lua(weapon_table)?;
+                    }
                     let json = conv::lua_to_json(raw).map_err(lua_err)?;
                     let descriptor: WeaponDescriptor =
                         serde_json::from_value(json).map_err(|e| {
@@ -190,6 +193,28 @@ pub fn entity_descriptor_from_lua(
         health,
         ai,
     })
+}
+
+/// Luau's generic JSON bridge maps functions/userdata/threads to JSON null.
+/// Reject those values for optional weapon presentation strings before serde
+/// can mistake malformed supplied input for omission.
+fn validate_optional_weapon_model_paths_lua(weapon: &Table) -> Result<(), DescriptorError> {
+    for field in ["thirdPersonModel", "viewmodel"] {
+        if !weapon.contains_key(field).map_err(lua_err)? {
+            continue;
+        }
+        let raw: LuaValue = weapon.get(field).map_err(lua_err)?;
+        if matches!(&raw, LuaValue::Nil | LuaValue::String(_)) {
+            continue;
+        }
+        return Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`components.weapon.{field}` must be a string when supplied, got {}",
+                raw.type_name()
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// Mirror of [`mesh_descriptor_from_js`] for Luau tables. Gathers raw fields

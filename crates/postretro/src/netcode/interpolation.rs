@@ -513,6 +513,17 @@ impl RemoteInterpolationBuffer {
         self.buffers.get(&network_id)?.sample_at(target_tick)
     }
 
+    /// Newest finite pitch for a pre-time-sync held presentation. No render tick
+    /// is required because the visible transform is still the newest applied pose.
+    pub(crate) fn newest_aim_pitch(&self, network_id: NetworkId) -> Option<f32> {
+        self.buffers
+            .get(&network_id)?
+            .samples
+            .back()
+            .map(|sample| sample.aim_pitch)
+            .filter(|pitch| pitch.is_finite())
+    }
+
     /// True when this entity's held-newest pose should feed adaptive delay.
     pub(crate) fn held_newest_needs_feedback(
         &self,

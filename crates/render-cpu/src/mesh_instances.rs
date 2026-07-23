@@ -197,10 +197,10 @@ pub struct MeshFramePlan {
 
 /// The two control-flow plans sharing this frame's palette and instance SSBOs.
 ///
-/// World instances receive the first budget admission so gameplay presentation
-/// cannot evict the world/shadow set. The viewmodel plan's palette bases and
-/// instance offsets continue after the world plan; neither plan owns a separate
-/// GPU buffer.
+/// Budget admission is global across both plans: all forward-visible groups are
+/// considered before dynamic-shadow-only and promoted-static-only groups. Dense
+/// instance offsets still place the viewmodel after the world plan; neither plan
+/// owns a separate GPU buffer.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MeshFramePlans {
     pub world: MeshFramePlan,
@@ -259,13 +259,21 @@ pub fn plan_mesh_frame(
 ) -> MeshFramePlan {
     let mut palette_cursor = 0;
     let mut instance_cursor = 0;
-    plan_grouped_mesh_frame(
-        instances,
-        joints,
-        |_| true,
-        &mut palette_cursor,
-        &mut instance_cursor,
-    )
+    let mut plan = MeshFramePlan::default();
+    for visibility_priority in 0..3 {
+        plan_mesh_priority(
+            instances,
+            joints,
+            &|_| true,
+            visibility_priority,
+            &mut palette_cursor,
+            &mut instance_cursor,
+            &mut plan,
+        );
+    }
+    let mut offset_cursor = 0;
+    assign_dense_instance_offsets(&mut plan, &mut offset_cursor);
+    plan
 }
 
 /// Partition world and first-person viewmodel instances into plans that share
@@ -278,6 +286,8 @@ pub fn plan_mesh_frame_plans(
 ) -> MeshFramePlans {
     let mut palette_cursor = 0;
     let mut instance_cursor = 0;
+    let mut world = MeshFramePlan::default();
+    let mut viewmodel = MeshFramePlan::default();
 
     // The collector appends its small viewmodel set after world instances. Find
     // that boundary once so each priority scan visits only its own plan. Keep a
@@ -289,122 +299,128 @@ pub fn plan_mesh_frame_plans(
             .iter()
             .all(|instance| instance.is_viewmodel)
     });
-    let (world, viewmodel) = if viewmodels_are_a_suffix {
+    if viewmodels_are_a_suffix {
         let split = first_viewmodel.unwrap_or(instances.len());
         let (world_instances, viewmodel_instances) = instances.split_at(split);
-        let world = plan_grouped_mesh_frame(
-            world_instances,
-            joints,
-            |_| true,
-            &mut palette_cursor,
-            &mut instance_cursor,
-        );
-        let viewmodel = plan_grouped_mesh_frame(
-            viewmodel_instances,
-            joints,
-            |_| true,
-            &mut palette_cursor,
-            &mut instance_cursor,
-        );
-        (world, viewmodel)
+        for visibility_priority in 0..3 {
+            plan_mesh_priority(
+                world_instances,
+                joints,
+                &|_| true,
+                visibility_priority,
+                &mut palette_cursor,
+                &mut instance_cursor,
+                &mut world,
+            );
+            plan_mesh_priority(
+                viewmodel_instances,
+                joints,
+                &|_| true,
+                visibility_priority,
+                &mut palette_cursor,
+                &mut instance_cursor,
+                &mut viewmodel,
+            );
+        }
     } else {
-        let world = plan_grouped_mesh_frame(
-            instances,
-            joints,
-            |instance| !instance.is_viewmodel,
-            &mut palette_cursor,
-            &mut instance_cursor,
-        );
-        let viewmodel = plan_grouped_mesh_frame(
-            instances,
-            joints,
-            |instance| instance.is_viewmodel,
-            &mut palette_cursor,
-            &mut instance_cursor,
-        );
-        (world, viewmodel)
-    };
+        for visibility_priority in 0..3 {
+            plan_mesh_priority(
+                instances,
+                joints,
+                &|instance| !instance.is_viewmodel,
+                visibility_priority,
+                &mut palette_cursor,
+                &mut instance_cursor,
+                &mut world,
+            );
+            plan_mesh_priority(
+                instances,
+                joints,
+                &|instance| instance.is_viewmodel,
+                visibility_priority,
+                &mut palette_cursor,
+                &mut instance_cursor,
+                &mut viewmodel,
+            );
+        }
+    }
+
+    let mut offset_cursor = 0;
+    assign_dense_instance_offsets(&mut world, &mut offset_cursor);
+    assign_dense_instance_offsets(&mut viewmodel, &mut offset_cursor);
     MeshFramePlans { world, viewmodel }
 }
 
-fn plan_grouped_mesh_frame(
+#[allow(clippy::too_many_arguments)]
+fn plan_mesh_priority(
     instances: &[MeshInstanceInput],
     joints: &impl JointCounts,
-    include: impl Fn(&MeshInstanceInput) -> bool,
+    include: &impl Fn(&MeshInstanceInput) -> bool,
+    visibility_priority: u8,
     palette_cursor: &mut usize,
     instance_cursor: &mut usize,
-) -> MeshFramePlan {
-    let mut groups: Vec<ModelDrawGroup> = Vec::new();
-    let plan_instance_start = *instance_cursor as u32;
-    let mut dropped: u32 = 0;
-
+    plan: &mut MeshFramePlan,
+) {
     // Budget forward-visible groups first, then dynamic-shadow casters, then the
     // broader promoted-static-only relevance set. Collector output keeps each
     // holder immediately followed by its attachments, so three scans preserve
     // group order without an allocation.
-    for visibility_priority in 0..3 {
-        let mut group_start = 0;
-        while group_start < instances.len() {
-            let holder_group = instances[group_start].palette_cache_key.holder_group();
-            let is_viewmodel = instances[group_start].is_viewmodel;
-            let mut group_end = group_start + 1;
-            while group_end < instances.len()
-                && instances[group_end].palette_cache_key.holder_group() == holder_group
-                && instances[group_end].is_viewmodel == is_viewmodel
-            {
-                group_end += 1;
-            }
-            let input_group = &instances[group_start..group_end];
-            if !include(&input_group[0]) {
-                group_start = group_end;
-                continue;
-            }
-            debug_assert!(
-                input_group.iter().all(&include),
-                "a holder and its attachments must share the world/viewmodel plan"
-            );
-            let forward_visible = input_group.iter().any(|instance| instance.forward_visible);
-            let dynamic_shadow_visible = input_group
-                .iter()
-                .any(|instance| instance.dynamic_shadow_visible);
-            let priority = if forward_visible {
-                0
-            } else if dynamic_shadow_visible {
-                1
-            } else {
-                2
-            };
-            if priority == visibility_priority {
-                plan_instance_group(
-                    input_group,
-                    forward_visible,
-                    dynamic_shadow_visible,
-                    joints,
-                    &mut groups,
-                    palette_cursor,
-                    instance_cursor,
-                    &mut dropped,
-                );
-            }
-            group_start = group_end;
+    let mut group_start = 0;
+    while group_start < instances.len() {
+        let holder_group = instances[group_start].palette_cache_key.holder_group();
+        let is_viewmodel = instances[group_start].is_viewmodel;
+        let mut group_end = group_start + 1;
+        while group_end < instances.len()
+            && instances[group_end].palette_cache_key.holder_group() == holder_group
+            && instances[group_end].is_viewmodel == is_viewmodel
+        {
+            group_end += 1;
         }
+        let input_group = &instances[group_start..group_end];
+        if !include(&input_group[0]) {
+            group_start = group_end;
+            continue;
+        }
+        debug_assert!(
+            input_group.iter().all(include),
+            "a holder and its attachments must share the world/viewmodel plan"
+        );
+        let forward_visible = input_group.iter().any(|instance| instance.forward_visible);
+        let dynamic_shadow_visible = input_group
+            .iter()
+            .any(|instance| instance.dynamic_shadow_visible);
+        let priority = if forward_visible {
+            0
+        } else if dynamic_shadow_visible {
+            1
+        } else {
+            2
+        };
+        if priority == visibility_priority {
+            plan_instance_group(
+                input_group,
+                forward_visible,
+                dynamic_shadow_visible,
+                joints,
+                &mut plan.groups,
+                palette_cursor,
+                instance_cursor,
+                &mut plan.dropped,
+            );
+        }
+        group_start = group_end;
     }
+}
 
+fn assign_dense_instance_offsets(plan: &mut MeshFramePlan, instance_cursor: &mut u32) {
+    let plan_instance_start = *instance_cursor;
     // Assign dense instance offsets in group order so the flat SSBO is filled
     // group-by-group; each group draws `instance_offset..+len`.
-    let mut instance_offset = plan_instance_start;
-    for group in &mut groups {
-        group.instance_offset = instance_offset;
-        instance_offset += group.instances.len() as u32;
+    for group in &mut plan.groups {
+        group.instance_offset = *instance_cursor;
+        *instance_cursor += group.instances.len() as u32;
     }
-    let instance_count = instance_offset - plan_instance_start;
-    *instance_cursor = instance_offset as usize;
-
-    MeshFramePlan {
-        groups,
-        instance_count,
-        dropped,
-    }
+    plan.instance_count = *instance_cursor - plan_instance_start;
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -903,6 +919,48 @@ mod tests {
         assert_eq!(world_group.instances[0].palette_base, 0);
         assert_eq!(world_group.instances[1].palette_base, 3);
         assert_eq!(viewmodel_group.instances[0].palette_base, 6);
+    }
+
+    // Regression: planning every world priority before the viewmodel let a
+    // shadow-only world group evict the forward-visible first-person weapon.
+    #[test]
+    fn plans_apply_visibility_priority_globally_across_world_and_viewmodel() {
+        let per = (MAX_PALETTE_ENTRIES / 3) as u32;
+        let joints = joints(&[
+            ("static-only", per),
+            ("dynamic", per),
+            ("world-forward", per),
+            ("viewmodel", per),
+        ]);
+        let mut viewmodel = instance("viewmodel", 4.0, 4);
+        viewmodel.is_viewmodel = true;
+        viewmodel.dynamic_shadow_visible = false;
+        let inputs = [
+            non_forward_instance("static-only", 1.0, 1),
+            dynamic_shadow_instance("dynamic", 2.0, 2),
+            instance("world-forward", 3.0, 3),
+            viewmodel,
+        ];
+
+        let plans = plan_mesh_frame_plans(&inputs, &joints);
+        let world_models: Vec<_> = plans
+            .world
+            .groups
+            .iter()
+            .map(|group| group.model.as_str())
+            .collect();
+
+        assert_eq!(world_models, ["world-forward", "dynamic"]);
+        assert_eq!(plans.world.instance_count, 2);
+        assert_eq!(plans.world.dropped, 1, "promoted-static-only drops last");
+        assert_eq!(plans.viewmodel.instance_count, 1);
+        assert_eq!(plans.viewmodel.dropped, 0, "forward viewmodel survives");
+        assert_eq!(plans.world.groups[0].instances[0].palette_base, 0);
+        assert_eq!(plans.viewmodel.groups[0].instances[0].palette_base, per);
+        assert_eq!(plans.world.groups[1].instances[0].palette_base, per * 2);
+        assert_eq!(plans.world.groups[0].instance_offset, 0);
+        assert_eq!(plans.world.groups[1].instance_offset, 1);
+        assert_eq!(plans.viewmodel.groups[0].instance_offset, 2);
     }
 
     #[test]

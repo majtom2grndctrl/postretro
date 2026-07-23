@@ -456,6 +456,10 @@ def merge_animations(input_dir, scale=None, base=None, exclude_meshes=None):
         for frame in range(frame_start, frame_end + 1):
             bpy.context.scene.frame_set(frame)
             bone_locals = poses_by_frame[frame]
+            # glTF clip duration is its final key time. Rebase imported Mixamo
+            # frame numbers so a clip beginning at frame 1 starts at time zero
+            # instead of adding a one-frame dwell when it loops.
+            rebaked_frame = frame - frame_start
 
             for pbone in base_armature.pose.bones:
                 if pbone.name not in bone_locals:
@@ -490,9 +494,9 @@ def merge_animations(input_dir, scale=None, base=None, exclude_meshes=None):
                 pbone.rotation_quaternion = rot
                 pbone.scale = scl
 
-                pbone.keyframe_insert(data_path="location", frame=frame)
-                pbone.keyframe_insert(data_path="rotation_quaternion", frame=frame)
-                pbone.keyframe_insert(data_path="scale", frame=frame)
+                pbone.keyframe_insert(data_path="location", frame=rebaked_frame)
+                pbone.keyframe_insert(data_path="rotation_quaternion", frame=rebaked_frame)
+                pbone.keyframe_insert(data_path="scale", frame=rebaked_frame)
 
                 if abs(scl[0] - 1.0) > 0.05 or abs(scl[1] - 1.0) > 0.05 or abs(scl[2] - 1.0) > 0.05:
                     if scale_ok:

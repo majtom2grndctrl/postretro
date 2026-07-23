@@ -77,6 +77,9 @@ pub fn entity_descriptor_from_js<'js>(
             if components_obj.contains_key("weapon").map_err(js_err)? {
                 let raw: JsValue = components_obj.get("weapon").map_err(js_err)?;
                 if !raw.is_null() && !raw.is_undefined() {
+                    if let Some(weapon_obj) = raw.as_object() {
+                        validate_optional_weapon_model_paths_js(weapon_obj)?;
+                    }
                     let json = conv::js_to_json(ctx, raw).map_err(js_err)?;
                     let descriptor: WeaponDescriptor =
                         serde_json::from_value(json).map_err(|e| {
@@ -157,6 +160,28 @@ pub fn entity_descriptor_from_js<'js>(
         health,
         ai,
     })
+}
+
+/// The generic JSON bridge intentionally maps unsupported VM values to JSON
+/// null for broad descriptor compatibility. These optional strings cannot use
+/// that degradation: a supplied function/symbol would silently disable weapon
+/// presentation after serde interpreted null as `None`.
+fn validate_optional_weapon_model_paths_js<'js>(
+    weapon: &Object<'js>,
+) -> Result<(), DescriptorError> {
+    for field in ["thirdPersonModel", "viewmodel"] {
+        if !weapon.contains_key(field).map_err(js_err)? {
+            continue;
+        }
+        let raw: JsValue = weapon.get(field).map_err(js_err)?;
+        if raw.is_null() || raw.is_undefined() || raw.as_string().is_some() {
+            continue;
+        }
+        return Err(DescriptorError::InvalidShape {
+            reason: format!("`components.weapon.{field}` must be a string when supplied"),
+        });
+    }
+    Ok(())
 }
 
 /// Parse a `components.mesh` object (JS). Shape:

@@ -1408,8 +1408,8 @@ pub(crate) fn client_decay_local_correction(endpoint: Option<&mut NetEndpoint>) 
 /// Before the time-sync estimator has folded its first echo (`estimated_server_tick`
 /// is `None`), there is no trustworthy clock to render against, so the buffers are
 /// left unsampled and remote entities stay at their last-applied snapshot pose. Their
-/// walk rate still derives from that held pose's zero XZ speed; no server tick is
-/// invented before the estimator initializes.
+/// walk rate still derives from that held pose's zero XZ speed, while avatar aim uses
+/// its newest finite held pitch. No server tick is invented before initialization.
 ///
 /// The mutable registry borrow is threaded in by the caller (`main.rs`), so this
 /// module never reaches into `App`.
@@ -1431,8 +1431,8 @@ pub(crate) fn client_sample_interpolation(
     // while deriving walk playback from that held (zero-speed) presentation.
     let Some(estimated_tick) = time_sync.estimated_server_tick() else {
         replication.apply_held_remote_enemy_walk_playback_rates(registry, frame_anim_time);
-        replication.apply_held_remote_player_locomotion(registry, frame_anim_time);
-        return ClientPresentationInputs::default();
+        replication.apply_held_remote_player_presentation(registry, frame_anim_time);
+        return replication.presented_player_inputs().clone();
     };
     // Jitter is available whenever the estimate is; default to 0 defensively.
     let jitter = time_sync.jitter_micros().unwrap_or(0.0);
@@ -3539,6 +3539,100 @@ mod tests {
         assert!(
             (registry.interpolated_transform(id, 1.0).unwrap().position.x - 4.0).abs() < EPSILON,
             "pre-sync sampling must not invent a render tick or move the held baseline pose"
+        );
+    }
+
+    // Regression: pre-sync presentation returned empty pose inputs, so a remote
+    // avatar began at neutral pitch and snapped when the first clock echo arrived.
+    #[test]
+    fn pre_sync_interpolation_exposes_only_newest_held_remote_player_pitch() {
+        let movement_payload = |aim_pitch| {
+            ComponentPayload::PlayerMovementState(WirePlayerMovementState {
+                velocity: [12.0, 0.0, 4.0],
+                ground: postretro_net::wire::WireGroundRef::World,
+                air_jumps_remaining: 1,
+                air_dashes_remaining: 1,
+                dash_cooldown_ms: 0.0,
+                air_ticks: 0,
+                movement_state: WireMovementState::Normal,
+                coyote_timer_ms: 0.0,
+                jump_buffer_timer_ms: 0.0,
+                jump_spent: false,
+                capsule_half_height: 0.8,
+                capsule_eye_height: 1.5,
+                aim_pitch,
+            })
+        };
+        let record = |baseline_id, transform_x, aim_pitch| EntityRecord::FullBaseline {
+            network_id: 7,
+            baseline_id,
+            last_processed_client_tick: None,
+            local_player: false,
+            entity_class: Some("player".to_string()),
+            active_weapon_archetype: None,
+            components: vec![
+                ComponentPayload::Transform(WireTransform {
+                    position: [transform_x, 0.0, 0.0],
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    scale: [1.0, 1.0, 1.0],
+                }),
+                movement_payload(aim_pitch),
+            ],
+        };
+
+        let mut registry = EntityRegistry::new();
+        let mut replication = ClientReplication::new();
+        replication.apply_snapshot(
+            &mut registry,
+            &SnapshotMessage {
+                sequence: 0,
+                server_tick: 100,
+                records: vec![record(1, 2.0, -0.35)],
+                state_schema_fingerprint: [0; 32],
+                state_records: Vec::new(),
+            },
+        );
+        replication.apply_snapshot(
+            &mut registry,
+            &SnapshotMessage {
+                sequence: 1,
+                server_tick: 110,
+                records: vec![record(2, 4.0, 0.6)],
+                state_schema_fingerprint: [0; 32],
+                state_records: Vec::new(),
+            },
+        );
+        replication.cache_remote_player_locomotion(
+            NetworkId(7),
+            Some(client::RemotePlayerLocomotionReference {
+                idle_state: "idle".to_string(),
+                walk_state: "walk_forward".to_string(),
+                run_state: None,
+                walk_speed: 60.0,
+                run_speed: 60.0,
+                walk_derived_travel_speed: None,
+                run_derived_travel_speed: None,
+            }),
+        );
+
+        let inputs = client_sample_interpolation(
+            &mut registry,
+            &mut replication,
+            &ClientTimeSync::new(),
+            &mut InterpolationDelayState::new(),
+            1.0 / 60.0,
+            1.0,
+        );
+
+        assert_eq!(inputs.aim_pitches.get(&NetworkId(7)), Some(&0.6));
+        assert!(
+            inputs.heading_yaws.is_empty(),
+            "held presentation has no motion-derived heading"
+        );
+        let id = replication.entity_for_network_id(NetworkId(7)).unwrap();
+        assert!(
+            (registry.interpolated_transform(id, 1.0).unwrap().position.x - 4.0).abs() < EPSILON,
+            "pre-sync presentation holds the newest applied transform"
         );
     }
 

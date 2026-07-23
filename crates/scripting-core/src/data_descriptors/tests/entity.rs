@@ -214,8 +214,79 @@ fn optional_weapon_model_paths_reject_empty_js_and_luau_values() {
         );
         let js_error = eval_js(&js, entity_descriptor_from_js).unwrap_err();
         let lua_error = eval_lua(&lua, entity_descriptor_from_lua).unwrap_err();
-        assert!(js_error.to_string().contains("non-empty model path"));
-        assert!(lua_error.to_string().contains("non-empty model path"));
+        assert!(js_error.to_string().contains("content-relative model path"));
+        assert!(
+            lua_error
+                .to_string()
+                .contains("content-relative model path")
+        );
+    }
+}
+
+#[test]
+fn optional_weapon_model_paths_reject_unsupported_vm_values_with_field_errors() {
+    for field in ["thirdPersonModel", "viewmodel"] {
+        let js = format!(
+            r#"({{ components: {{ weapon: {{ damage: 12, range: 64, fireRateMs: 180, fireMode: "semi", resolution: "hitscan", {field}: () => {{}} }} }} }})"#
+        );
+        let lua = format!(
+            r#"return {{ components = {{ weapon = {{ damage = 12, range = 64, fireRateMs = 180, fireMode = "semi", resolution = "hitscan", {field} = function() end }} }} }}"#
+        );
+        let js_error = eval_js(&js, entity_descriptor_from_js)
+            .unwrap_err()
+            .to_string();
+        let lua_error = eval_lua(&lua, entity_descriptor_from_lua)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            js_error.contains(&format!("components.weapon.{field}")),
+            "{js_error}"
+        );
+        assert!(
+            lua_error.contains(&format!("components.weapon.{field}")),
+            "{lua_error}"
+        );
+        assert!(js_error.contains("must be a string"), "{js_error}");
+        assert!(lua_error.contains("must be a string"), "{lua_error}");
+    }
+}
+
+#[test]
+fn optional_weapon_model_paths_reject_escape_and_platform_absolute_forms_in_both_vms() {
+    for invalid in [
+        "/tmp/model.gltf",
+        "../model.gltf",
+        "models/../model.gltf",
+        r"..\model.gltf",
+        r"C:\models\model.gltf",
+        "C:/models/model.gltf",
+        r"\\server\share\model.gltf",
+    ] {
+        for field in ["thirdPersonModel", "viewmodel"] {
+            let js = format!(
+                r#"({{ components: {{ weapon: {{ damage: 12, range: 64, fireRateMs: 180, fireMode: "semi", resolution: "hitscan", {field}: {invalid:?} }} }} }})"#
+            );
+            let lua_value = invalid.replace('\\', "\\\\").replace('"', "\\\"");
+            let lua = format!(
+                r#"return {{ components = {{ weapon = {{ damage = 12, range = 64, fireRateMs = 180, fireMode = "semi", resolution = "hitscan", {field} = "{lua_value}" }} }} }}"#
+            );
+            let js_error = eval_js(&js, entity_descriptor_from_js)
+                .unwrap_err()
+                .to_string();
+            let lua_error = eval_lua(&lua, entity_descriptor_from_lua)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                js_error.contains(&format!("components.weapon.{field}")),
+                "{js_error}"
+            );
+            assert!(
+                lua_error.contains(&format!("components.weapon.{field}")),
+                "{lua_error}"
+            );
+            assert!(js_error.contains("content-relative"), "{js_error}");
+            assert!(lua_error.contains("content-relative"), "{lua_error}");
+        }
     }
 }
 

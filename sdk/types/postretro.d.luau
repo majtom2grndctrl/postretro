@@ -267,9 +267,9 @@ export type WeaponDescriptor = {
   resolution: ResolutionMode,
   --- Optional combat attribution source id for this weapon. Must be non-empty ASCII, at most 64 bytes, and use only [A-Za-z0-9_.:-]. Omit to use the resolved canonical weapon name at spawn.
   creditSource: string?,
-  --- Optional content-relative rigid prop model mounted in a remote or local player's third-person hand socket. Must be non-empty when supplied.
+  --- Optional content-relative rigid prop model mounted in a remote or local player's third-person hand socket. Must be non-empty, use forward slashes, and contain neither an absolute path nor parent traversal.
   thirdPersonModel: string?,
-  --- Optional content-relative model rendered as this weapon's first-person viewmodel. Must be non-empty when supplied.
+  --- Optional content-relative model rendered as this weapon's first-person viewmodel. Must be non-empty, use forward slashes, and contain neither an absolute path nor parent traversal.
   viewmodel: string?,
   --- Optional weapon resource tuning. Omit to preserve unlimited-fire behavior.
   resource: WeaponResource?,

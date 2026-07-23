@@ -2177,7 +2177,7 @@ mod tests {
         assert!(text.contains("despawn"));
     }
 
-    // --- active_weapon_archetype metadata (E21 Task 1) ---
+    // --- Active-weapon metadata validation ---
 
     #[test]
     fn active_weapon_metadata_requires_a_non_empty_value_with_a_movement_payload() {

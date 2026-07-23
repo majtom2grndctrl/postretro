@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::data_descriptors::DescriptorError;
+use crate::data_descriptors::{DescriptorError, is_portable_content_relative_asset_path};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -61,10 +61,12 @@ pub struct WeaponDescriptor {
     pub resolution: ResolutionMode,
     #[serde(default, rename = "creditSource")]
     pub credit_source: Option<String>,
-    /// Optional non-empty rigid prop model mounted at the pawn's third-person hand socket.
+    /// Optional content-relative rigid prop model mounted at the pawn's third-person hand socket.
+    /// Uses forward slashes and may not be absolute or contain parent traversal.
     #[serde(default, rename = "thirdPersonModel")]
     pub third_person_model: Option<String>,
-    /// Optional non-empty model rendered by the first-person viewmodel pass.
+    /// Optional content-relative model rendered by the first-person viewmodel pass.
+    /// Uses forward slashes and may not be absolute or contain parent traversal.
     #[serde(default)]
     pub viewmodel: Option<String>,
     #[serde(default)]
@@ -104,9 +106,13 @@ impl WeaponDescriptor {
             ("thirdPersonModel", self.third_person_model.as_deref()),
             ("viewmodel", self.viewmodel.as_deref()),
         ] {
-            if matches!(path, Some("")) {
+            if let Some(path) = path
+                && !is_portable_content_relative_asset_path(path)
+            {
                 return Err(DescriptorError::InvalidShape {
-                    reason: format!("`components.weapon.{field}` must be a non-empty model path"),
+                    reason: format!(
+                        "`components.weapon.{field}` must be a non-empty, content-relative model path using forward slashes with no parent traversal"
+                    ),
                 });
             }
         }
@@ -402,26 +408,41 @@ mod tests {
     }
 
     #[test]
-    fn optional_weapon_model_paths_must_be_non_empty_when_supplied() {
-        let mut third_person = weapon_descriptor(None);
-        third_person.third_person_model = Some(String::new());
-        assert!(
-            third_person
-                .validate()
-                .unwrap_err()
-                .to_string()
-                .contains("thirdPersonModel")
-        );
+    fn optional_weapon_model_paths_must_be_contained_content_relative_paths() {
+        for invalid in [
+            "",
+            "/tmp/model.gltf",
+            "../model.gltf",
+            "models/../model.gltf",
+            r"..\model.gltf",
+            r"C:\models\model.gltf",
+            "C:/models/model.gltf",
+            "C:models/model.gltf",
+            r"\\server\share\model.gltf",
+        ] {
+            for field in ["thirdPersonModel", "viewmodel"] {
+                let mut descriptor = weapon_descriptor(None);
+                if field == "thirdPersonModel" {
+                    descriptor.third_person_model = Some(invalid.to_string());
+                } else {
+                    descriptor.viewmodel = Some(invalid.to_string());
+                }
+                let error = descriptor.validate().unwrap_err().to_string();
+                assert!(
+                    error.contains(field),
+                    "unexpected error for {invalid:?}: {error}"
+                );
+                assert!(
+                    error.contains("content-relative"),
+                    "unexpected error for {invalid:?}: {error}"
+                );
+            }
+        }
 
-        let mut viewmodel = weapon_descriptor(None);
-        viewmodel.viewmodel = Some(String::new());
-        assert!(
-            viewmodel
-                .validate()
-                .unwrap_err()
-                .to_string()
-                .contains("viewmodel")
-        );
+        let mut valid = weapon_descriptor(None);
+        valid.third_person_model = Some("models/smg/model.gltf".to_string());
+        valid.viewmodel = Some("./models/smg/view.gltf".to_string());
+        assert!(valid.validate().is_ok());
     }
 
     #[test]

@@ -88,6 +88,14 @@ not the raw HDR texture. Update the documented sRGB byte-identity resolve contra
 Because tonemap is deliberately not identity, the parity bar becomes **visual
 tolerance**, not byte-identity: in-range (≤1.0) content must render within tolerance
 of today, verified by tolerance-scoped capture goldens. Blocks Tasks 2 and 3.
+**Note — this extends an already-HDR lighting path.** The engine already *composes*
+lighting in `Rgba16Float` (the lightmap atlases, the SH irradiance/direct atlases,
+and the in-flight animated-direct composed atlas are all 16-bit float); the forward
+pass is the one place that range collapses to LDR sRGB. Task 1 carries the existing
+HDR range through to the scene target instead of clamping at forward output — so its
+beneficiaries are broader than emissive (bright dynamic and animated alarm lights
+stop hard-clipping too), and it aligns with, rather than bolts onto, the lighting
+architecture.
 
 ### Task 2: Emissive material slot
 Widen the material path from 3 slots to 4, end to end. `.prm`: add
@@ -138,14 +146,30 @@ implemented, update the §3 material-table emissive row and the §4 sibling
 convention with `_e`, and update `rendering_pipeline.md §7.8` for the HDR
 `scene_color` + tonemap + bloom compositor. Depends on Tasks 1-3.
 
+### Task 5: Split `texture_mips.rs` (behavior-preserving; precedes Task 2)
+`crates/level-compiler/src/texture_mips.rs` is 1553 lines and Task 2 threads an
+emissive arm through ~6 of its functions (sibling discovery, the slot-build cascade,
+`bundle_hash_for`, `filename_key_for`, `cache_entry_has_valid_declared_slots`).
+Split it first along the seams already present — the per-slot Mitchell-Netravali
+chain builders (`build_diffuse_chain`/`build_specular_chain`/`build_normal_bc5_chain`),
+the name→path collection + sibling resolution, and the content-hash/cache-key helpers
+each move to a sibling module under a `texture_mips/` directory (or `_bake`/`_cache`
+siblings), with `bake_texture_mips` staying as the orchestrator. Pure code motion:
+no behavior change, the same functions with the same signatures, callers in
+`pipeline.rs`/`main.rs` unchanged. This is the one oversized file whose emissive edit
+genuinely tangles across functions (Decisions → oversized files); doing the split as
+its own task keeps Task 2's baker diff readable instead of burying a refactor.
+Depends on nothing; concurrent with Task 1.
+
 ## Sequencing
 
-**Phase 1 (sequential):** Task 1 — HDR + tonemap foundation; blocks everything (the
-additive emissive term and bloom both need the HDR target, and the capture path
-changes with the format).
+**Phase 1 (concurrent):** Task 1 (HDR + tonemap foundation — blocks the additive
+emissive term and bloom; the capture path changes with the format), Task 5 (split
+`texture_mips.rs` — behavior-preserving, precedes Task 2's baker arm). Disjoint files
+(renderer vs. level-compiler).
 **Phase 2 (concurrent):** Task 2 (emissive slot), Task 3 (bloom) — both consume Task
 1's HDR `scene_color`; disjoint files (material/format/world-shader vs. frame-graph/
-bloom-shader). Isolated worktrees.
+bloom-shader). Task 2 builds on the split `texture_mips.rs`. Isolated worktrees.
 **Phase 3 (sequential):** Task 4 — consumes Tasks 1-3.
 
 ## Rough sketch
@@ -188,6 +212,42 @@ already disambiguates; a bump only adds an explicit signal.
 | Existing 3-slot `.prm` files stay valid | Task 2 (reader accepts bit 3 but never requires it; hash regenerates) | the slot-widening must keep bit-3-unset files parsing | AC 5 |
 | All HDR/tonemap/bloom stays in `postretro-renderer` | Task 1, Task 3 | Renderer-owns-GPU (`index.md §2`) | structural (`cargo tree`) |
 
+## Coordination with in-flight lighting work
+
+`plans/ready/animated-direct-sh-dynamic-receivers` (how kinematic movers, skinned
+meshes, and billboards receive a baked light's animated **direct** term) is in flight
+and touches adjacent ground. Four intersections, none blocking — three reassure the
+design, one is a merge-ordering note:
+
+- **No shader-consumer conflict.** That plan is *producer-side only* — movers already
+  sample the composed direct atlas at binding 15 and its consumers (`kinematic_brush.wgsl`,
+  `skinned_mesh.wgsl`, `billboard.wgsl`) are explicitly unchanged. Emissive's additive
+  term sits **after** `total_light` and is agnostic to how `total_light` is assembled,
+  so the two are orthogonal in the shader: emissive neither reads nor perturbs the
+  direct-light term the other plan feeds.
+- **The HDR reframe is shared upside.** That plan composes its animated-direct atlas
+  in `Rgba16Float` (like every other lighting atlas). Task 1's HDR scene target is the
+  natural completion of that HDR lighting path — a pulsing alarm light bright enough to
+  bloom is exactly the theatrical payoff both plans point at.
+- **Emissive lands on movers for free.** Movers bind the world-material bundle
+  (`rendering_pipeline.md §7.3`), so the emissive slot reaches them with no mover-path
+  work — a `neon_`-textured `kinematic_mover` self-lights. This directly serves the
+  button-as-kinematic-mover motivation (co-op-triggers research §4.2). v1 emissive is
+  **static** per-texel, so the mover glows constantly; activation-driven glow is the
+  named runtime-emissive follow-up.
+- **Merge ordering (the one real coordination).** Both plans edit `pipeline.rs`,
+  `forward.wgsl`, and `renderer_render_frame.rs` in different regions. `animated-direct`
+  is already in `ready/`, ahead of this draft — so it likely orchestrates first, and
+  emissive should **rebaseline its `research.md` file:line grounding** on the landed
+  result (those files grow). Do not split the renderer-side oversized files here (see
+  Decisions → oversized files): that plan is actively rewriting them, and a duplicate
+  split would collide.
+
+Emissive is also **orthogonal to shadowing**: it is self-illumination, not a light —
+it neither casts nor receives shadows, and an emissive surface in shadow still glows
+(a neon sign is bright in a dark room). Deliberate, and it keeps emissive fully
+decoupled from the shadow-receipt work.
+
 ## Decisions
 
 Resolved against the project's north stars (cyberpunk-neon as a product-identity
@@ -211,14 +271,20 @@ prefix-driven modder-friendly materials; ship a visible, testable slice):
   texture prefix (like `shininess()`), giving the property-less `Neon` variant real
   meaning and adding zero authoring surface. A per-material KVP defers until content
   proves prefix granularity insufficient.
+- **Oversized files: split one, defer the rest.** Of the six files >800 lines this
+  plan touches, only `texture_mips.rs` (1553) has an emissive edit that genuinely
+  tangles across functions — split it first (Task 5). The renderer-side files
+  (`forward.wgsl`, `renderer_render_frame.rs`, `renderer_types.rs`) take **localized**
+  edits (one binding + one term; one pass insertion; a few fields) *and* are being
+  actively rewritten by the in-flight `animated-direct-sh` work — splitting them here
+  would bury a refactor for no blast-radius win and collide with that plan. Let that
+  work land and carry the renderer-side split hygiene. `prm.rs`/`pipeline.rs` take
+  coherent-localized edits (the 3→4 slot widening; two bake call sites), not buried
+  refactors. Per the dev guide's "soft smell, not a gate," that is the disciplined
+  read, not a punt.
 
 ## Open questions
 
-- **Oversized files (implementer judgment).** `texture_mips.rs` (1553) and
-  `forward.wgsl` (1328) are the tangled extensions; `pipeline.rs`, `renderer_types.rs`,
-  `prm.rs`, `renderer_render_frame.rs` are all >800 but localized. Per the dev guide's
-  "soft smell, not a gate," split-first `texture_mips.rs` / `forward.wgsl` only if the
-  emissive diff sprawls; the rest stay as-is. Left flexible by intent.
 - **Follow-up — runtime-animated emissive (the theatrical bridge).** The button/trigger
   surface-glow consumer needs per-surface (or per-mesh-entity) emissive-intensity
   runtime state + a GPU feed — net-new, no existing seam (the light-brightness bridge

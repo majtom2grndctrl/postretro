@@ -129,5 +129,24 @@ texture-slot property, independent of this enum. (Prefix heuristics for
 | `crates/level-format/src/prm.rs` | 1012 | slot 3→4 (localized, ~6 sites) |
 | `crates/renderer/src/render/renderer_render_frame.rs` | 919 | bloom insertion + capture |
 
-`texture_mips.rs` and `forward.wgsl` are the tangled ones — split-first if the
-diff sprawls. The rest are localized.
+Only `texture_mips.rs` has an edit that genuinely **tangles across functions** (the
+emissive arm threads through ~6) → split-first (Task 5). `forward.wgsl`'s emissive
+edit is **localized** (one binding declaration + one additive term), despite the
+file's size — no split warranted, and it is shared with the in-flight
+`animated-direct-sh` work. The rest take localized/coherent edits.
+
+## Coordination — `plans/ready/animated-direct-sh-dynamic-receivers`
+
+In-flight work on how movers/skinned/billboards receive a baked light's animated
+**direct** term. Verified against its `index.md`:
+- Producer-side only: consumers (`kinematic_brush.wgsl`, `skinned_mesh.wgsl`,
+  `billboard.wgsl`) unchanged — they already sample the composed direct atlas at
+  binding 15. So no shader conflict with emissive's post-`total_light` additive term.
+- Composes its animated-direct atlas in `Rgba16Float` (like all lighting atlases) —
+  Task 1's HDR scene target completes that HDR lighting path, not a bolt-on.
+- Shared-file merge points (different regions): `pipeline.rs`, `forward.wgsl`,
+  `renderer_render_frame.rs`. That plan is in `ready/` (ahead of this draft) → likely
+  lands first; rebaseline the file:line facts above on the landed result.
+- Movers bind the world-material bundle (`rendering_pipeline.md §7.3`) → emissive
+  reaches movers with no mover-path work (serves the button-as-`kinematic_mover` case).
+- Shadowing is orthogonal: emissive is self-illumination, casts/receives no shadow.

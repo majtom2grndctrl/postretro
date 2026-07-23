@@ -534,7 +534,8 @@ little-endian; a section-internal `u8` version byte (first payload byte, as id 2
 per CSR entry, x-fastest in-cell order `local = lx + ly*4 + lz*16`, index-parallel to
 `affinity_lights`. The per-probe f16 stride is derived (a method, as on id 27), not
 serialized.
-Empty list encodes as a zero-count CSR (`affinity_offsets = [0]`, empty
+Empty list encodes as a zero-count CSR
+(`affinity_offsets = vec![0; affinity_cell_count + 1]`, empty
 `affinity_lights`/`delta_subblocks`) — the loader treats it as "no animated direct."
 The section is emitted only when `AnimatedBakedLights` is non-empty. It mirrors id 27
 for the payload shape and id 41 for the compose-pass integration, so no new

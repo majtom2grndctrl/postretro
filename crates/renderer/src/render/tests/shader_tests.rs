@@ -175,6 +175,20 @@ fn count_split_shader_consumers_use_expected_loop_bounds() {
 }
 
 #[test]
+fn skinned_shader_projects_and_shades_the_same_world_position() {
+    // Regression: the viewmodel used to provide a camera-space model transform
+    // to this shared shader while binding projection-only at group 0. Clip
+    // placement looked correct, but SH, dynamic lights, and shadow receipt all
+    // consumed the camera-space value as `world_position`.
+    let mesh_src = include_str!("../../shaders/skinned_mesh.wgsl");
+    assert!(mesh_src.contains("let world_pos = instance.model * skinned_pos;"));
+    assert!(mesh_src.contains("out.clip_position = camera.view_proj * world_pos;"));
+    assert!(mesh_src.contains("out.world_position = world_pos.xyz;"));
+    assert!(mesh_src.contains("sample_sh_indirect(in.world_position"));
+    assert!(mesh_src.contains("accumulate_dynamic_direct(\n        in.world_position,"));
+}
+
+#[test]
 fn forward_shader_shadowmask_union_uses_promoted_count_and_safe_metadata_tail() {
     let src = include_str!("../../shaders/forward.wgsl");
     let start = src

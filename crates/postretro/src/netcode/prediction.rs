@@ -445,6 +445,9 @@ pub(crate) fn replay(
     );
     let mut new_transform = transform;
     new_transform.position = new_position;
+    if input.facing_yaw.is_finite() {
+        new_transform.rotation = glam::Quat::from_rotation_y(input.facing_yaw);
+    }
     (new_transform, movement, events)
 }
 
@@ -555,6 +558,7 @@ mod tests {
                 crouch_intent: false,
                 facing_yaw: 0.0,
                 use_pressed: false,
+                aim_pitch: 0.0,
             },
             fire_button: WireFireButtonState {
                 pressed: false,
@@ -592,20 +596,25 @@ mod tests {
             dash_pressed: false,
             running: true,
             crouch_intent: false,
-            facing_yaw: 0.0,
+            facing_yaw: 0.65,
             use_pressed: false,
         };
 
         let (transform, movement, _events) =
             replay(start_transform(), component(), input, &world, GRAVITY, DT);
 
-        // The pair advanced: forward locomotion moved the pawn along -Z (facing_yaw
-        // 0 looks down -Z), and the movement component is the same owned value
+        // The pair advanced: forward locomotion retained a negative-Z component at
+        // this yaw, and the movement component is the same owned value
         // returned, not a registry read.
         assert!(
-            transform.position.z < START.z - EPSILON,
+            transform.position.z < START.z,
             "forward command should move the pawn along -Z; z={}",
             transform.position.z
+        );
+        let (yaw, _, _) = transform.rotation.to_euler(glam::EulerRot::YXZ);
+        assert!(
+            (yaw - 0.65).abs() <= EPSILON,
+            "predicted Transform retains the local camera yaw for presentation"
         );
         // The substrate snapped the grounded pawn to the floor; the returned
         // component carries live tick state (grounded), proving the pair round-tripped

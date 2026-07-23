@@ -395,10 +395,10 @@ impl Renderer {
     ///   blind spot where point lights only ever showed `NONE:not_spot`). NOTE
     ///   these read the STATIC load-time `shadow_candidate_lights` — a scripted
     ///   sweep light's animated position/cone is NOT reflected here.
-    /// - `casters`: `in_pvs` vs `off_pvs` from collected mesh draw inputs.
-    ///   `off_pvs` can include shadow-only casters retained because a selected
-    ///   static entity-shadow light reaches them, even when they are not
-    ///   forward-visible.
+    /// - `casters`: `forward` vs `non_forward` collected mesh draw inputs.
+    ///   `non_forward` includes explicit dynamic `shadowOnly` casters and the
+    ///   broader promoted-static shadow-relevance set; `forward` is a mesh-pass
+    ///   classification, not a raw PVS count.
     pub(super) fn emit_shadow_debug(
         &mut self,
         view_proj: Mat4,
@@ -584,16 +584,16 @@ impl Renderer {
             ));
         }
 
-        // Mesh visibility split. Forward-visible inputs render in the mesh pass;
-        // off-PVS inputs are retained only when selected static entity-shadow
-        // lights need them as shadow casters.
-        let in_pvs = self
+        // Mesh presentation split. Non-forward inputs include explicit
+        // shadow-only casters and the broader promoted-static relevance set;
+        // `forward_visible` intentionally is not a raw PVS signal.
+        let forward_visible = self
             .full()
             .mesh_draws
             .iter()
             .filter(|m| m.forward_visible)
             .count() as u32;
-        let off_pvs = self
+        let non_forward = self
             .full()
             .mesh_draws
             .iter()
@@ -605,7 +605,7 @@ impl Renderer {
         // POINT-light slot flip (the path that most likely casts the monster
         // shadows) always triggers a re-emit and can never XOR-cancel against a
         // simultaneous spot flip.
-        let fingerprint = (slot_occupancy, cube_occupancy, in_pvs, off_pvs);
+        let fingerprint = (slot_occupancy, cube_occupancy, forward_visible, non_forward);
         let heartbeat = f % 120 == 0;
         if fingerprint == self.full().shadow_debug_prev && !heartbeat {
             return;
@@ -627,7 +627,7 @@ impl Renderer {
             0
         };
         log::info!(
-            "[shadow_dbg f={f}{}] cam: pitch={:.1}deg fwd({:.2},{:.2},{:.2}) eye({:.0},{:.0},{:.0}) cell={cell_str} vis_cells={vis_cells} | pools: spot={spot_used}/{} cube={cube_used}/{cube_pool_size} elig_spot={elig_spot} elig_cube={elig_cube} spot_overflow={spot_overflow} cube_overflow={cube_overflow} | casters: in_pvs={in_pvs} off_pvs={off_pvs} total={} | occupied_spot_slots={} occupied_cube_slots={} | lights[{}]: {}",
+            "[shadow_dbg f={f}{}] cam: pitch={:.1}deg fwd({:.2},{:.2},{:.2}) eye({:.0},{:.0},{:.0}) cell={cell_str} vis_cells={vis_cells} | pools: spot={spot_used}/{} cube={cube_used}/{cube_pool_size} elig_spot={elig_spot} elig_cube={elig_cube} spot_overflow={spot_overflow} cube_overflow={cube_overflow} | casters: forward={forward_visible} non_forward={non_forward} total={} | occupied_spot_slots={} occupied_cube_slots={} | lights[{}]: {}",
             if changed { " CHANGED" } else { " (hb)" },
             pitch_deg,
             fwd.x,
@@ -1297,6 +1297,7 @@ mod tests {
             capture: None,
             resample: true,
             forward_visible: false,
+            dynamic_shadow_visible: false,
         };
         let planned_outside = PlannedInstance {
             transform: glam::Mat4::from_translation(Vec3::new(20.0, 0.0, 0.0)),

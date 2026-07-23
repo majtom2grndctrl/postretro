@@ -335,9 +335,9 @@ pub struct ScriptRuntime {
     pub(super) staged_manifest_lane: Option<StagedManifestBuildLane>,
     #[cfg(debug_assertions)]
     pub(super) active_mod_init_dependencies: Option<ActiveModInitDependencies>,
-    /// Full descriptor snapshot from the latest staged reload whose mesh blocks
-    /// cannot safely affect the currently installed level. Promoted just before
-    /// the next level installs its model/attachment resources.
+    /// Full descriptor snapshot from the latest staged reload whose mesh or
+    /// weapon-presentation paths cannot safely affect the installed level.
+    /// Promoted before the next model/attachment resource install.
     #[cfg(debug_assertions)]
     pub(super) deferred_mesh_descriptors: Option<Vec<EntityTypeDescriptor>>,
     pub(super) script_ctx: ScriptCtx,

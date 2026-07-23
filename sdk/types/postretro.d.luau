@@ -41,7 +41,7 @@ export type AnimationStateDescriptor = {
   loop: boolean?,
   --- Crossfade duration into this state, in milliseconds. Optional; must be finite and >= 0. Defaults to 150 ms.
   crossfadeMs: number?,
-  --- Per-state locomotion travel-speed override, in ground units per animated second. Optional; must be finite and > 0. When present it replaces this clip's load-derived travel speed; omit to use the derived value. V1 consumes this calibration only when the state is the AI alert-mapped locomotion state.
+  --- Per-state locomotion travel-speed override, in ground units per animated second. Optional; must be finite and > 0. When present it replaces this clip's load-derived travel speed; omit to use the derived value. V1 consumes this calibration for engine-selected player locomotion and the AI alert-mapped locomotion state.
   travelSpeed: number?,
   --- How a fade into this state takes over an in-flight fade. Optional; defaults to "smooth".
   interrupt: InterruptPolicy?,
@@ -55,6 +55,8 @@ export type MeshDescriptor = {
   attachments: { [string]: string }?,
   --- Per-model skinned pool-shadow receiver-bias multiplier. Defaults to 1.0; must be finite and in 0.0..=4.0. Set 0.0 to disable the receiver offset for this model.
   shadowBiasScale: number?,
+  --- When true, renders this mesh into shadow-depth passes only. Optional; defaults to false. For player descriptors this applies only to the owning local view; peer viewers render the avatar forward.
+  shadowOnly: boolean?,
   --- Declared animation states keyed by author-defined state name (e.g. idle/locomotion/attack/death). Optional; when present, must be non-empty and accompanied by a `defaultState` naming one of these states. Omit for a stateless mesh.
   animations: { [string]: AnimationStateDescriptor }?,
   --- The state entered at spawn. Required exactly when `animations` is present; must name a declared state.
@@ -65,7 +67,7 @@ export type MeshDescriptor = {
 
 --- Authored per-archetype locomotion calibration attached to `MeshDescriptor.locomotion`. Sibling to the per-state `travelSpeed` override.
 export type LocomotionDescriptor = {
-  --- Whether V1 rate-scales this archetype's AI alert-mapped locomotion state. Other animation states are never rate-scaled. Optional; defaults to true. Set false to play the authored cadence unscaled.
+  --- Whether V1 rate-scales engine-selected player locomotion and the AI alert-mapped locomotion state. Other animation states are never rate-scaled. Optional; defaults to true. Set false to play the authored cadence unscaled.
   speedScale: boolean?,
 }
 
@@ -265,6 +267,10 @@ export type WeaponDescriptor = {
   resolution: ResolutionMode,
   --- Optional combat attribution source id for this weapon. Must be non-empty ASCII, at most 64 bytes, and use only [A-Za-z0-9_.:-]. Omit to use the resolved canonical weapon name at spawn.
   creditSource: string?,
+  --- Optional content-relative rigid prop model mounted in a remote or local player's third-person hand socket. Must be non-empty, use forward slashes, and contain neither an absolute path nor parent traversal.
+  thirdPersonModel: string?,
+  --- Optional content-relative model rendered as this weapon's first-person viewmodel. Must be non-empty, use forward slashes, and contain neither an absolute path nor parent traversal.
+  viewmodel: string?,
   --- Optional weapon resource tuning. Omit to preserve unlimited-fire behavior.
   resource: WeaponResource?,
 }

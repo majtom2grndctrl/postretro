@@ -52,7 +52,8 @@ pub(crate) fn is_networked_ai_enemy(registry: &EntityRegistry, id: EntityId) -> 
 /// the matching descriptor-backed presentation locally. `None` unless the entity is one of:
 ///
 /// - a **movement pawn** (carries a `PlayerMovementState` wire payload) spawned through
-///   the net-slot descriptor path (`DescriptorSpawnPath::NetworkSlot`) — its
+///   the net-slot or player-start descriptor path
+///   (`DescriptorSpawnPath::NetworkSlot` / `DescriptorSpawnPath::PlayerSpawn`) — its
 ///   `canonical_name` is the resolved `entity_class` (default `"player"`); or
 /// - a **networked AI enemy** ([`is_networked_ai_enemy`]) — its `canonical_name` is
 ///   the descriptor class the host registered it under.
@@ -68,12 +69,18 @@ pub(super) fn descriptor_entity_class(
 ) -> Option<String> {
     let provenance = registry.get_component::<DescriptorProvenance>(id).ok()?;
 
-    // A net-slot movement pawn: the wire historically gated `entity_class` on a movement
-    // record, and this remains the host's own player / accepted-client pawn case.
+    // A movement pawn from either authoritative player path: the wire historically
+    // gated `entity_class` on a movement record. `PlayerSpawn` is the listen host's
+    // own boot pawn; `NetworkSlot` is an accepted client pawn.
     let carries_movement = components
         .iter()
         .any(|c| matches!(c, ComponentPayload::PlayerMovementState(_)));
-    if carries_movement && provenance.spawn_path == DescriptorSpawnPath::NetworkSlot {
+    if carries_movement
+        && matches!(
+            provenance.spawn_path,
+            DescriptorSpawnPath::NetworkSlot | DescriptorSpawnPath::PlayerSpawn
+        )
+    {
         return Some(provenance.canonical_name.clone());
     }
 

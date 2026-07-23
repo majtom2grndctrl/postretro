@@ -29,7 +29,8 @@ pub(crate) use data_archetype::{PLAYER_START_CLASSNAME, spawn_from_player_starts
 // unused there.
 #[allow(unused_imports)]
 pub(crate) use data_archetype::{
-    descriptor_materializes_ai_enemy, filter_out_client_ai_enemies, suppressed_ai_enemy_mesh_models,
+    descriptor_materializes_ai_enemy, filter_out_client_ai_enemies,
+    movement_descriptor_mesh_models, suppressed_ai_enemy_mesh_models, weapon_presentation_models,
 };
 
 // Re-export so call sites that say `super::MapEntity` (handlers, tests) keep

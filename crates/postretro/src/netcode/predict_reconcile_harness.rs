@@ -302,7 +302,8 @@ fn dash_correction_classifies_as_dash_and_smooths() {
     // Predict a dash tick locally WITHOUT delivering its ack yet, so the dash entry
     // stays unacked and replays during reconcile (the unacked window crosses a dash).
     let dash_tick = h.prediction.next_client_tick();
-    let dash_input = super::wire_convert::sim_command_to_input(&forward_command(true), dash_tick);
+    let dash_input =
+        super::wire_convert::sim_command_to_input(&forward_command(true), dash_tick, 0.0);
     let prev = (
         *h.client_registry.get_component::<Transform>(pawn).unwrap(),
         h.client_registry
@@ -1160,6 +1161,7 @@ fn stale_snapshot_for(h: &LoopbackHarness) -> postretro_net::wire::SnapshotMessa
             // A synthetic STALE fixture rejected by the sequence guard before apply;
             // it never exercises client materialization, so no class is stamped.
             entity_class: None,
+            active_weapon_archetype: None,
         }],
         state_schema_fingerprint: [0u8; 32],
         state_records: Vec::new(),

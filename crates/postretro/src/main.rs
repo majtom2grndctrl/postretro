@@ -95,7 +95,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use glam::Vec3;
+use glam::{Quat, Vec3};
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, DeviceId, KeyEvent, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
@@ -353,6 +353,18 @@ fn resolve_mesh_entity_bindings_for_entities(
     }
 }
 
+/// Resolve presentation attached by the listen-host accept lifecycle after the
+/// install-time model sweep. Kept as a named seam so acceptance cannot depend on
+/// a later weapon-attachment change to make the body animation usable.
+fn resolve_accepted_host_pawn_presentation(
+    registry: &mut postretro_entities::EntityRegistry,
+    tables: &scripting_systems::mesh_anim::MeshClipTables,
+    hit_zone_store: &scripting_systems::hit_zones::HitZoneStore,
+    pawn: postretro_entities::EntityId,
+) {
+    resolve_mesh_entity_bindings_for_entities(registry, tables, hit_zone_store, [pawn]);
+}
+
 /// Level-load cross-check: for every archetype that declares both a mesh model
 /// and `health.zoneMultipliers`, warn ONCE per archetype per declared tag that
 /// names no zone on the spawned model. The unknown set is computed by the pure,
@@ -497,6 +509,11 @@ pub(crate) struct App {
     /// field. Becomes `Some` for the rest of the run; a failed build exits boot.
     /// See: context/lib/boot_sequence.md §1.
     session: Option<session::Session>,
+
+    /// Current-frame interpolation-derived remote-avatar inputs. These are kept on
+    /// the App between the interpolation and presentation assembly stages so remote
+    /// aim/heading follows the exact transform the renderer receives.
+    remote_player_presentation: netcode::ClientPresentationInputs,
 
     /// Persistent crouch toggle latch for `CrouchMode::Toggle`. Flipped on each
     /// `Action::Crouch` press rising edge by the input layer; fed into
@@ -982,6 +999,86 @@ fn followed_player_pawn(
     registry: &postretro_entities::EntityRegistry,
 ) -> Option<postretro_entities::EntityId> {
     registry.local_player_movement_pawn()
+}
+
+/// Resolve a local first-person asset strictly through the host-local weapon
+/// ownership relationship. The descriptor is local content, not replicated
+/// presentation state; a missing/uncached model simply never enters the plan.
+fn local_viewmodel_asset<'a>(
+    registry: &postretro_entities::EntityRegistry,
+    local_pawn: postretro_entities::EntityId,
+    weapon_owners: &netcode::WeaponOwners,
+    descriptors: &'a [postretro_entities::EntityTypeDescriptor],
+) -> Option<(postretro_entities::EntityId, &'a str)> {
+    let weapon = weapon_owners.weapon_of(local_pawn)?;
+    let provenance = registry
+        .get_component::<postretro_entities::provenance::DescriptorProvenance>(weapon)
+        .ok()?;
+    let archetype = provenance.canonical_name.as_str();
+    let viewmodel = viewmodel_asset_for_archetype(archetype, descriptors)?;
+    Some((weapon, viewmodel))
+}
+
+/// Resolve optional first-person presentation from a shared weapon archetype.
+/// Connected clients use this without constructing a host-only weapon entity.
+fn viewmodel_asset_for_archetype<'a>(
+    archetype: &str,
+    descriptors: &'a [postretro_entities::EntityTypeDescriptor],
+) -> Option<&'a str> {
+    let viewmodel = descriptors
+        .iter()
+        .find(|descriptor| descriptor.canonical_name.as_deref() == Some(archetype))?
+        .weapon
+        .as_ref()?
+        .viewmodel
+        .as_deref()?
+        .trim();
+    (!viewmodel.is_empty()).then_some(viewmodel)
+}
+
+/// Camera-space placement of the first-person model. World camera yaw/pitch
+/// intentionally do not appear here: [`viewmodel_world_transform`] applies the
+/// render camera afterward. Render-rate bob, sway, and tilt are composed at this
+/// game-side assembly seam before the instance crosses into the renderer.
+fn viewmodel_camera_space_transform(
+    camera_right: Vec3,
+    view_feel_eye_offset: Vec3,
+    view_feel_roll: f32,
+    view_feel_yaw: f32,
+    view_feel_pitch: f32,
+) -> glam::Mat4 {
+    const BASE_OFFSET: Vec3 = Vec3::new(0.32, -0.28, -0.62);
+    let bob_offset = Vec3::new(
+        view_feel_eye_offset.dot(camera_right),
+        view_feel_eye_offset.y,
+        0.0,
+    );
+    let rotation = Quat::from_rotation_y(view_feel_yaw)
+        * Quat::from_rotation_x(view_feel_pitch)
+        * Quat::from_rotation_z(view_feel_roll);
+    glam::Mat4::from_scale_rotation_translation(Vec3::ONE, rotation, BASE_OFFSET + bob_offset)
+}
+
+/// Convert camera-relative weapon placement to a world transform. The dedicated
+/// viewmodel camera later applies the same view matrix with its tight projection,
+/// preserving camera-space clip placement while shared mesh shading receives a
+/// genuine world position.
+fn viewmodel_world_transform(
+    view_matrix: glam::Mat4,
+    camera_right: Vec3,
+    view_feel_eye_offset: Vec3,
+    view_feel_roll: f32,
+    view_feel_yaw: f32,
+    view_feel_pitch: f32,
+) -> glam::Mat4 {
+    view_matrix.inverse()
+        * viewmodel_camera_space_transform(
+            camera_right,
+            view_feel_eye_offset,
+            view_feel_roll,
+            view_feel_yaw,
+            view_feel_pitch,
+        )
 }
 
 /// Follow the camera to the local pawn's eye. `presentation_offset` is the M15
@@ -2036,10 +2133,11 @@ impl ApplicationHandler for App {
                         let trigger_system = &mut session.trigger_system;
                         let trigger_volume_bridge = &session.trigger_volume_bridge;
                         let trigger_bindings = &self.trigger_bindings;
+                        let presentation_camera_aim = (self.camera.pitch, self.camera.yaw);
                         let camera = &mut self.camera;
                         #[cfg(feature = "dev-tools")]
                         let debug_chase_agent = self.debug_chase_agent;
-                        let tick_events = sim::simulate_tick(
+                        let tick_events = sim::simulate_tick_with_presentation_aim(
                             script_ctx.registry.clone(),
                             &self.collision_world,
                             hit_zone_store,
@@ -2047,6 +2145,7 @@ impl ApplicationHandler for App {
                             script_ctx.gravity.get(),
                             self.active_wieldable,
                             frame_anim_time,
+                            presentation_camera_aim,
                             progress_tracker,
                             &mut self.ai_warned,
                             &self.kinematic_mover_colliders,
@@ -2690,6 +2789,10 @@ impl ApplicationHandler for App {
                         render_eye_position,
                         self.script_time as f32,
                     );
+                    renderer.update_viewmodel_view_projection(
+                        self.camera.aspect(),
+                        render_camera.view_matrix,
+                    );
 
                     // This gameplay block runs only in Running (the redraw
                     // path reaches here solely when `boot_state == Running`,
@@ -2754,6 +2857,70 @@ impl ApplicationHandler for App {
                             interp.position,
                             &session.hit_zone_store,
                         );
+
+                        // The first-person model is not an entity attachment. Host and
+                        // single-player resolve through their weapon entity; a connected
+                        // client resolves the recipient-local replicated archetype
+                        // directly because it intentionally owns no gameplay weapon.
+                        // Missing descriptors/models degrade to no instance this frame.
+                        let mut single_player_weapon_owners = netcode::WeaponOwners::new();
+                        if let (Some(local_pawn), Some(active_weapon)) =
+                            (followed_player_pawn(&registry), self.active_wieldable)
+                        {
+                            single_player_weapon_owners.set(local_pawn, active_weapon);
+                        }
+                        let descriptors = script_ctx.data_registry.borrow();
+                        if let Some(local_pawn) = followed_player_pawn(&registry) {
+                            let network_viewmodel =
+                                session
+                                    .net_endpoint
+                                    .as_ref()
+                                    .and_then(|endpoint| match endpoint {
+                                        netcode::NetEndpoint::Host { weapon_owners, .. } => {
+                                            local_viewmodel_asset(
+                                                &registry,
+                                                local_pawn,
+                                                weapon_owners,
+                                                &descriptors.entities,
+                                            )
+                                            .map(|(weapon, model)| (weapon.to_raw(), model))
+                                        }
+                                        netcode::NetEndpoint::Client { replication, .. } => {
+                                            replication
+                                                .local_active_weapon_archetype()
+                                                .and_then(|archetype| {
+                                                    viewmodel_asset_for_archetype(
+                                                        archetype,
+                                                        &descriptors.entities,
+                                                    )
+                                                })
+                                                .map(|model| (local_pawn.to_raw(), model))
+                                        }
+                                    });
+                            let viewmodel = network_viewmodel.or_else(|| {
+                                local_viewmodel_asset(
+                                    &registry,
+                                    local_pawn,
+                                    &single_player_weapon_owners,
+                                    &descriptors.entities,
+                                )
+                                .map(|(weapon, model)| (weapon.to_raw(), model))
+                            });
+                            if let Some((weapon_seed, model)) = viewmodel {
+                                session.mesh_render.collect_viewmodel(
+                                    model,
+                                    viewmodel_world_transform(
+                                        render_camera.view_matrix,
+                                        camera_right,
+                                        vf_eye_offset,
+                                        vf_roll,
+                                        vf_yaw_offset,
+                                        vf_pitch_offset,
+                                    ),
+                                    weapon_seed,
+                                );
+                            }
+                        }
                         renderer.set_mesh_draws(session.mesh_render.instances());
 
                         self.kinematic_mover_render.collect(
@@ -2958,13 +3125,12 @@ impl ApplicationHandler for App {
                             renderer,
                             &agent_overlay_geometry,
                         );
-                        // Remote-entity wireframe (M15 Phase 1): on the client
-                        // path only, draw a capsule at each replicated remote
-                        // entity so the host's moving pawn is visible rather
-                        // than an invisible bare-Transform ghost. Thin
-                        // delegation — `netcode` collects the centers
-                        // (registry read, no wgpu), the renderer owns the draw.
-                        // No-op for single-player and the host.
+                        // Replicated-entity fallback wireframe: on a host or client,
+                        // draw capsules only for replicated entities that still lack
+                        // mesh presentation. Thin delegation — `netcode` collects
+                        // centers (registry read, no wgpu); the renderer owns the draw.
+                        // No-op in single-player and once every replicated entity here
+                        // has materialized its descriptor mesh.
                         if let Some(endpoint) = session.net_endpoint.as_ref() {
                             let registry = script_ctx.registry.borrow();
                             let centers = netcode::remote_entity_positions(endpoint, &registry);
@@ -4455,6 +4621,7 @@ impl App {
             return;
         };
         let hit_zone_store = &session.hit_zone_store;
+        let mesh_clip_tables = &session.mesh_clip_tables;
         let mut armed_local_pawn = None;
         match session.net_endpoint.as_mut() {
             None => {}
@@ -4520,22 +4687,35 @@ impl App {
                                             // Phase 3 movement session: materialize the
                                             // descriptor-backed remote PlayerMovement pawn
                                             // from the slot's assigned placement.
-                                            netcode::host_handle_accept_descriptor(
-                                                &mut registry,
-                                                allocator,
-                                                replicable,
-                                                slot_pawns,
-                                                command_queues,
-                                                owners,
-                                                weapon_owners,
-                                                open_shots,
-                                                pending_hit_declarations,
-                                                weaponless_fire_logged,
-                                                *client_id,
-                                                &host_spawn_points,
-                                                &net_descriptors,
-                                                host_agent_params,
-                                            );
+                                            if let Some(pawn) =
+                                                netcode::host_handle_accept_descriptor(
+                                                    &mut registry,
+                                                    allocator,
+                                                    replicable,
+                                                    slot_pawns,
+                                                    command_queues,
+                                                    owners,
+                                                    weapon_owners,
+                                                    open_shots,
+                                                    pending_hit_declarations,
+                                                    weaponless_fire_logged,
+                                                    *client_id,
+                                                    &host_spawn_points,
+                                                    &net_descriptors,
+                                                    host_agent_params,
+                                                )
+                                            {
+                                                // The accepted pawn materializes after the
+                                                // level-wide model sweep. Resolve its clips and
+                                                // sockets now even when it has no weapon model;
+                                                // later weapon changes resolve only the new prop.
+                                                resolve_accepted_host_pawn_presentation(
+                                                    &mut registry,
+                                                    mesh_clip_tables,
+                                                    hit_zone_store,
+                                                    pawn,
+                                                );
+                                            }
                                         }
                                     }
                                     HandshakeOutcome::Rejected { client_id, reason } => {
@@ -4652,7 +4832,7 @@ impl App {
                     }
                 }
                 armed_local_pawn = apply_outcome.armed_local_pawn;
-                if apply_outcome.materialized_remote_enemy_presentation {
+                if apply_outcome.materialized_remote_entity_presentation {
                     // `mesh_clip_tables` is a disjoint field of the same `session`
                     // bound for the `net_endpoint` match above.
                     resolve_mesh_entity_bindings(
@@ -4783,11 +4963,13 @@ impl App {
         };
         if let Some(resolution) = resolution {
             if let Some(command) = zero_tick_fire_command.as_ref() {
+                let aim_pitch = self.camera.pitch;
                 let sent_tick = netcode::client_send_input_command(
                     self.session
                         .as_mut()
                         .and_then(|session| session.net_endpoint.as_mut()),
                     command,
+                    aim_pitch,
                 );
                 if sent_tick != Some(resolution.client_tick) {
                     return;
@@ -4845,6 +5027,7 @@ impl App {
     /// sends each accepted client a per-client delta snapshot over the snapshot
     /// channel. No-op for single-player and the client.
     fn net_serialize_and_send(&mut self) {
+        let host_aim_pitch = self.camera.pitch;
         // Session-owned `ScriptCtx` cloned before the `net_endpoint` borrow (this
         // method stays on `App`). See: context/lib/boot_sequence.md §1.
         let Some(script_ctx) = self
@@ -4854,6 +5037,11 @@ impl App {
         else {
             return;
         };
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        let mesh_clip_tables = &session.mesh_clip_tables;
+        let hit_zone_store = &session.hit_zone_store;
         let Some(netcode::NetEndpoint::Host {
             server,
             allocator,
@@ -4867,15 +5055,12 @@ impl App {
             open_shots: _,
             pending_hit_declarations: _,
             weaponless_fire_logged: _,
-            host_pawn: _,
+            host_pawn,
             map_enemies: _,
             loaded_movers: _,
             demo_mover,
             state_slots,
-        }) = self
-            .session
-            .as_mut()
-            .and_then(|session| session.net_endpoint.as_mut())
+        }) = session.net_endpoint.as_mut()
         else {
             return;
         };
@@ -4887,6 +5072,21 @@ impl App {
         {
             let mut registry = script_ctx.registry.borrow_mut();
             netcode::host_drive_demo_mover(&mut registry, demo_mover, allocator, replicable, *tick);
+            if weapon_owners.has_attachment_changes() {
+                let descriptors = script_ctx.data_registry.borrow();
+                let changed_pawns = netcode::synchronize_weapon_owner_attachments(
+                    &mut registry,
+                    weapon_owners,
+                    &descriptors.entities,
+                    hit_zone_store,
+                );
+                crate::resolve_mesh_entity_bindings_for_entities(
+                    &mut registry,
+                    mesh_clip_tables,
+                    hit_zone_store,
+                    changed_pawns,
+                );
+            }
         }
 
         {
@@ -4911,6 +5111,7 @@ impl App {
                 owners,
                 weapon_owners,
                 command_queues,
+                (*host_pawn).map(|pawn| (pawn, host_aim_pitch)),
                 *tick,
             );
         }
@@ -4936,27 +5137,30 @@ impl App {
         else {
             return;
         };
-        let Some(netcode::NetEndpoint::Client {
-            replication,
-            time_sync,
-            interpolation_delay,
-            ..
-        }) = self
-            .session
-            .as_mut()
-            .and_then(|session| session.net_endpoint.as_mut())
-        else {
-            return;
+        let presentation = {
+            let Some(netcode::NetEndpoint::Client {
+                replication,
+                time_sync,
+                interpolation_delay,
+                ..
+            }) = self
+                .session
+                .as_mut()
+                .and_then(|session| session.net_endpoint.as_mut())
+            else {
+                return;
+            };
+            let mut registry = script_ctx.registry.borrow_mut();
+            netcode::client_sample_interpolation(
+                &mut registry,
+                replication,
+                time_sync,
+                interpolation_delay,
+                f64::from(frame_dt),
+                frame_anim_time,
+            )
         };
-        let mut registry = script_ctx.registry.borrow_mut();
-        netcode::client_sample_interpolation(
-            &mut registry,
-            replication,
-            time_sync,
-            interpolation_delay,
-            f64::from(frame_dt),
-            frame_anim_time,
-        );
+        self.remote_player_presentation = presentation;
     }
 
     fn update_client_presentation_pose_inputs(&mut self, frame_anim_time: f64) {
@@ -4966,6 +5170,17 @@ impl App {
         let Some(session) = self.session.as_ref() else {
             return;
         };
+        let remote_network_ids = session
+            .net_endpoint
+            .as_ref()
+            .and_then(|endpoint| match endpoint {
+                netcode::NetEndpoint::Client { replication, .. } => {
+                    Some(replication.entity_network_ids())
+                }
+                netcode::NetEndpoint::Host { .. } => None,
+            })
+            .unwrap_or_default();
+        let camera_aim = (self.camera.pitch, self.camera.yaw);
         let mut registry = session.scripting.script_ctx.registry.borrow_mut();
         sim::update_presentation_pose_inputs(
             &mut registry,
@@ -4974,6 +5189,13 @@ impl App {
             &self.kinematic_mover_tick_states,
             &session.hit_zone_store,
             frame_anim_time,
+            sim::PresentationPoseInputs {
+                camera_aim,
+                remote_player_aims: &HashMap::new(),
+                remote_aim_pitches: &self.remote_player_presentation.aim_pitches,
+                remote_heading_yaws: &self.remote_player_presentation.heading_yaws,
+                remote_network_ids: &remote_network_ids,
+            },
         );
     }
 
@@ -5066,6 +5288,7 @@ impl App {
             shot_id,
             fire_tick,
             client_tick: resolved.client_tick,
+            aim_pitch: resolved.aim_pitch,
             command: resolved.command.clone(),
         }
     }
@@ -5166,11 +5389,13 @@ impl App {
     /// Thin delegation: reads `local_player_pawn` from the registry and hands it to
     /// `netcode::host_register_own_pawn`, which stamps a `NetworkId`, registers it for
     /// replication with NO owner mapping (never `local_player` on any recipient), and
-    /// tracks it so a level reload unregisters the stale pawn. No-op for single-player,
-    /// the client, and a host whose map has no `player_spawn` (no local pawn to
-    /// replicate). The host pawn stays driven locally by `simulate_tick` — this only
-    /// replicates its Transform + PlayerMovementState outbound.
+    /// tracks it so a level reload unregisters the stale pawn. Single-player and the
+    /// client are inert; a host map with no `player_spawn` clears any prior host-pawn
+    /// replication and weapon ownership. The host pawn stays driven locally by
+    /// `simulate_tick` — this only replicates its Transform + PlayerMovementState
+    /// outbound.
     fn host_register_own_pawn_after_install(&mut self) {
+        let active_weapon = self.active_wieldable;
         let Some(script_ctx) = self
             .session
             .as_ref()
@@ -5182,6 +5407,7 @@ impl App {
             allocator,
             replicable,
             host_pawn,
+            weapon_owners,
             ..
         }) = self
             .session
@@ -5196,9 +5422,17 @@ impl App {
         };
         let Some(pawn) = pawn else {
             // A host on a map with no player_spawn has no own pawn to replicate.
+            netcode::host_unregister_own_pawn(allocator, replicable, host_pawn, weapon_owners);
             return;
         };
-        netcode::host_register_own_pawn(allocator, replicable, host_pawn, pawn);
+        netcode::host_register_own_pawn(
+            allocator,
+            replicable,
+            host_pawn,
+            weapon_owners,
+            pawn,
+            active_weapon,
+        );
     }
 
     /// Register the listen host's networked AI enemies for outbound replication after a
@@ -5288,6 +5522,7 @@ impl App {
         command: &sim::SimCommand,
         tick_dt: f32,
     ) -> Option<u32> {
+        let aim_pitch = self.camera.pitch;
         let script_ctx = self
             .session
             .as_ref()
@@ -5312,10 +5547,13 @@ impl App {
             &mut registry,
             client,
             prediction,
-            command,
-            &combined_collision,
-            gravity,
-            tick_dt,
+            netcode::ClientPredictionTickContext {
+                command,
+                aim_pitch,
+                collision: &combined_collision,
+                gravity,
+                tick_dt,
+            },
         ))
     }
 
@@ -5722,6 +5960,150 @@ mod tests {
         // The lifecycle gate still suppresses the save before commit/restore.
         assert!(!should_save_persisted_state(false, false));
         assert!(!should_save_persisted_state(false, true));
+    }
+
+    fn weapon_viewmodel_descriptor(
+        canonical_name: &str,
+        viewmodel: Option<&str>,
+    ) -> postretro_entities::EntityTypeDescriptor {
+        postretro_entities::EntityTypeDescriptor {
+            canonical_name: Some(canonical_name.to_owned()),
+            default_weapon: None,
+            light: None,
+            emitter: None,
+            movement: None,
+            weapon: Some(postretro_foundation::WeaponDescriptor {
+                damage: 1.0,
+                range: 1.0,
+                cooldown_ms: 1.0,
+                fire_mode: postretro_foundation::FireMode::Semi,
+                resolution: postretro_foundation::ResolutionMode::Hitscan,
+                credit_source: None,
+                third_person_model: None,
+                viewmodel: viewmodel.map(str::to_owned),
+                resource: None,
+            }),
+            mesh: None,
+            health: None,
+            ai: None,
+        }
+    }
+
+    #[test]
+    fn local_viewmodel_asset_uses_weapon_owner_and_weapon_provenance() {
+        use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
+        use postretro_entities::{EntityRegistry, Transform};
+
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let weapon = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                weapon,
+                DescriptorProvenance {
+                    canonical_name: "reference_pistol".to_owned(),
+                    owned_components: Default::default(),
+                    map_overrides: Default::default(),
+                    spawn_path: DescriptorSpawnPath::DefaultWeapon,
+                },
+            )
+            .unwrap();
+        let mut owners = netcode::WeaponOwners::new();
+        owners.set(pawn, weapon);
+        let descriptors = vec![weapon_viewmodel_descriptor(
+            "reference_pistol",
+            Some("models/pistol/view.gltf"),
+        )];
+
+        assert_eq!(
+            local_viewmodel_asset(&registry, pawn, &owners, &descriptors),
+            Some((weapon, "models/pistol/view.gltf")),
+        );
+    }
+
+    #[test]
+    fn missing_viewmodel_descriptor_drops_local_presentation_without_stale_asset() {
+        use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
+        use postretro_entities::{EntityRegistry, Transform};
+
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let weapon = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                weapon,
+                DescriptorProvenance {
+                    canonical_name: "reference_pistol".to_owned(),
+                    owned_components: Default::default(),
+                    map_overrides: Default::default(),
+                    spawn_path: DescriptorSpawnPath::DefaultWeapon,
+                },
+            )
+            .unwrap();
+        let mut owners = netcode::WeaponOwners::new();
+        owners.set(pawn, weapon);
+
+        assert!(
+            local_viewmodel_asset(
+                &registry,
+                pawn,
+                &owners,
+                &[weapon_viewmodel_descriptor("reference_pistol", None)],
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn replicated_weapon_archetype_resolves_viewmodel_without_weapon_entity() {
+        let descriptors = vec![weapon_viewmodel_descriptor(
+            "reference_pistol",
+            Some("models/pistol/view.gltf"),
+        )];
+        assert_eq!(
+            viewmodel_asset_for_archetype("reference_pistol", &descriptors),
+            Some("models/pistol/view.gltf")
+        );
+        assert!(viewmodel_asset_for_archetype("missing", &descriptors).is_none());
+        assert!(
+            viewmodel_asset_for_archetype(
+                "reference_pistol",
+                &[weapon_viewmodel_descriptor("reference_pistol", None)],
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn viewmodel_transform_applies_view_feel_offsets_without_world_camera_rotation() {
+        let transform =
+            viewmodel_camera_space_transform(Vec3::X, Vec3::new(0.1, 0.2, 0.3), 0.1, 0.2, -0.3);
+        let translation = transform.w_axis.truncate();
+
+        assert_eq!(translation, Vec3::new(0.42, -0.08, -0.62));
+        assert_ne!(
+            transform.x_axis.truncate(),
+            Vec3::X,
+            "view-feel tilt must rotate the camera-space model"
+        );
+    }
+
+    #[test]
+    fn viewmodel_world_transform_keeps_shared_shader_positions_in_world_space() {
+        let view =
+            glam::Mat4::look_at_rh(Vec3::new(6.0, 2.0, 4.0), Vec3::new(5.0, 2.5, 3.0), Vec3::Y);
+        let camera_space = viewmodel_camera_space_transform(Vec3::X, Vec3::ZERO, 0.0, 0.0, 0.0);
+        let world = viewmodel_world_transform(view, Vec3::X, Vec3::ZERO, 0.0, 0.0, 0.0);
+        let model_point = Vec3::new(0.1, 0.2, -0.3).extend(1.0);
+
+        assert!(
+            (view * world * model_point).distance(camera_space * model_point) < 1.0e-5,
+            "world-space instance data must map back to authored camera-relative placement",
+        );
+        assert!(
+            (world.w_axis.truncate() - camera_space.w_axis.truncate()).length() > 1.0,
+            "shared shader world_position must not receive raw camera-space coordinates",
+        );
     }
 
     #[test]
@@ -6447,6 +6829,7 @@ mod tests {
                     crouch_intent: false,
                     facing_yaw: 0.0,
                     use_pressed: false,
+                    aim_pitch: 0.0,
                 },
                 fire_button: postretro_net::wire::WireFireButtonState {
                     pressed: true,
@@ -7748,18 +8131,17 @@ mod tests {
 
         let mut registry = EntityRegistry::new();
         let id = registry.spawn(Transform::default());
+        let unresolved_mesh = MeshComponent {
+            model: "models/descriptor_mob/scene.gltf".to_string(),
+            animation: Some(MeshAnimation::new(states, "idle".to_string())),
+            origin_offset: glam::Vec3::ZERO,
+            shadow_bias_scale: 1.0,
+            shadow_only: false,
+            attachments: Vec::new(),
+            pose_inputs: None,
+        };
         registry
-            .set_component(
-                id,
-                MeshComponent {
-                    model: "models/descriptor_mob/scene.gltf".to_string(),
-                    animation: Some(MeshAnimation::new(states, "idle".to_string())),
-                    origin_offset: glam::Vec3::ZERO,
-                    shadow_bias_scale: 1.0,
-                    attachments: Vec::new(),
-                    pose_inputs: None,
-                },
-            )
+            .set_component(id, unresolved_mesh.clone())
             .expect("freshly spawned id is live");
 
         // Before resolve, the descriptor mesh's model is already visible to the
@@ -7800,6 +8182,28 @@ mod tests {
             .expect("animation block present");
         assert_eq!(anim.states.get("idle").unwrap().clip_index, Some(0));
         assert_eq!(anim.states.get("attack").unwrap().clip_index, Some(1));
+
+        // Regression: a listen-host net-slot pawn materializes after this whole-
+        // registry install sweep. Its body must resolve immediately even when no
+        // weapon exists to trigger the later attachment-change path.
+        let accepted_pawn = registry.spawn(Transform::default());
+        registry
+            .set_component(accepted_pawn, unresolved_mesh)
+            .expect("accepted pawn materializes its descriptor mesh");
+        resolve_accepted_host_pawn_presentation(
+            &mut registry,
+            &tables,
+            &hit_zone_store,
+            accepted_pawn,
+        );
+        let accepted_animation = registry
+            .get_component::<MeshComponent>(accepted_pawn)
+            .unwrap()
+            .animation
+            .as_ref()
+            .unwrap();
+        assert_eq!(accepted_animation.states["idle"].clip_index, Some(0));
+        assert_eq!(accepted_animation.states["attack"].clip_index, Some(1));
     }
 
     #[test]
@@ -8030,6 +8434,7 @@ mod tests {
             weapon: None,
             mesh: Some(MeshDescriptor {
                 model: "models/remote_enemy/scene.gltf".to_string(),
+                shadow_only: false,
                 attachments: [("hand".to_string(), "models/remote_prop.gltf".to_string())]
                     .into_iter()
                     .collect(),
@@ -8044,7 +8449,7 @@ mod tests {
 
         let mut registry = EntityRegistry::new();
         let id = registry.spawn(Transform::default());
-        crate::scripting::builtins::net_descriptor::materialize_net_remote_enemy_presentation(
+        crate::scripting::builtins::net_descriptor::materialize_net_mesh_presentation(
             "remote_enemy",
             &descriptors,
             &mut registry,

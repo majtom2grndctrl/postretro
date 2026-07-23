@@ -56,7 +56,7 @@ mod trigger_state_channel_harness_test;
 #[cfg(test)]
 mod enemy_replication_harness_test;
 
-pub(crate) use client::ClientReplication;
+pub(crate) use client::{ClientPresentationInputs, ClientReplication};
 pub(crate) use command_queue::{
     HostCommandQueues, MovementOwners, ResolvedPawnCommand, WeaponOwners,
     host_resolve_remote_commands,
@@ -77,8 +77,10 @@ pub(crate) use prediction::{
 #[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use reconcile::reconcile_local_pawn;
+#[cfg(test)]
+pub(crate) use replication::produce_owned_snapshots;
 pub(crate) use replication::{
-    ReplicableSet, host_register_loaded_movers, host_register_map_enemies, produce_owned_snapshots,
+    ReplicableSet, host_register_loaded_movers, host_register_map_enemies,
 };
 pub(crate) use wire_convert::sim_command_to_input;
 
@@ -93,6 +95,7 @@ use glam::{Quat, Vec3};
 use parry3d::math::{Point, Vector};
 
 use postretro_entities::components::health::HealthComponent;
+use postretro_entities::provenance::DescriptorProvenance;
 use postretro_entities::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, EntityTypeDescriptor, SlotTable,
     Transform,
@@ -113,6 +116,63 @@ use crate::collision::{self, CollisionWorld};
 use crate::movement::MovementCollisionSource;
 use crate::sim::SimCommand;
 use crate::weapon::{self, ActivationOutcome, WeaponImpact};
+
+/// Synchronize the host's active-weapon table into third-person presentation
+/// attachments immediately before snapshot production. The table remains the
+/// authority source; this only mirrors its canonical descriptor identity onto the
+/// pawn mesh so the host body and outgoing snapshot describe the same weapon.
+pub(crate) fn synchronize_weapon_owner_attachments(
+    registry: &mut EntityRegistry,
+    weapon_owners: &mut WeaponOwners,
+    descriptors: &[EntityTypeDescriptor],
+    hit_zone_store: &crate::scripting_systems::hit_zones::HitZoneStore,
+) -> Vec<EntityId> {
+    weapon_owners
+        .take_attachment_changes()
+        .into_iter()
+        .filter_map(|(pawn, weapon)| {
+            let active_weapon_archetype = weapon.and_then(|weapon| {
+                registry
+                    .get_component::<DescriptorProvenance>(weapon)
+                    .ok()
+                    .map(|provenance| provenance.canonical_name.clone())
+            });
+            remote_materialize::update_active_weapon_attachment(
+                registry,
+                pawn,
+                descriptors,
+                active_weapon_archetype.as_deref(),
+                hit_zone_store,
+            )
+            .then_some(pawn)
+        })
+        .collect()
+}
+
+/// Synchronize one local pawn's third-person attachment from its active weapon.
+/// Single-player has no [`WeaponOwners`] table, and the listen host installs its
+/// own pawn before the regular pre-snapshot synchronization can run.
+pub(crate) fn synchronize_weapon_attachment_for_pawn(
+    registry: &mut EntityRegistry,
+    pawn: EntityId,
+    active_weapon: Option<EntityId>,
+    descriptors: &[EntityTypeDescriptor],
+    hit_zone_store: &crate::scripting_systems::hit_zones::HitZoneStore,
+) -> bool {
+    let active_weapon_archetype = active_weapon.and_then(|weapon| {
+        registry
+            .get_component::<DescriptorProvenance>(weapon)
+            .ok()
+            .map(|provenance| provenance.canonical_name.clone())
+    });
+    remote_materialize::update_active_weapon_attachment(
+        registry,
+        pawn,
+        descriptors,
+        active_weapon_archetype.as_deref(),
+        hit_zone_store,
+    )
+}
 
 /// Default listen port for `--host` when no port is supplied.
 pub(crate) const DEFAULT_HOST_PORT: u16 = 27015;
@@ -366,7 +426,7 @@ pub(crate) enum NetEndpoint {
 
 #[derive(Debug, Default)]
 pub(crate) struct ClientApplyFrameOutcome {
-    pub(crate) materialized_remote_enemy_presentation: bool,
+    pub(crate) materialized_remote_entity_presentation: bool,
     pub(crate) armed_local_pawn: Option<ClientArmedLocalPawn>,
     pub(crate) owner_private_weapon_cooldown_fresh: bool,
 }
@@ -880,6 +940,7 @@ fn player_movement_is_finite(m: &WirePlayerMovementState) -> bool {
         && m.jump_buffer_timer_ms.is_finite()
         && m.capsule_half_height.is_finite()
         && m.capsule_eye_height.is_finite()
+        && m.aim_pitch.is_finite()
         && state_finite
 }
 
@@ -903,7 +964,7 @@ pub(crate) fn decode_snapshot(bytes: &[u8]) -> Result<SnapshotMessage, SnapshotD
 /// The mutable registry borrow is threaded in by the caller (`main.rs`), so this
 /// module never reaches into `App`.
 ///
-/// Returns `true` when this receive pass materialized at least one remote-enemy
+/// Returns `true` when this receive pass materialized at least one remote
 /// presentation mesh, allowing the caller to resolve late-spawned animation clip
 /// indices against the already-loaded model tables.
 #[allow(clippy::too_many_arguments)]
@@ -986,30 +1047,87 @@ pub(crate) fn client_receive_and_apply(
         // `remote_materialize` (the focused seam also materializes remote enemies).
         if let Some(armed) = &outcome.armed_local_pawn {
             prediction.arm(armed.network_id, armed.entity_id);
-            remote_materialize::materialize_armed_local_pawn(armed, descriptors, registry);
+            frame_outcome.materialized_remote_entity_presentation |=
+                remote_materialize::materialize_armed_local_pawn(armed, descriptors, registry);
             frame_outcome.armed_local_pawn = Some(ClientArmedLocalPawn {
                 entity_id: armed.entity_id,
                 entity_class: armed.entity_class.clone(),
             });
         }
+        // The local pawn's world body is shadow-only, but it still needs the same
+        // third-person weapon silhouette as peers see. Its viewmodel remains separate
+        // from this presentation-only attachment path.
+        for update in &outcome.local_weapon_attachments {
+            frame_outcome.materialized_remote_entity_presentation |=
+                remote_materialize::update_active_weapon_attachment(
+                    registry,
+                    update.entity_id,
+                    descriptors,
+                    update.active_weapon_archetype.as_deref(),
+                    hit_zone_store,
+                );
+        }
         // Each non-local baseline that just spawned a descriptor-class-bearing entity gets
-        // its remote-enemy presentation materialized here, where the descriptor
-        // table is in scope (the net-facing apply is descriptor-blind). The helper attaches
-        // ONLY the descriptor's mesh — no Brain/Agent/Health/Weapon/PlayerMovement — and is
-        // idempotent + unknown-class-tolerant (leaves the entity transform-only, never
-        // rejects the snapshot). The entity is already mapped, so it interpolates regardless
-        // of whether a mesh attached. Runs before the frame renders (Game-logic stage).
-        for remote in &outcome.remote_enemies {
-            // Remote AI has no local AgentComponent, so derive its walk rate from
-            // exactly the motion this client presents. The shared descriptor supplies
-            // the immutable reference speed and alert-mapped locomotion state; neither
-            // belongs on the snapshot wire format.
-            let walk_reference = descriptors
-                .iter()
-                .find(|descriptor| {
-                    descriptor.canonical_name.as_deref() == Some(remote.entity_class.as_str())
-                })
-                .and_then(|descriptor| {
+        // its presentation materialized here, where the shared descriptor table is in scope
+        // (the net-facing apply is descriptor-blind). A descriptor's `movement` block is the
+        // durable player-type signal; names are author-controlled. Both paths attach ONLY the
+        // descriptor mesh — no Brain/Agent/Health/Weapon/PlayerMovement — and are idempotent
+        // plus unknown-class-tolerant, so a failed presentation still interpolates transform.
+        for remote in &outcome.remote_entities {
+            let descriptor = descriptors.iter().find(|descriptor| {
+                descriptor.canonical_name.as_deref() == Some(remote.entity_class.as_str())
+            });
+            let materialized = if matches!(descriptor, Some(descriptor) if descriptor.movement.is_some())
+            {
+                let player_locomotion = descriptor.and_then(|descriptor| {
+                    let movement = descriptor.movement.as_ref()?;
+                    let mesh = descriptor.mesh.as_ref()?;
+                    let idle_state = mesh.default_state.clone()?;
+                    let walk_state = ["walk_forward", "walk"]
+                        .into_iter()
+                        .find(|state| mesh.animations.contains_key(*state))?
+                        .to_string();
+                    let run_state = mesh
+                        .animations
+                        .contains_key("run")
+                        .then(|| "run".to_string());
+                    let derived_travel_speed = |state_name: &str| {
+                        let state = mesh.animations.get(state_name)?;
+                        hit_zone_store
+                            .get(&postretro_model::ModelHandle::from(mesh.model.clone()))
+                            .and_then(|model| {
+                                model
+                                    .clips
+                                    .iter()
+                                    .find(|clip| clip.name == state.clip)
+                                    .and_then(|clip| clip.travel_speed)
+                            })
+                    };
+                    Some(client::RemotePlayerLocomotionReference {
+                        idle_state,
+                        walk_derived_travel_speed: derived_travel_speed(&walk_state),
+                        run_derived_travel_speed: run_state
+                            .as_deref()
+                            .and_then(derived_travel_speed),
+                        walk_state,
+                        run_state,
+                        walk_speed: movement.ground.speed.walk,
+                        run_speed: movement.ground.speed.run,
+                    })
+                });
+                replication.cache_remote_player_locomotion(remote.network_id, player_locomotion);
+                remote_materialize::materialize_armed_remote_player(
+                    remote,
+                    descriptors,
+                    registry,
+                    agent_params,
+                )
+            } else {
+                // Remote AI has no local AgentComponent, so derive its walk rate from
+                // exactly the motion this client presents. The shared descriptor supplies
+                // the immutable reference speed and alert-mapped locomotion state; neither
+                // belongs on the snapshot wire format.
+                let walk_reference = descriptor.and_then(|descriptor| {
                     let ai = descriptor.ai.as_ref()?;
                     let mesh = descriptor.mesh.as_ref()?;
                     let state = mesh.animations.get(&ai.states.alert)?;
@@ -1024,19 +1142,29 @@ pub(crate) fn client_receive_and_apply(
                         });
                     Some((ai.move_speed, ai.states.alert.clone(), derived_travel_speed))
                 });
-            replication.cache_remote_enemy_walk_playback(remote.network_id, walk_reference);
-            let materialized = remote_materialize::materialize_armed_remote_enemy(
-                remote,
-                descriptors,
-                registry,
-                agent_params,
-            );
+                replication.cache_remote_enemy_walk_playback(remote.network_id, walk_reference);
+                remote_materialize::materialize_armed_remote_enemy(
+                    remote,
+                    descriptors,
+                    registry,
+                    agent_params,
+                )
+            };
             if materialized {
                 if let Some(state) = remote.initial_animation_state.as_deref() {
                     client::apply_mesh_animation_state(registry, remote.entity_id, state, true);
                 }
             }
-            frame_outcome.materialized_remote_enemy_presentation |= materialized;
+            let attachment_changed = remote.weapon_attachment_changed
+                && remote_materialize::update_active_weapon_attachment(
+                    registry,
+                    remote.entity_id,
+                    descriptors,
+                    remote.active_weapon_archetype.as_deref(),
+                    hit_zone_store,
+                );
+            frame_outcome.materialized_remote_entity_presentation |=
+                materialized || attachment_changed;
         }
         // M15 Phase 3 Task 5: reconcile the local predicted pawn against the
         // authoritative record this snapshot delivered — merge the movement subset,
@@ -1100,20 +1228,32 @@ fn snapshot_requires_descriptor_table(snapshot: &SnapshotMessage) -> bool {
 ///
 /// Game-logic-owned: the mutable registry borrow is threaded in by the caller so
 /// this module never reaches into `App`.
-pub(crate) fn client_predict_tick(
+pub(crate) struct ClientPredictionTickContext<'a, C: MovementCollisionSource> {
+    pub(crate) command: &'a SimCommand,
+    pub(crate) aim_pitch: f32,
+    pub(crate) collision: &'a C,
+    pub(crate) gravity: f32,
+    pub(crate) tick_dt: f32,
+}
+
+pub(crate) fn client_predict_tick<C: MovementCollisionSource>(
     registry: &mut EntityRegistry,
     client: &mut NetClient,
     prediction: &mut ClientPrediction,
-    command: &SimCommand,
-    collision: &impl MovementCollisionSource,
-    gravity: f32,
-    tick_dt: f32,
+    context: ClientPredictionTickContext<'_, C>,
 ) -> u32 {
+    let ClientPredictionTickContext {
+        command,
+        aim_pitch,
+        collision,
+        gravity,
+        tick_dt,
+    } = context;
     // 1. Send exactly one Input command for this predicted tick, stamped with the
     //    next monotonic client_tick. Sent even before the baseline arms prediction
     //    so the host's command stream starts immediately on connect.
     let client_tick = prediction.next_client_tick();
-    let input = sim_command_to_input(command, client_tick);
+    let input = sim_command_to_input(command, client_tick, aim_pitch);
     client.send_input(wire::encode(&wire::ClientMessage::Input(input)));
 
     // 2. Before the local baseline arms prediction, drive no provisional pawn.
@@ -1182,6 +1322,7 @@ pub(crate) fn client_peek_next_command_tick(endpoint: Option<&NetEndpoint>) -> O
 pub(crate) fn client_send_input_command(
     endpoint: Option<&mut NetEndpoint>,
     command: &SimCommand,
+    aim_pitch: f32,
 ) -> Option<u32> {
     let Some(NetEndpoint::Client {
         client, prediction, ..
@@ -1190,7 +1331,7 @@ pub(crate) fn client_send_input_command(
         return None;
     };
     let client_tick = prediction.next_client_tick();
-    let input = sim_command_to_input(command, client_tick);
+    let input = sim_command_to_input(command, client_tick, aim_pitch);
     client.send_input(wire::encode(&wire::ClientMessage::Input(input)));
     Some(client_tick)
 }
@@ -1267,8 +1408,8 @@ pub(crate) fn client_decay_local_correction(endpoint: Option<&mut NetEndpoint>) 
 /// Before the time-sync estimator has folded its first echo (`estimated_server_tick`
 /// is `None`), there is no trustworthy clock to render against, so the buffers are
 /// left unsampled and remote entities stay at their last-applied snapshot pose. Their
-/// walk rate still derives from that held pose's zero XZ speed; no server tick is
-/// invented before the estimator initializes.
+/// walk rate still derives from that held pose's zero XZ speed, while avatar aim uses
+/// its newest finite held pitch. No server tick is invented before initialization.
 ///
 /// The mutable registry borrow is threaded in by the caller (`main.rs`), so this
 /// module never reaches into `App`.
@@ -1285,12 +1426,13 @@ pub(crate) fn client_sample_interpolation(
     interpolation_delay: &mut InterpolationDelayState,
     frame_dt_secs: f64,
     frame_anim_time: f64,
-) {
+) -> ClientPresentationInputs {
     // No estimate yet: retain the last-applied pose until the clock initializes,
     // while deriving walk playback from that held (zero-speed) presentation.
     let Some(estimated_tick) = time_sync.estimated_server_tick() else {
         replication.apply_held_remote_enemy_walk_playback_rates(registry, frame_anim_time);
-        return;
+        replication.apply_held_remote_player_presentation(registry, frame_anim_time);
+        return replication.presented_player_inputs().clone();
     };
     // Jitter is available whenever the estimate is; default to 0 defensively.
     let jitter = time_sync.jitter_micros().unwrap_or(0.0);
@@ -1300,6 +1442,7 @@ pub(crate) fn client_sample_interpolation(
     if stats.presented > 0 {
         interpolation_delay.observe_sampled_frame(stats.starvation_feedback > 0, frame_dt_secs);
     }
+    replication.presented_player_inputs().clone()
 }
 
 /// Microseconds per server sim tick (60 Hz), used to derive the telemetry-only
@@ -1404,12 +1547,21 @@ pub(crate) fn host_replicate(
     owners: &MovementOwners,
     weapon_owners: &WeaponOwners,
     command_queues: &HostCommandQueues,
+    host_aim: Option<(EntityId, f32)>,
     tick: u32,
 ) {
     // Owned post-tick snapshot rule: copy replicable state into owned mirrors keyed
     // by NetworkId while borrowing the registry, then release before the net call.
     // Owned movement pawns also carry their owner id + resolved cursor (Phase 3).
-    let owned = produce_owned_snapshots(registry, replicable, allocator, owners, command_queues);
+    let owned = replication::produce_owned_snapshots_with_host_aim(
+        registry,
+        replicable,
+        allocator,
+        owners,
+        weapon_owners,
+        command_queues,
+        host_aim,
+    );
     replication.ingest_tick(owned);
 
     // Snapshots emit at 30 Hz (every second 60 Hz tick); ingest ran every tick above.
@@ -1493,7 +1645,8 @@ pub(crate) fn host_handle_accept(
 /// `spawn_points` are the level's `player_spawn` placements; `descriptors` the
 /// registered entity descriptors; `agent_params` the navmesh capsule (or `None`).
 /// Game-logic-owned: the spawn flows through `EntityRegistry::spawn`; the caller
-/// threads in the mutable registry borrow.
+/// threads in the mutable registry borrow. Returns the materialized pawn so the
+/// caller can resolve presentation bindings against the level-installed tables.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn host_handle_accept_descriptor(
     registry: &mut EntityRegistry,
@@ -1510,7 +1663,7 @@ pub(crate) fn host_handle_accept_descriptor(
     spawn_points: &[crate::scripting::map_entity::MapEntity],
     descriptors: &[EntityTypeDescriptor],
     agent_params: Option<NavAgentParams>,
-) {
+) -> Option<EntityId> {
     cleanup_stale_slot_replacement(
         registry,
         allocator,
@@ -1530,7 +1683,7 @@ pub(crate) fn host_handle_accept_descriptor(
         log::warn!(
             "[Net] slot {client_id} accepted but the map has no player_spawn placements; no pawn spawned"
         );
-        return;
+        return None;
     };
     let placement = &spawn_points[idx];
 
@@ -1548,6 +1701,17 @@ pub(crate) fn host_handle_accept_descriptor(
     );
 
     if let Some((pawn, _net_id, active_weapon)) = spawned {
+        let entity_class = placement
+            .key_values
+            .get("entity_class")
+            .map(String::as_str)
+            .unwrap_or("player");
+        remote_materialize::apply_remote_player_viewer_role(
+            entity_class,
+            descriptors,
+            registry,
+            pawn,
+        );
         // Record the owner mapping (pawn -> client_id) so snapshot production can stamp
         // `owner_client_id` and the resolved cursor. The client's command queue is
         // created lazily on its first ingested command.
@@ -1556,14 +1720,16 @@ pub(crate) fn host_handle_accept_descriptor(
             weapon_owners.set(pawn, weapon);
         }
         let _ = command_queues;
+        return Some(pawn);
     }
+    None
 }
 
 /// Register the listen host's OWN player pawn for OUTBOUND replication (M15 Phase 3,
 /// issue 3b): without this, the host pawn never enters the `ReplicableSet`, so
 /// `produce_owned_snapshots` never emits it and clients see no host capsule.
 ///
-/// This is replication-only. The host pawn keeps being driven LOCALLY by
+/// This is replication/presentation bookkeeping only. The host pawn keeps being driven LOCALLY by
 /// `simulate_tick`/`local_movement_pawn` — it is deliberately NOT recorded in
 /// `MovementOwners`, NOT command-queued, and NOT predicted/reconciled. Because it has
 /// no `owner_client_id`, its per-recipient `local_player` flag is false for every
@@ -1572,16 +1738,18 @@ pub(crate) fn host_handle_accept_descriptor(
 /// Idempotent and reload-safe: registering the same pawn twice is a no-op (the set and
 /// the allocator are both stable per `EntityId`). On a level reload the freshly-spawned
 /// pawn is a distinct `EntityId`, so the previously-tracked host pawn (if any) is
-/// unregistered first — never leaving a stale id in the replicable set. Pass the
-/// `Host` variant's `host_pawn` tracking slot; the helper updates it.
+/// unregistered and removed from `WeaponOwners` first. The new active weapon binding
+/// is recorded here so ownership and host-pawn identity change atomically.
 ///
 /// Game-logic-owned: it reads the registry through the borrow the caller threads in and
-/// only touches the replication bookkeeping; it never reaches into `App`.
+/// only touches host bookkeeping; it never reaches into `App`.
 pub(crate) fn host_register_own_pawn(
     allocator: &mut NetworkIdAllocator,
     replicable: &mut ReplicableSet,
     host_pawn: &mut Option<EntityId>,
+    weapon_owners: &mut WeaponOwners,
     pawn: EntityId,
+    active_weapon: Option<EntityId>,
 ) {
     // A level reload spawns a fresh host pawn (distinct EntityId). Drop the stale
     // registration before registering the new one so the replicable set never names a
@@ -1590,6 +1758,7 @@ pub(crate) fn host_register_own_pawn(
         if previous != pawn {
             replicable.unregister(previous);
             allocator.forget(previous);
+            weapon_owners.remove_pawn(previous);
         }
     }
     // Stamp the stable session-monotonic NetworkId and register for replication,
@@ -1598,7 +1767,28 @@ pub(crate) fn host_register_own_pawn(
     let net_id = allocator.stamp(pawn);
     replicable.register(pawn);
     *host_pawn = Some(pawn);
+    if let Some(weapon) = active_weapon {
+        weapon_owners.set(pawn, weapon);
+    } else {
+        weapon_owners.remove_pawn(pawn);
+    }
     log::info!("[Net] host registered own pawn {pawn:?} as {net_id:?} (outbound replication only)");
+}
+
+/// Remove the listen host's prior local pawn from replication and weapon ownership.
+/// Level install calls this when the replacement map has no player spawn, so stale
+/// ownership cannot survive merely because there is no new pawn to register.
+pub(crate) fn host_unregister_own_pawn(
+    allocator: &mut NetworkIdAllocator,
+    replicable: &mut ReplicableSet,
+    host_pawn: &mut Option<EntityId>,
+    weapon_owners: &mut WeaponOwners,
+) -> Option<EntityId> {
+    let previous = host_pawn.take()?;
+    replicable.unregister(previous);
+    allocator.forget(previous);
+    weapon_owners.remove_pawn(previous);
+    Some(previous)
 }
 
 /// Apply this frame's slot lifecycle transitions to the host's remote-pawn state
@@ -2179,12 +2369,11 @@ pub(crate) const REMOTE_CAPSULE_RADIUS: f32 = 0.4;
 #[cfg(feature = "dev-tools")]
 pub(crate) const REMOTE_CAPSULE_HALF_HEIGHT: f32 = 0.8;
 
-/// Collect the world-space positions of every replicated entity for the
-/// debug wireframe (M15 Phase 1 visibility aid). On the CLIENT, returns the
-/// `Transform.position` of each `EntityId` in its `NetworkId -> EntityId` map. On
-/// the HOST (issue 3a), returns the position of each `EntityId` in the authoritative
-/// `ReplicableSet` — the host has no client map, so it draws its own replicated
-/// entities (slot/client pawns plus its own pawn). Empty for single-player.
+/// Collect world-space positions for meshless replicated-entity debug wireframes.
+/// On the CLIENT, checks each non-local `NetworkId -> EntityId` mapping. On the HOST,
+/// checks the authoritative `ReplicableSet`. Entities with a `MeshComponent` already
+/// have their presentation, so capsules remain only a fallback for meshless or
+/// unresolved replicated entities. Empty for single-player.
 ///
 /// Read-only: borrows the registry immutably and never touches wgpu — the
 /// caller hands these positions to the renderer, which owns the capsule draw
@@ -2192,13 +2381,11 @@ pub(crate) const REMOTE_CAPSULE_HALF_HEIGHT: f32 = 0.8;
 /// the pawn `Transform.position` convention (the collision capsule is symmetric
 /// about it; see `movement/substrate.rs`).
 ///
-/// The overlay draws replicated gameplay entities, not only players: mapped
-/// client remotes and host `ReplicableSet` entries can include map-placed or runtime-spawned
-/// AI enemies, pawns, movers, and other networked gameplay objects. The debug
-/// marker still uses standing-player capsule dimensions, so non-player enemies
-/// get an approximate marker until a later debug shape path specializes them.
+/// The overlay can cover AI enemies, pawns, movers, and other networked gameplay
+/// objects. It uses standing-player dimensions only for its meshless fallback, so
+/// an unresolved non-player entity gets an approximate marker rather than no aid.
 ///
-/// `dev-tools`-gated: the sole consumer is the client debug-capsule draw behind
+/// `dev-tools`-gated: the sole consumer is the host/client debug-capsule draw behind
 /// that feature (the debug-line renderer is `dev-tools` only).
 #[cfg(feature = "dev-tools")]
 pub(crate) fn remote_entity_positions(
@@ -2212,10 +2399,16 @@ pub(crate) fn remote_entity_positions(
         NetEndpoint::Client { replication, .. } => replication
             .remote_debug_entity_ids()
             .filter_map(|id| {
-                registry
-                    .get_component::<Transform>(id)
-                    .ok()
-                    .map(|t| t.position)
+                (!registry
+                    .has_component_kind(id, ComponentKind::Mesh)
+                    .unwrap_or(false))
+                .then(|| {
+                    registry
+                        .get_component::<Transform>(id)
+                        .ok()
+                        .map(|t| t.position)
+                })
+                .flatten()
             })
             .collect(),
         // Host: there is no client `NetworkId -> EntityId` map, so source the overlay
@@ -2226,10 +2419,16 @@ pub(crate) fn remote_entity_positions(
         NetEndpoint::Host { replicable, .. } => replicable
             .iter()
             .filter_map(|id| {
-                registry
-                    .get_component::<Transform>(id)
-                    .ok()
-                    .map(|t| t.position)
+                (!registry
+                    .has_component_kind(id, ComponentKind::Mesh)
+                    .unwrap_or(false))
+                .then(|| {
+                    registry
+                        .get_component::<Transform>(id)
+                        .ok()
+                        .map(|t| t.position)
+                })
+                .flatten()
             })
             .collect(),
     }
@@ -2240,7 +2439,9 @@ mod tests {
     use super::*;
     use parry3d::math::{Isometry, Point};
     use parry3d::shape::TriMesh;
+    use postretro_entities::components::mesh::MeshAttachment;
     use postretro_entities::components::weapon::WeaponComponent;
+    use postretro_entities::provenance::{DescriptorComponentKind, DescriptorSpawnPath};
     use postretro_foundation::{FireMode, ResolutionMode, WeaponDescriptor};
 
     // Float epsilon for transform round-trips (testing_guide §Floating-point:
@@ -2283,8 +2484,89 @@ mod tests {
             fire_mode: FireMode::Semi,
             resolution: ResolutionMode::Hitscan,
             credit_source: Some("weapon.test.net".to_string()),
+            third_person_model: None,
+            viewmodel: None,
             resource: None,
         })
+    }
+
+    #[test]
+    fn host_weapon_owner_sync_reads_weapon_provenance_and_clears_unloaded_prop() {
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let mut mesh = MeshComponent::stateless("models/player/model.gltf".to_string());
+        mesh.attachments.push(MeshAttachment::unresolved(
+            remote_materialize::ACTIVE_WEAPON_SOCKET.to_string(),
+            "models/old_weapon/model.gltf".to_string(),
+        ));
+        registry.set_component(pawn, mesh).unwrap();
+
+        let weapon = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                weapon,
+                DescriptorProvenance {
+                    canonical_name: "reference_pistol".to_string(),
+                    owned_components: [DescriptorComponentKind::Weapon].into_iter().collect(),
+                    map_overrides: Default::default(),
+                    spawn_path: DescriptorSpawnPath::DefaultWeapon,
+                },
+            )
+            .unwrap();
+        let descriptors = vec![EntityTypeDescriptor {
+            canonical_name: Some("reference_pistol".to_string()),
+            default_weapon: None,
+            light: None,
+            emitter: None,
+            movement: None,
+            weapon: Some(WeaponDescriptor {
+                damage: 1.0,
+                range: 1.0,
+                cooldown_ms: 1.0,
+                fire_mode: FireMode::Semi,
+                resolution: ResolutionMode::Hitscan,
+                credit_source: None,
+                third_person_model: Some("models/pistol/model.gltf".to_string()),
+                viewmodel: None,
+                resource: None,
+            }),
+            mesh: None,
+            health: None,
+            ai: None,
+        }];
+        let mut weapon_owners = WeaponOwners::new();
+        weapon_owners.set(pawn, weapon);
+
+        let changed = synchronize_weapon_owner_attachments(
+            &mut registry,
+            &mut weapon_owners,
+            &descriptors,
+            &crate::scripting_systems::hit_zones::HitZoneStore::new(),
+        );
+        assert_eq!(changed, vec![pawn]);
+        assert_eq!(
+            weapon_owners.weapon_of(pawn),
+            Some(weapon),
+            "draining presentation changes preserves snapshot/combat provenance"
+        );
+        assert!(
+            registry
+                .get_component::<MeshComponent>(pawn)
+                .unwrap()
+                .attachments
+                .is_empty(),
+            "an unavailable third-person descriptor model clears the old hand prop"
+        );
+        assert!(
+            synchronize_weapon_owner_attachments(
+                &mut registry,
+                &mut weapon_owners,
+                &descriptors,
+                &crate::scripting_systems::hit_zones::HitZoneStore::new(),
+            )
+            .is_empty(),
+            "unchanged ownership performs no per-frame mesh synchronization"
+        );
     }
 
     fn authorized_test_shot(
@@ -2955,6 +3237,7 @@ mod tests {
             last_processed_client_tick: None,
             local_player: false,
             entity_class: Some("grunt".to_string()),
+            active_weapon_archetype: None,
             components: vec![ComponentPayload::Transform(sample_wire_transform())],
         });
         let classless = snapshot_with_record(EntityRecord::FullBaseline {
@@ -2963,6 +3246,7 @@ mod tests {
             last_processed_client_tick: None,
             local_player: false,
             entity_class: None,
+            active_weapon_archetype: None,
             components: vec![ComponentPayload::Transform(sample_wire_transform())],
         });
 
@@ -3189,6 +3473,7 @@ mod tests {
                     last_processed_client_tick: None,
                     local_player: false,
                     entity_class: None,
+                    active_weapon_archetype: None,
                     components: vec![ComponentPayload::Transform(WireTransform {
                         position: [4.0, 0.0, 0.0],
                         rotation: [0.0, 0.0, 0.0, 1.0],
@@ -3257,11 +3542,106 @@ mod tests {
         );
     }
 
+    // Regression: pre-sync presentation returned empty pose inputs, so a remote
+    // avatar began at neutral pitch and snapped when the first clock echo arrived.
+    #[test]
+    fn pre_sync_interpolation_exposes_only_newest_held_remote_player_pitch() {
+        let movement_payload = |aim_pitch| {
+            ComponentPayload::PlayerMovementState(WirePlayerMovementState {
+                velocity: [12.0, 0.0, 4.0],
+                ground: postretro_net::wire::WireGroundRef::World,
+                air_jumps_remaining: 1,
+                air_dashes_remaining: 1,
+                dash_cooldown_ms: 0.0,
+                air_ticks: 0,
+                movement_state: WireMovementState::Normal,
+                coyote_timer_ms: 0.0,
+                jump_buffer_timer_ms: 0.0,
+                jump_spent: false,
+                capsule_half_height: 0.8,
+                capsule_eye_height: 1.5,
+                aim_pitch,
+            })
+        };
+        let record = |baseline_id, transform_x, aim_pitch| EntityRecord::FullBaseline {
+            network_id: 7,
+            baseline_id,
+            last_processed_client_tick: None,
+            local_player: false,
+            entity_class: Some("player".to_string()),
+            active_weapon_archetype: None,
+            components: vec![
+                ComponentPayload::Transform(WireTransform {
+                    position: [transform_x, 0.0, 0.0],
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    scale: [1.0, 1.0, 1.0],
+                }),
+                movement_payload(aim_pitch),
+            ],
+        };
+
+        let mut registry = EntityRegistry::new();
+        let mut replication = ClientReplication::new();
+        replication.apply_snapshot(
+            &mut registry,
+            &SnapshotMessage {
+                sequence: 0,
+                server_tick: 100,
+                records: vec![record(1, 2.0, -0.35)],
+                state_schema_fingerprint: [0; 32],
+                state_records: Vec::new(),
+            },
+        );
+        replication.apply_snapshot(
+            &mut registry,
+            &SnapshotMessage {
+                sequence: 1,
+                server_tick: 110,
+                records: vec![record(2, 4.0, 0.6)],
+                state_schema_fingerprint: [0; 32],
+                state_records: Vec::new(),
+            },
+        );
+        replication.cache_remote_player_locomotion(
+            NetworkId(7),
+            Some(client::RemotePlayerLocomotionReference {
+                idle_state: "idle".to_string(),
+                walk_state: "walk_forward".to_string(),
+                run_state: None,
+                walk_speed: 60.0,
+                run_speed: 60.0,
+                walk_derived_travel_speed: None,
+                run_derived_travel_speed: None,
+            }),
+        );
+
+        let inputs = client_sample_interpolation(
+            &mut registry,
+            &mut replication,
+            &ClientTimeSync::new(),
+            &mut InterpolationDelayState::new(),
+            1.0 / 60.0,
+            1.0,
+        );
+
+        assert_eq!(inputs.aim_pitches.get(&NetworkId(7)), Some(&0.6));
+        assert!(
+            inputs.heading_yaws.is_empty(),
+            "held presentation has no motion-derived heading"
+        );
+        let id = replication.entity_for_network_id(NetworkId(7)).unwrap();
+        assert!(
+            (registry.interpolated_transform(id, 1.0).unwrap().position.x - 4.0).abs() < EPSILON,
+            "pre-sync presentation holds the newest applied transform"
+        );
+    }
+
     // --- Issue 3b: the listen host's OWN pawn replicates outbound ---------------
 
     use crate::scripting::builtins::spawn_from_player_starts;
     use crate::scripting::map_entity::MapEntity;
-    use postretro_entities::EntityTypeDescriptor;
+    use postretro_entities::components::mesh::MeshComponent;
+    use postretro_entities::{EntityTypeDescriptor, MeshDescriptor};
     use postretro_foundation::{
         AirParams, CapsuleParams, FallParams, GroundParams, PlayerMovementDescriptor, SpeedParams,
     };
@@ -3313,7 +3693,15 @@ mod tests {
                 view_feel: None,
             }),
             weapon: None,
-            mesh: None,
+            mesh: Some(MeshDescriptor {
+                model: "models/exo_red/model.gltf".to_string(),
+                shadow_only: true,
+                attachments: Default::default(),
+                shadow_bias_scale: 1.0,
+                animations: Default::default(),
+                default_state: None,
+                locomotion: None,
+            }),
             health: None,
             ai: None,
         }
@@ -3335,9 +3723,63 @@ mod tests {
         let descriptors = [host_player_descriptor()];
         let placement = [host_player_spawn_placement()];
         spawn_from_player_starts(&placement, &descriptors, registry, None);
-        registry
+        let pawn = registry
             .local_player_pawn()
-            .expect("the host boot pawn is marked the local player")
+            .expect("the host boot pawn is marked the local player");
+        assert!(
+            registry
+                .get_component::<MeshComponent>(pawn)
+                .expect("descriptor player mesh materializes without a snapshot")
+                .shadow_only,
+            "the single-player/listen-host descriptor path attaches the body shadow mesh"
+        );
+        pawn
+    }
+
+    // Regression: the listen host used full descriptor materialization for joined
+    // slot pawns, retaining the local-view `shadowOnly` bit and hiding every peer
+    // avatar from the host's forward pass.
+    #[test]
+    fn listen_host_joined_player_avatar_is_forward_visible() {
+        let mut registry = EntityRegistry::new();
+        let mut allocator = NetworkIdAllocator::new();
+        let mut replicable = ReplicableSet::new();
+        let mut slot_pawns = SlotPawns::new();
+        let mut queues = HostCommandQueues::new();
+        let mut owners = MovementOwners::new();
+        let mut weapon_owners = WeaponOwners::new();
+        let mut open_shots = OpenAuthorizedShots::default();
+        let mut pending_hits = PendingHitDeclarations::default();
+        let mut weaponless_logged = std::collections::HashSet::new();
+        let descriptors = [host_player_descriptor()];
+        let spawn_points = [host_player_spawn_placement()];
+        const CLIENT_ID: u64 = 77;
+
+        host_handle_accept_descriptor(
+            &mut registry,
+            &mut allocator,
+            &mut replicable,
+            &mut slot_pawns,
+            &mut queues,
+            &mut owners,
+            &mut weapon_owners,
+            &mut open_shots,
+            &mut pending_hits,
+            &mut weaponless_logged,
+            CLIENT_ID,
+            &spawn_points,
+            &descriptors,
+            None,
+        );
+
+        let pawn = slot_pawns.pawn_for(CLIENT_ID).expect("join spawns pawn");
+        assert!(
+            !registry
+                .get_component::<MeshComponent>(pawn)
+                .expect("joined player carries descriptor mesh")
+                .shadow_only,
+            "shadowOnly is a local-view exception; the listen host sees joined peers forward"
+        );
     }
 
     // Issue 3b: after host setup the host's own pawn is registered in the ReplicableSet
@@ -3354,10 +3796,18 @@ mod tests {
         let mut allocator = NetworkIdAllocator::new();
         let mut replicable = ReplicableSet::new();
         let mut host_pawn: Option<EntityId> = None;
+        let mut weapon_owners = WeaponOwners::new();
 
         // Register the host's own pawn for outbound replication (the production seam:
         // `App::host_register_own_pawn_after_install`).
-        host_register_own_pawn(&mut allocator, &mut replicable, &mut host_pawn, pawn);
+        host_register_own_pawn(
+            &mut allocator,
+            &mut replicable,
+            &mut host_pawn,
+            &mut weapon_owners,
+            pawn,
+            None,
+        );
 
         // It is in the replicable set, tracked, and carries an allocated NetworkId.
         assert!(
@@ -3409,8 +3859,8 @@ mod tests {
 
         // The record is a VALID non-local movement record on the wire: ingest into the
         // tracker and encode for a sample recipient. `local_player` must be false (the
-        // recipient is not the owner — there is no owner). Validation accepts a movement
-        // record with None ack + local_player false + entity_class present-or-absent.
+        // recipient is not the owner — there is no owner) and the boot pawn's descriptor
+        // class must be present so the client can materialize its remote avatar.
         const RECIPIENT: u64 = 7;
         let mut replication = ServerReplication::new();
         replication.register_client(RECIPIENT);
@@ -3430,14 +3880,58 @@ mod tests {
                 _ => false,
             })
             .expect("the host pawn reaches the recipient as a valid record");
-        let local_player = match host_record {
-            EntityRecord::FullBaseline { local_player, .. }
-            | EntityRecord::Delta { local_player, .. } => *local_player,
+        let (local_player, entity_class) = match host_record {
+            EntityRecord::FullBaseline {
+                local_player,
+                entity_class,
+                ..
+            }
+            | EntityRecord::Delta {
+                local_player,
+                entity_class,
+                ..
+            } => (*local_player, entity_class.clone()),
             _ => panic!("host pawn record is a movement baseline/delta"),
         };
         assert!(
             !local_player,
             "the host pawn is NEVER marked local_player for any recipient"
+        );
+        assert_eq!(
+            entity_class.as_deref(),
+            Some("player"),
+            "the host boot pawn carries the descriptor class needed for remote presentation"
+        );
+
+        let mut client_registry = EntityRegistry::new();
+        let mut client_replication = ClientReplication::new();
+        let client_outcome = client_replication.apply_snapshot(
+            &mut client_registry,
+            &SnapshotMessage {
+                sequence: 1,
+                server_tick: 1,
+                records,
+                state_schema_fingerprint: [0u8; 32],
+                state_records: Vec::new(),
+            },
+        );
+        let remote = client_outcome
+            .remote_entities
+            .first()
+            .expect("host pawn baseline asks the client to materialize its remote presentation");
+        assert_eq!(remote.entity_class, "player");
+        assert!(remote_materialize::materialize_armed_remote_player(
+            remote,
+            &[host_player_descriptor()],
+            &mut client_registry,
+            None,
+        ));
+        let mesh = client_registry
+            .get_component::<MeshComponent>(remote.entity_id)
+            .expect("client materializes the host pawn descriptor mesh");
+        assert!(
+            !mesh.shadow_only,
+            "the peer-facing host avatar is forward-visible rather than owner shadow-only"
         );
     }
 
@@ -3450,14 +3944,31 @@ mod tests {
         let mut allocator = NetworkIdAllocator::new();
         let mut replicable = ReplicableSet::new();
         let mut host_pawn: Option<EntityId> = None;
+        let mut weapon_owners = WeaponOwners::new();
 
         // First install.
         let first = spawn_host_boot_pawn(&mut registry);
-        host_register_own_pawn(&mut allocator, &mut replicable, &mut host_pawn, first);
+        let first_weapon = registry.spawn(Transform::default());
+        host_register_own_pawn(
+            &mut allocator,
+            &mut replicable,
+            &mut host_pawn,
+            &mut weapon_owners,
+            first,
+            Some(first_weapon),
+        );
         assert!(replicable.contains(first));
+        assert_eq!(weapon_owners.weapon_of(first), Some(first_weapon));
 
         // Re-registering the SAME pawn (idempotent install) keeps exactly one entry.
-        host_register_own_pawn(&mut allocator, &mut replicable, &mut host_pawn, first);
+        host_register_own_pawn(
+            &mut allocator,
+            &mut replicable,
+            &mut host_pawn,
+            &mut weapon_owners,
+            first,
+            Some(first_weapon),
+        );
         let count_after_idempotent = replicable.iter().count();
         assert_eq!(
             count_after_idempotent, 1,
@@ -3470,7 +3981,14 @@ mod tests {
         let second = spawn_host_boot_pawn(&mut registry);
         assert_ne!(first, second, "the reloaded host pawn is a distinct entity");
 
-        host_register_own_pawn(&mut allocator, &mut replicable, &mut host_pawn, second);
+        host_register_own_pawn(
+            &mut allocator,
+            &mut replicable,
+            &mut host_pawn,
+            &mut weapon_owners,
+            second,
+            None,
+        );
         assert_eq!(host_pawn, Some(second), "tracks the fresh host pawn");
         assert!(
             !replicable.contains(first),
@@ -3481,10 +3999,39 @@ mod tests {
             "the fresh host pawn is registered"
         );
         assert_eq!(
+            weapon_owners.weapon_of(first),
+            None,
+            "reload removes the old local pawn's weapon ownership"
+        );
+        assert_eq!(
             replicable.iter().count(),
             1,
             "exactly one host pawn is registered after reload"
         );
+
+        let second_weapon = registry.spawn(Transform::default());
+        host_register_own_pawn(
+            &mut allocator,
+            &mut replicable,
+            &mut host_pawn,
+            &mut weapon_owners,
+            second,
+            Some(second_weapon),
+        );
+        assert_eq!(weapon_owners.weapon_of(second), Some(second_weapon));
+        assert_eq!(
+            host_unregister_own_pawn(
+                &mut allocator,
+                &mut replicable,
+                &mut host_pawn,
+                &mut weapon_owners,
+            ),
+            Some(second),
+            "a replacement map without a player spawn unregisters the old host pawn"
+        );
+        assert_eq!(host_pawn, None);
+        assert_eq!(weapon_owners.weapon_of(second), None);
+        assert!(!replicable.contains(second));
     }
 
     // Issue 3a: `remote_entity_positions` for a Host endpoint sources the overlay from
@@ -3534,6 +4081,18 @@ mod tests {
             netcode_remote_positions(&client, &registry).is_empty(),
             "a client with no mapped entities draws nothing (client-map path, not host)"
         );
+
+        registry
+            .set_component(
+                a,
+                MeshComponent::stateless("models/avatar.gltf".to_string()),
+            )
+            .expect("host fixture entity remains live");
+        assert_eq!(
+            netcode_remote_positions(&host, &registry),
+            vec![Vec3::new(-4.0, 0.0, 5.0)],
+            "a rendered host avatar does not also receive a fallback capsule"
+        );
     }
 
     // Regression: the client dev-tools overlay used to draw every mapped entity,
@@ -3549,65 +4108,86 @@ mod tests {
         .expect("client endpoint constructs")
         .expect("connect role yields an endpoint");
 
-        let NetEndpoint::Client { replication, .. } = &mut client else {
-            panic!("from_role(Connect) must yield a Client endpoint");
-        };
-        replication.apply_snapshot(
-            &mut registry,
-            &SnapshotMessage {
-                sequence: 0,
-                server_tick: 10,
-                records: vec![
-                    postretro_net::wire::EntityRecord::FullBaseline {
-                        network_id: 7,
-                        baseline_id: 1,
-                        last_processed_client_tick: None,
-                        local_player: true,
-                        entity_class: Some("player".to_string()),
-                        components: vec![
-                            ComponentPayload::Transform(WireTransform {
-                                position: [3.0, 0.0, 0.0],
+        let remote = {
+            let NetEndpoint::Client { replication, .. } = &mut client else {
+                panic!("from_role(Connect) must yield a Client endpoint");
+            };
+            replication.apply_snapshot(
+                &mut registry,
+                &SnapshotMessage {
+                    sequence: 0,
+                    server_tick: 10,
+                    records: vec![
+                        postretro_net::wire::EntityRecord::FullBaseline {
+                            network_id: 7,
+                            baseline_id: 1,
+                            last_processed_client_tick: None,
+                            local_player: true,
+                            entity_class: Some("player".to_string()),
+                            active_weapon_archetype: None,
+                            components: vec![
+                                ComponentPayload::Transform(WireTransform {
+                                    position: [3.0, 0.0, 0.0],
+                                    rotation: [0.0, 0.0, 0.0, 1.0],
+                                    scale: [1.0, 1.0, 1.0],
+                                }),
+                                ComponentPayload::PlayerMovementState(WirePlayerMovementState {
+                                    velocity: [0.0, 0.0, 0.0],
+                                    ground: postretro_net::wire::WireGroundRef::World,
+                                    air_jumps_remaining: 1,
+                                    air_dashes_remaining: 1,
+                                    dash_cooldown_ms: 0.0,
+                                    air_ticks: 0,
+                                    movement_state: WireMovementState::Normal,
+                                    coyote_timer_ms: 0.0,
+                                    jump_buffer_timer_ms: 0.0,
+                                    jump_spent: false,
+                                    capsule_half_height: 0.8,
+                                    capsule_eye_height: 1.5,
+                                    aim_pitch: 0.0,
+                                }),
+                            ],
+                        },
+                        postretro_net::wire::EntityRecord::FullBaseline {
+                            network_id: 8,
+                            baseline_id: 1,
+                            last_processed_client_tick: None,
+                            local_player: false,
+                            entity_class: None,
+                            active_weapon_archetype: None,
+                            components: vec![ComponentPayload::Transform(WireTransform {
+                                position: [9.0, 0.0, 0.0],
                                 rotation: [0.0, 0.0, 0.0, 1.0],
                                 scale: [1.0, 1.0, 1.0],
-                            }),
-                            ComponentPayload::PlayerMovementState(WirePlayerMovementState {
-                                velocity: [0.0, 0.0, 0.0],
-                                ground: postretro_net::wire::WireGroundRef::World,
-                                air_jumps_remaining: 1,
-                                air_dashes_remaining: 1,
-                                dash_cooldown_ms: 0.0,
-                                air_ticks: 0,
-                                movement_state: WireMovementState::Normal,
-                                coyote_timer_ms: 0.0,
-                                jump_buffer_timer_ms: 0.0,
-                                jump_spent: false,
-                                capsule_half_height: 0.8,
-                                capsule_eye_height: 1.5,
-                            }),
-                        ],
-                    },
-                    postretro_net::wire::EntityRecord::FullBaseline {
-                        network_id: 8,
-                        baseline_id: 1,
-                        last_processed_client_tick: None,
-                        local_player: false,
-                        entity_class: None,
-                        components: vec![ComponentPayload::Transform(WireTransform {
-                            position: [9.0, 0.0, 0.0],
-                            rotation: [0.0, 0.0, 0.0, 1.0],
-                            scale: [1.0, 1.0, 1.0],
-                        })],
-                    },
-                ],
-                state_schema_fingerprint: [0u8; 32],
-                state_records: Vec::new(),
-            },
-        );
+                            })],
+                        },
+                    ],
+                    state_schema_fingerprint: [0u8; 32],
+                    state_records: Vec::new(),
+                },
+            );
+            replication
+                .map()
+                .get(&NetworkId(8))
+                .copied()
+                .expect("remote baseline mapped")
+        };
 
         assert_eq!(
             netcode_remote_positions(&client, &registry),
             vec![Vec3::new(9.0, 0.0, 0.0)],
             "client remote overlay excludes the local predicted pawn"
+        );
+
+        registry
+            .set_component(
+                remote,
+                MeshComponent::stateless("models/avatar.gltf".to_string()),
+            )
+            .expect("remote remains live after materialization");
+        assert!(
+            netcode_remote_positions(&client, &registry).is_empty(),
+            "a remote with a materialized mesh no longer needs a diagnostic capsule"
         );
     }
 

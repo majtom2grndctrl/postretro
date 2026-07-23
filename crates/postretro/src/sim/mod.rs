@@ -34,12 +34,14 @@ use postretro_entities::components::brain::{BrainComponent, LogicalState};
 use postretro_entities::components::health::{
     DamageContext, DamageProducer, HealthComponent, apply_damage_with_context,
 };
-use postretro_entities::components::mesh::{MeshAnimation, MeshComponent};
+use postretro_entities::components::mesh::{MeshAnimation, MeshComponent, switch_animation_state};
+use postretro_entities::components::player_movement::PlayerMovementComponent;
 use postretro_entities::components::weapon::{UNKNOWN_WEAPON_CREDIT_SOURCE, WeaponComponent};
 use postretro_entities::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, ScriptCtx, SlotTable,
 };
 use postretro_foundation::pose::{FootProbe, MAX_FEET};
+use postretro_net::wire::NetworkId;
 use postretro_scripting_core::reaction_dispatch::ProgressTracker;
 
 #[derive(Debug, Clone)]
@@ -74,6 +76,7 @@ pub(crate) struct RemotePawnCommand {
     pub(crate) fire_tick: u32,
     #[allow(dead_code)]
     pub(crate) client_tick: u32,
+    pub(crate) aim_pitch: f32,
     pub(crate) command: SimCommand,
 }
 
@@ -117,7 +120,7 @@ pub(crate) struct TriggerCommandFire {
     pub(crate) commands: Vec<crate::trigger_bindings::BoundTriggerCommandKind>,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, dead_code)]
 pub(crate) fn simulate_tick(
     registry: Rc<RefCell<EntityRegistry>>,
     collision_world: &CollisionWorld,
@@ -126,6 +129,52 @@ pub(crate) fn simulate_tick(
     gravity: f32,
     active_wieldable: Option<EntityId>,
     anim_time: f64,
+    _progress_tracker: &mut ProgressTracker,
+    ai_warned: &mut HashSet<String>,
+    mover_colliders: &[MoverCollider],
+    mover_tick_states: &mut MoverTickStateTable,
+    remote_pawn_commands: &[RemotePawnCommand],
+    command: &SimCommand,
+    post_movement: impl FnMut(&Rc<RefCell<EntityRegistry>>) -> PostMovementCommand,
+    tick_dt: f32,
+    trigger_context: Option<TriggerTickContext<'_>>,
+    on_impact: impl FnMut(&mut EntityRegistry),
+) -> TickEvents {
+    simulate_tick_with_presentation_aim(
+        registry,
+        collision_world,
+        hit_zone_store,
+        nav_graph,
+        gravity,
+        active_wieldable,
+        anim_time,
+        (0.0, 0.0),
+        _progress_tracker,
+        ai_warned,
+        mover_colliders,
+        mover_tick_states,
+        remote_pawn_commands,
+        command,
+        post_movement,
+        tick_dt,
+        trigger_context,
+        on_impact,
+    )
+}
+
+/// Fixed-tick simulation with the render-assembly camera aim captured by the App.
+/// Headless callers retain the wrapper above and intentionally use the neutral
+/// camera; production local-player presentation passes the live camera aim here.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn simulate_tick_with_presentation_aim(
+    registry: Rc<RefCell<EntityRegistry>>,
+    collision_world: &CollisionWorld,
+    hit_zone_store: &HitZoneStore,
+    nav_graph: Option<&NavGraph>,
+    gravity: f32,
+    active_wieldable: Option<EntityId>,
+    anim_time: f64,
+    presentation_camera_aim: (f32, f32),
     _progress_tracker: &mut ProgressTracker,
     ai_warned: &mut HashSet<String>,
     mover_colliders: &[MoverCollider],
@@ -156,6 +205,15 @@ pub(crate) fn simulate_tick(
     let remote_pawn_inputs: Vec<(EntityId, MovementInput)> = remote_pawn_commands
         .iter()
         .map(|remote| (remote.pawn, remote.command.movement.clone()))
+        .collect();
+    let remote_player_aims: HashMap<EntityId, (f32, f32)> = remote_pawn_commands
+        .iter()
+        .map(|remote| {
+            (
+                remote.pawn,
+                (remote.aim_pitch, remote.command.movement.facing_yaw),
+            )
+        })
         .collect();
 
     let combined_collision =
@@ -306,6 +364,7 @@ pub(crate) fn simulate_tick(
         let mut registry = registry.borrow_mut();
         // AgentTickResult only carries a diagnostic `replans` counter, not observable sim state, so the return value is intentionally discarded.
         let _ = agent_steering::tick(&mut registry, collision_world, nav_graph, gravity, tick_dt);
+        update_player_animation_locomotion(&mut registry, hit_zone_store, anim_time);
         update_brain_animation_playback_rates(&mut registry, hit_zone_store, anim_time);
         update_presentation_pose_inputs(
             &mut registry,
@@ -314,6 +373,13 @@ pub(crate) fn simulate_tick(
             &*mover_tick_states,
             hit_zone_store,
             anim_time,
+            PresentationPoseInputs {
+                camera_aim: presentation_camera_aim,
+                remote_player_aims: &remote_player_aims,
+                remote_aim_pitches: &HashMap::new(),
+                remote_heading_yaws: &HashMap::new(),
+                remote_network_ids: &HashMap::new(),
+            },
         );
     }
 
@@ -374,6 +440,103 @@ fn trigger_fire_context(
         fired_trigger: Some(event.fire.trigger),
         activator,
         occupancy,
+    }
+}
+
+/// Select authoritative player locomotion after movement resolves. Remote-owned host
+/// pawns carry no brain, so without this pass their descriptor default (`idle`) would
+/// be serialized forever and repeatedly correct the client's velocity prediction.
+/// State selection and rate calibration intentionally match the client presentation
+/// path; ordinary switches use the authored crossfade, preserving no-snap correction.
+pub(crate) fn update_player_animation_locomotion(
+    registry: &mut EntityRegistry,
+    hit_zone_store: &HitZoneStore,
+    anim_time: f64,
+) {
+    const MOVING_SPEED_EPSILON: f32 = 1.0e-4;
+
+    let players: Vec<EntityId> = registry
+        .iter_with_kind(ComponentKind::PlayerMovement)
+        .map(|(id, _)| id)
+        .collect();
+    for id in players {
+        let Ok(movement) = registry.get_component::<PlayerMovementComponent>(id) else {
+            continue;
+        };
+        let speed_xz = Vec3::new(movement.velocity.x, 0.0, movement.velocity.z).length();
+        let walk_speed = movement.ground_params.speed.walk;
+        let run_speed = movement.ground_params.speed.run;
+
+        let (idle_state, walk_state, run_state, current_state) = {
+            let Ok(mesh) = registry.get_component::<MeshComponent>(id) else {
+                continue;
+            };
+            let Some(animation) = mesh.animation.as_ref() else {
+                continue;
+            };
+            let walk_state = ["walk_forward", "walk"]
+                .into_iter()
+                .find(|state| animation.states.contains_key(*state))
+                .map(str::to_string);
+            let Some(walk_state) = walk_state else {
+                continue;
+            };
+            (
+                animation.default_state.clone(),
+                walk_state,
+                animation
+                    .states
+                    .contains_key("run")
+                    .then(|| "run".to_string()),
+                animation.current_state.clone(),
+            )
+        };
+        let moving = speed_xz.is_finite() && speed_xz > MOVING_SPEED_EPSILON;
+        let (target_state, fallback_speed) = if !moving {
+            (idle_state, 1.0)
+        } else if speed_xz > walk_speed && run_state.is_some() {
+            (run_state.expect("checked above"), run_speed)
+        } else {
+            (walk_state, walk_speed)
+        };
+        if current_state != target_state {
+            let _ = switch_animation_state(registry, id, &target_state);
+        }
+
+        let rate_input = registry
+            .get_component::<MeshComponent>(id)
+            .ok()
+            .and_then(|mesh| {
+                let animation = mesh.animation.as_ref()?;
+                if !moving || animation.current_state != target_state || !animation.speed_scale {
+                    return Some(1.0);
+                }
+                let effective = effective_travel_speed(animation, mesh, hit_zone_store);
+                Some(MeshAnimation::locomotion_rate_ratio(
+                    speed_xz.max(0.0),
+                    effective,
+                    fallback_speed,
+                ))
+            });
+        let Some(rate_input) = rate_input else {
+            continue;
+        };
+        let needs_rebase = registry
+            .get_component::<MeshComponent>(id)
+            .ok()
+            .and_then(|mesh| mesh.animation.as_ref())
+            .is_some_and(|animation| animation.playback_rate_needs_update(rate_input));
+        if !needs_rebase {
+            continue;
+        }
+        let Ok(mut mesh) = registry.get_component::<MeshComponent>(id).cloned() else {
+            continue;
+        };
+        let Some(animation) = mesh.animation.as_mut() else {
+            continue;
+        };
+        animation.update_playback_rate(rate_input, anim_time);
+        let _ = registry.set_component(id, mesh);
     }
 }
 
@@ -473,6 +636,14 @@ fn effective_travel_speed(
 /// transforms. The fixed tick calls this after steering; connected clients call
 /// it after remote interpolation because they intentionally skip `simulate_tick`.
 /// This mutates presentation-only mesh inputs and never enters replication.
+pub(crate) struct PresentationPoseInputs<'a> {
+    pub(crate) camera_aim: (f32, f32),
+    pub(crate) remote_player_aims: &'a HashMap<EntityId, (f32, f32)>,
+    pub(crate) remote_aim_pitches: &'a HashMap<NetworkId, f32>,
+    pub(crate) remote_heading_yaws: &'a HashMap<NetworkId, f32>,
+    pub(crate) remote_network_ids: &'a HashMap<EntityId, NetworkId>,
+}
+
 pub(crate) fn update_presentation_pose_inputs(
     registry: &mut EntityRegistry,
     collision_world: &CollisionWorld,
@@ -480,8 +651,23 @@ pub(crate) fn update_presentation_pose_inputs(
     mover_poses: &dyn MoverPoseSource,
     hit_zone_store: &HitZoneStore,
     anim_time: f64,
+    presentation: PresentationPoseInputs<'_>,
 ) {
-    update_pose_inputs(registry);
+    let PresentationPoseInputs {
+        camera_aim,
+        remote_player_aims,
+        remote_aim_pitches,
+        remote_heading_yaws,
+        remote_network_ids,
+    } = presentation;
+    update_pose_inputs(
+        registry,
+        camera_aim,
+        remote_player_aims,
+        remote_aim_pitches,
+        remote_heading_yaws,
+        remote_network_ids,
+    );
     update_foot_ground_probes(
         registry,
         collision_world,
@@ -496,7 +682,14 @@ pub(crate) fn update_presentation_pose_inputs(
 /// entity's target and body rotation. Every animated mesh receives a finite
 /// value; entities without a live acquired target hold their body heading with
 /// zero pitch, making pose modifiers a visual no-op.
-fn update_pose_inputs(registry: &mut EntityRegistry) {
+fn update_pose_inputs(
+    registry: &mut EntityRegistry,
+    camera_aim: (f32, f32),
+    remote_player_aims: &HashMap<EntityId, (f32, f32)>,
+    remote_aim_pitches: &HashMap<NetworkId, f32>,
+    remote_heading_yaws: &HashMap<NetworkId, f32>,
+    remote_network_ids: &HashMap<EntityId, NetworkId>,
+) {
     const MIN_HORIZONTAL_LEN_SQ: f32 = 1e-8;
 
     let animated: Vec<EntityId> = registry
@@ -535,7 +728,7 @@ fn update_pose_inputs(registry: &mut EntityRegistry) {
                     .map(|transform| transform.position)
             });
 
-        let (aim_pitch, aim_yaw) = target_position
+        let (default_aim_pitch, default_aim_yaw) = target_position
             .map(|target| target - transform.position)
             .filter(|direction| direction.is_finite())
             .map(|direction| {
@@ -560,6 +753,74 @@ fn update_pose_inputs(registry: &mut EntityRegistry) {
                 )
             })
             .unwrap_or((0.0, heading_yaw));
+
+        let (aim_pitch, aim_yaw, heading_yaw) = if registry.local_player_movement_pawn() == Some(id)
+        {
+            let player_heading = registry
+                .get_component::<PlayerMovementComponent>(id)
+                .ok()
+                .map(|movement| movement.velocity)
+                .filter(|velocity| velocity.is_finite())
+                .map(|velocity| player_travel_heading_yaw(velocity, heading_yaw))
+                .unwrap_or(heading_yaw);
+            let aim_pitch = camera_aim
+                .0
+                .clamp(-std::f32::consts::FRAC_PI_2, std::f32::consts::FRAC_PI_2);
+            let aim_yaw = camera_aim.1;
+            (
+                if aim_pitch.is_finite() {
+                    aim_pitch
+                } else {
+                    0.0
+                },
+                if aim_yaw.is_finite() {
+                    aim_yaw
+                } else {
+                    player_heading
+                },
+                player_heading,
+            )
+        } else if let Some(&(aim_pitch, aim_yaw)) = remote_player_aims.get(&id) {
+            let player_heading = registry
+                .get_component::<PlayerMovementComponent>(id)
+                .ok()
+                .map(|movement| movement.velocity)
+                .filter(|velocity| velocity.is_finite())
+                .map(|velocity| player_travel_heading_yaw(velocity, heading_yaw))
+                .unwrap_or(heading_yaw);
+            (
+                if aim_pitch.is_finite() {
+                    aim_pitch.clamp(-std::f32::consts::FRAC_PI_2, std::f32::consts::FRAC_PI_2)
+                } else {
+                    0.0
+                },
+                if aim_yaw.is_finite() {
+                    aim_yaw
+                } else {
+                    heading_yaw
+                },
+                player_heading,
+            )
+        } else if let Some(network_id) = remote_network_ids.get(&id)
+            && let Some(&aim_pitch) = remote_aim_pitches.get(network_id)
+        {
+            let remote_heading = remote_heading_yaws
+                .get(network_id)
+                .copied()
+                .filter(|yaw| yaw.is_finite())
+                .unwrap_or(heading_yaw);
+            (
+                if aim_pitch.is_finite() {
+                    aim_pitch
+                } else {
+                    0.0
+                },
+                heading_yaw,
+                remote_heading,
+            )
+        } else {
+            (default_aim_pitch, default_aim_yaw, heading_yaw)
+        };
 
         // Single borrow serves both the change check and the clone source, so a
         // stationary/idle crowd whose inputs haven't moved skips the write
@@ -586,6 +847,20 @@ fn update_pose_inputs(registry: &mut EntityRegistry) {
         mesh.pose_inputs = Some(new_pose_inputs);
         let _ = registry.set_component(id, mesh);
     }
+}
+
+/// Convert player travel velocity to the engine's yaw convention, where yaw zero
+/// faces `-Z`. Stationary or non-finite input retains the supplied body heading.
+pub(crate) fn player_travel_heading_yaw(velocity: Vec3, fallback: f32) -> f32 {
+    const MIN_HORIZONTAL_LEN_SQ: f32 = 1e-8;
+    let horizontal_len_sq = velocity.x * velocity.x + velocity.z * velocity.z;
+    if velocity.is_finite() && horizontal_len_sq > MIN_HORIZONTAL_LEN_SQ {
+        let yaw = (-velocity.x).atan2(-velocity.z);
+        if yaw.is_finite() {
+            return yaw;
+        }
+    }
+    fallback
 }
 
 /// Model-space downward reach of each foot ground probe, in model units. Ground
@@ -1297,6 +1572,8 @@ mod tests {
             fire_mode: FireMode::Semi,
             resolution: ResolutionMode::Hitscan,
             credit_source: Some(credit_source.to_string()),
+            third_person_model: None,
+            viewmodel: None,
             resource: None,
         })
     }
@@ -1314,6 +1591,8 @@ mod tests {
             fire_mode: FireMode::Semi,
             resolution: ResolutionMode::Hitscan,
             credit_source: Some(credit_source.to_string()),
+            third_person_model: None,
+            viewmodel: None,
             resource: Some(WeaponResource::Ammo(AmmoResource {
                 ammo_type: "bullets.light".to_string(),
                 magazine: capacity,
@@ -1428,6 +1707,69 @@ mod tests {
         )
     }
 
+    #[test]
+    fn player_travel_heading_uses_negative_z_as_yaw_zero() {
+        let epsilon = 1.0e-5;
+        assert!(player_travel_heading_yaw(Vec3::NEG_Z, 9.0).abs() < epsilon);
+        assert!(
+            (player_travel_heading_yaw(Vec3::X, 9.0) + std::f32::consts::FRAC_PI_2).abs() < epsilon
+        );
+        assert_eq!(player_travel_heading_yaw(Vec3::ZERO, 0.75), 0.75);
+    }
+
+    // Regression: host locomotion hard-coded an `idle` state while connected clients
+    // used the descriptor's valid `defaultState`, causing perpetual correction for
+    // descriptors whose rest state had another author-defined name.
+    #[test]
+    fn player_locomotion_uses_descriptor_default_state_as_idle_contract() {
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        registry.set_component(pawn, trigger_movement()).unwrap();
+
+        let state = |clip: &str, clip_index| AnimationState {
+            clip: clip.to_string(),
+            looping: true,
+            crossfade_ms: DEFAULT_CROSSFADE_MS,
+            interrupt: InterruptPolicy::Smooth,
+            travel_speed: None,
+            clip_index: Some(clip_index),
+        };
+        let states = HashMap::from([
+            ("stand".to_string(), state("stand", 0)),
+            ("walk_forward".to_string(), state("walk", 1)),
+        ]);
+        let mut animation = MeshAnimation::new(states, "stand".to_string());
+        animation.current_state = "walk_forward".to_string();
+        registry
+            .set_component(
+                pawn,
+                MeshComponent::animated("player".to_string(), animation),
+            )
+            .unwrap();
+
+        assert_eq!(
+            registry
+                .get_component::<PlayerMovementComponent>(pawn)
+                .unwrap()
+                .velocity,
+            Vec3::ZERO,
+            "the descriptor default state applies only when the player is stationary"
+        );
+
+        update_player_animation_locomotion(&mut registry, &HitZoneStore::new(), 0.0);
+
+        assert_eq!(
+            registry
+                .get_component::<MeshComponent>(pawn)
+                .unwrap()
+                .animation
+                .as_ref()
+                .unwrap()
+                .current_state,
+            "stand"
+        );
+    }
+
     fn trigger_component(on_fire: &str, armed: bool) -> TriggerVolumeComponent {
         TriggerVolumeComponent::new(
             TriggerActivation::Touch,
@@ -1479,6 +1821,7 @@ mod tests {
             shot_id: Some(ShotId::from_parts(NetworkId(network_id), client_tick)),
             fire_tick: 33,
             client_tick,
+            aim_pitch: 0.0,
             command: sim_command(fire, reload),
         }
     }

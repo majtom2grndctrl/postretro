@@ -30,7 +30,7 @@
 // seam (`sim::host_movement`). Intake runs `wire_convert::sanitize_input_command`
 // before queueing — an invalid command never mutates a queue.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use postretro_net::wire::InputCommand;
 
@@ -81,6 +81,7 @@ impl MovementOwners {
 #[derive(Debug, Default)]
 pub(crate) struct WeaponOwners {
     weapons: HashMap<EntityId, EntityId>,
+    attachment_dirty: HashSet<EntityId>,
 }
 
 impl WeaponOwners {
@@ -90,7 +91,9 @@ impl WeaponOwners {
 
     /// Record `weapon` as the active weapon for `pawn`.
     pub(crate) fn set(&mut self, pawn: EntityId, weapon: EntityId) {
-        self.weapons.insert(pawn, weapon);
+        if self.weapons.insert(pawn, weapon) != Some(weapon) {
+            self.attachment_dirty.insert(pawn);
+        }
     }
 
     /// The active weapon for `pawn`, if one was materialized.
@@ -100,7 +103,24 @@ impl WeaponOwners {
 
     /// Forget a pawn's active weapon (on slot close / despawn). Idempotent.
     pub(crate) fn remove_pawn(&mut self, pawn: EntityId) {
-        self.weapons.remove(&pawn);
+        if self.weapons.remove(&pawn).is_some() {
+            self.attachment_dirty.insert(pawn);
+        }
+    }
+
+    /// Drain pawn bindings whose authoritative weapon assignment changed. The
+    /// relationship map remains intact for snapshot provenance and combat lookup;
+    /// only the presentation work queue is consumed.
+    pub(crate) fn take_attachment_changes(&mut self) -> Vec<(EntityId, Option<EntityId>)> {
+        let dirty: Vec<EntityId> = self.attachment_dirty.drain().collect();
+        dirty
+            .into_iter()
+            .map(|pawn| (pawn, self.weapons.get(&pawn).copied()))
+            .collect()
+    }
+
+    pub(crate) fn has_attachment_changes(&self) -> bool {
+        !self.attachment_dirty.is_empty()
     }
 }
 
@@ -150,6 +170,13 @@ struct ClientCommandState {
     /// [`INPUT_HOLD_TICKS`] consecutive missing ticks before neutral takes over.
     /// `None` before the first command and after a hold lapses to neutral.
     last_resolved: Option<InputCommand>,
+    /// Latest finite aim pitch accepted by authoritative command playout. Movement,
+    /// fire, and use neutralize after a long outage, but torso aim is presentation
+    /// state and remains at the last valid orientation until a newer real command.
+    latest_aim_pitch: Option<f32>,
+    /// Latest finite facing yaw accepted by authoritative command playout. Long
+    /// outages neutralize gameplay intent without snapping the replicated body aim.
+    latest_facing_yaw: Option<f32>,
     /// Consecutive ticks the previous command has been held across a gap. Reset to 0
     /// whenever a real command resolves; once it reaches [`INPUT_HOLD_TICKS`] the gap
     /// policy synthesizes neutral input.
@@ -290,6 +317,9 @@ pub(crate) struct ResolvedPawnCommand {
     pub(crate) pawn: EntityId,
     pub(crate) client_id: u64,
     pub(crate) command: SimCommand,
+    /// Camera pitch from the resolved, host-authorized input command. Presentation
+    /// consumes it locally; snapshot production reads the same queue state.
+    pub(crate) aim_pitch: f32,
     pub(crate) client_tick: u32,
     #[allow(dead_code)]
     pub(crate) source: ResolutionSource,
@@ -383,6 +413,8 @@ impl HostCommandQueues {
         // Exact-tick hit: a real command resolves this tick.
         if let Some(cmd) = state.take_exact(expected) {
             let mut sim = input_command_to_sim(&cmd);
+            state.latest_aim_pitch = Some(cmd.movement.aim_pitch);
+            state.latest_facing_yaw = Some(cmd.movement.facing_yaw);
             state.last_resolved = Some(cmd);
             state.held_ticks = 0;
             state.resolved_cursor = Some(expected);
@@ -404,13 +436,19 @@ impl HostCommandQueues {
                 }
                 // No previous command to hold (cursor advanced via neutral only):
                 // neutral immediately.
-                None => (neutral_sim_command(), ResolutionSource::Neutral),
+                None => (
+                    neutral_sim_command(state.latest_facing_yaw.unwrap_or(0.0)),
+                    ResolutionSource::Neutral,
+                ),
             }
         } else {
             // Hold lapsed: neutral. Clear the held command so a later real command at
             // a still-higher tick resumes cleanly rather than re-holding stale intent.
             state.last_resolved = None;
-            (neutral_sim_command(), ResolutionSource::Neutral)
+            (
+                neutral_sim_command(state.latest_facing_yaw.unwrap_or(0.0)),
+                ResolutionSource::Neutral,
+            )
         };
 
         state.resolved_cursor = Some(expected);
@@ -427,6 +465,14 @@ impl HostCommandQueues {
     /// authority metadata. `None` until the first command resolves.
     pub(crate) fn resolved_cursor(&self, client_id: u64) -> Option<u32> {
         self.clients.get(&client_id).and_then(|s| s.resolved_cursor)
+    }
+
+    /// Latest finite aim pitch accepted by authoritative command playout. Input
+    /// neutralization does not reset presentation orientation during an outage.
+    pub(crate) fn current_aim_pitch(&self, client_id: u64) -> Option<f32> {
+        self.clients
+            .get(&client_id)
+            .and_then(|state| state.latest_aim_pitch)
     }
 
     /// Drop a client's queue + cursor on slot close. Idempotent.
@@ -454,10 +500,12 @@ pub(crate) fn host_resolve_remote_commands(
     let owner_pairs: Vec<(EntityId, u64)> = owners.iter().collect();
     for (pawn, client_id) in owner_pairs {
         if let Some(resolved) = command_queues.resolve_tick(client_id) {
+            let aim_pitch = command_queues.current_aim_pitch(client_id).unwrap_or(0.0);
             commands.push(ResolvedPawnCommand {
                 pawn,
                 client_id,
                 command: resolved.command,
+                aim_pitch,
                 client_tick: resolved.client_tick,
                 source: resolved.source,
             });
@@ -466,12 +514,9 @@ pub(crate) fn host_resolve_remote_commands(
     commands
 }
 
-/// A neutral (no-intent) sim command: no wish direction, no buttons, facing held at
-/// zero. The deterministic fallback when the gap policy exhausts the hold window.
-/// Facing 0.0 is acceptable for Phase 3's movement-only scope — a neutral tick
-/// applies no locomotion, so the held facing does not visibly snap; Task 5/6 may
-/// refine to hold the last facing if needed.
-fn neutral_sim_command() -> SimCommand {
+/// A neutral (no-intent) sim command: no wish direction or buttons, with the last
+/// finite facing yaw retained for remote-avatar presentation.
+fn neutral_sim_command(facing_yaw: f32) -> SimCommand {
     use crate::movement::MovementInput;
     use crate::weapon::FireButtonState;
     use glam::Vec2;
@@ -482,7 +527,7 @@ fn neutral_sim_command() -> SimCommand {
             dash_pressed: false,
             running: false,
             crouch_intent: false,
-            facing_yaw: 0.0,
+            facing_yaw,
             use_pressed: false,
         },
         fire_button: FireButtonState {
@@ -532,6 +577,7 @@ mod tests {
                 crouch_intent: false,
                 facing_yaw: 0.5,
                 use_pressed: false,
+                aim_pitch: 0.0,
             },
             fire_button: WireFireButtonState {
                 pressed: false,
@@ -574,6 +620,30 @@ mod tests {
         let resolved = queues.resolve_tick(CLIENT).expect("a command resolves");
         assert!((resolved.command.movement.wish_dir.x - (-1.0)).abs() < EPSILON);
         assert!((resolved.command.movement.wish_dir.y - 1.0).abs() < EPSILON);
+    }
+
+    #[test]
+    fn current_aim_pitch_tracks_the_last_resolved_input() {
+        let mut queues = HostCommandQueues::new();
+        let mut input = command(0, 1.0);
+        input.movement.aim_pitch = -0.42;
+        assert!(queues.ingest(CLIENT, &input));
+        assert!(queues.resolve_tick(CLIENT).is_some());
+        assert_eq!(queues.current_aim_pitch(CLIENT), Some(-0.42));
+
+        // Regression: an outage longer than INPUT_HOLD_TICKS neutralizes gameplay
+        // intent but must not snap the remote torso back to zero pitch.
+        for _ in 0..=INPUT_HOLD_TICKS + 2 {
+            assert!(queues.resolve_tick(CLIENT).is_some());
+        }
+        assert_eq!(queues.current_aim_pitch(CLIENT), Some(-0.42));
+        let neutral = queues.resolve_tick(CLIENT).expect("playout stays active");
+        assert_eq!(neutral.source, ResolutionSource::Neutral);
+        assert!(neutral.command.movement.wish_dir.length_squared() <= EPSILON);
+        assert!(
+            (neutral.command.movement.facing_yaw - 0.5).abs() <= EPSILON,
+            "neutral gameplay input retains the last finite facing yaw"
+        );
     }
 
     #[test]

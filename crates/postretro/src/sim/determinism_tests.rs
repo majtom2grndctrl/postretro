@@ -36,7 +36,7 @@ use postretro_entities::components::brain::{AiStateMap, AiTuning, BrainComponent
 use postretro_entities::components::health::{HealthComponent, Hitbox};
 use postretro_entities::components::mesh::{
     AnimationState, InterruptPolicy, MeshAnimation, MeshComponent, RATE_CHANGE_EPSILON, RATE_MAX,
-    RATE_MIN,
+    RATE_MIN, resolve_pending_animation_stamps,
 };
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::{
@@ -531,6 +531,7 @@ impl SimHarness {
             shot_id: None,
             fire_tick: 0,
             client_tick: 0,
+            aim_pitch: 0.0,
             command: command.to_sim_command(),
         }];
         let trigger_use_edges = HashMap::new();
@@ -961,6 +962,8 @@ fn spawn_weapon(registry: &mut EntityRegistry) -> EntityId {
                 fire_mode: FireMode::Semi,
                 resolution: ResolutionMode::Hitscan,
                 credit_source: None,
+                third_person_model: None,
+                viewmodel: None,
                 resource: None,
             }),
         )
@@ -1609,6 +1612,85 @@ fn local_locomotion_rate_precedence_matrix_is_override_then_derived_then_fallbac
     }
 }
 
+// Regression: host-owned player pawns have no Brain component, so their descriptor
+// default used to remain idle on every serialized snapshot while clients predicted
+// walking from velocity.
+#[test]
+fn host_player_locomotion_selects_walk_and_calibrates_rate_before_replication() {
+    let mut registry = EntityRegistry::new();
+    let pawn = registry.spawn(Transform::default());
+    let mut movement = PlayerMovementComponent::from_descriptor(&player_descriptor());
+    movement.velocity = Vec3::new(3.0, 0.0, 0.0);
+    registry.set_component(pawn, movement).unwrap();
+
+    let mut states = HashMap::new();
+    states.insert(
+        "idle".to_string(),
+        AnimationState {
+            clip: "idle".to_string(),
+            looping: true,
+            crossfade_ms: 50.0,
+            interrupt: InterruptPolicy::Smooth,
+            travel_speed: None,
+            clip_index: Some(0),
+        },
+    );
+    states.insert(
+        "walk_forward".to_string(),
+        AnimationState {
+            clip: "walk".to_string(),
+            looping: true,
+            crossfade_ms: 50.0,
+            interrupt: InterruptPolicy::Smooth,
+            travel_speed: Some(2.0),
+            clip_index: Some(1),
+        },
+    );
+    registry
+        .set_component(
+            pawn,
+            MeshComponent::animated(
+                "player-model".to_string(),
+                MeshAnimation::new(states, "idle".to_string()),
+            ),
+        )
+        .unwrap();
+    // The normal frame path resolves the descriptor's initial animation stamp
+    // before locomotion can crossfade away from it.
+    resolve_pending_animation_stamps(&mut registry, 0.5);
+
+    super::update_player_animation_locomotion(&mut registry, &HitZoneStore::new(), 1.0);
+
+    let animation = registry
+        .get_component::<MeshComponent>(pawn)
+        .unwrap()
+        .animation
+        .as_ref()
+        .unwrap();
+    assert_eq!(animation.current_state, "walk_forward");
+    assert!(
+        animation.previous_state.is_some(),
+        "switch uses authored crossfade"
+    );
+    assert!((animation.rate - 1.5).abs() <= 1.0e-6);
+
+    let mut replicable = crate::netcode::ReplicableSet::new();
+    replicable.register(pawn);
+    let mut allocator = crate::netcode::NetworkIdAllocator::new();
+    let snapshots = crate::netcode::produce_owned_snapshots(
+        &registry,
+        &replicable,
+        &mut allocator,
+        &crate::netcode::MovementOwners::new(),
+        &crate::netcode::HostCommandQueues::new(),
+    );
+    assert!(snapshots[0].components.iter().any(|payload| matches!(
+        payload,
+        postretro_net::wire::ComponentPayload::MeshAnimationState(state)
+            if state.current_state == "walk_forward"
+    )));
+}
+
 // Regression: runtime-spawned host enemies enter the first rate pass before
 // the outer app loop drains their clip-index resolve queue.
 #[test]
@@ -1804,7 +1886,14 @@ fn pose_inputs_fallbacks_and_vertical_targets_remain_finite() {
         };
         registry.set_component(entity, brain).unwrap();
 
-        super::update_pose_inputs(&mut registry);
+        super::update_pose_inputs(
+            &mut registry,
+            (0.0, 0.0),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
         registry
             .get_component::<MeshComponent>(entity)
             .unwrap()
@@ -1832,6 +1921,119 @@ fn pose_inputs_fallbacks_and_vertical_targets_remain_finite() {
     assert!(coincident.aim_pitch.abs() <= 1.0e-6);
     assert!((straight_up.aim_pitch - std::f32::consts::FRAC_PI_2).abs() <= 1.0e-6);
     assert!((straight_down.aim_pitch + std::f32::consts::FRAC_PI_2).abs() <= 1.0e-6);
+}
+
+#[test]
+fn local_player_pose_inputs_use_camera_aim_and_movement_heading() {
+    let (mut registry, pawn, _) = leg_probe_fixture(Vec3::ZERO, -0.4);
+    let mut movement = PlayerMovementComponent::from_descriptor(&player_descriptor());
+    movement.velocity = Vec3::X * 3.0;
+    registry.set_component(pawn, movement).unwrap();
+    registry.mark_local_player_pawn(pawn).unwrap();
+
+    super::update_pose_inputs(
+        &mut registry,
+        (-0.35, 1.1),
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+    );
+
+    let inputs = registry
+        .get_component::<MeshComponent>(pawn)
+        .unwrap()
+        .pose_inputs
+        .unwrap();
+    assert!((inputs.aim_pitch + 0.35).abs() <= 1.0e-6);
+    assert!((inputs.aim_yaw - 1.1).abs() <= 1.0e-6);
+    assert!((inputs.heading_yaw + std::f32::consts::FRAC_PI_2).abs() <= 1.0e-6);
+}
+
+#[test]
+fn remote_player_pose_inputs_use_interpolated_aim_and_velocity_heading_fallback() {
+    let transform_yaw = 0.6;
+    let (mut registry, pawn, _) = leg_probe_fixture(Vec3::ZERO, transform_yaw);
+    let network_id = postretro_net::wire::NetworkId(77);
+    let mut remote_network_ids = HashMap::new();
+    remote_network_ids.insert(pawn, network_id);
+    let mut remote_aim_pitches = HashMap::new();
+    remote_aim_pitches.insert(network_id, -0.25);
+    let mut remote_heading_yaws = HashMap::new();
+    remote_heading_yaws.insert(network_id, -1.2);
+
+    super::update_pose_inputs(
+        &mut registry,
+        (0.0, 0.0),
+        &HashMap::new(),
+        &remote_aim_pitches,
+        &remote_heading_yaws,
+        &remote_network_ids,
+    );
+    let moving = registry
+        .get_component::<MeshComponent>(pawn)
+        .unwrap()
+        .pose_inputs
+        .unwrap();
+    assert!((moving.aim_pitch + 0.25).abs() <= 1.0e-6);
+    assert!((moving.aim_yaw - transform_yaw).abs() <= 1.0e-6);
+    assert!((moving.heading_yaw + 1.2).abs() <= 1.0e-6);
+
+    super::update_pose_inputs(
+        &mut registry,
+        (0.0, 0.0),
+        &HashMap::new(),
+        &remote_aim_pitches,
+        &HashMap::new(),
+        &remote_network_ids,
+    );
+    let stationary = registry
+        .get_component::<MeshComponent>(pawn)
+        .unwrap()
+        .pose_inputs
+        .unwrap();
+    assert!(
+        (stationary.heading_yaw - transform_yaw).abs() <= 1.0e-6,
+        "stationary remote avatar falls back to displayed transform yaw"
+    );
+}
+
+#[test]
+fn listen_host_remote_player_pose_inputs_use_resolved_client_camera_aim() {
+    let (mut registry, pawn, _) = leg_probe_fixture(Vec3::ZERO, 0.0);
+    let mut movement = PlayerMovementComponent::from_descriptor(&player_descriptor());
+    movement.velocity = Vec3::X * 3.0;
+    registry.set_component(pawn, movement).unwrap();
+    // The registry treats the first movement pawn as local for old maps. Mark a
+    // separate pawn so this fixture exercises the listen-host remote-pawn path.
+    let local_pawn = registry.spawn(Transform::default());
+    registry
+        .set_component(
+            local_pawn,
+            PlayerMovementComponent::from_descriptor(&player_descriptor()),
+        )
+        .unwrap();
+    registry.mark_local_player_pawn(local_pawn).unwrap();
+    let mut remote_player_aims = HashMap::new();
+    remote_player_aims.insert(pawn, (-0.4, 1.2));
+
+    super::update_pose_inputs(
+        &mut registry,
+        (0.0, 0.0),
+        &remote_player_aims,
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+    );
+
+    let inputs = registry
+        .get_component::<MeshComponent>(pawn)
+        .unwrap()
+        .pose_inputs
+        .unwrap();
+    assert!((inputs.aim_pitch + 0.4).abs() <= 1.0e-6);
+    assert!((inputs.aim_yaw - 1.2).abs() <= 1.0e-6);
+    assert!((inputs.heading_yaw + std::f32::consts::FRAC_PI_2).abs() <= 1.0e-6);
 }
 
 /// One leg model: hip → knee → ankle, composed ankle resting at model (0,-0.7,0),
@@ -1914,6 +2116,13 @@ fn probe_leg_entity_in(
         &mover_states,
         &store,
         0.0,
+        super::PresentationPoseInputs {
+            camera_aim: (0.0, 0.0),
+            remote_player_aims: &HashMap::new(),
+            remote_aim_pitches: &HashMap::new(),
+            remote_heading_yaws: &HashMap::new(),
+            remote_network_ids: &HashMap::new(),
+        },
     );
 
     registry
@@ -1950,6 +2159,7 @@ fn leg_probe_fixture(position: Vec3, yaw: f32) -> (EntityRegistry, EntityId, Hit
                 animation: Some(MeshAnimation::new(states, "idle".into())),
                 origin_offset: Vec3::ZERO,
                 shadow_bias_scale: 1.0,
+                shadow_only: false,
                 attachments: Vec::new(),
                 pose_inputs: None,
             },
@@ -2041,6 +2251,13 @@ fn connected_client_presentation_probes_freshly_displayed_remote_transform() {
         &MoverTickStateTable::default(),
         &store,
         0.0,
+        super::PresentationPoseInputs {
+            camera_aim: (0.0, 0.0),
+            remote_player_aims: &HashMap::new(),
+            remote_aim_pitches: &HashMap::new(),
+            remote_heading_yaws: &HashMap::new(),
+            remote_network_ids: &HashMap::new(),
+        },
     );
 
     let inputs = registry
@@ -2062,7 +2279,21 @@ fn unavailable_probe_inputs_clear_stale_feet_and_publish_zero_count() {
     let (mut registry, entity, store) = leg_probe_fixture(Vec3::new(0.0, 1.0, 0.0), 0.0);
     let mover_states = MoverTickStateTable::default();
     let run = |registry: &mut EntityRegistry| {
-        super::update_presentation_pose_inputs(registry, &world, &[], &mover_states, &store, 0.0);
+        super::update_presentation_pose_inputs(
+            registry,
+            &world,
+            &[],
+            &mover_states,
+            &store,
+            0.0,
+            super::PresentationPoseInputs {
+                camera_aim: (0.0, 0.0),
+                remote_player_aims: &HashMap::new(),
+                remote_aim_pitches: &HashMap::new(),
+                remote_heading_yaws: &HashMap::new(),
+                remote_network_ids: &HashMap::new(),
+            },
+        );
     };
     let assert_cleared = |registry: &EntityRegistry, reason: &str| {
         let inputs = registry

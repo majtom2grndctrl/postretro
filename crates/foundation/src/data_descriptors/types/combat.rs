@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::data_descriptors::DescriptorError;
+use crate::data_descriptors::{DescriptorError, is_portable_content_relative_asset_path};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -61,6 +61,14 @@ pub struct WeaponDescriptor {
     pub resolution: ResolutionMode,
     #[serde(default, rename = "creditSource")]
     pub credit_source: Option<String>,
+    /// Optional content-relative rigid prop model mounted at the pawn's third-person hand socket.
+    /// Uses forward slashes and may not be absolute or contain parent traversal.
+    #[serde(default, rename = "thirdPersonModel")]
+    pub third_person_model: Option<String>,
+    /// Optional content-relative model rendered by the first-person viewmodel pass.
+    /// Uses forward slashes and may not be absolute or contain parent traversal.
+    #[serde(default)]
+    pub viewmodel: Option<String>,
     #[serde(default)]
     pub resource: Option<WeaponResource>,
 }
@@ -93,6 +101,20 @@ impl WeaponDescriptor {
         }
         if let Some(credit_source) = self.credit_source.as_deref() {
             validate_credit_source(credit_source)?;
+        }
+        for (field, path) in [
+            ("thirdPersonModel", self.third_person_model.as_deref()),
+            ("viewmodel", self.viewmodel.as_deref()),
+        ] {
+            if let Some(path) = path
+                && !is_portable_content_relative_asset_path(path)
+            {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`components.weapon.{field}` must be a non-empty, content-relative model path using forward slashes with no parent traversal"
+                    ),
+                });
+            }
         }
         if let Some(WeaponResource::Ammo(ammo)) = self.resource.as_ref() {
             validate_ascii_identifier("resource.type", &ammo.ammo_type)?;
@@ -317,6 +339,8 @@ mod tests {
             fire_mode: FireMode::Semi,
             resolution: ResolutionMode::Hitscan,
             credit_source: credit_source.map(str::to_string),
+            third_person_model: None,
+            viewmodel: None,
             resource: None,
         }
     }
@@ -381,6 +405,44 @@ mod tests {
         };
         assert_eq!(ammo.cost_per_shot, 1);
         assert_eq!(ammo.reload_ms, 1000);
+    }
+
+    #[test]
+    fn optional_weapon_model_paths_must_be_contained_content_relative_paths() {
+        for invalid in [
+            "",
+            "/tmp/model.gltf",
+            "../model.gltf",
+            "models/../model.gltf",
+            r"..\model.gltf",
+            r"C:\models\model.gltf",
+            "C:/models/model.gltf",
+            "C:models/model.gltf",
+            r"\\server\share\model.gltf",
+        ] {
+            for field in ["thirdPersonModel", "viewmodel"] {
+                let mut descriptor = weapon_descriptor(None);
+                if field == "thirdPersonModel" {
+                    descriptor.third_person_model = Some(invalid.to_string());
+                } else {
+                    descriptor.viewmodel = Some(invalid.to_string());
+                }
+                let error = descriptor.validate().unwrap_err().to_string();
+                assert!(
+                    error.contains(field),
+                    "unexpected error for {invalid:?}: {error}"
+                );
+                assert!(
+                    error.contains("content-relative"),
+                    "unexpected error for {invalid:?}: {error}"
+                );
+            }
+        }
+
+        let mut valid = weapon_descriptor(None);
+        valid.third_person_model = Some("models/smg/model.gltf".to_string());
+        valid.viewmodel = Some("./models/smg/view.gltf".to_string());
+        assert!(valid.validate().is_ok());
     }
 
     #[test]

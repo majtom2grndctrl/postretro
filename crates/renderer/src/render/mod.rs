@@ -10,6 +10,7 @@ mod fog_pass;
 mod frame_timing;
 mod kinematic_brush;
 mod loaded_texture;
+mod mesh_depth;
 mod mesh_pass;
 mod promoted_depth_cache;
 mod rigid_occluder_depth;

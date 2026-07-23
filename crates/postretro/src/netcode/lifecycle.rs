@@ -595,6 +595,8 @@ mod tests {
                 fire_mode: FireMode::Semi,
                 resolution: ResolutionMode::Hitscan,
                 credit_source: None,
+                third_person_model: None,
+                viewmodel: None,
                 resource: None,
             }),
             mesh: None,
@@ -782,6 +784,52 @@ mod tests {
             registry.has_component_kind(weapon, ComponentKind::Weapon),
             Ok(true)
         ));
+
+        let snapshots = crate::netcode::replication::produce_owned_snapshots_with_host_aim(
+            &registry,
+            &replicable,
+            &mut allocator,
+            &owners,
+            &weapon_owners,
+            &command_queues,
+            None,
+        );
+        let pawn_snapshot = snapshots
+            .iter()
+            .find(|snapshot| snapshot.network_id == pawn_net.0)
+            .expect("the active-weapon pawn is replicated");
+        assert_eq!(
+            pawn_snapshot.active_weapon_archetype,
+            Some("reference_pistol".to_string()),
+            "WeaponOwners resolves the weapon descriptor's canonical name onto the pawn record"
+        );
+
+        let host_pitch_snapshots =
+            crate::netcode::replication::produce_owned_snapshots_with_host_aim(
+                &registry,
+                &replicable,
+                &mut allocator,
+                &crate::netcode::MovementOwners::new(),
+                &weapon_owners,
+                &command_queues,
+                Some((pawn, -0.37)),
+            );
+        let host_movement = host_pitch_snapshots
+            .iter()
+            .find(|snapshot| snapshot.network_id == pawn_net.0)
+            .and_then(|snapshot| {
+                snapshot
+                    .components
+                    .iter()
+                    .find_map(|payload| match payload {
+                        postretro_net::wire::ComponentPayload::PlayerMovementState(movement) => {
+                            Some(movement)
+                        }
+                        _ => None,
+                    })
+            })
+            .expect("listen-host pawn carries movement presentation state");
+        assert!((host_movement.aim_pitch + 0.37).abs() <= 1.0e-6);
 
         crate::netcode::host_handle_lifecycle(
             &mut registry,

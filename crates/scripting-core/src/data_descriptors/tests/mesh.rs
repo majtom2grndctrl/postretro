@@ -140,6 +140,25 @@ fn js_mesh_shadow_bias_scale_defaults_and_validates() {
 }
 
 #[test]
+fn mesh_shadow_only_defaults_false_and_has_js_luau_parity() {
+    let js_default = eval_js(r#"({ components: { mesh: { model: "m" } } })"#, |ctx, v| {
+        entity_descriptor_from_js(ctx, v).unwrap()
+    });
+    assert!(!js_default.mesh.unwrap().shadow_only);
+
+    let js = eval_js(
+        r#"({ components: { mesh: { model: "m", shadowOnly: true } } })"#,
+        |ctx, v| entity_descriptor_from_js(ctx, v).unwrap(),
+    );
+    let lua = eval_lua(
+        r#"return { components = { mesh = { model = "m", shadowOnly = true } } }"#,
+        |v| entity_descriptor_from_lua(v).unwrap(),
+    );
+    assert!(js.mesh.unwrap().shadow_only);
+    assert!(lua.mesh.unwrap().shadow_only);
+}
+
+#[test]
 fn js_mesh_animated_parses_states_and_default() {
     let src = r#"({ components: { mesh: {
         model: "decraniated",

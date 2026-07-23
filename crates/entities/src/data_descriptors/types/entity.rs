@@ -29,6 +29,11 @@ pub use postretro_foundation::data_descriptors::LightDescriptor;
 #[derive(Debug, Clone, PartialEq)]
 pub struct MeshDescriptor {
     pub model: String,
+    /// When true, this mesh is collected only for shadow-depth presentation.
+    /// `shadowOnly` on the script surface; omission preserves normal forward
+    /// rendering. Player materialization retains the bit only for the owning
+    /// local viewer and clears it for peer-visible avatars.
+    pub shadow_only: bool,
     /// Named holder socket → content-relative prop model path. The spawn path
     /// materializes these into transiently unresolved mesh attachments; level
     /// load resolves their holder-side binding from the loaded glTF sockets.
@@ -94,6 +99,19 @@ pub struct RawAnimationState {
     pub travel_speed: Option<f32>,
 }
 
+/// Parsed mesh fields supplied by the JS and Luau descriptor bridges before
+/// shared validation turns them into a [`MeshDescriptor`].
+pub struct RawMeshDescriptor {
+    pub model: String,
+    pub attachments: HashMap<String, String>,
+    pub states: Vec<RawAnimationState>,
+    pub default_state: Option<String>,
+    pub animations_present: bool,
+    pub locomotion: Option<LocomotionDescriptor>,
+    pub shadow_bias_scale: Option<f32>,
+    pub shadow_only: bool,
+}
+
 impl MeshDescriptor {
     /// Effective locomotion rate-scaling toggle. Omitting either the block or
     /// its field preserves the shared default (`true`).
@@ -112,17 +130,22 @@ impl MeshDescriptor {
     /// any state is declared — a present `defaultState` that names a declared
     /// state. An empty-but-present `animations` block is rejected; a wholly absent
     /// one yields a stateless descriptor (`animations` empty, `default_state`
-    /// None). `shadowBiasScale` is optional on the wire, defaults to 1.0, and must
-    /// be finite in 0.0..=4.0.
-    pub fn build(
-        model: String,
-        attachments: HashMap<String, String>,
-        states: Vec<RawAnimationState>,
-        default_state: Option<String>,
-        animations_present: bool,
-        locomotion: Option<LocomotionDescriptor>,
-        shadow_bias_scale: Option<f32>,
-    ) -> Result<Self, DescriptorError> {
+    /// None). `shadowOnly` is optional descriptor input and defaults to `false`.
+    /// Player presentation treats it as an owning-view exception: the local body
+    /// remains shadow-only while peer viewers render the same avatar forward.
+    /// `shadowBiasScale` is optional on the wire, defaults to 1.0, and must be
+    /// finite in 0.0..=4.0.
+    pub fn build(raw: RawMeshDescriptor) -> Result<Self, DescriptorError> {
+        let RawMeshDescriptor {
+            model,
+            attachments,
+            states,
+            default_state,
+            animations_present,
+            locomotion,
+            shadow_bias_scale,
+            shadow_only,
+        } = raw;
         if model.is_empty() {
             return Err(DescriptorError::InvalidShape {
                 reason: "`components.mesh.model` must be a non-empty string".to_string(),
@@ -252,6 +275,7 @@ impl MeshDescriptor {
 
         Ok(MeshDescriptor {
             model,
+            shadow_only,
             attachments,
             shadow_bias_scale,
             animations,

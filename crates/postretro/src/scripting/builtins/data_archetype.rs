@@ -385,6 +385,63 @@ pub(crate) fn suppressed_ai_enemy_mesh_models(
     ordered
 }
 
+/// Collect every movement descriptor's holder and attachment models. A listen
+/// host may select any such descriptor for an accepted net-slot pawn, while a
+/// connected client receives those pawns through snapshots. Neither path may
+/// upload models during gameplay, so install preloads the full descriptor set.
+pub(crate) fn movement_descriptor_mesh_models(descriptors: &[EntityTypeDescriptor]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut ordered = Vec::new();
+    for descriptor in descriptors {
+        if descriptor.movement.is_none() {
+            continue;
+        }
+        let Some(mesh) = descriptor.mesh.as_ref() else {
+            continue;
+        };
+        if !mesh.model.is_empty() && seen.insert(mesh.model.clone()) {
+            ordered.push(mesh.model.clone());
+        }
+        let mut attachment_models: Vec<&str> =
+            mesh.attachments.values().map(String::as_str).collect();
+        attachment_models.sort_unstable();
+        for attachment_model in attachment_models {
+            if !attachment_model.is_empty() && seen.insert(attachment_model.to_string()) {
+                ordered.push(attachment_model.to_string());
+            }
+        }
+    }
+    ordered
+}
+
+/// Collect third- and first-person models declared by weapon descriptors.
+/// Wieldable instances intentionally have no `MeshComponent`, so a registry-driven
+/// sweep cannot discover either presentation asset. Every role may present an
+/// active weapon, therefore this list is always unioned into the level-load model
+/// sweep rather than being client-only.
+pub(crate) fn weapon_presentation_models(descriptors: &[EntityTypeDescriptor]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut ordered = Vec::new();
+    for descriptor in descriptors {
+        let Some(weapon) = descriptor.weapon.as_ref() else {
+            continue;
+        };
+        for model in [
+            weapon.third_person_model.as_deref(),
+            weapon.viewmodel.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .filter(|model| !model.is_empty())
+        {
+            if seen.insert(model.to_string()) {
+                ordered.push(model.to_string());
+            }
+        }
+    }
+    ordered
+}
+
 /// Attach descriptor components to an already-spawned entity. `initial_*` KVP
 /// overrides are applied to `emitter` and `light` before attachment;
 /// `movement` receives descriptor values verbatim. Weapon attachment is opt-in
@@ -523,13 +580,24 @@ pub(crate) fn attach_descriptor_components(
 /// Materialize the descriptor-owned mesh presentation shared by local spawns
 /// and connected-client remote enemies. Descriptor state maps already carry
 /// validated `travelSpeed` overrides; this seam also applies the shared
-/// absent-`speedScale` default and AI render-origin offset.
+/// absent-`speedScale` default and capsule-center-to-feet render-origin offset
+/// for AI and movement pawns.
 pub(crate) fn descriptor_mesh_component(
     descriptor: &EntityTypeDescriptor,
     agent_params: Option<NavAgentParams>,
 ) -> Option<MeshComponent> {
     let mesh_desc = descriptor.mesh.as_ref()?;
-    let origin_offset = if descriptor.ai.is_some() {
+    let origin_offset = if let Some(movement) = descriptor.movement.as_ref() {
+        // Player transforms are their collision-capsule centers, while player
+        // meshes are authored at their feet. `half_height` names the distance
+        // from the center to each spherical-cap center, so the total capsule
+        // height is twice `(half_height + radius)`.
+        let capsule = &movement.capsule;
+        capsule_center_to_feet_origin_offset(
+            capsule.radius,
+            2.0 * (capsule.half_height + capsule.radius),
+        )
+    } else if descriptor.ai.is_some() {
         let params = agent_params.unwrap_or(DEFAULT_AGENT_PARAMS);
         capsule_center_to_feet_origin_offset(params.radius, params.height)
     } else {
@@ -555,7 +623,8 @@ pub(crate) fn descriptor_mesh_component(
         component
             .with_attachments(attachments)
             .with_origin_offset(origin_offset)
-            .with_shadow_bias_scale(mesh_desc.shadow_bias_scale),
+            .with_shadow_bias_scale(mesh_desc.shadow_bias_scale)
+            .with_shadow_only(mesh_desc.shadow_only),
     )
 }
 
@@ -924,6 +993,47 @@ mod tests {
 
         let provenance = reg.get_component::<DescriptorProvenance>(id).unwrap();
         assert!(provenance.owns(DescriptorComponentKind::Mesh));
+    }
+
+    #[test]
+    fn descriptor_mesh_offsets_capsule_center_to_feet_for_movement_and_ai_only() {
+        let mesh_only = mesh_descriptor("prop", false);
+        assert_eq!(
+            descriptor_mesh_component(&mesh_only, None)
+                .expect("mesh-only descriptor materializes")
+                .origin_offset,
+            Vec3::ZERO,
+            "mesh-only descriptors keep their authored transform origin"
+        );
+
+        let mut movement = mesh_descriptor("player", false);
+        let movement_params = movement_descriptor();
+        let expected_movement_offset = capsule_center_to_feet_origin_offset(
+            movement_params.capsule.radius,
+            2.0 * (movement_params.capsule.half_height + movement_params.capsule.radius),
+        );
+        movement.movement = Some(movement_params);
+        assert_eq!(
+            descriptor_mesh_component(&movement, None)
+                .expect("movement descriptor materializes")
+                .origin_offset,
+            expected_movement_offset,
+            "movement-pawn meshes are authored at feet while transforms are capsule centers"
+        );
+
+        let ai = ai_enemy_descriptor("grunt");
+        let agent_params = NavAgentParams {
+            radius: 0.2,
+            height: 2.0,
+            ..DEFAULT_AGENT_PARAMS
+        };
+        assert_eq!(
+            descriptor_mesh_component(&ai, Some(agent_params))
+                .expect("AI descriptor materializes")
+                .origin_offset,
+            capsule_center_to_feet_origin_offset(agent_params.radius, agent_params.height),
+            "AI descriptors retain the established nav-agent offset"
+        );
     }
 
     #[test]
@@ -1874,6 +1984,8 @@ mod tests {
                 fire_mode: FireMode::Semi,
                 resolution: ResolutionMode::Hitscan,
                 credit_source: None,
+                third_person_model: None,
+                viewmodel: None,
                 resource: None,
             }),
             mesh: None,
@@ -2402,6 +2514,72 @@ mod tests {
         let placements = vec![placement("crate", &[]), placement("mystery", &[])];
 
         assert!(suppressed_ai_enemy_mesh_models(&placements, &descriptors).is_empty());
+    }
+
+    #[test]
+    fn movement_descriptor_mesh_models_collects_every_player_presentation() {
+        // Hosts may assign any movement descriptor to a joining slot, and clients
+        // receive the same set through snapshots. Preload holder and attachment
+        // models; unrelated mesh-only descriptors must not leak in.
+        let mut avatar = player_with_movement("co_op_avatar");
+        avatar.mesh = mesh_descriptor("co_op_avatar", false).mesh;
+        let mesh = avatar.mesh.as_mut().expect("fixture supplies a mesh");
+        mesh.model = "models/exo_red/model.gltf".to_string();
+        mesh.attachments = [
+            ("hand_r".to_string(), "models/smg/model.gltf".to_string()),
+            ("back".to_string(), "models/backpack/model.gltf".to_string()),
+        ]
+        .into_iter()
+        .collect();
+
+        let models = movement_descriptor_mesh_models(&[
+            avatar,
+            mesh_descriptor("scenery", false),
+            player_with_movement("invisible_player"),
+        ]);
+
+        assert_eq!(
+            models,
+            vec![
+                "models/exo_red/model.gltf".to_string(),
+                "models/backpack/model.gltf".to_string(),
+                "models/smg/model.gltf".to_string(),
+            ],
+            "only movement descriptors contribute and attachments retain deterministic socket order"
+        );
+    }
+
+    #[test]
+    fn weapon_presentation_models_collects_nonempty_third_and_first_person_paths_once() {
+        let mut pistol = weapon_descriptor("pistol");
+        pistol.weapon.as_mut().unwrap().third_person_model =
+            Some("models/pistol/model.gltf".to_string());
+        pistol.weapon.as_mut().unwrap().viewmodel = Some("models/pistol/view.gltf".to_string());
+        let mut duplicate = weapon_descriptor("pistol_variant");
+        duplicate.weapon.as_mut().unwrap().third_person_model =
+            Some("models/pistol/model.gltf".to_string());
+        duplicate.weapon.as_mut().unwrap().viewmodel = Some("models/pistol/view.gltf".to_string());
+        let mut rifle = weapon_descriptor("rifle");
+        rifle.weapon.as_mut().unwrap().third_person_model =
+            Some("models/rifle/model.gltf".to_string());
+        let mut empty = weapon_descriptor("empty");
+        empty.weapon.as_mut().unwrap().third_person_model = Some(String::new());
+
+        assert_eq!(
+            weapon_presentation_models(&[
+                pistol,
+                mesh_descriptor("scenery", false),
+                duplicate,
+                empty,
+                rifle,
+            ]),
+            vec![
+                "models/pistol/model.gltf".to_string(),
+                "models/pistol/view.gltf".to_string(),
+                "models/rifle/model.gltf".to_string(),
+            ],
+            "declared weapon presentation models preserve descriptor order and dedupe paths"
+        );
     }
 
     #[test]

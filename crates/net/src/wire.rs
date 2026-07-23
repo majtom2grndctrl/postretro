@@ -65,7 +65,11 @@ pub struct NetworkId(pub u32);
 ///
 /// Bumped to 9 for E17 trigger commands: mover phase gained `target_segment`
 /// and movement input gained `use_pressed`.
-pub const SNAPSHOT_VERSION: u16 = 9;
+///
+/// Bumped to 10 for E21 co-op avatar presentation: player movement gained
+/// replicated `aim_pitch`, and entity records gained active-weapon archetype
+/// metadata.
+pub const SNAPSHOT_VERSION: u16 = 10;
 
 /// `record_kind` discriminant for a full-baseline (spawn / join / refresh) record.
 pub const RECORD_KIND_FULL_BASELINE: u16 = 0;
@@ -161,6 +165,9 @@ pub struct WirePlayerMovementState {
     pub jump_spent: bool,
     pub capsule_half_height: f32,
     pub capsule_eye_height: f32,
+    /// Camera pitch from the movement owner's latest resolved input. It is
+    /// presentation state for remote avatars, not a movement-simulation value.
+    pub aim_pitch: f32,
 }
 
 impl WireMovementState {
@@ -194,6 +201,7 @@ impl WirePlayerMovementState {
             && self.jump_buffer_timer_ms.is_finite()
             && self.capsule_half_height.is_finite()
             && self.capsule_eye_height.is_finite()
+            && self.aim_pitch.is_finite()
             && self.movement_state.all_finite()
     }
 }
@@ -311,6 +319,14 @@ pub struct RawEntityRecord {
     /// rejected at `validate`. This is a plain string identifier, NOT a descriptor
     /// type: the crate stays registry-blind and never resolves it.
     pub entity_class: String,
+    /// Whether `active_weapon_archetype` carries a real value. Mirrors the typed
+    /// `EntityRecord` option: `false` requires an empty string; `true` requires a
+    /// non-empty canonical weapon archetype name.
+    pub has_active_weapon_archetype: bool,
+    /// The active weapon's opaque descriptor canonical name. Valid only on a
+    /// non-despawn record carrying `PlayerMovementState`; no value means no weapon
+    /// is currently equipped.
+    pub active_weapon_archetype: String,
     pub components: Vec<RawComponentPayload>,
 }
 
@@ -390,6 +406,10 @@ pub enum EntityRecord {
         /// materializes, and that presentation entity rides the wire as a `Transform`.
         /// A plain string identifier, never resolved by this registry-blind crate.
         entity_class: Option<String>,
+        /// The opaque canonical name of this movement pawn's active weapon, or
+        /// `None` when it has no active weapon. Valid only on records carrying
+        /// `PlayerMovementState` (enforced at `validate`).
+        active_weapon_archetype: Option<String>,
         components: Vec<ComponentPayload>,
     },
     Delta {
@@ -402,6 +422,8 @@ pub enum EntityRecord {
         local_player: bool,
         /// See `FullBaseline::entity_class`.
         entity_class: Option<String>,
+        /// See `FullBaseline::active_weapon_archetype`.
+        active_weapon_archetype: Option<String>,
         components: Vec<ComponentPayload>,
     },
     Despawn {
@@ -459,9 +481,8 @@ pub enum ValidationError {
     /// `has_last_processed_client_tick` was `false` but `last_processed_client_tick`
     /// was nonzero — the "absent" flag cannot ride a real tick value.
     MalformedTickMetadata { last_processed_client_tick: u32 },
-    /// A despawn record carried any movement-authority metadata
-    /// (`has_last_processed_client_tick` / `local_player`) or an `entity_class`. A
-    /// tombstone has no pawn state to ack and no descriptor class to materialize.
+    /// A despawn record carried movement-authority metadata, an `entity_class`, or
+    /// active-weapon metadata. A tombstone has no pawn state or presentation identity.
     MetadataOnDespawn,
     /// A despawn record carried component payloads. Despawns are tombstone-only and
     /// never carry replicated component state.
@@ -477,6 +498,11 @@ pub enum ValidationError {
     /// `has_entity_class` was `true` but `entity_class` was empty. The flag means a
     /// concrete class value is present.
     EmptyEntityClassMetadata,
+    /// `has_active_weapon_archetype` was `false` but its string was non-empty, or
+    /// it was `true` but its string was empty.
+    MalformedActiveWeaponMetadata,
+    /// Active-weapon metadata is meaningful only on a `PlayerMovementState` record.
+    ActiveWeaponMetadataWithoutMovement,
     /// A `PlayerMovementState` payload carried a non-finite float (NaN/inf) in one
     /// of its replicated fields (velocity, timers, dash boost, crouch eye value, or
     /// capsule dimensions). Rejected before typed apply so no non-finite movement
@@ -524,7 +550,7 @@ impl std::fmt::Display for ValidationError {
             ValidationError::MetadataOnDespawn => {
                 write!(
                     f,
-                    "movement-authority or entity_class metadata on a despawn record"
+                    "movement-authority, entity_class, or active-weapon metadata on a despawn record"
                 )
             }
             ValidationError::ComponentsOnDespawn => {
@@ -540,6 +566,14 @@ impl std::fmt::Display for ValidationError {
             ValidationError::EmptyEntityClassMetadata => {
                 write!(f, "has_entity_class=true but entity_class is empty")
             }
+            ValidationError::MalformedActiveWeaponMetadata => write!(
+                f,
+                "active-weapon metadata flag and archetype string disagree"
+            ),
+            ValidationError::ActiveWeaponMetadataWithoutMovement => write!(
+                f,
+                "active-weapon metadata on a record without a PlayerMovementState component"
+            ),
             ValidationError::NonFiniteMovementState => {
                 write!(f, "non-finite float in a PlayerMovementState payload")
             }
@@ -647,12 +681,14 @@ impl RawEntityRecord {
                 let components = self.validate_components()?;
                 let last_processed_client_tick = self.validate_movement_metadata(&components)?;
                 let entity_class = self.validate_entity_class(&components)?;
+                let active_weapon_archetype = self.validate_active_weapon_metadata(&components)?;
                 Ok(EntityRecord::FullBaseline {
                     network_id: self.network_id,
                     baseline_id: self.baseline_id_or_ref,
                     last_processed_client_tick,
                     local_player: self.local_player,
                     entity_class,
+                    active_weapon_archetype,
                     components,
                 })
             }
@@ -660,6 +696,7 @@ impl RawEntityRecord {
                 let components = self.validate_components()?;
                 let last_processed_client_tick = self.validate_movement_metadata(&components)?;
                 let entity_class = self.validate_entity_class(&components)?;
+                let active_weapon_archetype = self.validate_active_weapon_metadata(&components)?;
                 Ok(EntityRecord::Delta {
                     network_id: self.network_id,
                     baseline_ref: self.baseline_id_or_ref,
@@ -667,6 +704,7 @@ impl RawEntityRecord {
                     last_processed_client_tick,
                     local_player: self.local_player,
                     entity_class,
+                    active_weapon_archetype,
                     components,
                 })
             }
@@ -678,6 +716,8 @@ impl RawEntityRecord {
                     || self.local_player
                     || self.has_entity_class
                     || !self.entity_class.is_empty()
+                    || self.has_active_weapon_archetype
+                    || !self.active_weapon_archetype.is_empty()
                 {
                     return Err(ValidationError::MetadataOnDespawn);
                 }
@@ -782,6 +822,32 @@ impl RawEntityRecord {
             Ok(None)
         }
     }
+
+    /// Validate this record's active-weapon metadata against its components. Unlike
+    /// `entity_class`, this identity is player-pawn state and therefore requires a
+    /// `PlayerMovementState` payload on the same non-despawn record.
+    fn validate_active_weapon_metadata(
+        &self,
+        components: &[ComponentPayload],
+    ) -> Result<Option<String>, ValidationError> {
+        if (!self.has_active_weapon_archetype && !self.active_weapon_archetype.is_empty())
+            || (self.has_active_weapon_archetype && self.active_weapon_archetype.is_empty())
+        {
+            return Err(ValidationError::MalformedActiveWeaponMetadata);
+        }
+
+        if self.has_active_weapon_archetype
+            && !components
+                .iter()
+                .any(|component| matches!(component, ComponentPayload::PlayerMovementState(_)))
+        {
+            return Err(ValidationError::ActiveWeaponMetadataWithoutMovement);
+        }
+
+        Ok(self
+            .has_active_weapon_archetype
+            .then(|| self.active_weapon_archetype.clone()))
+    }
 }
 
 impl RawSnapshotMessage {
@@ -822,6 +888,9 @@ pub struct WireMovementInput {
     pub crouch_intent: bool,
     pub facing_yaw: f32,
     pub use_pressed: bool,
+    /// Camera pitch, appended after the E17 input layout. It is replicated for
+    /// remote-avatar presentation and does not participate in movement simulation.
+    pub aim_pitch: f32,
 }
 
 /// Wire mirror of the engine `FireButtonState`.
@@ -1084,6 +1153,7 @@ mod tests {
             jump_spent: true,
             capsule_half_height: 0.8,
             capsule_eye_height: 1.5,
+            aim_pitch: -0.45,
         }
     }
 
@@ -1166,6 +1236,8 @@ mod tests {
             local_player: false,
             has_entity_class: false,
             entity_class: String::new(),
+            has_active_weapon_archetype: false,
+            active_weapon_archetype: String::new(),
             components,
         }
     }
@@ -1200,6 +1272,7 @@ mod tests {
                 crouch_intent: false,
                 facing_yaw: 1.234_5,
                 use_pressed: true,
+                aim_pitch: -0.45,
             },
             fire_button: WireFireButtonState {
                 pressed: true,
@@ -1535,6 +1608,7 @@ mod tests {
                 last_processed_client_tick: None,
                 local_player: false,
                 entity_class: None,
+                active_weapon_archetype: None,
                 components: vec![
                     ComponentPayload::Transform(sample_transform()),
                     ComponentPayload::PlayerMovementState(sample_movement()),
@@ -1570,6 +1644,7 @@ mod tests {
                 last_processed_client_tick: None,
                 local_player: false,
                 entity_class: None,
+                active_weapon_archetype: None,
                 components: vec![ComponentPayload::Transform(sample_transform())],
             }]
         );
@@ -1766,9 +1841,14 @@ mod tests {
     }
 
     #[test]
-    fn version_mismatch_rejects_before_records() {
+    fn e21_snapshot_version_rejects_pre_change_layout_before_records() {
+        const PRE_E21_SNAPSHOT_VERSION: u16 = 9;
+        assert_eq!(
+            SNAPSHOT_VERSION, 10,
+            "E21 aim-pitch and active-weapon fields require snapshot version 10"
+        );
         let raw = RawSnapshotMessage {
-            version: SNAPSHOT_VERSION - 1, // a Phase 1-era version
+            version: PRE_E21_SNAPSHOT_VERSION,
             sequence: 1,
             server_tick: 1,
             records: Vec::new(),
@@ -1779,7 +1859,7 @@ mod tests {
             raw.validate(),
             Err(ValidationError::VersionMismatch {
                 expected: SNAPSHOT_VERSION,
-                received: SNAPSHOT_VERSION - 1,
+                received: PRE_E21_SNAPSHOT_VERSION,
             })
         );
     }
@@ -1850,6 +1930,7 @@ mod tests {
                 last_processed_client_tick: None,
                 local_player: false,
                 entity_class: None,
+                active_weapon_archetype: None,
                 components: vec![ComponentPayload::Transform(sample_transform())],
             },
             EntityRecord::Delta {
@@ -1859,6 +1940,7 @@ mod tests {
                 last_processed_client_tick: None,
                 local_player: false,
                 entity_class: None,
+                active_weapon_archetype: None,
                 components: vec![ComponentPayload::Transform(sample_transform())],
             },
             EntityRecord::Despawn {
@@ -1955,6 +2037,8 @@ mod tests {
         record.has_last_processed_client_tick = true;
         record.last_processed_client_tick = 777;
         record.local_player = true;
+        record.has_active_weapon_archetype = true;
+        record.active_weapon_archetype = "reference_pistol".to_string();
 
         let raw = RawSnapshotMessage {
             version: SNAPSHOT_VERSION,
@@ -1975,6 +2059,7 @@ mod tests {
                 last_processed_client_tick: Some(777),
                 local_player: true,
                 entity_class: None,
+                active_weapon_archetype: Some("reference_pistol".to_string()),
                 components: vec![
                     ComponentPayload::Transform(sample_transform()),
                     ComponentPayload::PlayerMovementState(sample_movement()),
@@ -2004,6 +2089,7 @@ mod tests {
                 last_processed_client_tick: None,
                 local_player: false,
                 entity_class: None,
+                active_weapon_archetype: None,
                 components: vec![ComponentPayload::PlayerMovementState(sample_movement())],
             }
         );
@@ -2087,7 +2173,67 @@ mod tests {
         let text = ValidationError::MetadataOnDespawn.to_string();
         assert!(text.contains("movement-authority"));
         assert!(text.contains("entity_class"));
+        assert!(text.contains("active-weapon"));
         assert!(text.contains("despawn"));
+    }
+
+    // --- Active-weapon metadata validation ---
+
+    #[test]
+    fn active_weapon_metadata_requires_a_non_empty_value_with_a_movement_payload() {
+        let mut absent_flag_with_value = raw_record(
+            RECORD_KIND_FULL_BASELINE,
+            1,
+            1,
+            0,
+            0,
+            vec![raw_movement_payload()],
+        );
+        absent_flag_with_value.active_weapon_archetype = "reference_pistol".to_string();
+        assert_eq!(
+            absent_flag_with_value.validate(),
+            Err(ValidationError::MalformedActiveWeaponMetadata)
+        );
+
+        let mut present_flag_without_value = raw_record(
+            RECORD_KIND_FULL_BASELINE,
+            1,
+            1,
+            0,
+            0,
+            vec![raw_movement_payload()],
+        );
+        present_flag_without_value.has_active_weapon_archetype = true;
+        assert_eq!(
+            present_flag_without_value.validate(),
+            Err(ValidationError::MalformedActiveWeaponMetadata)
+        );
+
+        let mut transform_only = raw_record(
+            RECORD_KIND_FULL_BASELINE,
+            1,
+            1,
+            0,
+            0,
+            vec![raw_transform_payload()],
+        );
+        transform_only.has_active_weapon_archetype = true;
+        transform_only.active_weapon_archetype = "reference_pistol".to_string();
+        assert_eq!(
+            transform_only.validate(),
+            Err(ValidationError::ActiveWeaponMetadataWithoutMovement)
+        );
+    }
+
+    #[test]
+    fn active_weapon_metadata_on_despawn_rejects() {
+        let mut flagged = raw_record(RECORD_KIND_DESPAWN, 1, 0, 9, 0, Vec::new());
+        flagged.has_active_weapon_archetype = true;
+        assert_eq!(flagged.validate(), Err(ValidationError::MetadataOnDespawn));
+
+        let mut value = raw_record(RECORD_KIND_DESPAWN, 1, 0, 9, 0, Vec::new());
+        value.active_weapon_archetype = "reference_pistol".to_string();
+        assert_eq!(value.validate(), Err(ValidationError::MetadataOnDespawn));
     }
 
     // --- entity_class metadata (M15 Phase 3 Task 7) ---
@@ -2129,6 +2275,7 @@ mod tests {
                 last_processed_client_tick: Some(5),
                 local_player: true,
                 entity_class: Some("player".to_string()),
+                active_weapon_archetype: None,
                 components: vec![
                     ComponentPayload::Transform(sample_transform()),
                     ComponentPayload::PlayerMovementState(sample_movement()),
@@ -2154,6 +2301,7 @@ mod tests {
                 last_processed_client_tick: None,
                 local_player: false,
                 entity_class: Some("boomer".to_string()),
+                active_weapon_archetype: None,
                 components: vec![ComponentPayload::Transform(sample_transform())],
             }
         );
@@ -2186,6 +2334,7 @@ mod tests {
                 last_processed_client_tick: None,
                 local_player: false,
                 entity_class: Some("boomer".to_string()),
+                active_weapon_archetype: None,
                 components: vec![ComponentPayload::Transform(sample_transform())],
             }
         );

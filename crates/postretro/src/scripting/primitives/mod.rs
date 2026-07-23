@@ -92,7 +92,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("clip", "String", "Clip name this state plays. Must be non-empty; resolved against the model's clips at level load.")
         .field("loop?", "bool", "Whether the clip loops. Optional; defaults to false.")
         .field("crossfadeMs?", "f32", "Crossfade duration into this state, in milliseconds. Optional; must be finite and >= 0. Defaults to 150 ms.")
-        .field("travelSpeed?", "f32", "Per-state locomotion travel-speed override, in ground units per animated second. Optional; must be finite and > 0. When present it replaces this clip's load-derived travel speed; omit to use the derived value. V1 consumes this calibration only when the state is the AI alert-mapped locomotion state.")
+        .field("travelSpeed?", "f32", "Per-state locomotion travel-speed override, in ground units per animated second. Optional; must be finite and > 0. When present it replaces this clip's load-derived travel speed; omit to use the derived value. V1 consumes this calibration for engine-selected player locomotion and the AI alert-mapped locomotion state.")
         .field("interrupt?", "InterruptPolicy", "How a fade into this state takes over an in-flight fade. Optional; defaults to \"smooth\".")
         .finish();
     registry
@@ -105,6 +105,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
             "Optional socket-name → content-relative prop-model map. Both socket names and model paths must be non-empty. Attachments are presentation-only and follow their holder's authored socket.",
         )
         .field("shadowBiasScale?", "number", "Per-model skinned pool-shadow receiver-bias multiplier. Defaults to 1.0; must be finite and in 0.0..=4.0. Set 0.0 to disable the receiver offset for this model.")
+        .field("shadowOnly?", "bool", "When true, renders this mesh into shadow-depth passes only. Optional; defaults to false. For player descriptors this applies only to the owning local view; peer viewers render the avatar forward.")
         .field(
             "animations?",
             "MeshAnimationStates",
@@ -127,7 +128,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field(
             "speedScale?",
             "bool",
-            "Whether V1 rate-scales this archetype's AI alert-mapped locomotion state. Other animation states are never rate-scaled. Optional; defaults to true. Set false to play the authored cadence unscaled.",
+            "Whether V1 rate-scales engine-selected player locomotion and the AI alert-mapped locomotion state. Other animation states are never rate-scaled. Optional; defaults to true. Set false to play the authored cadence unscaled.",
         )
         .finish();
     registry
@@ -312,6 +313,8 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("fireMode", "FireMode", "Semi or automatic input gate.")
         .field("resolution", "ResolutionMode", "Shot resolution mode. Currently supports hitscan only.")
         .field("creditSource?", "String", "Optional combat attribution source id for this weapon. Must be non-empty ASCII, at most 64 bytes, and use only [A-Za-z0-9_.:-]. Omit to use the resolved canonical weapon name at spawn.")
+        .field("thirdPersonModel?", "String", "Optional content-relative rigid prop model mounted in a remote or local player's third-person hand socket. Must be non-empty, use forward slashes, and contain neither an absolute path nor parent traversal.")
+        .field("viewmodel?", "String", "Optional content-relative model rendered as this weapon's first-person viewmodel. Must be non-empty, use forward slashes, and contain neither an absolute path nor parent traversal.")
         .field("resource?", "WeaponResource", "Optional weapon resource tuning. Omit to preserve unlimited-fire behavior.")
         .finish();
     registry

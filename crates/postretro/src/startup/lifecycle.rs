@@ -12,8 +12,9 @@ use crate::frame_timing::InterpolableState;
 use crate::render;
 use crate::scripting::builtins::{
     PLAYER_START_CLASSNAME, apply_classname_dispatch, apply_data_archetype_dispatch,
-    descriptor_materializes_ai_enemy, filter_out_client_ai_enemies, spawn_from_player_starts,
-    suppressed_ai_enemy_mesh_models,
+    descriptor_materializes_ai_enemy, filter_out_client_ai_enemies,
+    movement_descriptor_mesh_models, spawn_from_player_starts, suppressed_ai_enemy_mesh_models,
+    weapon_presentation_models,
 };
 use crate::startup::{
     BootState, InFlightLevelLoad, LevelLoadEntry, LevelRequest, LevelSource, LoadOutcome,
@@ -580,7 +581,7 @@ impl App {
             .install_deferred_mesh_descriptors(&script_ctx)
         {
             log::info!(
-                "[Scripting] installed deferred mesh descriptors for the next level model sweep"
+                "[Scripting] installed deferred presentation descriptors for the next level model sweep"
             );
         }
         // Segment A of the CPU world install: seed gravity from the level's
@@ -813,6 +814,35 @@ impl App {
         self.host_spawn_points = products.spawn_points;
         self.active_wieldable = products.active_wieldable;
         self.active_wieldable_descriptor = products.active_wieldable_descriptor;
+
+        // The boot pawn exists before the regular host snapshot cadence (and in
+        // single-player there is no `WeaponOwners` table at all), so establish its
+        // shadow-only third-person weapon prop at install time. The model sweep above
+        // has already built both CPU tables; resolve only this changed pawn through
+        // the standard socket-binding path.
+        let local_pawn = script_ctx.registry.borrow().local_player_pawn();
+        let descriptors = script_ctx.data_registry.borrow().entities.clone();
+        if let Some(pawn) = local_pawn {
+            let session = self
+                .session
+                .as_mut()
+                .expect("session installed before local weapon presentation install");
+            let mut registry = script_ctx.registry.borrow_mut();
+            if crate::netcode::synchronize_weapon_attachment_for_pawn(
+                &mut registry,
+                pawn,
+                self.active_wieldable,
+                &descriptors,
+                &session.hit_zone_store,
+            ) {
+                crate::resolve_mesh_entity_bindings_for_entities(
+                    &mut registry,
+                    &session.mesh_clip_tables,
+                    &session.hit_zone_store,
+                    [pawn],
+                );
+            }
+        }
 
         // E10 Task 4 / M15 Phase 3: register this level's map-placed AI enemies and
         // PRL-loaded movers for outbound replication. Host-gated (a no-op off a
@@ -1274,6 +1304,51 @@ pub(crate) struct WorldInstallHandles<'a> {
     pub(crate) suppress_boot_pawn: bool,
 }
 
+/// Attach the descriptor-authored `player.health` validation range before either
+/// network role builds its replicated-state schema. The selected descriptor matches
+/// `spawn_from_player_starts`: placements are visited in map order, `entity_class`
+/// defaults to `"player"`, unknown/non-movement descriptors do not become the local
+/// movement pawn, and the first movement descriptor is authoritative.
+///
+/// This deliberately resolves from shared authoring data rather than the registry.
+/// Connected clients suppress their boot pawn until the host baseline arrives, but
+/// must still fingerprint the same range as the listen host.
+pub(crate) fn install_descriptor_player_health_range(
+    slot_table: &mut postretro_entities::SlotTable,
+    spawn_points: &[crate::scripting::map_entity::MapEntity],
+    descriptors: &[postretro_entities::EntityTypeDescriptor],
+) {
+    for spawn in spawn_points {
+        let entity_class = spawn
+            .key_values
+            .get("entity_class")
+            .map(String::as_str)
+            .unwrap_or("player");
+        let Some(descriptor) = descriptors
+            .iter()
+            .find(|descriptor| descriptor.canonical_name.as_deref() == Some(entity_class))
+        else {
+            continue;
+        };
+        if descriptor.movement.is_none() {
+            continue;
+        }
+        let Some(health) = descriptor.health.as_ref() else {
+            return;
+        };
+        if let Err(err) = slot_table.set_engine_numeric_range(
+            "player.health",
+            postretro_entities::NumericRange {
+                min: 0.0,
+                max: health.max,
+            },
+        ) {
+            log::warn!("[Loader] failed to set player.health range: {err}");
+        }
+        return;
+    }
+}
+
 /// Segment B of the CPU world install (renderer-free): fog-volume entities,
 /// collision world + kinematic movers, classname dispatch, the data script, the
 /// data-archetype sweep (incl. player-pawn spawn), the mesh sweep's CPU half
@@ -1447,6 +1522,23 @@ pub(crate) fn install_world_cpu(
     // cannot see them; unioned into the mesh model list below so the host-replicated
     // remote enemy is drawable. Empty off a connected client.
     let mut suppressed_enemy_models: Vec<String> = Vec::new();
+    // Runtime net-slot materialization may select any movement descriptor on a
+    // listen host, while a connected client receives the same set by snapshot.
+    // Preload the whole category for every role; gameplay never uploads models.
+    let movement_descriptor_models = movement_descriptor_mesh_models(&descriptors);
+    // Replicated state schema must be role-invariant before the first snapshot is
+    // validated. Resolve the authored player-health range from the shared map
+    // placement + descriptor table, not from a role-specific materialized pawn: a
+    // connected client intentionally suppresses its boot pawn.
+    install_descriptor_player_health_range(
+        &mut script_ctx.slot_table.borrow_mut(),
+        &spawn_points,
+        &descriptors,
+    );
+    // Wieldable weapon instances have no MeshComponent of their own. Preload every
+    // declared third- and first-person model so attachment/viewmodel changes never
+    // trigger runtime model loads or leave a transient placeholder.
+    let weapon_presentation_models = weapon_presentation_models(&descriptors);
     let (active_wieldable, active_wieldable_descriptor, first_spawn) = {
         let mut registry = script_ctx.registry.borrow_mut();
         let mut map_entities = map_entities;
@@ -1499,24 +1591,6 @@ pub(crate) fn install_world_cpu(
             (None, None)
         };
 
-        // Attach the `player.health` slot's declared range `[0, max]` now the pawn
-        // (and its health component) has materialized. `max` is mod data, so it
-        // cannot be declared at `SlotTable` construction.
-        if let Some((_, health)) =
-            postretro_entities::components::health::pawn_with_health(&registry)
-        {
-            use postretro_entities::NumericRange;
-            if let Err(err) = script_ctx.slot_table.borrow_mut().set_engine_numeric_range(
-                "player.health",
-                NumericRange {
-                    min: 0.0,
-                    max: health.max,
-                },
-            ) {
-                log::warn!("[Loader] failed to set player.health range: {err}");
-            }
-        }
-
         (active_wieldable, active_wieldable_descriptor, first_spawn)
     };
     let spawner_diagnostics = {
@@ -1557,9 +1631,10 @@ pub(crate) fn install_world_cpu(
 
     // Mesh model sweep, CPU half. Runs AFTER both dispatch sweeps so it sees every
     // mesh entity. Reset the game-side tables, compute the distinct model list
-    // (unioning the suppressed remote-enemy models), then the renderer-coupled
-    // upload + clip-table build runs via the injected hook, followed by the CPU
-    // hit-zone build, clip-index resolve, and zone-multiplier cross-check.
+    // (unioning models missing due to connected-client suppression), then the
+    // renderer-coupled upload + clip-table build runs via the injected hook,
+    // followed by the CPU hit-zone build, clip-index resolve, and zone-multiplier
+    // cross-check.
     mesh_clip_tables.clear();
     hit_zone_store.clear();
     let models = {
@@ -1567,6 +1642,16 @@ pub(crate) fn install_world_cpu(
         let mut models = crate::distinct_mesh_models(&registry);
         let mut seen: std::collections::HashSet<String> = models.iter().cloned().collect();
         for model in &suppressed_enemy_models {
+            if seen.insert(model.clone()) {
+                models.push(model.clone());
+            }
+        }
+        for model in &movement_descriptor_models {
+            if seen.insert(model.clone()) {
+                models.push(model.clone());
+            }
+        }
+        for model in &weapon_presentation_models {
             if seen.insert(model.clone()) {
                 models.push(model.clone());
             }
@@ -1908,6 +1993,7 @@ mod tests {
                 #[cfg(feature = "dev-tools")]
                 debug_ui: None,
             }),
+            remote_player_presentation: crate::netcode::ClientPresentationInputs::default(),
             crouch_toggle_active: false,
             ai_warned: std::collections::HashSet::new(),
             cursor_pos: None,

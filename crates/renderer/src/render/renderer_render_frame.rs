@@ -10,6 +10,24 @@ use super::*;
 const RENDERER_NEAR_CLIP: f32 = 0.1;
 const RENDERER_FAR_CLIP: f32 = 4096.0;
 
+/// Select the non-empty mesh plans for their structurally separate pass paths.
+/// Shadow-depth recording receives the world plan; the viewmodel plan is only
+/// consumed by its dedicated forward pass.
+pub(super) fn mesh_frame_plans_for_passes(
+    plans: Option<&mesh_instances::MeshFramePlans>,
+) -> (
+    Option<&mesh_instances::MeshFramePlan>,
+    Option<&mesh_instances::MeshFramePlan>,
+) {
+    let world = plans
+        .filter(|plans| !plans.world.groups.is_empty())
+        .map(|plans| &plans.world);
+    let viewmodel = plans
+        .filter(|plans| !plans.viewmodel.groups.is_empty())
+        .map(|plans| &plans.viewmodel);
+    (world, viewmodel)
+}
+
 impl Renderer {
     #[allow(clippy::too_many_arguments)]
     pub fn render_frame_indirect(
@@ -161,18 +179,24 @@ impl Renderer {
         } else {
             false
         };
-        let promotion_mesh_frame_plan: Option<mesh_instances::MeshFramePlan> = if render_world
+        // Plan both control-flow partitions together before shadow-slot
+        // assignment. They share one palette/instance SSBO allocation, so two
+        // independent plans would overlap their bases. Static-light promotion
+        // deliberately sees only the world partition.
+        let mesh_frame_plans: Option<mesh_instances::MeshFramePlans> = if render_world
             && self.full().mesh_pass.has_model()
             && !self.full().mesh_draws.is_empty()
-            && selected_static_needs_mesh_gate
         {
-            Some(mesh_instances::plan_mesh_frame(
+            Some(mesh_instances::plan_mesh_frame_plans(
                 &self.full().mesh_draws,
                 &self.full().mesh_pass,
             ))
         } else {
             None
         };
+        let promotion_mesh_frame_plan = selected_static_needs_mesh_gate
+            .then(|| mesh_frame_plans.as_ref().map(|plans| &plans.world))
+            .flatten();
         if render_world {
             // mem::take avoids a simultaneous borrow of self; returned after call
             // to reuse the allocation.
@@ -184,7 +208,7 @@ impl Renderer {
                 &eff_brightness,
                 reachable_cell_aabbs,
                 now_seconds,
-                promotion_mesh_frame_plan.as_ref(),
+                promotion_mesh_frame_plan,
             );
             // Env-gated diagnostics (POSTRETRO_SHADOW_DEBUG=1) — read-only, runs
             // right after slot assignment so it sees this frame's decisions. No
@@ -237,45 +261,23 @@ impl Renderer {
         // read the SAME already-posed buffers. Nothing rewrites `palette_buffer`/
         // `instance_buffer` between this point and the forward `record_draws`, so
         // an entity and its shadow are sampled at the identical pose (no one-frame
-        // lag). The plan is held in `mesh_frame_plan` and consumed by both passes.
-        let mesh_frame_plan: Option<mesh_instances::MeshFramePlan> = if render_world
-            && self.full().mesh_pass.has_model()
-            && !self.full().mesh_draws.is_empty()
-        {
-            // Plan: group instances by model, assign each a contiguous palette
-            // run, drop any overflow past the fixed budget. GPU-free. A selected
-            // static-light gate may have already built the all-instance CPU plan
-            // above so promotion ranking sees the same renderable/overflow
-            // result as the upload path. If no promoted slot exists after
-            // ranking, discard shadow-only retained instances before pose
-            // sampling and buffer upload; only promoted static slots can consume
-            // them.
-            let plan = if self.full().promoted_static_records.is_empty() {
-                mesh_instances::plan_forward_visible_mesh_frame(
-                    &self.full().mesh_draws,
-                    &self.full().mesh_pass,
-                )
-            } else {
-                match promotion_mesh_frame_plan {
-                    Some(plan) => plan,
-                    None => mesh_instances::plan_mesh_frame(
-                        &self.full().mesh_draws,
-                        &self.full().mesh_pass,
-                    ),
-                }
-            };
-
+        // lag). The world and viewmodel plans are held in `mesh_frame_plans`;
+        // both upload into the same buffers, but only the world partition reaches
+        // shadow depth below.
+        if let Some(plans) = &mesh_frame_plans {
             // Overflow drops excess instances rather than corrupting the
             // palette or panicking — rate-limited warning. Covers BOTH the
-            // palette-slot cap and the instance-count cap (the latter is what
-            // fires for rigid / zero-joint props, which consume no slots).
-            if plan.dropped > 0 {
+            // palette-slot cap and the instance-count cap. Rigid / zero-joint
+            // props still reserve one identity palette entry, so either cap
+            // can reject them.
+            let dropped = plans.world.dropped.saturating_add(plans.viewmodel.dropped);
+            if dropped > 0 {
                 let now = now_seconds as f32;
                 if now - self.full().mesh_overflow_last_warn >= 1.0 {
                     log::warn!(
                         "[Renderer] skinned-mesh budget exceeded: dropped {} instance(s) \
                              (budget {} palette slots / {} instances); excess not drawn",
-                        plan.dropped,
+                        dropped,
                         mesh_instances::MAX_PALETTE_ENTRIES,
                         mesh_instances::MAX_INSTANCES,
                     );
@@ -291,13 +293,15 @@ impl Renderer {
                 let full = full
                     .as_mut()
                     .expect("renderer full-init must complete before full-ready paths run");
-                full.mesh_pass
-                    .plan_and_upload(queue, &plan, &mut full.bone_palette_scratch);
+                full.mesh_pass.plan_and_upload(
+                    queue,
+                    &[&plans.world, &plans.viewmodel],
+                    &mut full.bone_palette_scratch,
+                );
             }
-            (!plan.groups.is_empty()).then_some(plan)
-        } else {
-            None
-        };
+        }
+        let (world_mesh_frame_plan, viewmodel_mesh_frame_plan) =
+            mesh_frame_plans_for_passes(mesh_frame_plans.as_ref());
 
         if render_world {
             let full = self.full_mut();
@@ -332,7 +336,7 @@ impl Renderer {
         }
 
         if render_world {
-            self.record_spot_shadow_depth(encoder, mesh_frame_plan.as_ref());
+            self.record_spot_shadow_depth(encoder, world_mesh_frame_plan);
         }
 
         // --- Cube point-light shadow depth loop -------------------------------
@@ -363,7 +367,7 @@ impl Renderer {
         // baseline" invariant.
         self.full_mut().cube_entity_occluders_submitted = 0;
         if render_world {
-            self.record_cube_shadow_depth(encoder, mesh_frame_plan.as_ref());
+            self.record_cube_shadow_depth(encoder, world_mesh_frame_plan);
         }
 
         self.record_depth_and_sdf_passes(encoder, view_proj, render_world);
@@ -506,7 +510,7 @@ impl Renderer {
         // the hoist populated, the SAME buffers the skinned-depth shadow pass
         // read, so an entity and its shadow share one pose (no one-frame lag).
         if render_world {
-            if let Some(plan) = &mesh_frame_plan {
+            if let Some(plan) = world_mesh_frame_plan {
                 // Mesh group-2 params uniform (binding 4): the runtime-light count, the
                 // frame's render-clock time (the SAME value written to forward
                 // `Uniforms.time` this frame — cached in `update_per_frame_uniforms` —
@@ -725,6 +729,64 @@ impl Renderer {
             // before the next frame's emit call — that single owner handles
             // surface Timeout/Occluded/Outdated early-returns above without
             // leaking segments across frames.
+        }
+
+        // First-person weapon presentation is deliberately last among scene
+        // geometry: clear the shared depth attachment so nearby world surfaces
+        // cannot clip it, then draw only the structurally separate viewmodel
+        // plan. Running after fog/wireframe/debug also preserves their world-depth
+        // interpretation; UI remains above this pass as usual.
+        if render_world {
+            if let Some(plan) = viewmodel_mesh_frame_plan {
+                {
+                    let Self { queue, full, .. } = self;
+                    let full = full
+                        .as_mut()
+                        .expect("renderer full-init must complete before full-ready paths run");
+                    full.mesh_pass.write_light_params(
+                        queue,
+                        full.total_light_count,
+                        full.mesh_dynamic_time,
+                        full.lighting_isolation as u32,
+                        full.ambient_floor,
+                    );
+                }
+                let mut viewmodel_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Skinned Viewmodel Pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &scene_color,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &self.full().depth_view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(1.0),
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: None,
+                    ..Default::default()
+                });
+                viewmodel_pass.set_bind_group(
+                    0,
+                    self.full().mesh_pass.viewmodel_uniform_bind_group(),
+                    &[],
+                );
+                viewmodel_pass.set_bind_group(
+                    4,
+                    &self.full().sh_volume_resources.mesh_bind_group,
+                    &[],
+                );
+                self.full_mut()
+                    .mesh_pass
+                    .record_draws(&mut viewmodel_pass, plan);
+            }
         }
 
         // UI pass: records into `scene_color` (offscreen) with `LoadOp::Load`

@@ -8,7 +8,7 @@ emissive texels bloom. This is the correct model an earlier `neon_`-based
 lighting-*replacement* stub (cut 2026-05) got wrong — emissive **adds to** scene
 lighting, it never replaces it. Realizes the reserved `.prm` bit-3 slot and the
 cyberpunk-neon look; consumed later by in-game button/trigger activation feedback
-(see Non-goals → the runtime-animated follow-up).
+(see Out of scope → the runtime-animated follow-up).
 
 ## Scope
 
@@ -71,10 +71,14 @@ compositor foundation, the emissive material slot, and the bloom pass.
   `.prm` files still parse unchanged; a content rebuild regenerates the cache with
   emissive bundles.
 - [ ] An emissive `_e.png` sibling is **accepted by sibling color-space validation
-  regardless of its PNG color-space tag** (an untagged PNG included) and is **not**
-  subjected to the linear-required check that rejects sRGB `_s`/`_n`. Asserted by a
-  validation unit test: an untagged/sRGB `_e.png` passes, and applying the linear check
-  to `_e` (removing the exemption) would fail it (so "do nothing" does not satisfy it).
+  regardless of its PNG color-space tag** (an untagged PNG — gen_emissive's output —
+  included) and is **not** subjected to the linear-required check that rejects sRGB
+  `_s`/`_n`. Asserted by a validation unit test using a **deliberately sRGB-tagged**
+  `_e.png` fixture (an *untagged* file detects as `Linear` and would pass the linear
+  check anyway, so only a tagged file can demonstrate the exemption): the sRGB-tagged
+  `_e.png` passes, and removing the `_e` exemption (applying the linear check) would
+  reject it — so "do nothing" does not satisfy this criterion. An untagged `_e.png` is
+  also accepted.
 - [ ] `tools/gen_emissive.py` produces `_e.png` siblings that bake and render.
 - [ ] `resource_management.md §4.5` reads as implemented and `rendering_pipeline.md
   §7.8` reflects the HDR `scene_color` + tonemap + bloom compositor.
@@ -114,6 +118,9 @@ corrupt readback. Keep the deterministic Rgba8 PNG path by having capture read a
 **tonemapped LDR** copy: insert (at the `capture_frame_indirect` readback site, after
 `record_scene_passes` returns) a **capture-path-only** tonemap-to-LDR step targeting an
 `Rgba8UnormSrgb` texture, which the existing `read_texture_rgba8` consumes unchanged.
+This step uses the **same** near-neutral soft-knee tonemap operator as the resolve — it
+differs only in output target (`Rgba8UnormSrgb`), not in the operator — so a captured
+frame matches the displayed frame.
 `scene_color` must be `Rgba16Float` **independent of `capture_format`** — the headless
 renderer passes `capture_format = Rgba8UnormSrgb` as `surface_format` (`renderer_init.rs`),
 so keying scene_color off `surface_format` would wrongly build an LDR scene_color under
@@ -180,16 +187,22 @@ skinned/mesh pipeline **totals** by 1 (only forward's total and mesh's group-2 c
 are currently guarded headlessly), add a headless total-count assertion for the
 kinematic and skinned-mesh pipelines too (or explicitly verify their totals stay ≤16) —
 an overflow there would otherwise surface only as a GPU-only pipeline-creation panic. World +
-kinematic-brush shaders: declare and sample the emissive texture, decode sRGB→linear,
-and add `emissive * strength` additively to the final HDR color after `total_light`.
+kinematic-brush shaders: declare and sample the emissive texture — sampled **linear via
+hardware sRGB decode, exactly like `base_texture`/diffuse (forward.wgsl samples the
+`Rgba8UnormSrgb` diffuse with no manual decode)**; do **not** add a manual sRGB→linear
+decode, which would double-decode/darken the term *and* hardcode a format assumption in
+the shader against the future BC7 path (Wire-format forward-note) — and add
+`emissive * strength` additively to the final HDR color after `total_light`.
 **Emissive strength is prefix-driven**, following the existing `shininess()`
 mechanism — **not** the gameplay-only `MaterialProperties` struct
 (`crates/render-data/src/material.rs`, which carries `ricochet` and is never GPU-fed).
 Add an `emissive_strength()` method on the `Material` enum beside `shininess()`,
-resolved from the texture prefix and packed into the group-1 material uniform
-alongside shininess via the same `material_plan.rs` `build_material_bind_group` path —
-the `Neon` variant gets a high strength so `neon_` textures self-light with no new
-authoring surface. Widening that uniform ripples to the material-uniform struct
+resolved from the texture prefix and packed into the group-1 material uniform beside
+shininess in `build_material_uniform` (`crates/render-cpu/src/material_plan.rs`, where
+`shininess` is packed into `bytes[0..4]`); the widened BGL/bind-group flows through
+`build_material_bind_group` (`crates/renderer/src/render/material_plan.rs`). The `Neon`
+variant gets a high strength so `neon_` textures self-light with no new authoring
+surface. Widening that uniform ripples to the material-uniform struct
 declared in the **forward** and **kinematic-brush** shaders (skinned declares only
 bindings 0/5 and is unaffected); pin the new uniform layout when implementing. Emissive is **never** written into any
 light buffer (invariant: no light-loop feed). Depends on Task 1. Concurrent with
@@ -209,19 +222,24 @@ renderer. Bloom samples and composites `scene_color` via `self.full().screen_eff
 (`scene_color_view()` / `scene_color_texture()`; the texture already carries
 `TEXTURE_BINDING`, and the additive composite is a `LoadOp::Load` render pass).
 Register a `bloom` entry in the `POSTRETRO_GPU_TIMING` pass list (add a `TIMING_PAIR_*`
-const, bump `TIMING_PAIR_COUNT`, and extend the labels vec in `pipeline_layout.rs`,
-§12), plus a `tonemap` entry if that resolve step is bracketed separately. Threshold and
-intensity are tunable constants; the reference `Neon` emissive strength (Task 4) is
-set so `emissive * strength` clears this threshold (see Invariants). Testable against
+const, bump `TIMING_PAIR_COUNT` from 10 to 11, and extend the labels vec in
+`pipeline_layout.rs`, §12). The Task 1 tonemap runs **inside the existing resolve pass**
+and is **not** separately timed — only bloom gets a new `TIMING_PAIR`. Threshold and
+intensity are tunable constants; the reference `Neon` emissive strength (Task 4) is set
+so `emissive * strength` clears this threshold (see Invariants). **Expose a bloom
+enable/disable control** (a dev-tools toggle or config constant) — the AC 1 manual gate
+uses it to observe the emissive term with bloom off (emissive is authored above the
+bloom threshold, so without a toggle its halo can't be suppressed for that test). Testable against
 any HDR input (a bright dynamic light or a debug constant) — independent of the
 emissive authoring path. Depends on Task 1 (needs the HDR `scene_color`). Concurrent
 with Task 2 (disjoint files: bloom owns the frame graph + its shaders; emissive owns
 the material/format/world-shader path).
 
 ### Task 4: Tooling, generalization, verification, docs
-`tools/gen_emissive.py` mirroring `gen_specular.py`/`gen_normal.py`, emitting sRGB
-`_e.png` siblings (masking bright/neon diffuse regions) that pass the Task 2
-validation arm. Populate the `emissive_strength()` values on the `Material` variants Task 2
+`tools/gen_emissive.py` mirroring `gen_specular.py`/`gen_normal.py`, emitting
+sRGB-**content** `_e.png` siblings — **untagged on disk** (stripping any sRGB/gAMA/iCCP
+color-space chunk, exactly as `gen_specular.py`/`gen_normal.py` do) — that pass the
+Task 2 validation arm. (Untagged is fine: the `_e` arm accepts any tag; see AC 6.) Populate the `emissive_strength()` values on the `Material` variants Task 2
 added (`neon_` high; others as content needs), with the reference `Neon` strength
 set so `emissive * strength` clears the Task 3 bloom threshold (and exceeds 1.0) —
 otherwise the capture below cannot show bloom. Add a dev-map emissive

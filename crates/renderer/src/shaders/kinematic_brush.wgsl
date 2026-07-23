@@ -224,7 +224,11 @@ fn accumulate_dynamic_direct(
         var effective_color = light.color_and_falloff_model.xyz;
         var effective_aim = light.direction_and_range.xyz;
         if scripted_desc.is_active != 0u {
-            let cycle_t = fract(kinematic_light_params.time / max(scripted_desc.period, 0.0001) + scripted_desc.phase);
+            let cycle_t = animation_curve_t(
+                scripted_desc.period,
+                scripted_desc.phase,
+                kinematic_light_params.time,
+            );
             if scripted_desc.color_count > 0u {
                 let unit_sample = max(
                     sample_color_catmull_rom(scripted_desc.color_offset, scripted_desc.color_count, cycle_t, scripted_desc.base_color),

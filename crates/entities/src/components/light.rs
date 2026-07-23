@@ -35,10 +35,10 @@ pub enum FalloffKind {
 ///
 /// `play_count`:
 /// - `None` — loop forever (default GPU behavior).
-/// - `Some(n)` — play `n` full periods, then the light bridge samples the final
-///   keyframe value, writes it back as static `intensity`/`color`/`cone_direction`,
-///   and clears `animation`. The GPU descriptor itself never carries `play_count`;
-///   completion is CPU-side.
+/// - `Some(n)` — play `n` endpoint-clamped periods, then the light bridge writes
+///   final radiance back as static state and clears `animation`. Brightness
+///   multiplies authored intensity; color and direction replace their authored
+///   values. The GPU descriptor never carries `play_count`; completion is CPU-side.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LightAnimation {

@@ -1599,9 +1599,13 @@ mod tests {
             tile_dimension: 6,
             tile_border: 1,
             animation_descriptor_indices: vec![0],
-            affinity_offsets: vec![0, 0],
-            affinity_lights: Vec::new(),
-            delta_subblocks: Vec::new(),
+            affinity_offsets: vec![0, 1],
+            affinity_lights: vec![0],
+            delta_subblocks: vec![
+                0;
+                postretro_level_format::delta_sh_volumes::PROBES_PER_CELL
+                    * postretro_level_format::delta_sh_volumes::DEFAULT_DELTA_PROBE_F16_STRIDE
+            ],
         };
 
         let usage = resolve_direct_atlas_usage(None, None, Some(&animated), Some(&sh));

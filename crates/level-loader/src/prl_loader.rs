@@ -1982,6 +1982,12 @@ pub fn load_prl(path: &str) -> Result<LevelWorld, PrlLoadError> {
             Some(data) => match AnimatedDirectShDeltaVolumesSection::from_bytes(&data) {
                 Ok(section) => {
                     match validate_animated_direct_sh_delta(&section, sh_volume.as_ref()) {
+                        Ok(()) if section.affinity_lights.is_empty() => {
+                            log::info!(
+                                "[PRL] AnimatedDirectShDeltaVolumes has no usable CSR entries; treating section as absent"
+                            );
+                            None
+                        }
                         Ok(()) => {
                             log::info!(
                                 "[PRL] AnimatedDirectShDeltaVolumes: {} animated light(s), affinity grid {}×{}×{} ({} CSR entr(y/ies), {} delta subblock halves)",

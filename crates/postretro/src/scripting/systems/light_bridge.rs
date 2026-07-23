@@ -24,14 +24,18 @@ use postretro_scripting_core::conv::Vec3Lit;
 ///
 /// `animation_start_time` is `Some(t)` while a `play_count`-bounded animation
 /// is running, where `t` is the engine time when the animation was last written.
+/// `animation_cycle_index` identifies the finite period currently packed for
+/// endpoint-clamped GPU sampling.
 /// When `current_time − t` reaches `play_count × period_ms / 1000.0`, the bridge
 /// samples the final keyframe, writes a static `LightComponent` back to the registry,
-/// and clears this field. Any `setAnimation` call resets `animation_start_time` to the
-/// current frame time — "last call wins" always restarts the count from zero.
+/// and clears the timing state. Any `setAnimation` call resets
+/// `animation_start_time` to the current frame time — "last call wins" always
+/// restarts the count from zero.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct LightSnapshot {
     pub(crate) component: LightComponent,
     pub(crate) animation_start_time: Option<f32>,
+    pub(crate) animation_cycle_index: u32,
 }
 
 /// Payload handed back to the renderer after `update`.
@@ -186,7 +190,8 @@ impl LightBridge {
                 let component = registry
                     .get_component::<postretro_entities::components::light::LightComponent>(id)
                     .ok()?;
-                let brightness = eval_effective_brightness(component, current_time);
+                let brightness =
+                    eval_effective_brightness(component, self.snapshots.get(&id), current_time);
                 let map_light = component_to_map_light(
                     component,
                     self.cached_origins_f64[map_idx],
@@ -383,8 +388,8 @@ impl LightBridge {
         let mut settled: Vec<(EntityId, LightComponent)> = Vec::new();
         for (map_idx, &id) in self.entity_ids.iter().enumerate() {
             let Ok(current) = registry.get_component::<LightComponent>(id) else {
-                // A tracked dynamic light that disappears must force one
-                // tombstone upload; otherwise its last GPU record stays live.
+                // A tracked light that disappears must force one tombstone
+                // upload; otherwise its last forward or compose record stays live.
                 if self.snapshots.remove(&id).is_some() {
                     self.dirty = true;
                 }
@@ -416,11 +421,24 @@ impl LightBridge {
                 continue;
             }
 
-            if changed {
+            let cycle_index = if changed {
+                0
+            } else {
+                finite_animation_cycle_index(current, snapshot, current_time)
+            };
+            let cycle_changed =
+                snapshot.is_some_and(|snapshot| snapshot.animation_cycle_index != cycle_index);
+
+            if changed || cycle_changed {
                 self.dirty = true;
-                let mut new_start = None;
+                let mut new_start = if changed {
+                    None
+                } else {
+                    snapshot.and_then(|snapshot| snapshot.animation_start_time)
+                };
                 if let Some(anim) = &current.animation
                     && anim.play_count.is_some()
+                    && changed
                 {
                     // Record start time so completion can fire on a future frame.
                     // Any mutation resets the clock ("last call wins").
@@ -431,6 +449,7 @@ impl LightBridge {
                     LightSnapshot {
                         component: current.clone(),
                         animation_start_time: new_start,
+                        animation_cycle_index: cycle_index,
                     },
                 );
             }
@@ -446,6 +465,7 @@ impl LightBridge {
                 LightSnapshot {
                     component: settled_component,
                     animation_start_time: None,
+                    animation_cycle_index: 0,
                 },
             );
             self.dirty = true;
@@ -465,7 +485,7 @@ impl LightBridge {
                 let Ok(component) = registry.get_component::<LightComponent>(id) else {
                     return 0.0;
                 };
-                eval_effective_brightness(component, current_time)
+                eval_effective_brightness(component, self.snapshots.get(&id), current_time)
             })
             .collect();
 
@@ -494,11 +514,16 @@ impl LightBridge {
         for (map_idx, &id) in self.entity_ids.iter().enumerate() {
             let Ok(component) = registry.get_component::<LightComponent>(id) else {
                 // A missing dynamic entity still occupies its compact forward
-                // slot. Static entries have no direct-light slot to preserve.
+                // slot. A missing slot-bearing static entity similarly needs
+                // an explicit compose tombstone or its last baked delta stays
+                // active indefinitely.
                 if self.shape[map_idx].is_dynamic {
                     lights_bytes.extend_from_slice(&[0u8; GPU_LIGHT_SIZE]);
                     descriptor_bytes.extend_from_slice(&[0u8; ANIMATION_DESCRIPTOR_SIZE]);
                     influences.push(self.cached_influences[map_idx].clone());
+                }
+                if let Some(slot) = self.shape[map_idx].animated_slot {
+                    compose_descriptor_writes.push((slot, [0u8; ANIMATION_DESCRIPTOR_SIZE]));
                 }
                 continue;
             };
@@ -534,8 +559,13 @@ impl LightBridge {
                 }
             }
 
-            let forward_desc =
-                pack_forward_animation_descriptor(component, brightness_offset, color_offset);
+            let snapshot = self.snapshots.get(&id);
+            let forward_desc = pack_forward_animation_descriptor(
+                component,
+                snapshot,
+                brightness_offset,
+                color_offset,
+            );
             if self.shape[map_idx].is_dynamic {
                 lights_bytes.extend_from_slice(&pack_light(&map_light));
                 descriptor_bytes.extend_from_slice(&forward_desc);
@@ -551,7 +581,12 @@ impl LightBridge {
             if let Some(slot) = self.shape[map_idx].animated_slot {
                 compose_descriptor_writes.push((
                     slot,
-                    pack_compose_animation_descriptor(component, brightness_offset, color_offset),
+                    pack_compose_animation_descriptor(
+                        component,
+                        snapshot,
+                        brightness_offset,
+                        color_offset,
+                    ),
                 ));
             }
         }
@@ -718,9 +753,62 @@ fn sample_brightness_at(samples: &[f32], cycle_t: f32) -> f32 {
     ((a * f + b) * f + c) * f + d
 }
 
+/// Endpoint-clamped Catmull-Rom sampling for finite animations. Samples are
+/// uniformly spaced over inclusive `[0, 1]`, so `t == 1` is the final keyframe
+/// rather than the closed curve's first keyframe.
+fn sample_brightness_at_open(samples: &[f32], t: f32) -> f32 {
+    let count = samples.len();
+    if count == 0 {
+        return 1.0;
+    }
+    if count == 1 {
+        return samples[0];
+    }
+    let last = count - 1;
+    let scaled = t.clamp(0.0, 1.0) * last as f32;
+    let i1 = (scaled.floor() as usize).min(last);
+    let i0 = i1.saturating_sub(1);
+    let i2 = (i1 + 1).min(last);
+    let i3 = (i1 + 2).min(last);
+    let f = scaled.fract();
+    let (p0, p1, p2, p3) = (samples[i0], samples[i1], samples[i2], samples[i3]);
+    let a = -0.5 * p0 + 1.5 * p1 - 1.5 * p2 + 0.5 * p3;
+    let b = p0 - 2.5 * p1 + 2.0 * p2 - 0.5 * p3;
+    let c = -0.5 * p0 + 0.5 * p2;
+    let d = p1;
+    ((a * f + b) * f + c) * f + d
+}
+
+fn finite_animation_cycle_index(
+    component: &LightComponent,
+    snapshot: Option<&LightSnapshot>,
+    current_time: f32,
+) -> u32 {
+    let Some(anim) = component.animation.as_ref() else {
+        return 0;
+    };
+    let Some(play_count) = anim.play_count.filter(|&count| count > 0) else {
+        return 0;
+    };
+    let Some(start) = snapshot.and_then(|snapshot| snapshot.animation_start_time) else {
+        return 0;
+    };
+    let period_s = anim.period_ms / 1000.0;
+    if period_s <= 0.0 {
+        return 0;
+    }
+    ((current_time - start).max(0.0) / period_s)
+        .floor()
+        .min(play_count.saturating_sub(1) as f32) as u32
+}
+
 /// Current effective brightness for shadow-slot suppression. Mirrors GPU
 /// animation evaluation; called every frame, not just on dirty frames.
-fn eval_effective_brightness(component: &LightComponent, current_time: f32) -> f32 {
+fn eval_effective_brightness(
+    component: &LightComponent,
+    snapshot: Option<&LightSnapshot>,
+    current_time: f32,
+) -> f32 {
     match &component.animation {
         None => 1.0,
         Some(anim) => {
@@ -731,9 +819,19 @@ fn eval_effective_brightness(component: &LightComponent, current_time: f32) -> f
             {
                 let period_s = anim.period_ms / 1000.0;
                 if period_s > 0.0 {
-                    let phase = anim.phase.unwrap_or(0.0);
-                    let cycle_t = (current_time / period_s + phase).rem_euclid(1.0);
-                    sample_brightness_at(brightness, cycle_t)
+                    let phase = anim.phase.unwrap_or(0.0).rem_euclid(1.0);
+                    if anim.play_count.is_some_and(|count| count > 0)
+                        && let Some(snapshot) = snapshot
+                        && let Some(start) = snapshot.animation_start_time
+                    {
+                        let cycle_start = start + snapshot.animation_cycle_index as f32 * period_s;
+                        let open_t =
+                            phase + ((current_time - cycle_start) / period_s) * (1.0 - phase);
+                        sample_brightness_at_open(brightness, open_t)
+                    } else {
+                        let cycle_t = (current_time / period_s + phase).rem_euclid(1.0);
+                        sample_brightness_at(brightness, cycle_t)
+                    }
                 } else {
                     brightness[0]
                 }
@@ -753,14 +851,16 @@ fn eval_effective_brightness(component: &LightComponent, current_time: f32) -> f
 /// weight-map path has no direct-light fallback.
 ///
 /// **`play_count` is stripped:** the GPU never sees completion bounds. The
-/// CPU-side bridge handles completion by writing the final keyframe back as
-/// static `intensity`/`color` and clearing `animation`. The GPU always sees
-/// a looping descriptor or a sentinel.
+/// CPU-side bridge resets finite descriptors once per period and handles
+/// completion by writing final radiance back as static `intensity`/`color`
+/// before clearing `animation`. A negative packed period selects the shared
+/// endpoint-clamped curve mode; positive periods remain closed loops.
 ///
 /// Sample payloads live in a separate `anim_samples` storage buffer addressed
 /// by per-descriptor offsets.
 fn pack_forward_animation_descriptor(
     component: &LightComponent,
+    snapshot: Option<&LightSnapshot>,
     brightness_offset: u32,
     color_offset: u32,
 ) -> [u8; ANIMATION_DESCRIPTOR_SIZE] {
@@ -770,11 +870,13 @@ fn pack_forward_animation_descriptor(
         color_offset,
         component.color,
         false,
+        snapshot,
     )
 }
 
 fn pack_compose_animation_descriptor(
     component: &LightComponent,
+    snapshot: Option<&LightSnapshot>,
     brightness_offset: u32,
     color_offset: u32,
 ) -> [u8; ANIMATION_DESCRIPTOR_SIZE] {
@@ -792,7 +894,14 @@ fn pack_compose_animation_descriptor(
             component.color[2] * component.intensity,
         ]
     };
-    pack_animation_descriptor(component, brightness_offset, color_offset, base_color, true)
+    pack_animation_descriptor(
+        component,
+        brightness_offset,
+        color_offset,
+        base_color,
+        true,
+        snapshot,
+    )
 }
 
 fn pack_animation_descriptor(
@@ -801,6 +910,7 @@ fn pack_animation_descriptor(
     color_offset: u32,
     base_color: [f32; 3],
     active_without_animation: bool,
+    snapshot: Option<&LightSnapshot>,
 ) -> [u8; ANIMATION_DESCRIPTOR_SIZE] {
     let mut bytes = [0u8; ANIMATION_DESCRIPTOR_SIZE];
     let Some(anim) = &component.animation else {
@@ -817,11 +927,24 @@ fn pack_animation_descriptor(
         return bytes;
     };
 
-    // GPU uses seconds; script-side tracks ms.
+    // GPU uses seconds; script-side tracks ms. A negative period is the
+    // descriptor-only marker for endpoint-clamped finite sampling. Its
+    // magnitude and phase map the current authored period from the authored
+    // starting phase through t=1 (the final keyframe).
     let period_s = anim.period_ms / 1000.0;
-    bytes[0..4].copy_from_slice(&period_s.to_ne_bytes());
-    let phase = anim.phase.unwrap_or(0.0).rem_euclid(1.0);
-    bytes[4..8].copy_from_slice(&phase.to_ne_bytes());
+    let authored_phase = anim.phase.unwrap_or(0.0).rem_euclid(1.0);
+    let (packed_period, packed_phase) = if anim.play_count.is_some_and(|count| count > 0)
+        && let Some(snapshot) = snapshot
+        && let Some(start) = snapshot.animation_start_time
+    {
+        let cycle_start = start + snapshot.animation_cycle_index as f32 * period_s;
+        let open_period = period_s / (1.0 - authored_phase).max(1.0e-6);
+        (-open_period, authored_phase - cycle_start / open_period)
+    } else {
+        (period_s, authored_phase)
+    };
+    bytes[0..4].copy_from_slice(&packed_period.to_ne_bytes());
+    bytes[4..8].copy_from_slice(&packed_phase.to_ne_bytes());
 
     let brightness_count: u32 = anim
         .brightness
@@ -873,7 +996,7 @@ fn check_play_count_completion(
     if let Some(brightness) = &anim.brightness
         && let Some(&final_brightness) = brightness.last()
     {
-        settled.intensity = final_brightness;
+        settled.intensity *= final_brightness;
     }
     if let Some(color) = &anim.color
         && let Some(final_color) = color.last()
@@ -1129,25 +1252,103 @@ mod tests {
         // Animate starts at t=1.0; completion bound = 2 × 0.5s, fires at t=2.0.
         let _ = bridge.update(&mut registry, 1.0);
 
-        let _ = bridge.update(&mut registry, 1.5);
+        let second_period = bridge.update(&mut registry, 1.5).unwrap();
+        assert!(
+            second_period.has_dirty_data,
+            "finite descriptors reset to endpoint-clamped sampling each period"
+        );
+        let packed_period =
+            f32::from_ne_bytes(second_period.descriptor_bytes[0..4].try_into().unwrap());
+        assert!(
+            packed_period < 0.0,
+            "negative period selects endpoint-clamped GPU sampling"
+        );
         let mid = registry.get_component::<LightComponent>(id).unwrap();
         assert!(
             mid.animation.is_some(),
             "animation still live before completion bound"
         );
 
-        let _ = bridge.update(&mut registry, 2.01);
+        let near_completion = bridge.update(&mut registry, 1.999).unwrap();
+        assert!(
+            (near_completion.effective_brightness[0] - 0.25).abs() < 0.01,
+            "finite sampling must approach the final brightness before settlement; got {}",
+            near_completion.effective_brightness[0]
+        );
+
+        let completed = bridge.update(&mut registry, 2.01).unwrap();
         let settled = registry.get_component::<LightComponent>(id).unwrap();
         assert!(
             settled.animation.is_none(),
             "animation cleared on completion"
         );
         assert!(
-            (settled.intensity - 0.25).abs() < 1e-6,
-            "intensity settled to final brightness keyframe; got {}",
+            (settled.intensity - 0.375).abs() < 1e-6,
+            "settled intensity must preserve authored 1.5 × final brightness 0.25; got {}",
             settled.intensity
         );
         assert_eq!(settled.color, [0.0, 0.0, 1.0]);
+        let packed_r = f32::from_le_bytes(completed.lights_bytes[16..20].try_into().unwrap());
+        let packed_g = f32::from_le_bytes(completed.lights_bytes[20..24].try_into().unwrap());
+        let packed_b = f32::from_le_bytes(completed.lights_bytes[24..28].try_into().unwrap());
+        assert_eq!(
+            [packed_r, packed_g, packed_b],
+            [0.0, 0.0, 0.375],
+            "forward record must settle to the same final radiance"
+        );
+    }
+
+    #[test]
+    fn slot_bearing_one_shot_settles_compose_descriptor_to_final_radiance() {
+        let mut light = sample_point_light();
+        light.intensity = 2.0;
+        light.color = [0.5, 0.25, 0.125];
+        light.animated_slot = Some(2);
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[light], &mut registry, 0);
+        let _ = bridge.update(&mut registry, 0.0);
+
+        let id = bridge.entity_for_map_index(0).unwrap();
+        let mut component = registry
+            .get_component::<LightComponent>(id)
+            .unwrap()
+            .clone();
+        component.animation = Some(LightAnimation {
+            period_ms: 1000.0,
+            phase: None,
+            play_count: Some(1),
+            start_active: None,
+            brightness: Some(vec![1.0, 0.25]),
+            color: Some(vec![Vec3Lit([1.0, 0.0, 0.0]), Vec3Lit([0.0, 0.0, 1.0])]),
+            direction: None,
+        });
+        registry.set_component(id, component).unwrap();
+
+        let playing = bridge.update(&mut registry, 1.0).unwrap();
+        assert!(
+            f32::from_ne_bytes(
+                playing.compose_descriptor_writes[0].1[0..4]
+                    .try_into()
+                    .unwrap()
+            ) < 0.0,
+            "finite compose descriptors must use endpoint-clamped sampling"
+        );
+
+        let settled = bridge.update(&mut registry, 2.01).unwrap();
+        let (slot, descriptor) = &settled.compose_descriptor_writes[0];
+        assert_eq!(*slot, 2);
+        assert_eq!(
+            u32::from_ne_bytes(descriptor[36..40].try_into().unwrap()),
+            1,
+            "settled slot stays active"
+        );
+        let final_radiance = [
+            f32::from_ne_bytes(descriptor[16..20].try_into().unwrap()),
+            f32::from_ne_bytes(descriptor[20..24].try_into().unwrap()),
+            f32::from_ne_bytes(descriptor[24..28].try_into().unwrap()),
+        ];
+        assert_eq!(final_radiance, [0.0, 0.0, 0.5]);
     }
 
     #[test]
@@ -1237,7 +1438,7 @@ mod tests {
             }),
         };
         let bytes =
-            pack_forward_animation_descriptor(&component, 0, SCRIPTED_BRIGHTNESS_SLOT as u32);
+            pack_forward_animation_descriptor(&component, None, 0, SCRIPTED_BRIGHTNESS_SLOT as u32);
         let active = u32::from_ne_bytes(bytes[36..40].try_into().unwrap());
         assert_eq!(active, 0, "start_active: Some(false) must pack as inactive");
     }
@@ -1693,6 +1894,32 @@ mod tests {
         assert_eq!(update.descriptor_bytes, vec![0; ANIMATION_DESCRIPTOR_SIZE]);
         assert_eq!(update.effective_brightness, vec![0.0]);
 
+        assert!(!bridge.update(&mut registry, 0.2).unwrap().has_dirty_data);
+    }
+
+    // Regression: slot-bearing baked lights have no dynamic-forward record.
+    // Their compose descriptor must still be tombstoned on despawn or the
+    // renderer keeps composing the stale baked delta.
+    #[test]
+    fn despawned_slot_bearing_static_light_emits_compose_tombstone() {
+        let mut light = sample_point_light();
+        light.animated_slot = Some(5);
+        let mut registry = EntityRegistry::new();
+        let mut bridge = LightBridge::new();
+        bridge.populate_from_level(&[light], &mut registry, 0);
+        let id = bridge.entity_for_map_index(0).unwrap();
+        let _ = bridge.update(&mut registry, 0.0);
+
+        registry.despawn(id).unwrap();
+        let update = bridge.update(&mut registry, 0.1).expect("despawn dirty");
+
+        assert!(update.has_dirty_data);
+        assert!(update.lights_bytes.is_empty());
+        assert!(update.descriptor_bytes.is_empty());
+        assert_eq!(
+            update.compose_descriptor_writes,
+            vec![(5, [0u8; ANIMATION_DESCRIPTOR_SIZE])]
+        );
         assert!(!bridge.update(&mut registry, 0.2).unwrap().has_dirty_data);
     }
 

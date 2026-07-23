@@ -81,6 +81,8 @@ pub struct DirectDeltaComposeBuffers {
 /// authored intensity/color once through `base_color`, then brightness.
 #[derive(Clone, Copy, Debug)]
 pub struct AnimatedLightScaleDescriptor<'a> {
+    /// Positive for a closed loop. Negative selects endpoint-clamped sampling;
+    /// the magnitude is the packed finite-period time scale.
     pub period: f32,
     pub phase: f32,
     pub base_color: [f32; 3],
@@ -100,7 +102,7 @@ pub fn animated_light_scale(
         return [0.0; 3];
     };
 
-    let cycle_t = (time / descriptor.period.max(1.0e-6) + descriptor.phase).rem_euclid(1.0);
+    let cycle_t = animation_curve_t(descriptor.period, descriptor.phase, time);
     let brightness = sample_curve_catmull_rom(descriptor.brightness, cycle_t).max(0.0);
     let color = if descriptor.color.is_empty() {
         descriptor.base_color
@@ -120,17 +122,44 @@ pub fn animated_light_scale(
     ]
 }
 
+fn animation_curve_t(period: f32, phase: f32, time: f32) -> f32 {
+    if period < 0.0 {
+        return -1.0 - (time / (-period).max(1.0e-6) + phase).clamp(0.0, 1.0);
+    }
+    (time / period.max(1.0e-6) + phase).rem_euclid(1.0)
+}
+
 fn sample_curve_catmull_rom(samples: &[f32], cycle_t: f32) -> f32 {
     match samples {
         [] => 1.0,
         [value] => *value,
         _ => {
             let count = samples.len();
-            let scaled = cycle_t * count as f32;
-            let i1 = scaled.floor() as usize % count;
-            let i0 = (i1 + count - 1) % count;
-            let i2 = (i1 + 1) % count;
-            let i3 = (i1 + 2) % count;
+            let is_open = cycle_t <= -1.0;
+            let t = if is_open {
+                (-cycle_t - 1.0).clamp(0.0, 1.0)
+            } else {
+                cycle_t
+            };
+            let scaled = if is_open {
+                t * (count - 1) as f32
+            } else {
+                t * count as f32
+            };
+            let i1 = if is_open {
+                (scaled.floor() as usize).min(count - 1)
+            } else {
+                scaled.floor() as usize % count
+            };
+            let (i0, i2, i3) = if is_open {
+                (
+                    i1.saturating_sub(1),
+                    (i1 + 1).min(count - 1),
+                    (i1 + 2).min(count - 1),
+                )
+            } else {
+                ((i1 + count - 1) % count, (i1 + 1) % count, (i1 + 2) % count)
+            };
             let fraction = scaled.fract();
             let (p0, p1, p2, p3) = (samples[i0], samples[i1], samples[i2], samples[i3]);
             let a = -0.5 * p0 + 1.5 * p1 - 1.5 * p2 + 0.5 * p3;
@@ -147,11 +176,31 @@ fn sample_color_catmull_rom(samples: &[[f32; 3]], cycle_t: f32) -> [f32; 3] {
         [value] => *value,
         _ => {
             let count = samples.len();
-            let scaled = cycle_t * count as f32;
-            let i1 = scaled.floor() as usize % count;
-            let i0 = (i1 + count - 1) % count;
-            let i2 = (i1 + 1) % count;
-            let i3 = (i1 + 2) % count;
+            let is_open = cycle_t <= -1.0;
+            let t = if is_open {
+                (-cycle_t - 1.0).clamp(0.0, 1.0)
+            } else {
+                cycle_t
+            };
+            let scaled = if is_open {
+                t * (count - 1) as f32
+            } else {
+                t * count as f32
+            };
+            let i1 = if is_open {
+                (scaled.floor() as usize).min(count - 1)
+            } else {
+                scaled.floor() as usize % count
+            };
+            let (i0, i2, i3) = if is_open {
+                (
+                    i1.saturating_sub(1),
+                    (i1 + 1).min(count - 1),
+                    (i1 + 2).min(count - 1),
+                )
+            } else {
+                ((i1 + count - 1) % count, (i1 + 1) % count, (i1 + 2) % count)
+            };
             let fraction = scaled.fract();
             std::array::from_fn(|channel| {
                 let (p0, p1, p2, p3) = (
@@ -484,10 +533,12 @@ mod tests {
             animated_light_scale(Some(installed), 0.25),
         );
 
-        // One-shot settlement clears the curve after folding its final
-        // brightness into authored radiance, so the composed term does not pop.
+        // A finite descriptor uses the negative-period endpoint-clamped mode.
+        // It reaches the final sample at the completion boundary instead of
+        // wrapping to the closed curve's first sample.
         let one_shot = [0.25, 0.75];
         let playing = AnimatedLightScaleDescriptor {
+            period: -1.0,
             brightness: &one_shot,
             color: &[],
             ..authored
@@ -499,8 +550,8 @@ mod tests {
             ..authored
         };
         assert_scale(
-            animated_light_scale(Some(playing), 0.5),
-            animated_light_scale(Some(settled), 0.5),
+            animated_light_scale(Some(playing), 1.0),
+            animated_light_scale(Some(settled), 1.0),
         );
         // Explicitly clearing holds authored/settled radiance. Despawn removes
         // the descriptor contribution; a reload reinstates the initial state.

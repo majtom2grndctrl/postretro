@@ -150,7 +150,7 @@ fn animated_light_scale(light_index: u32) -> vec3<f32> {
         return vec3<f32>(0.0);
     }
 
-    let t = fract(uniforms.time / max(desc.period, 1.0e-6) + desc.phase);
+    let t = animation_curve_t(desc.period, desc.phase, uniforms.time);
     let brightness = max(
         sample_curve_catmull_rom(desc.brightness_offset, desc.brightness_count, t),
         0.0,

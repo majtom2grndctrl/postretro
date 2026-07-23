@@ -4883,6 +4883,38 @@ mod tests {
     }
 
     #[test]
+    fn load_prl_treats_empty_animated_direct_sh_delta_csr_as_absent() {
+        let base_dims = [1, 1, 1];
+        let mut section =
+            animated_direct_delta_section_for(expected_affinity_dims(base_dims, AFFINITY_FACTOR));
+        section.affinity_offsets.fill(0);
+        section.affinity_lights.clear();
+        section.delta_subblocks.clear();
+        let sections = vec![
+            geometry_blob(sample_geometry()),
+            bvh_blob(sample_bvh_section()),
+            octahedral_sh_volume_blob(base_octahedral_section(base_dims)),
+            animated_direct_sh_delta_blob(section),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ];
+
+        let tmp = write_prl_fixture(
+            sections,
+            "postretro_test_empty_animated_direct_sh_delta.prl",
+        );
+        let world = load_prl(tmp.to_str().unwrap())
+            .expect("valid empty AnimatedDirectShDeltaVolumes must load");
+
+        assert!(
+            world.animated_direct_sh_delta_volumes.is_none(),
+            "an empty CSR cannot contribute and must not select renderer Case 2"
+        );
+
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
     fn load_prl_soft_drops_malformed_animated_direct_sh_deltas() {
         let sections = vec![
             geometry_blob(sample_geometry()),

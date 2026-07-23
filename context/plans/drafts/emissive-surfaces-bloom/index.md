@@ -302,6 +302,19 @@ lockstep on a layout change): a bump makes the reader reject existing v2 files
 backward-compatible (bit-3-gated) and the content hash already disambiguates bundles,
 so no bump is warranted.
 
+**Format-agnostic slot (forward-note for BC7-on-color).** The emissive slot's format
+is carried by its per-slot `format_tag`, resolved through the **shared `PrmFormat` →
+`wgpu::TextureFormat` match** that diffuse already uses — it is **not** hardcoded to
+`Rgba8UnormSrgb` anywhere in the reader, upload, or shader path. v1 only ever *emits*
+`format_tag = 0` for `_e` (uncompressed sRGB, matching today's diffuse), but the plumbing
+must stay format-driven so that a later BC7-on-color epic can add a single `PrmFormat`
+arm (a new `format_tag`, à la the BC5-normals tag-3 addition) that *both* the diffuse
+and emissive slots opt into, with no emissive-specific rework. Concretely: do not add a
+`slot == emissive ⇒ Rgba8UnormSrgb` assumption in the format resolution; treat the
+emissive slot exactly like diffuse (color slot, format per tag). See the
+`bc7-color-textures` draft for the sequenced follow-up (it depends on this spec so that
+BC7 targets the full color-slot set at once).
+
 ## Invariants
 
 | Invariant | Established by | Threatened at | Verified by |

@@ -1,5 +1,6 @@
 // Renderer: GPU init, texture upload, depth pre-pass + forward pipelines, and draw.
 // See: context/lib/rendering_pipeline.md
+mod animated_direct_sh_compose;
 mod animated_lightmap;
 #[cfg(feature = "dev-tools")]
 mod debug_lines;

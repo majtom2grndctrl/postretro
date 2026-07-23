@@ -369,6 +369,11 @@ pub struct LevelGeometry<'a> {
     /// direct atlas when static lights promote into shadow pools.
     pub direct_sh_delta_volumes:
         Option<&'a postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection>,
+    /// Sparse per-animated-baked-light direct SH deltas. Its descriptor map and
+    /// CSR light indices use the independent AnimatedBakedLights namespace.
+    pub animated_direct_sh_delta_volumes: Option<
+        &'a postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection,
+    >,
     /// Selection-order list of global level-light indices eligible for runtime
     /// entity-shadow promotion.
     pub entity_shadow_lights: &'a [u32],

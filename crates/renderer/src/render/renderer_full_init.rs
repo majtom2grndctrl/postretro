@@ -200,6 +200,7 @@ pub(crate) fn build_full_renderer(
         geometry.and_then(|g| g.sh_volume),
         geometry.and_then(|g| g.direct_sh_volume),
         geometry.and_then(|g| g.direct_sh_delta_volumes),
+        geometry.and_then(|g| g.animated_direct_sh_delta_volumes),
         // Runtime-spawned lights append after the full-authored prefix.
         scripted_light_capacity,
         probe_occlusion_enabled,
@@ -518,7 +519,9 @@ pub(crate) fn build_full_renderer(
         &sh_volume_resources,
         geometry.and_then(|g| g.direct_sh_volume),
         geometry.and_then(|g| g.direct_sh_delta_volumes),
+        geometry.and_then(|g| g.animated_direct_sh_delta_volumes),
         &promoted_static_weight_buffer,
+        &uniform_bind_group_layout,
     );
     // Only allocate the promoted-slot depth cache when the map has a non-empty
     // entity-shadow selection; an empty/absent selection can never promote a

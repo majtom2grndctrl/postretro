@@ -76,6 +76,7 @@ impl Renderer {
             delta_sh_volumes: None,
             direct_sh_volume: None,
             direct_sh_delta_volumes: None,
+            animated_direct_sh_delta_volumes: None,
             entity_shadow_lights: &[],
             shadowmask_atlas: None,
             sdf_atlas: None,
@@ -343,6 +344,7 @@ impl Renderer {
             geometry.sh_volume,
             geometry.direct_sh_volume,
             geometry.direct_sh_delta_volumes,
+            geometry.animated_direct_sh_delta_volumes,
             // Runtime-spawned lights append after the full-authored prefix.
             geometry.lights.len() + RUNTIME_DYNAMIC_LIGHT_RESERVE,
             full.probe_occlusion_enabled,
@@ -403,7 +405,9 @@ impl Renderer {
             &full.sh_volume_resources,
             geometry.direct_sh_volume,
             geometry.direct_sh_delta_volumes,
+            geometry.animated_direct_sh_delta_volumes,
             &full.promoted_static_weight_buffer,
+            &full.uniform_bind_group_layout,
         );
         #[cfg(feature = "dev-tools")]
         {

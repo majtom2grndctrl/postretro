@@ -1,6 +1,7 @@
 // Animated SH and direct SH delta compose sizing and parameter packing.
 // See: context/lib/rendering_pipeline.md §4
 
+use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
 use postretro_level_format::delta_sh_volumes::{
     AFFINITY_FACTOR, DeltaShVolumesSection, delta_probe_f16_stride,
 };
@@ -75,6 +76,99 @@ pub struct DirectDeltaComposeBuffers {
     pub affinity_dims: [u32; 3],
 }
 
+/// CPU-side source of truth for the animated-direct compose scale. The Pass-B
+/// WGSL helper mirrors this exactly: unit-radiance delta transport receives the
+/// authored intensity/color once through `base_color`, then brightness.
+#[derive(Clone, Copy, Debug)]
+pub struct AnimatedLightScaleDescriptor<'a> {
+    pub period: f32,
+    pub phase: f32,
+    pub base_color: [f32; 3],
+    pub brightness: &'a [f32],
+    pub color: &'a [[f32; 3]],
+    pub is_active: bool,
+}
+
+/// Match `animated_light_scale` in `animated_direct_sh_compose.wgsl` without a
+/// GPU context. `base_color` is either authored `intensity × color`, or an
+/// intensity splat when a color curve supplies RGB.
+pub fn animated_light_scale(
+    descriptor: Option<AnimatedLightScaleDescriptor<'_>>,
+    time: f32,
+) -> [f32; 3] {
+    let Some(descriptor) = descriptor.filter(|descriptor| descriptor.is_active) else {
+        return [0.0; 3];
+    };
+
+    let cycle_t = (time / descriptor.period.max(1.0e-6) + descriptor.phase).rem_euclid(1.0);
+    let brightness = sample_curve_catmull_rom(descriptor.brightness, cycle_t).max(0.0);
+    let color = if descriptor.color.is_empty() {
+        descriptor.base_color
+    } else {
+        let sampled = sample_color_catmull_rom(descriptor.color, cycle_t);
+        [
+            sampled[0].max(0.0) * descriptor.base_color[0],
+            sampled[1].max(0.0) * descriptor.base_color[1],
+            sampled[2].max(0.0) * descriptor.base_color[2],
+        ]
+    };
+
+    [
+        color[0] * brightness,
+        color[1] * brightness,
+        color[2] * brightness,
+    ]
+}
+
+fn sample_curve_catmull_rom(samples: &[f32], cycle_t: f32) -> f32 {
+    match samples {
+        [] => 1.0,
+        [value] => *value,
+        _ => {
+            let count = samples.len();
+            let scaled = cycle_t * count as f32;
+            let i1 = scaled.floor() as usize % count;
+            let i0 = (i1 + count - 1) % count;
+            let i2 = (i1 + 1) % count;
+            let i3 = (i1 + 2) % count;
+            let fraction = scaled.fract();
+            let (p0, p1, p2, p3) = (samples[i0], samples[i1], samples[i2], samples[i3]);
+            let a = -0.5 * p0 + 1.5 * p1 - 1.5 * p2 + 0.5 * p3;
+            let b = p0 - 2.5 * p1 + 2.0 * p2 - 0.5 * p3;
+            let c = -0.5 * p0 + 0.5 * p2;
+            ((a * fraction + b) * fraction + c) * fraction + p1
+        }
+    }
+}
+
+fn sample_color_catmull_rom(samples: &[[f32; 3]], cycle_t: f32) -> [f32; 3] {
+    match samples {
+        [] => [1.0; 3],
+        [value] => *value,
+        _ => {
+            let count = samples.len();
+            let scaled = cycle_t * count as f32;
+            let i1 = scaled.floor() as usize % count;
+            let i0 = (i1 + count - 1) % count;
+            let i2 = (i1 + 1) % count;
+            let i3 = (i1 + 2) % count;
+            let fraction = scaled.fract();
+            std::array::from_fn(|channel| {
+                let (p0, p1, p2, p3) = (
+                    samples[i0][channel],
+                    samples[i1][channel],
+                    samples[i2][channel],
+                    samples[i3][channel],
+                );
+                let a = -0.5 * p0 + 1.5 * p1 - 1.5 * p2 + 0.5 * p3;
+                let b = p0 - 2.5 * p1 + 2.0 * p2 - 0.5 * p3;
+                let c = -0.5 * p0 + 0.5 * p2;
+                ((a * fraction + b) * fraction + c) * fraction + p1
+            })
+        }
+    }
+}
+
 pub fn build_delta_buffers(
     delta: Option<&DeltaShVolumesSection>,
     grid_dimensions: [u32; 3],
@@ -117,6 +211,31 @@ pub fn build_direct_delta_buffers(
         delta_subblocks: delta.delta_subblocks.clone(),
         affinity_offsets: delta.affinity_offsets.clone(),
         affinity_lights: delta.affinity_lights.clone(),
+        affinity_dims: delta.affinity_dims,
+    }
+}
+
+pub fn build_animated_direct_delta_buffers(
+    delta: Option<&AnimatedDirectShDeltaVolumesSection>,
+    grid_dimensions: [u32; 3],
+) -> DeltaComposeBuffers {
+    let Some(delta) = delta else {
+        let affinity_dims = affinity_dims_for_grid(grid_dimensions);
+        return DeltaComposeBuffers {
+            animated_light_count: 0,
+            delta_subblocks: Vec::new(),
+            affinity_offsets: vec![0; affinity_cell_count(affinity_dims) + 1],
+            affinity_lights: Vec::new(),
+            animation_descriptor_indices: Vec::new(),
+            affinity_dims,
+        };
+    };
+    DeltaComposeBuffers {
+        animated_light_count: delta.animation_descriptor_indices.len() as u32,
+        delta_subblocks: delta.delta_subblocks.clone(),
+        affinity_offsets: delta.affinity_offsets.clone(),
+        affinity_lights: delta.affinity_lights.clone(),
+        animation_descriptor_indices: delta.animation_descriptor_indices.clone(),
         affinity_dims: delta.affinity_dims,
     }
 }
@@ -210,6 +329,7 @@ pub fn f16_bits_to_f32(bits: u16) -> f32 {
 mod tests {
     use super::*;
     use crate::sh_volume::f32_to_f16_bits;
+    use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
     use postretro_level_format::delta_sh_volumes::{
         DEFAULT_DELTA_PROBE_F16_STRIDE, PROBES_PER_CELL,
     };
@@ -294,6 +414,99 @@ mod tests {
         assert_eq!(b.affinity_offsets, vec![0, 1, 1, 2]);
         assert_eq!(b.affinity_lights, vec![0, 1]);
         assert_eq!(b.delta_subblocks, subblocks);
+    }
+
+    #[test]
+    fn build_animated_direct_delta_buffers_keeps_its_own_descriptor_index_space() {
+        let subblocks = sample_subblock(10);
+        let section = AnimatedDirectShDeltaVolumesSection {
+            affinity_factor: AFFINITY_FACTOR,
+            affinity_dims: [1, 1, 1],
+            tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            animation_descriptor_indices: vec![7],
+            affinity_offsets: vec![0, 1],
+            affinity_lights: vec![0],
+            delta_subblocks: subblocks.clone(),
+        };
+
+        let buffers = build_animated_direct_delta_buffers(Some(&section), [1, 1, 1]);
+        assert_eq!(buffers.animation_descriptor_indices, vec![7]);
+        assert_eq!(buffers.affinity_lights, vec![0]);
+        assert_eq!(buffers.delta_subblocks, subblocks);
+    }
+
+    #[test]
+    fn animated_light_scale_follows_compose_lifecycle_without_gpu() {
+        let assert_scale = |actual: [f32; 3], expected: [f32; 3]| {
+            for (actual, expected) in actual.into_iter().zip(expected) {
+                assert!(
+                    (actual - expected).abs() < 1.0e-5,
+                    "scale {actual} did not match {expected}"
+                );
+            }
+        };
+
+        let authored = AnimatedLightScaleDescriptor {
+            period: 1.0,
+            phase: 0.0,
+            base_color: [2.0, 1.0, 0.5],
+            brightness: &[],
+            color: &[],
+            is_active: true,
+        };
+        // Initial-active carries authored radiance; initial-inactive is dark.
+        assert_scale(animated_light_scale(Some(authored), 0.0), [2.0, 1.0, 0.5]);
+        assert_scale(
+            animated_light_scale(
+                Some(AnimatedLightScaleDescriptor {
+                    is_active: false,
+                    ..authored
+                }),
+                0.0,
+            ),
+            [0.0; 3],
+        );
+
+        let brightness = [0.5, 1.0, 0.5, 0.0];
+        let color = [[1.0, 0.5, 0.25], [1.0, 0.5, 0.25]];
+        let installed = AnimatedLightScaleDescriptor {
+            base_color: [2.0; 3],
+            brightness: &brightness,
+            color: &color,
+            ..authored
+        };
+        // Trigger-installed color/brightness applies intensity once. At the
+        // second knot, looping evaluation reaches the exact authored sample.
+        assert_scale(animated_light_scale(Some(installed), 0.25), [2.0, 1.0, 0.5]);
+        assert_scale(
+            animated_light_scale(Some(installed), 1.25),
+            animated_light_scale(Some(installed), 0.25),
+        );
+
+        // One-shot settlement clears the curve after folding its final
+        // brightness into authored radiance, so the composed term does not pop.
+        let one_shot = [0.25, 0.75];
+        let playing = AnimatedLightScaleDescriptor {
+            brightness: &one_shot,
+            color: &[],
+            ..authored
+        };
+        let settled = AnimatedLightScaleDescriptor {
+            base_color: [1.5, 0.75, 0.375],
+            brightness: &[],
+            color: &[],
+            ..authored
+        };
+        assert_scale(
+            animated_light_scale(Some(playing), 0.5),
+            animated_light_scale(Some(settled), 0.5),
+        );
+        // Explicitly clearing holds authored/settled radiance. Despawn removes
+        // the descriptor contribution; a reload reinstates the initial state.
+        assert_scale(animated_light_scale(Some(settled), 2.0), [1.5, 0.75, 0.375]);
+        assert_scale(animated_light_scale(None, 2.0), [0.0; 3]);
+        assert_scale(animated_light_scale(Some(authored), 0.0), [2.0, 1.0, 0.5]);
     }
 
     #[test]

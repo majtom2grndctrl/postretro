@@ -234,6 +234,10 @@ impl Renderer {
                 .promoted_static_weights
                 .iter()
                 .any(|weight| *weight > 0.0)
+                || self
+                    .full()
+                    .sh_volume_resources
+                    .animated_direct_has_active_descriptor()
                 || direct_sh_debug_override.active();
             {
                 let Self { queue, full, .. } = self;
@@ -247,6 +251,7 @@ impl Renderer {
                 full.direct_sh_compose.dispatch_if_needed(
                     queue,
                     encoder,
+                    &full.uniform_bind_group,
                     direct_sh_active,
                     direct_sh_debug_override,
                     direct_sh_ts,

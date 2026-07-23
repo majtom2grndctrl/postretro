@@ -38,6 +38,18 @@ last direct-light gap for moving receivers under authored script animation.
   dynamic-receiver classes are exercised by one manual-GPU check (AC2); the automated
   capture golden is deferred to a follow-up spec.
 
+**Shipped beyond this spec's stated producer-side scope (undocumented at the time,
+recorded here per dev guide §1.2):** the implementation also delivered two pieces of
+shared animated-light infrastructure affecting **all** scripted animated lights, not
+only animated-direct receivers — (a) a finite (`playCount`-bounded) endpoint-clamped
+curve-sampling mode, marked by a negative packed period and decoded by the shared WGSL
+`animation_curve_t` (`crates/renderer/src/shaders/curve_eval.wgsl`) and its CPU mirror
+(`render-cpu/src/sh_compose.rs`); and (b) a `check_play_count_completion` settle-math
+fix — `settled.intensity = final_brightness` became `settled.intensity *=
+final_brightness`, preserving authored base intensity on settle. Both live in
+`crates/postretro/src/scripting/systems/light_bridge.rs::pack_animation_descriptor` /
+`check_play_count_completion` and are covered by tests.
+
 ### Out of scope
 
 - **Promoting animated lights into the runtime shadow-map pool.** Kept separate by
@@ -120,8 +132,10 @@ The prompt's seven decisions, resolved:
    copy-through); a **45-absent** map is Case 1 — the single unchanged
    `direct_sh_compose` pass, no Pass B, no intermediate, no dummy buffers, today's
    cadence. GPU memory: one new sparse f16 section, same footprint class as the indirect
-   delta, clipped to each light's occlusion-tested direct reach (tighter than indirect
-   bounce reach), plus (45-present only) one probe-atlas-sized intermediate texture.
+   delta — same affinity-cell reach as id-27 (both decompose via
+   `decompose_affinity_for_lights`'s falloff-sphere AABB, no cone clipping at the CSR
+   level; cone/occlusion narrowing happens per-probe inside the bake, zeroing
+   out-of-cone probes) — plus (45-present only) one probe-atlas-sized intermediate texture.
 
 7. **Acceptance surfaces.** Compiler bake + section round-trip; PRL wire + loader
    validation with all-or-nothing clear; renderer compose extension + widened
@@ -316,11 +330,14 @@ then `sh_bake::pack_octahedral_irradiance_tile`. Occlusion
 helpers are module-private (`sh_bake.rs`/`lightmap_bake.rs`) and reached through it,
 not called directly. Unit-radiance means the bake omits the light's authored
 intensity/color (the runtime descriptor applies them once); bake at the light's
-**authored cone direction** (rest). Reach-cull with the direct-reach
-`decompose_affinity_for_lights` (cone/falloff + portal reach), the same tighter reach
-the base direct bake uses — not the broader indirect bounce reach. This is an intentional
-deviation from the mirror: `delta_sh_bake` calls `decompose_affinity` over the animated
-envelope; this bake calls `decompose_affinity_for_lights` over the single-light slice. Emit section 45
+**authored cone direction** (rest). Reach-cull with `decompose_affinity_for_lights`
+(falloff-sphere AABB + portal reach — no cone clipping at this stage); this yields the
+same per-light cell set `decompose_affinity` (the id-27 bake's thin wrapper over the
+same function) would produce for this light, not a tighter reach — the call-site
+difference is a single-light slice vs. the full animated-light envelope, not a
+narrower reach test. Cone/occlusion narrowing happens per-probe inside
+`bake_probe_direct_rgb` (it zeroes out-of-cone probes' radiance), not at the
+CSR/affinity level. Emit section 45
 with its own `animation_descriptor_indices` (same `AnimatedBakedLights` index space
 section 27 uses). Wire into `pipeline.rs` to run whenever `AnimatedBakedLights` is
 non-empty. **Own the emission seam:** the section is only written to the `.prl` by
@@ -556,14 +573,17 @@ decision, not a deferral.
   engine-testing artifact that would also make `setLightAnimation` target both. The
   E18 spawner assertions are light-tier-agnostic, so nothing blocks the conversion.
 
-- **CSR: bake the independent, tighter direct-reach index for section 45** (not
-  shared with the indirect delta's id-27 CSR). This is leaner, not merely simpler:
-  sharing would carry direct sub-blocks for bounce-only cells the occlusion-tested
-  direct cone never reaches, spending VRAM against the compatibility-floor budget for
-  no benefit. It also matches the codebase's measure-before-pivoting culture (global
-  BVH, clustered-forward deferral): independent-tighter is the correct lean default;
-  a shared index is the speculative variant to reach for only if a measured combined
-  footprint ever demands it. Escape hatch noted, decision made.
+- **CSR: bake an independent affinity-CSR for section 45**, not shared with the
+  indirect delta's id-27 CSR. Its cell set equals id-27's — both decompose via the
+  same falloff-sphere AABB reach test (`light_aabb` in `affinity_grid.rs`, no cone
+  clipping); cone/occlusion narrowing happens per-probe inside the bake, not at the
+  CSR level, so the composed result stays correct because out-of-cone probes bake to
+  ~zero. The independence is justified by **load-independence from section 27**
+  (section 45 loads and composes correctly whether or not section 27 is present) and
+  by keeping the bake a field-for-field mirror of `DeltaShVolumesSection` — not by a
+  smaller VRAM footprint. Cone-clipped reach tightening (skipping falloff cells the
+  occlusion-tested cone never lights) remains an available future optimization if a
+  measured footprint ever demands it — v1 does not pursue it.
 
 - **Direction animation on movers is the dynamic tier's job, by design** (see Out of
   scope). Not a limitation to close later: a live-direction cone raking moving

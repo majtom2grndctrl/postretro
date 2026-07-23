@@ -159,7 +159,12 @@ impl AnimatedDirectShDeltaVolumesSection {
             offset += 4;
         }
 
-        let offsets_len = affinity_cell_count + 1;
+        let offsets_len = affinity_cell_count.checked_add(1).ok_or_else(|| {
+            invalid_data(format!(
+                "animated direct sh delta volumes affinity_cell_count {affinity_cell_count} \
+                 overflows affinity_offsets length"
+            ))
+        })?;
         let offsets_bytes = offsets_len.checked_mul(4).ok_or_else(|| {
             invalid_data(format!(
                 "animated direct sh delta volumes affinity_offsets length {offsets_len} \

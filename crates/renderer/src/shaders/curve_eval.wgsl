@@ -1,5 +1,5 @@
 // Shared Catmull-Rom curve evaluation helpers for WGSL shaders (binding-agnostic).
-// See: context/plans/in-progress/animated-curve-eval/index.md
+// See: context/lib/rendering_pipeline.md §4 "Animated lights"
 
 // Uniform Catmull-Rom (tension 0.5) sampling. Looping descriptors use a
 // closed curve over [0, 1). Finite descriptors carry a negative period;

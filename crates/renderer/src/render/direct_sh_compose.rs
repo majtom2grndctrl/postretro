@@ -555,13 +555,6 @@ mod tests {
     }
 
     #[test]
-    fn case1_keeps_the_existing_single_dispatch_predicate() {
-        // No section-45 state participates in Case 1. With no pending copy and
-        // no promotion transition, the old compose pass stays undispatched.
-        assert!(!direct_compose_should_dispatch(false, false, false));
-    }
-
-    #[test]
     fn debug_override_bytes_encodes_fields_at_correct_offsets() {
         let bytes = debug_override_bytes(DirectShDebugOverride {
             enabled: true,

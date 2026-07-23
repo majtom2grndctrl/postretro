@@ -124,6 +124,14 @@ def parse_args():
              "spun in place."
     )
     parser.add_argument(
+        "--eye-inset", type=float, default=0.01,
+        metavar="METERS",
+        help="With --fix-eyes, push each eyeball this far back into the socket "
+             "(meters, along the head's backward axis) so the cornea does not "
+             "bulge past the eyelids. Eye radius is ~0.014m; default 0.01. "
+             "Use 0 to disable, or raise it for deeper-set eyes."
+    )
+    parser.add_argument(
         "--exclude-meshes", nargs="+", default=[],
         metavar="NAME",
         help="Drop named mesh objects before join (e.g. --exclude-meshes EXO_Body). "
@@ -524,7 +532,7 @@ def merge_animations(input_dir, scale=None, base=None, exclude_meshes=None):
         print(f"  {action.name}: frames {int(frame_range[0])}-{int(frame_range[1])}")
 
 
-def flip_eye_geometry():
+def flip_eye_geometry(inset=0.0):
     """Rotate each eyeball 180 deg about its own vertical axis so the iris
     faces the front of the head.
 
@@ -538,6 +546,9 @@ def flip_eye_geometry():
     center: the pupil swings from back to front, the eye stays in its socket,
     and its Head skinning is untouched. Run this AFTER the meshes are joined
     so all eye material slots live on one object.
+
+    `inset` (meters) then pushes the eyeballs backward into the sockets so the
+    now-forward-facing cornea does not bulge past the eyelids.
     """
     mesh_obj = get_mesh()
     if not mesh_obj:
@@ -602,6 +613,16 @@ def flip_eye_geometry():
         total += len(idxs)
         print(f"  --fix-eyes: spun {name} eye ({len(idxs)} verts) about "
               f"(x={cx:.3f}, y={cy:.3f})")
+
+    # Push the eyeballs back into their sockets. After the spin, the sphere's
+    # rounded front hemisphere sits proud of the eyelids; a small backward
+    # translation seats the cornea behind the lids. The head faces Blender +Y
+    # at this stage (the flip_z bake maps the face to glTF -Z / engine +Z), so
+    # "into the skull" is -Y. Translation does not affect normals.
+    if inset:
+        for i in eye_vert_idx:
+            verts[i].co.y -= inset
+        print(f"  --fix-eyes: inset eyes {inset:.3f}m into sockets (-Y)")
 
     if loop_normals is not None:
         for li in eye_loop_idx:
@@ -876,7 +897,7 @@ def main():
     clean_scene()
     merge_animations(args.input_dir, args.scale, args.base, args.exclude_meshes)
     if args.fix_eyes:
-        flip_eye_geometry()
+        flip_eye_geometry(inset=args.eye_inset)
     if args.strip_face:
         strip_facial_bones()
     validate_model()

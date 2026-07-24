@@ -49,6 +49,28 @@ the agent capsule can wedge into.
   Route: P -> detour north OR south of the center pillar (~208 units clear) -> E.
 ```
 
+### Emissive panels (bloom A/B)
+
+Two floating `16 × 128 × 80` panels sit west of the pillars, both at
+`x[192,208] z[32,112]`, directly ahead of the player spawn:
+
+| Panel | Y extent | Texture | `_e` peak | Emissive term | Blooms? |
+|---|---|---|---|---|---|
+| Bright | `y[192,320]` | `neon/neon_glow_panel` | sRGB 255 | 4.0 | yes — 4× threshold |
+| Dim | `y[352,480]` | `neon/neon_dim_panel` | sRGB 99 | ~0.5 | no — half threshold |
+
+The pair is the A/B for emissive-with-bloom vs emissive-without-bloom. There is no
+per-material bloom flag; bloom is decided purely by whether a fragment's linear
+luminance clears `BLOOM_THRESHOLD` (`1.0`, `renderer/src/render/bloom.rs`). Both
+panels use `Material::Neon`'s `emissive_strength` of `4.0`, so the authored `_e`
+texel value is the only lever — the dim panel's texture is the bright one scaled
+in linear light.
+
+Both panels share the same diffuse, and the west face each presents to the spawn
+is unlit by direct light (the warm spots at `288 320` / `288 192` aim ±Y away from
+them and fail `n·L`; the blue spot at `32 80` is outside its cone), so the
+comparison isolates the emissive value rather than the lighting.
+
 The bake reports **NavMesh: 18 regions, 22 portals** (53×105 cell grid @ 0.25 m) —
 a genuinely multi-region, multi-portal mesh (the old single-room layout baked to
 1 region / 0 portals, a straight-line chase). The floor is a single connected

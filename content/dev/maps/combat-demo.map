@@ -98,6 +98,18 @@
 ( 208 320 32 ) ( 192 320 112 ) ( 192 320 32 ) neon/neon_glow_panel 0 0 0 1 1
 ( 208 192 32 ) ( 208 320 112 ) ( 208 320 32 ) neon/neon_glow_panel 0 0 0 1 1
 }
+// brush 10 - emissive panel BELOW the bloom threshold, a +160 Y translation of
+// brush 9. Same geometry and diffuse, so the only variable is the authored `_e`
+// value: neon_dim_panel_e peaks at sRGB 99 (~0.5 emissive term) against
+// neon_glow_panel_e's 255 (4.0). Self-lit, never bright-passed.
+{
+( 192 480 32 ) ( 192 352 112 ) ( 192 352 32 ) neon/neon_dim_panel 0 0 0 1 1
+( 192 352 32 ) ( 208 352 112 ) ( 208 352 32 ) neon/neon_dim_panel 0 0 0 1 1
+( 192 352 32 ) ( 208 480 32 ) ( 192 480 32 ) neon/neon_dim_panel 0 0 0 1 1
+( 192 480 112 ) ( 208 352 112 ) ( 192 352 112 ) neon/neon_dim_panel 0 0 0 1 1
+( 208 480 32 ) ( 192 480 112 ) ( 192 480 32 ) neon/neon_dim_panel 0 0 0 1 1
+( 208 352 32 ) ( 208 480 112 ) ( 208 480 32 ) neon/neon_dim_panel 0 0 0 1 1
+}
 }
 // entity 1
 {

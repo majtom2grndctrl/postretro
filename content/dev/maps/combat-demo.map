@@ -236,33 +236,25 @@
 "style" "0"
 }
 // entity 14
-// Fake spill for the bright neon panel. Emissive is a shader term only -- it
-// lights nothing -- so this stands in for the light the panel would cast.
-// Sits 16 units in front of the panel's west face aiming away from it (yaw 180
-// = -X), so it never illuminates the panel itself and cannot disturb the
-// emissive-vs-threshold comparison. Intensity tracks the panel's mean emissive
-// term (0.372 vs the dim panel's 0.146, hence 150 vs 60).
 {
 "classname" "light_spot"
-"origin" "176 256 72"
+"origin" "192 256 72"
 "light" "150"
 "_falloff_range" "200"
 "_cone" "45"
-"_cone2" "80"
+"_cone2" "85"
 "_color" "252 255 246"
 "angles" "-15 180 0"
 "style" "0"
 }
 // entity 15
-// Fake spill for the dim (at-threshold) panel; same geometry and wide cone as
-// entity 14, scaled to that panel's lower mean emissive term.
 {
 "classname" "light_spot"
-"origin" "672 256 72"
+"origin" "688 256 72"
 "light" "60"
 "_falloff_range" "200"
 "_cone" "45"
-"_cone2" "80"
+"_cone2" "85"
 "_color" "252 255 246"
 "angles" "-15 180 0"
 "style" "0"

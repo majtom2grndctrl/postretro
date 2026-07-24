@@ -51,13 +51,21 @@ the agent capsule can wedge into.
 
 ### Emissive panels (bloom A/B)
 
-Two floating `16 × 128 × 80` panels sit west of the pillars, both at
-`x[192,208] z[32,112]`, directly ahead of the player spawn:
+Two floating `16 × 128 × 80` panels share the `y[192,320] z[32,112]` band on the
+player-spawn sightline, one near the west end and one by the east pillar:
 
-| Panel | Y extent | Texture | `_e` peak | Emissive term | Blooms? |
+| Panel | X extent | Texture | `_e` peak | Emissive term | Blooms? |
 |---|---|---|---|---|---|
-| Bright | `y[192,320]` | `neon/neon_glow_panel` | sRGB 255 | 4.0 | yes — 4× threshold |
-| Dim | `y[352,480]` | `neon/neon_dim_panel` | sRGB 137 | 1.001 | no — sits *on* the threshold |
+| Bright | `x[192,208]` | `neon/neon_glow_panel` | sRGB 255 | 4.0 | yes — 4× threshold |
+| Dim | `x[688,704]` | `neon/neon_dim_panel` | sRGB 137 | 1.001 | no — sits *on* the threshold |
+
+Each panel has a wide-cone `light_spot` 16 units in front of its west face
+(`176 256 72` and `672 256 72`, `_cone 45` / `_cone2 80`, aimed `-15 180 0`).
+**Emissive is a shader term only — it lights nothing** — so these stand in for the
+spill the panels would cast. Their intensities track each panel's mean emissive
+term (`0.372` vs `0.146`, hence `light 150` vs `60`). Both aim *away* from their
+panel, so neither adds to its own fragment luminance and the threshold comparison
+stays clean.
 
 The pair is the A/B for emissive-with-bloom vs emissive-without-bloom. There is no
 per-material bloom flag; bloom is decided purely by whether a fragment's linear
@@ -67,13 +75,13 @@ texel value is the only lever.
 
 The dim `_e` is the bright one **clamped, not scaled**: most of the source pattern
 already sits below the threshold (terms `0.42`–`0.79`) and blooms on nothing, so
-only the 537 over-threshold texels are pulled down to `0.893`. Everything already
+only the 515 over-threshold texels are pulled down to `1.001`. Everything already
 sub-threshold is left byte-identical, which keeps the panel's readable glow —
 scaling the whole map instead crushes it to near-black. The clamp scales on the
 peak channel like `soft_knee_tonemap` does, so clamped texels keep their hue.
 
 Worth knowing: the *bright* panel already contains emissive-without-bloom. Only
-537 of its 762 non-black texels clear the threshold; the rest glow without ever
+515 of its 762 non-black texels clear the threshold; the rest glow without ever
 entering the bright pass. The dim panel isolates that behavior across a whole
 surface.
 
@@ -104,7 +112,7 @@ harmless here (0.1% extraction), but the reason a shipping idle state wants
 `~0.9` rather than exactly `1.0`.
 
 Both panels share the same diffuse, and the west face each presents to the spawn
-is unlit by direct light (the warm spots at `288 320` / `288 192` aim ±Y away from
+is unlit by direct light (the flanking warm spots aim ±Y away from
 them and fail `n·L`; the blue spot at `32 80` is outside its cone), so the
 comparison isolates the emissive value rather than the lighting.
 

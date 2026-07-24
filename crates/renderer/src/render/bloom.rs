@@ -3,7 +3,11 @@
 
 use std::num::NonZeroU64;
 
-use super::{BloomRenderProfile, BloomResolution, SCENE_COLOR_FORMAT};
+use super::{BloomRenderProfile, SCENE_COLOR_FORMAT};
+// Only the CPU shader-contract references below name the resolution directly;
+// the runtime paths reach it through `BloomRenderProfile`.
+#[cfg(test)]
+use super::BloomResolution;
 use wgpu::util::DeviceExt;
 
 /// Luminance at which HDR pixels begin contributing to bloom. Task 4's Neon
@@ -524,6 +528,9 @@ fn bloom_level_dimensions(
 /// Inclusive-exclusive source block assigned to one bright-pass destination
 /// texel. The arithmetic mirrors `bloom_extract.wgsl`: the ceil-sized target
 /// table gives every source texel exactly one owner, including odd edges.
+///
+/// CPU reference for the shader contract, so it has no runtime caller.
+#[cfg(test)]
 fn bright_pass_source_block_bounds(
     source_dimensions: (u32, u32),
     destination_coordinate: (u32, u32),
@@ -544,6 +551,9 @@ fn bright_pass_source_block_bounds(
 /// The texel-addressed pixelated sampling rule used by both composite shader
 /// variants. `u64` intermediates keep the CPU contract exact at all supported
 /// renderer dimensions.
+///
+/// CPU reference for the shader contract, so it has no runtime caller.
+#[cfg(test)]
 fn pixelated_source_coordinate(
     destination_position: (u32, u32),
     destination_dimensions: (u32, u32),

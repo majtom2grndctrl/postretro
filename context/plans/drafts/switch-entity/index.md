@@ -74,8 +74,11 @@ No runtime, PRL, renderer, `ClassnameDispatch`, or `TriggerVolumeBridge` change.
   identically to `trigger_volume` — they map to the same `TriggerVolumeComponent`
   fields, so no re-verification of the mechanism is needed beyond confirming the
   compiler forwards them.
-- [ ] A `switch` with none of `on_fire` / `on_exit` / `target_tag` compiles with the
-  same "inert" warning `trigger_volume` emits.
+- [ ] A `switch` with none of `on_fire` / `on_exit` / `target_tag` **compiles
+  successfully** (inert, not an error), through the same `resolve_trigger_volume` inert
+  path `trigger_volume` uses. The `log::warn!` text is not unit-capturable (the
+  compiler's `CollectingLogger` is a process-global backend); warning parity is a
+  review/grep gate on the shared `resolve_trigger_volume` call, not a log-capture test.
 - [ ] A `switch` classname does **not** fall through to a generic `MapEntityRecord`
   (it is handled by the brush-entity branch, like `trigger_volume`).
 - [ ] The change touches only the FGD, the level compiler, and tests — **no** new PRL
@@ -87,10 +90,11 @@ No runtime, PRL, renderer, `ClassnameDispatch`, or `TriggerVolumeBridge` change.
 ### Task 1: `switch` FGD class
 Add a `switch` `@SolidClass` to `sdk/TrenchBroom/postretro.fgd`, modelled on the
 `trigger_volume` class but with the switch semantics: **no `activation` KVP** (the
-compiler forces `use`), plus a `use_reach(float)` property (the AABB inflation margin, authored in map units;
-its default is a concrete literal — e.g. 24 map units ≈ 0.61 m — that must equal the
-compiler's fallback literal; not tied to the runtime capsule constant, which the
-`level-compiler` crate cannot reach — see Rough sketch). Carry the shared trigger
+compiler forces `use`), plus a `use_reach(float)` property (the AABB inflation margin,
+authored in map units; **default `24` map units ≈ 0.61 m** — this is the single source of
+truth for the default, and Task 2's compiler fallback literal must match it. It is a
+hardcoded literal, not tied to the runtime capsule constant: the `level-compiler` crate
+cannot reach that constant). Carry the shared trigger
 authoring surface: `on_fire(string)`, `on_exit(string)`, `name(string)`, `target_tag(string)`,
 `command(choices: start/stop/reverse/go_to_path_node)`, `command_arg(string)`,
 `fire_mode(choices: once/multiple)`, `rearm_ms(float)`,
@@ -109,7 +113,8 @@ normal world partition / lighting / collision / draw pipeline; and (2) **emits a
 `activation` set to `1` (`use`) regardless of any authored value (reuse
 `resolve_trigger_volume` with an `activation`-forced props map, or call it then
 overwrite `MapTriggerVolume.activation`), then **inflate `aabb_min`/`aabb_max` by
-`use_reach * scale`** (parsed from props, default per Rough sketch; `scale =
+`use_reach * scale`** (parsed from props, default `24.0` map units when `use_reach` is
+absent — must equal Task 1's FGD default; `scale =
 format.units_to_meters()`, the same scale the AABB vertices already carry — the AABB is
 in engine meters but `use_reach` is authored in map units, so the raw value must not be
 added directly) on every axis, and push it
@@ -122,8 +127,14 @@ dropped. All downstream consumers
 Tests: (a) a `switch` brush contributes to world geometry (non-empty world brush set /
 draw geometry) **and** emits exactly one `MapTriggerVolume` with `activation == 1`
 and an AABB inflated past the raw brush hull (assert on `map.trigger_volumes`; call
-`encode_trigger_volumes_section` first if the wire `TriggerVolumeRecord` is wanted); (b) the inert-warning parity; (c) the
-switch classname does not appear as a `MapEntityRecord`; (d) a fully-populated `switch`
+`encode_trigger_volumes_section` first if the wire `TriggerVolumeRecord` is wanted; get
+the reference hull from the fixture's known brush extents `* scale`, or by compiling the
+same brush as a `trigger_volume`, then compare per-axis); (b) inert-compile parity — a
+`switch` with none of `on_fire`/`on_exit`/`target_tag` **compiles successfully** (inert,
+not an error); the `log::warn!` text itself is not unit-assertable (the compiler's
+`CollectingLogger` is a process-global backend that parallel tests cannot capture), so
+warning parity rides on the reuse of `resolve_trigger_volume` and is a review/grep gate;
+(c) the switch classname does not appear as a `MapEntityRecord`; (d) a fully-populated `switch`
 (fire_mode=multiple, rearm_ms, target_tag, command/command_arg, on_fire/on_exit,
 enabled_on_spawn) round-trips every shared field onto the emitted `MapTriggerVolume` —
 the forwarding AC-4 asks to confirm. Also add a **dev-map fixture**:

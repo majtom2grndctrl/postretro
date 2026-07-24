@@ -19,12 +19,12 @@
 }
 // brush 1
 {
-( -16 528 128 ) ( -16 -16 144 ) ( -16 -16 128 ) concrete_pavement_036 0 0 0 1 1
-( -16 -16 128 ) ( 1040 -16 144 ) ( 1040 -16 128 ) concrete_pavement_036 0 0 0 1 1
-( -16 -16 128 ) ( 1040 528 128 ) ( -16 528 128 ) concrete_pavement_036 0 0 0 1 1
-( -16 528 144 ) ( 1040 -16 144 ) ( -16 -16 144 ) concrete_pavement_036 0 0 0 1 1
-( 1040 528 128 ) ( -16 528 144 ) ( -16 528 128 ) concrete_pavement_036 0 0 0 1 1
-( 1040 -16 128 ) ( 1040 528 144 ) ( 1040 528 128 ) concrete_pavement_036 0 0 0 1 1
+( -16 528 128 ) ( -16 -16 144 ) ( -16 -16 128 ) 50-free-textures/wood_bark_048 0 0 0 1 1
+( -16 -16 128 ) ( 1040 -16 144 ) ( 1040 -16 128 ) 50-free-textures/wood_bark_048 0 0 0 1 1
+( -16 -16 128 ) ( 1040 528 128 ) ( -16 528 128 ) 50-free-textures/wood_bark_048 0 0 0 1 1
+( -16 528 144 ) ( 1040 -16 144 ) ( -16 -16 144 ) 50-free-textures/wood_bark_048 0 0 0 1 1
+( 1040 528 128 ) ( -16 528 144 ) ( -16 528 128 ) 50-free-textures/wood_bark_048 0 0 0 1 1
+( 1040 -16 128 ) ( 1040 528 144 ) ( 1040 528 128 ) 50-free-textures/wood_bark_048 0 0 0 1 1
 }
 // brush 2
 {
@@ -89,9 +89,6 @@
 ( 784 304 0 ) ( 720 304 128 ) ( 720 304 0 ) concrete_pavement_036 0 0 0 1 1
 ( 784 208 0 ) ( 784 304 128 ) ( 784 304 0 ) concrete_pavement_036 0 0 0 1 1
 }
-// Emissive bloom fixture: directly ahead of the player spawn.
-// The neon prefix selects the HDR emissive multiplier; its `_e` sibling carries
-// the per-texel glow pattern. Use POSTRETRO_BLOOM=0 to inspect self-light only.
 // brush 9
 {
 ( 192 320 32 ) ( 192 192 112 ) ( 192 192 32 ) neon/neon_glow_panel 0 0 0 1 1

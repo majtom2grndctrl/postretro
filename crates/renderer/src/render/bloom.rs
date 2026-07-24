@@ -3,7 +3,7 @@
 
 use std::num::NonZeroU64;
 
-use super::SCENE_COLOR_FORMAT;
+use super::{BloomRenderProfile, BloomResolution, SCENE_COLOR_FORMAT};
 use wgpu::util::DeviceExt;
 
 /// Luminance at which HDR pixels begin contributing to bloom. Task 4's Neon

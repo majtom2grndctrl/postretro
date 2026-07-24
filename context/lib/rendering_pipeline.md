@@ -266,6 +266,14 @@ emissive texels and other HDR-bright scene content make a soft screen-space
 halo without changing any lighting buffer or causing overlays/UI to bloom. Set
 `POSTRETRO_BLOOM=0` to disable the pass for the manual no-bloom emissive check.
 
+**Mod bloom profile.** A mod may set a static bloom profile in its manifest.
+The profile chooses a half, quarter, or eighth-resolution base chain and may
+use texel-addressed pixelated upsample/composite reads. Omission uses the
+half-resolution smooth profile. Downsample and blur stay linear in every mode.
+The renderer owns profile state and resource changes; it persists across level
+changes, resize, and full-renderer recreation. Player overrides and
+per-material bloom tiers are separate features.
+
 The boot-splash path is separate from the gameplay resolve: it writes directly
 to the swapchain `view`, never touching `scene_color`, the UI pass,
 `UiReadSnapshot`, or the screen-effects compose. Startup records black/logo

@@ -46,10 +46,14 @@ profile-sized targets from its retained profile there.
   Extraction must visit every in-bounds texel in each divisor-sized source block,
   threshold each texel before reduction, and normalize by the in-bounds count.
 - Smooth filtering remains linear for downsample and Gaussian blur. Pixelated
-  mode selects nearest-style `textureLoad` entry points only for bloom
-  upsample/composite reads.
+  mode selects `textureLoad` entry points only for bloom upsample/composite
+  reads. Because those reads ignore sampler binding, they can retain existing
+  linear bind groups; an alternate nearest-sampler implementation must rebuild
+  or select every affected bind group.
 - `Renderer::new_offscreen` is used by `--capture`, whose driver does not run
-  mod init. Capture remains default half/smooth in this plan.
+  mod init. This plan applies the profile to windowed renderer paths only;
+  capture remains default half/smooth as a documented temporary limitation
+  until a separate manifest-aware capture plan.
 - `POSTRETRO_BLOOM=0` and the dev-tools enable control remain independent
   diagnostic controls. The manifest profile has no enable field.
 
@@ -69,4 +73,5 @@ profile-sized targets from its retained profile there.
 `crates/postretro/src/scripting/primitives/mod.rs` (884 lines) exceed the
 planning threshold. Extract the staged snapshot types, app staged-manifest
 lifecycle method, and mod-manifest SDK registrar before feature edits extend
-those seams.
+those seams. These splits respectively isolate the profile transfer, app commit,
+and owner/SDK seams rather than extending oversized files.

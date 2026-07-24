@@ -120,8 +120,9 @@ the `has_brushes` block and `continue` before that block's terminal unconditiona
 dropped. All downstream consumers
 (`TriggerVolumeBridge`, `trigger_system`, `TriggerVolumeComponent`) are unchanged.
 Tests: (a) a `switch` brush contributes to world geometry (non-empty world brush set /
-draw geometry) **and** emits exactly one `TriggerVolumeRecord` with `activation == 1`
-and an AABB inflated past the raw brush hull; (b) the inert-warning parity; (c) the
+draw geometry) **and** emits exactly one `MapTriggerVolume` with `activation == 1`
+and an AABB inflated past the raw brush hull (assert on `map.trigger_volumes`; call
+`encode_trigger_volumes_section` first if the wire `TriggerVolumeRecord` is wanted); (b) the inert-warning parity; (c) the
 switch classname does not appear as a `MapEntityRecord`; (d) a fully-populated `switch`
 (fire_mode=multiple, rearm_ms, target_tag, command/command_arg, on_fire/on_exit,
 enabled_on_spawn) round-trips every shared field onto the emitted `MapTriggerVolume` —

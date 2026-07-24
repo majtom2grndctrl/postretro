@@ -2,7 +2,6 @@
 // Gated on `POSTRETRO_GPU_TIMING=1` and the timestamp features used below.
 
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// How many frames to accumulate before logging an averaged line.
@@ -32,7 +31,10 @@ pub struct FrameTiming {
     /// While pending, `encode_resolve` must not overwrite the readback
     /// buffer (it's still mapped on the host).
     map_pending: Arc<AtomicBool>,
-    map_result: Arc<Mutex<Option<Vec<u64>>>>,
+    /// Set by the map callback when the readback buffer is ready to be read.
+    /// The callback deliberately does not capture the buffer: the renderer can
+    /// be torn down before a pending callback is dispatched.
+    map_ready: Arc<AtomicBool>,
     ns_per_tick: f32,
     pass_labels: Vec<&'static str>,
     accum_ns: Vec<f64>,
@@ -111,7 +113,7 @@ impl FrameTiming {
             resolve_buffer,
             readback_buffer,
             map_pending: Arc::new(AtomicBool::new(false)),
-            map_result: Arc::new(Mutex::new(None)),
+            map_ready: Arc::new(AtomicBool::new(false)),
             ns_per_tick,
             pass_labels,
             accum_ns: vec![0.0; pair_usize],
@@ -208,8 +210,17 @@ impl FrameTiming {
     pub fn post_submit(&mut self, device: &wgpu::Device) {
         let _ = device.poll(wgpu::PollType::Poll);
 
-        let snapshot = self.map_result.lock().unwrap().take();
-        if let Some(ticks) = snapshot {
+        if self.map_ready.swap(false, Ordering::AcqRel) {
+            let buffer_size = self.num_queries as wgpu::BufferAddress * QUERY_SIZE;
+            let view = self
+                .readback_buffer
+                .slice(0..buffer_size)
+                .get_mapped_range();
+            let mut ticks = Vec::with_capacity(view.len() / 8);
+            for chunk in view.chunks_exact(8) {
+                ticks.push(u64::from_le_bytes(chunk.try_into().unwrap()));
+            }
+            drop(view);
             self.accumulate(&ticks);
             self.readback_buffer.unmap();
             self.map_pending.store(false, Ordering::Release);
@@ -217,25 +228,17 @@ impl FrameTiming {
 
         if !self.map_pending.load(Ordering::Acquire) {
             self.map_pending.store(true, Ordering::Release);
-            let result_slot = Arc::clone(&self.map_result);
+            let ready = Arc::clone(&self.map_ready);
             let pending = Arc::clone(&self.map_pending);
-            let buffer_size = self.num_queries as wgpu::BufferAddress * QUERY_SIZE;
-            let buf = self.readback_buffer.clone();
             self.readback_buffer
-                .slice(0..buffer_size)
+                .slice(..)
                 .map_async(wgpu::MapMode::Read, move |res| match res {
                     Ok(()) => {
-                        let view = buf.slice(0..buffer_size).get_mapped_range();
-                        let mut ticks = Vec::with_capacity(view.len() / 8);
-                        for chunk in view.chunks_exact(8) {
-                            ticks.push(u64::from_le_bytes(chunk.try_into().unwrap()));
-                        }
-                        drop(view);
-                        // Buffer stays mapped; the main thread unmaps it
-                        // during the next `post_submit` after observing
-                        // the result. Unmapping inside the callback would
-                        // race with any outstanding view.
-                        *result_slot.lock().unwrap() = Some(ticks);
+                        // Regression: accessing the buffer from this callback
+                        // panicked if the renderer/device was torn down before
+                        // wgpu dispatched it. Only the live FrameTiming owner
+                        // reads and unmaps the mapped range.
+                        ready.store(true, Ordering::Release);
                     }
                     Err(err) => {
                         log::warn!("[gpu-timing] readback map failed: {err:?}");

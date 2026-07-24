@@ -14,8 +14,6 @@ use std::collections::HashSet;
 #[cfg(feature = "dev-tools")]
 use std::sync::Arc;
 #[cfg(feature = "dev-tools")]
-use std::sync::Mutex;
-#[cfg(feature = "dev-tools")]
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use glam::Mat4;
@@ -135,9 +133,10 @@ struct SubmittedCounterReadback {
     /// Per-slot "a `map_async` is in flight" flag — the buffer is busy, so no
     /// copy may target it until its map resolves and the main thread unmaps it.
     map_pending: Vec<Arc<AtomicBool>>,
-    /// Per-slot landing zone for the mapped value, written by the map callback
-    /// and drained on the main thread in `post_submit`.
-    map_result: Vec<Arc<Mutex<Option<u32>>>>,
+    /// Per-slot flag set when its map callback completes. The callback never
+    /// captures or reads a buffer, so teardown cannot dispatch it against a
+    /// destroyed native resource.
+    map_ready: Vec<Arc<AtomicBool>>,
     /// Per-slot flag: a copy was encoded+submitted into this slot and awaits its
     /// map kickoff in `post_submit`.
     copied_pending: Vec<bool>,
@@ -170,8 +169,8 @@ impl SubmittedCounterReadback {
             map_pending: (0..Self::RING_DEPTH)
                 .map(|_| Arc::new(AtomicBool::new(false)))
                 .collect(),
-            map_result: (0..Self::RING_DEPTH)
-                .map(|_| Arc::new(Mutex::new(None)))
+            map_ready: (0..Self::RING_DEPTH)
+                .map(|_| Arc::new(AtomicBool::new(false)))
                 .collect(),
             copied_pending: vec![false; Self::RING_DEPTH],
             write_index: 0,
@@ -203,7 +202,10 @@ impl SubmittedCounterReadback {
         let _ = device.poll(wgpu::PollType::Poll);
 
         for slot in 0..Self::RING_DEPTH {
-            if let Some(value) = self.map_result[slot].lock().unwrap().take() {
+            if self.map_ready[slot].swap(false, Ordering::AcqRel) {
+                let view = self.slots[slot].slice(0..4).get_mapped_range();
+                let value = u32::from_le_bytes([view[0], view[1], view[2], view[3]]);
+                drop(view);
                 self.slots[slot].unmap();
                 self.map_pending[slot].store(false, Ordering::Release);
                 self.latest = value;
@@ -214,19 +216,16 @@ impl SubmittedCounterReadback {
             if self.copied_pending[slot] && !self.map_pending[slot].load(Ordering::Acquire) {
                 self.copied_pending[slot] = false;
                 self.map_pending[slot].store(true, Ordering::Release);
-                let result_slot = Arc::clone(&self.map_result[slot]);
+                let ready = Arc::clone(&self.map_ready[slot]);
                 let pending = Arc::clone(&self.map_pending[slot]);
-                let buf = self.slots[slot].clone();
                 self.slots[slot]
                     .slice(0..4)
                     .map_async(wgpu::MapMode::Read, move |res| match res {
                         Ok(()) => {
-                            let view = buf.slice(0..4).get_mapped_range();
-                            let value = u32::from_le_bytes([view[0], view[1], view[2], view[3]]);
-                            drop(view);
-                            // Buffer stays mapped; the main thread unmaps it in
-                            // the next `post_submit` after consuming the result.
-                            *result_slot.lock().unwrap() = Some(value);
+                            // Regression: reading this buffer in the callback
+                            // panicked if wgpu dispatched it after renderer
+                            // teardown. The live ring owner reads and unmaps it.
+                            ready.store(true, Ordering::Release);
                         }
                         Err(err) => {
                             log::warn!("[candidate-cull] counter map failed: {err:?}");

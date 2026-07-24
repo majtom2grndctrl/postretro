@@ -2,7 +2,6 @@
 // irradiance volumes. Gated on `dev-tools`. See: context/lib/rendering_pipeline.md §12
 //
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use glam::Vec3;
@@ -298,8 +297,10 @@ pub struct ShProbeReadback {
     copied_pending: bool,
     /// A `map_async` is in flight — the buffer is busy, so no copy may target it.
     map_pending: Arc<AtomicBool>,
-    /// Decoded per-probe irradiance RGB (z-major), populated by the map callback.
-    map_result: Arc<Mutex<Option<Vec<[f32; 3]>>>>,
+    /// Set by the map callback when the buffer is ready for the live owner to
+    /// decode. The callback deliberately does not capture the buffer: renderer
+    /// teardown can dispatch a pending callback after its native resource is gone.
+    map_ready: Arc<AtomicBool>,
 }
 
 impl ShProbeReadback {
@@ -346,7 +347,7 @@ impl ShProbeReadback {
             wanted: false,
             copied_pending: false,
             map_pending: Arc::new(AtomicBool::new(false)),
-            map_result: Arc::new(Mutex::new(None)),
+            map_ready: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -401,48 +402,42 @@ impl ShProbeReadback {
     pub fn post_submit(&mut self, device: &wgpu::Device) -> Option<Vec<[f32; 3]>> {
         let _ = device.poll(wgpu::PollType::Poll);
 
-        let out = self.map_result.lock().unwrap().take();
-        if out.is_some() {
+        let out = if self.map_ready.swap(false, Ordering::AcqRel) {
+            let view = self.buffer.slice(0..self.buffer_size).get_mapped_range();
+            let decoded = decode_probe_irradiance_atlas(
+                &view,
+                self.grid_dimensions,
+                self.atlas_dimensions,
+                self.tile_dimension,
+                self.tile_border,
+                self.atlas_tiles_per_row,
+                self.tiles_per_layer,
+                self.atlas_layer_count,
+                self.padded_bytes_per_row,
+            );
+            drop(view);
             self.buffer.unmap();
             self.map_pending.store(false, Ordering::Release);
-        }
+            Some(decoded)
+        } else {
+            None
+        };
 
         // Kick off a map only for a buffer we actually copied into this cycle.
         if self.copied_pending && !self.map_pending.load(Ordering::Acquire) {
             self.copied_pending = false;
             self.map_pending.store(true, Ordering::Release);
-            let result_slot = Arc::clone(&self.map_result);
+            let ready = Arc::clone(&self.map_ready);
             let pending = Arc::clone(&self.map_pending);
-            let buf = self.buffer.clone();
             let size = self.buffer_size;
-            let dims = self.grid_dimensions;
-            let atlas_dims = self.atlas_dimensions;
-            let tile_dimension = self.tile_dimension;
-            let tile_border = self.tile_border;
-            let atlas_tiles_per_row = self.atlas_tiles_per_row;
-            let tiles_per_layer = self.tiles_per_layer;
-            let atlas_layer_count = self.atlas_layer_count;
-            let stride = self.padded_bytes_per_row;
             self.buffer
                 .slice(0..size)
                 .map_async(wgpu::MapMode::Read, move |res| match res {
                     Ok(()) => {
-                        let view = buf.slice(0..size).get_mapped_range();
-                        let decoded = decode_probe_irradiance_atlas(
-                            &view,
-                            dims,
-                            atlas_dims,
-                            tile_dimension,
-                            tile_border,
-                            atlas_tiles_per_row,
-                            tiles_per_layer,
-                            atlas_layer_count,
-                            stride,
-                        );
-                        drop(view);
-                        // Buffer stays mapped; the main thread unmaps it in the
-                        // next `post_submit` after consuming the result.
-                        *result_slot.lock().unwrap() = Some(decoded);
+                        // Regression: accessing this buffer in the callback
+                        // panicked if wgpu dispatched it after renderer teardown.
+                        // Only the live owner decodes and unmaps the mapped range.
+                        ready.store(true, Ordering::Release);
                     }
                     Err(err) => {
                         log::warn!("[sh-readback] atlas map failed: {err:?}");

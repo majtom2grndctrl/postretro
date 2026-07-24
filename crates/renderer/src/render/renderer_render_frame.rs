@@ -962,7 +962,7 @@ impl Renderer {
         full.screen_effects
             .encode_resolve(queue, encoder, view, &full.ui_snapshot.slot_values);
 
-        if let Some(timing) = &full.frame_timing {
+        if let Some(timing) = &mut full.frame_timing {
             timing.encode_resolve(encoder);
         }
 

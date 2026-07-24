@@ -841,7 +841,7 @@ mod tests {
         let header = header.unwrap();
         assert_eq!(
             header.slot_mask,
-            PrmSlots::DIFFUSE | PrmSlots::SPECULAR | PrmSlots::NORMAL
+            PrmSlots::DIFFUSE | PrmSlots::SPECULAR | PrmSlots::NORMAL | PrmSlots::EMISSIVE
         );
         assert!(slots.iter().all(Result::is_ok));
 
@@ -893,6 +893,7 @@ mod tests {
 
         std::fs::write(collection.join("surface.png"), png_bytes(8, 8)).unwrap();
         std::fs::write(collection.join("surface_s.png"), png_bytes(8, 8)).unwrap();
+        std::fs::write(collection.join("surface_e.png"), png_bytes(8, 8)).unwrap();
         let names = ["shared/surface".to_string()];
         let keys = bake_texture_mips(&names, &texture_root, &cache_root).unwrap();
         let cache_path = cache_root.join(format!(
@@ -913,13 +914,12 @@ mod tests {
         bake_texture_mips(&names, &texture_root, &cache_root).unwrap();
 
         let repaired = std::fs::read(&cache_path).unwrap();
+        assert_ne!(repaired, corrupt, "the corrupt bundle must be rebuilt");
         let (header, slots) = PrmFile::from_bytes_partial(&repaired);
-        assert!(header.is_ok());
+        let header = header.expect("rebuilt header parses");
         assert!(
-            slots
-                .iter()
-                .enumerate()
-                .all(|(index, result)| index == 2 || result.is_ok())
+            cache_entry_has_valid_declared_slots(&header, &slots),
+            "every slot declared by the rebuilt world bundle must parse"
         );
 
         let _ = std::fs::remove_dir_all(&root);

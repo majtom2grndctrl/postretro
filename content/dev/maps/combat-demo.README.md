@@ -57,7 +57,7 @@ Two floating `16 × 128 × 80` panels sit west of the pillars, both at
 | Panel | Y extent | Texture | `_e` peak | Emissive term | Blooms? |
 |---|---|---|---|---|---|
 | Bright | `y[192,320]` | `neon/neon_glow_panel` | sRGB 255 | 4.0 | yes — 4× threshold |
-| Dim | `y[352,480]` | `neon/neon_dim_panel` | sRGB 130 | 0.893 | no — just under threshold |
+| Dim | `y[352,480]` | `neon/neon_dim_panel` | sRGB 137 | 1.001 | no — sits *on* the threshold |
 
 The pair is the A/B for emissive-with-bloom vs emissive-without-bloom. There is no
 per-material bloom flag; bloom is decided purely by whether a fragment's linear
@@ -77,9 +77,31 @@ Worth knowing: the *bright* panel already contains emissive-without-bloom. Only
 entering the bright pass. The dim panel isolates that behavior across a whole
 surface.
 
-Note that bloom onset is gradual, not a cliff — the bright pass extracts
-`1 - threshold/luminance` of a fragment, so a term of `1.1` yields a ~9% extraction
-(~3% after `BLOOM_INTENSITY`), while the bright panel's `4.0` yields 75%.
+The dim panel is deliberately parked **on** the threshold rather than under it:
+`excess = max(luminance - 1.0, 0.0)` is zero there, so it is the brightest an
+emissive surface can be while extracting nothing. That makes it the reference for
+how bright a glowing surface can idle with no halo at all.
+
+Bloom onset is a ramp, not a cliff — the bright pass extracts
+`1 - threshold/luminance`, which is scaled again by `BLOOM_INTENSITY` (`0.35`)
+when composited back:
+
+| Emissive term | Extracted | After `BLOOM_INTENSITY` |
+|---|---|---|
+| ≤ 1.00 | 0% | 0% — no halo |
+| 1.05 | 4.8% | 1.7% |
+| 1.10 | 9.1% | 3.2% |
+| 1.20 | 16.7% | 5.8% |
+| 1.50 | 33.3% | 11.7% |
+| 2.00 | 50.0% | 17.5% |
+| 4.00 (bright panel) | 75.0% | 26.2% |
+
+Useful for pulsing an emissive surface as state feedback: hold the idle state at
+or below `1.0` for no halo, and drive the active state into the `1.1`–`1.5` band
+for a halo that reads as a change without dominating the frame. `1.001` leaves no
+headroom, so indirect light landing on the surface tips it fractionally over —
+harmless here (0.1% extraction), but the reason a shipping idle state wants
+`~0.9` rather than exactly `1.0`.
 
 Both panels share the same diffuse, and the west face each presents to the spawn
 is unlit by direct light (the warm spots at `288 320` / `288 192` aim ±Y away from

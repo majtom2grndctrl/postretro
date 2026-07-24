@@ -70,6 +70,12 @@ pub fn drain_render_profile_js<'js>(
         return Ok(ModRenderProfile::default());
     }
     let raw_render: JsValue = obj.get("render").map_err(js_err)?;
+    // `render: undefined`/`null` is the idiomatic TS spelling of an absent
+    // optional; treat it as omission (silent default) so QuickJS matches Luau's
+    // `nil` path, like every other manifest drain in this file.
+    if raw_render.is_null() || raw_render.is_undefined() {
+        return Ok(ModRenderProfile::default());
+    }
     if !raw_render.is_object() || raw_render.is_array() {
         log::warn!(
             "[Scripting] {scope}: `render` must be an object; using the default render profile"
@@ -83,6 +89,9 @@ pub fn drain_render_profile_js<'js>(
         return Ok(ModRenderProfile::default());
     }
     let raw_bloom: JsValue = render.get("bloom").map_err(js_err)?;
+    if raw_bloom.is_null() || raw_bloom.is_undefined() {
+        return Ok(ModRenderProfile::default());
+    }
     if !raw_bloom.is_object() || raw_bloom.is_array() {
         log::warn!(
             "[Scripting] {scope}: `render.bloom` must be an object; using the default bloom profile"

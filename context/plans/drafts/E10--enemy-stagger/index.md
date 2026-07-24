@@ -76,9 +76,7 @@ Give the reference enemy a `stagger` block (threshold meaningfully above its per
 
 ```ts
 // Proposed design
-import { defineEntity, runtime } from "postretro";
-
-const dist = runtime.read("@brain.targetDistance");
+import { defineEntity, brain, state, runtime } from "postretro";
 
 export const grunt = defineEntity({
   canonicalName: "grunt",
@@ -90,27 +88,26 @@ export const grunt = defineEntity({
       attack: { damage: 10, range: 1.8, cooldownMs: 1200 },
       stagger: { damageThreshold: 15, cooldownMs: 2000 },
       interrupts: [
-        { to: "flinch", when: runtime.ge(runtime.read("@state.staggered"), 1) },
+        { to: "flinch", when: runtime.ge(state("staggered"), 1) },
       ],
       states: {
         idle: {
           animation: "idle", motion: "hold",
-          transitions: [{ to: "chase", when: runtime.le(dist, 16) }],
+          transitions: [{ to: "chase", when: runtime.le(brain.targetDistance, 16) }],
         },
         chase: {
           animation: "walk", motion: "chaseTarget",
-          transitions: [{ to: "attack", when: runtime.le(dist, 2) }],
+          transitions: [{ to: "attack", when: runtime.le(brain.targetDistance, 2) }],
         },
         attack: {
           animation: "attack", motion: "chaseTarget", action: "attack",
-          transitions: [{ to: "chase", when: runtime.gt(dist, 2) }],
+          transitions: [{ to: "chase", when: runtime.gt(brain.targetDistance, 2) }],
         },
         flinch: {
           animation: "pain", motion: "hold", onEnter: "enemyStagger",
-          // Commitment window: cannot exit for 450 ms, then resume.
           transitions: [{
             to: "chase",
-            when: runtime.ge(runtime.read("@brain.timeInStateMs"), 450),
+            when: runtime.ge(brain.timeInStateMs, 450),
           }],
         },
       },

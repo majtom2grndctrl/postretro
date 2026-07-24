@@ -52,7 +52,7 @@ Behavior-preserving split of `crates/postretro/src/scripting/systems/ai.rs` (969
 
 ### Task 2: Foundation descriptor + parsing
 
-`BehaviorGraphDescriptor` in `postretro-foundation` (`data_descriptors/types/`): `initial: String`, `states: BTreeMap<String, BehaviorStateDescriptor>` (`animation: String`, `motion: MotionVerb`, `action: Option<ActionVerb>`, `transitions: Vec<TransitionDescriptor>`, `on_enter: Option<String>`), `interrupts: Vec<TransitionDescriptor>`, `attack: Option<AttackParams>`, `move_speed: f32`. `move_speed` feeds `attach_agent` at the attach site. `TransitionDescriptor { to: String, when: IrNode }` — raw `IrNode` per the descriptor-partition rule; every referenced type is foundation-resident so the descriptor stays in foundation. `MotionVerb`/`ActionVerb` are closed serde enums per the boundary inventory. Structural validation at parse: names resolve, no duplicates, numeric `attack` fields finite/positive (damage ≥ 0). Add the `behavior` key to `EntityTypeDescriptor` (`postretro-entities`, `entities/src/data_descriptors/types/entity.rs`) and both twin parsers (`scripting-core/data_descriptors/js/entity.rs`, `scripting-core/data_descriptors/lua/entity.rs` — both funnel through `serde_json`, so divergence is impossible), including the `ai`+`behavior` mutual-exclusion error. Extend the typedef generator (`scripting/primitives/mod.rs` descriptor fields) so `behavior` and its types emit into both typedefs; guard fields emit as `RuntimeValue`. The typedef generator's `rust_to_ts` (`scripting-core/src/typedef/common.rs`) needs an explicit `"IrNode" => "RuntimeValue"` mapping entry (and the Luau equivalent). `MotionVerb` and `ActionVerb` emit as string literal union types (`"chaseTarget" | "hold" | "freeze"`, `"attack"`) — the `FireMode` precedent, not plain `string`. State-name cross-references (`initial`, `transitions[].to`) use `const`-generic inference on the `behavior` block so the IDE constrains them to authored state keys — the `defineStore<const S>` precedent; `defineEntity` gains a `const` generic or the behavior sub-block uses a typed helper.
+`BehaviorGraphDescriptor` in `postretro-foundation` (`data_descriptors/types/`): `initial: String`, `states: BTreeMap<String, BehaviorStateDescriptor>` (`animation: String`, `motion: MotionVerb`, `action: Option<ActionVerb>`, `transitions: Vec<TransitionDescriptor>`, `on_enter: Option<String>`), `interrupts: Vec<TransitionDescriptor>`, `attack: Option<AttackParams>`, `move_speed: f32`. `move_speed` feeds `attach_agent` at the attach site. `TransitionDescriptor { to: String, when: IrNode }` — raw `IrNode` per the descriptor-partition rule; every referenced type is foundation-resident so the descriptor stays in foundation. `MotionVerb`/`ActionVerb` are closed serde enums per the boundary inventory. Structural validation at parse: names resolve, no duplicates, numeric `attack` fields finite/positive (damage ≥ 0). Add the `behavior` key to `EntityTypeDescriptor` (`postretro-entities`, `entities/src/data_descriptors/types/entity.rs`) and both twin parsers (`scripting-core/data_descriptors/js/entity.rs`, `scripting-core/data_descriptors/lua/entity.rs` — both funnel through `serde_json`, so divergence is impossible), including the `ai`+`behavior` mutual-exclusion error. Extend the typedef generator (`scripting/primitives/mod.rs` descriptor fields) so `behavior` and its types emit into both typedefs; guard fields emit as `RuntimeValue`. The typedef generator's `rust_to_ts` (`scripting-core/src/typedef/common.rs`) needs an explicit `"IrNode" => "RuntimeValue"` mapping entry (and the Luau equivalent). `MotionVerb` and `ActionVerb` emit as string literal union types (`"chaseTarget" | "hold" | "freeze"`, `"attack"`) — the `FireMode` precedent, not plain `string`. State-name cross-references (`initial`, `transitions[].to`) use `const`-generic inference on the `behavior` block so the IDE constrains them to authored state keys — the `defineStore<const S>` precedent; `defineEntity` gains a `const` generic or the behavior sub-block uses a typed helper. SDK sugar for guard inputs: a `brain` export (frozen object of pre-wrapped `runtime.read("@brain.*")` IR input leaves, generated from `BRAIN_INPUTS` — `brain.targetDistance`, `brain.hasTarget`, etc.) and a `state(name)` function (wraps `runtime.read("@state." + name)`) ship from `"postretro"` in both runtimes. No new primitives — pure SDK-side prelude helpers, same pattern as `getGameState()`.
 
 ### Task 3: BrainScope
 
@@ -88,8 +88,8 @@ Author the reference enemy (`sdk/behaviors/reference/entities.{ts,luau}`) as an 
 | Action verb | `ActionVerb::Attack` | `"attack"` | `"attack"` (string literal union) | same | n/a |
 | Transition | `TransitionDescriptor { to, when: IrNode }` | `{to, when}`; `when` is the op-tagged IR object | `when: RuntimeValue` | same | n/a |
 | Attack params | `AttackParams` | `attack.{damage,range,cooldownMs}` | same | same | n/a |
-| Brain inputs | `BRAIN_INPUTS` fixed table | — | `"@brain.targetDistance"` etc. (string names in `runtime.read`) | same | n/a |
-| Per-entity state leaf | `ENTITY_STATE_INPUT_PREFIX` | — | `"@state.<name>"` | same | n/a |
+| Brain inputs | `BRAIN_INPUTS` fixed table | — | `brain.targetDistance` etc. (typed object, pre-wrapped IR input leaves) | `brain.targetDistance` | n/a |
+| Per-entity state leaf | `ENTITY_STATE_INPUT_PREFIX` | — | `state("<name>")` (function, wraps `@state.<name>` IR input leaf) | `state("<name>")` | n/a |
 
 ## Invariants
 
@@ -109,10 +109,7 @@ Author the reference enemy (`sdk/behaviors/reference/entities.{ts,luau}`) as an 
 
 ```ts
 // Proposed design
-import { defineEntity, runtime } from "postretro";
-
-const dist = runtime.read("@brain.targetDistance");
-const enraged = runtime.ge(runtime.read("@state.rage"), 3);
+import { defineEntity, brain, state, runtime } from "postretro";
 
 export const grunt = defineEntity({
   canonicalName: "grunt",
@@ -123,31 +120,29 @@ export const grunt = defineEntity({
       initial: "idle",
       attack: { damage: 8, range: 2, cooldownMs: 1200 },
       interrupts: [
-        // Impact policy writes @state.staggered; this wins from any state.
-        { to: "flinch", when: runtime.ge(runtime.read("@state.staggered"), 1) },
+        { to: "flinch", when: runtime.ge(state("staggered"), 1) },
       ],
       states: {
         idle: {
           animation: "idle", motion: "hold",
-          transitions: [{ to: "chase", when: runtime.le(dist, 16) }],
+          transitions: [{ to: "chase", when: runtime.le(brain.targetDistance, 16) }],
         },
         chase: {
           animation: "walk", motion: "chaseTarget",
           transitions: [
-            { to: "attack", when: runtime.le(dist, 2) },
-            { to: "idle", when: runtime.gt(dist, 50) },
+            { to: "attack", when: runtime.le(brain.targetDistance, 2) },
+            { to: "idle", when: runtime.gt(brain.targetDistance, 50) },
           ],
         },
         attack: {
           animation: "attack", motion: "chaseTarget", action: "attack",
-          transitions: [{ to: "chase", when: runtime.gt(dist, 2) }],
+          transitions: [{ to: "chase", when: runtime.gt(brain.targetDistance, 2) }],
         },
         flinch: {
           animation: "pain", motion: "hold", onEnter: "gruntFlinched",
-          // Commitment window: cannot exit for 400 ms, then resume.
           transitions: [{
             to: "chase",
-            when: runtime.ge(runtime.read("@brain.timeInStateMs"), 400),
+            when: runtime.ge(brain.timeInStateMs, 400),
           }],
         },
       },

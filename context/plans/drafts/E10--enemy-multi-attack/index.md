@@ -86,9 +86,7 @@ Cross-spec: run after `E10--enemy-combat-positioning` and `E10--enemy-facing-sle
 
 ```ts
 // Proposed design
-import { defineEntity, runtime } from "postretro";
-
-const dist = runtime.read("@brain.targetDistance");
+import { defineEntity, brain, runtime } from "postretro";
 
 export const grunt = defineEntity({
   canonicalName: "grunt",
@@ -104,24 +102,24 @@ export const grunt = defineEntity({
       states: {
         idle: {
           animation: "idle", motion: "hold",
-          transitions: [{ to: "chase", when: runtime.le(dist, 16) }],
+          transitions: [{ to: "chase", when: runtime.le(brain.targetDistance, 16) }],
         },
         chase: {
           animation: "walk", motion: "chaseTarget",
           transitions: [
-            { to: "attack_claw", when: runtime.le(dist, 1.8) },
-            { to: "attack_zap", when: runtime.le(dist, 14) },
+            { to: "attack_claw", when: runtime.le(brain.targetDistance, 1.8) },
+            { to: "attack_zap", when: runtime.le(brain.targetDistance, 14) },
           ],
         },
         attack_claw: {
           animation: "attack_claw", motion: "chaseTarget", action: { attack: "claw" },
-          transitions: [{ to: "chase", when: runtime.gt(dist, 1.8) }],
+          transitions: [{ to: "chase", when: runtime.gt(brain.targetDistance, 1.8) }],
         },
         attack_zap: {
           animation: "attack_zap", motion: "chaseTarget", action: { attack: "zap" },
           transitions: [
-            { to: "attack_claw", when: runtime.le(dist, 1.8) },
-            { to: "chase", when: runtime.gt(dist, 14) },
+            { to: "attack_claw", when: runtime.le(brain.targetDistance, 1.8) },
+            { to: "chase", when: runtime.gt(brain.targetDistance, 14) },
           ],
         },
       },

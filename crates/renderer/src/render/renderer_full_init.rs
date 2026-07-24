@@ -378,11 +378,11 @@ pub(crate) fn build_full_renderer(
     } = build_shadow_vs_resources(device, &shadow_vs_bgl);
 
     // GPU timing is enabled only when requested AND the device was created
-    // with TIMESTAMP_QUERY (boot-phase `request_renderer_device` only grants
-    // it when both held). Re-derive from the device's granted features so
-    // `build_full_renderer` stays a pure function of boot state.
+    // with both timestamp features its pass- and encoder-level brackets use.
+    // Re-derive from the device's granted features so `build_full_renderer`
+    // stays a pure function of boot state.
     let enable_gpu_timing = std::env::var("POSTRETRO_GPU_TIMING").ok().as_deref() == Some("1")
-        && device.features().contains(wgpu::Features::TIMESTAMP_QUERY);
+        && gpu_timing_features_supported(device.features());
     let frame_timing = build_frame_timing(device, queue, enable_gpu_timing);
 
     // See: context/lib/rendering_pipeline.md §7.4

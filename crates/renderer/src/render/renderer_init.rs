@@ -229,7 +229,7 @@ fn request_renderer_device_with_capabilities(
     // FrameTiming=None → zero runtime cost when timing isn't requested or supported.
     let adapter_features = adapter.features();
     let gpu_timing_requested = std::env::var("POSTRETRO_GPU_TIMING").ok().as_deref() == Some("1");
-    let gpu_timing_supported = adapter_features.contains(wgpu::Features::TIMESTAMP_QUERY);
+    let gpu_timing_supported = gpu_timing_features_supported(adapter_features);
     let enable_gpu_timing = gpu_timing_requested && gpu_timing_supported;
     // BC5-compressed normal maps are a hard requirement (not optional like
     // GPU timing): the .prm baker emits BC5 normal slots unconditionally.

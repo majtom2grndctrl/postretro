@@ -498,8 +498,8 @@ pub struct Renderer {
 pub(super) struct FullRenderer {
     pub(super) pipeline: wgpu::RenderPipeline,
     pub(super) depth_prepass_pipeline: wgpu::RenderPipeline,
-    /// `Some` when `POSTRETRO_GPU_TIMING=1` AND adapter supports `TIMESTAMP_QUERY`;
-    /// `None` → no `timestamp_writes` attached to any pass.
+    /// `Some` when `POSTRETRO_GPU_TIMING=1` AND the adapter supports both base
+    /// and encoder-level timestamp queries; `None` → no timing writes.
     pub(super) frame_timing: Option<FrameTiming>,
     pub(super) vertex_buffer: wgpu::Buffer,
     pub(super) index_buffer: wgpu::Buffer,

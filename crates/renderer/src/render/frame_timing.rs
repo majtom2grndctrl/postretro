@@ -1,5 +1,5 @@
 // GPU timestamp query helper for per-pass frame timing.
-// Gated on `POSTRETRO_GPU_TIMING=1` and `Features::TIMESTAMP_QUERY`.
+// Gated on `POSTRETRO_GPU_TIMING=1` and the timestamp features used below.
 
 use std::sync::Arc;
 use std::sync::Mutex;

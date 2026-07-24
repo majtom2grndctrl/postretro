@@ -113,9 +113,10 @@ linear movers.
 ## Acceptance criteria
 
 - [ ] **AC1.** `sdk/TrenchBroom/postretro.fgd` `kinematic_mover` gains `spin_axis`,
-  `spin_speed`, `spin_accel`, and `carry_yaw` keys (inspection gate). `prl-build`
+  `spin_speed`, `spin_accel`, and `carry_yaw` keys (inspection/review gate — presence is
+  checked by reading the FGD, not by a runnable test). `prl-build`
   compiles a map with a spinning mover into the `KinematicGeometry` section carrying
-  the axis, speed, accel, and `carry_yaw`.
+  the axis, speed, accel, and `carry_yaw` (this half is the runnable assertion).
 - [ ] **AC2.** `prl-build` accepts a **pure rotator** (single-waypoint `path`, non-zero
   authored spin) and still rejects a non-spinning mover whose `path` resolves to fewer
   than two waypoints, each with a diagnostic. A non-finite `spin_speed`, a non-finite or
@@ -142,17 +143,28 @@ linear movers.
   deterministic sim. (Position/planted carry, independent of `carry_yaw`.)
 - [ ] **AC8.** With `carry_yaw` set, the rider's view yaw advances with the platform's
   world-up rotation each grounded tick; platform pitch/roll produce no camera pitch or
-  roll (upright invariant) — holds identically single-player and on a connected client.
+  roll (upright invariant) — holds identically single-player and on a connected client
+  **by construction**: yaw carry is applied on the owning client at the look seam and
+  reaches others only through A's already-tested `facing_yaw` replication, so no separate
+  connected-client yaw test is required (single-player and connected are the same
+  client-local code path).
 - [ ] **AC9.** With `carry_yaw` unset (the default), the platform revolves the rider's
   position (AC7 still holds) but the rider's view yaw and aim are untouched — the camera
   yaw is unchanged by the platform's spin, preserving aim authority — holds identically
-  single-player and on a connected client.
+  single-player and on a connected client **by construction**, for the same reason as AC8:
+  `facing_yaw` is untouched on the owning client and that (unchanged) value is what
+  replicates.
 - [ ] **AC10.** Leaving a rotating platform imparts the tangential linear velocity at the
   leave point (`angular_velocity × radius`) plus A's linear release, and no player angular
   velocity — verified deterministically single-player and in connected-client replay.
-- [ ] **AC11.** A mover advancing/rotating into a stationary player still displaces the
+- [ ] **AC11.** The swept displace-out-of-penetration assertion uses an **advancing+rotating**
+  mover (linear tick delta present) pushing into a stationary player: it still displaces the
   player out of penetration (A's displace-only push, now over rotating geometry); no
-  tunneling, no persistent overlap.
+  tunneling, no persistent overlap. (The swept-push path early-continues when the linear tick
+  delta ≈ 0, so it does not model a *pure* rotator's sweep — a pure rotator's penetration is
+  instead handled by the per-tick static-overlap displacement, with no persistent overlap;
+  deep high-speed pure-rotational swept tunneling is out of scope this slice — displace-only
+  push, crush/blocking deferred to E17-E.)
 - [ ] **AC12.** In the deterministic net harness at the E15 profile (`LinkConfig { delay:
   45, jitter: 60, loss_probability: 0.05 }` + fixed seed), the client's predicted mover
   orientation tracks the host within a dedicated angular tolerance (radians, authored
@@ -166,7 +178,7 @@ linear movers.
   `spin_angle_rad`, the current rate, and the target rate; wire drift/round-trip guards
   pass; a peer on the old version is refused at the handshake.
 - [ ] **AC14.** No new `unsafe`; no non-renderer module imports `wgpu`; no renderer source
-  changes.
+  changes (CI-grep / review gates, not runnable unit tests).
 - [ ] **AC15.** Non-spinning movers and mover-less/static maps behave and reconcile
   exactly as before (existing mover and movement suites pass unchanged).
 
@@ -215,7 +227,10 @@ angular kinematics: extend `MoverPose` and `MoverTickState` (`collision/moving.r
 `crates/postretro/src/kinematic_mover.rs`) with `angular_velocity: Vec3` (world axis × signed current rad/s,
 ZERO when inactive), `tick_rotation_delta: Quat` (the rotation applied this tick,
 `Quat::IDENTITY` when inactive), and `carry_yaw: bool` (surfaced from the static field so
-the Task 2 look seam gates without a second component lookup). `stop` zeros the reported
+the Task 2 look seam gates without a second component lookup). Two sites build a `MoverPose`
+and must populate the new fields: the pose bridge `MoverTickStateTable::pose` /
+`MoverPoseSource` (`crates/postretro/src/kinematic_mover.rs:80`) and the client replay pose
+builder `mover_pose_for_current_phase` (`:129`, the Task 5 derivation site). `stop` zeros the reported
 angular velocity along with linear (freeze) but retains the rate phase; `start` resumes;
 `reverse`/`go_to_path_node` do not touch spin. Keep the driver a pure function of
 `{phase (angle, current rate, target rate), static path (incl. axis/accel), dt}`. Tests
@@ -262,11 +277,19 @@ regardless of `carry_yaw`. In `apply_mover_release_velocity`, on leaving a `Move
 reference add the tangential linear velocity `pose.angular_velocity × (player_pos − pivot)`
 once, in addition to A's linear `pose.linear_velocity`; add no angular velocity to the
 player. `pivot` here is the same start-of-tick origin used by carry
-(`pose.transform.position − pose.tick_delta`).
+(`pose.transform.position − pose.tick_delta`). `apply_mover_release_velocity`
+(`crates/postretro/src/movement/substrate.rs:562`) currently carries no player position in
+its signature — widen it to receive the current player position, available at the call site
+`substrate.rs:481`.
 
 Implement yaw orientation carry at the look/camera seam that feeds
-`MovementInput.facing_yaw` (`crates/postretro/src/movement/mod.rs:56`; look integration in
-`input/look.rs`): while the owning player is grounded on a spinning mover **whose
+`MovementInput.facing_yaw`. The carry is injected where `facing_yaw` is assembled from the
+camera yaw — the `facing_yaw: camera.yaw` assignment in `crates/postretro/src/main.rs`
+(~`main.rs:895`), near the camera-yaw integration (~`main.rs:1902`) — not in `input/look.rs`
+(`LookInputs` has no access to the ground ref, mover pose, or camera yaw); grep
+`facing_yaw: camera.yaw` to relocate the site. This is where the mover pose table and the
+player's ground ref are reachable. (The `MovementInput.facing_yaw` field itself is declared
+in `crates/postretro/src/movement/mod.rs:56`.) While the owning player is grounded on a spinning mover **whose
 `carry_yaw` is set** (read from `pose.carry_yaw`), add the world-up component of the mover's
 tick rotation (`tick_rotation_delta` projected onto world-up → a yaw angle) to the camera
 yaw before `facing_yaw` is resolved, so it rides existing input replication. When
@@ -309,7 +332,12 @@ serialization is in `crates/level-format/src/kinematic_geometry.rs`, named above
 finite `spin_speed` and finite non-negative `spin_accel`, and when `spin_speed` is non-zero
 require a finite non-zero `spin_axis` (normalize at compile) and allow the mover's `path` to
 resolve to a single waypoint (its origin) — a **pure rotator**; when `spin_speed` is zero
-keep A's ≥2-waypoint requirement. Serialization/round-trip tests for both section versions.
+keep A's ≥2-waypoint requirement. The per-record decoder `read_mover`
+(`crates/level-format/src/kinematic_geometry.rs:163`) has no version parameter today —
+thread the section version into it so v1 skips the spin fields (default) and v2 reads them.
+Serialization/round-trip tests for both section versions; the existing test
+`empty_section_round_trips_with_version_and_zero_counts` (`:588`) asserts an exact version
+byte literal (`[1,0,0,…]`) and must be updated for the 1→2 bump.
 
 ### Task 4: Runtime loading and spawn
 
@@ -322,8 +350,12 @@ keep A's ≥2-waypoint requirement. Serialization/round-trip tests for both sect
 `LoadedKinematicMover` into `KinematicMoverComponent::new` at the spawn site
 (`spawn_from_geometry`, `crates/postretro/src/runtime_movers.rs`), seeding `spin_angle_rad`
 to 0 and both current/target rate to the initial rate. A pure rotator resolves its
-single-waypoint chain to a one-element `waypoints`/`waypoint_names`; confirm the driver
-treats it as non-traversable (spins in place). Host and client both spawn from the record as
+single-waypoint chain to a one-element `waypoints`/`waypoint_names`; the runtime chain
+resolver `resolve_waypoint_chain` (`crates/postretro/src/runtime_movers.rs:373`) currently
+rejects any chain of fewer than two waypoints, so relax that rejection **only when authored
+spin is non-zero** (the pure-rotator case), keeping the ≥2-waypoint rejection intact for
+zero-spin movers so the zero-spin invariant holds; confirm the driver then treats the
+one-element chain as non-traversable (spins in place). Host and client both spawn from the record as
 in A. No new update-order stage — the existing fixed-tick mover system now advances rotation
 and the ramp as well.
 
@@ -331,8 +363,11 @@ and the ramp as well.
 
 Append `spin_angle_rad: f32`, `spin_rate_rad_s: f32`, and `spin_target_rate_rad_s: f32` to
 `WireKinematicMoverState` (`crates/net/src/wire.rs`) after `target_segment`; add all three
-to `all_finite`. Update raw↔typed conversion, baseline/delta, and drift/round-trip tests. Map
-them in `wire_convert` alongside the other phase fields. Bump `SNAPSHOT_VERSION` 10 → 11 in
+to `all_finite`. Update raw↔typed conversion, baseline/delta, and drift/round-trip tests. Map the three fields
+at the mover-phase serialize site `kinematic_mover_state_to_wire`
+(`crates/postretro/src/netcode/replication.rs:266`) and the client-side seed
+`seed_kinematic_mover_phase` (`crates/postretro/src/netcode/client.rs:2090`) — not
+`wire_convert`, which only handles `SimCommand`↔`InputCommand`. Bump `SNAPSHOT_VERSION` 10 → 11 in
 `crates/net/src/wire.rs` (update the drift guard near `wire.rs:1847`,
 `PRE_E21_SNAPSHOT_VERSION`) and `WIRE_VERSION` 10 → 11 in `crates/net/src/transport.rs`
 (update the drift guard near `transport.rs:735`). Client apply seeds the predictive driver's
@@ -344,17 +379,26 @@ identically from the replicated current+target rate and the locally-held static 
 The mover-history buffer already stores the full authoritative `Transform` per tick, so a
 rider's replay reads the historical rotation for *position*. The replay `MoverPose`'s
 `tick_rotation_delta` and `angular_velocity`, however, are derived analytically on the client
-from the replicated **current rate**, the locally-held static `spin_axis` (from the local
-PRL), `dt`, and the replicated `started`/`completed` flags (both already on
-`KinematicMoverState`) — not reconstructed from consecutive history quaternions. The client
-applies the identical active-tick gate as the host driver: the angular fields use the
+in `mover_pose_for_current_phase` (`crates/postretro/src/kinematic_mover.rs:129`, already
+imported by `netcode/client.rs`) from the replicated **current rate**, the locally-held static
+`spin_axis` (from the local PRL), `dt`, and the replicated `started`/`completed` flags (both
+already on `KinematicMoverState`) — not reconstructed from consecutive history quaternions.
+It must populate `angular_velocity`/`tick_rotation_delta` from the replicated current rate +
+local static axis + dt under the identical active-tick gate; left unwired it returns
+ZERO/IDENTITY and client orientation silently won't reconcile (only AC12's angular tolerance
+would catch it). The client applies the identical active-tick gate as the host driver: the angular fields use the
 post-ramp current rate only while `started && !completed && rate ≠ 0`; otherwise
 `angular_velocity = Vec3::ZERO` and `tick_rotation_delta = Quat::IDENTITY`. Deriving from
 `{current rate, axis, dt}` alone would read the wire's retained non-zero current rate for a
 stopped or completed mover as spurious carry/release; gating on `started`/`completed` matches
 the host's zero/identity report instead, which protects AC10 and AC12 for the
 stop/complete-during-ride cases. `carry_yaw` is likewise held locally from the PRL and never
-crosses the wire. Extend the
+crosses the wire. The existing harness builder `with_moving_platform` constructs a linear
+translator, not a rotator — the rotating-platform scenario needs a new rotating-platform
+fixture in the harness. The command-injection seam already exists:
+`predict_reconcile_harness.rs` exposes `host_registry`/`host_mover`, so a test fires
+`set_spin_rate` by mutating the host mover directly, as the existing remote-trigger tests do.
+Extend the
 prediction/reconciliation harness with a rotating-platform scenario at the E15 profile:
 assert the client's predicted orientation tracks the host within an angular tolerance with no
 accumulating correction (reuse `assert_non_accumulating`); fire a `set_spin_rate` command
@@ -362,9 +406,10 @@ mid-scenario and assert the ramp reconciles with no accumulating correction; ass
 reconciles its revolved position in place; and include a leave-mid-ride assertion that the
 tangential release matches the single-player policy.
 
-Note on crate boundaries: `wire_convert`, `assert_non_accumulating`, and `MOVER_TOLERANCE_M`
-are grouped above with the wire edits by topic, but they live under
-`crates/postretro/src/netcode/` — `wire_convert` in `netcode/wire_convert.rs`,
+Note on crate boundaries: `kinematic_mover_state_to_wire`, `seed_kinematic_mover_phase`,
+`assert_non_accumulating`, and `MOVER_TOLERANCE_M` are grouped above with the wire edits by
+topic, but they live under `crates/postretro/src/netcode/` — `kinematic_mover_state_to_wire`
+in `netcode/replication.rs`, `seed_kinematic_mover_phase` in `netcode/client.rs`,
 `assert_non_accumulating` and `MOVER_TOLERANCE_M` in `netcode/predict_reconcile_harness.rs` —
 distinct from the `WireKinematicMoverState`/`all_finite` edits in `crates/net/src/wire.rs`.
 `MOVER_TOLERANCE_M` is not a shared constant; it is a per-test local `const = 0.16` declared

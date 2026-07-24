@@ -55,6 +55,53 @@ registered here; those belong in per-level data scripts via `setupLevel(ctx)`.
 The mod-init VM is dropped after the manifest commits; no script state persists
 past that point.
 
+**Render profile.** The optional `render.bloom` block picks the mod's bloom look
+once, for the whole mod:
+
+```typescript
+export default defineMod({
+  name: "MyMod",
+  render: {
+    bloom: {
+      resolution: "quarter",
+      pixelated: true,
+    },
+  },
+});
+```
+
+```lua
+return defineMod({
+  name = "MyMod",
+  render = {
+    bloom = {
+      resolution = "quarter",
+      pixelated = true,
+    },
+  },
+})
+```
+
+`resolution` is the base resolution of the bloom chain, one of `"half"`
+(default), `"quarter"`, or `"eighth"`. Each step down starts the chain at half
+the dimensions of the previous one, which makes the glow chunkier and cuts
+bloom-pass cost. `pixelated` (default `false`) switches the bloom upsample and
+the final composite to blocky, texel-addressed sampling for a retro look; the
+downsample and blur stages stay linear either way.
+
+Both fields — and `render` and `bloom` themselves — are optional, and omitting
+them selects the engine default of half-resolution smooth bloom. Malformed
+optional values degrade rather than abort: a non-object `render` or `bloom`
+warns and falls back to the complete default profile, an unrecognized
+`resolution` warns and uses `"half"`, and a non-boolean `pixelated` warns and
+uses `false`. None of these reject an otherwise valid manifest.
+
+The profile is static and mod-wide. It is committed at mod init and reapplied
+by a debug staged reload, so it cannot vary per level, per material, or from a
+reaction. It selects only the bloom *style*: whether bloom runs at all remains
+controlled by the `POSTRETRO_BLOOM` diagnostic override and the dev-tools
+toggle.
+
 ---
 
 ## `defineEntity` and entity descriptors

@@ -19,6 +19,7 @@ pub(crate) fn build_full_renderer(
     surface_height: u32,
     has_multi_draw_indirect: bool,
     cube_array_supported: bool,
+    bloom_render_profile: BloomRenderProfile,
 ) -> Result<FullRenderer> {
     // Dummy buffers until `install_level_geometry` replaces them.
     let geometry: Option<&LevelGeometry> = None;
@@ -196,6 +197,7 @@ pub(crate) fn build_full_renderer(
         surface_config.width,
         surface_config.height,
         screen_effects.scene_color_texture(),
+        bloom_render_profile,
     );
 
     let scripted_light_capacity = full_lights.len() + RUNTIME_DYNAMIC_LIGHT_RESERVE;

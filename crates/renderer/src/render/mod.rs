@@ -3,6 +3,7 @@
 mod animated_direct_sh_compose;
 mod animated_lightmap;
 mod bloom;
+mod bloom_profile;
 #[cfg(feature = "dev-tools")]
 mod debug_lines;
 #[cfg(feature = "dev-tools")]
@@ -89,6 +90,7 @@ use postretro_visibility::{CameraCullVisibility, VisibilityPath, VisibleCells};
 
 use animated_direct_sh_compose::AnimatedDirectShDebugOverride;
 use bloom::BloomPass;
+pub use bloom_profile::{BloomRenderProfile, BloomResolution};
 use direct_sh_compose::{
     DirectShComposeDebugOverrides, DirectShComposeResources, DirectShComposeTimestampWrites,
     DirectShDebugOverride,

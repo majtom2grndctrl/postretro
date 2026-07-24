@@ -475,6 +475,10 @@ pub struct Renderer {
     /// boot state alone. `Some` cube pool iff this is true (see `FullRenderer`).
     pub(super) cube_array_supported: bool,
 
+    /// Static bloom style cached in boot state so `finish_full_init` rebuilds
+    /// the full renderer with the last committed profile after surface recovery.
+    pub(super) bloom_render_profile: BloomRenderProfile,
+
     /// Renderer-owned boot splash pass: clears the swapchain and draws the
     /// decoded logo as a single textured quad. Independent of the UI pass — the
     /// boot path uses it directly so first pixels reach the window before the

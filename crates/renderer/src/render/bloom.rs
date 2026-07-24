@@ -27,7 +27,47 @@ struct BloomParams {
     threshold: f32,
     intensity: f32,
     direction: [f32; 2],
-    _padding: [f32; 2],
+    source_block_divisor: u32,
+    _padding: u32,
+    output_dimensions: [u32; 2],
+}
+
+/// CPU-only description of the target sizes and bright-pass source coverage
+/// that back a `BloomPass` allocation. Keeping it separate from wgpu resources
+/// lets tests cover profile changes and odd dimensions without a GPU context.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BloomResourcePlan {
+    profile: BloomRenderProfile,
+    surface_dimensions: (u32, u32),
+}
+
+impl BloomResourcePlan {
+    fn new(profile: BloomRenderProfile, surface_width: u32, surface_height: u32) -> Self {
+        Self {
+            profile,
+            surface_dimensions: (surface_width.max(1), surface_height.max(1)),
+        }
+    }
+
+    fn set_profile(&mut self, profile: BloomRenderProfile) -> bool {
+        if self.profile == profile {
+            return false;
+        }
+        self.profile = profile;
+        true
+    }
+
+    fn resize(&mut self, surface_width: u32, surface_height: u32) {
+        self.surface_dimensions = (surface_width.max(1), surface_height.max(1));
+    }
+
+    fn level_dimensions(&self) -> [(u32, u32); BLOOM_LEVEL_COUNT] {
+        bloom_level_dimensions_table(
+            self.surface_dimensions.0,
+            self.surface_dimensions.1,
+            self.profile,
+        )
+    }
 }
 
 struct BloomLevel {
@@ -41,11 +81,13 @@ struct BloomLevel {
     blur_bind_group: wgpu::BindGroup,
 }
 
-/// Renderer-owned HDR bloom chain. Bright pixels are extracted into a
-/// half-resolution target, filtered through successively smaller levels, then
-/// accumulated back up the chain before the final additive scene composite.
+/// Renderer-owned HDR bloom chain. Bright pixels are extracted into the
+/// profile-selected base target, filtered through successively smaller levels,
+/// then accumulated back up the chain before the final additive scene
+/// composite.
 pub struct BloomPass {
     enabled: bool,
+    resource_plan: BloomResourcePlan,
     sampler: wgpu::Sampler,
     bind_group_layout: wgpu::BindGroupLayout,
     params_buffer: wgpu::Buffer,
@@ -57,7 +99,9 @@ pub struct BloomPass {
     downsample_pipeline: wgpu::RenderPipeline,
     blur_pipeline: wgpu::RenderPipeline,
     upsample_pipeline: wgpu::RenderPipeline,
+    pixelated_upsample_pipeline: wgpu::RenderPipeline,
     composite_pipeline: wgpu::RenderPipeline,
+    pixelated_composite_pipeline: wgpu::RenderPipeline,
     levels: Vec<BloomLevel>,
 }
 
@@ -67,6 +111,7 @@ impl BloomPass {
         surface_width: u32,
         surface_height: u32,
         scene_color_texture: &wgpu::Texture,
+        profile: BloomRenderProfile,
     ) -> Self {
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Bloom Linear Sampler"),
@@ -81,7 +126,8 @@ impl BloomPass {
         let params_size = std::mem::size_of::<BloomParams>() as u64;
         let params_alignment = u64::from(device.limits().min_uniform_buffer_offset_alignment);
         let params_stride = params_size.div_ceil(params_alignment) * params_alignment;
-        let level_dimensions = bloom_level_dimensions_table(surface_width, surface_height);
+        let resource_plan = BloomResourcePlan::new(profile, surface_width, surface_height);
+        let level_dimensions = resource_plan.level_dimensions();
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Bloom BGL"),
             entries: &[
@@ -116,8 +162,9 @@ impl BloomPass {
         let params_buffer = create_params_buffer(
             device,
             params_stride,
-            (surface_width, surface_height),
+            resource_plan.surface_dimensions,
             &level_dimensions,
+            resource_plan.profile,
         );
         let scene_source_view =
             scene_color_texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -183,6 +230,14 @@ impl BloomPass {
             additive_blend,
             "Bloom Upsample Pipeline",
         );
+        let pixelated_upsample_pipeline = create_pipeline(
+            device,
+            &layout,
+            &composite_shader,
+            "fs_upsample_pixelated",
+            additive_blend,
+            "Bloom Pixelated Upsample Pipeline",
+        );
         let composite_pipeline = create_pipeline(
             device,
             &layout,
@@ -190,6 +245,14 @@ impl BloomPass {
             "fs_composite",
             additive_blend,
             "Bloom Scene Composite Pipeline",
+        );
+        let pixelated_composite_pipeline = create_pipeline(
+            device,
+            &layout,
+            &composite_shader,
+            "fs_composite_pixelated",
+            additive_blend,
+            "Bloom Pixelated Scene Composite Pipeline",
         );
         let levels = create_levels(
             device,
@@ -201,6 +264,7 @@ impl BloomPass {
 
         Self {
             enabled: bloom_enabled_from_environment(),
+            resource_plan,
             sampler,
             bind_group_layout,
             params_buffer,
@@ -211,7 +275,9 @@ impl BloomPass {
             downsample_pipeline,
             blur_pipeline,
             upsample_pipeline,
+            pixelated_upsample_pipeline,
             composite_pipeline,
+            pixelated_composite_pipeline,
             levels,
         }
     }
@@ -223,12 +289,36 @@ impl BloomPass {
         surface_height: u32,
         scene_color_texture: &wgpu::Texture,
     ) {
-        let level_dimensions = bloom_level_dimensions_table(surface_width, surface_height);
+        self.resource_plan.resize(surface_width, surface_height);
+        self.rebuild_profile_resources(device, scene_color_texture);
+    }
+
+    /// Apply a new static render profile while retaining the current scene
+    /// dimensions. The profile owns the target sizing and pipeline selection,
+    /// so all dependent resources are rebuilt together before the next frame.
+    pub fn set_profile(
+        &mut self,
+        device: &wgpu::Device,
+        scene_color_texture: &wgpu::Texture,
+        profile: BloomRenderProfile,
+    ) {
+        if self.resource_plan.set_profile(profile) {
+            self.rebuild_profile_resources(device, scene_color_texture);
+        }
+    }
+
+    fn rebuild_profile_resources(
+        &mut self,
+        device: &wgpu::Device,
+        scene_color_texture: &wgpu::Texture,
+    ) {
+        let level_dimensions = self.resource_plan.level_dimensions();
         self.params_buffer = create_params_buffer(
             device,
             self.params_stride,
-            (surface_width, surface_height),
+            self.resource_plan.surface_dimensions,
             &level_dimensions,
+            self.resource_plan.profile,
         );
         self.scene_source_view =
             scene_color_texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -262,6 +352,16 @@ impl BloomPass {
     /// scene bind group is rebuilt on resize, so this function has no material
     /// or light-path dependency and works for any HDR scene contribution.
     pub fn record(&self, encoder: &mut wgpu::CommandEncoder, scene_color_view: &wgpu::TextureView) {
+        let upsample_pipeline = if self.resource_plan.profile.pixelated {
+            &self.pixelated_upsample_pipeline
+        } else {
+            &self.upsample_pipeline
+        };
+        let composite_pipeline = if self.resource_plan.profile.pixelated {
+            &self.pixelated_composite_pipeline
+        } else {
+            &self.composite_pipeline
+        };
         let mut params_slot = 0;
         let first = &self.levels[0];
         let params_offset = self.next_params_offset(&mut params_slot);
@@ -323,7 +423,7 @@ impl BloomPass {
                 "Bloom Upsample Pass",
                 &target.down_view,
                 wgpu::LoadOp::Load,
-                &self.upsample_pipeline,
+                upsample_pipeline,
                 &source.down_bind_group,
                 params_offset,
             );
@@ -335,7 +435,7 @@ impl BloomPass {
             "Bloom Scene Composite Pass",
             scene_color_view,
             wgpu::LoadOp::Load,
-            &self.composite_pipeline,
+            composite_pipeline,
             &first.down_bind_group,
             params_offset,
         );
@@ -400,77 +500,160 @@ fn create_levels(
         .collect()
 }
 
-fn bloom_level_dimensions_table(width: u32, height: u32) -> [(u32, u32); BLOOM_LEVEL_COUNT] {
-    std::array::from_fn(|level_index| bloom_level_dimensions(width, height, level_index))
+fn bloom_level_dimensions_table(
+    width: u32,
+    height: u32,
+    profile: BloomRenderProfile,
+) -> [(u32, u32); BLOOM_LEVEL_COUNT] {
+    std::array::from_fn(|level_index| bloom_level_dimensions(width, height, profile, level_index))
 }
 
-fn bloom_level_dimensions(width: u32, height: u32, level_index: usize) -> (u32, u32) {
-    let divisor = 1u32 << (level_index as u32 + 1);
+fn bloom_level_dimensions(
+    width: u32,
+    height: u32,
+    profile: BloomRenderProfile,
+    level_index: usize,
+) -> (u32, u32) {
+    let divisor = profile.resolution.base_divisor() * (1u32 << level_index as u32);
     (
         width.max(1).div_ceil(divisor).max(1),
         height.max(1).div_ceil(divisor).max(1),
     )
 }
 
+/// Inclusive-exclusive source block assigned to one bright-pass destination
+/// texel. The arithmetic mirrors `bloom_extract.wgsl`: the ceil-sized target
+/// table gives every source texel exactly one owner, including odd edges.
+fn bright_pass_source_block_bounds(
+    source_dimensions: (u32, u32),
+    destination_coordinate: (u32, u32),
+    resolution: BloomResolution,
+) -> ((u32, u32), (u32, u32)) {
+    let divisor = resolution.base_divisor();
+    let start = (
+        destination_coordinate.0 * divisor,
+        destination_coordinate.1 * divisor,
+    );
+    let end = (
+        (start.0 + divisor).min(source_dimensions.0),
+        (start.1 + divisor).min(source_dimensions.1),
+    );
+    (start, end)
+}
+
+/// The texel-addressed pixelated sampling rule used by both composite shader
+/// variants. `u64` intermediates keep the CPU contract exact at all supported
+/// renderer dimensions.
+fn pixelated_source_coordinate(
+    destination_position: (u32, u32),
+    destination_dimensions: (u32, u32),
+    source_dimensions: (u32, u32),
+) -> (u32, u32) {
+    debug_assert!(destination_dimensions.0 > 0 && destination_dimensions.1 > 0);
+    debug_assert!(source_dimensions.0 > 0 && source_dimensions.1 > 0);
+    let map_axis = |position: u32, destination_extent: u32, source_extent: u32| {
+        let coordinate =
+            (u64::from(position) * u64::from(source_extent) / u64::from(destination_extent)) as u32;
+        coordinate.min(source_extent - 1)
+    };
+    (
+        map_axis(
+            destination_position.0,
+            destination_dimensions.0,
+            source_dimensions.0,
+        ),
+        map_axis(
+            destination_position.1,
+            destination_dimensions.1,
+            source_dimensions.1,
+        ),
+    )
+}
+
 fn bloom_params(
-    dimensions: (u32, u32),
+    source_dimensions: (u32, u32),
+    output_dimensions: (u32, u32),
     direction: [f32; 2],
     threshold: f32,
     intensity: f32,
+    source_block_divisor: u32,
 ) -> BloomParams {
     BloomParams {
-        texel_size: [1.0 / dimensions.0 as f32, 1.0 / dimensions.1 as f32],
+        texel_size: [
+            1.0 / source_dimensions.0 as f32,
+            1.0 / source_dimensions.1 as f32,
+        ],
         threshold,
         intensity,
         direction,
-        _padding: [0.0; 2],
+        source_block_divisor,
+        _padding: 0,
+        output_dimensions: [output_dimensions.0, output_dimensions.1],
     }
 }
 
 fn bloom_parameter_slots(
     surface_dimensions: (u32, u32),
     level_dimensions: &[(u32, u32); BLOOM_LEVEL_COUNT],
+    profile: BloomRenderProfile,
 ) -> Vec<BloomParams> {
     let mut slots = Vec::with_capacity(BLOOM_PARAM_SLOT_COUNT);
     slots.push(bloom_params(
         surface_dimensions,
+        level_dimensions[0],
         [0.0, 0.0],
         BLOOM_THRESHOLD,
         1.0,
+        profile.resolution.base_divisor(),
     ));
 
     for level_index in 0..BLOOM_LEVEL_COUNT {
         if level_index > 0 {
             slots.push(bloom_params(
                 level_dimensions[level_index - 1],
+                level_dimensions[level_index],
                 [0.0, 0.0],
                 0.0,
                 1.0,
+                1,
             ));
         }
         slots.push(bloom_params(
             level_dimensions[level_index],
+            level_dimensions[level_index],
             [1.0, 0.0],
             0.0,
             1.0,
+            1,
         ));
         slots.push(bloom_params(
+            level_dimensions[level_index],
             level_dimensions[level_index],
             [0.0, 1.0],
             0.0,
             1.0,
+            1,
         ));
     }
 
-    for source_dimensions in level_dimensions[1..].iter().rev() {
-        slots.push(bloom_params(*source_dimensions, [0.0, 0.0], 0.0, 1.0));
+    for level_index in (1..BLOOM_LEVEL_COUNT).rev() {
+        slots.push(bloom_params(
+            level_dimensions[level_index],
+            level_dimensions[level_index - 1],
+            [0.0, 0.0],
+            0.0,
+            1.0,
+            1,
+        ));
     }
 
     slots.push(bloom_params(
         level_dimensions[0],
+        surface_dimensions,
         [0.0, 0.0],
         0.0,
         BLOOM_INTENSITY,
+        1,
     ));
     debug_assert_eq!(slots.len(), BLOOM_PARAM_SLOT_COUNT);
     slots
@@ -481,8 +664,9 @@ fn create_params_buffer(
     params_stride: u64,
     surface_dimensions: (u32, u32),
     level_dimensions: &[(u32, u32); BLOOM_LEVEL_COUNT],
+    profile: BloomRenderProfile,
 ) -> wgpu::Buffer {
-    let slots = bloom_parameter_slots(surface_dimensions, level_dimensions);
+    let slots = bloom_parameter_slots(surface_dimensions, level_dimensions, profile);
     let buffer_size = params_stride * BLOOM_PARAM_SLOT_COUNT as u64;
     let buffer_size =
         usize::try_from(buffer_size).expect("bloom parameter buffer size must fit in usize");
@@ -656,28 +840,144 @@ mod tests {
     }
 
     #[test]
-    fn bloom_levels_keep_nonzero_dimensions() {
-        assert_eq!(bloom_level_dimensions(1, 1, 0), (1, 1));
-        assert_eq!(bloom_level_dimensions(1920, 1080, 0), (960, 540));
-        assert_eq!(bloom_level_dimensions(1920, 1080, 4), (60, 34));
+    fn bloom_level_dimensions_follow_every_profile_divisor_at_odd_sizes() {
+        for resolution in [
+            BloomResolution::Half,
+            BloomResolution::Quarter,
+            BloomResolution::Eighth,
+        ] {
+            let profile = BloomRenderProfile {
+                resolution,
+                pixelated: false,
+            };
+            for level_index in 0..BLOOM_LEVEL_COUNT {
+                let divisor = resolution.base_divisor() * (1 << level_index);
+                assert_eq!(
+                    bloom_level_dimensions(1279, 719, profile, level_index),
+                    (1279_u32.div_ceil(divisor), 719_u32.div_ceil(divisor)),
+                    "{resolution:?} level {level_index}",
+                );
+            }
+        }
+        assert_eq!(
+            bloom_level_dimensions(1, 1, BloomRenderProfile::default(), 0),
+            (1, 1)
+        );
     }
 
     #[test]
-    fn bloom_parameter_slots_follow_record_order_and_resize_dimensions() {
-        let dimensions = bloom_level_dimensions_table(1920, 1080);
-        let slots = bloom_parameter_slots((1920, 1080), &dimensions);
+    fn bloom_resource_plan_preserves_profile_changes_before_and_after_resize() {
+        let mut plan = BloomResourcePlan::new(BloomRenderProfile::default(), 1920, 1080);
+        assert_eq!(plan.level_dimensions()[0], (960, 540));
+
+        assert!(plan.set_profile(BloomRenderProfile {
+            resolution: BloomResolution::Quarter,
+            pixelated: true,
+        }));
+        assert_eq!(plan.level_dimensions()[0], (480, 270));
+
+        plan.resize(1279, 719);
+        assert_eq!(plan.level_dimensions()[0], (320, 180));
+        assert!(plan.set_profile(BloomRenderProfile {
+            resolution: BloomResolution::Eighth,
+            pixelated: true,
+        }));
+        assert_eq!(plan.level_dimensions()[0], (160, 90));
+        assert!(!plan.set_profile(BloomRenderProfile {
+            resolution: BloomResolution::Eighth,
+            pixelated: true,
+        }));
+    }
+
+    #[test]
+    fn bloom_parameter_slots_follow_record_order_and_profile_dimensions() {
+        let profile = BloomRenderProfile::default();
+        let dimensions = bloom_level_dimensions_table(1920, 1080, profile);
+        let slots = bloom_parameter_slots((1920, 1080), &dimensions, profile);
         assert_eq!(slots.len(), BLOOM_PARAM_SLOT_COUNT);
         assert_eq!(slots[0].texel_size, [1.0 / 1920.0, 1.0 / 1080.0]);
         assert_eq!(slots[0].threshold, BLOOM_THRESHOLD);
+        assert_eq!(slots[0].source_block_divisor, 2);
+        assert_eq!(slots[0].output_dimensions, [960, 540]);
         assert_eq!(slots[3].texel_size, [1.0 / 960.0, 1.0 / 540.0]);
         assert_eq!(slots[15].texel_size, [1.0 / 60.0, 1.0 / 34.0]);
         assert_eq!(slots[19].intensity, BLOOM_INTENSITY);
+        assert_eq!(slots[19].output_dimensions, [1920, 1080]);
 
-        let resized_dimensions = bloom_level_dimensions_table(1279, 719);
-        let resized_slots = bloom_parameter_slots((1279, 719), &resized_dimensions);
+        let quarter = BloomRenderProfile {
+            resolution: BloomResolution::Quarter,
+            pixelated: false,
+        };
+        let resized_dimensions = bloom_level_dimensions_table(1279, 719, quarter);
+        let resized_slots = bloom_parameter_slots((1279, 719), &resized_dimensions, quarter);
         assert_eq!(resized_slots.len(), BLOOM_PARAM_SLOT_COUNT);
         assert_eq!(resized_slots[0].texel_size, [1.0 / 1279.0, 1.0 / 719.0]);
-        assert_eq!(resized_slots[1].texel_size, [1.0 / 640.0, 1.0 / 360.0]);
+        assert_eq!(resized_slots[0].source_block_divisor, 4);
+        assert_eq!(resized_slots[0].output_dimensions, [320, 180]);
+        assert_eq!(resized_slots[1].texel_size, [1.0 / 320.0, 1.0 / 180.0]);
+    }
+
+    #[test]
+    fn bright_pass_source_blocks_cover_each_texel_once_for_supported_divisors() {
+        for resolution in [
+            BloomResolution::Half,
+            BloomResolution::Quarter,
+            BloomResolution::Eighth,
+        ] {
+            let profile = BloomRenderProfile {
+                resolution,
+                pixelated: false,
+            };
+            for source_width in 1..=17 {
+                for source_height in 1..=17 {
+                    let target_dimensions =
+                        bloom_level_dimensions(source_width, source_height, profile, 0);
+                    let mut coverage = vec![0_u8; (source_width * source_height) as usize];
+                    for target_y in 0..target_dimensions.1 {
+                        for target_x in 0..target_dimensions.0 {
+                            let (start, end) = bright_pass_source_block_bounds(
+                                (source_width, source_height),
+                                (target_x, target_y),
+                                resolution,
+                            );
+                            assert!(start.0 < end.0 && start.1 < end.1);
+                            for source_y in start.1..end.1 {
+                                for source_x in start.0..end.0 {
+                                    coverage[(source_y * source_width + source_x) as usize] += 1;
+                                }
+                            }
+                        }
+                    }
+                    assert!(
+                        coverage.iter().all(|count| *count == 1),
+                        "{resolution:?} must cover every texel once at {source_width}x{source_height}",
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pixelated_mapping_is_floor_scaled_and_clamped_at_odd_edges() {
+        let source_dimensions = (5, 3);
+        let destination_dimensions = (13, 7);
+        for destination_y in 0..destination_dimensions.1 {
+            for destination_x in 0..destination_dimensions.0 {
+                let mapped = pixelated_source_coordinate(
+                    (destination_x, destination_y),
+                    destination_dimensions,
+                    source_dimensions,
+                );
+                assert_eq!(
+                    mapped,
+                    (
+                        destination_x * source_dimensions.0 / destination_dimensions.0,
+                        destination_y * source_dimensions.1 / destination_dimensions.1,
+                    )
+                );
+                assert!(mapped.0 < source_dimensions.0 && mapped.1 < source_dimensions.1);
+            }
+        }
     }
 
     #[test]
@@ -703,11 +1003,37 @@ mod tests {
             .find("let excess =")
             .expect("extract shader must threshold each source texel");
         let reduction = source
-            .find("extracted * 0.25")
-            .expect("extract shader must reduce thresholded source texels");
+            .find("extracted / f32(valid_source_texels)")
+            .expect("extract shader must normalize by its valid source texel count");
         assert!(source_load < threshold);
         assert!(threshold < reduction);
+        assert!(source.contains("source_block_divisor"));
+        assert!(source.contains("if (all(source_coord < source_dimensions))"));
+        assert!(source.contains("var valid_source_texels = 0u"));
         assert!(!source.contains("textureSample(bloom_source"));
+    }
+
+    #[test]
+    fn pixelated_composite_entries_use_clamped_texel_mapping_without_changing_filters() {
+        let source = include_str!("../shaders/bloom_composite.wgsl");
+        assert!(source.contains("fn pixelated_source_coordinate"));
+        assert!(
+            source.contains("(destination_position * source_dimensions) / destination_dimensions")
+        );
+        assert!(source.contains("return clamp("));
+
+        for entry in ["fs_upsample_pixelated", "fs_composite_pixelated"] {
+            let entry_start = source
+                .find(entry)
+                .expect("pixelated profile must have a pipeline entry point");
+            let entry_source = &source[entry_start..];
+            assert!(entry_source.contains("pixelated_source_coordinate("));
+            assert!(entry_source.contains("textureLoad(bloom_source"));
+        }
+
+        let filter_source = include_str!("../shaders/bloom_filter.wgsl");
+        assert!(filter_source.contains("textureSample(bloom_source"));
+        assert!(!filter_source.contains("textureLoad(bloom_source"));
     }
 
     #[test]

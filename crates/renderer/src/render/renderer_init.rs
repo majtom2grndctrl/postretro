@@ -98,6 +98,7 @@ impl Renderer {
             surface_reconfigure_pending: false,
             has_multi_draw_indirect,
             cube_array_supported,
+            bloom_render_profile: BloomRenderProfile::default(),
             boot_splash: Some(boot_splash),
             // Full renderer is built on the first `finish_full_init` /
             // `ensure_full_ready`, after the boot splash has presented.
@@ -129,6 +130,7 @@ impl Renderer {
         // This fixed target format makes capture bytes independent of whichever
         // swapchain formats a windowed surface happens to advertise.
         let capture_format = wgpu::TextureFormat::Rgba8UnormSrgb;
+        let bloom_render_profile = BloomRenderProfile::default();
         let full = build_full_renderer(
             &device,
             &queue,
@@ -137,6 +139,7 @@ impl Renderer {
             capture_height,
             has_multi_draw_indirect,
             cube_array_supported,
+            bloom_render_profile,
         )?;
         Ok(Self {
             device,
@@ -158,6 +161,7 @@ impl Renderer {
             surface_reconfigure_pending: false,
             has_multi_draw_indirect,
             cube_array_supported,
+            bloom_render_profile,
             boot_splash: None,
             full: Some(Box::new(full)),
         })
@@ -181,6 +185,7 @@ impl Renderer {
             self.surface_config.height,
             self.has_multi_draw_indirect,
             self.cube_array_supported,
+            self.bloom_render_profile,
         )?;
         self.full = Some(Box::new(full));
         log::info!("[Renderer] Full renderer initialization complete");

@@ -3,7 +3,9 @@ struct BloomParams {
     threshold: f32,
     intensity: f32,
     direction: vec2<f32>,
-    _padding: vec2<f32>,
+    source_block_divisor: u32,
+    _padding: u32,
+    output_dimensions: vec2<u32>,
 };
 
 @group(0) @binding(0) var bloom_source: texture_2d<f32>;

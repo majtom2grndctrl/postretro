@@ -11,87 +11,26 @@ use rquickjs::{
 };
 
 use super::data_descriptors::{
-    EntityTypeDescriptor, ImpactEventDescriptor, ModThemeTokens, RegisteredUiTree,
-    TriggerPoolDescriptor, drain_fonts_js, drain_fonts_lua, drain_frontend_js, drain_frontend_lua,
+    drain_fonts_js, drain_fonts_lua, drain_frontend_js, drain_frontend_lua,
     drain_global_crossings_js, drain_global_crossings_lua, drain_global_reactions_js,
     drain_global_reactions_lua, drain_impact_events_js, drain_impact_events_lua, drain_maps_js,
     drain_maps_lua, drain_theme_js, drain_theme_lua, drain_trigger_events_js,
     drain_trigger_events_lua, drain_trigger_pools_js, drain_trigger_pools_lua, drain_ui_trees_js,
     drain_ui_trees_lua, entity_descriptor_from_js,
 };
-use super::data_registry::{ScopedCrossing, ScopedReaction};
 use super::error::ScriptError;
 use super::luau::LuauConfig;
 use super::luau_require::LuauRequireTracker;
 use super::quickjs::{QuickJsConfig, run_script};
-use super::runtime::{Frontend, ModManifestResult, ModMapEntry};
-use super::slot_table::StoreDeclarationSet;
+use super::runtime::ModManifestResult;
 use super::store_bridge::{drain_store_declarations_js, drain_store_declarations_lua};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum StagedManifestDiagnosticSeverity {
-    Info,
-    Error,
-}
+mod transfer;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct StagedManifestDiagnostic {
-    pub severity: StagedManifestDiagnosticSeverity,
-    pub message: String,
-}
-
-impl StagedManifestDiagnostic {
-    fn info(message: impl Into<String>) -> Self {
-        Self {
-            severity: StagedManifestDiagnosticSeverity::Info,
-            message: message.into(),
-        }
-    }
-
-    fn error(message: impl Into<String>) -> Self {
-        Self {
-            severity: StagedManifestDiagnosticSeverity::Error,
-            message: message.into(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct StagedManifest {
-    pub name: String,
-    pub entities: Vec<EntityTypeDescriptor>,
-    pub maps: Vec<ModMapEntry>,
-    pub reactions: Vec<ScopedReaction>,
-    pub crossings: Vec<ScopedCrossing>,
-    pub events: Vec<ImpactEventDescriptor>,
-    pub trigger_events: Vec<super::data_descriptors::TriggerEventDescriptor>,
-    pub trigger_pools: Vec<TriggerPoolDescriptor>,
-    pub ui_trees: Vec<RegisteredUiTree>,
-    pub theme: ModThemeTokens,
-    pub frontend: Option<Frontend>,
-    pub store_declarations: StoreDeclarationSet,
-    /// Canonical mod-init source dependencies carried across the worker→main
-    /// thread boundary. The descriptor registry write and watcher classifier
-    /// update both happen on the main thread in `commit_staged_manifest_result`,
-    /// where the engine registry is mutably owned; this field is what makes the
-    /// dependency set available at that commit point.
-    pub dependency_paths: Vec<PathBuf>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum StagedManifestBuildStatus {
-    Built(Box<StagedManifest>),
-    NoStartScript,
-    Failed,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct StagedManifestBuildResult {
-    pub generation: u64,
-    pub mod_root: PathBuf,
-    pub status: StagedManifestBuildStatus,
-    pub diagnostics: Vec<StagedManifestDiagnostic>,
-}
+pub use transfer::{
+    StagedManifest, StagedManifestBuildResult, StagedManifestBuildStatus, StagedManifestDiagnostic,
+    StagedManifestDiagnosticSeverity,
+};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct StagedManifestBuildConfig {
@@ -823,6 +762,7 @@ fn run_staged_mod_init_luau(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data_descriptors::ModThemeTokens;
     use std::time::{Duration, Instant};
 
     struct TempModRoot(PathBuf);

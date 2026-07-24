@@ -362,6 +362,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         lighting = indirect;
     }
     lighting = vec3<f32>(kinematic_light_params.ambient_floor) + lighting + dynamic;
-    let emissive = sample_post_retro(emissive_texture, aniso_sampler, in.uv, ddx, ddy).rgb;
+    var emissive = vec3<f32>(0.0);
+    if material.emissive_strength > 0.0 {
+        emissive = sample_post_retro(emissive_texture, aniso_sampler, in.uv, ddx, ddy).rgb;
+    }
     return vec4<f32>(base_color.rgb * lighting + emissive * material.emissive_strength, base_color.a);
 }

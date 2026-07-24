@@ -8,6 +8,7 @@ so it is an authoring starting point for the static, per-texel emissive slot.
 
 import argparse
 import os
+import sys
 from pathlib import Path
 
 from PIL import Image, ImageOps
@@ -41,7 +42,7 @@ def process_image(input_path, output_path, cutoff=None, force=False):
     """Generate an sRGB-content, untagged emissive sibling from one diffuse PNG."""
     if os.path.exists(output_path) and not force:
         print(f"Skipping {input_path} (output already exists)")
-        return
+        return True
 
     try:
         with Image.open(input_path) as image:
@@ -59,8 +60,10 @@ def process_image(input_path, output_path, cutoff=None, force=False):
             emissive.info.pop("gamma", None)
             emissive.info.pop("icc_profile", None)
             emissive.save(output_path, "PNG", pnginfo=PngInfo(), icc_profile=b"")
+        return True
     except Exception as error:
-        print(f"Error processing {input_path}: {error}")
+        print(f"Error processing {input_path}: {error}", file=sys.stderr)
+        return False
 
 
 def main():
@@ -82,18 +85,31 @@ def main():
     if input_path.is_file():
         files = [input_path]
     elif input_path.is_dir():
-        pattern = "**/*.[pj][np]g" if args.recursive else "*.[pj][np]g"
-        files = list(input_path.glob(pattern))
+        candidates = input_path.rglob("*") if args.recursive else input_path.iterdir()
+        files = sorted(
+            path
+            for path in candidates
+            if path.is_file() and path.suffix.lower() in {".png", ".jpg"}
+        )
     else:
-        print(f"Invalid input path: {args.input}")
-        return
+        parser.error(f"invalid input path: {args.input}")
 
+    failed = []
     for source in files:
-        if source.stem.endswith(("_s", "_n", "_e")):
+        if source.stem.lower().endswith(("_s", "_n", "_e")):
             continue
         output_path = source.parent / f"{source.stem}_e.png"
-        process_image(source, output_path, args.cutoff, args.force)
+        if not process_image(source, output_path, args.cutoff, args.force):
+            failed.append(source)
+
+    if failed:
+        print(
+            f"Failed to generate emissive maps for {len(failed)} input file(s).",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

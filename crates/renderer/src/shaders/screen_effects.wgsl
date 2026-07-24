@@ -5,10 +5,9 @@
 //
 // Tonemaps HDR scene color, then composes screen effects (flash / vignette /
 // shake) on top.
-// The effect values arrive in `EffectUniform`, packed CPU-side from the frame's
-// `screen.flash` / `screen.vignette` / `screen.shake` slots (see
-// render/screen_effects.rs::pack_effect_uniform). At rest every term is an exact
-// no-op, so only the near-neutral tonemap changes an at-rest scene.
+// Windowed effect values are packed CPU-side from the frame's screen-effect
+// slots. Capture binds the same uniform at its default, at-rest value. At rest
+// every effect term is an exact no-op, so only the near-neutral tonemap applies.
 //
 // `scene_color` is linear Rgba16Float. This shader samples it without an sRGB
 // decode and writes an sRGB target, which performs the sole store conversion.

@@ -4,8 +4,9 @@
 use std::collections::HashSet;
 
 /// Surface material type derived from texture name prefix.
-/// Drives footstep sounds, impact effects, ricochet behavior, and
-/// decals. Behaviors are stubs until consumed by later phases.
+/// Rendering consumes each variant's shininess and emissive strength.
+/// Gameplay and audio hooks such as footsteps, impacts, ricochets, and decals
+/// remain future consumers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Material {
     Metal,

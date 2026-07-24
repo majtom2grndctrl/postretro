@@ -119,10 +119,9 @@ impl Renderer {
 
         let width = self.surface_config.width;
         let height = self.surface_config.height;
-        // `scene_color` is HDR Rgba16Float, while the established PNG path
-        // reads tightly packed RGBA8. Resolve to a capture-only LDR texture
-        // first; it shares the window resolve's soft-knee tonemap but keeps
-        // transient flash/vignette/shake at rest.
+        // The PNG path reads tightly packed RGBA8, so resolve HDR scene color to
+        // a capture-only LDR target first. Capture shares the window tonemap but
+        // uses an at-rest effect uniform instead of transient screen effects.
         let capture_color = self.full().screen_effects.encode_capture_tonemap(
             &self.device,
             &self.queue,
@@ -730,21 +729,21 @@ impl Renderer {
         // contribution back before capture. The capture return below therefore
         // sees bloom, while wireframe/debug/viewmodel/UI remain un-bloomed.
         if self.full().bloom.enabled() {
-            let Self { queue, full, .. } = self;
-            let full = full
-                .as_mut()
+            let full = self
+                .full
+                .as_ref()
                 .expect("renderer full-init must complete before full-ready paths run");
             if let Some(timing) = &full.frame_timing {
                 timing.write_encoder_start(encoder, TIMING_PAIR_BLOOM);
             }
-            full.bloom.record(queue, encoder, &scene_color);
+            full.bloom.record(encoder, &scene_color);
             if let Some(timing) = &full.frame_timing {
                 timing.write_encoder_end(encoder, TIMING_PAIR_BLOOM);
             }
         }
 
-        // Offscreen capture stops after the world scene. The windowed-only
-        // wireframe/debug/UI/resolve tail below must never enter capture bytes.
+        // Offscreen capture stops after fog and bloom. The windowed-only
+        // wireframe/debug/viewmodel/UI/resolve tail must not enter capture bytes.
         let Some(view) = swapchain_view else {
             return Ok(());
         };
@@ -956,12 +955,10 @@ impl Renderer {
         // shrank), so freed modal trees release their layout cache.
         full.ui.truncate_gameplay_stack(stack.len());
 
-        // Post-scene compositor resolve: blit `scene_color` into the swapchain
-        // `view`, composing flash/vignette/shake from the frame's UI slot
-        // snapshot on top. Encoded AFTER the UI pass and BEFORE the timing
-        // resolve — the sole swapchain writer for the gameplay path, run every
-        // frame (never skipped at rest). At-rest slot values pack to the identity
-        // uniform, so the output stays byte-identical to the pre-SE blit.
+        // Resolve HDR `scene_color` into the swapchain after UI, applying the
+        // soft-knee tonemap before flash/vignette/shake. This is the gameplay
+        // path's sole swapchain writer and runs even when screen effects are at
+        // rest; timing query resolution follows it.
         full.screen_effects
             .encode_resolve(queue, encoder, view, &full.ui_snapshot.slot_values);
 

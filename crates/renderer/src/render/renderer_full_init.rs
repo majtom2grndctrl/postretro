@@ -468,12 +468,11 @@ pub(crate) fn build_full_renderer(
         kinematic_brush.instance_transform_bind_group_layout(),
     );
 
-    // UI quad / 9-slice + text pass — sibling to fog. Owns all UI GPU state
-    // (quad pipeline, glyphon atlas/renderer, white texel). The splash phase
-    // and the gameplay path both record through it.
+    // Gameplay UI owns its quad pipeline, glyphon atlas/renderer, and white
+    // texel. Boot splash rendering uses its separate lightweight pass.
     let ui = ui::UiPass::new(device, queue, SCENE_COLOR_FORMAT);
 
-    let mut fog = FogPass::new(
+    let fog = FogPass::new(
         device,
         surface_config.width,
         surface_config.height,
@@ -484,8 +483,6 @@ pub(crate) fn build_full_renderer(
         &spot_shadow_bgl,
         cube_array_supported,
     );
-    fog.rebuild_composite_for_scene_color(device);
-
     if has_geometry {
         log::info!(
             "[Renderer] Textured pipeline ready: {} indices, {} textures, bvh_leaves={}",

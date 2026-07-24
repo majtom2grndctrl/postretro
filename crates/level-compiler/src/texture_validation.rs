@@ -1,7 +1,7 @@
 // Compile-time PNG color-space validation for texture siblings.
 //
 // Per `context/lib/resource_management.md` §4 and the normal-maps plan
-// (`context/plans/in-progress/normal-maps/index.md` Task 2), surface map
+// (`context/plans/done/normal-maps/index.md` Task 2), surface map
 // siblings must be authored in linear color space:
 //
 // | Suffix     | Required color space | Action on violation |

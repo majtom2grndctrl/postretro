@@ -4,6 +4,7 @@
 use std::num::NonZeroU64;
 
 use super::SCENE_COLOR_FORMAT;
+use wgpu::util::DeviceExt;
 
 /// Luminance at which HDR pixels begin contributing to bloom. Task 4's Neon
 /// reference strength must keep its authored emissive value above this value.
@@ -20,7 +21,7 @@ const BLOOM_LEVEL_COUNT: usize = 5;
 const BLOOM_PARAM_SLOT_COUNT: usize = BLOOM_LEVEL_COUNT * 4;
 
 #[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 struct BloomParams {
     texel_size: [f32; 2],
     threshold: f32,
@@ -38,7 +39,6 @@ struct BloomLevel {
     blur_view: wgpu::TextureView,
     down_bind_group: wgpu::BindGroup,
     blur_bind_group: wgpu::BindGroup,
-    dimensions: (u32, u32),
 }
 
 /// Renderer-owned HDR bloom chain. Bright pixels are extracted into a
@@ -81,6 +81,7 @@ impl BloomPass {
         let params_size = std::mem::size_of::<BloomParams>() as u64;
         let params_alignment = u64::from(device.limits().min_uniform_buffer_offset_alignment);
         let params_stride = params_size.div_ceil(params_alignment) * params_alignment;
+        let level_dimensions = bloom_level_dimensions_table(surface_width, surface_height);
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Bloom BGL"),
             entries: &[
@@ -112,12 +113,12 @@ impl BloomPass {
                 },
             ],
         });
-        let params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Bloom Parameters"),
-            size: params_stride * BLOOM_PARAM_SLOT_COUNT as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let params_buffer = create_params_buffer(
+            device,
+            params_stride,
+            (surface_width, surface_height),
+            &level_dimensions,
+        );
         let scene_source_view =
             scene_color_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let scene_source_bind_group = create_bind_group(
@@ -173,14 +174,7 @@ impl BloomPass {
             None,
             "Bloom Gaussian Blur Pipeline",
         );
-        let additive_blend = Some(wgpu::BlendState {
-            color: wgpu::BlendComponent {
-                src_factor: wgpu::BlendFactor::One,
-                dst_factor: wgpu::BlendFactor::One,
-                operation: wgpu::BlendOperation::Add,
-            },
-            alpha: wgpu::BlendComponent::REPLACE,
-        });
+        let additive_blend = Some(additive_bloom_blend());
         let upsample_pipeline = create_pipeline(
             device,
             &layout,
@@ -199,8 +193,7 @@ impl BloomPass {
         );
         let levels = create_levels(
             device,
-            surface_width,
-            surface_height,
+            &level_dimensions,
             &bind_group_layout,
             &sampler,
             &params_buffer,
@@ -230,6 +223,13 @@ impl BloomPass {
         surface_height: u32,
         scene_color_texture: &wgpu::Texture,
     ) {
+        let level_dimensions = bloom_level_dimensions_table(surface_width, surface_height);
+        self.params_buffer = create_params_buffer(
+            device,
+            self.params_stride,
+            (surface_width, surface_height),
+            &level_dimensions,
+        );
         self.scene_source_view =
             scene_color_texture.create_view(&wgpu::TextureViewDescriptor::default());
         self.scene_source_bind_group = create_bind_group(
@@ -242,8 +242,7 @@ impl BloomPass {
         );
         self.levels = create_levels(
             device,
-            surface_width,
-            surface_height,
+            &level_dimensions,
             &self.bind_group_layout,
             &self.sampler,
             &self.params_buffer,
@@ -262,22 +261,10 @@ impl BloomPass {
     /// Encode bloom against the currently bound HDR scene target. The source
     /// scene bind group is rebuilt on resize, so this function has no material
     /// or light-path dependency and works for any HDR scene contribution.
-    pub fn record(
-        &self,
-        queue: &wgpu::Queue,
-        encoder: &mut wgpu::CommandEncoder,
-        scene_color_view: &wgpu::TextureView,
-    ) {
+    pub fn record(&self, encoder: &mut wgpu::CommandEncoder, scene_color_view: &wgpu::TextureView) {
         let mut params_slot = 0;
         let first = &self.levels[0];
-        let params_offset = self.write_params(
-            queue,
-            &mut params_slot,
-            first.dimensions,
-            [0.0, 0.0],
-            BLOOM_THRESHOLD,
-            1.0,
-        );
+        let params_offset = self.next_params_offset(&mut params_slot);
         encode_fullscreen_pass(
             encoder,
             "Bloom Bright Pass",
@@ -292,14 +279,7 @@ impl BloomPass {
             if level_index > 0 {
                 let source = &self.levels[level_index - 1];
                 let target = &self.levels[level_index];
-                let params_offset = self.write_params(
-                    queue,
-                    &mut params_slot,
-                    source.dimensions,
-                    [0.0, 0.0],
-                    0.0,
-                    1.0,
-                );
+                let params_offset = self.next_params_offset(&mut params_slot);
                 encode_fullscreen_pass(
                     encoder,
                     "Bloom Downsample Pass",
@@ -312,14 +292,7 @@ impl BloomPass {
             }
 
             let level = &self.levels[level_index];
-            let params_offset = self.write_params(
-                queue,
-                &mut params_slot,
-                level.dimensions,
-                [1.0, 0.0],
-                0.0,
-                1.0,
-            );
+            let params_offset = self.next_params_offset(&mut params_slot);
             encode_fullscreen_pass(
                 encoder,
                 "Bloom Horizontal Gaussian Pass",
@@ -329,14 +302,7 @@ impl BloomPass {
                 &level.down_bind_group,
                 params_offset,
             );
-            let params_offset = self.write_params(
-                queue,
-                &mut params_slot,
-                level.dimensions,
-                [0.0, 1.0],
-                0.0,
-                1.0,
-            );
+            let params_offset = self.next_params_offset(&mut params_slot);
             encode_fullscreen_pass(
                 encoder,
                 "Bloom Vertical Gaussian Pass",
@@ -351,14 +317,7 @@ impl BloomPass {
         for level_index in (1..self.levels.len()).rev() {
             let source = &self.levels[level_index];
             let target = &self.levels[level_index - 1];
-            let params_offset = self.write_params(
-                queue,
-                &mut params_slot,
-                source.dimensions,
-                [0.0, 0.0],
-                0.0,
-                1.0,
-            );
+            let params_offset = self.next_params_offset(&mut params_slot);
             encode_fullscreen_pass(
                 encoder,
                 "Bloom Upsample Pass",
@@ -370,14 +329,7 @@ impl BloomPass {
             );
         }
 
-        let params_offset = self.write_params(
-            queue,
-            &mut params_slot,
-            first.dimensions,
-            [0.0, 0.0],
-            0.0,
-            BLOOM_INTENSITY,
-        );
+        let params_offset = self.next_params_offset(&mut params_slot);
         encode_fullscreen_pass(
             encoder,
             "Bloom Scene Composite Pass",
@@ -390,26 +342,10 @@ impl BloomPass {
         debug_assert_eq!(params_slot, BLOOM_PARAM_SLOT_COUNT);
     }
 
-    fn write_params(
-        &self,
-        queue: &wgpu::Queue,
-        params_slot: &mut usize,
-        dimensions: (u32, u32),
-        direction: [f32; 2],
-        threshold: f32,
-        intensity: f32,
-    ) -> u32 {
+    fn next_params_offset(&self, params_slot: &mut usize) -> u32 {
         debug_assert!(*params_slot < BLOOM_PARAM_SLOT_COUNT);
-        let params = BloomParams {
-            texel_size: [1.0 / dimensions.0 as f32, 1.0 / dimensions.1 as f32],
-            threshold,
-            intensity,
-            direction,
-            _padding: [0.0; 2],
-        };
         let offset = self.params_stride * *params_slot as u64;
         *params_slot += 1;
-        queue.write_buffer(&self.params_buffer, offset, bytemuck::bytes_of(&params));
         offset
             .try_into()
             .expect("bloom parameter dynamic offset must fit in u32")
@@ -425,15 +361,15 @@ fn bloom_enabled_from_environment() -> bool {
 
 fn create_levels(
     device: &wgpu::Device,
-    surface_width: u32,
-    surface_height: u32,
+    level_dimensions: &[(u32, u32); BLOOM_LEVEL_COUNT],
     bind_group_layout: &wgpu::BindGroupLayout,
     sampler: &wgpu::Sampler,
     params_buffer: &wgpu::Buffer,
 ) -> Vec<BloomLevel> {
-    (0..BLOOM_LEVEL_COUNT)
-        .map(|level_index| {
-            let dimensions = bloom_level_dimensions(surface_width, surface_height, level_index);
+    level_dimensions
+        .iter()
+        .copied()
+        .map(|dimensions| {
             let (down_texture, down_view) = create_bloom_target(device, dimensions, "Bloom Down");
             let (blur_texture, blur_view) = create_bloom_target(device, dimensions, "Bloom Blur");
             let down_bind_group = create_bind_group(
@@ -459,10 +395,13 @@ fn create_levels(
                 blur_view,
                 down_bind_group,
                 blur_bind_group,
-                dimensions,
             }
         })
         .collect()
+}
+
+fn bloom_level_dimensions_table(width: u32, height: u32) -> [(u32, u32); BLOOM_LEVEL_COUNT] {
+    std::array::from_fn(|level_index| bloom_level_dimensions(width, height, level_index))
 }
 
 fn bloom_level_dimensions(width: u32, height: u32, level_index: usize) -> (u32, u32) {
@@ -471,6 +410,112 @@ fn bloom_level_dimensions(width: u32, height: u32, level_index: usize) -> (u32, 
         width.max(1).div_ceil(divisor).max(1),
         height.max(1).div_ceil(divisor).max(1),
     )
+}
+
+fn bloom_params(
+    dimensions: (u32, u32),
+    direction: [f32; 2],
+    threshold: f32,
+    intensity: f32,
+) -> BloomParams {
+    BloomParams {
+        texel_size: [1.0 / dimensions.0 as f32, 1.0 / dimensions.1 as f32],
+        threshold,
+        intensity,
+        direction,
+        _padding: [0.0; 2],
+    }
+}
+
+fn bloom_parameter_slots(
+    surface_dimensions: (u32, u32),
+    level_dimensions: &[(u32, u32); BLOOM_LEVEL_COUNT],
+) -> Vec<BloomParams> {
+    let mut slots = Vec::with_capacity(BLOOM_PARAM_SLOT_COUNT);
+    slots.push(bloom_params(
+        surface_dimensions,
+        [0.0, 0.0],
+        BLOOM_THRESHOLD,
+        1.0,
+    ));
+
+    for level_index in 0..BLOOM_LEVEL_COUNT {
+        if level_index > 0 {
+            slots.push(bloom_params(
+                level_dimensions[level_index - 1],
+                [0.0, 0.0],
+                0.0,
+                1.0,
+            ));
+        }
+        slots.push(bloom_params(
+            level_dimensions[level_index],
+            [1.0, 0.0],
+            0.0,
+            1.0,
+        ));
+        slots.push(bloom_params(
+            level_dimensions[level_index],
+            [0.0, 1.0],
+            0.0,
+            1.0,
+        ));
+    }
+
+    for source_dimensions in level_dimensions[1..].iter().rev() {
+        slots.push(bloom_params(*source_dimensions, [0.0, 0.0], 0.0, 1.0));
+    }
+
+    slots.push(bloom_params(
+        level_dimensions[0],
+        [0.0, 0.0],
+        0.0,
+        BLOOM_INTENSITY,
+    ));
+    debug_assert_eq!(slots.len(), BLOOM_PARAM_SLOT_COUNT);
+    slots
+}
+
+fn create_params_buffer(
+    device: &wgpu::Device,
+    params_stride: u64,
+    surface_dimensions: (u32, u32),
+    level_dimensions: &[(u32, u32); BLOOM_LEVEL_COUNT],
+) -> wgpu::Buffer {
+    let slots = bloom_parameter_slots(surface_dimensions, level_dimensions);
+    let buffer_size = params_stride * BLOOM_PARAM_SLOT_COUNT as u64;
+    let buffer_size =
+        usize::try_from(buffer_size).expect("bloom parameter buffer size must fit in usize");
+    let params_size = std::mem::size_of::<BloomParams>();
+    let mut bytes = vec![0; buffer_size];
+    for (slot, params) in slots.iter().enumerate() {
+        let offset = usize::try_from(params_stride)
+            .expect("bloom parameter stride must fit in usize")
+            * slot;
+        bytes[offset..offset + params_size].copy_from_slice(bytemuck::bytes_of(params));
+    }
+    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Bloom Parameters"),
+        contents: &bytes,
+        usage: wgpu::BufferUsages::UNIFORM,
+    })
+}
+
+fn additive_bloom_blend() -> wgpu::BlendState {
+    wgpu::BlendState {
+        color: wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::One,
+            dst_factor: wgpu::BlendFactor::One,
+            operation: wgpu::BlendOperation::Add,
+        },
+        // Bloom changes scene radiance, not coverage. Preserve destination alpha
+        // through both the intermediate upsample and final scene composite.
+        alpha: wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::Zero,
+            dst_factor: wgpu::BlendFactor::One,
+            operation: wgpu::BlendOperation::Add,
+        },
+    }
 }
 
 fn create_bloom_target(
@@ -615,6 +660,54 @@ mod tests {
         assert_eq!(bloom_level_dimensions(1, 1, 0), (1, 1));
         assert_eq!(bloom_level_dimensions(1920, 1080, 0), (960, 540));
         assert_eq!(bloom_level_dimensions(1920, 1080, 4), (60, 34));
+    }
+
+    #[test]
+    fn bloom_parameter_slots_follow_record_order_and_resize_dimensions() {
+        let dimensions = bloom_level_dimensions_table(1920, 1080);
+        let slots = bloom_parameter_slots((1920, 1080), &dimensions);
+        assert_eq!(slots.len(), BLOOM_PARAM_SLOT_COUNT);
+        assert_eq!(slots[0].texel_size, [1.0 / 1920.0, 1.0 / 1080.0]);
+        assert_eq!(slots[0].threshold, BLOOM_THRESHOLD);
+        assert_eq!(slots[3].texel_size, [1.0 / 960.0, 1.0 / 540.0]);
+        assert_eq!(slots[15].texel_size, [1.0 / 60.0, 1.0 / 34.0]);
+        assert_eq!(slots[19].intensity, BLOOM_INTENSITY);
+
+        let resized_dimensions = bloom_level_dimensions_table(1279, 719);
+        let resized_slots = bloom_parameter_slots((1279, 719), &resized_dimensions);
+        assert_eq!(resized_slots.len(), BLOOM_PARAM_SLOT_COUNT);
+        assert_eq!(resized_slots[0].texel_size, [1.0 / 1279.0, 1.0 / 719.0]);
+        assert_eq!(resized_slots[1].texel_size, [1.0 / 640.0, 1.0 / 360.0]);
+    }
+
+    #[test]
+    fn additive_bloom_blend_preserves_destination_alpha() {
+        let blend = additive_bloom_blend();
+        assert_eq!(blend.color.src_factor, wgpu::BlendFactor::One);
+        assert_eq!(blend.color.dst_factor, wgpu::BlendFactor::One);
+        assert_eq!(blend.color.operation, wgpu::BlendOperation::Add);
+        assert_eq!(blend.alpha.src_factor, wgpu::BlendFactor::Zero);
+        assert_eq!(blend.alpha.dst_factor, wgpu::BlendFactor::One);
+        assert_eq!(blend.alpha.operation, wgpu::BlendOperation::Add);
+    }
+
+    #[test]
+    fn bloom_extract_thresholds_source_texels_before_reduction() {
+        // Regression: filtering first could average a thin HDR texel down to the
+        // threshold and erase its bloom contribution.
+        let source = include_str!("../shaders/bloom_extract.wgsl");
+        let source_load = source
+            .find("textureLoad(")
+            .expect("extract shader must load unfiltered source texels");
+        let threshold = source
+            .find("let excess =")
+            .expect("extract shader must threshold each source texel");
+        let reduction = source
+            .find("extracted * 0.25")
+            .expect("extract shader must reduce thresholded source texels");
+        assert!(source_load < threshold);
+        assert!(threshold < reduction);
+        assert!(!source.contains("textureSample(bloom_source"));
     }
 
     #[test]

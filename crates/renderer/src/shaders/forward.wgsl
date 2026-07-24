@@ -865,7 +865,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // UV footprint derivatives — computed once here in uniform control flow.
     // WGSL requires dpdx/dpdy to be called from uniform control flow, so they
     // are hoisted out of the per-slot sampling helpers and handed to
-    // textureSampleGrad as explicit gradients. Shared by all three texture slots.
+    // textureSampleGrad as explicit gradients before conditional texture reads.
     let ddx = dpdx(in.uv);
     let ddy = dpdy(in.uv);
 
@@ -1277,7 +1277,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         total_light = total_light + effective_color * attenuation * NdotL;
     }
 
-    let emissive = sample_color(emissive_texture, in.uv, ddx, ddy).rgb;
+    var emissive = vec3<f32>(0.0);
+    if material.emissive_strength > 0.0 {
+        emissive = sample_color(emissive_texture, in.uv, ddx, ddy).rgb;
+    }
     let rgb = base_color.rgb * total_light + emissive * material.emissive_strength;
     // `SdfShadowMode::Visualize` (2) replaces the shaded color with a
     // grayscale view of the first per-light visibility slice (R = slot 0,

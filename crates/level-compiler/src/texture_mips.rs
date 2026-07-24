@@ -15,7 +15,9 @@ mod resolution;
 
 use bake::{build_diffuse_chain, build_normal_bc5_chain, build_specular_chain};
 use cache::{bundle_hash_for, cache_entry_has_valid_declared_slots, filename_key_for};
-use resolution::{bare_segment, build_name_to_path_map, normalize_map_texture_name};
+use resolution::{
+    build_name_to_path_map, normalize_map_texture_name, resolve_texture_bundle_paths,
+};
 
 // -- Gamma helpers --------------------------------------------------------
 
@@ -402,6 +404,15 @@ fn decode_png_rgba(bytes: &[u8], path: &Path) -> anyhow::Result<(Vec<u8>, u32, u
     Ok((rgba.into_raw(), w, h))
 }
 
+fn png_dimensions(bytes: &[u8], path: &Path) -> anyhow::Result<(u32, u32)> {
+    use anyhow::Context as _;
+    use image::ImageDecoder as _;
+
+    let decoder = image::codecs::png::PngDecoder::new(std::io::Cursor::new(bytes))
+        .with_context(|| format!("reading PNG header {}", path.display()))?;
+    Ok(decoder.dimensions())
+}
+
 /// Atomic write: write to `<target>.tmp.<pid>`, then `rename` to `target`.
 fn atomic_write(target: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     let parent = target
@@ -440,8 +451,9 @@ pub fn bake_diffuse_texture(diffuse_path: &Path, cache_root: &Path) -> anyhow::R
     let bundle_hash = bundle_hash_for(Some(&diffuse_bytes), None, None, None);
     let prm_path = cache_root.join(format!("{}.prm", cache_filename_for_key(&filename_key)));
 
-    // A richer world bundle can share this diffuse-addressed filename. Keep it
-    // intact when all declared slots parse; model loading consumes only diffuse.
+    // A legacy richer world bundle may still occupy this pre-change
+    // diffuse-addressed filename. Keep a structurally valid one intact because
+    // model loading consumes only its diffuse slot.
     if prm_path.exists() {
         if let Ok(bytes) = std::fs::read(&prm_path) {
             let (hdr_result, slots) = PrmFile::from_bytes_partial(&bytes);
@@ -519,20 +531,14 @@ pub fn bake_texture_mips(
         // the relative keys (`collection/stem`).
         let normalized = normalize_map_texture_name(name);
 
-        // Resolve the diffuse against the normalized relative name first; on a
-        // miss, fall back to the bare last path segment (back-compat alias).
-        // Sibling `_s`/`_n`/`_e` keys append to the SAME form that resolved the
-        // diffuse, so siblings come from the same collection.
-        let (diff_path, resolved_base) = match name_to_path.get(&normalized) {
-            Some(p) => (Some(p.clone()), normalized.clone()),
-            None => {
-                let bare = bare_segment(&normalized).to_string();
-                (name_to_path.get(&bare).cloned(), bare)
-            }
-        };
-        let spec_path = name_to_path.get(&format!("{resolved_base}_s")).cloned();
-        let norm_path = name_to_path.get(&format!("{resolved_base}_n")).cloned();
-        let emissive_path = name_to_path.get(&format!("{resolved_base}_e")).cloned();
+        // Preserve a requested qualified base when any of its slots exists.
+        // Only an entirely missing qualified bundle may fall back to the
+        // unique bare-stem aliases.
+        let resolved = resolve_texture_bundle_paths(&name_to_path, &normalized);
+        let diff_path = resolved.diffuse;
+        let spec_path = resolved.specular;
+        let norm_path = resolved.normal;
+        let emissive_path = resolved.emissive;
 
         // Read raw bytes (needed for both filename key and bundle hash).
         let diff_bytes = match diff_path.as_ref() {
@@ -577,6 +583,23 @@ pub fn bake_texture_mips(
             continue;
         }
 
+        if let (Some(diffuse), Some(emissive), Some(diffuse_path), Some(emissive_path)) = (
+            diff_bytes.as_deref(),
+            emissive_bytes.as_deref(),
+            diff_path.as_ref(),
+            emissive_path.as_ref(),
+        ) {
+            let (diffuse_width, diffuse_height) = png_dimensions(diffuse, diffuse_path)?;
+            let (emissive_width, emissive_height) = png_dimensions(emissive, emissive_path)?;
+            if (emissive_width, emissive_height) != (diffuse_width, diffuse_height) {
+                anyhow::bail!(
+                    "emissive texture {} is {emissive_width}x{emissive_height}, but diffuse texture {} for '{name}' is {diffuse_width}x{diffuse_height}; _e.png dimensions must match diffuse",
+                    emissive_path.display(),
+                    diffuse_path.display(),
+                );
+            }
+        }
+
         let bundle_hash = bundle_hash_for(
             diff_bytes.as_deref(),
             spec_bytes.as_deref(),
@@ -601,9 +624,8 @@ pub fn bake_texture_mips(
             }
         }
 
-        // Build slots. We only emit a slot for the diffuse if the source PNG
-        // actually exists; same for specular, normal, and emissive. Dimensions across
-        // slots are not required to match here (the runtime checks).
+        // Build only the slots whose source PNGs exist. Emissive dimensions
+        // are checked against diffuse before the bundle is encoded.
         let mut slots_arr: [Option<PrmSlot>; 4] = [None, None, None, None];
         let mut slot_mask = PrmSlots::empty();
 
@@ -700,6 +722,8 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    use postretro_level_format::prm::PrmReadError;
+
     fn unique_temp_dir(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
             "prl-build-{label}-{}-{}",
@@ -720,6 +744,13 @@ mod tests {
                 255,
             ])
         });
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+        bytes.into_inner()
+    }
+
+    fn solid_png_bytes(width: u32, height: u32, color: [u8; 4]) -> Vec<u8> {
+        let image = image::RgbaImage::from_pixel(width, height, image::Rgba(color));
         let mut bytes = std::io::Cursor::new(Vec::new());
         image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
         bytes.into_inner()
@@ -811,11 +842,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    // Regression: model baking used to overwrite a world bundle at the shared
-    // diffuse-content filename when the world bundle had sibling slots.
+    // Regression: richer world bundles must not share the model's diffuse-only
+    // filename, or another material with the same diffuse can overwrite them.
     #[test]
-    fn single_diffuse_bake_preserves_richer_world_bundle_with_same_diffuse() {
-        let root = unique_temp_dir("single-diffuse-preserves-world-bundle");
+    fn single_diffuse_bake_uses_distinct_filename_from_richer_world_bundle() {
+        let root = unique_temp_dir("single-diffuse-distinct-from-world-bundle");
         let texture_root = root.join("textures");
         let collection = texture_root.join("shared");
         let cache_root = root.join("cache");
@@ -829,14 +860,15 @@ mod tests {
 
         let world_keys =
             bake_texture_mips(&["shared/surface".to_string()], &texture_root, &cache_root).unwrap();
-        let key = world_keys["shared/surface"];
-        let cache_path = cache_root.join(format!("{}.prm", cache_filename_for_key(&key)));
-        let world_bytes = std::fs::read(&cache_path).unwrap();
+        let world_key = world_keys["shared/surface"];
+        let world_path = cache_root.join(format!("{}.prm", cache_filename_for_key(&world_key)));
+        let world_bytes = std::fs::read(&world_path).unwrap();
 
-        let returned_key = bake_diffuse_texture(&diffuse_path, &cache_root).unwrap();
+        let model_key = bake_diffuse_texture(&diffuse_path, &cache_root).unwrap();
+        let model_path = cache_root.join(format!("{}.prm", cache_filename_for_key(&model_key)));
 
-        assert_eq!(returned_key, key);
-        assert_eq!(std::fs::read(&cache_path).unwrap(), world_bytes);
+        assert_ne!(model_key, world_key);
+        assert_eq!(std::fs::read(&world_path).unwrap(), world_bytes);
         let (header, slots) = PrmFile::from_bytes_partial(&world_bytes);
         let header = header.unwrap();
         assert_eq!(
@@ -844,6 +876,12 @@ mod tests {
             PrmSlots::DIFFUSE | PrmSlots::SPECULAR | PrmSlots::NORMAL | PrmSlots::EMISSIVE
         );
         assert!(slots.iter().all(Result::is_ok));
+
+        let model_bytes = std::fs::read(model_path).unwrap();
+        let (header, slots) = PrmFile::from_bytes_partial(&model_bytes);
+        assert_eq!(header.unwrap().slot_mask, PrmSlots::DIFFUSE);
+        assert!(slots[0].is_ok());
+        assert!(slots[1..].iter().all(Result::is_err));
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1231,6 +1269,128 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    // Regression: diffuse-only filename addressing collapsed materials whose
+    // diffuse bytes matched but whose emissive siblings differed.
+    #[test]
+    fn same_diffuse_with_different_emissive_writes_distinct_runtime_bundles() {
+        let root = unique_temp_dir("distinct-emissive-bundles");
+        let texture_root = root.join("textures");
+        let alpha = texture_root.join("alpha");
+        let beta = texture_root.join("beta");
+        let cache_root = root.join("cache");
+        std::fs::create_dir_all(&alpha).unwrap();
+        std::fs::create_dir_all(&beta).unwrap();
+
+        let diffuse = solid_png_bytes(4, 4, [40, 50, 60, 255]);
+        std::fs::write(alpha.join("panel.png"), &diffuse).unwrap();
+        std::fs::write(beta.join("panel.png"), &diffuse).unwrap();
+        std::fs::write(
+            alpha.join("panel_e.png"),
+            solid_png_bytes(4, 4, [255, 0, 0, 255]),
+        )
+        .unwrap();
+        std::fs::write(
+            beta.join("panel_e.png"),
+            solid_png_bytes(4, 4, [0, 0, 255, 255]),
+        )
+        .unwrap();
+
+        let names = ["alpha/panel".to_string(), "beta/panel".to_string()];
+        let keys = bake_texture_mips(&names, &texture_root, &cache_root).unwrap();
+        let alpha_key = keys["alpha/panel"];
+        let beta_key = keys["beta/panel"];
+        assert_ne!(
+            alpha_key, beta_key,
+            "the complete optional bundle must participate in its filename key"
+        );
+
+        let load_bundle = |key: [u8; 32]| {
+            let path = cache_root.join(format!("{}.prm", cache_filename_for_key(&key)));
+            let bytes = std::fs::read(path).expect("key must address a baked runtime sidecar");
+            let (header, slots) = PrmFile::from_bytes_partial(&bytes);
+            let header = header.expect("runtime header parses");
+            assert_eq!(header.slot_mask, PrmSlots::DIFFUSE | PrmSlots::EMISSIVE);
+            assert!(slots[0].is_ok(), "diffuse slot parses");
+            assert!(slots[3].is_ok(), "emissive slot parses");
+            (
+                slots[0].as_ref().unwrap().to_owned(),
+                slots[3].as_ref().unwrap().to_owned(),
+            )
+        };
+        let (alpha_diffuse, alpha_emissive) = load_bundle(alpha_key);
+        let (beta_diffuse, beta_emissive) = load_bundle(beta_key);
+        assert_eq!(alpha_diffuse, beta_diffuse);
+        assert_ne!(alpha_emissive, beta_emissive);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Regression: resolving siblings from the diffuse fallback base dropped a
+    // qualified emissive-only material when no diffuse PNG existed.
+    #[test]
+    fn qualified_emissive_only_material_resolves_from_requested_collection() {
+        let root = unique_temp_dir("qualified-emissive-only");
+        let texture_root = root.join("textures");
+        let alpha = texture_root.join("alpha");
+        let beta = texture_root.join("beta");
+        let cache_root = root.join("cache");
+        std::fs::create_dir_all(&alpha).unwrap();
+        std::fs::create_dir_all(&beta).unwrap();
+        std::fs::write(
+            alpha.join("panel_e.png"),
+            solid_png_bytes(2, 2, [240, 20, 10, 255]),
+        )
+        .unwrap();
+        std::fs::write(
+            beta.join("panel_e.png"),
+            solid_png_bytes(2, 2, [10, 20, 240, 255]),
+        )
+        .unwrap();
+
+        let keys =
+            bake_texture_mips(&["alpha/panel".to_string()], &texture_root, &cache_root).unwrap();
+        let key = keys["alpha/panel"];
+        assert_ne!(key, [0u8; 32]);
+        let path = cache_root.join(format!("{}.prm", cache_filename_for_key(&key)));
+        let bytes = std::fs::read(path).unwrap();
+        let (header, slots) = PrmFile::from_bytes_partial(&bytes);
+        assert_eq!(header.unwrap().slot_mask, PrmSlots::EMISSIVE);
+        assert!(matches!(&slots[0], Err(PrmReadError::NotPresent)));
+        assert_eq!(
+            &slots[3]
+                .as_ref()
+                .expect("qualified emissive parses")
+                .payload[0..4],
+            &[240, 20, 10, 255],
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Regression: a mismatched emissive image reached runtime even though the
+    // authoring contract requires it to share the diffuse dimensions.
+    #[test]
+    fn emissive_dimensions_must_match_diffuse_at_compile_time() {
+        let root = unique_temp_dir("emissive-dimension-mismatch");
+        let texture_root = root.join("textures");
+        let collection = texture_root.join("neon");
+        let cache_root = root.join("cache");
+        std::fs::create_dir_all(&collection).unwrap();
+        std::fs::write(collection.join("panel.png"), png_bytes(4, 4)).unwrap();
+        std::fs::write(collection.join("panel_e.png"), png_bytes(2, 4)).unwrap();
+
+        let error = bake_texture_mips(&["neon/panel".to_string()], &texture_root, &cache_root)
+            .expect_err("mismatched emissive dimensions must fail the map build");
+        let message = error.to_string();
+        assert!(message.contains("panel_e.png"));
+        assert!(message.contains("2x4"));
+        assert!(message.contains("panel.png"));
+        assert!(message.contains("4x4"));
+        assert!(message.contains("_e.png dimensions must match diffuse"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// Filename key falls back to specular when diffuse is missing, but the
     /// 0x01 prefix prevents a collision with a diffuse PNG whose bytes
     /// happen to equal the specular bytes.
@@ -1247,11 +1407,8 @@ mod tests {
         assert_eq!(filename_key_for(None, None, None, None), [0u8; 32]);
     }
 
-    /// Resolver coverage: a collection subdir with a diffuse, a `_s` specular
-    /// sibling, and a `_n` normal sibling must resolve through ALL three name
-    /// forms TrenchBroom might emit — bare `stem`, `collection/stem`, and
-    /// root-inclusive `textures/collection/stem` — to the same PNG, and the
-    /// resolved form must carry the `_s`/`_n` siblings from that collection.
+    /// Resolver coverage: a collection subdir with a diffuse and all optional
+    /// siblings must resolve through every name form TrenchBroom might emit.
     #[test]
     fn resolver_matches_bare_qualified_and_root_inclusive_forms() {
         let root = std::env::temp_dir().join(format!(
@@ -1275,9 +1432,11 @@ mod tests {
         let diff = collection.join("concrete_pavement_036.png");
         let spec = collection.join("concrete_pavement_036_s.png");
         let norm = collection.join("concrete_pavement_036_n.png");
+        let emissive = collection.join("concrete_pavement_036_e.png");
         std::fs::write(&diff, png_bytes(1)).unwrap();
         std::fs::write(&spec, png_bytes(2)).unwrap();
         std::fs::write(&norm, png_bytes(3)).unwrap();
+        std::fs::write(&emissive, png_bytes(4)).unwrap();
 
         let map = build_name_to_path_map(&root);
 
@@ -1297,6 +1456,10 @@ mod tests {
             map.get("50-free-textures/concrete_pavement_036_n"),
             Some(&norm)
         );
+        assert_eq!(
+            map.get("50-free-textures/concrete_pavement_036_e"),
+            Some(&emissive)
+        );
 
         // All three incoming name forms normalize to the relative key and
         // therefore resolve to the diffuse and its siblings.
@@ -1308,28 +1471,27 @@ mod tests {
             "Textures\\50-Free-Textures\\Concrete_Pavement_036",
         ] {
             let normalized = normalize_map_texture_name(incoming);
-            let (diff_path, base) = match map.get(&normalized) {
-                Some(p) => (Some(p.clone()), normalized.clone()),
-                None => {
-                    let bare = bare_segment(&normalized).to_string();
-                    (map.get(&bare).cloned(), bare)
-                }
-            };
+            let paths = resolve_texture_bundle_paths(&map, &normalized);
             assert_eq!(
-                diff_path.as_ref(),
+                paths.diffuse.as_ref(),
                 Some(&diff),
                 "diffuse for '{incoming}' should resolve to {}",
                 diff.display()
             );
             assert_eq!(
-                map.get(&format!("{base}_s")),
+                paths.specular.as_ref(),
                 Some(&spec),
                 "specular sibling for '{incoming}' should resolve from the same collection"
             );
             assert_eq!(
-                map.get(&format!("{base}_n")),
+                paths.normal.as_ref(),
                 Some(&norm),
                 "normal sibling for '{incoming}' should resolve from the same collection"
+            );
+            assert_eq!(
+                paths.emissive.as_ref(),
+                Some(&emissive),
+                "emissive sibling for '{incoming}' should resolve from the same collection"
             );
         }
 

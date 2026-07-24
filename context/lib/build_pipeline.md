@@ -48,7 +48,7 @@ TrenchBroom identifies materials by their path **relative to the textures root**
 
 - The name→PNG index (`build_name_to_path_map`) keys each PNG under its path **relative to the texture root** — forward-slashed, lowercased, extension stripped (e.g. `50-free-textures/concrete_pavement_036`). It also inserts a **bare-stem alias** (`concrete_pavement_036`) for back-compat, but only when that stem is unique across all collections. On a stem collision the alias is dropped and a `warn!` names both paths, so a bare name never silently resolves to the wrong collection.
 - The incoming map name is normalized (lowercase, `\`→`/`, leading `textures/` stripped) so both `collection/stem` and root-inclusive `textures/collection/stem` map to the relative key. Lookup tries the normalized relative name, then falls back to the bare last path segment.
-- `_s`/`_n`/`_e` siblings are derived by appending to **the same form that resolved the diffuse**, so siblings come from the same collection.
+- A qualified base remains selected when any bundle slot exists there, including sibling-only materials. Only an entirely missing qualified bundle falls back to the unique bare alias. All four slots resolve from the selected base, so siblings never cross collections.
 
 A material name with a space (e.g. a collection dir `Level Eleven Games Sci-Fi Texture Pack v1`) is double-quoted in the `.map` by TrenchBroom. shalrath has no quote handling, so the parser (`crates/level-compiler/src/parse.rs`) runs a pre-parse pass that strips the quotes and swaps interior spaces for a path-illegal sentinel byte, keeping the material field one token. The sentinel is decoded back to a real space at the single texture-read boundary, so every downstream stage sees the human-readable name.
 
@@ -317,15 +317,16 @@ Disk-backed content-hash cache that lets `prl-build` skip cached bake work when 
 Per-texture mip-chain sidecars are **runtime-required compiled output** living under the top-level `baked/materials/` tree — not in the disposable `.build-caches/` stage cache (see §Build Cache). prl-build writes them; the engine reads them at level load.
 
 **`.prm` files.** Each sidecar bundles up to four material slots — diffuse,
-specular, normal, and emissive — each optional. Content-addressed by
-`blake3(diffuse PNG content)` when a diffuse slot is present; otherwise
-`blake3(tag_byte || first_present_PNG)`. The `tag_byte` distinguishes
-specular-only, normal-only, and emissive-only single-slot textures. The header
-bundle hash covers the slot mask and every present slot's raw PNG bytes, so
-adding an `_e` sibling invalidates a diffuse-addressed bundle. Stored at
+specular, normal, and emissive — each optional. Multi-slot filenames use the
+canonical bundle hash over slot mask and every present slot's raw PNG bytes.
+A diffuse-only bundle uses `blake3(diffuse PNG content)` so world and model
+diffuse-only materials share one sidecar. Other single-slot bundles use
+`blake3(tag_byte || PNG content)`; the tag distinguishes specular, normal, and
+emissive. Two bundles with the same diffuse but different siblings therefore
+have distinct runtime-loadable filenames. Stored at
 `<workspace>/baked/materials/<hex>.prm`. Cross-mod dedupe is intended:
-identical PNG bytes produce the same `.prm` regardless of which mod authored
-them.
+identical complete bundles produce the same `.prm` regardless of which mod
+authored them.
 
 **Wire format.** Header + per-slot blocks + packed mip payload. Wire layout lives in `postretro-level-format::prm`. Note: `.prm` uses a `u8` exact-match format epoch (not the stage-cache `u32` convention) — the header owns its own version semantics.
 
@@ -336,11 +337,11 @@ R8. Normal filters linearly then renormalises per output texel; `(0, 0, 1)`
 substitutes when magnitude < 1e-4. Output is then BC5-encoded (RG channels
 only; the shader reconstructs Z).
 
-**Cache invalidation.** Filename keys on diffuse content only (stable addressing). `bundle_hash` in the header covers `slot_mask` + every present slot's raw PNG bytes. A world-material cache hit requires a matching bundle hash and structurally valid payload for every declared slot; truncated or corrupt declared slots trigger a full rebake and atomic overwrite (tempfile `<hex>.prm.tmp.<pid>` → `std::fs::rename`). Model baking preserves a structurally valid richer world bundle at the shared diffuse address even though its bundle hash includes sibling slots. A version mismatch in the header triggers rebake. To force a full retexture rebuild, delete `baked/materials/` (the next bake repopulates it; doing so leaves the runtime without world-material mips until then).
+**Cache invalidation.** Multi-slot filenames cover the complete bundle; the header repeats that bundle hash for cache validation. A world-material cache hit requires a matching bundle hash and structurally valid payload for every declared slot. Truncated or corrupt declared slots trigger a full rebake and atomic overwrite (tempfile `<hex>.prm.tmp.<pid>` → `std::fs::rename`). Diffuse-only model and world bundles retain their shared diffuse-content filename without colliding with richer world bundles. A version mismatch in the header triggers rebake. To force a full retexture rebuild, delete `baked/materials/` (the next bake repopulates it; doing so leaves the runtime without world-material mips until then).
 
 **Runtime.** Level load resolves each `TextureNamesSection` entry's blake3 key from `TextureCacheKeysSection`, opens the corresponding `.prm`, and uploads each slot's mip chain directly. A zero key (`[0u8; 32]`) substitutes per-slot placeholders silently. A corrupt or missing `.prm` substitutes per-slot placeholders and logs a `warn!`; load continues. Sampler `lod_max_clamp` is set to `mip_count - 1` per texture.
 
-**Model textures.** `prop_mesh` model base-color textures bake the same way, content-driven from the model placements in the map — no CLI flag, mirroring how world materials follow from `TextureNames`. prl-build resolves each placed model's glTF base-color PNG(s) and bakes a diffuse-only `.prm`, content-addressed by `blake3(base-color PNG)` — byte-identical to a diffuse-only world sidecar. A richer world bundle with the same diffuse bytes owns the shared filename and is never replaced by the model bake. Model rendering still consumes only the diffuse slot and substitutes neutral specular and normal placeholders. Unlike world materials, no PRL section carries model keys: the runtime content-hashes the same PNG when it loads the glTF and opens `<key>.prm` directly, so the compiler only has to make the sidecar exist. The glTF base-color path resolver is shared by runtime and compiler through the `gltf-resolve` feature of `postretro-level-format`. Missing or malformed glTF fails the whole model load, so the model is skipped. Only an unresolved, missing, or unreadable base-color PNG or material degrades to the texture placeholder. Compiler resolution and bake failures warn; compilation continues. For standalone model prep, `cargo run -p xtask -- bake-model-textures <scene.gltf>` runs the same model-texture sidecar bake without compiling a map. Output stays under `<workspace>/baked/materials/`: gitignored, regenerable, runtime-required.
+**Model textures.** `prop_mesh` model base-color textures bake the same way, content-driven from the model placements in the map — no CLI flag, mirroring how world materials follow from `TextureNames`. prl-build resolves each placed model's glTF base-color PNG(s) and bakes a diffuse-only `.prm`, content-addressed by `blake3(base-color PNG)` — byte-identical to a diffuse-only world sidecar. Richer world bundles use complete-bundle filenames and cannot be replaced by a model bake. Model rendering still consumes only the diffuse slot and substitutes neutral specular and normal placeholders. Unlike world materials, no PRL section carries model keys: the runtime content-hashes the same PNG when it loads the glTF and opens `<key>.prm` directly, so the compiler only has to make the sidecar exist. The glTF base-color path resolver is shared by runtime and compiler through the `gltf-resolve` feature of `postretro-level-format`. Missing or malformed glTF fails the whole model load, so the model is skipped. Only an unresolved, missing, or unreadable base-color PNG or material degrades to the texture placeholder. Compiler resolution and bake failures warn; compilation continues. For standalone model prep, `cargo run -p xtask -- bake-model-textures <scene.gltf>` runs the same model-texture sidecar bake without compiling a map. Output stays under `<workspace>/baked/materials/`: gitignored, regenerable, runtime-required.
 
 ---
 

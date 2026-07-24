@@ -206,6 +206,9 @@ pub enum PrmReadError {
     #[error("slot {slot}: unsupported format tag {tag}")]
     UnsupportedFormatTag { slot: u8, tag: u8 },
 
+    #[error("format tag Bc5RgUnorm is only valid on the normal slot, found on slot {slot}")]
+    Bc5OnNonNormalSlot { slot: u8 },
+
     #[error("slot is not present in the bundle")]
     NotPresent,
 
@@ -288,9 +291,8 @@ impl PrmFile {
     /// `header.slot_mask` are emitted. `header.total_body_bytes` is recomputed
     /// from the actual slot payloads, so callers may leave it as `0`.
     ///
-    /// Fails with `Bc5OnNonNormalSlot` if a diffuse or specular slot carries
-    /// `Bc5RgUnorm`: BC5 normal-map encoding is confined to the normal slot
-    /// (wire index 2).
+    /// Fails with `Bc5OnNonNormalSlot` if any non-normal slot carries
+    /// `Bc5RgUnorm`: BC5 normal-map encoding is confined to wire index 2.
     pub fn to_bytes(&self) -> Result<Vec<u8>, PrmWriteError> {
         // Guard the BC5-on-normal-slot-only invariant before emitting anything.
         // The normal slot is wire index 2 (`[0 diffuse, 1 specular, 2 normal, 3 emissive]`).
@@ -556,6 +558,15 @@ fn parse_slot(
         body[offset + 10],
         body[offset + 11],
     ]);
+
+    if format == PrmFormat::Bc5RgUnorm && slot_index != 2 {
+        let consumed = SLOT_HEADER_SIZE.saturating_add(payload_bytes as usize);
+        let consumed = consumed.min(body.len().saturating_sub(offset));
+        return (
+            Err(PrmReadError::Bc5OnNonNormalSlot { slot: slot_index }),
+            consumed,
+        );
+    }
 
     // Dimension sanity bound. Zero dimensions are rejected because a zero-size payload is always malformed.
     if width == 0 || height == 0 || width > MAX_DIMENSION || height > MAX_DIMENSION {
@@ -952,8 +963,8 @@ mod tests {
         assert_eq!(got.level_count, 2, "8×8 BC5 truncates to 2 levels");
     }
 
-    /// `Bc5RgUnorm` is confined to the normal slot (wire index 2). Placing it on
-    /// diffuse or specular must fail at write time; the normal slot accepts it.
+    /// `Bc5RgUnorm` is confined to the normal slot (wire index 2). Every other
+    /// slot must fail at write time; the normal slot accepts it.
     #[test]
     fn writer_rejects_bc5_on_non_normal_slots() {
         // BC5 on diffuse (slot 0) → rejected.
@@ -992,6 +1003,24 @@ mod tests {
             "BC5 on specular must be rejected"
         );
 
+        // BC5 on emissive (slot 3) → rejected.
+        let emissive_bc5 = PrmFile {
+            header: PrmHeader {
+                stage_version: STAGE_VERSION,
+                slot_mask: PrmSlots::EMISSIVE,
+                bundle_hash: [0; 32],
+                total_body_bytes: 0,
+            },
+            slots: [None, None, None, Some(make_bc5_slot(8, 8))],
+        };
+        assert!(
+            matches!(
+                emissive_bc5.to_bytes(),
+                Err(PrmWriteError::Bc5OnNonNormalSlot { slot: 3 })
+            ),
+            "BC5 on emissive must be rejected"
+        );
+
         // BC5 on normal (slot 2) → accepted.
         let normal_bc5 = PrmFile {
             header: PrmHeader {
@@ -1006,6 +1035,50 @@ mod tests {
             normal_bc5.to_bytes().is_ok(),
             "BC5 on normal slot must be accepted"
         );
+    }
+
+    // Regression: hand-authored bytes could bypass the writer and place BC5
+    // in color/property slots, violating the reader's slot-type contract.
+    #[test]
+    fn reader_rejects_bc5_on_every_non_normal_slot() {
+        let normal = make_bc5_slot(8, 8);
+        let valid_normal = PrmFile {
+            header: PrmHeader {
+                stage_version: STAGE_VERSION,
+                slot_mask: PrmSlots::NORMAL,
+                bundle_hash: [0xB5; 32],
+                total_body_bytes: 0,
+            },
+            slots: [None, None, Some(normal), None],
+        };
+        let normal_bytes = valid_normal
+            .to_bytes()
+            .expect("normal BC5 fixture serializes");
+
+        for (slot_mask, slot_index) in [
+            (PrmSlots::DIFFUSE, 0usize),
+            (PrmSlots::SPECULAR, 1),
+            (PrmSlots::EMISSIVE, 3),
+        ] {
+            let mut bytes = normal_bytes.clone();
+            bytes[5] = slot_mask.bits();
+            let (header, slots) = PrmFile::from_bytes_partial(&bytes);
+            assert_eq!(
+                header
+                    .expect("header remains independently valid")
+                    .slot_mask,
+                slot_mask
+            );
+            assert!(
+                matches!(
+                    &slots[slot_index],
+                    Err(PrmReadError::Bc5OnNonNormalSlot { slot })
+                        if usize::from(*slot) == slot_index
+                ),
+                "reader must reject BC5 on slot {slot_index}, got {:?}",
+                slots[slot_index]
+            );
+        }
     }
 
     /// Mutating `total_body_bytes` in the header (slot-sum vs. declared mismatch)

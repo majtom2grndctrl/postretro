@@ -16,6 +16,34 @@ pub(super) fn bare_segment(normalized: &str) -> &str {
         .unwrap_or(normalized)
 }
 
+pub(super) struct TextureBundlePaths {
+    pub diffuse: Option<PathBuf>,
+    pub specular: Option<PathBuf>,
+    pub normal: Option<PathBuf>,
+    pub emissive: Option<PathBuf>,
+}
+
+pub(super) fn resolve_texture_bundle_paths(
+    name_to_path: &HashMap<String, PathBuf>,
+    normalized: &str,
+) -> TextureBundlePaths {
+    let qualified_base_exists = ["", "_s", "_n", "_e"]
+        .iter()
+        .any(|suffix| name_to_path.contains_key(&format!("{normalized}{suffix}")));
+    let resolved_base = if qualified_base_exists {
+        normalized
+    } else {
+        bare_segment(normalized)
+    };
+
+    TextureBundlePaths {
+        diffuse: name_to_path.get(resolved_base).cloned(),
+        specular: name_to_path.get(&format!("{resolved_base}_s")).cloned(),
+        normal: name_to_path.get(&format!("{resolved_base}_n")).cloned(),
+        emissive: name_to_path.get(&format!("{resolved_base}_e")).cloned(),
+    }
+}
+
 pub(super) fn build_name_to_path_map(texture_root: &Path) -> HashMap<String, PathBuf> {
     let mut map = HashMap::new();
     let mut stem_owner: HashMap<String, PathBuf> = HashMap::new();

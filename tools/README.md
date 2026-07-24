@@ -71,7 +71,7 @@ python3 tools/gen_normal.py   --input <path> --recursive
 python3 tools/gen_emissive.py --input <path> --recursive
 ```
 
-Pass `--help` to either script for full option reference.
+Pass `--help` to any generator for full option reference.
 
 ## Map compilation
 

@@ -10,9 +10,10 @@ use crate::data_descriptors::{
     EntityTypeDescriptor, drain_fonts_js, drain_fonts_lua, drain_frontend_js, drain_frontend_lua,
     drain_global_crossings_js, drain_global_crossings_lua, drain_global_reactions_js,
     drain_global_reactions_lua, drain_impact_events_js, drain_impact_events_lua, drain_maps_js,
-    drain_maps_lua, drain_theme_js, drain_theme_lua, drain_trigger_events_js,
-    drain_trigger_events_lua, drain_trigger_pools_js, drain_trigger_pools_lua, drain_ui_trees_js,
-    drain_ui_trees_lua, entity_descriptor_from_js, entity_descriptor_from_lua,
+    drain_maps_lua, drain_render_profile_js, drain_render_profile_lua, drain_theme_js,
+    drain_theme_lua, drain_trigger_events_js, drain_trigger_events_lua, drain_trigger_pools_js,
+    drain_trigger_pools_lua, drain_ui_trees_js, drain_ui_trees_lua, entity_descriptor_from_js,
+    entity_descriptor_from_lua,
 };
 use crate::error::ScriptError;
 use crate::primitives_registry::ScriptPrimitive;
@@ -206,6 +207,17 @@ pub(super) fn run_mod_init_quickjs(
                 return;
             }
         };
+        let render = match drain_render_profile_js(&obj, "default mod manifest export") {
+            Ok(profile) => profile,
+            Err(e) => {
+                out = Err(ScriptError::InvalidArgument {
+                    reason: format!(
+                        "mod-init: `{source_path}` default mod manifest export `render` invalid: {e}"
+                    ),
+                });
+                return;
+            }
+        };
         let frontend = match drain_frontend_js(&obj, "default mod manifest export") {
             Ok(frontend) => frontend,
             Err(e) => {
@@ -288,6 +300,7 @@ pub(super) fn run_mod_init_quickjs(
 
         out = Ok(ModManifestResult {
             name,
+            render,
             entities,
             ui_trees,
             theme,
@@ -422,6 +435,13 @@ pub(super) fn run_mod_init_luau(
             reason: format!("mod-init: `{source_path}` returned mod manifest `theme` invalid: {e}"),
         }
     })?;
+    let render = drain_render_profile_lua(&table, "returned mod manifest").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` returned mod manifest `render` invalid: {e}"
+            ),
+        }
+    })?;
     let frontend = drain_frontend_lua(&table, "returned mod manifest").map_err(|e| {
         ScriptError::InvalidArgument {
             reason: format!(
@@ -480,6 +500,7 @@ pub(super) fn run_mod_init_luau(
 
     Ok(ModManifestResult {
         name,
+        render,
         entities,
         ui_trees,
         theme,
@@ -500,6 +521,76 @@ mod tests {
     use super::*;
     use crate::data_descriptors::TriggerPoolArm;
     use crate::primitives_registry::PrimitiveRegistry;
+    use crate::runtime::{ModBloomProfile, ModBloomResolution, ModRenderProfile};
+
+    fn cold_render_profiles(
+        js_render: &str,
+        luau_render: &str,
+    ) -> (ModRenderProfile, ModRenderProfile) {
+        let registry = PrimitiveRegistry::new();
+        let quickjs = QuickJsSubsystem::new(&registry, &crate::quickjs::QuickJsConfig::default())
+            .expect("QuickJS subsystem should initialize");
+        let js_source = format!(
+            "globalThis.__postretroModManifest = {{ name: 'RenderMod', render: {js_render} }};"
+        );
+        let luau_source = format!("return {{ name = 'RenderMod', render = {luau_render} }}");
+
+        let js = run_mod_init_quickjs(&quickjs, &js_source, "render-mod.js")
+            .expect("optional QuickJS render profile must not reject the manifest");
+        let luau = run_mod_init_luau(&[], &luau_source, "render-mod.luau", Path::new("."))
+            .expect("optional Luau render profile must not reject the manifest");
+        (js.render, luau.render)
+    }
+
+    #[test]
+    fn mod_init_render_profile_matches_in_both_runtimes() {
+        let (js, luau) = cold_render_profiles(
+            "{ bloom: { resolution: 'quarter', pixelated: true } }",
+            "{ bloom = { resolution = 'quarter', pixelated = true } }",
+        );
+        let expected = ModRenderProfile {
+            bloom: ModBloomProfile {
+                resolution: ModBloomResolution::Quarter,
+                pixelated: true,
+            },
+        };
+        assert_eq!(js, expected);
+        assert_eq!(luau, expected);
+    }
+
+    #[test]
+    fn mod_init_render_profile_malformed_fields_degrade_equally() {
+        let cases = [
+            ("7", "7", ModRenderProfile::default()),
+            ("{ bloom: 7 }", "{ bloom = 7 }", ModRenderProfile::default()),
+            (
+                "{ bloom: { resolution: 'third', pixelated: true } }",
+                "{ bloom = { resolution = 'third', pixelated = true } }",
+                ModRenderProfile {
+                    bloom: ModBloomProfile {
+                        resolution: ModBloomResolution::Half,
+                        pixelated: true,
+                    },
+                },
+            ),
+            (
+                "{ bloom: { resolution: 'eighth', pixelated: 'yes' } }",
+                "{ bloom = { resolution = 'eighth', pixelated = 'yes' } }",
+                ModRenderProfile {
+                    bloom: ModBloomProfile {
+                        resolution: ModBloomResolution::Eighth,
+                        pixelated: false,
+                    },
+                },
+            ),
+        ];
+
+        for (js_source, luau_source, expected) in cases {
+            let (js, luau) = cold_render_profiles(js_source, luau_source);
+            assert_eq!(js, expected);
+            assert_eq!(luau, expected);
+        }
+    }
 
     #[test]
     fn mod_init_trigger_pools_skip_malformed_entries_in_both_runtimes() {
@@ -536,6 +627,8 @@ mod tests {
         )
         .expect("malformed pool entry should not abort Luau mod init");
 
+        assert_eq!(js_manifest.render, ModRenderProfile::default());
+        assert_eq!(luau_manifest.render, ModRenderProfile::default());
         assert_eq!(js_manifest.trigger_pools, luau_manifest.trigger_pools);
         assert_eq!(js_manifest.trigger_pools.len(), 1);
         let pool = &js_manifest.trigger_pools[0];

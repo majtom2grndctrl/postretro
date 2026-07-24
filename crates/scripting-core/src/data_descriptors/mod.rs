@@ -17,7 +17,9 @@ pub use super::components::billboard_emitter::BillboardEmitterComponentLit;
 pub use super::components::mesh::{AnimationState, InterruptPolicy};
 pub use super::data_registry::{ScopedCrossing, ScopedReaction};
 pub use super::registry::EntityId;
-pub use super::runtime::{Frontend, MenuCamera, ModMapEntry};
+pub use super::runtime::{
+    Frontend, MenuCamera, ModBloomProfile, ModBloomResolution, ModMapEntry, ModRenderProfile,
+};
 pub use crate::ir::IrType;
 pub use crate::ui::descriptor::{
     AnchoredTree, AnnounceWidget, BarMax, BarMaxStateRef, BarWidget, BindSource, Border,

@@ -49,6 +49,90 @@ the agent capsule can wedge into.
   Route: P -> detour north OR south of the center pillar (~208 units clear) -> E.
 ```
 
+### Emissive panels (bloom A/B)
+
+Two floating `16 × 128 × 80` panels share the `y[192,320] z[32,112]` band on the
+player-spawn sightline, one near the west end and one by the east pillar:
+
+| Panel | X extent | Texture | `_e` peak | Peak luminance×4 | Blooms? |
+|---|---|---|---|---|---|
+| Bright | `x[192,208]` | `neon/neon_glow_panel` | sRGB 255 | 4.0 | yes — 4× threshold |
+| Dim | `x[688,704]` | `neon/neon_dim_panel` | sRGB 136 | 0.985 | no — genuinely sub-threshold |
+
+The bright pass gates on **Rec.709 luminance** of the linear color, not the peak
+channel — `luminance = dot(color, (0.2126, 0.7152, 0.0722))` in `bloom_extract.wgsl`.
+The neon texels are near-neutral, so peak-channel and luminance nearly coincide.
+**sRGB 136 is the highest 8-bit `_e` byte that stays under the threshold:**
+`s2l(136)*4 = 0.985` (< 1.0), while the next byte `s2l(137)*4 = 1.0006` crosses it
+(quantization has no byte at exactly 1.0). So 136 is where the threshold sits from
+below — at it, `excess = max(luminance - 1.0, 0.0)` is zero for every texel and the
+bright pass extracts nothing.
+
+Each panel has a wide-cone `light_spot` at its west face
+(`192 256 72` and `688 256 72`, `_cone 45` / `_cone2 85`, aimed `-15 180 0`).
+**Emissive is a shader term only — it lights nothing** — so these stand in for the
+spill the panels would cast. Their intensities track each panel's mean emissive
+term (`0.372` vs `0.146`, hence `light 150` vs `60`). The light is co-planar with
+its panel's west face, so `n·L` on that face is exactly zero and the spill adds
+nothing to the panel's own fragment — the threshold comparison stays clean
+regardless of cone width.
+
+The pair is the A/B for emissive-with-bloom vs emissive-without-bloom. There is no
+per-material bloom flag; bloom is decided purely by whether a fragment's linear
+luminance clears `BLOOM_THRESHOLD` (`1.0`, `crates/renderer/src/render/bloom.rs`).
+Both panels use `Material::Neon`'s `emissive_strength` of `4.0`, so the authored
+`_e` texel value is the only lever.
+
+The dim `_e` is the bright one **clamped, not scaled**: most of the source pattern
+already sits below the threshold (terms `0.42`–`0.79`) and blooms on nothing, so
+only the 515 texels whose peak channel exceeds the ceiling are pulled down.
+Everything already sub-threshold is left byte-identical, which keeps the panel's
+readable glow — scaling the whole map instead crushes it to near-black. The clamp
+scales on the peak channel like `soft_knee_tonemap` does, so clamped texels keep
+their hue.
+
+Worth knowing: the *bright* panel already contains emissive-without-bloom. By the
+luminance metric the bright pass actually uses, only 468 of its 762 non-black
+texels clear the threshold (515 by peak channel — colored texels with one hot
+channel can sit over per-channel but under in luminance); the rest glow without
+ever entering the bright pass. The dim panel isolates that behavior across a whole
+surface.
+
+The dim panel is deliberately parked **just under** the threshold at sRGB 136
+(`0.985`): zero texels clear the luminance threshold, so the bright pass extracts
+literally nothing — a genuine no-bloom surface, not merely an imperceptible one.
+136 is the reference for "as bright as an emissive surface can idle with no halo
+at all"; 137 (`1.0006`) is the first byte that would cross. There is no measurable
+perf saving either way — the bloom chain runs at fixed cost whenever bloom is
+enabled — but keeping the panel fully under the line makes the no-bloom property
+exact rather than approximate.
+
+Bloom onset is a ramp, not a cliff — the bright pass extracts
+`1 - threshold/luminance`, which is scaled again by `BLOOM_INTENSITY` (`0.35`)
+when composited back:
+
+| Emissive term | Extracted | After `BLOOM_INTENSITY` |
+|---|---|---|
+| ≤ 1.00 | 0% | 0% — no halo |
+| 1.05 | 4.8% | 1.7% |
+| 1.10 | 9.1% | 3.2% |
+| 1.20 | 16.7% | 5.8% |
+| 1.50 | 33.3% | 11.7% |
+| 2.00 | 50.0% | 17.5% |
+| 4.00 (bright panel) | 75.0% | 26.2% |
+
+Useful for pulsing an emissive surface as state feedback: hold the idle state at
+or below `1.0` for no halo, and drive the active state into the `1.1`–`1.5` band
+for a halo that reads as a change without dominating the frame. This demo panel
+idles at `0.985` — just `0.015` under the line — to mark exactly where the
+threshold is; a shipping idle state wants more margin (`~0.9`) so indirect light
+on the surface can't nudge it over. The panel is a measuring stick, not a template.
+
+Both panels share the same diffuse, and the west face each presents to the spawn
+is unlit by direct light (the flanking warm spots aim ±Y away from
+them and fail `n·L`; the blue spot at `32 80` is outside its cone), so the
+comparison isolates the emissive value rather than the lighting.
+
 The bake reports **NavMesh: 18 regions, 22 portals** (53×105 cell grid @ 0.25 m) —
 a genuinely multi-region, multi-portal mesh (the old single-room layout baked to
 1 region / 0 portals, a straight-line chase). The floor is a single connected

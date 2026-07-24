@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 
+use super::SCENE_COLOR_FORMAT;
 use postretro_entities::SlotValue;
 use postretro_render_cpu::screen_effects::{EffectUniform, pack_effect_uniform};
 
@@ -15,20 +16,15 @@ use postretro_render_cpu::screen_effects::{EffectUniform, pack_effect_uniform};
 /// EVERY frame as the sole swapchain writer for the gameplay path — never
 /// skipped at rest.
 ///
-/// **Byte-identity contract.** `scene_color` is allocated at the sRGB surface
-/// format, single-sample, and the resolve sampler is NEAREST / pixel-aligned, so
-/// each `scene_color` texel maps 1:1 to its swapchain texel with no resample.
-/// The per-pass sRGB-encode + 8-bit quantize that landed in `scene_color`
-/// round-trips losslessly to the swapchain (and fog_composite's dither lands on
-/// the same 8-bit grid). This makes the foundation-task identity blit output
-/// byte-identical to the pre-SE direct-to-swapchain pipeline.
+/// `scene_color` is a linear [`SCENE_COLOR_FORMAT`] target. The resolve samples
+/// it without sRGB decoding, tonemaps to display range, then writes the sRGB
+/// swapchain target so hardware performs the sole store conversion.
 ///
 /// **Effect seam.** The resolve composes flash/vignette/shake on top of the
-/// identity blit. [`pack_effect_uniform`] packs the frame's `screen.*` slot
+/// tonemapped scene. [`pack_effect_uniform`] packs the frame's `screen.*` slot
 /// values into [`EffectUniform`] (binding 2 of group 0); the shader applies the
 /// math in `screen_effects.wgsl`. At-rest slot values pack to the identity
-/// uniform and every effect term ALU-collapses to a no-op, so the output stays
-/// byte-identical to the pre-SE blit (parity gate holds for unbound + at-rest).
+/// uniform and every effect term ALU-collapses to a no-op after tonemapping.
 pub struct ScreenEffectsPass {
     /// Offscreen color target. The scene/UI passes render here; the resolve
     /// samples it. Recreated on resize at the surface size.
@@ -36,14 +32,14 @@ pub struct ScreenEffectsPass {
     /// View into `color_texture` used both as the scene/UI passes' color
     /// attachment and as the resolve's sampled source.
     color_view: wgpu::TextureView,
-    /// Surface format (sRGB) the target is allocated at — load-bearing for
-    /// byte-identity. Cached so resize recreates the texture at the same format.
-    format: wgpu::TextureFormat,
     sampler: wgpu::Sampler,
     bind_group_layout: wgpu::BindGroupLayout,
     /// References `color_view`; rebuilt on resize.
     bind_group: wgpu::BindGroup,
-    pipeline: wgpu::RenderPipeline,
+    resolve_pipeline: wgpu::RenderPipeline,
+    /// Same shader/operator as the windowed resolve, but targeting deterministic
+    /// RGBA8 sRGB capture bytes with transient effects held at rest.
+    capture_pipeline: wgpu::RenderPipeline,
     /// Per-frame effect uniform (flash/vignette/shake). Written every frame from
     /// the packed snapshot values; persists across resize (recreating the texture
     /// rebuilds the bind group, which re-references this buffer).
@@ -57,10 +53,9 @@ impl ScreenEffectsPass {
         height: u32,
         surface_format: wgpu::TextureFormat,
     ) -> Self {
-        let (color_texture, color_view) = create_scene_color(device, width, height, surface_format);
+        let (color_texture, color_view) = create_scene_color(device, width, height);
 
-        // NEAREST / pixel-aligned: 1:1 texel passthrough so the identity blit is
-        // byte-identical to the pre-SE direct-to-swapchain output.
+        // NEAREST / pixel-aligned sampling preserves the scene's texel grid.
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Screen Effects Resolve Sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -104,8 +99,7 @@ impl ScreenEffectsPass {
             ],
         });
 
-        // Per-frame effect uniform, initialized at-rest (identity) so the very
-        // first frame before any write is still a byte-identical blit.
+        // Per-frame effect uniform, initialized at rest for a neutral resolve.
         let effect_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Screen Effects Uniform Buffer"),
             size: std::mem::size_of::<EffectUniform>() as u64,
@@ -130,45 +124,29 @@ impl ScreenEffectsPass {
             bind_group_layouts: &[Some(&bind_group_layout)],
             immediate_size: 0,
         });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Screen Effects Pipeline"),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                // Sole swapchain writer for the gameplay path — opaque overwrite,
-                // no blend (the source already carries the fully composited frame).
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: surface_format,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        let resolve_pipeline = create_resolve_pipeline(
+            device,
+            &layout,
+            &shader,
+            surface_format,
+            "Screen Effects Resolve Pipeline",
+        );
+        let capture_pipeline = create_resolve_pipeline(
+            device,
+            &layout,
+            &shader,
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+            "Screen Effects Capture Tonemap Pipeline",
+        );
 
         Self {
             color_texture,
             color_view,
-            format: surface_format,
             sampler,
             bind_group_layout,
             bind_group,
-            pipeline,
+            resolve_pipeline,
+            capture_pipeline,
             effect_buffer,
         }
     }
@@ -179,8 +157,8 @@ impl ScreenEffectsPass {
         &self.color_view
     }
 
-    /// The renderer-owned pre-resolve scene target. Offscreen capture reads this
-    /// texture directly so transient resolve effects are excluded.
+    /// The renderer-owned raw HDR scene target. Post-scene passes sample this
+    /// before the display/capture resolves.
     pub(super) fn scene_color_texture(&self) -> &wgpu::Texture {
         &self.color_texture
     }
@@ -188,7 +166,7 @@ impl ScreenEffectsPass {
     /// Recreate `scene_color` at the new surface size and rebuild the resolve
     /// bind group. Called alongside the depth-target recreation on resize.
     pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
-        let (color_texture, color_view) = create_scene_color(device, width, height, self.format);
+        let (color_texture, color_view) = create_scene_color(device, width, height);
         self.color_texture = color_texture;
         self.color_view = color_view;
         self.bind_group = create_bind_group(
@@ -202,12 +180,12 @@ impl ScreenEffectsPass {
 
     /// Record the resolve pass: a fullscreen-triangle blit from `scene_color`
     /// into the swapchain `view`, composing the frame's screen effects
-    /// (flash/vignette/shake) on top of the identity blit. The sole swapchain
+    /// (flash/vignette/shake) after its soft-knee tonemap. The sole swapchain
     /// writer for the gameplay path — encoded every frame, never gated.
     ///
     /// Writes the per-frame effect uniform from the packed `slot_values` first.
     /// At rest all three effect slots collapse to no-ops (see [`pack_effect_uniform`]
-    /// and the WGSL), so the output stays byte-identical to the pre-SE blit.
+    /// and the WGSL), so only the tonemap changes an at-rest scene.
     pub fn encode_resolve(
         &self,
         queue: &wgpu::Queue,
@@ -236,23 +214,71 @@ impl ScreenEffectsPass {
             timestamp_writes: None,
             ..Default::default()
         });
-        pass.set_pipeline(&self.pipeline);
+        pass.set_pipeline(&self.resolve_pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
         pass.draw(0..3, 0..1); // fullscreen triangle from vertex_index — no vertex buffer
     }
+
+    /// Tonemap the raw HDR scene into the fixed RGBA8 sRGB capture format.
+    /// Capture intentionally omits transient screen effects, so it writes an
+    /// at-rest effect uniform while reusing the resolve shader and its tonemap.
+    pub(super) fn encode_capture_tonemap(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        width: u32,
+        height: u32,
+    ) -> wgpu::Texture {
+        queue.write_buffer(
+            &self.effect_buffer,
+            0,
+            bytemuck::bytes_of(&EffectUniform::default()),
+        );
+        let capture_scene_view = self
+            .scene_color_texture()
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let capture_bind_group = create_bind_group(
+            device,
+            &self.bind_group_layout,
+            &capture_scene_view,
+            &self.sampler,
+            &self.effect_buffer,
+        );
+        let capture_texture = create_capture_color(device, width, height);
+        let capture_view = capture_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Screen Effects Capture Tonemap Pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &capture_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            ..Default::default()
+        });
+        pass.set_pipeline(&self.capture_pipeline);
+        pass.set_bind_group(0, &capture_bind_group, &[]);
+        pass.draw(0..3, 0..1);
+        capture_texture
+    }
 }
 
-/// Allocate the `scene_color` target: surface format (sRGB), surface size,
+/// Allocate the linear HDR `scene_color` target at the surface size,
 /// single-sample. `RENDER_ATTACHMENT` (scene/UI passes draw into it) +
-/// `TEXTURE_BINDING` (the resolve samples it) + `COPY_SRC` (offscreen capture
-/// reads it back). `0` dims clamp to `1` to keep
+/// `TEXTURE_BINDING` (display and capture resolves sample it). `0` dims clamp to
+/// `1` to keep
 /// texture creation valid during transient zero-size resize events (mirrors the
 /// depth target's `prepass_attachment_extent`).
 fn create_scene_color(
     device: &wgpu::Device,
     width: u32,
     height: u32,
-    format: wgpu::TextureFormat,
 ) -> (wgpu::Texture, wgpu::TextureView) {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("Scene Color Texture"),
@@ -264,14 +290,66 @@ fn create_scene_color(
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-            | wgpu::TextureUsages::TEXTURE_BINDING
-            | wgpu::TextureUsages::COPY_SRC,
+        format: SCENE_COLOR_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     (texture, view)
+}
+
+fn create_capture_color(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Scene Capture Tonemap Texture"),
+        size: wgpu::Extent3d {
+            width: width.max(1),
+            height: height.max(1),
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    })
+}
+
+fn create_resolve_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    target_format: wgpu::TextureFormat,
+    label: &'static str,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(label),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs_main"),
+            buffers: &[],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            ..Default::default()
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: target_format,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
 }
 
 fn create_bind_group(

@@ -85,7 +85,7 @@ pub(crate) fn build_material_bind_group(
     material: Material,
     label_prefix: &str,
 ) -> wgpu::BindGroup {
-    let uniform_bytes = build_material_uniform(material.shininess());
+    let uniform_bytes = build_material_uniform(material.shininess(), material.emissive_strength());
     let uniform_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some(&format!("{label_prefix} Uniform")),
         contents: &uniform_bytes,
@@ -98,6 +98,10 @@ pub(crate) fn build_material_bind_group(
             wgpu::BindGroupEntry {
                 binding: 0,
                 resource: wgpu::BindingResource::TextureView(&loaded.diffuse_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&loaded.emissive_view),
             },
             wgpu::BindGroupEntry {
                 binding: 2,

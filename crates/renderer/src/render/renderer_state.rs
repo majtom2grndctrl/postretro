@@ -5,6 +5,43 @@
 use super::*;
 
 impl Renderer {
+    /// Update the static bloom style used by the next scene frame. The value is
+    /// retained in boot state so a later full-renderer rebuild keeps the active
+    /// profile rather than silently returning to the default.
+    pub fn set_bloom_render_profile(&mut self, profile: BloomRenderProfile) {
+        if self.bloom_render_profile == profile {
+            return;
+        }
+
+        self.bloom_render_profile = profile;
+        let Self { device, full, .. } = self;
+        if let Some(full) = full.as_mut() {
+            let (bloom, screen_effects) = (&mut full.bloom, &full.screen_effects);
+            bloom.set_profile(device, screen_effects.scene_color_texture(), profile);
+        }
+    }
+
+    /// Current static bloom style. This is CPU-only state and is valid during
+    /// both the boot-splash and full-renderer phases.
+    pub fn bloom_render_profile(&self) -> BloomRenderProfile {
+        self.bloom_render_profile
+    }
+
+    /// Runtime bloom state. `POSTRETRO_BLOOM=0` seeds this false for the
+    /// manual no-bloom observation; dev-tools can then change it live.
+    #[cfg(feature = "dev-tools")]
+    pub fn bloom_enabled(&self) -> bool {
+        self.full().bloom.enabled()
+    }
+
+    #[cfg(feature = "dev-tools")]
+    pub fn set_bloom_enabled(&mut self, enabled: bool) {
+        if self.full().bloom.enabled() != enabled {
+            self.full_mut().bloom.set_enabled(enabled);
+            log::info!("[Renderer] Bloom: {enabled}");
+        }
+    }
+
     /// Direct setter used by the debug-panel dropdown. Logs only on actual
     /// transition so spam-clicks on the current mode stay quiet.
     #[cfg(feature = "dev-tools")]

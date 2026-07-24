@@ -543,10 +543,35 @@ export type ThemeTokens = {
   spacing: { [string]: number }?,
 }
 
+--- Base resolution used by the mod's bloom chain. Lower resolutions produce chunkier bloom and reduce bloom-pass work. Valid values: `half`, `quarter`, `eighth`.
+export type BloomResolution =
+  --- Start the bloom chain at half the scene dimensions. This is the default.
+  "half"
+  --- Start the bloom chain at one quarter of the scene dimensions.
+  | "quarter"
+  --- Start the bloom chain at one eighth of the scene dimensions.
+  | "eighth"
+
+--- Static bloom presentation preferences for the entire mod. Optional fields use the current half-resolution smooth defaults.
+export type BloomRenderProfile = {
+  --- Bloom chain base resolution. Optional; defaults to `"half"`.
+  resolution: BloomResolution?,
+  --- Use pixelated bloom upsampling and compositing. Optional; defaults to false.
+  pixelated: boolean?,
+}
+
+--- Static renderer preferences declared once for the entire mod.
+export type RenderProfile = {
+  --- Bloom presentation preferences. Optional; defaults to half-resolution smooth bloom.
+  bloom: BloomRenderProfile?,
+}
+
 --- Mod manifest consumed from `start-script.ts`'s default export or `start-script.luau`'s chunk return. `defineMod(config)` is a pure typed identity helper for this object; the engine commits its data only after manifest validation succeeds.
 export type ModManifest = {
   --- Human-readable mod name used for diagnostics and UI. Required.
   name: string,
+  --- Static renderer preferences for the entire mod. Optional; defaults to half-resolution smooth bloom.
+  render: RenderProfile?,
   --- Engine-global entity-type registrations. Optional; survive level unload and are committed only after the manifest validates.
   entities: {EntityTypeDescriptor}?,
   --- Script-registered UI trees (name + `AnchoredTree` + `alwaysOn`). Optional; malformed entries are logged and skipped without aborting boot.

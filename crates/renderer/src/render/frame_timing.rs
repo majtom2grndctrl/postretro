@@ -1,14 +1,13 @@
 // GPU timestamp query helper for per-pass frame timing.
-// Gated on `POSTRETRO_GPU_TIMING=1` and `Features::TIMESTAMP_QUERY`.
+// Gated on `POSTRETRO_GPU_TIMING=1` and the timestamp features used below.
 
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-/// How many frames to accumulate before logging an averaged line.
-const AVG_WINDOW_FRAMES: u32 = 120;
+/// How many completed readback samples to accumulate before logging an average.
+const AVG_WINDOW_SAMPLES: u32 = 120;
 
-/// Snapshot of one averaged 120-frame window, retained for the debug UI to
+/// Snapshot of one averaged 120-sample window, retained for the debug UI to
 /// display. Overwritten each window. `(label, avg_ms, skip_count)`.
 #[derive(Debug, Clone)]
 #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
@@ -32,7 +31,15 @@ pub struct FrameTiming {
     /// While pending, `encode_resolve` must not overwrite the readback
     /// buffer (it's still mapped on the host).
     map_pending: Arc<AtomicBool>,
-    map_result: Arc<Mutex<Option<Vec<u64>>>>,
+    /// A timing resolve was copied into the readback buffer and awaits its
+    /// `map_async` kickoff in `post_submit`. Keeping this distinct from
+    /// `map_pending` ensures every map observes a fresh copy rather than
+    /// repeatedly mapping an already-consumed sample.
+    copied_pending: bool,
+    /// Set by the map callback when the readback buffer is ready to be read.
+    /// The callback deliberately does not capture the buffer: the renderer can
+    /// be torn down before a pending callback is dispatched.
+    map_ready: Arc<AtomicBool>,
     ns_per_tick: f32,
     pass_labels: Vec<&'static str>,
     accum_ns: Vec<f64>,
@@ -111,7 +118,8 @@ impl FrameTiming {
             resolve_buffer,
             readback_buffer,
             map_pending: Arc::new(AtomicBool::new(false)),
-            map_result: Arc::new(Mutex::new(None)),
+            copied_pending: false,
+            map_ready: Arc::new(AtomicBool::new(false)),
             ns_per_tick,
             pass_labels,
             accum_ns: vec![0.0; pair_usize],
@@ -123,7 +131,7 @@ impl FrameTiming {
         }
     }
 
-    /// Most recent averaged 120-frame snapshot. `None` until the first
+    /// Most recent averaged 120-sample snapshot. `None` until the first
     /// averaging boundary has elapsed.
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     pub fn last_window(&self) -> Option<&FrameTimingSnapshot> {
@@ -175,12 +183,12 @@ impl FrameTiming {
     }
 
     /// Resolve the query set and copy into the readback buffer. Skips
-    /// the copy when a previous `map_async` is still in flight — missing
-    /// a single frame's data is preferable to stalling. Always drains
+    /// the copy when a previous copy/map cycle is still in flight — missing
+    /// a frame's data is preferable to stalling. Always drains
     /// `pairs_written` and, when the copy runs, stores the drained
     /// bitmask into `pairs_written_in_flight` so it travels with the
     /// tick snapshot arriving via `map_async`.
-    pub fn encode_resolve(&self, encoder: &mut wgpu::CommandEncoder) {
+    pub fn encode_resolve(&mut self, encoder: &mut wgpu::CommandEncoder) {
         let written_this_frame = self.pairs_written.swap(0, Ordering::Relaxed);
         encoder.resolve_query_set(
             &self.query_set,
@@ -188,7 +196,7 @@ impl FrameTiming {
             &self.resolve_buffer,
             0,
         );
-        if !self.map_pending.load(Ordering::Acquire) {
+        if !self.copied_pending && !self.map_pending.load(Ordering::Acquire) {
             encoder.copy_buffer_to_buffer(
                 &self.resolve_buffer,
                 0,
@@ -198,44 +206,47 @@ impl FrameTiming {
             );
             self.pairs_written_in_flight
                 .store(written_this_frame, Ordering::Relaxed);
+            self.copied_pending = true;
         }
     }
 
     /// Drive the async map state machine. Called once per frame AFTER
     /// `queue.submit`. Non-blocking poll drives any ready map callbacks
-    /// on native; consumes a completed map if waiting, then kicks off a
-    /// new `map_async`.
+    /// on native; consumes a completed map if waiting, then starts a map only
+    /// for a newly submitted copy.
     pub fn post_submit(&mut self, device: &wgpu::Device) {
         let _ = device.poll(wgpu::PollType::Poll);
 
-        let snapshot = self.map_result.lock().unwrap().take();
-        if let Some(ticks) = snapshot {
+        if self.map_ready.swap(false, Ordering::AcqRel) {
+            let buffer_size = self.num_queries as wgpu::BufferAddress * QUERY_SIZE;
+            let view = self
+                .readback_buffer
+                .slice(0..buffer_size)
+                .get_mapped_range();
+            let mut ticks = Vec::with_capacity(view.len() / 8);
+            for chunk in view.chunks_exact(8) {
+                ticks.push(u64::from_le_bytes(chunk.try_into().unwrap()));
+            }
+            drop(view);
             self.accumulate(&ticks);
             self.readback_buffer.unmap();
             self.map_pending.store(false, Ordering::Release);
         }
 
-        if !self.map_pending.load(Ordering::Acquire) {
+        if self.copied_pending && !self.map_pending.load(Ordering::Acquire) {
+            self.copied_pending = false;
             self.map_pending.store(true, Ordering::Release);
-            let result_slot = Arc::clone(&self.map_result);
+            let ready = Arc::clone(&self.map_ready);
             let pending = Arc::clone(&self.map_pending);
-            let buffer_size = self.num_queries as wgpu::BufferAddress * QUERY_SIZE;
-            let buf = self.readback_buffer.clone();
             self.readback_buffer
-                .slice(0..buffer_size)
+                .slice(..)
                 .map_async(wgpu::MapMode::Read, move |res| match res {
                     Ok(()) => {
-                        let view = buf.slice(0..buffer_size).get_mapped_range();
-                        let mut ticks = Vec::with_capacity(view.len() / 8);
-                        for chunk in view.chunks_exact(8) {
-                            ticks.push(u64::from_le_bytes(chunk.try_into().unwrap()));
-                        }
-                        drop(view);
-                        // Buffer stays mapped; the main thread unmaps it
-                        // during the next `post_submit` after observing
-                        // the result. Unmapping inside the callback would
-                        // race with any outstanding view.
-                        *result_slot.lock().unwrap() = Some(ticks);
+                        // Regression: accessing the buffer from this callback
+                        // panicked if the renderer/device was torn down before
+                        // wgpu dispatched it. Only the live FrameTiming owner
+                        // reads and unmaps the mapped range.
+                        ready.store(true, Ordering::Release);
                     }
                     Err(err) => {
                         log::warn!("[gpu-timing] readback map failed: {err:?}");
@@ -269,7 +280,7 @@ impl FrameTiming {
         }
         self.accum_frames += 1;
 
-        if self.accum_frames >= AVG_WINDOW_FRAMES {
+        if self.accum_frames >= AVG_WINDOW_SAMPLES {
             let mut parts: Vec<String> = Vec::with_capacity(self.pass_labels.len());
             let mut snapshot_passes: Vec<(&'static str, f32, u32)> =
                 Vec::with_capacity(self.pass_labels.len());
@@ -295,13 +306,13 @@ impl FrameTiming {
                 .collect();
             if skip_parts.is_empty() {
                 log::info!(
-                    "[gpu-timing] {} (avg over {} frames)",
+                    "[gpu-timing] {} (avg over {} samples)",
                     parts.join(" | "),
                     self.accum_frames,
                 );
             } else {
                 log::info!(
-                    "[gpu-timing] {} (avg over {} frames; skipped: {})",
+                    "[gpu-timing] {} (avg over {} samples; skipped: {})",
                     parts.join(" | "),
                     self.accum_frames,
                     skip_parts.join(", "),

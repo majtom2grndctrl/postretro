@@ -19,12 +19,12 @@
 }
 // brush 1
 {
-( -16 528 128 ) ( -16 -16 144 ) ( -16 -16 128 ) concrete_pavement_036 0 0 0 1 1
-( -16 -16 128 ) ( 1040 -16 144 ) ( 1040 -16 128 ) concrete_pavement_036 0 0 0 1 1
-( -16 -16 128 ) ( 1040 528 128 ) ( -16 528 128 ) concrete_pavement_036 0 0 0 1 1
-( -16 528 144 ) ( 1040 -16 144 ) ( -16 -16 144 ) concrete_pavement_036 0 0 0 1 1
-( 1040 528 128 ) ( -16 528 144 ) ( -16 528 128 ) concrete_pavement_036 0 0 0 1 1
-( 1040 -16 128 ) ( 1040 528 144 ) ( 1040 528 128 ) concrete_pavement_036 0 0 0 1 1
+( -16 528 128 ) ( -16 -16 144 ) ( -16 -16 128 ) 50-free-textures/wood_bark_048 0 0 0 1 1
+( -16 -16 128 ) ( 1040 -16 144 ) ( 1040 -16 128 ) 50-free-textures/wood_bark_048 0 0 0 1 1
+( -16 -16 128 ) ( 1040 528 128 ) ( -16 528 128 ) 50-free-textures/wood_bark_048 0 0 0 1 1
+( -16 528 144 ) ( 1040 -16 144 ) ( -16 -16 144 ) 50-free-textures/wood_bark_048 0 0 0 1 1
+( 1040 528 128 ) ( -16 528 144 ) ( -16 528 128 ) 50-free-textures/wood_bark_048 0 0 0 1 1
+( 1040 -16 128 ) ( 1040 528 144 ) ( 1040 528 128 ) 50-free-textures/wood_bark_048 0 0 0 1 1
 }
 // brush 2
 {
@@ -88,6 +88,24 @@
 ( 720 304 128 ) ( 784 208 128 ) ( 720 208 128 ) concrete_pavement_036 0 0 0 1 1
 ( 784 304 0 ) ( 720 304 128 ) ( 720 304 0 ) concrete_pavement_036 0 0 0 1 1
 ( 784 208 0 ) ( 784 304 128 ) ( 784 304 0 ) concrete_pavement_036 0 0 0 1 1
+}
+// brush 9
+{
+( 192 320 32 ) ( 192 192 112 ) ( 192 192 32 ) neon/neon_glow_panel 0 0 0 1 1
+( 192 192 32 ) ( 208 192 112 ) ( 208 192 32 ) neon/neon_glow_panel 0 0 0 1 1
+( 192 192 32 ) ( 208 320 32 ) ( 192 320 32 ) neon/neon_glow_panel 0 0 0 1 1
+( 192 320 112 ) ( 208 192 112 ) ( 192 192 112 ) neon/neon_glow_panel 0 0 0 1 1
+( 208 320 32 ) ( 192 320 112 ) ( 192 320 32 ) neon/neon_glow_panel 0 0 0 1 1
+( 208 192 32 ) ( 208 320 112 ) ( 208 320 32 ) neon/neon_glow_panel 0 0 0 1 1
+}
+// brush 10
+{
+( 688 320 32 ) ( 688 192 112 ) ( 688 192 32 ) neon/neon_dim_panel -32 0 0 1 1
+( 688 192 32 ) ( 704 192 112 ) ( 704 192 32 ) neon/neon_dim_panel 16 0 0 1 1
+( 688 192 32 ) ( 704 320 32 ) ( 688 320 32 ) neon/neon_dim_panel 16 32 0 1 1
+( 688 320 112 ) ( 704 192 112 ) ( 688 192 112 ) neon/neon_dim_panel 16 32 0 1 1
+( 704 320 32 ) ( 688 320 112 ) ( 688 320 32 ) neon/neon_dim_panel 16 0 0 1 1
+( 704 192 32 ) ( 704 320 112 ) ( 704 320 32 ) neon/neon_dim_panel -32 0 0 1 1
 }
 }
 // entity 1
@@ -215,5 +233,29 @@
 "_cone2" "60"
 "_color" "255 203 157"
 "angles" "-40 90 0"
+"style" "0"
+}
+// entity 14
+{
+"classname" "light_spot"
+"origin" "192 256 72"
+"light" "150"
+"_falloff_range" "200"
+"_cone" "45"
+"_cone2" "85"
+"_color" "252 255 246"
+"angles" "-15 180 0"
+"style" "0"
+}
+// entity 15
+{
+"classname" "light_spot"
+"origin" "688 256 72"
+"light" "60"
+"_falloff_range" "200"
+"_cone" "45"
+"_cone2" "85"
+"_color" "252 255 246"
+"angles" "-15 180 0"
 "style" "0"
 }

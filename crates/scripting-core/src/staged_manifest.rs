@@ -11,87 +11,26 @@ use rquickjs::{
 };
 
 use super::data_descriptors::{
-    EntityTypeDescriptor, ImpactEventDescriptor, ModThemeTokens, RegisteredUiTree,
-    TriggerPoolDescriptor, drain_fonts_js, drain_fonts_lua, drain_frontend_js, drain_frontend_lua,
+    drain_fonts_js, drain_fonts_lua, drain_frontend_js, drain_frontend_lua,
     drain_global_crossings_js, drain_global_crossings_lua, drain_global_reactions_js,
     drain_global_reactions_lua, drain_impact_events_js, drain_impact_events_lua, drain_maps_js,
-    drain_maps_lua, drain_theme_js, drain_theme_lua, drain_trigger_events_js,
-    drain_trigger_events_lua, drain_trigger_pools_js, drain_trigger_pools_lua, drain_ui_trees_js,
-    drain_ui_trees_lua, entity_descriptor_from_js,
+    drain_maps_lua, drain_render_profile_js, drain_render_profile_lua, drain_theme_js,
+    drain_theme_lua, drain_trigger_events_js, drain_trigger_events_lua, drain_trigger_pools_js,
+    drain_trigger_pools_lua, drain_ui_trees_js, drain_ui_trees_lua, entity_descriptor_from_js,
 };
-use super::data_registry::{ScopedCrossing, ScopedReaction};
 use super::error::ScriptError;
 use super::luau::LuauConfig;
 use super::luau_require::LuauRequireTracker;
 use super::quickjs::{QuickJsConfig, run_script};
-use super::runtime::{Frontend, ModManifestResult, ModMapEntry};
-use super::slot_table::StoreDeclarationSet;
+use super::runtime::ModManifestResult;
 use super::store_bridge::{drain_store_declarations_js, drain_store_declarations_lua};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum StagedManifestDiagnosticSeverity {
-    Info,
-    Error,
-}
+mod transfer;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct StagedManifestDiagnostic {
-    pub severity: StagedManifestDiagnosticSeverity,
-    pub message: String,
-}
-
-impl StagedManifestDiagnostic {
-    fn info(message: impl Into<String>) -> Self {
-        Self {
-            severity: StagedManifestDiagnosticSeverity::Info,
-            message: message.into(),
-        }
-    }
-
-    fn error(message: impl Into<String>) -> Self {
-        Self {
-            severity: StagedManifestDiagnosticSeverity::Error,
-            message: message.into(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct StagedManifest {
-    pub name: String,
-    pub entities: Vec<EntityTypeDescriptor>,
-    pub maps: Vec<ModMapEntry>,
-    pub reactions: Vec<ScopedReaction>,
-    pub crossings: Vec<ScopedCrossing>,
-    pub events: Vec<ImpactEventDescriptor>,
-    pub trigger_events: Vec<super::data_descriptors::TriggerEventDescriptor>,
-    pub trigger_pools: Vec<TriggerPoolDescriptor>,
-    pub ui_trees: Vec<RegisteredUiTree>,
-    pub theme: ModThemeTokens,
-    pub frontend: Option<Frontend>,
-    pub store_declarations: StoreDeclarationSet,
-    /// Canonical mod-init source dependencies carried across the worker→main
-    /// thread boundary. The descriptor registry write and watcher classifier
-    /// update both happen on the main thread in `commit_staged_manifest_result`,
-    /// where the engine registry is mutably owned; this field is what makes the
-    /// dependency set available at that commit point.
-    pub dependency_paths: Vec<PathBuf>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum StagedManifestBuildStatus {
-    Built(Box<StagedManifest>),
-    NoStartScript,
-    Failed,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct StagedManifestBuildResult {
-    pub generation: u64,
-    pub mod_root: PathBuf,
-    pub status: StagedManifestBuildStatus,
-    pub diagnostics: Vec<StagedManifestDiagnostic>,
-}
+pub use transfer::{
+    StagedManifest, StagedManifestBuildResult, StagedManifestBuildStatus, StagedManifestDiagnostic,
+    StagedManifestDiagnosticSeverity,
+};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct StagedManifestBuildConfig {
@@ -382,6 +321,7 @@ fn run_staged_manifest_build(
 
     Ok(Some(StagedManifest {
         name: manifest.name,
+        render: manifest.render,
         entities: manifest.entities,
         maps: manifest.maps,
         reactions: manifest.reactions,
@@ -551,6 +491,13 @@ fn manifest_from_js_value<'js>(
             ),
         }
     })?;
+    let render = drain_render_profile_js(&obj, "default mod manifest export").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` default mod manifest export `render` invalid: {e}"
+            ),
+        }
+    })?;
     let frontend = drain_frontend_js(&obj, "default mod manifest export").map_err(|e| {
         ScriptError::InvalidArgument {
             reason: format!(
@@ -616,6 +563,7 @@ fn manifest_from_js_value<'js>(
 
     Ok(ModManifestResult {
         name,
+        render,
         entities,
         ui_trees,
         theme,
@@ -747,6 +695,13 @@ fn run_staged_mod_init_luau(
             reason: format!("mod-init: `{source_path}` returned mod manifest `theme` invalid: {e}"),
         }
     })?;
+    let render = drain_render_profile_lua(&table, "returned mod manifest").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` returned mod manifest `render` invalid: {e}"
+            ),
+        }
+    })?;
     let frontend = drain_frontend_lua(&table, "returned mod manifest").map_err(|e| {
         ScriptError::InvalidArgument {
             reason: format!(
@@ -805,6 +760,7 @@ fn run_staged_mod_init_luau(
 
     Ok(ModManifestResult {
         name,
+        render,
         entities,
         ui_trees,
         theme,
@@ -823,6 +779,8 @@ fn run_staged_mod_init_luau(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data_descriptors::ModThemeTokens;
+    use crate::runtime::{ModBloomProfile, ModBloomResolution, ModRenderProfile};
     use std::time::{Duration, Instant};
 
     struct TempModRoot(PathBuf);
@@ -854,12 +812,86 @@ mod tests {
         TempModRoot(p)
     }
 
+    fn staged_render_profile(name: &str, entry: &str, source: &str) -> ModRenderProfile {
+        let dir = temp_mod_root(name);
+        fs::write(dir.join(entry), source).unwrap();
+        let result = build_staged_manifest(&dir, 1, &StagedManifestBuildConfig::default());
+        let StagedManifestBuildStatus::Built(manifest) = result.status else {
+            panic!("expected built staged manifest, got {:?}", result.status);
+        };
+        manifest.render
+    }
+
     fn assert_send<T: Send>() {}
 
     #[test]
     fn staged_manifest_output_is_send() {
         assert_send::<StagedManifest>();
         assert_send::<StagedManifestBuildResult>();
+    }
+
+    #[test]
+    fn staged_manifest_render_profile_snapshot_matches_in_both_runtimes() {
+        let js = staged_render_profile(
+            "js_render_profile",
+            "start-script.js",
+            r#"
+                globalThis.__postretroModManifest = {
+                    name: "RenderMod",
+                    render: { bloom: { resolution: "eighth", pixelated: true } },
+                };
+            "#,
+        );
+        let luau = staged_render_profile(
+            "luau_render_profile",
+            "start-script.luau",
+            r#"
+                return {
+                    name = "RenderMod",
+                    render = { bloom = { resolution = "eighth", pixelated = true } },
+                }
+            "#,
+        );
+        let expected = ModRenderProfile {
+            bloom: ModBloomProfile {
+                resolution: ModBloomResolution::Eighth,
+                pixelated: true,
+            },
+        };
+        assert_eq!(js, expected);
+        assert_eq!(luau, expected);
+    }
+
+    #[test]
+    fn staged_manifest_malformed_render_fields_degrade_equally() {
+        let js = staged_render_profile(
+            "js_bad_render_profile",
+            "start-script.js",
+            r#"
+                globalThis.__postretroModManifest = {
+                    name: "RenderMod",
+                    render: { bloom: { resolution: "third", pixelated: true } },
+                };
+            "#,
+        );
+        let luau = staged_render_profile(
+            "luau_bad_render_profile",
+            "start-script.luau",
+            r#"
+                return {
+                    name = "RenderMod",
+                    render = { bloom = { resolution = "third", pixelated = true } },
+                }
+            "#,
+        );
+        let expected = ModRenderProfile {
+            bloom: ModBloomProfile {
+                resolution: ModBloomResolution::Half,
+                pixelated: true,
+            },
+        };
+        assert_eq!(js, expected);
+        assert_eq!(luau, expected);
     }
 
     #[test]

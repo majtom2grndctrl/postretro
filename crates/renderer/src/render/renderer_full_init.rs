@@ -19,6 +19,7 @@ pub(crate) fn build_full_renderer(
     surface_height: u32,
     has_multi_draw_indirect: bool,
     cube_array_supported: bool,
+    bloom_render_profile: BloomRenderProfile,
 ) -> Result<FullRenderer> {
     // Dummy buffers until `install_level_geometry` replaces them.
     let geometry: Option<&LevelGeometry> = None;
@@ -183,14 +184,20 @@ pub(crate) fn build_full_renderer(
     let (_depth_texture, depth_view) =
         create_depth_texture(device, surface_config.width, surface_config.height);
 
-    // Post-scene compositor seam: `scene_color` offscreen target + identity
-    // resolve. Allocated at the sRGB surface format / surface size /
-    // single-sample for byte-identical resolve (see `screen_effects.rs`).
+    // Post-scene compositor seam: a linear HDR `scene_color` target + sRGB
+    // resolve. The scene target is independent from the swapchain format.
     let screen_effects = ScreenEffectsPass::new(
         device,
         surface_config.width,
         surface_config.height,
         surface_format,
+    );
+    let bloom = BloomPass::new(
+        device,
+        surface_config.width,
+        surface_config.height,
+        screen_effects.scene_color_texture(),
+        bloom_render_profile,
     );
 
     let scripted_light_capacity = full_lights.len() + RUNTIME_DYNAMIC_LIGHT_RESERVE;
@@ -355,7 +362,6 @@ pub(crate) fn build_full_renderer(
         shadow_depth_pipeline,
     } = build_renderer_pipelines(
         device,
-        surface_format,
         &uniform_bind_group_layout,
         &texture_bind_group_layout,
         &lighting_bind_group_layout,
@@ -374,17 +380,16 @@ pub(crate) fn build_full_renderer(
     } = build_shadow_vs_resources(device, &shadow_vs_bgl);
 
     // GPU timing is enabled only when requested AND the device was created
-    // with TIMESTAMP_QUERY (boot-phase `request_renderer_device` only grants
-    // it when both held). Re-derive from the device's granted features so
-    // `build_full_renderer` stays a pure function of boot state.
+    // with both timestamp features its pass- and encoder-level brackets use.
+    // Re-derive from the device's granted features so `build_full_renderer`
+    // stays a pure function of boot state.
     let enable_gpu_timing = std::env::var("POSTRETRO_GPU_TIMING").ok().as_deref() == Some("1")
-        && device.features().contains(wgpu::Features::TIMESTAMP_QUERY);
+        && gpu_timing_features_supported(device.features());
     let frame_timing = build_frame_timing(device, queue, enable_gpu_timing);
 
     // See: context/lib/rendering_pipeline.md §7.4
     let smoke_pass = SmokePass::new(
         device,
-        surface_format,
         DEPTH_FORMAT,
         &uniform_bind_group_layout,
         &lighting_bind_group_layout,
@@ -398,7 +403,6 @@ pub(crate) fn build_full_renderer(
     // depth loop; `record_draws` then records the forward draw.
     let mut mesh_pass = mesh_pass::MeshPass::new(
         device,
-        surface_format,
         DEPTH_FORMAT,
         // The depth-only skinned pipeline writes the shadow-map depth format
         // and binds the world spot-shadow `shadow_vs_bgl` at group 0 (the
@@ -442,7 +446,6 @@ pub(crate) fn build_full_renderer(
     );
     let mut kinematic_brush = kinematic_brush::KinematicBrushPass::new(
         device,
-        surface_format,
         DEPTH_FORMAT,
         &uniform_bind_group_layout,
         &texture_bind_group_layout,
@@ -467,12 +470,11 @@ pub(crate) fn build_full_renderer(
         kinematic_brush.instance_transform_bind_group_layout(),
     );
 
-    // UI quad / 9-slice + text pass — sibling to fog. Owns all UI GPU state
-    // (quad pipeline, glyphon atlas/renderer, white texel). The splash phase
-    // and the gameplay path both record through it.
-    let ui = ui::UiPass::new(device, queue, surface_format);
+    // Gameplay UI owns its quad pipeline, glyphon atlas/renderer, and white
+    // texel. Boot splash rendering uses its separate lightweight pass.
+    let ui = ui::UiPass::new(device, queue, SCENE_COLOR_FORMAT);
 
-    let mut fog = FogPass::new(
+    let fog = FogPass::new(
         device,
         surface_config.width,
         surface_config.height,
@@ -483,9 +485,6 @@ pub(crate) fn build_full_renderer(
         &spot_shadow_bgl,
         cube_array_supported,
     );
-    // Swapchain may differ from the hardcoded Rgba8UnormSrgb default.
-    fog.rebuild_composite_for_format(device, surface_format);
-
     if has_geometry {
         log::info!(
             "[Renderer] Textured pipeline ready: {} indices, {} textures, bvh_leaves={}",
@@ -502,13 +501,8 @@ pub(crate) fn build_full_renderer(
     }
 
     #[cfg(feature = "dev-tools")]
-    let debug_lines = debug_lines::DebugLineRenderer::new(
-        device,
-        surface_format,
-        DEPTH_FORMAT,
-        1,
-        &uniform_bind_group_layout,
-    );
+    let debug_lines =
+        debug_lines::DebugLineRenderer::new(device, DEPTH_FORMAT, 1, &uniform_bind_group_layout);
 
     let promoted_static_weight_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("Promoted Static Light Weights"),
@@ -631,6 +625,7 @@ pub(crate) fn build_full_renderer(
         shadow_vs_stride,
         depth_view,
         screen_effects,
+        bloom,
         gpu_textures,
         bvh_leaves,
         cell_draw_index,

@@ -11,6 +11,8 @@
 
 use glam::{Mat4, Vec3};
 
+use super::SCENE_COLOR_FORMAT;
+
 use postretro_render_cpu::fog_volume::{
     self, FOG_PARAMS_SIZE, FOG_PLANES_BUFFER_CAPACITY, FOG_POINT_LIGHT_SIZE, FOG_SPOT_LIGHT_SIZE,
     FOG_VOLUME_SIZE, FogPointLight, FogSpotLight, FogVolume, MAX_FOG_POINT_LIGHTS, MAX_FOG_VOLUMES,
@@ -420,13 +422,10 @@ impl FogPass {
             fragment: Some(wgpu::FragmentState {
                 module: &composite_shader,
                 entry_point: Some("fs_main"),
-                // Initial format — renderer calls `rebuild_composite_for_format` immediately
-                // after construction to set the real surface format. The pipeline created here
-                // is never used before that call.
                 targets: &[Some(wgpu::ColorTargetState {
                     // Additive: final = scene + fog_scatter. Alpha path is
                     // unused but kept consistent.
-                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                    format: SCENE_COLOR_FORMAT,
                     blend: Some(wgpu::BlendState {
                         color: wgpu::BlendComponent {
                             src_factor: wgpu::BlendFactor::One,
@@ -471,60 +470,6 @@ impl FogPass {
             spot_count: 0,
             point_count: 0,
         }
-    }
-
-    /// Rebuild the composite pipeline when the surface format changes.
-    /// Stored composite bind group stays valid because it only references the
-    /// scatter target — unrelated to the output format.
-    pub fn rebuild_composite_for_format(
-        &mut self,
-        device: &wgpu::Device,
-        format: wgpu::TextureFormat,
-    ) {
-        let composite_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Fog Composite Shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/fog_composite.wgsl").into()),
-        });
-        let composite_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Fog Composite Pipeline Layout"),
-            bind_group_layouts: &[Some(&self.composite_bgl)],
-            immediate_size: 0,
-        });
-        self.composite_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Fog Composite Pipeline"),
-            layout: Some(&composite_layout),
-            vertex: wgpu::VertexState {
-                module: &composite_shader,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &composite_shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState {
-                        color: wgpu::BlendComponent {
-                            src_factor: wgpu::BlendFactor::One,
-                            dst_factor: wgpu::BlendFactor::One,
-                            operation: wgpu::BlendOperation::Add,
-                        },
-                        alpha: wgpu::BlendComponent::REPLACE,
-                    }),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
     }
 
     /// Resize the scatter target and rebuild the group-6 bind group.

@@ -3,6 +3,58 @@
 
 use super::super::*;
 
+#[test]
+fn world_material_uniform_mirrors_shininess_and_emissive_strength_packing() {
+    let forward = include_str!("../../shaders/forward.wgsl");
+    let kinematic = include_str!("../../shaders/kinematic_brush.wgsl");
+    for shader in [forward, kinematic] {
+        assert!(shader.contains("shininess: f32,"));
+        assert!(shader.contains("emissive_strength: f32,"));
+        assert!(shader.contains("_pad: vec2<f32>,"));
+    }
+    assert!(forward.contains("@group(1) @binding(1) var emissive_texture"));
+    assert!(kinematic.contains("@group(1) @binding(1) var emissive_texture"));
+}
+
+#[test]
+fn zero_strength_materials_skip_emissive_texture_sampling() {
+    let forward = include_str!("../../shaders/forward.wgsl");
+    let kinematic = include_str!("../../shaders/kinematic_brush.wgsl");
+    for (label, shader, sample) in [
+        (
+            "forward",
+            forward,
+            "emissive = sample_color(emissive_texture",
+        ),
+        (
+            "kinematic",
+            kinematic,
+            "emissive = sample_post_retro(emissive_texture",
+        ),
+    ] {
+        let derivatives = shader
+            .find("let ddx = dpdx(in.uv);")
+            .unwrap_or_else(|| panic!("{label} shader must derive texture gradients"));
+        let black = shader
+            .find("var emissive = vec3<f32>(0.0);")
+            .unwrap_or_else(|| panic!("{label} shader must initialize emissive to black"));
+        let guard = shader
+            .find("if material.emissive_strength > 0.0")
+            .unwrap_or_else(|| panic!("{label} shader must guard the emissive texture fetch"));
+        let sample = shader
+            .find(sample)
+            .unwrap_or_else(|| panic!("{label} shader must retain positive emissive sampling"));
+        let additive = shader
+            .find("+ emissive * material.emissive_strength")
+            .unwrap_or_else(|| panic!("{label} shader must retain additive HDR emissive"));
+
+        assert!(
+            derivatives < black && black < guard && guard < sample && sample < additive,
+            "{label} shader must derive gradients, initialize black, guard sampling, then add emissive",
+        );
+    }
+}
+
 /// Regression: every storage/uniform buffer binding in `forward.wgsl` must
 /// receive a payload large enough to satisfy wgpu's minimum-binding-size
 /// validation. The original bug was `anim_descriptors` bound with 16 B while

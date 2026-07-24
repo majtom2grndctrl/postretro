@@ -283,7 +283,6 @@ fn material_index(texture_index: u32, material_count: usize) -> usize {
 impl KinematicBrushPass {
     pub fn new(
         device: &wgpu::Device,
-        surface_format: wgpu::TextureFormat,
         depth_format: wgpu::TextureFormat,
         camera_bgl: &wgpu::BindGroupLayout,
         material_bgl: &wgpu::BindGroupLayout,
@@ -381,7 +380,7 @@ impl KinematicBrushPass {
                 module: &shader,
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: surface_format,
+                    format: SCENE_COLOR_FORMAT,
                     blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -1032,6 +1031,41 @@ mod tests {
     fn kinematic_pass_uses_existing_bind_group_budget() {
         assert_eq!(KINEMATIC_BIND_GROUP_COUNT, 5);
         const { assert!(KINEMATIC_BIND_GROUP_COUNT <= 8) };
+    }
+
+    #[test]
+    fn kinematic_pipeline_fragment_texture_budget_includes_emissive() {
+        let total = |cube_array_supported| {
+            let per_group = [
+                fragment_sampled_textures(&uniform_bind_group_layout_entries()),
+                fragment_sampled_textures(&material_bind_group_layout_entries()),
+                fragment_sampled_textures(&light_bind_group_layout_entries(cube_array_supported)),
+                0, // group 3 instance storage buffer
+                fragment_sampled_textures(&sh_volume::sh_bind_group_layout_entries()),
+            ];
+            (per_group, per_group.iter().sum::<u32>())
+        };
+
+        let (cube_groups, cube_total) = total(true);
+        assert_eq!(cube_groups, [0, 4, 2, 0, 3]);
+        assert_eq!(cube_total, 9);
+        assert!(cube_total <= 16);
+
+        let (no_cube_groups, no_cube_total) = total(false);
+        assert_eq!(no_cube_groups, [0, 4, 1, 0, 3]);
+        assert_eq!(no_cube_total, 8);
+        assert!(no_cube_total <= 16);
+    }
+
+    #[test]
+    fn kinematic_material_uniform_mirrors_emissive_layout() {
+        let shader = include_str!("../shaders/kinematic_brush.wgsl");
+        assert!(shader.contains("shininess: f32,"));
+        assert!(shader.contains("emissive_strength: f32,"));
+        assert!(shader.contains("emissive_texture"));
+        assert!(
+            shader.contains("base_color.rgb * lighting + emissive * material.emissive_strength")
+        );
     }
 
     #[test]

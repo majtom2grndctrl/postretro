@@ -4,6 +4,8 @@
 use bytemuck::{Pod, Zeroable};
 use glam::Vec3;
 
+use super::SCENE_COLOR_FORMAT;
+
 const DEBUG_LINES_SHADER_SOURCE: &str = include_str!("../shaders/debug_lines.wgsl");
 
 const MAX_DEBUG_SEGMENTS: usize = 256 * 1024;
@@ -195,7 +197,6 @@ fn marker_segments(center: Vec3, size: f32) -> [(Vec3, Vec3); 3] {
 impl DebugLineRenderer {
     pub fn new(
         device: &wgpu::Device,
-        color_format: wgpu::TextureFormat,
         depth_format: wgpu::TextureFormat,
         sample_count: u32,
         uniform_bind_group_layout: &wgpu::BindGroupLayout,
@@ -258,7 +259,7 @@ impl DebugLineRenderer {
                     module: &shader,
                     entry_point: Some("fs_main"),
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: color_format,
+                        format: SCENE_COLOR_FORMAT,
                         blend: None,
                         write_mask: wgpu::ColorWrites::ALL,
                     })],

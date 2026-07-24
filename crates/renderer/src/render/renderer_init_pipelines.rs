@@ -17,7 +17,6 @@ pub(crate) struct RendererPipelines {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_renderer_pipelines(
     device: &wgpu::Device,
-    surface_format: wgpu::TextureFormat,
     uniform_bind_group_layout: &wgpu::BindGroupLayout,
     texture_bind_group_layout: &wgpu::BindGroupLayout,
     lighting_bind_group_layout: &wgpu::BindGroupLayout,
@@ -127,7 +126,7 @@ pub(crate) fn build_renderer_pipelines(
             module: &shader,
             entry_point: Some("fs_main"),
             targets: &[Some(wgpu::ColorTargetState {
-                format: surface_format,
+                format: SCENE_COLOR_FORMAT,
                 blend: None,
                 write_mask: wgpu::ColorWrites::ALL,
             })],
@@ -223,7 +222,7 @@ pub(crate) fn build_renderer_pipelines(
                 module: &wireframe_shader,
                 entry_point: Some("fs_cull_status"),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: surface_format,
+                    format: SCENE_COLOR_FORMAT,
                     blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -290,7 +289,7 @@ pub(crate) fn build_renderer_pipelines(
                 module: &wireframe_shader,
                 entry_point: Some("fs_visible"),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: surface_format,
+                    format: SCENE_COLOR_FORMAT,
                     blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],

@@ -158,8 +158,8 @@ impl Renderer {
     /// Camera owns aspect ratio; caller must also call `update_per_frame_uniforms`.
     ///
     /// Works in BOTH windowed phases. Windowed renderers reconfigure the surface
-    /// during boot; the full-phase target rebuilds (depth, screen effects, fog, SDF
-    /// shadow, spot-shadow bind group) only run when the full renderer exists.
+    /// during boot; full-phase depth, HDR scene/bloom, fog, SDF shadow, and
+    /// spot-shadow resources rebuild only when the full renderer exists.
     /// Offscreen renderers have no surface, so resize is a no-op.
     /// During the boot/splash window (`full` is `None`) the surface is the only
     /// thing that needs resizing — the boot splash re-projects against the new
@@ -187,9 +187,15 @@ impl Renderer {
             .expect("full renderer present (checked above)");
         let (_depth_texture, depth_view) = create_depth_texture(device, width, height);
         full.depth_view = depth_view;
-        // `scene_color` is surface-sized; recreate it (and rebuild the resolve
-        // bind group) alongside the depth target.
+        // Recreate the surface-sized HDR scene target before bloom so bloom can
+        // rebuild its source view and resolution-dependent parameter table.
         full.screen_effects.resize(device, width, height);
+        full.bloom.resize(
+            device,
+            width,
+            height,
+            full.screen_effects.scene_color_texture(),
+        );
         full.fog.resize(device, width, height, &full.depth_view);
         // SDF shadow target is half-res relative to the surface; the depth view
         // also changed, so the pass bind group has to be rebuilt.

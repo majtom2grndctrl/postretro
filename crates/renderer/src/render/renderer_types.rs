@@ -475,6 +475,10 @@ pub struct Renderer {
     /// boot state alone. `Some` cube pool iff this is true (see `FullRenderer`).
     pub(super) cube_array_supported: bool,
 
+    /// Static bloom style cached in boot state so `finish_full_init` rebuilds
+    /// the full renderer with the last committed profile after surface recovery.
+    pub(super) bloom_render_profile: BloomRenderProfile,
+
     /// Renderer-owned boot splash pass: clears the swapchain and draws the
     /// decoded logo as a single textured quad. Independent of the UI pass — the
     /// boot path uses it directly so first pixels reach the window before the
@@ -498,8 +502,8 @@ pub struct Renderer {
 pub(super) struct FullRenderer {
     pub(super) pipeline: wgpu::RenderPipeline,
     pub(super) depth_prepass_pipeline: wgpu::RenderPipeline,
-    /// `Some` when `POSTRETRO_GPU_TIMING=1` AND adapter supports `TIMESTAMP_QUERY`;
-    /// `None` → no `timestamp_writes` attached to any pass.
+    /// `Some` when `POSTRETRO_GPU_TIMING=1` AND the adapter supports both base
+    /// and encoder-level timestamp queries; `None` → no timing writes.
     pub(super) frame_timing: Option<FrameTiming>,
     pub(super) vertex_buffer: wgpu::Buffer,
     pub(super) index_buffer: wgpu::Buffer,
@@ -745,6 +749,10 @@ pub(super) struct FullRenderer {
     /// to the swapchain (the sole gameplay-path swapchain writer). Recreated on
     /// resize alongside `depth_view`. See `render/screen_effects.rs`.
     pub(super) screen_effects: ScreenEffectsPass,
+
+    /// HDR bloom chain. Samples the post-fog `scene_color` target and
+    /// composites before capture and presentation resolve.
+    pub(super) bloom: BloomPass,
 
     /// GPU textures indexed by texture index.
     pub(super) gpu_textures: Vec<GpuTexture>,

@@ -9,6 +9,7 @@ mod mod_init_exec;
 mod types;
 
 pub use types::{
-    Frontend, MenuCamera, ModManifestResult, ModMapEntry, ReloadSummary, ScriptRuntime,
-    ScriptRuntimeConfig, StagedManifestCommitOutcome,
+    Frontend, MenuCamera, ModBloomProfile, ModBloomResolution, ModManifestResult, ModMapEntry,
+    ModRenderProfile, ReloadSummary, ScriptRuntime, ScriptRuntimeConfig,
+    StagedManifestCommitOutcome,
 };

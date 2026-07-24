@@ -210,9 +210,14 @@ impl App {
     }
 
     /// Run `mod_init` and commit its validated manifest into the engine-global
-    /// `DataRegistry`, overlay persisted state once, and start the hot-reload
-    /// watcher. Records `mod_init` into `mod_timings`. Errors log and leave the
-    /// engine in a blank-mod state so the splash flow still completes.
+    /// `DataRegistry`, install the manifest's UI theme/fonts and bloom render
+    /// profile, overlay persisted state once, and start the hot-reload watcher.
+    /// Records `mod_init` into `mod_timings`. Errors log and leave the engine in
+    /// a blank-mod state so the splash flow still completes.
+    ///
+    /// This is also the resume seam: suspend drops the renderer, and the resumed
+    /// splash loop replays this after `finish_renderer_full_init`, so the
+    /// recreated renderer re-receives the committed profile.
     fn run_deferred_mod_init(&mut self) {
         // Mod init runs before the worker spawns so declarations and entity
         // descriptors commit together, then persistence overlays defaults once
@@ -227,6 +232,13 @@ impl App {
             postretro_foundation::ModThemeTokens,
             postretro_foundation::ModFontAssets,
         )> = None;
+        // Same deferral as theme/fonts and `frontend`: the renderer setter needs
+        // `&mut self`, which the session borrow below forbids. A failed mod init
+        // leaves this `None` and therefore makes NO setter call, so the renderer
+        // keeps its active profile.
+        let mut committed_render_profile: Option<
+            postretro_scripting_core::runtime::ModRenderProfile,
+        > = None;
         {
             let session = self
                 .session
@@ -240,6 +252,19 @@ impl App {
                 log::error!("[Scripting] mod_init failed: {err}");
             } else {
                 let has_manifest = session.scripting.script_runtime.mod_manifest().is_some();
+                // Read the render profile before anything drains or `take`s the
+                // manifest below — `ModRenderProfile` is `Copy`, so this costs a
+                // read and cannot be invalidated by the later mutations. A
+                // successful init with no start script commits the default,
+                // matching the staged `NoStartScript` rule.
+                committed_render_profile = Some(
+                    session
+                        .scripting
+                        .script_runtime
+                        .mod_manifest()
+                        .map(|manifest| manifest.render)
+                        .unwrap_or_default(),
+                );
                 // Drain the manifest's engine-global `DataRegistry` registrations
                 // (entity types, maps, global reactions/crossings) through the
                 // shared extractor also used by the headless observability path, so
@@ -314,6 +339,9 @@ impl App {
         // the session borrow above has ended.
         if let Some((mod_theme, mod_fonts)) = deferred_theme_fonts {
             self.install_mod_ui_theme_and_fonts(mod_theme, mod_fonts);
+        }
+        if let Some(render_profile) = committed_render_profile {
+            self.apply_mod_bloom_render_profile(render_profile);
         }
         self.mod_timings.record("mod_init");
     }

@@ -247,17 +247,51 @@ Spatial diagnostics use this pass for CPU-authored structural overlays:
 
 Spatial visible-cell coloring is derived from the drawable `VisibleCells` result that feeds world rendering, not from fog/light reachability masks. The wider `fog_reachable` / light-reachable sets include empty cells for volume and dynamic-light isolation and must not drive first-pass Spatial visibility colors.
 
-### 7.8 Screen-space effects resolve pass
+### 7.8 HDR scene color, bloom, and screen-space resolve
 
-The renderer owns a `scene_color` offscreen target: surface (sRGB) format, single-sample, surface-sized. Every gameplay scene pass and gameplay UI pass writes into `scene_color`; the resolve pass is the sole swapchain writer for the gameplay path — it runs every frame as a fullscreen-triangle blit from `scene_color` into the swapchain. The boot-splash path is separate from the gameplay resolve: it writes directly to the swapchain `view`, never touching `scene_color`, the UI pass, `UiReadSnapshot`, or the screen-effects compose. Startup records black/logo splash timing only after the renderer reports that command submission reached a successful present path.
+The renderer owns a single-sample, surface-sized linear `Rgba16Float`
+`scene_color` target. Every gameplay scene pass and gameplay UI pass writes
+there; the fullscreen resolve is the sole swapchain writer for the gameplay
+path. It samples `scene_color`, applies the near-neutral soft-knee tonemap,
+then the flash, vignette, and shake effects, and writes the sRGB swapchain.
+The target stores raw linear values; sampling it does not decode sRGB, and the
+swapchain store performs the one display encode. This preserves in-range
+content closely while compressing HDR overshoot rather than hard-clipping it.
+
+The renderer-owned bloom compositor runs after fog and before capture,
+wireframe/debug/viewmodel overlays, and gameplay UI. It extracts HDR luminance
+above `BLOOM_THRESHOLD`, filters a five-level downsample/blur/upsample chain,
+then additively composites the result back into `scene_color`. As a result,
+emissive texels and other HDR-bright scene content make a soft screen-space
+halo without changing any lighting buffer or causing overlays/UI to bloom. Set
+`POSTRETRO_BLOOM=0` to disable the pass for the manual no-bloom emissive check.
+
+**Mod bloom profile.** A mod may set a static bloom profile in its manifest.
+The profile chooses a half, quarter, or eighth-resolution base chain and may
+use texel-addressed pixelated upsample/composite reads. Omission uses the
+half-resolution smooth profile. Downsample and blur stay linear in every mode.
+The renderer owns profile state and resource changes; it persists across level
+changes, resize, and full-renderer recreation. Player overrides and
+per-material bloom tiers are separate features.
+
+The boot-splash path is separate from the gameplay resolve: it writes directly
+to the swapchain `view`, never touching `scene_color`, the UI pass,
+`UiReadSnapshot`, or the screen-effects compose. Startup records black/logo
+splash timing only after the renderer reports that command submission reached a
+successful present path.
 
 **Renderer boot/full phase split.** Renderer init is two phases so first pixels reach the window before the heavy pipelines build. The **boot phase** (`Renderer::new`) creates the instance, surface, adapter, device, queue, surface config, and the renderer-owned boot splash pass; device creation requests the full feature/limit set because wgpu features can't be added after the device exists. The **full phase** builds the steady-state renderer — world buffers, lighting/shadow resources, screen effects, mesh/UI/fog passes, debug lines. `is_boot_ready` gates splash painting; `is_full_ready` gates Frontend, Loading completion, Running, the UI pass, and scene rendering. Full init is idempotent/restartable across surface recreation, so a suspend→resume that recreated the surface reruns it without re-running deferred session init. See `boot_sequence.md` §1.
 
 **Boot splash pass.** A renderer-owned pass (`render/splash_pass.rs`) that clears the swapchain (`LoadOp::Clear` black) and, when a logo is installed, draws it as one aspect-preserving textured quad sized by pure GPU-free math. It owns its pipeline, bind group layout, sampler, uploaded logo texture, and uniform — no shared world/UI resources. The app-facing renderer API stays small: install decoded splash pixels, render a black/logo frame, receive a `PresentHandle` after successful submission, clear the logo. Transient or skipped acquire paths return no handle, so startup timing does not advance. The app decodes the PNG on the boot thread (CPU-only, no wgpu) and hands pixels to the renderer, which owns all GPU work. Independent of the UI system: no `UiPass`, `UiImageRegistry`, `UiReadSnapshot`, glyphon, taffy, or UI JSON.
 
-Three effects are composited on top of the identity blit: flash (over-blend toward a tint color, weighted by `flash.a`), vignette (edge darken/tint, strength-scaled radial blend), and shake (pure UV offset applied before the sample). All three are packed CPU-side from the frame's `UiReadSnapshot` into a per-frame `EffectUniform` (binding 2 of group 0). At rest, every term is exactly 0 — the mix factors collapse to 0 and the resolve is bit-identical to a direct passthrough. The resolve sampler is NEAREST / pixel-aligned so the 1:1 texel mapping holds for the identity case. See `crates/renderer/src/render/screen_effects.rs` and `crates/renderer/src/shaders/screen_effects.wgsl`.
+The resolve applies a near-neutral soft-knee tonemap before the existing flash (over-blend toward a tint color, weighted by `flash.a`), vignette (edge darken/tint, strength-scaled radial blend), and shake (pure UV offset applied before the sample). All three are packed CPU-side from the frame's `UiReadSnapshot` into a per-frame `EffectUniform` (binding 2 of group 0). The former byte-identity resolve contract is superseded: in-range content remains a visual-parity/manual-GPU gate. The resolve sampler is NEAREST / pixel-aligned. See `crates/renderer/src/render/screen_effects.rs` and `crates/renderer/src/shaders/screen_effects.wgsl`.
 
-**Frame capture (Epic 20, shipped).** `scene_color` doubles as the offscreen readback source for headless frame capture — read pre-resolve, so a capture excludes the transient effects and stays reproducible. Renderer owns the readback (per the boundary rule); surfaceless-renderer construction and full design: `plans/done/E20--frame-capture`.
+**Frame capture (Epic 20, shipped).** Headless capture runs the same soft-knee
+tonemap into a capture-only `Rgba8UnormSrgb` target after the bloom composite,
+then reads it back. PNG bytes therefore stay deterministic RGBA8 while capture
+includes scene bloom and excludes transient screen effects. Renderer owns the
+readback (per the boundary rule); surfaceless-renderer construction and full
+design: `plans/done/E20--frame-capture`.
 
 ---
 
@@ -374,7 +408,7 @@ Camera position and orientation produce a view matrix each frame, feeding:
 
 ### GPU Pass Timing
 
-Set `POSTRETRO_GPU_TIMING=1` to enable per-pass GPU timing; for a normal dev launch use `RUST_LOG=info POSTRETRO_GPU_TIMING=1 cargo run -p xtask -- run`. With dev-tools enabled, use `RUST_LOG=info POSTRETRO_GPU_TIMING=1 cargo run -p xtask -- run --features dev-tools --`. Cargo flags before `--` go to the engine `cargo run`; args after it go to postretro. Requires adapter support for `TIMESTAMP_QUERY`; silently disabled if the feature is absent. Passes measured: `cull`, `animated_lm_compose`, `depth_prepass`, `sdf_shadow`, `forward`, `sh_compose`, `direct_sh_compose`, `animated_direct_sh_compose`, `promoted_depth_cache_upper`, `smoke`. Results are averaged over a 120-frame window and logged via `log::info!` at the window boundary. SH sampling is not separately timestamp-bracketed because it runs inside the forward fragment shader; measure it as `forward` timing deltas before/after the octahedral migration and with Probe Occlusion on/off.
+Set `POSTRETRO_GPU_TIMING=1` to enable per-pass GPU timing; for a normal dev launch use `RUST_LOG=info POSTRETRO_GPU_TIMING=1 cargo run -p xtask -- run`. With dev-tools enabled, use `RUST_LOG=info POSTRETRO_GPU_TIMING=1 cargo run -p xtask -- run --features dev-tools --`. Cargo flags before `--` go to the engine `cargo run`; args after it go to postretro. Requires adapter support for both `TIMESTAMP_QUERY` (pass-descriptor timestamps) and `TIMESTAMP_QUERY_INSIDE_ENCODERS` (multi-pass/copy brackets); silently disabled if either feature is absent. Passes measured: `cull`, `animated_lm_compose`, `depth_prepass`, `sdf_shadow`, `forward`, `sh_compose`, `direct_sh_compose`, `animated_direct_sh_compose`, `promoted_depth_cache_upper`, `smoke`, `bloom`. Results are averaged over a 120-frame window and logged via `log::info!` at the window boundary. SH sampling is not separately timestamp-bracketed because it runs inside the forward fragment shader; measure it as `forward` timing deltas before/after the octahedral migration and with Probe Occlusion on/off.
 
 ### Debug-Line Renderer
 

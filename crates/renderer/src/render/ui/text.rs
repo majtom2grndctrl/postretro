@@ -57,7 +57,7 @@ impl UiTextRenderer {
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        surface_format: wgpu::TextureFormat,
+        color_format: wgpu::TextureFormat,
         depth_stencil: wgpu::DepthStencilState,
     ) -> Self {
         // Build glyphon's own GPU/cache state here so `TextAtlas` construction
@@ -68,12 +68,8 @@ impl UiTextRenderer {
         let glyph_cache = GlyphCache::new(device);
         let viewport = Viewport::new(device, &glyph_cache);
 
-        // Color space: build the atlas with the sRGB *surface* format. glyphon's
-        // default `ColorMode::Accurate` then stores colored glyphs in an sRGB
-        // atlas and blends coverage in the surface color space, keeping glyph
-        // coverage physically correct against the sRGB swapchain — edges neither
-        // over- nor under-darkened.
-        let mut text_atlas = TextAtlas::new(device, queue, &glyph_cache, surface_format);
+        // Text draws into the UI target alongside its matching quad pipelines.
+        let mut text_atlas = TextAtlas::new(device, queue, &glyph_cache, color_format);
         let text_renderer = TextRenderer::new(
             &mut text_atlas,
             device,

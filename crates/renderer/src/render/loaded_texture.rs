@@ -36,6 +36,11 @@ pub struct LoadedTexture {
     #[allow(dead_code)]
     pub normal_texture: wgpu::Texture,
     pub normal_view: wgpu::TextureView,
+    /// Owned alongside `emissive_view`; the black sRGB placeholder preserves the
+    /// additive-of-zero contract when an `_e.png` sibling is absent.
+    #[allow(dead_code)]
+    pub emissive_texture: wgpu::Texture,
+    pub emissive_view: wgpu::TextureView,
     /// Max mip levels across all uploaded slots. The sampler's `lod_max_clamp`
     /// is keyed by this value so no slot is over-clamped when sibling slots
     /// have different chain depths (e.g. corrupted diffuse with intact normal).
@@ -199,8 +204,21 @@ fn make_normal_placeholder(
     )
 }
 
+fn make_emissive_placeholder(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+) -> (wgpu::Texture, wgpu::TextureView) {
+    upload_texture_data(
+        device,
+        queue,
+        wgpu::TextureFormat::Rgba8UnormSrgb,
+        &[(1, 1, &BLACK_RGBA)],
+        "Placeholder Emissive (Black sRGB 1x1)",
+    )
+}
+
 /// All-slot placeholder texture: 64×64 checkerboard diffuse, 1×1 black specular,
-/// 1×1 neutral normal. Shared between `load_textures`' per-texture fallback path
+/// 1×1 neutral normal, and 1×1 black sRGB emissive. Shared between `load_textures`' per-texture fallback path
 /// and the renderer's no-level-loaded bootstrap slot.
 pub(super) fn placeholder_loaded_texture(
     device: &wgpu::Device,
@@ -209,6 +227,7 @@ pub(super) fn placeholder_loaded_texture(
     let (diffuse_texture, diffuse_view) = make_diffuse_placeholder(device, queue);
     let (specular_texture, specular_view) = make_specular_placeholder(device, queue);
     let (normal_texture, normal_view) = make_normal_placeholder(device, queue);
+    let (emissive_texture, emissive_view) = make_emissive_placeholder(device, queue);
     LoadedTexture {
         diffuse_texture,
         diffuse_view,
@@ -216,6 +235,8 @@ pub(super) fn placeholder_loaded_texture(
         specular_view,
         normal_texture,
         normal_view,
+        emissive_texture,
+        emissive_view,
         mip_count: 1,
     }
 }
@@ -312,6 +333,15 @@ pub fn load_textures(
             Slot::Normal,
             plan.consume[2],
         );
+        let (emissive_texture, emissive_view) = upload_slot_or_placeholder(
+            device,
+            queue,
+            &slot_results[3],
+            3,
+            name,
+            Slot::Emissive,
+            plan.consume[3],
+        );
 
         out.push(LoadedTexture {
             diffuse_texture,
@@ -320,6 +350,8 @@ pub fn load_textures(
             specular_view,
             normal_texture,
             normal_view,
+            emissive_texture,
+            emissive_view,
             mip_count: plan.mip_count,
         });
     }
@@ -379,6 +411,7 @@ pub(super) fn load_model_diffuse_texture(
     );
     let (specular_texture, specular_view) = make_specular_placeholder(device, queue);
     let (normal_texture, normal_view) = make_normal_placeholder(device, queue);
+    let (emissive_texture, emissive_view) = make_emissive_placeholder(device, queue);
 
     LoadedTexture {
         diffuse_texture,
@@ -387,6 +420,8 @@ pub(super) fn load_model_diffuse_texture(
         specular_view,
         normal_texture,
         normal_view,
+        emissive_texture,
+        emissive_view,
         mip_count: plan.mip_count,
     }
 }
@@ -396,6 +431,7 @@ enum Slot {
     Diffuse,
     Specular,
     Normal,
+    Emissive,
 }
 
 fn upload_slot_or_placeholder(
@@ -412,6 +448,7 @@ fn upload_slot_or_placeholder(
             Slot::Diffuse => make_diffuse_placeholder(device, queue),
             Slot::Specular => make_specular_placeholder(device, queue),
             Slot::Normal => make_normal_placeholder(device, queue),
+            Slot::Emissive => make_emissive_placeholder(device, queue),
         };
     }
 
@@ -423,6 +460,7 @@ fn upload_slot_or_placeholder(
                 Slot::Diffuse => format!("Texture '{name}' Diffuse"),
                 Slot::Specular => format!("Texture '{name}' Specular"),
                 Slot::Normal => format!("Texture '{name}' Normal"),
+                Slot::Emissive => format!("Texture '{name}' Emissive"),
             };
             upload_texture_data(device, queue, format, &levels, &label)
         }
@@ -430,6 +468,7 @@ fn upload_slot_or_placeholder(
             Slot::Diffuse => make_diffuse_placeholder(device, queue),
             Slot::Specular => make_specular_placeholder(device, queue),
             Slot::Normal => make_normal_placeholder(device, queue),
+            Slot::Emissive => make_emissive_placeholder(device, queue),
         },
         Err(e) => {
             log::warn!(
@@ -439,6 +478,7 @@ fn upload_slot_or_placeholder(
                 Slot::Diffuse => make_diffuse_placeholder(device, queue),
                 Slot::Specular => make_specular_placeholder(device, queue),
                 Slot::Normal => make_normal_placeholder(device, queue),
+                Slot::Emissive => make_emissive_placeholder(device, queue),
             }
         }
     }

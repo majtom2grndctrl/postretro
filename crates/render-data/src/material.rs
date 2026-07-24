@@ -4,8 +4,9 @@
 use std::collections::HashSet;
 
 /// Surface material type derived from texture name prefix.
-/// Drives footstep sounds, impact effects, ricochet behavior, and
-/// decals. Behaviors are stubs until consumed by later phases.
+/// Rendering consumes each variant's shininess and emissive strength.
+/// Gameplay and audio hooks such as footsteps, impacts, ricochets, and decals
+/// remain future consumers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Material {
     Metal,
@@ -42,6 +43,21 @@ impl Material {
             Material::Concrete => 4.0,
             Material::Grate => 8.0,
             Material::Default => 32.0,
+        }
+    }
+
+    /// Static emissive multiplier for this material prefix. The texture carries
+    /// the per-texel pattern; this keeps v1 authoring prefix-driven like
+    /// `shininess()` without introducing gameplay material properties.
+    pub fn emissive_strength(self) -> f32 {
+        match self {
+            Material::Neon => 4.0,
+            Material::Metal
+            | Material::Concrete
+            | Material::Grate
+            | Material::Glass
+            | Material::Wood
+            | Material::Default => 0.0,
         }
     }
 

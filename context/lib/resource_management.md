@@ -26,9 +26,9 @@ TrenchBroom requires the collection subdirectory structure for texture browsing.
 
 PRL stores a deduplicated texture name list (`TextureNames` section) plus a parallel `TextureCacheKeys` section — one 32-byte `blake3` hash per name entry, same ordering. No pixel data.
 
-**Compile time.** `prl-build` resolves each `TextureNames` entry to its PNG bundle: `{name}.png` (diffuse), `{name}_s.png` (specular), and `{name}_n.png` (normal-map) discovered by suffix via case-insensitive lookup. `TextureNames` entries are stored verbatim from the `.map`, so a name may be **collection-qualified** (`collection/stem`) — TrenchBroom identifies materials by their path relative to the textures root — or a bare stem (hand-authored maps). The resolver indexes each PNG under its collection-relative key (lowercased, forward-slashed, no extension) and also under a **bare-stem alias** when that stem is unique across collections (ambiguous stems get no alias and log a warning). Incoming names are normalized (lowercase, `\`→`/`, leading `textures/` stripped) before lookup, then fall back to the bare last path segment; `_s`/`_n` siblings are appended to the form that resolved the diffuse so they come from the same collection. All three are optional — a bundle is baked whenever at least one is found; when none are found, a zero key signals the runtime to substitute placeholders without warning. The Mitchell-Netravali baker (B = C = 1/3) produces full mip chains in linear space — sRGB diffuse decoded to linear before filtering and re-encoded on output; R8 specular filtered linearly; Rgba8 normal filtered linearly with per-output-texel renormalization. Output is one `.prm` sidecar per content-addressed bundle under `<workspace>/baked/materials/<blake3-hex>.prm` (runtime-required compiled output, not the disposable `.build-caches/` stage cache — see `build_pipeline.md` §Build Cache). If no PNG is found for a name, the compiler writes a zero key (`[0u8; 32]`) and emits no `.prm`.
+**Compile time.** `prl-build` resolves each `TextureNames` entry to its PNG bundle: `{name}.png` (diffuse), `{name}_s.png` (specular), `{name}_n.png` (normal-map), and `{name}_e.png` (emissive) discovered by suffix via case-insensitive lookup. `TextureNames` entries are stored verbatim from the `.map`, so a name may be **collection-qualified** (`collection/stem`) — TrenchBroom identifies materials by their path relative to the textures root — or a bare stem (hand-authored maps). The resolver indexes each PNG under its collection-relative key (lowercased, forward-slashed, no extension) and also under a **bare-stem alias** when that stem is unique across collections (ambiguous stems get no alias and log a warning). Incoming names are normalized (lowercase, `\`→`/`, leading `textures/` stripped). A qualified base stays selected when any of its four slots exists, including sibling-only bundles; only an entirely missing qualified bundle falls back to the bare last segment. All slots then resolve from that selected base. All four are optional — a bundle is baked whenever at least one is found; when none are found, a zero key signals the runtime to substitute placeholders without warning. The Mitchell-Netravali baker (B = C = 1/3) produces full mip chains in linear space — sRGB diffuse and emissive color decode to linear before filtering and re-encode on output; R8 specular filters linearly; Rgba8 normal filters linearly with per-output-texel renormalization. Output is one `.prm` sidecar per content-addressed bundle under `<workspace>/baked/materials/<blake3-hex>.prm` (runtime-required compiled output, not the disposable `.build-caches/` stage cache — see `build_pipeline.md` §Build Cache). If no PNG is found for a name, the compiler writes a zero key (`[0u8; 32]`) and emits no `.prm`.
 
-**Level load.** For each `TextureCacheKeys[i]`, the engine opens `<workspace>/baked/materials/<hex>.prm`, parses it with `PrmFile::from_bytes_partial`, and uploads each present slot's mip chain directly. A zero key produces a silent placeholder. A corrupt or missing sidecar logs a `warn!` and substitutes per-slot placeholders; cleanly-parsed slots from a partially-corrupt file are used. The runtime never opens a PNG for world materials. Model materials use the same diffuse-addressed cache but consume only diffuse; specular and normal remain neutral even when a shared world bundle contains richer slots.
+**Level load.** For each `TextureCacheKeys[i]`, the engine opens `<workspace>/baked/materials/<hex>.prm`, parses it with `PrmFile::from_bytes_partial`, and uploads each present slot's mip chain directly. A zero key produces a silent placeholder. A corrupt or missing sidecar logs a `warn!` and substitutes per-slot placeholders; cleanly-parsed slots from a partially-corrupt file are used. The runtime never opens a PNG for world materials. Model materials use diffuse-only addressing and share sidecars only with diffuse-only world bundles. They consume only diffuse; specular and normal remain neutral and emissive remains black.
 
 **Model helper.** `cargo run -p xtask -- bake-model-textures <scene.gltf>` bakes glTF base-color sidecars without compiling a map. Output is `<workspace>/baked/materials/*.prm`: gitignored, regenerable, runtime-required.
 
@@ -73,7 +73,7 @@ Example prefixes (illustrative, not exhaustive):
 | `metal` | Metal |
 | `concrete` | Concrete |
 | `grate` | Grate |
-| `neon` | Neon — aesthetic material type (shininess; planned audio/impact behaviors). Carries no rendering bypass. |
+| `neon` | Neon — shininess plus a static emissive multiplier for `_e` textures; planned audio/impact behaviors. |
 | `glass` | Glass |
 | `wood` | Wood |
 
@@ -81,7 +81,7 @@ The material enum and prefix derivation are implemented. Behavior hooks are plan
 
 | Behavior | Status |
 |----------|--------|
-| **Emissive surfaces** | Not implemented. No material bypasses or adds to scene lighting. A correct emissive feature (additive HDR contribution + bloom) is deferred — see §4.5. |
+| **Emissive surfaces** | Implemented — world and kinematic-brush `_e` texels add static self-illumination to HDR scene color, scaled by the prefix-derived material multiplier. They never replace or inject into direct/indirect lighting; bright values bloom in the renderer compositor. See §4.5. |
 | **Shininess** | Implemented (Epic 5) — specular exponent on enum variant. |
 | **Footstep sounds** | Planned. |
 | **Bullet impact particles** | Planned. |
@@ -138,13 +138,34 @@ Optional per-texture normal maps for fine surface detail.
 - **Fallback:** without `numpy`, emits flat `(127, 127, 255)` maps with no surface detail.
 - **Linear guarantee:** no `sRGB`, `gAMA`, or `iCCP` chunks — passes `prl-build` validation.
 
-### 4.5 Emissive Surfaces (Reserved)
+### 4.5 Emissive Surfaces
 
-> **Not implemented.** No material bypasses or adds to scene lighting. No `_e` sibling is baked or sampled; no emissive binding exists in the forward shader.
+Optional emissive color maps add static, per-texel self-illumination to world and
+kinematic-brush surfaces. They are not lights: they do not change the lightmap,
+SH irradiance, dynamic-light buffer, or neighboring surfaces. To light a scene,
+an author places a separate light entity.
 
-The `.prm` slot mask reserves bit 3 for a future emissive slot; the reader rejects any file that sets it. The reserved bit and the sibling-texture baking pipeline (§4.1–4.4) are the foundation a correct implementation builds on.
+- **Naming:** `{name}_e.png` beside the diffuse texture.
+- **Format:** `Rgba8UnormSrgb`, sampled as linear color by hardware. Dimensions
+  must match the diffuse texture; `prl-build` rejects a mismatch at compile time.
+- **Color space:** sRGB content. `prl-build` accepts `_e` regardless of its PNG
+  color-space tag, so the untagged output from `tools/gen_emissive.py` is valid.
+- **Baking:** the fourth optional `.prm` slot (slot-mask bit 3), after diffuse,
+  specular, and normal. It uses the same sRGB decode → linear filter → sRGB
+  encode path as diffuse.
+- **Strength:** a prefix-derived `Material::emissive_strength()` multiplier scales
+  the sampled color. `neon_` is 4.0 so an authored bright texel exceeds the
+  renderer bloom threshold; other current material prefixes are zero until
+  content establishes a use for them. There is no per-surface runtime scalar in
+  v1.
+- **Composite and fallback:** forward rendering writes `lit + emissive` into the
+  renderer-owned HDR scene target. An absent `_e` uses a shared 1×1 black sRGB
+  placeholder, an additive no-op. Bloom is a screen-space effect after this
+  composite, not light emitted onto neighbors.
 
-The intended direction is an *additive* HDR contribution (`lit + emissive`) feeding a bloom pass — not the lighting-replacement model an earlier draft assumed. Design and scheduling are deferred to the post-processing/bloom work.
+`tools/gen_emissive.py` creates a bright-texel starting point from a diffuse
+texture. Its output is deliberately untagged: PNG metadata does not determine
+the authored sRGB-content convention for this sibling.
 
 ---
 
@@ -212,7 +233,7 @@ The renderer owns all GPU-side resources: wgpu buffers, textures, samplers. CPU-
 | Type | Location | Description |
 |------|----------|-------------|
 | `postretro_ui::UiTexture` | `crates/ui/src/ui_texture.rs` (`postretro-ui`) | CPU-side `{ data, width, height }`. RGBA8 decoded from PNG. Used for splash and HUD blits. No wgpu handles. |
-| `LoadedTexture` | `crates/renderer/src/render/loaded_texture.rs` | World- and model-material GPU resources: wgpu handles for diffuse, specular, and normal slots plus `mip_count`. World loading consumes all available slots; model loading consumes diffuse only. Lives inside the renderer module to preserve the "Renderer owns GPU" invariant. |
+| `LoadedTexture` | `crates/renderer/src/render/loaded_texture.rs` | World- and model-material GPU resources: wgpu handles for diffuse, specular, normal, and emissive slots plus `mip_count`. World loading consumes all available slots; model loading consumes diffuse only and binds neutral/black placeholders for the rest. Lives inside the renderer module to preserve the "Renderer owns GPU" invariant. |
 
 ### 8.2 Lifecycle
 

@@ -6,6 +6,24 @@ use super::*;
 
 const MAX_OFFSCREEN_CAPTURE_DIMENSION: u32 = 8192;
 
+/// Select the wgpu backends for this renderer instance. `WGPU_BACKEND` is an
+/// opt-in diagnostic override (for example, `vulkan` or `dx12` on Windows);
+/// without it the engine keeps wgpu's normal primary-backend selection.
+fn renderer_backends(configured: Option<wgpu::Backends>) -> Result<wgpu::Backends> {
+    match configured {
+        Some(backends) if backends.is_empty() => anyhow::bail!(
+            "WGPU_BACKEND did not select a valid backend; supported native diagnostic \
+             choices are: vulkan (vk), dx12 (d3d12), metal (mtl), or opengl (gl)"
+        ),
+        Some(backends) => Ok(backends),
+        None => Ok(wgpu::Backends::PRIMARY),
+    }
+}
+
+fn renderer_backends_from_env() -> Result<wgpu::Backends> {
+    renderer_backends(wgpu::Backends::from_env())
+}
+
 impl Renderer {
     /// Boot phase: build only the minimal GPU state needed to present the boot
     /// splash — instance, surface, adapter, device, queue, surface configuration,
@@ -25,9 +43,11 @@ impl Renderer {
     /// `install_textures`.
     pub fn new(window: &Arc<Window>) -> Result<Self> {
         let size = window.inner_size();
+        let backends = renderer_backends_from_env()?;
+        log::info!("[Renderer] wgpu backend selection: {backends:?}");
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::PRIMARY,
+            backends,
             ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
 
@@ -78,6 +98,7 @@ impl Renderer {
             surface_reconfigure_pending: false,
             has_multi_draw_indirect,
             cube_array_supported,
+            bloom_render_profile: BloomRenderProfile::default(),
             boot_splash: Some(boot_splash),
             // Full renderer is built on the first `finish_full_init` /
             // `ensure_full_ready`, after the boot splash has presented.
@@ -90,9 +111,11 @@ impl Renderer {
     /// scene target is the capture output and no present path is available.
     pub fn new_offscreen(capture_width: u32, capture_height: u32) -> Result<Self> {
         validate_offscreen_capture_dimensions(capture_width, capture_height)?;
+        let backends = renderer_backends_from_env()?;
+        log::info!("[Renderer] wgpu backend selection: {backends:?}");
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::PRIMARY,
+            backends,
             ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -107,6 +130,7 @@ impl Renderer {
         // This fixed target format makes capture bytes independent of whichever
         // swapchain formats a windowed surface happens to advertise.
         let capture_format = wgpu::TextureFormat::Rgba8UnormSrgb;
+        let bloom_render_profile = BloomRenderProfile::default();
         let full = build_full_renderer(
             &device,
             &queue,
@@ -115,6 +139,7 @@ impl Renderer {
             capture_height,
             has_multi_draw_indirect,
             cube_array_supported,
+            bloom_render_profile,
         )?;
         Ok(Self {
             device,
@@ -136,6 +161,7 @@ impl Renderer {
             surface_reconfigure_pending: false,
             has_multi_draw_indirect,
             cube_array_supported,
+            bloom_render_profile,
             boot_splash: None,
             full: Some(Box::new(full)),
         })
@@ -159,6 +185,7 @@ impl Renderer {
             self.surface_config.height,
             self.has_multi_draw_indirect,
             self.cube_array_supported,
+            self.bloom_render_profile,
         )?;
         self.full = Some(Box::new(full));
         log::info!("[Renderer] Full renderer initialization complete");
@@ -198,7 +225,18 @@ fn validate_offscreen_capture_dimensions(capture_width: u32, capture_height: u32
 fn request_renderer_device_with_capabilities(
     adapter: &wgpu::Adapter,
 ) -> Result<(wgpu::Device, wgpu::Queue, bool, bool)> {
-    log::info!("[Renderer] GPU adapter: {}", adapter.get_info().name);
+    let adapter_info = adapter.get_info();
+    log::info!(
+        "[Renderer] GPU adapter: {} (backend={:?}, type={:?}, vendor=0x{:04x}, \
+         device=0x{:04x}, driver={} {})",
+        adapter_info.name,
+        adapter_info.backend,
+        adapter_info.device_type,
+        adapter_info.vendor,
+        adapter_info.device,
+        adapter_info.driver,
+        adapter_info.driver_info,
+    );
 
     let downlevel = adapter.get_downlevel_capabilities();
     let has_multi_draw_indirect = downlevel
@@ -229,7 +267,7 @@ fn request_renderer_device_with_capabilities(
     // FrameTiming=None → zero runtime cost when timing isn't requested or supported.
     let adapter_features = adapter.features();
     let gpu_timing_requested = std::env::var("POSTRETRO_GPU_TIMING").ok().as_deref() == Some("1");
-    let gpu_timing_supported = adapter_features.contains(wgpu::Features::TIMESTAMP_QUERY);
+    let gpu_timing_supported = gpu_timing_features_supported(adapter_features);
     let enable_gpu_timing = gpu_timing_requested && gpu_timing_supported;
     // BC5-compressed normal maps are a hard requirement (not optional like
     // GPU timing): the .prm baker emits BC5 normal slots unconditionally.
@@ -240,6 +278,9 @@ fn request_renderer_device_with_capabilities(
         gpu_timing_requested,
         gpu_timing_supported,
     )?;
+    device.set_device_lost_callback(|reason, message| {
+        log::error!("[Renderer] GPU device lost ({reason:?}): {message}");
+    });
 
     Ok((device, queue, has_multi_draw_indirect, cube_array_supported))
 }
@@ -276,6 +317,29 @@ mod tests {
                 .unwrap_err()
                 .to_string(),
             "offscreen capture dimensions must not exceed 8192"
+        );
+    }
+
+    #[test]
+    fn renderer_backends_honor_explicit_override_or_primary_default() {
+        assert_eq!(
+            renderer_backends(Some(wgpu::Backends::VULKAN)).unwrap(),
+            wgpu::Backends::VULKAN
+        );
+        assert_eq!(
+            renderer_backends(Some(wgpu::Backends::DX12)).unwrap(),
+            wgpu::Backends::DX12
+        );
+        assert_eq!(renderer_backends(None).unwrap(), wgpu::Backends::PRIMARY);
+    }
+
+    #[test]
+    fn renderer_backends_reject_empty_override() {
+        assert!(
+            renderer_backends(Some(wgpu::Backends::empty()))
+                .unwrap_err()
+                .to_string()
+                .contains("WGPU_BACKEND did not select a valid backend")
         );
     }
 }

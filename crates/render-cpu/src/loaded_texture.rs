@@ -43,12 +43,12 @@ pub fn slot_levels(slot: &PrmSlot) -> Vec<(u32, u32, &[u8])> {
     out
 }
 
-/// Maximum mip levels across all three slots. Takes the max (not diffuse-only)
+/// Maximum mip levels across all four slots. Takes the max (not diffuse-only)
 /// so a corrupted diffuse with intact siblings doesn't clamp those siblings to
 /// LOD 0. Defaults to 1 when no slot parses cleanly — disables mip filtering
 /// rather than clamping to a wrong level. Used to key the sampler pool
 /// (`Renderer::mip_count_aniso_samplers`).
-pub fn header_mip_count(slots: &[Result<PrmSlot, PrmReadError>; 3]) -> u32 {
+pub fn header_mip_count(slots: &[Result<PrmSlot, PrmReadError>; 4]) -> u32 {
     slots
         .iter()
         .filter_map(|r| r.as_ref().ok())
@@ -65,22 +65,27 @@ pub enum TextureSlotPolicy {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TextureSlotPlan {
-    pub consume: [bool; 3],
+    pub consume: [bool; 4],
     pub mip_count: u32,
 }
 
 pub fn texture_slot_plan(
     header_slots: PrmSlots,
-    slots: &[Result<PrmSlot, PrmReadError>; 3],
+    slots: &[Result<PrmSlot, PrmReadError>; 4],
     policy: TextureSlotPolicy,
 ) -> TextureSlotPlan {
     match policy {
         TextureSlotPolicy::WorldBundle => TextureSlotPlan {
-            consume: [true, true, true],
+            consume: [true, true, true, true],
             mip_count: header_mip_count(slots),
         },
         TextureSlotPolicy::ModelDiffuseOnly => TextureSlotPlan {
-            consume: [header_slots.contains(PrmSlots::DIFFUSE), false, false],
+            consume: [
+                header_slots.contains(PrmSlots::DIFFUSE),
+                false,
+                false,
+                false,
+            ],
             mip_count: slots[0]
                 .as_ref()
                 .map(|slot| slot.level_count as u32)
@@ -120,7 +125,7 @@ mod tests {
                 bundle_hash: [0u8; 32],
                 total_body_bytes: 0,
             },
-            slots: [Some(slot), None, None],
+            slots: [Some(slot), None, None, None],
         };
         file.to_bytes().expect("diffuse-only .prm serializes")
     }
@@ -142,7 +147,10 @@ mod tests {
         let file = PrmFile {
             header: PrmHeader {
                 stage_version: STAGE_VERSION,
-                slot_mask: PrmSlots::DIFFUSE | PrmSlots::SPECULAR | PrmSlots::NORMAL,
+                slot_mask: PrmSlots::DIFFUSE
+                    | PrmSlots::SPECULAR
+                    | PrmSlots::NORMAL
+                    | PrmSlots::EMISSIVE,
                 bundle_hash: [0u8; 32],
                 total_body_bytes: 0,
             },
@@ -168,6 +176,13 @@ mod tests {
                     level_count: 1,
                     payload: vec![127, 127, 255, 255],
                 }),
+                Some(PrmSlot {
+                    format: PrmFormat::Rgba8UnormSrgb,
+                    width: 1,
+                    height: 1,
+                    level_count: 1,
+                    payload: vec![0, 0, 0, 255],
+                }),
             ],
         };
         let bytes = file.to_bytes().unwrap();
@@ -177,7 +192,7 @@ mod tests {
             &slots,
             TextureSlotPolicy::ModelDiffuseOnly,
         );
-        assert_eq!(plan.consume, [true, false, false]);
+        assert_eq!(plan.consume, [true, false, false, false]);
         assert_eq!(plan.mip_count, 3);
     }
 

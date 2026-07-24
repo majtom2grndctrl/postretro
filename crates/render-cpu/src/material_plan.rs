@@ -10,10 +10,28 @@ pub fn mip_lod_max_clamp(mip_count: u32) -> f32 {
 
 pub const MATERIAL_UNIFORM_SIZE: usize = 32;
 
-pub fn build_material_uniform(shininess: f32) -> [u8; MATERIAL_UNIFORM_SIZE] {
+pub fn build_material_uniform(
+    shininess: f32,
+    emissive_strength: f32,
+) -> [u8; MATERIAL_UNIFORM_SIZE] {
     let mut bytes = [0u8; MATERIAL_UNIFORM_SIZE];
     bytes[0..4].copy_from_slice(&shininess.to_le_bytes());
+    bytes[4..8].copy_from_slice(&emissive_strength.to_le_bytes());
     bytes
+}
+
+#[cfg(test)]
+mod material_uniform_tests {
+    use super::*;
+
+    #[test]
+    fn material_uniform_packs_shininess_and_emissive_strength_in_first_row() {
+        let bytes = build_material_uniform(32.0, 4.0);
+        assert_eq!(bytes.len(), MATERIAL_UNIFORM_SIZE);
+        assert_eq!(&bytes[0..4], &32.0f32.to_le_bytes());
+        assert_eq!(&bytes[4..8], &4.0f32.to_le_bytes());
+        assert!(bytes[8..].iter().all(|&byte| byte == 0));
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

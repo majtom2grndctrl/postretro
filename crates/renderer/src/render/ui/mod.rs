@@ -490,7 +490,7 @@ impl UiPass {
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        surface_format: wgpu::TextureFormat,
+        color_format: wgpu::TextureFormat,
     ) -> Self {
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("UI Quad BGL"),
@@ -582,7 +582,7 @@ impl UiPass {
             &pipeline_layout,
             &shader,
             &instance_layout,
-            surface_format,
+            color_format,
             true,
             "UI Quad Pipeline",
         );
@@ -591,7 +591,7 @@ impl UiPass {
             &pipeline_layout,
             &shader,
             &instance_layout,
-            surface_format,
+            color_format,
             false,
             "UI Quad Translucent Pipeline",
         );
@@ -655,8 +655,7 @@ impl UiPass {
         // glyphon shaped-text state — its own pipeline/atlas, constructed here
         // so `TextAtlas` builds in `Renderer::new` rather than on the first
         // shaped frame. The CPU `FontSystem` is session-owned.
-        let text =
-            UiTextRenderer::new(device, queue, surface_format, ui_depth_stencil_state(false));
+        let text = UiTextRenderer::new(device, queue, color_format, ui_depth_stencil_state(false));
 
         Self {
             opaque_pipeline,
@@ -1041,7 +1040,7 @@ fn create_ui_quad_pipeline(
     pipeline_layout: &wgpu::PipelineLayout,
     shader: &wgpu::ShaderModule,
     instance_layout: &wgpu::VertexBufferLayout<'_>,
-    surface_format: wgpu::TextureFormat,
+    color_format: wgpu::TextureFormat,
     depth_write_enabled: bool,
     label: &'static str,
 ) -> wgpu::RenderPipeline {
@@ -1067,7 +1066,7 @@ fn create_ui_quad_pipeline(
             module: shader,
             entry_point: Some("fs_main"),
             targets: &[Some(wgpu::ColorTargetState {
-                format: surface_format,
+                format: color_format,
                 // Standard alpha blend over the existing surface contents.
                 blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                 write_mask: wgpu::ColorWrites::ALL,

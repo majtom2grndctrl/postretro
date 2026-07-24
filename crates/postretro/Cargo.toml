@@ -139,3 +139,8 @@ path = "src/main.rs"
 [[bin]]
 name = "gen-script-types"
 path = "src/bin/gen_script_types.rs"
+
+[[test]]
+name = "capture_frame"
+path = "tests/capture_frame.rs"
+required-features = ["capture"]

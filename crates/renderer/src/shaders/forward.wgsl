@@ -72,6 +72,9 @@ struct GpuLight {
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
 
 @group(1) @binding(0) var base_texture: texture_2d<f32>;
+// Per-material emissive color. `Rgba8UnormSrgb` decodes to linear through the
+// hardware texture path, like base_texture; the black placeholder is a no-op.
+@group(1) @binding(1) var emissive_texture: texture_2d<f32>;
 // Per-material specular texture (R8Unorm sampled as .r). 1×1 black when the
 // diffuse's `_s.png` sibling is absent — zeros `spec_int` without any
 // shader branching. See context/lib/resource_management.md §4.1.
@@ -81,7 +84,9 @@ struct MaterialUniform {
     // Blinn-Phong specular exponent; constant per-material variant.
     // Padded to 16 B for uniform-buffer alignment.
     shininess: f32,
-    _pad: vec3<f32>,
+    // Prefix-driven static multiplier for the emissive texture.
+    emissive_strength: f32,
+    _pad: vec2<f32>,
 };
 @group(1) @binding(3) var<uniform> material: MaterialUniform;
 // Per-material tangent-space normal map. Sampled with `aniso_sampler`. The
@@ -94,7 +99,6 @@ struct MaterialUniform {
 // shimmer while in-shader texel-grid reconstruction keeps texels crisp up
 // close. The BGL and world/mover material bind groups wire it from
 // `Renderer::mip_count_aniso_samplers`; see `render/mod.rs`'s group-1 BGL
-// comment. (Binding 1 is intentionally vacated — renumbering the aniso sampler down would require a matching BGL and material-bind-group rebuild with no functional benefit.)
 @group(1) @binding(5) var aniso_sampler: sampler;
 
 @group(2) @binding(0) var<storage, read> lights: array<GpuLight>;
@@ -861,7 +865,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // UV footprint derivatives — computed once here in uniform control flow.
     // WGSL requires dpdx/dpdy to be called from uniform control flow, so they
     // are hoisted out of the per-slot sampling helpers and handed to
-    // textureSampleGrad as explicit gradients. Shared by all three texture slots.
+    // textureSampleGrad as explicit gradients before conditional texture reads.
     let ddx = dpdx(in.uv);
     let ddy = dpdy(in.uv);
 
@@ -1273,7 +1277,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         total_light = total_light + effective_color * attenuation * NdotL;
     }
 
-    let rgb = base_color.rgb * total_light;
+    var emissive = vec3<f32>(0.0);
+    if material.emissive_strength > 0.0 {
+        emissive = sample_color(emissive_texture, in.uv, ddx, ddy).rgb;
+    }
+    let rgb = base_color.rgb * total_light + emissive * material.emissive_strength;
     // `SdfShadowMode::Visualize` (2) replaces the shaded color with a
     // grayscale view of the first per-light visibility slice (R = slot 0,
     // the most-influential sdf light) — sampled through the same bilateral

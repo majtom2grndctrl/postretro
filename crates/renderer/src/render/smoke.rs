@@ -320,7 +320,6 @@ impl SmokePass {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         device: &wgpu::Device,
-        surface_format: wgpu::TextureFormat,
         depth_format: wgpu::TextureFormat,
         camera_bgl: &wgpu::BindGroupLayout,
         lighting_bgl: &wgpu::BindGroupLayout,
@@ -419,7 +418,7 @@ impl SmokePass {
                 module: &shader,
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: surface_format,
+                    format: super::SCENE_COLOR_FORMAT,
                     // Additive alpha blend: smoke accumulates without
                     // darkening the scene behind it.
                     blend: Some(wgpu::BlendState {

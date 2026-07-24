@@ -49,7 +49,7 @@ struct CameraUniforms {
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 
 // --- Group 1: material -------------------------------------------------------
-// Same layout `build_material_bind_group` produces (bindings 0,2,3,4,5). The
+// Same layout `build_material_bind_group` produces (bindings 0,1,2,3,4,5). The
 // SH-lit fragment samples only diffuse (binding 0) through the character-model
 // sampler (binding 5): nearest magnification, linear minification + mips, no
 // anisotropy. SH irradiance comes from group 4. The other bindings are declared

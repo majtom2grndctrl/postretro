@@ -20,6 +20,17 @@ fn array_layers_sufficient(limit: u32) -> bool {
     limit >= REQUIRED_MAX_TEXTURE_ARRAY_LAYERS
 }
 
+/// GPU timing uses pass-descriptor timestamps for individual render/compute
+/// passes and encoder-level timestamps for spans containing copies or several
+/// passes. wgpu exposes those operations as separate device features.
+fn gpu_timing_required_features() -> wgpu::Features {
+    wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
+}
+
+pub(super) fn gpu_timing_features_supported(features: wgpu::Features) -> bool {
+    features.contains(gpu_timing_required_features())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn request_renderer_device(
     adapter: &wgpu::Adapter,
@@ -31,11 +42,12 @@ pub(crate) fn request_renderer_device(
     let adapter_features = adapter.features();
     let mut required_features = wgpu::Features::TEXTURE_COMPRESSION_BC;
     if enable_gpu_timing {
-        required_features |= wgpu::Features::TIMESTAMP_QUERY;
+        required_features |= gpu_timing_required_features();
     } else if gpu_timing_requested && !gpu_timing_supported {
         log::warn!(
             "[Renderer] POSTRETRO_GPU_TIMING=1 requested but adapter \
-                 lacks TIMESTAMP_QUERY support — running without GPU timing"
+                 lacks TIMESTAMP_QUERY and/or TIMESTAMP_QUERY_INSIDE_ENCODERS \
+                 support — running without GPU timing"
         );
     }
 
@@ -514,11 +526,10 @@ pub(crate) fn build_uniform_bind_groups(
         }],
     });
 
-    // Group 1: 0=diffuse(sRGB), 2=specular(R8), 3=shininess,
+    // Group 1: 0=diffuse(sRGB), 1=emissive(sRGB), 2=specular(R8), 3=material uniform,
     //          4=normal(Rgba8Unorm, NOT sRGB; n = sample.rgb*2-1),
     //          5=selected filtering material sampler.
-    // Binding 1 is intentionally vacated (former nearest sampler). Binding 5
-    // is shared: world/movers use linear+anisotropic; skinned models use nearest mag.
+    // Binding 5 is shared: world/movers use linear+anisotropic; skinned models use nearest mag.
     let texture_bind_group_layout =
         device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Material Bind Group Layout"),
@@ -558,6 +569,7 @@ pub(crate) fn build_frame_timing(
         pass_labels[TIMING_PAIR_PROMOTED_DEPTH_CACHE] = "promoted_depth_cache_upper";
         pass_labels[TIMING_PAIR_SMOKE] = "smoke";
         pass_labels[TIMING_PAIR_ANIMATED_DIRECT_SH_COMPOSE] = "animated_direct_sh_compose";
+        pass_labels[TIMING_PAIR_BLOOM] = "bloom";
         Some(FrameTiming::new(device, queue, pass_labels))
     } else {
         None
@@ -622,6 +634,22 @@ pub(crate) fn build_placeholder_textures(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Regression: enabling only TIMESTAMP_QUERY let encoder-level timing reach
+    // wgpu without its separately required device feature and panic at runtime.
+    #[test]
+    fn gpu_timing_requires_base_and_encoder_timestamp_features() {
+        assert!(!gpu_timing_features_supported(wgpu::Features::empty()));
+        assert!(!gpu_timing_features_supported(
+            wgpu::Features::TIMESTAMP_QUERY
+        ));
+        assert!(!gpu_timing_features_supported(
+            wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
+        ));
+        assert!(gpu_timing_features_supported(
+            wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
+        ));
+    }
 
     /// Array-layer floor guard. No real adapter exposes `max_texture_array_layers`
     /// below 256, so the full bail in `request_renderer_device` can't be exercised

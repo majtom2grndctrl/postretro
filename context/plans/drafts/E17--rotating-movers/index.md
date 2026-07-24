@@ -108,8 +108,9 @@ and reconcile with the same mechanism A established for linear movers.
   orientation tracks the host within A's `MOVER_TOLERANCE_M`-equivalent angular tolerance
   with no accumulating correction, and a rider reconciles its revolved position in place
   without steady-state drift.
-- [ ] `SNAPSHOT_VERSION` and the transport protocol gate are bumped; wire drift/round-trip
-  guards pass; a peer on the old version is refused at the handshake.
+- [ ] `SNAPSHOT_VERSION` and `WIRE_VERSION` are bumped (the app-protocol/vocabulary id is
+  intentionally unchanged — no new message); wire drift/round-trip guards pass; a peer on
+  the old version is refused at the handshake.
 - [ ] No new `unsafe`; no non-renderer module imports `wgpu`; no renderer source changes.
 - [ ] Non-spinning movers and mover-less/static maps behave and reconcile exactly as before
   (existing mover and movement suites pass unchanged).
@@ -141,7 +142,9 @@ Add to `KinematicMoverComponent` (`crates/entities/src/components/kinematic_move
 static `spin_axis: Vec3` and `spin_speed_rad_s: f32` (seeded at construction, not
 replicated), and phase `spin_angle_rad: f32` (replicated). Grow
 `KinematicMoverComponent::new` with the two static args; update every call site (loader in
-`runtime_movers.rs`, driver/command tests, wire-convert fixtures). Extend the deterministic
+`runtime_movers.rs`, driver/command tests, wire-convert fixtures). The `runtime_movers.rs`
+loader call site passes zero/default spin (`Vec3::ZERO`, `0.0`) until Task 4 threads the
+real record values. Extend the deterministic
 driver (Task 0a's isolated half) so each active tick (`started && !completed`, non-zero
 spin) advances `spin_angle_rad += spin_speed_rad_s * dt`, wraps to `[0, 2π)`, and writes
 `Transform.rotation = Quat::from_axis_angle(spin_axis, spin_angle_rad)`. Report the tick's
@@ -165,18 +168,29 @@ the pivot (`pose.transform.position − pose.tick_delta`, the start-of-tick orig
 step-up probe and sweep in `integrate_collision`. In `apply_mover_release_velocity`, on
 leaving a `Mover` reference add the tangential linear velocity
 `pose.angular_velocity × (player_pos − pivot)` once, in addition to A's linear
-`pose.linear_velocity`; add no angular velocity to the player. Implement yaw orientation
+`pose.linear_velocity`; add no angular velocity to the player. `pivot` here is the same
+start-of-tick origin used by carry (`pose.transform.position − pose.tick_delta`). Implement yaw orientation
 carry at the look/camera seam that feeds `MovementInput.facing_yaw`
 (`crates/postretro/src/movement/mod.rs:56`; look integration in `input/look.rs`): while the
 owning player is grounded on a spinning mover, add the world-up component of the mover's
 tick rotation (`tick_rotation_delta` projected onto world-up → a yaw angle) to the camera
-yaw before `facing_yaw` is resolved, so it rides existing input replication. Pitch/roll of
+yaw before `facing_yaw` is resolved, so it rides existing input replication. The look seam runs
+in the Input stage, one stage ahead of the Game-logic stage that produces this tick's
+mover pose; it reads the previous tick's settled mover pose via the ground ref's
+`Mover(id)` (grounding is itself a prior-tick fact) and carries that prior-tick
+`tick_rotation_delta`. This one-tick lag is accepted and required: carrying the
+same-tick delta would move the read into game logic and need a new
+player-orientation wire field, which is out of scope. Pitch/roll of
 the platform contribute nothing to the camera (upright invariant). Thread the new
 `MoverPose` angular fields through the replay pose source unchanged in shape. Tests
 (deterministic sim): ≥10-revolution planted-rider carry (constant axis-relative XZ offset,
 Y within ε); yaw carry advances with world-up spin and is zero for a pure pitch/roll axis;
 tangential detach velocity direction and magnitude; no player angular momentum; push
-displacement over a rotating face.
+displacement over a rotating face. Note: the mover collider is already posed with
+`Transform.rotation` in the collision isometry (`collision/moving.rs`), so
+`displace_from_movers` and the carry sweep test against the rotated collider with no
+new posing code — the rotating-face push follows automatically once the driver
+writes `Transform.rotation`.
 
 ### Task 3: PRL format, FGD, and compiler
 
@@ -194,8 +208,12 @@ Serialization/round-trip tests for both section versions.
 
 ### Task 4: Runtime loading and spawn
 
+`spawn_from_geometry` consumes `LoadedKinematicMover` (`crates/level-loader/src/prl.rs`), not
+`KinematicMoverRecord` directly. Append `spin_axis: Vec3` and `spin_speed_deg_s: f32` to
+`LoadedKinematicMover` and map them in `impl From<KinematicMoverRecord> for
+LoadedKinematicMover` (`prl.rs`), mirroring the existing `speed → speed_mps` precedent.
 Thread `spin_axis` (normalized) and `spin_speed_deg_s → rad/s` from the loaded
-`KinematicMoverRecord` into `KinematicMoverComponent::new` at the spawn site
+`LoadedKinematicMover` into `KinematicMoverComponent::new` at the spawn site
 (`spawn_from_geometry`, `crates/postretro/src/runtime_movers.rs`), seeding `spin_angle_rad`
 to 0. A pure rotator resolves its single-waypoint chain to a one-element `waypoints`/
 `waypoint_names`; confirm the driver treats it as non-traversable (spins in place). Host and
@@ -207,23 +225,39 @@ fixed-tick mover system now advances rotation as well.
 Append `spin_angle_rad: f32` to `WireKinematicMoverState` (`crates/net/src/wire.rs`) after
 `target_segment`; add it to `all_finite`. Update raw↔typed conversion, baseline/delta, and
 drift/round-trip tests. Map it in `wire_convert` alongside the other phase fields. Bump
-`SNAPSHOT_VERSION` (currently 10 → 11) and `WIRE_VERSION` (currently 10 → 11) in
-`crates/net/src/transport.rs`. Client apply seeds the predictive driver's `spin_angle_rad`
-from the replicated phase so orientation reconciles rather than free-runs. The mover-history
+`SNAPSHOT_VERSION` 10 → 11 in `crates/net/src/wire.rs` (update the drift guard near
+`wire.rs:1847`, `PRE_E21_SNAPSHOT_VERSION`) and `WIRE_VERSION` 10 → 11 in
+`crates/net/src/transport.rs` (update the drift guard near `transport.rs:735`). Client apply
+seeds the predictive driver's `spin_angle_rad` from the replicated phase so orientation
+reconciles rather than free-runs. The mover-history
 buffer already stores the full authoritative `Transform` per tick, so a rider's replay reads
-the historical rotation; ensure the replay `MoverPose` reconstructs `tick_rotation_delta`
-(delta between consecutive history rotations) and `angular_velocity`. Extend the
+the historical rotation for *position*. The replay `MoverPose`'s `tick_rotation_delta` and
+`angular_velocity`, however, are derived analytically on the client from the locally-held
+static `spin_axis`/`spin_speed` (held from the local PRL) and `dt` — not reconstructed from
+consecutive history quaternions — so they match the host's analytic value exactly, which
+AC7's connected-client assertion requires. Extend the
 prediction/reconciliation harness with a rotating-platform scenario at the E15 profile:
 assert the client's predicted orientation tracks the host within an angular tolerance with
 no accumulating correction (reuse `assert_non_accumulating`), and that a rider reconciles its
 revolved position in place; include a leave-mid-ride assertion that the tangential release
 matches the single-player policy.
 
+Note on crate boundaries: `wire_convert`, `assert_non_accumulating`, and
+`MOVER_TOLERANCE_M` are grouped above with the wire edits by topic, but they live under
+`crates/postretro/src/netcode/` — `wire_convert` in `netcode/wire_convert.rs`,
+`assert_non_accumulating` and `MOVER_TOLERANCE_M` in
+`netcode/predict_reconcile_harness.rs` — distinct from the `WireKinematicMoverState`/
+`all_finite` edits in `crates/net/src/wire.rs`. `MOVER_TOLERANCE_M` is not a shared
+constant; it is a per-test local `const = 0.16` declared inside separate test fns. The new
+angular tolerance either reuses that existing per-test `0.16` value or is hoisted to a
+shared const if one is wanted.
+
 ### Task 6: Demo map, diagnostics, and documentation
 
 Add a rotating carousel (and optionally a translate+spin variant) to a dev map. Diagnostics
 (non-gated): extend the mover debug overlay to draw the spin axis and current orientation;
-include spin in the level-load mover summary. Update context docs where the durable contract
+include spin in the level-load mover summary. The overlay is emitted through the existing
+(non-renderer) mover debug-overlay draw path — no new renderer source. Update context docs where the durable contract
 changed: `movement.md` §6 (Moving bases — angular carry, yaw orientation policy, tangential
 detach; retract the "never add angular velocity" linear-only note), `build_pipeline.md` (the
 spin FGD/compiler/PRL fields and section version 2), `networking.md` (the `spin_angle_rad`
@@ -262,8 +296,9 @@ One `bitcode` delta on an existing type; no new snapshot record kind, no new PRL
 - **PRL `KinematicGeometrySection`** bumps `KINEMATIC_GEOMETRY_VERSION` 1 → 2; the section is
   little-endian and self-contained as before. Two `f32`×3 + one `f32` are appended to each
   `KinematicMoverRecord`. `from_bytes` accepts `{1, 2}`; version 1 decodes to zero spin.
-- Bump `SNAPSHOT_VERSION` 10 → 11 and `WIRE_VERSION` 10 → 11 (both existing-type layout
-  changes — networking.md's two-gate handshake).
+- Bump `SNAPSHOT_VERSION` 10 → 11 in `crates/net/src/wire.rs` and `WIRE_VERSION` 10 → 11 in
+  `crates/net/src/transport.rs` (both existing-type layout changes — networking.md's
+  two-gate handshake).
 
 ## Invariants
 

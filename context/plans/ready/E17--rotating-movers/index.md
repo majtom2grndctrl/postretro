@@ -1,6 +1,6 @@
 # E17-D — Rotation and Orientation Carry
 
-> **Status:** draft.
+> **Status:** ready (reviewed — structural + implementability; awaiting implementation).
 >
 > **Epic:** 17 — Kinematic Geometry and Moving Platforms.
 >

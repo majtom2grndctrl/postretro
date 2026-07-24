@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 pub(crate) mod lifecycle;
+pub(crate) mod render_profile;
 pub(crate) mod session;
 pub(crate) mod splash_lifecycle;
 pub(crate) mod staged_manifest_lifecycle;
@@ -435,7 +436,8 @@ mod tests {
     /// forces a diff here — the splash-frame-one twin of `boot_mark_order_valid_path`.
     /// `finish_renderer_full_init` builds `Renderer::full`; `run_deferred_mod_init`
     /// then installs the mod theme/fonts via `set_ui_theme`/`register_ui_font`,
-    /// which are full-ready renderer paths that panic if `full` is not yet built.
+    /// which are full-ready renderer paths that panic if `full` is not yet built,
+    /// and applies the manifest's bloom render profile onto that renderer.
     /// See: context/lib/boot_sequence.md §1, rendering_pipeline §7.8.
     fn splash_frame_one_step_order() -> Vec<&'static str> {
         vec![
@@ -443,7 +445,7 @@ mod tests {
             "ensure_debug_ui",         // boot-ready only (device limit + window)
             "set_input_focus",         // session-owned state
             "finish_renderer_full_init", // builds Renderer::full (full-ready)
-            "run_deferred_mod_init",   // mod theme/font install → FULL-READY renderer paths
+            "run_deferred_mod_init",   // mod theme/font install + bloom profile apply → FULL-READY
             "swap_mod_splash_override_if_pending",
         ]
     }
@@ -476,6 +478,30 @@ mod tests {
             step_index(&steps, "install_pending_session")
                 < step_index(&steps, "finish_renderer_full_init"),
             "session build (CPU-side, failure-early-return) precedes renderer full-init",
+        );
+    }
+
+    /// Recreation contract for the mod bloom render profile. The apply lives in
+    /// `run_deferred_mod_init`, which the splash loop replays after
+    /// `finish_renderer_full_init` on every boot AND on resume (suspend drops
+    /// `App::renderer`, so resume rebuilds it and re-drives this schedule).
+    /// Ordering the apply behind full-init is what makes a recreated `Renderer`
+    /// re-receive the committed profile instead of silently keeping the default.
+    ///
+    /// This is the machine-checkable half of "a mod profile survives full-renderer
+    /// recreation"; the pixels are a manual check (see the plan's Task 7).
+    #[test]
+    fn splash_frame_one_reapplies_the_mod_bloom_profile_after_renderer_recreation() {
+        let steps = splash_frame_one_step_order();
+
+        assert!(
+            steps.contains(&"run_deferred_mod_init"),
+            "the bloom-profile apply rides on run_deferred_mod_init, which resume replays",
+        );
+        assert!(
+            step_index(&steps, "finish_renderer_full_init")
+                < step_index(&steps, "run_deferred_mod_init"),
+            "the profile must be applied onto the (re)built renderer, not before it exists",
         );
     }
 

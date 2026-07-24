@@ -63,6 +63,76 @@ impl LevelManifest {
     }
 }
 
+/// Drain the optional static renderer profile from a Luau mod manifest.
+/// Mirrors [`drain_render_profile_js`] field-for-field.
+pub fn drain_render_profile_lua(
+    table: &Table,
+    scope: &str,
+) -> Result<ModRenderProfile, DescriptorError> {
+    let raw_render: LuaValue = table.get("render").map_err(lua_err)?;
+    let render = match raw_render {
+        LuaValue::Nil => return Ok(ModRenderProfile::default()),
+        LuaValue::Table(render) => render,
+        _ => {
+            log::warn!(
+                "[Scripting] {scope}: `render` must be a table; using the default render profile"
+            );
+            return Ok(ModRenderProfile::default());
+        }
+    };
+
+    let raw_bloom: LuaValue = render.get("bloom").map_err(lua_err)?;
+    let bloom = match raw_bloom {
+        LuaValue::Nil => return Ok(ModRenderProfile::default()),
+        LuaValue::Table(bloom) => bloom,
+        _ => {
+            log::warn!(
+                "[Scripting] {scope}: `render.bloom` must be a table; using the default bloom profile"
+            );
+            return Ok(ModRenderProfile::default());
+        }
+    };
+
+    let resolution = match bloom.get::<LuaValue>("resolution").map_err(lua_err)? {
+        LuaValue::Nil => ModBloomResolution::default(),
+        LuaValue::String(value) => match value.to_str().ok().as_deref() {
+            Some("half") => ModBloomResolution::Half,
+            Some("quarter") => ModBloomResolution::Quarter,
+            Some("eighth") => ModBloomResolution::Eighth,
+            _ => {
+                log::warn!(
+                    "[Scripting] {scope}: `render.bloom.resolution` must be `half`, `quarter`, or `eighth`; using `half`"
+                );
+                ModBloomResolution::default()
+            }
+        },
+        _ => {
+            log::warn!(
+                "[Scripting] {scope}: `render.bloom.resolution` must be `half`, `quarter`, or `eighth`; using `half`"
+            );
+            ModBloomResolution::default()
+        }
+    };
+
+    let pixelated = match bloom.get::<LuaValue>("pixelated").map_err(lua_err)? {
+        LuaValue::Nil => false,
+        LuaValue::Boolean(value) => value,
+        _ => {
+            log::warn!(
+                "[Scripting] {scope}: `render.bloom.pixelated` must be a boolean; using `false`"
+            );
+            false
+        }
+    };
+
+    Ok(ModRenderProfile {
+        bloom: ModBloomProfile {
+            resolution,
+            pixelated,
+        },
+    })
+}
+
 /// Drain pure SDK `defineImpactEvent` handles from a manifest. The event
 /// remains opaque policy data here; Task 5 owns validation, merging, and
 /// execution.

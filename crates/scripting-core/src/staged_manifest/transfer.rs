@@ -7,7 +7,7 @@ use super::super::data_descriptors::{
     TriggerPoolDescriptor,
 };
 use super::super::data_registry::{ScopedCrossing, ScopedReaction};
-use super::super::runtime::{Frontend, ModMapEntry};
+use super::super::runtime::{Frontend, ModMapEntry, ModRenderProfile};
 use super::super::slot_table::StoreDeclarationSet;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -41,6 +41,7 @@ impl StagedManifestDiagnostic {
 #[derive(Clone, Debug, PartialEq)]
 pub struct StagedManifest {
     pub name: String,
+    pub render: ModRenderProfile,
     pub entities: Vec<EntityTypeDescriptor>,
     pub maps: Vec<ModMapEntry>,
     pub reactions: Vec<ScopedReaction>,

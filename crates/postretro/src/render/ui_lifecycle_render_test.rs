@@ -89,6 +89,7 @@ fn staged_manifest_result(
         mod_root: PathBuf::from("content/dev"),
         status: StagedManifestBuildStatus::Built(Box::new(StagedManifest {
             name: "UiLifecycle".to_string(),
+            render: Default::default(),
             entities: Vec::new(),
             maps: Vec::new(),
             reactions: Vec::new(),

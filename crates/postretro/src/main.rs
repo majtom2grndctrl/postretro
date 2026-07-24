@@ -7583,6 +7583,7 @@ mod tests {
             status: StagedManifestBuildStatus::Built(Box::new(
                 postretro_scripting_core::staged_manifest::StagedManifest {
                     name: "UiCommit".to_string(),
+                    render: Default::default(),
                     entities: Vec::new(),
                     maps: Vec::new(),
                     reactions: Vec::new(),

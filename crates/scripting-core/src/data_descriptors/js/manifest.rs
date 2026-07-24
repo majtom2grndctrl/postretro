@@ -59,6 +59,81 @@ impl LevelManifest {
     }
 }
 
+/// Drain the optional static renderer profile from a QuickJS mod manifest.
+/// Every malformed field degrades independently so presentation preferences
+/// never reject an otherwise valid manifest.
+pub fn drain_render_profile_js<'js>(
+    obj: &Object<'js>,
+    scope: &str,
+) -> Result<ModRenderProfile, DescriptorError> {
+    if !obj.contains_key("render").map_err(js_err)? {
+        return Ok(ModRenderProfile::default());
+    }
+    let raw_render: JsValue = obj.get("render").map_err(js_err)?;
+    if !raw_render.is_object() || raw_render.is_array() {
+        log::warn!(
+            "[Scripting] {scope}: `render` must be an object; using the default render profile"
+        );
+        return Ok(ModRenderProfile::default());
+    }
+    let render = raw_render
+        .as_object()
+        .expect("object type was checked before borrowing");
+    if !render.contains_key("bloom").map_err(js_err)? {
+        return Ok(ModRenderProfile::default());
+    }
+    let raw_bloom: JsValue = render.get("bloom").map_err(js_err)?;
+    if !raw_bloom.is_object() || raw_bloom.is_array() {
+        log::warn!(
+            "[Scripting] {scope}: `render.bloom` must be an object; using the default bloom profile"
+        );
+        return Ok(ModRenderProfile::default());
+    }
+    let bloom = raw_bloom
+        .as_object()
+        .expect("object type was checked before borrowing");
+
+    let resolution = if bloom.contains_key("resolution").map_err(js_err)? {
+        let raw: JsValue = bloom.get("resolution").map_err(js_err)?;
+        let authored = raw.as_string().and_then(|value| value.to_string().ok());
+        match authored.as_deref() {
+            Some("half") => ModBloomResolution::Half,
+            Some("quarter") => ModBloomResolution::Quarter,
+            Some("eighth") => ModBloomResolution::Eighth,
+            _ => {
+                log::warn!(
+                    "[Scripting] {scope}: `render.bloom.resolution` must be `half`, `quarter`, or `eighth`; using `half`"
+                );
+                ModBloomResolution::default()
+            }
+        }
+    } else {
+        ModBloomResolution::default()
+    };
+
+    let pixelated = if bloom.contains_key("pixelated").map_err(js_err)? {
+        let raw: JsValue = bloom.get("pixelated").map_err(js_err)?;
+        match raw.as_bool() {
+            Some(value) => value,
+            None => {
+                log::warn!(
+                    "[Scripting] {scope}: `render.bloom.pixelated` must be a boolean; using `false`"
+                );
+                false
+            }
+        }
+    } else {
+        false
+    };
+
+    Ok(ModRenderProfile {
+        bloom: ModBloomProfile {
+            resolution,
+            pixelated,
+        },
+    })
+}
+
 /// Drain pure SDK `defineImpactEvent` handles from a manifest. Parsing stops at
 /// the descriptor boundary: Task 5 owns policy validation, author-id merging,
 /// and effect evaluation.

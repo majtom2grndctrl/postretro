@@ -38,9 +38,31 @@ pub struct Frontend {
     pub camera: MenuCamera,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ModBloomResolution {
+    #[default]
+    Half,
+    Quarter,
+    Eighth,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ModBloomProfile {
+    pub resolution: ModBloomResolution,
+    pub pixelated: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ModRenderProfile {
+    pub bloom: ModBloomProfile,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ModManifestResult {
     pub name: String,
+    /// Static mod-owned render preferences parsed from `render`. Omission or
+    /// malformed optional fields normalize to the current renderer defaults.
+    pub render: ModRenderProfile,
     /// Entity-type descriptors returned by the mod manifest. Empty when the
     /// returned object omits the `entities` field. Drained into `DataRegistry`
     /// by the boot caller after `run_mod_init` returns.

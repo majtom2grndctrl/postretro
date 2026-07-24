@@ -57,14 +57,29 @@ Two floating `16 × 128 × 80` panels sit west of the pillars, both at
 | Panel | Y extent | Texture | `_e` peak | Emissive term | Blooms? |
 |---|---|---|---|---|---|
 | Bright | `y[192,320]` | `neon/neon_glow_panel` | sRGB 255 | 4.0 | yes — 4× threshold |
-| Dim | `y[352,480]` | `neon/neon_dim_panel` | sRGB 99 | ~0.5 | no — half threshold |
+| Dim | `y[352,480]` | `neon/neon_dim_panel` | sRGB 130 | 0.893 | no — just under threshold |
 
 The pair is the A/B for emissive-with-bloom vs emissive-without-bloom. There is no
 per-material bloom flag; bloom is decided purely by whether a fragment's linear
 luminance clears `BLOOM_THRESHOLD` (`1.0`, `renderer/src/render/bloom.rs`). Both
 panels use `Material::Neon`'s `emissive_strength` of `4.0`, so the authored `_e`
-texel value is the only lever — the dim panel's texture is the bright one scaled
-in linear light.
+texel value is the only lever.
+
+The dim `_e` is the bright one **clamped, not scaled**: most of the source pattern
+already sits below the threshold (terms `0.42`–`0.79`) and blooms on nothing, so
+only the 537 over-threshold texels are pulled down to `0.893`. Everything already
+sub-threshold is left byte-identical, which keeps the panel's readable glow —
+scaling the whole map instead crushes it to near-black. The clamp scales on the
+peak channel like `soft_knee_tonemap` does, so clamped texels keep their hue.
+
+Worth knowing: the *bright* panel already contains emissive-without-bloom. Only
+537 of its 762 non-black texels clear the threshold; the rest glow without ever
+entering the bright pass. The dim panel isolates that behavior across a whole
+surface.
+
+Note that bloom onset is gradual, not a cliff — the bright pass extracts
+`1 - threshold/luminance` of a fragment, so a term of `1.1` yields a ~9% extraction
+(~3% after `BLOOM_INTENSITY`), while the bright panel's `4.0` yields 75%.
 
 Both panels share the same diffuse, and the west face each presents to the spawn
 is unlit by direct light (the warm spots at `288 320` / `288 192` aim ±Y away from

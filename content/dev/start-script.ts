@@ -17,6 +17,14 @@ import {
 export default defineMod({
   name: "dev",
   maps: mapCatalog,
+  // Non-default on purpose: the dev mod dogfoods the mod-authored bloom surface,
+  // so a regression in the profile wire is visible on every dev launch.
+  render: {
+    bloom: {
+      resolution: "quarter",
+      pixelated: true,
+    },
+  },
   frontend: {
     menuTree: frontendMenu.name,
     backgroundLevel: "combat-demo",

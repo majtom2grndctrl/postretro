@@ -72,7 +72,12 @@ The serial walk exists because the camera path needed hierarchical rejection bef
 
 The cull-status scratch buffer is shared across slots and already overwritten by every dispatch in the pass; the shadow path has no wireframe overlay reading it. Parallel dispatch does not make that worse, but do not start reading it for shadow slots without giving each slot its own region.
 
+## Continuation gate
+
+Task 1 is instrumentation and lands regardless — an unmeasured pass is a gap whatever the number turns out to be. Continue to Tasks 2–4 only if the baseline shows the shadow cull pass at **0.3 ms or more** per frame on `stress-warren-lit` with the shadow pool saturated. Below that, record the number in this plan and stop: the pass is not worth a new shader and a second traversal path, and the serial walk is paying its way.
+
+If the baseline instead shows per-dispatch overhead dominating the per-leaf work — many occupied slots, each finishing almost immediately — the right fix is batching all occupied slots into one dispatch, with the slot index on the `z` dimension and per-slot planes read from an array rather than a per-slot uniform. That reworks the bind-group layout, so it becomes its own plan rather than an expansion of this one.
+
 ## Open questions
 
-- Batching all occupied slots into a single dispatch — slot index on the `z` dimension, per-slot planes read from an array rather than a per-slot uniform — would remove the per-slot bind-group set and dispatch overhead. That is a larger change to the bind-group layout than this plan takes on, and it is only worth it if Task 1's baseline shows per-dispatch overhead is material at 96 spot regions and 36 cube regions.
-- If Task 1 shows the shadow cull is already a negligible share of frame GPU time on the target maps, this plan should stop after Task 1 and the measurement should be recorded here rather than shipped around.
+None. The design is decided; the only variable is whether the measured baseline clears the gate above.

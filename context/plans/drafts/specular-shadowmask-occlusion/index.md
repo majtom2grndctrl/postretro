@@ -27,6 +27,10 @@ every non-`sdf` static light, so a fully shadowed surface can float a full-stren
 - **Movers, skinned meshes, billboards.** Their specular already comes solely from promoted static
   records shadowed by the pool map and faded by the promotion weight. Untouched.
 - **`sdf`-typed lights.** Already shadowed per-light by the SDF visibility slice.
+- **Directional (sun) lights.** Excluded by the shadowmask's own selection, and correctly so: a sun
+  reaches nearly every exterior-facing texel, so it would be adjacent to almost every other light in
+  the 4-channel overlap graph and consume a quarter of the budget while raising drop pressure on the
+  point and spot lights this plan targets. Their specular stays unshadowed.
 - **Animated static lights.** Their direct term lives in the animated atlas, not the shadowmask.
 - **Any new baked PRL section.** No wire-format change.
 
@@ -183,20 +187,30 @@ branch, `Uniforms` field), `crates/renderer/src/shaders/billboard.wgsl` (`Unifor
 **Cost.** One extra `textureSample` per (fragment × non-`sdf` static light in the chunk list), on a
 texture already resident and already sampled once per fragment by the union path. The sample can be
 hoisted: all lights read the same UV and layer, so fetch the `vec4` once before the loop and select a
-channel per light inside it — one added sample per fragment total, independent of light count. Prefer
-the hoisted form.
+channel per light inside it — one added sample per fragment total, independent of light count. Use the
+hoisted form. It depends on every light in the loop reading the same UV and layer, which holds today
+because world specular samples the fragment's own lightmap coordinates; leave a comment at the fetch
+site saying the hoist must be undone if specular ever samples a per-light UV.
 
 ## Open questions
 
-- **Coverage gap.** Selected-and-then-dropped lights, and lights below the promotion thresholds, keep
-  unshadowed specular. The bright long-range lights whose highlights read worst are exactly the ones
-  selection prefers, so this is judged acceptable — but a human should confirm that a dim wall sconce
-  with a visible floating highlight is a tolerable residue rather than a blocker. If not, the follow-on
-  is a specular-only selection pass decoupled from `EntityShadowLights`, which needs its own channel
-  budget.
-- **Directional (sun) lights.** `is_promotable_base_light` accepts only point and spot, so a sun's
-  specular stays unshadowed. Whether that reads as a defect depends on whether outdoor maps ship with
-  strong sun specular; not decided here.
-- **Hoisted vs. per-light sample.** The hoisted single-fetch form is recommended above, but it assumes
-  the specular loop keeps reading one UV per fragment. If a future change makes specular sample a
-  different UV per light, the hoist must be undone.
+None.
+
+**Coverage gap — accepted, not deferred.** Lights outside the `EntityShadowLights` selection keep
+unshadowed specular. This is a partial fix to a limitation `forward.wgsl` already documents and
+already ships with, so every uncovered light renders exactly as it does today and none renders worse.
+Selection prefers bright, long-range, shadow-casting lights — the ones whose highlights read worst —
+so the fix lands where the artifact is most visible. A dim wall sconce retaining a faint highlight is
+consistent with an engine whose stated aesthetic uses modern embellishments sparingly; specular is an
+embellishment here, not a load-bearing cue. Ship the partial fix and record the residue as a narrowed
+known limitation. A specular-only selection pass decoupled from `EntityShadowLights` remains possible
+later, but it needs its own channel budget and should not gate this.
+
+**Directional lights — a correct exclusion, not an oversight.** The shadowmask carries four channels
+assigned by graph coloring over a texel-overlap graph, with lights dropped when the graph needs more
+than four colors. A sun reaches nearly every exterior-facing texel, so it would be adjacent to almost
+every other light in that graph, consume a channel outright, and raise drop pressure on exactly the
+point and spot lights this plan targets. Spending a quarter of the budget to shadow the one light type
+whose specular the engine is least likely to lean on — the aesthetic is interior-heavy cyberpunk, and
+one dev fixture map currently authors a `light_sun` at all — is the wrong trade. Directional stays out
+of scope on that reasoning, not pending a judgment call.

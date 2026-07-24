@@ -39,7 +39,7 @@ Nothing today measures the portal traversal in isolation — the engine reports 
 
 ### Task 2: Averaged reporting
 
-Accumulate the per-frame portal-walk duration and counters over a 120-frame window and log one averaged line, mirroring the reporting shape the renderer already uses for GPU passes in `crates/renderer/src/render/frame_timing.rs` — fixed window, averaged value, and a retained snapshot the debug UI can display under `dev-tools`. Report the counters as window averages except `step_limit_hit`, which reports as a count of frames in the window that tripped it, since a single trip is the interesting signal. On frames that took a fallback path, contribute nothing to the window rather than contributing zeros, and report the fallback frame count separately so a window is never silently diluted.
+Accumulate the per-frame portal-walk duration and counters over a 120-frame window and log one averaged line, mirroring the reporting shape the renderer already uses for GPU passes in `crates/renderer/src/render/frame_timing.rs` — fixed window, averaged value, and a retained snapshot the debug UI can display under `dev-tools`. Gate the logging on an environment variable rather than a cargo feature, matching `POSTRETRO_GPU_TIMING`; the timing capture itself compiles in unconditionally, since two clock reads per frame are noise against the call being measured. Only the debug-UI snapshot stays `dev-tools`-gated, because that UI already is. Report the counters as window averages except `step_limit_hit`, which reports as a count of frames in the window that tripped it, since a single trip is the interesting signal. On frames that took a fallback path, contribute nothing to the window rather than contributing zeros, and report the fallback frame count separately so a window is never silently diluted.
 
 ### Task 3: Record baselines and pin the gate
 
@@ -85,5 +85,6 @@ Two further constraints on any such plan. Fork granularity is one polygon clip p
 
 ## Open questions
 
-- Whether the averaged portal-walk line should live behind `dev-tools` or ship in release builds. The renderer's GPU timing is env-gated rather than feature-gated, which argues for matching it, but this is a CPU cost paid every frame the instrumentation is compiled in.
-- Baseline numbers are unrecorded until Task 3 runs. If they land far below the gate on every probe map — which is the expectation — this plan's durable output is the gate and the constraints table, and no parallelization work should follow.
+None.
+
+Gating was the one real question, and it resolves against the existing convention: the timing is **env-gated, not `dev-tools`-gated**, matching how the renderer's GPU pass timing already works. The cost of compiling it in is two clock reads per frame around a call that is being measured precisely because it may cost hundreds of microseconds; that is noise. The "tiny binary" goal is about what ships in the payload, not about two timestamps, and a diagnostic surface that behaves differently depending on build features is worse for a modder-facing engine than one that is uniformly available behind an environment variable. Task 2 states this directly; the debug-UI snapshot stays `dev-tools`-gated, since the UI itself already is.

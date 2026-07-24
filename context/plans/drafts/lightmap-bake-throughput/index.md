@@ -81,8 +81,15 @@ The parallel structure is the same on both paths: rayon map over charts into per
 
 The measured baseline to beat: the incremental-bake plan records a cold build at 228 s with the SH bake's 631 s since moved behind a cache, so the lightmap bake is a large share of what cold builds still pay.
 
+## Risks
+
+Not open questions — each has a decided response.
+
+- **Chart imbalance.** The 4× target assumes chart count greatly exceeds core count and that charts are roughly balanced. Boxy level geometry works against that: one wall of a large room is a single chart whose texel count dwarfs a dozen small ones, and the bake finishes when that chart finishes. If Task 5 finds a fixture where the largest chart alone exceeds the target wall clock, the fix is splitting within a chart by texel rows — a change to the parallel unit, not to this plan's structure — and it becomes its own plan rather than expanding this one. Task 5 records the largest-chart share of total bake time so the follow-on is either justified or ruled out on evidence.
+- **Peak memory.** Memory rises with worker count, since each worker holds per-chart buffers. If the 25% acceptance bound proves tight on large atlases, cap the worker count for this stage rather than restructuring the merge; a bake that uses six cores instead of eight still delivers most of the win, and bounded memory matters more than the last 25% of throughput on a compile step authors run on their own machines.
+
 ## Open questions
 
-- The `bvh` dependency is declared with `default-features = false`, which switches off the crate's rayon feature and with it the `rayon_executor` for parallel BVH construction. `traverse_iterator` needs no feature, so this plan is unaffected — but whether to enable the feature for parallel tree builds is a separate call. The build pipeline documents the BVH stage as fast enough to skip caching, which argues against bothering.
-- The 4× target in the acceptance criteria assumes chart count greatly exceeds core count and that charts are roughly balanced. A map dominated by one enormous chart will parallelize poorly. If Task 5 finds a fixture like that, the fix is splitting within a chart by texel rows, which is a larger change and should become its own plan rather than expanding this one.
-- Peak memory rises with worker count, since each worker holds per-chart buffers. The 25% bound in the acceptance criteria is a guess; if it proves tight on large atlases, bounding rayon's thread count for this stage is the cheaper answer than restructuring the merge.
+None.
+
+The one item that read as open — whether to enable the `bvh` crate's rayon feature for parallel tree construction, currently off via `default-features = false` — is decided as no. `traverse_iterator` needs no feature, so this plan is unaffected either way, and the build pipeline documents the BVH stage as fast enough that it is not even cached. Enabling a default feature to speed up a stage nobody has measured as slow is the wrong trade against the lean-dependency goal.

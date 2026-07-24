@@ -11,7 +11,7 @@ Raise BVH leaf granularity from one leaf per `(face, material_bucket)` pair to o
 - Split the coordinate-conversion and UV/tangent projection math out of the geometry stage before extending it, if that split has not already landed.
 - Sub-sort faces by texture index within each BSP leaf so every `(cell, bucket)` group occupies one contiguous index-buffer range.
 - Cluster BVH primitives: one primitive per maximal `(cell, bucket)` run instead of one per face.
-- A bounded cluster-size knob so a large cell's bucket does not become a single all-or-nothing frustum unit.
+- An AABB-extent bound on cluster size, so a large cell's bucket does not become a single all-or-nothing frustum unit, plus a face-count escape hatch that reproduces pre-change output exactly.
 - Rework the animated-light chunk builder's face lookup, which currently assumes one face per leaf.
 - Correctness verification that the submitted triangle set is unchanged, and measurement of the draw-count / submitted-triangle trade-off.
 
@@ -21,7 +21,7 @@ Raise BVH leaf granularity from one leaf per `(face, material_bucket)` pair to o
 - Clustering across cells or across material buckets. `cell_id` drives the visible-cell test and the bucket drives the draw call; both stay one-per-leaf.
 - Changing the BVH build algorithm or replacing the `bvh` crate.
 - Changing `CellDrawIndex` wire layout. Span semantics are unchanged; spans simply collapse toward one per `(cell, bucket)`.
-- Reorganizing the geometry stage's test module. The split in Task 1 moves source only; see Open questions.
+- Reorganizing the geometry stage's test module. Task 1 moves source only. The tests are written through `extract_geometry` rather than against the projection math directly — only the basis-conversion round-trip calls a moved function — so they do not follow the code, and the file lands near 1140 lines with about 300 lines of non-test source. Moving them would mean rewriting behavioral tests as unit tests, which is a test-design change wearing a refactor's clothes; it is not worth bundling into a perf plan.
 - Meshlet/cluster-cone culling, triangle-level GPU culling, or any Nanite-style two-level scheme.
 
 ## Acceptance criteria
@@ -55,7 +55,7 @@ In `collect_primitives` (`crates/level-compiler/src/bvh_build.rs`), emit one `Bv
 
 ### Task 4: Cluster size bound
 
-A whole-cell-bucket leaf is one frustum unit: if any part is in frustum, all of it draws. Add a bound that splits a run into multiple primitives when it would exceed a maximum face count per cluster, exposed as a `prl-build --bvh-cluster-max-faces <n>` flag mirroring the existing per-flag precedent, with a default chosen from the Task 6 measurements. A value of `1` reproduces pre-change one-face-per-leaf output exactly and is the regression escape hatch. Splitting must cut the run at a face boundary so each resulting primitive keeps a contiguous index range.
+A whole-cell-bucket leaf is one frustum unit: if any part is in frustum, all of it draws. Bound that unit by the cluster's **AABB extent**, not by its face count. The engine targets low-poly Doom/Quake-style geometry, so a `(cell, bucket)` run is typically a handful of faces and a face-count cap would almost never bind — while the case that actually hurts is structural to boxy level design: a room's floor and ceiling share a texture, merge into one leaf, and produce an AABB spanning the room's full height that is in frustum whenever either surface is. Split a run when the candidate cluster's AABB would exceed a diagonal threshold, cutting at face boundaries so each resulting primitive keeps a contiguous index range, and greedily accumulating faces in run order so the split is deterministic. Expose it as `prl-build --bvh-cluster-max-extent <meters>`, defaulted from the Task 7 sweep. Keep a separate `--bvh-cluster-max-faces` cap whose only supported values are `1` — reproducing pre-change one-face-per-leaf output exactly, the regression escape hatch — and unbounded, which is the default. Do not tune behavior with the face cap; it exists to turn the feature off.
 
 ### Task 5: Animated-light chunk face mapping
 
@@ -67,7 +67,7 @@ A whole-cell-bucket leaf is one frustum unit: if any part is in frustum, all of 
 
 ### Task 7: Measurement and probe verification
 
-Extend the existing probe harness in `crates/postretro/src/candidate_cull_probes.rs`, which already compiles `stress-warren`, `stress-warren-crates`, and `campaign-test` and compares the candidate path against the tree walk via `candidate_cull_mirror`. Add an assertion that the union of submitted index ranges — not the leaf set, which necessarily changes — is identical between a `--bvh-cluster-max-faces 1` build and a clustered build at each probe camera. Record leaf count, node count, indirect buffer bytes, candidate-leaf count, submitted triangle count, and `POSTRETRO_GPU_TIMING=1` pass times for both builds at several cluster bounds, and pick the shipped default from the results.
+Extend the existing probe harness in `crates/postretro/src/candidate_cull_probes.rs`, which already compiles `stress-warren`, `stress-warren-crates`, and `campaign-test` and compares the candidate path against the tree walk via `candidate_cull_mirror`. Add an assertion that the union of submitted index ranges — not the leaf set, which necessarily changes — is identical between a `--bvh-cluster-max-faces 1` build and a clustered build at each probe camera. Record leaf count, node count, indirect buffer bytes, candidate-leaf count, submitted triangle count, and `POSTRETRO_GPU_TIMING=1` pass times for both builds across a sweep of `--bvh-cluster-max-extent` values, and pick the shipped default from the results. Also record, per map, the distribution of faces per `(cell, bucket)` run and the fraction of runs the chosen extent actually splits — if clustering rarely fires because runs are already tiny, the plan's premise is wrong for this content and it should stop here rather than ship a default.
 
 ## Sequencing
 
@@ -99,6 +99,4 @@ The doc comment at the top of `crates/level-format/src/bvh.rs` names four downst
 
 ## Open questions
 
-- The geometry-stage split (Task 1) moves source but not tests. The file's test module is roughly 845 of its 1355 lines, and those tests are written through `extract_geometry` rather than against the projection math directly — only the basis-conversion round-trip calls a moved function. So the split lands the file near 1140 lines with about 300 lines of non-test source, and a later pass would be needed to move projection tests alongside their code. Splitting the test module is out of scope here; whether it is worth doing at all is a judgment call for review.
-- The right default for `--bvh-cluster-max-faces` is unknown until Task 6 measures. If submitted triangles regress badly at every bound above 1, the plan's premise is wrong and it should stop after Task 6 rather than ship a default.
-- Clustering by `(cell, bucket)` ignores co-planarity. A cell's floor and ceiling with the same texture merge into one leaf with a tall AABB. A co-planarity or AABB-extent secondary split may beat a flat face-count bound; Task 6's sweep should record enough to tell.
+- The shipped `--bvh-cluster-max-extent` default is unknown until Task 7 sweeps it. This is a genuine measurement, not a design gap: the split rule and its escape hatch are decided, only the constant is open, and Task 7 states the condition under which the plan stops instead of shipping one.

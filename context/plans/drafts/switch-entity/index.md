@@ -25,7 +25,8 @@ No runtime, PRL, renderer, `ClassnameDispatch`, or `TriggerVolumeBridge` change.
   switch's brushes into the **static world geometry** (visible + collidable), and (b)
   emits a **`use`-forced** `TriggerVolumeRecord` whose AABB is the switch's brush AABB
   **inflated by a `use_reach` margin**, so a player standing in front of the now-solid
-  switch overlaps the trigger (use-activation is capsule-vs-AABB containment).
+  switch overlaps the trigger (use-activation is capsule-vs-AABB overlap —
+  `capsule_overlaps_aabb`, an intersection test, not containment).
 - Reuse of the shipped trigger vocabulary: `on_fire` / `on_exit` named reactions,
   `target_tag` + `command` / `command_arg` mover control, `fire_mode` (once/multiple),
   `rearm_ms`, `enabled_on_spawn`, `_tags`.
@@ -43,7 +44,10 @@ No runtime, PRL, renderer, `ClassnameDispatch`, or `TriggerVolumeBridge` change.
 - **New scripting-type surface.** `switch` reuses `TriggerVolumeComponent`; no
   `.d.luau` / `.d.ts` change (classnames are not declared in the scripting type
   surface — only the queryable component union is, and `trigger_volume` already covers
-  it).
+  it). Because a `switch` is emitted as a `TriggerVolumeComponent`,
+  `world.query({ component: "trigger_volume", tag })` now also returns switches —
+  indistinguishable at the component/query layer (intended), so script authors
+  querying trigger volumes will include switches.
 - **A new `activation` choice on the switch.** `switch` is press-to-activate by
   definition; `activation` is forced to `use` by the compiler and is not an authorable
   KVP.
@@ -54,10 +58,14 @@ No runtime, PRL, renderer, `ClassnameDispatch`, or `TriggerVolumeBridge` change.
   geometry** (drawn + collidable, indistinguishable from worldspawn brushwork), and a
   single `use`-activation `TriggerVolumeRecord` is emitted covering it. Verified by a
   compiler unit test asserting both the world-geometry contribution and a
-  `TriggerVolumeRecord` with `activation == use` (1).
+  `MapTriggerVolume` with `activation == 1` (use); a `TriggerVolumeRecord` only exists
+  after `encode_trigger_volumes_section` runs, so a test wanting the wire record must
+  also call the encoder.
 - [ ] The emitted trigger's AABB is **larger than the raw switch brush AABB** by the
   `use_reach` margin on every axis (so a flush-standing player capsule can overlap it).
-  Verified by the same test comparing `aabb_min`/`aabb_max` against the brush hull.
+  Verified by the same test comparing `aabb_min`/`aabb_max` against the brush hull on
+  each of x/y/z — `aabb_min` strictly decreased and `aabb_max` strictly increased on
+  every axis.
 - [ ] In-engine, pressing `use` while standing in front of a placed `switch` fires its
   `on_fire` reaction (and/or commands its `target_tag` mover) identically to an
   equivalent `use` `trigger_volume`. Verified on a dev-map fixture (manual gate — the
@@ -79,9 +87,11 @@ No runtime, PRL, renderer, `ClassnameDispatch`, or `TriggerVolumeBridge` change.
 ### Task 1: `switch` FGD class
 Add a `switch` `@SolidClass` to `sdk/TrenchBroom/postretro.fgd`, modelled on the
 `trigger_volume` class but with the switch semantics: **no `activation` KVP** (the
-compiler forces `use`), plus a `use_reach(float)` property (the AABB inflation margin,
-default matching the player capsule reach — see Rough sketch). Carry the shared trigger
-authoring surface: `on_fire(string)`, `on_exit(string)`, `target_tag(string)`,
+compiler forces `use`), plus a `use_reach(float)` property (the AABB inflation margin, authored in map units;
+its default is a concrete literal — e.g. 24 map units ≈ 0.61 m — that must equal the
+compiler's fallback literal; not tied to the runtime capsule constant, which the
+`level-compiler` crate cannot reach — see Rough sketch). Carry the shared trigger
+authoring surface: `on_fire(string)`, `on_exit(string)`, `name(string)`, `target_tag(string)`,
 `command(choices: start/stop/reverse/go_to_path_node)`, `command_arg(string)`,
 `fire_mode(choices: once/multiple)`, `rearm_ms(float)`,
 `enabled_on_spawn(choices: 0/1)`, `_tags(string)`. Help text states that a `switch` is
@@ -99,20 +109,33 @@ normal world partition / lighting / collision / draw pipeline; and (2) **emits a
 `activation` set to `1` (`use`) regardless of any authored value (reuse
 `resolve_trigger_volume` with an `activation`-forced props map, or call it then
 overwrite `MapTriggerVolume.activation`), then **inflate `aabb_min`/`aabb_max` by
-`use_reach`** (parsed from props, default per Rough sketch) on every axis, and push it
+`use_reach * scale`** (parsed from props, default per Rough sketch; `scale =
+format.units_to_meters()`, the same scale the AABB vertices already carry — the AABB is
+in engine meters but `use_reach` is authored in map units, so the raw value must not be
+added directly) on every axis, and push it
 to the `trigger_volumes` list. The switch must **not** also produce a `MapEntityRecord`
-(the brush branch `continue`s, like `trigger_volume`). All downstream consumers
+(the brush branch `continue`s, like `trigger_volume`). This new branch must sit inside
+the `has_brushes` block and `continue` before that block's terminal unconditional
+`continue` (~parse.rs:675) — otherwise the switch falls through and is silently
+dropped. All downstream consumers
 (`TriggerVolumeBridge`, `trigger_system`, `TriggerVolumeComponent`) are unchanged.
 Tests: (a) a `switch` brush contributes to world geometry (non-empty world brush set /
 draw geometry) **and** emits exactly one `TriggerVolumeRecord` with `activation == 1`
 and an AABB inflated past the raw brush hull; (b) the inert-warning parity; (c) the
-switch classname does not appear as a `MapEntityRecord`. Also add a **dev-map fixture**:
+switch classname does not appear as a `MapEntityRecord`; (d) a fully-populated `switch`
+(fire_mode=multiple, rearm_ms, target_tag, command/command_arg, on_fire/on_exit,
+enabled_on_spawn) round-trips every shared field onto the emitted `MapTriggerVolume` —
+the forwarding AC-4 asks to confirm. Also add a **dev-map fixture**:
 place a `switch` in a dev map wired via `on_fire` to a visible reaction (mover start or
 a store-slot write), for the AC-3 manual in-engine gate (press `use`, confirm it fires).
 `parse.rs` is large (~2000
 lines) but this edit is a **localized new branch** mirroring the adjacent
 `trigger_volume` branch — a cohesive addition, not a tangle across functions — so no
-split-before-extend is warranted (dev guide: "soft smell, not a gate").
+split-before-extend is warranted (dev guide: "soft smell, not a gate"). Note: because
+the desugar reuses `resolve_trigger_volume`, its inert warning and error diagnostics
+hardcode and name `trigger_volume`, not `switch`. Accepted for v1 (consistent with
+wholesale reuse); parameterizing the classname in those messages is an optional
+follow-up.
 
 ## Sequencing
 
@@ -129,15 +152,19 @@ classname string, not the FGD file.
   reads `activation` from props (`"use"` → `1`) and computes the brush-hull AABB into
   `MapTriggerVolume { aabb_min, aabb_max, activation, .. }` (`map_data.rs:177`); the
   record type `TriggerVolumeRecord` (`crates/level-format/src/trigger_volumes.rs:14`)
-  carries `aabb_min`/`aabb_max: [f32; 3]`. Inflate those by `use_reach`.
-- **`use_reach` default:** use-activation is capsule-vs-AABB containment
-  (`trigger_system.rs` `capsule_overlaps_aabb` + `use_pressed`), so the trigger must
-  extend past the solid switch face into the space the player stands in. Default
-  `use_reach` ≥ the player capsule radius (so a player flush against the switch
-  overlaps); pick the concrete default against the movement capsule constant at
-  implementation (starting value ~24 map units). Uniform inflation on all axes is
-  fine — for a wall-flush switch the rear/side margins fall inside solid wall and are
-  unreachable; the front margin is the reachable one.
+  carries `aabb_min`/`aabb_max: [f32; 3]`. That AABB is in engine meters — each vertex
+  is `quake_to_engine(v) * scale` — so `use_reach` (authored in map units) must be
+  scaled by `scale` before it is added; inflate those by `use_reach * scale`.
+- **`use_reach` default:** use-activation is capsule-vs-AABB overlap (an intersection
+  test, `trigger_system.rs` `capsule_overlaps_aabb` + `use_pressed`, not containment),
+  so the trigger must extend past the solid switch face into the space the player
+  stands in. The player capsule radius is an authored descriptor field
+  (`CapsuleParams.radius`, ~0.4 m in fixtures), not an engine constant the compiler can
+  read — the overlap test already effectively grants ~radius of reach. Pin the default
+  at 24 map units (~0.61 m), which the compiler hardcodes as a literal (it cannot read
+  the runtime descriptor) and which exceeds the ~0.4 m capsule radius. Uniform
+  inflation on all axes is fine — for a wall-flush switch the rear/side margins fall
+  inside solid wall and are unreachable; the front margin is the reachable one.
 - **No depress:** static geometry means the switch does not move on press. That is the
   v1 boundary (Out of scope).
 
@@ -157,15 +184,18 @@ classname string, not the FGD file.
   runtime code** — the lowest-risk path. The point-entity variant (`@PointClass`,
   glTF model + use-radius) was rejected: it needs a net-new `ClassnameDispatch` builtin
   (breaking the count-locked table at `builtins/mod.rs`) **and** net-new point-origin
-  AABB ingestion in `TriggerVolumeBridge` (which today ingests only brush AABBs), for a
+  AABB ingestion in `TriggerVolumeBridge` (whose stored trigger geometry is AABB-only —
+  no rotation/OBB — it ingests the full trigger record otherwise), for a
   workflow (place a model prop) less natural to brush mappers than carving a switch.
 - **`activation` forced to `use`, not authorable.** A switch that could be a touch
   trigger is just a `trigger_volume`; forcing `use` is what makes `switch` a distinct,
   meaningful sugar.
-- **`use_reach` is required (and exposed).** Unlike an invisible `trigger_volume` the
-  player can stand *inside*, a switch is solid — the trigger must be inflated to be
-  reachable. Exposing it as a tunable (with a sane default) lets mappers widen reach for
-  large consoles or recessed switches.
+- **Inflation is mandatory to the mechanism; `use_reach` is exposed as a tunable, not
+  required.** Unlike an invisible `trigger_volume` the player can stand *inside*, a
+  switch is solid — the trigger must be inflated to be reachable, so the compiler
+  always applies `use_reach`. It ships with a default (Task 1), so it is not an
+  author-required KVP; exposing it as a tunable lets mappers widen reach for large
+  consoles or recessed switches.
 
 ## Open questions
 

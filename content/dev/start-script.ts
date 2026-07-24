@@ -17,11 +17,13 @@ import {
 export default defineMod({
   name: "dev",
   maps: mapCatalog,
-  // Non-default on purpose: the dev mod dogfoods the mod-authored bloom surface,
-  // so a regression in the profile wire is visible on every dev launch.
+  // Dogfoods the mod-authored bloom surface on every dev launch. `resolution`
+  // is left at the engine default (`half`); `pixelated: true` is the non-default
+  // field, so a regression in the pixelated wire is visible here. (Set
+  // `resolution` to `quarter`/`eighth` to also exercise the resolution wire.)
   render: {
     bloom: {
-      resolution: "quarter",
+      resolution: "half",
       pixelated: true,
     },
   },

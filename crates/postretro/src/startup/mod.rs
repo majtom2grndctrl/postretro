@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 pub(crate) mod lifecycle;
 pub(crate) mod session;
 pub(crate) mod splash_lifecycle;
+pub(crate) mod staged_manifest_lifecycle;
 pub(crate) mod worker;
 
 pub(crate) use lifecycle::FRONTEND_CLEAR_COLOR;

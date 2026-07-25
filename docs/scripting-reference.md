@@ -535,6 +535,9 @@ remain runtime-only, and no animation curves are baked.
 Returned when `component` is `"trigger_volume"`. The snapshot exposes only
 `id`, `position`, and `tags`; arming state and activation phase remain
 engine-owned. The handle adds command builders for the live entity.
+Switch entities also emit a `trigger_volume` component and are
+indistinguishable from authored trigger volumes here; separate them with a
+tag convention.
 
 | Field | Type | Description |
 |-------|------|-------------|

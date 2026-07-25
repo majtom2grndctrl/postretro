@@ -59,7 +59,7 @@ Spawn 1–2 agents, one at a time. Provide the agent brief, plus an enumeration 
 
 Once all edits land, spawn **one** test-runner agent. On the warm cache it runs:
 - `cargo check` for touched crates
-- **focused** tests for the touched crate/module — `cargo test -p <crate> <name_filter>`, narrowed to one target to skip the `tests/` suite: `--lib` for a library crate, `--bin <name>` for a binary one (`--bin prl-build` for `postretro-level-compiler`). Check the count — a target/filter pair matching nothing prints `0 passed` and exits `ok`. `postretro-level-compiler`'s cold bakes are `#[ignore]`-gated, so a bare run of it is cheap; never add `-- --ignored` (~31 min).
+- **focused** tests for the touched crate/module — `cargo test -p <crate> <name_filter>`, narrowed to one target to skip the `tests/` suite: `--lib` for a library crate, `--bin <name>` for a binary one (`--bin prl-build` for `postretro-level-compiler`). Check the count — a target/filter pair matching nothing prints `0 passed` and exits `ok`. `postretro-level-compiler`'s cold bakes are `#[ignore]`-gated, so a bare run of it is cheap; never add `-- --ignored` (~5 min).
 
 **Run contract** (how the gate agent must execute the above):
 - Run every cargo command in the **foreground (blocking)** and capture its pass/fail result inline, in the same turn.

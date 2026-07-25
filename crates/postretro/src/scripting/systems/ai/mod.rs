@@ -23,11 +23,11 @@ use targeting::{
     target_distance,
 };
 use transition::{SteeringIntent, evaluate_transition};
+// `ai_tests` is included here via `#[path]`, so its `use super::*` resolves
+// against this module — the split moved these into submodules, but the tests
+// still name them unqualified.
 #[cfg(test)]
-use transition::{
-    STRIDE_MID_DISTANCE, STRIDE_NEAR_DISTANCE, TARGET_SWITCH_HYSTERESIS_DISTANCE,
-    think_stride_for_distance,
-};
+use transition::{TARGET_SWITCH_HYSTERESIS_DISTANCE, think_stride_for_distance};
 
 use crate::agent_steering;
 use crate::collision::CollisionWorld;
@@ -36,6 +36,8 @@ use crate::combat_positioning::{
     select_combat_positions_batch,
 };
 use crate::nav::NavGraph;
+#[cfg(test)]
+use crate::nav::distance_xz;
 use postretro_entities::components::brain::{AiStateMap, BrainComponent, LogicalState};
 use postretro_entities::components::health::{
     DamageContext, DamageProducer, apply_damage_with_context,

@@ -36,8 +36,11 @@ use crate::{parse, partition, portals, visibility};
 ///
 /// Keep this list cheap. Bake cost tracks probe and texel counts, not `.map` size:
 /// the heavily-lit entries dominate while the animated-weight-map fixtures are
-/// sub-second each. occlusion-test was dropped as the single most expensive entry
-/// (~65% of the gates' runtime on its own). The coverage consciously given up is
+/// sub-second each. occlusion-test was dropped as the single most expensive entry:
+/// measured before/after, dropping it cut the gates 7× (1812s → 260s). A
+/// full-compile timing is a poor proxy for a gate's share — the gates bake probes
+/// twice and weight large volumes far more heavily — so measure before/after
+/// rather than trust a compile-time estimate. The coverage consciously given up is
 /// geometric complexity — gate-heavily-lit stresses light count over small
 /// geometry, so a determinism break that needs large, occluder-dense brushwork to
 /// show up is no longer gated here. Reach for a compact purpose-built fixture

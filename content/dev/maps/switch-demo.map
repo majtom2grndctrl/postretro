@@ -7,6 +7,8 @@
 // (static world geometry + a use-activation trigger inflated by use_reach).
 // Compile: cargo run -p postretro-level-compiler -- content/dev/maps/switch-demo.map -o content/dev/maps/switch-demo.prl
 // Run: cargo run -p xtask -- run content/dev/maps/switch-demo.prl
+// Rebuild first: cargo build -p postretro-level-compiler --bin prl-build
+// Stale binary compiles this map silently empty -- no geometry, no TriggerVolumes, no error.
 // NOTE: keep map comments free of braces and quotes, and never leave a blank
 // line inside an entity block -- the .map parser silently drops later entities.
 // entity 0

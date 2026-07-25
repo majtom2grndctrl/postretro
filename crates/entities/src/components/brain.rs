@@ -40,13 +40,6 @@ pub struct BrainComponent {
     /// against a distance-derived stride to time-slice target acquisition for
     /// distant enemies. Seeded to `0` at spawn.
     pub think_stride_counter: u32,
-    /// Death-despawn countdown in milliseconds. Vestigial: the field survives
-    /// for legacy-descriptor shape parity, but nothing seeds or decrements it —
-    /// despawn timing is owned by the death/despawn effect path (E16,
-    /// `impact_effects.rs`), not by this timer. Always `None`; the AI tick must
-    /// not seed it.
-    #[serde(default)]
-    pub death_despawn_remaining_ms: Option<f32>,
     /// Last locomotion intent applied to animation selection. This latches the
     /// idle/walk decision so an enemy in `Alert` switches once on stop/resume
     /// instead of re-requesting the same animation every tick.
@@ -140,7 +133,6 @@ impl BrainComponent {
         Self {
             attack_cooldown_remaining_ms: 0.0,
             think_stride_counter: 0,
-            death_despawn_remaining_ms: None,
             locomotion_moving: false,
             aggro_armed: true,
             acquired_target: None,
@@ -225,7 +217,32 @@ pub fn attach_brain_graph(
 /// RESOLUTION (`clip_index`) lands later at level load; an unresolved-but-
 /// declared name is caught at tick time by `switch_animation_state`
 /// (`UnknownState`), which the tick also handles by keeping the prior animation.
-pub fn validate_brain_animation_states(registry: &EntityRegistry, entity: EntityId) -> Vec<String> {
+///
+/// # Rest-pose reconciliation
+///
+/// This is also where the graph's REST animation — the `initial` state's — is
+/// joined to the mesh's `defaultState`. The two names are independently
+/// author-chosen on an authored graph, and nothing else joins them: the mesh
+/// component is built sitting in `mesh.defaultState`, the brain is seeded in
+/// `graph.initial`, and the tick only calls `animation_for_state` once
+/// `should_switch_animation` fires (a state change or a locomotion flip). An
+/// idle-until-provoked or aggro-sealed enemy never trips either, so a mismatch
+/// presents the WRONG clip indefinitely — and the host replicates
+/// `current_state` verbatim, so every client shows the same wrong clip.
+///
+/// A mismatch therefore warns AND seeds the graph's rest animation as the
+/// entity's current animation state (the established warn-once-and-degrade
+/// posture, with the degradation being "present what the graph asked for").
+/// The seeded name is exactly what `animation_for_state(graph, initial,
+/// moving = false)` returns, so it does not fight the locomotion-at-standstill
+/// substitution: that substitution resolves to the `initial` state's animation
+/// too. `mesh.default_state` is left untouched — it is mesh-owned data, not
+/// live presentation. A rest animation the mesh does not declare is reported
+/// above and never seeded; the mesh default is kept instead.
+pub fn validate_brain_animation_states(
+    registry: &mut EntityRegistry,
+    entity: EntityId,
+) -> Vec<String> {
     let Ok(brain) = registry.get_component::<BrainComponent>(entity) else {
         return Vec::new();
     };
@@ -250,6 +267,36 @@ pub fn validate_brain_animation_states(registry: &EntityRegistry, entity: Entity
             unmapped.push(name.clone());
         }
     }
+
+    // The graph's rest animation vs. the clip the mesh actually starts in.
+    let rest_animation = brain
+        .graph
+        .states
+        .get(&brain.graph.initial)
+        .map(|state| state.animation.clone());
+    let current_animation = declared
+        .and_then(|mesh| mesh.animation.as_ref())
+        .map(|animation| animation.current_state.clone());
+    let rest_is_declared = !unmapped.contains(&brain.graph.initial);
+    let seed = match (rest_animation, current_animation) {
+        (Some(rest), Some(current)) if rest != current && rest_is_declared => Some((rest, current)),
+        _ => None,
+    };
+
+    if let Some((rest, current)) = seed {
+        log::warn!(
+            "[AI] brain graph's rest animation `{rest}` (the `initial` state's) differs from \
+             the mesh's default animation state `{current}`; seeding `{rest}` so the enemy \
+             does not present `{current}` until its first state change",
+        );
+        if let Ok(mut mesh) = registry.get_component::<MeshComponent>(entity).cloned() {
+            if let Some(animation) = mesh.animation.as_mut() {
+                animation.current_state = rest;
+                let _ = registry.set_component(entity, mesh);
+            }
+        }
+    }
+
     unmapped
 }
 
@@ -297,7 +344,6 @@ mod tests {
         assert_eq!(brain.time_in_state_ms, 0.0);
         assert_eq!(brain.attack_cooldown_remaining_ms, 0.0);
         assert_eq!(brain.think_stride_counter, 0);
-        assert_eq!(brain.death_despawn_remaining_ms, None);
         assert!(!brain.locomotion_moving);
         assert!(brain.aggro_armed);
         assert_eq!(brain.acquired_target, None);
@@ -307,7 +353,11 @@ mod tests {
         assert_eq!(brain.graph.states["alert"].animation, "walk");
         assert_eq!(brain.graph.states["death"].animation, "die");
         assert_eq!(brain.graph.move_speed, 3.5);
-        assert_eq!(brain.graph.death_despawn_ms(), 1500.0);
+        assert_eq!(
+            brain.graph.engagement_radius(),
+            2.2,
+            "a lowered graph's combat-slot radius resolves through `attack.range`"
+        );
     }
 
     #[test]
@@ -426,7 +476,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(validate_brain_animation_states(&reg, id).is_empty());
+        assert!(validate_brain_animation_states(&mut reg, id).is_empty());
     }
 
     #[test]
@@ -462,7 +512,7 @@ mod tests {
         )
         .unwrap();
 
-        let unmapped = validate_brain_animation_states(&reg, id);
+        let unmapped = validate_brain_animation_states(&mut reg, id);
         assert_eq!(
             unmapped,
             vec!["attack".to_string()],
@@ -504,7 +554,10 @@ mod tests {
         attach_brain(&mut reg, id, &sample_descriptor()).unwrap();
         reg.set_component(id, MeshComponent::stateless("grunt".into()))
             .unwrap();
-        assert_eq!(validate_brain_animation_states(&reg, id), lowered_states());
+        assert_eq!(
+            validate_brain_animation_states(&mut reg, id),
+            lowered_states()
+        );
     }
 
     #[test]
@@ -512,7 +565,10 @@ mod tests {
         let mut reg = EntityRegistry::new();
         let id = reg.spawn(Transform::default());
         attach_brain(&mut reg, id, &sample_descriptor()).unwrap();
-        assert_eq!(validate_brain_animation_states(&reg, id), lowered_states());
+        assert_eq!(
+            validate_brain_animation_states(&mut reg, id),
+            lowered_states()
+        );
     }
 
     /// The lowered legacy graph's resolved state list, derived from the lowering
@@ -571,8 +627,8 @@ mod tests {
                 range: 2.0,
                 cooldown_ms: 900.0,
             }),
+            engagement_radius: None,
             move_speed: 4.0,
-            death_despawn_ms: None,
         }
     }
 
@@ -589,9 +645,9 @@ mod tests {
         assert_eq!(brain.time_in_state_ms, 0.0);
         assert_eq!(*brain.graph, graph, "the graph is retained verbatim");
         assert_eq!(
-            brain.graph.death_despawn_ms(),
-            BehaviorGraphDescriptor::DEFAULT_DEATH_DESPAWN_MS,
-            "an absent `deathDespawnMs` takes the shared default"
+            brain.graph.engagement_radius(),
+            2.0,
+            "with no `engagementRadius` the graph falls back to its `attack.range`"
         );
         assert_eq!(
             brain.leash_range, None,
@@ -610,7 +666,6 @@ mod tests {
             "a legacy brain retains exactly the lowered graph"
         );
         assert_eq!(brain.leash_range, Some(desc.leash_range));
-        assert_eq!(brain.graph.death_despawn_ms(), desc.death_despawn_ms);
     }
 
     #[test]
@@ -646,10 +701,105 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            validate_brain_animation_states(&reg, id),
+            validate_brain_animation_states(&mut reg, id),
             vec!["rest".to_string()],
             "the walk covers authored state names, not the closed legacy four"
         );
+        assert_eq!(
+            current_animation_state(&reg, id),
+            "walk",
+            "an undeclared rest animation is reported, never seeded — the mesh \
+             default is kept"
+        );
+    }
+
+    #[test]
+    fn spawn_validation_seeds_the_graph_rest_animation_over_a_differing_mesh_default() {
+        // The graph rests in `rest`→"idle" but the mesh starts in "walk". Nothing
+        // else joins the two names: the brain is seeded directly in `initial` and
+        // the tick only re-selects an animation once the state changes or the
+        // locomotion latch flips, so an idle-until-provoked enemy would present
+        // "walk" forever — on the host AND, through verbatim `current_state`
+        // replication, on every client.
+        let mut reg = EntityRegistry::new();
+        let id = reg.spawn(Transform::default());
+        attach_brain_graph(&mut reg, id, &authored_graph()).unwrap();
+
+        let mut states = HashMap::new();
+        states.insert("idle".to_string(), declared_state("Idle"));
+        states.insert("walk".to_string(), declared_state("Walk"));
+        reg.set_component(
+            id,
+            MeshComponent {
+                model: "grunt".into(),
+                animation: Some(MeshAnimation::new(states, "walk".into())),
+                origin_offset: glam::Vec3::ZERO,
+                shadow_bias_scale: 1.0,
+                shadow_only: false,
+                attachments: Vec::new(),
+                pose_inputs: None,
+            },
+        )
+        .unwrap();
+
+        assert!(
+            validate_brain_animation_states(&mut reg, id).is_empty(),
+            "every authored state's animation is declared here"
+        );
+        assert_eq!(
+            current_animation_state(&reg, id),
+            "idle",
+            "spawn presents the graph's rest animation, not the mesh default"
+        );
+        let mesh = reg.get_component::<MeshComponent>(id).unwrap();
+        assert_eq!(
+            mesh.animation.as_ref().unwrap().default_state,
+            "walk",
+            "the mesh's own default is untouched — only live presentation is seeded"
+        );
+    }
+
+    #[test]
+    fn spawn_validation_leaves_a_matching_mesh_default_alone() {
+        // The legacy lowering is implicitly consistent (`idle` both sides), which
+        // is why this gap only surfaced with author-chosen graph state names.
+        let mut reg = EntityRegistry::new();
+        let id = reg.spawn(Transform::default());
+        attach_brain(&mut reg, id, &sample_descriptor()).unwrap();
+
+        let mut states = HashMap::new();
+        states.insert("idle".to_string(), declared_state("Idle"));
+        states.insert("walk".to_string(), declared_state("Walk"));
+        states.insert("attack".to_string(), declared_state("Attack"));
+        states.insert("die".to_string(), declared_state("Death"));
+        reg.set_component(
+            id,
+            MeshComponent {
+                model: "grunt".into(),
+                animation: Some(MeshAnimation::new(states, "idle".into())),
+                origin_offset: glam::Vec3::ZERO,
+                shadow_bias_scale: 1.0,
+                shadow_only: false,
+                attachments: Vec::new(),
+                pose_inputs: None,
+            },
+        )
+        .unwrap();
+
+        assert!(validate_brain_animation_states(&mut reg, id).is_empty());
+        assert_eq!(current_animation_state(&reg, id), "idle");
+    }
+
+    /// The entity's live animation state — what the renderer and the snapshot
+    /// producer both read.
+    fn current_animation_state(reg: &EntityRegistry, id: EntityId) -> String {
+        reg.get_component::<MeshComponent>(id)
+            .unwrap()
+            .animation
+            .as_ref()
+            .unwrap()
+            .current_state
+            .clone()
     }
 
     #[test]

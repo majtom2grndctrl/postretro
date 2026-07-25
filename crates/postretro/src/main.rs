@@ -522,11 +522,14 @@ pub(crate) struct App {
     /// button level directly). See: context/lib/input.md, context/lib/player_options.md
     crouch_toggle_active: bool,
 
-    /// Warn-once latch for the enemy-AI tick. Keyed, namespaced diagnostics fire
-    /// exactly once across the run rather than each tick: `anim:<name>` for an
-    /// animation state that fails to switch (`UnknownState`/`NotAnimated`, prior
-    /// animation kept) and `blocked:<id>` for a chasing enemy whose agent found
-    /// no path. Lives on `App` (the AI tick owner), threaded into
+    /// Warn-once state for the enemy-AI tick. Content-keyed diagnostics (e.g.
+    /// `anim:<name>` for an animation state that fails to switch,
+    /// `UnknownState`/`NotAnimated`, prior animation kept) fire exactly once
+    /// across the run via a `HashSet<String>` latch; the blocked-chase warning
+    /// (a chasing enemy whose agent found no path) is separate, keyed by a
+    /// typed `HashSet<EntityId>` rather than a formatted string so the
+    /// per-tick check never allocates, and pruned each tick against the live
+    /// brain set. Lives on `App` (the AI tick owner), threaded into
     /// `scripting_systems::ai::run_ai_tick`. See: scripting/systems/ai/mod.rs.
     ai_runtime: crate::scripting_systems::ai::AiRuntime,
 

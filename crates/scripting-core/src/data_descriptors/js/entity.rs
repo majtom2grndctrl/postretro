@@ -120,6 +120,7 @@ pub fn entity_descriptor_from_js<'js>(
                 let raw: JsValue = components_obj.get("behavior").map_err(js_err)?;
                 if !raw.is_null() && !raw.is_undefined() {
                     let json = conv::js_to_json(ctx, raw).map_err(js_err)?;
+                    reject_object_where_transition_list_belongs(&json)?;
                     let descriptor: BehaviorGraphDescriptor = serde_json::from_value(json)
                         .map_err(|e| DescriptorError::InvalidShape {
                             reason: format!("`components.behavior` invalid: {e}"),
@@ -195,6 +196,52 @@ fn validate_optional_weapon_model_paths_js<'js>(
         return Err(DescriptorError::InvalidShape {
             reason: format!("`components.weapon.{field}` must be a string when supplied"),
         });
+    }
+    Ok(())
+}
+
+/// Reject an object authored where the behavior block declares an array of
+/// transitions (`interrupts`, and each state's `transitions`).
+///
+/// JavaScript has no array/map ambiguity — `[]` and `{}` are distinct — so
+/// unlike the Luau twin's `normalize_behavior_arrays` there is nothing to
+/// re-seat here; every object in one of these positions is an authoring
+/// mistake. What the twin does share is the ERROR: writing a named-key map
+/// where a list belongs is a natural mistake in both languages, and `serde`'s
+/// own "invalid type: map, expected a sequence" names neither the field nor the
+/// state, leaving an author with a dozen transition lists nothing to go on.
+fn reject_object_where_transition_list_belongs(
+    json: &serde_json::Value,
+) -> Result<(), DescriptorError> {
+    fn check(parent: &serde_json::Value, field: &str, path: &str) -> Result<(), DescriptorError> {
+        let Some(map) = parent.get(field).and_then(|value| value.as_object()) else {
+            return Ok(());
+        };
+        let found = if map.is_empty() {
+            "an object with no entries".to_string()
+        } else {
+            format!(
+                "an object with named keys ({})",
+                map.keys().cloned().collect::<Vec<_>>().join(", ")
+            )
+        };
+        Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`{path}` must be an array of transitions; found {found}. Author it as a list: \
+                 `[{{ to: \"...\", when: ... }}]`"
+            ),
+        })
+    }
+
+    check(json, "interrupts", "components.behavior.interrupts")?;
+    if let Some(states) = json.get("states").and_then(|s| s.as_object()) {
+        for (name, state) in states {
+            check(
+                state,
+                "transitions",
+                &format!("components.behavior.states.{name}.transitions"),
+            )?;
+        }
     }
     Ok(())
 }

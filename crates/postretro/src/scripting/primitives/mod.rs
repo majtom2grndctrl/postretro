@@ -403,7 +403,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("interrupts?", "Vec<TransitionDescriptor>", "Any-state edges, evaluated in declaration order BEFORE the current state's own transitions. An interrupt targeting the current state is skipped. Optional; defaults to none.")
         .field("attack?", "AttackParams", "Attack tuning for the `attack` action verb. Required exactly when some state declares that action.")
         .field("moveSpeed", "f32", "Pursuit movement speed in metres/sec, seeding the navigation agent. Must be finite and > 0.")
-        .field("deathDespawnMs?", "f32", "Delay between death and despawn, in milliseconds. Must be finite and > 0. Optional; defaults to 2000. Carried for legacy `components.ai` shape parity only; despawn timing is owned by the death/despawn effect path, not by this value.")
+        .field("engagementRadius?", "f32", "Radius of the ring of combat slots the engine spreads engaged agents around their target, in metres. Must be finite and > 0 when present. Not the same as `attack.range`, which gates damage only. Optional; when absent, resolves to `attack.range`, else a default.")
         .finish();
     registry
         .register_type("PlayerMovementDescriptor")

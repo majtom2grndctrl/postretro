@@ -63,7 +63,11 @@ pub struct AttackParams {
     /// Damage dealt per attack. Finite and `>= 0` — a negative payload would
     /// HEAL the target through the damage chokepoint's subtraction.
     pub damage: f32,
-    /// Distance within which the attack lands, in metres. Finite and `> 0`.
+    /// Distance within which the attack lands damage, in metres. Finite and
+    /// `> 0`. This is a DAMAGE gate and nothing else. Where engaged agents
+    /// stand is [`BehaviorGraphDescriptor::engagement_radius`], which merely
+    /// defaults to this value when the graph authors no `engagementRadius` of
+    /// its own.
     pub range: f32,
     /// Minimum interval between attacks, in milliseconds. Finite and `> 0`.
     pub cooldown_ms: f32,
@@ -88,9 +92,18 @@ pub struct TransitionDescriptor {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BehaviorStateDescriptor {
-    /// Mesh animation-state name requested while this state is current. Names
-    /// are resolved against `components.mesh.animations` at SPAWN, not here
-    /// (cross-component); an unknown name warns and keeps the prior animation.
+    /// Mesh animation-state name requested while this state is current — with
+    /// one substitution: a LOCOMOTION state (`chaseTarget` motion and no
+    /// `action`) at a standstill plays the graph's rest animation instead,
+    /// because its own animation is a travel cycle that would slide in place.
+    /// The rest animation is the `initial` state's, which is what makes
+    /// `initial`'s animation the graph's rest pose. Every other state — a
+    /// `chaseTarget` state that declares an action included — always plays its
+    /// own name.
+    ///
+    /// Names are resolved against `components.mesh.animations` at SPAWN, not
+    /// here (cross-component); an unknown name warns and keeps the prior
+    /// animation.
     pub animation: String,
     pub motion: MotionVerb,
     #[serde(default)]
@@ -100,7 +113,13 @@ pub struct BehaviorStateDescriptor {
     #[serde(default)]
     pub transitions: Vec<TransitionDescriptor>,
     /// Named-event address fired through the post-tick drain when the brain
-    /// enters this state.
+    /// CHANGES into this state.
+    ///
+    /// A change, not an entry: the brain is seeded directly in `initial` at
+    /// spawn with no transition, so an `onEnter` on the `initial` state does
+    /// NOT fire then. The same state's `onEnter` does fire when the aggro gate
+    /// closes and forces the brain back to `initial` from somewhere else — that
+    /// is a real change. Use it for reaction cues, not for spawn-time setup.
     #[serde(default)]
     pub on_enter: Option<String>,
 }
@@ -113,13 +132,28 @@ pub struct BehaviorStateDescriptor {
 /// guards between them.
 ///
 /// Wire keys are camelCase: `initial`, `states`, `interrupts`, `attack`,
-/// `moveSpeed`, `deathDespawnMs`.
+/// `engagementRadius`, `moveSpeed`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BehaviorGraphDescriptor {
-    /// The state entered at spawn. Must name a declared state. It doubles as
-    /// the forced state when the aggro gate closes or no target exists, so it
-    /// should be rest-appropriate.
+    /// The state entered at spawn. Must name a declared state.
+    ///
+    /// It doubles as the forced state when the aggro gate closes — that gate is
+    /// the ONLY thing that overrides guard evaluation, so `initial` should be
+    /// rest-appropriate. It is also the graph's rest pose: a locomotion state
+    /// at a standstill plays this state's `animation` (see
+    /// [`BehaviorStateDescriptor::animation`]).
+    ///
+    /// Having no target is NOT such an override. An armed brain evaluates its
+    /// guards every tick whether or not a pawn exists: `@brain.hasTarget` reads
+    /// false, `@brain.targetDistance` reads the [`BRAIN_NO_TARGET_DISTANCE`]
+    /// sentinel (whose `gt`/`ge` asymmetry that constant documents), and a
+    /// `chaseTarget` state degrades to cleared steering because there is
+    /// nothing to move relative to. A sealed enemy can therefore still flinch
+    /// on an interrupt. A graph that wants to stand down on target loss authors
+    /// that edge itself — the lowering does exactly this for legacy brains.
+    ///
+    /// [`BRAIN_NO_TARGET_DISTANCE`]: crate::brain::BRAIN_NO_TARGET_DISTANCE
     pub initial: String,
     /// Declared states, keyed by author-chosen name. Must be non-empty.
     #[serde(deserialize_with = "deserialize_states")]
@@ -128,20 +162,37 @@ pub struct BehaviorGraphDescriptor {
     /// state's own transitions.
     #[serde(default)]
     pub interrupts: Vec<TransitionDescriptor>,
-    /// Tuning for the `attack` action verb. Required exactly when some state
-    /// declares that action.
+    /// Tuning for the `attack` action verb. REQUIRED when some state declares
+    /// that action; permitted (and meaningful) even when none does, because
+    /// `attack.range` is what [`BehaviorGraphDescriptor::engagement_radius`]
+    /// falls back to. A present-but-unreferenced block is therefore accepted,
+    /// not a validation error.
+    ///
+    /// `attack.range` gates DAMAGE only — it is the distance within which the
+    /// action verb lands a hit. It does not decide where chasers stand; that is
+    /// `engagementRadius`.
     #[serde(default)]
     pub attack: Option<AttackParams>,
+    /// Radius of the ring of combat slots the engine spreads engaged agents
+    /// around their target, in metres. Finite and `> 0` when present.
+    ///
+    /// Distinct from `attack.range`, which gates damage. This one is pure
+    /// spacing: it sets both where candidate slots are generated and the band
+    /// distance each candidate is scored against, for EVERY engaged state —
+    /// attacking or not. A pure-pursuit graph (`chaseTarget`, no `action`)
+    /// needs it just as much as an attacker, or its chasers all steer at the
+    /// raw target position and pile up.
+    ///
+    /// Resolution order is [`BehaviorGraphDescriptor::engagement_radius`]: this
+    /// field, else `attack.range`, else
+    /// [`BehaviorGraphDescriptor::DEFAULT_ENGAGEMENT_RADIUS`]. The `attack.range`
+    /// step is what keeps a lowered legacy graph — which always leaves this
+    /// field `None` — behavior-identical to the pre-graph engine.
+    #[serde(default)]
+    pub engagement_radius: Option<f32>,
     /// Pursuit movement speed in metres/sec, seeding the navigation agent.
     /// Finite and `> 0`.
     pub move_speed: f32,
-    /// Delay between death and despawn, in milliseconds. Absent or `null` uses
-    /// [`BehaviorGraphDescriptor::DEFAULT_DEATH_DESPAWN_MS`], which matches the
-    /// legacy `components.ai` authoring default. Carried for parity with that
-    /// legacy block only — no runtime path consumes it. Despawn timing is
-    /// owned by the death/despawn effect path (E16).
-    #[serde(default)]
-    pub death_despawn_ms: Option<f32>,
 }
 
 /// Deserialize the state map, rejecting a repeated key instead of letting the
@@ -189,16 +240,33 @@ where
 }
 
 impl BehaviorGraphDescriptor {
-    /// Despawn delay applied when `deathDespawnMs` is absent. Matches the value
-    /// legacy `components.ai` descriptors author explicitly.
-    pub const DEFAULT_DEATH_DESPAWN_MS: f32 = 2000.0;
+    /// Combat-slot ring radius for a graph that authors neither
+    /// `engagementRadius` nor an `attack` block — a pure-pursuit graph, which
+    /// would otherwise get a radius of zero and thus NO slots at all.
+    ///
+    /// 2 m, chosen from what combat-slot resolution does with the number: slots
+    /// are generated on rings of 8 directions at 0.75×, 1×, and 1.25× the
+    /// radius, and each is scored on how far its distance-to-target strays from
+    /// it. At 2 m the adjacent-slot chord on the main ring is ~1.5 m, comfortably
+    /// clear of an agent capsule (0.3 m radius), so eight melee-scale chasers
+    /// occupy distinct slots instead of stacking — while staying close enough
+    /// that the ring still reads as "crowding the player". It also matches the
+    /// melee `attack.range` shipped enemies author, so adding an attack action
+    /// to a pursuit graph does not visibly re-space it.
+    pub const DEFAULT_ENGAGEMENT_RADIUS: f32 = 2.0;
 
-    /// The effective despawn delay: the authored value, or the shared default.
-    /// Parity-only — no runtime consumer reads this value. Despawn timing is
-    /// owned by the death/despawn effect path (E16), not by this timer.
-    pub fn death_despawn_ms(&self) -> f32 {
-        self.death_despawn_ms
-            .unwrap_or(Self::DEFAULT_DEATH_DESPAWN_MS)
+    /// The effective combat-slot ring radius: the authored `engagementRadius`,
+    /// else the `attack` block's `range`, else
+    /// [`Self::DEFAULT_ENGAGEMENT_RADIUS`].
+    ///
+    /// The `attack.range` step is load-bearing for legacy parity: lowering
+    /// leaves `engagement_radius` as `None`, so a lowered graph resolves to the
+    /// legacy `attackRange` — the exact value the pre-graph engine fed combat-slot
+    /// resolution.
+    pub fn engagement_radius(&self) -> f32 {
+        self.engagement_radius
+            .or_else(|| self.attack.map(|attack| attack.range))
+            .unwrap_or(Self::DEFAULT_ENGAGEMENT_RADIUS)
     }
 
     /// The shared parse-time validator both runtimes funnel through, so QuickJS
@@ -210,7 +278,8 @@ impl BehaviorGraphDescriptor {
     /// - `states` is non-empty and `initial` names a declared state;
     /// - every `transitions[].to` and `interrupts[].to` names a declared state;
     /// - every state's `animation` is non-empty;
-    /// - `moveSpeed` is finite `> 0`; a present `deathDespawnMs` is finite `> 0`;
+    /// - no state-local transition targets its own declaring state;
+    /// - `moveSpeed` is finite `> 0`; a present `engagementRadius` is finite `> 0`;
     /// - `attack` numerics are finite (`damage >= 0`, `range`/`cooldownMs > 0`),
     ///   and the block is present whenever a state declares the attack action;
     /// - every guard binds against `BrainValidationScope` and produces a Bool.
@@ -233,8 +302,8 @@ impl BehaviorGraphDescriptor {
             });
         }
         validate_positive("moveSpeed", self.move_speed)?;
-        if let Some(death_despawn_ms) = self.death_despawn_ms {
-            validate_positive("deathDespawnMs", death_despawn_ms)?;
+        if let Some(engagement_radius) = self.engagement_radius {
+            validate_positive("engagementRadius", engagement_radius)?;
         }
         if let Some(attack) = self.attack.as_ref() {
             if !attack.damage.is_finite() || attack.damage < 0.0 {
@@ -251,7 +320,10 @@ impl BehaviorGraphDescriptor {
 
         for (index, interrupt) in self.interrupts.iter().enumerate() {
             let path = format!("interrupts[{index}]");
-            self.validate_transition(interrupt, &path)?;
+            // Interrupts MAY name any state, their own included: the evaluator
+            // skips a self-targeting interrupt rather than letting it win, so it
+            // blocks nothing. Only the state-local path needs the rule below.
+            self.validate_transition(interrupt, &path, None)?;
         }
         for (name, state) in &self.states {
             if state.animation.is_empty() {
@@ -270,24 +342,46 @@ impl BehaviorGraphDescriptor {
             }
             for (index, transition) in state.transitions.iter().enumerate() {
                 let path = format!("states.{name}.transitions[{index}]");
-                self.validate_transition(transition, &path)?;
+                self.validate_transition(transition, &path, Some(name.as_str()))?;
             }
         }
         Ok(self)
     }
 
-    /// Validate one edge: the destination resolves and the guard binds to a
-    /// boolean. `path` is the authored location (`states.chase.transitions[1]`
-    /// or `interrupts[0]`) so the message names the state and index.
+    /// Validate one edge: the destination resolves, is not the declaring state
+    /// itself, and the guard binds to a boolean. `path` is the authored location
+    /// (`states.chase.transitions[1]` or `interrupts[0]`) so the message names
+    /// the state and index. `declaring_state` is the state that owns the edge
+    /// for a state-local transition, `None` for an interrupt.
     fn validate_transition(
         &self,
         transition: &TransitionDescriptor,
         path: &str,
+        declaring_state: Option<&str>,
     ) -> Result<(), DescriptorError> {
         if !self.states.contains_key(&transition.to) {
             return Err(DescriptorError::InvalidShape {
                 reason: format!(
                     "`components.behavior.{path}.to` (\"{}\") does not name a declared state",
+                    transition.to
+                ),
+            });
+        }
+        // A state-local self-edge is a silent transition BLOCKER, not a no-op.
+        // Selection is first-true-wins over the ordered list, so once the
+        // self-edge's guard holds it short-circuits the search — every
+        // lower-priority transition in that state stops being evaluated, at
+        // every distance, forever. And it does not re-enter: the target index
+        // equals the current one, so there is no `onEnter`, no
+        // `timeInStateMs` reset, no state change at all. Reject it rather than
+        // let an author discover it as a state their enemy can never leave.
+        // (The interrupt path handles the same shape by skipping at eval time.)
+        if declaring_state == Some(transition.to.as_str()) {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`components.behavior.{path}.to` (\"{}\") names the state that declares it; a \
+                     state-local transition cannot target its own state, because it would block \
+                     every transition declared after it instead of re-entering",
                     transition.to
                 ),
             });
@@ -301,7 +395,11 @@ impl BehaviorGraphDescriptor {
         if program.root_type != IrType::Bool {
             return Err(DescriptorError::InvalidShape {
                 reason: format!(
-                    "`components.behavior.{path}.when` guard must produce a boolean, but its root produces a number"
+                    // Format the actual root type rather than naming the only
+                    // other variant: `IrType` having exactly two today is not a
+                    // property this message should depend on.
+                    "`components.behavior.{path}.when` guard must produce a boolean, but its root produces {:?}",
+                    program.root_type
                 ),
             });
         }
@@ -415,26 +513,87 @@ mod tests {
             ]),
             interrupts: Vec::new(),
             attack: None,
+            engagement_radius: None,
             move_speed: 3.0,
-            death_despawn_ms: None,
         }
     }
 
     #[test]
-    fn a_well_formed_graph_validates_and_defaults_its_despawn_delay() {
-        let validated = graph().validate().expect("graph validates");
+    fn a_well_formed_graph_validates() {
+        graph().validate().expect("graph validates");
+    }
+
+    #[test]
+    fn the_engagement_radius_resolves_field_then_attack_range_then_default() {
+        // A pure-pursuit graph: no `engagementRadius`, no `attack` block. This
+        // is the case that must NOT resolve to zero, since zero yields no
+        // combat slots at all and every chaser piles onto the target.
         assert_eq!(
-            validated.death_despawn_ms(),
-            BehaviorGraphDescriptor::DEFAULT_DEATH_DESPAWN_MS
+            graph().engagement_radius(),
+            BehaviorGraphDescriptor::DEFAULT_ENGAGEMENT_RADIUS
+        );
+
+        // An `attack` block supplies the fallback — the legacy-parity path.
+        let with_attack = BehaviorGraphDescriptor {
+            attack: Some(AttackParams {
+                damage: 8.0,
+                range: 2.2,
+                cooldown_ms: 1200.0,
+            }),
+            ..graph()
+        };
+        assert_eq!(with_attack.engagement_radius(), 2.2);
+
+        // The explicit field outranks both.
+        assert_eq!(
+            BehaviorGraphDescriptor {
+                engagement_radius: Some(5.0),
+                ..with_attack
+            }
+            .engagement_radius(),
+            5.0
         );
         assert_eq!(
             BehaviorGraphDescriptor {
-                death_despawn_ms: Some(500.0),
+                engagement_radius: Some(5.0),
                 ..graph()
             }
-            .death_despawn_ms(),
-            500.0
+            .engagement_radius(),
+            5.0
         );
+    }
+
+    #[test]
+    fn a_state_local_transition_targeting_its_own_state_is_rejected_with_its_index() {
+        let mut g = graph();
+        g.states.get_mut("chase").unwrap().transitions = vec![
+            TransitionDescriptor {
+                to: "idle".to_string(),
+                when: le(BRAIN_TARGET_DISTANCE_INPUT, 1.0),
+            },
+            TransitionDescriptor {
+                to: "chase".to_string(),
+                when: le(BRAIN_TARGET_DISTANCE_INPUT, 2.0),
+            },
+        ];
+        let err = g.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("states.chase.transitions[1].to") && err.contains("chase"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_self_targeting_interrupt_is_accepted() {
+        // The evaluator skips it, so it blocks nothing — and the lowering emits
+        // exactly this shape for the legacy "no target stands down" rule.
+        let mut g = graph();
+        g.interrupts = vec![TransitionDescriptor {
+            to: "idle".to_string(),
+            when: le(BRAIN_TIME_IN_STATE_MS_INPUT, 100.0),
+        }];
+        g.validate()
+            .expect("a self-targeting interrupt is legal; only state-local self-edges are not");
     }
 
     #[test]
@@ -563,19 +722,21 @@ mod tests {
     }
 
     #[test]
-    fn move_speed_and_death_despawn_must_be_finite_and_positive() {
+    fn move_speed_and_engagement_radius_must_be_finite_and_positive() {
         let mut g = graph();
         g.move_speed = 0.0;
         assert!(g.validate().unwrap_err().to_string().contains("moveSpeed"));
 
-        let mut g = graph();
-        g.death_despawn_ms = Some(-1.0);
-        assert!(
-            g.validate()
-                .unwrap_err()
-                .to_string()
-                .contains("deathDespawnMs")
-        );
+        for radius in [-1.0, 0.0, f32::NAN] {
+            let mut g = graph();
+            g.engagement_radius = Some(radius);
+            assert!(
+                g.validate()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("engagementRadius")
+            );
+        }
     }
 
     #[test]
@@ -583,7 +744,7 @@ mod tests {
         let json = serde_json::json!({
             "initial": "idle",
             "moveSpeed": 3.0,
-            "deathDespawnMs": 1500.0,
+            "engagementRadius": 3.5,
             "attack": { "damage": 8.0, "range": 2.0, "cooldownMs": 1200.0 },
             "interrupts": [
                 { "to": "idle", "when": { "op": "ge", "a": { "op": "input", "name": "@state.staggered" }, "b": { "op": "const", "value": 1.0 } } }
@@ -612,7 +773,11 @@ mod tests {
             validated.states["attack"].on_enter.as_deref(),
             Some("gruntSwings")
         );
-        assert_eq!(validated.death_despawn_ms(), 1500.0);
+        assert_eq!(
+            validated.engagement_radius(),
+            3.5,
+            "the explicit field outranks the `attack.range` fallback"
+        );
         // Serialize emits the defaulted keys explicitly (the `AiDescriptor`
         // convention: no `skip_serializing_if`), so identity is asserted by
         // re-deserializing rather than by byte-comparing the two JSON values.

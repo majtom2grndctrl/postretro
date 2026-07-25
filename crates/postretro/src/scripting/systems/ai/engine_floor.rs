@@ -59,7 +59,12 @@ pub(crate) enum SteeringIntent {
     /// verb, what the engine floor forces when the aggro gate closes, and what a
     /// target-less chase degrades to.
     Clear,
-    /// Hold the current steering state (no set/clear). The `freeze` motion
-    /// verb, so a terminal state neither chases nor re-issues a clear each tick.
+    /// The `freeze` motion verb. On the tick the graph ENTERS a frozen state
+    /// the wrapper clears the destination once — releasing the combat slot a
+    /// freeze surrenders while continuing to walk toward it are mutually
+    /// exclusive, so the walk stops — and on every later tick spent in that
+    /// state it touches neither destination nor steering, so a death
+    /// animation, ragdoll, or scripted mover can drive the frozen entity
+    /// without this arm fighting it.
     Hold,
 }

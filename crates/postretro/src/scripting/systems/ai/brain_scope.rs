@@ -381,7 +381,7 @@ mod tests {
         // added input automatically — the previous fixed-length `expected`
         // array silently truncated a longer BRAIN_INPUTS via `zip`.
         for (program, (name, _)) in programs.iter().zip(BRAIN_INPUTS.iter()) {
-            let want = expected_fixed_value(name, facts, &health);
+            let want = expected_fixed_value(name, facts, health);
             match want {
                 IrValue::Number(number) => assert_number(eval_value(program, &scope), number),
                 IrValue::Bool(_) => {

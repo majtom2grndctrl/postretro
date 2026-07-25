@@ -115,6 +115,8 @@ across all levels.
 | `canonicalName` | `string` (optional) | The `.map` classname this archetype matches. Omit it for descriptors that are not directly map-placeable. Built-in classnames (e.g. `billboard_emitter`) take precedence. |
 | `components.emitter` | `ComponentValue` (optional) | Emitter component attached at spawn. Use `smokeEmitter`, `sparkEmitter`, or `emitter()`. |
 | `components.light` | `{ color: [r, g, b], range: number, intensity: number, is_dynamic: boolean }` (optional) | Light component attached at spawn. Descriptor-spawned lights are always treated as dynamic regardless of `is_dynamic`. |
+| `components.behavior` | `BehaviorGraphDescriptor` (optional) | Authored enemy behavior state graph — named states, motion/action verbs, and ordered transition guards. See [`components.behavior`](#componentsbehavior). Mutually exclusive with `components.ai`. |
+| `components.ai` | `AiDescriptor` (optional) | Legacy fixed four-state enemy brain (`detectionRange`, `attackRange`, `leashRange`, `attackDamage`, `attackCooldownMs`, `moveSpeed`, `deathDespawnMs`, `states`). Still supported: it **lowers to a behavior graph at spawn**, so it runs on the same evaluator with the same tick semantics. Prefer `components.behavior` for new work — everything below the four fixed states is unreachable from `ai`. Mutually exclusive with `components.behavior`. |
 
 **Manifest commit:** returned descriptors validate as a group after
 the mod manifest succeeds. A failed mod init changes neither the entity registry nor
@@ -421,6 +423,435 @@ tick time. Each row below rejects the descriptor with a descriptive
 | Root-type mismatch — a boolean-rooted expression in a number field (or vice versa), e.g. `boostSpeed: runtime.gt(runtime.read("speed"), 5)` | Rejected at load: the expression's result type does not match the field. |
 | Malformed node — an object that isn't a recognizable `runtime.*` node | Rejected at load as an invalid expression shape. |
 | Literal out of range — a bare-literal field outside its declared bounds (e.g. literal `boostSpeed: 0`) | Rejected at load, exactly as before (unchanged by runtime values). |
+
+---
+
+## components.behavior
+
+Attach a `behavior` block to an entity descriptor to give it an enemy brain. The
+block is a **behavior state graph**: you declare named states, what each one does
+while it is current, and the ordered guards that move between them. The engine
+owns target selection, steering, combat spacing, damage, animation switching, and
+determinism; the graph owns which states exist and when the brain changes state.
+
+Guards are [runtime values](#runtime-values) — the same `runtime.*` builders as
+dash fields, bound against a brain-fact namespace instead of the movement one.
+Your script still runs only at load: a guard crosses into the engine as data and
+is re-evaluated every tick.
+
+`components.behavior` and `components.ai` are two spellings of one brain.
+Declaring both is a load error.
+
+```typescript
+import { brain, defineEntity, runtime } from "postretro";
+
+defineEntity({
+  canonicalName: "grunt",
+  components: {
+    health: { max: 40, hitbox: { halfExtents: [0.4, 0.9, 0.4], offset: [0, 0.9, 0] } },
+    mesh: {
+      model: "models/grunt/scene.gltf",
+      animations: {
+        idle: { clip: "Idle", loop: true },
+        walk: { clip: "Walking_A", loop: true },
+        swing: { clip: "Melee_Slice", loop: false, interrupt: "snap" },
+      },
+      defaultState: "idle",
+    },
+    behavior: {
+      initial: "idle",
+      moveSpeed: 3,
+      attack: { damage: 8, range: 2, cooldownMs: 1200 },
+      engagementRadius: 2,
+      // Lost the target? Stand down this tick, before any range guard runs.
+      interrupts: [
+        { to: "idle", when: runtime.select(brain.hasTarget, false, true) },
+      ],
+      states: {
+        idle: {
+          animation: "idle",
+          motion: "hold",
+          transitions: [
+            { to: "chase", when: runtime.le(brain.targetDistance, 16) },
+          ],
+        },
+        chase: {
+          animation: "walk",
+          motion: "chaseTarget",
+          transitions: [
+            { to: "swing", when: runtime.le(brain.targetDistance, 2) },
+            { to: "idle", when: runtime.gt(brain.targetDistance, 50) },
+          ],
+        },
+        swing: {
+          animation: "swing",
+          motion: "chaseTarget",
+          action: "attack",
+          transitions: [
+            { to: "chase", when: runtime.gt(brain.targetDistance, 2) },
+          ],
+        },
+      },
+    },
+  },
+});
+```
+
+### The block
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `initial` | `string` | The state entered at spawn. Must name a declared state. It is also the state the engine forces when the **aggro gate** closes, and the graph's **rest pose** (see *Animation* below) — so author it rest-appropriate. |
+| `states` | `{ [name]: BehaviorState }` | The declared states, keyed by a name you choose. Must declare at least one. Duplicate names are rejected. |
+| `interrupts` | `Transition[]` (optional) | Any-state edges, evaluated in declaration order **before** the current state's own transitions. Defaults to none. |
+| `attack` | `{ damage, range, cooldownMs }` (optional) | Tuning for the `attack` action verb. **Required** whenever any state declares `action: "attack"`. Permitted even when none does, because `attack.range` is what `engagementRadius` falls back to. `damage` must be finite and `>= 0` (a negative payload would *heal* through the damage chokepoint); `range` and `cooldownMs` must be finite and `> 0`. |
+| `engagementRadius` | `number` (optional) | Radius in metres of the ring of combat slots the engine spreads engaged agents around their target. Finite and `> 0`. See *`attack.range` vs `engagementRadius`* below. |
+| `moveSpeed` | `number` | Pursuit movement speed in metres/sec, seeding the navigation agent. Finite and `> 0`. |
+
+Each entry in `states`:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `animation` | `string` | Non-empty. Names a key of `components.mesh.animations`. That link is checked at **spawn**, not at load (it is cross-component): an unknown name warns once and keeps the previous animation — it never aborts the spawn. |
+| `motion` | `"chaseTarget" \| "hold" \| "freeze"` | What the state does with movement. See *Verbs* below. |
+| `action` | `"attack"` (optional) | What the state does besides moving. Omit for a state that takes no action. |
+| `transitions` | `Transition[]` (optional) | State-local edges, evaluated in declaration order after the graph's interrupts. Omit for a state with no exits. |
+| `onEnter` | `string` (optional) | A named-event address fired through the post-tick event drain when the brain **changes into** this state. It is a *change*, not an entry: the brain is seeded directly in `initial` at spawn with no transition, so an `onEnter` on `initial` does **not** fire then. It does fire when the aggro gate forces the brain back to `initial` from somewhere else. Use it for reaction cues, not spawn-time setup. |
+
+A `Transition` is `{ to: string, when: RuntimeValue }` — the destination state
+name and the guard that selects it.
+
+**What validation rejects at load.** Every message names the authored path
+(`states.chase.transitions[1]`, `interrupts[0]`), so you get the state and the
+index:
+
+| Situation | Result |
+|-----------|--------|
+| `states` is empty, or `initial` names no declared state | Rejected. |
+| A `transitions[].to` or `interrupts[].to` names no declared state | Rejected, with the path. |
+| A state's `animation` is an empty string | Rejected. |
+| A **state-local** transition whose `to` is the state that declares it | Rejected — see *Evaluation rules*. |
+| A state declares `action: "attack"` with no `attack` block on the graph | Rejected. |
+| `moveSpeed`, `engagementRadius`, `attack.range`, `attack.cooldownMs` not finite and `> 0`; `attack.damage` not finite and `>= 0` | Rejected. |
+| A guard that names an unknown input, mismatches operand types, or whose root produces a number rather than a boolean | Rejected, with the path. |
+| An unknown key anywhere in the block, or a duplicate state name | Rejected. |
+
+An `interrupts[].to` that names its **own** current state is *not* rejected: the
+evaluator skips a self-targeting interrupt at tick time, so it blocks nothing.
+
+### Verbs
+
+Motion verbs are a closed vocabulary — the engine owns steering, you pick which
+of its modes a state selects.
+
+| `motion` | At runtime |
+|----------|-----------|
+| `"chaseTarget"` | Steer toward the target's assigned combat slot. With no target this degrades to a stand-down (there is nothing to move relative to). |
+| `"hold"` | Stand still by **clearing** the navigation destination. |
+| `"freeze"` | Touch neither destination nor steering — the agent keeps whatever it had. Terminal presentation. |
+
+The `hold`/`freeze` distinction is easy to get backwards. `hold` is the one that
+stops the agent: it clears the destination, so the agent settles in place.
+`freeze` writes nothing, so an agent already walking somewhere keeps walking
+there.
+
+Action verbs are likewise closed; `"attack"` is the only one today. It applies
+`attack.damage` to the selected target through the engine's damage chokepoint —
+once per `attack.cooldownMs`, only while the target is inside `attack.range`, and
+only while it is still alive. A graph with no `attack` block never attacks.
+
+**Engagement** — the engine's "this brain is fighting" test — is
+`motion: "chaseTarget"` **or** any `action`, not the motion verb alone. Target
+retention across ticks, combat-slot participation and incumbency, and facing all
+key on it. A `hold` + `attack` state stands its ground and swings, so it keeps
+its target, keeps its slot, and turns to face what it is hitting.
+
+**Animation.** A state plays its own `animation` name, with one substitution: a
+*locomotion* state (`chaseTarget` motion and **no** `action`) plays the graph's
+rest animation — the `initial` state's — while it is standing still, because its
+own animation is a travel cycle that would slide in place. Every other state,
+including a `chaseTarget` state that declares an action, always plays its own.
+
+**v1 limitation — two or more locomotion states.** `states` is authored as an
+object, but the engine resolves it as a `BTreeMap`: states are ordered
+lexicographically by name, not by authoring order. This is invisible with a
+single locomotion state (every reference enemy shipped today has exactly one),
+but a graph's *travel* animation — the reference walk-playback rate scaling
+uses — is derived from the **first** locomotion state in that lexicographic
+order. Author two, say `patrol` (`chaseTarget`, no action, plays `"walk"`) and
+`pursue` (`chaseTarget`, no action, plays `"run"`), and the graph's travel
+animation always resolves to `patrol`'s `"walk"` — even while the brain is
+actually in `pursue` — because `"patrol" < "pursue"`. Rate scaling then scales
+the wrong clip, and renaming either state can silently flip which one wins.
+Stick to one locomotion state per graph until you need a second; if you add
+one, expect this.
+
+### Evaluation rules
+
+These are the rules you cannot author a graph without.
+
+1. **Interrupts first, then the current state's transitions.** Both in
+   declaration order. The first guard that evaluates true wins, and nothing after
+   it is consulted. A high-priority reaction belongs in `interrupts`; ordering
+   within a state's own list is your priority ladder.
+2. **A self-targeting interrupt is skipped.** Interrupts fire as real state
+   changes, never as self re-entry, so an interrupt back into the state you are
+   already in simply does not apply that tick and evaluation continues.
+3. **A self-targeting state-local transition is a load error.** It reads like a
+   no-op but it is a silent transition *blocker*: selection is first-true-wins, so
+   the moment its guard holds it short-circuits the search and every transition
+   declared after it in that state stops being evaluated — at every distance,
+   forever. And it does not re-enter: no `onEnter`, no `timeInStateMs` reset, no
+   state change at all. Rather than let you discover this as a state your enemy
+   can never leave, validation rejects it.
+4. **Guards are evaluated every tick.** Nothing a state is doing blocks them —
+   not a one-shot attack clip, not an armed attack cooldown, not a just-entered
+   state. There is no engine "commit to this state for N ms". A commitment window
+   is an authored guard: keep the state's exits gated on
+   `runtime.ge(brain.timeInStateMs, 400)` and the exit fires on the first tick the
+   window elapses, never before.
+5. **The aggro gate is the only thing that skips evaluation.** When an enemy's
+   aggro is disarmed, the engine forces it to `initial` and clears its steering
+   without consulting a single guard. Re-arming resumes normal evaluation.
+   Everything else — including having no target at all — still runs the full
+   guard set every tick, which is how a sealed-in enemy can still flinch on an
+   interrupt.
+
+### `@brain.*` guard inputs
+
+A behavior guard binds against a fixed, read-only **brain** namespace. Import
+`brain` from `"postretro"` and use its properties as operands; each is the
+pre-wrapped input leaf for the matching `@brain.*` name.
+
+| `brain` property | `read` name | Type | Meaning |
+|------------------|-------------|------|---------|
+| `brain.hasTarget` | `@brain.hasTarget` | `boolean` | Whether the enemy has a selected target this tick. |
+| `brain.targetDistance` | `@brain.targetDistance` | `number` | Distance to the selected target in metres — or the `1e9` no-target sentinel. **Read the trap below before using it.** |
+| `brain.timeInStateMs` | `@brain.timeInStateMs` | `number` | Milliseconds since the brain entered its current state. Resets on every state change. |
+| `brain.attackCooldownMs` | `@brain.attackCooldownMs` | `number` | Milliseconds left on the attack cooldown; `0` once elapsed. |
+| `brain.acquisitionDue` | `@brain.acquisitionDue` | `boolean` | True on the think-stride ticks where the engine re-evaluates acquisition. Detection is time-sliced; conjoin this onto detection edges so they only fire on an acquisition tick. |
+| `brain.health` | `@brain.health` | `number` | The enemy's current hit points. |
+| `brain.maxHealth` | `@brain.maxHealth` | `number` | The enemy's maximum hit points. |
+
+Plus one open namespace: `state("name")` reads the per-entity state field `name`
+as a number (`@state.name`). Impact policies and reactions write these fields;
+guards only read them. A field this entity never had reads `0`. This is the seam
+for authored reactions to drive behavior — an impact policy writes
+`staggered: 1` via its `setState` primitive, which must target `@impact.target`
+(any other target is a load error); an interrupt guarded on
+`runtime.ge(state("staggered"), 1)` picks it up on the next AI tick. Impact
+policies are a separate authoring surface from `components.behavior` — this file
+does not document them.
+
+Reading any other name is a load error.
+
+### The no-target trap
+
+**This is the single most important thing in this section.**
+
+With no selected target, `brain.hasTarget` reads `false` and
+`brain.targetDistance` reads a `1e9` sentinel. The sentinel is
+**one-directional**:
+
+- `le` / `lt` guards read **false** untargeted. Safe — that is why an entry edge
+  like `le(brain.targetDistance, 16)` needs no `hasTarget` conjunction.
+- `gt` / `ge` guards read **true** untargeted. **A distance guard alone is not a
+  "target is far away" test — it is also the "no target" test**, and it fires the
+  instant the target is lost.
+
+So a graph whose only disengagement edges are `gt`/`ge` range checks walks itself
+backwards through those states one per tick when its target despawns, playing a
+travel animation with nothing to travel toward. This is not hypothetical: the
+shipped reference enemy did exactly that until it was fixed.
+
+The correct pattern is an **any-state interrupt gated on `hasTarget`**, declared
+first so it outranks every range edge and the enemy stands down in one tick:
+
+```typescript
+interrupts: [
+  // "No target" — the IR has no `not` opcode, so negation is a select.
+  { to: "idle", when: runtime.select(brain.hasTarget, false, true) },
+],
+```
+
+Keep your `gt`/`ge` range edges as they are; the interrupt is what makes them
+safe. Alternatively, gate an individual edge directly:
+`runtime.select(brain.hasTarget, runtime.gt(brain.targetDistance, 50), false)`.
+
+### `attack.range` vs `engagementRadius`
+
+Two separate knobs that are easy to conflate:
+
+- **`attack.range` gates damage.** It is the distance within which the `attack`
+  action verb actually lands a hit, checked every tick. A state may declare the
+  action at any distance; this is what stops it connecting from across the room.
+- **`engagementRadius` sets combat spacing.** It is the radius of the ring of
+  combat slots the engine spreads engaged agents around their target — where
+  chasers *stand*. It applies to **every** engaged state, attacking or not.
+
+`engagementRadius` resolves as: the authored field, else `attack.range`, else the
+engine default of **2 m**. A pure-pursuit graph (`chaseTarget`, no `action`, no
+`attack` block) therefore gets the default rather than a radius of zero — which
+would generate no slots at all and pile every chaser onto the target. If your
+pursuers should crowd tighter or hang back, author `engagementRadius` outright.
+
+Author it explicitly even when it equals `attack.range`: they are separate knobs,
+and a graph that later retunes its swing reach should not silently re-space its
+pack.
+
+### The level-wide pursuer
+
+There is deliberately **no engine leash for authored graphs.** Target selection
+has no range limit, and an authored graph carries no engine-side disengagement
+range. A `chaseTarget` state with no exit guard validates cleanly and pursues
+from anywhere on the level, through the whole map, forever.
+
+An authored graph owns **both** engagement and disengagement. Give every pursuit
+state an exit:
+
+```typescript
+chase: {
+  animation: "walk",
+  motion: "chaseTarget",
+  transitions: [
+    { to: "swing", when: runtime.le(brain.targetDistance, 2) },
+    // The leash. Without this line, the chase never ends.
+    { to: "idle", when: runtime.gt(brain.targetDistance, 50) },
+  ],
+},
+```
+
+…and pair it with the `hasTarget` interrupt above, since that `gt` guard is also
+true when there is no target at all.
+
+### Writing guards
+
+A guard is any boolean-rooted `runtime.*` expression over `brain.*`,
+`state("...")`, and literals. It must produce a boolean: a bare
+`brain.targetDistance` in a `when` is a load error.
+
+There are **no `and` / `or` / `not` opcodes**, and the SDK ships no helpers for
+them — compose them yourself out of `select`:
+
+| Logic | Spelling |
+|-------|----------|
+| `a && b` | `runtime.select(a, b, false)` |
+| `a \|\| b` | `runtime.select(a, true, b)` |
+| `!a` | `runtime.select(a, false, true)` |
+
+`select` is branchless — both arms are values, not deferred work — so nesting is
+cheap and there is nothing to short-circuit for performance. Nest for three-way
+conjunctions:
+
+```typescript
+// acquisitionDue && targetDistance <= 16
+runtime.select(brain.acquisitionDue, runtime.le(brain.targetDistance, 16), false);
+```
+
+Bare `number` and `boolean` literals auto-wrap, exactly as elsewhere in
+`runtime.*`.
+
+### Worked example — a stagger interrupt with a commitment window
+
+```typescript
+import { brain, defineEntity, runtime, state } from "postretro";
+
+const DETECTION = 16;
+const REACH = 2;
+const LEASH = 50;
+
+defineEntity({
+  canonicalName: "brute",
+  components: {
+    health: { max: 90, hitbox: { halfExtents: [0.5, 1.0, 0.5], offset: [0, 1.0, 0] } },
+    mesh: {
+      model: "models/brute/scene.gltf",
+      animations: {
+        idle: { clip: "Idle", loop: true },
+        walk: { clip: "Walk", loop: true, travelSpeed: 3 },
+        swing: { clip: "Slam", loop: false, interrupt: "snap" },
+        pain: { clip: "Hit_React", loop: false, interrupt: "snap" },
+      },
+      defaultState: "idle",
+    },
+    behavior: {
+      initial: "idle",
+      moveSpeed: 3,
+      attack: { damage: 14, range: REACH, cooldownMs: 1400 },
+      engagementRadius: REACH,
+      interrupts: [
+        // Stand down the instant the target is gone — declared first so it
+        // outranks every range edge below.
+        { to: "idle", when: runtime.select(brain.hasTarget, false, true) },
+        // Flinch when an impact policy sets `staggered`.
+        { to: "flinch", when: runtime.ge(state("staggered"), 1) },
+      ],
+      states: {
+        idle: {
+          animation: "idle",
+          motion: "hold",
+          transitions: [
+            // Detection is strided, so conjoin `acquisitionDue`.
+            {
+              to: "chase",
+              when: runtime.select(
+                brain.acquisitionDue,
+                runtime.le(brain.targetDistance, DETECTION),
+                false,
+              ),
+            },
+          ],
+        },
+        chase: {
+          animation: "walk",
+          motion: "chaseTarget",
+          transitions: [
+            { to: "slam", when: runtime.le(brain.targetDistance, REACH) },
+            { to: "idle", when: runtime.gt(brain.targetDistance, LEASH) },
+          ],
+        },
+        slam: {
+          animation: "swing",
+          motion: "chaseTarget",
+          action: "attack",
+          transitions: [
+            { to: "chase", when: runtime.gt(brain.targetDistance, REACH) },
+          ],
+        },
+        flinch: {
+          animation: "pain",
+          motion: "hold",
+          onEnter: "bruteFlinched",
+          // A 400 ms commitment window: the only exit is time, so nothing
+          // pulls the brute out of the flinch early. Guards still run every
+          // tick — this guard is simply false until the window elapses.
+          transitions: [
+            { to: "chase", when: runtime.ge(brain.timeInStateMs, 400) },
+          ],
+        },
+      },
+    },
+  },
+});
+```
+
+This example never resets `staggered` back to `0`. `state("...")` fields latch —
+nothing clears them automatically — so as written the interrupt guard
+(`runtime.ge(state("staggered"), 1)`) stays true forever once an impact policy
+sets it, and the brute re-enters `flinch` on every tick it is allowed to leave.
+A real graph needs something that zeroes `staggered` after the flinch has been
+consumed — an impact policy write on the next hit, or another authored
+mechanism — or the "stagger" becomes a permanent flinch loop.
+
+`onEnter: "bruteFlinched"` is received the same way any named event is:
+`defineReaction("bruteFlinched", { ... })` subscribes to it (see the
+`defineReaction` examples above, e.g. the hallway-light wave and `flicker`
+reaction).
+
+Note what is *not* here: death is not a graph transition. The engine's death
+sweep latches a zero-HP enemy and stops evaluating its graph; playing a death
+clip and despawning belong to an impact policy, and the behavior block carries no
+despawn field.
 
 ---
 

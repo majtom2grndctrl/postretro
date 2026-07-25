@@ -385,8 +385,8 @@ export type BehaviorGraphDescriptor = {
   attack: AttackParams?,
   --- Pursuit movement speed in metres/sec, seeding the navigation agent. Must be finite and > 0.
   moveSpeed: number,
-  --- Delay between death and despawn, in milliseconds. Must be finite and > 0. Optional; defaults to 2000. Carried for legacy `components.ai` shape parity only; despawn timing is owned by the death/despawn effect path, not by this value.
-  deathDespawnMs: number?,
+  --- Radius of the ring of combat slots the engine spreads engaged agents around their target, in metres. Must be finite and > 0 when present. Not the same as `attack.range`, which gates damage only. Optional; when absent, resolves to `attack.range`, else a default.
+  engagementRadius: number?,
 }
 
 --- Authored player-movement preset. `capsule`, `ground`, `air`, and `fall` are required. `dash`, `crouch`, and `viewFeel` are opt-in features; `forgiveness` has engine defaults when omitted. Distances use metres and time uses seconds unless a key is suffixed `Ms`.

@@ -12,8 +12,8 @@ Generate the full edge diagram on demand with `cargo run -p xtask -- crate-graph
 
 ## Layers
 
-- **Layer 0 (leaves):** foundation, level-format, net, render-data, script-compiler
-- **Layer 1:** entities, level-compiler, level-loader, model
+- **Layer 0 (leaves):** foundation, level-format, net, render-data
+- **Layer 1:** entities, level-compiler, level-loader, model, script-compiler
 - **Layer 2:** scripting-core, visibility, xtask
 - **Layer 3:** lighting, render-cpu, ui
 - **Layer 4:** renderer
@@ -25,11 +25,11 @@ Crates ranked by how many workspace crates depend on them directly —
 the compile chokepoints. Changing a public type in a high-ranked crate
 recompiles every dependent.
 
-- **level-format** — 8 dependents (postretro, level-compiler, level-loader, model, render-cpu, renderer, scripting-core, xtask)
+- **level-format** — 9 dependents (postretro, level-compiler, level-loader, model, render-cpu, renderer, script-compiler, scripting-core, xtask)
 - **entities** — 6 dependents (postretro, lighting, render-cpu, renderer, scripting-core, ui)
 - **render-data** — 6 dependents (postretro, level-loader, lighting, model, render-cpu, renderer)
+- **foundation** — 5 dependents (postretro, entities, lighting, model, scripting-core)
 - **level-loader** — 5 dependents (postretro, lighting, render-cpu, renderer, visibility)
-- **foundation** — 4 dependents (postretro, entities, lighting, scripting-core)
 - **scripting-core** — 4 dependents (postretro, lighting, renderer, ui)
 - **model** — 3 dependents (postretro, render-cpu, renderer)
 - **visibility** — 3 dependents (postretro, render-cpu, renderer)

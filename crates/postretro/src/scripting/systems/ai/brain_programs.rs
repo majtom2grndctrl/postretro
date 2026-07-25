@@ -25,7 +25,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use postretro_entities::components::brain::BrainComponent;
 use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry};
 use postretro_foundation::{
     BakedIr, BehaviorGraphDescriptor, BoundProgram, CURRENT_IR_VERSION, IrType,
@@ -77,6 +76,11 @@ impl BrainEntityPrograms {
 pub(crate) struct BrainPrograms {
     scope: BrainScope,
     entries: HashMap<EntityId, BrainEntityPrograms>,
+    /// The entities `sync` saw on its current pass. A field rather than a local
+    /// purely so its capacity survives: `sync` runs every AI tick, and a local
+    /// set would allocate on every one of them to detect a condition that only
+    /// changes at spawn, despawn, or re-seed.
+    live: HashSet<EntityId>,
 }
 
 impl BrainPrograms {
@@ -84,6 +88,7 @@ impl BrainPrograms {
         Self {
             scope: BrainScope::for_validation(),
             entries: HashMap::new(),
+            live: HashSet::new(),
         }
     }
 
@@ -112,19 +117,20 @@ impl BrainPrograms {
     /// mid-evaluation.
     ///
     /// `warned` is the run-long warn-once latch: a guard that fails to bind
-    /// reports once per authored path and leaves that edge disabled.
+    /// reports once per distinct broken contract and leaves that edge disabled.
+    ///
+    /// Steady state — nothing spawned, despawned, or re-seeded — allocates
+    /// nothing. That is deliberate: `sync` runs every AI tick but only ever has
+    /// work on those three events, so it walks the registry iterator directly
+    /// (`registry` is an independent borrow from `&mut self`) and reuses the
+    /// `live` set's capacity instead of building a fresh `Vec` and `HashSet`.
     pub(crate) fn sync(&mut self, registry: &EntityRegistry, warned: &mut HashSet<String>) {
-        let mut live: HashSet<EntityId> = HashSet::new();
-        let brains: Vec<(EntityId, &BrainComponent)> = registry
-            .iter_with_kind(ComponentKind::Brain)
-            .filter_map(|(entity, value)| match value {
-                ComponentValue::Brain(brain) => Some((entity, brain)),
-                _ => None,
-            })
-            .collect();
-
-        for (entity, brain) in brains {
-            live.insert(entity);
+        self.live.clear();
+        for (entity, value) in registry.iter_with_kind(ComponentKind::Brain) {
+            let ComponentValue::Brain(brain) = value else {
+                continue;
+            };
+            self.live.insert(entity);
             // Pointer identity, NOT structural equality: a graph is immutable
             // once attached, so sharing the same allocation is proof the bound
             // programs still describe this brain. Comparing contents would walk
@@ -141,12 +147,46 @@ impl BrainPrograms {
             }
         }
 
+        let live = &self.live;
         self.entries.retain(|entity, _| live.contains(entity));
     }
 }
 
+/// Where a guard sits inside its graph.
+///
+/// Carried as a value rather than a formatted `String` because binding
+/// SUCCEEDS for all but a broken graph: building the path at the call site
+/// allocated one string per guard per spawn — a monster-closet reveal of thirty
+/// enemies over a twenty-guard graph paid six hundred allocations in one tick —
+/// and every one of them was dropped unread. [`Display`] defers the cost to the
+/// failure branch, which runs at most once per distinct problem.
+enum GuardPath<'a> {
+    Interrupt { index: usize },
+    StateTransition { state: &'a str, index: usize },
+}
+
+impl std::fmt::Display for GuardPath<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Interrupt { index } => write!(f, "interrupts[{index}]"),
+            Self::StateTransition { state, index } => {
+                write!(f, "states.{state}.transitions[{index}]")
+            }
+        }
+    }
+}
+
+/// The author-facing spelling of an IR result type. Matched exhaustively so a
+/// third `IrType` cannot silently keep reporting one of the first two.
+fn ir_type_label(ir_type: IrType) -> &'static str {
+    match ir_type {
+        IrType::Number => "a number",
+        IrType::Bool => "a boolean",
+    }
+}
+
 /// Bind every guard in `graph` against the shared scope, warning once per
-/// authored path for the ones that fail and leaving those edges disabled.
+/// distinct failure and leaving those edges disabled.
 fn bind_graph(
     scope: &BrainScope,
     graph: Arc<BehaviorGraphDescriptor>,
@@ -157,7 +197,13 @@ fn bind_graph(
         .iter()
         .enumerate()
         .map(|(index, transition)| {
-            bind_guard(scope, transition, &format!("interrupts[{index}]"), warned)
+            bind_guard(
+                scope,
+                &graph,
+                transition,
+                GuardPath::Interrupt { index },
+                warned,
+            )
         })
         .collect();
     let states = graph
@@ -171,8 +217,9 @@ fn bind_graph(
                 .map(|(index, transition)| {
                     bind_guard(
                         scope,
+                        &graph,
                         transition,
-                        &format!("states.{name}.transitions[{index}]"),
+                        GuardPath::StateTransition { state: name, index },
                         warned,
                     )
                 })
@@ -188,8 +235,9 @@ fn bind_graph(
 
 fn bind_guard(
     scope: &BrainScope,
+    graph: &BehaviorGraphDescriptor,
     transition: &TransitionDescriptor,
-    path: &str,
+    path: GuardPath<'_>,
     warned: &mut HashSet<String>,
 ) -> Option<BoundProgram<BrainScope>> {
     let baked = BakedIr {
@@ -199,15 +247,28 @@ fn bind_guard(
     };
     let reason = match bind(&baked, scope) {
         Ok(program) if program.root_type == IrType::Bool => return Some(program),
-        Ok(_) => "its root produces a number, not a boolean".to_string(),
+        Ok(program) => format!(
+            "its root produces {}, not a boolean",
+            ir_type_label(program.root_type)
+        ),
         Err(error) => error.to_string(),
     };
-    if warned.insert(format!("brain-guard:{path}")) {
+    // The latch key describes the whole PROBLEM, not just its coordinate. A path
+    // is intra-graph — `interrupts[0]` is about the most collision-prone string
+    // this vocabulary produces — and `AiRuntime` lives for the whole app and is
+    // never rebuilt on level load, so keying on the path alone let one
+    // archetype's broken guard permanently swallow a different archetype's
+    // different broken guard. Authored graphs are bind-validated at parse, so a
+    // failure here means a contract broke; masking a second, unrelated break is
+    // precisely the diagnosability this warn exists to preserve.
+    let to = &transition.to;
+    let initial = &graph.initial;
+    if warned.insert(format!("brain-guard:{initial}:{path}:{to}:{reason}")) {
+        let states: Vec<&str> = graph.states.keys().map(String::as_str).collect();
         log::warn!(
-            "[AI] behavior guard `{path}` could not be bound ({reason}); \
-             the transition to `{to}` is disabled for the rest of the run. \
-             Warned once per guard.",
-            to = transition.to,
+            "[AI] behavior guard `{path}` could not be bound ({reason}); the transition to \
+             `{to}` is disabled for the rest of the run. The graph starts in `{initial}` and \
+             declares {states:?}. Warned once per distinct graph, path, target, and reason.",
         );
     }
     None
@@ -222,7 +283,7 @@ mod tests {
     use crate::alloc_probe::AllocSnapshot;
     use postretro_entities::Transform;
     use postretro_entities::components::brain::{
-        attach_brain, attach_brain_graph, graph_state_index,
+        BrainComponent, attach_brain, attach_brain_graph, graph_state_index,
     };
     use postretro_entities::data_descriptors::{
         AiDescriptor, AiStateNames, BehaviorStateDescriptor, LEGACY_ALERT_STATE,
@@ -272,8 +333,8 @@ mod tests {
             )]),
             interrupts: Vec::new(),
             attack: None,
+            engagement_radius: None,
             move_speed: 3.0,
-            death_despawn_ms: None,
         }
     }
 
@@ -287,6 +348,14 @@ mod tests {
     /// gone from the engine: nothing but this drift guard ever needed it.
     ///
     /// Closed transition set (`ai` is the descriptor being lowered):
+    /// - NO TARGET, from ANY state: `idle` with steering cleared. The v0 tick
+    ///   never reached the transition core without a pawn — its `else` arm
+    ///   forced `Idle` + `Clear` outright — so that arm is restated here as the
+    ///   `has_target == false` row. In the lowered graph this is the ONE edge
+    ///   that is not a restatement of a v0 rule but a generated interrupt
+    ///   (`!hasTarget → idle`), which is exactly why it has to be sampled: with
+    ///   a target on every row it evaluates false everywhere and a
+    ///   wrong-but-present interrupt would pass.
     /// - `idle` → `attack` when acquisition fires and the target is inside
     ///   detection AND attack range (the "newly alerted, already in contact"
     ///   branch, nested inside the detection check);
@@ -301,9 +370,13 @@ mod tests {
     fn v0_transition(
         ai: &AiDescriptor,
         current: &str,
+        has_target: bool,
         distance: f32,
         acquisition_due: bool,
     ) -> (&'static str, SteeringIntent) {
+        if !has_target {
+            return (LEGACY_IDLE_STATE, SteeringIntent::Clear);
+        }
         match current {
             LEGACY_IDLE_STATE => {
                 if acquisition_due && distance <= ai.detection_range {
@@ -495,10 +568,44 @@ mod tests {
                 "the unbindable edge is disabled, not fatal"
             );
         }
+        assert_eq!(warned.len(), 1, "one warn per distinct broken guard");
+        let key = warned.iter().next().unwrap();
+        assert!(
+            key.starts_with("brain-guard:") && key.contains("states.rest.transitions[0]"),
+            "the warn key names the state and transition index: {key}"
+        );
+    }
+
+    #[test]
+    fn two_graphs_broken_at_the_same_path_each_report() {
+        // The path is an INTRA-graph coordinate, and `interrupts[0]` /
+        // `states.<name>.transitions[0]` collide readily across archetypes. A
+        // latch keyed on the path alone would let the first broken graph silence
+        // every later one for the rest of the run — the exact diagnosability loss
+        // the warn exists to prevent.
+        let mut first = minimal_graph("idle");
+        first.states.get_mut("rest").unwrap().transitions[0].when = IrNode::Input {
+            name: "@brain.morale".to_string(),
+        };
+        let mut second = minimal_graph("walk");
+        second.states.get_mut("rest").unwrap().transitions[0].when = IrNode::Input {
+            name: "@brain.nerve".to_string(),
+        };
+
+        let mut registry = EntityRegistry::new();
+        for graph in [&first, &second] {
+            let entity = registry.spawn(Transform::default());
+            attach_brain_graph(&mut registry, entity, graph).unwrap();
+        }
+        let mut programs = BrainPrograms::new();
+        let mut warned = HashSet::new();
+
+        programs.sync(&registry, &mut warned);
+
         assert_eq!(
-            warned.iter().collect::<Vec<_>>(),
-            vec!["brain-guard:states.rest.transitions[0]"],
-            "one warn per authored path, naming the state and index"
+            warned.len(),
+            2,
+            "each broken graph reports its own failure: {warned:?}"
         );
     }
 
@@ -519,6 +626,28 @@ mod tests {
     }
 
     #[test]
+    fn a_steady_state_sync_performs_zero_heap_allocations() {
+        // `sync` runs every AI tick, but the condition it detects only changes at
+        // spawn, despawn, or re-seed. With none of those pending it must do no
+        // work the allocator can see — it sits just outside the guarded per-tick
+        // guard window, so nothing else would catch a regression here.
+        let graph = lower_ai_descriptor(&sample_descriptor());
+        let (registry, _) = registry_with_brain(&graph);
+        let mut programs = BrainPrograms::new();
+        let mut warned = HashSet::new();
+        programs.sync(&registry, &mut warned);
+
+        let snapshot = AllocSnapshot::arm();
+        programs.sync(&registry, &mut warned);
+        let allocs = snapshot.allocs_since();
+
+        assert_eq!(
+            allocs, 0,
+            "a sync with nothing to reconcile must not allocate"
+        );
+    }
+
+    #[test]
     fn transitions_are_total_for_an_index_outside_the_resolved_state_list() {
         let (registry, entity) = registry_with_brain(&minimal_graph("idle"));
         let mut programs = BrainPrograms::new();
@@ -528,10 +657,17 @@ mod tests {
 
     #[test]
     fn the_lowered_graph_reproduces_the_v0_transition_core_edge_for_edge() {
-        // Drift guard: every (state × distance × acquisition) row the legacy
-        // core answers must be the row the lowered graph's ordered guards
-        // answer. The expectation is an independent restatement of the v0
-        // rules (`v0_transition`), not a transcription of the lowered edges.
+        // Drift guard: every (state × has-target × distance × acquisition) row
+        // the legacy core answers must be the row the lowered graph's ordered
+        // guards answer. The expectation is an independent restatement of the
+        // v0 rules (`v0_transition`), not a transcription of the lowered edges.
+        //
+        // The has-target dimension is what reaches the generated
+        // `!hasTarget → idle` interrupt. Sampled from `attack` in particular:
+        // that is the state whose only other exit is the attack-range edge, so
+        // deleting the interrupt leaves it in `attack` on the sentinel. (From
+        // `alert` the leash edge is itself true on the sentinel and reaches
+        // `idle` anyway, so `alert` alone would not detect the loss.)
         let ai = sample_descriptor();
         let graph = lower_ai_descriptor(&ai);
         let (registry, entity) = registry_with_brain(&graph);
@@ -568,29 +704,35 @@ mod tests {
                     "death stays terminal in the lowered graph"
                 );
             }
-            for distance in distances {
-                for acquisition_due in [false, true] {
-                    let expected = v0_transition(&ai, current, distance, acquisition_due);
+            for has_target in [false, true] {
+                for distance in distances {
+                    for acquisition_due in [false, true] {
+                        let expected =
+                            v0_transition(&ai, current, has_target, distance, acquisition_due);
 
-                    programs.scope_mut().refresh(
-                        &registry,
-                        entity,
-                        BrainFacts {
-                            target_distance: Some(distance),
-                            time_in_state_ms: 0.0,
-                            attack_cooldown_ms: 0.0,
-                            acquisition_due,
-                        },
-                    );
-                    let entry = programs.get(entity).expect("the brain stays bound");
-                    let (next, steering) = step_graph(&graph, entry, programs.scope(), current);
+                        programs.scope_mut().refresh(
+                            &registry,
+                            entity,
+                            BrainFacts {
+                                // No target means no distance to read: the scope
+                                // projects `hasTarget` false and the distance
+                                // sentinel, which is what the interrupt sees.
+                                target_distance: has_target.then_some(distance),
+                                time_in_state_ms: 0.0,
+                                attack_cooldown_ms: 0.0,
+                                acquisition_due,
+                            },
+                        );
+                        let entry = programs.get(entity).expect("the brain stays bound");
+                        let (next, steering) = step_graph(&graph, entry, programs.scope(), current);
 
-                    assert_eq!(
-                        (next.as_str(), steering),
-                        expected,
-                        "state `{current}` at distance {distance} \
-                         (acquisitionDue = {acquisition_due})"
-                    );
+                        assert_eq!(
+                            (next.as_str(), steering),
+                            expected,
+                            "state `{current}` at distance {distance} \
+                             (hasTarget = {has_target}, acquisitionDue = {acquisition_due})"
+                        );
+                    }
                 }
             }
         }

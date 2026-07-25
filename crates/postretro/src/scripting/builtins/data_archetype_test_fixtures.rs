@@ -5,13 +5,15 @@
 // scripting tree's private test helpers — and without duplicating the builders
 // (which would invite drift). See context/lib/testing_guide.md §4.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use glam::Vec3;
 
 use crate::scripting::map_entity::MapEntity;
+use postretro_foundation::{BRAIN_TARGET_DISTANCE_INPUT, IrNode, IrValue};
 use postretro_scripting_core::data_descriptors::{
-    AiDescriptor, AiStateNames, EntityTypeDescriptor,
+    ActionVerb, AiDescriptor, AiStateNames, AttackParams, BehaviorGraphDescriptor,
+    BehaviorStateDescriptor, EntityTypeDescriptor, MotionVerb, TransitionDescriptor,
 };
 
 /// A `MapEntity` placement with the given classname and raw KVP bag. Origin is a
@@ -109,11 +111,73 @@ fn sample_ai_descriptor() -> AiDescriptor {
     }
 }
 
-/// An AI-enemy descriptor: a mesh placement (so it is directly map-placeable)
-/// plus an `ai` block (so materialization attaches `Brain` + `Agent`). This
-/// is the shape a real map-placed enemy descriptor has.
+/// An AI-enemy descriptor in the LEGACY `components.ai` spelling: a mesh
+/// placement (so it is directly map-placeable) plus an `ai` block (so
+/// materialization attaches `Brain` + `Agent`).
 pub(crate) fn ai_enemy_descriptor(classname: &str) -> EntityTypeDescriptor {
     let mut descriptor = mesh_descriptor(classname, true);
     descriptor.ai = Some(sample_ai_descriptor());
+    descriptor
+}
+
+/// Minimal valid `components.behavior` graph over the two animation states
+/// [`mesh_descriptor`] declares (`idle` default + `attack`): rest in `idle`
+/// until the target closes, then chase-and-attack. `initial`'s animation is the
+/// mesh's `defaultState`, so this fixture is also rest-pose consistent
+/// (`validate_brain_animation_states`).
+fn sample_behavior_graph() -> BehaviorGraphDescriptor {
+    BehaviorGraphDescriptor {
+        initial: "idle".to_string(),
+        states: BTreeMap::from([
+            (
+                "idle".to_string(),
+                BehaviorStateDescriptor {
+                    animation: "idle".to_string(),
+                    motion: MotionVerb::Hold,
+                    action: None,
+                    transitions: vec![TransitionDescriptor {
+                        to: "attack".to_string(),
+                        when: IrNode::Le {
+                            a: Box::new(IrNode::Input {
+                                name: BRAIN_TARGET_DISTANCE_INPUT.to_string(),
+                            }),
+                            b: Box::new(IrNode::Const {
+                                value: IrValue::Number(16.0),
+                            }),
+                        },
+                    }],
+                    on_enter: None,
+                },
+            ),
+            (
+                "attack".to_string(),
+                BehaviorStateDescriptor {
+                    animation: "attack".to_string(),
+                    motion: MotionVerb::ChaseTarget,
+                    action: Some(ActionVerb::Attack),
+                    transitions: Vec::new(),
+                    on_enter: None,
+                },
+            ),
+        ]),
+        interrupts: Vec::new(),
+        attack: Some(AttackParams {
+            damage: 8.0,
+            range: 2.0,
+            cooldown_ms: 1200.0,
+        }),
+        engagement_radius: None,
+        move_speed: 3.5,
+    }
+}
+
+/// An AI-enemy descriptor in the AUTHORED `components.behavior` spelling — the
+/// sibling of [`ai_enemy_descriptor`] and the shape the shipped reference enemy
+/// now has. Same mesh placement; the brain arrives as a graph instead of a
+/// legacy preset, which is the other arm every "does this descriptor carry a
+/// brain?" predicate must accept.
+pub(crate) fn behavior_enemy_descriptor(classname: &str) -> EntityTypeDescriptor {
+    let mut descriptor = mesh_descriptor(classname, true);
+    descriptor.behavior = Some(sample_behavior_graph());
     descriptor
 }

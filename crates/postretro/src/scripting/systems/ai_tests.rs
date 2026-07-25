@@ -98,11 +98,15 @@ fn usable_state(clip: &str, idx: usize) -> AnimationState {
     }
 }
 
-/// A four-state mesh declaring the tuning's animation names, all resolved.
+/// A mesh declaring the tuning's animation names, all resolved. `walk` is the
+/// SHIPPED reference enemy's travel-state name (`locomotion` is this file's own
+/// fixture spelling); both resolve to the same clip so a graph authored either
+/// way is drivable here.
 fn enemy_mesh() -> MeshComponent {
     let mut states = std::collections::HashMap::new();
     states.insert("idle".to_string(), usable_state("idle_clip", 0));
     states.insert("locomotion".to_string(), usable_state("walk_clip", 1));
+    states.insert("walk".to_string(), usable_state("walk_clip", 1));
     states.insert("attack".to_string(), usable_state("attack_clip", 2));
     states.insert("death".to_string(), usable_state("death_clip", 3));
     MeshComponent {
@@ -578,6 +582,76 @@ fn slew_yaw_sequence_is_deterministic() {
     }
 
     assert_eq!(run_sequence(), run_sequence());
+}
+
+// Regression: `NaN <= MIN_XZ_LEN_SQ` is false, so a NaN direction fell through
+// the zero-length guard into `atan2(NaN, NaN)` and wrote a NaN yaw.
+#[test]
+fn yaw_rotation_toward_reports_no_heading_for_a_non_finite_direction() {
+    for dir in [
+        Vec3::new(f32::NAN, 0.0, 1.0),
+        Vec3::new(1.0, 0.0, f32::NAN),
+        Vec3::new(f32::NAN, f32::NAN, f32::NAN),
+        // Y is ignored by the yaw-only math, but a corrupt vector usually
+        // carries it — the XZ pair alone must still decide.
+        Vec3::new(1.0, f32::NAN, 0.0),
+    ] {
+        let rotation = yaw_rotation_toward(dir);
+        match rotation {
+            None => {}
+            Some(quat) => assert!(
+                quat.x.is_finite()
+                    && quat.y.is_finite()
+                    && quat.z.is_finite()
+                    && quat.w.is_finite(),
+                "a non-finite direction {dir:?} must not produce a NaN rotation, got {quat:?}",
+            ),
+        }
+    }
+    assert_eq!(
+        yaw_rotation_toward(Vec3::new(f32::NAN, 0.0, 1.0)),
+        None,
+        "a NaN XZ component yields no heading, so the caller leaves facing alone",
+    );
+
+    // `+inf` is deliberately still a usable heading: `atan2(inf, inf)` is a
+    // finite π/4, so there is nothing to guard against.
+    let infinite = yaw_rotation_toward(Vec3::new(f32::INFINITY, 0.0, f32::INFINITY))
+        .expect("an infinite direction still yields a finite diagonal heading");
+    assert!(
+        infinite.x.is_finite()
+            && infinite.y.is_finite()
+            && infinite.z.is_finite()
+            && infinite.w.is_finite(),
+    );
+}
+
+// Regression: `NaN.signum()` is NaN, so a non-finite yaw was ABSORBING — the
+// corrupt rotation was written back and read as the next tick's current yaw.
+#[test]
+fn slew_yaw_is_total_over_non_finite_yaws() {
+    let current = 0.5_f32;
+    for target in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        assert_eq!(
+            slew_yaw(current, target, 0.25).to_bits(),
+            current.to_bits(),
+            "an unusable target yaw must hold the existing facing, not corrupt it",
+        );
+    }
+
+    // A current yaw that is already corrupt must RE-SEAT rather than stay
+    // wedged: the entity gets its facing back on the first tick with a usable
+    // target, instead of reading its own NaN forever.
+    let target = 1.25_f32;
+    for corrupt in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        let next = slew_yaw(corrupt, target, 0.25);
+        assert!(next.is_finite(), "re-seating must produce a usable yaw");
+        assert_eq!(
+            next.to_bits(),
+            target.to_bits(),
+            "there is nothing to slew FROM, so the facing seats at the target",
+        );
+    }
 }
 
 #[test]
@@ -1634,13 +1708,6 @@ fn zero_hp_brain_remains_active_without_despawn() {
     );
     assert_eq!(events, vec![ENEMY_ATTACK_EVENT]);
     assert_eq!(player_hp(&reg, pawn), 92.0);
-    assert_eq!(
-        reg.get_component::<BrainComponent>(enemy)
-            .unwrap()
-            .death_despawn_remaining_ms,
-        None,
-        "the AI tick must not seed the removed death-despawn countdown",
-    );
 }
 
 #[test]
@@ -3198,8 +3265,8 @@ fn pursuit_graph() -> BehaviorGraphDescriptor {
             range: 2.0,
             cooldown_ms: 1000.0,
         }),
+        engagement_radius: None,
         move_speed: 3.5,
-        death_despawn_ms: None,
     }
 }
 
@@ -3333,8 +3400,8 @@ fn a_time_in_state_guard_exits_on_the_first_tick_the_window_elapses() {
         ]),
         interrupts: Vec::new(),
         attack: None,
+        engagement_radius: None,
         move_speed: 3.5,
-        death_despawn_ms: None,
     };
 
     let mut reg = EntityRegistry::new();
@@ -3399,8 +3466,8 @@ fn interrupt_graph(interrupts: Vec<TransitionDescriptor>) -> BehaviorGraphDescri
         ]),
         interrupts,
         attack: None,
+        engagement_radius: None,
         move_speed: 3.5,
-        death_despawn_ms: None,
     }
 }
 
@@ -3574,6 +3641,116 @@ fn standing_down_clears_steering_even_when_the_initial_state_chases() {
     );
 }
 
+/// A chase-then-petrify graph: `charge` pursues, and a per-entity `halt` field
+/// drops it into a `freeze` state that declares no exits. `stop` takes no action
+/// and does not chase, so entering it also releases the enemy's combat slot.
+fn petrifying_graph() -> BehaviorGraphDescriptor {
+    BehaviorGraphDescriptor {
+        initial: "charge".to_string(),
+        states: BTreeMap::from([
+            (
+                "charge".to_string(),
+                authored_state(
+                    "locomotion",
+                    MotionVerb::ChaseTarget,
+                    None,
+                    vec![edge(
+                        "stop",
+                        IrNode::Ge {
+                            a: Box::new(brain_input("@state.halt")),
+                            b: Box::new(IrNode::Const {
+                                value: IrValue::Number(1.0),
+                            }),
+                        },
+                    )],
+                ),
+            ),
+            (
+                "stop".to_string(),
+                authored_state("death", MotionVerb::Freeze, None, Vec::new()),
+            ),
+        ]),
+        interrupts: Vec::new(),
+        attack: None,
+        engagement_radius: None,
+        move_speed: 3.5,
+    }
+}
+
+#[test]
+fn entering_a_freeze_state_stops_path_following_and_releases_the_combat_slot() {
+    // `freeze` touches steering exactly once, on ENTRY. Without that clear, a
+    // `set_destination` that deliberately preserves the existing path would keep
+    // walking the agent into ground it has just surrendered to the slot solver.
+    let floor = OpenFloor::new();
+    let world = floor.collision_world();
+    let graph = floor.nav_graph();
+
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let behavior = petrifying_graph();
+    let player_pos = Vec3::new(20.0, chaser_rest_y(), 20.0);
+    spawn_player(&mut reg, player_pos);
+    let enemy = spawn_enemy(
+        &mut reg,
+        Vec3::new(14.0, chaser_rest_y(), 20.0),
+        authored_brain(&behavior, "charge"),
+        50.0,
+    );
+
+    // Actively chasing: a destination is issued and a combat slot is claimed.
+    run_ai_tick_with_navigation(&mut reg, &mut runtime, STEER_DT, Some(&graph), Some(&world));
+    assert_eq!(enemy_state_name(&reg, enemy), "charge");
+    assert!(
+        agent_steering::path_state(&reg, enemy)
+            .expect("agent present")
+            .has_destination,
+        "the chasing state steers before the freeze",
+    );
+    assert!(
+        enemy_combat_slot(&reg, enemy).is_some(),
+        "an engaged chaser claims a slot around its target",
+    );
+
+    // The transition into the freeze state.
+    reg.entity_state_mut(enemy)
+        .expect("spawn seeds entity state")
+        .set("halt", 1.0);
+    run_ai_tick_with_navigation(&mut reg, &mut runtime, STEER_DT, Some(&graph), Some(&world));
+
+    assert_eq!(enemy_state_name(&reg, enemy), "stop");
+    assert!(
+        !agent_steering::path_state(&reg, enemy)
+            .expect("agent present")
+            .has_destination,
+        "entering a freeze state stops path-following",
+    );
+    assert_eq!(
+        enemy_combat_slot(&reg, enemy),
+        None,
+        "a frozen enemy is no longer engaged, so its slot is surrendered",
+    );
+    assert_eq!(
+        enemy_acquired_target(&reg, enemy),
+        None,
+        "and it no longer holds the pawn it was chasing",
+    );
+
+    // ...and touches nothing thereafter. A destination written by something else
+    // (a scripted mover, a death slide) must survive: the clear is on entry, not
+    // per tick.
+    agent_steering::set_destination(&mut reg, enemy, Vec3::new(24.0, chaser_rest_y(), 20.0));
+    run_ai_tick_with_navigation(&mut reg, &mut runtime, STEER_DT, Some(&graph), Some(&world));
+
+    assert_eq!(enemy_state_name(&reg, enemy), "stop");
+    assert!(
+        agent_steering::path_state(&reg, enemy)
+            .expect("agent present")
+            .has_destination,
+        "a settled freeze state leaves steering alone — the clear fires on entry only",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Acceptance: the shipped reference enemy, authored vs. lowered
 //
@@ -3584,8 +3761,12 @@ fn standing_down_clears_steering_even_when_the_initial_state_chases() {
 // ---------------------------------------------------------------------------
 
 /// The reference enemy's shipped tuning, spelled as the legacy block it used to
-/// carry. Ranges/damage/cooldown/despawn are the shipped values; the animation
-/// names are this fixture's mesh states, so the animation trace is observable.
+/// carry. Ranges/damage/cooldown are the shipped values (`deathDespawnMs` is a
+/// legacy-block field only, and lowers to nothing), and the animation names are
+/// the shipped graph's — so [`reference_behavior_graph`] can be compared to the
+/// shipped authoring for exact equality, not "equality modulo renaming". The
+/// `death` name has no authored counterpart (death is not a graph transition)
+/// and exists only because the legacy block requires all four.
 fn reference_ai_descriptor() -> AiDescriptor {
     AiDescriptor {
         detection_range: 16.0,
@@ -3597,7 +3778,7 @@ fn reference_ai_descriptor() -> AiDescriptor {
         death_despawn_ms: 4000.0,
         states: AiStateNames {
             idle: "idle".into(),
-            alert: "locomotion".into(),
+            alert: "walk".into(),
             attack: "attack".into(),
             death: "death".into(),
         },
@@ -3611,7 +3792,13 @@ fn reference_ai_descriptor() -> AiDescriptor {
 /// Detection is conjoined with `@brain.acquisitionDue` (the IR has no `and`
 /// opcode, so conjunction is `select(cond, inner, false)`); the attack-range and
 /// leash edges are deliberately ungated, matching the engine floor's own
-/// unstrided attack and retention-leash checks.
+/// unstrided attack and retention-leash checks. The single interrupt is the
+/// shipped stand-down on target loss.
+///
+/// This is the oracle the parity test compares against, so a drifted
+/// transcription would assert nothing —
+/// [`the_reference_oracle_matches_the_shipped_authored_graph`] pins it against
+/// the shipped Luau source so the drift cannot happen silently.
 fn reference_behavior_graph() -> BehaviorGraphDescriptor {
     let ai = reference_ai_descriptor();
     let when_acquisition_due = |inner: IrNode| IrNode::Select {
@@ -3666,15 +3853,110 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                 ),
             ),
         ]),
-        interrupts: Vec::new(),
+        // The shipped stand-down interrupt, first in interrupt order: with no
+        // target `@brain.targetDistance` reads the sentinel, which makes both
+        // `gt` disengage edges above true, so without this the enemy would take
+        // two ticks (and one travel-animation frame) to leave `attack`. The IR
+        // has no `not` opcode, so the negation is `select(hasTarget, false,
+        // true)` — the same shape the lowering emits.
+        interrupts: vec![edge(
+            "idle",
+            IrNode::Select {
+                cond: Box::new(brain_input(BRAIN_HAS_TARGET_INPUT)),
+                a: Box::new(IrNode::Const {
+                    value: IrValue::Bool(false),
+                }),
+                b: Box::new(IrNode::Const {
+                    value: IrValue::Bool(true),
+                }),
+            },
+        )],
         attack: Some(AttackParams {
             damage: ai.attack_damage,
             range: ai.attack_range,
             cooldown_ms: ai.attack_cooldown_ms,
         }),
+        // The shipped graph authors `engagementRadius` explicitly at the same
+        // value `attack.range` would supply as the fallback, which is what the
+        // lowered legacy block resolves to — so combat-slot spacing stays
+        // identical across the two authorings.
+        engagement_radius: Some(ai.attack_range),
         move_speed: ai.move_speed,
-        death_despawn_ms: Some(ai.death_despawn_ms),
     }
+}
+
+/// The reference enemy's `components.behavior` block as the SHIPPED
+/// `sdk/behaviors/reference/entities.luau` actually authors it.
+///
+/// The module is evaluated verbatim against the same SDK helper modules the
+/// engine's Luau prelude installs (`sdk/lib/runtime.luau` for the IR builders,
+/// `sdk/lib/brain.luau` for the `@brain.*` leaves), with `defineEntity` stubbed
+/// to the identity it is for a plain descriptor. Reading the guards out of the
+/// real source is the whole point: a second hand-written copy would prove only
+/// that someone edited both.
+fn shipped_reference_behavior_graph() -> BehaviorGraphDescriptor {
+    use mlua::LuaSerdeExt as _;
+
+    const RUNTIME_LUAU_SRC: &str = include_str!("../../../../../sdk/lib/runtime.luau");
+    const BRAIN_LUAU_SRC: &str = include_str!("../../../../../sdk/lib/brain.luau");
+    const ENTITIES_LUAU_SRC: &str =
+        include_str!("../../../../../sdk/behaviors/reference/entities.luau");
+
+    let lua = mlua::Lua::new();
+    let runtime: mlua::Table = lua
+        .load(RUNTIME_LUAU_SRC)
+        .set_name("sdk/lib/runtime.luau")
+        .eval()
+        .expect("runtime.luau evaluates");
+    let brain_sdk: mlua::Table = lua
+        .load(BRAIN_LUAU_SRC)
+        .set_name("sdk/lib/brain.luau")
+        .eval()
+        .expect("brain.luau evaluates");
+    let brain: mlua::Table = brain_sdk.get("brain").expect("brain.luau exports `brain`");
+    let define_entity = lua
+        .create_function(|_, descriptor: mlua::Table| Ok(descriptor))
+        .expect("stub defineEntity");
+    let globals = lua.globals();
+    globals.set("runtime", runtime).unwrap();
+    globals.set("brain", brain).unwrap();
+    globals.set("defineEntity", define_entity).unwrap();
+
+    let module: mlua::Table = lua
+        .load(ENTITIES_LUAU_SRC)
+        .set_name("sdk/behaviors/reference/entities.luau")
+        .eval()
+        .expect("the shipped reference entities module evaluates");
+    let entity: mlua::Table = module
+        .get("referenceEnemyEntity")
+        .expect("the module exports `referenceEnemyEntity`");
+    let components: mlua::Table = entity
+        .get("components")
+        .expect("the archetype has components");
+    let behavior: mlua::Value = components
+        .get("behavior")
+        .expect("the reference enemy is authored as a behavior graph");
+    lua.from_value(behavior)
+        .expect("the shipped behavior block deserializes into the engine descriptor")
+}
+
+/// The oracle below is a Rust hand-transcription of a graph that ships as
+/// TypeScript and Luau. This is what stops it becoming fiction: retune a range,
+/// reorder an edge, or drop the stand-down interrupt in the shipped source and
+/// this fails, instead of the parity test happily proving a stale transcription
+/// matches the legacy block.
+///
+/// It reads the Luau authoring; that the TypeScript twin says the same thing is
+/// `the_shipped_reference_enemy_graph_is_identical_in_both_authorings`
+/// (`scripting-core`, where the twin-parser machinery lives). Together the two
+/// close the loop: TS ≡ Luau ≡ this oracle ≡ the lowered legacy block.
+#[test]
+fn the_reference_oracle_matches_the_shipped_authored_graph() {
+    assert_eq!(
+        reference_behavior_graph(),
+        shipped_reference_behavior_graph(),
+        "the Rust oracle has drifted from `sdk/behaviors/reference/entities.luau`",
+    );
 }
 
 /// One tick of observable brain output: the state it settled in, the damage it
@@ -3770,6 +4052,52 @@ fn the_authored_reference_graph_is_behavior_identical_to_the_legacy_block() {
             "authored graph and lowered legacy block diverged on tick {tick}"
         );
     }
+}
+
+/// The case the parity fixture above structurally cannot see: it hands the
+/// enemy a pawn on all 200 ticks, so the sentinel path is never walked.
+///
+/// Seeded in `attack` specifically. From `alert` this passes even with the
+/// stand-down interrupt deleted, because the leash edge (`gt(dist, 50)`) is
+/// itself true on the sentinel and reaches `idle` in one tick anyway. `attack`
+/// is the state whose only exit is `gt(dist, attackRange)` → `alert`, so
+/// without the interrupt this takes two ticks and shows a frame of the travel
+/// animation with nothing to travel toward.
+#[test]
+fn the_reference_graph_stands_down_from_attack_in_one_tick_with_no_pawn() {
+    let graph = reference_behavior_graph();
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    // No player pawn is spawned at all — the disconnect / level-transition /
+    // last-co-op-pawn-leaves case.
+    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, authored_brain(&graph, "attack"), 50.0);
+    assert_eq!(enemy_state_name(&reg, enemy), "attack");
+
+    run_ai_tick(&mut reg, &mut runtime, 0.016);
+
+    assert_eq!(
+        enemy_state_name(&reg, enemy),
+        "idle",
+        "losing the target must stand the brain down in ONE tick, not walk it \
+         back through the pursuit state on the distance sentinel",
+    );
+    assert_ne!(
+        enemy_animation(&reg, enemy),
+        graph.states["alert"].animation,
+        "the travel animation must never be requested on the way down; there is \
+         nothing to travel toward",
+    );
+    assert_eq!(
+        enemy_animation(&reg, enemy),
+        graph.states["idle"].animation,
+        "the stand-down lands on the graph's rest animation",
+    );
+    assert!(
+        !agent_steering::path_state(&reg, enemy)
+            .expect("agent present")
+            .has_destination,
+        "a stood-down enemy holds no destination",
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -4002,11 +4330,14 @@ fn a_brain_seated_outside_its_graph_recovers_to_the_initial_state() {
         "an unaddressable state index re-seats to the graph's `initial`"
     );
     assert!(
-        runtime
-            .warned
-            .iter()
-            .any(|key| key.starts_with("brain-state:")),
-        "the re-seat reports through the run-long warn latch: {:?}",
+        runtime.reseat_warned.contains(&enemy),
+        "the re-seat reports through the entity-keyed warn latch: {:?}",
+        runtime.reseat_warned
+    );
+    assert!(
+        runtime.warned.is_empty(),
+        "the re-seat is entity-keyed, so it must not add a per-spawn string to \
+         the content latch: {:?}",
         runtime.warned
     );
 
@@ -4043,8 +4374,8 @@ fn standing_attack_graph() -> BehaviorGraphDescriptor {
             range: 2.0,
             cooldown_ms: 1000.0,
         }),
+        engagement_radius: None,
         move_speed: 3.5,
-        death_despawn_ms: None,
     }
 }
 

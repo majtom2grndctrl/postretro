@@ -1742,6 +1742,20 @@ fn spawner_path_first_rate_pass_uses_derived_clip_calibration_before_index_resol
         None,
         "first rate pass occurs before the queued index fill",
     );
+
+    // Enter the graph's locomotion state, which is what the rate pass scales.
+    // Spawn seeds `current_state` from the graph's rest animation rather than the
+    // mesh `defaultState` (`components::brain::validate_brain_animation_states`),
+    // so a freshly spawned enemy is at rest with nothing to rate-scale. Driving
+    // the state here is what the brain itself does once the enemy starts chasing,
+    // and it keeps this test about calibration ordering rather than spawn seeding.
+    let mut mesh = registry
+        .get_component::<MeshComponent>(enemy)
+        .unwrap()
+        .clone();
+    mesh.animation.as_mut().unwrap().current_state = "walk".to_string();
+    registry.set_component(enemy, mesh).unwrap();
+
     let mut agent = registry
         .get_component::<AgentComponent>(enemy)
         .unwrap()

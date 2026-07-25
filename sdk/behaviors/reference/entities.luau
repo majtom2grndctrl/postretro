@@ -40,7 +40,19 @@ local LEASH_RANGE = 50
 --- model's real clip names. Every `behavior.states.*.animation` names one of
 --- them -- the cross-component link the brain drives each tick.
 ---
---- Two authoring notes worth copying:
+--- The graph is the reference authoring of the classic three-state pursuit
+--- shape:
+---
+--- ```text
+---   ANY   --(!hasTarget)-->                            idle   (interrupt)
+---   idle  --(acquisitionDue && dist <= ATTACK_RANGE)--> attack
+---   idle  --(acquisitionDue && dist <= DETECTION_RANGE)--> alert
+---   alert --(dist <= ATTACK_RANGE)-->                  attack
+---   alert --(dist >  LEASH_RANGE)-->                   idle
+---   attack --(dist >  ATTACK_RANGE)-->                 alert
+--- ```
+---
+--- Three authoring notes worth copying:
 ---
 --- * `acquisitionDue` conjunction. Detection is time-sliced by the engine's
 ---   think stride, so both `idle` edges only fire on an acquisition tick. The
@@ -52,19 +64,30 @@ local LEASH_RANGE = 50
 --- * `idle -> attack` is declared first. Guards are first-true-wins in
 ---   declaration order, so the "already in contact range on the tick we notice
 ---   them" edge has to precede the plain detection edge to be reachable.
+--- * The stand-down interrupt is declared first of all. Interrupts run before
+---   any state-local guard, so losing the target outranks every range edge and
+---   the enemy stands down in ONE tick. It is not optional polish:
+---   `brain.targetDistance` reads a `1e9` sentinel with no target, and that
+---   sentinel is ONE-DIRECTIONAL. `le`/`lt` guards read false untargeted (safe,
+---   which is why the entry edges need no `hasTarget` conjunction), but
+---   `gt`/`ge` guards read TRUE -- so without this interrupt the two disengage
+---   guards below both fire on target loss and walk the enemy
+---   `attack -> alert -> idle` over two ticks, playing the travel animation for
+---   one of them with nothing to travel toward. The IR has no `not` opcode, so
+---   the negation is spelled `select(hasTarget, false, true)`.
 ---
 --- There is no `death` state: death is not a graph transition. The engine's
 --- death sweep latches a zero-HP enemy and the authored impact policy plays the
---- `death` mesh clip and despawns after its own delay. `deathDespawnMs` below
---- is carried for legacy `components.ai` shape parity only — nothing reads it;
---- despawn timing belongs entirely to the impact policy's `despawn` effect.
+--- `death` mesh clip and despawns after its own delay -- despawn timing belongs
+--- entirely to that policy's `despawn` effect, and the behavior block carries
+--- no despawn field of its own.
 ---
 --- The graph also owns its own leash: there is no engine-side range limit on
 --- an authored `chaseTarget` state. `alert`'s `dist > LEASH_RANGE` exit above
 --- is what stops pursuit — omit an exit guard like it and the enemy chases
 --- from anywhere on the level. Engagement and disengagement are both
---- graph-authored here, mirrored against the same `brain.targetDistance` read
---- the entry guards use.
+--- graph-authored here: the range edges against `brain.targetDistance`, plus
+--- the interrupt for the case where there is no distance to read.
 M.referenceEnemyEntity = defineEntity({
   canonicalName = M.REFERENCE_ENEMY_CLASSNAME,
   components = {
@@ -112,16 +135,29 @@ M.referenceEnemyEntity = defineEntity({
     behavior = {
       initial = "idle",
       moveSpeed = 3,
-      -- Legacy-parity field only; no runtime consumer. Despawn timing is the
-      -- impact policy's `despawn` effect, not this value. See the class doc
-      -- comment above.
-      deathDespawnMs = 4000,
       attack = { damage = 8, range = ATTACK_RANGE, cooldownMs = 1200 },
+      -- Where engaged chasers STAND: the radius of the ring of combat slots the
+      -- engine spreads them around the target. Pure spacing, and distinct from
+      -- `attack.range` above, which gates DAMAGE and nothing else. Omitting it
+      -- falls back to `attack.range`, which is the value used here -- it is
+      -- authored explicitly anyway, because the two are separate knobs and a
+      -- graph that later retunes its swing reach should not silently re-space
+      -- its pack. A pure-pursuit graph (`chaseTarget`, no `action`) has no
+      -- `attack.range` to fall back on and wants this field outright.
+      engagementRadius = ATTACK_RANGE,
+      -- Stand down the instant the target is gone. Declared first so it
+      -- outranks every state-local guard -- see the doc comment above for why
+      -- the `gt` disengage guards below cannot do this job themselves.
+      interrupts = {
+        { to = "idle", when = runtime.select(brain.hasTarget, false, true) },
+      },
       states = {
         -- At rest. `initial` doubles as the state the engine forces when the
-        -- aggro gate closes or no player is around, and as the animation a
-        -- travelling state falls back to at a standstill -- so it is authored
-        -- rest-appropriate.
+        -- aggro gate closes -- that gate is the only thing that overrides guard
+        -- evaluation -- and as the animation a travelling state falls back to
+        -- at a standstill, so it is authored rest-appropriate. Losing the
+        -- target is NOT such an override: guards keep running, which is why the
+        -- stand-down above is authored as an ordinary interrupt.
         idle = {
           animation = "idle",
           motion = "hold",

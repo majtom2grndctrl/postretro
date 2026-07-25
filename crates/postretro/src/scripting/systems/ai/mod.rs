@@ -145,17 +145,24 @@ const MESH_FORWARD: Vec3 = Vec3::Z;
 /// `(sin yaw, 0, cos yaw)`; solving `that == dir_xz` gives `yaw = atan2(dx, dz)`,
 /// so the rotation turns the model's authored FRONT to face `dir`.
 ///
-/// Returns `None` for a direction with negligible XZ length (the squared XZ
-/// magnitude is at or below `MIN_XZ_LEN_SQ`), so a zero-length steering/aim vector
-/// never produces a NaN yaw — the caller then leaves the existing facing
-/// untouched. The Y component is ignored: facing is yaw-only, keeping the model
-/// upright.
+/// Returns `None` for a direction that yields no usable heading — negligible XZ
+/// length, or a non-finite component — so neither a zero-length nor a corrupt
+/// steering/aim vector ever produces a NaN yaw. The caller then leaves the
+/// existing facing untouched. The Y component is ignored: facing is yaw-only,
+/// keeping the model upright.
 fn yaw_rotation_toward(dir: Vec3) -> Option<Quat> {
     // Squared XZ length guard: below this the direction is too short to derive a
     // stable heading (and `atan2(0, 0)` would be meaningless), so report "no
     // facing change".
     const MIN_XZ_LEN_SQ: f32 = 1e-8;
-    if dir.x * dir.x + dir.z * dir.z <= MIN_XZ_LEN_SQ {
+    // The NaN test is not redundant with the length test: NaN compares false
+    // against EVERYTHING, so `len <= MIN` alone let a NaN component fall through
+    // to `atan2(NaN, NaN)` and write a NaN quaternion into `Transform.rotation`
+    // — from which nothing recovers, because the next tick reads that rotation
+    // back as its own current yaw. `+inf` needs no such treatment
+    // (`atan2(inf, inf)` is a finite π/4) and passes as usual.
+    let len_xz_sq = dir.x * dir.x + dir.z * dir.z;
+    if len_xz_sq.is_nan() || len_xz_sq <= MIN_XZ_LEN_SQ {
         return None;
     }
     // Aim MESH_FORWARD at `dir` in the XZ plane: the yaw that rotates the model's
@@ -177,7 +184,21 @@ fn yaw_from_rotation(rotation: Quat) -> f32 {
 /// Advance `current` yaw toward `target` by at most `max_delta` radians along the
 /// shortest arc. Returns `target` exactly when it is within the per-tick budget,
 /// preserving exact arrival instead of orbiting around the goal.
+///
+/// Total over non-finite input: a non-finite yaw here would otherwise be
+/// ABSORBING rather than transient, because `delta.signum()` is NaN for a NaN
+/// delta, so `current + NaN * max_delta` is NaN and the corrupt value is written
+/// straight back into the rotation the next tick reads. Falling back to whichever
+/// operand is finite keeps one bad frame from wedging an entity's facing forever.
 pub(crate) fn slew_yaw(current: f32, target: f32, max_delta: f32) -> f32 {
+    if !target.is_finite() {
+        return current;
+    }
+    if !current.is_finite() {
+        // Nothing sensible to slew FROM — seat the facing at the target rather
+        // than propagating the corruption through the arithmetic below.
+        return target;
+    }
     let delta = (target - current + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU)
         - std::f32::consts::PI;
     let max_delta = max_delta.max(0.0);
@@ -233,13 +254,35 @@ struct EnemyOutcome {
 /// of every tick — `sync` binds newly seen graphs, and a guard that fails to
 /// bind reports through the same latch that reports an unresolvable animation.
 pub(crate) struct AiRuntime {
-    /// Warn-once latch, keyed and namespaced so a given diagnostic fires once
-    /// across the whole run, never each tick: `anim:<name>` for an animation
-    /// state that fails to switch (`UnknownState`/`NotAnimated` — the prior
-    /// animation is kept and the tick is never aborted), `blocked:<id>` for a
-    /// chasing enemy whose agent found no path to its selected destination, and
-    /// `brain-guard:<path>` for a transition guard that failed to bind.
+    /// Warn-once latch for the CONTENT-keyed diagnostics, namespaced so a given
+    /// one fires once across the whole run, never each tick: `anim:<name>` for an
+    /// animation state that fails to switch (`UnknownState`/`NotAnimated` — the
+    /// prior animation is kept and the tick is never aborted),
+    /// and `brain-guard:<graph>:<path>:<to>:<reason>` for a transition guard
+    /// that failed to bind. Both keys are CONTENT — an animation name, a graph
+    /// shape — so they are bounded by the mod's authored content, not by how
+    /// many entities the level spawns. Anything keyed by ENTITY belongs in a
+    /// typed, prunable set instead (see [`Self::reseat_warned`]).
     pub(crate) warned: HashSet<String>,
+    /// Enemies already reported as seated in a behavior state their graph does
+    /// not declare.
+    ///
+    /// Entity-keyed, so it gets the same treatment as [`Self::blocked_warned`]
+    /// rather than a per-spawn `format!`ed `String` in the run-long content
+    /// latch: an unbounded set of one-string-per-enemy is not something a
+    /// wave-spawning level should accumulate for the process lifetime, however
+    /// rarely each entry is added. Pruned against the live brains each tick.
+    reseat_warned: HashSet<EntityId>,
+    /// Enemies already reported as unable to route to their chase destination.
+    ///
+    /// Entity-keyed, and separate from `warned`, for two reasons a `format!`ed
+    /// string key handled badly: the latch check itself must not allocate (a
+    /// genuinely unroutable enemy reaches it every tick for the rest of the
+    /// run, long after the latch closed), and the set must be prunable, since a
+    /// wave-spawning level would otherwise accumulate one entry per enemy that
+    /// ever blocked. `run_ai_tick_with_navigation_and_impact` prunes it against
+    /// the live brains each tick.
+    blocked_warned: HashSet<EntityId>,
     /// Per-entity bound transition guards. Derived data, rebuilt from each
     /// brain's retained graph whenever the entity is (re)seen.
     programs: BrainPrograms,
@@ -249,6 +292,8 @@ impl AiRuntime {
     pub(crate) fn new() -> Self {
         Self {
             warned: HashSet::new(),
+            blocked_warned: HashSet::new(),
+            reseat_warned: HashSet::new(),
             programs: BrainPrograms::new(),
         }
     }
@@ -323,8 +368,22 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
     // Reconcile the bound-guard side-table with the registry's live brains
     // before anything reads it: this is the single lifecycle hook covering
     // spawn, despawn, and a wholesale deserialize.
-    let AiRuntime { warned, programs } = runtime;
+    let AiRuntime {
+        warned,
+        blocked_warned,
+        reseat_warned,
+        programs,
+    } = runtime;
     programs.sync(registry, warned);
+
+    // Bound the blocked-warn latch to entities that still carry a brain: the
+    // side-table `sync` just reconciled is the authoritative live set, so this
+    // is where the pruning is free. Without it a wave-spawning level accumulates
+    // one entry per enemy that ever blocked, for the process lifetime. A reused
+    // entity id may report once more, which is the right answer for what is a
+    // different enemy.
+    blocked_warned.retain(|id| programs.get(*id).is_some());
+    reseat_warned.retain(|id| programs.get(*id).is_some());
 
     // Pass 1: snapshot every brain-bearing enemy under the immutable borrow.
     let snapshots: Vec<EnemySnapshot> = registry
@@ -408,16 +467,25 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                     None
                 }
             } else if evaluate_acquisition {
-                if let Some(retained) = retained {
-                    select_target(
+                match retained {
+                    Some(retained) => select_target(
                         registry,
                         snap.position,
                         Some(retained.target.entity),
                         false,
                         None,
-                    )
-                } else {
-                    select_target(registry, snap.position, retained_target, false, None)
+                    ),
+                    // `nearest` above IS this scan: it runs exactly when
+                    // `retained` is `None`, with the same arguments, over a
+                    // registry nothing has touched since. Re-running it made
+                    // every non-engaged brain pay the pawn scan twice on each
+                    // stride-due tick — the think stride adding work instead of
+                    // removing it.
+                    None if retained_target.is_none() => nearest,
+                    // A retained id that no longer resolves to a candidate still
+                    // seeds hysteresis, so this scan is genuinely a different
+                    // one.
+                    None => select_target(registry, snap.position, retained_target, false, None),
                 }
             } else {
                 current_target
@@ -463,7 +531,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             let current_index = if state_at(&brain.graph, brain.state_index).is_some() {
                 brain.state_index
             } else {
-                if warned.insert(format!("brain-state:{}", snap.id.to_raw())) {
+                if reseat_warned.insert(snap.id) {
                     log::warn!(
                         "[AI] enemy {} sat in behavior state index {} which its graph does not \
                          declare; re-seating it to `{}`. Warned once per enemy.",
@@ -583,7 +651,12 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
     // switch animation. Mutable borrow only; no iterator held.
     let mut events: Vec<Cow<'static, str>> = Vec::new();
     for mut outcome in outcomes {
-        // Persist the brain (state + timers + stride counter).
+        // Persist the brain (state + timers + stride counter) BEFORE the damage
+        // chokepoint below, so an impact policy, death effect, or `on_impact`
+        // callback reacting to this enemy's attack reads the state it is now in
+        // rather than last tick's. That ordering is why this write stays and the
+        // locomotion latch is folded in by re-reading at the end of the loop
+        // instead of writing this snapshot back a second time.
         let _ = registry.set_component(outcome.id, outcome.brain.clone());
 
         // The entered state's authored entry event. Raised before this tick's
@@ -604,7 +677,8 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
 
         // Steering: chase sets the destination to a selected combat slot when
         // one is available, otherwise to the raw target position. Clear stands
-        // down; hold leaves the agent untouched.
+        // down; hold releases the agent on the tick it takes over and leaves it
+        // untouched thereafter.
         // `set_destination`/`clear_destination` no-op when the enemy carries no
         // agent component.
         match outcome.steering {
@@ -612,28 +686,33 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                 if let Some(target) = outcome.target {
                     let destination = outcome.combat_slot.unwrap_or(target.position);
                     agent_steering::set_destination(registry, outcome.id, destination);
-                    // Diagnostic read of the steering surface: a chasing enemy
-                    // whose agent cannot route to its selected destination (a
-                    // combat slot, or the raw target fallback when no slot was
-                    // assigned) AND holds no previous path to keep following is
-                    // `blocked`. Surface it once per enemy via the warn latch
-                    // so a genuinely unroutable target (a disconnected region,
-                    // or a spawn far off the navmesh — near-wall positions are
-                    // snap-resolved by pathfinding and never latch this) is
-                    // visible without per-tick spam. The steering tick holds a
-                    // pathless blocked agent in place and keeps retrying under
-                    // its replan cooldown; this only reports.
+                    // Diagnostic read of the steering surface: an agent that
+                    // cannot route to the destination it was given AND holds no
+                    // previous path to keep following is `blocked`. Surface it
+                    // once per enemy so a genuinely unroutable target (a
+                    // disconnected region, or a spawn far off the navmesh —
+                    // near-wall positions are snap-resolved by pathfinding and
+                    // never latch this) is visible without per-tick spam. The
+                    // steering tick holds a pathless blocked agent in place and
+                    // keeps retrying under its replan cooldown; this only
+                    // reports.
+                    //
+                    // `path_state` was snapshotted BEFORE the `set_destination`
+                    // above, so the verdict is the steering tick's answer about
+                    // the destination this enemy was chasing LAST tick, not the
+                    // one just written. Reading it after the write would not
+                    // help — `set_destination` deliberately leaves the plan
+                    // intact and `agent_steering::tick` owns the replan — so the
+                    // message says which tick it is describing instead.
                     if let Some(state) = path_state.as_ref() {
-                        if state.blocked {
-                            let key = format!("blocked:{}", outcome.id.to_raw());
-                            if warned.insert(key) {
-                                log::warn!(
-                                    "[AI] enemy {} is chasing its selected destination but its agent \
-                                     found no path (blocked); holding position. Warned \
-                                     once per enemy.",
-                                    outcome.id
-                                );
-                            }
+                        if state.blocked && blocked_warned.insert(outcome.id) {
+                            log::warn!(
+                                "[AI] enemy {} entered this tick blocked: as of the last \
+                                 steering tick its agent had no path to the destination it \
+                                 was chasing, so it is holding position. Warned once per \
+                                 enemy.",
+                                outcome.id
+                            );
                         }
                     }
                 }
@@ -641,7 +720,23 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             SteeringIntent::Clear => {
                 agent_steering::clear_destination(registry, outcome.id);
             }
-            SteeringIntent::Hold => {}
+            SteeringIntent::Hold => {
+                // `freeze` touches nothing PER TICK, but it cannot touch nothing
+                // on the way IN. Entering a freeze state with no action verb
+                // makes the brain unengaged, so `resolve_combat_slots` has just
+                // surrendered its combat slot — and `set_destination` semantics
+                // preserve the existing path, so leaving steering alone would
+                // walk the agent into ground another enemy may claim on the very
+                // next batch. Releasing the claim and continuing to walk into it
+                // are mutually exclusive; the claim is what the slot solver
+                // owns, so the walk is what has to stop. Clearing once on ENTRY
+                // (not every tick) keeps the verb's contract intact afterwards:
+                // a death animation, ragdoll, or scripted mover can drive the
+                // frozen entity without this arm fighting it.
+                if outcome.state_changed {
+                    agent_steering::clear_destination(registry, outcome.id);
+                }
+            }
         }
 
         // Facing (yaw-only): nothing else writes the enemy's `Transform` rotation,
@@ -659,8 +754,11 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         // damage on a pawn behind its back. A state that neither chases nor acts
         // never turns — which is also why a closed aggro gate cannot turn an
         // enemy: it forces the resting state, and resting does neither.
-        // Yaw only (model stays upright); a zero-length direction yields `None` and
-        // writes nothing (never a NaN yaw).
+        // Yaw only (model stays upright); a zero-length OR non-finite direction
+        // yields `None` and writes nothing, and `slew_yaw` re-seats rather than
+        // propagates a non-finite current yaw — between them, no NaN can reach
+        // `Transform.rotation`, which the renderer feeds straight into the model
+        // matrix and which nothing else re-seats.
         if outcome.engaged {
             if let Some(path) = path_state.as_ref() {
                 let facing =
@@ -771,8 +869,20 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                 }
             }
         }
-        outcome.brain.locomotion_moving = locomotion_intent.moving;
-        let _ = registry.set_component(outcome.id, outcome.brain);
+        // Fold the locomotion latch into whatever the component NOW holds. The
+        // damage chokepoint and `on_impact` ran since the publish above, and
+        // either can mutate this entity's brain (`apply_update_enemy_state_to_brain`
+        // writes exactly this component); writing the pre-callback snapshot back
+        // would silently discard that. The latch is the only field this pass
+        // still owns. A missing component means the entity did not survive the
+        // callbacks, and there is nothing to update.
+        if let Ok(mut brain) = registry
+            .get_component::<BrainComponent>(outcome.id)
+            .cloned()
+        {
+            brain.locomotion_moving = locomotion_intent.moving;
+            let _ = registry.set_component(outcome.id, brain);
+        }
     }
 
     events
@@ -825,11 +935,12 @@ fn resolve_combat_slots(
         queries.push(CombatQuery {
             claimant_id: outcome.id.to_raw(),
             agent_pos: outcome.position,
-            engagement_radius: outcome
-                .brain
-                .graph
-                .attack
-                .map_or(0.0, |attack| attack.range),
+            // `attack.range` gates DAMAGE only; this is pure combat-slot
+            // spacing. The accessor resolves explicit `engagementRadius` →
+            // `attack.range` → a default, so a graph with no `attack` block
+            // still spreads chasers onto a ring instead of every one of them
+            // steering at the raw target position and piling up.
+            engagement_radius: outcome.brain.graph.engagement_radius(),
             target_pos: target.position,
             combat_slot: retained_slot,
             scan_challengers: retained_slot.is_none(),

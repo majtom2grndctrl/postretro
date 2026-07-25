@@ -58,11 +58,14 @@ pub const LEGACY_DEATH_STATE: &str = "death";
 /// the edge-by-edge correspondence. `death` carries `freeze` motion and no
 /// outgoing edges: graph evaluation never enters it (death is not a graph
 /// transition — the death sweep latches HP-zero entities), it exists so the
-/// despawn timer and the legacy death animation mapping have a state to occupy.
+/// legacy death animation mapping has a state to occupy.
 ///
-/// Every legacy tuning value is carried forward verbatim, including
-/// `death_despawn_ms`, so a lowered graph never silently substitutes the shared
-/// [`BehaviorGraphDescriptor::DEFAULT_DEATH_DESPAWN_MS`] for an authored value.
+/// Every legacy tuning value that a graph can express is carried forward
+/// verbatim. `engagement_radius` is the deliberate exception: it is left `None`
+/// so the graph resolves its combat-slot radius through `attack.range`, which is
+/// the exact value the pre-graph engine fed combat-slot resolution. Setting it
+/// here would be a second spelling of the same number and would move the
+/// legacy-parity invariant the moment the two drifted.
 pub fn lower_ai_descriptor(ai: &AiDescriptor) -> BehaviorGraphDescriptor {
     let graph = BehaviorGraphDescriptor {
         initial: LEGACY_IDLE_STATE.to_string(),
@@ -155,8 +158,11 @@ pub fn lower_ai_descriptor(ai: &AiDescriptor) -> BehaviorGraphDescriptor {
             range: ai.attack_range,
             cooldown_ms: ai.attack_cooldown_ms,
         }),
+        // Left `None` on purpose — see the doc comment. `attack.range` above is
+        // already `ai.attack_range`, so `engagement_radius()` resolves to the
+        // v0 value without restating it.
+        engagement_radius: None,
         move_speed: ai.move_speed,
-        death_despawn_ms: Some(ai.death_despawn_ms),
     };
     // A malformed edge here is an engine bug, not bad authoring: these trees are
     // generated, so a guard that fails to bind or a destination that names no
@@ -164,6 +170,11 @@ pub fn lower_ai_descriptor(ai: &AiDescriptor) -> BehaviorGraphDescriptor {
     // surfaces at the generation site rather than as a disabled edge at spawn.
     // The descriptor's own numeric bounds are NOT re-checked — those are
     // `AiDescriptor::validate`'s contract, enforced at parse.
+    // `#[cfg(debug_assertions)]` on the statement: a bare `debug_assert!` still
+    // *compiles* (name-resolves) its arguments in release, so without this
+    // attribute the call site would survive release while the debug-only
+    // callee below vanished, breaking the release build.
+    #[cfg(debug_assertions)]
     debug_assert!(
         generated_edges_are_well_formed(&graph),
         "every lowered edge must name a declared state and carry a bindable boolean guard"
@@ -171,20 +182,33 @@ pub fn lower_ai_descriptor(ai: &AiDescriptor) -> BehaviorGraphDescriptor {
     graph
 }
 
-/// Whether every generated edge names a declared state and carries a guard that
-/// binds to a boolean. Sole caller is the `debug_assert!` in
-/// [`lower_ai_descriptor`], so both compile out of release together.
+/// Whether every generated edge names a declared state, carries a guard that
+/// binds to a boolean, and — for state-local edges — does not target its own
+/// declaring state (which `validate` rejects, since a self-edge blocks every
+/// transition declared after it). Sole caller is the `#[cfg(debug_assertions)]`-gated
+/// `debug_assert!` in [`lower_ai_descriptor`], which carries the matching
+/// attribute on its own statement so the call site and this callee compile out
+/// of release together.
 #[cfg(debug_assertions)]
 fn generated_edges_are_well_formed(graph: &BehaviorGraphDescriptor) -> bool {
-    graph
+    // `None` for an interrupt, which MAY name its own target state: the
+    // evaluator skips a self-targeting interrupt rather than letting it win.
+    let edges = graph
         .interrupts
         .iter()
-        .chain(graph.states.values().flat_map(|state| &state.transitions))
-        .all(|transition| {
-            graph.states.contains_key(&transition.to)
-                && crate::brain::bind_brain_guard(&transition.when)
-                    .is_ok_and(|program| program.root_type == crate::ir::IrType::Bool)
-        })
+        .map(|transition| (transition, None))
+        .chain(graph.states.iter().flat_map(|(name, state)| {
+            state
+                .transitions
+                .iter()
+                .map(move |transition| (transition, Some(name.as_str())))
+        }));
+    edges.into_iter().all(|(transition, declaring_state)| {
+        graph.states.contains_key(&transition.to)
+            && declaring_state != Some(transition.to.as_str())
+            && crate::brain::bind_brain_guard(&transition.when)
+                .is_ok_and(|program| program.root_type == crate::ir::IrType::Bool)
+    })
 }
 
 fn target_distance() -> IrNode {
@@ -333,11 +357,15 @@ mod tests {
         let graph = lower_ai_descriptor(&ai);
         assert_eq!(graph.move_speed, ai.move_speed);
         assert_eq!(
-            graph.death_despawn_ms,
-            Some(ai.death_despawn_ms),
-            "an authored despawn delay must not fall through to the shared default"
+            graph.engagement_radius, None,
+            "lowering must not author an engagement radius: legacy parity depends on it \
+             resolving through `attack.range`"
         );
-        assert_eq!(graph.death_despawn_ms(), ai.death_despawn_ms);
+        assert_eq!(
+            graph.engagement_radius(),
+            ai.attack_range,
+            "a lowered graph spreads combat slots at exactly the v0 radius"
+        );
         assert_eq!(
             graph.attack,
             Some(AttackParams {
@@ -426,5 +454,20 @@ mod tests {
         graph
             .validate()
             .expect("a lowered graph passes the authored-graph validator");
+    }
+
+    #[test]
+    fn no_lowered_state_declares_a_transition_to_itself() {
+        // `validate` rejects a state-local self-edge (it blocks every
+        // lower-priority transition instead of re-entering), so the lowering
+        // must never emit one or every legacy enemy would fail to spawn. The
+        // one self-targetable edge is the "no target stands down" INTERRUPT,
+        // which the evaluator skips rather than firing.
+        let graph = lower_ai_descriptor(&sample_descriptor());
+        for (name, state) in &graph.states {
+            for transition in &state.transitions {
+                assert_ne!(&transition.to, name, "`{name}` declares a self-edge");
+            }
+        }
     }
 }

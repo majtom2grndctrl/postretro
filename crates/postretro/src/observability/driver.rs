@@ -9,8 +9,8 @@
 // printed once).
 // See: context/lib/boot_sequence.md §3, context/plans/done/agentic-observability
 
+use std::borrow::Cow;
 use std::cell::RefCell;
-use std::collections::HashSet;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -193,7 +193,7 @@ fn run_headless_inner(
     //    tracker (above), the AI-warning set, the mover tick states, and the
     //    animation clock advanced by dt each tick.
     let registry = script_ctx.registry.clone();
-    let mut ai_runtime: crate::scripting_systems::ai::AiRuntime = HashSet::new();
+    let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
     let mut anim_time: f64 = 0.0;
     let mut prev_fire_active = false;
     // Seeded from tick 0's effective aim (not just `0.0`) so a `ticks: 0` run —
@@ -311,7 +311,7 @@ fn run_headless_inner(
             events.push(TickEventRecord {
                 tick,
                 movement: to_owned_strings(&tick_events.movement),
-                ai: to_owned_strings(&tick_events.ai),
+                ai: to_owned_cow_strings(&tick_events.ai),
                 weapon: weapon_events,
                 death: death_events_for_tick,
             });
@@ -432,6 +432,12 @@ fn warn_unreachable_commands(commands: &[CommandEntry], ticks: u32) {
 
 fn to_owned_strings(events: &[&'static str]) -> Vec<String> {
     events.iter().map(|event| (*event).to_string()).collect()
+}
+
+/// The AI tick reports `Cow` so an authored `onEnter` address rides alongside
+/// the static attack event without cloning the latter every attack tick.
+fn to_owned_cow_strings(events: &[Cow<'static, str>]) -> Vec<String> {
+    events.iter().map(|event| event.to_string()).collect()
 }
 
 /// Resolve the pawn summarized by headless observability.

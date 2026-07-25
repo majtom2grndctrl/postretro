@@ -71,22 +71,58 @@ No runtime, PRL, renderer, `ClassnameDispatch`, or `TriggerVolumeBridge` change.
   also call the encoder.
 - [ ] The emitted trigger's AABB grows past the raw switch brush AABB **per face, by
   `min(use_reach, free distance in front of that face)`** — holding the invariant that
-  **no grown face extends past the near side of any occluder whose cross-section that
-  face overlaps**. A flush-mounted face has zero free distance and does not grow at all;
-  a face 4 units off its mount grows 4; a face fronting open room grows the full margin.
-  Occluders are the static world brush hulls plus the `kinematic_mover` hulls at their
-  authored position, minus the switch's own brushes. Verified by three compiler tests
-  comparing `aabb_min`/`aabb_max` against the brush hull per axis: a switch standing
-  clear of other brushwork, where all six faces grow the full margin (guards against
-  over-refusing); a wall-flush switch, where the walled face keeps the raw hull; a
-  corner-mounted switch with a 4-unit gap to the second wall, where that face grows
-  exactly 4 while the four open faces still grow the full margin.
-- [ ] `use_reach` outside `(0, 128]` map units (`MAX_SWITCH_USE_REACH`) is a **compile
-  error, not a clamp** — zero and negative alike, non-numeric, non-finite, and above the
-  bound. An **empty** value is the one exception: a field the author cleared in
-  TrenchBroom arrives as `""` and falls back to the default rather than failing the
-  compile (the `_lightmap_density` posture). Verified by compiler tests over both ends,
-  the bound itself as a legal value, and the empty-value fallback.
+  **no grown face extends past the near side of any occluder the compiler could not rule
+  out of the corridor that face grows into**. A flush-mounted face has zero free distance
+  and does not grow at all; a face 4 units off its mount grows 4; a face fronting open
+  room grows the full margin. Occluders are the static world brush hulls plus the
+  `kinematic_mover` hulls at their authored position, minus the switch's own brushes.
+  A hull clamps a face only when all three hold: its AABB overlaps that face's
+  cross-section by **positive area** (a 1 mm contact tolerance — edge-on contact is not
+  overlap); its AABB stands past the face on the growth axis by more than that tolerance;
+  and **no single one of the brush's own planes separates the growth prism** (the face's
+  cross-section extended along the growth axis to the full margin) from the brush. The
+  plane test is a one-sided separating-plane test on the box's support point, so it is
+  **conservative, not exact** — it can keep an occluder a finer test would drop, which
+  costs reach rather than leaking it. Verified by compiler tests comparing
+  `aabb_min`/`aabb_max` against the brush hull per axis: a switch standing clear of other
+  brushwork, where all six faces grow the full margin (guards against over-refusing); a
+  wall-flush switch, where the walled face keeps the raw hull; a corner-mounted switch
+  with a 4-unit gap to the second wall, where that face grows exactly 4 while the four
+  open faces still grow the full margin; a mover-mounted switch clamping against a
+  `kinematic_mover` hull; a one-unit gap resolving at the flush tolerance; a partially
+  overlapping occluder clamping the whole face; and a **diagonal brush whose AABB
+  straddles the switch on every axis**, which must clamp nothing.
+- [ ] A `switch` with **no brushes** is a **compile error**, and so is a `switch` owning
+  **more than one brush**. A brushless switch has nothing to desugar and previously fell
+  through to the point-entity tail as a `MapEntityRecord` the runtime silently drops; a
+  multi-brush switch unions its brushes into one AABB, and the per-face clamp cannot
+  catch that because every face of the union fronts open room. Both `bail!` with the
+  switch's name and the brushwork's position (`name` is optional in the FGD, so an
+  unnamed offender must still be findable). Verified by compiler tests asserting the
+  compile fails and the message names the classname and the real problem.
+- [ ] `use_reach` above 128 map units (`MAX_SWITCH_USE_REACH`) or at/below the
+  **flush-tolerance floor** (`FLUSH_TOLERANCE_METERS / scale`, ≈ 0.0394 map units) is a
+  **compile error, not a clamp** — negatives, non-numeric, and non-finite alike. The
+  floor is the flush tolerance rather than zero because per-face growth at or under that
+  tolerance is discarded as float dust: a margin below it grows nothing, so it would
+  compile into a volume no larger than the solid brush while the diagnostic reported it
+  as clamped against geometry that was never there. An **empty** value is the one
+  exception: a field the author cleared in TrenchBroom arrives as `""` and falls back to
+  the default rather than failing the compile (the `_lightmap_density` posture). Verified
+  by compiler tests over both ends, the bound itself as a legal value, and the
+  empty-value fallback.
+- [ ] A switch that grew **no horizontal press margin** — every face on X and Z clamped
+  or under the flush tolerance — emits a `warn!`. Engine space is Y-up, so a player
+  presses sideways from a standing position: a volume that grew only upward is reachable
+  from flush contact or directly above and nowhere a player stands. The rule is *no
+  horizontal face grew*, not *any face was zeroed* — a flush wall mount legitimately
+  zeroes exactly one horizontal face and must stay silent. Reported as one aggregate line
+  plus a bounded number of per-switch detail lines naming the clamping plane per face.
+  The text says the volume was **clamped against geometry standing in front of it**, not
+  that the switch is enclosed in solid: the plane test is conservative, so the stronger
+  claim is not defensible. Not unit-assertable (the `CollectingLogger` is a process-global
+  backend); the trigger condition is covered by a test asserting a sunk console grows only
+  upward.
 - [ ] In-engine, pressing `use` while standing in front of a placed `switch` fires its
   `on_fire` reaction (and/or commands its `target_tag` mover) identically to an
   equivalent `use` `trigger_volume`. Verified on a dev-map fixture (manual gate — the
@@ -208,12 +244,14 @@ classname string, not the FGD file.
   test, `trigger_system.rs` `capsule_overlaps_aabb` + `use_pressed`, not containment),
   so the trigger must extend past the solid switch face into the space the player
   stands in. The player capsule radius is an authored descriptor field
-  (`CapsuleParams.radius`, ~0.4 m in fixtures), not an engine constant the compiler can
-  read — the overlap test already effectively grants ~radius of reach *on top of* the
-  margin, which is why a margin on a face that abuts a wall reaches through it (see
-  Decisions). Pin the default at 24 map units (~0.61 m), which the compiler hardcodes as
-  a literal (it cannot read the runtime descriptor) and which exceeds the ~0.4 m capsule
-  radius. Apply it per face, clamped to the free space in front of that face.
+  (`CapsuleParams.radius`), not an engine constant the compiler can read — the only
+  authored first-party value is **0.2 m** (`content/dev/scripts/player.ts`, ≈ 7.9 map
+  units); every 0.4 m figure in the repo is a test fixture. The overlap test already
+  effectively grants ~radius of reach *on top of* the margin, which is why a margin on a
+  face that abuts a wall reaches through it (see Decisions). Pin the default at 24 map
+  units (~0.61 m), which the compiler hardcodes as a literal (it cannot read the runtime
+  descriptor) and which exceeds the capsule radius. Apply it per face, clamped to the
+  free space in front of that face.
 - **No depress:** static geometry means the switch does not move on press. That is the
   v1 boundary (Out of scope).
 
@@ -245,22 +283,30 @@ classname string, not the FGD file.
   compiler always applies `use_reach`. It ships with a default (Task 1), so it is not an
   author-required KVP; exposing it as a tunable lets mappers widen reach for large
   consoles or recessed switches.
-- **Revised twice during implementation: grow per face, clamped to the free space in
-  front of it.** This spec originally specified uniform inflation on every axis and
-  defended it with "for a wall-flush switch the rear/side margins fall inside solid wall
-  and are unreachable; the front margin is the reachable one." **That reasoning was wrong
-  on a load-bearing point: it omitted the player capsule radius.** `capsule_overlaps_aabb`
-  measures axis-to-AABB distance against `radius²`, so effective reach past a face is
-  `use_reach * scale + radius` — `24 * 0.0254 + 0.4` m = `1.0096` m, or **≈ 40 map units
-  at defaults**, against first-party walls that are 16 units thick. (An earlier draft of
-  this bullet said ~31 units; that figure carried a `− SKIN_DISTANCE` term that was
-  correctly dropped without recomputing the number. The corrected figure makes the
-  original defect **worse** than this plan recorded, not better: the rear *margin* alone
-  landed 8 units past the `switch-demo` wall's far face, but effective reach put the
-  pressable point ~24 units into the next room.) A margin does not have to *contain* the
-  player to be reachable; it only has to come within a capsule radius of them. So a player
-  in the next room, facing away, could fire the switch through the wall. Shipping that was
-  rejected and revising this spec was authorized instead.
+- **Revised three times during implementation: grow per face, clamped against the
+  occluding brushes' own planes.** This spec originally specified uniform inflation on
+  every axis and defended it with "for a wall-flush switch the rear/side margins fall
+  inside solid wall and are unreachable; the front margin is the reachable one." **That
+  reasoning was wrong on a load-bearing point: it omitted the player capsule radius.**
+  `capsule_overlaps_aabb` measures axis-to-AABB distance against `radius²`, so effective
+  reach past a face is `use_reach * scale + radius` — `24 * 0.0254 + 0.2` m = `0.8096` m,
+  or **≈ 31.9 map units at defaults**, against first-party walls that are 16 units thick.
+  A margin does not have to *contain* the player to be reachable; it only has to come
+  within a capsule radius of them. So a player in the next room, facing away, could fire
+  the switch through the wall. Shipping that was rejected and revising this spec was
+  authorized instead.
+- **The 31.9-unit figure was "corrected" to ~40 and defended with a fabricated
+  provenance note. Both are retracted.** A later pass rewrote the number as ~40 units
+  (`24 * 0.0254 + 0.4`) and annotated it with a note claiming the original ~31 carried a
+  dropped `− SKIN_DISTANCE` term, instructing future readers not to change it back. **The
+  note was invented; there was no `SKIN_DISTANCE` term.** The `0.4` came from reading a
+  test fixture as if it were the engine value. The capsule radius is an author-controlled
+  descriptor field with **no `Default`** — every `0.4` in the repo is a test fixture, and
+  the only authored first-party value is **0.2 m** (`content/dev/scripts/player.ts`,
+  ≈ 7.9 map units). So the original ~31 was right and the correction was wrong. Recorded
+  at length because the failure mode is the point: a fabricated rationale in a Decisions
+  section is worse than a wrong number. A wrong number gets recomputed by the next reader;
+  a wrong number with a provenance story and a do-not-revert instruction gets preserved.
 - **The first replacement was also wrong: a per-face probe was a sampling error.** The fix
   that superseded uniform inflation tested each face's adjacent space with a single probe
   point one map unit out, then grew that face by the full 24. This plan recorded that as
@@ -273,31 +319,76 @@ classname string, not the FGD file.
   test that samples at distance A must not license an action that reaches to distance B.
   The probe and the growth have to be the same question. A boolean "is it open?" cannot
   authorize a quantity.
-- **What ships: growth clamped per face to the nearest occluder standing past it.** Each
+- **The second replacement was also wrong: an AABB is not a usable proxy for its brush.**
+  The version that superseded the probe clamped each face against the *AABBs* of the
+  occluder set. **That was wrong in the opposite direction, and the direction is why it
+  survived review.** A brush's AABB is not the brush: a diagonal partition, wedge, ramp,
+  one-brush staircase, or 45° chamfer a hundred units away can have an AABB that straddles
+  the switch on every axis and overlaps every cross-section. That zeroed all six faces —
+  an unpressable switch, clamped against geometry that was never in front of it — and the
+  compiler then emitted a diagnostic claiming the switch was "enclosed by solid geometry",
+  which was simply false. **Every stated invariant still held.** The failure was silent and
+  inverted: over-refusal, not over-reach. Nothing in the plan, the code, or the test suite
+  was looking in that direction, because the two prior failures had both been leaks.
+  **The generalisable point: a conservative proxy is only safe if you know which way
+  "conservative" points.** Fail-closed is not automatically the safe side — here it pointed
+  at *unpressable*, and an unpressable switch is a broken map with no error and no failing
+  test. Ask what the proxy's error does to the user, not just whether it is one-sided.
+- **What ships: growth clamped per face against the occluding brushes' own planes.** Each
   face grows by `min(margin, free distance)`, holding the invariant *no grown face extends
-  past the near side of any occluder whose cross-section that face overlaps*. Flush
+  past the near side of any occluder the compiler could not rule out of the corridor that
+  face grows into*. An occluder qualifies only after two cheap AABB rejects (positive-area
+  cross-section overlap; standing past the face on the growth axis) **and** a
+  separating-plane test of the brush's own planes against the **growth prism** — the
+  face's cross-section extended out to the full margin. The AABB gets to say "maybe"; the
+  brush's planes get the last word, which is what kills the diagonal-partition case. Flush
   mounting falls out as a zero gap rather than being a special case, and the floated-switch
   gap is no longer a residual — growth stops at the mount whatever the gap. `kinematic_mover`
   hulls are in the occluder set at their **authored** position, so a switch on a door or
   lift clamps against its mount; reach stays conservative for a mover that later moves
-  away, which is the right trade against pressing through a closed door. Cross-section
-  overlap must be positive-area within a 1 mm tolerance: trigger AABBs are `f32` on the
-  wire while brush hulls are f64, and a strict comparison reported phantom overlaps at
+  away, which is the right trade against pressing through a closed door. Every comparison
+  that can straddle a contact plane carries a 1 mm tolerance: trigger AABBs are `f32` on the
+  wire while brush hulls are f64, and strict comparisons reported phantom overlaps at
   flush contact planes (a flush mount touches four of the console's faces edge-on, and
   counting that as overlap zeroed all four margins). Cost: the clamp needs the finished
   static world brush set, so the margins move out of the entity loop into a pass after
-  `build_brush_volumes`. **Deliberately stated with what it does not cover** — the third
-  claim in this sequence should not be the third overclaim. The runtime still measures from
-  the capsule axis, so effective reach is the clamped distance *plus* the capsule radius
-  (~15.75 map units); an occluder thinner than that radius remains pressable through.
-  Clamping removes the margin from the leak, not the radius. The compiler docs and the FGD
-  say so alongside the invariant.
-- **`use_reach` is range-checked, not clamped.** Zero is rejected alongside negatives:
-  the margin *is* the reach mechanism, so a zero-margin switch would compile clean and be
-  unpressable. An upper bound (`MAX_SWITCH_USE_REACH`) rejects the authoring typo it
-  exists for — a stray digit, a unit mix-up — before it becomes a press volume that
-  swallows the room and fires on every `use` press in it. Both ends error rather than
-  clamp: a silently-corrected value hides the mistake that produced it.
+  `build_brush_volumes`.
+- **The replacement says it is conservative instead of claiming it is exact — that is the
+  discipline the first three lacked.** The separating-plane test tries only the brush's own
+  planes, so a prism that survives them may still miss the brush; an edge-cross axis is
+  never formed. The doc comment states this, states which direction the error runs (a false
+  positive costs a face some reach; a false negative would put a pressable volume inside
+  solid), and carries an explicit *what this does not cover* list. The diagnostic follows
+  the same rule: it reports what the compiler concluded ("clamped against geometry standing
+  in front of it"), never what the room contains. The capsule-radius residual is stated
+  too: the runtime still measures from the capsule axis, so effective reach is the clamped
+  distance *plus* the radius (≈ 7.9 map units at the authored 0.2 m), and an occluder
+  thinner than that stays pressable through. Clamping removes the margin from the leak, not
+  the radius. Each of the first three versions shipped
+  with a confident claim — "unreachable", "structurally impossible", "enclosed by solid
+  geometry" — that was false. A stated bound that is honest beats an exactness claim that
+  is not.
+- **`use_reach` is range-checked, not clamped.** The floor is the compiler's flush
+  tolerance expressed in map units, not zero: growth at or under that tolerance is
+  discarded as float dust, so any smaller margin grows no face and compiles into a volume
+  no larger than the solid brush — while the no-horizontal-growth diagnostic reports it as
+  clamped against geometry that was never there. Note the reason is **not** that such a
+  switch is unpressable; an earlier draft of this bullet said so and the code explicitly
+  retracts it. The runtime measures from the capsule *axis*, so a zero-margin volume is
+  still reachable from flush contact. Pressable only by standing against it is a typo or a
+  cleared-to-zero field, not intent — which is what the range check is for. An upper bound
+  (`MAX_SWITCH_USE_REACH`) rejects the authoring typo it exists for — a stray digit, a unit
+  mix-up — before it becomes a press volume that swallows the room and fires on every `use`
+  press in it. Both ends error rather than clamp: a silently-corrected value hides the
+  mistake that produced it.
+- **One brush per switch, and never zero.** Both are hard errors, for opposite reasons. A
+  brushless `switch` has nothing to desugar and fell through to the point-entity tail,
+  emitting a `MapEntityRecord` the runtime drops at `debug!` as an unregistered classname —
+  no geometry, no trigger, no diagnostic, silent at every level. A multi-brush `switch`
+  unions its brushes into a single AABB, so two consoles on facing walls produce a
+  room-spanning press volume, and the per-face clamp cannot catch it because every face of
+  that union fronts open room — `MAX_SWITCH_USE_REACH` bounds the margin, not the hull it
+  is added to. `fog_volume` already carried the multi-brush precedent for the same reason.
 
 ## Open questions
 

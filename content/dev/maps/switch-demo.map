@@ -167,11 +167,17 @@
 "_bake_only" "0"
 "_shadow_type" "static_light_map"
 }
-// entity 8 -- the console indicator, authored on the dynamic tier. Sits 8 units
-// in front of the switch plate face at y 312, centred on it in x and z. Dim and
-// short-range on purpose: it must read as the console lighting up, not as room
-// light, so it stays well under the two room lights above. switch-demo.ts holds
-// it dark on spawn and fades it up on press.
+// entity 8 -- the press indicator, authored on the dynamic tier. switch-demo.ts
+// holds it dark on spawn and fades it up on press, so it is the confirmation a
+// tester sees when the switch fires.
+// Placement was retuned by hand so the three lights read distinctly while
+// testing; it now sits mid-room rather than against the console, and at 400 it
+// is the brightest light here. It therefore reads as the room lighting up, not
+// as the console lighting up -- fine for confirming a press landed, weaker as a
+// check that the press is visible while looking AT the switch, which is what
+// the no-facing-check design makes it worth confirming. Move it back toward the
+// plate face (y 312, x 224, z 56) and back under the room lights if that is the
+// property being tested.
 // light_dynamic is a design decision, not a spelling of light. A baked light
 // that a script animates leaves the static lightmap for the animated-lightmap
 // atlas, and animated weight maps only cover atlas array layer 0 -- a face the
@@ -185,10 +191,10 @@
 // The dynamic class omits every bake KVP -- style, _bake_only, _shadow_type,
 // _animated, _start_inactive -- because nothing on this tier bakes. The tier
 // comes from the classname; there is no KVP that selects it.
-// _cast_entity_shadows 0 drops the per-entity occluder pass for this light: it
-// is a 96-unit indicator whose only receiver in range is the plate it is
-// mounted on. The light's WORLD shadow is unaffected -- that rides the tier
-// itself, not this toggle.
+// _cast_entity_shadows 0 drops the per-entity occluder pass for this light --
+// nothing in this fixture moves through its range that needs to cast onto the
+// world. The light's WORLD shadow is unaffected; that rides the tier itself,
+// not this toggle.
 {
 "classname" "light_dynamic"
 "origin" "224 224 96"

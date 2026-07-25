@@ -287,9 +287,11 @@ made coincident land a few hundred nanometres apart. Any *strict* comparison acr
 boundary therefore misfires at exactly-touching planes — the case flush-mounted brushwork
 produces constantly.
 
-**It bit the switch clamp once already.** A strict cross-section overlap test reported
+**It bit the switch clamp twice.** A strict cross-section overlap test reported
 phantom overlaps where a wall touches four of the console's faces edge-on, zeroing all four
-margins. Fixed with a 1 mm contact tolerance, chosen to sit above f32 representation error
+margins; separately, the untoleranced "stands past this face" comparisons let a coplanar
+mount read either way depending on `f32` rounding. Both now use a 1 mm contact tolerance,
+chosen to sit above f32 representation error
 at level coordinates (~1e-6 m near the origin, approaching 1e-4 m at 800 m out) and 25×
 below one map unit, so no authored dimension can hide inside it.
 
@@ -298,6 +300,37 @@ against compiler-side hulls plausibly has the same latent bug — fog cell masks
 zone resolution, and cell/AABB containment are the obvious candidates by shape. This
 session did not check any of them; the finding is the hazard and the precedent for the fix,
 not a survey.
+
+---
+
+## 9. Open residuals of the switch reach clamp
+
+### A mover that moves *into* the reach corridor is no occluder **[confirmed]**
+
+`kinematic_mover` hulls join the occluder set at their **authored** (compile-time)
+position. A mover authored *clear* of a switch that later travels into the corridor a
+face grew into — a blast door authored open and closed by that very switch — clamps
+nothing at compile time, so the face grows fully and at runtime the press volume sits
+behind a closed solid. The opposite case (authored across the corridor, later moves away)
+only costs reach, which is the safe direction. Documented in the compiler's own
+*what this does not cover* list.
+
+Closing it needs either a runtime test — evaluate the press against the mover's current
+hull rather than a baked AABB — or a compile-time sweep of the mover's whole path,
+clamping against the union of its positions. Both are outside this spec's boundary (FGD +
+level compiler + tests); the runtime option touches `trigger_system`, and the sweep needs
+the resolved waypoint path, which is built after the reach pass.
+
+### The FGD's behavioural prose is unguarded **[confirmed]**
+
+`fgd_switch_use_reach_matches_the_compiler_constants` pins exactly two things numerically:
+the `use_reach` default parsed out of the attribute line, and the ceiling parsed out of the
+help text after a fixed `no more than ` marker. It reads nothing else in the file. Every
+other behavioural sentence in the `switch` class's ~50-line header — that the brushwork
+renders and collides, that `activation` is forced to `use`, that reach is clamped per face,
+that one entity may own only one brush — can drift out of step with the compiler silently.
+The one guarded number is the one least likely to be wrong. A cheap improvement: assert a
+handful of load-bearing phrases, or move the prose to a generated block.
 
 ---
 
@@ -313,18 +346,52 @@ not a survey.
   bare `cargo test` on the crate; the gated set measured ~31 min and a bare run is cheap.
   Dropping `occlusion-test` from `GATE_FIXTURES` cut the gates 7× (1812s → 260s), putting
   the gated set at ~5 min. Figures replaced with measured ones.
-- **Switches were pressable through walls — fixed twice, because the first fix was also
-  wrong.** The spec's uniform all-axis inflation omitted the player capsule radius, so
-  effective reach was `use_reach * scale + radius` = **≈ 40 map units** at defaults
-  (`24 * 0.0254 + 0.4` m) against 16-unit walls. (Earlier drafts of this file and the spec
-  said ~31; that figure carried a `− SKIN_DISTANCE` term dropped without recomputing. The
-  real number makes the original defect worse than recorded, not better.) The first
-  replacement — probe one map unit out per face, then grow the full 24 — was a *sampling*
-  error: any solid between 1 and 24 units out was sampled as open and grown through, leak
-  condition `clearance + thickness < use_reach`. What ships clamps each face to the free
-  distance in front of it. Spec revised rather than shipped both times; both lessons, and
+- **Switches were pressable through walls — fixed three times, because the first two
+  fixes were also wrong.** The spec's uniform all-axis inflation omitted the player capsule
+  radius, so effective reach was `use_reach * scale + radius` = `24 * 0.0254 + 0.2` m =
+  `0.8096` m, **≈ 31.9 map units** at defaults, against 16-unit walls. (An earlier pass
+  restated this as ~40 units and annotated it with a provenance note claiming the ~31
+  carried a dropped `− SKIN_DISTANCE` term. **That note was fabricated — there was no such
+  term.** The `0.4 m` radius behind the ~40 was read out of a test fixture; the capsule
+  radius is an authored descriptor field with no `Default`, and the only authored
+  first-party value is `0.2 m` in `content/dev/scripts/player.ts`, ≈ 7.9 map units. The
+  note and the ~40 are both deleted.) The first replacement — probe one map unit out per
+  face, then grow the full 24 — was a *sampling* error: any solid between 1 and 24 units
+  out was sampled as open and grown through, leak condition
+  `clearance + thickness < use_reach`. What ships clamps each face against the occluding
+  brushes' own planes. Spec revised rather than shipped all three times; every lesson, and
   what the final invariant deliberately does **not** cover, are recorded in its Decisions
   section.
+- **The AABB-proxy clamp made switches unpressable, silently and in the safe-looking
+  direction** **[confirmed]**. The second replacement clamped each face against occluder
+  *AABBs*. A brush's AABB is not the brush: a diagonal partition, wedge, ramp, one-brush
+  staircase, or 45° chamfer far from the switch can have an AABB that straddles the switch
+  on every axis and overlaps every cross-section, zeroing all six faces against geometry
+  that was never in front of them. Fail-closed, so every stated invariant still held and no
+  test or claim caught it. Now each candidate occluder must also survive a separating-plane
+  test of its own planes against the face's **growth prism**. Covered by
+  `switch_reach_ignores_a_diagonal_brush_its_aabb_straddles_the_switch`.
+- **The stands-past comparisons had no tolerance** **[confirmed]**. Cross-section overlap
+  carried the 1 mm contact tolerance but the "does this occluder stand past the face"
+  comparisons did not, so a mount coplanar with a face read as standing past it or not
+  depending on which way the trigger's `f32` bounds rounded. Both now use the same
+  tolerance, for the same reason (see §8).
+- **The clamp diagnostic claimed "enclosed by solid geometry"** **[confirmed]**. False on
+  its face — the clamp is conservative, so it cannot establish enclosure, and under the
+  AABB-proxy defect above it said this about switches standing in open room. The warning
+  now reports only what the compiler concluded: the volume was clamped against geometry
+  standing in front of it, with the clamping plane named per face. It fires on
+  *no horizontal face grew* (Y-up, so a player presses sideways), not on *any face was
+  zeroed* — a flush wall mount legitimately zeroes one horizontal face and stays silent.
+- **A blank KVP meant different things to different keys** **[confirmed]**. TrenchBroom
+  writes `""` for a cleared field rather than dropping the key, so a cleared `fire_mode`
+  hit an "unknown value" bail that printed empty backticks and a cleared `rearm_ms` hit a
+  float parse error on the empty string — diagnostics naming a value the author cannot see
+  in the editor. Blank now means "unset, use the FGD default" uniformly across
+  `activation`, `command`, `fire_mode`, `rearm_ms`, `enabled_on_spawn`, and `use_reach`,
+  applied in the shared resolver, so it reaches `trigger_volume` too. `command_arg` is
+  deliberately excluded: it is the one key whose emptiness is itself an error condition
+  (`go_to_path_node` requires it).
 - **A switch floated off its mount grew across the gap** (previously filed here as an
   accepted probe residual). Growth is now clamped to the actual free distance, so it stops
   at the mount whatever the gap — flush mounting is just the zero-gap case. No longer an

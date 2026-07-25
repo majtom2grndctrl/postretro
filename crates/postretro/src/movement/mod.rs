@@ -6,6 +6,7 @@ use glam::{Vec2, Vec3};
 mod carry;
 mod dispatch;
 mod intents;
+mod mover_carry;
 mod scope;
 mod substrate;
 

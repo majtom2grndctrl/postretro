@@ -131,7 +131,7 @@ pub(crate) fn request_renderer_device(
     // context/plans/drafts/perf-animated-sh-light-culling/index.md
     // tracks the fix: sparse per-light delta storage that keeps the total
     // binding under the 128 MiB spec floor regardless of light count.
-    const REQUIRED_STORAGE_BUFFER_BINDING_SIZE: u64 = 2 * 1024 * 1024 * 1024 - 4;
+    const REQUIRED_STORAGE_BUFFER_BINDING_SIZE: u64 = 2 * 1024 * 1024 * 1024 - 8;
     // Lightmap atlases bake up to 8192² (see
     // `crates/level-compiler/src/lightmap_bake.rs::MAX_ATLAS_DIMENSION`).
     // The bake is a CLI with no GPU device, so its cap is a fixed constant —
@@ -147,7 +147,7 @@ pub(crate) fn request_renderer_device(
     // silently. It also sits within reach of real adapters: the dev Apple-Silicon
     // device caps below 3 GiB, so a higher floor (e.g. 4 GiB) rejects it.
     // Revisit against a known target-hardware floor once shipping maps exist.
-    const REQUIRED_MAX_BUFFER_SIZE: u64 = 2 * 1024 * 1024 * 1024;
+    const REQUIRED_MAX_BUFFER_SIZE: u64 = 2 * 1024 * 1024 * 1024 - 8;
     let adapter_limits = adapter.limits();
     let required_limits = wgpu::Limits {
         max_bind_groups: 8,

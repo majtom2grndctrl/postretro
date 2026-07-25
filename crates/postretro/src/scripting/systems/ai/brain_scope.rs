@@ -12,10 +12,6 @@
 //
 // Read-only: guards consume state, they never write it. `resolve_output`
 // returns `None` for every name; `write` is unreachable.
-//
-// Nothing in the tick binds guards yet, so outside the tests below this surface
-// has no caller; the allow keeps that warning-free without item-level noise.
-#![cfg_attr(not(test), allow(dead_code))]
 
 use std::cell::RefCell;
 

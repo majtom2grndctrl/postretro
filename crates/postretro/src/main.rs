@@ -528,7 +528,7 @@ pub(crate) struct App {
     /// animation kept) and `blocked:<id>` for a chasing enemy whose agent found
     /// no path. Lives on `App` (the AI tick owner), threaded into
     /// `scripting_systems::ai::run_ai_tick`. See: scripting/systems/ai.rs.
-    ai_warned: std::collections::HashSet<String>,
+    ai_runtime: crate::scripting_systems::ai::AiRuntime,
 
     /// Last cursor position in device pixels, tracked from winit `CursorMoved`
     /// while the cursor is released (UI mode). Tracked *state*, never queued:
@@ -1940,7 +1940,7 @@ impl ApplicationHandler for App {
                 // consequential work instead executes and rechecks inside each fixed tick.
                 // See: context/lib/entity_model.md §5
                 let mut pending_movement_events: Vec<&'static str> = Vec::new();
-                let mut pending_ai_events: Vec<&'static str> = Vec::new();
+                let mut pending_ai_events: Vec<std::borrow::Cow<'static, str>> = Vec::new();
                 let mut pending_weapon_events: Vec<&'static str> = Vec::new();
                 let mut pending_reload_deliveries: Vec<sim::ReloadDelivery> = Vec::new();
                 let mut pending_trigger_residuals = Vec::new();
@@ -2147,7 +2147,7 @@ impl ApplicationHandler for App {
                             frame_anim_time,
                             presentation_camera_aim,
                             progress_tracker,
-                            &mut self.ai_warned,
+                            &mut self.ai_runtime,
                             &self.kinematic_mover_colliders,
                             &mut self.kinematic_mover_tick_states,
                             &remote_pawn_commands,
@@ -6440,7 +6440,7 @@ mod tests {
     #[test]
     fn sim_catchup_pushes_interpolation_state_per_tick() {
         use std::cell::RefCell;
-        use std::collections::HashSet;
+
         use std::rc::Rc;
 
         use crate::collision::CollisionWorld;
@@ -6478,7 +6478,7 @@ mod tests {
         let world = CollisionWorld::new();
         let hit_zones = scripting_systems::hit_zones::HitZoneStore::new();
         let mut progress = ProgressTracker::new();
-        let mut ai_warned = HashSet::new();
+        let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
         let mover_colliders = Vec::new();
         let mut mover_states = kinematic_mover::MoverTickStateTable::default();
         let remote_inputs = Vec::new();
@@ -6511,7 +6511,7 @@ mod tests {
                 None,
                 0.0,
                 &mut progress,
-                &mut ai_warned,
+                &mut ai_runtime,
                 &mover_colliders,
                 &mut mover_states,
                 &remote_inputs,
@@ -6827,7 +6827,7 @@ mod tests {
     #[test]
     fn simulate_tick_resolves_weapon_aim_after_movement_camera_follow() {
         use std::cell::RefCell;
-        use std::collections::HashSet;
+
         use std::rc::Rc;
 
         use crate::collision::CollisionWorld;
@@ -6859,7 +6859,7 @@ mod tests {
         let world = CollisionWorld::new();
         let hit_zones = scripting_systems::hit_zones::HitZoneStore::new();
         let mut progress = ProgressTracker::new();
-        let mut ai_warned = HashSet::new();
+        let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
         let mover_colliders = Vec::new();
         let mut mover_states = kinematic_mover::MoverTickStateTable::default();
         let remote_inputs = Vec::new();
@@ -6891,7 +6891,7 @@ mod tests {
             None,
             0.0,
             &mut progress,
-            &mut ai_warned,
+            &mut ai_runtime,
             &mover_colliders,
             &mut mover_states,
             &remote_inputs,

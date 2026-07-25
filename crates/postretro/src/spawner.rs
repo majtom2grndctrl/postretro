@@ -485,7 +485,7 @@ mod tests {
             "the descriptor attachment must not overwrite the interpolation windup"
         );
 
-        let mut warned = HashSet::new();
+        let mut warned = crate::scripting_systems::ai::AiRuntime::new();
         let dt_secs = 0.05;
         for _ in 0..4 {
             assert!(
@@ -505,7 +505,7 @@ mod tests {
 
         assert_eq!(
             run_ai_tick(&mut registry, &mut warned, dt_secs),
-            vec![ENEMY_ATTACK_EVENT],
+            vec![std::borrow::Cow::Borrowed(ENEMY_ATTACK_EVENT)],
             "the enemy attacks once exactly when the seeded windup reaches zero"
         );
         assert!(

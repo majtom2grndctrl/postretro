@@ -1,35 +1,51 @@
-// Engine-owned enemy FSM tick: snapshot/compute/apply passes over enemy
-// brains — target steering, damage, animation, and facing.
+// Engine-owned enemy brain tick: snapshot/compute/apply passes over enemy
+// behavior graphs — target steering, damage, animation, and facing.
 // See: context/lib/entity_model.md §5 (fixed-tick game logic) ·
 //      context/lib/scripting.md §10.5 (the contextual damage chokepoint)
 
-// Architectural decision (M10): an engine-owned Rust FSM with a closed
-// transition set; tuning is declarative; there is no live VM at tick. Scripts
-// declare thresholds and the logical→animation map; Rust executes. The
-// transition core (`transition.rs`) is a pure function over (target position,
-// agent position, tuning, current state) — no registry, no `App` — so it is
-// unit-testable without a GPU; this module layers the registry reads/writes,
-// target selection (`targeting.rs`), damage, and animation switching on top.
+// Mods declare the state graph; Rust executes it. Every brain carries one
+// representation — a `BehaviorGraphDescriptor`, authored directly or lowered
+// from a legacy `components.ai` block — and this module drives exactly one
+// evaluator over it. There is no live VM at tick: guards are IR programs bound
+// once per graph into the evaluator's side-table (`brain_programs.rs`) and read
+// through a refreshed scope (`brain_scope.rs`).
+//
+// The split of duties: `graph_eval.rs` owns the pure selection and the verb
+// vocabulary, `targeting.rs` owns target selection, and this module layers the
+// registry reads/writes — steering, damage, facing, animation — on top. The
+// engine floor (stride, target selection, hysteresis, combat slots, the aggro
+// gate) sits UPSTREAM of guard evaluation and is not authorable.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 use glam::{Quat, Vec3};
 
 mod brain_programs;
 mod brain_scope;
+mod graph_eval;
 mod targeting;
 mod transition;
 
+use brain_programs::BrainPrograms;
+use brain_scope::BrainFacts;
+use graph_eval::{
+    action_for_state, animation_for_state, chases, initial_index, select_transition, state_at,
+    steering_for,
+};
+pub(crate) use graph_eval::{locomotion_animation, rest_animation};
 use targeting::{
     TargetPawn, acquisition_due, select_target, selected_target_alive, target_candidate,
     target_distance,
 };
-use transition::{SteeringIntent, evaluate_transition};
+use transition::SteeringIntent;
 // `ai_tests` is included here via `#[path]`, so its `use super::*` resolves
 // against this module — the split moved these into submodules, but the tests
 // still name them unqualified.
 #[cfg(test)]
-use transition::{TARGET_SWITCH_HYSTERESIS_DISTANCE, think_stride_for_distance};
+use transition::{
+    TARGET_SWITCH_HYSTERESIS_DISTANCE, evaluate_transition, think_stride_for_distance,
+};
 
 use crate::agent_steering;
 use crate::collision::CollisionWorld;
@@ -40,7 +56,7 @@ use crate::combat_positioning::{
 use crate::nav::NavGraph;
 #[cfg(test)]
 use crate::nav::distance_xz;
-use postretro_entities::components::brain::{AiStateMap, BrainComponent, LogicalState};
+use postretro_entities::components::brain::BrainComponent;
 use postretro_entities::components::health::{
     DamageContext, DamageProducer, apply_damage_with_context,
 };
@@ -51,7 +67,7 @@ use postretro_entities::{
     ComponentKind, ComponentValue, DeferredEffectComponent, DeferredEffectKind, EntityId,
     EntityRegistry, Transform,
 };
-use postretro_foundation::DamagePayload;
+use postretro_foundation::{ActionVerb, DamagePayload};
 
 /// Event name fired once per enemy attack that lands this tick. Mirrors the
 /// weapon-fire event precedent (`"activate"`/`"impact"`): the tick returns the
@@ -61,10 +77,10 @@ pub(crate) const ENEMY_ATTACK_EVENT: &str = "enemyAttack";
 const ENEMY_ATTACK_SOURCE_ID: &str = "enemy.attack";
 
 /// Minimum XZ speed (units/sec) the agent must exceed for "moving" behavior:
-/// above it the enemy orients to its velocity and `Alert` selects its walk
-/// animation; at or below it the enemy is treated as stopped and uses player
-/// facing/idle animation. A shared epsilon keeps facing and locomotion animation
-/// in agreement.
+/// above it the enemy orients to its velocity and a locomotion state plays its
+/// own travel animation; at or below it the enemy is treated as stopped, faces
+/// its target, and a locomotion state substitutes the graph's rest animation. A
+/// shared epsilon keeps facing and locomotion animation in agreement.
 const MOVE_SPEED_EPSILON: f32 = 0.05;
 
 /// Maximum enemy-facing yaw rotation, in radians/sec. Higher than path steering
@@ -94,18 +110,6 @@ impl LocomotionIntent {
             moving: speed_xz_sq > MOVE_SPEED_EPSILON * MOVE_SPEED_EPSILON,
             speed_xz_sq,
         }
-    }
-}
-
-fn animation_for_locomotion(
-    state: LogicalState,
-    intent: LocomotionIntent,
-    states: &AiStateMap,
-) -> &str {
-    if state == LogicalState::Alert && !intent.moving {
-        states.animation_for(LogicalState::Idle)
-    } else {
-        states.animation_for(state)
     }
 }
 
@@ -180,6 +184,8 @@ pub(crate) fn slew_yaw(current: f32, target: f32, max_delta: f32) -> f32 {
 
 /// Per-enemy snapshot captured under the immutable iterator borrow so the
 /// mutable writes (steering, damage, animation) happen after the walk completes.
+/// The compute pass CONSUMES these — the brain is moved into its outcome rather
+/// than cloned a second time, which matters because a brain carries its graph.
 struct EnemySnapshot {
     id: EntityId,
     position: Vec3,
@@ -190,57 +196,100 @@ struct EnemySnapshot {
 /// a second pass under `&mut registry`.
 struct EnemyOutcome {
     id: EntityId,
+    /// This enemy's position as snapshotted, carried forward so combat-slot
+    /// resolution needs nothing but the outcomes.
+    position: Vec3,
     target: Option<TargetPawn>,
     brain: BrainComponent,
     steering: SteeringIntent,
     combat_slot: Option<Vec3>,
-    /// `true` when the logical state changed this tick; the apply pass uses this
+    /// The target this brain held BEFORE this tick's evaluation — the incumbency
+    /// test for combat-slot retention.
+    prior_acquired_target: Option<EntityId>,
+    /// `true` when the graph state changed this tick; the apply pass uses this
     /// with locomotion intent changes to decide whether to switch animation.
     state_changed: bool,
     /// `true` when an attack landed this tick (damage applied, event raised).
     attacked: bool,
+    /// The entered state's authored `on_enter` address, present only on the tick
+    /// the brain entered it.
+    on_enter: Option<String>,
 }
 
-/// Drive every enemy brain one tick. Returns the event names raised this tick
-/// (one [`ENEMY_ATTACK_EVENT`] per enemy that attacked), for the app's post-tick
-/// event drain. `tick_dt` is the fixed tick delta in seconds.
+/// The AI tick's run-long state, owned by `App` across ticks.
 ///
-/// `warned` is the warn-once latch (owned by `App`), keyed and namespaced so a
-/// given diagnostic fires once across the whole run, never each tick:
-/// `anim:<name>` for an animation state that fails to switch
-/// (`UnknownState`/`NotAnimated` — the prior animation is kept and the tick is
-/// never aborted) and `blocked:<id>` for a chasing enemy whose agent found no
-/// path to its selected destination.
+/// Two things outlive a tick: the warn-once latch and the evaluator's bound
+/// guard programs. They travel together because both are reconciled at the top
+/// of every tick — `sync` binds newly seen graphs, and a guard that fails to
+/// bind reports through the same latch that reports an unresolvable animation.
+pub(crate) struct AiRuntime {
+    /// Warn-once latch, keyed and namespaced so a given diagnostic fires once
+    /// across the whole run, never each tick: `anim:<name>` for an animation
+    /// state that fails to switch (`UnknownState`/`NotAnimated` — the prior
+    /// animation is kept and the tick is never aborted), `blocked:<id>` for a
+    /// chasing enemy whose agent found no path to its selected destination, and
+    /// `brain-guard:<path>` for a transition guard that failed to bind.
+    pub(crate) warned: HashSet<String>,
+    /// Per-entity bound transition guards. Derived data, rebuilt from each
+    /// brain's retained graph whenever the entity is (re)seen.
+    programs: BrainPrograms,
+}
+
+impl AiRuntime {
+    pub(crate) fn new() -> Self {
+        Self {
+            warned: HashSet::new(),
+            programs: BrainPrograms::new(),
+        }
+    }
+}
+
+impl Default for AiRuntime {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Drive every enemy brain one tick. Returns the event addresses raised this
+/// tick — one [`ENEMY_ATTACK_EVENT`] per enemy that attacked, plus each entered
+/// state's authored `on_enter` — for the app's post-tick event drain. `tick_dt`
+/// is the fixed tick delta in seconds.
+///
+/// The return is `Cow` so the static attack event costs nothing to raise while
+/// an authored address still travels as an owned `String`; the owning clone
+/// happens once per state ENTRY, never per tick.
 ///
 /// Ordering inside the tick, PER enemy:
-/// 1. Tick the attack cooldown down (every tick).
-/// 2. Evaluate the transition core, with acquisition gated by the
-///    think stride (distance-derived). Attack-range edges + the cooldown check
-///    are NOT strided.
-/// 3. On an attack (in `Attack` with the cooldown elapsed) apply the configured
-///    damage to the selected target pawn through the chokepoint and raise the
-///    attack event.
-/// 4. On a state CHANGE or locomotion stop/resume, request the selected
+/// 1. Tick the attack cooldown and the time-in-state down/up (every tick).
+/// 2. Evaluate the graph's guards — interrupts first, then the current state's
+///    transitions, declaration order, first true wins. Every guard is evaluated
+///    every tick: nothing latches evaluation off, so a commitment window is an
+///    authored `@brain.timeInStateMs` guard rather than an engine rule.
+/// 3. On entering a state, reset the time-in-state and raise its `on_enter`.
+/// 4. When the selected state declares the `attack` action and the cooldown has
+///    elapsed, apply the graph's damage to the selected target pawn through the
+///    chokepoint and raise the attack event.
+/// 5. On a state CHANGE or locomotion stop/resume, request the selected
 ///    animation state.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn run_ai_tick(
     registry: &mut EntityRegistry,
-    warned: &mut HashSet<String>,
+    runtime: &mut AiRuntime,
     tick_dt: f32,
-) -> Vec<&'static str> {
-    run_ai_tick_with_navigation(registry, warned, tick_dt, None, None)
+) -> Vec<Cow<'static, str>> {
+    run_ai_tick_with_navigation(registry, runtime, tick_dt, None, None)
 }
 
 pub(crate) fn run_ai_tick_with_navigation(
     registry: &mut EntityRegistry,
-    warned: &mut HashSet<String>,
+    runtime: &mut AiRuntime,
     tick_dt: f32,
     nav_graph: Option<&NavGraph>,
     collision_world: Option<&CollisionWorld>,
-) -> Vec<&'static str> {
+) -> Vec<Cow<'static, str>> {
     run_ai_tick_with_navigation_and_impact(
         registry,
-        warned,
+        runtime,
         tick_dt,
         nav_graph,
         collision_world,
@@ -250,13 +299,19 @@ pub(crate) fn run_ai_tick_with_navigation(
 
 pub(crate) fn run_ai_tick_with_navigation_and_impact(
     registry: &mut EntityRegistry,
-    warned: &mut HashSet<String>,
+    runtime: &mut AiRuntime,
     tick_dt: f32,
     nav_graph: Option<&NavGraph>,
     collision_world: Option<&CollisionWorld>,
     mut on_impact: impl FnMut(&mut EntityRegistry),
-) -> Vec<&'static str> {
+) -> Vec<Cow<'static, str>> {
     let dt_ms = tick_dt.max(0.0) * 1000.0;
+
+    // Reconcile the bound-guard side-table with the registry's live brains
+    // before anything reads it: this is the single lifecycle hook covering
+    // spawn, despawn, and a wholesale deserialize.
+    let AiRuntime { warned, programs } = runtime;
+    programs.sync(registry, warned);
 
     // Pass 1: snapshot every brain-bearing enemy under the immutable borrow.
     let snapshots: Vec<EnemySnapshot> = registry
@@ -292,11 +347,15 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
 
     // Pass 2 (compute): evaluate each brain, producing the outcomes to apply.
     let mut outcomes: Vec<EnemyOutcome> = Vec::with_capacity(snapshots.len());
-    for snap in &snapshots {
-        let mut brain = snap.brain.clone();
-        let prior_state = brain.state;
+    for snap in snapshots {
+        let mut brain = snap.brain;
+        let prior_state_index = brain.state_index;
+        let prior_acquired_target = brain.acquired_target;
         let (target, evaluate_acquisition) = if brain.aggro_armed {
-            let retained_target = matches!(brain.state, LogicalState::Alert | LogicalState::Attack)
+            // A target is retained across ticks only while the brain is engaged
+            // — that is, while the state it sits in chases. A resting brain
+            // re-ranks candidates instead of honoring a stale acquired id.
+            let retained_target = chases(&brain.graph, brain.state_index)
                 .then_some(brain.acquired_target)
                 .flatten();
             let retained = retained_target
@@ -310,8 +369,11 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                 current_target.map(|target| target_distance(target, snap.position));
             let evaluate_acquisition = acquisition_due(&brain, current_distance);
 
-            let retained_outside_leash =
-                retained.is_some_and(|retained| retained.distance > brain.tuning.leash_range);
+            // The engine floor's retention leash. A brain without one (an
+            // authored graph) never escapes here: its guards own disengagement.
+            let leash_range = brain.leash_range;
+            let retained_outside_leash = retained
+                .is_some_and(|retained| leash_range.is_some_and(|leash| retained.distance > leash));
             let target = if retained_outside_leash {
                 // Leash escape for the already-retained target is cheap because the
                 // retained pawn has already been read. Clear immediately instead of
@@ -326,7 +388,8 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                         None,
                     )
                     .filter(|target| {
-                        target_distance(*target, snap.position) <= brain.tuning.leash_range
+                        leash_range
+                            .is_none_or(|leash| target_distance(*target, snap.position) <= leash)
                     })
                 } else {
                     None
@@ -351,84 +414,119 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             (None, false)
         };
 
-        // (1) Cooldown ticks down every tick.
+        // (1) Cooldown ticks down and time-in-state accrues every tick, before
+        // any guard reads them: a `@brain.timeInStateMs` commitment window then
+        // elapses on the first tick its budget is spent, and never earlier.
         brain.attack_cooldown_remaining_ms = (brain.attack_cooldown_remaining_ms - dt_ms).max(0.0);
+        brain.time_in_state_ms += dt_ms;
 
         // Stride bookkeeping advances every tick so the gate is deterministic.
         brain.think_stride_counter = brain.think_stride_counter.wrapping_add(1);
 
         let mut attacked = false;
-        let steering;
-        if !brain.aggro_armed {
+        // Forcing the graph's `initial` state is the engine floor's stand-down:
+        // an unvalidated graph whose `initial` names nothing simply stays put
+        // rather than being pushed to an arbitrary state.
+        let resting_index = initial_index(&brain.graph).unwrap_or(prior_state_index);
+        let (next_index, steering) = match target {
             // The aggro gate's v1 disengage policy is hold. A closed brain
-            // neither consults target selection nor evaluates FSM transitions;
-            // clearing its destination sends the agent through steering's
-            // destination-less idle-settle path, which has no separation push.
-            brain.state = LogicalState::Idle;
-            brain.acquired_target = None;
-            steering = SteeringIntent::Clear;
-        } else if let Some(target) = target {
-            // The think stride is derived from the CURRENT player distance;
-            // the gate fires when the per-enemy counter aligns with the
-            // band's divisor. Acquisition (detection/leash) is evaluated only
-            // on a think tick; attack-range edges + the cooldown check are
-            // not.
-            let result = evaluate_transition(
-                target.position,
-                snap.position,
-                &brain.tuning,
-                brain.state,
-                evaluate_acquisition,
-            );
-            brain.state = result.next_state;
-            steering = result.steering;
-            if matches!(brain.state, LogicalState::Alert | LogicalState::Attack)
-                && steering == SteeringIntent::Chase
-            {
-                brain.acquired_target = Some(target.entity);
-            } else {
-                brain.acquired_target = None;
+            // consults neither target selection nor its guards; clearing its
+            // destination sends the agent through steering's destination-less
+            // idle-settle path, which has no separation push. A brain with no
+            // pawn to pursue stands down the same way. Standing down clears
+            // steering outright rather than deferring to the resting state's
+            // motion verb: with no target there is nothing to move relative to.
+            None => (resting_index, SteeringIntent::Clear),
+            Some(target) => {
+                // The think stride is derived from the CURRENT player distance;
+                // the gate fires when the per-enemy counter aligns with the
+                // band's divisor, and reaches the guards as `@brain.acquisitionDue`
+                // for the edges that opt into it. `@brain.targetDistance` is the
+                // distance to the FINALLY selected pawn.
+                programs.scope_mut().refresh(
+                    registry,
+                    snap.id,
+                    BrainFacts {
+                        target_distance: Some(target_distance(target, snap.position)),
+                        time_in_state_ms: brain.time_in_state_ms,
+                        attack_cooldown_ms: brain.attack_cooldown_remaining_ms,
+                        acquisition_due: evaluate_acquisition,
+                    },
+                );
+                let next_index = programs
+                    .get(snap.id)
+                    .and_then(|bound| {
+                        select_transition(&brain.graph, bound, programs.scope(), brain.state_index)
+                    })
+                    .unwrap_or(brain.state_index);
+                let steering = state_at(&brain.graph, next_index)
+                    .map(|state| steering_for(state.motion))
+                    .unwrap_or(SteeringIntent::Clear);
+                (next_index, steering)
             }
+        };
 
-            // (4) Attack: in `Attack` with the cooldown elapsed AND the
-            // SELECTED target still alive, apply the configured damage once
-            // and arm the cooldown. Checked every tick. Gating on the
-            // selected target's Health stops attack/event spam against an
-            // already-dead but still-present pawn and prevents damaging a
-            // different co-op pawn than the one this enemy chose.
-            if brain.state == LogicalState::Attack
+        // Only a chasing state holds a target: that is what keeps the acquired
+        // id a truthful "this brain is engaged" marker for target retention.
+        brain.acquired_target = match (steering, target) {
+            (SteeringIntent::Chase, Some(target)) => Some(target.entity),
+            _ => None,
+        };
+
+        // (4) Attack: the selected state declares the `attack` action, the
+        // cooldown has elapsed, and the SELECTED target is still alive — apply
+        // the configured damage once and arm the cooldown. Checked every tick.
+        // Gating on the selected target's Health stops attack/event spam against
+        // an already-dead but still-present pawn and prevents damaging a
+        // different co-op pawn than the one this enemy chose.
+        if let Some(target) = target {
+            if action_for_state(&brain.graph, next_index) == Some(ActionVerb::Attack)
                 && brain.attack_cooldown_remaining_ms <= 0.0
                 && selected_target_alive(registry, target.entity)
             {
                 attacked = true;
-                brain.attack_cooldown_remaining_ms = brain.tuning.attack_cooldown_ms;
+                brain.attack_cooldown_remaining_ms =
+                    brain.graph.attack.map_or(0.0, |attack| attack.cooldown_ms);
             }
-        } else {
-            // No player to target: idle and clear any stale steering.
-            brain.state = LogicalState::Idle;
-            brain.acquired_target = None;
-            steering = SteeringIntent::Clear;
         }
+
+        let state_changed = next_index != prior_state_index;
+        brain.state_index = next_index;
+        let on_enter = if state_changed {
+            brain.time_in_state_ms = 0.0;
+            state_at(&brain.graph, next_index).and_then(|state| state.on_enter.clone())
+        } else {
+            None
+        };
 
         outcomes.push(EnemyOutcome {
             id: snap.id,
+            position: snap.position,
             target,
-            state_changed: brain.state != prior_state,
+            prior_acquired_target,
+            state_changed,
             attacked,
+            on_enter,
             steering,
             combat_slot: None,
             brain,
         });
     }
 
-    resolve_combat_slots(&snapshots, &mut outcomes, nav_graph, collision_world);
+    resolve_combat_slots(&mut outcomes, nav_graph, collision_world);
 
     // Pass 3 (apply): write back brains, drive steering, apply damage, and
     // switch animation. Mutable borrow only; no iterator held.
-    let mut events: Vec<&'static str> = Vec::new();
+    let mut events: Vec<Cow<'static, str>> = Vec::new();
     for mut outcome in outcomes {
         // Persist the brain (state + timers + stride counter).
         let _ = registry.set_component(outcome.id, outcome.brain.clone());
+
+        // The entered state's authored entry event. Raised before this tick's
+        // action so a reaction reads the state the brain is now IN.
+        if let Some(address) = outcome.on_enter.take() {
+            events.push(Cow::Owned(address));
+        }
 
         let path_state = agent_steering::path_state(registry, outcome.id);
         let locomotion_intent = if outcome.brain.aggro_armed {
@@ -489,17 +587,15 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         //     it faces where it is going even when routing around obstacles. The
         //     velocity is read from `path_state` (last tick's resolved velocity) —
         //     a one-tick lag on facing that is imperceptible.
-        //   - Stopped but engaged (`Alert`/`Attack` with near-zero XZ speed —
+        //   - Stopped but engaged (a chasing state with near-zero XZ speed —
         //     arrived/blocked/swinging): face this enemy's selected target.
-        //   - `Idle` (no target) and `Death`: leave facing untouched.
+        //   - Standing down or frozen: leave facing untouched.
+        // Engagement is the CHASE intent, so a state that stands still or freezes
+        // never turns — which is also why a closed aggro gate cannot turn an
+        // enemy: it forces the resting state, and resting does not chase.
         // Yaw only (model stays upright); a zero-length direction yields `None` and
         // writes nothing (never a NaN yaw).
-        if outcome.brain.aggro_armed
-            && matches!(
-                outcome.brain.state,
-                LogicalState::Alert | LogicalState::Attack
-            )
-        {
+        if outcome.steering == SteeringIntent::Chase {
             if let Some(path) = path_state.as_ref() {
                 let facing =
                     if locomotion_intent.speed_xz_sq > MOVE_SPEED_EPSILON * MOVE_SPEED_EPSILON {
@@ -537,7 +633,11 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                     registry,
                     target.entity,
                     &DamagePayload {
-                        amount: outcome.brain.tuning.attack_damage,
+                        amount: outcome
+                            .brain
+                            .graph
+                            .attack
+                            .map_or(0.0, |attack| attack.damage),
                     },
                     DamageContext {
                         source_id: ENEMY_ATTACK_SOURCE_ID.to_string(),
@@ -549,33 +649,34 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                 );
                 on_impact(registry);
             }
-            events.push(ENEMY_ATTACK_EVENT);
+            events.push(Cow::Borrowed(ENEMY_ATTACK_EVENT));
 
             // Replay the attack clip on every IN-STATE swing. The attack clip is
             // one-shot (`loop:false`) and animation is otherwise switched only on
             // `state_changed`, so a repeated cooldown-gated swing while the enemy
-            // STAYS in `Attack` would leave the clip clamped on its last frame —
-            // the player cannot tell they are being hit. Restarting it from frame 0
-            // re-fires the swing visually. This is purely cosmetic: damage stays
-            // cooldown-gated above (NOT frame-synced).
+            // STAYS in its attacking state would leave the clip clamped on its
+            // last frame — the player cannot tell they are being hit. Restarting
+            // it from frame 0 re-fires the swing visually. This is purely
+            // cosmetic: damage stays cooldown-gated above (NOT frame-synced).
             //
-            // Guard on `!state_changed`: on the entry tick INTO `Attack` the
-            // `state_changed` switch below already plays the clip from zero, so a
-            // restart here would double-fire (it would be a harmless re-stamp of a
+            // Guard on `!state_changed`: on the entry tick the `state_changed`
+            // switch below already plays the clip from zero, so a restart here
+            // would double-fire (it would be a harmless re-stamp of a
             // just-stamped pending clip, but skipping it keeps the seam explicit:
             // first swing via the switch, every later in-state swing via restart).
+            //
+            // An attacking state declares an action, so it is never a locomotion
+            // state — its own animation is what plays, never the rest
+            // substitution.
             if !outcome.state_changed {
-                let name = outcome
-                    .brain
-                    .tuning
-                    .states
-                    .animation_for(outcome.brain.state);
-                let _ = restart_animation_clip(registry, outcome.id, name);
+                if let Some(state) = state_at(&outcome.brain.graph, outcome.brain.state_index) {
+                    let _ = restart_animation_clip(registry, outcome.id, &state.animation);
+                }
             }
         }
 
         // Animation: on a state change or locomotion stop/resume, request the
-        // selected animation name for the new logical/locomotion state. A failed
+        // selected animation name for the new graph/locomotion state. A failed
         // switch (`UnknownState`/`NotAnimated`) warns ONCE per distinct name and
         // keeps the prior animation — it never aborts the tick. The locomotion
         // latch is still persisted after failures so unresolved clips do not
@@ -585,33 +686,33 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             locomotion_intent.moving,
             outcome.brain.locomotion_moving,
         ) {
-            let name = animation_for_locomotion(
-                outcome.brain.state,
-                locomotion_intent,
-                &outcome.brain.tuning.states,
-            );
-            match switch_animation_state(registry, outcome.id, name) {
-                SwitchResult::Switched | SwitchResult::AlreadyInState => {}
-                SwitchResult::UnknownState | SwitchResult::NotAnimated => {
-                    if warned.insert(format!("anim:{name}")) {
-                        log::warn!(
-                            "[AI] enemy animation state `{name}` could not be switched \
-                             (undeclared/unresolved on the mesh); keeping the prior \
-                             animation. Warned once per distinct name."
-                        );
+            if let Some(name) = animation_for_state(
+                &outcome.brain.graph,
+                outcome.brain.state_index,
+                locomotion_intent.moving,
+            ) {
+                match switch_animation_state(registry, outcome.id, name) {
+                    SwitchResult::Switched | SwitchResult::AlreadyInState => {}
+                    SwitchResult::UnknownState | SwitchResult::NotAnimated => {
+                        if warned.insert(format!("anim:{name}")) {
+                            log::warn!(
+                                "[AI] enemy animation state `{name}` could not be switched \
+                                 (undeclared/unresolved on the mesh); keeping the prior \
+                                 animation. Warned once per distinct name."
+                            );
+                        }
                     }
                 }
             }
         }
         outcome.brain.locomotion_moving = locomotion_intent.moving;
-        let _ = registry.set_component(outcome.id, outcome.brain.clone());
+        let _ = registry.set_component(outcome.id, outcome.brain);
     }
 
     events
 }
 
 fn resolve_combat_slots(
-    snapshots: &[EnemySnapshot],
     outcomes: &mut [EnemyOutcome],
     nav_graph: Option<&NavGraph>,
     collision_world: Option<&CollisionWorld>,
@@ -637,27 +738,31 @@ fn resolve_combat_slots(
         return;
     }
 
-    let other_agents: Vec<CombatAgentSnapshot> = snapshots
+    let other_agents: Vec<CombatAgentSnapshot> = outcomes
         .iter()
-        .map(|snap| CombatAgentSnapshot {
-            claimant_id: snap.id.to_raw(),
-            position: snap.position,
+        .map(|outcome| CombatAgentSnapshot {
+            claimant_id: outcome.id.to_raw(),
+            position: outcome.position,
         })
         .collect();
 
     let mut queries = Vec::new();
-    for (snap, outcome) in snapshots.iter().zip(outcomes.iter()) {
+    for outcome in outcomes.iter() {
         if outcome.steering != SteeringIntent::Chase {
             continue;
         }
         let Some(target) = outcome.target else {
             continue;
         };
-        let retained_slot = retained_combat_slot(snap, outcome);
+        let retained_slot = retained_combat_slot(outcome);
         queries.push(CombatQuery {
             claimant_id: outcome.id.to_raw(),
-            agent_pos: snap.position,
-            engagement_radius: outcome.brain.tuning.attack_range,
+            agent_pos: outcome.position,
+            engagement_radius: outcome
+                .brain
+                .graph
+                .attack
+                .map_or(0.0, |attack| attack.range),
             target_pos: target.position,
             combat_slot: retained_slot,
             scan_challengers: retained_slot.is_none(),
@@ -703,12 +808,16 @@ fn clear_combat_slot(outcome: &mut EnemyOutcome) {
     outcome.brain.combat_slot_hold_ticks = 0;
 }
 
-fn retained_combat_slot(snap: &EnemySnapshot, outcome: &EnemyOutcome) -> Option<Vec3> {
+/// The slot this enemy may re-present as an incumbent: the one it held while
+/// already chasing this same target, and only while its hold window is open.
+/// Both slot fields are still the PRIOR tick's here — nothing but this pass
+/// writes them.
+fn retained_combat_slot(outcome: &EnemyOutcome) -> Option<Vec3> {
     let target = outcome.target?;
     (outcome.steering == SteeringIntent::Chase
-        && snap.brain.acquired_target == Some(target.entity)
-        && snap.brain.combat_slot_hold_ticks > 0)
-        .then_some(snap.brain.combat_slot)
+        && outcome.prior_acquired_target == Some(target.entity)
+        && outcome.brain.combat_slot_hold_ticks > 0)
+        .then_some(outcome.brain.combat_slot)
         .flatten()
 }
 

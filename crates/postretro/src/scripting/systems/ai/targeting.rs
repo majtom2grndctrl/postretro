@@ -1,5 +1,5 @@
 // Enemy target-pawn selection: nearest/retained candidate ranking with
-// switch hysteresis, feeding the FSM tick's per-enemy target.
+// switch hysteresis, feeding the brain tick's per-enemy target.
 // See: context/lib/entity_model.md §2 (engine components)
 
 use glam::Vec3;

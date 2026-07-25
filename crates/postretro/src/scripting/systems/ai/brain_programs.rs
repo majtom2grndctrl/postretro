@@ -21,11 +21,6 @@
 // this way covers spawn, despawn, and a wholesale deserialize with one call,
 // instead of threading the table through every seam that can attach or remove a
 // brain.
-//
-// Nothing drives the graph evaluation path yet, so outside the tests below this
-// surface has no caller; the allow keeps that warning-free without item-level
-// noise.
-#![cfg_attr(not(test), allow(dead_code))]
 
 use std::collections::{HashMap, HashSet};
 

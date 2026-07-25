@@ -1,8 +1,8 @@
 // AI brain component: the engine-owned enemy state machine's per-instance data.
 // Engine-internal — never reachable through `worldQuery` (the `PlayerMovement`
 // and `Agent` precedent, entity_model.md §7b). Carries the retained behavior
-// state graph, the current graph state, per-instance timers (attack cooldown,
-// think stride, time in state), and the resolved tuning.
+// state graph, the current graph state, and the per-instance timers (attack
+// cooldown, think stride, time in state).
 //
 // The graph is the ONE brain representation: `components.behavior` carries it
 // directly and `components.ai` lowers to it at spawn, so both authoring
@@ -26,10 +26,11 @@ use crate::registry::{EntityId, EntityRegistry, RegistryError};
 
 use super::mesh::MeshComponent;
 
-/// The closed set of logical FSM states the engine-owned brain evaluates. The
-/// transition set (idle → alert → attack → death) is sized to these four and is
-/// engine-closed; scripts tune thresholds and the animation mapping but cannot
-/// add states. See entity_model.md §2 and `scripting/systems/ai.rs` (the FSM tick).
+/// The closed set of logical states the legacy four-state transition core
+/// evaluates. The brain itself no longer carries one: it runs a behavior state
+/// graph whose states are authored (or lowered from `components.ai`). This enum
+/// and [`AiTuning`] survive as that core's inputs, which the lowered graph is
+/// differentially tested against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LogicalState {
@@ -39,9 +40,8 @@ pub enum LogicalState {
     Alert,
     /// The target is in attack range; the brain applies damage on cooldown.
     Attack,
-    /// The brain's entity reached zero HP; it plays the death clip and the AI
-    /// tick despawns it after `death_despawn_ms` (the despawn is owned by
-    /// `scripting/systems/ai.rs`).
+    /// The brain's entity reached zero HP. Not graph-reachable: the death sweep
+    /// latches HP-zero entities and the AI tick skips them.
     Death,
 }
 
@@ -68,11 +68,9 @@ impl LogicalState {
 }
 
 /// The four logical-state → animation-state name mappings, resolved from the
-/// descriptor's closed `states` block. Each field is the declared `mesh`
-/// animation-state name the FSM requests when it enters the corresponding
-/// logical state. The names are validated against the mesh at SPAWN (the ai
-/// block cannot see the mesh block at its own parse — cross-component), not at
-/// descriptor parse.
+/// descriptor's closed `states` block. The brain reads per-state animations off
+/// its graph instead; this survives as [`AiTuning`]'s state map, an input to the
+/// legacy transition core.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AiStateMap {
     pub idle: String,
@@ -93,14 +91,13 @@ impl AiStateMap {
     }
 }
 
-/// Resolved AI tuning materialized at spawn. Mirrors the legacy
-/// [`AiDescriptor`]'s authored fields (ranges, attack params, despawn delay) plus
-/// the logical-state → animation-state name map. Descriptor-owned tuning
-/// (entity_model.md §4): maps never override these, the FSM reads them each tick.
+/// The four-state transition core's resolved inputs: a 1:1 materialization of
+/// the legacy [`AiDescriptor`]'s authored fields plus its state map.
 ///
-/// This is the four-state transition core's shape. An authored graph expresses
-/// most of it as guards and per-state animations instead, so
-/// [`AiTuning::from_graph`] carries over only what the graph actually declares.
+/// The brain does not carry this. Every legacy descriptor lowers to a behavior
+/// graph at spawn and the tick evaluates that graph, so what the core once read
+/// per tick now lives as guards (`detection_range`, `leash_range`), per-state
+/// animations, and the graph's own `attack`/`move_speed`/`death_despawn_ms`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AiTuning {
     pub detection_range: f32,
@@ -114,44 +111,6 @@ pub struct AiTuning {
 }
 
 impl AiTuning {
-    /// Resolved tuning for an entity whose brain is an AUTHORED graph.
-    ///
-    /// The graph is the authority for such a brain: its guards express detection
-    /// and leash as comparisons over `@brain.targetDistance`, and each of its
-    /// states names its own animation, so the legacy `detection_range`,
-    /// `leash_range`, and four-entry [`AiStateMap`] have no authored analogue.
-    /// The ranges are seeded to `0.0` — the value at which the four-state
-    /// transition core can never acquire a target — so a legacy evaluation of an
-    /// authored brain stands still rather than inventing behavior, and the state
-    /// map mirrors the graph's `initial` (rest) animation, which is what the
-    /// non-FSM readers of this map (deferred-recovery presentation) want.
-    ///
-    /// Everything the graph does carry — attack payload, move speed, despawn
-    /// delay — is copied verbatim.
-    pub fn from_graph(graph: &BehaviorGraphDescriptor) -> Self {
-        let attack = graph.attack;
-        let rest_animation = graph
-            .states
-            .get(&graph.initial)
-            .map(|state| state.animation.clone())
-            .unwrap_or_default();
-        Self {
-            detection_range: 0.0,
-            attack_range: attack.map_or(0.0, |attack| attack.range),
-            leash_range: 0.0,
-            attack_damage: attack.map_or(0.0, |attack| attack.damage),
-            attack_cooldown_ms: attack.map_or(0.0, |attack| attack.cooldown_ms),
-            move_speed: graph.move_speed,
-            death_despawn_ms: graph.death_despawn_ms(),
-            states: AiStateMap {
-                idle: rest_animation.clone(),
-                alert: rest_animation.clone(),
-                attack: rest_animation.clone(),
-                death: rest_animation,
-            },
-        }
-    }
-
     /// Materialize resolved tuning from the parsed descriptor. A 1:1 copy: the
     /// descriptor already validated every numeric field at parse time.
     pub fn from_descriptor(desc: &AiDescriptor) -> Self {
@@ -173,14 +132,11 @@ impl AiTuning {
     }
 }
 
-/// Engine-internal AI brain: the retained behavior graph, the live state it sits
-/// in, and the resolved tuning. Seeded at spawn in the graph's `initial` state
-/// with every timer at rest; the AI tick (`scripting/systems/ai/`) drives the
-/// rest.
+/// Engine-internal AI brain: the retained behavior graph plus the live state it
+/// sits in. Seeded at spawn in the graph's `initial` state with every timer at
+/// rest; the AI tick (`scripting/systems/ai/`) drives the rest.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BrainComponent {
-    /// Current logical FSM state. Starts [`LogicalState::Idle`].
-    pub state: LogicalState,
     /// Milliseconds remaining before the brain may attack again. Counts down each
     /// tick; `0.0` means an attack is available. Seeded to `0.0` (ready) at spawn.
     pub attack_cooldown_remaining_ms: f32,
@@ -188,13 +144,11 @@ pub struct BrainComponent {
     /// against a distance-derived stride to time-slice target acquisition for
     /// distant enemies. Seeded to `0` at spawn.
     pub think_stride_counter: u32,
-    /// Death-despawn countdown in milliseconds. `None` until the brain enters
-    /// [`LogicalState::Death`], at which point the FSM tick seeds it from
-    /// `tuning.death_despawn_ms` (clamped to `>= 0`) and decrements it by the
-    /// tick delta each subsequent tick. When it reaches `0.0` the AI tick
-    /// despawns the entity. The TIMER is authoritative: the entity despawns after
-    /// `death_despawn_ms` whether or not the death animation clip ever resolved.
-    /// Seeded `None` at spawn and never set outside the Death state.
+    /// Death-despawn countdown in milliseconds, seeded from the graph's
+    /// `death_despawn_ms` by the death path that owns removal and decremented by
+    /// the tick delta. The TIMER is authoritative: the entity despawns after the
+    /// delay whether or not the death animation clip ever resolved. Seeded
+    /// `None` at spawn; graph evaluation never writes it.
     #[serde(default)]
     pub death_despawn_remaining_ms: Option<f32>,
     /// Last locomotion intent applied to animation selection. This latches the
@@ -209,9 +163,9 @@ pub struct BrainComponent {
     /// so absent values default open.
     #[serde(default = "default_aggro_armed")]
     pub aggro_armed: bool,
-    /// Currently acquired player pawn. This is retained only while the FSM is
-    /// engaged (`Alert`/`Attack`) so near-equidistant co-op players do not cause
-    /// per-think target churn. Cleared when aggro drops.
+    /// Currently acquired player pawn. Set only while the current state chases
+    /// (a `chaseTarget` motion verb), so near-equidistant co-op players do not
+    /// cause per-think target churn. Cleared when aggro drops.
     #[serde(default)]
     pub acquired_target: Option<EntityId>,
     /// Last accepted combat-position slot around the acquired target. Retained
@@ -224,8 +178,17 @@ pub struct BrainComponent {
     /// fallback, target loss, clear steering, and death clear both fields.
     #[serde(default)]
     pub combat_slot_hold_ticks: u32,
-    /// Resolved descriptor tuning the FSM reads each tick.
-    pub tuning: AiTuning,
+    /// The engine floor's target-retention leash, in world units on the XZ
+    /// plane: an acquired pawn beyond it stops being this brain's target
+    /// immediately, off-stride included.
+    ///
+    /// Target selection is engine-owned, so the leash it applies is a component
+    /// scalar rather than a graph guard. A legacy `components.ai` brain seeds it
+    /// from `leashRange`; an authored graph leaves it `None` — the engine floor
+    /// then retains whatever it acquired and the graph's own guards over
+    /// `@brain.targetDistance` decide when to disengage.
+    #[serde(default)]
+    pub leash_range: Option<f32>,
     /// The brain's behavior state graph — the ONE brain representation. An
     /// authored `components.behavior` block carries it directly; a legacy
     /// `components.ai` block lowers to it at spawn
@@ -255,7 +218,7 @@ impl BrainComponent {
     /// representation an authored graph would.
     pub fn from_descriptor(desc: &AiDescriptor) -> Self {
         Self {
-            tuning: AiTuning::from_descriptor(desc),
+            leash_range: Some(desc.leash_range),
             ..Self::from_graph(&lower_ai_descriptor(desc))
         }
     }
@@ -264,7 +227,6 @@ impl BrainComponent {
     /// Seeded in the graph's `initial` state with every timer at rest.
     pub fn from_graph(graph: &BehaviorGraphDescriptor) -> Self {
         Self {
-            state: LogicalState::Idle,
             attack_cooldown_remaining_ms: 0.0,
             think_stride_counter: 0,
             death_despawn_remaining_ms: None,
@@ -273,7 +235,7 @@ impl BrainComponent {
             acquired_target: None,
             combat_slot: None,
             combat_slot_hold_ticks: 0,
-            tuning: AiTuning::from_graph(graph),
+            leash_range: None,
             // A validated graph always declares `initial`; an unvalidated one
             // falls back to the first resolved state rather than an index the
             // state list cannot answer.
@@ -418,9 +380,8 @@ mod tests {
     }
 
     #[test]
-    fn from_descriptor_seeds_idle_ready_and_copies_tuning() {
+    fn from_descriptor_seeds_idle_ready_and_carries_the_engine_floor_leash() {
         let brain = BrainComponent::from_descriptor(&sample_descriptor());
-        assert_eq!(brain.state, LogicalState::Idle);
         assert_eq!(brain.state_name(), Some("idle"));
         assert_eq!(brain.time_in_state_ms, 0.0);
         assert_eq!(brain.attack_cooldown_remaining_ms, 0.0);
@@ -431,15 +392,11 @@ mod tests {
         assert_eq!(brain.acquired_target, None);
         assert_eq!(brain.combat_slot, None);
         assert_eq!(brain.combat_slot_hold_ticks, 0);
-        assert_eq!(brain.tuning.detection_range, 18.0);
-        assert_eq!(brain.tuning.attack_range, 2.2);
-        assert_eq!(brain.tuning.leash_range, 26.0);
-        assert_eq!(brain.tuning.attack_damage, 8.0);
-        assert_eq!(brain.tuning.attack_cooldown_ms, 1200.0);
-        assert_eq!(brain.tuning.move_speed, 3.5);
-        assert_eq!(brain.tuning.death_despawn_ms, 1500.0);
-        assert_eq!(brain.tuning.states.alert, "walk");
-        assert_eq!(brain.tuning.states.death, "die");
+        assert_eq!(brain.leash_range, Some(26.0));
+        assert_eq!(brain.graph.states["alert"].animation, "walk");
+        assert_eq!(brain.graph.states["death"].animation, "die");
+        assert_eq!(brain.graph.move_speed, 3.5);
+        assert_eq!(brain.graph.death_despawn_ms(), 1500.0);
     }
 
     #[test]
@@ -448,7 +405,7 @@ mod tests {
         let id = reg.spawn(Transform::default());
         attach_brain(&mut reg, id, &sample_descriptor()).unwrap();
         let brain = reg.get_component::<BrainComponent>(id).unwrap();
-        assert_eq!(brain.state, LogicalState::Idle);
+        assert_eq!(brain.state_name(), Some("idle"));
     }
 
     #[test]
@@ -709,7 +666,7 @@ mod tests {
     }
 
     #[test]
-    fn from_graph_seeds_the_initial_state_index_and_mirrors_graph_tuning() {
+    fn from_graph_seeds_the_initial_state_index_and_retains_the_graph() {
         let graph = authored_graph();
         let brain = BrainComponent::from_graph(&graph);
         assert_eq!(brain.state_name(), Some("rest"));
@@ -720,23 +677,15 @@ mod tests {
         );
         assert_eq!(brain.time_in_state_ms, 0.0);
         assert_eq!(brain.graph, graph, "the graph is retained verbatim");
-        assert_eq!(brain.tuning.move_speed, 4.0);
-        assert_eq!(brain.tuning.attack_damage, 5.0);
-        assert_eq!(brain.tuning.attack_range, 2.0);
-        assert_eq!(brain.tuning.attack_cooldown_ms, 900.0);
         assert_eq!(
-            brain.tuning.death_despawn_ms,
+            brain.graph.death_despawn_ms(),
             BehaviorGraphDescriptor::DEFAULT_DEATH_DESPAWN_MS,
             "an absent `deathDespawnMs` takes the shared default"
         );
         assert_eq!(
-            (brain.tuning.detection_range, brain.tuning.leash_range),
-            (0.0, 0.0),
-            "detection and leash have no authored analogue; the graph's guards own them"
-        );
-        assert_eq!(
-            brain.tuning.states.idle, "idle",
-            "the legacy state map mirrors the graph's rest animation"
+            brain.leash_range, None,
+            "an authored graph owns disengagement through its guards, not the \
+             engine floor's retention leash"
         );
     }
 
@@ -749,12 +698,7 @@ mod tests {
             lower_ai_descriptor(&desc),
             "a legacy brain retains exactly the lowered graph"
         );
-        assert_eq!(
-            brain.tuning,
-            AiTuning::from_descriptor(&desc),
-            "legacy tuning still comes from the descriptor verbatim"
-        );
-        assert_eq!(brain.tuning.death_despawn_ms, desc.death_despawn_ms);
+        assert_eq!(brain.leash_range, Some(desc.leash_range));
         assert_eq!(brain.graph.death_despawn_ms(), desc.death_despawn_ms);
     }
 

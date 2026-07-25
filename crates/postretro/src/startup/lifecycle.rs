@@ -2001,7 +2001,7 @@ mod tests {
             }),
             remote_player_presentation: crate::netcode::ClientPresentationInputs::default(),
             crouch_toggle_active: false,
-            ai_warned: std::collections::HashSet::new(),
+            ai_runtime: crate::scripting_systems::ai::AiRuntime::new(),
             cursor_pos: None,
             nav_stick_tracker: input::StickNavTracker::new(),
             frame_timing: FrameTiming::new(initial_state),

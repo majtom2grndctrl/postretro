@@ -1,8 +1,9 @@
 // Determinism coverage for the headless fixed-tick seam.
 // See: context/lib/entity_model.md §5
 
+use std::borrow::Cow;
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -32,7 +33,7 @@ use crate::trigger_pools::{TriggerPoolSeedPolicy, install_trigger_pools};
 use crate::trigger_system::{PlayerId, TriggerEvent, TriggerEventEdge, TriggerSystem};
 use crate::weapon::FireButtonState;
 use postretro_entities::components::agent::AgentComponent;
-use postretro_entities::components::brain::{BrainComponent, LogicalState};
+use postretro_entities::components::brain::{BrainComponent, graph_state_index};
 use postretro_entities::components::health::{HealthComponent, Hitbox};
 use postretro_entities::components::mesh::{
     AnimationState, InterruptPolicy, MeshAnimation, MeshComponent, RATE_CHANGE_EPSILON, RATE_MAX,
@@ -40,6 +41,7 @@ use postretro_entities::components::mesh::{
 };
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::data_descriptors::{AiDescriptor, AiStateNames};
+use postretro_entities::data_descriptors::{LEGACY_ALERT_STATE, LEGACY_ATTACK_STATE};
 use postretro_entities::{
     CrossingCondition, CrossingDescriptor, DataRegistry, EntityId, EntityRegistry, MoverCommand,
     NamedReaction, PrimitiveDescriptor, ReactionDescriptor, ReplicationScope, ScriptCtx,
@@ -199,7 +201,7 @@ struct RecordedReload {
 #[derive(Debug, PartialEq)]
 struct RecordedTick {
     movement: Vec<&'static str>,
-    ai: Vec<&'static str>,
+    ai: Vec<Cow<'static, str>>,
     weapon: Vec<&'static str>,
     death: Vec<String>,
     authorized_shots: Vec<RecordedShot>,
@@ -215,7 +217,7 @@ struct RecordedTick {
 struct SimRun {
     pawns: Vec<(Role, PawnOutcome)>,
     selected_player_health: f32,
-    enemy_state: LogicalState,
+    enemy_state: String,
     events: Vec<RecordedTick>,
     trigger_residual_counts: Vec<usize>,
     trigger_slot: Option<SlotValue>,
@@ -232,7 +234,7 @@ struct SimHarness {
     hit_zones: HitZoneStore,
     active_wieldable: EntityId,
     progress: ProgressTracker,
-    ai_warned: HashSet<String>,
+    ai_runtime: crate::scripting_systems::ai::AiRuntime,
     mover_colliders: Vec<MoverCollider>,
     mover_states: MoverTickStateTable,
     trigger_system: TriggerSystem,
@@ -494,7 +496,7 @@ impl SimHarness {
             hit_zones: HitZoneStore::new(),
             active_wieldable,
             progress: ProgressTracker::new(),
-            ai_warned: HashSet::new(),
+            ai_runtime: crate::scripting_systems::ai::AiRuntime::new(),
             mover_colliders: Vec::new(),
             mover_states: MoverTickStateTable::default(),
             trigger_system: TriggerSystem::default(),
@@ -545,7 +547,7 @@ impl SimHarness {
             Some(self.active_wieldable),
             0.0,
             &mut self.progress,
-            &mut self.ai_warned,
+            &mut self.ai_runtime,
             &self.mover_colliders,
             &mut self.mover_states,
             &remote_pawn_commands,
@@ -708,12 +710,14 @@ impl SimHarness {
             .current
     }
 
-    fn enemy_state(&self) -> LogicalState {
+    fn enemy_state(&self) -> String {
         self.registry
             .borrow()
             .get_component::<BrainComponent>(self.enemy)
             .expect("enemy keeps brain")
-            .state
+            .state_name()
+            .expect("enemy sits in a declared graph state")
+            .to_string()
     }
 
     fn trigger_slot(&self) -> Option<SlotValue> {
@@ -1049,6 +1053,14 @@ fn open_floor_nav_graph() -> NavGraph {
     })
 }
 
+/// A legacy brain staged directly into one of its lowered graph states.
+fn brain_in_state(descriptor: &AiDescriptor, state: &str) -> BrainComponent {
+    let mut brain = BrainComponent::from_descriptor(descriptor);
+    brain.state_index =
+        graph_state_index(&brain.graph, state).expect("the lowered graph declares the state");
+    brain
+}
+
 fn driven_agent_descriptor() -> AiDescriptor {
     AiDescriptor {
         detection_range: 40.0,
@@ -1088,10 +1100,12 @@ fn driven_agent_mesh(current_state: &str) -> MeshComponent {
     )
 }
 
+/// Spawn a legacy-descriptor enemy staged directly into one of its lowered
+/// graph states, named as the lowering names it.
 fn spawn_driven_agent(
     registry: &mut EntityRegistry,
     position: Vec3,
-    state: LogicalState,
+    state: &str,
     animation_state: &str,
 ) -> EntityId {
     let enemy = registry.spawn(Transform {
@@ -1099,13 +1113,7 @@ fn spawn_driven_agent(
         ..Transform::default()
     });
     registry
-        .set_component(
-            enemy,
-            BrainComponent {
-                state,
-                ..BrainComponent::from_descriptor(&driven_agent_descriptor())
-            },
-        )
+        .set_component(enemy, brain_in_state(&driven_agent_descriptor(), state))
         .expect("driven agent brain should attach");
     registry
         .set_component(enemy, AgentComponent::new(0.35, 1.8, 0.4, 3.5))
@@ -1124,7 +1132,7 @@ fn run_driven_agent_sim_tick(
     nav_graph: &NavGraph,
     anim_time: f64,
     progress: &mut ProgressTracker,
-    ai_warned: &mut HashSet<String>,
+    ai_runtime: &mut crate::scripting_systems::ai::AiRuntime,
     mover_states: &mut MoverTickStateTable,
 ) {
     let command = SimCommand {
@@ -1153,7 +1161,7 @@ fn run_driven_agent_sim_tick(
         None,
         anim_time,
         progress,
-        ai_warned,
+        ai_runtime,
         &[],
         mover_states,
         &[],
@@ -1212,7 +1220,7 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
     let world = floor_world();
     let nav_graph = open_floor_nav_graph();
     let mut progress = ProgressTracker::new();
-    let mut ai_warned = HashSet::new();
+    let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
     let mut mover_states = MoverTickStateTable::default();
     let empty_hit_zones = HitZoneStore::new();
 
@@ -1225,7 +1233,7 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
         let enemy = spawn_driven_agent(
             &mut registry,
             Vec3::new(5.0, 1.21, 5.0),
-            LogicalState::Attack,
+            LEGACY_ATTACK_STATE,
             "attack",
         );
         let mut mesh = registry
@@ -1245,7 +1253,7 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
         &nav_graph,
         1.0,
         &mut progress,
-        &mut ai_warned,
+        &mut ai_runtime,
         &mut mover_states,
     );
     assert_eq!(
@@ -1272,7 +1280,7 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
         let enemy = spawn_driven_agent(
             &mut registry,
             Vec3::new(5.0, 1.21, 5.0),
-            LogicalState::Alert,
+            LEGACY_ALERT_STATE,
             "locomotion",
         );
         let mut mesh = registry
@@ -1304,7 +1312,7 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
         &nav_graph,
         1.0,
         &mut progress,
-        &mut ai_warned,
+        &mut ai_runtime,
         &mut mover_states,
     );
     run_driven_agent_sim_tick(
@@ -1314,7 +1322,7 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
         &nav_graph,
         2.0,
         &mut progress,
-        &mut ai_warned,
+        &mut ai_runtime,
         &mut mover_states,
     );
 
@@ -1371,7 +1379,7 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
         &nav_graph,
         3.0,
         &mut progress,
-        &mut ai_warned,
+        &mut ai_runtime,
         &mut mover_states,
     );
     assert_eq!(
@@ -1428,7 +1436,7 @@ fn update_brain_playback_rate_scales_from_clip_travel_speed() {
     let enemy = spawn_driven_agent(
         &mut registry,
         Vec3::new(5.0, 1.21, 5.0),
-        LogicalState::Alert,
+        LEGACY_ALERT_STATE,
         "locomotion",
     );
     // Force a known post-steering velocity; the producer reads
@@ -1477,7 +1485,7 @@ fn update_brain_playback_rate_skips_scaling_when_speed_scale_off() {
     let enemy = spawn_driven_agent(
         &mut registry,
         Vec3::new(5.0, 1.21, 5.0),
-        LogicalState::Alert,
+        LEGACY_ALERT_STATE,
         "locomotion",
     );
     let mut mesh = registry
@@ -1558,7 +1566,7 @@ fn local_locomotion_rate_precedence_matrix_is_override_then_derived_then_fallbac
         let enemy = spawn_driven_agent(
             &mut registry,
             Vec3::new(5.0, 1.21, 5.0),
-            LogicalState::Alert,
+            LEGACY_ALERT_STATE,
             "locomotion",
         );
         let mut mesh = registry
@@ -1780,7 +1788,7 @@ fn simulate_tick_writes_target_aim_and_tick_end_heading_pose_inputs() {
     let world = floor_world();
     let nav_graph = open_floor_nav_graph();
     let mut progress = ProgressTracker::new();
-    let mut ai_warned = HashSet::new();
+    let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
     let mut mover_states = MoverTickStateTable::default();
     let hit_zones = HitZoneStore::new();
     let registry = Rc::new(RefCell::new(EntityRegistry::new()));
@@ -1790,7 +1798,7 @@ fn simulate_tick_writes_target_aim_and_tick_end_heading_pose_inputs() {
         let enemy = spawn_driven_agent(
             &mut registry,
             Vec3::new(5.0, 1.21, 5.0),
-            LogicalState::Attack,
+            LEGACY_ATTACK_STATE,
             "attack",
         );
         let mut brain = registry
@@ -1809,7 +1817,7 @@ fn simulate_tick_writes_target_aim_and_tick_end_heading_pose_inputs() {
         &nav_graph,
         1.0,
         &mut progress,
-        &mut ai_warned,
+        &mut ai_runtime,
         &mut mover_states,
     );
 
@@ -1855,9 +1863,8 @@ fn pose_inputs_fallbacks_and_vertical_targets_remain_finite() {
             target
         });
         let brain = BrainComponent {
-            state: LogicalState::Attack,
             acquired_target,
-            ..BrainComponent::from_descriptor(&driven_agent_descriptor())
+            ..brain_in_state(&driven_agent_descriptor(), LEGACY_ATTACK_STATE)
         };
         registry.set_component(entity, brain).unwrap();
 
@@ -3063,7 +3070,7 @@ fn simulate_tick_uses_sim_command_fire_button_with_callback_aim() {
     let world = CollisionWorld::new();
     let hit_zones = HitZoneStore::new();
     let mut progress = ProgressTracker::new();
-    let mut ai_warned = HashSet::new();
+    let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
     let mover_colliders = Vec::new();
     let mut mover_states = MoverTickStateTable::default();
     let command = SimCommand {
@@ -3093,7 +3100,7 @@ fn simulate_tick_uses_sim_command_fire_button_with_callback_aim() {
         Some(weapon),
         0.0,
         &mut progress,
-        &mut ai_warned,
+        &mut ai_runtime,
         &mover_colliders,
         &mut mover_states,
         &[],
@@ -3135,7 +3142,7 @@ fn simulate_tick_normalizes_callback_aim_direction_before_weapon_fire() {
     let world = CollisionWorld::new();
     let hit_zones = HitZoneStore::new();
     let mut progress = ProgressTracker::new();
-    let mut ai_warned = HashSet::new();
+    let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
     let mover_colliders = Vec::new();
     let mut mover_states = MoverTickStateTable::default();
     let command = SimCommand {
@@ -3165,7 +3172,7 @@ fn simulate_tick_normalizes_callback_aim_direction_before_weapon_fire() {
         Some(weapon),
         0.0,
         &mut progress,
-        &mut ai_warned,
+        &mut ai_runtime,
         &mover_colliders,
         &mut mover_states,
         &[],
@@ -3213,7 +3220,7 @@ fn simulate_tick_noops_weapon_fire_for_invalid_callback_aim_direction() {
     let world = CollisionWorld::new();
     let hit_zones = HitZoneStore::new();
     let mut progress = ProgressTracker::new();
-    let mut ai_warned = HashSet::new();
+    let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
     let mover_colliders = Vec::new();
     let mut mover_states = MoverTickStateTable::default();
     let command = SimCommand {
@@ -3243,7 +3250,7 @@ fn simulate_tick_noops_weapon_fire_for_invalid_callback_aim_direction() {
         Some(weapon),
         0.0,
         &mut progress,
-        &mut ai_warned,
+        &mut ai_runtime,
         &mover_colliders,
         &mut mover_states,
         &[],
@@ -3296,7 +3303,7 @@ fn simulate_tick_noops_weapon_fire_for_non_finite_callback_aim_origin() {
     let world = CollisionWorld::new();
     let hit_zones = HitZoneStore::new();
     let mut progress = ProgressTracker::new();
-    let mut ai_warned = HashSet::new();
+    let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
     let mover_colliders = Vec::new();
     let mut mover_states = MoverTickStateTable::default();
     let command = SimCommand {
@@ -3326,7 +3333,7 @@ fn simulate_tick_noops_weapon_fire_for_non_finite_callback_aim_origin() {
         Some(weapon),
         0.0,
         &mut progress,
-        &mut ai_warned,
+        &mut ai_runtime,
         &mover_colliders,
         &mut mover_states,
         &[],

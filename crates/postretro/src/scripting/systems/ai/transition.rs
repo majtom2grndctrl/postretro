@@ -1,10 +1,15 @@
-// The enemy FSM's pure transition core: state/steering evaluation plus the
-// think-stride and target-switch hysteresis helpers it depends on.
+// The steering intent the tick applies, plus the think-stride and
+// target-switch hysteresis helpers the engine floor depends on — and the v0
+// four-state transition core, retained as the differential oracle the lowered
+// graph's generated guards are tested against.
 // See: context/lib/entity_model.md §2 (engine components)
 
+#[cfg(test)]
 use glam::Vec3;
 
+#[cfg(test)]
 use crate::nav::distance_xz;
+#[cfg(test)]
 use postretro_entities::components::brain::{AiTuning, LogicalState};
 
 /// Think-stride bands. Target acquisition is time-sliced by player distance:
@@ -63,13 +68,20 @@ pub(crate) enum SteeringIntent {
 
 /// One transition evaluation's result: the next logical state plus what the
 /// steering layer should do. Pure output of [`evaluate_transition`].
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TransitionResult {
     pub(crate) next_state: LogicalState,
     pub(crate) steering: SteeringIntent,
 }
 
-/// The PURE FSM core: given the player position, the agent position, the resolved
+/// The v0 FSM core. The tick no longer calls it: every brain runs its behavior
+/// graph, and a legacy `components.ai` descriptor lowers to a graph whose
+/// generated guards must restate this function edge for edge. That differential
+/// test is the sole remaining caller, which is why this compiles out of a
+/// non-test build.
+///
+/// Given the player position, the agent position, the resolved
 /// tuning, the current logical state, and whether THIS tick re-evaluates target
 /// acquisition (the think-stride gate), return the next state and the steering
 /// intent. No registry, no `App`, no time — the unit tests drive it directly.
@@ -87,6 +99,7 @@ pub(crate) struct TransitionResult {
 /// acquisition gap never suppresses an in-range attack transition. When
 /// acquisition is gated off and the agent is already engaged, the agent keeps
 /// chasing (steering stays `Chase`) — it does not drop the target mid-stride.
+#[cfg(test)]
 pub(crate) fn evaluate_transition(
     player_pos: Vec3,
     agent_pos: Vec3,

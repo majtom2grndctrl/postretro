@@ -1,11 +1,14 @@
-// Unit tests for the engine-owned enemy FSM tick. The pure transition core is
-// driven directly (no registry); the integration tests build a minimal registry
-// with a player pawn (PlayerMovement + Transform + Health), an enemy (Brain +
-// Transform + Agent + Mesh), and assert observable outcomes — destination via
-// `path_state`, HP deltas via the chokepoint, the selected animation name, and
-// the stride gating.
+// Unit tests for the engine-owned enemy brain tick. The v0 transition core is
+// driven directly (no registry) as the oracle the lowered legacy graph must
+// match; the integration tests build a minimal registry with a player pawn
+// (PlayerMovement + Transform + Health), an enemy (Brain + Transform + Agent +
+// Mesh), and assert observable outcomes — destination via `path_state`, HP
+// deltas via the chokepoint, the selected animation name, and the stride
+// gating. Most drive a lowered `components.ai` descriptor; the closing section
+// drives authored graphs.
 
-use std::collections::HashSet;
+use std::borrow::Cow;
+use std::collections::BTreeMap;
 
 use glam::Vec3;
 use parry3d::math::{Isometry, Point};
@@ -15,15 +18,26 @@ use postretro_level_format::navmesh::{NAVMESH_VERSION, NavMeshSection, NavPortal
 use super::*;
 use crate::agent_steering;
 use crate::collision::CollisionWorld;
+use crate::impact_policy::ImpactPolicyRuntime;
 use crate::nav::NavGraph;
 use postretro_entities::components::agent::AgentComponent;
-use postretro_entities::components::brain::{AiStateMap, AiTuning, BrainComponent, LogicalState};
+use postretro_entities::components::brain::{BrainComponent, graph_state_index};
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::mesh::{
     AnimationState, InterruptPolicy, MeshAnimation, MeshComponent,
 };
 use postretro_entities::components::player_movement::PlayerMovementComponent;
+use postretro_entities::data_descriptors::{
+    AiDescriptor, AiStateNames, LEGACY_ALERT_STATE, LEGACY_ATTACK_STATE, LEGACY_DEATH_STATE,
+    LEGACY_IDLE_STATE, lower_ai_descriptor,
+};
 use postretro_entities::registry::{EntityId, EntityRegistry, Transform};
+use postretro_entities::{EntityStateComponent, ScriptCtx};
+use postretro_foundation::{
+    ActionVerb, AttackParams, BRAIN_HAS_TARGET_INPUT, BRAIN_TARGET_DISTANCE_INPUT,
+    BRAIN_TIME_IN_STATE_MS_INPUT, BehaviorGraphDescriptor, BehaviorStateDescriptor,
+    ImpactEventDescriptor, IrNode, IrValue, MotionVerb, TransitionDescriptor,
+};
 use postretro_scripting_core::data_descriptors::{
     AirParams, CapsuleParams, FallParams, ForgivenessParams, GroundParams,
     PlayerMovementDescriptor, SpeedParams,
@@ -40,11 +54,12 @@ fn yaw_distance(from: f32, to: f32) -> f32 {
         .abs()
 }
 
-/// Resolved tuning with legible ranges: detect at 18, attack at 2, leash at 26,
-/// 8 damage on a 1000ms cooldown. Animation names mirror the four logical
-/// states: idle→idle, alert→locomotion, attack→attack, death→death.
-fn tuning() -> AiTuning {
-    AiTuning {
+/// A legacy `components.ai` descriptor with legible ranges: detect at 18,
+/// attack at 2, leash at 26, 8 damage on a 1000ms cooldown. Animation names
+/// mirror the four lowered states: idle→idle, alert→locomotion,
+/// attack→attack, death→death.
+fn tuning() -> AiDescriptor {
+    AiDescriptor {
         detection_range: 18.0,
         attack_range: 2.0,
         leash_range: 26.0,
@@ -52,7 +67,7 @@ fn tuning() -> AiTuning {
         attack_cooldown_ms: 1000.0,
         move_speed: 3.5,
         death_despawn_ms: 1500.0,
-        states: AiStateMap {
+        states: AiStateNames {
             idle: "idle".into(),
             alert: "locomotion".into(),
             attack: "attack".into(),
@@ -61,19 +76,13 @@ fn tuning() -> AiTuning {
     }
 }
 
-fn brain_with(tuning: AiTuning, state: LogicalState) -> BrainComponent {
-    BrainComponent {
-        state,
-        attack_cooldown_remaining_ms: 0.0,
-        think_stride_counter: 0,
-        death_despawn_remaining_ms: None,
-        locomotion_moving: false,
-        aggro_armed: true,
-        acquired_target: None,
-        combat_slot: None,
-        combat_slot_hold_ticks: 0,
-        tuning,
-    }
+/// A brain lowered from `descriptor` and seeded into the named lowered state
+/// (one of the `LEGACY_*_STATE` constants) rather than the graph's `initial`.
+fn brain_with(descriptor: AiDescriptor, state: &str) -> BrainComponent {
+    let mut brain = BrainComponent::from_descriptor(&descriptor);
+    brain.state_index = graph_state_index(&brain.graph, state)
+        .expect("the lowered graph declares every legacy state");
+    brain
 }
 
 /// A usable (clip-resolved) animation state so `switch_animation_state` accepts
@@ -89,11 +98,15 @@ fn usable_state(clip: &str, idx: usize) -> AnimationState {
     }
 }
 
-/// A four-state mesh declaring the tuning's animation names, all resolved.
+/// A mesh declaring the tuning's animation names, all resolved. `walk` is the
+/// SHIPPED reference enemy's travel-state name (`locomotion` is this file's own
+/// fixture spelling); both resolve to the same clip so a graph authored either
+/// way is drivable here.
 fn enemy_mesh() -> MeshComponent {
     let mut states = std::collections::HashMap::new();
     states.insert("idle".to_string(), usable_state("idle_clip", 0));
     states.insert("locomotion".to_string(), usable_state("walk_clip", 1));
+    states.insert("walk".to_string(), usable_state("walk_clip", 1));
     states.insert("attack".to_string(), usable_state("attack_clip", 2));
     states.insert("death".to_string(), usable_state("death_clip", 3));
     MeshComponent {
@@ -221,8 +234,15 @@ fn player_hp(reg: &EntityRegistry, pawn: EntityId) -> f32 {
     reg.get_component::<HealthComponent>(pawn).unwrap().current
 }
 
-fn enemy_state(reg: &EntityRegistry, enemy: EntityId) -> LogicalState {
-    reg.get_component::<BrainComponent>(enemy).unwrap().state
+/// The enemy's current graph state name — the one vocabulary these tests
+/// assert in, whether the brain came from a lowered `components.ai` block or an
+/// authored graph.
+fn enemy_state_name(reg: &EntityRegistry, enemy: EntityId) -> String {
+    reg.get_component::<BrainComponent>(enemy)
+        .unwrap()
+        .state_name()
+        .expect("the brain sits in a declared state")
+        .to_string()
 }
 
 /// Overwrite an entity's current HP (the recovery tests heal a dead enemy back
@@ -316,110 +336,167 @@ fn set_enemy_animation(reg: &mut EntityRegistry, enemy: EntityId, state: &str) {
 }
 
 // ---------------------------------------------------------------------------
-// Pure transition core
+// Lowered-graph transition core
+//
+// The v0 four-state core is gone; a legacy `components.ai` descriptor lowers to
+// a graph and the evaluator walks its ordered guards. These are the v0 core's
+// unit tests, restated against that evaluator: same tuning, same rows, driven
+// through `select_transition` instead of a bespoke `match`.
 // ---------------------------------------------------------------------------
+
+/// Resolve one hypothetical tick of the lowered graph: the state a brain
+/// sitting in `current` selects at `distance` from its target, plus the
+/// steering intent that state carries. Staying put reports the current state,
+/// matching the v0 core's same-state rows.
+///
+/// The registry exists only because [`BrainScope::refresh`] reads health and
+/// per-entity state through it; nothing here runs the tick.
+fn step_lowered(
+    descriptor: &AiDescriptor,
+    current: &str,
+    distance: f32,
+    acquisition_due: bool,
+) -> (String, SteeringIntent) {
+    let graph = lower_ai_descriptor(descriptor);
+    let mut reg = EntityRegistry::new();
+    let enemy = reg.spawn(Transform::default());
+    reg.set_component(enemy, BrainComponent::from_graph(&graph))
+        .expect("fresh entity is live");
+
+    let mut programs = BrainPrograms::new();
+    let mut warned = HashSet::new();
+    programs.sync(&reg, &mut warned);
+    assert!(warned.is_empty(), "every generated guard binds");
+    programs.scope_mut().refresh(
+        &reg,
+        enemy,
+        BrainFacts {
+            target_distance: Some(distance),
+            time_in_state_ms: 0.0,
+            attack_cooldown_ms: 0.0,
+            acquisition_due,
+        },
+    );
+
+    let current_index = graph_state_index(&graph, current).expect("declared state");
+    let bound = programs.get(enemy).expect("the spawned brain is bound");
+    let next_index =
+        select_transition(&graph, bound, programs.scope(), current_index).unwrap_or(current_index);
+    let motion = state_at(&graph, next_index)
+        .expect("the selected index is declared")
+        .motion;
+    let name = graph
+        .states
+        .keys()
+        .nth(next_index)
+        .expect("the selected index is declared")
+        .clone();
+    (name, steering_for(motion))
+}
 
 #[test]
 fn idle_transitions_to_alert_when_player_enters_detection_range() {
-    let t = tuning();
     // Player 10 units away (inside detection 18, outside attack 2): alert+chase.
-    let result = evaluate_transition(
-        Vec3::new(10.0, 0.0, 0.0),
-        Vec3::ZERO,
-        &t,
-        LogicalState::Idle,
-        true,
+    assert_eq!(
+        step_lowered(&tuning(), LEGACY_IDLE_STATE, 10.0, true),
+        (LEGACY_ALERT_STATE.to_string(), SteeringIntent::Chase)
     );
-    assert_eq!(result.next_state, LogicalState::Alert);
-    assert_eq!(result.steering, SteeringIntent::Chase);
+}
+
+#[test]
+fn idle_transitions_straight_to_attack_when_already_in_contact_range() {
+    // The v0 core's nested "newly alerted and already in range" branch: the
+    // lowered graph declares that edge first so first-true-wins picks it.
+    assert_eq!(
+        step_lowered(&tuning(), LEGACY_IDLE_STATE, 1.0, true),
+        (LEGACY_ATTACK_STATE.to_string(), SteeringIntent::Chase)
+    );
 }
 
 #[test]
 fn idle_stays_idle_and_clears_when_player_outside_detection_range() {
-    let t = tuning();
-    let result = evaluate_transition(
-        Vec3::new(50.0, 0.0, 0.0),
-        Vec3::ZERO,
-        &t,
-        LogicalState::Idle,
-        true,
+    assert_eq!(
+        step_lowered(&tuning(), LEGACY_IDLE_STATE, 50.0, true),
+        (LEGACY_IDLE_STATE.to_string(), SteeringIntent::Clear)
     );
-    assert_eq!(result.next_state, LogicalState::Idle);
-    assert_eq!(result.steering, SteeringIntent::Clear);
+}
+
+#[test]
+fn idle_detection_is_suppressed_when_acquisition_is_gated_off() {
+    // Detection is the acquisition-gated edge: in range, but not a think tick.
+    assert_eq!(
+        step_lowered(&tuning(), LEGACY_IDLE_STATE, 10.0, false),
+        (LEGACY_IDLE_STATE.to_string(), SteeringIntent::Clear)
+    );
 }
 
 #[test]
 fn alert_transitions_to_idle_when_player_leaves_leash_range() {
-    let t = tuning();
     // Player 30 units away (outside leash 26): drop target → idle + clear.
-    let result = evaluate_transition(
-        Vec3::new(30.0, 0.0, 0.0),
-        Vec3::ZERO,
-        &t,
-        LogicalState::Alert,
-        true,
+    assert_eq!(
+        step_lowered(&tuning(), LEGACY_ALERT_STATE, 30.0, true),
+        (LEGACY_IDLE_STATE.to_string(), SteeringIntent::Clear)
     );
-    assert_eq!(result.next_state, LogicalState::Idle);
-    assert_eq!(result.steering, SteeringIntent::Clear);
 }
 
 #[test]
 fn alert_transitions_to_attack_within_attack_range() {
-    let t = tuning();
-    let result = evaluate_transition(
-        Vec3::new(1.0, 0.0, 0.0),
-        Vec3::ZERO,
-        &t,
-        LogicalState::Alert,
-        true,
+    assert_eq!(
+        step_lowered(&tuning(), LEGACY_ALERT_STATE, 1.0, true),
+        (LEGACY_ATTACK_STATE.to_string(), SteeringIntent::Chase)
     );
-    assert_eq!(result.next_state, LogicalState::Attack);
-    assert_eq!(result.steering, SteeringIntent::Chase);
 }
 
 #[test]
 fn attack_falls_back_to_alert_when_leaving_attack_range() {
-    let t = tuning();
-    let result = evaluate_transition(
-        Vec3::new(5.0, 0.0, 0.0),
-        Vec3::ZERO,
-        &t,
-        LogicalState::Attack,
-        true,
+    assert_eq!(
+        step_lowered(&tuning(), LEGACY_ATTACK_STATE, 5.0, true),
+        (LEGACY_ALERT_STATE.to_string(), SteeringIntent::Chase)
     );
-    assert_eq!(result.next_state, LogicalState::Alert);
-    assert_eq!(result.steering, SteeringIntent::Chase);
 }
 
 #[test]
 fn alert_keeps_chasing_when_acquisition_gated_off_and_still_engaged() {
     // Inside leash but acquisition NOT evaluated this tick: must not drop the
     // target — it keeps chasing.
-    let t = tuning();
-    let result = evaluate_transition(
-        Vec3::new(10.0, 0.0, 0.0),
-        Vec3::ZERO,
-        &t,
-        LogicalState::Alert,
-        false,
+    assert_eq!(
+        step_lowered(&tuning(), LEGACY_ALERT_STATE, 10.0, false),
+        (LEGACY_ALERT_STATE.to_string(), SteeringIntent::Chase)
     );
-    assert_eq!(result.next_state, LogicalState::Alert);
-    assert_eq!(result.steering, SteeringIntent::Chase);
+}
+
+#[test]
+fn alert_leash_escape_is_suppressed_when_acquisition_is_gated_off() {
+    // The leash edge carries the same acquisition gate the v0 core applied:
+    // beyond leash, but off-stride, the graph holds the pursuit. (The engine
+    // floor's own `leash_range` retention check, which is NOT strided, is what
+    // drops the target in the full tick — see the integration tests.)
+    assert_eq!(
+        step_lowered(&tuning(), LEGACY_ALERT_STATE, 30.0, false),
+        (LEGACY_ALERT_STATE.to_string(), SteeringIntent::Chase)
+    );
 }
 
 #[test]
 fn attack_range_entry_is_evaluated_even_when_acquisition_gated_off() {
     // The strided-gap-must-not-suppress-attack contract at the pure level:
     // acquisition off, but the player is inside attack range — still attacks.
-    let t = tuning();
-    let result = evaluate_transition(
-        Vec3::new(1.0, 0.0, 0.0),
-        Vec3::ZERO,
-        &t,
-        LogicalState::Alert,
-        false,
+    assert_eq!(
+        step_lowered(&tuning(), LEGACY_ALERT_STATE, 1.0, false).0,
+        LEGACY_ATTACK_STATE
     );
-    assert_eq!(result.next_state, LogicalState::Attack);
+}
+
+#[test]
+fn death_is_terminal_in_the_lowered_graph() {
+    // The v0 core held `Death` and touched no steering; the lowered graph
+    // encodes that as a `freeze` state with no outgoing edges.
+    for acquisition_due in [false, true] {
+        assert_eq!(
+            step_lowered(&tuning(), LEGACY_DEATH_STATE, 0.0, acquisition_due),
+            (LEGACY_DEATH_STATE.to_string(), SteeringIntent::Hold)
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -507,6 +584,76 @@ fn slew_yaw_sequence_is_deterministic() {
     assert_eq!(run_sequence(), run_sequence());
 }
 
+// Regression: `NaN <= MIN_XZ_LEN_SQ` is false, so a NaN direction fell through
+// the zero-length guard into `atan2(NaN, NaN)` and wrote a NaN yaw.
+#[test]
+fn yaw_rotation_toward_reports_no_heading_for_a_non_finite_direction() {
+    for dir in [
+        Vec3::new(f32::NAN, 0.0, 1.0),
+        Vec3::new(1.0, 0.0, f32::NAN),
+        Vec3::new(f32::NAN, f32::NAN, f32::NAN),
+        // Y is ignored by the yaw-only math, but a corrupt vector usually
+        // carries it — the XZ pair alone must still decide.
+        Vec3::new(1.0, f32::NAN, 0.0),
+    ] {
+        let rotation = yaw_rotation_toward(dir);
+        match rotation {
+            None => {}
+            Some(quat) => assert!(
+                quat.x.is_finite()
+                    && quat.y.is_finite()
+                    && quat.z.is_finite()
+                    && quat.w.is_finite(),
+                "a non-finite direction {dir:?} must not produce a NaN rotation, got {quat:?}",
+            ),
+        }
+    }
+    assert_eq!(
+        yaw_rotation_toward(Vec3::new(f32::NAN, 0.0, 1.0)),
+        None,
+        "a NaN XZ component yields no heading, so the caller leaves facing alone",
+    );
+
+    // `+inf` is deliberately still a usable heading: `atan2(inf, inf)` is a
+    // finite π/4, so there is nothing to guard against.
+    let infinite = yaw_rotation_toward(Vec3::new(f32::INFINITY, 0.0, f32::INFINITY))
+        .expect("an infinite direction still yields a finite diagonal heading");
+    assert!(
+        infinite.x.is_finite()
+            && infinite.y.is_finite()
+            && infinite.z.is_finite()
+            && infinite.w.is_finite(),
+    );
+}
+
+// Regression: `NaN.signum()` is NaN, so a non-finite yaw was ABSORBING — the
+// corrupt rotation was written back and read as the next tick's current yaw.
+#[test]
+fn slew_yaw_is_total_over_non_finite_yaws() {
+    let current = 0.5_f32;
+    for target in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        assert_eq!(
+            slew_yaw(current, target, 0.25).to_bits(),
+            current.to_bits(),
+            "an unusable target yaw must hold the existing facing, not corrupt it",
+        );
+    }
+
+    // A current yaw that is already corrupt must RE-SEAT rather than stay
+    // wedged: the entity gets its facing back on the first tick with a usable
+    // target, instead of reading its own NaN forever.
+    let target = 1.25_f32;
+    for corrupt in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        let next = slew_yaw(corrupt, target, 0.25);
+        assert!(next.is_finite(), "re-seating must produce a usable yaw");
+        assert_eq!(
+            next.to_bits(),
+            target.to_bits(),
+            "there is nothing to slew FROM, so the facing seats at the target",
+        );
+    }
+}
+
 #[test]
 fn locomotion_intent_uses_xz_speed_and_shared_epsilon() {
     let below = LocomotionIntent::from_velocity(Vec3::new(MOVE_SPEED_EPSILON * 0.5, 99.0, 0.0));
@@ -520,44 +667,45 @@ fn locomotion_intent_uses_xz_speed_and_shared_epsilon() {
     assert!(above.moving, "above epsilon is moving");
 }
 
-#[test]
-fn alert_stationary_selects_idle_and_alert_moving_selects_walk() {
-    let states = tuning().states;
-    let stopped = LocomotionIntent::from_velocity(Vec3::ZERO);
-    let moving = LocomotionIntent::from_velocity(Vec3::new(MOVE_SPEED_EPSILON * 2.0, 0.0, 0.0));
+/// The animation the tick would request for a legacy state at a given
+/// locomotion intent, driven through the graph substitution rule.
+fn animation_for_legacy_state(state: &str, moving: bool) -> String {
+    let graph = lower_ai_descriptor(&tuning());
+    let index = graph_state_index(&graph, state).unwrap();
+    animation_for_state(&graph, index, moving)
+        .expect("every lowered state resolves an animation")
+        .to_string()
+}
 
+#[test]
+fn a_stationary_locomotion_state_substitutes_the_rest_animation() {
     assert_eq!(
-        animation_for_locomotion(LogicalState::Alert, stopped, &states),
+        animation_for_legacy_state(LEGACY_ALERT_STATE, false),
         "idle",
-        "stationary Alert uses the idle-mapped animation",
+        "a chasing state with no action of its own yields to the graph's rest \
+         animation at a standstill",
     );
     assert_eq!(
-        animation_for_locomotion(LogicalState::Alert, moving, &states),
+        animation_for_legacy_state(LEGACY_ALERT_STATE, true),
         "locomotion",
-        "moving Alert uses the alert/walk mapping",
+        "in motion it plays its own travel cycle",
     );
 }
 
 #[test]
-fn non_alert_states_keep_their_mapped_animation_regardless_of_speed() {
-    let states = tuning().states;
-    let stopped = LocomotionIntent::from_velocity(Vec3::ZERO);
-    let moving = LocomotionIntent::from_velocity(Vec3::new(1.0, 0.0, 0.0));
-
+fn non_locomotion_states_keep_their_own_animation_regardless_of_speed() {
+    assert_eq!(animation_for_legacy_state(LEGACY_IDLE_STATE, true), "idle");
     assert_eq!(
-        animation_for_locomotion(LogicalState::Idle, moving, &states),
-        "idle"
+        animation_for_legacy_state(LEGACY_ATTACK_STATE, false),
+        "attack",
+        "a chasing state that declares an action is not locomotion",
     );
     assert_eq!(
-        animation_for_locomotion(LogicalState::Attack, stopped, &states),
+        animation_for_legacy_state(LEGACY_ATTACK_STATE, true),
         "attack"
     );
     assert_eq!(
-        animation_for_locomotion(LogicalState::Attack, moving, &states),
-        "attack"
-    );
-    assert_eq!(
-        animation_for_locomotion(LogicalState::Death, moving, &states),
+        animation_for_legacy_state(LEGACY_DEATH_STATE, true),
         "death"
     );
 }
@@ -671,7 +819,7 @@ fn select_target_excludes_retained_target_when_leash_expires_on_acquisition_tick
 #[test]
 fn detection_sets_agent_destination_and_leash_clears_it() {
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
 
     // A short leash (8) so "beyond leash" still falls in the near stride band
     // (<= 12) — the leash drop is then evaluated every tick, isolating this test
@@ -679,18 +827,13 @@ fn detection_sets_agent_destination_and_leash_clears_it() {
     let mut t = tuning();
     t.detection_range = 18.0;
     t.leash_range = 8.0;
-    let enemy = spawn_enemy(
-        &mut reg,
-        Vec3::ZERO,
-        brain_with(t, LogicalState::Idle),
-        50.0,
-    );
+    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain_with(t, LEGACY_IDLE_STATE), 50.0);
 
     // Player crosses into detection range (5 units away): the tick must set the
     // agent destination to the player. Assert via the path_state read.
     let pawn = spawn_player(&mut reg, Vec3::new(5.0, 0.0, 0.0));
     run_ai_tick(&mut reg, &mut warned, 0.016);
-    assert_eq!(enemy_state(&reg, enemy), LogicalState::Alert);
+    assert_eq!(enemy_state_name(&reg, enemy), LEGACY_ALERT_STATE);
     assert_eq!(
         enemy_acquired_target(&reg, enemy),
         Some(pawn),
@@ -709,7 +852,7 @@ fn detection_sets_agent_destination_and_leash_clears_it() {
     t.position = Vec3::new(10.0, 0.0, 0.0);
     reg.set_component(pawn, t).unwrap();
     run_ai_tick(&mut reg, &mut warned, 0.016);
-    assert_eq!(enemy_state(&reg, enemy), LogicalState::Idle);
+    assert_eq!(enemy_state_name(&reg, enemy), LEGACY_IDLE_STATE);
     assert_eq!(
         enemy_acquired_target(&reg, enemy),
         None,
@@ -730,13 +873,13 @@ fn detection_sets_agent_destination_and_leash_clears_it() {
 #[test]
 fn sealed_enemy_does_not_acquire_adjacent_player_or_write_transform() {
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
     let start = Transform {
         position: Vec3::ZERO,
         rotation: glam::Quat::from_rotation_y(0.7),
         ..Transform::default()
     };
-    let mut brain = brain_with(tuning(), LogicalState::Idle);
+    let mut brain = brain_with(tuning(), LEGACY_IDLE_STATE);
     brain.aggro_armed = false;
     let enemy = spawn_enemy(&mut reg, start.position, brain, 50.0);
     reg.set_component(enemy, start).unwrap();
@@ -746,7 +889,7 @@ fn sealed_enemy_does_not_acquire_adjacent_player_or_write_transform() {
     // adjacent here proves the sealed gate also prevents the thin-wall case.
     run_ai_tick(&mut reg, &mut warned, 0.016);
 
-    assert_eq!(enemy_state(&reg, enemy), LogicalState::Idle);
+    assert_eq!(enemy_state_name(&reg, enemy), LEGACY_IDLE_STATE);
     assert_eq!(enemy_acquired_target(&reg, enemy), None);
     assert!(
         !agent_steering::path_state(&reg, enemy)
@@ -765,8 +908,8 @@ fn sealed_enemy_does_not_acquire_adjacent_player_or_write_transform() {
 #[test]
 fn opening_sealed_enemy_allows_pursuit_on_next_think_tick() {
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
-    let mut brain = brain_with(tuning(), LogicalState::Idle);
+    let mut warned = AiRuntime::new();
+    let mut brain = brain_with(tuning(), LEGACY_IDLE_STATE);
     brain.aggro_armed = false;
     let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 50.0);
     let pawn = spawn_player(&mut reg, Vec3::new(5.0, 0.0, 0.0));
@@ -775,7 +918,7 @@ fn opening_sealed_enemy_allows_pursuit_on_next_think_tick() {
     set_enemy_aggro_armed(&mut reg, enemy, true);
     run_ai_tick(&mut reg, &mut warned, 0.016);
 
-    assert_eq!(enemy_state(&reg, enemy), LogicalState::Alert);
+    assert_eq!(enemy_state_name(&reg, enemy), LEGACY_ALERT_STATE);
     assert_eq!(enemy_acquired_target(&reg, enemy), Some(pawn));
     assert!(
         agent_steering::path_state(&reg, enemy)
@@ -788,11 +931,11 @@ fn opening_sealed_enemy_allows_pursuit_on_next_think_tick() {
 #[test]
 fn closing_mid_chase_clears_steering_and_holds_idempotently() {
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
     let enemy = spawn_enemy(
         &mut reg,
         Vec3::ZERO,
-        brain_with(tuning(), LogicalState::Idle),
+        brain_with(tuning(), LEGACY_IDLE_STATE),
         50.0,
     );
     spawn_player(&mut reg, Vec3::new(5.0, 0.0, 0.0));
@@ -805,7 +948,7 @@ fn closing_mid_chase_clears_steering_and_holds_idempotently() {
     run_ai_tick(&mut reg, &mut warned, 0.016);
     let first_closed_animation = reg.get_component::<MeshComponent>(enemy).unwrap().clone();
 
-    assert_eq!(enemy_state(&reg, enemy), LogicalState::Idle);
+    assert_eq!(enemy_state_name(&reg, enemy), LEGACY_IDLE_STATE);
     assert_eq!(enemy_acquired_target(&reg, enemy), None);
     assert!(
         !agent_steering::path_state(&reg, enemy)
@@ -833,8 +976,8 @@ fn closing_mid_chase_clears_steering_and_holds_idempotently() {
 #[test]
 fn gated_zero_hp_enemy_remains_present_and_idle() {
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
-    let mut brain = brain_with(tuning(), LogicalState::Idle);
+    let mut warned = AiRuntime::new();
+    let mut brain = brain_with(tuning(), LEGACY_IDLE_STATE);
     brain.aggro_armed = false;
     let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 0.0);
     spawn_player(&mut reg, Vec3::new(1.0, 0.0, 0.0));
@@ -843,7 +986,7 @@ fn gated_zero_hp_enemy_remains_present_and_idle() {
         run_ai_tick(&mut reg, &mut warned, 1.0);
     }
 
-    assert_eq!(enemy_state(&reg, enemy), LogicalState::Idle);
+    assert_eq!(enemy_state_name(&reg, enemy), LEGACY_IDLE_STATE);
     assert_eq!(enemy_acquired_target(&reg, enemy), None);
     assert!(
         !agent_steering::path_state(&reg, enemy)
@@ -856,11 +999,11 @@ fn gated_zero_hp_enemy_remains_present_and_idle() {
 #[test]
 fn retained_target_is_consumed_for_chase_when_other_pawn_is_only_slightly_nearer() {
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
 
     let retained = spawn_player(&mut reg, Vec3::new(10.0, 0.0, 0.0));
     spawn_player(&mut reg, Vec3::new(9.5, 0.0, 0.0));
-    let mut brain = brain_with(tuning(), LogicalState::Alert);
+    let mut brain = brain_with(tuning(), LEGACY_ALERT_STATE);
     brain.acquired_target = Some(retained);
     let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 50.0);
 
@@ -871,7 +1014,7 @@ fn retained_target_is_consumed_for_chase_when_other_pawn_is_only_slightly_nearer
         Some(retained),
         "the retained target identity stays persisted while engaged",
     );
-    assert_eq!(enemy_state(&reg, enemy), LogicalState::Alert);
+    assert_eq!(enemy_state_name(&reg, enemy), LEGACY_ALERT_STATE);
     let path = agent_steering::path_state(&reg, enemy).expect("agent present");
     assert!(path.has_destination, "engaged target sets steering");
     assert!(
@@ -885,13 +1028,13 @@ fn retained_target_is_consumed_for_chase_when_other_pawn_is_only_slightly_nearer
 #[test]
 fn off_stride_retained_target_does_not_switch_to_meaningfully_closer_pawn() {
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
 
     let retained = spawn_player(&mut reg, Vec3::new(35.0, 0.0, 0.0));
     let closer = spawn_player(&mut reg, Vec3::new(1.0, 0.0, 0.0));
     let mut t = tuning();
     t.leash_range = 60.0;
-    let mut brain = brain_with(t, LogicalState::Alert);
+    let mut brain = brain_with(t, LEGACY_ALERT_STATE);
     brain.acquired_target = Some(retained);
     let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 50.0);
 
@@ -917,17 +1060,17 @@ fn off_stride_retained_target_does_not_switch_to_meaningfully_closer_pawn() {
 #[test]
 fn idle_brain_ignores_stale_retained_target_when_acquiring() {
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
 
     let stale_far = spawn_player(&mut reg, Vec3::new(25.0, 0.0, 0.0));
     let near = spawn_player(&mut reg, Vec3::new(5.0, 0.0, 0.0));
-    let mut brain = brain_with(tuning(), LogicalState::Idle);
+    let mut brain = brain_with(tuning(), LEGACY_IDLE_STATE);
     brain.acquired_target = Some(stale_far);
     let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 50.0);
 
     run_ai_tick(&mut reg, &mut warned, 0.016);
 
-    assert_eq!(enemy_state(&reg, enemy), LogicalState::Alert);
+    assert_eq!(enemy_state_name(&reg, enemy), LEGACY_ALERT_STATE);
     assert_eq!(
         enemy_acquired_target(&reg, enemy),
         Some(near),
@@ -938,14 +1081,14 @@ fn idle_brain_ignores_stale_retained_target_when_acquiring() {
 #[test]
 fn retained_target_outside_leash_drops_instead_of_switching_to_out_of_leash_replacement() {
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
 
     let retained = spawn_player(&mut reg, Vec3::new(20.0, 0.0, 0.0));
     let replacement = spawn_player(&mut reg, Vec3::new(35.0, 0.0, 0.0));
     let mut t = tuning();
     t.leash_range = 10.0;
     t.detection_range = 40.0;
-    let mut brain = brain_with(t, LogicalState::Alert);
+    let mut brain = brain_with(t, LEGACY_ALERT_STATE);
     brain.acquired_target = Some(retained);
     brain.think_stride_counter = 3; // 20 units is mid band: 4 % 4 == acquisition tick.
     let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 50.0);
@@ -954,8 +1097,8 @@ fn retained_target_outside_leash_drops_instead_of_switching_to_out_of_leash_repl
     run_ai_tick(&mut reg, &mut warned, 0.016);
 
     assert_eq!(
-        enemy_state(&reg, enemy),
-        LogicalState::Idle,
+        enemy_state_name(&reg, enemy),
+        LEGACY_IDLE_STATE,
         "an acquisition tick that invalidates leash should drop aggro when no replacement is in leash"
     );
     assert_eq!(
@@ -975,13 +1118,13 @@ fn retained_target_outside_leash_drops_instead_of_switching_to_out_of_leash_repl
 #[test]
 fn retained_target_outside_leash_clears_stale_destination_off_stride() {
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
 
     let retained = spawn_player(&mut reg, Vec3::new(35.0, 0.0, 0.0));
     let mut t = tuning();
     t.leash_range = 10.0;
     t.detection_range = 40.0;
-    let mut brain = brain_with(t, LogicalState::Alert);
+    let mut brain = brain_with(t, LEGACY_ALERT_STATE);
     brain.acquired_target = Some(retained);
     brain.think_stride_counter = 0; // 35 units is far band: 1 % 12 is off-stride.
     let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 50.0);
@@ -990,8 +1133,8 @@ fn retained_target_outside_leash_clears_stale_destination_off_stride() {
     run_ai_tick(&mut reg, &mut warned, 0.016);
 
     assert_eq!(
-        enemy_state(&reg, enemy),
-        LogicalState::Idle,
+        enemy_state_name(&reg, enemy),
+        LEGACY_IDLE_STATE,
         "leash escape should stand down immediately, not wait for target acquisition stride"
     );
     assert_eq!(
@@ -1014,7 +1157,7 @@ fn retained_target_outside_leash_clears_stale_destination_off_stride() {
 #[test]
 fn attack_applies_configured_damage_once_per_cooldown() {
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
 
     // Player inside attack range (1 unit). Enemy idle → detection puts it in
     // attack this tick (already in attack range), cooldown ready → one hit.
@@ -1022,7 +1165,7 @@ fn attack_applies_configured_damage_once_per_cooldown() {
     let enemy = spawn_enemy(
         &mut reg,
         Vec3::ZERO,
-        brain_with(tuning(), LogicalState::Idle),
+        brain_with(tuning(), LEGACY_IDLE_STATE),
         50.0,
     );
 
@@ -1079,7 +1222,7 @@ fn attack_applies_configured_damage_once_per_cooldown() {
 #[test]
 fn attack_does_not_damage_remote_health_when_marked_local_pawn_lacks_health() {
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
 
     let remote = spawn_player(&mut reg, Vec3::new(100.0, 0.0, 0.0));
     let local = spawn_player_without_health(&mut reg, Vec3::new(1.0, 0.0, 0.0));
@@ -1087,7 +1230,7 @@ fn attack_does_not_damage_remote_health_when_marked_local_pawn_lacks_health() {
     spawn_enemy(
         &mut reg,
         Vec3::ZERO,
-        brain_with(tuning(), LogicalState::Attack),
+        brain_with(tuning(), LEGACY_ATTACK_STATE),
         50.0,
     );
 
@@ -1107,7 +1250,7 @@ fn attack_does_not_damage_remote_health_when_marked_local_pawn_lacks_health() {
 #[test]
 fn attack_damages_selected_remote_target_not_marked_local_pawn() {
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
 
     let local = spawn_player(&mut reg, Vec3::new(100.0, 0.0, 0.0));
     let remote = spawn_player(&mut reg, Vec3::new(1.0, 0.0, 0.0));
@@ -1115,7 +1258,7 @@ fn attack_damages_selected_remote_target_not_marked_local_pawn() {
     spawn_enemy(
         &mut reg,
         Vec3::ZERO,
-        brain_with(tuning(), LogicalState::Idle),
+        brain_with(tuning(), LEGACY_IDLE_STATE),
         50.0,
     );
 
@@ -1141,7 +1284,7 @@ fn attack_damages_selected_remote_target_not_marked_local_pawn() {
 #[test]
 fn selected_dead_target_suppresses_attack_even_when_other_pawn_is_alive() {
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
 
     let selected_dead = spawn_player(&mut reg, Vec3::new(1.0, 0.0, 0.0));
     set_hp(&mut reg, selected_dead, 0.0);
@@ -1149,7 +1292,7 @@ fn selected_dead_target_suppresses_attack_even_when_other_pawn_is_alive() {
     spawn_enemy(
         &mut reg,
         Vec3::ZERO,
-        brain_with(tuning(), LogicalState::Idle),
+        brain_with(tuning(), LEGACY_IDLE_STATE),
         50.0,
     );
 
@@ -1174,14 +1317,14 @@ fn selected_dead_target_suppresses_attack_even_when_other_pawn_is_alive() {
 #[test]
 fn no_damage_when_player_below_attack_range() {
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
 
     // Player at 10 units: inside detection, outside attack range → no damage.
     let pawn = spawn_player(&mut reg, Vec3::new(10.0, 0.0, 0.0));
     spawn_enemy(
         &mut reg,
         Vec3::ZERO,
-        brain_with(tuning(), LogicalState::Idle),
+        brain_with(tuning(), LEGACY_IDLE_STATE),
         50.0,
     );
 
@@ -1193,7 +1336,7 @@ fn no_damage_when_player_below_attack_range() {
 #[test]
 fn no_attack_or_event_when_player_already_dead() {
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
 
     // Player inside attack range but already dead (HP 0, still present — the
     // respawn flow is owned elsewhere). The enemy must not keep swinging at it
@@ -1215,7 +1358,7 @@ fn no_attack_or_event_when_player_already_dead() {
     spawn_enemy(
         &mut reg,
         Vec3::ZERO,
-        brain_with(tuning(), LogicalState::Idle),
+        brain_with(tuning(), LEGACY_IDLE_STATE),
         50.0,
     );
 
@@ -1233,12 +1376,12 @@ fn no_attack_or_event_when_player_already_dead() {
 #[test]
 fn each_logical_state_switches_to_mapped_animation() {
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
 
     let enemy = spawn_enemy(
         &mut reg,
         Vec3::ZERO,
-        brain_with(tuning(), LogicalState::Idle),
+        brain_with(tuning(), LEGACY_IDLE_STATE),
         50.0,
     );
     set_agent_velocity(&mut reg, enemy, Vec3::new(1.0, 0.0, 0.0));
@@ -1246,7 +1389,7 @@ fn each_logical_state_switches_to_mapped_animation() {
 
     // idle starts as the mesh default; entering ALERT selects "locomotion".
     run_ai_tick(&mut reg, &mut warned, 0.016);
-    assert_eq!(enemy_state(&reg, enemy), LogicalState::Alert);
+    assert_eq!(enemy_state_name(&reg, enemy), LEGACY_ALERT_STATE);
     assert_eq!(enemy_animation(&reg, enemy), "locomotion");
 
     // Move the player into attack range → ATTACK selects "attack".
@@ -1254,7 +1397,7 @@ fn each_logical_state_switches_to_mapped_animation() {
     t.position = Vec3::new(1.0, 0.0, 0.0);
     reg.set_component(pawn, t).unwrap();
     run_ai_tick(&mut reg, &mut warned, 0.016);
-    assert_eq!(enemy_state(&reg, enemy), LogicalState::Attack);
+    assert_eq!(enemy_state_name(&reg, enemy), LEGACY_ATTACK_STATE);
     assert_eq!(enemy_animation(&reg, enemy), "attack");
 
     // Player leaves to beyond leash. Retained-target leash escape is evaluated
@@ -1264,7 +1407,7 @@ fn each_logical_state_switches_to_mapped_animation() {
     t.position = Vec3::new(30.0, 0.0, 0.0);
     reg.set_component(pawn, t).unwrap();
     run_ai_tick(&mut reg, &mut warned, 0.016);
-    assert_eq!(enemy_state(&reg, enemy), LogicalState::Idle);
+    assert_eq!(enemy_state_name(&reg, enemy), LEGACY_IDLE_STATE);
     assert_eq!(enemy_animation(&reg, enemy), "idle");
 }
 
@@ -1274,23 +1417,18 @@ fn unmapped_animation_warns_once_and_keeps_prior_state() {
     // it: the switch fails, the prior animation is kept, and the warn latch
     // records the name exactly once.
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
 
     let mut t = tuning();
     t.states.alert = "missing_clip".into();
-    let enemy = spawn_enemy(
-        &mut reg,
-        Vec3::ZERO,
-        brain_with(t, LogicalState::Idle),
-        50.0,
-    );
+    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain_with(t, LEGACY_IDLE_STATE), 50.0);
     set_agent_velocity(&mut reg, enemy, Vec3::new(1.0, 0.0, 0.0));
     spawn_player(&mut reg, Vec3::new(10.0, 0.0, 0.0));
 
     run_ai_tick(&mut reg, &mut warned, 0.016);
     assert_eq!(
-        enemy_state(&reg, enemy),
-        LogicalState::Alert,
+        enemy_state_name(&reg, enemy),
+        LEGACY_ALERT_STATE,
         "logical state still advances"
     );
     assert_eq!(
@@ -1299,19 +1437,19 @@ fn unmapped_animation_warns_once_and_keeps_prior_state() {
         "failed switch keeps the prior animation",
     );
     assert!(
-        warned.contains("anim:missing_clip"),
+        warned.warned.contains("anim:missing_clip"),
         "warn latch records the namespaced animation name",
     );
-    assert_eq!(warned.len(), 1, "exactly one distinct name warned");
+    assert_eq!(warned.warned.len(), 1, "exactly one distinct name warned");
 }
 
 #[test]
 fn stationary_alert_selects_idle_animation_and_latches_stopped() {
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
 
     spawn_player(&mut reg, Vec3::new(10.0, 0.0, 0.0));
-    let mut brain = brain_with(tuning(), LogicalState::Alert);
+    let mut brain = brain_with(tuning(), LEGACY_ALERT_STATE);
     brain.locomotion_moving = true;
     let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 50.0);
     set_enemy_animation(&mut reg, enemy, "locomotion");
@@ -1319,7 +1457,7 @@ fn stationary_alert_selects_idle_animation_and_latches_stopped() {
 
     run_ai_tick(&mut reg, &mut warned, 0.016);
 
-    assert_eq!(enemy_state(&reg, enemy), LogicalState::Alert);
+    assert_eq!(enemy_state_name(&reg, enemy), LEGACY_ALERT_STATE);
     assert_eq!(
         enemy_animation(&reg, enemy),
         "idle",
@@ -1334,10 +1472,10 @@ fn stationary_alert_selects_idle_animation_and_latches_stopped() {
 #[test]
 fn alert_locomotion_stop_and_resume_switch_once_per_intent_change() {
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
 
     spawn_player(&mut reg, Vec3::new(10.0, 0.0, 0.0));
-    let mut brain = brain_with(tuning(), LogicalState::Alert);
+    let mut brain = brain_with(tuning(), LEGACY_ALERT_STATE);
     brain.locomotion_moving = true;
     let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 50.0);
     set_enemy_animation(&mut reg, enemy, "locomotion");
@@ -1376,7 +1514,7 @@ fn alert_locomotion_stop_and_resume_switch_once_per_intent_change() {
 #[test]
 fn unresolved_locomotion_switch_still_persists_latch() {
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
 
     let mut t = tuning();
     t.states.alert = "missing_clip".into();
@@ -1384,7 +1522,7 @@ fn unresolved_locomotion_switch_still_persists_latch() {
     let enemy = spawn_enemy(
         &mut reg,
         Vec3::ZERO,
-        brain_with(t, LogicalState::Alert),
+        brain_with(t, LEGACY_ALERT_STATE),
         50.0,
     );
     set_agent_velocity(&mut reg, enemy, Vec3::new(1.0, 0.0, 0.0));
@@ -1399,7 +1537,7 @@ fn unresolved_locomotion_switch_still_persists_latch() {
         enemy_locomotion_moving(&reg, enemy),
         "moving latch persists even when the switch is unresolved",
     );
-    assert!(warned.contains("anim:missing_clip"));
+    assert!(warned.warned.contains("anim:missing_clip"));
 
     run_ai_tick(&mut reg, &mut warned, 0.016);
     assert!(
@@ -1407,7 +1545,7 @@ fn unresolved_locomotion_switch_still_persists_latch() {
         "unchanged moving intent remains latched on the following tick",
     );
     assert_eq!(
-        warned.len(),
+        warned.warned.len(),
         1,
         "unchanged unresolved locomotion does not add further warnings",
     );
@@ -1422,12 +1560,12 @@ fn near_enemy_evaluates_detection_every_tick() {
     // A near enemy (within STRIDE_NEAR_DISTANCE) uses stride 1: detection is
     // evaluated on the very first tick after the player appears.
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
 
     let enemy = spawn_enemy(
         &mut reg,
         Vec3::ZERO,
-        brain_with(tuning(), LogicalState::Idle),
+        brain_with(tuning(), LEGACY_IDLE_STATE),
         50.0,
     );
     // 5 units: near band, inside detection.
@@ -1435,8 +1573,8 @@ fn near_enemy_evaluates_detection_every_tick() {
 
     run_ai_tick(&mut reg, &mut warned, 0.016);
     assert_eq!(
-        enemy_state(&reg, enemy),
-        LogicalState::Alert,
+        enemy_state_name(&reg, enemy),
+        LEGACY_ALERT_STATE,
         "near enemy acquires on the first tick",
     );
 }
@@ -1451,16 +1589,11 @@ fn distant_enemy_strides_detection_but_attack_still_fires() {
     // inside detection) does NOT flip to alert on the first (non-think) tick.
     {
         let mut reg = EntityRegistry::new();
-        let mut warned = HashSet::new();
+        let mut warned = AiRuntime::new();
         // Detection range wide enough to include a far-band player.
         let mut t = tuning();
         t.detection_range = 40.0;
-        let enemy = spawn_enemy(
-            &mut reg,
-            Vec3::ZERO,
-            brain_with(t, LogicalState::Idle),
-            50.0,
-        );
+        let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain_with(t, LEGACY_IDLE_STATE), 50.0);
         // 35 units: far band (> STRIDE_MID_DISTANCE 30), inside detection 40.
         spawn_player(&mut reg, Vec3::new(35.0, 0.0, 0.0));
 
@@ -1468,8 +1601,8 @@ fn distant_enemy_strides_detection_but_attack_still_fires() {
         // 1 % 12 != 0 so acquisition is gated OFF this tick → stays idle.
         run_ai_tick(&mut reg, &mut warned, 0.016);
         assert_eq!(
-            enemy_state(&reg, enemy),
-            LogicalState::Idle,
+            enemy_state_name(&reg, enemy),
+            LEGACY_IDLE_STATE,
             "far enemy's detection is strided: no acquire on a non-think tick",
         );
     }
@@ -1477,18 +1610,18 @@ fn distant_enemy_strides_detection_but_attack_still_fires() {
     // 2) Zero HP does not force the FSM into Death, even on a non-think tick.
     {
         let mut reg = EntityRegistry::new();
-        let mut warned = HashSet::new();
+        let mut warned = AiRuntime::new();
         let enemy = spawn_enemy(
             &mut reg,
             Vec3::ZERO,
-            brain_with(tuning(), LogicalState::Alert),
+            brain_with(tuning(), LEGACY_ALERT_STATE),
             0.0,
         );
         spawn_player(&mut reg, Vec3::new(35.0, 0.0, 0.0));
         run_ai_tick(&mut reg, &mut warned, 0.016);
         assert_eq!(
-            enemy_state(&reg, enemy),
-            LogicalState::Alert,
+            enemy_state_name(&reg, enemy),
+            LEGACY_ALERT_STATE,
             "zero HP leaves the brain's normal FSM state untouched",
         );
     }
@@ -1500,10 +1633,10 @@ fn distant_enemy_strides_detection_but_attack_still_fires() {
     // the counter such that acquisition is gated; the attack check ignores that.
     {
         let mut reg = EntityRegistry::new();
-        let mut warned = HashSet::new();
+        let mut warned = AiRuntime::new();
         let pawn = spawn_player(&mut reg, Vec3::new(1.0, 0.0, 0.0));
         // Enemy in Attack already, cooldown ready, player in attack range.
-        let mut brain = brain_with(tuning(), LogicalState::Attack);
+        let mut brain = brain_with(tuning(), LEGACY_ATTACK_STATE);
         // Counter at 5 → after increment 6; 6 % stride(near=1) == 0 anyway, but
         // the attack path does not depend on the acquisition gate at all.
         brain.think_stride_counter = 5;
@@ -1520,12 +1653,12 @@ fn no_player_pawn_leaves_enemy_idle_and_clears_steering() {
     // With no player pawn, the tick still runs: the enemy resolves to idle and
     // any stale destination is cleared.
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
 
     let enemy = spawn_enemy(
         &mut reg,
         Vec3::ZERO,
-        brain_with(tuning(), LogicalState::Alert),
+        brain_with(tuning(), LEGACY_ALERT_STATE),
         50.0,
     );
     // Pre-seed a destination so we can observe it being cleared.
@@ -1533,7 +1666,7 @@ fn no_player_pawn_leaves_enemy_idle_and_clears_steering() {
 
     let events = run_ai_tick(&mut reg, &mut warned, 0.016);
     assert!(events.is_empty());
-    assert_eq!(enemy_state(&reg, enemy), LogicalState::Idle);
+    assert_eq!(enemy_state_name(&reg, enemy), LEGACY_IDLE_STATE);
     assert_eq!(
         enemy_acquired_target(&reg, enemy),
         None,
@@ -1555,12 +1688,12 @@ fn no_player_pawn_leaves_enemy_idle_and_clears_steering() {
 #[test]
 fn zero_hp_brain_remains_active_without_despawn() {
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
     let pawn = spawn_player(&mut reg, Vec3::new(1.0, 0.0, 0.0));
     let enemy = spawn_enemy(
         &mut reg,
         Vec3::ZERO,
-        brain_with(tuning(), LogicalState::Alert),
+        brain_with(tuning(), LEGACY_ALERT_STATE),
         50.0,
     );
     set_hp(&mut reg, enemy, 0.0);
@@ -1569,30 +1702,23 @@ fn zero_hp_brain_remains_active_without_despawn() {
 
     assert!(reg.exists(enemy), "zero HP alone must not remove the brain");
     assert_eq!(
-        enemy_state(&reg, enemy),
-        LogicalState::Attack,
-        "zero HP must not force LogicalState::Death",
+        enemy_state_name(&reg, enemy),
+        LEGACY_ATTACK_STATE,
+        "zero HP must not force the terminal death state",
     );
     assert_eq!(events, vec![ENEMY_ATTACK_EVENT]);
     assert_eq!(player_hp(&reg, pawn), 92.0);
-    assert_eq!(
-        reg.get_component::<BrainComponent>(enemy)
-            .unwrap()
-            .death_despawn_remaining_ms,
-        None,
-        "the AI tick must not seed the removed death-despawn countdown",
-    );
 }
 
 #[test]
 fn queued_despawn_quiesces_brain_without_overwriting_animation() {
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
     spawn_player(&mut reg, Vec3::new(1.0, 0.0, 0.0));
     let enemy = spawn_enemy(
         &mut reg,
         Vec3::ZERO,
-        brain_with(tuning(), LogicalState::Alert),
+        brain_with(tuning(), LEGACY_ALERT_STATE),
         50.0,
     );
     agent_steering::set_destination(&mut reg, enemy, Vec3::new(5.0, 0.0, 0.0));
@@ -1602,7 +1728,7 @@ fn queued_despawn_quiesces_brain_without_overwriting_animation() {
     let events = run_ai_tick(&mut reg, &mut warned, 0.016);
 
     assert!(events.is_empty(), "a queued despawn must stop attacks");
-    assert_eq!(enemy_state(&reg, enemy), LogicalState::Alert);
+    assert_eq!(enemy_state_name(&reg, enemy), LEGACY_ALERT_STATE);
     assert_eq!(
         enemy_animation(&reg, enemy),
         "death",
@@ -1619,12 +1745,12 @@ fn queued_despawn_quiesces_brain_without_overwriting_animation() {
 #[test]
 fn queued_positive_health_recovery_quiesces_zero_hp_brain() {
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
     let pawn = spawn_player(&mut reg, Vec3::new(1.0, 0.0, 0.0));
     let enemy = spawn_enemy(
         &mut reg,
         Vec3::ZERO,
-        brain_with(tuning(), LogicalState::Attack),
+        brain_with(tuning(), LEGACY_ATTACK_STATE),
         50.0,
     );
     set_hp(&mut reg, enemy, 0.0);
@@ -1653,12 +1779,12 @@ fn queued_positive_health_recovery_quiesces_zero_hp_brain() {
 #[test]
 fn queued_health_change_does_not_quiesce_live_brain() {
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
     let pawn = spawn_player(&mut reg, Vec3::new(1.0, 0.0, 0.0));
     let enemy = spawn_enemy(
         &mut reg,
         Vec3::ZERO,
-        brain_with(tuning(), LogicalState::Attack),
+        brain_with(tuning(), LEGACY_ATTACK_STATE),
         50.0,
     );
     crate::impact_effects::set_health(&mut reg, enemy, 25.0, Some(500.0));
@@ -1672,12 +1798,12 @@ fn queued_health_change_does_not_quiesce_live_brain() {
 #[test]
 fn elapsed_health_recovery_reactivates_downed_brain() {
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
     let pawn = spawn_player(&mut reg, Vec3::new(1.0, 0.0, 0.0));
     let enemy = spawn_enemy(
         &mut reg,
         Vec3::ZERO,
-        brain_with(tuning(), LogicalState::Attack),
+        brain_with(tuning(), LEGACY_ATTACK_STATE),
         50.0,
     );
     set_hp(&mut reg, enemy, 0.0);
@@ -1708,9 +1834,9 @@ fn elapsed_health_recovery_reactivates_downed_brain() {
 #[test]
 fn elapsed_health_recovery_reselects_moving_alert_animation() {
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
     spawn_player(&mut reg, Vec3::new(10.0, 0.0, 0.0));
-    let mut brain = brain_with(tuning(), LogicalState::Alert);
+    let mut brain = brain_with(tuning(), LEGACY_ALERT_STATE);
     brain.locomotion_moving = true;
     let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 50.0);
     set_agent_velocity(&mut reg, enemy, Vec3::new(1.0, 0.0, 0.0));
@@ -1722,7 +1848,7 @@ fn elapsed_health_recovery_reselects_moving_alert_animation() {
     assert_eq!(enemy_animation(&reg, enemy), "idle");
 
     run_ai_tick(&mut reg, &mut warned, 0.016);
-    assert_eq!(enemy_state(&reg, enemy), LogicalState::Alert);
+    assert_eq!(enemy_state_name(&reg, enemy), LEGACY_ALERT_STATE);
     assert_eq!(
         enemy_animation(&reg, enemy),
         "locomotion",
@@ -1820,7 +1946,7 @@ fn chaser_rest_y() -> f32 {
 /// agent capsule matches the navmesh's baked agent so it routes cleanly.
 fn spawn_chaser(reg: &mut EntityRegistry, x: f32, z: f32) -> EntityId {
     let pos = Vec3::new(x, chaser_rest_y(), z);
-    spawn_enemy(reg, pos, brain_with(tuning(), LogicalState::Alert), 50.0)
+    spawn_enemy(reg, pos, brain_with(tuning(), LEGACY_ALERT_STATE), 50.0)
 }
 
 fn enemy_combat_slot(reg: &EntityRegistry, enemy: EntityId) -> Option<Vec3> {
@@ -1843,7 +1969,7 @@ fn closed_enemy_with_no_destination_is_not_separation_nudged() {
     let graph = floor.nav_graph();
     let mut reg = EntityRegistry::new();
 
-    let mut sealed_brain = brain_with(tuning(), LogicalState::Idle);
+    let mut sealed_brain = brain_with(tuning(), LEGACY_IDLE_STATE);
     sealed_brain.aggro_armed = false;
     let sealed = spawn_enemy(
         &mut reg,
@@ -1857,7 +1983,7 @@ fn closed_enemy_with_no_destination_is_not_separation_nudged() {
     let moving = spawn_enemy(
         &mut reg,
         Vec3::new(8.1, chaser_rest_y(), 8.0),
-        brain_with(tuning(), LogicalState::Idle),
+        brain_with(tuning(), LEGACY_IDLE_STATE),
         50.0,
     );
     agent_steering::set_destination(&mut reg, moving, Vec3::new(16.0, chaser_rest_y(), 8.0));
@@ -1945,7 +2071,7 @@ fn ai_combat_positioning_assigns_distinct_slots_around_selected_target() {
     let graph = floor.nav_graph();
 
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
     let player_pos = Vec3::new(20.0, chaser_rest_y(), 20.0);
     spawn_player(&mut reg, player_pos);
 
@@ -1994,7 +2120,7 @@ fn ai_combat_positioning_near_enemy_uses_engagement_band_not_target_center() {
     let graph = floor.nav_graph();
 
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
     let player_pos = Vec3::new(20.0, chaser_rest_y(), 20.0);
     spawn_player(&mut reg, player_pos);
     let enemy = spawn_chaser(&mut reg, 20.4, 20.0);
@@ -2026,7 +2152,7 @@ fn ai_combat_positioning_scarce_slots_leave_extras_on_raw_target_chase() {
     }]);
 
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
     let player_pos = Vec3::new(1.0, chaser_rest_y(), 1.0);
     spawn_player(&mut reg, player_pos);
     let enemies = [
@@ -2069,7 +2195,7 @@ fn ai_combat_positioning_uses_each_enemy_selected_target_position() {
     let graph = floor.nav_graph();
 
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
     let player_a_pos = Vec3::new(8.0, chaser_rest_y(), 8.0);
     let player_b_pos = Vec3::new(30.0, chaser_rest_y(), 30.0);
     let player_a = spawn_player(&mut reg, player_a_pos);
@@ -2105,11 +2231,11 @@ fn ai_combat_positioning_retains_same_target_incumbent_and_decrements_hold() {
     let graph = floor.nav_graph();
 
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
     let player_pos = Vec3::new(20.0, chaser_rest_y(), 20.0);
     let player = spawn_player(&mut reg, player_pos);
     let incumbent = player_pos + Vec3::new(tuning().attack_range * 1.25, 0.0, 0.0);
-    let mut brain = brain_with(tuning(), LogicalState::Alert);
+    let mut brain = brain_with(tuning(), LEGACY_ALERT_STATE);
     brain.acquired_target = Some(player);
     brain.combat_slot = Some(incumbent);
     brain.combat_slot_hold_ticks = 3;
@@ -2132,10 +2258,10 @@ fn ai_combat_positioning_retains_same_target_incumbent_and_decrements_hold() {
 #[test]
 fn ai_combat_positioning_clears_stale_slot_when_selector_surfaces_are_absent() {
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
     let player_pos = Vec3::new(8.0, chaser_rest_y(), 8.0);
     let player = spawn_player(&mut reg, player_pos);
-    let mut brain = brain_with(tuning(), LogicalState::Alert);
+    let mut brain = brain_with(tuning(), LEGACY_ALERT_STATE);
     brain.acquired_target = Some(player);
     brain.combat_slot = Some(player_pos + Vec3::new(tuning().attack_range, 0.0, 0.0));
     brain.combat_slot_hold_ticks = COMBAT_SLOT_HOLD_TICKS;
@@ -2158,14 +2284,14 @@ fn ai_combat_positioning_invalidates_stale_incumbent_on_target_switch() {
     let graph = floor.nav_graph();
 
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
     let old_player_pos = Vec3::new(40.0, chaser_rest_y(), 8.0);
     let new_player_pos = Vec3::new(8.0, chaser_rest_y(), 8.0);
     let old_player = spawn_player(&mut reg, old_player_pos);
     let new_player = spawn_player(&mut reg, new_player_pos);
     let enemy_pos = Vec3::new(8.0, chaser_rest_y(), 12.0);
     let stale_slot = new_player_pos + Vec3::new(tuning().attack_range + 0.9, 0.0, 0.0);
-    let mut brain = brain_with(tuning(), LogicalState::Alert);
+    let mut brain = brain_with(tuning(), LEGACY_ALERT_STATE);
     brain.acquired_target = Some(old_player);
     brain.think_stride_counter =
         think_stride_for_distance(distance_xz(old_player_pos, enemy_pos)) - 1;
@@ -2199,12 +2325,12 @@ fn ai_combat_positioning_ignores_inactive_stale_slot_claims() {
     let graph = floor.nav_graph();
 
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
     let player_pos = Vec3::new(20.0, chaser_rest_y(), 20.0);
     let player = spawn_player(&mut reg, player_pos);
     let expected_slot = player_pos - Vec3::new(tuning().attack_range, 0.0, 0.0);
 
-    let mut inactive = brain_with(tuning(), LogicalState::Idle);
+    let mut inactive = brain_with(tuning(), LEGACY_IDLE_STATE);
     inactive.acquired_target = Some(player);
     inactive.combat_slot = Some(expected_slot);
     inactive.combat_slot_hold_ticks = COMBAT_SLOT_HOLD_TICKS;
@@ -2237,7 +2363,7 @@ fn integrated_chase_loop_keeps_all_chasers_moving_past_replan_budget() {
     let graph = floor.nav_graph();
 
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
 
     // A (near-)stationary player at one end of the floor, inside detection range
     // of the cluster so all chasers stay in Alert and pursue.
@@ -2350,7 +2476,7 @@ fn integrated_chase_loop_closes_distance_for_all_chasers_when_player_moves() {
     let graph = floor.nav_graph();
 
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
 
     // Player starts far down the floor; it will walk TOWARD the chaser cluster so
     // both sides converge regardless of relative speed — what we assert is that
@@ -2439,7 +2565,7 @@ fn assert_faces(actual: Vec3, expected: Vec3, ctx: &str) {
 
 fn run_ticks_until_facing_converges(
     reg: &mut EntityRegistry,
-    warned: &mut HashSet<String>,
+    warned: &mut AiRuntime,
     enemy: EntityId,
     expected: Vec3,
     ctx: &str,
@@ -2472,20 +2598,20 @@ fn stopped_engaged_enemy_faces_the_player() {
     // An enemy in attack range (so it reaches `Attack`) with near-zero velocity
     // must face the player, not its spawn heading. Player off to +X.
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
 
     let player = spawn_player(&mut reg, Vec3::new(1.5, 0.0, 0.0));
     let enemy = spawn_enemy(
         &mut reg,
         Vec3::ZERO,
-        brain_with(tuning(), LogicalState::Idle),
+        brain_with(tuning(), LEGACY_IDLE_STATE),
         50.0,
     );
     // Stopped (arrived/swinging): zero velocity.
     set_agent_velocity(&mut reg, enemy, Vec3::ZERO);
 
     run_ai_tick(&mut reg, &mut warned, 0.016);
-    assert_eq!(enemy_state(&reg, enemy), LogicalState::Attack);
+    assert_eq!(enemy_state_name(&reg, enemy), LEGACY_ATTACK_STATE);
 
     // Player is at +X from the enemy → the enemy faces +X.
     let to_player = reg.get_component::<Transform>(player).unwrap().position - Vec3::ZERO;
@@ -2512,20 +2638,20 @@ fn stopped_engaged_enemy_front_meets_player_not_its_back() {
     // axis directly and explicitly rejects the back-facing case, so a regression
     // to the old `-Z` (camera-forward) convention fails here.
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
 
     // Player off to +X within attack range so the enemy reaches `Attack`.
     spawn_player(&mut reg, Vec3::new(1.5, 0.0, 0.0));
     let enemy = spawn_enemy(
         &mut reg,
         Vec3::ZERO,
-        brain_with(tuning(), LogicalState::Idle),
+        brain_with(tuning(), LEGACY_IDLE_STATE),
         50.0,
     );
     set_agent_velocity(&mut reg, enemy, Vec3::ZERO);
 
     run_ai_tick(&mut reg, &mut warned, 0.016);
-    assert_eq!(enemy_state(&reg, enemy), LogicalState::Attack);
+    assert_eq!(enemy_state_name(&reg, enemy), LEGACY_ATTACK_STATE);
 
     // The model's authored front (`+Z` rotated by the stored quaternion) points at
     // the player (+X): dot ≈ +1.
@@ -2556,14 +2682,14 @@ fn moving_enemy_faces_its_velocity_direction() {
     // A moving enemy (XZ speed above the epsilon) faces where it is going — its
     // velocity direction — even if that differs from the bee-line to the player.
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
 
     // Player inside detection (so the enemy is engaged/Alert) along +Z.
     spawn_player(&mut reg, Vec3::new(0.0, 0.0, 10.0));
     let enemy = spawn_enemy(
         &mut reg,
         Vec3::ZERO,
-        brain_with(tuning(), LogicalState::Alert),
+        brain_with(tuning(), LEGACY_ALERT_STATE),
         50.0,
     );
     // Velocity points toward +X (routing around an obstacle), NOT toward the
@@ -2589,13 +2715,13 @@ fn moving_enemy_faces_its_velocity_direction() {
 #[test]
 fn moving_alert_enemy_facing_is_rate_limited_per_tick() {
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
 
     spawn_player(&mut reg, Vec3::new(10.0, 0.0, 0.0));
     let enemy = spawn_enemy(
         &mut reg,
         Vec3::ZERO,
-        brain_with(tuning(), LogicalState::Alert),
+        brain_with(tuning(), LEGACY_ALERT_STATE),
         50.0,
     );
     set_agent_velocity(&mut reg, enemy, Vec3::new(4.0, 0.0, 0.0));
@@ -2620,14 +2746,14 @@ fn idle_enemy_facing_is_left_unchanged() {
     // An Idle enemy (no target) must not have its facing written: the spawn
     // rotation is preserved.
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
 
     // No player in detection range → stays Idle.
     spawn_player(&mut reg, Vec3::new(100.0, 0.0, 0.0));
     let enemy = spawn_enemy(
         &mut reg,
         Vec3::ZERO,
-        brain_with(tuning(), LogicalState::Idle),
+        brain_with(tuning(), LEGACY_IDLE_STATE),
         50.0,
     );
     // Give it a distinctive non-identity spawn rotation, and a velocity that
@@ -2639,7 +2765,7 @@ fn idle_enemy_facing_is_left_unchanged() {
     set_agent_velocity(&mut reg, enemy, Vec3::new(3.0, 0.0, 0.0));
 
     run_ai_tick(&mut reg, &mut warned, 0.016);
-    assert_eq!(enemy_state(&reg, enemy), LogicalState::Idle);
+    assert_eq!(enemy_state_name(&reg, enemy), LEGACY_IDLE_STATE);
     let rot_after = reg.get_component::<Transform>(enemy).unwrap().rotation;
     assert!(
         rot_after.angle_between(spawn_rot) < 1e-5,
@@ -2650,13 +2776,13 @@ fn idle_enemy_facing_is_left_unchanged() {
 #[test]
 fn death_enemy_facing_is_left_unchanged() {
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
 
     spawn_player(&mut reg, Vec3::new(1.5, 0.0, 0.0));
     let enemy = spawn_enemy(
         &mut reg,
         Vec3::ZERO,
-        brain_with(tuning(), LogicalState::Death),
+        brain_with(tuning(), LEGACY_DEATH_STATE),
         0.0,
     );
     let spawn_rot = glam::Quat::from_rotation_y(1.2);
@@ -2666,7 +2792,7 @@ fn death_enemy_facing_is_left_unchanged() {
     set_agent_velocity(&mut reg, enemy, Vec3::new(3.0, 0.0, 0.0));
 
     run_ai_tick(&mut reg, &mut warned, 0.016);
-    assert_eq!(enemy_state(&reg, enemy), LogicalState::Death);
+    assert_eq!(enemy_state_name(&reg, enemy), LEGACY_DEATH_STATE);
     let rot_after = reg.get_component::<Transform>(enemy).unwrap().rotation;
     assert!(
         rot_after.angle_between(spawn_rot) < 1e-5,
@@ -2680,14 +2806,14 @@ fn stopped_engaged_enemy_on_top_of_player_writes_no_nan_facing() {
     // to-player direction is zero-length. The facing guard must skip the write,
     // leaving the prior rotation finite (no NaN quaternion).
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
 
     // Player co-located (within attack range, distance 0) → enemy reaches Attack.
     spawn_player(&mut reg, Vec3::ZERO);
     let enemy = spawn_enemy(
         &mut reg,
         Vec3::ZERO,
-        brain_with(tuning(), LogicalState::Idle),
+        brain_with(tuning(), LEGACY_IDLE_STATE),
         50.0,
     );
     set_enemy_yaw(&mut reg, enemy, 1.2);
@@ -2695,7 +2821,7 @@ fn stopped_engaged_enemy_on_top_of_player_writes_no_nan_facing() {
     set_agent_velocity(&mut reg, enemy, Vec3::ZERO);
 
     run_ai_tick(&mut reg, &mut warned, 0.016);
-    assert_eq!(enemy_state(&reg, enemy), LogicalState::Attack);
+    assert_eq!(enemy_state_name(&reg, enemy), LEGACY_ATTACK_STATE);
     let rot = reg.get_component::<Transform>(enemy).unwrap().rotation;
     assert!(
         rot.x.is_finite() && rot.y.is_finite() && rot.z.is_finite() && rot.w.is_finite(),
@@ -2721,13 +2847,13 @@ fn repeated_in_attack_swing_restarts_the_attack_clip() {
     // clip — observed as the entry stamp going pending again after a resolve had
     // filled it. The entry tick must NOT double-restart.
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
 
     let pawn = spawn_player(&mut reg, Vec3::new(1.0, 0.0, 0.0));
     let enemy = spawn_enemy(
         &mut reg,
         Vec3::ZERO,
-        brain_with(tuning(), LogicalState::Idle),
+        brain_with(tuning(), LEGACY_IDLE_STATE),
         50.0,
     );
 
@@ -2737,7 +2863,7 @@ fn repeated_in_attack_swing_restarts_the_attack_clip() {
     // switch. The switch leaves the new `attack` entry stamp pending.
     let events = run_ai_tick(&mut reg, &mut warned, dt);
     assert_eq!(events, vec![ENEMY_ATTACK_EVENT], "first swing lands");
-    assert_eq!(enemy_state(&reg, enemy), LogicalState::Attack);
+    assert_eq!(enemy_state_name(&reg, enemy), LEGACY_ATTACK_STATE);
     assert_eq!(enemy_animation(&reg, enemy), "attack");
     assert!(
         enemy_anim_entered_at(&reg, enemy).is_none(),
@@ -2771,8 +2897,8 @@ fn repeated_in_attack_swing_restarts_the_attack_clip() {
     let events = run_ai_tick(&mut reg, &mut warned, dt);
     assert_eq!(events, vec![ENEMY_ATTACK_EVENT], "second swing lands");
     assert_eq!(
-        enemy_state(&reg, enemy),
-        LogicalState::Attack,
+        enemy_state_name(&reg, enemy),
+        LEGACY_ATTACK_STATE,
         "still in Attack — this is an in-state swing, not a re-entry",
     );
     assert!(
@@ -2796,20 +2922,20 @@ fn attack_entry_tick_does_not_double_restart_the_clip() {
     // `previous_state` from a redundant restart-over-switch), and a subsequent
     // resolve cleanly fills one entry stamp.
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
 
     // Player inside attack range so Idle→Attack happens on tick 1 WITH a swing.
     spawn_player(&mut reg, Vec3::new(1.0, 0.0, 0.0));
     let enemy = spawn_enemy(
         &mut reg,
         Vec3::ZERO,
-        brain_with(tuning(), LogicalState::Idle),
+        brain_with(tuning(), LEGACY_IDLE_STATE),
         50.0,
     );
 
     let events = run_ai_tick(&mut reg, &mut warned, 0.1);
     assert_eq!(events, vec![ENEMY_ATTACK_EVENT]);
-    assert_eq!(enemy_state(&reg, enemy), LogicalState::Attack);
+    assert_eq!(enemy_state_name(&reg, enemy), LEGACY_ATTACK_STATE);
 
     let anim = reg
         .get_component::<MeshComponent>(enemy)
@@ -2939,7 +3065,7 @@ fn e2e_pursuit_around_corner_never_freezes_and_closes_on_the_target() {
     let world = CornerArena::collision_world();
     let graph = CornerArena::nav_graph();
     let mut reg = EntityRegistry::new();
-    let mut warned = HashSet::new();
+    let mut warned = AiRuntime::new();
 
     let ry = chaser_rest_y();
     // The player: acquired in the open, rounds the corner through the west
@@ -2961,7 +3087,7 @@ fn e2e_pursuit_around_corner_never_freezes_and_closes_on_the_target() {
     let enemy = spawn_enemy(
         &mut reg,
         enemy_start,
-        brain_with(tuning(), LogicalState::Idle),
+        brain_with(tuning(), LEGACY_IDLE_STATE),
         50.0,
     );
 
@@ -3001,7 +3127,7 @@ fn e2e_pursuit_around_corner_never_freezes_and_closes_on_the_target() {
         agent_steering::tick(&mut reg, &world, Some(&graph), STEER_GRAVITY, STEER_DT);
 
         let state = agent_steering::path_state(&reg, enemy).unwrap();
-        let brain_state = enemy_state(&reg, enemy);
+        let brain_state = enemy_state_name(&reg, enemy);
         let dist = distance_xz(state.position, p);
         min_distance = min_distance.min(dist);
         assert!(
@@ -3009,14 +3135,13 @@ fn e2e_pursuit_around_corner_never_freezes_and_closes_on_the_target() {
             "fixture must keep the target inside leash (tick {tick_index}, dist {dist})"
         );
 
-        if brain_state != LogicalState::Idle {
+        if brain_state != LEGACY_IDLE_STATE {
             acquired = true;
         }
         if acquired {
             // INV6: within leash, a live target never de-aggros.
             assert_ne!(
-                brain_state,
-                LogicalState::Idle,
+                brain_state, LEGACY_IDLE_STATE,
                 "enemy dropped aggro inside leash on tick {tick_index}"
             );
             // INV1: the frozen state — blocked, no path, not moving — is not a
@@ -3042,5 +3167,1290 @@ fn e2e_pursuit_around_corner_never_freezes_and_closes_on_the_target() {
         min_distance <= attack_range + 0.75,
         "enemy never closed toward attack range around the corner: \
          closest approach {min_distance:.3} (attack range {attack_range})"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Acceptance: authored behavior graphs
+//
+// The tests above drive lowered legacy descriptors, which exercise the
+// evaluator through the four generated states. These drive graphs an author
+// could have written: interrupts, commitment windows, and entry events have no
+// legacy spelling.
+// ---------------------------------------------------------------------------
+
+fn brain_input(name: &str) -> IrNode {
+    IrNode::Input {
+        name: name.to_string(),
+    }
+}
+
+fn target_within(distance: f32) -> IrNode {
+    IrNode::Le {
+        a: Box::new(brain_input(BRAIN_TARGET_DISTANCE_INPUT)),
+        b: Box::new(IrNode::Const {
+            value: IrValue::Number(distance),
+        }),
+    }
+}
+
+fn target_beyond(distance: f32) -> IrNode {
+    IrNode::Gt {
+        a: Box::new(brain_input(BRAIN_TARGET_DISTANCE_INPUT)),
+        b: Box::new(IrNode::Const {
+            value: IrValue::Number(distance),
+        }),
+    }
+}
+
+fn authored_state(
+    animation: &str,
+    motion: MotionVerb,
+    action: Option<ActionVerb>,
+    transitions: Vec<TransitionDescriptor>,
+) -> BehaviorStateDescriptor {
+    BehaviorStateDescriptor {
+        animation: animation.to_string(),
+        motion,
+        action,
+        transitions,
+        on_enter: None,
+    }
+}
+
+fn edge(to: &str, when: IrNode) -> TransitionDescriptor {
+    TransitionDescriptor {
+        to: to.to_string(),
+        when,
+    }
+}
+
+/// A three-state pursuit graph over the shared `enemy_mesh` animation names:
+/// `rest` (stand still) → `charge` (travel) → `strike` (contact damage), with
+/// `strike` announcing its entry.
+fn pursuit_graph() -> BehaviorGraphDescriptor {
+    let mut strike = authored_state(
+        "attack",
+        MotionVerb::ChaseTarget,
+        Some(ActionVerb::Attack),
+        vec![edge("charge", target_beyond(2.0))],
+    );
+    strike.on_enter = Some("gruntSwings".to_string());
+    BehaviorGraphDescriptor {
+        initial: "rest".to_string(),
+        states: BTreeMap::from([
+            (
+                "rest".to_string(),
+                authored_state(
+                    "idle",
+                    MotionVerb::Hold,
+                    None,
+                    vec![edge("charge", target_within(16.0))],
+                ),
+            ),
+            (
+                "charge".to_string(),
+                authored_state(
+                    "locomotion",
+                    MotionVerb::ChaseTarget,
+                    None,
+                    vec![edge("strike", target_within(2.0))],
+                ),
+            ),
+            ("strike".to_string(), strike),
+        ]),
+        interrupts: Vec::new(),
+        attack: Some(AttackParams {
+            damage: 8.0,
+            range: 2.0,
+            cooldown_ms: 1000.0,
+        }),
+        engagement_radius: None,
+        move_speed: 3.5,
+    }
+}
+
+fn authored_brain(graph: &BehaviorGraphDescriptor, state: &str) -> BrainComponent {
+    let mut brain = BrainComponent::from_graph(graph);
+    brain.state_index =
+        graph_state_index(graph, state).expect("the authored graph declares the state");
+    brain
+}
+
+fn enemy_time_in_state(reg: &EntityRegistry, enemy: EntityId) -> f32 {
+    reg.get_component::<BrainComponent>(enemy)
+        .unwrap()
+        .time_in_state_ms
+}
+
+#[test]
+fn an_authored_graph_walks_its_states_and_raises_the_entered_state_on_enter() {
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let graph = pursuit_graph();
+
+    let pawn = spawn_player(&mut reg, Vec3::new(1.0, 0.0, 0.0));
+    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, authored_brain(&graph, "rest"), 50.0);
+
+    // `rest` declares one edge, so reaching contact takes two ticks.
+    let first = run_ai_tick(&mut reg, &mut runtime, 0.016);
+    assert_eq!(enemy_state_name(&reg, enemy), "charge");
+    assert!(first.is_empty(), "`charge` announces nothing");
+    assert_eq!(enemy_animation(&reg, enemy), "idle", "stopped travel rests");
+
+    let second = run_ai_tick(&mut reg, &mut runtime, 0.016);
+    assert_eq!(enemy_state_name(&reg, enemy), "strike");
+    assert_eq!(
+        second,
+        vec![
+            Cow::Owned("gruntSwings".to_string()),
+            Cow::Borrowed(ENEMY_ATTACK_EVENT),
+        ],
+        "the entry event precedes the action the entered state takes"
+    );
+    assert_eq!(player_hp(&reg, pawn), 92.0);
+    assert_eq!(
+        enemy_animation(&reg, enemy),
+        "attack",
+        "an acting state keeps its own animation at a standstill"
+    );
+
+    // Entering is what raises `on_enter`: staying does not re-raise it.
+    let third = run_ai_tick(&mut reg, &mut runtime, 0.016);
+    assert_eq!(enemy_state_name(&reg, enemy), "strike");
+    assert!(
+        third.is_empty(),
+        "no re-entry, no event, no in-cooldown swing"
+    );
+}
+
+#[test]
+fn a_guard_fires_mid_attack_cooldown_and_mid_one_shot_clip() {
+    // Interruptible by default: nothing an enemy is doing — a one-shot attack
+    // clip, an armed cooldown — defers guard evaluation to a later tick.
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let graph = pursuit_graph();
+
+    let pawn = spawn_player(&mut reg, Vec3::new(1.0, 0.0, 0.0));
+    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, authored_brain(&graph, "strike"), 50.0);
+
+    run_ai_tick(&mut reg, &mut runtime, 0.016);
+    assert_eq!(enemy_state_name(&reg, enemy), "strike");
+    assert!(
+        reg.get_component::<BrainComponent>(enemy)
+            .unwrap()
+            .attack_cooldown_remaining_ms
+            > 900.0,
+        "the swing armed a full cooldown"
+    );
+    // Stage the one-shot swing clip as the live animation: the brain was seeded
+    // straight into `strike`, so no entry switch requested it.
+    set_enemy_animation(&mut reg, enemy, "attack");
+
+    // The pawn steps out of contact range with ~984ms of cooldown left and the
+    // one-shot clip still on screen.
+    let mut transform = *reg.get_component::<Transform>(pawn).unwrap();
+    transform.position = Vec3::new(6.0, 0.0, 0.0);
+    reg.set_component(pawn, transform).unwrap();
+
+    run_ai_tick(&mut reg, &mut runtime, 0.016);
+
+    assert_eq!(
+        enemy_state_name(&reg, enemy),
+        "charge",
+        "the exit guard fires on the tick it becomes true, not after the cooldown"
+    );
+}
+
+#[test]
+fn a_time_in_state_guard_exits_on_the_first_tick_the_window_elapses() {
+    const WINDOW_MS: f32 = 500.0;
+    const TICK_DT: f32 = 0.016;
+
+    let graph = BehaviorGraphDescriptor {
+        initial: "rest".to_string(),
+        states: BTreeMap::from([
+            (
+                "rest".to_string(),
+                authored_state(
+                    "idle",
+                    MotionVerb::Hold,
+                    None,
+                    vec![edge("commit", target_within(16.0))],
+                ),
+            ),
+            (
+                "commit".to_string(),
+                authored_state(
+                    "attack",
+                    MotionVerb::Freeze,
+                    None,
+                    vec![edge(
+                        "rest",
+                        IrNode::Ge {
+                            a: Box::new(brain_input(BRAIN_TIME_IN_STATE_MS_INPUT)),
+                            b: Box::new(IrNode::Const {
+                                value: IrValue::Number(WINDOW_MS),
+                            }),
+                        },
+                    )],
+                ),
+            ),
+        ]),
+        interrupts: Vec::new(),
+        attack: None,
+        engagement_radius: None,
+        move_speed: 3.5,
+    };
+
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    spawn_player(&mut reg, Vec3::new(5.0, 0.0, 0.0));
+    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, authored_brain(&graph, "rest"), 50.0);
+
+    run_ai_tick(&mut reg, &mut runtime, TICK_DT);
+    assert_eq!(enemy_state_name(&reg, enemy), "commit");
+    assert_eq!(
+        enemy_time_in_state(&reg, enemy),
+        0.0,
+        "entering a state restarts its clock"
+    );
+
+    // The window is a whole number of ticks plus a remainder, so the exit lands
+    // on the first tick whose accrued time reaches it — never before.
+    let ticks_to_elapse = (WINDOW_MS / (TICK_DT * 1000.0)).ceil() as u32;
+    for tick in 1..ticks_to_elapse {
+        run_ai_tick(&mut reg, &mut runtime, TICK_DT);
+        assert_eq!(
+            enemy_state_name(&reg, enemy),
+            "commit",
+            "the commitment window still holds at tick {tick}"
+        );
+    }
+    run_ai_tick(&mut reg, &mut runtime, TICK_DT);
+    assert_eq!(
+        enemy_state_name(&reg, enemy),
+        "rest",
+        "the exit fires on the first tick the window elapses"
+    );
+}
+
+/// A graph whose `rest` state has a state-local edge that is true whenever the
+/// listed interrupts are, so precedence is observable in one tick.
+fn interrupt_graph(interrupts: Vec<TransitionDescriptor>) -> BehaviorGraphDescriptor {
+    BehaviorGraphDescriptor {
+        initial: "rest".to_string(),
+        states: BTreeMap::from([
+            (
+                "rest".to_string(),
+                authored_state(
+                    "idle",
+                    MotionVerb::Hold,
+                    None,
+                    vec![edge("charge", target_within(16.0))],
+                ),
+            ),
+            (
+                "charge".to_string(),
+                authored_state("locomotion", MotionVerb::ChaseTarget, None, Vec::new()),
+            ),
+            (
+                "flee".to_string(),
+                authored_state("death", MotionVerb::Hold, None, Vec::new()),
+            ),
+            (
+                "panic".to_string(),
+                authored_state("attack", MotionVerb::Freeze, None, Vec::new()),
+            ),
+        ]),
+        interrupts,
+        attack: None,
+        engagement_radius: None,
+        move_speed: 3.5,
+    }
+}
+
+#[test]
+fn an_interrupt_wins_over_a_simultaneously_true_state_local_edge_in_declaration_order() {
+    let graph = interrupt_graph(vec![
+        edge("flee", target_within(16.0)),
+        edge("panic", target_within(16.0)),
+    ]);
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    spawn_player(&mut reg, Vec3::new(5.0, 0.0, 0.0));
+    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, authored_brain(&graph, "rest"), 50.0);
+
+    run_ai_tick(&mut reg, &mut runtime, 0.016);
+
+    assert_eq!(
+        enemy_state_name(&reg, enemy),
+        "flee",
+        "interrupts precede the current state's own edges, and the first \
+         declared interrupt wins"
+    );
+}
+
+#[test]
+fn an_interrupt_fires_from_any_state() {
+    // The same interrupt set, entered from a state that declares no edges at
+    // all: any-state means any state.
+    let graph = interrupt_graph(vec![edge("panic", target_within(16.0))]);
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    spawn_player(&mut reg, Vec3::new(5.0, 0.0, 0.0));
+    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, authored_brain(&graph, "charge"), 50.0);
+
+    run_ai_tick(&mut reg, &mut runtime, 0.016);
+
+    assert_eq!(enemy_state_name(&reg, enemy), "panic");
+}
+
+#[test]
+fn a_self_targeting_interrupt_is_skipped_rather_than_re_entering_its_own_state() {
+    let graph = interrupt_graph(vec![edge("rest", target_within(16.0))]);
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    spawn_player(&mut reg, Vec3::new(5.0, 0.0, 0.0));
+    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, authored_brain(&graph, "rest"), 50.0);
+
+    run_ai_tick(&mut reg, &mut runtime, 0.016);
+
+    assert_eq!(
+        enemy_state_name(&reg, enemy),
+        "charge",
+        "an interrupt back into the current state is skipped, so the \
+         state-local edge behind it still decides the tick"
+    );
+}
+
+#[test]
+fn a_closed_aggro_gate_forces_an_authored_graph_to_its_initial_state() {
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let graph = pursuit_graph();
+
+    spawn_player(&mut reg, Vec3::new(5.0, 0.0, 0.0));
+    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, authored_brain(&graph, "rest"), 50.0);
+
+    run_ai_tick(&mut reg, &mut runtime, 0.016);
+    assert_eq!(enemy_state_name(&reg, enemy), "charge");
+    assert!(
+        agent_steering::path_state(&reg, enemy)
+            .expect("agent present")
+            .has_destination
+    );
+
+    set_enemy_aggro_armed(&mut reg, enemy, false);
+    run_ai_tick(&mut reg, &mut runtime, 0.016);
+
+    assert_eq!(
+        enemy_state_name(&reg, enemy),
+        graph.initial,
+        "a closed gate stands the brain down to its authored initial state"
+    );
+    assert_eq!(enemy_acquired_target(&reg, enemy), None);
+    assert!(
+        !agent_steering::path_state(&reg, enemy)
+            .expect("agent present")
+            .has_destination,
+        "standing down clears steering"
+    );
+
+    set_enemy_aggro_armed(&mut reg, enemy, true);
+    run_ai_tick(&mut reg, &mut runtime, 0.016);
+
+    assert_eq!(
+        enemy_state_name(&reg, enemy),
+        "charge",
+        "re-arming resumes ordinary evaluation"
+    );
+    assert!(
+        agent_steering::path_state(&reg, enemy)
+            .expect("agent present")
+            .has_destination
+    );
+}
+
+#[test]
+fn an_authored_state_with_an_undeclared_animation_keeps_the_prior_one() {
+    let mut graph = pursuit_graph();
+    graph.states.get_mut("charge").unwrap().animation = "sprint".to_string();
+
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    spawn_player(&mut reg, Vec3::new(5.0, 0.0, 0.0));
+    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, authored_brain(&graph, "rest"), 50.0);
+    set_enemy_animation(&mut reg, enemy, "death");
+    // Moving, so the travel animation is requested rather than the rest
+    // substitution — the unresolvable name is what the tick tries to switch to.
+    set_agent_velocity(&mut reg, enemy, Vec3::new(3.0, 0.0, 0.0));
+
+    run_ai_tick(&mut reg, &mut runtime, 0.016);
+
+    assert_eq!(enemy_state_name(&reg, enemy), "charge");
+    assert_eq!(
+        enemy_animation(&reg, enemy),
+        "death",
+        "an undeclared animation name keeps the prior animation"
+    );
+    assert!(runtime.warned.contains("anim:sprint"));
+
+    run_ai_tick(&mut reg, &mut runtime, 0.016);
+    assert_eq!(
+        runtime
+            .warned
+            .iter()
+            .filter(|key| *key == "anim:sprint")
+            .count(),
+        1,
+        "warned once per distinct name"
+    );
+}
+
+#[test]
+fn standing_down_clears_steering_even_when_the_initial_state_chases() {
+    // The engine floor clears steering outright when it forces the resting
+    // state: with no target to pursue, the resting state's motion verb has
+    // nothing to act on.
+    let mut graph = pursuit_graph();
+    graph.initial = "charge".to_string();
+
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    spawn_player(&mut reg, Vec3::new(5.0, 0.0, 0.0));
+    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, authored_brain(&graph, "charge"), 50.0);
+
+    run_ai_tick(&mut reg, &mut runtime, 0.016);
+    assert!(
+        agent_steering::path_state(&reg, enemy)
+            .expect("agent present")
+            .has_destination
+    );
+
+    set_enemy_aggro_armed(&mut reg, enemy, false);
+    run_ai_tick(&mut reg, &mut runtime, 0.016);
+
+    assert_eq!(enemy_state_name(&reg, enemy), "charge");
+    assert!(
+        !agent_steering::path_state(&reg, enemy)
+            .expect("agent present")
+            .has_destination,
+        "a closed gate clears steering regardless of the resting state's verb"
+    );
+}
+
+/// A chase-then-petrify graph: `charge` pursues, and a per-entity `halt` field
+/// drops it into a `freeze` state that declares no exits. `stop` takes no action
+/// and does not chase, so entering it also releases the enemy's combat slot.
+fn petrifying_graph() -> BehaviorGraphDescriptor {
+    BehaviorGraphDescriptor {
+        initial: "charge".to_string(),
+        states: BTreeMap::from([
+            (
+                "charge".to_string(),
+                authored_state(
+                    "locomotion",
+                    MotionVerb::ChaseTarget,
+                    None,
+                    vec![edge(
+                        "stop",
+                        IrNode::Ge {
+                            a: Box::new(brain_input("@state.halt")),
+                            b: Box::new(IrNode::Const {
+                                value: IrValue::Number(1.0),
+                            }),
+                        },
+                    )],
+                ),
+            ),
+            (
+                "stop".to_string(),
+                authored_state("death", MotionVerb::Freeze, None, Vec::new()),
+            ),
+        ]),
+        interrupts: Vec::new(),
+        attack: None,
+        engagement_radius: None,
+        move_speed: 3.5,
+    }
+}
+
+#[test]
+fn entering_a_freeze_state_stops_path_following_and_releases_the_combat_slot() {
+    // `freeze` touches steering exactly once, on ENTRY. Without that clear, a
+    // `set_destination` that deliberately preserves the existing path would keep
+    // walking the agent into ground it has just surrendered to the slot solver.
+    let floor = OpenFloor::new();
+    let world = floor.collision_world();
+    let graph = floor.nav_graph();
+
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let behavior = petrifying_graph();
+    let player_pos = Vec3::new(20.0, chaser_rest_y(), 20.0);
+    spawn_player(&mut reg, player_pos);
+    let enemy = spawn_enemy(
+        &mut reg,
+        Vec3::new(14.0, chaser_rest_y(), 20.0),
+        authored_brain(&behavior, "charge"),
+        50.0,
+    );
+
+    // Actively chasing: a destination is issued and a combat slot is claimed.
+    run_ai_tick_with_navigation(&mut reg, &mut runtime, STEER_DT, Some(&graph), Some(&world));
+    assert_eq!(enemy_state_name(&reg, enemy), "charge");
+    assert!(
+        agent_steering::path_state(&reg, enemy)
+            .expect("agent present")
+            .has_destination,
+        "the chasing state steers before the freeze",
+    );
+    assert!(
+        enemy_combat_slot(&reg, enemy).is_some(),
+        "an engaged chaser claims a slot around its target",
+    );
+
+    // The transition into the freeze state.
+    reg.entity_state_mut(enemy)
+        .expect("spawn seeds entity state")
+        .set("halt", 1.0);
+    run_ai_tick_with_navigation(&mut reg, &mut runtime, STEER_DT, Some(&graph), Some(&world));
+
+    assert_eq!(enemy_state_name(&reg, enemy), "stop");
+    assert!(
+        !agent_steering::path_state(&reg, enemy)
+            .expect("agent present")
+            .has_destination,
+        "entering a freeze state stops path-following",
+    );
+    assert_eq!(
+        enemy_combat_slot(&reg, enemy),
+        None,
+        "a frozen enemy is no longer engaged, so its slot is surrendered",
+    );
+    assert_eq!(
+        enemy_acquired_target(&reg, enemy),
+        None,
+        "and it no longer holds the pawn it was chasing",
+    );
+
+    // ...and touches nothing thereafter. A destination written by something else
+    // (a scripted mover, a death slide) must survive: the clear is on entry, not
+    // per tick.
+    agent_steering::set_destination(&mut reg, enemy, Vec3::new(24.0, chaser_rest_y(), 20.0));
+    run_ai_tick_with_navigation(&mut reg, &mut runtime, STEER_DT, Some(&graph), Some(&world));
+
+    assert_eq!(enemy_state_name(&reg, enemy), "stop");
+    assert!(
+        agent_steering::path_state(&reg, enemy)
+            .expect("agent present")
+            .has_destination,
+        "a settled freeze state leaves steering alone — the clear fires on entry only",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Acceptance: the shipped reference enemy, authored vs. lowered
+//
+// `sdk/behaviors/reference/entities.{ts,luau}` ships the reference enemy as an
+// explicit `components.behavior` graph. These restate that graph in Rust and
+// prove it is behavior-identical, tick for tick, to the same enemy authored via
+// the legacy `components.ai` block it replaced.
+// ---------------------------------------------------------------------------
+
+/// The reference enemy's shipped tuning, spelled as the legacy block it used to
+/// carry. Ranges/damage/cooldown are the shipped values (`deathDespawnMs` is a
+/// legacy-block field only, and lowers to nothing), and the animation names are
+/// the shipped graph's — so [`reference_behavior_graph`] can be compared to the
+/// shipped authoring for exact equality, not "equality modulo renaming". The
+/// `death` name has no authored counterpart (death is not a graph transition)
+/// and exists only because the legacy block requires all four.
+fn reference_ai_descriptor() -> AiDescriptor {
+    AiDescriptor {
+        detection_range: 16.0,
+        attack_range: 2.0,
+        leash_range: 50.0,
+        attack_damage: 8.0,
+        attack_cooldown_ms: 1200.0,
+        move_speed: 3.0,
+        death_despawn_ms: 4000.0,
+        states: AiStateNames {
+            idle: "idle".into(),
+            alert: "walk".into(),
+            attack: "attack".into(),
+            death: "death".into(),
+        },
+    }
+}
+
+/// The shipped authored graph, restated in Rust: the same states, the same
+/// declaration order, and the same guards `sdk/behaviors/reference/entities.ts`
+/// builds through `runtime.select` / `runtime.le` / `runtime.gt` over `brain.*`.
+///
+/// Detection is conjoined with `@brain.acquisitionDue` (the IR has no `and`
+/// opcode, so conjunction is `select(cond, inner, false)`); the attack-range and
+/// leash edges are deliberately ungated, matching the engine floor's own
+/// unstrided attack and retention-leash checks. The single interrupt is the
+/// shipped stand-down on target loss.
+///
+/// This is the oracle the parity test compares against, so a drifted
+/// transcription would assert nothing —
+/// [`the_reference_oracle_matches_the_shipped_authored_graph`] pins it against
+/// the shipped Luau source so the drift cannot happen silently.
+fn reference_behavior_graph() -> BehaviorGraphDescriptor {
+    let ai = reference_ai_descriptor();
+    let when_acquisition_due = |inner: IrNode| IrNode::Select {
+        cond: Box::new(brain_input(
+            postretro_foundation::BRAIN_ACQUISITION_DUE_INPUT,
+        )),
+        a: Box::new(inner),
+        b: Box::new(IrNode::Const {
+            value: IrValue::Bool(false),
+        }),
+    };
+    BehaviorGraphDescriptor {
+        initial: "idle".to_string(),
+        states: BTreeMap::from([
+            (
+                "idle".to_string(),
+                authored_state(
+                    &ai.states.idle,
+                    MotionVerb::Hold,
+                    None,
+                    vec![
+                        edge(
+                            "attack",
+                            when_acquisition_due(target_within(ai.attack_range)),
+                        ),
+                        edge(
+                            "alert",
+                            when_acquisition_due(target_within(ai.detection_range)),
+                        ),
+                    ],
+                ),
+            ),
+            (
+                "alert".to_string(),
+                authored_state(
+                    &ai.states.alert,
+                    MotionVerb::ChaseTarget,
+                    None,
+                    vec![
+                        edge("attack", target_within(ai.attack_range)),
+                        edge("idle", target_beyond(ai.leash_range)),
+                    ],
+                ),
+            ),
+            (
+                "attack".to_string(),
+                authored_state(
+                    &ai.states.attack,
+                    MotionVerb::ChaseTarget,
+                    Some(ActionVerb::Attack),
+                    vec![edge("alert", target_beyond(ai.attack_range))],
+                ),
+            ),
+        ]),
+        // The shipped stand-down interrupt, first in interrupt order: with no
+        // target `@brain.targetDistance` reads the sentinel, which makes both
+        // `gt` disengage edges above true, so without this the enemy would take
+        // two ticks (and one travel-animation frame) to leave `attack`. The IR
+        // has no `not` opcode, so the negation is `select(hasTarget, false,
+        // true)` — the same shape the lowering emits.
+        interrupts: vec![edge(
+            "idle",
+            IrNode::Select {
+                cond: Box::new(brain_input(BRAIN_HAS_TARGET_INPUT)),
+                a: Box::new(IrNode::Const {
+                    value: IrValue::Bool(false),
+                }),
+                b: Box::new(IrNode::Const {
+                    value: IrValue::Bool(true),
+                }),
+            },
+        )],
+        attack: Some(AttackParams {
+            damage: ai.attack_damage,
+            range: ai.attack_range,
+            cooldown_ms: ai.attack_cooldown_ms,
+        }),
+        // The shipped graph authors `engagementRadius` explicitly at the same
+        // value `attack.range` would supply as the fallback, which is what the
+        // lowered legacy block resolves to — so combat-slot spacing stays
+        // identical across the two authorings.
+        engagement_radius: Some(ai.attack_range),
+        move_speed: ai.move_speed,
+    }
+}
+
+/// The reference enemy's `components.behavior` block as the SHIPPED
+/// `sdk/behaviors/reference/entities.luau` actually authors it.
+///
+/// The module is evaluated verbatim against the same SDK helper modules the
+/// engine's Luau prelude installs (`sdk/lib/runtime.luau` for the IR builders,
+/// `sdk/lib/brain.luau` for the `@brain.*` leaves), with `defineEntity` stubbed
+/// to the identity it is for a plain descriptor. Reading the guards out of the
+/// real source is the whole point: a second hand-written copy would prove only
+/// that someone edited both.
+fn shipped_reference_behavior_graph() -> BehaviorGraphDescriptor {
+    use mlua::LuaSerdeExt as _;
+
+    const RUNTIME_LUAU_SRC: &str = include_str!("../../../../../sdk/lib/runtime.luau");
+    const BRAIN_LUAU_SRC: &str = include_str!("../../../../../sdk/lib/brain.luau");
+    const ENTITIES_LUAU_SRC: &str =
+        include_str!("../../../../../sdk/behaviors/reference/entities.luau");
+
+    let lua = mlua::Lua::new();
+    let runtime: mlua::Table = lua
+        .load(RUNTIME_LUAU_SRC)
+        .set_name("sdk/lib/runtime.luau")
+        .eval()
+        .expect("runtime.luau evaluates");
+    let brain_sdk: mlua::Table = lua
+        .load(BRAIN_LUAU_SRC)
+        .set_name("sdk/lib/brain.luau")
+        .eval()
+        .expect("brain.luau evaluates");
+    let brain: mlua::Table = brain_sdk.get("brain").expect("brain.luau exports `brain`");
+    let define_entity = lua
+        .create_function(|_, descriptor: mlua::Table| Ok(descriptor))
+        .expect("stub defineEntity");
+    let globals = lua.globals();
+    globals.set("runtime", runtime).unwrap();
+    globals.set("brain", brain).unwrap();
+    globals.set("defineEntity", define_entity).unwrap();
+
+    let module: mlua::Table = lua
+        .load(ENTITIES_LUAU_SRC)
+        .set_name("sdk/behaviors/reference/entities.luau")
+        .eval()
+        .expect("the shipped reference entities module evaluates");
+    let entity: mlua::Table = module
+        .get("referenceEnemyEntity")
+        .expect("the module exports `referenceEnemyEntity`");
+    let components: mlua::Table = entity
+        .get("components")
+        .expect("the archetype has components");
+    let behavior: mlua::Value = components
+        .get("behavior")
+        .expect("the reference enemy is authored as a behavior graph");
+    lua.from_value(behavior)
+        .expect("the shipped behavior block deserializes into the engine descriptor")
+}
+
+/// The oracle below is a Rust hand-transcription of a graph that ships as
+/// TypeScript and Luau. This is what stops it becoming fiction: retune a range,
+/// reorder an edge, or drop the stand-down interrupt in the shipped source and
+/// this fails, instead of the parity test happily proving a stale transcription
+/// matches the legacy block.
+///
+/// It reads the Luau authoring; that the TypeScript twin says the same thing is
+/// `the_shipped_reference_enemy_graph_is_identical_in_both_authorings`
+/// (`scripting-core`, where the twin-parser machinery lives). Together the two
+/// close the loop: TS ≡ Luau ≡ this oracle ≡ the lowered legacy block.
+#[test]
+fn the_reference_oracle_matches_the_shipped_authored_graph() {
+    assert_eq!(
+        reference_behavior_graph(),
+        shipped_reference_behavior_graph(),
+        "the Rust oracle has drifted from `sdk/behaviors/reference/entities.luau`",
+    );
+}
+
+/// One tick of observable brain output: the state it settled in, the damage it
+/// had dealt by then, the animation it is requesting, and whether it is steering
+/// anywhere.
+#[derive(Debug, Clone, PartialEq)]
+struct BrainTrace {
+    state: String,
+    player_hp: f32,
+    animation: String,
+    has_destination: bool,
+    acquired: bool,
+}
+
+/// Where the player stands on `tick` — out of detection, inside detection,
+/// in contact, backing off, and finally past the leash.
+fn reference_player_x(tick: u32) -> f32 {
+    match tick {
+        0..=9 => 30.0,
+        10..=39 => 10.0,
+        40..=139 => 1.5,
+        140..=169 => 6.0,
+        _ => 80.0,
+    }
+}
+
+/// Run the scripted approach against one brain and record its per-tick output.
+fn trace_reference_fixture(brain: BrainComponent) -> Vec<BrainTrace> {
+    const TICKS: u32 = 200;
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let pawn = spawn_player(&mut reg, Vec3::new(reference_player_x(0), 0.0, 0.0));
+    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 50.0);
+
+    (0..TICKS)
+        .map(|tick| {
+            let mut transform = *reg.get_component::<Transform>(pawn).unwrap();
+            transform.position = Vec3::new(reference_player_x(tick), 0.0, 0.0);
+            reg.set_component(pawn, transform).unwrap();
+
+            run_ai_tick(&mut reg, &mut runtime, 0.016);
+
+            BrainTrace {
+                state: enemy_state_name(&reg, enemy),
+                player_hp: player_hp(&reg, pawn),
+                animation: enemy_animation(&reg, enemy),
+                has_destination: agent_steering::path_state(&reg, enemy)
+                    .expect("agent present")
+                    .has_destination,
+                acquired: enemy_acquired_target(&reg, enemy).is_some(),
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn the_authored_reference_graph_is_behavior_identical_to_the_legacy_block() {
+    let authored = trace_reference_fixture(BrainComponent::from_graph(&reference_behavior_graph()));
+    let legacy =
+        trace_reference_fixture(BrainComponent::from_descriptor(&reference_ai_descriptor()));
+
+    // The fixture has to actually exercise the loop, or "identical" is vacuous.
+    let states: Vec<&str> = authored
+        .iter()
+        .map(|row| row.state.as_str())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    assert_eq!(
+        states,
+        vec!["alert", "attack", "idle"],
+        "the approach must visit rest, pursuit, and contact"
+    );
+    let damage_ticks: Vec<usize> = authored
+        .windows(2)
+        .enumerate()
+        .filter(|(_, pair)| pair[1].player_hp < pair[0].player_hp)
+        .map(|(index, _)| index + 1)
+        .collect();
+    assert!(
+        damage_ticks.len() >= 2,
+        "the fixture must span more than one attack cooldown: {damage_ticks:?}"
+    );
+    assert!(
+        authored.iter().any(|row| row.animation == "attack")
+            && authored.iter().any(|row| row.animation == "idle"),
+        "the fixture must switch animation at least once"
+    );
+
+    for (tick, (authored, legacy)) in authored.iter().zip(legacy.iter()).enumerate() {
+        assert_eq!(
+            authored, legacy,
+            "authored graph and lowered legacy block diverged on tick {tick}"
+        );
+    }
+}
+
+/// The case the parity fixture above structurally cannot see: it hands the
+/// enemy a pawn on all 200 ticks, so the sentinel path is never walked.
+///
+/// Seeded in `attack` specifically. From `alert` this passes even with the
+/// stand-down interrupt deleted, because the leash edge (`gt(dist, 50)`) is
+/// itself true on the sentinel and reaches `idle` in one tick anyway. `attack`
+/// is the state whose only exit is `gt(dist, attackRange)` → `alert`, so
+/// without the interrupt this takes two ticks and shows a frame of the travel
+/// animation with nothing to travel toward.
+#[test]
+fn the_reference_graph_stands_down_from_attack_in_one_tick_with_no_pawn() {
+    let graph = reference_behavior_graph();
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    // No player pawn is spawned at all — the disconnect / level-transition /
+    // last-co-op-pawn-leaves case.
+    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, authored_brain(&graph, "attack"), 50.0);
+    assert_eq!(enemy_state_name(&reg, enemy), "attack");
+
+    run_ai_tick(&mut reg, &mut runtime, 0.016);
+
+    assert_eq!(
+        enemy_state_name(&reg, enemy),
+        "idle",
+        "losing the target must stand the brain down in ONE tick, not walk it \
+         back through the pursuit state on the distance sentinel",
+    );
+    assert_ne!(
+        enemy_animation(&reg, enemy),
+        graph.states["alert"].animation,
+        "the travel animation must never be requested on the way down; there is \
+         nothing to travel toward",
+    );
+    assert_eq!(
+        enemy_animation(&reg, enemy),
+        graph.states["idle"].animation,
+        "the stand-down lands on the graph's rest animation",
+    );
+    assert!(
+        !agent_steering::path_state(&reg, enemy)
+            .expect("agent present")
+            .has_destination,
+        "a stood-down enemy holds no destination",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Acceptance: impact policy writes `@state.*`, an authored interrupt reads it
+// ---------------------------------------------------------------------------
+
+/// The stagger shape: `pursuit_graph` plus a `flinch` state and the any-state
+/// interrupt that enters it when a per-entity `staggered` field is set.
+fn staggerable_graph() -> BehaviorGraphDescriptor {
+    let mut graph = pursuit_graph();
+    graph.states.insert(
+        "flinch".to_string(),
+        authored_state("death", MotionVerb::Hold, None, Vec::new()),
+    );
+    graph.interrupts = vec![edge(
+        "flinch",
+        IrNode::Ge {
+            a: Box::new(brain_input("@state.staggered")),
+            b: Box::new(IrNode::Const {
+                value: IrValue::Number(1.0),
+            }),
+        },
+    )];
+    graph
+}
+
+/// An impact policy that sets `@state.staggered` on any `staggerable` entity
+/// the damage chokepoint reports a hit on — the authored half of the stagger
+/// shape, exactly as a mod would declare it.
+fn stagger_impact_policy() -> ImpactEventDescriptor {
+    ImpactEventDescriptor {
+        id: "reference_stagger".to_string(),
+        is_override: false,
+        levels: Vec::new(),
+        filter_tag: Some("staggerable".to_string()),
+        policy: vec![serde_json::json!({
+            "primitive": "setState",
+            "target": "@impact.target",
+            "args": {
+                "name": "staggered",
+                "value": { "op": "const", "value": 1.0 },
+            },
+        })],
+    }
+}
+
+#[test]
+fn an_impact_policy_write_fires_an_authored_state_interrupt_on_the_next_tick() {
+    let graph = staggerable_graph();
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    spawn_player(&mut reg, Vec3::new(5.0, 0.0, 0.0));
+    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, authored_brain(&graph, "rest"), 50.0);
+    reg.set_tags(enemy, vec!["staggerable".to_string()])
+        .expect("enemy is live");
+
+    let mut policies = ImpactPolicyRuntime::new(ScriptCtx::new());
+    policies.replace_global_events(vec![stagger_impact_policy()]);
+
+    // Baseline: nothing has written the field, so the interrupt stays false and
+    // the state-local edge decides the tick.
+    run_ai_tick(&mut reg, &mut runtime, 0.016);
+    assert_eq!(enemy_state_name(&reg, enemy), "charge");
+
+    // A weapon lands on the enemy. The chokepoint publishes the dispatch and
+    // the policy writes `@state.staggered` inside the same tick.
+    apply_damage_with_context(
+        &mut reg,
+        enemy,
+        &DamagePayload { amount: 5.0 },
+        DamageContext::new("test.weapon", DamageProducer::InTick),
+    );
+    policies.evaluate_pending_in_registry(&mut reg);
+    assert_eq!(
+        reg.get_component::<EntityStateComponent>(enemy)
+            .expect("spawn seeds entity state")
+            .get("staggered"),
+        1.0,
+        "the impact policy wrote the per-entity field the guard reads"
+    );
+
+    // Next AI tick: the authored interrupt reads that field and wins over the
+    // current state's own edges.
+    run_ai_tick(&mut reg, &mut runtime, 0.016);
+    assert_eq!(
+        enemy_state_name(&reg, enemy),
+        "flinch",
+        "an authored `@state` interrupt fires on the first AI tick after the write"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Acceptance: guards run on every armed tick, with or without a target
+//
+// The aggro gate is the ONE thing upstream of guard evaluation. Having no pawn
+// to chase is not: the brain evaluates its whole guard set against the no-target
+// facts (`@brain.hasTarget` false, `@brain.targetDistance` at its sentinel).
+// These drive the real tick — evaluating the scope directly would not prove the
+// tick ever reaches it.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn an_armed_enemy_with_no_target_still_fires_its_interrupts() {
+    // The monster-closet shape: a sealed enemy nobody is standing in front of
+    // takes a hit and must still flinch. Before guards ran without a target this
+    // was unreachable — the aggro gate is open, there is simply nobody to chase.
+    let graph = staggerable_graph();
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    // Deliberately no player pawn: nothing for the engine floor to acquire.
+    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, authored_brain(&graph, "rest"), 50.0);
+
+    run_ai_tick(&mut reg, &mut runtime, 0.016);
+    assert_eq!(
+        enemy_state_name(&reg, enemy),
+        "rest",
+        "no guard is true yet, so the brain stays where it is"
+    );
+
+    reg.entity_state_mut(enemy)
+        .expect("spawn seeds entity state")
+        .set("staggered", 1.0);
+    run_ai_tick(&mut reg, &mut runtime, 0.016);
+
+    assert_eq!(
+        enemy_state_name(&reg, enemy),
+        "flinch",
+        "an interrupt reaches a brain that has no target to chase"
+    );
+}
+
+/// `pursuit_graph` with `rest` re-armed to expose what a guard SEES when there
+/// is no target: one edge reads `@brain.hasTarget` directly, the other is a bare
+/// range guard that has to read false through the no-target sentinel.
+fn target_probe_graph() -> BehaviorGraphDescriptor {
+    let mut graph = pursuit_graph();
+    graph.states.get_mut("rest").unwrap().transitions = vec![
+        edge("charge", brain_input(BRAIN_HAS_TARGET_INPUT)),
+        edge("strike", target_within(16.0)),
+    ];
+    graph
+}
+
+#[test]
+fn with_no_target_a_has_target_guard_and_a_bare_range_guard_both_read_false() {
+    let graph = target_probe_graph();
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, authored_brain(&graph, "rest"), 50.0);
+
+    run_ai_tick(&mut reg, &mut runtime, 0.016);
+
+    assert_eq!(
+        enemy_state_name(&reg, enemy),
+        "rest",
+        "`hasTarget` is false and the sentinel distance fails a bare range \
+         guard, so neither edge fires"
+    );
+
+    // The same two guards, now with a pawn to read: `hasTarget` is declared
+    // first, so it is the one that wins.
+    spawn_player(&mut reg, Vec3::new(5.0, 0.0, 0.0));
+    run_ai_tick(&mut reg, &mut runtime, 0.016);
+
+    assert_eq!(enemy_state_name(&reg, enemy), "charge");
+}
+
+#[test]
+fn a_closed_aggro_gate_evaluates_no_guards_at_all() {
+    // An interrupt that cannot be false: if the gate consulted the guards for
+    // any reason, this brain would land in `panic`. It must land in `initial`.
+    let graph = interrupt_graph(vec![edge(
+        "panic",
+        IrNode::Const {
+            value: IrValue::Bool(true),
+        },
+    )]);
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    spawn_player(&mut reg, Vec3::new(5.0, 0.0, 0.0));
+    let mut brain = authored_brain(&graph, "charge");
+    brain.aggro_armed = false;
+    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 50.0);
+    // A stale destination from before the gate closed, so the stand-down's
+    // clear is observable.
+    agent_steering::set_destination(&mut reg, enemy, Vec3::new(5.0, 0.0, 0.0));
+
+    run_ai_tick(&mut reg, &mut runtime, 0.016);
+
+    assert_eq!(
+        enemy_state_name(&reg, enemy),
+        graph.initial,
+        "a closed gate forces `initial` without consulting a single guard"
+    );
+    assert_eq!(enemy_acquired_target(&reg, enemy), None);
+    assert!(
+        !agent_steering::path_state(&reg, enemy)
+            .expect("agent present")
+            .has_destination,
+        "standing down clears steering"
+    );
+
+    set_enemy_aggro_armed(&mut reg, enemy, true);
+    run_ai_tick(&mut reg, &mut runtime, 0.016);
+
+    assert_eq!(
+        enemy_state_name(&reg, enemy),
+        "panic",
+        "re-arming lets the same interrupt through immediately"
+    );
+}
+
+#[test]
+fn a_brain_seated_outside_its_graph_recovers_to_the_initial_state() {
+    // A graph swapped under a persisted `state_index` leaves the brain pointing
+    // at no declared state. The tick is TOTAL: it re-seats rather than wedging,
+    // and warns once for the enemy.
+    let graph = pursuit_graph();
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let mut brain = authored_brain(&graph, "rest");
+    brain.state_index = 99;
+    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 50.0);
+
+    run_ai_tick(&mut reg, &mut runtime, 0.016);
+
+    assert_eq!(
+        enemy_state_name(&reg, enemy),
+        graph.initial,
+        "an unaddressable state index re-seats to the graph's `initial`"
+    );
+    assert!(
+        runtime.reseat_warned.contains(&enemy),
+        "the re-seat reports through the entity-keyed warn latch: {:?}",
+        runtime.reseat_warned
+    );
+    assert!(
+        runtime.warned.is_empty(),
+        "the re-seat is entity-keyed, so it must not add a per-spawn string to \
+         the content latch: {:?}",
+        runtime.warned
+    );
+
+    // Re-seated, not merely parked: the recovered state's own edges decide the
+    // next tick.
+    spawn_player(&mut reg, Vec3::new(5.0, 0.0, 0.0));
+    run_ai_tick(&mut reg, &mut runtime, 0.016);
+    assert_eq!(enemy_state_name(&reg, enemy), "charge");
+}
+
+// ---------------------------------------------------------------------------
+// Acceptance: `attack.range` gates damage, and engagement is not motion-shaped
+// ---------------------------------------------------------------------------
+
+/// A stand-and-swing graph: one state, `hold` motion plus the `attack` action
+/// and no exits at all. Nothing but the engine's `attack.range` gate can stop it
+/// dealing damage, and nothing but the ENGAGED test can make it hold a target or
+/// turn toward one.
+fn standing_attack_graph() -> BehaviorGraphDescriptor {
+    BehaviorGraphDescriptor {
+        initial: "strike".to_string(),
+        states: BTreeMap::from([(
+            "strike".to_string(),
+            authored_state(
+                "attack",
+                MotionVerb::Hold,
+                Some(ActionVerb::Attack),
+                Vec::new(),
+            ),
+        )]),
+        interrupts: Vec::new(),
+        attack: Some(AttackParams {
+            damage: 8.0,
+            range: 2.0,
+            cooldown_ms: 1000.0,
+        }),
+        engagement_radius: None,
+        move_speed: 3.5,
+    }
+}
+
+#[test]
+fn an_attack_state_deals_no_damage_outside_attack_range() {
+    let graph = standing_attack_graph();
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let pawn = spawn_player(&mut reg, Vec3::new(5.0, 0.0, 0.0));
+    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, authored_brain(&graph, "strike"), 50.0);
+
+    let events = run_ai_tick(&mut reg, &mut runtime, 0.016);
+    assert!(
+        events.is_empty(),
+        "an out-of-range swing raises no attack event"
+    );
+    assert_eq!(
+        player_hp(&reg, pawn),
+        100.0,
+        "`attack.range` gates the damage, not just the authored transitions"
+    );
+    assert_eq!(
+        enemy_state_name(&reg, enemy),
+        "strike",
+        "the state is unchanged: only the action was gated"
+    );
+
+    // The same state, the same cooldown, the pawn now inside the range.
+    let mut transform = *reg.get_component::<Transform>(pawn).unwrap();
+    transform.position = Vec3::new(1.0, 0.0, 0.0);
+    reg.set_component(pawn, transform).unwrap();
+
+    let events = run_ai_tick(&mut reg, &mut runtime, 0.016);
+    assert_eq!(events, vec![ENEMY_ATTACK_EVENT]);
+    assert_eq!(player_hp(&reg, pawn), 92.0);
+}
+
+#[test]
+fn a_standing_attack_state_retains_its_target_and_faces_it() {
+    // Engagement is not motion-shaped: a state that holds its ground and swings
+    // keeps its acquired pawn and turns toward it, exactly as a chasing state
+    // does. Otherwise it swings at whatever its spawn heading happened to be.
+    let graph = standing_attack_graph();
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let pawn = spawn_player(&mut reg, Vec3::new(1.5, 0.0, 0.0));
+    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, authored_brain(&graph, "strike"), 50.0);
+    // Facing away, and stopped — `hold` never gives the agent a destination.
+    set_enemy_yaw(&mut reg, enemy, std::f32::consts::PI);
+    set_agent_velocity(&mut reg, enemy, Vec3::ZERO);
+
+    run_ai_tick(&mut reg, &mut runtime, 0.016);
+    assert_eq!(
+        enemy_acquired_target(&reg, enemy),
+        Some(pawn),
+        "a swinging state is engaged, so it retains its pawn across ticks"
+    );
+
+    run_ticks_until_facing_converges(
+        &mut reg,
+        &mut runtime,
+        enemy,
+        Vec3::X,
+        "a standing attacker turns to face what it is hitting",
+    );
+    assert_faces(
+        enemy_forward_xz(&reg, enemy),
+        Vec3::X,
+        "a standing attacker turns to face what it is hitting",
+    );
+    assert!(
+        !agent_steering::path_state(&reg, enemy)
+            .expect("agent present")
+            .has_destination,
+        "engagement turns and retains; it does not steer — that stays the \
+         motion verb's job"
     );
 }

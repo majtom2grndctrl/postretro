@@ -111,9 +111,10 @@ pub enum ComponentKind {
     /// Movable navigation agent (engine-internal, like `PlayerMovement` — never
     /// reachable through `worldQuery`). See `components::agent`.
     Agent = 11,
-    /// Engine-owned AI brain: enemy FSM logical state, timers, and resolved
-    /// `components.ai` tuning (engine-internal, like `PlayerMovement`/`Agent` —
-    /// never reachable through `worldQuery`). See `components::brain`.
+    /// Engine-owned AI brain: the retained behavior graph, its current state
+    /// index, and per-instance timers (engine-internal, like
+    /// `PlayerMovement`/`Agent` — never reachable through `worldQuery`). See
+    /// `components::brain`.
     Brain = 12,
     /// Deterministic linear mover. Scripts query mover handles through
     /// `world.query`; raw phase remains engine-owned and non-attachable.

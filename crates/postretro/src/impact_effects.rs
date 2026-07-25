@@ -154,14 +154,16 @@ fn resume_recovered_brain_presentation(registry: &mut EntityRegistry, target: En
     let Ok(mut brain) = registry.get_component::<BrainComponent>(target).cloned() else {
         return;
     };
-    let idle = brain.tuning.states.idle.clone();
-    // The deferred period preserves the last locomotion velocity and FSM state.
-    // Invalidate the animation latch so the following AI tick reselects the
-    // state-appropriate idle, walk, or attack clip instead of leaving this
+    let rest = crate::scripting_systems::ai::rest_animation(&brain.graph).map(str::to_string);
+    // The deferred period preserves the last locomotion velocity and graph
+    // state. Invalidate the animation latch so the following AI tick reselects
+    // the state-appropriate rest, travel, or action clip instead of leaving this
     // one-tick baseline pose in place indefinitely.
     brain.locomotion_moving = !brain.locomotion_moving;
     let _ = registry.set_component(target, brain);
-    let _ = play_animation(registry, target, &idle);
+    if let Some(rest) = rest {
+        let _ = play_animation(registry, target, &rest);
+    }
 }
 
 /// Advance active deferred-effect queues after the weapon and enemy-melee

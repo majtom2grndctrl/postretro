@@ -832,6 +832,37 @@
   export const runtime: Runtime;
 
   // -------------------------------------------------------------------------
+  // Behavior-graph guard inputs (sdk/lib/brain.ts). Pre-wrapped IR input leaves
+  // for the fixed `@brain.*` namespace plus the `@state.<name>` leaf builder —
+  // pure SDK sugar over `runtime.read`, not primitives. The property set is the
+  // `BRAIN_INPUTS` table in crates/foundation/src/brain.rs.
+
+  /** The fixed brain-fact namespace a transition guard may read. Each property
+   * is an IR input leaf, usable anywhere a `runtime` builder takes an operand. */
+  export interface BrainInputs {
+    /** `true` while the enemy has a selected target this tick (boolean). */
+    readonly hasTarget: RuntimeRead;
+    /** Distance to the selected target in metres, or `1e9` with no target — so a bare `le(targetDistance, r)` reads false untargeted (number). */
+    readonly targetDistance: RuntimeRead;
+    /** Milliseconds since the brain entered its current state. A commitment window is a guard over this, not an engine mechanism (number). */
+    readonly timeInStateMs: RuntimeRead;
+    /** Milliseconds left on the attack cooldown; `0` once elapsed (number). */
+    readonly attackCooldownMs: RuntimeRead;
+    /** `true` on the think-stride ticks where acquisition is re-evaluated (boolean). */
+    readonly acquisitionDue: RuntimeRead;
+    /** The enemy's current hit points (number). */
+    readonly health: RuntimeRead;
+    /** The enemy's maximum hit points (number). */
+    readonly maxHealth: RuntimeRead;
+  }
+
+  /** Pre-wrapped guard input leaves for the fixed `@brain.*` namespace. */
+  export const brain: BrainInputs;
+
+  /** Read a per-entity state field as a guard input: `state("staggered")` is the `@state.staggered` leaf. Unset fields read as `0`. Impact policies and reactions write these; guards only read them. */
+  export function state(name: string): RuntimeRead;
+
+  // -------------------------------------------------------------------------
   // UI navigation intents — the closed gamepad-first nav vocabulary the input
   // stage produces (keyboard arrows/enter/escape, D-pad, stick edges) and that
   // UI authors reference in `capturesNav` and focus policy. Wire names mirror

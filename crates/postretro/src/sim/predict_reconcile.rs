@@ -8,7 +8,7 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
 use std::cell::RefCell;
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::rc::Rc;
 
 use glam::{Vec2, Vec3};
@@ -115,7 +115,7 @@ struct PrototypeHarness {
     world: CollisionWorld,
     hit_zones: HitZoneStore,
     progress: ProgressTracker,
-    ai_warned: HashSet<String>,
+    ai_runtime: crate::scripting_systems::ai::AiRuntime,
     mover_colliders: Vec<MoverCollider>,
     mover_states: MoverTickStateTable,
     player_id: EntityId,
@@ -133,7 +133,7 @@ impl PrototypeHarness {
             world: floor_world(),
             hit_zones: HitZoneStore::new(),
             progress: ProgressTracker::new(),
-            ai_warned: HashSet::new(),
+            ai_runtime: crate::scripting_systems::ai::AiRuntime::new(),
             mover_colliders: Vec::new(),
             mover_states: MoverTickStateTable::default(),
             player_id,
@@ -151,7 +151,7 @@ impl PrototypeHarness {
             None,
             0.0,
             &mut self.progress,
-            &mut self.ai_warned,
+            &mut self.ai_runtime,
             &self.mover_colliders,
             &mut self.mover_states,
             &[],

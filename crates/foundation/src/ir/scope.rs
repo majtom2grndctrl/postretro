@@ -9,6 +9,16 @@
 
 use super::{IrType, IrValue};
 
+/// Reserved input-name prefix for per-instance numeric state leaves
+/// (`@state.<field>`).
+///
+/// It lives on the binding seam rather than beside any one scope because
+/// several scopes route it: the impact-policy `EntityScope` reads and writes
+/// entity state through it, and behavior-graph guards read it. The exact prefix
+/// is matched with `strip_prefix`, so a near-miss like `@stateful.x` is an
+/// unknown name, not a state leaf.
+pub const ENTITY_STATE_INPUT_PREFIX: &str = "@state.";
+
 /// A resolved input: the eval-time handle the scope reads from, plus the
 /// projected IR type bind type-checks against.
 ///

@@ -27,7 +27,7 @@
 #![cfg(test)]
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     net::{Ipv4Addr, SocketAddr, UdpSocket},
     time::Duration,
 };
@@ -454,7 +454,7 @@ impl PersistentAtmosphereHarness {
         let world = CollisionWorld::new();
         let hit_zones = HitZoneStore::new();
         let mut progress = postretro_scripting_core::reaction_dispatch::ProgressTracker::new();
-        let mut ai_warned = HashSet::new();
+        let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
         let mut mover_states = MoverTickStateTable::default();
         let use_edges = HashMap::new();
         simulate_tick(
@@ -466,7 +466,7 @@ impl PersistentAtmosphereHarness {
             None,
             0.0,
             &mut progress,
-            &mut ai_warned,
+            &mut ai_runtime,
             &[],
             &mut mover_states,
             &[RemotePawnCommand {

@@ -1,6 +1,7 @@
 // Headless fixed-tick game-state advance seam.
 // See: context/lib/entity_model.md §5 · context/lib/networking.md
 
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
@@ -30,7 +31,7 @@ use crate::trigger_system::{AuthoritativePlayer, PlayerId, TriggerSystem};
 use crate::weapon::{self, FireButtonState, WeaponFireAuthorization, WeaponFireCommand};
 use postretro_entities::PoseInputs;
 use postretro_entities::components::agent::AgentComponent;
-use postretro_entities::components::brain::{BrainComponent, LogicalState};
+use postretro_entities::components::brain::BrainComponent;
 use postretro_entities::components::health::{
     DamageContext, DamageProducer, HealthComponent, apply_damage_with_context,
 };
@@ -97,7 +98,9 @@ pub(crate) struct TriggerTickContext<'a> {
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct TickEvents {
     pub(crate) movement: Vec<&'static str>,
-    pub(crate) ai: Vec<&'static str>,
+    /// AI events raised this tick: the static enemy-attack address plus each
+    /// entered graph state's authored `on_enter`, which is owned.
+    pub(crate) ai: Vec<Cow<'static, str>>,
     pub(crate) weapon: Vec<&'static str>,
     pub(crate) death: Vec<String>,
     pub(crate) authorized_shots: Vec<OpenAuthorizedShot>,
@@ -130,7 +133,7 @@ pub(crate) fn simulate_tick(
     active_wieldable: Option<EntityId>,
     anim_time: f64,
     _progress_tracker: &mut ProgressTracker,
-    ai_warned: &mut HashSet<String>,
+    ai_runtime: &mut scripting_systems::ai::AiRuntime,
     mover_colliders: &[MoverCollider],
     mover_tick_states: &mut MoverTickStateTable,
     remote_pawn_commands: &[RemotePawnCommand],
@@ -150,7 +153,7 @@ pub(crate) fn simulate_tick(
         anim_time,
         (0.0, 0.0),
         _progress_tracker,
-        ai_warned,
+        ai_runtime,
         mover_colliders,
         mover_tick_states,
         remote_pawn_commands,
@@ -176,7 +179,7 @@ pub(crate) fn simulate_tick_with_presentation_aim(
     anim_time: f64,
     presentation_camera_aim: (f32, f32),
     _progress_tracker: &mut ProgressTracker,
-    ai_warned: &mut HashSet<String>,
+    ai_runtime: &mut scripting_systems::ai::AiRuntime,
     mover_colliders: &[MoverCollider],
     mover_tick_states: &mut MoverTickStateTable,
     remote_pawn_commands: &[RemotePawnCommand],
@@ -350,7 +353,7 @@ pub(crate) fn simulate_tick_with_presentation_aim(
         let mut registry = registry.borrow_mut();
         scripting_systems::ai::run_ai_tick_with_navigation_and_impact(
             &mut registry,
-            ai_warned,
+            ai_runtime,
             tick_dt,
             nav_graph,
             Some(collision_world),
@@ -571,14 +574,14 @@ fn update_brain_animation_playback_rates(
             continue;
         };
 
-        // Rate-scale only the alert-mapped locomotion state, and only while the
-        // archetype leaves `speedScale` on. Every other case rests at the
-        // authored rate (1.0). Calibration is `measured_ground_speed /
-        // effective_travel_speed`; a state with neither an override nor a derived
-        // clip stride falls back to `speed_xz / move_speed`, keeping the shipped
-        // in-place walk unchanged.
-        let is_locomotion =
-            animation.current_state == brain.tuning.states.animation_for(LogicalState::Alert);
+        // Rate-scale only the graph's locomotion state — the one that chases
+        // without an action of its own — and only while the archetype leaves
+        // `speedScale` on. Every other case rests at the authored rate (1.0).
+        // Calibration is `measured_ground_speed / effective_travel_speed`; a
+        // state with neither an override nor a derived clip stride falls back to
+        // `speed_xz / move_speed`, keeping the shipped in-place walk unchanged.
+        let is_locomotion = scripting_systems::ai::locomotion_animation(&brain.graph)
+            .is_some_and(|locomotion| animation.current_state == locomotion);
         let rate_input = if is_locomotion && animation.speed_scale {
             let effective = effective_travel_speed(animation, mesh, hit_zone_store);
             MeshAnimation::locomotion_rate_ratio(speed_xz, effective, agent.move_speed)
@@ -1455,11 +1458,20 @@ mod tests {
     use crate::weapon::FireButtonState;
     use glam::Vec2;
     use postretro_entities::components::agent::AgentComponent;
-    use postretro_entities::components::brain::{AiStateMap, AiTuning};
+    use postretro_entities::components::brain::graph_state_index;
     use postretro_entities::components::mesh::{
         AnimationState, DEFAULT_CROSSFADE_MS, InterruptPolicy, MeshAnimation, MeshComponent,
         resolve_pending_animation_stamps,
     };
+    use postretro_entities::data_descriptors::{AiDescriptor, AiStateNames, LEGACY_ALERT_STATE};
+
+    /// A legacy brain staged directly into its lowered `alert` state.
+    fn alert_brain(descriptor: &AiDescriptor) -> BrainComponent {
+        let mut brain = BrainComponent::from_descriptor(descriptor);
+        brain.state_index = graph_state_index(&brain.graph, LEGACY_ALERT_STATE)
+            .expect("the lowered graph declares `alert`");
+        brain
+    }
     use postretro_entities::{
         AmmoReserve, DataRegistry, KinematicMoverComponent, KinematicMoverMode, MoverCommand,
         NamedReaction, NumericRange, PrimitiveDescriptor, ReactionDescriptor, SlotOwnership,
@@ -1474,7 +1486,7 @@ mod tests {
     use postretro_net::wire::NetworkId;
     use postretro_scripting_core::reaction_dispatch::fire_prepartitioned_reactions_with_sequences;
     use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
-    use std::collections::{BTreeMap, HashMap, HashSet};
+    use std::collections::{BTreeMap, HashMap};
 
     #[test]
     fn zero_hp_player_remains_present_for_trigger_occupancy_until_despawn() {
@@ -1833,7 +1845,7 @@ mod tests {
         let world = CollisionWorld::new();
         let hit_zones = HitZoneStore::new();
         let mut progress = ProgressTracker::new();
-        let mut ai_warned = HashSet::new();
+        let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
         let mover_colliders = Vec::new();
         let mut mover_states = MoverTickStateTable::default();
         simulate_tick(
@@ -1845,7 +1857,7 @@ mod tests {
             None,
             0.0,
             &mut progress,
-            &mut ai_warned,
+            &mut ai_runtime,
             &mover_colliders,
             &mut mover_states,
             remote,
@@ -1869,7 +1881,7 @@ mod tests {
         let world = CollisionWorld::new();
         let hit_zones = HitZoneStore::new();
         let mut progress = ProgressTracker::new();
-        let mut ai_warned = HashSet::new();
+        let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
         let mut mover_states = MoverTickStateTable::default();
         simulate_tick(
             registry,
@@ -1880,7 +1892,7 @@ mod tests {
             Some(weapon),
             0.0,
             &mut progress,
-            &mut ai_warned,
+            &mut ai_runtime,
             &[],
             &mut mover_states,
             &[],
@@ -2049,7 +2061,7 @@ mod tests {
         bridge.insert_for_test(source_trigger, Vec3::splat(-4.0), Vec3::splat(4.0));
         let mut trigger_system = TriggerSystem::default();
         let mut progress = ProgressTracker::new();
-        let mut ai_warned = HashSet::new();
+        let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
         let mut mover_states = MoverTickStateTable::default();
         let world = CollisionWorld::new();
         let hit_zones = HitZoneStore::new();
@@ -2064,7 +2076,7 @@ mod tests {
             None,
             0.0,
             &mut progress,
-            &mut ai_warned,
+            &mut ai_runtime,
             &[],
             &mut mover_states,
             &[],
@@ -2184,7 +2196,7 @@ mod tests {
             None,
             0.0,
             &mut progress,
-            &mut ai_warned,
+            &mut ai_runtime,
             &[],
             &mut mover_states,
             &[],
@@ -2307,7 +2319,7 @@ mod tests {
             }
             let mut trigger_system = TriggerSystem::default();
             let mut progress = ProgressTracker::new();
-            let mut ai_warned = HashSet::new();
+            let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
             let mut mover_states = MoverTickStateTable::default();
             let use_edges = HashMap::new();
 
@@ -2320,7 +2332,7 @@ mod tests {
                 None,
                 0.0,
                 &mut progress,
-                &mut ai_warned,
+                &mut ai_runtime,
                 &[],
                 &mut mover_states,
                 &[],
@@ -2869,7 +2881,7 @@ mod tests {
         let world = CollisionWorld::new();
         let hit_zones = HitZoneStore::new();
         let mut progress = ProgressTracker::new();
-        let mut ai_warned = HashSet::new();
+        let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
         let mut mover_states = MoverTickStateTable::default();
 
         let events = simulate_tick(
@@ -2881,7 +2893,7 @@ mod tests {
             Some(weapon),
             0.0,
             &mut progress,
-            &mut ai_warned,
+            &mut ai_runtime,
             &[],
             &mut mover_states,
             &[],
@@ -3198,7 +3210,7 @@ mod tests {
             let world = CollisionWorld::new();
             let hit_zones = HitZoneStore::new();
             let mut progress = ProgressTracker::new();
-            let mut ai_warned = HashSet::new();
+            let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
             let mut mover_states = MoverTickStateTable::default();
             simulate_tick(
                 registry.clone(),
@@ -3209,7 +3221,7 @@ mod tests {
                 None,
                 0.0,
                 &mut progress,
-                &mut ai_warned,
+                &mut ai_runtime,
                 &[],
                 &mut mover_states,
                 &[],
@@ -3281,32 +3293,21 @@ mod tests {
             registry
                 .set_component(
                     enemy,
-                    BrainComponent {
-                        state: LogicalState::Alert,
-                        attack_cooldown_remaining_ms: 0.0,
-                        think_stride_counter: 0,
-                        death_despawn_remaining_ms: None,
-                        locomotion_moving: false,
-                        aggro_armed: true,
-                        acquired_target: None,
-                        combat_slot: None,
-                        combat_slot_hold_ticks: 0,
-                        tuning: AiTuning {
-                            detection_range: 18.0,
-                            attack_range: 2.0,
-                            leash_range: 26.0,
-                            attack_damage: 8.0,
-                            attack_cooldown_ms: 1000.0,
-                            move_speed: 4.0,
-                            death_despawn_ms: 500.0,
-                            states: AiStateMap {
-                                idle: "idle".into(),
-                                alert: "walk".into(),
-                                attack: "attack".into(),
-                                death: "death".into(),
-                            },
+                    alert_brain(&AiDescriptor {
+                        detection_range: 18.0,
+                        attack_range: 2.0,
+                        leash_range: 26.0,
+                        attack_damage: 8.0,
+                        attack_cooldown_ms: 1000.0,
+                        move_speed: 4.0,
+                        death_despawn_ms: 500.0,
+                        states: AiStateNames {
+                            idle: "idle".into(),
+                            alert: "walk".into(),
+                            attack: "attack".into(),
+                            death: "death".into(),
                         },
-                    },
+                    }),
                 )
                 .unwrap();
             crate::impact_effects::despawn(&mut registry, enemy, Some(500.0));
@@ -3316,7 +3317,7 @@ mod tests {
         let world = CollisionWorld::new();
         let hit_zones = HitZoneStore::new();
         let mut progress = ProgressTracker::new();
-        let mut ai_warned = HashSet::new();
+        let mut ai_runtime = crate::scripting_systems::ai::AiRuntime::new();
         let mut mover_states = MoverTickStateTable::default();
         let events = simulate_tick(
             registry.clone(),
@@ -3327,7 +3328,7 @@ mod tests {
             None,
             0.0,
             &mut progress,
-            &mut ai_warned,
+            &mut ai_runtime,
             &[],
             &mut mover_states,
             &[],

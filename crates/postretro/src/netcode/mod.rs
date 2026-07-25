@@ -100,7 +100,7 @@ use postretro_entities::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, EntityTypeDescriptor, SlotTable,
     Transform,
 };
-use postretro_foundation::{NavAgentParams, PlayerMovementComponent};
+use postretro_foundation::{NavAgentParams, PlayerMovementComponent, lower_ai_descriptor};
 use postretro_net::replication::ServerReplication;
 use postretro_net::timesync::{
     self, ClockEstimator, MonotonicClock, TimeSyncRequest, TimeSyncSender,
@@ -114,6 +114,7 @@ use postretro_net::wire::{
 
 use crate::collision::{self, CollisionWorld};
 use crate::movement::MovementCollisionSource;
+use crate::scripting_systems;
 use crate::sim::SimCommand;
 use crate::weapon::{self, ActivationOutcome, WeaponImpact};
 
@@ -1125,12 +1126,21 @@ pub(crate) fn client_receive_and_apply(
             } else {
                 // Remote AI has no local AgentComponent, so derive its walk rate from
                 // exactly the motion this client presents. The shared descriptor supplies
-                // the immutable reference speed and alert-mapped locomotion state; neither
-                // belongs on the snapshot wire format.
+                // the immutable reference speed and the locomotion state; neither belongs
+                // on the snapshot wire format.
+                //
+                // "The walking state" is picked by the same rule the host tick's
+                // animation substitution uses: the graph's locomotion state, which chases
+                // without an action of its own. The brain's graph is the descriptor's
+                // authored `behavior` block, or the lowering of its legacy `ai` block —
+                // in the spawn site's precedence, so both ends agree on what this enemy
+                // would carry.
                 let walk_reference = descriptor.and_then(|descriptor| {
-                    let ai = descriptor.ai.as_ref()?;
                     let mesh = descriptor.mesh.as_ref()?;
-                    let state = mesh.animations.get(&ai.states.alert)?;
+                    let lowered = descriptor.ai.as_ref().map(lower_ai_descriptor);
+                    let graph = lowered.as_ref().or(descriptor.behavior.as_ref())?;
+                    let locomotion = scripting_systems::ai::locomotion_animation(graph)?;
+                    let state = mesh.animations.get(locomotion)?;
                     let derived_travel_speed = hit_zone_store
                         .get(&postretro_model::ModelHandle::from(mesh.model.clone()))
                         .and_then(|model| {
@@ -1140,7 +1150,11 @@ pub(crate) fn client_receive_and_apply(
                                 .find(|clip| clip.name == state.clip)
                                 .and_then(|clip| clip.travel_speed)
                         });
-                    Some((ai.move_speed, ai.states.alert.clone(), derived_travel_speed))
+                    Some((
+                        graph.move_speed,
+                        locomotion.to_string(),
+                        derived_travel_speed,
+                    ))
                 });
                 replication.cache_remote_enemy_walk_playback(remote.network_id, walk_reference);
                 remote_materialize::materialize_armed_remote_enemy(
@@ -2533,6 +2547,7 @@ mod tests {
             mesh: None,
             health: None,
             ai: None,
+            behavior: None,
         }];
         let mut weapon_owners = WeaponOwners::new();
         weapon_owners.set(pawn, weapon);
@@ -3704,6 +3719,7 @@ mod tests {
             }),
             health: None,
             ai: None,
+            behavior: None,
         }
     }
 

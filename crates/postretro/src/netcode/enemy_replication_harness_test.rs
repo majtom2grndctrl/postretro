@@ -81,9 +81,10 @@ use crate::scripting::builtins::data_archetype::{
     descriptor_materializes_ai_enemy, filter_out_client_ai_enemies,
 };
 use postretro_entities::components::agent::AgentComponent;
-use postretro_entities::components::brain::{AiStateMap, AiTuning, BrainComponent, LogicalState};
+use postretro_entities::components::brain::BrainComponent;
 use postretro_entities::components::mesh::{AnimationState, InterruptPolicy, MeshComponent};
 use postretro_entities::components::spawner::SpawnerComponent;
+use postretro_entities::data_descriptors::{AiDescriptor, AiStateNames};
 use postretro_entities::provenance::{
     DescriptorComponentKind, DescriptorProvenance, DescriptorSpawnPath,
 };
@@ -139,32 +140,21 @@ fn perfect_link() -> LinkConfig {
 /// `BrainComponent` keeps the fixture honest about what an `ai` descriptor block
 /// materializes.
 fn brain() -> BrainComponent {
-    BrainComponent {
-        state: LogicalState::Idle,
-        attack_cooldown_remaining_ms: 0.0,
-        think_stride_counter: 0,
-        death_despawn_remaining_ms: None,
-        locomotion_moving: false,
-        aggro_armed: true,
-        acquired_target: None,
-        combat_slot: None,
-        combat_slot_hold_ticks: 0,
-        tuning: AiTuning {
-            detection_range: 18.0,
-            attack_range: 2.0,
-            leash_range: 26.0,
-            attack_damage: 8.0,
-            attack_cooldown_ms: 1000.0,
-            move_speed: 3.5,
-            death_despawn_ms: 1500.0,
-            states: AiStateMap {
-                idle: "idle".into(),
-                alert: "locomotion".into(),
-                attack: "attack".into(),
-                death: "death".into(),
-            },
+    BrainComponent::from_descriptor(&AiDescriptor {
+        detection_range: 18.0,
+        attack_range: 2.0,
+        leash_range: 26.0,
+        attack_damage: 8.0,
+        attack_cooldown_ms: 1000.0,
+        move_speed: 3.5,
+        death_despawn_ms: 1500.0,
+        states: AiStateNames {
+            idle: "idle".into(),
+            alert: "locomotion".into(),
+            attack: "attack".into(),
+            death: "death".into(),
         },
-    }
+    })
 }
 
 fn agent() -> AgentComponent {
@@ -288,6 +278,7 @@ fn enemy_descriptor(class: &str) -> EntityTypeDescriptor {
         // presence is the sole AI classifier. A real `AiDescriptor` keeps the fixture
         // honest about what an `ai` block resolves to.
         ai: Some(ai_descriptor()),
+        behavior: None,
     }
 }
 
@@ -310,6 +301,65 @@ fn ai_descriptor() -> postretro_foundation::AiDescriptor {
             death: "death".into(),
         },
     }
+}
+
+/// The same enemy in the AUTHORED `components.behavior` spelling — the shape the
+/// shipped reference enemy has. The suppression seam keys on "carries a brain",
+/// not on which block spells it, so the netcode-facing predicate and filter must
+/// treat this identically to [`enemy_descriptor`].
+fn behavior_enemy_descriptor(class: &str) -> EntityTypeDescriptor {
+    use postretro_foundation::data_descriptors::types::behavior::{
+        ActionVerb, AttackParams, BehaviorGraphDescriptor, BehaviorStateDescriptor, MotionVerb,
+        TransitionDescriptor,
+    };
+    use postretro_foundation::{BRAIN_TARGET_DISTANCE_INPUT, IrNode, IrValue};
+
+    let mut descriptor = enemy_descriptor(class);
+    descriptor.ai = None;
+    descriptor.behavior = Some(BehaviorGraphDescriptor {
+        initial: "idle".to_string(),
+        states: std::collections::BTreeMap::from([
+            (
+                "idle".to_string(),
+                BehaviorStateDescriptor {
+                    animation: "idle".to_string(),
+                    motion: MotionVerb::Hold,
+                    action: None,
+                    transitions: vec![TransitionDescriptor {
+                        to: "attack".to_string(),
+                        when: IrNode::Le {
+                            a: Box::new(IrNode::Input {
+                                name: BRAIN_TARGET_DISTANCE_INPUT.to_string(),
+                            }),
+                            b: Box::new(IrNode::Const {
+                                value: IrValue::Number(16.0),
+                            }),
+                        },
+                    }],
+                    on_enter: None,
+                },
+            ),
+            (
+                "attack".to_string(),
+                BehaviorStateDescriptor {
+                    animation: "attack".to_string(),
+                    motion: MotionVerb::ChaseTarget,
+                    action: Some(ActionVerb::Attack),
+                    transitions: Vec::new(),
+                    on_enter: None,
+                },
+            ),
+        ]),
+        interrupts: Vec::new(),
+        attack: Some(AttackParams {
+            damage: 8.0,
+            range: 2.0,
+            cooldown_ms: 1000.0,
+        }),
+        engagement_radius: None,
+        move_speed: 3.5,
+    });
+    descriptor
 }
 
 /// A `MapEntity` placement of `classname` (the connected-client install filter input).
@@ -354,6 +404,7 @@ fn prop_descriptor(class: &str) -> EntityTypeDescriptor {
         }),
         health: None,
         ai: None,
+        behavior: None,
     }
 }
 
@@ -652,6 +703,28 @@ fn connected_client_has_exactly_one_remote_enemy_and_no_local_authoritative_copy
         !descriptor_materializes_ai_enemy(&prop_descriptor("crate")),
         "the prop descriptor is NOT an AI enemy (kept on the client)"
     );
+}
+
+// The suppression seam keys on "carries a brain", and the shipped reference
+// enemy authors that brain as a `components.behavior` graph. Had the predicate
+// covered only the legacy `ai` spelling, a connected client would spawn a local
+// authoritative duplicate brain for exactly the class a real map places.
+#[test]
+fn connected_client_suppresses_the_behavior_spelled_enemy_placement_too() {
+    let descriptors = vec![
+        behavior_enemy_descriptor(ENEMY_CLASS),
+        prop_descriptor("crate"),
+    ];
+    assert!(
+        descriptor_materializes_ai_enemy(&descriptors[0]),
+        "an authored `behavior` graph classifies as an AI enemy"
+    );
+
+    let kept =
+        filter_out_client_ai_enemies(&[placement(ENEMY_CLASS), placement("crate")], &descriptors);
+
+    assert_eq!(kept.len(), 1, "the behavior-spelled enemy is suppressed");
+    assert_eq!(kept[0].classname, "crate", "only the non-AI prop survives");
 }
 
 // A runtime-spawned enemy uses the same host snapshot → client materialization

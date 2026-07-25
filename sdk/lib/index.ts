@@ -15,6 +15,9 @@ export { world } from "./world";
 
 export { runtime } from "./runtime";
 
+export type { BrainInputs } from "./brain";
+export { brain, state } from "./brain";
+
 export type { AnimatableScalar, AnimatableVec3 } from "./animation";
 
 export { getGameState } from "./game_state";

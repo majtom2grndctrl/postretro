@@ -434,28 +434,40 @@ fn paired_weapon_ammo_resource_rejects_fractional_and_non_finite_u32_fields() {
             r#"{ kind: "ammo", type: "cells", magazine: 8, costPerShot: 1, reserve: 32, reloadMs: 1.5 }"#,
             r#"{ kind = "ammo", type = "cells", magazine = 8, costPerShot = 1, reserve = 32, reloadMs = 1.5 }"#,
         ),
+    ] {
+        assert_ammo_pair_rejects(field, js_resource, lua_resource, "expected u32");
+    }
+
+    // Non-finite values are rejected one layer earlier, by the JSON bridge, so
+    // they never reach the u32 serde error. Both runtimes name the field.
+    for (field, js_resource, lua_resource) in [
         (
-            "non-finite magazine",
+            "magazine",
             r#"{ kind: "ammo", type: "cells", magazine: Infinity, costPerShot: 1, reserve: 32, reloadMs: 1000 }"#,
             r#"{ kind = "ammo", type = "cells", magazine = math.huge, costPerShot = 1, reserve = 32, reloadMs = 1000 }"#,
         ),
         (
-            "non-finite costPerShot",
+            "costPerShot",
             r#"{ kind: "ammo", type: "cells", magazine: 8, costPerShot: Infinity, reserve: 32, reloadMs: 1000 }"#,
             r#"{ kind = "ammo", type = "cells", magazine = 8, costPerShot = math.huge, reserve = 32, reloadMs = 1000 }"#,
         ),
         (
-            "non-finite reserve",
-            r#"{ kind: "ammo", type: "cells", magazine: 8, costPerShot: 1, reserve: Infinity, reloadMs: 1000 }"#,
-            r#"{ kind = "ammo", type = "cells", magazine = 8, costPerShot = 1, reserve = math.huge, reloadMs = 1000 }"#,
+            "reserve",
+            r#"{ kind: "ammo", type: "cells", magazine: 8, costPerShot: 1, reserve: -Infinity, reloadMs: 1000 }"#,
+            r#"{ kind = "ammo", type = "cells", magazine = 8, costPerShot = 1, reserve = -math.huge, reloadMs = 1000 }"#,
         ),
         (
-            "non-finite reloadMs",
-            r#"{ kind: "ammo", type: "cells", magazine: 8, costPerShot: 1, reserve: 32, reloadMs: Infinity }"#,
-            r#"{ kind = "ammo", type = "cells", magazine = 8, costPerShot = 1, reserve = 32, reloadMs = math.huge }"#,
+            "reloadMs",
+            r#"{ kind: "ammo", type: "cells", magazine: 8, costPerShot: 1, reserve: 32, reloadMs: NaN }"#,
+            r#"{ kind = "ammo", type = "cells", magazine = 8, costPerShot = 1, reserve = 32, reloadMs = 0/0 }"#,
         ),
     ] {
-        assert_ammo_pair_rejects(field, js_resource, lua_resource, "expected u32");
+        assert_ammo_pair_rejects(
+            field,
+            js_resource,
+            lua_resource,
+            &format!("non-finite number at `resource.{field}`"),
+        );
     }
 }
 

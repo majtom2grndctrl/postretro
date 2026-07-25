@@ -83,7 +83,9 @@ pub use postretro_entities::data_descriptors::{
     TriggerPoolArm, TriggerPoolDescriptor, build_crossing, build_predicate_crossing,
 };
 pub use postretro_foundation::data_descriptors::LightDescriptor;
-pub use postretro_foundation::data_descriptors::types::{combat::*, manifest::*, movement::*};
+pub use postretro_foundation::data_descriptors::types::{
+    behavior::*, combat::*, manifest::*, movement::*,
+};
 
 pub use js::entity::*;
 pub use js::manifest::*;

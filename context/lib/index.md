@@ -18,6 +18,7 @@
 - **Brush roles / which brushes participate in the BSP** → `build_pipeline.md` §Compiler pipeline
 - **Audio / spatial sound / reverb zones** → `audio.md`
 - **Entity model / game objects / sprites** → `entity_model.md`
+- **Enemy AI / behavior state graph / transition guards / brain component** → `entity_model.md` §7c · `scripting.md` §11
 - **Build pipeline / FGD / TrenchBroom** → `build_pipeline.md`
 - **Input handling / gamepad** → `input.md`
 - **Player options / settings persistence / mouse sensitivity / invert-Y / view_feel_scale** → `player_options.md`

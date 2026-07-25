@@ -286,6 +286,7 @@ mod tests {
             }),
             health: None,
             ai: None,
+            behavior: None,
         }
     }
 

@@ -1063,6 +1063,36 @@ export type Runtime = {
 --- Runtime-value builder vocabulary global.
 declare runtime: Runtime
 
+-- Behavior-graph guard inputs (sdk/lib/brain.luau). Pre-wrapped IR input leaves
+-- for the fixed `@brain.*` namespace plus the `@state.<name>` leaf builder --
+-- pure SDK sugar over the same data `runtime.read` returns, not primitives. The
+-- key set is the `BRAIN_INPUTS` table in crates/foundation/src/brain.rs.
+
+--- The fixed brain-fact namespace a transition guard may read. Each field is an
+--- IR input leaf, usable anywhere a `runtime` builder takes an operand.
+export type BrainInputs = {
+  --- `true` while the enemy has a selected target this tick (boolean).
+  hasTarget: RuntimeRead,
+  --- Distance to the selected target in metres, or `1e9` with no target -- so a bare `le(targetDistance, r)` reads false untargeted (number).
+  targetDistance: RuntimeRead,
+  --- Milliseconds since the brain entered its current state. A commitment window is a guard over this, not an engine mechanism (number).
+  timeInStateMs: RuntimeRead,
+  --- Milliseconds left on the attack cooldown; `0` once elapsed (number).
+  attackCooldownMs: RuntimeRead,
+  --- `true` on the think-stride ticks where acquisition is re-evaluated (boolean).
+  acquisitionDue: RuntimeRead,
+  --- The enemy's current hit points (number).
+  health: RuntimeRead,
+  --- The enemy's maximum hit points (number).
+  maxHealth: RuntimeRead,
+}
+
+--- Pre-wrapped guard input leaves for the fixed `@brain.*` namespace.
+declare brain: BrainInputs
+
+--- Read a per-entity state field as a guard input: `state("staggered")` is the `@state.staggered` leaf. Unset fields read as `0`. Impact policies and reactions write these; guards only read them.
+declare function state(name: string): RuntimeRead
+
 -- UI navigation intents — the closed gamepad-first nav vocabulary the input
 -- stage produces (keyboard arrows/enter/escape, D-pad, stick edges) and that UI
 -- authors reference in `capturesNav` and focus policy. Wire names mirror the

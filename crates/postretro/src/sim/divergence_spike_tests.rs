@@ -2,7 +2,6 @@
 // See: context/lib/entity_model.md §5
 
 use std::cell::RefCell;
-use std::collections::HashSet;
 use std::rc::Rc;
 
 use glam::{Vec2, Vec3};
@@ -131,7 +130,7 @@ struct SimHarness {
     hit_zones: HitZoneStore,
     active_wieldable: EntityId,
     progress: ProgressTracker,
-    ai_warned: HashSet<String>,
+    ai_runtime: crate::scripting_systems::ai::AiRuntime,
     mover_colliders: Vec<MoverCollider>,
     mover_states: MoverTickStateTable,
     role_ids: Vec<(Role, EntityId)>,
@@ -157,7 +156,7 @@ impl SimHarness {
             hit_zones: HitZoneStore::new(),
             active_wieldable,
             progress: ProgressTracker::new(),
-            ai_warned: HashSet::new(),
+            ai_runtime: crate::scripting_systems::ai::AiRuntime::new(),
             mover_colliders: Vec::new(),
             mover_states: MoverTickStateTable::default(),
             role_ids,
@@ -176,7 +175,7 @@ impl SimHarness {
             Some(self.active_wieldable),
             0.0,
             &mut self.progress,
-            &mut self.ai_warned,
+            &mut self.ai_runtime,
             &self.mover_colliders,
             &mut self.mover_states,
             &[],

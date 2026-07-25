@@ -116,6 +116,10 @@ export type PostretroModule = {
   defineStore: typeof(defineStore),
   --- Build an additive write for a writable Number store slot.
   slot: typeof(slot),
+  --- Pre-wrapped behavior-graph guard inputs for the fixed `@brain.*` namespace.
+  brain: BrainInputs,
+  --- Build a `@state.<name>` guard input leaf for a per-entity state field.
+  state: typeof(state),
   emitter: typeof(emitter),
   smokeEmitter: typeof(smokeEmitter),
   sparkEmitter: typeof(sparkEmitter),

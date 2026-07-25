@@ -15,6 +15,7 @@ use std::collections::{HashMap, HashSet};
 
 use glam::{Quat, Vec3};
 
+mod brain_scope;
 mod targeting;
 mod transition;
 

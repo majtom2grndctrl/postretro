@@ -210,8 +210,10 @@ impl BindingScope for DispatchScope {
     }
 }
 
-/// Reserved prefix for per-instance numeric state leaves.
-pub const ENTITY_STATE_INPUT_PREFIX: &str = "@state.";
+/// Reserved prefix for per-instance numeric state leaves. Owned by the binding
+/// seam in `postretro-foundation` because behavior-graph guards route the same
+/// prefix from a scope that cannot depend on this crate.
+pub use crate::ir::ENTITY_STATE_INPUT_PREFIX;
 
 /// A resolved input in an [`EntityScope`]. State handles keep their name while
 /// impact facts and ambient store reads retain the handles from the dispatch

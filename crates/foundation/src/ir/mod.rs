@@ -28,7 +28,7 @@ pub use eval::{eval_and_write, eval_value};
 #[allow(unused_imports)]
 pub use load::load_baked_ir;
 #[allow(unused_imports)]
-pub use scope::{BindingScope, ResolvedInput, ResolvedOutput};
+pub use scope::{BindingScope, ENTITY_STATE_INPUT_PREFIX, ResolvedInput, ResolvedOutput};
 
 /// Current IR wire-format version. Stamped into every [`BakedIr`] envelope.
 ///
@@ -61,6 +61,18 @@ pub enum IrType {
 pub enum IrValue {
     Bool(bool),
     Number(f32),
+}
+
+impl IrType {
+    /// The type-correct zero for this type: `0.0` for a number, `false` for a
+    /// boolean. Scopes fill value-less slots with it so `read` stays total
+    /// (the eval contract) before any live refresh has run.
+    pub fn zero(self) -> IrValue {
+        match self {
+            IrType::Number => IrValue::Number(0.0),
+            IrType::Bool => IrValue::Bool(false),
+        }
+    }
 }
 
 impl IrValue {

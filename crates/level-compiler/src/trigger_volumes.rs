@@ -212,7 +212,10 @@ mod tests {
         assert_eq!(cleared.activation, absent.activation, "activation");
         assert_eq!(cleared.command, absent.command, "command");
         assert_eq!(cleared.fire_mode, absent.fire_mode, "fire_mode");
-        assert_eq!(cleared.enabled_on_spawn, absent.enabled_on_spawn, "enabled_on_spawn");
+        assert_eq!(
+            cleared.enabled_on_spawn, absent.enabled_on_spawn,
+            "enabled_on_spawn"
+        );
         assert!(
             (cleared.rearm_ms - absent.rearm_ms).abs() < 1e-6,
             "rearm_ms: {} vs {}",
@@ -283,7 +286,11 @@ mod tests {
         // Omitting the key entirely fails the same way.
         let error = resolve(&[("command", "go_to_path_node"), ("on_fire", "open_gate")])
             .expect_err("go_to_path_node without a command_arg must not compile");
-        assert!(error.to_string().contains("`go_to_path_node` requires `command_arg`"));
+        assert!(
+            error
+                .to_string()
+                .contains("`go_to_path_node` requires `command_arg`")
+        );
     }
 
     #[test]
@@ -294,19 +301,34 @@ mod tests {
         assert!(error.to_string().contains("invalid `rearm_ms`"), "{error}");
 
         let error = resolve(&[("rearm_ms", "-1")]).expect_err("negative rearm_ms must fail");
-        assert!(error.to_string().contains("finite and non-negative"), "{error}");
+        assert!(
+            error.to_string().contains("finite and non-negative"),
+            "{error}"
+        );
 
         let error = resolve(&[("activation", "toggle")]).expect_err("unknown activation fails");
-        assert!(error.to_string().contains("unknown `activation` `toggle`"), "{error}");
+        assert!(
+            error.to_string().contains("unknown `activation` `toggle`"),
+            "{error}"
+        );
 
         let error = resolve(&[("command", "detonate")]).expect_err("unknown command must fail");
-        assert!(error.to_string().contains("unknown `command` `detonate`"), "{error}");
+        assert!(
+            error.to_string().contains("unknown `command` `detonate`"),
+            "{error}"
+        );
 
         let error = resolve(&[("fire_mode", "twice")]).expect_err("unknown fire_mode must fail");
-        assert!(error.to_string().contains("unknown `fire_mode` `twice`"), "{error}");
+        assert!(
+            error.to_string().contains("unknown `fire_mode` `twice`"),
+            "{error}"
+        );
 
         let error =
             resolve(&[("enabled_on_spawn", "maybe")]).expect_err("unknown enabled_on_spawn fails");
-        assert!(error.to_string().contains("`enabled_on_spawn` must be 0/1"), "{error}");
+        assert!(
+            error.to_string().contains("`enabled_on_spawn` must be 0/1"),
+            "{error}"
+        );
     }
 }

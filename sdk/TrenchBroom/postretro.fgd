@@ -395,6 +395,57 @@
     _tags(string) : "Space-delimited tags" : ""
 ]
 
+// Pressable switch brush — one authored brush that is visible, solid, and
+// pressable. Unlike `trigger_volume` (invisible, no collision), a switch's
+// brushwork compiles into the static world geometry: its faces render, take
+// baked light, and collide exactly like worldspawn brushwork. On top of that
+// geometry the compiler emits a `use`-activation trigger, so the player presses
+// `use` while facing the switch to fire it. Activation is always `use` and is
+// not authorable — a touch-activated volume is a `trigger_volume`.
+//
+// Because the geometry is solid, the trigger AABB is inflated past the brush
+// hull by `use_reach` on every axis so a player standing flush against the
+// switch overlaps it. For a wall-flush switch the rear and side margins fall
+// inside solid wall and are unreachable; the front margin is the one that
+// matters. Widen `use_reach` for large consoles or recessed switches.
+//
+// The switch does not move when pressed — v1 geometry is static. For a depress
+// animation, author a `kinematic_mover` alongside the switch.
+//
+// Everything else matches `trigger_volume`: `on_fire` / `on_exit` named
+// reactions, `target_tag` + `command` / `command_arg` mover control, and the
+// same `fire_mode` / `rearm_ms` / `enabled_on_spawn` firing rules.
+@SolidClass
+    color(60 200 200)
+    = switch : "Visible, solid brush the player presses use on to fire mover commands and named reactions"
+[
+    name(string) : "Switch name" : ""
+    use_reach(float) : "Press reach in map units — how far past the switch faces the use volume extends (24 map units is about 0.61 m)" : "24"
+    target_tag(string) : "Target mover tag" : ""
+    on_fire(string) : "Reaction on activation" : "" : "Name of the reaction fired when this switch is pressed."
+    on_exit(string) : "Reaction on exit" : "" : "Name of the reaction fired when a player leaves after pressing this switch."
+    command(choices) : "Mover command" : "start" =
+    [
+        "start" : "Start"
+        "stop" : "Stop"
+        "reverse" : "Reverse"
+        "go_to_path_node" : "Go To Path Node"
+    ]
+    command_arg(string) : "Command argument (path node for go_to_path_node)" : ""
+    fire_mode(choices) : "Fire mode" : "once" =
+    [
+        "once" : "Once"
+        "multiple" : "Multiple"
+    ]
+    rearm_ms(float) : "Rearm delay (milliseconds)" : "0"
+    enabled_on_spawn(choices) : "Enabled on spawn" : 1 =
+    [
+        0 : "Off"
+        1 : "On"
+    ]
+    _tags(string) : "Space-delimited tags" : ""
+]
+
 // Per-region volumetric fog brush.
 //
 // Geometry behaviour is auto-detected from the brush faces:

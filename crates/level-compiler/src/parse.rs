@@ -1117,7 +1117,14 @@ fn build_brush_volumes_with_ids(
             });
         }
 
-        brush_volumes.push((*brush_id, BrushVolume { planes, sides, aabb }));
+        brush_volumes.push((
+            *brush_id,
+            BrushVolume {
+                planes,
+                sides,
+                aabb,
+            },
+        ));
     }
 
     brush_volumes
@@ -2494,10 +2501,9 @@ mod tests {
         // value turned an editor keystroke into a compile error.
         let default_map =
             parse_inline_map(&switch_map("\"on_fire\" \"open_lift\"")).expect("switch compiles");
-        let cleared = parse_inline_map(&switch_map(
-            "\"on_fire\" \"open_lift\"\n\"use_reach\" \"\"",
-        ))
-        .expect("a cleared use_reach must fall back to the default, not fail the compile");
+        let cleared =
+            parse_inline_map(&switch_map("\"on_fire\" \"open_lift\"\n\"use_reach\" \"\""))
+                .expect("a cleared use_reach must fall back to the default, not fail the compile");
 
         let expected = &default_map.trigger_volumes[0];
         let actual = &cleared.trigger_volumes[0];

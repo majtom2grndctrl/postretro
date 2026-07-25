@@ -40,15 +40,26 @@ separate cause.
 
 ### Clippy is red on `main` **[confirmed]**
 
+**Three** errors, all in `crates/renderer/`, not the one this entry first recorded:
+
 ```
 error: this function has too many arguments (8/7)
-  --> crates/renderer/src/render/renderer_full_init.rs:14:1
+  --> crates/renderer/src/render/renderer_full_init.rs:14:1     (lib)
+error: items after a test module
+  --> crates/renderer/src/render/renderer_frame.rs:328:1        (lib test)
+error: the following explicit lifetimes could be elided: 'a
+  --> crates/renderer/src/render/tests/pipeline_budget_tests.rs:82:15   (lib test)
 ```
 
 `build_full_renderer` gained its eighth parameter (`bloom_render_profile`) in `621320a`,
 which is an ancestor of `origin/main`. So `cargo clippy -- -D warnings` cannot pass on a
 clean checkout. Fix is either `#[allow(clippy::too_many_arguments)]` or collapsing the
 params into a struct — a renderer-boundary design call.
+
+The two test-target errors are mechanical: move the `mod tests` declaration below the
+items that follow it, and drop the `'a` annotations. Note they surface only under
+`--all-targets`; a bare `cargo clippy` compiles the lib alone and reports just the first,
+which is why this entry originally recorded one error.
 
 **Repro:** `cargo clippy --target-dir target/preflight-clippy --all-targets -- -D warnings`,
 exit 101. Re-confirmed at the end of this session, after every switch change landed —

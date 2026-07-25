@@ -334,6 +334,31 @@ mod tests {
         assert_number(eval_value(&program, &scope), 0.0);
     }
 
+    /// The value `refresh` must project for a given fixed input name, computed
+    /// from the same facts/health `refresh` consumes.
+    ///
+    /// No `_` arm: driving this from `BRAIN_INPUTS` iteration (below) rather
+    /// than a hand-listed, positionally-zipped array means a `BRAIN_INPUTS`
+    /// entry added without a matching arm here panics at test time instead of
+    /// silently dropping out of a shorter hand-written list.
+    fn expected_fixed_value(name: &str, facts: BrainFacts, health: &HealthComponent) -> IrValue {
+        match name {
+            BRAIN_HAS_TARGET_INPUT => IrValue::Bool(facts.target_distance.is_some()),
+            BRAIN_TARGET_DISTANCE_INPUT => {
+                IrValue::Number(facts.target_distance.unwrap_or(BRAIN_NO_TARGET_DISTANCE))
+            }
+            BRAIN_TIME_IN_STATE_MS_INPUT => IrValue::Number(facts.time_in_state_ms),
+            BRAIN_ATTACK_COOLDOWN_MS_INPUT => IrValue::Number(facts.attack_cooldown_ms),
+            BRAIN_ACQUISITION_DUE_INPUT => IrValue::Bool(facts.acquisition_due),
+            BRAIN_HEALTH_INPUT => IrValue::Number(health.current),
+            BRAIN_MAX_HEALTH_INPUT => IrValue::Number(health.max),
+            other => panic!(
+                "`{other}` is in BRAIN_INPUTS but `expected_fixed_value` has no case for it \
+                 — add one alongside the new `refresh` slot"
+            ),
+        }
+    }
+
     #[test]
     fn refresh_projects_engine_facts_and_health_into_the_fixed_slots() {
         let (registry, enemy, _) = seeded_registry();
@@ -345,18 +370,18 @@ mod tests {
             .map(|(name, _)| bind_read(name, &scope))
             .collect();
 
-        scope.refresh(&registry, enemy, engaged_facts());
+        let facts = engaged_facts();
+        scope.refresh(&registry, enemy, facts);
+        let health = registry
+            .get_component::<HealthComponent>(enemy)
+            .expect("seeded enemy has health");
 
-        let expected = [
-            (BRAIN_HAS_TARGET_INPUT, IrValue::Bool(true)),
-            (BRAIN_TARGET_DISTANCE_INPUT, IrValue::Number(7.5)),
-            (BRAIN_TIME_IN_STATE_MS_INPUT, IrValue::Number(250.0)),
-            (BRAIN_ATTACK_COOLDOWN_MS_INPUT, IrValue::Number(400.0)),
-            (BRAIN_ACQUISITION_DUE_INPUT, IrValue::Bool(true)),
-            (BRAIN_HEALTH_INPUT, IrValue::Number(30.0)),
-            (BRAIN_MAX_HEALTH_INPUT, IrValue::Number(40.0)),
-        ];
-        for (program, (name, want)) in programs.iter().zip(expected) {
+        // Iterating BRAIN_INPUTS itself (rather than a separate hand-listed,
+        // positionally-zipped array) is what makes this loop cover a newly
+        // added input automatically — the previous fixed-length `expected`
+        // array silently truncated a longer BRAIN_INPUTS via `zip`.
+        for (program, (name, _)) in programs.iter().zip(BRAIN_INPUTS.iter()) {
+            let want = expected_fixed_value(name, facts, &health);
             match want {
                 IrValue::Number(number) => assert_number(eval_value(program, &scope), number),
                 IrValue::Bool(_) => {

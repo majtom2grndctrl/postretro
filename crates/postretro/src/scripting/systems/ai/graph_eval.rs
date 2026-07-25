@@ -29,13 +29,20 @@ use super::engine_floor::SteeringIntent;
 ///   actual state transitions, never as self re-entry.
 /// - Guards are evaluated every tick. No state, action, or animation blocks
 ///   evaluation — commitment windows are authored as `@brain.timeInStateMs`
-///   guards, not engine-side latches.
+///   guards, not engine-side latches. The caller runs this on every tick an
+///   armed brain is evaluated, WITH OR WITHOUT a selected target: with none,
+///   `@brain.hasTarget` reads false and `@brain.targetDistance` reads the
+///   no-target sentinel, so a sealed enemy's interrupts still fire. The one
+///   thing upstream of evaluation is the aggro gate, which stands a brain down
+///   without consulting its guards at all.
 /// - A `None` program is a disabled edge (its guard failed to bind): permanently
 ///   false, never fatal.
 ///
 /// Total: an out-of-range `state_index`, or a winning edge whose `to` names no
-/// declared state, reports "stay put". Zero-alloc, as the per-tick guard window
-/// requires.
+/// declared state, reports "stay put" — though the caller re-seats a brain whose
+/// index addresses no declared state before it ever gets here, so "stay put" is
+/// only ever a same-state answer in practice. Zero-alloc, as the per-tick guard
+/// window requires.
 pub(super) fn select_transition(
     graph: &BehaviorGraphDescriptor,
     bound: &BrainEntityPrograms,
@@ -70,13 +77,29 @@ pub(super) fn state_at(
     graph.states.values().nth(index)
 }
 
-/// Whether the state at `index` pursues a target.
+/// Whether the state at `index` is ENGAGED with a target: it chases toward one,
+/// or it takes an action against one.
 ///
-/// This is the engine floor's "engaged" test: a brain retains its acquired pawn
-/// across ticks only while the state it sits in actually chases, so a resting or
-/// frozen brain re-ranks candidates from scratch instead of honoring a stale id.
-pub(super) fn chases(graph: &BehaviorGraphDescriptor, index: usize) -> bool {
-    state_at(graph, index).is_some_and(|state| steering_for(state.motion) == SteeringIntent::Chase)
+/// This is the engine floor's "is this brain fighting" test, and it is
+/// deliberately NOT the same question as "does this state steer". Two distinct
+/// questions run over the same states:
+///
+/// - ENGAGED (this function): does the brain have a stake in a particular pawn?
+///   Everything that follows from a fight uses it — target retention across
+///   ticks and its switch hysteresis, combat-slot participation and incumbency,
+///   and facing. A `hold` + `attack` state stands its ground and swings, so it
+///   is every bit as engaged as a chase: it must keep its pawn, keep its slot,
+///   and turn to face what it is hitting.
+/// - STEERS (`steering_for(..) == SteeringIntent::Chase`): does this state want
+///   the agent moved toward the target this tick? Only destination writes ask
+///   that, and they keep asking the motion verb alone.
+///
+/// A resting or frozen state that takes no action is neither, so such a brain
+/// re-ranks candidates from scratch instead of honoring a stale acquired id.
+pub(super) fn engages(graph: &BehaviorGraphDescriptor, index: usize) -> bool {
+    state_at(graph, index).is_some_and(|state| {
+        steering_for(state.motion) == SteeringIntent::Chase || state.action.is_some()
+    })
 }
 
 /// The index of the graph's `initial` state — the state the engine floor forces

@@ -431,3 +431,93 @@ fn brain_sdk_helpers_cover_every_brain_input() {
     assert_eq!(leaf.get::<String>("name").unwrap(), "@state.staggered");
     assert!(BRAIN_TS_SRC.contains(r#"runtime.read("@state." + name)"#));
 }
+
+// --- empty array-valued fields (twin parity) -----------------------------
+//
+// An empty Luau table is ambiguous: `{}` is both the empty array and the empty
+// map, and the Lua→JSON bridge resolves it to an OBJECT because it cannot see
+// the target type. Declaring "this graph has no interrupts" is the spelling
+// authors reach for most, so the two runtimes must agree on it.
+
+#[test]
+fn both_parsers_accept_an_empty_interrupts_list() {
+    let js = eval_js(
+        &js_behavior(JS_NEAR_GUARD, "").replace("initial:", "interrupts: [], initial:"),
+        |ctx, v| entity_descriptor_from_js(ctx, v).unwrap(),
+    );
+    let lua = eval_lua(
+        &lua_behavior(LUA_NEAR_GUARD, "").replace("initial =", "interrupts = {}, initial ="),
+        |v| entity_descriptor_from_lua(v).unwrap(),
+    );
+
+    let (js_graph, lua_graph) = (
+        js.behavior.expect("JS behavior parsed"),
+        lua.behavior.expect("Luau behavior parsed"),
+    );
+    assert!(js_graph.interrupts.is_empty());
+    assert!(
+        lua_graph.interrupts.is_empty(),
+        "`interrupts = {{}}` must parse as the empty list, not fail as a map"
+    );
+    assert_eq!(
+        js_graph, lua_graph,
+        "the two spellings must produce the identical graph"
+    );
+}
+
+#[test]
+fn both_parsers_accept_an_empty_transitions_list_on_a_state() {
+    // `chase` already declares no `transitions` key at all; this pins the
+    // explicit empty spelling, which travels the same ambiguous bridge.
+    let js = eval_js(
+        &js_behavior(JS_NEAR_GUARD, "").replace(
+            r#"chase: { animation: "walk", motion: "chaseTarget" }"#,
+            r#"chase: { animation: "walk", motion: "chaseTarget", transitions: [] }"#,
+        ),
+        |ctx, v| entity_descriptor_from_js(ctx, v).unwrap(),
+    );
+    let lua = eval_lua(
+        &lua_behavior(LUA_NEAR_GUARD, "").replace(
+            r#"chase = { animation = "walk", motion = "chaseTarget" }"#,
+            r#"chase = { animation = "walk", motion = "chaseTarget", transitions = {} }"#,
+        ),
+        |v| entity_descriptor_from_lua(v).unwrap(),
+    );
+
+    let (js_graph, lua_graph) = (
+        js.behavior.expect("JS behavior parsed"),
+        lua.behavior.expect("Luau behavior parsed"),
+    );
+    assert!(js_graph.states["chase"].transitions.is_empty());
+    assert!(lua_graph.states["chase"].transitions.is_empty());
+    assert_eq!(js_graph, lua_graph);
+}
+
+#[test]
+fn lua_behavior_rejects_a_named_key_table_where_an_array_belongs() {
+    // Only the EMPTY table is re-seated as an array. A table with named keys is
+    // a genuine authoring mistake, and the error must name the path — serde's
+    // own message names neither the field nor the state.
+    let src = lua_behavior(LUA_NEAR_GUARD, "").replace(
+        "initial =",
+        r#"interrupts = { flinch = { to = "chase" } }, initial ="#,
+    );
+    let err = lua_error(&src);
+    assert!(
+        err.contains("components.behavior.interrupts") && err.contains("flinch"),
+        "the error must name the authored path and the offending key: {err}"
+    );
+}
+
+#[test]
+fn lua_behavior_rejects_a_named_key_transitions_table_naming_its_state() {
+    let src = lua_behavior(LUA_NEAR_GUARD, "").replace(
+        r#"chase = { animation = "walk", motion = "chaseTarget" }"#,
+        r#"chase = { animation = "walk", motion = "chaseTarget", transitions = { onward = {} } }"#,
+    );
+    let err = lua_error(&src);
+    assert!(
+        err.contains("components.behavior.states.chase.transitions"),
+        "the error must name the state whose transitions are malformed: {err}"
+    );
+}

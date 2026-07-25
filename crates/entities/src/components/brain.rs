@@ -18,6 +18,8 @@
 //      component, no script surface)
 //      context/lib/scripting.md §1 (scripts declare, Rust executes)
 
+use std::sync::Arc;
+
 use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
@@ -38,11 +40,11 @@ pub struct BrainComponent {
     /// against a distance-derived stride to time-slice target acquisition for
     /// distant enemies. Seeded to `0` at spawn.
     pub think_stride_counter: u32,
-    /// Death-despawn countdown in milliseconds, seeded from the graph's
-    /// `death_despawn_ms` by the death path that owns removal and decremented by
-    /// the tick delta. The TIMER is authoritative: the entity despawns after the
-    /// delay whether or not the death animation clip ever resolved. Seeded
-    /// `None` at spawn; graph evaluation never writes it.
+    /// Death-despawn countdown in milliseconds. Vestigial: the field survives
+    /// for legacy-descriptor shape parity, but nothing seeds or decrements it —
+    /// despawn timing is owned by the death/despawn effect path (E16,
+    /// `impact_effects.rs`), not by this timer. Always `None`; the AI tick must
+    /// not seed it.
     #[serde(default)]
     pub death_despawn_remaining_ms: Option<f32>,
     /// Last locomotion intent applied to animation selection. This latches the
@@ -93,7 +95,22 @@ pub struct BrainComponent {
     /// it are NOT: they live in the evaluator's side-table and are rebuilt from
     /// this graph whenever the entity is (re)seen — at spawn and after a
     /// deserialize.
-    pub graph: BehaviorGraphDescriptor,
+    ///
+    /// Behind an [`Arc`] because the AI tick clones a brain twice per enemy per
+    /// tick (snapshot, then write-back) and a graph is a deep tree of authored
+    /// states and boxed `IrNode` guards — cloning it by value put ~45–50
+    /// allocations in the per-tick path. Shared, those clones are refcount
+    /// bumps, and the evaluator's staleness test becomes a pointer compare
+    /// instead of a structural walk of every guard tree
+    /// (`BrainPrograms::sync`). The graph is immutable once attached: nothing
+    /// mutates it in place, so sharing is unobservable.
+    ///
+    /// Equality still compares CONTENTS (`Arc<T>: PartialEq` delegates to `T`),
+    /// so component equality and serde round-trips behave exactly as they did
+    /// by value. Serde does not preserve sharing across a round-trip — each
+    /// deserialized brain gets its own allocation, which is why `sync`'s
+    /// pointer test correctly rebinds after a load.
+    pub graph: Arc<BehaviorGraphDescriptor>,
     /// The current graph state, as an index into the graph's resolved state list
     /// (`graph.states` in its `BTreeMap` iteration order). An index rather than a
     /// name so per-tick evaluation neither allocates nor compares strings; it is
@@ -134,7 +151,7 @@ impl BrainComponent {
             // falls back to the first resolved state rather than an index the
             // state list cannot answer.
             state_index: graph_state_index(graph, &graph.initial).unwrap_or(0),
-            graph: graph.clone(),
+            graph: Arc::new(graph.clone()),
             time_in_state_ms: 0.0,
         }
     }
@@ -570,7 +587,7 @@ mod tests {
             "the seeded index addresses `initial` in the resolved state list"
         );
         assert_eq!(brain.time_in_state_ms, 0.0);
-        assert_eq!(brain.graph, graph, "the graph is retained verbatim");
+        assert_eq!(*brain.graph, graph, "the graph is retained verbatim");
         assert_eq!(
             brain.graph.death_despawn_ms(),
             BehaviorGraphDescriptor::DEFAULT_DEATH_DESPAWN_MS,
@@ -588,7 +605,7 @@ mod tests {
         let desc = sample_descriptor();
         let brain = BrainComponent::from_descriptor(&desc);
         assert_eq!(
-            brain.graph,
+            *brain.graph,
             lower_ai_descriptor(&desc),
             "a legacy brain retains exactly the lowered graph"
         );
@@ -649,7 +666,7 @@ mod tests {
         };
         assert_eq!(back, brain);
         assert_eq!(back.state_name(), Some("charge"));
-        assert_eq!(back.graph, authored_graph());
+        assert_eq!(*back.graph, authored_graph());
     }
 
     #[test]

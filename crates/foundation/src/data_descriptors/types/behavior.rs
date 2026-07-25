@@ -29,6 +29,10 @@ pub enum MotionVerb {
 impl MotionVerb {
     /// Every motion verb, for drift guards that must enumerate the closed set
     /// (the emitted SDK union is a second spelling of this vocabulary).
+    ///
+    /// The array is hand-written, but `motion_verb_all_is_exhaustive` below
+    /// pins it to a successor chain over an exhaustive `match`, so a new
+    /// variant missing from `ALL` fails that test instead of compiling clean.
     pub const ALL: [MotionVerb; 3] = [
         MotionVerb::ChaseTarget,
         MotionVerb::Hold,
@@ -46,7 +50,8 @@ pub enum ActionVerb {
 }
 
 impl ActionVerb {
-    /// Every action verb. See [`MotionVerb::ALL`].
+    /// Every action verb. See [`MotionVerb::ALL`]; `action_verb_all_is_exhaustive`
+    /// below is its exhaustiveness guard.
     pub const ALL: [ActionVerb; 1] = [ActionVerb::Attack];
 }
 
@@ -132,7 +137,9 @@ pub struct BehaviorGraphDescriptor {
     pub move_speed: f32,
     /// Delay between death and despawn, in milliseconds. Absent or `null` uses
     /// [`BehaviorGraphDescriptor::DEFAULT_DEATH_DESPAWN_MS`], which matches the
-    /// legacy `components.ai` authoring default.
+    /// legacy `components.ai` authoring default. Carried for parity with that
+    /// legacy block only — no runtime path consumes it. Despawn timing is
+    /// owned by the death/despawn effect path (E16).
     #[serde(default)]
     pub death_despawn_ms: Option<f32>,
 }
@@ -187,6 +194,8 @@ impl BehaviorGraphDescriptor {
     pub const DEFAULT_DEATH_DESPAWN_MS: f32 = 2000.0;
 
     /// The effective despawn delay: the authored value, or the shared default.
+    /// Parity-only — no runtime consumer reads this value. Despawn timing is
+    /// owned by the death/despawn effect path (E16), not by this timer.
     pub fn death_despawn_ms(&self) -> f32 {
         self.death_despawn_ms
             .unwrap_or(Self::DEFAULT_DEATH_DESPAWN_MS)
@@ -316,6 +325,56 @@ mod tests {
     use super::*;
     use crate::brain::{BRAIN_TARGET_DISTANCE_INPUT, BRAIN_TIME_IN_STATE_MS_INPUT};
     use crate::ir::IrValue;
+
+    // `ALL` is a hand-written array, so it needs a guard that a new variant
+    // cannot pass by accident. Each test below rebuilds the vocabulary from a
+    // SUCCESSOR CHAIN: an exhaustive `match` (no `_` arm) mapping each variant
+    // to the next, walked from the first until it reports the end.
+    //
+    // The chain is what makes this real. Deriving the list by mapping `ALL`
+    // over itself would be tautological — it can only ever reproduce `ALL`,
+    // so a variant missing from the array still passes. Walking a successor
+    // chain instead builds the list from the MATCH, which the compiler forces
+    // you to extend: adding `Sprint` fails to compile until it has an arm, the
+    // natural arm puts it in the walk, and the walk then disagrees with a
+    // stale `ALL` until the array is updated too.
+    #[test]
+    fn motion_verb_all_is_exhaustive() {
+        fn next(verb: MotionVerb) -> Option<MotionVerb> {
+            match verb {
+                MotionVerb::ChaseTarget => Some(MotionVerb::Hold),
+                MotionVerb::Hold => Some(MotionVerb::Freeze),
+                MotionVerb::Freeze => None,
+            }
+        }
+        let mut walked = vec![MotionVerb::ChaseTarget];
+        while let Some(verb) = next(*walked.last().expect("the walk is seeded")) {
+            walked.push(verb);
+        }
+        assert_eq!(
+            walked,
+            MotionVerb::ALL,
+            "`MotionVerb::ALL` must hold every variant, in successor order"
+        );
+    }
+
+    #[test]
+    fn action_verb_all_is_exhaustive() {
+        fn next(verb: ActionVerb) -> Option<ActionVerb> {
+            match verb {
+                ActionVerb::Attack => None,
+            }
+        }
+        let mut walked = vec![ActionVerb::Attack];
+        while let Some(verb) = next(*walked.last().expect("the walk is seeded")) {
+            walked.push(verb);
+        }
+        assert_eq!(
+            walked,
+            ActionVerb::ALL,
+            "`ActionVerb::ALL` must hold every variant, in successor order"
+        );
+    }
 
     fn le(input: &str, value: f32) -> IrNode {
         IrNode::Le {

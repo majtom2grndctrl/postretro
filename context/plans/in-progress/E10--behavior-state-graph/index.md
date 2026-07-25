@@ -14,7 +14,7 @@ Replace the engine-closed four-state enemy FSM with an authored **behavior state
 - Closed motion-verb vocabulary v1: `chaseTarget` (combat-slot steering, today's Chase), `hold` (clear destination, stand), `freeze` (touch nothing — terminal presentation). Closed action-verb vocabulary v1: `attack` (cooldown-gated contact damage from the `attack` block, today's melee).
 - Optional per-state `onEnter` named-event address, fired through the existing post-tick event drain.
 - Legacy compatibility: `components.ai` is retained and **lowers at spawn to a generated graph** that reproduces `evaluate_transition` exactly (including acquisition-gated detection/leash edges via `@brain.acquisitionDue`). One brain representation, one evaluator code path. Authoring both `ai` and `behavior` is a parse error.
-- Engine-owned floor unchanged: target selection/retention/hysteresis, think-stride, aggro gate (`updateEnemyState`; closed gate forces `initial` + clear steering), no-target forces `initial` + clear steering, combat-slot resolution, facing/locomotion arbitration, damage chokepoint, host-only evaluation (client skip gate untouched), E16 death/despawn ownership.
+- Engine-owned floor unchanged: target selection/retention/hysteresis, think-stride, aggro gate (`updateEnemyState`; closed gate forces `initial` + clear steering — the ONE place guard evaluation is skipped), combat-slot resolution, facing/locomotion arbitration, damage chokepoint, host-only evaluation (client skip gate untouched), E16 death/despawn ownership. Having no target is NOT a floor override: an armed brain evaluates its guards every tick whether or not a pawn exists, reading `@brain.hasTarget` false and the `@brain.targetDistance` sentinel, so a sealed enemy can still flinch on an interrupt. A `chaseTarget` state selected with no target degrades to cleared steering, since there is nothing to move relative to.
 - Behavior-preserving split of `scripting/systems/ai.rs` (969 lines) before extension.
 - Reference enemy migrates to an authored explicit graph; pose-fixture enemy stays on legacy `ai` to keep the lowering path exercised.
 
@@ -27,7 +27,8 @@ Replace the engine-closed four-state enemy FSM with an authored **behavior state
 - `and`/`or`/`not` IR opcodes — additive substrate follow-up, not this plan. Lowering builds `select` trees Rust-side until the opcodes land; authored guards benefit from them once available.
 - Multi-attack (`E10--enemy-multi-attack`) and stagger (`E10--enemy-stagger`) — both re-target onto this graph after it lands (stagger = impact policy writing `@state.*` + an authored interrupt; multi-attack enriches the action vocabulary). Their drafts are not edited here.
 - Wire/replication changes — graph state is host-only sim state; clients keep consuming replicated animation state.
-- Removing the vestigial `death` state map entry from legacy `ai` descriptors — parsed and lowered as today; cleanup is separate. `deathDespawnMs` is carried forward as an optional field on `BehaviorGraphDescriptor` (default 2000 ms).
+- Removing the vestigial `death` state map entry from legacy `ai` descriptors — parsed and lowered as today; cleanup is separate. `deathDespawnMs` is carried forward as an optional field on `BehaviorGraphDescriptor` (default 2000 ms) for parity with the legacy block; no runtime path consumes it, because despawn timing is owned by the E16 death/despawn effect path.
+- An engine-side leash or acquisition range for AUTHORED graphs. `select_target` has no range limit, and an authored graph carries `leash_range: None` by design, so a `chaseTarget` state authored with no exit guard yields a level-wide pursuer that validates cleanly. v1 answer: an authored graph owns BOTH engagement and disengagement through its own guards over `@brain.targetDistance` (the reference enemy is the pattern), documented in `docs/scripting-reference.md`. A `leashRange` field on the behavior block was considered and deferred — it would be a second spelling of disengagement that silently outranks the guards. The successor spec (`E10--enemy-aggro-model`, from `research/enemy-aggro-model.md`) owns the question of whether acquisition range belongs to the engine floor or to authored guards.
 
 ## Acceptance criteria
 
@@ -106,6 +107,8 @@ Author the reference enemy (`sdk/behaviors/reference/entities.{ts,luau}`) as an 
 | Animation subordinate to logical state: unknown name warns, keeps prior, never aborts | Preserved (v0) | Task 5 animation request path; Task 4 spawn validation walk | AC 8 |
 | Host-only graph evaluation; no wire change | Preserved (client `simulate_tick` skip) | Task 5 must add no client-side eval | AC 1 (suite includes net tests) |
 | Guard eval is pure, total, zero-alloc per tick | Epic 14 substrate | Task 3 `refresh` and `@state` snapshot must not allocate per-eval | AC 11 |
+| Engagement is "steers toward the target OR declares an action verb", not the motion verb alone | Task 5 (evaluator) | Target retention, facing, and combat-slot incumbency all key on it; a stationary attacker (`hold` + `attack`) must not forfeit them. Destination writes still key on the motion verb | AC 4 |
+| The retained graph is shared, not deep-cloned: `BrainComponent` holds a refcounted handle, so a per-tick brain clone is a refcount bump and the side-table's staleness test is a pointer compare | Task 4 | Any code that mutates a graph in place instead of replacing the handle; `sync` must stay a pointer check, never a structural compare | AC 11 |
 
 ## Script syntax examples
 

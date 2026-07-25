@@ -34,9 +34,9 @@ use postretro_entities::data_descriptors::{
 use postretro_entities::registry::{EntityId, EntityRegistry, Transform};
 use postretro_entities::{EntityStateComponent, ScriptCtx};
 use postretro_foundation::{
-    ActionVerb, AttackParams, BRAIN_TARGET_DISTANCE_INPUT, BRAIN_TIME_IN_STATE_MS_INPUT,
-    BehaviorGraphDescriptor, BehaviorStateDescriptor, ImpactEventDescriptor, IrNode, IrValue,
-    MotionVerb, TransitionDescriptor,
+    ActionVerb, AttackParams, BRAIN_HAS_TARGET_INPUT, BRAIN_TARGET_DISTANCE_INPUT,
+    BRAIN_TIME_IN_STATE_MS_INPUT, BehaviorGraphDescriptor, BehaviorStateDescriptor,
+    ImpactEventDescriptor, IrNode, IrValue, MotionVerb, TransitionDescriptor,
 };
 use postretro_scripting_core::data_descriptors::{
     AirParams, CapsuleParams, FallParams, ForgivenessParams, GroundParams,
@@ -3858,5 +3858,268 @@ fn an_impact_policy_write_fires_an_authored_state_interrupt_on_the_next_tick() {
         enemy_state_name(&reg, enemy),
         "flinch",
         "an authored `@state` interrupt fires on the first AI tick after the write"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Acceptance: guards run on every armed tick, with or without a target
+//
+// The aggro gate is the ONE thing upstream of guard evaluation. Having no pawn
+// to chase is not: the brain evaluates its whole guard set against the no-target
+// facts (`@brain.hasTarget` false, `@brain.targetDistance` at its sentinel).
+// These drive the real tick — evaluating the scope directly would not prove the
+// tick ever reaches it.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn an_armed_enemy_with_no_target_still_fires_its_interrupts() {
+    // The monster-closet shape: a sealed enemy nobody is standing in front of
+    // takes a hit and must still flinch. Before guards ran without a target this
+    // was unreachable — the aggro gate is open, there is simply nobody to chase.
+    let graph = staggerable_graph();
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    // Deliberately no player pawn: nothing for the engine floor to acquire.
+    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, authored_brain(&graph, "rest"), 50.0);
+
+    run_ai_tick(&mut reg, &mut runtime, 0.016);
+    assert_eq!(
+        enemy_state_name(&reg, enemy),
+        "rest",
+        "no guard is true yet, so the brain stays where it is"
+    );
+
+    reg.entity_state_mut(enemy)
+        .expect("spawn seeds entity state")
+        .set("staggered", 1.0);
+    run_ai_tick(&mut reg, &mut runtime, 0.016);
+
+    assert_eq!(
+        enemy_state_name(&reg, enemy),
+        "flinch",
+        "an interrupt reaches a brain that has no target to chase"
+    );
+}
+
+/// `pursuit_graph` with `rest` re-armed to expose what a guard SEES when there
+/// is no target: one edge reads `@brain.hasTarget` directly, the other is a bare
+/// range guard that has to read false through the no-target sentinel.
+fn target_probe_graph() -> BehaviorGraphDescriptor {
+    let mut graph = pursuit_graph();
+    graph.states.get_mut("rest").unwrap().transitions = vec![
+        edge("charge", brain_input(BRAIN_HAS_TARGET_INPUT)),
+        edge("strike", target_within(16.0)),
+    ];
+    graph
+}
+
+#[test]
+fn with_no_target_a_has_target_guard_and_a_bare_range_guard_both_read_false() {
+    let graph = target_probe_graph();
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, authored_brain(&graph, "rest"), 50.0);
+
+    run_ai_tick(&mut reg, &mut runtime, 0.016);
+
+    assert_eq!(
+        enemy_state_name(&reg, enemy),
+        "rest",
+        "`hasTarget` is false and the sentinel distance fails a bare range \
+         guard, so neither edge fires"
+    );
+
+    // The same two guards, now with a pawn to read: `hasTarget` is declared
+    // first, so it is the one that wins.
+    spawn_player(&mut reg, Vec3::new(5.0, 0.0, 0.0));
+    run_ai_tick(&mut reg, &mut runtime, 0.016);
+
+    assert_eq!(enemy_state_name(&reg, enemy), "charge");
+}
+
+#[test]
+fn a_closed_aggro_gate_evaluates_no_guards_at_all() {
+    // An interrupt that cannot be false: if the gate consulted the guards for
+    // any reason, this brain would land in `panic`. It must land in `initial`.
+    let graph = interrupt_graph(vec![edge(
+        "panic",
+        IrNode::Const {
+            value: IrValue::Bool(true),
+        },
+    )]);
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    spawn_player(&mut reg, Vec3::new(5.0, 0.0, 0.0));
+    let mut brain = authored_brain(&graph, "charge");
+    brain.aggro_armed = false;
+    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 50.0);
+    // A stale destination from before the gate closed, so the stand-down's
+    // clear is observable.
+    agent_steering::set_destination(&mut reg, enemy, Vec3::new(5.0, 0.0, 0.0));
+
+    run_ai_tick(&mut reg, &mut runtime, 0.016);
+
+    assert_eq!(
+        enemy_state_name(&reg, enemy),
+        graph.initial,
+        "a closed gate forces `initial` without consulting a single guard"
+    );
+    assert_eq!(enemy_acquired_target(&reg, enemy), None);
+    assert!(
+        !agent_steering::path_state(&reg, enemy)
+            .expect("agent present")
+            .has_destination,
+        "standing down clears steering"
+    );
+
+    set_enemy_aggro_armed(&mut reg, enemy, true);
+    run_ai_tick(&mut reg, &mut runtime, 0.016);
+
+    assert_eq!(
+        enemy_state_name(&reg, enemy),
+        "panic",
+        "re-arming lets the same interrupt through immediately"
+    );
+}
+
+#[test]
+fn a_brain_seated_outside_its_graph_recovers_to_the_initial_state() {
+    // A graph swapped under a persisted `state_index` leaves the brain pointing
+    // at no declared state. The tick is TOTAL: it re-seats rather than wedging,
+    // and warns once for the enemy.
+    let graph = pursuit_graph();
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let mut brain = authored_brain(&graph, "rest");
+    brain.state_index = 99;
+    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 50.0);
+
+    run_ai_tick(&mut reg, &mut runtime, 0.016);
+
+    assert_eq!(
+        enemy_state_name(&reg, enemy),
+        graph.initial,
+        "an unaddressable state index re-seats to the graph's `initial`"
+    );
+    assert!(
+        runtime
+            .warned
+            .iter()
+            .any(|key| key.starts_with("brain-state:")),
+        "the re-seat reports through the run-long warn latch: {:?}",
+        runtime.warned
+    );
+
+    // Re-seated, not merely parked: the recovered state's own edges decide the
+    // next tick.
+    spawn_player(&mut reg, Vec3::new(5.0, 0.0, 0.0));
+    run_ai_tick(&mut reg, &mut runtime, 0.016);
+    assert_eq!(enemy_state_name(&reg, enemy), "charge");
+}
+
+// ---------------------------------------------------------------------------
+// Acceptance: `attack.range` gates damage, and engagement is not motion-shaped
+// ---------------------------------------------------------------------------
+
+/// A stand-and-swing graph: one state, `hold` motion plus the `attack` action
+/// and no exits at all. Nothing but the engine's `attack.range` gate can stop it
+/// dealing damage, and nothing but the ENGAGED test can make it hold a target or
+/// turn toward one.
+fn standing_attack_graph() -> BehaviorGraphDescriptor {
+    BehaviorGraphDescriptor {
+        initial: "strike".to_string(),
+        states: BTreeMap::from([(
+            "strike".to_string(),
+            authored_state(
+                "attack",
+                MotionVerb::Hold,
+                Some(ActionVerb::Attack),
+                Vec::new(),
+            ),
+        )]),
+        interrupts: Vec::new(),
+        attack: Some(AttackParams {
+            damage: 8.0,
+            range: 2.0,
+            cooldown_ms: 1000.0,
+        }),
+        move_speed: 3.5,
+        death_despawn_ms: None,
+    }
+}
+
+#[test]
+fn an_attack_state_deals_no_damage_outside_attack_range() {
+    let graph = standing_attack_graph();
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let pawn = spawn_player(&mut reg, Vec3::new(5.0, 0.0, 0.0));
+    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, authored_brain(&graph, "strike"), 50.0);
+
+    let events = run_ai_tick(&mut reg, &mut runtime, 0.016);
+    assert!(
+        events.is_empty(),
+        "an out-of-range swing raises no attack event"
+    );
+    assert_eq!(
+        player_hp(&reg, pawn),
+        100.0,
+        "`attack.range` gates the damage, not just the authored transitions"
+    );
+    assert_eq!(
+        enemy_state_name(&reg, enemy),
+        "strike",
+        "the state is unchanged: only the action was gated"
+    );
+
+    // The same state, the same cooldown, the pawn now inside the range.
+    let mut transform = *reg.get_component::<Transform>(pawn).unwrap();
+    transform.position = Vec3::new(1.0, 0.0, 0.0);
+    reg.set_component(pawn, transform).unwrap();
+
+    let events = run_ai_tick(&mut reg, &mut runtime, 0.016);
+    assert_eq!(events, vec![ENEMY_ATTACK_EVENT]);
+    assert_eq!(player_hp(&reg, pawn), 92.0);
+}
+
+#[test]
+fn a_standing_attack_state_retains_its_target_and_faces_it() {
+    // Engagement is not motion-shaped: a state that holds its ground and swings
+    // keeps its acquired pawn and turns toward it, exactly as a chasing state
+    // does. Otherwise it swings at whatever its spawn heading happened to be.
+    let graph = standing_attack_graph();
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let pawn = spawn_player(&mut reg, Vec3::new(1.5, 0.0, 0.0));
+    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, authored_brain(&graph, "strike"), 50.0);
+    // Facing away, and stopped — `hold` never gives the agent a destination.
+    set_enemy_yaw(&mut reg, enemy, std::f32::consts::PI);
+    set_agent_velocity(&mut reg, enemy, Vec3::ZERO);
+
+    run_ai_tick(&mut reg, &mut runtime, 0.016);
+    assert_eq!(
+        enemy_acquired_target(&reg, enemy),
+        Some(pawn),
+        "a swinging state is engaged, so it retains its pawn across ticks"
+    );
+
+    run_ticks_until_facing_converges(
+        &mut reg,
+        &mut runtime,
+        enemy,
+        Vec3::X,
+        "a standing attacker turns to face what it is hitting",
+    );
+    assert_faces(
+        enemy_forward_xz(&reg, enemy),
+        Vec3::X,
+        "a standing attacker turns to face what it is hitting",
+    );
+    assert!(
+        !agent_steering::path_state(&reg, enemy)
+            .expect("agent present")
+            .has_destination,
+        "engagement turns and retains; it does not steer — that stays the \
+         motion verb's job"
     );
 }

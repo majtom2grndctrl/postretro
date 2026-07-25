@@ -342,14 +342,14 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("AiDescriptor")
-        .doc("Authored AI brain component preset attached to `EntityTypeDescriptor.components.ai`. Descriptor-owned tuning: maps never override these. Materializes the engine-owned brain (logical state + timers) and a movable navigation agent at spawn. Distances are in metres, times in milliseconds, `moveSpeed` in metres/sec. The `states` block links the brain's logical states to mesh animation states; that cross-component mapping is validated at spawn (the ai block cannot see the mesh block at its own parse).")
+        .doc("Authored AI brain component preset attached to `EntityTypeDescriptor.components.ai`. Descriptor-owned tuning: maps never override these. Lowers at spawn to a behavior graph and materializes the engine-owned brain (graph + current state + timers) and a movable navigation agent. Distances are in metres, times in milliseconds, `moveSpeed` in metres/sec. The `states` block links the brain's states to mesh animation states; that cross-component mapping is validated at spawn (the ai block cannot see the mesh block at its own parse).")
         .field("detectionRange", "f32", "Distance at which the brain notices a target and leaves idle, in metres. Must be finite and > 0.")
         .field("attackRange", "f32", "Distance within which the brain attacks rather than pursues, in metres. Must be finite and > 0.")
         .field("leashRange", "f32", "Distance from its origin past which the brain disengages and returns, in metres. Must be finite and > 0.")
         .field("attackDamage", "f32", "Damage dealt per attack. Must be finite and >= 0 (a negative value would heal the target through the damage chokepoint).")
         .field("attackCooldownMs", "f32", "Minimum interval between attacks, in milliseconds. Must be finite and > 0.")
         .field("moveSpeed", "f32", "Pursuit movement speed in metres/sec, seeding the navigation agent. Must be finite and > 0.")
-        .field("deathDespawnMs", "f32", "Delay between death and despawn, in milliseconds (lets the death animation play out). Must be finite and > 0.")
+        .field("deathDespawnMs", "f32", "Delay between death and despawn, in milliseconds. Must be finite and > 0. Carried for legacy shape parity only; despawn timing is owned by the death/despawn effect path, not by this value.")
         .field("states", "AiStateNames", "Closed logical-state → mesh animation-state name mapping (idle / alert / attack / death). Each value must name a state declared in `components.mesh.animations`; validated at spawn.")
         .finish();
     registry
@@ -403,7 +403,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("interrupts?", "Vec<TransitionDescriptor>", "Any-state edges, evaluated in declaration order BEFORE the current state's own transitions. An interrupt targeting the current state is skipped. Optional; defaults to none.")
         .field("attack?", "AttackParams", "Attack tuning for the `attack` action verb. Required exactly when some state declares that action.")
         .field("moveSpeed", "f32", "Pursuit movement speed in metres/sec, seeding the navigation agent. Must be finite and > 0.")
-        .field("deathDespawnMs?", "f32", "Delay between death and despawn, in milliseconds (lets the death animation play out). Must be finite and > 0. Optional; defaults to 2000.")
+        .field("deathDespawnMs?", "f32", "Delay between death and despawn, in milliseconds. Must be finite and > 0. Optional; defaults to 2000. Carried for legacy `components.ai` shape parity only; despawn timing is owned by the death/despawn effect path, not by this value.")
         .finish();
     registry
         .register_type("PlayerMovementDescriptor")

@@ -164,9 +164,9 @@ pub(crate) struct AgentTickResult {
     pub(crate) replans: u32,
 }
 
-/// Read-back of one agent's path-following state. The enemy-AI FSM tick
-/// (`scripting/systems/ai.rs`) reads this to decide AI behavior; every field is
-/// derived from the live component, never recomputed here.
+/// Read-back of one agent's path-following state. The enemy-AI tick
+/// (`scripting/systems/ai/mod.rs`) reads this to decide AI behavior; every field
+/// is derived from the live component, never recomputed here.
 ///
 /// The steering-API surface (`set_destination`/`clear_destination`/`path_state`
 /// and this struct) is consumed by that FSM tick, which drives
@@ -225,12 +225,12 @@ pub(crate) struct AgentPathState {
 /// updates the target; it does not touch the plan.
 ///
 /// This decoupling is the crux of the chase loop: the primary consumer
-/// (`scripting/systems/ai.rs`) re-issues the player's position EVERY tick while
-/// chasing. If this wiped the path on each change, chasers beyond the per-tick
-/// replan budget would end the tick with an empty path and freeze; preserving
-/// the path lets them keep following their last route (stale-but-moving) until
-/// a budget slot frees up. It also stops a transient call from clearing
-/// `blocked` before the FSM's blocked-warn can observe it.
+/// (`scripting/systems/ai/mod.rs`) re-issues the player's position EVERY tick
+/// while chasing. If this wiped the path on each change, chasers beyond the
+/// per-tick replan budget would end the tick with an empty path and freeze;
+/// preserving the path lets them keep following their last route
+/// (stale-but-moving) until a budget slot frees up. It also stops a transient
+/// call from clearing `blocked` before the tick's blocked-warn can observe it.
 ///
 /// A non-finite `pos` is rejected as a silent no-op (matching `find_path`'s
 /// finiteness guard) so a NaN/inf target never enters the steering state. Also a

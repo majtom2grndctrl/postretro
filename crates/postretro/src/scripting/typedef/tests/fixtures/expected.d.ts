@@ -308,7 +308,7 @@ declare module "postretro" {
     death: string;
   };
 
-  /** Authored AI brain component preset attached to `EntityTypeDescriptor.components.ai`. Descriptor-owned tuning: maps never override these. Materializes the engine-owned brain (logical state + timers) and a movable navigation agent at spawn. Distances are in metres, times in milliseconds, `moveSpeed` in metres/sec. The `states` block links the brain's logical states to mesh animation states; that cross-component mapping is validated at spawn (the ai block cannot see the mesh block at its own parse). */
+  /** Authored AI brain component preset attached to `EntityTypeDescriptor.components.ai`. Descriptor-owned tuning: maps never override these. Lowers at spawn to a behavior graph and materializes the engine-owned brain (graph + current state + timers) and a movable navigation agent. Distances are in metres, times in milliseconds, `moveSpeed` in metres/sec. The `states` block links the brain's states to mesh animation states; that cross-component mapping is validated at spawn (the ai block cannot see the mesh block at its own parse). */
   export type AiDescriptor = {
     /** Distance at which the brain notices a target and leaves idle, in metres. Must be finite and > 0. */
     detectionRange: number;
@@ -322,7 +322,7 @@ declare module "postretro" {
     attackCooldownMs: number;
     /** Pursuit movement speed in metres/sec, seeding the navigation agent. Must be finite and > 0. */
     moveSpeed: number;
-    /** Delay between death and despawn, in milliseconds (lets the death animation play out). Must be finite and > 0. */
+    /** Delay between death and despawn, in milliseconds. Must be finite and > 0. Carried for legacy shape parity only; despawn timing is owned by the death/despawn effect path, not by this value. */
     deathDespawnMs: number;
     /** Closed logical-state → mesh animation-state name mapping (idle / alert / attack / death). Each value must name a state declared in `components.mesh.animations`; validated at spawn. */
     states: AiStateNames;
@@ -386,7 +386,7 @@ declare module "postretro" {
     attack?: AttackParams;
     /** Pursuit movement speed in metres/sec, seeding the navigation agent. Must be finite and > 0. */
     moveSpeed: number;
-    /** Delay between death and despawn, in milliseconds (lets the death animation play out). Must be finite and > 0. Optional; defaults to 2000. */
+    /** Delay between death and despawn, in milliseconds. Must be finite and > 0. Optional; defaults to 2000. Carried for legacy `components.ai` shape parity only; despawn timing is owned by the death/despawn effect path, not by this value. */
     deathDespawnMs?: number;
   };
 

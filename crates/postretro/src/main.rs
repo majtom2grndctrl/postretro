@@ -527,7 +527,7 @@ pub(crate) struct App {
     /// animation state that fails to switch (`UnknownState`/`NotAnimated`, prior
     /// animation kept) and `blocked:<id>` for a chasing enemy whose agent found
     /// no path. Lives on `App` (the AI tick owner), threaded into
-    /// `scripting_systems::ai::run_ai_tick`. See: scripting/systems/ai.rs.
+    /// `scripting_systems::ai::run_ai_tick`. See: scripting/systems/ai/mod.rs.
     ai_runtime: crate::scripting_systems::ai::AiRuntime,
 
     /// Last cursor position in device pixels, tracked from winit `CursorMoved`

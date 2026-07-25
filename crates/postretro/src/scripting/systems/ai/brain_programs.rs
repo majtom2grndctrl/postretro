@@ -23,6 +23,7 @@
 // brain.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use postretro_entities::components::brain::BrainComponent;
 use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry};
@@ -42,10 +43,12 @@ use super::brain_scope::BrainScope;
 /// generated, so a `None` here means one of those two contracts broke — hence
 /// the warn at bind time.
 pub(crate) struct BrainEntityPrograms {
-    /// The graph these programs were bound from. Retained so `sync` can tell a
-    /// still-valid entry from one whose entity was re-seeded with a different
-    /// brain (the deserialize/reload case).
-    graph: BehaviorGraphDescriptor,
+    /// The graph these programs were bound from — the same shared handle the
+    /// brain carries. Retained so `sync` can tell a still-valid entry from one
+    /// whose entity was re-seeded with a different brain (the deserialize/reload
+    /// case), and held as an `Arc` so that test is a pointer compare rather than
+    /// a structural walk of every guard tree on every entity every tick.
+    graph: Arc<BehaviorGraphDescriptor>,
     /// Parallel to `graph.interrupts`.
     interrupts: Vec<Option<BoundProgram<BrainScope>>>,
     /// Indexed by resolved state index (`graph.states` in `BTreeMap` order);
@@ -122,12 +125,18 @@ impl BrainPrograms {
 
         for (entity, brain) in brains {
             live.insert(entity);
+            // Pointer identity, NOT structural equality: a graph is immutable
+            // once attached, so sharing the same allocation is proof the bound
+            // programs still describe this brain. Comparing contents would walk
+            // every authored state and guard tree for every enemy every tick to
+            // detect a change that only happens at spawn or after a
+            // deserialize (both of which land a different allocation).
             let bound = self
                 .entries
                 .get(&entity)
-                .is_some_and(|entry| entry.graph == brain.graph);
+                .is_some_and(|entry| Arc::ptr_eq(&entry.graph, &brain.graph));
             if !bound {
-                let entry = bind_graph(&self.scope, &brain.graph, warned);
+                let entry = bind_graph(&self.scope, Arc::clone(&brain.graph), warned);
                 self.entries.insert(entity, entry);
             }
         }
@@ -140,7 +149,7 @@ impl BrainPrograms {
 /// authored path for the ones that fail and leaving those edges disabled.
 fn bind_graph(
     scope: &BrainScope,
-    graph: &BehaviorGraphDescriptor,
+    graph: Arc<BehaviorGraphDescriptor>,
     warned: &mut HashSet<String>,
 ) -> BrainEntityPrograms {
     let interrupts = graph
@@ -171,7 +180,7 @@ fn bind_graph(
         })
         .collect();
     BrainEntityPrograms {
-        graph: graph.clone(),
+        graph,
         interrupts,
         states,
     }
@@ -208,7 +217,7 @@ fn bind_guard(
 mod tests {
     use super::super::brain_scope::BrainFacts;
     use super::super::engine_floor::SteeringIntent;
-    use super::super::graph_eval::select_transition;
+    use super::super::graph_eval::{select_transition, steering_for};
     use super::*;
     use crate::alloc_probe::AllocSnapshot;
     use postretro_entities::Transform;
@@ -220,7 +229,7 @@ mod tests {
         LEGACY_ATTACK_STATE, LEGACY_DEATH_STATE, LEGACY_IDLE_STATE, MotionVerb,
         lower_ai_descriptor,
     };
-    use postretro_foundation::{IrNode, IrValue, eval_value};
+    use postretro_foundation::{IrNode, IrValue};
     use std::collections::BTreeMap;
 
     fn sample_descriptor() -> AiDescriptor {
@@ -265,17 +274,6 @@ mod tests {
             attack: None,
             move_speed: 3.0,
             death_despawn_ms: None,
-        }
-    }
-
-    /// The v0 steering intent each lowered state's motion verb stands in for.
-    /// An exhaustive `match` so a widened motion vocabulary is a compile error
-    /// here rather than a silently-passing identity check.
-    fn steering_for(motion: MotionVerb) -> SteeringIntent {
-        match motion {
-            MotionVerb::ChaseTarget => SteeringIntent::Chase,
-            MotionVerb::Hold => SteeringIntent::Clear,
-            MotionVerb::Freeze => SteeringIntent::Hold,
         }
     }
 
@@ -339,39 +337,29 @@ mod tests {
         }
     }
 
-    /// Walk the graph exactly as the ordered-guard contract specifies —
-    /// self-targeting interrupts skipped, interrupts before the current state's
-    /// transitions, declaration order, first true wins — and report the
-    /// resulting `(state name, steering intent)`. Staying put is the current
-    /// state with its own motion verb, matching the v0 core's same-state rows.
+    /// One step of the PRODUCTION selector and the PRODUCTION verb mapping,
+    /// reported as `(state name, steering intent)`.
+    ///
+    /// Deliberately not a restatement of the ordered-guard walk: the point of
+    /// the drift guard below is that the shipped `select_transition` and
+    /// `steering_for` answer what the v0 oracle answers, which a test-local copy
+    /// of either would quietly stop proving. Staying put is the current state
+    /// with its own motion verb, matching the v0 core's same-state rows.
     fn step_graph(
         graph: &BehaviorGraphDescriptor,
         programs: &BrainEntityPrograms,
         scope: &BrainScope,
         current: &str,
     ) -> (String, SteeringIntent) {
-        let state_index = graph_state_index(graph, current).expect("current state is declared");
-        let mut edges = graph
-            .interrupts
+        let current_index = graph_state_index(graph, current).expect("current state is declared");
+        let next_index =
+            select_transition(graph, programs, scope, current_index).unwrap_or(current_index);
+        let (name, state) = graph
+            .states
             .iter()
-            .zip(programs.interrupts())
-            .filter(|(interrupt, _)| interrupt.to != current)
-            .chain(
-                graph.states[current]
-                    .transitions
-                    .iter()
-                    .zip(programs.transitions(state_index)),
-            );
-        let next = edges
-            .find(|(_, program)| {
-                program
-                    .as_ref()
-                    .is_some_and(|program| eval_value(program, scope) == IrValue::Bool(true))
-            })
-            .map(|(transition, _)| transition.to.clone())
-            .unwrap_or_else(|| current.to_string());
-        let motion = graph.states[&next].motion;
-        (next, steering_for(motion))
+            .nth(next_index)
+            .expect("the selected index is declared");
+        (name.clone(), steering_for(state.motion))
     }
 
     fn registry_with_brain(graph: &BehaviorGraphDescriptor) -> (EntityRegistry, EntityId) {
@@ -391,7 +379,15 @@ mod tests {
         programs.sync(&registry, &mut warned);
 
         let entry = programs.get(entity).expect("the spawned brain is bound");
-        assert!(entry.interrupts().is_empty(), "the lowered graph has none");
+        assert_eq!(
+            entry.interrupts().len(),
+            1,
+            "the lowered graph's one any-state edge is the no-target stand-down"
+        );
+        assert!(
+            entry.interrupts().iter().all(Option::is_some),
+            "the generated stand-down guard binds"
+        );
         for (index, (name, state)) in graph.states.iter().enumerate() {
             let bound = entry.transitions(index);
             assert_eq!(

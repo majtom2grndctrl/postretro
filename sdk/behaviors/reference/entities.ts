@@ -71,7 +71,16 @@ const REFERENCE_LEASH_RANGE = 50;
  *
  * There is no `death` state: death is not a graph transition. The engine's
  * death sweep latches a zero-HP enemy and the authored impact policy plays the
- * `death` mesh clip and despawns after `deathDespawnMs`.
+ * `death` mesh clip and despawns after its own delay. `deathDespawnMs` below
+ * is carried for legacy `components.ai` shape parity only — nothing reads it;
+ * despawn timing belongs entirely to the impact policy's `despawn` effect.
+ *
+ * The graph also owns its own leash: there is no engine-side range limit on
+ * an authored `chaseTarget` state. `alert`'s `dist > REFERENCE_LEASH_RANGE`
+ * exit above is what stops pursuit — omit an exit guard like it and the
+ * enemy chases from anywhere on the level. Engagement and disengagement are
+ * both graph-authored here, mirrored against the same `brain.targetDistance`
+ * read the entry guards use.
  */
 export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
   canonicalName: REFERENCE_ENEMY_CLASSNAME,
@@ -122,11 +131,14 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
         speedScale: true,
       },
     },
-    // The behavior state graph. Ranges are in metres; cooldown/despawn in ms;
-    // moveSpeed in m/s. Every `animation` names a `mesh.animations` key above.
+    // The behavior state graph. Ranges are in metres; cooldown in ms; moveSpeed
+    // in m/s. Every `animation` names a `mesh.animations` key above.
     behavior: {
       initial: "idle",
       moveSpeed: 3,
+      // Legacy-parity field only; no runtime consumer. Despawn timing is the
+      // impact policy's `despawn` effect, not this value. See the class doc
+      // comment above.
       deathDespawnMs: 4000,
       attack: { damage: 8, range: REFERENCE_ATTACK_RANGE, cooldownMs: 1200 },
       states: {

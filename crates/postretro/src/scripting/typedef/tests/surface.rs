@@ -572,6 +572,80 @@ fn impact_policy_surface_uses_author_ids_and_closed_effect_union() {
 }
 
 /// Drift guard for the behavior-graph verb vocabularies. The registry
+/// The emitted `BrainInputs` shape is a second spelling of `BRAIN_INPUTS`.
+///
+/// The `brain` guard-input object is a hand-authored SDK prelude helper, not
+/// generated output (the plan's "compile-time sync obligation against
+/// `BRAIN_INPUTS`") — which means the table and the two emitted type blocks can
+/// drift silently. This test is that obligation: it derives the expected field
+/// names from `BRAIN_INPUTS` itself, so a brain input added in foundation and
+/// forgotten in either typedef template fails here rather than shipping as a
+/// guard input authors cannot reach.
+#[test]
+fn brain_input_typedefs_match_the_foundation_table() {
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
+    use postretro_foundation::{BRAIN_INPUT_PREFIX, BRAIN_INPUTS};
+
+    /// The field names declared in the emitted `BrainInputs` block, in order.
+    /// Both emitters open the block with `BrainInputs` and write one field per
+    /// line; doc lines (`/**`, `*`, `---`) are skipped and the scan stops at
+    /// the closing brace.
+    fn field_names(output: &str) -> Vec<String> {
+        let mut lines = output
+            .lines()
+            .skip_while(|line| !line.contains("BrainInputs"));
+        assert!(
+            lines.next().is_some(),
+            "`BrainInputs` block missing from generated output"
+        );
+        let mut fields = Vec::new();
+        for line in lines {
+            let line = line.trim();
+            if line.starts_with("/**")
+                || line.starts_with('*')
+                || line.starts_with("---")
+                || line.is_empty()
+            {
+                continue;
+            }
+            if line.starts_with('}') {
+                break;
+            }
+            // `readonly hasTarget: RuntimeRead;` / `hasTarget: RuntimeRead,`
+            let field = line
+                .trim_start_matches("readonly ")
+                .split(':')
+                .next()
+                .expect("a field line carries a name");
+            fields.push(field.trim().to_string());
+        }
+        fields
+    }
+
+    let mut r = PrimitiveRegistry::new();
+    register_all(&mut r, ScriptCtx::new());
+
+    // `@brain.hasTarget` is authored as `brain.hasTarget`, so the expected
+    // field is the table name with its namespace prefix removed.
+    let expected: Vec<String> = BRAIN_INPUTS
+        .iter()
+        .map(|(name, _)| {
+            name.strip_prefix(BRAIN_INPUT_PREFIX)
+                .unwrap_or_else(|| panic!("`{name}` must carry the `{BRAIN_INPUT_PREFIX}` prefix"))
+                .to_string()
+        })
+        .collect();
+
+    for output in [&generate_typescript(&r), &generate_luau(&r)] {
+        assert_eq!(
+            field_names(output),
+            expected,
+            "emitted `BrainInputs` fields do not match `BRAIN_INPUTS`"
+        );
+    }
+}
+
 /// registrations in `scripting/primitives/mod.rs` are a second spelling of the
 /// `MotionVerb` / `ActionVerb` enums, so this test derives the expected union
 /// members from the enums themselves — `ALL` enumerates the variants and serde

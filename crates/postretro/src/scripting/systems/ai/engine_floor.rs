@@ -50,10 +50,14 @@ pub(crate) fn think_stride_for_distance(distance: f32) -> u32 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SteeringIntent {
     /// Chase: the wrapper prefers a combat slot around the selected target and
-    /// falls back to the target position. The `chaseTarget` motion verb.
+    /// falls back to the target position. The `chaseTarget` motion verb — but
+    /// only while there IS a target: with none, the tick degrades a chase to
+    /// [`SteeringIntent::Clear`], since there is nothing to move relative to and
+    /// the agent would otherwise keep walking to a stale destination.
     Chase,
     /// Stand down: the wrapper clears the agent destination. The `hold` motion
-    /// verb, and what the engine floor forces when a brain stands down.
+    /// verb, what the engine floor forces when the aggro gate closes, and what a
+    /// target-less chase degrades to.
     Clear,
     /// Hold the current steering state (no set/clear). The `freeze` motion
     /// verb, so a terminal state neither chases nor re-issues a clear each tick.

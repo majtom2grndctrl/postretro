@@ -19,6 +19,11 @@
 //   `acquisitionDue`, `detection_range`, AND `attack_range`, and must be
 //   declared before `idle`→`alert` for first-true-wins to pick it.
 //
+// - Losing the target is a lowered INTERRUPT (`!hasTarget` → `idle`). In v0 the
+//   tick forced `idle` ahead of the transition core whenever no pawn was held;
+//   the evaluator has no such override, so the rule becomes an any-state edge
+//   that stands down in the same single tick.
+//
 // The IR has no `and` opcode, so conjunction is `select(cond, inner, false)`:
 // the guard reads `inner` only when `cond` holds and short-circuits to `false`
 // otherwise. Think-stride banding and target-switch hysteresis are NOT edges —
@@ -26,7 +31,9 @@
 
 use std::collections::BTreeMap;
 
-use crate::brain::{BRAIN_ACQUISITION_DUE_INPUT, BRAIN_TARGET_DISTANCE_INPUT};
+use crate::brain::{
+    BRAIN_ACQUISITION_DUE_INPUT, BRAIN_HAS_TARGET_INPUT, BRAIN_TARGET_DISTANCE_INPUT,
+};
 use crate::data_descriptors::types::behavior::{
     ActionVerb, AttackParams, BehaviorGraphDescriptor, BehaviorStateDescriptor, MotionVerb,
     TransitionDescriptor,
@@ -136,8 +143,13 @@ pub fn lower_ai_descriptor(ai: &AiDescriptor) -> BehaviorGraphDescriptor {
                 },
             ),
         ]),
-        // The legacy core has no any-state edges.
-        interrupts: Vec::new(),
+        // The v0 floor's forced stand-down, now an authored-shape edge. First
+        // in interrupt order so losing the target wins over every state-local
+        // guard, matching the override it replaces.
+        interrupts: vec![TransitionDescriptor {
+            to: LEGACY_IDLE_STATE.to_string(),
+            when: when_no_target(),
+        }],
         attack: Some(AttackParams {
             damage: ai.attack_damage,
             range: ai.attack_range,
@@ -204,6 +216,34 @@ fn target_distance_gt(limit: f32) -> IrNode {
     IrNode::Gt {
         a: Box::new(target_distance()),
         b: Box::new(number_const(limit)),
+    }
+}
+
+/// The v0 floor's "no target stands down" rule, as a lowered interrupt.
+///
+/// In v0 this was not an edge at all: the tick FORCED `idle` whenever the enemy
+/// held no target, ahead of the transition core. The graph evaluator does not
+/// override that way — guards run every tick whether or not a pawn exists — so
+/// the rule has to be encoded where every other v0 rule now lives, in the
+/// lowered graph itself. As an INTERRUPT it fires from any state, in one tick,
+/// exactly as the forced stand-down did; the self-targeting skip means `idle`
+/// never re-enters itself.
+///
+/// Without it a legacy brain that loses its pawn walks its ordinary range
+/// guards against the [`BRAIN_NO_TARGET_DISTANCE`] sentinel — leaving `attack`
+/// for `alert` (an ungated edge) and only reaching `idle` on the next
+/// acquisition tick. That is a two-tick stand-down where v0 took one, and it is
+/// observable in the animation the enemy plays while it happens.
+///
+/// The IR has no `not` opcode, so the negation is a `select` yielding `false`
+/// when a target exists and `true` when none does.
+fn when_no_target() -> IrNode {
+    IrNode::Select {
+        cond: Box::new(IrNode::Input {
+            name: BRAIN_HAS_TARGET_INPUT.to_string(),
+        }),
+        a: Box::new(bool_const(false)),
+        b: Box::new(bool_const(true)),
     }
 }
 
@@ -280,7 +320,11 @@ mod tests {
             graph.states[LEGACY_DEATH_STATE].transitions.is_empty(),
             "death is terminal: it is not reachable by, and has no, graph edges"
         );
-        assert!(graph.interrupts.is_empty());
+        // The one any-state edge: v0's forced "no target stands down", which the
+        // evaluator can no longer express as a floor override.
+        assert_eq!(graph.interrupts.len(), 1);
+        assert_eq!(graph.interrupts[0].to, LEGACY_IDLE_STATE);
+        assert_eq!(graph.interrupts[0].when, when_no_target());
     }
 
     #[test]

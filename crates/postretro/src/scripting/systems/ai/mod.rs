@@ -15,6 +15,14 @@
 // registry reads/writes — steering, damage, facing, animation — on top. The
 // engine floor (stride, target selection, hysteresis, combat slots, the aggro
 // gate) sits UPSTREAM of guard evaluation and is not authorable.
+//
+// Exactly ONE thing suppresses guard evaluation: a closed aggro gate, which
+// stands the brain down to its graph's `initial` state with steering cleared and
+// reads neither targeting nor guards. Everything else — including having no
+// target at all — evaluates the whole guard set as usual, with the no-target
+// facts (`@brain.hasTarget` false, `@brain.targetDistance` at its sentinel)
+// projected into the scope. That is what lets a sealed-closet enemy that gets
+// shot flinch on an authored interrupt while it has nobody to chase.
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -31,7 +39,7 @@ use brain_programs::BrainPrograms;
 use brain_scope::BrainFacts;
 use engine_floor::SteeringIntent;
 use graph_eval::{
-    action_for_state, animation_for_state, chases, initial_index, select_transition, state_at,
+    action_for_state, animation_for_state, engages, initial_index, select_transition, state_at,
     steering_for,
 };
 pub(crate) use graph_eval::{locomotion_animation, rest_animation};
@@ -200,6 +208,10 @@ struct EnemyOutcome {
     target: Option<TargetPawn>,
     brain: BrainComponent,
     steering: SteeringIntent,
+    /// `true` when the selected state is ENGAGED with the target — it chases it
+    /// or acts on it (`graph_eval::engages`). Drives facing and combat-slot
+    /// participation; the destination writes key on `steering` instead.
+    engaged: bool,
     combat_slot: Option<Vec3>,
     /// The target this brain held BEFORE this tick's evaluation — the incumbency
     /// test for combat-slot retention.
@@ -261,12 +273,15 @@ impl Default for AiRuntime {
 /// 1. Tick the attack cooldown and the time-in-state down/up (every tick).
 /// 2. Evaluate the graph's guards — interrupts first, then the current state's
 ///    transitions, declaration order, first true wins. Every guard is evaluated
-///    every tick: nothing latches evaluation off, so a commitment window is an
-///    authored `@brain.timeInStateMs` guard rather than an engine rule.
+///    every armed tick, target or not: nothing latches evaluation off, so a
+///    commitment window is an authored `@brain.timeInStateMs` guard rather than
+///    an engine rule. A CLOSED aggro gate is the sole exception — it stands the
+///    brain down to its `initial` state and skips evaluation entirely.
 /// 3. On entering a state, reset the time-in-state and raise its `on_enter`.
-/// 4. When the selected state declares the `attack` action and the cooldown has
-///    elapsed, apply the graph's damage to the selected target pawn through the
-///    chokepoint and raise the attack event.
+/// 4. When the selected state declares the `attack` action, the cooldown has
+///    elapsed, and the selected target is inside `attack.range`, apply the
+///    graph's damage to that pawn through the chokepoint and raise the attack
+///    event.
 /// 5. On a state CHANGE or locomotion stop/resume, request the selected
 ///    animation state.
 #[cfg_attr(not(test), allow(dead_code))]
@@ -351,9 +366,9 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         let prior_acquired_target = brain.acquired_target;
         let (target, evaluate_acquisition) = if brain.aggro_armed {
             // A target is retained across ticks only while the brain is engaged
-            // — that is, while the state it sits in chases. A resting brain
-            // re-ranks candidates instead of honoring a stale acquired id.
-            let retained_target = chases(&brain.graph, brain.state_index)
+            // — chasing one, or acting on one. A resting brain re-ranks
+            // candidates instead of honoring a stale acquired id.
+            let retained_target = engages(&brain.graph, brain.state_index)
                 .then_some(brain.acquired_target)
                 .flatten();
             let retained = retained_target
@@ -422,63 +437,112 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         brain.think_stride_counter = brain.think_stride_counter.wrapping_add(1);
 
         let mut attacked = false;
-        // Forcing the graph's `initial` state is the engine floor's stand-down:
-        // an unvalidated graph whose `initial` names nothing simply stays put
-        // rather than being pushed to an arbitrary state.
+        // Forcing the graph's `initial` state is the engine floor's stand-down,
+        // and its re-seat: an unvalidated graph whose `initial` names nothing
+        // simply stays put rather than being pushed to an arbitrary state.
         let resting_index = initial_index(&brain.graph).unwrap_or(prior_state_index);
-        let (next_index, steering) = match target {
-            // The aggro gate's v1 disengage policy is hold. A closed brain
-            // consults neither target selection nor its guards; clearing its
-            // destination sends the agent through steering's destination-less
-            // idle-settle path, which has no separation push. A brain with no
-            // pawn to pursue stands down the same way. Standing down clears
-            // steering outright rather than deferring to the resting state's
-            // motion verb: with no target there is nothing to move relative to.
-            None => (resting_index, SteeringIntent::Clear),
-            Some(target) => {
-                // The think stride is derived from the CURRENT player distance;
-                // the gate fires when the per-enemy counter aligns with the
-                // band's divisor, and reaches the guards as `@brain.acquisitionDue`
-                // for the edges that opt into it. `@brain.targetDistance` is the
-                // distance to the FINALLY selected pawn.
-                programs.scope_mut().refresh(
-                    registry,
-                    snap.id,
-                    BrainFacts {
-                        target_distance: Some(target_distance(target, snap.position)),
-                        time_in_state_ms: brain.time_in_state_ms,
-                        attack_cooldown_ms: brain.attack_cooldown_remaining_ms,
-                        acquisition_due: evaluate_acquisition,
-                    },
-                );
-                let next_index = programs
-                    .get(snap.id)
-                    .and_then(|bound| {
-                        select_transition(&brain.graph, bound, programs.scope(), brain.state_index)
-                    })
-                    .unwrap_or(brain.state_index);
-                let steering = state_at(&brain.graph, next_index)
-                    .map(|state| steering_for(state.motion))
-                    .unwrap_or(SteeringIntent::Clear);
-                (next_index, steering)
-            }
+        // Distance to the FINALLY selected pawn, or `None` with no target —
+        // read by the guards (as `@brain.targetDistance`/`@brain.hasTarget`) and
+        // by the attack range gate, so the two can never disagree.
+        let selected_distance = target.map(|target| target_distance(target, snap.position));
+        let (next_index, steering) = if !brain.aggro_armed {
+            // THE AGGRO GATE, and the only thing that suppresses evaluation. Its
+            // v1 disengage policy is hold: a closed brain consults neither target
+            // selection nor its guards, and standing down clears steering outright
+            // rather than deferring to the resting state's motion verb. Clearing
+            // the destination sends the agent through steering's destination-less
+            // idle-settle path, which has no separation push.
+            (resting_index, SteeringIntent::Clear)
+        } else {
+            // Re-seat a brain whose index addresses no declared state (a graph
+            // swapped under a persisted `state_index`, or a hand-seeded one)
+            // instead of leaving it wedged: `select_transition` walks from the
+            // current state, so an unaddressable one would answer "stay put"
+            // forever. The graph's `initial` is the same state the gate stands
+            // brains down to.
+            let current_index = if state_at(&brain.graph, brain.state_index).is_some() {
+                brain.state_index
+            } else {
+                if warned.insert(format!("brain-state:{}", snap.id.to_raw())) {
+                    log::warn!(
+                        "[AI] enemy {} sat in behavior state index {} which its graph does not \
+                         declare; re-seating it to `{}`. Warned once per enemy.",
+                        snap.id,
+                        brain.state_index,
+                        brain.graph.initial,
+                    );
+                }
+                resting_index
+            };
+
+            // The think stride is derived from the CURRENT player distance; the
+            // gate fires when the per-enemy counter aligns with the band's
+            // divisor, and reaches the guards as `@brain.acquisitionDue` for the
+            // edges that opt into it. With no target the facts still refresh —
+            // `hasTarget` false, `targetDistance` at its sentinel — because an
+            // armed brain evaluates its whole guard set whether or not it has a
+            // pawn: that is how an interrupt reaches an enemy nobody is standing
+            // in front of.
+            programs.scope_mut().refresh(
+                registry,
+                snap.id,
+                BrainFacts {
+                    target_distance: selected_distance,
+                    time_in_state_ms: brain.time_in_state_ms,
+                    attack_cooldown_ms: brain.attack_cooldown_remaining_ms,
+                    acquisition_due: evaluate_acquisition,
+                },
+            );
+            let next_index = programs
+                .get(snap.id)
+                .and_then(|bound| {
+                    select_transition(&brain.graph, bound, programs.scope(), current_index)
+                })
+                .unwrap_or(current_index);
+            let steering = state_at(&brain.graph, next_index)
+                .map(|state| steering_for(state.motion))
+                .unwrap_or(SteeringIntent::Clear);
+            // A chase with nothing to chase degrades to a stand-down: with no
+            // target there is nothing to move relative to, and leaving the intent
+            // as Chase would keep the agent walking to the last destination it
+            // was given.
+            let steering = match (steering, target) {
+                (SteeringIntent::Chase, None) => SteeringIntent::Clear,
+                (steering, _) => steering,
+            };
+            (next_index, steering)
         };
 
-        // Only a chasing state holds a target: that is what keeps the acquired
-        // id a truthful "this brain is engaged" marker for target retention.
-        brain.acquired_target = match (steering, target) {
-            (SteeringIntent::Chase, Some(target)) => Some(target.entity),
+        // The acquired id is the "this brain is engaged" marker the next tick's
+        // retention reads, so it is set by ENGAGEMENT (chasing or acting), not by
+        // the steering intent — a state that stands still and swings keeps its
+        // pawn.
+        brain.acquired_target = match target {
+            Some(target) if engages(&brain.graph, next_index) => Some(target.entity),
             _ => None,
         };
 
         // (4) Attack: the selected state declares the `attack` action, the
-        // cooldown has elapsed, and the SELECTED target is still alive — apply
-        // the configured damage once and arm the cooldown. Checked every tick.
+        // cooldown has elapsed, the SELECTED target is inside the graph's
+        // `attack.range`, and it is still alive — apply the configured damage
+        // once and arm the cooldown. Checked every tick.
+        // The range gate is what makes `attack.range` mean something for an
+        // authored graph, where a state can declare the action at any distance;
+        // a lowered legacy graph is unaffected, because its ungated
+        // `attack → alert` edge already leaves the attacking state on the first
+        // tick the target exceeds that same range.
+        // A graph with no `attack` block configures no range and no damage, so
+        // it never attacks.
         // Gating on the selected target's Health stops attack/event spam against
         // an already-dead but still-present pawn and prevents damaging a
         // different co-op pawn than the one this enemy chose.
-        if let Some(target) = target {
-            if action_for_state(&brain.graph, next_index) == Some(ActionVerb::Attack)
+        if let (Some(target), Some(distance)) = (target, selected_distance) {
+            let in_attack_range = brain
+                .graph
+                .attack
+                .is_some_and(|attack| distance <= attack.range);
+            if in_attack_range
+                && action_for_state(&brain.graph, next_index) == Some(ActionVerb::Attack)
                 && brain.attack_cooldown_remaining_ms <= 0.0
                 && selected_target_alive(registry, target.entity)
             {
@@ -489,6 +553,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         }
 
         let state_changed = next_index != prior_state_index;
+        let engaged = target.is_some() && engages(&brain.graph, next_index);
         brain.state_index = next_index;
         let on_enter = if state_changed {
             brain.time_in_state_ms = 0.0;
@@ -506,6 +571,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             attacked,
             on_enter,
             steering,
+            engaged,
             combat_slot: None,
             brain,
         });
@@ -585,15 +651,17 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         //     it faces where it is going even when routing around obstacles. The
         //     velocity is read from `path_state` (last tick's resolved velocity) —
         //     a one-tick lag on facing that is imperceptible.
-        //   - Stopped but engaged (a chasing state with near-zero XZ speed —
-        //     arrived/blocked/swinging): face this enemy's selected target.
-        //   - Standing down or frozen: leave facing untouched.
-        // Engagement is the CHASE intent, so a state that stands still or freezes
+        //   - Stopped but engaged (near-zero XZ speed — arrived/blocked/swinging):
+        //     face this enemy's selected target.
+        //   - Standing down: leave facing untouched.
+        // The test is ENGAGEMENT, not the chase intent: a state that stands its
+        // ground and swings must turn toward what it is hitting, or it lands
+        // damage on a pawn behind its back. A state that neither chases nor acts
         // never turns — which is also why a closed aggro gate cannot turn an
-        // enemy: it forces the resting state, and resting does not chase.
+        // enemy: it forces the resting state, and resting does neither.
         // Yaw only (model stays upright); a zero-length direction yields `None` and
         // writes nothing (never a NaN yaw).
-        if outcome.steering == SteeringIntent::Chase {
+        if outcome.engaged {
             if let Some(path) = path_state.as_ref() {
                 let facing =
                     if locomotion_intent.speed_xz_sq > MOVE_SPEED_EPSILON * MOVE_SPEED_EPSILON {
@@ -715,9 +783,13 @@ fn resolve_combat_slots(
     nav_graph: Option<&NavGraph>,
     collision_world: Option<&CollisionWorld>,
 ) {
+    // Slots belong to the ENGAGED: a brain standing its ground and swinging is
+    // occupying a piece of ground around the target just as much as one walking
+    // into it, so it keeps its claim and its incumbency. Only the destination
+    // WRITE keys on the chase intent.
     for outcome in outcomes.iter_mut() {
         outcome.combat_slot = None;
-        if outcome.steering != SteeringIntent::Chase || outcome.target.is_none() {
+        if !outcome.engaged {
             clear_combat_slot(outcome);
         }
     }
@@ -729,10 +801,7 @@ fn resolve_combat_slots(
         return;
     };
 
-    if !outcomes
-        .iter()
-        .any(|outcome| outcome.steering == SteeringIntent::Chase && outcome.target.is_some())
-    {
+    if !outcomes.iter().any(|outcome| outcome.engaged) {
         return;
     }
 
@@ -746,7 +815,7 @@ fn resolve_combat_slots(
 
     let mut queries = Vec::new();
     for outcome in outcomes.iter() {
-        if outcome.steering != SteeringIntent::Chase {
+        if !outcome.engaged {
             continue;
         }
         let Some(target) = outcome.target else {
@@ -778,7 +847,7 @@ fn resolve_combat_slots(
             .collect();
 
     for outcome in outcomes.iter_mut() {
-        if outcome.steering != SteeringIntent::Chase || outcome.target.is_none() {
+        if !outcome.engaged {
             clear_combat_slot(outcome);
             continue;
         }
@@ -807,12 +876,12 @@ fn clear_combat_slot(outcome: &mut EnemyOutcome) {
 }
 
 /// The slot this enemy may re-present as an incumbent: the one it held while
-/// already chasing this same target, and only while its hold window is open.
-/// Both slot fields are still the PRIOR tick's here — nothing but this pass
-/// writes them.
+/// already engaged with this same target, and only while its hold window is
+/// open. Both slot fields are still the PRIOR tick's here — nothing but this
+/// pass writes them.
 fn retained_combat_slot(outcome: &EnemyOutcome) -> Option<Vec3> {
     let target = outcome.target?;
-    (outcome.steering == SteeringIntent::Chase
+    (outcome.engaged
         && outcome.prior_acquired_target == Some(target.entity)
         && outcome.brain.combat_slot_hold_ticks > 0)
         .then_some(outcome.brain.combat_slot)

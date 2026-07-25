@@ -16,6 +16,12 @@ use crate::ir::{
     IrNode, IrType, IrValue, ResolvedInput, ResolvedOutput, bind,
 };
 
+/// The fixed brain-fact input namespace, the sibling of
+/// [`ENTITY_STATE_INPUT_PREFIX`]. Every name in [`BRAIN_INPUTS`] carries it, and
+/// stripping it yields the field an author writes on the SDK's `brain` object
+/// (`@brain.hasTarget` is authored `brain.hasTarget`).
+pub const BRAIN_INPUT_PREFIX: &str = "@brain.";
+
 /// `true` while the enemy has a selected target this tick.
 pub const BRAIN_HAS_TARGET_INPUT: &str = "@brain.hasTarget";
 /// Distance to the selected target, or [`BRAIN_NO_TARGET_DISTANCE`] with none.

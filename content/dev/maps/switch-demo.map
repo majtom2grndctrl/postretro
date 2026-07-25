@@ -1,0 +1,156 @@
+// Game: Postretro
+// Format: Standard
+// Switch-entity fixture. Sealed room, interior 448 x 320 x 160 units, wall
+// thickness 16. One authored switch brush is mounted flush on the north wall:
+// it is visible, solid, and pressable. Walk up to it, press use, and the door
+// slab in the west half drops. Manual gate for the switch compile-time desugar
+// (static world geometry + a use-activation trigger inflated by use_reach).
+// Compile: cargo run -p postretro-level-compiler -- content/dev/maps/switch-demo.map -o content/dev/maps/switch-demo.prl
+// Run: cargo run -p xtask -- run content/dev/maps/switch-demo.prl
+// NOTE: keep map comments free of braces and quotes, and never leave a blank
+// line inside an entity block -- the .map parser silently drops later entities.
+// entity 0
+{
+"classname" "worldspawn"
+"initialGravity" "-9.81"
+"wad" ""
+"data_script" "../scripts/switch-demo.ts"
+"_tb_mod" "dev"
+"_tb_def" "external:../../../sdk/TrenchBroom/postretro.fgd"
+// floor
+{
+( 464 -16 -16 ) ( 464 336 0 ) ( 464 336 -16 ) debug_ceiling_grey 0 0 0 1 1
+( -16 336 -16 ) ( -16 -16 0 ) ( -16 -16 -16 ) debug_ceiling_grey 0 0 0 1 1
+( 464 336 -16 ) ( -16 336 0 ) ( -16 336 -16 ) debug_ceiling_grey 0 0 0 1 1
+( -16 -16 -16 ) ( 464 -16 0 ) ( 464 -16 -16 ) debug_ceiling_grey 0 0 0 1 1
+( -16 336 0 ) ( 464 -16 0 ) ( -16 -16 0 ) debug_ceiling_grey 0 0 0 1 1
+( -16 -16 -16 ) ( 464 336 -16 ) ( -16 336 -16 ) debug_ceiling_grey 0 0 0 1 1
+}
+// ceiling
+{
+( 464 -16 160 ) ( 464 336 176 ) ( 464 336 160 ) debug_ceiling_grey 0 0 0 1 1
+( -16 336 160 ) ( -16 -16 176 ) ( -16 -16 160 ) debug_ceiling_grey 0 0 0 1 1
+( 464 336 160 ) ( -16 336 176 ) ( -16 336 160 ) debug_ceiling_grey 0 0 0 1 1
+( -16 -16 160 ) ( 464 -16 176 ) ( 464 -16 160 ) debug_ceiling_grey 0 0 0 1 1
+( -16 336 176 ) ( 464 -16 176 ) ( -16 -16 176 ) debug_ceiling_grey 0 0 0 1 1
+( -16 -16 160 ) ( 464 336 160 ) ( -16 336 160 ) debug_ceiling_grey 0 0 0 1 1
+}
+// west wall
+{
+( 0 -16 0 ) ( 0 336 160 ) ( 0 336 0 ) concrete_stone_033 0 0 0 1 1
+( -16 336 0 ) ( -16 -16 160 ) ( -16 -16 0 ) concrete_stone_033 0 0 0 1 1
+( 0 336 0 ) ( -16 336 160 ) ( -16 336 0 ) concrete_stone_033 0 0 0 1 1
+( -16 -16 0 ) ( 0 -16 160 ) ( 0 -16 0 ) concrete_stone_033 0 0 0 1 1
+( -16 336 160 ) ( 0 -16 160 ) ( -16 -16 160 ) concrete_stone_033 0 0 0 1 1
+( -16 -16 0 ) ( 0 336 0 ) ( -16 336 0 ) concrete_stone_033 0 0 0 1 1
+}
+// east wall
+{
+( 464 -16 0 ) ( 464 336 160 ) ( 464 336 0 ) concrete_stone_033 0 0 0 1 1
+( 448 336 0 ) ( 448 -16 160 ) ( 448 -16 0 ) concrete_stone_033 0 0 0 1 1
+( 464 336 0 ) ( 448 336 160 ) ( 448 336 0 ) concrete_stone_033 0 0 0 1 1
+( 448 -16 0 ) ( 464 -16 160 ) ( 464 -16 0 ) concrete_stone_033 0 0 0 1 1
+( 448 336 160 ) ( 464 -16 160 ) ( 448 -16 160 ) concrete_stone_033 0 0 0 1 1
+( 448 -16 0 ) ( 464 336 0 ) ( 448 336 0 ) concrete_stone_033 0 0 0 1 1
+}
+// south wall
+{
+( 448 -16 0 ) ( 448 0 160 ) ( 448 0 0 ) concrete_stone_033 0 0 0 1 1
+( 0 0 0 ) ( 0 -16 160 ) ( 0 -16 0 ) concrete_stone_033 0 0 0 1 1
+( 448 0 0 ) ( 0 0 160 ) ( 0 0 0 ) concrete_stone_033 0 0 0 1 1
+( 0 -16 0 ) ( 448 -16 160 ) ( 448 -16 0 ) concrete_stone_033 0 0 0 1 1
+( 0 0 160 ) ( 448 -16 160 ) ( 0 -16 160 ) concrete_stone_033 0 0 0 1 1
+( 0 -16 0 ) ( 448 0 0 ) ( 0 0 0 ) concrete_stone_033 0 0 0 1 1
+}
+// north wall -- the switch console is mounted flush against its inner face
+{
+( 448 320 0 ) ( 448 336 160 ) ( 448 336 0 ) concrete_stone_033 0 0 0 1 1
+( 0 336 0 ) ( 0 320 160 ) ( 0 320 0 ) concrete_stone_033 0 0 0 1 1
+( 448 336 0 ) ( 0 336 160 ) ( 0 336 0 ) concrete_stone_033 0 0 0 1 1
+( 0 320 0 ) ( 448 320 160 ) ( 448 320 0 ) concrete_stone_033 0 0 0 1 1
+( 0 336 160 ) ( 448 320 160 ) ( 0 320 160 ) concrete_stone_033 0 0 0 1 1
+( 0 320 0 ) ( 448 336 0 ) ( 0 336 0 ) concrete_stone_033 0 0 0 1 1
+}
+}
+// entity 1
+{
+"classname" "player_spawn"
+"origin" "64 160 24"
+"angles" "0 0 0"
+}
+// entity 2 -- the switch. Solid, drawn, and pressable: the compiler folds this
+// brush into static world geometry and also emits a use-activation trigger
+// volume inflated by use_reach, so a player standing in front of the solid face
+// still overlaps the volume.
+{
+"classname" "switch"
+"name" "door_switch"
+"on_fire" "switchDemo.openDoor"
+"use_reach" "24"
+"fire_mode" "once"
+"rearm_ms" "0"
+"enabled_on_spawn" "1"
+"_tags" "switch_demo_console"
+{
+( 248 312 40 ) ( 248 320 72 ) ( 248 320 40 ) metal/metal_rough_046a 0 0 0 1 1
+( 200 320 40 ) ( 200 312 72 ) ( 200 312 40 ) metal/metal_rough_046a 0 0 0 1 1
+( 248 320 40 ) ( 200 320 72 ) ( 200 320 40 ) metal/metal_rough_046a 0 0 0 1 1
+( 200 312 40 ) ( 248 312 72 ) ( 248 312 40 ) metal/metal_rough_046a 0 0 0 1 1
+( 200 320 72 ) ( 248 312 72 ) ( 200 312 72 ) metal/metal_rough_046a 0 0 0 1 1
+( 200 312 40 ) ( 248 320 40 ) ( 200 320 40 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 3 -- the visible payoff: a door slab that drops on the first press.
+{
+"classname" "kinematic_mover"
+"name" "switch_demo_door"
+"path" "switch_door_closed"
+"speed" "4"
+"wait_ms" "0"
+"move_mode" "once"
+"start_on_spawn" "0"
+"_tags" "switch_demo_door"
+{
+( 160 100 0 ) ( 160 116 96 ) ( 160 116 0 ) concrete_stone_033 0 0 0 1 1
+( 96 116 0 ) ( 96 100 96 ) ( 96 100 0 ) concrete_stone_033 0 0 0 1 1
+( 160 116 0 ) ( 96 116 96 ) ( 96 116 0 ) concrete_stone_033 0 0 0 1 1
+( 96 100 0 ) ( 160 100 96 ) ( 160 100 0 ) concrete_stone_033 0 0 0 1 1
+( 96 116 96 ) ( 160 100 96 ) ( 96 100 96 ) concrete_stone_033 0 0 0 1 1
+( 96 100 0 ) ( 160 116 0 ) ( 96 116 0 ) concrete_stone_033 0 0 0 1 1
+}
+}
+// entity 4
+{
+"classname" "kinematic_waypoint"
+"name" "switch_door_closed"
+"next" "switch_door_open"
+"origin" "128 108 48"
+}
+// entity 5
+{
+"classname" "kinematic_waypoint"
+"name" "switch_door_open"
+"origin" "128 108 -64"
+}
+// entity 6
+{
+"classname" "light"
+"origin" "224 224 128"
+"light" "400"
+"style" ""
+"_color" "255 240 220"
+"_falloff_range" "512"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+}
+// entity 7
+{
+"classname" "light"
+"origin" "96 96 128"
+"light" "300"
+"style" ""
+"_color" "120 190 255"
+"_falloff_range" "448"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+}

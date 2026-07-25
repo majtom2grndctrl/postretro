@@ -340,6 +340,14 @@ fn parse_optional_finite_f32(
     Ok(parsed)
 }
 
+/// Default `switch` `use_reach` margin, in map units (~0.61 m at 1 unit = 1 inch).
+///
+/// Must match the `use_reach` default in `sdk/TrenchBroom/postretro.fgd`.
+/// Deliberately a literal rather than the runtime player capsule radius: that
+/// radius is an authored descriptor field the level compiler cannot reach, and
+/// this value is chosen to exceed it.
+const DEFAULT_SWITCH_USE_REACH: f32 = 24.0;
+
 /// Read and parse a .map file, classify brushes, and extract face geometry.
 ///
 /// The `format` parameter identifies the source map format. Its `units_to_meters()`
@@ -636,6 +644,46 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
                 trigger_volumes.push(crate::trigger_volumes::resolve_trigger_volume(
                     &geo_map, &brush_ids, &props, scale,
                 )?);
+                continue;
+            }
+            // A `switch` is authoring sugar that desugars into two shipped
+            // mechanisms driven by the same brushes: static world geometry (so
+            // the switch is visible and solid) and a `use` trigger volume (so
+            // it is pressable). No runtime type is involved.
+            if classname == "switch" {
+                let mut props = collect_entity_properties(&geo_map, entity_id);
+                // Press-to-activate is what distinguishes `switch` from
+                // `trigger_volume`, so any authored `activation` is discarded.
+                props.insert("activation".to_string(), "use".to_string());
+                let switch_name = props.get("name").map(|v| v.trim()).unwrap_or_default();
+                let use_reach = parse_optional_finite_f32(
+                    &props,
+                    "use_reach",
+                    DEFAULT_SWITCH_USE_REACH,
+                    &classname,
+                    switch_name,
+                )?;
+                if use_reach < 0.0 {
+                    anyhow::bail!(
+                        "switch `{switch_name}` `use_reach` must be non-negative, got {use_reach}"
+                    );
+                }
+                let mut trigger = crate::trigger_volumes::resolve_trigger_volume(
+                    &geo_map, &brush_ids, &props, scale,
+                )?;
+                // Use-activation is a capsule-vs-AABB intersection test, not a
+                // containment test. The switch brush is solid, so the player
+                // can never stand inside it — the trigger has to reach out past
+                // the switch face into the space the player occupies.
+                // `use_reach` is authored in map units; the AABB is already in
+                // engine meters, hence the scale.
+                let margin = use_reach * scale as f32;
+                for axis in 0..3 {
+                    trigger.aabb_min[axis] -= margin;
+                    trigger.aabb_max[axis] += margin;
+                }
+                trigger_volumes.push(trigger);
+                world_brush_ids.extend(brush_ids.iter().copied());
                 continue;
             }
             if classname == "kinematic_mover" {
@@ -1887,6 +1935,162 @@ mod tests {
         let records = crate::trigger_volumes::encode_trigger_volumes_section(&map.trigger_volumes)
             .expect("one trigger produces a PRL section");
         assert_eq!(records.triggers[0].on_exit, "close_lift");
+    }
+
+    /// A `switch` sharing the `trigger_volume` fixture's brush, so the two can be
+    /// compiled side by side and their AABBs compared per axis.
+    ///
+    /// `extra_kvps` is spliced without a blank line: a blank line inside an entity
+    /// block makes the .map parser silently drop the remaining entities.
+    fn switch_map(extra_kvps: &str) -> String {
+        let name_block = if extra_kvps.is_empty() {
+            "\"name\" \"lift_a\"".to_string()
+        } else {
+            format!("\"name\" \"lift_a\"\n{extra_kvps}")
+        };
+        kinematic_test_map("wp_b")
+            .replacen(
+                "\"classname\" \"kinematic_mover\"",
+                "\"classname\" \"switch\"",
+                1,
+            )
+            .replacen("\"name\" \"lift_a\"", &name_block, 1)
+    }
+
+    #[test]
+    fn switch_folds_brushes_into_world_geometry_and_emits_inflated_use_trigger() {
+        // Reference hull: the same brush authored as a `trigger_volume`, which is
+        // not inflated.
+        let reference = parse_inline_map(&trigger_volume_map("start", "", "0"))
+            .expect("reference trigger_volume must compile");
+        let hull = &reference.trigger_volumes[0];
+
+        let map = parse_inline_map(&switch_map("\"on_fire\" \"open_lift\""))
+            .expect("switch must compile");
+        assert_eq!(map.trigger_volumes.len(), 1, "one switch → one trigger");
+        let switch = &map.trigger_volumes[0];
+        assert_eq!(switch.activation, 1, "switch activation is forced to `use`");
+
+        // Visible + solid: unlike trigger_volume, the switch brush stays in the
+        // static BSP inputs and the extracted draw geometry.
+        assert!(
+            map.brush_volumes
+                .iter()
+                .flat_map(|brush| brush.sides.iter())
+                .any(|side| side.texture == "mover_tex"),
+            "switch brush must feed static brush_volumes"
+        );
+        let result = crate::partition::partition(&map.brush_volumes).unwrap();
+        let geometry =
+            crate::geometry::extract_geometry(&result.faces, &result.tree, &HashSet::new());
+        assert!(
+            geometry
+                .texture_names
+                .names
+                .iter()
+                .any(|name| name == "mover_tex"),
+            "switch faces must reach the draw geometry"
+        );
+
+        // Reachability: inflated by the default use_reach on every axis, scaled
+        // from map units into engine meters.
+        let margin = DEFAULT_SWITCH_USE_REACH * MapFormat::IdTech2.units_to_meters() as f32;
+        for axis in 0..3 {
+            assert!(
+                switch.aabb_min[axis] < hull.aabb_min[axis],
+                "axis {axis}: min must shrink ({} vs {})",
+                switch.aabb_min[axis],
+                hull.aabb_min[axis]
+            );
+            assert!(
+                switch.aabb_max[axis] > hull.aabb_max[axis],
+                "axis {axis}: max must grow ({} vs {})",
+                switch.aabb_max[axis],
+                hull.aabb_max[axis]
+            );
+            assert!((switch.aabb_min[axis] - (hull.aabb_min[axis] - margin)).abs() < 1e-5);
+            assert!((switch.aabb_max[axis] - (hull.aabb_max[axis] + margin)).abs() < 1e-5);
+        }
+    }
+
+    #[test]
+    fn switch_use_reach_override_widens_the_trigger_beyond_the_default() {
+        let default_map =
+            parse_inline_map(&switch_map("\"on_fire\" \"open_lift\"")).expect("switch compiles");
+        let wide_map = parse_inline_map(&switch_map(
+            "\"on_fire\" \"open_lift\"\n\"use_reach\" \"48\"",
+        ))
+        .expect("switch with authored use_reach compiles");
+
+        let default_trigger = &default_map.trigger_volumes[0];
+        let wide = &wide_map.trigger_volumes[0];
+        let extra = 24.0 * MapFormat::IdTech2.units_to_meters() as f32;
+        for axis in 0..3 {
+            assert!((wide.aabb_min[axis] - (default_trigger.aabb_min[axis] - extra)).abs() < 1e-5);
+            assert!((wide.aabb_max[axis] - (default_trigger.aabb_max[axis] + extra)).abs() < 1e-5);
+        }
+        assert!(parse_inline_map(&switch_map("\"use_reach\" \"-1\"")).is_err());
+        assert!(parse_inline_map(&switch_map("\"use_reach\" \"nonsense\"")).is_err());
+    }
+
+    #[test]
+    fn switch_without_reaction_or_target_compiles_inert() {
+        // Parity with trigger_volume: no on_fire/on_exit/target_tag is a warning
+        // from the shared resolve_trigger_volume path, not a compile error.
+        let map = parse_inline_map(&switch_map("")).expect("inert switch must compile");
+        assert_eq!(map.trigger_volumes.len(), 1);
+        let switch = &map.trigger_volumes[0];
+        assert!(switch.on_fire.is_empty());
+        assert!(switch.on_exit.is_empty());
+        assert!(switch.target_tag.is_empty());
+        assert_eq!(switch.activation, 1);
+    }
+
+    #[test]
+    fn switch_is_not_emitted_as_a_runtime_map_entity() {
+        let map = parse_inline_map(&switch_map("\"on_fire\" \"open_lift\""))
+            .expect("switch must compile");
+        assert!(
+            map.map_entities
+                .iter()
+                .all(|entity| entity.classname != "switch"),
+            "switch desugars into geometry + a trigger, never a classname-dispatch entity"
+        );
+    }
+
+    #[test]
+    fn switch_forwards_shared_trigger_fields_to_the_emitted_volume() {
+        let map = parse_inline_map(&switch_map(concat!(
+            "\"target_tag\" \"lift_platform\"\n",
+            "\"command\" \"go_to_path_node\"\n",
+            "\"command_arg\" \"wp_b\"\n",
+            "\"fire_mode\" \"multiple\"\n",
+            "\"rearm_ms\" \"250\"\n",
+            "\"enabled_on_spawn\" \"0\"\n",
+            "\"on_fire\" \"open_lift\"\n",
+            "\"on_exit\" \"close_lift\"\n",
+            "\"activation\" \"touch\"",
+        )))
+        .expect("fully-populated switch must compile");
+        let switch = &map.trigger_volumes[0];
+        assert_eq!(switch.name, "lift_a");
+        assert_eq!(switch.target_tag, "lift_platform");
+        assert_eq!(switch.command, 3, "go_to_path_node");
+        assert_eq!(switch.command_arg, "wp_b");
+        assert_eq!(switch.fire_mode, 1, "multiple");
+        assert!((switch.rearm_ms - 250.0).abs() < 1e-6);
+        assert!(!switch.enabled_on_spawn);
+        assert_eq!(switch.on_fire, "open_lift");
+        assert_eq!(switch.on_exit, "close_lift");
+        assert!(switch.tags.contains(&"platform".to_string()));
+        // A switch is press-to-activate by definition; an authored `activation`
+        // is discarded rather than honored.
+        assert_eq!(switch.activation, 1);
+
+        let records = crate::trigger_volumes::encode_trigger_volumes_section(&map.trigger_volumes)
+            .expect("one trigger produces a PRL section");
+        assert_eq!(records.triggers[0].activation, 1);
+        assert_eq!(records.triggers[0].on_fire, "open_lift");
     }
 
     fn grouped_brush_test_map() -> &'static str {

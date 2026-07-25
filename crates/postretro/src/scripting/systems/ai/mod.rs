@@ -1,29 +1,33 @@
-// Engine-owned enemy FSM tick: the system half of the brain (the per-instance
-// DATA + spawn-time state-map validation live in `components/brain.rs`). Each
-// think tick selects a target pawn, evaluates the closed transition set
-// (idle/alert/attack/death), drives the steering API toward a combat slot or
-// raw target fallback while chasing, applies damage on the attack cooldown, and
-// requests the mapped animation state. The transition CORE is a pure function
-// over (target position, agent position, tuning, current state) so it is
-// unit-testable without `App` or a GPU; the tick wrapper layers the registry
-// reads/writes, damage, and animation switching on top.
-//
+// Engine-owned enemy FSM tick: snapshot/compute/apply passes over enemy
+// brains — target steering, damage, animation, and facing.
+// See: context/lib/entity_model.md §5 (fixed-tick game logic) ·
+//      context/lib/scripting.md §10.5 (the contextual damage chokepoint)
+
 // Architectural decision (M10): an engine-owned Rust FSM with a closed
 // transition set; tuning is declarative; there is no live VM at tick. Scripts
-// declare thresholds and the logical→animation map; Rust executes.
-//
-// See: context/lib/entity_model.md §2 (engine components), §5 (fixed-tick game
-//      logic), §7 (collision)
-//      context/lib/scripting.md §1 (scripts declare, Rust executes),
-//      §10.5 (the contextual damage chokepoint)
-//      crates/postretro/src/scripting/components/brain.rs (BrainComponent /
-//      LogicalState / AiTuning — the FSM data this tick drives)
-//      crates/postretro/src/agent_steering.rs (set_destination /
-//      clear_destination / path_state — the steering surface this tick drives)
+// declare thresholds and the logical→animation map; Rust executes. The
+// transition core (`transition.rs`) is a pure function over (target position,
+// agent position, tuning, current state) — no registry, no `App` — so it is
+// unit-testable without a GPU; this module layers the registry reads/writes,
+// target selection (`targeting.rs`), damage, and animation switching on top.
 
 use std::collections::{HashMap, HashSet};
 
 use glam::{Quat, Vec3};
+
+mod targeting;
+mod transition;
+
+use targeting::{
+    TargetPawn, acquisition_due, select_target, selected_target_alive, target_candidate,
+    target_distance,
+};
+use transition::{SteeringIntent, evaluate_transition};
+#[cfg(test)]
+use transition::{
+    STRIDE_MID_DISTANCE, STRIDE_NEAR_DISTANCE, TARGET_SWITCH_HYSTERESIS_DISTANCE,
+    think_stride_for_distance,
+};
 
 use crate::agent_steering;
 use crate::collision::CollisionWorld;
@@ -31,15 +35,14 @@ use crate::combat_positioning::{
     CombatAgentSnapshot, CombatCandidate, CombatQuery, PATH_LENGTH_SCORE_WEIGHT,
     select_combat_positions_batch,
 };
-use crate::nav::{NavGraph, distance_xz};
-use postretro_entities::components::brain::{AiStateMap, AiTuning, BrainComponent, LogicalState};
+use crate::nav::NavGraph;
+use postretro_entities::components::brain::{AiStateMap, BrainComponent, LogicalState};
 use postretro_entities::components::health::{
-    DamageContext, DamageProducer, HealthComponent, apply_damage_with_context,
+    DamageContext, DamageProducer, apply_damage_with_context,
 };
 use postretro_entities::components::mesh::{
     SwitchResult, restart_animation_clip, switch_animation_state,
 };
-use postretro_entities::components::player_movement::PlayerMovementComponent;
 use postretro_entities::{
     ComponentKind, ComponentValue, DeferredEffectComponent, DeferredEffectKind, EntityId,
     EntityRegistry, Transform,
@@ -53,45 +56,6 @@ use postretro_foundation::DamagePayload;
 pub(crate) const ENEMY_ATTACK_EVENT: &str = "enemyAttack";
 const ENEMY_ATTACK_SOURCE_ID: &str = "enemy.attack";
 
-/// Think-stride bands. Target acquisition is time-sliced by player distance:
-/// near enemies re-evaluate every tick, mid enemies every few ticks, distant
-/// enemies rarely. The cheap retained-target leash check and the
-/// attack-in-range/cooldown check are NOT strided — they run every tick
-/// regardless, so a strided acquisition gap can never suppress an in-stride
-/// attack or leash escape.
-///
-/// Distances are XZ ground distances (the navmesh plane); the bands are coarse
-/// by design — stride is a cost knob, not a gameplay contract.
-const STRIDE_NEAR_DISTANCE: f32 = 12.0;
-const STRIDE_MID_DISTANCE: f32 = 30.0;
-/// Stride divisor for each band: `1` = every tick, `n` = once every `n` ticks.
-const STRIDE_NEAR: u32 = 1;
-const STRIDE_MID: u32 = 4;
-const STRIDE_FAR: u32 = 12;
-
-/// Target switching hysteresis in world units on the XZ plane. A retained target
-/// stays sticky unless another pawn is MORE than this much closer, preventing
-/// co-op target churn when players are only slightly offset from one another.
-const TARGET_SWITCH_HYSTERESIS_DISTANCE: f32 = 1.0;
-const COMBAT_SLOT_HOLD_TICKS: u32 = 8;
-
-fn is_meaningfully_closer(candidate_distance: f32, retained_distance: f32) -> bool {
-    candidate_distance + TARGET_SWITCH_HYSTERESIS_DISTANCE < retained_distance
-}
-
-/// The think stride (in ticks) for an enemy at `distance` (XZ) from the player:
-/// `1` near, larger as the player recedes. Pure helper so the stride policy is
-/// testable in isolation.
-pub(crate) fn think_stride_for_distance(distance: f32) -> u32 {
-    if distance <= STRIDE_NEAR_DISTANCE {
-        STRIDE_NEAR
-    } else if distance <= STRIDE_MID_DISTANCE {
-        STRIDE_MID
-    } else {
-        STRIDE_FAR
-    }
-}
-
 /// Minimum XZ speed (units/sec) the agent must exceed for "moving" behavior:
 /// above it the enemy orients to its velocity and `Alert` selects its walk
 /// animation; at or below it the enemy is treated as stopped and uses player
@@ -102,6 +66,11 @@ const MOVE_SPEED_EPSILON: f32 = 0.05;
 /// Maximum enemy-facing yaw rotation, in radians/sec. Higher than path steering
 /// so visual facing catches up quickly without snapping.
 pub(crate) const FACING_TURN_RATE: f32 = crate::agent_steering::MAX_TURN_RATE * 2.0;
+
+/// How many ticks a resolved combat slot is held for its incumbent before the
+/// batch solver is free to reassign it to a challenger. See
+/// `resolve_combat_slots`/`retained_combat_slot`.
+const COMBAT_SLOT_HOLD_TICKS: u32 = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct LocomotionIntent {
@@ -202,231 +171,6 @@ pub(crate) fn slew_yaw(current: f32, target: f32, max_delta: f32) -> f32 {
         target
     } else {
         current + delta.signum() * max_delta
-    }
-}
-
-/// What the FSM wants the steering layer to do this tick. Decoupled from the
-/// steering API itself so the pure transition function carries no registry
-/// dependency — the tick wrapper translates the intent into
-/// `set_destination`/`clear_destination` calls.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SteeringIntent {
-    /// Chase: the wrapper prefers a combat slot around the selected target and
-    /// falls back to the target position. Emitted in `Alert` and `Attack`.
-    Chase,
-    /// Stand down: the wrapper clears the agent destination. Emitted in `Idle`.
-    Clear,
-    /// Hold the current steering state (no set/clear). Emitted in `Death` so a
-    /// dying enemy neither chases nor re-issues a clear every tick.
-    Hold,
-}
-
-/// One transition evaluation's result: the next logical state plus what the
-/// steering layer should do. Pure output of [`evaluate_transition`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct TransitionResult {
-    pub(crate) next_state: LogicalState,
-    pub(crate) steering: SteeringIntent,
-}
-
-/// The PURE FSM core: given the player position, the agent position, the resolved
-/// tuning, the current logical state, and whether THIS tick re-evaluates target
-/// acquisition (the think-stride gate), return the next state and the steering
-/// intent. No registry, no `App`, no time — the unit tests drive it directly.
-///
-/// Closed transition set:
-/// - `idle` → `alert` when the player enters `detection_range` (acquisition).
-/// - `alert` → `idle` when the player leaves `leash_range` (acquisition).
-/// - `alert` → `attack` when the player is within `attack_range`.
-/// - `attack` → `alert` when the player leaves `attack_range`.
-/// - `death` is terminal here. It has no HP input and is not HP-reachable.
-///
-/// `evaluate_acquisition` gates ONLY the detection (`idle`→`alert`) and leash
-/// (`alert`→`idle`) edges — the strided target-acquisition. The attack-range
-/// edges (`alert`↔`attack`) are evaluated EVERY call regardless, so a strided
-/// acquisition gap never suppresses an in-range attack transition. When
-/// acquisition is gated off and the agent is already engaged, the agent keeps
-/// chasing (steering stays `Chase`) — it does not drop the target mid-stride.
-pub(crate) fn evaluate_transition(
-    player_pos: Vec3,
-    agent_pos: Vec3,
-    tuning: &AiTuning,
-    current: LogicalState,
-    evaluate_acquisition: bool,
-) -> TransitionResult {
-    let distance = distance_xz(player_pos, agent_pos);
-    match current {
-        LogicalState::Idle => {
-            // Detection is acquisition-gated: only re-checked on a think tick.
-            if evaluate_acquisition && distance <= tuning.detection_range {
-                // Newly alerted: if already inside attack range, go straight to
-                // attack; otherwise chase.
-                let next_state = if distance <= tuning.attack_range {
-                    LogicalState::Attack
-                } else {
-                    LogicalState::Alert
-                };
-                return TransitionResult {
-                    next_state,
-                    steering: SteeringIntent::Chase,
-                };
-            }
-            TransitionResult {
-                next_state: LogicalState::Idle,
-                steering: SteeringIntent::Clear,
-            }
-        }
-        LogicalState::Alert => {
-            // Attack-range entry is evaluated every tick (not acquisition-gated).
-            if distance <= tuning.attack_range {
-                return TransitionResult {
-                    next_state: LogicalState::Attack,
-                    steering: SteeringIntent::Chase,
-                };
-            }
-            // Leash is acquisition-gated: only drop the target on a think tick.
-            if evaluate_acquisition && distance > tuning.leash_range {
-                return TransitionResult {
-                    next_state: LogicalState::Idle,
-                    steering: SteeringIntent::Clear,
-                };
-            }
-            // Still engaged: keep chasing.
-            TransitionResult {
-                next_state: LogicalState::Alert,
-                steering: SteeringIntent::Chase,
-            }
-        }
-        LogicalState::Attack => {
-            // Leaving attack range drops back to alert; evaluated every tick.
-            if distance > tuning.attack_range {
-                return TransitionResult {
-                    next_state: LogicalState::Alert,
-                    steering: SteeringIntent::Chase,
-                };
-            }
-            TransitionResult {
-                next_state: LogicalState::Attack,
-                steering: SteeringIntent::Chase,
-            }
-        }
-        // Terminal: this state is no longer HP-reachable. An authored deferred
-        // despawn owns removal; once another path enters Death, the FSM holds.
-        LogicalState::Death => TransitionResult {
-            next_state: LogicalState::Death,
-            steering: SteeringIntent::Hold,
-        },
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct TargetPawn {
-    pub(crate) entity: EntityId,
-    pub(crate) position: Vec3,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct TargetCandidate {
-    target: TargetPawn,
-    distance: f32,
-}
-
-fn target_candidate(
-    registry: &EntityRegistry,
-    entity: EntityId,
-    from: Vec3,
-    visible: Option<&dyn Fn(EntityId) -> bool>,
-) -> Option<TargetCandidate> {
-    if visible.is_some_and(|is_visible| !is_visible(entity)) {
-        return None;
-    }
-    registry
-        .get_component::<PlayerMovementComponent>(entity)
-        .ok()?;
-    let position = registry.get_component::<Transform>(entity).ok()?.position;
-    Some(TargetCandidate {
-        target: TargetPawn { entity, position },
-        distance: distance_xz(position, from),
-    })
-}
-
-fn nearest_target_candidate(
-    registry: &EntityRegistry,
-    from: Vec3,
-    visible: Option<&dyn Fn(EntityId) -> bool>,
-    exclude: Option<EntityId>,
-) -> Option<TargetCandidate> {
-    registry
-        .iter_with_kind(ComponentKind::PlayerMovement)
-        .filter_map(|(entity, _)| {
-            if exclude == Some(entity) {
-                return None;
-            }
-            target_candidate(registry, entity, from, visible)
-        })
-        .min_by(|a, b| a.distance.total_cmp(&b.distance))
-}
-
-fn target_distance(target: TargetPawn, from: Vec3) -> f32 {
-    distance_xz(target.position, from)
-}
-
-fn acquisition_due(brain: &BrainComponent, distance: Option<f32>) -> bool {
-    distance
-        .map(|distance| {
-            let stride = think_stride_for_distance(distance);
-            stride <= 1 || brain.think_stride_counter.wrapping_add(1) % stride == 0
-        })
-        .unwrap_or(true)
-}
-
-fn selected_target_alive(registry: &EntityRegistry, target: EntityId) -> bool {
-    registry
-        .get_component::<HealthComponent>(target)
-        .map(|health| health.current > 0.0 && health.current.is_finite())
-        .unwrap_or(false)
-}
-
-/// Select the player pawn this enemy should pursue.
-///
-/// This is the AI targeting extension point: v1 ranks all
-/// [`ComponentKind::PlayerMovement`] pawns by nearest XZ distance from `from`.
-/// The optional predicate is the future visibility/relevance seam intended for
-/// `context/research/cell-visibility-substrate.md` (and exact LOS work) without
-/// re-threading the FSM. If `retained_target` is still a valid, relevant player
-/// pawn, it is preferred unless another pawn is meaningfully closer by
-/// [`TARGET_SWITCH_HYSTERESIS_DISTANCE`]. When `retained_outside_leash` is true,
-/// the retained pawn is no longer relevant for this acquisition tick and is
-/// excluded; the caller still owns any leash/range rules for replacements. This
-/// targeting path intentionally does not consult the registry's local-player
-/// marker, which is client-side convenience state.
-pub(crate) fn select_target(
-    registry: &EntityRegistry,
-    from: Vec3,
-    retained_target: Option<EntityId>,
-    retained_outside_leash: bool,
-    visible: Option<&dyn Fn(EntityId) -> bool>,
-) -> Option<TargetPawn> {
-    let retained = retained_target
-        .filter(|_| !retained_outside_leash)
-        .and_then(|entity| target_candidate(registry, entity, from, visible));
-    let nearest = nearest_target_candidate(
-        registry,
-        from,
-        visible,
-        retained_target.filter(|_| retained_outside_leash),
-    );
-
-    match (retained, nearest) {
-        (Some(retained), Some(nearest))
-            if nearest.target.entity != retained.target.entity
-                && is_meaningfully_closer(nearest.distance, retained.distance) =>
-        {
-            Some(nearest.target)
-        }
-        (Some(retained), _) => Some(retained.target),
-        (None, Some(nearest)) => Some(nearest.target),
-        (None, None) => None,
     }
 }
 
@@ -965,5 +709,5 @@ fn retained_combat_slot(snap: &EnemySnapshot, outcome: &EnemyOutcome) -> Option<
 }
 
 #[cfg(test)]
-#[path = "ai_tests.rs"]
+#[path = "../ai_tests.rs"]
 mod tests;

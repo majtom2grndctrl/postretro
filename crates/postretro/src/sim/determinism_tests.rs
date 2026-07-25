@@ -32,13 +32,14 @@ use crate::trigger_pools::{TriggerPoolSeedPolicy, install_trigger_pools};
 use crate::trigger_system::{PlayerId, TriggerEvent, TriggerEventEdge, TriggerSystem};
 use crate::weapon::FireButtonState;
 use postretro_entities::components::agent::AgentComponent;
-use postretro_entities::components::brain::{AiStateMap, AiTuning, BrainComponent, LogicalState};
+use postretro_entities::components::brain::{BrainComponent, LogicalState};
 use postretro_entities::components::health::{HealthComponent, Hitbox};
 use postretro_entities::components::mesh::{
     AnimationState, InterruptPolicy, MeshAnimation, MeshComponent, RATE_CHANGE_EPSILON, RATE_MAX,
     RATE_MIN, resolve_pending_animation_stamps,
 };
 use postretro_entities::components::weapon::WeaponComponent;
+use postretro_entities::data_descriptors::{AiDescriptor, AiStateNames};
 use postretro_entities::{
     CrossingCondition, CrossingDescriptor, DataRegistry, EntityId, EntityRegistry, MoverCommand,
     NamedReaction, PrimitiveDescriptor, ReactionDescriptor, ReplicationScope, ScriptCtx,
@@ -877,32 +878,21 @@ fn spawn_enemy(registry: &mut EntityRegistry, position: Vec3) -> EntityId {
     registry
         .set_component(
             id,
-            BrainComponent {
-                state: LogicalState::Idle,
-                attack_cooldown_remaining_ms: 0.0,
-                think_stride_counter: 0,
-                death_despawn_remaining_ms: None,
-                locomotion_moving: false,
-                aggro_armed: true,
-                acquired_target: None,
-                combat_slot: None,
-                combat_slot_hold_ticks: 0,
-                tuning: AiTuning {
-                    detection_range: 8.0,
-                    attack_range: 2.0,
-                    leash_range: 12.0,
-                    attack_damage: 7.0,
-                    attack_cooldown_ms: 1000.0,
-                    move_speed: 0.0,
-                    death_despawn_ms: 1000.0,
-                    states: AiStateMap {
-                        idle: "idle".to_string(),
-                        alert: "alert".to_string(),
-                        attack: "attack".to_string(),
-                        death: "death".to_string(),
-                    },
+            BrainComponent::from_descriptor(&AiDescriptor {
+                detection_range: 8.0,
+                attack_range: 2.0,
+                leash_range: 12.0,
+                attack_damage: 7.0,
+                attack_cooldown_ms: 1000.0,
+                move_speed: 0.0,
+                death_despawn_ms: 1000.0,
+                states: AiStateNames {
+                    idle: "idle".to_string(),
+                    alert: "alert".to_string(),
+                    attack: "attack".to_string(),
+                    death: "death".to_string(),
                 },
-            },
+            }),
         )
         .expect("enemy brain component should attach");
     registry
@@ -1059,8 +1049,8 @@ fn open_floor_nav_graph() -> NavGraph {
     })
 }
 
-fn driven_agent_tuning() -> AiTuning {
-    AiTuning {
+fn driven_agent_descriptor() -> AiDescriptor {
+    AiDescriptor {
         detection_range: 40.0,
         attack_range: 2.0,
         leash_range: 48.0,
@@ -1068,7 +1058,7 @@ fn driven_agent_tuning() -> AiTuning {
         attack_cooldown_ms: 1000.0,
         move_speed: 3.5,
         death_despawn_ms: 1000.0,
-        states: AiStateMap {
+        states: AiStateNames {
             idle: "idle".to_string(),
             alert: "locomotion".to_string(),
             attack: "attack".to_string(),
@@ -1113,15 +1103,7 @@ fn spawn_driven_agent(
             enemy,
             BrainComponent {
                 state,
-                attack_cooldown_remaining_ms: 0.0,
-                think_stride_counter: 0,
-                death_despawn_remaining_ms: None,
-                locomotion_moving: false,
-                aggro_armed: true,
-                acquired_target: None,
-                combat_slot: None,
-                combat_slot_hold_ticks: 0,
-                tuning: driven_agent_tuning(),
+                ..BrainComponent::from_descriptor(&driven_agent_descriptor())
             },
         )
         .expect("driven agent brain should attach");
@@ -1874,15 +1856,8 @@ fn pose_inputs_fallbacks_and_vertical_targets_remain_finite() {
         });
         let brain = BrainComponent {
             state: LogicalState::Attack,
-            attack_cooldown_remaining_ms: 0.0,
-            think_stride_counter: 0,
-            death_despawn_remaining_ms: None,
-            locomotion_moving: false,
-            aggro_armed: true,
             acquired_target,
-            combat_slot: None,
-            combat_slot_hold_ticks: 0,
-            tuning: driven_agent_tuning(),
+            ..BrainComponent::from_descriptor(&driven_agent_descriptor())
         };
         registry.set_component(entity, brain).unwrap();
 

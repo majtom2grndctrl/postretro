@@ -20,7 +20,9 @@ use super::MapEntity;
 use postretro_entities::AmmoReserve;
 use postretro_entities::components::agent::attach_agent;
 use postretro_entities::components::billboard_emitter::BillboardEmitterComponent;
-use postretro_entities::components::brain::{attach_brain, validate_brain_animation_states};
+use postretro_entities::components::brain::{
+    attach_brain, attach_brain_graph, validate_brain_animation_states,
+};
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::light::{FalloffKind, LightComponent, LightKind};
 use postretro_entities::components::mesh::{
@@ -268,32 +270,41 @@ pub(crate) fn ai_capsule_center_from_feet_offset(
     descriptor: &EntityTypeDescriptor,
     agent_params: Option<NavAgentParams>,
 ) -> Vec3 {
-    if descriptor.ai.is_none() {
+    if !descriptor_carries_brain(descriptor) {
         return Vec3::ZERO;
     }
     let params = agent_params.unwrap_or(DEFAULT_AGENT_PARAMS);
     -capsule_center_to_feet_origin_offset(params.radius, params.height)
 }
 
+/// Whether this descriptor authors a brain, in either of its two spellings: the
+/// legacy `components.ai` preset or an authored `components.behavior` graph.
+/// Parse-time validation guarantees at most one is present, and the spawn path
+/// lowers the legacy one into the same graph the authored one carries, so every
+/// site that used to ask "is there an `ai` block?" asks this instead.
+fn descriptor_carries_brain(descriptor: &EntityTypeDescriptor) -> bool {
+    descriptor.ai.is_some() || descriptor.behavior.is_some()
+}
+
 /// Whether materializing this descriptor would attach the engine-owned AI pair
 /// (`ComponentKind::Brain` + `ComponentKind::Agent`) — i.e. whether the
-/// descriptor carries an `ai` block. This is the *pre-materialization* mirror of
+/// descriptor carries a brain block. This is the *pre-materialization* mirror of
 /// the live-component predicate
 /// `crate::netcode::descriptor_class::is_networked_ai_enemy`,
-/// which can only inspect those components AFTER an entity exists: the `ai`
-/// block is the sole thing `attach_descriptor_components` keys the `Brain` +
-/// `Agent` attachment on, so `descriptor.ai.is_some()` holds exactly when that
+/// which can only inspect those components AFTER an entity exists: a brain block
+/// is the sole thing `attach_descriptor_components` keys the `Brain` + `Agent`
+/// attachment on, so [`descriptor_carries_brain`] holds exactly when that
 /// predicate would later return `true` for an eligible descriptor spawn of this
 /// descriptor.
 ///
 /// Used by the connected-client install path (E10 Task 5) to drop AI-enemy map
 /// placements *before* dispatch, since those enemies must arrive only as
 /// host-authoritative snapshots — never as locally-spawned authoritative copies.
-/// Keying on `ai.is_some()` (not classname strings, not
+/// Keying on the brain block (not classname strings, not
 /// `DescriptorProvenance.owned_components`, which never tracks AI) keeps the same
 /// single definition of "AI map enemy" the live predicate enforces.
 pub(crate) fn descriptor_materializes_ai_enemy(descriptor: &EntityTypeDescriptor) -> bool {
-    descriptor.ai.is_some()
+    descriptor_carries_brain(descriptor)
 }
 
 /// Partition map placements for a **connected client** install (E10 Task 5):
@@ -524,18 +535,30 @@ pub(crate) fn attach_descriptor_components(
         owned_components.insert(DescriptorComponentKind::Health);
     }
 
-    // An `ai` descriptor materializes the engine-owned brain AND a movable
-    // navigation agent (the FSM drives the agent each tick). The agent's capsule
-    // is seeded from the navmesh's baked `NavAgentParams` (passed down from the
-    // attach call site — never read inside the component). When the map has no
-    // navmesh (`agent_params == None`), the capsule falls back to an engine
-    // default and the agent simply cannot path. Move speed comes from the `ai`
-    // descriptor. After both components land, the brain's logical-state →
-    // animation-state map is validated against the entity's mesh (cross-component:
-    // the ai block could not see the mesh at its own parse).
-    if let Some(ai_desc) = descriptor.ai.as_ref() {
+    // A brain block materializes the engine-owned brain AND a movable navigation
+    // agent (the tick drives the agent each tick). The two authoring spellings
+    // meet here: a legacy `ai` preset lowers to the graph an authored `behavior`
+    // block carries directly, so exactly one `BrainComponent` shape leaves this
+    // site regardless of which block was authored.
+    //
+    // The agent's capsule is seeded from the navmesh's baked `NavAgentParams`
+    // (passed down from the attach call site — never read inside the component).
+    // When the map has no navmesh (`agent_params == None`), the capsule falls
+    // back to an engine default and the agent simply cannot path. Move speed
+    // comes from whichever block was authored. After both components land, the
+    // brain's state → animation-state map is validated against the entity's mesh
+    // (cross-component: neither block could see the mesh at its own parse).
+    let brain_move_speed = if let Some(ai_desc) = descriptor.ai.as_ref() {
         // `set_component`/`attach_*` only fail on a stale id — just returned.
         let _ = attach_brain(registry, id, ai_desc);
+        Some(ai_desc.move_speed)
+    } else if let Some(behavior) = descriptor.behavior.as_ref() {
+        let _ = attach_brain_graph(registry, id, behavior);
+        Some(behavior.move_speed)
+    } else {
+        None
+    };
+    if let Some(move_speed) = brain_move_speed {
         let aggro_armed = ai_aggro_armed_on_spawn(entity);
         if let Ok(mut brain) = registry
             .get_component::<postretro_entities::components::brain::BrainComponent>(id)
@@ -546,12 +569,12 @@ pub(crate) fn attach_descriptor_components(
         }
 
         let params = agent_params.unwrap_or(DEFAULT_AGENT_PARAMS);
-        let _ = attach_agent(registry, id, &params, ai_desc.move_speed);
+        let _ = attach_agent(registry, id, &params, move_speed);
 
-        // Warn-once per undeclared animation-state name; the FSM keeps the prior
-        // animation for those logical states. Called here for its spawn-time
-        // validation side effect — the return value (unmapped logical states) is
-        // not consumed; the FSM handles `UnknownState` at tick time.
+        // Warn-once per undeclared animation-state name; the tick keeps the prior
+        // animation for those states. Called here for its spawn-time validation
+        // side effect — the return value (unmapped state names) is not consumed;
+        // the tick handles `UnknownState` at tick time.
         let _ = validate_brain_animation_states(registry, id);
     }
 
@@ -597,7 +620,7 @@ pub(crate) fn descriptor_mesh_component(
             capsule.radius,
             2.0 * (capsule.half_height + capsule.radius),
         )
-    } else if descriptor.ai.is_some() {
+    } else if descriptor_carries_brain(descriptor) {
         let params = agent_params.unwrap_or(DEFAULT_AGENT_PARAMS);
         capsule_center_to_feet_origin_offset(params.radius, params.height)
     } else {

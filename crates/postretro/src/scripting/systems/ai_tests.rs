@@ -23,6 +23,7 @@ use postretro_entities::components::mesh::{
     AnimationState, InterruptPolicy, MeshAnimation, MeshComponent,
 };
 use postretro_entities::components::player_movement::PlayerMovementComponent;
+use postretro_entities::data_descriptors::{AiDescriptor, AiStateNames};
 use postretro_entities::registry::{EntityId, EntityRegistry, Transform};
 use postretro_scripting_core::data_descriptors::{
     AirParams, CapsuleParams, FallParams, ForgivenessParams, GroundParams,
@@ -61,18 +62,32 @@ fn tuning() -> AiTuning {
     }
 }
 
+/// The legacy descriptor a resolved [`AiTuning`] was materialized from.
+/// `AiTuning::from_descriptor` is a 1:1 copy, so this inverts it exactly — which
+/// is what lets `brain_with` hand the spawn constructor a descriptor and get a
+/// retained graph that describes the very same brain the tuning does.
+fn descriptor_for(tuning: &AiTuning) -> AiDescriptor {
+    AiDescriptor {
+        detection_range: tuning.detection_range,
+        attack_range: tuning.attack_range,
+        leash_range: tuning.leash_range,
+        attack_damage: tuning.attack_damage,
+        attack_cooldown_ms: tuning.attack_cooldown_ms,
+        move_speed: tuning.move_speed,
+        death_despawn_ms: tuning.death_despawn_ms,
+        states: AiStateNames {
+            idle: tuning.states.idle.clone(),
+            alert: tuning.states.alert.clone(),
+            attack: tuning.states.attack.clone(),
+            death: tuning.states.death.clone(),
+        },
+    }
+}
+
 fn brain_with(tuning: AiTuning, state: LogicalState) -> BrainComponent {
     BrainComponent {
         state,
-        attack_cooldown_remaining_ms: 0.0,
-        think_stride_counter: 0,
-        death_despawn_remaining_ms: None,
-        locomotion_moving: false,
-        aggro_armed: true,
-        acquired_target: None,
-        combat_slot: None,
-        combat_slot_hold_ticks: 0,
-        tuning,
+        ..BrainComponent::from_descriptor(&descriptor_for(&tuning))
     }
 }
 

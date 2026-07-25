@@ -1455,11 +1455,11 @@ mod tests {
     use crate::weapon::FireButtonState;
     use glam::Vec2;
     use postretro_entities::components::agent::AgentComponent;
-    use postretro_entities::components::brain::{AiStateMap, AiTuning};
     use postretro_entities::components::mesh::{
         AnimationState, DEFAULT_CROSSFADE_MS, InterruptPolicy, MeshAnimation, MeshComponent,
         resolve_pending_animation_stamps,
     };
+    use postretro_entities::data_descriptors::{AiDescriptor, AiStateNames};
     use postretro_entities::{
         AmmoReserve, DataRegistry, KinematicMoverComponent, KinematicMoverMode, MoverCommand,
         NamedReaction, NumericRange, PrimitiveDescriptor, ReactionDescriptor, SlotOwnership,
@@ -3283,15 +3283,7 @@ mod tests {
                     enemy,
                     BrainComponent {
                         state: LogicalState::Alert,
-                        attack_cooldown_remaining_ms: 0.0,
-                        think_stride_counter: 0,
-                        death_despawn_remaining_ms: None,
-                        locomotion_moving: false,
-                        aggro_armed: true,
-                        acquired_target: None,
-                        combat_slot: None,
-                        combat_slot_hold_ticks: 0,
-                        tuning: AiTuning {
+                        ..BrainComponent::from_descriptor(&AiDescriptor {
                             detection_range: 18.0,
                             attack_range: 2.0,
                             leash_range: 26.0,
@@ -3299,13 +3291,13 @@ mod tests {
                             attack_cooldown_ms: 1000.0,
                             move_speed: 4.0,
                             death_despawn_ms: 500.0,
-                            states: AiStateMap {
+                            states: AiStateNames {
                                 idle: "idle".into(),
                                 alert: "walk".into(),
                                 attack: "attack".into(),
                                 death: "death".into(),
                             },
-                        },
+                        })
                     },
                 )
                 .unwrap();

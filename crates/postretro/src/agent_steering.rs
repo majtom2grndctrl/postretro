@@ -169,7 +169,7 @@ pub(crate) struct AgentTickResult {
 /// is derived from the live component, never recomputed here.
 ///
 /// The steering-API surface (`set_destination`/`clear_destination`/`path_state`
-/// and this struct) is consumed by that FSM tick, which drives
+/// and this struct) is consumed by that tick, which drives
 /// `set_destination`/`clear_destination` per chasing enemy and reads
 /// `path_state` for arrival/blocked.
 ///

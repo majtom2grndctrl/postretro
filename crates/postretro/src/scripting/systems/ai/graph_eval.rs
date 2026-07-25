@@ -103,7 +103,11 @@ pub(super) fn engages(graph: &BehaviorGraphDescriptor, index: usize) -> bool {
 }
 
 /// The index of the graph's `initial` state — the state the engine floor forces
-/// when the aggro gate is closed or no target exists.
+/// when the aggro gate is closed. Having no target is NOT a floor override: an
+/// armed brain still evaluates its guards every tick, target or not. This same
+/// index is also the re-seat destination for a brain whose `state_index`
+/// addresses no declared state (a graph swapped under a persisted index, or a
+/// hand-seeded one).
 pub(super) fn initial_index(graph: &BehaviorGraphDescriptor) -> Option<usize> {
     graph_state_index(graph, &graph.initial)
 }
@@ -136,6 +140,19 @@ fn is_locomotion_state(state: &BehaviorStateDescriptor) -> bool {
 
 /// The graph's locomotion animation-state name: the first locomotion state's, in
 /// resolved-state order. `None` for a graph that never travels.
+///
+/// "First" here is `BTreeMap` iteration order over `graph.states` — lexicographic
+/// by state name, NOT authored order and NOT the state the brain is actually in.
+/// For a graph with a single locomotion state this is exact; for a graph with
+/// two or more (e.g. a `patrol` and a `pursue`, both `chaseTarget` with distinct
+/// animations), it collapses them to whichever name sorts first, regardless of
+/// which one is live — so an enemy walking `pursue`'s "run" cycle can still
+/// report "walk" here, and renaming a state can silently flip the answer. Both
+/// consumers (`sim/mod.rs`'s walk-playback rate scaling and `netcode/mod.rs`'s
+/// remote-enemy reference) resolve independently from the same graph, so host
+/// and client still agree with each other — this is a v1 limitation for
+/// single-locomotion graphs, not a correctness bug. A future reader adding a
+/// second locomotion state should read this before chasing a wrong walk speed.
 pub(crate) fn locomotion_animation(graph: &BehaviorGraphDescriptor) -> Option<&str> {
     graph
         .states

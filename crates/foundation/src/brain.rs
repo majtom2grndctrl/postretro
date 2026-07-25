@@ -42,8 +42,20 @@ pub const BRAIN_MAX_HEALTH_INPUT: &str = "@brain.maxHealth";
 ///
 /// A sentinel rather than an absent value because the IR is total: every input
 /// must read as some number. It sits far beyond any plausible authored range so
-/// a bare `le(targetDistance, r)` guard reads false with no target, without the
-/// author having to conjoin [`BRAIN_HAS_TARGET_INPUT`].
+/// a bare `le`/`lt(targetDistance, r)` guard reads false with no target, without
+/// the author having to conjoin [`BRAIN_HAS_TARGET_INPUT`].
+///
+/// **The `gt`/`ge` direction is the inverse, not a mirror.** With no target,
+/// every `gt(targetDistance, r)` / `ge(targetDistance, r)` guard reads **true**
+/// — a bare distance guard is NOT a "target is far away" test, it is also the
+/// "no target" test, and an authored graph whose only exits are `gt`/`ge`
+/// guards will fire them the instant the target is lost. This already shipped
+/// as a real defect: the reference enemy took a two-tick stand-down (playing
+/// its travel animation for one of those ticks) when its last target
+/// despawned. A disengagement edge that must be robust to target loss has to
+/// gate on [`BRAIN_HAS_TARGET_INPUT`] directly, or be authored as an
+/// any-state interrupt that stands the brain down when `hasTarget` is false.
+/// The IR has no `not` opcode; negate with `select(cond, false, true)`.
 pub const BRAIN_NO_TARGET_DISTANCE: f32 = 1.0e9;
 
 /// The fixed brain input namespace, in handle order. Each entry is a
@@ -52,7 +64,8 @@ pub const BRAIN_NO_TARGET_DISTANCE: f32 = 1.0e9;
 ///
 /// The order is load-bearing: the runtime scope's snapshot array is indexed by
 /// it, so refresh must write the same slots in the same order. Names use the
-/// `@`-reserved, camelCase idiom of the script surface (scripting.md §4).
+/// camelCase idiom of the script surface (scripting.md §4) inside the
+/// `@`-reserved ephemeral-dispatch-input namespace (scripting.md §5).
 pub const BRAIN_INPUTS: [(&str, IrType); 7] = [
     (BRAIN_HAS_TARGET_INPUT, IrType::Bool),
     (BRAIN_TARGET_DISTANCE_INPUT, IrType::Number),

@@ -571,7 +571,6 @@ fn impact_policy_surface_uses_author_ids_and_closed_effect_union() {
     );
 }
 
-/// Drift guard for the behavior-graph verb vocabularies. The registry
 /// The emitted `BrainInputs` shape is a second spelling of `BRAIN_INPUTS`.
 ///
 /// The `brain` guard-input object is a hand-authored SDK prelude helper, not
@@ -646,6 +645,7 @@ fn brain_input_typedefs_match_the_foundation_table() {
     }
 }
 
+/// Drift guard for the behavior-graph verb vocabularies. The registry
 /// registrations in `scripting/primitives/mod.rs` are a second spelling of the
 /// `MotionVerb` / `ActionVerb` enums, so this test derives the expected union
 /// members from the enums themselves — `ALL` enumerates the variants and serde

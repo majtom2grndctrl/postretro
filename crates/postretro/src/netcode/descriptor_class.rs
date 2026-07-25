@@ -13,8 +13,10 @@ use postretro_entities::{ComponentKind, EntityId, EntityRegistry};
 /// - its `DescriptorProvenance.spawn_path` is `MapPlacement` or `RuntimeSpawn` (not a
 ///   player-start / net-slot / default-weapon spawn), AND
 /// - its **live** registry columns carry BOTH `ComponentKind::Brain` AND
-///   `ComponentKind::Agent` (the engine-owned AI brain + navigation agent an `ai`
-///   descriptor block materializes together — see `data_archetype::attach_descriptor_components`).
+///   `ComponentKind::Agent` (the engine-owned AI brain + navigation agent a brain
+///   block materializes together, in either of its two spellings: the legacy
+///   `components.ai` preset or an authored `components.behavior` graph — see
+///   `data_archetype::attach_descriptor_components`).
 ///
 /// Contract notes for importers:
 /// - It reads the **live component columns**, NOT `DescriptorProvenance.owned_components`.

@@ -261,16 +261,17 @@ If a situation appears to require `unsafe`, stop and consult the project owner. 
 
 ### 3.6 `debug_assert!`-only helpers
 
-When a helper exists only to feed a `debug_assert!`, gate it with `#[cfg(debug_assertions)]` — not `#[allow(dead_code)]`. The assertion is the sole non-test caller, and it too compiles out in release. Helper and caller then appear and disappear together, so no dead-code warning can arise.
+When a helper exists only to feed a `debug_assert!`, gate both the helper and the `debug_assert!` statement with `#[cfg(debug_assertions)]` — not `#[allow(dead_code)]`. A bare `debug_assert!` still *compiles* its arguments in release (it expands to `if cfg!(debug_assertions) { assert!(..) }`), so an ungated call still name-resolves the helper and fails release builds once the helper is gated. Gate the statement too, and helper and caller appear and disappear together — no dead-code warning, no release break.
 
 ```rust
 #[cfg(debug_assertions)]
 fn forward_pipeline_sampled_texture_count() -> u32 { /* ... */ }
 
+#[cfg(debug_assertions)]
 debug_assert_eq!(forward_pipeline_sampled_texture_count(), REQUIRED_SAMPLED_TEXTURES);
 ```
 
-The `cfg` gate states why the helper is absent in release; `#[allow]` only suppresses the symptom.
+The `cfg` gate states why the helper and its assertion are absent in release; `#[allow]` only suppresses the symptom.
 
 ---
 

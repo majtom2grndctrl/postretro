@@ -545,6 +545,11 @@ tag convention.
 | `position` | `{ x, y, z }` | Trigger origin in world space at query time. |
 | `tags` | `string[]` | Trigger tags at query time. Empty array if untagged. |
 
+For a switch, `position` is the centre of its (asymmetrically grown)
+activation volume, not the visible console — expect roughly 0.3 m of offset
+at default reach. Don't use `trigger.position` to place switch-attached
+effects; anchor those to the switch's own geometry instead.
+
 ```typescript
 trigger.arm();    // [{ id: trigger.id, primitive: "armTrigger", args: {} }]
 trigger.disarm(); // [{ id: trigger.id, primitive: "disarmTrigger", args: {} }]

@@ -1120,16 +1120,18 @@ fn spawn_platform_mover(registry: &mut EntityRegistry) -> EntityId {
     let id = registry.spawn(Transform::default());
     let mover = KinematicMoverComponent::new(
         MOVING_PLATFORM_ID,
-        vec![Vec3::ZERO, Vec3::new(6.0, 0.0, 0.0)],
-        vec!["start".to_string(), "finish".to_string()],
-        MOVING_PLATFORM_SPEED_MPS,
-        0.0,
-        KinematicMoverMode::PingPong,
-        false,
-        Vec3::ZERO,
-        0.0,
-        0.0,
-        false,
+        postretro_entities::KinematicMoverConfig {
+            waypoints: vec![Vec3::ZERO, Vec3::new(6.0, 0.0, 0.0)],
+            waypoint_names: vec!["start".to_string(), "finish".to_string()],
+            speed_mps: MOVING_PLATFORM_SPEED_MPS,
+            wait_ms: 0.0,
+            mode: KinematicMoverMode::PingPong,
+            started: false,
+            spin_axis: Vec3::ZERO,
+            initial_spin_rate_rad_s: 0.0,
+            spin_accel_rad_s2: 0.0,
+            carry_yaw: false,
+        },
     );
     registry.set_component(id, mover).unwrap();
     id
@@ -1139,16 +1141,18 @@ fn spawn_rotating_platform_mover(registry: &mut EntityRegistry) -> EntityId {
     let id = registry.spawn(Transform::default());
     let mover = KinematicMoverComponent::new(
         MOVING_PLATFORM_ID,
-        vec![Vec3::ZERO],
-        vec!["center".to_string()],
-        0.0,
-        0.0,
-        KinematicMoverMode::Once,
-        true,
-        Vec3::Y,
-        ROTATING_PLATFORM_INITIAL_RATE_RAD_S,
-        ROTATING_PLATFORM_ACCEL_RAD_S2,
-        false,
+        postretro_entities::KinematicMoverConfig {
+            waypoints: vec![Vec3::ZERO],
+            waypoint_names: vec!["center".to_string()],
+            speed_mps: 0.0,
+            wait_ms: 0.0,
+            mode: KinematicMoverMode::Once,
+            started: true,
+            spin_axis: Vec3::Y,
+            initial_spin_rate_rad_s: ROTATING_PLATFORM_INITIAL_RATE_RAD_S,
+            spin_accel_rad_s2: ROTATING_PLATFORM_ACCEL_RAD_S2,
+            carry_yaw: false,
+        },
     );
     registry.set_component(id, mover).unwrap();
     id

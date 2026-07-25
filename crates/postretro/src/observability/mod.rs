@@ -317,16 +317,18 @@ mod tests {
             ComponentKind::KinematicMover => {
                 ComponentValue::KinematicMover(KinematicMoverComponent::new(
                     1,
-                    vec![Vec3::ZERO, Vec3::new(1.0, 0.0, 0.0)],
-                    vec!["a".to_string(), "b".to_string()],
-                    1.0,
-                    0.0,
-                    KinematicMoverMode::Once,
-                    false,
-                    Vec3::ZERO,
-                    0.0,
-                    0.0,
-                    false,
+                    postretro_entities::KinematicMoverConfig {
+                        waypoints: vec![Vec3::ZERO, Vec3::new(1.0, 0.0, 0.0)],
+                        waypoint_names: vec!["a".to_string(), "b".to_string()],
+                        speed_mps: 1.0,
+                        wait_ms: 0.0,
+                        mode: KinematicMoverMode::Once,
+                        started: false,
+                        spin_axis: Vec3::ZERO,
+                        initial_spin_rate_rad_s: 0.0,
+                        spin_accel_rad_s2: 0.0,
+                        carry_yaw: false,
+                    },
                 ))
             }
             ComponentKind::TriggerVolume => {

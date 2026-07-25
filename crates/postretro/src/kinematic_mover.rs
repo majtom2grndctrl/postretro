@@ -466,16 +466,18 @@ mod tests {
     fn sample_mover(mode: KinematicMoverMode, wait_ms: f32) -> KinematicMoverComponent {
         KinematicMoverComponent::new(
             7,
-            vec![Vec3::ZERO, Vec3::new(2.0, 0.0, 0.0)],
-            vec!["start".to_string(), "finish".to_string()],
-            1.0,
-            wait_ms,
-            mode,
-            true,
-            Vec3::ZERO,
-            0.0,
-            0.0,
-            false,
+            postretro_entities::KinematicMoverConfig {
+                waypoints: vec![Vec3::ZERO, Vec3::new(2.0, 0.0, 0.0)],
+                waypoint_names: vec!["start".to_string(), "finish".to_string()],
+                speed_mps: 1.0,
+                wait_ms,
+                mode,
+                started: true,
+                spin_axis: Vec3::ZERO,
+                initial_spin_rate_rad_s: 0.0,
+                spin_accel_rad_s2: 0.0,
+                carry_yaw: false,
+            },
         )
     }
 
@@ -519,16 +521,18 @@ mod tests {
     ) -> KinematicMoverComponent {
         KinematicMoverComponent::new(
             7,
-            vec![Vec3::ZERO],
-            vec!["origin".to_string()],
-            0.0,
-            0.0,
-            KinematicMoverMode::Once,
-            true,
-            Vec3::Y,
-            initial_spin_rate_rad_s,
-            spin_accel_rad_s2,
-            true,
+            postretro_entities::KinematicMoverConfig {
+                waypoints: vec![Vec3::ZERO],
+                waypoint_names: vec!["origin".to_string()],
+                speed_mps: 0.0,
+                wait_ms: 0.0,
+                mode: KinematicMoverMode::Once,
+                started: true,
+                spin_axis: Vec3::Y,
+                initial_spin_rate_rad_s,
+                spin_accel_rad_s2,
+                carry_yaw: true,
+            },
         )
     }
 
@@ -678,16 +682,18 @@ mod tests {
     fn spin_and_translation_compose_into_one_mover_pose() {
         let mover = KinematicMoverComponent::new(
             7,
-            vec![Vec3::ZERO, Vec3::new(2.0, 0.0, 0.0)],
-            vec!["start".to_string(), "finish".to_string()],
-            1.0,
-            0.0,
-            KinematicMoverMode::PingPong,
-            true,
-            Vec3::Y,
-            std::f32::consts::PI,
-            0.0,
-            true,
+            postretro_entities::KinematicMoverConfig {
+                waypoints: vec![Vec3::ZERO, Vec3::new(2.0, 0.0, 0.0)],
+                waypoint_names: vec!["start".to_string(), "finish".to_string()],
+                speed_mps: 1.0,
+                wait_ms: 0.0,
+                mode: KinematicMoverMode::PingPong,
+                started: true,
+                spin_axis: Vec3::Y,
+                initial_spin_rate_rad_s: std::f32::consts::PI,
+                spin_accel_rad_s2: 0.0,
+                carry_yaw: true,
+            },
         );
 
         let (mover, transform, table) = tick_component(mover, transform_at(Vec3::ZERO), 0.5);
@@ -721,16 +727,18 @@ mod tests {
     fn once_movers_stop_spinning_after_completion_while_ping_pong_movers_continue() {
         let once = KinematicMoverComponent::new(
             7,
-            vec![Vec3::ZERO, Vec3::X],
-            vec!["start".to_string(), "finish".to_string()],
-            1.0,
-            0.0,
-            KinematicMoverMode::Once,
-            true,
-            Vec3::Y,
-            1.0,
-            0.0,
-            false,
+            postretro_entities::KinematicMoverConfig {
+                waypoints: vec![Vec3::ZERO, Vec3::X],
+                waypoint_names: vec!["start".to_string(), "finish".to_string()],
+                speed_mps: 1.0,
+                wait_ms: 0.0,
+                mode: KinematicMoverMode::Once,
+                started: true,
+                spin_axis: Vec3::Y,
+                initial_spin_rate_rad_s: 1.0,
+                spin_accel_rad_s2: 0.0,
+                carry_yaw: false,
+            },
         );
         let (once, transform, table) = tick_component(once, transform_at(Vec3::ZERO), 1.0);
         assert!(once.completed);
@@ -748,16 +756,18 @@ mod tests {
 
         let ping_pong = KinematicMoverComponent::new(
             7,
-            vec![Vec3::ZERO, Vec3::X],
-            vec!["start".to_string(), "finish".to_string()],
-            1.0,
-            0.0,
-            KinematicMoverMode::PingPong,
-            true,
-            Vec3::Y,
-            1.0,
-            0.0,
-            false,
+            postretro_entities::KinematicMoverConfig {
+                waypoints: vec![Vec3::ZERO, Vec3::X],
+                waypoint_names: vec!["start".to_string(), "finish".to_string()],
+                speed_mps: 1.0,
+                wait_ms: 0.0,
+                mode: KinematicMoverMode::PingPong,
+                started: true,
+                spin_axis: Vec3::Y,
+                initial_spin_rate_rad_s: 1.0,
+                spin_accel_rad_s2: 0.0,
+                carry_yaw: false,
+            },
         );
         let (ping_pong, transform, _) = tick_component(ping_pong, transform_at(Vec3::ZERO), 1.0);
         let (ping_pong, _, table) = tick_component(ping_pong, transform, 0.5);
@@ -906,20 +916,22 @@ mod tests {
     fn go_to_path_node_moves_to_named_node_waits_then_holds() {
         let mut mover = KinematicMoverComponent::new(
             7,
-            vec![
-                Vec3::ZERO,
-                Vec3::new(2.0, 0.0, 0.0),
-                Vec3::new(4.0, 0.0, 0.0),
-            ],
-            vec!["a".to_string(), "b".to_string(), "c".to_string()],
-            1.0,
-            250.0,
-            KinematicMoverMode::PingPong,
-            true,
-            Vec3::ZERO,
-            0.0,
-            0.0,
-            false,
+            postretro_entities::KinematicMoverConfig {
+                waypoints: vec![
+                    Vec3::ZERO,
+                    Vec3::new(2.0, 0.0, 0.0),
+                    Vec3::new(4.0, 0.0, 0.0),
+                ],
+                waypoint_names: vec!["a".to_string(), "b".to_string(), "c".to_string()],
+                speed_mps: 1.0,
+                wait_ms: 250.0,
+                mode: KinematicMoverMode::PingPong,
+                started: true,
+                spin_axis: Vec3::ZERO,
+                initial_spin_rate_rad_s: 0.0,
+                spin_accel_rad_s2: 0.0,
+                carry_yaw: false,
+            },
         );
         let mut transform = transform_at(Vec3::ZERO);
 
@@ -955,20 +967,22 @@ mod tests {
     fn mover_driver_replays_targeted_motion_deterministically() {
         let mut seed = KinematicMoverComponent::new(
             7,
-            vec![
-                Vec3::ZERO,
-                Vec3::new(2.0, 0.0, 0.0),
-                Vec3::new(4.0, 0.0, 0.0),
-            ],
-            vec!["a".to_string(), "b".to_string(), "c".to_string()],
-            1.0,
-            100.0,
-            KinematicMoverMode::PingPong,
-            true,
-            Vec3::ZERO,
-            0.0,
-            0.0,
-            false,
+            postretro_entities::KinematicMoverConfig {
+                waypoints: vec![
+                    Vec3::ZERO,
+                    Vec3::new(2.0, 0.0, 0.0),
+                    Vec3::new(4.0, 0.0, 0.0),
+                ],
+                waypoint_names: vec!["a".to_string(), "b".to_string(), "c".to_string()],
+                speed_mps: 1.0,
+                wait_ms: 100.0,
+                mode: KinematicMoverMode::PingPong,
+                started: true,
+                spin_axis: Vec3::ZERO,
+                initial_spin_rate_rad_s: 0.0,
+                spin_accel_rad_s2: 0.0,
+                carry_yaw: false,
+            },
         );
         apply_mover_command(&mut seed, &MoverCommand::GoToPathNode("c".to_string()));
         let mut a = (seed.clone(), transform_at(Vec3::ZERO));
@@ -988,19 +1002,21 @@ mod tests {
     fn near_zero_ping_pong_segment_completes_without_spinning() {
         let mover = KinematicMoverComponent::new(
             7,
-            vec![
-                Vec3::ZERO,
-                Vec3::new(KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH * 0.5, 0.0, 0.0),
-            ],
-            vec!["start".to_string(), "finish".to_string()],
-            1.0,
-            0.0,
-            KinematicMoverMode::PingPong,
-            true,
-            Vec3::ZERO,
-            0.0,
-            0.0,
-            false,
+            postretro_entities::KinematicMoverConfig {
+                waypoints: vec![
+                    Vec3::ZERO,
+                    Vec3::new(KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH * 0.5, 0.0, 0.0),
+                ],
+                waypoint_names: vec!["start".to_string(), "finish".to_string()],
+                speed_mps: 1.0,
+                wait_ms: 0.0,
+                mode: KinematicMoverMode::PingPong,
+                started: true,
+                spin_axis: Vec3::ZERO,
+                initial_spin_rate_rad_s: 0.0,
+                spin_accel_rad_s2: 0.0,
+                carry_yaw: false,
+            },
         );
 
         let (mover, transform, table) = tick_component(mover, transform_at(Vec3::ZERO), 1.0);

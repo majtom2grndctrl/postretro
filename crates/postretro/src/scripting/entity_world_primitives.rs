@@ -436,16 +436,18 @@ mod tests {
             id,
             KinematicMoverComponent::new(
                 9,
-                vec![Vec3::ZERO, Vec3::X],
-                vec!["start".to_string(), "end".to_string()],
-                1.0,
-                0.0,
-                KinematicMoverMode::PingPong,
-                false,
-                Vec3::ZERO,
-                0.0,
-                0.0,
-                false,
+                postretro_entities::KinematicMoverConfig {
+                    waypoints: vec![Vec3::ZERO, Vec3::X],
+                    waypoint_names: vec!["start".to_string(), "end".to_string()],
+                    speed_mps: 1.0,
+                    wait_ms: 0.0,
+                    mode: KinematicMoverMode::PingPong,
+                    started: false,
+                    spin_axis: Vec3::ZERO,
+                    initial_spin_rate_rad_s: 0.0,
+                    spin_accel_rad_s2: 0.0,
+                    carry_yaw: false,
+                },
             ),
         )
         .unwrap();

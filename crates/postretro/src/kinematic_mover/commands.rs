@@ -313,16 +313,18 @@ mod tests {
     fn sample_mover(mode: KinematicMoverMode, wait_ms: f32) -> KinematicMoverComponent {
         KinematicMoverComponent::new(
             7,
-            vec![Vec3::ZERO, Vec3::new(2.0, 0.0, 0.0)],
-            vec!["start".to_string(), "finish".to_string()],
-            1.0,
-            wait_ms,
-            mode,
-            true,
-            Vec3::ZERO,
-            0.0,
-            0.0,
-            false,
+            postretro_entities::KinematicMoverConfig {
+                waypoints: vec![Vec3::ZERO, Vec3::new(2.0, 0.0, 0.0)],
+                waypoint_names: vec!["start".to_string(), "finish".to_string()],
+                speed_mps: 1.0,
+                wait_ms,
+                mode,
+                started: true,
+                spin_axis: Vec3::ZERO,
+                initial_spin_rate_rad_s: 0.0,
+                spin_accel_rad_s2: 0.0,
+                carry_yaw: false,
+            },
         )
     }
 

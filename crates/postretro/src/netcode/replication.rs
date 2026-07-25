@@ -474,16 +474,18 @@ mod tests {
     fn kinematic_mover_wire_state_carries_rotating_phase_fields() {
         let mut mover = KinematicMoverComponent::new(
             41,
-            vec![Vec3::ZERO],
-            vec!["center".to_string()],
-            0.0,
-            0.0,
-            KinematicMoverMode::Once,
-            true,
-            Vec3::Y,
-            1.0,
-            2.0,
-            true,
+            postretro_entities::KinematicMoverConfig {
+                waypoints: vec![Vec3::ZERO],
+                waypoint_names: vec!["center".to_string()],
+                speed_mps: 0.0,
+                wait_ms: 0.0,
+                mode: KinematicMoverMode::Once,
+                started: true,
+                spin_axis: Vec3::Y,
+                initial_spin_rate_rad_s: 1.0,
+                spin_accel_rad_s2: 2.0,
+                carry_yaw: true,
+            },
         );
         mover.spin_angle_rad = 0.75;
         mover.spin_rate_rad_s = 1.25;

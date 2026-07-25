@@ -62,41 +62,46 @@ pub struct KinematicMoverComponent {
     pub spin_target_rate_rad_s: f32,
 }
 
+/// Static mover authoring data and its initial runtime phase.
+///
+/// Rates are expressed in radians, and the constructor normalizes `spin_axis`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct KinematicMoverConfig {
+    pub waypoints: Vec<Vec3>,
+    pub waypoint_names: Vec<String>,
+    pub speed_mps: f32,
+    pub wait_ms: f32,
+    pub mode: KinematicMoverMode,
+    pub started: bool,
+    pub spin_axis: Vec3,
+    pub initial_spin_rate_rad_s: f32,
+    pub spin_accel_rad_s2: f32,
+    pub carry_yaw: bool,
+}
+
 impl KinematicMoverComponent {
-    pub fn new(
-        mover_id: u32,
-        waypoints: Vec<Vec3>,
-        waypoint_names: Vec<String>,
-        speed_mps: f32,
-        wait_ms: f32,
-        mode: KinematicMoverMode,
-        started: bool,
-        spin_axis: Vec3,
-        initial_spin_rate_rad_s: f32,
-        spin_accel_rad_s2: f32,
-        carry_yaw: bool,
-    ) -> Self {
+    pub fn new(mover_id: u32, config: KinematicMoverConfig) -> Self {
         Self {
             mover_id,
-            waypoints,
-            waypoint_names,
-            speed_mps,
-            wait_ms,
-            mode,
-            spin_axis: spin_axis.normalize_or_zero(),
-            spin_accel_rad_s2,
-            carry_yaw,
+            waypoints: config.waypoints,
+            waypoint_names: config.waypoint_names,
+            speed_mps: config.speed_mps,
+            wait_ms: config.wait_ms,
+            mode: config.mode,
+            spin_axis: config.spin_axis.normalize_or_zero(),
+            spin_accel_rad_s2: config.spin_accel_rad_s2,
+            carry_yaw: config.carry_yaw,
             segment_index: 0,
             direction_sign: 1,
             segment_elapsed_ms: 0.0,
             wait_remaining_ms: 0.0,
             current_linear_velocity: Vec3::ZERO,
-            started,
+            started: config.started,
             completed: false,
             target_segment: None,
             spin_angle_rad: 0.0,
-            spin_rate_rad_s: initial_spin_rate_rad_s,
-            spin_target_rate_rad_s: initial_spin_rate_rad_s,
+            spin_rate_rad_s: config.initial_spin_rate_rad_s,
+            spin_target_rate_rad_s: config.initial_spin_rate_rad_s,
         }
     }
 }
@@ -110,16 +115,18 @@ mod tests {
     fn kinematic_mover_component_registers_kind_and_round_trips_serde() {
         let mover = KinematicMoverComponent::new(
             9,
-            vec![Vec3::ZERO, Vec3::new(1.0, 2.0, 3.0)],
-            vec!["start".to_string(), "finish".to_string()],
-            2.5,
-            125.0,
-            KinematicMoverMode::PingPong,
-            true,
-            Vec3::new(0.0, 2.0, 0.0),
-            1.25,
-            0.75,
-            true,
+            KinematicMoverConfig {
+                waypoints: vec![Vec3::ZERO, Vec3::new(1.0, 2.0, 3.0)],
+                waypoint_names: vec!["start".to_string(), "finish".to_string()],
+                speed_mps: 2.5,
+                wait_ms: 125.0,
+                mode: KinematicMoverMode::PingPong,
+                started: true,
+                spin_axis: Vec3::new(0.0, 2.0, 0.0),
+                initial_spin_rate_rad_s: 1.25,
+                spin_accel_rad_s2: 0.75,
+                carry_yaw: true,
+            },
         );
         let value = mover.clone().into_value();
 

@@ -89,16 +89,18 @@ mod tests {
     fn rotating_mover(axis: Vec3) -> KinematicMoverComponent {
         KinematicMoverComponent::new(
             7,
-            vec![Vec3::ZERO],
-            vec!["carousel".to_string()],
-            1.0,
-            0.0,
-            KinematicMoverMode::Once,
-            true,
-            axis,
-            1.0,
-            0.0,
-            true,
+            postretro_entities::KinematicMoverConfig {
+                waypoints: vec![Vec3::ZERO],
+                waypoint_names: vec!["carousel".to_string()],
+                speed_mps: 1.0,
+                wait_ms: 0.0,
+                mode: KinematicMoverMode::Once,
+                started: true,
+                spin_axis: axis,
+                initial_spin_rate_rad_s: 1.0,
+                spin_accel_rad_s2: 0.0,
+                carry_yaw: true,
+            },
         )
     }
 

@@ -243,16 +243,18 @@ fn spawn_from_geometry(
         };
         let component = KinematicMoverComponent::new(
             mover.mover_id,
-            waypoints,
-            waypoint_names,
-            mover.speed_mps,
-            mover.wait_ms,
-            mode,
-            mover.start_on_spawn,
-            spin_axis,
-            mover.spin_speed_deg_s.to_radians(),
-            mover.spin_accel_deg_s2.to_radians(),
-            mover.carry_yaw,
+            postretro_entities::KinematicMoverConfig {
+                waypoints,
+                waypoint_names,
+                speed_mps: mover.speed_mps,
+                wait_ms: mover.wait_ms,
+                mode,
+                started: mover.start_on_spawn,
+                spin_axis,
+                initial_spin_rate_rad_s: mover.spin_speed_deg_s.to_radians(),
+                spin_accel_rad_s2: mover.spin_accel_deg_s2.to_radians(),
+                carry_yaw: mover.carry_yaw,
+            },
         );
         log::info!("{}", kinematic_mover_load_summary(mover, &component));
         registry
@@ -490,16 +492,18 @@ mod tests {
         loaded.carry_yaw = true;
         let component = KinematicMoverComponent::new(
             loaded.mover_id,
-            vec![loaded.origin],
-            vec!["carousel".to_string()],
-            loaded.speed_mps,
-            loaded.wait_ms,
-            KinematicMoverMode::PingPong,
-            loaded.start_on_spawn,
-            loaded.spin_axis,
-            loaded.spin_speed_deg_s.to_radians(),
-            loaded.spin_accel_deg_s2.to_radians(),
-            loaded.carry_yaw,
+            postretro_entities::KinematicMoverConfig {
+                waypoints: vec![loaded.origin],
+                waypoint_names: vec!["carousel".to_string()],
+                speed_mps: loaded.speed_mps,
+                wait_ms: loaded.wait_ms,
+                mode: KinematicMoverMode::PingPong,
+                started: loaded.start_on_spawn,
+                spin_axis: loaded.spin_axis,
+                initial_spin_rate_rad_s: loaded.spin_speed_deg_s.to_radians(),
+                spin_accel_rad_s2: loaded.spin_accel_deg_s2.to_radians(),
+                carry_yaw: loaded.carry_yaw,
+            },
         );
 
         let summary = kinematic_mover_load_summary(&loaded, &component);

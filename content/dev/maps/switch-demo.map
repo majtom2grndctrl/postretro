@@ -149,10 +149,10 @@
 {
 "classname" "light"
 "origin" "224 224 128"
-"light" "400"
+"light" "100"
 "style" ""
 "_color" "255 240 220"
-"_falloff_range" "512"
+"_falloff_range" "75"
 "_bake_only" "0"
 "_shadow_type" "static_light_map"
 }
@@ -160,10 +160,10 @@
 {
 "classname" "light"
 "origin" "96 96 128"
-"light" "300"
+"light" "200"
 "style" ""
 "_color" "120 190 255"
-"_falloff_range" "448"
+"_falloff_range" "200"
 "_bake_only" "0"
 "_shadow_type" "static_light_map"
 }
@@ -191,10 +191,10 @@
 // itself, not this toggle.
 {
 "classname" "light_dynamic"
-"origin" "224 304 56"
-"light" "90"
+"origin" "224 224 96"
+"light" "400"
 "_color" "80 255 140"
-"_falloff_range" "96"
+"_falloff_range" "133"
 "delay" "0"
 "_cast_entity_shadows" "0"
 "_tags" "switch_demo_console_light"

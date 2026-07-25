@@ -376,7 +376,7 @@ the frontend through the same path as `returnToFrontend()`.
 
 ### 10.6 Mover Commands
 
-`world.query({ component: "kinematic_mover", tag })` reads map movers. The raw query result is a snapshot (`id`, position, tags); the SDK wraps it in a mover handle that builds tag-targeted reaction steps. `start`, `stop`, `reverse`, `goToPathNode(node)`, and `setSpinRate(rate)` map to the closed Rust command vocabulary. `setSpinRate` accepts a finite target in degrees per second, which the shared command applier converts to radians per second; it changes only the target rate, so the deterministic driver ramps through signed reversals and toward rest. Commands are declarative reaction data, not a per-tick script-control path: the deterministic mover driver owns motion every tick.
+`world.query({ component: "kinematic_mover", tag })` reads map movers. The raw query result is a snapshot (`id`, position, tags); the SDK wraps it in a mover handle that builds tag-targeted reaction steps. `start`, `stop`, `reverse`, `goToPathNode(node)`, and `setSpinRate(rate)` map to the closed Rust command vocabulary. `setSpinRate(rate)` emits the `moverSetSpinRate` primitive and the `set_spin_rate` command verb. `rate` is a finite target in degrees per second at every author-facing surface; the shared command applier converts it to radians per second. It changes only target rate, so the deterministic driver ramps through signed reversals and toward rest. Commands are declarative reaction data, not a per-tick script-control path: the deterministic mover driver owns motion every tick.
 
 ### 10.7 Trigger Commands
 

@@ -254,6 +254,7 @@ fn spawn_from_geometry(
             mover.spin_accel_deg_s2.to_radians(),
             mover.carry_yaw,
         );
+        log::info!("{}", kinematic_mover_load_summary(mover, &component));
         registry
             .set_component(entity, component)
             .map_err(|err| RuntimeMoverLoadError::new(err.to_string()))?;
@@ -261,6 +262,27 @@ fn spawn_from_geometry(
     }
 
     Ok(spawned)
+}
+
+/// Author-readable static and seeded-phase diagnostics emitted during level
+/// install. Rates are converted back to the FGD's degrees-per-second units.
+fn kinematic_mover_load_summary(
+    loaded: &LoadedKinematicMover,
+    component: &KinematicMoverComponent,
+) -> String {
+    let axis = component.spin_axis;
+    format!(
+        "[Loader] kinematic mover {} (`{}`): spin static(axis=[{:.3}, {:.3}, {:.3}], accel={:.2} deg/s², carry_yaw={}); phase(current_rate={:.2} deg/s, target_rate={:.2} deg/s)",
+        loaded.mover_id,
+        loaded.name,
+        axis.x,
+        axis.y,
+        axis.z,
+        component.spin_accel_rad_s2.to_degrees(),
+        component.carry_yaw,
+        component.spin_rate_rad_s.to_degrees(),
+        component.spin_target_rate_rad_s.to_degrees(),
+    )
 }
 
 fn build_mover_collider(mover: &LoadedKinematicMover) -> Option<MoverCollider> {
@@ -456,6 +478,36 @@ mod tests {
             spin_accel_deg_s2: 0.0,
             carry_yaw: false,
         }
+    }
+
+    #[test]
+    fn load_summary_separates_static_spin_fields_from_seeded_phase_in_author_units() {
+        let mut loaded = mover(1);
+        loaded.name = "carousel".to_string();
+        loaded.spin_axis = Vec3::new(0.0, 0.0, 3.0);
+        loaded.spin_speed_deg_s = -90.0;
+        loaded.spin_accel_deg_s2 = 45.0;
+        loaded.carry_yaw = true;
+        let component = KinematicMoverComponent::new(
+            loaded.mover_id,
+            vec![loaded.origin],
+            vec!["carousel".to_string()],
+            loaded.speed_mps,
+            loaded.wait_ms,
+            KinematicMoverMode::PingPong,
+            loaded.start_on_spawn,
+            loaded.spin_axis,
+            loaded.spin_speed_deg_s.to_radians(),
+            loaded.spin_accel_deg_s2.to_radians(),
+            loaded.carry_yaw,
+        );
+
+        let summary = kinematic_mover_load_summary(&loaded, &component);
+
+        assert!(summary.contains("spin static(axis=[0.000, 0.000, 1.000]"));
+        assert!(summary.contains("accel=45.00 deg/s²"));
+        assert!(summary.contains("carry_yaw=true"));
+        assert!(summary.contains("phase(current_rate=-90.00 deg/s, target_rate=-90.00 deg/s)"));
     }
 
     fn geometry(mode: u8) -> KinematicGeometry {

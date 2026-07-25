@@ -7,11 +7,10 @@ west end and move east through the stations.
 Build a local artifact on demand:
 
 ```bash
-cargo run -p postretro-level-compiler -- content/dev/maps/kinematic-platform.map -o content/dev/maps/kinematic-platform.prl
+cargo run -p postretro-level-compiler -- content/dev/maps/kinematic-platform.map -o /private/tmp/kinematic-platform.prl
 ```
 
-Do not commit the generated `.prl` or `baked/materials/` sidecars. Remove the
-local artifact after the run when it is no longer useful.
+Do not commit generated `.prl` files or `baked/materials/` sidecars.
 
 ## Fixture Material
 
@@ -43,6 +42,11 @@ The fixture uses two complete world-material bundles:
   three bright static point lights. The lights compete for the fixed two-slot
   promoted-cube budget, so use this station to confirm graceful ranker
   selection rather than a guarantee that all three are promoted.
+- **Rotating-carousel station (x 560–720, y -48–48).** The asymmetric Metal
+  slab is a pure rotator around its single `carousel_origin` waypoint. It
+  starts at 45 deg/s about the authored vertical axis, carries rider yaw, and
+  declares a 180 deg/s² spin acceleration for rate-command testing. Its open
+  bay has no nearby wall or mover face that can pinch a rider during rotation.
 
 ## Manual Checks
 
@@ -68,6 +72,11 @@ The fixture uses two complete world-material bundles:
 5. Before touching platform A's start pad, confirm that its docked geometry is
    still a stable dynamic-light occluder. After starting it, its cast shadow
    must track every frame and remain stable again at an endpoint.
+6. In the open west bay, stand on the carousel for several turns. The slab
+   should rotate in place, keep the rider planted, and carry view yaw without
+   camera pitch or roll. Do not use the nearby moving-platform tracks as a
+   rotation test area; the carousel station is intentionally isolated for the
+   displace-only mover policy.
 
 These are visual, in-engine checks. Map compilation only validates authored
 content and cannot prove shadow-pool receipt, promotion crossfades, or the

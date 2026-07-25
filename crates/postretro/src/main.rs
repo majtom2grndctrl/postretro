@@ -30,6 +30,10 @@ mod impact_policy;
 mod input;
 mod kinematic_mover;
 mod movement;
+// App-side debug-line geometry for rotating kinematic movers. This owns no GPU
+// state; the renderer only consumes its emitted lines.
+#[cfg(feature = "dev-tools")]
+mod mover_diagnostics;
 // The runtime nav graph is built in every build whenever a level carries a
 // baked navmesh; pathfinding consumes its query surface.
 mod nav;
@@ -3175,6 +3179,17 @@ impl ApplicationHandler for App {
                         // and the map carried a baked navmesh.
                         if let Some(nav_graph) = self.nav_graph.as_ref() {
                             render::nav_diagnostics::emit(renderer, nav_graph);
+                        }
+                        // Rotating-mover spin axes and orientation. The app owns the
+                        // registry read and line geometry; renderer only consumes the
+                        // established debug-line primitive.
+                        if session
+                            .debug_ui
+                            .as_ref()
+                            .is_some_and(|debug_ui| debug_ui.is_visible())
+                        {
+                            let registry = script_ctx.registry.borrow();
+                            mover_diagnostics::emit(renderer, &registry);
                         }
                         // All-agent path/velocity/destination overlay. The
                         // registry was read once before egui; this emit pass

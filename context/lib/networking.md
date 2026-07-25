@@ -76,7 +76,7 @@ The net crate emits typed snapshots and **never mutates the registry.** All regi
 
 On every client game-logic frame, apply received snapshots before state-crossing detection. Snapshot apply mints a frame-stamped `SnapshotsApplied` witness; crossing detection consumes it after game logic settles same-frame local slot writes. The witness cannot be forged or reused from a prior frame, so crossings always observe received replicated state before they inspect the slot table.
 
-Current component payloads are `Transform`, `PlayerMovementState`, `MeshAnimationState`, and `KinematicMoverState`, added in `ComponentKind` numeric order. `PlayerMovementState` includes presentation-only `aim_pitch` for remote-avatar pose presentation. `MeshAnimationState` carries the current animation state name; descriptor mesh data stays local. `KinematicMoverState` carries phase only: `mover_id`, segment index, direction, mode, elapsed/wait milliseconds, started/completed flags, velocity, and an optional target segment for a move-and-hold command. Static path data stays in PRL `KinematicGeometry`.
+Current component payloads are `Transform`, `PlayerMovementState`, `MeshAnimationState`, and `KinematicMoverState`, added in `ComponentKind` numeric order. `PlayerMovementState` includes presentation-only `aim_pitch` for remote-avatar pose presentation. `MeshAnimationState` carries the current animation state name; descriptor mesh data stays local. `KinematicMoverState` carries phase only: `mover_id`, segment index, direction, mode, elapsed/wait milliseconds, started/completed flags, velocity, optional target segment for move-and-hold, and rotating phase (`spin_angle_rad`, current spin rate, target spin rate). Static path and spin authoring (axis, acceleration, `carry_yaw`) stays in PRL `KinematicGeometry`.
 
 Player movement grounding is a widened ground reference (`Airborne`, `World`, or `Mover(mover_id)`) rather than a bare boolean. The net crate validates only the enum shape and finite numeric fields; resolving a mover id to a loaded local mover is engine-owned client apply.
 
@@ -285,7 +285,9 @@ any changed message layout — including a later, independent field addition to 
 already-shipped message — bumps the wire-version (layout) constant again, independently of
 any vocabulary change. `SNAPSHOT_VERSION` is untouched by anything that rides
 `ClientMessage`/`ServerMessage` on the Input channel; it bumps only when a change lands on
-the snapshot record itself.
+the snapshot record itself. Rotating-mover phase fields are a snapshot layout change: they
+use `SNAPSHOT_VERSION` 11 and `WIRE_VERSION` 11, so version-10 peers are refused by both
+handshake gates.
 
 ## Phase boundaries
 
@@ -295,7 +297,7 @@ Phase 1/2 plans are historical. Do not read their old full-snapshot, no-despawn,
 
 Replicable-set policy is gameplay-authoritative first. Player pawns, AI/enemies, movers, and other networked gameplay objects go on the wire. Deterministic client-local or baked data — particles, sprite visuals, lights, fog volumes, and shared `.prl` map data — stays off the wire unless gameplay authority requires otherwise.
 
-Mover prediction is phase-seeded and separate from the pawn command-ring predictor. The host replicates authoritative mover phase; clients re-run the deterministic mover driver from that phase and reconcile in place, mapped by `NetworkId`. There is no provisional client-created mover copy.
+Mover prediction is phase-seeded and separate from the pawn command-ring predictor. The host replicates authoritative mover phase; clients re-run the deterministic mover driver from that phase and reconcile in place, mapped by `NetworkId`. Rotating movers seed angle plus current and target spin rates; clients combine that phase with the local PRL axis and acceleration, so orientation, ramps, and a rider's rotating-base carry reconcile without a second player-orientation field. There is no provisional client-created mover copy.
 
 Trigger volumes are shared baked map data, not replicated state. Clients send a `use_pressed` input bit with movement input; only the host evaluates touch/use overlap and fires trigger commands. A fired command mutates replicated mover phase, including its optional target segment, so clients reconcile the resulting motion without ever evaluating the trigger locally.
 

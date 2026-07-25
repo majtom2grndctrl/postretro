@@ -15,8 +15,8 @@ use shambler::face::{FaceWinding, face_centers, face_indices, face_vertices};
 use crate::format::quake_map;
 use crate::map_data::{
     BrushPlane, BrushSide, BrushVolume, EntityInfo, EntityShadowParams, KinematicMoveMode, MapData,
-    MapEntityRecord, MapFogVolume, MapKinematicMover, MapKinematicWaypoint, MapLight, NavParams,
-    TextureProjection,
+    MapEntityRecord, MapFogVolume, MapKinematicMover, MapKinematicWaypoint, MapLight,
+    MapTriggerVolume, NavParams, TextureProjection,
 };
 use crate::map_format::MapFormat;
 use postretro_level_format::fog_volumes::{MAX_FOG_VOLUMES, MAX_PLANES_PER_VOLUME};
@@ -348,6 +348,39 @@ fn parse_optional_finite_f32(
 /// this value is chosen to exceed it.
 const DEFAULT_SWITCH_USE_REACH: f32 = 24.0;
 
+/// Largest accepted `switch` `use_reach`, in map units (~3.25 m).
+///
+/// Reach only has to bridge the gap between the switch face and the player
+/// capsule, so every legitimate value sits near the 24-unit default; a console
+/// deep in an alcove might want a few times that. Rejecting beyond 5× catches the
+/// authoring typo this bound exists for — a stray digit (`240`) or a unit mix-up —
+/// before it becomes a trigger volume that swallows the room and fires on every
+/// `use` press in it.
+const MAX_SWITCH_USE_REACH: f32 = 128.0;
+
+/// Distance outside a switch face at which world solidity is sampled, in map units.
+///
+/// The question is adjacency — is the space *against* this face open? — so the
+/// sample sits just outside the face rather than out at the full reach. Sampling
+/// at reach distance would instead refuse to inflate into any room shallower than
+/// `use_reach`, which is exactly the face that matters. One map unit is far below
+/// any authored wall thickness (16 units in first-party content) and far above
+/// plane-classification float noise.
+const SWITCH_SOLIDITY_PROBE_UNITS: f64 = 1.0;
+
+/// A `switch` trigger awaiting its per-face reach margins.
+///
+/// Deferred out of the entity loop because the margin test reads the finished
+/// static world brush set, which the loop is still collecting.
+#[derive(Debug)]
+struct PendingSwitchReach {
+    /// Position of this switch's volume in the `trigger_volumes` list.
+    trigger_index: usize,
+    name: String,
+    /// Reach margin in engine meters.
+    margin: f32,
+}
+
 /// Read and parse a .map file, classify brushes, and extract face geometry.
 ///
 /// The `format` parameter identifies the source map format. Its `units_to_meters()`
@@ -446,6 +479,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     // brush-face vertices, point-entity AABBs from origin + radius/height.
     let mut fog_volumes: Vec<MapFogVolume> = Vec::new();
     let mut trigger_volumes = Vec::new();
+    let mut pending_switch_reach: Vec<PendingSwitchReach> = Vec::new();
 
     // Worldspawn `fog_pixel_scale` (1=full-res, 8=coarsest). Default 4 when
     // unset. `0` is the "unset" sentinel — pass it through as `0` so the
@@ -642,7 +676,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
             if classname == "trigger_volume" {
                 let props = collect_entity_properties(&geo_map, entity_id);
                 trigger_volumes.push(crate::trigger_volumes::resolve_trigger_volume(
-                    &geo_map, &brush_ids, &props, scale,
+                    &geo_map, &brush_ids, &props, scale, &classname,
                 )?);
                 continue;
             }
@@ -652,36 +686,60 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
             // it is pressable). No runtime type is involved.
             if classname == "switch" {
                 let mut props = collect_entity_properties(&geo_map, entity_id);
+                let switch_name = props
+                    .get("name")
+                    .map(|v| v.trim().to_owned())
+                    .unwrap_or_default();
                 // Press-to-activate is what distinguishes `switch` from
                 // `trigger_volume`, so any authored `activation` is discarded.
-                props.insert("activation".to_string(), "use".to_string());
-                let switch_name = props.get("name").map(|v| v.trim()).unwrap_or_default();
+                // Warned rather than dropped silently: the realistic source is a
+                // `trigger_volume` converted by editing its classname, and
+                // TrenchBroom cannot surface the leftover key because `switch`
+                // does not declare it.
+                if let Some(authored) = props.insert("activation".to_string(), "use".to_string()) {
+                    log::warn!(
+                        "[Compiler] switch `{switch_name}` ignores authored `activation` `{}`; a \
+                         switch is always `use`-activated",
+                        authored.trim()
+                    );
+                }
                 let use_reach = parse_optional_finite_f32(
                     &props,
                     "use_reach",
                     DEFAULT_SWITCH_USE_REACH,
                     &classname,
-                    switch_name,
+                    &switch_name,
                 )?;
-                if use_reach < 0.0 {
+                // Zero is rejected, not just negatives: the margin is the whole
+                // reach mechanism, so a zero-margin switch compiles clean and is
+                // then unpressable.
+                if use_reach <= 0.0 {
                     anyhow::bail!(
-                        "switch `{switch_name}` `use_reach` must be non-negative, got {use_reach}"
+                        "switch `{switch_name}` `use_reach` must be positive, got {use_reach} — \
+                         the trigger volume only becomes reachable by growing past the solid \
+                         switch face"
                     );
                 }
-                let mut trigger = crate::trigger_volumes::resolve_trigger_volume(
-                    &geo_map, &brush_ids, &props, scale,
-                )?;
-                // Use-activation is a capsule-vs-AABB intersection test, not a
-                // containment test. The switch brush is solid, so the player
-                // can never stand inside it — the trigger has to reach out past
-                // the switch face into the space the player occupies.
-                // `use_reach` is authored in map units; the AABB is already in
-                // engine meters, hence the scale.
-                let margin = use_reach * scale as f32;
-                for axis in 0..3 {
-                    trigger.aabb_min[axis] -= margin;
-                    trigger.aabb_max[axis] += margin;
+                if use_reach > MAX_SWITCH_USE_REACH {
+                    anyhow::bail!(
+                        "switch `{switch_name}` `use_reach` {use_reach} exceeds the maximum \
+                         {MAX_SWITCH_USE_REACH} map units — a press volume that large swallows \
+                         the room around the switch"
+                    );
                 }
+                let trigger = crate::trigger_volumes::resolve_trigger_volume(
+                    &geo_map, &brush_ids, &props, scale, &classname,
+                )?;
+                // The reach margins are applied after this loop: whether a face
+                // may grow depends on the static world brush set, which is still
+                // being collected here.
+                pending_switch_reach.push(PendingSwitchReach {
+                    trigger_index: trigger_volumes.len(),
+                    name: switch_name,
+                    // `use_reach` is authored in map units; the AABB is already
+                    // in engine meters, hence the scale.
+                    margin: use_reach * scale as f32,
+                });
                 trigger_volumes.push(trigger);
                 world_brush_ids.extend(brush_ids.iter().copied());
                 continue;
@@ -802,6 +860,12 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     }
 
     let brush_volumes = build_brush_volumes(&geo_map, &world_brush_ids, scale);
+    apply_switch_use_reach(
+        &mut trigger_volumes,
+        &pending_switch_reach,
+        &brush_volumes,
+        scale,
+    );
     let total_vertex_count: usize = brush_volumes
         .iter()
         .flat_map(|brush| brush.sides.iter())
@@ -981,6 +1045,81 @@ fn build_brush_volumes(geo_map: &GeoMap, brush_ids: &[BrushId], scale: f64) -> V
     }
 
     brush_volumes
+}
+
+/// Grow each switch's trigger AABB by its reach margin, on the faces whose
+/// adjacent space is open.
+///
+/// Use-activation is a capsule-vs-AABB intersection test and the switch brush is
+/// solid, so the volume has to reach past the switch face into the space the
+/// player stands in. Growing a face that abuts a wall reaches *through* it
+/// instead: `capsule_overlaps_aabb` measures from the capsule axis, so a face's
+/// effective reach is `margin + capsule_radius` — past the default margin and a
+/// 16-unit wall, that lands a pressable volume in the room behind. Testing the
+/// adjacent space makes press-through-wall structurally impossible instead of a
+/// question of wall thickness.
+///
+/// Only the space immediately outside a face is tested, so a switch floated off a
+/// wall still grows across the gap behind it.
+fn apply_switch_use_reach(
+    triggers: &mut [MapTriggerVolume],
+    pending: &[PendingSwitchReach],
+    world_brushes: &[BrushVolume],
+    scale: f64,
+) {
+    let probe = SWITCH_SOLIDITY_PROBE_UNITS * scale;
+    for switch in pending {
+        let trigger = &mut triggers[switch.trigger_index];
+        let min = DVec3::from_array(trigger.aabb_min.map(|v| v as f64));
+        let max = DVec3::from_array(trigger.aabb_max.map(|v| v as f64));
+        let center = (min + max) * 0.5;
+        let mut open_faces = 0;
+
+        for axis in 0..3 {
+            // Each sample sits outside the AABB along the axis it probes, so it
+            // can never land inside the switch's own brushes — those are in
+            // `world_brushes` too, having been folded into the world set.
+            let mut behind = center;
+            behind[axis] = min[axis] - probe;
+            if !point_is_inside_a_brush(behind, world_brushes) {
+                trigger.aabb_min[axis] -= switch.margin;
+                open_faces += 1;
+            }
+
+            let mut ahead = center;
+            ahead[axis] = max[axis] + probe;
+            if !point_is_inside_a_brush(ahead, world_brushes) {
+                trigger.aabb_max[axis] += switch.margin;
+                open_faces += 1;
+            }
+        }
+
+        if open_faces == 0 {
+            log::warn!(
+                "[Compiler] switch `{}` is enclosed by solid geometry on every face, so it gets no \
+                 press margin and can never be activated",
+                switch.name
+            );
+        }
+    }
+}
+
+/// True when `point` lies within any of the brush volumes.
+///
+/// `BrushVolume` planes are outward-facing half-spaces, so a point is inside a
+/// convex brush when it sits behind every one of them — the same reading the
+/// BSP's own solidity test uses (`partition::brush_bsp::brush_contains_region`).
+/// The AABB test prunes the plane loop, and bounds the rare non-closed brush whose
+/// half-space intersection is infinite.
+fn point_is_inside_a_brush(point: DVec3, brushes: &[BrushVolume]) -> bool {
+    brushes.iter().any(|brush| {
+        point.cmpge(brush.aabb.min).all()
+            && point.cmple(brush.aabb.max).all()
+            && brush
+                .planes
+                .iter()
+                .all(|plane| point.dot(plane.normal) - plane.distance <= 0.0)
+    })
 }
 
 fn resolve_kinematic_movers(
@@ -1957,8 +2096,89 @@ mod tests {
             .replacen("\"name\" \"lift_a\"", &name_block, 1)
     }
 
+    /// A Quake-format axis-aligned box brush spanning `min`..`max` (map units),
+    /// with each face's point triple wound so its plane normal points out of the box.
+    fn box_brush(min: [i32; 3], max: [i32; 3], texture: &str) -> String {
+        let ([x0, y0, z0], [x1, y1, z1]) = (min, max);
+        format!(
+            r#"{{
+( {x0} 0 0 ) ( {x0} 1 0 ) ( {x0} 0 1 ) {texture} 0 0 0 1 1
+( {x1} 0 0 ) ( {x1} 0 1 ) ( {x1} 1 0 ) {texture} 0 0 0 1 1
+( 0 {y0} 0 ) ( 0 {y0} 1 ) ( 1 {y0} 0 ) {texture} 0 0 0 1 1
+( 0 {y1} 0 ) ( 1 {y1} 0 ) ( 0 {y1} 1 ) {texture} 0 0 0 1 1
+( 0 0 {z0} ) ( 1 0 {z0} ) ( 0 1 {z0} ) {texture} 0 0 0 1 1
+( 0 0 {z1} ) ( 0 1 {z1} ) ( 1 0 {z1} ) {texture} 0 0 0 1 1
+}}"#
+        )
+    }
+
+    /// A switch console mounted flush on a wall, mirroring
+    /// `content/dev/maps/switch-demo.map`: console at Quake y 312..320, 16-unit
+    /// wall at y 320..336. Quake +y is engine -x, so the walled face is the
+    /// `aabb_min[0]` one; the console's other five faces front open space.
+    fn wall_mounted_switch_map() -> String {
+        let wall = box_brush([0, 320, 0], [448, 336, 160], "wall_tex");
+        let console = box_brush([200, 312, 40], [248, 320, 72], "switch_tex");
+        format!(
+            r#"
+// entity 0
+{{
+"classname" "worldspawn"
+"initialGravity" "-9.81"
+{wall}
+}}
+// entity 1
+{{
+"classname" "switch"
+"name" "door_switch"
+"on_fire" "open_door"
+{console}
+}}
+"#
+        )
+    }
+
+    // Regression: the margin was applied to all six faces unconditionally, so a
+    // wall-flush switch was pressable from the room on the far side of the wall —
+    // margin plus capsule radius outreached a standard 16-unit wall.
+    #[test]
+    fn switch_flush_against_a_wall_grows_only_into_open_space() {
+        let map =
+            parse_inline_map(&wall_mounted_switch_map()).expect("wall-mounted switch must compile");
+        assert_eq!(map.trigger_volumes.len(), 1);
+        let switch = &map.trigger_volumes[0];
+
+        // Console hull in map units, engine-swizzled (engine x = -quake_y,
+        // y = quake_z, z = -quake_x). The wall occupies engine x -336..-320.
+        let hull_min = [-320.0, 40.0, -248.0];
+        let hull_max = [-312.0, 72.0, -200.0];
+        let unit = MapFormat::IdTech2.units_to_meters() as f32;
+        let margin = DEFAULT_SWITCH_USE_REACH;
+
+        // The walled face keeps the raw hull — no margin at all.
+        assert!(
+            (switch.aabb_min[0] - hull_min[0] * unit).abs() < 1e-5,
+            "rear face must not grow into the wall, got {}",
+            switch.aabb_min[0]
+        );
+        assert!(
+            switch.aabb_min[0] > -336.0 * unit,
+            "rear face must stay short of the wall's far side"
+        );
+        // Every face fronting open room gets the full margin.
+        assert!((switch.aabb_max[0] - (hull_max[0] + margin) * unit).abs() < 1e-5);
+        assert!((switch.aabb_min[1] - (hull_min[1] - margin) * unit).abs() < 1e-5);
+        assert!((switch.aabb_max[1] - (hull_max[1] + margin) * unit).abs() < 1e-5);
+        assert!((switch.aabb_min[2] - (hull_min[2] - margin) * unit).abs() < 1e-5);
+        assert!((switch.aabb_max[2] - (hull_max[2] + margin) * unit).abs() < 1e-5);
+    }
+
     #[test]
     fn switch_folds_brushes_into_world_geometry_and_emits_inflated_use_trigger() {
+        // The fixture's only other world brush sits 160 units away, so every
+        // switch face fronts open space and all six margins are expected — the
+        // guard against over-clamping the per-face solidity test.
+        //
         // Reference hull: the same brush authored as a `trigger_volume`, which is
         // not inflated.
         let reference = parse_inline_map(&trigger_volume_map("start", "", "0"))
@@ -2029,8 +2249,26 @@ mod tests {
             assert!((wide.aabb_min[axis] - (default_trigger.aabb_min[axis] - extra)).abs() < 1e-5);
             assert!((wide.aabb_max[axis] - (default_trigger.aabb_max[axis] + extra)).abs() < 1e-5);
         }
+    }
+
+    #[test]
+    fn switch_rejects_use_reach_outside_the_supported_range() {
+        // Zero is rejected alongside negatives: the margin *is* the reach
+        // mechanism, so a zero-margin switch would compile clean and be
+        // unpressable.
+        assert!(parse_inline_map(&switch_map("\"use_reach\" \"0\"")).is_err());
         assert!(parse_inline_map(&switch_map("\"use_reach\" \"-1\"")).is_err());
         assert!(parse_inline_map(&switch_map("\"use_reach\" \"nonsense\"")).is_err());
+        // Unbounded reach made the volume swallow the level, firing on every `use`
+        // press in it.
+        assert!(parse_inline_map(&switch_map("\"use_reach\" \"100000\"")).is_err());
+        let over = format!("\"use_reach\" \"{}\"", MAX_SWITCH_USE_REACH + 1.0);
+        assert!(parse_inline_map(&switch_map(&over)).is_err());
+        let at_bound = format!("\"use_reach\" \"{MAX_SWITCH_USE_REACH}\"");
+        assert!(
+            parse_inline_map(&switch_map(&at_bound)).is_ok(),
+            "the bound itself is a legal value"
+        );
     }
 
     #[test]
@@ -2084,7 +2322,7 @@ mod tests {
         assert_eq!(switch.on_exit, "close_lift");
         assert!(switch.tags.contains(&"platform".to_string()));
         // A switch is press-to-activate by definition; an authored `activation`
-        // is discarded rather than honored.
+        // is warned about and discarded rather than honored.
         assert_eq!(switch.activation, 1);
 
         let records = crate::trigger_volumes::encode_trigger_volumes_section(&map.trigger_volumes)

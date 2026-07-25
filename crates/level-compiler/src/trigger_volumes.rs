@@ -10,11 +10,17 @@ use shambler::face::{face_planes, face_vertices};
 use crate::map_data::MapTriggerVolume;
 use crate::parse::{quake_to_engine, shambler_to_dvec3};
 
+/// Resolve a brush entity's world-space trigger AABB and activation data.
+///
+/// `classname` names the authored entity in every diagnostic: `switch` desugars
+/// through this same resolver, and an error attributed to `trigger_volume` sends
+/// the author hunting for an entity their map may not contain.
 pub(crate) fn resolve_trigger_volume(
     geo_map: &GeoMap,
     brush_ids: &[BrushId],
     props: &HashMap<String, String>,
     scale: f64,
+    classname: &str,
 ) -> Result<MapTriggerVolume> {
     let name = props
         .get("name")
@@ -23,14 +29,14 @@ pub(crate) fn resolve_trigger_volume(
     let activation = match props.get("activation").map(|v| v.trim()).unwrap_or("touch") {
         "touch" | "0" => 0,
         "use" | "1" => 1,
-        other => anyhow::bail!("trigger_volume `{name}` has unknown `activation` `{other}`"),
+        other => anyhow::bail!("{classname} `{name}` has unknown `activation` `{other}`"),
     };
     let command = match props.get("command").map(|v| v.trim()).unwrap_or("start") {
         "start" | "0" => 0,
         "stop" | "1" => 1,
         "reverse" | "2" => 2,
         "go_to_path_node" | "goToPathNode" | "3" => 3,
-        other => anyhow::bail!("trigger_volume `{name}` has unknown `command` `{other}`"),
+        other => anyhow::bail!("{classname} `{name}` has unknown `command` `{other}`"),
     };
     let command_arg = props
         .get("command_arg")
@@ -50,26 +56,26 @@ pub(crate) fn resolve_trigger_volume(
         .unwrap_or_default();
     if target_tag.is_empty() && on_fire.is_empty() && on_exit.is_empty() {
         log::warn!(
-            "[LevelCompiler] trigger_volume `{name}` has neither `target_tag`, `on_fire`, nor `on_exit`; it will be inert"
+            "[LevelCompiler] {classname} `{name}` has neither `target_tag`, `on_fire`, nor `on_exit`; it will be inert"
         );
     }
     if command == 3 && command_arg.is_empty() {
-        anyhow::bail!("trigger_volume `{name}` `go_to_path_node` requires `command_arg`");
+        anyhow::bail!("{classname} `{name}` `go_to_path_node` requires `command_arg`");
     }
     let fire_mode = match props.get("fire_mode").map(|v| v.trim()).unwrap_or("once") {
         "once" | "0" => 0,
         "multiple" | "1" => 1,
-        other => anyhow::bail!("trigger_volume `{name}` has unknown `fire_mode` `{other}`"),
+        other => anyhow::bail!("{classname} `{name}` has unknown `fire_mode` `{other}`"),
     };
     let rearm_ms = props
         .get("rearm_ms")
         .map(|v| v.trim().parse::<f32>())
         .transpose()
-        .map_err(|e| anyhow::anyhow!("trigger_volume `{name}` invalid `rearm_ms`: {e}"))?
+        .map_err(|e| anyhow::anyhow!("{classname} `{name}` invalid `rearm_ms`: {e}"))?
         .unwrap_or(0.0);
     if !rearm_ms.is_finite() || rearm_ms < 0.0 {
         anyhow::bail!(
-            "trigger_volume `{name}` `rearm_ms` must be finite and non-negative, got {rearm_ms}"
+            "{classname} `{name}` `rearm_ms` must be finite and non-negative, got {rearm_ms}"
         );
     }
     let enabled_on_spawn = match props
@@ -80,7 +86,7 @@ pub(crate) fn resolve_trigger_volume(
         "1" | "true" | "True" => true,
         "0" | "false" | "False" => false,
         other => {
-            anyhow::bail!("trigger_volume `{name}` `enabled_on_spawn` must be 0/1, got `{other}`")
+            anyhow::bail!("{classname} `{name}` `enabled_on_spawn` must be 0/1, got `{other}`")
         }
     };
     let geo_planes = face_planes(&geo_map.face_planes);
@@ -105,10 +111,10 @@ pub(crate) fn resolve_trigger_volume(
         }
     }
     if !min.is_finite() {
-        anyhow::bail!("trigger_volume `{name}` brushes produced no usable vertices");
+        anyhow::bail!("{classname} `{name}` brushes produced no usable vertices");
     }
     if (max - min).min_element() <= 0.0 {
-        anyhow::bail!("trigger_volume `{name}` AABB has zero extent");
+        anyhow::bail!("{classname} `{name}` AABB has zero extent");
     }
     Ok(MapTriggerVolume {
         name,

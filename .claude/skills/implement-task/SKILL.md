@@ -61,7 +61,7 @@ Build the feature according to the task spec and context file conventions.
 Before reporting done:
 - All acceptance criteria met
 - `cargo check` passes — you run solo and own the build, so run it freely
-- Focused tests for the touched crate/module pass — `cargo test -p <crate> <name_filter>`, narrowed to one target to skip the `tests/` suite: `--lib` for a library crate, `--bin <name>` for a binary one (`--bin prl-build` for `postretro-level-compiler`). Confirm the reported count is non-zero and matches what you meant to run — a target/filter pair matching nothing prints `0 passed` and exits `ok`. Not the full workspace suite, never a bare `cargo test -p postretro-level-compiler` (cold `prl-build` bakes, ~1h) — the caller's gate owns full-suite runs
+- Focused tests for the touched crate/module pass — `cargo test -p <crate> <name_filter>`, narrowed to one target to skip the `tests/` suite: `--lib` for a library crate, `--bin <name>` for a binary one (`--bin prl-build` for `postretro-level-compiler`). Confirm the reported count is non-zero and matches what you meant to run — a target/filter pair matching nothing prints `0 passed` and exits `ok`. Not the full workspace suite — the caller's gate owns full-suite runs. `postretro-level-compiler`'s cold bakes are `#[ignore]`-gated, so a bare run of it is cheap; never add `-- --ignored` (~31 min)
 - New code follows conventions from the development guide
 - Tests exist where the testing guide says they should
 

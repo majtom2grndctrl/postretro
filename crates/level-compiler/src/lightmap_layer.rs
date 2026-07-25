@@ -1269,7 +1269,7 @@ mod tests {
 
     /// Determinism GATE (1): the warm per-light composite is byte-identical to
     /// the monolithic `bake_face_chart` atlas (pre-BC6H `CompositedAtlas`) on
-    /// EVERY `content/dev/maps/` fixture. The synthetic
+    /// every `GATE_FIXTURES` entry. The synthetic
     /// `composite_matches_monolithic_atlas_bit_for_bit` proves the mechanism;
     /// this runs the real fixtures through both paths.
     ///

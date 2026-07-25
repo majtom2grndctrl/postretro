@@ -412,46 +412,67 @@
 // from whichever side the volume reaches. Shape the reach; the engine will not
 // require the player to be looking at it.
 //
-// Because the geometry is solid, the press volume has to grow past the brush
-// faces into the space the player stands in. Each face grows by `use_reach`, or
-// by the gap to the nearest solid standing in front of it, whichever is smaller.
-// The rule the compiler holds: no grown face extends past the near side of any
-// occluder whose cross-section that face overlaps. Occluders are the static
-// world brushwork plus `kinematic_mover` brushwork at its authored position, so
-// reach past a door stays conservative even once the door opens. A flush mount is
-// simply a zero gap; the gap can be any width and growth still stops at the
-// mount. A switch embedded in solid on every face gets no margin at all, warns at
-// compile time, and can never be pressed.
+// Because the geometry is solid, the press volume grows past the brush faces
+// into the space the player stands in. Each face grows by `use_reach` or by the
+// gap to the nearest solid standing in front of it, whichever is smaller — so a
+// flush-mounted face grows nothing and a face 4 units off its mount grows 4.
+// Occluders are the static world brushwork plus `kinematic_mover` brushwork at
+// its authored position. A hull clamps a face only when it overlaps that face's
+// cross-section by positive area (edge-on contact is not overlap, which is what
+// leaves a flush mount's four lateral faces free to grow) and the compiler
+// cannot rule its brush planes out of the corridor that face grows into. The
+// plane test is conservative, not exact: it can cost a face reach it could have
+// had, never grant reach through a solid.
+//
+// Mount switch brushwork flush against its mount — never sunk into it. The press
+// volume is an axis-aligned box, so there is no way to grow part of a face: a
+// console sunk even one unit into its mount cannot grow horizontally at all.
+//
+// The compiler warns, naming the switch and its position, whenever no HORIZONTAL
+// face grew (engine X and Z; Y is up), and lists which horizontal faces were
+// clamped and against what. A player presses from a standing position and
+// reaches sideways, so a volume that grew only upward is reachable from flush
+// contact or directly overhead and nowhere a player stands. That warning is the
+// signal a switch will be hard or impossible to press. A flush wall mount zeroes
+// exactly one horizontal face and stays silent.
 //
 // Reach budget: the runtime press test measures from the player capsule's
-// centerline, so effective reach past a face is the clamped margin plus the
-// capsule radius (~15.75 map units, 0.4 m). That radius is never clamped — an
-// occluder thinner than it is still pressable through, so back a switch with a
-// mount at least that thick whenever the far side is playable space. The press
-// volume is also an axis-aligned box with no rotation, so a brush rotated for
-// looks gets an AABB larger than its visible footprint and correspondingly more
-// reach on every face. Widen `use_reach` for large consoles or recessed switches.
+// centerline, so effective reach past a clamped face is the clamped margin plus
+// the capsule radius. That radius is an authored descriptor field, not an engine
+// constant — the first-party player is 0.2 m (`content/dev/scripts/player.ts`),
+// about 7.9 map units, putting default reach near 31.9 map units. The press
+// volume is also unrotated, so a brush rotated for looks gets an AABB larger than
+// its visible footprint and correspondingly more reach on every face. Widen
+// `use_reach` for large consoles or recessed switches.
+//
+// What the clamp does not cover: a `kinematic_mover` occludes at its AUTHORED
+// position only, so a blast door authored open and closed by this very switch
+// clamps nothing at compile time and at runtime the volume sits behind a closed
+// solid (the reverse case only costs reach); faces clamp one axis at a time
+// against the ungrown cross-section, so geometry sitting only in a grown box's
+// corner is unaccounted for; and a brush with no usable vertices clamps nothing.
 //
 // The switch does not move when pressed — v1 geometry is static. For a depress
 // animation, author a `kinematic_mover` alongside the switch.
 //
 // Everything else matches `trigger_volume`: `on_fire` / `on_exit` named
 // reactions, `target_tag` + `command` / `command_arg` mover control, and the
-// same `fire_mode` / `rearm_ms` / `enabled_on_spawn` firing rules.
+// same `fire_mode` / `rearm_ms` / `enabled_on_spawn` firing rules. Clearing any
+// of those fields — or `use_reach` — means "unset": the compiler falls back to
+// the default rather than failing.
 //
-// A cleared `use_reach` field falls back to the default below. That default and
-// `DEFAULT_SWITCH_USE_REACH` in crates/level-compiler/src/parse.rs are two
-// hand-maintained copies of one number, as are the 128 above and
-// `MAX_SWITCH_USE_REACH`. Change each pair together —
-// `fgd_switch_use_reach_matches_the_compiler_constants` reads this file and
-// fails if they drift, so editing the `use_reach` line means keeping its
-// default and the literal 128 intact.
+// The `use_reach` default and the ceiling stated in its help text below are
+// hand-copied from `DEFAULT_SWITCH_USE_REACH` and `MAX_SWITCH_USE_REACH` in
+// crates/level-compiler/src/parse.rs. Change each pair together:
+// `fgd_switch_use_reach_matches_the_compiler_constants` parses both numbers out
+// of the `use_reach` line below and fails if either drifts. It pins those two
+// numbers and nothing else — every behavioural sentence above is unguarded prose.
 @SolidClass
     color(60 200 200)
     = switch : "Visible, solid brush the player presses use on to fire mover commands and named reactions"
 [
     name(string) : "Switch name" : ""
-    use_reach(float) : "Press reach in map units — how far each face of the use volume grows into the space in front of it, or up to the nearest solid standing there, whichever is less. Must be greater than 0 and no more than 128; outside that range is a compile error. Blank falls back to the default, about 0.61 m" : "24"
+    use_reach(float) : "Press reach in map units — how far each face of the use volume grows into the space in front of it, or up to the nearest solid standing there, whichever is less. Must clear the compiler's flush-tolerance floor (a few hundredths of a unit — a margin below it grows no face at all) and be no more than 128; outside that range is a compile error, and the error names the floor. Blank falls back to the default, about 0.61 m" : "24"
     target_tag(string) : "Target mover tag" : ""
     on_fire(string) : "Reaction on activation" : "" : "Name of the reaction fired when this switch is pressed."
     on_exit(string) : "Reaction on exit" : "" : "Name of the reaction fired when a player leaves after pressing this switch."

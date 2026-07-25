@@ -91,9 +91,10 @@
 }
 // entity 2 -- the switch. Solid, drawn, and pressable: the compiler folds this
 // brush into static world geometry and also emits a use-activation trigger
-// volume grown by use_reach on each face whose adjacent space is open, so a
-// player in front of the solid face overlaps it while the walled rear face gets
-// no margin -- this switch is mounted flush, so it cannot be pressed from behind.
+// volume. Each face grows toward use_reach, clamped to the free distance in
+// front of it against occluding geometry -- flush contact grows nothing, so
+// this switch's wall-mounted rear face gets no margin and cannot be pressed
+// from behind.
 {
 "classname" "switch"
 "name" "door_switch"

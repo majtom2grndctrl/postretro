@@ -185,6 +185,13 @@
 // 24-unit dark border that switches on with the press. At d = 24 it is 1.33x
 // and reads as falloff. Pull the light toward the plate and the halo comes
 // back.
+// Distance is the blunt lever. The better one for a real console is a
+// light_dynamic_spot with a wide cone aimed at the plate: the halo is only
+// visible because a point light lights the wall AROUND the panel and the panel
+// darkens part of it, so a cone that never reaches that wall has no lit region
+// to cut into. That also lets the light sit close without the shadow scaling
+// up. Kept as a point light here because this fixture is verifying the switch
+// desugar, not lighting technique -- reach for the spot in shipping content.
 // Deliberately the brightest light in the map (400 against the room lights' 100
 // and 200) and deliberately NOT dim. An earlier pass authored it dim and
 // short-range on the theory that a console indicator should read as local

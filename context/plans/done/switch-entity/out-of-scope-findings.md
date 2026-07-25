@@ -1,0 +1,423 @@
+# Out-of-scope findings — switch-entity session
+
+Issues surfaced while implementing `switch` that sit outside this spec's scope. The
+numbered sections were left unfixed; the closing section records what *was* fixed, so it
+does not get re-filed. Each entry records how it was verified, so a follow-up agent knows
+what is established fact and what still needs confirming.
+
+Provenance shorthand: **[confirmed]** reproduced or read directly in this session ·
+**[reported]** observed by an implementation agent, not independently reproduced.
+
+---
+
+## 1. Pre-existing failures on `main`
+
+### Two `#[ignore]`d cold-bake tests fail **[confirmed]**
+
+**Repro:** `CARGO_PROFILE_TEST_SPLIT_DEBUGINFO=off cargo test -p postretro-level-compiler -- --ignored`
+→ 4 passed, 2 failed. Both live in the `tests/` integration suite, which runs in
+well under a minute, so reproducing these does not cost the full gated set. They are
+untouched by this session's `GATE_FIXTURES` trim — that trim only affects the three
+SH/lightmap determinism gates in the bin target, which pass 3/0.
+
+| Test | Assertion |
+|---|---|
+| `mixed_fixture_without_script_membership_matches_pre_feature_golden_prl` (`tests/animated_weight_maps_fixtures.rs:421`) | "an un-targeted static light changed the pre-feature PRL output" — golden PRL byte mismatch |
+| `fixture_keeps_script_and_kvp_animated_prl_slots_distinct` (`tests/animated_weight_maps_fixtures.rs:189`) | "animated chunks must contain both the script and KVP light, never the steady control" |
+
+**Not caused by the switch work.** Verified by checking out `crates/level-compiler/src/parse.rs`
+from `origin/main` and re-running: the same two tests fail identically.
+
+**Leading hypothesis for the golden mismatch, unconfirmed:** the only golden file
+(`tests/fixtures/golden/test_animated_weight_maps_mixed.pre-script-light-membership.prl`)
+was last touched by `c8354ed`. `main` has since landed `799dc4a` (emissive material slot),
+`e87889e`, and `dab1d30`. A new material slot plausibly changes PRL material bytes, in
+which case the golden needs regenerating rather than the compiler fixing. **Do not
+regenerate on that assumption** — diff the actual byte delta first and confirm it is
+confined to the emissive slot. A golden that absorbs a real regression is worse than a
+failing one. The second failure is about animated-chunk membership and is probably a
+separate cause.
+
+### Clippy is red on `main` **[confirmed]**
+
+**Three** errors, all in `crates/renderer/`, not the one this entry first recorded:
+
+```
+error: this function has too many arguments (8/7)
+  --> crates/renderer/src/render/renderer_full_init.rs:14:1     (lib)
+error: items after a test module
+  --> crates/renderer/src/render/renderer_frame.rs:328:1        (lib test)
+error: the following explicit lifetimes could be elided: 'a
+  --> crates/renderer/src/render/tests/pipeline_budget_tests.rs:82:15   (lib test)
+```
+
+`build_full_renderer` gained its eighth parameter (`bloom_render_profile`) in `621320a`,
+which is an ancestor of `origin/main`. So `cargo clippy -- -D warnings` cannot pass on a
+clean checkout. Fix is either `#[allow(clippy::too_many_arguments)]` or collapsing the
+params into a struct — a renderer-boundary design call.
+
+The two test-target errors are mechanical: move the `mod tests` declaration below the
+items that follow it, and drop the `'a` annotations. Note they surface only under
+`--all-targets`; a bare `cargo clippy` compiles the lib alone and reports just the first,
+which is why this entry originally recorded one error.
+
+**Repro:** `cargo clippy --target-dir target/preflight-clippy --all-targets -- -D warnings`,
+exit 101. Re-confirmed at the end of this session, after every switch change landed —
+this branch neither causes nor fixes it, and `crates/renderer/` is absent from the
+branch diff.
+
+**Consequence worth knowing before the next session:** this is the *third* clause of the
+standard preflight (`cargo fmt --check && cargo clippy … && cargo test`), so with `&&`
+chaining it currently blocks `cargo test` from running at all. Anyone treating a red
+preflight as "my change broke something" will lose time here. Run the clauses separately,
+capturing each exit code, until this is resolved.
+
+**Environment note, unrelated to the lint but hit on the way to it:** clippy and
+`cargo test` both need system libraries the container may lack — `libasound2-dev` (ALSA,
+via kira) and `libudev-dev` (via gilrs). Without them the failure is a build error in
+`alsa-sys`/`libudev-sys` that looks nothing like a lint or test failure. `apt-get update`
+first; a stale index 404s on the `.deb`.
+
+---
+
+## 2. Stale test gate
+
+`cap_fixture_every_texel_respects_max_lights_per_chunk`
+(`tests/animated_weight_maps_fixtures.rs:442`) carries a bare `#[ignore]` whose comment
+says to un-ignore "once the UV packer leaves a…". It **now passes** **[confirmed]** and is
+sub-second — nearly free coverage currently switched off. Confirm the packer condition
+the comment refers to is genuinely resolved, then drop the attribute.
+
+---
+
+## 3. Unregistered primitive: `setFogScatter` **[confirmed]**
+
+> **Correction (superseding this entry's original framing).** This was first written as the
+> reason campaign-test showed no pulsing fog. That diagnosis was wrong. The fog was missing
+> because `campaign-test.map` had no `fog_volume` tagged `pulse_fog`; the map author fixed
+> that in `7ed99d07`. `arena-lights.ts:127` guards the whole fog block with
+> `if (fogs.length > 0)`, so with an empty query **neither** fog reaction was defined — the
+> unregistered primitive was unreachable code, not the cause. Pulsing itself comes from
+> `fog.pulse(...)` → `setFogAnimation`, which **is** registered, which is why the pulse
+> returned with the entity alone.
+>
+> The defect below is real but was masked. `7ed99d07` unmasks it: campaign-test now takes the
+> `fogs.length > 0` branch, so the tag-targeted `setFogScatter` reaction is defined for the
+> first time and will log `[Scripting] primitive 'setFogScatter' is not registered; reaction
+> had no effect` at every level load. Consequence: the fog pulses, but the `0.4` baseline
+> never applies.
+
+Two shipping dev content scripts invoke a reaction primitive that Rust never registers:
+
+- `content/dev/scripts/fog-pulse-demo.ts:42`
+- `content/dev/scripts/arena-lights.ts:132`
+
+`register_fog_reaction_primitives` (`crates/postretro/src/fx/fog_reactions/mod.rs:17-60`)
+registers `setFogDensity`, `setFogGlow`, `setFogEdgeSoftness`, `setFogFalloff`,
+`setFogParams`, and `setFogAnimation`. There is no `setFogScatter` and no alias, so these
+calls hit the not-registered path at `crates/scripting-core/src/reaction_dispatch.rs:392`.
+
+**The fix is a rename plus an arg-key change — not just a rename.** `SetFogGlowArgs`
+(`set_fog_glow.rs:14`) has one field, `glow`, and the struct is
+`#[serde(rename_all = "camelCase")]` with no alias. Both content scripts pass
+`args: { scatter: 0.4 }`, so renaming the primitive alone converts a not-registered warning
+into a deserialization error. Both keys have to move together.
+
+`setFogGlow` is the current truth on the authoritative surface — the generated typedefs
+(`sdk/types/postretro.d.ts:900`, `sdk/types/postretro.d.luau:979`) and their templates
+(`crates/scripting-core/src/typedef/templates/sdk_lib.d.ts:153`, `sdk_lib.luau:233`) all say
+`setFogGlow`, and `committed_sdk_types_match_current_registry` guards them. The old name
+survives in hand-maintained files the generator does not own:
+
+- `sdk/lib/data_script.luau:106,108,168` (`SetFogScatterStep`)
+- `sdk/lib/data_script.ts:62,80` and `sdk/lib/index.ts:55` (re-exporting a
+  `SetFogScatterStep` that `postretro.d.ts` no longer declares)
+- `sdk/lib/entities/fog_volumes.ts:23` (doc comment)
+- `docs/scripting-reference.md:798`
+- the two content scripts above
+
+**Not affected by `7ed99d07`:** `campaign-test` is not in `GATE_FIXTURES`
+(`fixture_pipeline.rs:48-55`) and the golden-PRL test pins the animated-weight-maps `mixed`
+fixture, not campaign-test — so the map edit does not touch either §1 failure.
+
+---
+
+## 4. Type-surface drift
+
+### `SetLightAnimationStep.args` is too narrow **[confirmed]**
+
+`sdk/types/postretro.d.ts:884-888` declares `args: LightAnimation`, but the handler
+deserializes `Option<LightAnimation>` (`crates/lighting/src/script_primitives.rs:209-213`)
+and `null` is the documented clear-the-animation path. The sibling
+`SetFogAnimationStep` gets this right — `args: FogAnimation | null`
+(`postretro.d.ts:935-939`). So clearing a light animation works at runtime but does not
+type-check in TypeScript.
+
+This is not cosmetic: clearing is the *only* correct way to author an off-then-on light
+(see §6), so the type surface currently blocks the sanctioned pattern.
+
+### An sdk_lib doc sentence has four hand-maintained copies **[confirmed]**
+
+Editing a doc comment in the scripting type surface means editing it in **four** places,
+and only one of them is discoverable from the others:
+
+1. `crates/scripting-core/src/typedef/templates/sdk_lib.d.ts` (and `.luau`) — the template
+2. `sdk/types/postretro.d.ts` (and `.d.luau`) — the committed generated output
+3. `crates/postretro/src/scripting/typedef/tests/fixtures/expected.d.ts` (and `.d.luau`) —
+   committed snapshot fixtures that embed the same sdk_lib block
+
+Nothing in 1 or 2 points at 3. Verifying that the template and the generated file agree —
+the obvious check, and a real one — still leaves the snapshot fixtures stale, and the only
+thing that catches it is running `typescript_snapshot_matches_full_registry` /
+`luau_snapshot_matches_full_registry`. This session hit exactly that: a one-sentence doc
+addition passed a template-vs-generated diff and still failed the full suite.
+
+Not a defect in the generator; the snapshot fixtures are doing their job. But the
+enforcement is discoverable only by failing, so a comment in the templates pointing at the
+fixture path would save the next person a confusing red gate.
+
+### `build_pipeline.md` light row omits `_animated` **[confirmed]**
+
+`_animated` is a real FGD key (`sdk/TrenchBroom/postretro.fgd:112`), parsed by the
+compiler, and the documented fallback for mod-global light animation — but it is absent
+from the `light` row's KVP list in the Custom FGD entity table
+(`context/lib/build_pipeline.md:63`). It appears only in adjacent comment prose.
+
+---
+
+## 5. Silent data loss: blank line inside a `.map` entity block **[reported]**
+
+A bare blank line within an entity block causes `parse_map_file` to return `Ok` with
+**only worldspawn** — the remaining entities vanish with no error and no warning. Hit
+while authoring the `switch-demo` fixture; worked around there, and noted in a comment in
+the fixture and its test helper.
+
+Pre-existing shambler/shalrath parsing behavior, not introduced by this change. Worth a
+diagnostic: hand-authored and generated maps both hit this, and the failure mode is
+invisible until something is missing in-engine. Not independently reproduced outside the
+fixture-authoring context — reproduce before designing the fix.
+
+---
+
+## 6. Constraints relevant to a `switch` v2 (not defects)
+
+Surfaced while inventorying options for visual feedback on a press. Recorded here because
+the spec's own open question (depress animation as a follow-up) depends on them.
+
+- **Mover geometry is invisible to hitscan** **[confirmed]**. Weapons cast against the
+  static `CollisionWorld` (`crates/postretro/src/weapon/mod.rs`); only movement uses
+  `CombinedCollisionWorld`. So the spec's v2 sketch — `switch` owning a short mover throw
+  — would let bullets pass through a solid-looking wall console, on top of losing baked
+  lightmap, static BVH, SDF shadow, portal occlusion, and navmesh participation. This is a
+  stronger argument for v1's static geometry than the spec assumed.
+- **Baked static lights *are* runtime-animatable** **[reported]**. `collect_membership`
+  walks every reaction returned from `setupLevel`, not just `levelLoad`, so a light
+  animated only by a switch press gets its animated-bake structures reserved
+  automatically — no `_animated 1` needed. This makes "console lights up on press" an
+  authoring-only change with no engine work, and is the cheapest visual-feedback path.
+- **`setLightAnimation` settle is multiplicative** **[reported]**. A finite `playCount`
+  settles by writing `intensity *= final_brightness` back as static state. So
+  `fade({from:1,to:0})` settles intensity to literal `0`, and a later
+  `fade({from:0,to:1})` yields `0 × 1 = 0` — the light can never be re-lit. Off-then-on
+  must be authored as `startActive:false` plus a later `setLightAnimation(id, null)`.
+  Worth an explicit warning in the authoring docs; it is a trap that reads as a bug.
+- **No timed sequencing within one dispatch** **[reported]**. There is no `wait(ms)` step
+  in the `SequenceStep` union, so "flash, pause, then open the door" is not expressible in
+  a single press — only concurrent effects plus whatever a light curve's own `periodMs`
+  provides. Already recorded as WALL #1 in `content/dev/scripts/coop-two-button-puzzles.ts`.
+- **Audio is not spatialized** **[reported]**. `playSound` ships and works, but all sounds
+  play dry, so a switch click confirms the press without localizing to the button. The
+  distance/panning table in `context/lib/audio.md` describes intent, not implementation.
+- **Runtime emissive change needs engine work** **[reported]**. Emissive is baked into an
+  immutable per-material bind group at load, gated on a `neon_*` name prefix plus an `_e`
+  sibling texture, with `emissive_strength` a per-enum constant. Changing it at runtime
+  touches `render-data/material.rs`, both `material_plan.rs`, both shaders, and needs a new
+  primitive — and static world geometry has no entity to attach the state to.
+
+---
+
+## 7. Deferred by scope during the review-findings pass
+
+Both were found by the review panel, judged real, and left unfixed because the fix is
+wider than this feature. Recorded so they are decisions, not oversights.
+
+- **One `use` press fires every switch whose volume the player overlaps** **[confirmed]**.
+  `trigger_system.rs` iterates triggers independently and each evaluates
+  `overlapping && use_pressed`; there is no nearest-trigger arbitration, no
+  consume-the-press, and no facing tie-break. Two console switches ~1.5 m apart both
+  fire from one press at the default reach, as does a switch co-located with a legacy
+  `use` `trigger_volume`. Newly *reachable* because the press margin is now compulsory
+  and its size is a default a mapper may never touch — before, the mapper sized the
+  volume by hand and could keep volumes disjoint. **Why deferred:** arbitration lives in
+  the shipped `trigger_system` and would change behavior for every existing `use`
+  trigger, and switch-vs-`trigger_volume` provenance is deliberately not on the wire, so
+  it cannot be scoped to switches without a PRL change. Both are outside this feature's
+  stated boundary (FGD + level compiler + tests). Workaround today: keep switches more
+  than `2 × use_reach` apart, or narrow `use_reach` on dense banks.
+- **Animated lightmaps cover atlas layer 0 only** **[confirmed]**. `forward.wgsl`
+  documents that faces with `lightmap_layer >= 1` receive no animated lighting at all.
+  Anyone authoring a baked light that a script animates gets a light that silently never
+  animates on the overflow faces — a false-negative mode with no assert and no warning.
+  Worth a compile-time or load-time warning when an animated light's receivers land
+  beyond layer 0.
+
+  **The constraint is confirmed reachable in a small fixture, not theoretical.**
+  `switch-demo` is a single sealed room and it still measured `512x512x2` — two layers. The
+  fixture sidesteps the constraint entirely by authoring the console indicator as
+  `light_dynamic` instead of `light`: a dynamic light bakes into nothing, so it has no
+  atlas and no layer to spill past. That tier choice is load-bearing, not cosmetic (noted
+  in the map's own comment block); the price is no baked indirect bounce, which a press
+  indicator does not need.
+
+  **Coarsening `_lightmap_density` does not work around it** **[confirmed]** — measured
+  `512x512x2` at 0.04, `256x256x3` at 0.06, `256x256x2` at 0.08. `choose_layer_dim`
+  (`crates/level-compiler/src/lightmap_bake.rs`) sizes the layer to the densest single
+  leaf, so the layer *dimension* shrinks along with the texel count and the layer count
+  never reaches 1 — it can even get worse. Recorded so the next agent does not spend the
+  session trying the obvious thing.
+
+---
+
+## 8. f32/f64 boundary between wire bounds and compiler hulls **[confirmed]**
+
+Trigger AABBs are `[f32; 3]` on the wire (`crates/level-format/src/trigger_volumes.rs`)
+while brush hulls are native f64 throughout the compiler. Widening the f32 back to f64 for
+a geometric comparison does **not** recover the discarded bits, so two planes the author
+made coincident land a few hundred nanometres apart. Any *strict* comparison across that
+boundary therefore misfires at exactly-touching planes — the case flush-mounted brushwork
+produces constantly.
+
+**It bit the switch clamp twice.** A strict cross-section overlap test reported
+phantom overlaps where a wall touches four of the console's faces edge-on, zeroing all four
+margins; separately, the untoleranced "stands past this face" comparisons let a coplanar
+mount read either way depending on `f32` rounding. Both now use a 1 mm contact tolerance,
+chosen to sit above f32 representation error
+at level coordinates (~1e-6 m near the origin, approaching 1e-4 m at 800 m out) and 25×
+below one map unit, so no authored dimension can hide inside it.
+
+**Worth auditing, not audited.** Other compiler code that compares wire-format bounds
+against compiler-side hulls plausibly has the same latent bug — fog cell masks, acoustic
+zone resolution, and cell/AABB containment are the obvious candidates by shape. This
+session did not check any of them; the finding is the hazard and the precedent for the fix,
+not a survey.
+
+---
+
+## 9. Open residuals of the switch reach clamp
+
+### A mover that moves *into* the reach corridor is no occluder **[confirmed]**
+
+`kinematic_mover` hulls join the occluder set at their **authored** (compile-time)
+position. A mover authored *clear* of a switch that later travels into the corridor a
+face grew into — a blast door authored open and closed by that very switch — clamps
+nothing at compile time, so the face grows fully and at runtime the press volume sits
+behind a closed solid. The opposite case (authored across the corridor, later moves away)
+only costs reach, which is the safe direction. Documented in the compiler's own
+*what this does not cover* list.
+
+Closing it needs either a runtime test — evaluate the press against the mover's current
+hull rather than a baked AABB — or a compile-time sweep of the mover's whole path,
+clamping against the union of its positions. Both are outside this spec's boundary (FGD +
+level compiler + tests); the runtime option touches `trigger_system`, and the sweep needs
+the resolved waypoint path, which is built after the reach pass.
+
+### The FGD's behavioural prose is unguarded **[confirmed]**
+
+`fgd_switch_use_reach_matches_the_compiler_constants` pins exactly two things numerically:
+the `use_reach` default parsed out of the attribute line, and the ceiling parsed out of the
+help text after a fixed `no more than ` marker. It reads nothing else in the file. Every
+other behavioural sentence in the `switch` class's ~50-line header — that the brushwork
+renders and collides, that `activation` is forced to `use`, that reach is clamped per face,
+that one entity may own only one brush — can drift out of step with the compiler silently.
+The one guarded number is the one least likely to be wrong. A cheap improvement: assert a
+handful of load-bearing phrases, or move the prose to a generated block.
+
+---
+
+## Fixed in this session (do not re-file)
+
+- **`--lib` silently verified nothing on binary crates.** The recommended focused-test
+  invocation assumed unit tests live in a crate's lib target. `postretro-level-compiler`
+  exposes only texture helpers from its lib, so its map parsing and entity dispatch live in
+  the `prl-build` bin target and `--lib` matched zero tests while printing `0 passed` and
+  exiting `ok`. Corrected in `context/lib/testing_guide.md` and the three skills that
+  carried the same clause.
+- **Cold-bake cost folklore.** The guide claimed ~1 hour and told agents never to run a
+  bare `cargo test` on the crate; the gated set measured ~31 min and a bare run is cheap.
+  Dropping `occlusion-test` from `GATE_FIXTURES` cut the gates 7× (1812s → 260s), putting
+  the gated set at ~5 min. Figures replaced with measured ones.
+- **Switches were pressable through walls — fixed three times, because the first two
+  fixes were also wrong.** The spec's uniform all-axis inflation omitted the player capsule
+  radius, so effective reach was `use_reach * scale + radius` = `24 * 0.0254 + 0.2` m =
+  `0.8096` m, **≈ 31.9 map units** at defaults, against 16-unit walls. (An earlier pass
+  restated this as ~40 units and annotated it with a provenance note claiming the ~31
+  carried a dropped `− SKIN_DISTANCE` term. **That note was fabricated — there was no such
+  term.** The `0.4 m` radius behind the ~40 was read out of a test fixture; the capsule
+  radius is an authored descriptor field with no `Default`, and the only authored
+  first-party value is `0.2 m` in `content/dev/scripts/player.ts`, ≈ 7.9 map units. The
+  note and the ~40 are both deleted.) The first replacement — probe one map unit out per
+  face, then grow the full 24 — was a *sampling* error: any solid between 1 and 24 units
+  out was sampled as open and grown through, leak condition
+  `clearance + thickness < use_reach`. What ships clamps each face against the occluding
+  brushes' own planes. Spec revised rather than shipped all three times; every lesson, and
+  what the final invariant deliberately does **not** cover, are recorded in its Decisions
+  section.
+- **The AABB-proxy clamp made switches unpressable, silently and in the safe-looking
+  direction** **[confirmed]**. The second replacement clamped each face against occluder
+  *AABBs*. A brush's AABB is not the brush: a diagonal partition, wedge, ramp, one-brush
+  staircase, or 45° chamfer far from the switch can have an AABB that straddles the switch
+  on every axis and overlaps every cross-section, zeroing all six faces against geometry
+  that was never in front of them. Fail-closed, so every stated invariant still held and no
+  test or claim caught it. Now each candidate occluder must also survive a separating-plane
+  test of its own planes against the face's **growth prism**. Covered by
+  `switch_reach_ignores_a_diagonal_brush_its_aabb_straddles_the_switch`.
+- **The stands-past comparisons had no tolerance** **[confirmed]**. Cross-section overlap
+  carried the 1 mm contact tolerance but the "does this occluder stand past the face"
+  comparisons did not, so a mount coplanar with a face read as standing past it or not
+  depending on which way the trigger's `f32` bounds rounded. Both now use the same
+  tolerance, for the same reason (see §8).
+- **The clamp diagnostic claimed "enclosed by solid geometry"** **[confirmed]**. False on
+  its face — the clamp is conservative, so it cannot establish enclosure, and under the
+  AABB-proxy defect above it said this about switches standing in open room. The warning
+  now reports only what the compiler concluded: the volume was clamped against geometry
+  standing in front of it, with the clamping plane named per face. It fires on
+  *no horizontal face grew* (Y-up, so a player presses sideways), not on *any face was
+  zeroed* — a flush wall mount legitimately zeroes one horizontal face and stays silent.
+- **A blank KVP meant different things to different keys** **[confirmed]**. TrenchBroom
+  writes `""` for a cleared field rather than dropping the key, so a cleared `fire_mode`
+  hit an "unknown value" bail that printed empty backticks and a cleared `rearm_ms` hit a
+  float parse error on the empty string — diagnostics naming a value the author cannot see
+  in the editor. Blank now means "unset, use the FGD default" uniformly across
+  `activation`, `command`, `fire_mode`, `rearm_ms`, `enabled_on_spawn`, and `use_reach`,
+  applied in the shared resolver, so it reaches `trigger_volume` too. `command_arg` is
+  deliberately excluded: it is the one key whose emptiness is itself an error condition
+  (`go_to_path_node` requires it).
+- **A switch floated off its mount grew across the gap** (previously filed here as an
+  accepted probe residual). Growth is now clamped to the actual free distance, so it stops
+  at the mount whatever the gap — flush mounting is just the zero-gap case. No longer an
+  authoring-guidance limit and no longer documented as one.
+- **`kinematic_mover` brushes were a hole in the occluder set.** Mover brushes never reach
+  the static world brush set, so a switch mounted on a door or lift clamped against nothing
+  and grew straight through it. Mover hulls are now in the occluder set at their
+  **authored** (compile-time) position — conservative for a mover that later moves away,
+  which is the correct trade against pressing through a closed door.
+- **A brushless brush-entity classname shipped as an unregistered entity.** A `switch`
+  with no brushes fell through to the point-entity tail and emitted a `MapEntityRecord`
+  the runtime drops at `debug!` as an unregistered classname: no geometry, no trigger, no
+  compile diagnostic, silent at every level. Now `bail!`s. **The class of bug generalizes**
+  — any brush-entity classname whose handler sits behind a `has_brushes` check has this
+  shape, and the point-entity tail will accept anything.
+- **A multi-brush `switch` unioned into one hull.** The press volume is the AABB union of
+  the entity's brushes, so two consoles on facing walls produced a room-spanning volume
+  firing on any `use` press inside it — and the per-face clamp cannot catch it, because
+  every face of that union fronts open room (`MAX_SWITCH_USE_REACH` bounds the margin, not
+  the hull it is added to). Now `bail!`s with a split-them-up message. `fog_volume` already
+  carried exactly this precedent for the same reason; the switch follows it.
+- **`use_reach` range, discarded `activation`, and switch diagnostics.** `use_reach <= 0`
+  and an absurd upper value are now compile errors; an authored `activation` warns instead
+  of vanishing; `resolve_trigger_volume` takes the classname, so a switch's errors no
+  longer report themselves as `trigger_volume`. That last one supersedes the "accepted for
+  v1" note the spec used to carry.
+- **`trigger_volume` queries silently included switches.** Documented on all three
+  author-facing surfaces (`docs/scripting-reference.md` and both type surfaces) plus the
+  two generator templates, so the committed snapshot and the templates stay in step.

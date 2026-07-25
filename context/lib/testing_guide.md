@@ -112,10 +112,14 @@ In the web/sandbox environment, run tests with `CARGO_PROFILE_TEST_SPLIT_DEBUGIN
 
 Some suites are expensive and must not be run reflexively:
 
-- The `postretro-level-compiler` `tests/` integration tests (e.g. `animated_weight_maps_fixtures.rs`) shell out to `prl-build`, doing **cold SH/lightmap bakes** (`--no-cache`). A bare `cargo test -p postretro-level-compiler` can take **~1 hour**. The expensive cold-bake tests are `#[ignore]`-gated — run them on demand with `cargo test -p postretro-level-compiler -- --ignored`, or as part of the one-time integration preflight gate.
+- `postretro-level-compiler`'s cold-bake coverage is `#[ignore]`-gated, so a bare `cargo test -p postretro-level-compiler` is cheap. Run the gated set on demand with `cargo test -p postretro-level-compiler -- --ignored`, or as part of the one-time integration preflight gate. Measured cost of that set: **~5–7 min** (two runs: 315s, 401s), and it is lopsided. The three SH/lightmap determinism gates in the **bin** target (`sh_group`, `lightmap_layer`) are ~80% of it — each loops `GATE_FIXTURES` (`fixture_pipeline.rs`) baking every fixture twice, grouped vs monolithic. The `tests/` integration suite, which shells out to `prl-build` for `--no-cache` bakes, is under a minute of the total.
 - Compiling the large maps (`stress-warren*`, `campaign-test`) is slow. Routine, non-`#[ignore]` tests use only small, focused fixtures — synthetic in-memory structures or tiny purpose-built fixture maps. Heavy-map harnesses are `#[ignore]`-gated, on-demand only.
 
-**Default verification while iterating:** `cargo check` plus *targeted* tests for the touched crate/module — `cargo test -p <crate> <name_filter>`, with `--lib` to skip the integration tests. Reserve a full `cargo test` for a single coordinator-level gate after integration, not per change.
+**Keep `GATE_FIXTURES` cheap, and profile before adding to it.** Bake cost tracks probe and texel counts, not `.map` file size. One large fixture can dwarf the rest of the list combined — dropping `occlusion-test` cut the gates 7× (1812s → 260s) while the animated-weight-map fixtures are sub-second each. A full-compile timing is a poor proxy for a gate's share, because the gates bake probes twice and weight large volumes far more heavily.
+
+**Default verification while iterating:** `cargo check` plus *targeted* tests for the touched crate/module — `cargo test -p <crate> <name_filter>`. Narrow to a single target to skip the `tests/` suite: `--lib` for a library crate, `--bin <name>` for a binary one. Reserve a full `cargo test` for a single coordinator-level gate after integration, not per change.
+
+**Read the test count, not the exit status.** A target-and-filter pair matching nothing prints `0 passed` and exits `ok` — a pass and a no-op look identical at a glance. `--lib` on a binary crate is the standing trap: `postretro-level-compiler` exposes only texture helpers from its lib, so the compiler internals (map parsing, entity dispatch) live in the `prl-build` bin target and `--lib` reaches none of them. Use `--bin prl-build` there. Whatever the target, confirm the count matches the tests you meant to run.
 
 ---
 

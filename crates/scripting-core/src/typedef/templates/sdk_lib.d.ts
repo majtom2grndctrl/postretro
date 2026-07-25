@@ -44,7 +44,7 @@
     goToPathNode(node: string): SequenceStep[];
   }
 
-  /** Typed trigger handle returned by `world.query({ component: "trigger_volume" })`. Arming state remains engine-owned; methods build closed command steps. */
+  /** Typed trigger handle returned by `world.query({ component: "trigger_volume" })`. Arming state remains engine-owned; methods build closed command steps. Switch entities also emit a `trigger_volume` component and are indistinguishable from authored trigger volumes here; separate them with a tag convention. */
   export interface TriggerVolumeHandle extends TriggerVolumeEntity {
     arm(): SequenceStep[];
     disarm(): SequenceStep[];

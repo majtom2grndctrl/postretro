@@ -535,12 +535,20 @@ remain runtime-only, and no animation curves are baked.
 Returned when `component` is `"trigger_volume"`. The snapshot exposes only
 `id`, `position`, and `tags`; arming state and activation phase remain
 engine-owned. The handle adds command builders for the live entity.
+Switch entities also emit a `trigger_volume` component and are
+indistinguishable from authored trigger volumes here; separate them with a
+tag convention.
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `id` | `EntityId` | Stable entity id. |
 | `position` | `{ x, y, z }` | Trigger origin in world space at query time. |
 | `tags` | `string[]` | Trigger tags at query time. Empty array if untagged. |
+
+For a switch, `position` is the centre of its (asymmetrically grown)
+activation volume, not the visible console — expect roughly 0.3 m of offset
+at default reach. Don't use `trigger.position` to place switch-attached
+effects; anchor those to the switch's own geometry instead.
 
 ```typescript
 trigger.arm();    // [{ id: trigger.id, primitive: "armTrigger", args: {} }]

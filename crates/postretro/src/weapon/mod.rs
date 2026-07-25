@@ -793,6 +793,7 @@ mod tests {
                 mesh: None,
                 health: None,
                 ai: None,
+                behavior: None,
             },
             EntityTypeDescriptor {
                 canonical_name: Some("pistol".to_string()),
@@ -804,6 +805,7 @@ mod tests {
                 mesh: None::<MeshDescriptor>,
                 health: None,
                 ai: None,
+                behavior: None,
             },
         ]
     }

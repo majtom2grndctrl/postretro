@@ -84,6 +84,7 @@ pub(crate) fn mesh_descriptor(classname: &str, animated: bool) -> EntityTypeDesc
         }),
         health: None,
         ai: None,
+        behavior: None,
     }
 }
 

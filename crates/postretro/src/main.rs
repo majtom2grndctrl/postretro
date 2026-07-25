@@ -5931,6 +5931,7 @@ mod tests {
             mesh: None,
             health: None,
             ai: None,
+            behavior: None,
         }
     }
 
@@ -8391,6 +8392,7 @@ mod tests {
             }),
             health: None,
             ai: None,
+            behavior: None,
         }];
 
         let mut registry = EntityRegistry::new();

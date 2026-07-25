@@ -2096,6 +2096,7 @@ mod tests {
             mesh: None,
             health: None,
             ai: None,
+            behavior: None,
         }
     }
 

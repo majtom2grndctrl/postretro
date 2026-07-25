@@ -288,6 +288,7 @@ fn enemy_descriptor(class: &str) -> EntityTypeDescriptor {
         // presence is the sole AI classifier. A real `AiDescriptor` keeps the fixture
         // honest about what an `ai` block resolves to.
         ai: Some(ai_descriptor()),
+        behavior: None,
     }
 }
 
@@ -354,6 +355,7 @@ fn prop_descriptor(class: &str) -> EntityTypeDescriptor {
         }),
         health: None,
         ai: None,
+        behavior: None,
     }
 }
 

@@ -2533,6 +2533,7 @@ mod tests {
             mesh: None,
             health: None,
             ai: None,
+            behavior: None,
         }];
         let mut weapon_owners = WeaponOwners::new();
         weapon_owners.set(pawn, weapon);
@@ -3704,6 +3705,7 @@ mod tests {
             }),
             health: None,
             ai: None,
+            behavior: None,
         }
     }
 

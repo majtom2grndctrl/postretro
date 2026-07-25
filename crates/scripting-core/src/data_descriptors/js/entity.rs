@@ -4,7 +4,7 @@
 use super::super::*;
 
 /// Deserialize an entity-type descriptor from a JS object. Shape:
-/// `{ canonicalName?: string, defaultWeapon?: string, components?: { mesh?: MeshDescriptor, movement?: PlayerMovementDescriptor, weapon?: WeaponDescriptor, health?: HealthDescriptor, ai?: AiDescriptor, light?: LightDescriptor, emitter?: BillboardEmitterComponent } }`.
+/// `{ canonicalName?: string, defaultWeapon?: string, components?: { mesh?: MeshDescriptor, movement?: PlayerMovementDescriptor, weapon?: WeaponDescriptor, health?: HealthDescriptor, ai?: AiDescriptor, behavior?: BehaviorGraphDescriptor, light?: LightDescriptor, emitter?: BillboardEmitterComponent } }`.
 /// Component sub-objects parse via `serde_json` after a recursive walk through
 /// the existing `js_to_json` helper — matches how `LightAnimation` /
 /// `BillboardEmitterComponent` cross the FFI elsewhere.
@@ -46,6 +46,7 @@ pub fn entity_descriptor_from_js<'js>(
     let mut mesh = None;
     let mut health = None;
     let mut ai = None;
+    let mut behavior = None;
 
     if obj.contains_key("components").map_err(js_err)? {
         let components_val: JsValue = obj.get("components").map_err(js_err)?;
@@ -115,6 +116,17 @@ pub fn entity_descriptor_from_js<'js>(
                     ai = Some(descriptor.validate()?);
                 }
             }
+            if components_obj.contains_key("behavior").map_err(js_err)? {
+                let raw: JsValue = components_obj.get("behavior").map_err(js_err)?;
+                if !raw.is_null() && !raw.is_undefined() {
+                    let json = conv::js_to_json(ctx, raw).map_err(js_err)?;
+                    let descriptor: BehaviorGraphDescriptor = serde_json::from_value(json)
+                        .map_err(|e| DescriptorError::InvalidShape {
+                            reason: format!("`components.behavior` invalid: {e}"),
+                        })?;
+                    behavior = Some(descriptor.validate()?);
+                }
+            }
             if components_obj.contains_key("light").map_err(js_err)? {
                 let raw: JsValue = components_obj.get("light").map_err(js_err)?;
                 if !raw.is_null() && !raw.is_undefined() {
@@ -149,7 +161,7 @@ pub fn entity_descriptor_from_js<'js>(
         }
     }
 
-    Ok(EntityTypeDescriptor {
+    let descriptor = EntityTypeDescriptor {
         canonical_name,
         default_weapon,
         light,
@@ -159,7 +171,10 @@ pub fn entity_descriptor_from_js<'js>(
         mesh,
         health,
         ai,
-    })
+        behavior,
+    };
+    descriptor.validate_component_exclusivity()?;
+    Ok(descriptor)
 }
 
 /// The generic JSON bridge intentionally maps unsupported VM values to JSON

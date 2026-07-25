@@ -570,3 +570,74 @@ fn impact_policy_surface_uses_author_ids_and_closed_effect_union() {
         "Luau must expose exactly the five closed impact-effect builders"
     );
 }
+
+/// Drift guard for the behavior-graph verb vocabularies. The registry
+/// registrations in `scripting/primitives/mod.rs` are a second spelling of the
+/// `MotionVerb` / `ActionVerb` enums, so this test derives the expected union
+/// members from the enums themselves — `ALL` enumerates the variants and serde
+/// supplies each wire name, exactly as the descriptor parsers see them. A
+/// variant added in foundation and forgotten in the registry fails here.
+#[test]
+fn behavior_verb_typedefs_match_the_foundation_enums() {
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
+    use postretro_foundation::data_descriptors::{ActionVerb, MotionVerb};
+
+    fn wire<T: serde::Serialize>(variant: &T) -> String {
+        serde_json::to_value(variant)
+            .expect("verb serializes")
+            .as_str()
+            .expect("verb serializes as a wire string")
+            .to_string()
+    }
+
+    /// The quoted members of the union body emitted for `name`, in order.
+    /// Both emitters write one member per line (`| "hold"`, doc lines
+    /// interleaved) once any variant carries a doc string; the scan stops at
+    /// the first line that is neither.
+    fn union_members(output: &str, name: &str) -> Vec<String> {
+        let header = format!("export type {name} =");
+        let mut lines = output
+            .lines()
+            .skip_while(|line| !line.trim_start().starts_with(&header));
+        assert!(
+            lines.next().is_some(),
+            "`{name}` union missing from generated output"
+        );
+        let mut members = Vec::new();
+        for line in lines {
+            let line = line.trim().trim_start_matches("| ");
+            if line.starts_with("/**") || line.starts_with("---") {
+                continue;
+            }
+            let Some(member) = line.strip_prefix('"') else {
+                break;
+            };
+            let Some(member) = member.split('"').next() else {
+                break;
+            };
+            members.push(member.to_string());
+        }
+        members
+    }
+
+    let mut r = PrimitiveRegistry::new();
+    register_all(&mut r, ScriptCtx::new());
+    let ts = generate_typescript(&r);
+    let luau = generate_luau(&r);
+
+    let motion: Vec<String> = MotionVerb::ALL.iter().map(wire).collect();
+    let action: Vec<String> = ActionVerb::ALL.iter().map(wire).collect();
+    for output in [&ts, &luau] {
+        assert_eq!(
+            union_members(output, "MotionVerb"),
+            motion,
+            "emitted `MotionVerb` union does not match `MotionVerb::ALL`"
+        );
+        assert_eq!(
+            union_members(output, "ActionVerb"),
+            action,
+            "emitted `ActionVerb` union does not match `ActionVerb::ALL`"
+        );
+    }
+}

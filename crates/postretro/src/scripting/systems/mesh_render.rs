@@ -2222,6 +2222,7 @@ mod tests {
             }),
             health: None,
             ai: None,
+            behavior: None,
         };
         assert!(
             crate::scripting::builtins::net_descriptor::materialize_net_mesh_presentation(

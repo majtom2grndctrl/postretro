@@ -443,6 +443,8 @@ mod tests {
                 "defineTriggerPool",
                 "defineStore",
                 "slot",
+                "brain",
+                "state",
                 "emitter",
                 "smokeEmitter",
                 "sparkEmitter",

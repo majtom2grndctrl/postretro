@@ -648,6 +648,7 @@ mod tests {
             mesh,
             health: None,
             ai: None,
+            behavior: None,
         }
     }
 

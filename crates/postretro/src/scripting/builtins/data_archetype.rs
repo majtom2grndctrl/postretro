@@ -963,6 +963,7 @@ mod tests {
             mesh: None,
             health: None,
             ai: None,
+            behavior: None,
         }
     }
 
@@ -1185,6 +1186,7 @@ mod tests {
                 zone_multipliers: std::collections::HashMap::new(),
             }),
             ai: None,
+            behavior: None,
         }];
         let placements = vec![placement("target_dummy", &[])];
         let handled = apply_data_archetype_dispatch(
@@ -1578,6 +1580,7 @@ mod tests {
             mesh: None,
             health: None,
             ai: None,
+            behavior: None,
         }];
         let placements = vec![placement(
             "campfire",
@@ -1622,6 +1625,7 @@ mod tests {
             mesh: None,
             health: None,
             ai: None,
+            behavior: None,
         }];
         let placements = vec![placement("campfire", &[("velocity", "9.0 9.0 9.0")])];
         apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg, None);
@@ -1663,6 +1667,7 @@ mod tests {
             mesh: None,
             health: None,
             ai: None,
+            behavior: None,
         }];
         let placements = vec![placement("campfire", &[("initial_rate", "20.5")])];
         apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg, None);
@@ -1701,6 +1706,7 @@ mod tests {
             mesh: None,
             health: None,
             ai: None,
+            behavior: None,
         }];
         let placements = vec![placement("burstfire", &[("initial_burst", "24")])];
         apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg, None);
@@ -1741,6 +1747,7 @@ mod tests {
             mesh: None,
             health: None,
             ai: None,
+            behavior: None,
         }];
         let placements = vec![placement(
             "smolder",
@@ -1791,6 +1798,7 @@ mod tests {
             mesh: None,
             health: None,
             ai: None,
+            behavior: None,
         }];
 
         let placements = vec![placement("billboard_emitter", &[])];
@@ -1858,6 +1866,7 @@ mod tests {
             mesh: None,
             health: None,
             ai: None,
+            behavior: None,
         }];
         let placements = vec![placement("ghost", &[]), placement("ghost", &[])];
         let handled = apply_data_archetype_dispatch(
@@ -1967,6 +1976,7 @@ mod tests {
             mesh: None,
             health: None,
             ai: None,
+            behavior: None,
         }
     }
 
@@ -1991,6 +2001,7 @@ mod tests {
             mesh: None,
             health: None,
             ai: None,
+            behavior: None,
         }
     }
 
@@ -2017,6 +2028,7 @@ mod tests {
             mesh: None,
             health: None,
             ai: None,
+            behavior: None,
         }
     }
 
@@ -2069,6 +2081,7 @@ mod tests {
             mesh: None,
             health: None,
             ai: None,
+            behavior: None,
         }
     }
 

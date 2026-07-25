@@ -4,7 +4,7 @@
 use super::super::*;
 
 /// Mirror of [`entity_descriptor_from_js`] for Luau tables. Shape:
-/// `{ canonicalName?: string, defaultWeapon?: string, components?: { mesh?: MeshDescriptor, movement?: PlayerMovementDescriptor, weapon?: WeaponDescriptor, health?: HealthDescriptor, ai?: AiDescriptor, light?: LightDescriptor, emitter?: BillboardEmitterComponent } }`.
+/// `{ canonicalName?: string, defaultWeapon?: string, components?: { mesh?: MeshDescriptor, movement?: PlayerMovementDescriptor, weapon?: WeaponDescriptor, health?: HealthDescriptor, ai?: AiDescriptor, behavior?: BehaviorGraphDescriptor, light?: LightDescriptor, emitter?: BillboardEmitterComponent } }`.
 ///
 /// `canonicalName` is optional; absence means the descriptor has no direct
 /// map-placement form (see `EntityTypeDescriptor`).
@@ -61,6 +61,7 @@ pub fn entity_descriptor_from_lua(
     let mut mesh = None;
     let mut health = None;
     let mut ai = None;
+    let mut behavior = None;
 
     if table.contains_key("components").map_err(lua_err)? {
         let raw: LuaValue = table.get("components").map_err(lua_err)?;
@@ -148,6 +149,17 @@ pub fn entity_descriptor_from_lua(
                     ai = Some(descriptor.validate()?);
                 }
             }
+            if components_table.contains_key("behavior").map_err(lua_err)? {
+                let raw: LuaValue = components_table.get("behavior").map_err(lua_err)?;
+                if !matches!(raw, LuaValue::Nil) {
+                    let json = conv::lua_to_json(raw).map_err(lua_err)?;
+                    let descriptor: BehaviorGraphDescriptor = serde_json::from_value(json)
+                        .map_err(|e| DescriptorError::InvalidShape {
+                            reason: format!("`components.behavior` invalid: {e}"),
+                        })?;
+                    behavior = Some(descriptor.validate()?);
+                }
+            }
             if components_table.contains_key("light").map_err(lua_err)? {
                 let raw: LuaValue = components_table.get("light").map_err(lua_err)?;
                 if !matches!(raw, LuaValue::Nil) {
@@ -182,7 +194,7 @@ pub fn entity_descriptor_from_lua(
         }
     }
 
-    Ok(EntityTypeDescriptor {
+    let descriptor = EntityTypeDescriptor {
         canonical_name,
         default_weapon,
         light,
@@ -192,7 +204,10 @@ pub fn entity_descriptor_from_lua(
         mesh,
         health,
         ai,
-    })
+        behavior,
+    };
+    descriptor.validate_component_exclusivity()?;
+    Ok(descriptor)
 }
 
 /// Luau's generic JSON bridge maps functions/userdata/threads to JSON null.

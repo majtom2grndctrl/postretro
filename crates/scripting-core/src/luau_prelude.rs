@@ -65,6 +65,12 @@ const ARRAY_METATABLE_GLOBAL: &str = "__postretroArrayMetatable";
 /// builder assembles a `RuntimeValue` table and never calls back into Rust.
 const RUNTIME_LUAU_SRC: &str = include_str!("../../../sdk/lib/runtime.luau");
 
+/// SDK library prelude — `brain.luau` returns the behavior-graph guard-input
+/// sugar (`brain`, `state`). Pure data assembly with no primitive dependency
+/// and no ordering constraint: it builds its IR input leaves literally rather
+/// than through the `runtime` global.
+const BRAIN_LUAU_SRC: &str = include_str!("../../../sdk/lib/brain.luau");
+
 /// SDK library prelude — `ui/reactions.luau` returns state-crossing, system
 /// reaction, UI-stack, and text-entry descriptor builders. These are evaluated
 /// for the `postretro/ui` virtual module only; Task 1 of the UI SDK split keeps
@@ -211,6 +217,10 @@ const UI_THEME_FIELDS: &[&str] = &["defineTheme", "getDesignTokens"];
 /// `game_state.luau`.
 const GAME_STATE_FIELDS: &[&str] = &["getGameState"];
 
+/// Behavior-graph guard-input SDK fields lifted to globals after evaluating
+/// `brain.luau`.
+const BRAIN_LUAU_FIELDS: &[&str] = &["brain", "state"];
+
 /// Authoritative runtime export names for `require("postretro/ui")`.
 pub const POSTRETRO_UI_MODULE_EXPORTS: &[&str] = &[
     "Text",
@@ -277,6 +287,8 @@ pub const POSTRETRO_ROOT_MODULE_EXPORTS: &[&str] = &[
     "defineMapCatalog",
     "defineTriggerPool",
     "defineStore",
+    "brain",
+    "state",
     "emitter",
     "smokeEmitter",
     "sparkEmitter",
@@ -686,6 +698,31 @@ pub fn evaluate_prelude(
             reason: format!("failed to install global `runtime`: {e}"),
         })?;
 
+    // Step 9: evaluate `brain.luau` and lift its behavior-graph guard-input
+    // sugar to globals. Pure data assembly like `runtime.luau`; the ordering is
+    // free.
+    let brain_sdk: Table = lua
+        .load(BRAIN_LUAU_SRC)
+        .set_name("postretro/sdk/brain.luau")
+        .eval()
+        .map_err(|e| ScriptError::ScriptThrew {
+            msg: format!("failed to evaluate SDK prelude `brain.luau`: {e}"),
+            source_name: "sdk/lib/brain.luau".to_string(),
+        })?;
+    for field in BRAIN_LUAU_FIELDS {
+        let value: mlua::Value =
+            brain_sdk
+                .get(*field)
+                .map_err(|e| ScriptError::InvalidArgument {
+                    reason: format!("brain.luau missing `{field}`: {e}"),
+                })?;
+        globals
+            .set(*field, value)
+            .map_err(|e| ScriptError::InvalidArgument {
+                reason: format!("failed to install global `{field}`: {e}"),
+            })?;
+    }
+
     if let Some(virtual_modules) = virtual_modules {
         populate_virtual_modules(
             lua,
@@ -694,6 +731,7 @@ pub fn evaluate_prelude(
                 world,
                 runtime,
                 game_state_sdk,
+                brain_sdk,
                 keyframes_sdk,
                 emitters_sdk,
                 data_sdk,
@@ -714,6 +752,7 @@ struct LuauSdkExportInventory {
     world: mlua::Value,
     runtime: mlua::Value,
     game_state_sdk: Table,
+    brain_sdk: Table,
     keyframes_sdk: Table,
     emitters_sdk: Table,
     data_sdk: Table,
@@ -799,6 +838,12 @@ fn populate_virtual_modules(
         &inventory.game_state_sdk,
         GAME_STATE_FIELDS,
         "game_state.luau",
+    )?;
+    copy_fields_to_table(
+        &root_module,
+        &inventory.brain_sdk,
+        BRAIN_LUAU_FIELDS,
+        "brain.luau",
     )?;
     copy_fields_to_table(
         &root_module,

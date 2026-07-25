@@ -1,8 +1,9 @@
 # Out-of-scope findings — switch-entity session
 
-Issues surfaced while implementing `switch` that sit outside this spec's scope. None
-were acted on. Each entry records how it was verified, so a follow-up agent knows what
-is established fact and what still needs confirming.
+Issues surfaced while implementing `switch` that sit outside this spec's scope. The
+numbered sections were left unfixed; the closing section records what *was* fixed, so it
+does not get re-filed. Each entry records how it was verified, so a follow-up agent knows
+what is established fact and what still needs confirming.
 
 Provenance shorthand: **[confirmed]** reproduced or read directly in this session ·
 **[reported]** observed by an implementation agent, not independently reproduced.
@@ -242,18 +243,50 @@ wider than this feature. Recorded so they are decisions, not oversights.
   it cannot be scoped to switches without a PRL change. Both are outside this feature's
   stated boundary (FGD + level compiler + tests). Workaround today: keep switches more
   than `2 × use_reach` apart, or narrow `use_reach` on dense banks.
-- **Animated lightmaps cover atlas layer 0 only** **[reported]**. `forward.wgsl`
+- **Animated lightmaps cover atlas layer 0 only** **[confirmed]**. `forward.wgsl`
   documents that faces with `lightmap_layer >= 1` receive no animated lighting at all.
-  The `switch-demo` room is far too small to spill past layer 0, so the light-on-press
-  fixture is safe — but anyone porting that pattern into a large map gets a light that
-  silently never animates on the overflow faces. A false-negative mode with no
-  diagnostic; worth a compile-time or load-time warning when an animated light's
-  receivers land beyond layer 0.
+  Anyone authoring a baked light that a script animates gets a light that silently never
+  animates on the overflow faces — a false-negative mode with no assert and no warning.
+  Worth a compile-time or load-time warning when an animated light's receivers land
+  beyond layer 0.
 
-The switch's own **probe residual** — a switch floated more than one map unit off its
-mount still grows a margin across that gap — is *not* listed here because it is
-documented as an accepted limit in both `sdk/TrenchBroom/postretro.fgd` (the `switch`
-comment block) and the spec's Decisions section, where an author will actually meet it.
+  **The constraint is confirmed reachable in a small fixture, not theoretical.**
+  `switch-demo` is a single sealed room and it still measured `512x512x2` — two layers. The
+  fixture sidesteps the constraint entirely by authoring the console indicator as
+  `light_dynamic` instead of `light`: a dynamic light bakes into nothing, so it has no
+  atlas and no layer to spill past. That tier choice is load-bearing, not cosmetic (noted
+  in the map's own comment block); the price is no baked indirect bounce, which a press
+  indicator does not need.
+
+  **Coarsening `_lightmap_density` does not work around it** **[confirmed]** — measured
+  `512x512x2` at 0.04, `256x256x3` at 0.06, `256x256x2` at 0.08. `choose_layer_dim`
+  (`crates/level-compiler/src/lightmap_bake.rs`) sizes the layer to the densest single
+  leaf, so the layer *dimension* shrinks along with the texel count and the layer count
+  never reaches 1 — it can even get worse. Recorded so the next agent does not spend the
+  session trying the obvious thing.
+
+---
+
+## 8. f32/f64 boundary between wire bounds and compiler hulls **[confirmed]**
+
+Trigger AABBs are `[f32; 3]` on the wire (`crates/level-format/src/trigger_volumes.rs`)
+while brush hulls are native f64 throughout the compiler. Widening the f32 back to f64 for
+a geometric comparison does **not** recover the discarded bits, so two planes the author
+made coincident land a few hundred nanometres apart. Any *strict* comparison across that
+boundary therefore misfires at exactly-touching planes — the case flush-mounted brushwork
+produces constantly.
+
+**It bit the switch clamp once already.** A strict cross-section overlap test reported
+phantom overlaps where a wall touches four of the console's faces edge-on, zeroing all four
+margins. Fixed with a 1 mm contact tolerance, chosen to sit above f32 representation error
+at level coordinates (~1e-6 m near the origin, approaching 1e-4 m at 800 m out) and 25×
+below one map unit, so no authored dimension can hide inside it.
+
+**Worth auditing, not audited.** Other compiler code that compares wire-format bounds
+against compiler-side hulls plausibly has the same latent bug — fog cell masks, acoustic
+zone resolution, and cell/AABB containment are the obvious candidates by shape. This
+session did not check any of them; the finding is the hazard and the precedent for the fix,
+not a survey.
 
 ---
 
@@ -269,10 +302,39 @@ comment block) and the spec's Decisions section, where an author will actually m
   bare `cargo test` on the crate; the gated set measured ~31 min and a bare run is cheap.
   Dropping `occlusion-test` from `GATE_FIXTURES` cut the gates 7× (1812s → 260s), putting
   the gated set at ~5 min. Figures replaced with measured ones.
-- **Switches were pressable through walls.** The spec's uniform all-axis inflation omitted
-  the player capsule radius, so effective reach was ~31 map units against 16-unit walls.
-  Now grows per face, only where the adjacent space is open. Spec revised rather than
-  shipped; rationale and the generalizable insight recorded in its Decisions section.
+- **Switches were pressable through walls — fixed twice, because the first fix was also
+  wrong.** The spec's uniform all-axis inflation omitted the player capsule radius, so
+  effective reach was `use_reach * scale + radius` = **≈ 40 map units** at defaults
+  (`24 * 0.0254 + 0.4` m) against 16-unit walls. (Earlier drafts of this file and the spec
+  said ~31; that figure carried a `− SKIN_DISTANCE` term dropped without recomputing. The
+  real number makes the original defect worse than recorded, not better.) The first
+  replacement — probe one map unit out per face, then grow the full 24 — was a *sampling*
+  error: any solid between 1 and 24 units out was sampled as open and grown through, leak
+  condition `clearance + thickness < use_reach`. What ships clamps each face to the free
+  distance in front of it. Spec revised rather than shipped both times; both lessons, and
+  what the final invariant deliberately does **not** cover, are recorded in its Decisions
+  section.
+- **A switch floated off its mount grew across the gap** (previously filed here as an
+  accepted probe residual). Growth is now clamped to the actual free distance, so it stops
+  at the mount whatever the gap — flush mounting is just the zero-gap case. No longer an
+  authoring-guidance limit and no longer documented as one.
+- **`kinematic_mover` brushes were a hole in the occluder set.** Mover brushes never reach
+  the static world brush set, so a switch mounted on a door or lift clamped against nothing
+  and grew straight through it. Mover hulls are now in the occluder set at their
+  **authored** (compile-time) position — conservative for a mover that later moves away,
+  which is the correct trade against pressing through a closed door.
+- **A brushless brush-entity classname shipped as an unregistered entity.** A `switch`
+  with no brushes fell through to the point-entity tail and emitted a `MapEntityRecord`
+  the runtime drops at `debug!` as an unregistered classname: no geometry, no trigger, no
+  compile diagnostic, silent at every level. Now `bail!`s. **The class of bug generalizes**
+  — any brush-entity classname whose handler sits behind a `has_brushes` check has this
+  shape, and the point-entity tail will accept anything.
+- **A multi-brush `switch` unioned into one hull.** The press volume is the AABB union of
+  the entity's brushes, so two consoles on facing walls produced a room-spanning volume
+  firing on any `use` press inside it — and the per-face clamp cannot catch it, because
+  every face of that union fronts open room (`MAX_SWITCH_USE_REACH` bounds the margin, not
+  the hull it is added to). Now `bail!`s with a split-them-up message. `fog_volume` already
+  carried exactly this precedent for the same reason; the switch follows it.
 - **`use_reach` range, discarded `activation`, and switch diagnostics.** `use_reach <= 0`
   and an absurd upper value are now compile errors; an authored `activation` warns instead
   of vanishing; `resolve_trigger_volume` takes the classname, so a switch's errors no

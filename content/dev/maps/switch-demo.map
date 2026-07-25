@@ -2,9 +2,16 @@
 // Format: Standard
 // Switch-entity fixture. Sealed room, interior 448 x 320 x 160 units, wall
 // thickness 16. One authored switch brush is mounted flush on the north wall:
-// it is visible, solid, and pressable. Walk up to it, press use, and the door
-// slab in the west half drops. Manual gate for the switch compile-time desugar
-// (static world geometry + a use-activation trigger inflated by use_reach).
+// it is visible, solid, and pressable. Walk up to it, press use, and two things
+// happen -- the console indicator light beside the switch fades up from dark,
+// and the door slab in the west half drops. Activation is proximity-only with no
+// facing check, so the indicator is the confirmation you can see while looking
+// at the console; the door remains the independent signal several metres away.
+// Manual gate for the switch compile-time desugar (static world geometry + a
+// use-activation trigger inflated by use_reach) and for script-driven animation
+// of a baked static light.
+// The switch is fire_mode once, so the indicator lights once per level load and
+// then stays lit. Reload to test again -- that is the fixture, not a bug.
 // Compile: cargo run -p postretro-level-compiler -- content/dev/maps/switch-demo.map -o content/dev/maps/switch-demo.prl
 // Run: cargo run -p xtask -- run content/dev/maps/switch-demo.prl
 // Rebuild first: cargo build -p postretro-level-compiler --bin prl-build
@@ -155,4 +162,21 @@
 "_falloff_range" "448"
 "_bake_only" "0"
 "_shadow_type" "static_light_map"
+}
+// entity 8 -- the console indicator. Sits 8 units in front of the switch plate
+// face at y 312, centred on it in x and z. Dim and short-range on purpose: it
+// must read as the console lighting up, not as room light, so it stays well
+// under the two room lights above. switch-demo.ts holds it dark on spawn and
+// fades it up on press; the setLightAnimation steps there reserve its animated
+// bake on their own, so it needs no _animated KVP and no dynamic-tier light.
+{
+"classname" "light"
+"origin" "224 304 56"
+"light" "90"
+"style" ""
+"_color" "80 255 140"
+"_falloff_range" "96"
+"_bake_only" "0"
+"_shadow_type" "static_light_map"
+"_tags" "switch_demo_console_light"
 }

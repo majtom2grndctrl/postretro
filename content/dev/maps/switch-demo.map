@@ -8,8 +8,8 @@
 // facing check, so the indicator is the confirmation you can see while looking
 // at the console; the door remains the independent signal several metres away.
 // Manual gate for the switch compile-time desugar (static world geometry + a
-// use-activation trigger grown past its open faces by use_reach) and for animation
-// of a baked static light.
+// use-activation trigger grown past its open faces by use_reach) and for script
+// animation of a dynamic-tier light.
 // The switch is fire_mode once, so the indicator lights once per level load and
 // then stays lit. Reload to test again -- that is the fixture, not a bug.
 // Compile: cargo run -p postretro-level-compiler -- content/dev/maps/switch-demo.map -o content/dev/maps/switch-demo.prl
@@ -164,20 +164,35 @@
 "_bake_only" "0"
 "_shadow_type" "static_light_map"
 }
-// entity 8 -- the console indicator. Sits 8 units in front of the switch plate
-// face at y 312, centred on it in x and z. Dim and short-range on purpose: it
-// must read as the console lighting up, not as room light, so it stays well
-// under the two room lights above. switch-demo.ts holds it dark on spawn and
-// fades it up on press; the setLightAnimation steps there reserve its animated
-// bake on their own, so it needs no _animated KVP and no dynamic-tier light.
+// entity 8 -- the console indicator, authored on the dynamic tier. Sits 8 units
+// in front of the switch plate face at y 312, centred on it in x and z. Dim and
+// short-range on purpose: it must read as the console lighting up, not as room
+// light, so it stays well under the two room lights above. switch-demo.ts holds
+// it dark on spawn and fades it up on press.
+// light_dynamic is a design decision, not a spelling of light. A baked light
+// that a script animates leaves the static lightmap for the animated-lightmap
+// atlas, and animated weight maps only cover atlas array layer 0 -- a face the
+// packer spills onto a higher layer is dark before AND after the press, with no
+// assert and no warning. Coarsening _lightmap_density does not help: the layer
+// dimension shrinks along with the texel count, so the layer count never
+// reaches 1. A dynamic light bakes into nothing, so it has no atlas and no
+// layer to spill past -- it is evaluated live in the forward direct loop and
+// shadowed from the runtime pool. Price paid: this light contributes no baked
+// indirect bounce, which a press indicator does not need.
+// The dynamic class omits every bake KVP -- style, _bake_only, _shadow_type,
+// _animated, _start_inactive -- because nothing on this tier bakes. The tier
+// comes from the classname; there is no KVP that selects it.
+// _cast_entity_shadows 0 drops the per-entity occluder pass for this light: it
+// is a 96-unit indicator whose only receiver in range is the plate it is
+// mounted on. The light's WORLD shadow is unaffected -- that rides the tier
+// itself, not this toggle.
 {
-"classname" "light"
+"classname" "light_dynamic"
 "origin" "224 304 56"
 "light" "90"
-"style" ""
 "_color" "80 255 140"
 "_falloff_range" "96"
-"_bake_only" "0"
-"_shadow_type" "static_light_map"
+"delay" "0"
+"_cast_entity_shadows" "0"
 "_tags" "switch_demo_console_light"
 }

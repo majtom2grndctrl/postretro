@@ -32,19 +32,41 @@ Replace the engine-closed four-state enemy FSM with an authored **behavior state
 
 ## Acceptance criteria
 
-- [ ] Full existing AI integration test suite passes unchanged for legacy `components.ai` descriptors: reference-fixture transition ticks, damage cadence, animation switches, facing, stride, aggro-gate, and combat-slot behavior are identical. Pure-core unit tests port to the lowered graph rather than being deleted.
-- [ ] A `components.behavior` descriptor parses and validates identically in QuickJS and Luau, with pathed errors in both for: unknown `initial`, a transition `to` naming no declared state, duplicate state names, empty `states`, and a guard that fails bind validation (unknown input name, type mismatch) — the error names the state and transition index.
-- [ ] Authoring both `components.ai` and `components.behavior` on one descriptor is a parse error in both runtimes.
-- [ ] Guards are evaluated every tick: a transition whose guard becomes true fires that tick even mid one-shot attack clip and mid attack cooldown. A guard over `@brain.timeInStateMs` implements a commitment window: the exit fires on the first tick the window elapses and never before.
-- [ ] An `interrupts` entry fires from any state and wins over a simultaneously-true state-local transition; among interrupts, declaration order wins. Sim determinism tests stay green.
-- [ ] An impact policy writing a per-entity state field causes a `@state.<name>` guard to fire on the next AI tick (the stagger shape, demonstrated end to end).
-- [ ] The reference enemy authored as an explicit graph is behavior-identical on a fixture to the same enemy authored via legacy `components.ai`: same transition ticks, damage cadence, and animation requests.
-- [ ] With no player pawn present, a reference-graph enemy seeded in its attack state reaches `initial` in one tick and never requests the travel animation on the way — the stand-down interrupt, in both the authored and lowered graphs.
-- [ ] A state's unknown animation name warns once at spawn and keeps the prior animation at tick time (existing invariant, now walked over authored graph states).
-- [ ] `updateEnemyState` with `aggro: false` forces an authored-graph enemy to its `initial` state with steering cleared; re-arming resumes normal evaluation.
-- [ ] `BrainComponent` serde round-trips without serializing bound guard programs; programs rebind from the retained graph, and component equality is unaffected by them (dash precedent).
-- [ ] Per-tick guard evaluation allocates zero heap (alloc-probe assertion, matching the substrate invariant).
-- [ ] SDK typedef drift tests pass with the new `behavior` types in both committed fixtures (`postretro.d.ts`, `postretro.d.luau`); the agent diagnostics overlay shows the authored state name.
+- [x] Full existing AI integration test suite passes unchanged for legacy `components.ai` descriptors: reference-fixture transition ticks, damage cadence, animation switches, facing, stride, aggro-gate, and combat-slot behavior are identical. Pure-core unit tests port to the lowered graph rather than being deleted.
+- [x] A `components.behavior` descriptor parses and validates identically in QuickJS and Luau, with pathed errors in both for: unknown `initial`, a transition `to` naming no declared state, duplicate state names, empty `states`, and a guard that fails bind validation (unknown input name, type mismatch) — the error names the state and transition index.
+- [x] Authoring both `components.ai` and `components.behavior` on one descriptor is a parse error in both runtimes.
+- [x] Guards are evaluated every tick: a transition whose guard becomes true fires that tick even mid one-shot attack clip and mid attack cooldown. A guard over `@brain.timeInStateMs` implements a commitment window: the exit fires on the first tick the window elapses and never before.
+- [x] An `interrupts` entry fires from any state and wins over a simultaneously-true state-local transition; among interrupts, declaration order wins. Sim determinism tests stay green.
+- [x] An impact policy writing a per-entity state field causes a `@state.<name>` guard to fire on the next AI tick (the stagger shape, demonstrated end to end).
+- [x] The reference enemy authored as an explicit graph is behavior-identical on a fixture to the same enemy authored via legacy `components.ai`: same transition ticks, damage cadence, and animation requests.
+- [x] With no player pawn present, a reference-graph enemy seeded in its attack state reaches `initial` in one tick and never requests the travel animation on the way — the stand-down interrupt, in both the authored and lowered graphs.
+- [x] A state's unknown animation name warns once at spawn and keeps the prior animation at tick time (existing invariant, now walked over authored graph states).
+- [x] `updateEnemyState` with `aggro: false` forces an authored-graph enemy to its `initial` state with steering cleared; re-arming resumes normal evaluation.
+- [x] `BrainComponent` serde round-trips without serializing bound guard programs; programs rebind from the retained graph, and component equality is unaffected by them (dash precedent).
+- [x] Per-tick guard evaluation allocates zero heap (alloc-probe assertion, matching the substrate invariant).
+- [x] SDK typedef drift tests pass with the new `behavior` types in both committed fixtures (`postretro.d.ts`, `postretro.d.luau`); the agent diagnostics overlay shows the authored state name.
+
+### Coverage notes
+
+Two criteria are met in substance by tests that stop one seam short of their
+literal wording. Both are dev-tools or scripting glue rather than sim behavior,
+and both are recorded here rather than left to be rediscovered.
+
+- **AC 10 (`updateEnemyState`)** is covered from both ends but never in one
+  test. `a_closed_aggro_gate_forces_an_authored_graph_to_its_initial_state`
+  (`ai_tests.rs`) proves force-to-initial, cleared steering, dropped target and
+  resumed evaluation on re-arm — driving `brain.aggro_armed` through a test
+  helper. The reaction primitive is proven separately in
+  `scripting/reactions/enemy_state.rs`, where `{"aggro": false}` flips that same
+  field. They meet at the field, so the pair is sound; nothing exercises the
+  script call and the authored-graph outcome together.
+- **AC 13 (overlay)** — the typedef half is fully pinned by the committed
+  fixtures and their drift tests. The overlay half is not:
+  `agent_diagnostics.rs` reads `brain.state_name()`, which resolves through the
+  graph's state keys, but `agent_overlay_label_includes_state_speed_and_flags`
+  passes a literal `Some("alert")` into the label assembler. The wiring from
+  `BrainComponent` to the label is unasserted. Verified by hand instead
+  (`Alt+Shift+A` on a map placing `reference_enemy`).
 
 ## Tasks
 

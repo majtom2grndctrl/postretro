@@ -59,12 +59,12 @@ Spawn 1–2 agents, one at a time. Provide the agent brief, plus an enumeration 
 
 Once all edits land, spawn **one** test-runner agent. On the warm cache it runs:
 - `cargo check` for touched crates
-- **focused** tests for the touched crate/module — `cargo test -p <crate> <name_filter>` (`--lib` skips integration tests). WARN: never run a bare `cargo test -p postretro-level-compiler` — its integration suite triggers cold `prl-build` bakes (~1h).
+- **focused** tests for the touched crate/module — `cargo test -p <crate> <name_filter>`, narrowed to one target to skip the `tests/` suite: `--lib` for a library crate, `--bin <name>` for a binary one (`--bin prl-build` for `postretro-level-compiler`). Check the count — a target/filter pair matching nothing prints `0 passed` and exits `ok`. WARN: never run a bare `cargo test -p postretro-level-compiler` — its integration suite triggers cold `prl-build` bakes (~1h).
 
 **Run contract** (how the gate agent must execute the above):
 - Run every cargo command in the **foreground (blocking)** and capture its pass/fail result inline, in the same turn.
 - **No backgrounding.** Never `run_in_background` a cargo command, and never Monitor / schedule a wakeup / "wait for the notification" to pick up a build or test result later — cargo results are captured synchronously, not polled.
-- Give each command a generous timeout, up to the Bash tool's 600000ms max. If one command would genuinely exceed that, narrow the scope (tighter `-p <crate>` + test-name filter, `--lib` to drop integration targets) instead of backgrounding it.
+- Give each command a generous timeout, up to the Bash tool's 600000ms max. If one command would genuinely exceed that, narrow the scope (tighter `-p <crate>` + test-name filter, a single `--lib`/`--bin <name>` target to drop the `tests/` suite) instead of backgrounding it.
 - The agent doesn't end its turn until every gate command has reported a result. A "still running in the background" hand-off is a failure of this step, not a valid outcome.
 
 It reports which crates fail to compile and which tests fail, mapped to the responsible file. A dedicated runner keeps the coordinator's context clean of build output. For one or two trivial findings, run the gate inline instead.

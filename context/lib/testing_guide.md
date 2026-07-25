@@ -115,7 +115,9 @@ Some suites are expensive and must not be run reflexively:
 - The `postretro-level-compiler` `tests/` integration tests (e.g. `animated_weight_maps_fixtures.rs`) shell out to `prl-build`, doing **cold SH/lightmap bakes** (`--no-cache`). A bare `cargo test -p postretro-level-compiler` can take **~1 hour**. The expensive cold-bake tests are `#[ignore]`-gated — run them on demand with `cargo test -p postretro-level-compiler -- --ignored`, or as part of the one-time integration preflight gate.
 - Compiling the large maps (`stress-warren*`, `campaign-test`) is slow. Routine, non-`#[ignore]` tests use only small, focused fixtures — synthetic in-memory structures or tiny purpose-built fixture maps. Heavy-map harnesses are `#[ignore]`-gated, on-demand only.
 
-**Default verification while iterating:** `cargo check` plus *targeted* tests for the touched crate/module — `cargo test -p <crate> <name_filter>`, with `--lib` to skip the integration tests. Reserve a full `cargo test` for a single coordinator-level gate after integration, not per change.
+**Default verification while iterating:** `cargo check` plus *targeted* tests for the touched crate/module — `cargo test -p <crate> <name_filter>`. Narrow to a single target to skip the `tests/` suite: `--lib` for a library crate, `--bin <name>` for a binary one. Reserve a full `cargo test` for a single coordinator-level gate after integration, not per change.
+
+**Read the test count, not the exit status.** A target-and-filter pair matching nothing prints `0 passed` and exits `ok` — a pass and a no-op look identical at a glance. `--lib` on a binary crate is the standing trap: `postretro-level-compiler` exposes only texture helpers from its lib, so the compiler internals (map parsing, entity dispatch) live in the `prl-build` bin target and `--lib` reaches none of them. Use `--bin prl-build` there. Whatever the target, confirm the count matches the tests you meant to run.
 
 ---
 

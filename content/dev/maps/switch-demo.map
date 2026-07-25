@@ -8,8 +8,10 @@
 // facing check, so the indicator is the confirmation you can see while looking
 // at the console; the door remains the independent signal several metres away.
 // Manual gate for the switch compile-time desugar (static world geometry + a
-// use-activation trigger grown past its open faces by use_reach) and for script
-// animation of a dynamic-tier light.
+// use-activation trigger whose every face grows up to use_reach, clamped to the
+// free space in front of it) and for script animation of a dynamic-tier light.
+// The console is flush on the north wall, so that face grows nothing -- which is
+// the case the clamp exists to hold.
 // The switch is fire_mode once, so the indicator lights once per level load and
 // then stays lit. Reload to test again -- that is the fixture, not a bug.
 // Compile: cargo run -p postretro-level-compiler -- content/dev/maps/switch-demo.map -o content/dev/maps/switch-demo.prl

@@ -8,7 +8,7 @@
 // facing check, so the indicator is the confirmation you can see while looking
 // at the console; the door remains the independent signal several metres away.
 // Manual gate for the switch compile-time desugar (static world geometry + a
-// use-activation trigger inflated by use_reach) and for script-driven animation
+// use-activation trigger grown past its open faces by use_reach) and for animation
 // of a baked static light.
 // The switch is fire_mode once, so the indicator lights once per level load and
 // then stays lit. Reload to test again -- that is the fixture, not a bug.
@@ -89,8 +89,9 @@
 }
 // entity 2 -- the switch. Solid, drawn, and pressable: the compiler folds this
 // brush into static world geometry and also emits a use-activation trigger
-// volume inflated by use_reach, so a player standing in front of the solid face
-// still overlaps the volume.
+// volume grown by use_reach on each face whose adjacent space is open, so a
+// player in front of the solid face overlaps it while the walled rear face gets
+// no margin -- this switch is mounted flush, so it cannot be pressed from behind.
 {
 "classname" "switch"
 "name" "door_switch"

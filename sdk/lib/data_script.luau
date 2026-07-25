@@ -151,6 +151,12 @@ export type MoverGoToPathNodeStep = {
   args: { node: string },
 }
 
+export type MoverSetSpinRateStep = {
+  id: number,
+  primitive: "moverSetSpinRate",
+  args: { rate: number },
+}
+
 export type ArmTriggerStep = {
   id: number | "@trigger",
   primitive: "armTrigger",
@@ -165,7 +171,7 @@ export type DisarmTriggerStep = {
 
 -- `SetFogAnimationStep` is declared in `postretro.d.luau` (the SDK lib
 -- block generated from the primitive registry) and is not redeclared here.
-export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogScatterStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | ArmTriggerStep | DisarmTriggerStep
+export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogScatterStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | ArmTriggerStep | DisarmTriggerStep
 
 --- Descriptor produced by `defineReaction`. The `name` field is merged
 --- into the descriptor at the top level so the Rust deserializer can read

@@ -335,6 +335,7 @@ fn is_trigger_consequential_primitive(primitive: &str) -> bool {
             | "moverStop"
             | "moverReverse"
             | "moverGoToPathNode"
+            | "moverSetSpinRate"
             | "applyDamage"
             | "armTrigger"
             | "disarmTrigger"

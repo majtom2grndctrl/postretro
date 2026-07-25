@@ -21,6 +21,8 @@ pub enum MoverCommand {
     Stop,
     Reverse,
     GoToPathNode(String),
+    /// Set the authored target spin rate in degrees per second.
+    SetSpinRate(f32),
 }
 
 /// Live deterministic phase for one moving-world payload.
@@ -130,5 +132,22 @@ mod tests {
         assert_eq!(mover.spin_axis, Vec3::Y);
         assert_eq!(mover.spin_rate_rad_s, 1.25);
         assert_eq!(mover.spin_target_rate_rad_s, 1.25);
+    }
+
+    #[test]
+    fn set_spin_rate_command_uses_snake_case_degrees_payload() {
+        let command = MoverCommand::SetSpinRate(-90.0);
+
+        assert_eq!(
+            serde_json::to_value(&command).unwrap(),
+            serde_json::json!({ "set_spin_rate": -90.0 })
+        );
+        assert_eq!(
+            serde_json::from_value::<MoverCommand>(serde_json::json!({
+                "set_spin_rate": 180.0
+            }))
+            .unwrap(),
+            MoverCommand::SetSpinRate(180.0)
+        );
     }
 }

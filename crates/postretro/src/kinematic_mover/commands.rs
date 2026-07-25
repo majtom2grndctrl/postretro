@@ -106,6 +106,16 @@ pub(crate) fn apply_mover_command(mover: &mut KinematicMoverComponent, command: 
             mover.completed = false;
             mover.wait_remaining_ms = 0.0;
         }
+        MoverCommand::SetSpinRate(rate_deg_s) => {
+            if !rate_deg_s.is_finite() {
+                log::warn!(
+                    "[Mover] set_spin_rate for mover {} has non-finite rate; skipping",
+                    mover.mover_id
+                );
+                return;
+            }
+            mover.spin_target_rate_rad_s = rate_deg_s.to_radians();
+        }
     }
 }
 
@@ -178,6 +188,7 @@ pub(crate) fn register_mover_reaction_primitives(
         );
         Ok(())
     });
+    let go_to_path_node_diagnostics = diagnostics.clone();
     registry.register("moverGoToPathNode", move |registry, targets, args| {
         let args: MoverGoToPathNodeArgs =
             serde_json::from_value(args.clone()).map_err(|e| ReactionError::InvalidArgument {
@@ -187,7 +198,21 @@ pub(crate) fn register_mover_reaction_primitives(
             registry,
             targets,
             &MoverCommand::GoToPathNode(args.node),
-            &diagnostics,
+            &go_to_path_node_diagnostics,
+        );
+        Ok(())
+    });
+    let set_spin_rate_diagnostics = diagnostics.clone();
+    registry.register("moverSetSpinRate", move |registry, targets, args| {
+        let args: MoverSetSpinRateArgs =
+            serde_json::from_value(args.clone()).map_err(|e| ReactionError::InvalidArgument {
+                reason: format!("moverSetSpinRate: failed to deserialize args: {e}"),
+            })?;
+        apply_mover_command_to_targets(
+            registry,
+            targets,
+            &MoverCommand::SetSpinRate(args.rate),
+            &set_spin_rate_diagnostics,
         );
         Ok(())
     });
@@ -222,16 +247,32 @@ pub(crate) fn register_sequenced_mover_primitives(
         "moverReverse",
         MoverCommand::Reverse,
     );
+    let go_to_path_node_ctx = ctx.clone();
+    let go_to_path_node_diagnostics = diagnostics.clone();
     registry.register("moverGoToPathNode", move |id, args| {
         let args: MoverGoToPathNodeArgs =
             serde_json::from_value(args.clone()).map_err(|e| SequenceError::InvalidArgument {
                 reason: format!("moverGoToPathNode: failed to deserialize args: {e}"),
             })?;
-        let mut entities = ctx.registry.borrow_mut();
+        let mut entities = go_to_path_node_ctx.registry.borrow_mut();
         apply_mover_command_to_targets(
             &mut entities,
             &[id],
             &MoverCommand::GoToPathNode(args.node),
+            &go_to_path_node_diagnostics,
+        );
+        Ok(())
+    });
+    registry.register("moverSetSpinRate", move |id, args| {
+        let args: MoverSetSpinRateArgs =
+            serde_json::from_value(args.clone()).map_err(|e| SequenceError::InvalidArgument {
+                reason: format!("moverSetSpinRate: failed to deserialize args: {e}"),
+            })?;
+        let mut entities = ctx.registry.borrow_mut();
+        apply_mover_command_to_targets(
+            &mut entities,
+            &[id],
+            &MoverCommand::SetSpinRate(args.rate),
             &diagnostics,
         );
         Ok(())
@@ -257,11 +298,17 @@ struct MoverGoToPathNodeArgs {
     node: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub(crate) struct MoverSetSpinRateArgs {
+    pub(crate) rate: f32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use glam::{Quat, Vec3};
-    use postretro_entities::KinematicMoverMode;
+    use postretro_entities::{KinematicMoverMode, ScriptCtx};
+    use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
 
     fn sample_mover(mode: KinematicMoverMode, wait_ms: f32) -> KinematicMoverComponent {
         KinematicMoverComponent::new(
@@ -341,6 +388,37 @@ mod tests {
     }
 
     #[test]
+    fn set_spin_rate_converts_degrees_and_mutates_only_target_rate() {
+        let mut mover = sample_mover(KinematicMoverMode::PingPong, 250.0);
+        mover.direction_sign = -1;
+        mover.segment_elapsed_ms = 750.0;
+        mover.wait_remaining_ms = 100.0;
+        mover.current_linear_velocity = Vec3::X;
+        mover.completed = true;
+        mover.spin_angle_rad = 0.75;
+        mover.spin_rate_rad_s = 1.25;
+        mover.spin_target_rate_rad_s = -0.5;
+
+        let mut expected = mover.clone();
+        expected.spin_target_rate_rad_s = 180.0_f32.to_radians();
+
+        apply_mover_command(&mut mover, &MoverCommand::SetSpinRate(180.0));
+
+        assert_eq!(mover, expected);
+    }
+
+    #[test]
+    fn set_spin_rate_skips_non_finite_targets_without_mutating_phase() {
+        let mover = sample_mover(KinematicMoverMode::PingPong, 250.0);
+
+        for rate in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut candidate = mover.clone();
+            apply_mover_command(&mut candidate, &MoverCommand::SetSpinRate(rate));
+            assert_eq!(candidate, mover);
+        }
+    }
+
+    #[test]
     fn command_target_applier_skips_non_movers() {
         let mut registry = EntityRegistry::new();
         let mover_entity = registry.spawn(transform_at(Vec3::ZERO));
@@ -384,49 +462,95 @@ mod tests {
     }
 
     #[test]
-    fn script_mover_primitive_matches_shared_kvp_command_path() {
-        let mut script_registry = EntityRegistry::new();
-        let script_target = script_registry.spawn(transform_at(Vec3::ZERO));
-        script_registry
+    fn set_spin_rate_reaction_and_sequence_routes_match_shared_kvp_command_path() {
+        let mut reaction_registry_entities = EntityRegistry::new();
+        let reaction_target = reaction_registry_entities.spawn(transform_at(Vec3::ZERO));
+        reaction_registry_entities
             .set_component(
-                script_target,
+                reaction_target,
                 sample_mover(KinematicMoverMode::PingPong, 0.0),
             )
             .unwrap();
 
         let mut kvp_registry = EntityRegistry::new();
         let kvp_target = kvp_registry.spawn(transform_at(Vec3::ZERO));
-        assert_eq!(script_target, kvp_target, "fixture registries must align");
+        assert_eq!(reaction_target, kvp_target, "fixture registries must align");
         kvp_registry
             .set_component(kvp_target, sample_mover(KinematicMoverMode::PingPong, 0.0))
             .unwrap();
+
+        let sequence_ctx = ScriptCtx::new();
+        let sequence_target = sequence_ctx
+            .registry
+            .borrow_mut()
+            .spawn(transform_at(Vec3::ZERO));
+        sequence_ctx
+            .registry
+            .borrow_mut()
+            .set_component(
+                sequence_target,
+                sample_mover(KinematicMoverMode::PingPong, 0.0),
+            )
+            .unwrap();
+
         let mut reactions = ReactionPrimitiveRegistry::new();
         register_mover_reaction_primitives(&mut reactions, Default::default());
         assert!(
             reactions
                 .dispatch(
-                    "moverGoToPathNode",
-                    &mut script_registry,
-                    &[script_target],
-                    &serde_json::json!({ "node": "finish" }),
+                    "moverSetSpinRate",
+                    &mut reaction_registry_entities,
+                    &[reaction_target],
+                    &serde_json::json!({ "rate": -90.0 }),
                 )
                 .unwrap()
         );
+
+        let mut sequences = SequencedPrimitiveRegistry::new();
+        register_sequenced_mover_primitives(
+            &mut sequences,
+            sequence_ctx.clone(),
+            Default::default(),
+        );
+        sequences
+            .get("moverSetSpinRate")
+            .expect("set-spin-rate sequence primitive should register")(
+            sequence_target,
+            &serde_json::json!({ "rate": -90.0 }),
+        )
+        .unwrap();
+
         apply_mover_command_to_targets(
             &mut kvp_registry,
             &[kvp_target],
-            &MoverCommand::GoToPathNode("finish".to_string()),
+            &MoverCommand::SetSpinRate(-90.0),
             &MoverCommandDiagnostics::default(),
         );
 
+        let kvp_mover = kvp_registry
+            .get_component::<KinematicMoverComponent>(kvp_target)
+            .unwrap();
         assert_eq!(
-            script_registry
-                .get_component::<KinematicMoverComponent>(script_target)
+            reaction_registry_entities
+                .get_component::<KinematicMoverComponent>(reaction_target)
                 .unwrap(),
-            kvp_registry
-                .get_component::<KinematicMoverComponent>(kvp_target)
-                .unwrap(),
-            "the script primitive must use the same mover-phase applier as KVP commands"
+            kvp_mover,
+            "the reaction primitive must use the same mover-phase applier as KVP commands"
+        );
+        let sequence_mover = sequence_ctx
+            .registry
+            .borrow()
+            .get_component::<KinematicMoverComponent>(sequence_target)
+            .unwrap()
+            .clone();
+        assert_eq!(
+            sequence_mover, *kvp_mover,
+            "the sequence primitive must use the same mover-phase applier as KVP commands"
+        );
+        assert_eq!(
+            kvp_mover.spin_target_rate_rad_s,
+            (-90.0_f32).to_radians(),
+            "the shared applier owns degrees-to-radians conversion"
         );
     }
 }

@@ -61,6 +61,7 @@ export type {
   MoverStopStep,
   MoverReverseStep,
   MoverGoToPathNodeStep,
+  MoverSetSpinRateStep,
   ArmTriggerStep,
   DisarmTriggerStep,
   CrossingParams,

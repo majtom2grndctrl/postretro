@@ -65,6 +65,7 @@ mod tests {
             "moverStop",
             "moverReverse",
             "moverGoToPathNode",
+            "moverSetSpinRate",
         ] {
             assert!(r.contains(name), "missing {name}");
         }

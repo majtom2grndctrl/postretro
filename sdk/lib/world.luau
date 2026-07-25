@@ -27,7 +27,7 @@ export type EntityHandle = {
 --- `:sweep`); `{ component = "fog_volume", ... }` yields fog volume handles
 --- with capability methods (`:pulse`, `:fade`, `:flicker`, `:pulseSaturation`,
 --- `:fadeSaturation`); `{ component = "kinematic_mover", ... }` yields mover
---- handles with `:start`, `:stop`, `:reverse`, and `:goToPathNode`; `{ component = "trigger_volume", ... }`
+--- handles with `:start`, `:stop`, `:reverse`, `:goToPathNode`, and `:setSpinRate`; `{ component = "trigger_volume", ... }`
 --- yields trigger handles with `:arm` and `:disarm`; `{ component = "emitter", ... }` yields
 --- handles carrying the full `BillboardEmitterComponent` snapshot under
 --- `component`; any other component filter returns `EntityHandle` values

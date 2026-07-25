@@ -18,8 +18,9 @@ mod commands;
 #[cfg(test)]
 pub(crate) use commands::apply_mover_command;
 pub(crate) use commands::{
-    MoverCommandDiagnostics, apply_mover_command_to_known_movers, apply_mover_command_to_targets,
-    register_mover_reaction_primitives, register_sequenced_mover_primitives,
+    MoverCommandDiagnostics, MoverSetSpinRateArgs, apply_mover_command_to_known_movers,
+    apply_mover_command_to_targets, register_mover_reaction_primitives,
+    register_sequenced_mover_primitives,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -629,6 +630,28 @@ mod tests {
     }
 
     #[test]
+    fn set_spin_rate_ramps_through_zero_to_signed_target_and_snaps_without_acceleration() {
+        let mut reversing = pure_rotator(std::f32::consts::PI, std::f32::consts::PI);
+        apply_mover_command(&mut reversing, &MoverCommand::SetSpinRate(-180.0));
+        assert!((reversing.spin_target_rate_rad_s + std::f32::consts::PI).abs() < EPS);
+
+        let (reversing, transform, _) = tick_component(reversing, transform_at(Vec3::ZERO), 0.5);
+        assert!((reversing.spin_rate_rad_s - std::f32::consts::FRAC_PI_2).abs() < EPS);
+
+        let (reversing, transform, _) = tick_component(reversing, transform, 0.5);
+        assert!(reversing.spin_rate_rad_s.abs() < EPS);
+
+        let (reversing, _, _) = tick_component(reversing, transform, 0.5);
+        assert!((reversing.spin_rate_rad_s + std::f32::consts::FRAC_PI_2).abs() < EPS);
+
+        let mut snapped = pure_rotator(1.0, 0.0);
+        apply_mover_command(&mut snapped, &MoverCommand::SetSpinRate(90.0));
+        assert!((snapped.spin_rate_rad_s - 1.0).abs() < EPS);
+        let (snapped, _, _) = tick_component(snapped, transform_at(Vec3::ZERO), 0.25);
+        assert!((snapped.spin_rate_rad_s - std::f32::consts::FRAC_PI_2).abs() < EPS);
+    }
+
+    #[test]
     fn mid_ramp_phase_replay_reproduces_rate_and_orientation() {
         let mut seed = pure_rotator(0.0, 1.5);
         seed.spin_target_rate_rad_s = 4.0;
@@ -745,11 +768,15 @@ mod tests {
 
     #[test]
     fn stop_freezes_spin_and_start_resumes_retained_rate_phase() {
-        let mut mover = pure_rotator(1.0, 2.0);
-        mover.spin_target_rate_rad_s = 4.0;
-        let (mut mover, transform, _) = tick_component(mover, transform_at(Vec3::ZERO), 0.5);
-        assert!((mover.spin_rate_rad_s - 2.0).abs() < EPS);
-        assert!((mover.spin_angle_rad - 1.0).abs() < EPS);
+        let mut mover = pure_rotator(std::f32::consts::PI, std::f32::consts::PI);
+        apply_mover_command(&mut mover, &MoverCommand::SetSpinRate(0.0));
+        assert!(
+            mover.spin_rate_rad_s > 0.0,
+            "set_spin_rate(0) must not hard-stop"
+        );
+        assert!(mover.spin_target_rate_rad_s.abs() < EPS);
+        let (mut mover, transform, _) = tick_component(mover, transform_at(Vec3::ZERO), 0.25);
+        assert!((mover.spin_rate_rad_s - std::f32::consts::FRAC_PI_2 * 1.5).abs() < EPS);
 
         apply_mover_command(&mut mover, &MoverCommand::Stop);
         let retained_rate = mover.spin_rate_rad_s;
@@ -768,11 +795,21 @@ mod tests {
 
         apply_mover_command(&mut mover, &MoverCommand::Start);
         let (mover, resumed_transform, table) = tick_component(mover, frozen_transform, 0.5);
-        assert!((mover.spin_rate_rad_s - 3.0).abs() < EPS);
-        assert!((mover.spin_target_rate_rad_s - 4.0).abs() < EPS);
-        assert!((mover.spin_angle_rad - 2.5).abs() < EPS);
-        assert_quat_approx(resumed_transform.rotation, Quat::from_rotation_y(2.5));
-        assert_vec3_approx(table.get(7).unwrap().angular_velocity, Vec3::Y * 3.0);
+        assert!(
+            mover.spin_rate_rad_s > 0.0,
+            "resumed mover should keep ramping to rest"
+        );
+        assert!(mover.spin_rate_rad_s < retained_rate);
+        assert!(mover.spin_target_rate_rad_s.abs() < EPS);
+        assert!(mover.spin_angle_rad > retained_angle);
+        assert_quat_approx(
+            resumed_transform.rotation,
+            Quat::from_rotation_y(mover.spin_angle_rad),
+        );
+        assert_vec3_approx(
+            table.get(7).unwrap().angular_velocity,
+            Vec3::Y * mover.spin_rate_rad_s,
+        );
     }
 
     #[test]

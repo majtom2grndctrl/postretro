@@ -22,7 +22,7 @@ use postretro_scripting_core::store_bridge::{json_value_for_slot, validate_slot_
 use serde::Deserialize;
 
 use crate::health::reactions::ApplyDamageArgs;
-use crate::kinematic_mover::MoverCommandDiagnostics;
+use crate::kinematic_mover::{MoverCommandDiagnostics, MoverSetSpinRateArgs};
 use crate::scripting::reactions::animation::SetAnimationStateArgs;
 use crate::scripting::reactions::enemy_state::UpdateEnemyStateArgs;
 #[cfg(test)]
@@ -40,6 +40,7 @@ const CONSEQUENTIAL_PRIMITIVES: &[&str] = &[
     "moverStop",
     "moverReverse",
     "moverGoToPathNode",
+    "moverSetSpinRate",
     "applyDamage",
     "armTrigger",
     "disarmTrigger",
@@ -721,6 +722,19 @@ fn bind_command(
             Some(BoundTriggerCommand::Mover {
                 target: target(primitive)?,
                 command: MoverCommand::GoToPathNode(args.node),
+            })
+        }
+        "moverSetSpinRate" => {
+            let args: MoverSetSpinRateArgs = match serde_json::from_value(args.clone()) {
+                Ok(args) => args,
+                Err(error) => {
+                    log::warn!("[Trigger] moverSetSpinRate has invalid args; not binding: {error}");
+                    return None;
+                }
+            };
+            Some(BoundTriggerCommand::Mover {
+                target: target(primitive)?,
+                command: MoverCommand::SetSpinRate(args.rate),
             })
         }
         "applyDamage" => {
@@ -1781,6 +1795,13 @@ mod tests {
                 ),
                 primitive(
                     "open",
+                    "moverSetSpinRate",
+                    Some("door"),
+                    serde_json::json!({ "rate": -90.0 }),
+                    None,
+                ),
+                primitive(
+                    "open",
                     "setState",
                     None,
                     serde_json::json!({ "slot": "trigger.flag", "value": 1 }),
@@ -1802,7 +1823,7 @@ mod tests {
         let binding = table
             .binding(trigger, TriggerEventEdge::Enter)
             .expect("named trigger event binds");
-        assert_eq!(binding.commands.len(), 2);
+        assert_eq!(binding.commands.len(), 3);
         assert!(matches!(
             binding.commands[0],
             BoundTriggerCommand::Mover {
@@ -1812,6 +1833,13 @@ mod tests {
         ));
         assert!(matches!(
             binding.commands[1],
+            BoundTriggerCommand::Mover {
+                command: MoverCommand::SetSpinRate(rate),
+                ..
+            } if (rate + 90.0).abs() < f32::EPSILON
+        ));
+        assert!(matches!(
+            binding.commands[2],
             BoundTriggerCommand::StoreSlot { ref slot, .. } if slot == "trigger.flag"
         ));
         let residual = table

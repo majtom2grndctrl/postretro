@@ -853,6 +853,7 @@ declare module "postretro" {
     stop(): SequenceStep[];
     reverse(): SequenceStep[];
     goToPathNode(node: string): SequenceStep[];
+    setSpinRate(rate: number): SequenceStep[];
   }
 
   /** Typed trigger handle returned by `world.query({ component: "trigger_volume" })`. Arming state remains engine-owned; methods build closed command steps. Switch entities also emit a `trigger_volume` component and are indistinguishable from authored trigger volumes here; separate them with a tag convention. */
@@ -1010,6 +1011,8 @@ declare module "postretro" {
   export type MoverReverseStep = { id: EntityId; primitive: "moverReverse"; args: Record<string, never> };
   /** Sequence step that moves a kinematic mover to a named path node. */
   export type MoverGoToPathNodeStep = { id: EntityId; primitive: "moverGoToPathNode"; args: { node: string } };
+  /** Sequence step that sets a kinematic mover target spin rate in degrees per second. */
+  export type MoverSetSpinRateStep = { id: EntityId; primitive: "moverSetSpinRate"; args: { rate: number } };
 
   /** Sequence step that arms one trigger volume. */
   export type ArmTriggerStep = { id: EntityId | "@trigger"; primitive: "armTrigger"; args: ArmTriggerArgs };
@@ -1029,6 +1032,7 @@ declare module "postretro" {
     | MoverStopStep
     | MoverReverseStep
     | MoverGoToPathNodeStep
+    | MoverSetSpinRateStep
     | ArmTriggerStep
     | DisarmTriggerStep;
 

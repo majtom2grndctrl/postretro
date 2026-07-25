@@ -43,7 +43,7 @@ export interface World {
    * capability methods); `"fog_volume"` yields `FogVolumeHandle[]` (carrying
    * `pulse` / `fade` / `flicker` / `pulseSaturation` / `fadeSaturation`
    * capability methods); `"kinematic_mover"` yields `MoverEntityHandle[]`
-   * (carrying start / stop / reverse / goToPathNode command builders);
+   * (carrying start / stop / reverse / goToPathNode / setSpinRate command builders);
    * `"trigger_volume"` yields `TriggerVolumeHandle[]` (carrying arm / disarm
    * command builders); `"emitter"` yields handles carrying the full
    * `BillboardEmitterComponent` snapshot under `component`; any other

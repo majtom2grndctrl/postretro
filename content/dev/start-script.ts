@@ -12,6 +12,7 @@ import { frontendMenu, frontendReactions, mapCatalog } from "./scripts/frontend-
 import {
   combatDummyLifecycle,
   combatZombieLifecycle,
+  enemyDeath,
 } from "./scripts/combat-lifecycle";
 
 export default defineMod({
@@ -40,8 +41,11 @@ export default defineMod({
   theme: hudTheme,
   reactions: frontendReactions,
   // The combat demo's unique target tags make these mod-global policies work
-  // for both catalog and direct CLI map loads.
-  events: [combatDummyLifecycle, combatZombieLifecycle],
+  // for both catalog and direct CLI map loads. `enemyDeath` must precede its
+  // `combatZombieLifecycle` override: registration order is iteration order, and
+  // an override registered before its base is dropped as targeting an unknown
+  // event.
+  events: [combatDummyLifecycle, enemyDeath, combatZombieLifecycle],
   // Fixture-only mod-global tier: this composes on the tagged trap-pools map
   // while its level-local script owns the independent closet_trap count pool.
   triggerPools: [

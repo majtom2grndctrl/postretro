@@ -179,7 +179,7 @@
 "origin" "224 -56 16"
 "angles" "0 180 0"
 "enabled_on_spawn" "false"
-"_tags" "closet_enemies"
+"_tags" "enemy closet_enemies"
 }
 // entity 7
 {
@@ -187,7 +187,7 @@
 "origin" "256 8 16"
 "angles" "0 180 0"
 "enabled_on_spawn" "false"
-"_tags" "closet_enemies"
+"_tags" "enemy closet_enemies"
 }
 // entity 8
 {

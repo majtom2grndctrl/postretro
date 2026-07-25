@@ -270,19 +270,7 @@ fn read_mover(
             ([0.0; 3], 0.0, 0.0, false)
         };
 
-    validate_mover_geometry(
-        mover_idx,
-        origin,
-        speed,
-        wait_ms,
-        spin_axis,
-        spin_speed_deg_s,
-        spin_accel_deg_s2,
-        &vertices,
-        &indices,
-    )?;
-
-    Ok(KinematicMoverRecord {
+    let mover = KinematicMoverRecord {
         mover_id,
         name,
         tags,
@@ -299,7 +287,9 @@ fn read_mover(
         spin_speed_deg_s,
         spin_accel_deg_s2,
         carry_yaw,
-    })
+    };
+    validate_mover_geometry(mover_idx, &mover)?;
+    Ok(mover)
 }
 
 fn write_vertex(buf: &mut Vec<u8>, vertex: &Vertex) {
@@ -402,59 +392,59 @@ fn read_vertex(
     })
 }
 
-fn validate_mover_geometry(
-    mover_idx: usize,
-    origin: [f32; 3],
-    speed: f32,
-    wait_ms: f32,
-    spin_axis: [f32; 3],
-    spin_speed_deg_s: f32,
-    spin_accel_deg_s2: f32,
-    vertices: &[Vertex],
-    indices: &[u32],
-) -> crate::Result<()> {
-    if !origin.iter().all(|component| component.is_finite()) {
+fn validate_mover_geometry(mover_idx: usize, mover: &KinematicMoverRecord) -> crate::Result<()> {
+    if !mover.origin.iter().all(|component| component.is_finite()) {
         return invalid_data(format!(
-            "kinematic geometry: mover {mover_idx} origin is non-finite: {origin:?}"
+            "kinematic geometry: mover {mover_idx} origin is non-finite: {:?}",
+            mover.origin
         ));
     }
-    if !speed.is_finite() || speed <= 0.0 {
+    if !mover.speed.is_finite() || mover.speed <= 0.0 {
         return invalid_data(format!(
-            "kinematic geometry: mover {mover_idx} speed must be finite and positive, got {speed}"
+            "kinematic geometry: mover {mover_idx} speed must be finite and positive, got {}",
+            mover.speed
         ));
     }
-    if !wait_ms.is_finite() || wait_ms < 0.0 {
+    if !mover.wait_ms.is_finite() || mover.wait_ms < 0.0 {
         return invalid_data(format!(
-            "kinematic geometry: mover {mover_idx} wait_ms must be finite and non-negative, got {wait_ms}"
+            "kinematic geometry: mover {mover_idx} wait_ms must be finite and non-negative, got {}",
+            mover.wait_ms
         ));
     }
-    if !spin_axis.iter().all(|component| component.is_finite()) {
+    if !mover
+        .spin_axis
+        .iter()
+        .all(|component| component.is_finite())
+    {
         return invalid_data(format!(
-            "kinematic geometry: mover {mover_idx} spin_axis is non-finite: {spin_axis:?}"
+            "kinematic geometry: mover {mover_idx} spin_axis is non-finite: {:?}",
+            mover.spin_axis
         ));
     }
-    if !spin_speed_deg_s.is_finite() {
+    if !mover.spin_speed_deg_s.is_finite() {
         return invalid_data(format!(
-            "kinematic geometry: mover {mover_idx} spin_speed_deg_s must be finite, got {spin_speed_deg_s}"
+            "kinematic geometry: mover {mover_idx} spin_speed_deg_s must be finite, got {}",
+            mover.spin_speed_deg_s
         ));
     }
-    if !spin_accel_deg_s2.is_finite() || spin_accel_deg_s2 < 0.0 {
+    if !mover.spin_accel_deg_s2.is_finite() || mover.spin_accel_deg_s2 < 0.0 {
         return invalid_data(format!(
-            "kinematic geometry: mover {mover_idx} spin_accel_deg_s2 must be finite and non-negative, got {spin_accel_deg_s2}"
+            "kinematic geometry: mover {mover_idx} spin_accel_deg_s2 must be finite and non-negative, got {}",
+            mover.spin_accel_deg_s2
         ));
     }
-    if indices.len() % 3 != 0 {
+    if mover.indices.len() % 3 != 0 {
         return invalid_data(format!(
             "kinematic geometry: mover {mover_idx} index count {} is not divisible by 3",
-            indices.len()
+            mover.indices.len()
         ));
     }
-    if vertices.is_empty() || indices.is_empty() {
+    if mover.vertices.is_empty() || mover.indices.is_empty() {
         return invalid_data(format!(
             "kinematic geometry: mover {mover_idx} geometry must contain vertices and indices"
         ));
     }
-    for (vertex_idx, vertex) in vertices.iter().enumerate() {
+    for (vertex_idx, vertex) in mover.vertices.iter().enumerate() {
         if !vertex
             .position
             .iter()
@@ -477,11 +467,11 @@ fn validate_mover_geometry(
             ));
         }
     }
-    for (index_idx, &vertex_index) in indices.iter().enumerate() {
-        if vertex_index as usize >= vertices.len() {
+    for (index_idx, &vertex_index) in mover.indices.iter().enumerate() {
+        if vertex_index as usize >= mover.vertices.len() {
             return invalid_data(format!(
                 "kinematic geometry: mover {mover_idx} index {index_idx} references vertex {vertex_index} out of range for {} vertices",
-                vertices.len()
+                mover.vertices.len()
             ));
         }
     }

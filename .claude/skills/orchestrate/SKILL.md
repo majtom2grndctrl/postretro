@@ -52,9 +52,35 @@ Use `feature/<plan-name>` as the integration branch for all implementation work.
 
 For each phase in the sequencing section:
 
-**Sequential:** One Opus agent at a time. Wait for completion before starting the next.
+**Sizing.** Set `model:` on every Agent call. Omitting it inherits the session model — Opus spent on plumbing, or contract work handed to Sonnet.
 
-**Concurrent:** Spawn all phase Opus agents simultaneously via multiple Agent tool calls in one message.
+**Opus** when the task touches:
+- GPU contracts, shader layouts, bind groups, renderer scheduling
+- Persistent formats, cache keys, PRL sections, migration behavior
+- Offset-sensitive layouts: wire headers, byte builders, std140 mirrors, shader structs, cache payloads
+- Cross-crate data flow or shared runtime contracts
+- Producer/consumer seams across loader, compiler, renderer, shader, or diagnostics
+- Ambiguous acceptance criteria; design choices resolved by reading code
+- Manual visual behavior automated tests can't prove
+
+**Sonnet** for:
+- Localized implementation with a clear module home
+- Focused tests for already specified behavior
+- Loader/exposure plumbing for an already defined section
+- Mechanical propagation across call sites
+- Small review fixes, low blast radius
+
+**Split on contract risk, not task size.** Settled contract → Sonnet, whatever the size. The contract itself is the work → Opus. Current Sonnet lands localized features and tests near Opus quality; Opus on a bounded task costs more and widens scope past the acceptance criteria. Haiku is not an implementation agent here.
+
+**One local contract is the Sonnet boundary.** Another crate, runtime stage, shader, cache, or diagnostic path consuming the output means Opus — or split the task so the seam is its own Opus task.
+
+**Effort is session-wide.** Not an Agent parameter; model is the only per-agent lever. A task needing more depth than the session affords gets split, not dialed up.
+
+**Briefing Opus on layout and contract tasks.** Name what stays fixed: offsets, bindings, versions, cache epochs, mirror structs. Require offset/layout assertions where layouts are hand-mirrored or stale input must be rejected. Don't ask it to double-check its work — that buys over-verification, not coverage.
+
+**Sequential:** One agent at a time. Wait for completion before starting the next.
+
+**Concurrent:** Spawn all phase agents simultaneously via multiple Agent tool calls in one message.
 
 > **Cargo under concurrency.** Run concurrent agents in isolated worktrees — separate `target/` dirs, cap 3 (see `development_guide.md`). Separate target dirs have no shared build lock, so each agent runs `cargo check` and focused tests freely. Agents sharing one `target/` must not: they serialize on cargo's build lock and churn the incremental cache. Defer their compile/test to one post-phase pass, as `/fix-review-findings` does.
 

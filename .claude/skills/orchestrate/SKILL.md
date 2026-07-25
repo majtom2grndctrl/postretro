@@ -52,9 +52,33 @@ Use `feature/<plan-name>` as the integration branch for all implementation work.
 
 For each phase in the sequencing section:
 
-**Sequential:** One Opus agent at a time. Wait for completion before starting the next.
+**Sizing: pick a model per task.** Pass `model: "opus"` or `model: "sonnet"` explicitly on every Agent call. Omitting it inherits the session model, which spends Opus on plumbing and starves contract work when the session is on Sonnet. Model is the only per-agent capability lever — reasoning effort is a session-wide setting, not an Agent parameter, so a task that needs more depth than the session affords must be split, not dialed up.
 
-**Concurrent:** Spawn all phase Opus agents simultaneously via multiple Agent tool calls in one message.
+Use **Opus** when the task touches any of:
+- GPU contracts, shader layouts, bind groups, or renderer scheduling
+- Persistent formats, cache keys, PRL sections, or migration behavior
+- Offset-sensitive layouts: wire headers, byte builders, std140 mirrors, shader structs, cache payloads
+- Cross-crate data flow or shared runtime contracts
+- Producer/consumer seams split across loader, compiler, renderer, shader, or diagnostics code
+- Ambiguous acceptance criteria, or design choices that must be resolved by reading code
+- Manual visual behavior that automated tests cannot fully prove
+
+Use **Sonnet** for:
+- Localized implementation with a clear module home
+- Focused tests for an already specified behavior
+- Loader/exposure plumbing for an already defined section
+- Mechanical propagation across call sites
+- Small review fixes with low blast radius
+
+**Sonnet is a first-class implementation agent, not a fix-up agent.** It lands localized features and tests at close to Opus quality, so the split is about *contract risk*, not task size: send Sonnet anything whose contract is already settled, and reserve Opus for tasks where the contract itself is the work. Opus is not the safe default — on a bounded task it costs more and is likelier to widen scope past the acceptance criteria.
+
+**One local contract is the Sonnet boundary.** If another crate, runtime stage, shader, cache, or diagnostic path consumes the output, escalate to Opus or split the task so the seam becomes its own Opus task. Don't use Haiku for implementation in this workspace.
+
+**Opus briefing for layout and contract tasks.** Name what stays fixed: unchanged offsets, bindings, versions, cache epochs, and mirror structs. Require offset/layout assertions when layouts are hand-mirrored or stale input must be rejected. Opus verifies its own work unprompted — don't add "double-check your work" instructions, they buy over-verification, not coverage.
+
+**Sequential:** One agent at a time. Wait for completion before starting the next.
+
+**Concurrent:** Spawn all phase agents simultaneously via multiple Agent tool calls in one message, choosing the model per task from the guide above.
 
 > **Cargo under concurrency.** Run concurrent agents in isolated worktrees — separate `target/` dirs, cap 3 (see `development_guide.md`). Separate target dirs have no shared build lock, so each agent runs `cargo check` and focused tests freely. Agents sharing one `target/` must not: they serialize on cargo's build lock and churn the incremental cache. Defer their compile/test to one post-phase pass, as `/fix-review-findings` does.
 

@@ -26,6 +26,11 @@ line-of-sight, no sound); disengage is a single distance with no memory or searc
 
 ## Open question: does acquisition range belong to the engine floor or to authored guards?
 
+> **Answered** by `context/plans/drafts/E10--enemy-aggro-model/` — both, split by tier: the floor's
+> leash bounds acquisition for legacy `components.ai`, and an authored graph spells its own radius
+> as a distance clause in its candidate filter. No descriptor range field on `components.behavior`.
+> Reasoning in that plan's `research.md` §2.1. The findings below stand as the evidence.
+
 `context/plans/in-progress/E10--behavior-state-graph/index.md` deliberately deferred this question
 to this doc. Three findings from that plan's review panel are concrete evidence for it — recorded
 here so the successor spec doesn't re-derive them.

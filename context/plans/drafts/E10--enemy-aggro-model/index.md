@@ -22,7 +22,9 @@ the rest of taste already lives.
   becomes an authored interrupt instead of engine policy.
 - **A per-graph candidate filter.** One optional IR predicate on the behavior
   block, compiled once and evaluated per candidate during the acquisition scan,
-  over a small candidate-facts namespace. The engine floor keeps deciding which
+  over a candidate-facts namespace: engine facts about the candidate, plus the
+  same `@state.*` per-entity leaves guards already read, resolved against the
+  candidate rather than the enemy. The engine floor keeps deciding which
   entities are *offered* (player pawns, and later the visibility predicate); the
   mod decides which offered candidates are worth engaging. Unauthored, nothing
   is evaluated and behavior is bit-identical to today.
@@ -72,11 +74,17 @@ the rest of taste already lives.
 - [ ] A graph can author a candidate filter that excludes dead pawns; an enemy
       whose only nearby pawn is dead acquires nothing and stays at rest, while
       the same enemy with a live pawn in range engages normally.
+- [ ] A candidate filter reads a mod-authored `@state.*` field on the candidate
+      and acts on it: a pawn some impact policy marked untargetable is skipped by
+      the acquisition scan while an unmarked pawn beside it is acquired, with no
+      engine component naming that field. A candidate carrying no state
+      component, or not that field, reads `0.0`.
 - [ ] A graph with no candidate filter selects targets exactly as today —
       the full existing AI suite passes unchanged, legacy and authored alike.
 - [ ] A candidate filter is compiled once per graph and evaluated per candidate
-      with no heap allocation on the acquisition path (alloc-probe assertion,
-      matching the substrate invariant).
+      with no heap allocation on the acquisition path, the interned `@state.*`
+      snapshot included — it grows at bind and is written by index at refresh
+      (alloc-probe assertion, matching the substrate invariant).
 - [ ] A candidate filter that fails to bind is a validation error in both
       QuickJS and Luau, with the authored path in the message; a filter that
       produces a non-boolean is rejected the same way.
@@ -98,10 +106,12 @@ the rest of taste already lives.
 - [ ] The shipped reference enemy trips neither warning, authors both the
       target-death interrupt and the candidate filter, and is behavior-identical
       to its Luau twin.
-- [ ] SDK typedef drift tests pass with the new facts and the filter field in
-      both committed fixtures; the scripting reference documents the floor's
-      acquisition contract, the target-side facts' no-target readings, and that
-      an authored graph owns its own disengagement.
+- [ ] SDK typedef drift tests pass with the new brain facts, the `candidate`
+      prelude, and the filter field in both committed fixtures; the scripting
+      reference documents the floor's acquisition contract, the target-side
+      facts' no-target readings, that an authored graph owns its own
+      disengagement, and that a distance filter is the authored acquisition
+      radius.
 
 ## Tasks
 
@@ -141,16 +151,26 @@ key per the boundary inventory), following the same descriptor-partition rule as
 transition guards — the bound program is derived data the evaluator owns, never
 a descriptor field. It needs its own input namespace and its own
 declaration-time binding scope, both in a new module beside `brain.rs` rather
-than inside it: a fixed table of candidate facts — the candidate's XZ distance
-from the enemy, its current health, its max health, and its death-latch boolean
-— plus a validation scope resolving exactly those names, and a bind helper
-mirroring the existing guard-bind helper. `BehaviorGraphDescriptor::validate`
-binds the filter when present and rejects an unbindable or non-boolean one with
-the authored path, exactly as it already does per transition. Runtime side, in
-the binary: a candidate `BindingScope` beside the brain scope — the same shape
-minus the per-entity state half, so a fixed array of values written by index and
-no interned-name vector. It refreshes per candidate from the registry, reading
-components by reference. Binding rides the existing evaluator side-table:
+than inside it, and both shaped exactly like the brain pair. Two halves, as
+there: a fixed table of `@candidate.`-prefixed engine facts — the candidate's XZ
+distance from the enemy, its current health, its max health, and its death-latch
+boolean — whose order **is** the runtime read handle, so it grows by appending
+and never by insertion; and the `@state.*` per-entity leaves, resolved against
+the candidate. One resolve function mirroring `resolve_brain_input` answers
+both arms, a validation scope resolves through it, and a bind helper mirrors the
+existing guard-bind helper. The shared `@state.` prefix is deliberate: a leaf
+names a field, and the scope names whose field it is — `state("revivable")`
+reads the enemy's in a guard and the candidate's in a filter, which is the
+composition seam of `scripting.md` §11 reaching the acquisition path.
+`BehaviorGraphDescriptor::validate` binds the filter when present and rejects an
+unbindable or non-boolean one with the authored path, exactly as it already does
+per transition. Runtime side, in the binary: a candidate `BindingScope` beside
+the brain scope, the same two-snapshot shape — a fixed array written by index,
+plus an interned `@state.*` name vector that grows only at bind. It refreshes
+per candidate from the registry, reading components by reference; a candidate
+with no `EntityStateComponent`, or without the named field, reads `0.0`, the
+same emergent-field contract the brain scope honors. Binding rides the existing
+evaluator side-table:
 `BrainPrograms` holds one shared candidate scope alongside its brain scope, and
 `BrainEntityPrograms` gains one optional bound filter program compiled during
 the same `sync` pass that binds the graph's guards, keyed off the same `Arc`
@@ -164,7 +184,11 @@ existing selection call sites (the early non-engaged scan, the leash-escape
 replacement, and both acquisition-due branches) from the side-table entry it
 already looks up for guard evaluation. `None` means no filter: nothing is
 evaluated and the scan is byte-for-byte today's. Lowering emits no filter, so
-legacy brains are unchanged.
+legacy brains are unchanged. Extend the SDK with a `candidate` prelude object in
+both runtimes — pre-wrapped leaves for the fixed table, under the same
+compile-time sync obligation Task 1 carries for `brain`. The existing
+`state(name)` builder serves both scopes unchanged: it emits an `@state.` leaf
+and the scope it binds against decides whose field that is.
 
 ### Task 3: Leash bounds acquisition
 
@@ -219,20 +243,25 @@ each.
 Author the new vocabulary into the reference enemy
 (`sdk/behaviors/reference/entities.{ts,luau}`, identical spellings): a
 target-death stand-down interrupt declared immediately after the existing
-has-target interrupt, and a candidate filter excluding dead pawns. Its comments
-are the de-facto authoring documentation and must teach three things — that
-target-side facts read zero with no target and are only meaningful under
-`hasTarget`; that the death latch, not a health comparison, is the death test
-and why; and that candidacy is per-graph eligibility while disengagement is
-per-state policy. Extend `docs/scripting-reference.md` with the floor's
-acquisition contract: what the engine offers as candidates, what it never
-decides (aliveness), the legacy leash's dual acquisition/retention role, and
-that an authored graph owns its own disengagement. Update the `components.ai`
-field descriptions in the typedef generator
-(`crates/postretro/src/scripting/primitives/mod.rs`, the `detectionRange` and
-`leashRange` field strings) to state the ordering constraint and the leash's
-widened role, and emit the new behavior-block filter field. Regenerate and
-commit both typedef fixtures.
+has-target interrupt, and a candidate filter that excludes dead pawns and bounds
+acquisition by distance. Its comments are the de-facto authoring documentation
+and must teach four things — that target-side facts read zero with no target and
+are only meaningful under `hasTarget`; that the death latch, not a health
+comparison, is the death test and why; that candidacy is per-graph eligibility
+while disengagement is per-state policy; and that `state("field")` names the
+enemy's field in a guard and the candidate's in a filter, because the scope, not
+the leaf, decides the entity. Extend `docs/scripting-reference.md` with the
+floor's acquisition contract: what the engine offers as candidates, what it
+never decides (aliveness), the legacy leash's dual acquisition/retention role,
+that an authored graph owns its own disengagement, and that a filter over
+`candidate.distance` **is** the authored acquisition radius — the reason no
+descriptor field spells one, and the answer to the question the seed research
+left open. In the typedef generator
+(`crates/postretro/src/scripting/primitives/mod.rs`), update the
+`components.ai` `detectionRange` and `leashRange` field descriptions to state
+the ordering constraint and the leash's widened role, and emit the
+behavior-block filter field plus the `candidate` input interface beside the
+existing `brain` one. Regenerate and commit both typedef fixtures.
 
 ## Sequencing
 
@@ -258,25 +287,32 @@ settle, and regenerates typedefs once.
 | Candidate health | `CANDIDATE_HEALTH_INPUT` | `"@candidate.health"` | `candidate.health` | `candidate.health` |
 | Candidate max health | `CANDIDATE_MAX_HEALTH_INPUT` | `"@candidate.maxHealth"` | `candidate.maxHealth` | `candidate.maxHealth` |
 | Candidate death latch | `CANDIDATE_DIED_INPUT` | `"@candidate.died"` | `candidate.died` | `candidate.died` |
+| Candidate state leaf | `ENTITY_STATE_INPUT_PREFIX` (reused) | `"@state.<field>"` | `state("field")` | `state("field")` |
 
-No FGD column: all of it is descriptor-owned tuning, never map-overridable.
+No FGD column: all of it is descriptor-owned tuning, never map-overridable. The
+state leaf reuses the guard spelling on purpose — the scope binds it, so no
+second name exists for the same field.
 
 ## Invariants
 
 | Invariant | Established by | Preserved / threatened at | Verified by |
 |---|---|---|---|
-| The engine floor holds no aliveness policy for target selection; the attack gate's aliveness check is the floor's only health read and stays a damage gate | Task 2 (by not adding one) | Any future "obvious fix" adding a health test to candidacy or retention | AC 7, 4 |
+| The engine floor holds no aliveness policy for target selection; the attack gate's aliveness check is the floor's only health read and stays a damage gate | Task 2 (by not adding one) | Any future "obvious fix" adding a health test to candidacy or retention | AC 8, 5 |
 | Target-side facts read their type's zero with no target; `@brain.hasTarget` is the sole authoritative presence test, and the distance sentinel remains the lone exception | Task 1 | Any new target-side fact choosing a non-zero no-target reading | AC 2 |
-| The death latch, not a health comparison, is the authored death signal — it is unambiguous untargeted and carries the sweep's non-finite arm | Task 1 | Docs and reference authoring must not teach `le(targetHealth, 0)` as the death test | AC 1, 12 |
+| The death latch, not a health comparison, is the authored death signal — it is unambiguous untargeted and carries the sweep's non-finite arm | Task 1 | Docs and reference authoring must not teach `le(targetHealth, 0)` as the death test | AC 1, 13 |
 | Candidacy is per-graph eligibility; disengagement is per-state policy. The filter never runs against the retained target | Task 2 | The shared candidate lookup also resolves the retained target — the filter must sit in the ranking scan only | AC 1, 3 |
-| An unauthored graph and every legacy brain behave bit-identically to today: no filter is evaluated, no new edge is lowered | Task 2, Task 3 | Any default filter, or a lowering that emits a target-death edge | AC 4, 7 |
-| Bound programs stay derived data in the evaluator side-table, rebuilt via the `Arc` pointer-identity staleness test; the filter joins them rather than riding the component | Predecessor, extended by Task 2 | A filter program stored on `BrainComponent` would reintroduce serde and equality coupling | AC 5 |
-| Acquisition-path evaluation is zero-alloc per tick; the filter adds a constant factor to an existing traversal, never a new walk | Task 2 | Candidate-scope refresh must not intern, clone, or collect | AC 5 |
-| The floor's leash is symmetric: a target beyond it is neither acquired nor retained | Task 3 | Any new acquisition path bypassing the selection chokepoint; the ordering validator alone cannot enforce it, since Rust fixtures bypass validation | AC 8, 9 |
-| A brain with no leash keeps unbounded acquisition, with disengagement owned by its guards | Task 3 | Any default value substituted for the absent leash | AC 4 |
-| Acquisition-range authority stays engine-side and legacy-only: no descriptor field spells disengagement range | Predecessor (pinned) | Task 3 must thread the existing component field, never introduce an authored one | AC 4 |
-| Engagement radius stays combat-slot spread only — never acquisition, retention, or damage | Predecessor (pinned) | Any task tempted to reuse it as an acquisition radius | AC 4 |
-| Graph diagnostics are warnings, never errors: a relentless pursuer is a legitimate authored design | Task 4 | Escalation to a validation error would reject shipping content | AC 10, 11 |
+| The floor decides what is *perceivable* — which entities the scan is offered, and later the `visible` predicate — while the graph decides which offered candidates are worth engaging. The filter is strictly downstream of `visible` and can only narrow the offer set | Task 2 | A perception spec exposing a `@candidate.visible` fact and moving line-of-sight policy into the filter; any filter arm that widens what the scan considers | AC 3, 5 |
+| The filter answers eligibility, never order: it produces a boolean, and ranking stays nearest-with-hysteresis | Task 2 | A threat or priority spec widening the filter to a score rather than adding its own seam | AC 3, 7 |
+| `@state.*` names a field; the binding scope names whose. One spelling reaches the enemy from a guard and the candidate from a filter, so the `scripting.md` §11 composition seam holds on the acquisition path | Task 2 | A second, candidate-specific spelling for the same fields would fork the seam and strand mod-authored properties outside candidacy | AC 4 |
+| Both fixed input tables are append-only — a name's index is its runtime read handle | Task 1, Task 2 | An insertion or reorder silently re-points every bound program | AC 5, 6 |
+| An unauthored graph and every legacy brain behave bit-identically to today: no filter is evaluated, no new edge is lowered | Task 2, Task 3 | Any default filter, or a lowering that emits a target-death edge | AC 5, 8 |
+| Bound programs stay derived data in the evaluator side-table, rebuilt via the `Arc` pointer-identity staleness test; the filter joins them rather than riding the component | Predecessor, extended by Task 2 | A filter program stored on `BrainComponent` would reintroduce serde and equality coupling | AC 6 |
+| Acquisition-path evaluation is zero-alloc per tick; the filter adds a constant factor to an existing traversal, never a new walk | Task 2 | Candidate-scope refresh must not intern, clone, or collect — the `@state.*` snapshot grows at bind alone | AC 6 |
+| The floor's leash is symmetric: a target beyond it is neither acquired nor retained | Task 3 | Any new acquisition path bypassing the selection chokepoint; the ordering validator alone cannot enforce it, since Rust fixtures bypass validation | AC 9, 10 |
+| A brain with no leash keeps unbounded acquisition, with disengagement owned by its guards | Task 3 | Any default value substituted for the absent leash | AC 5 |
+| Acquisition-range authority stays engine-side and legacy-only: no descriptor field spells disengagement range. An authored graph bounds acquisition with a distance filter instead | Predecessor (pinned), extended by Task 2 | Task 3 must thread the existing component field, never introduce an authored one; a future perception spec must reach for the filter before a new descriptor range | AC 5, 14 |
+| Engagement radius stays combat-slot spread only — never acquisition, retention, or damage | Predecessor (pinned) | Any task tempted to reuse it as an acquisition radius | AC 5 |
+| Graph diagnostics are warnings, never errors: a relentless pursuer is a legitimate authored design | Task 4 | Escalation to a validation error would reject shipping content | AC 11, 12 |
 
 ## Script syntax examples
 
@@ -286,7 +322,23 @@ behavior: {
   initial: "idle",
   // Per-GRAPH eligibility, asked once per candidate during acquisition.
   // Not a guard: guards run against a target that has already been chosen.
-  candidateFilter: runtime.select(candidate.died, false, true),
+  //
+  // Three clauses: not dead, within this graph's acquisition radius, and not
+  // flagged untargetable by whatever impact policy owns that field. The radius
+  // lives HERE — the floor spells no acquisition range for an authored graph,
+  // so a distance clause is how a graph gets one. `state()` reads the
+  // CANDIDATE's field in this position and the enemy's inside a guard: the
+  // scope decides the entity, not the leaf. No `and` opcode — conjunction is a
+  // nested `select(a, b, false)`.
+  candidateFilter: runtime.select(
+    candidate.died,
+    false,
+    runtime.select(
+      runtime.le(candidate.distance, ACQUIRE_RANGE),
+      runtime.eq(state("untargetable"), 0),
+      false,
+    ),
+  ),
   interrupts: [
     // Target loss first, as always — it outranks every range guard.
     { to: "idle", when: runtime.select(brain.hasTarget, false, true) },
@@ -307,3 +359,25 @@ behavior: {
   validators do not have in hand. Threading it would widen every descriptor
   type's validator signature. Accepted as-is; revisit if authors report the
   diagnostics as hard to place.
+- **Where line of sight lands once it exists.** This plan puts perception
+  upstream of candidacy: the floor decides what is perceivable, the filter
+  narrows what is worth engaging. That leaves one call for the perception spec —
+  whether visibility stays a floor gate on the offer set, or is *also* published
+  as a `@candidate.visible` fact so a graph can author "engage only what I can
+  see" as taste. Both read as consistent with the split; only the second lets a
+  mod hold fire on an unseen target without an engine change, and only the first
+  keeps one answer to "what can this enemy perceive". Not decided here because
+  no resolver exists yet to decide it against.
+- **Where target ranking lands.** Two homes are now plausible and the seed
+  research assumes the first: widening the `visible` predicate from `bool` to a
+  weight, or a second per-graph IR expression producing a score over the same
+  `@candidate.*` namespace this plan builds. The second is the cheaper one after
+  this plan lands — namespace, scope, binding, and staleness are all in place —
+  and it puts ranking policy on the taste side with eligibility. Whichever wins,
+  the filter stays boolean: a score belongs in its own seam, not in a widened
+  return type.
+- **Threat and last-attacker policies have no seam.** "Prefer whoever just hurt
+  me" is a relation over enemy × candidate, and both scopes are per-entity: the
+  brain scope names one enemy, the candidate scope one candidate. Expressing it
+  needs per-pair memory on the brain, which nothing here provides and no task
+  should improvise. The dimension is deferred whole, not half-seamed.

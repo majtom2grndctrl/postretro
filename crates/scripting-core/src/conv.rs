@@ -11,6 +11,79 @@ const JSON_CONVERSION_MAX_DEPTH: usize = 64;
 
 // payload is a serde_json::Value walked recursively into native objects — no JSON string on the wire.
 
+/// One step of the authored path to a value, used only to name the field in a
+/// conversion error.
+#[derive(Clone, Copy)]
+enum PathSeg<'p> {
+    Key(&'p str),
+    /// JSON array position, always 0-based — Luau's 1-based table index is
+    /// rebased here so equivalent data yields the same path in both runtimes.
+    Index(usize),
+}
+
+/// Borrowed path segment plus its parent link. Built on the stack as the walk
+/// descends, so a successful conversion allocates nothing for it.
+#[derive(Clone, Copy)]
+struct ConvPath<'p> {
+    parent: Option<&'p ConvPath<'p>>,
+    seg: PathSeg<'p>,
+}
+
+impl<'p> ConvPath<'p> {
+    fn child(parent: Option<&'p ConvPath<'p>>, seg: PathSeg<'p>) -> ConvPath<'p> {
+        ConvPath { parent, seg }
+    }
+}
+
+fn render_path(path: Option<&ConvPath<'_>>) -> String {
+    fn walk(node: &ConvPath<'_>, out: &mut String) {
+        if let Some(parent) = node.parent {
+            walk(parent, out);
+        }
+        match node.seg {
+            PathSeg::Key(k) => {
+                if !out.is_empty() {
+                    out.push('.');
+                }
+                out.push_str(k);
+            }
+            PathSeg::Index(i) => {
+                out.push('[');
+                out.push_str(&i.to_string());
+                out.push(']');
+            }
+        }
+    }
+
+    let mut out = String::new();
+    if let Some(node) = path {
+        walk(node, &mut out);
+    }
+    if out.is_empty() {
+        // The converted value is itself the number — no field to name.
+        out.push_str("<root>");
+    }
+    out
+}
+
+/// Shared rejection text for both runtimes. Parity is the contract here: a
+/// value that fails in one runtime must fail in the other with the same reason
+/// and the same path.
+///
+/// Why reject rather than degrade: JSON cannot spell `Infinity` or `NaN`, so
+/// the old fallback emitted null — and every `Option<T>` descriptor field reads
+/// null as "unauthored, use the default". That split one authoring mistake into
+/// two outcomes: `engagementRadius: -1` errored cleanly through descriptor
+/// validation, while `engagementRadius: Infinity` silently became the default.
+/// Every optional numeric field on every descriptor, in both runtimes, went
+/// through that seam. Rejecting here puts both on the validation path.
+fn non_finite_message(path: Option<&ConvPath<'_>>, value: f64) -> String {
+    format!(
+        "non-finite number at `{}`: {value} — authored numbers must be finite",
+        render_path(path)
+    )
+}
+
 pub fn json_to_js<'js>(ctx: &Ctx<'js>, v: &serde_json::Value) -> rquickjs::Result<JsValue<'js>> {
     match v {
         serde_json::Value::Null => Ok(JsValue::new_null(ctx.clone())),
@@ -44,7 +117,7 @@ pub fn json_to_js<'js>(ctx: &Ctx<'js>, v: &serde_json::Value) -> rquickjs::Resul
 
 #[allow(clippy::only_used_in_recursion)]
 pub fn js_to_json<'js>(ctx: &Ctx<'js>, v: JsValue<'js>) -> rquickjs::Result<serde_json::Value> {
-    js_to_json_inner(ctx, v, 0)
+    js_to_json_inner(ctx, v, 0, None)
 }
 
 #[allow(clippy::only_used_in_recursion)]
@@ -52,6 +125,7 @@ fn js_to_json_inner<'js>(
     ctx: &Ctx<'js>,
     v: JsValue<'js>,
     depth: usize,
+    path: Option<&ConvPath<'_>>,
 ) -> rquickjs::Result<serde_json::Value> {
     if depth >= JSON_CONVERSION_MAX_DEPTH {
         return Err(rquickjs::Error::new_from_js_message(
@@ -83,9 +157,17 @@ fn js_to_json_inner<'js>(
             };
             return Ok(serde_json::Value::Number(number));
         }
-        return Ok(serde_json::Number::from_f64(f)
+        // `from_f64` returns `None` for exactly the non-finite cases, so this is
+        // the Infinity/-Infinity/NaN rejection. See `non_finite_message`.
+        return serde_json::Number::from_f64(f)
             .map(serde_json::Value::Number)
-            .unwrap_or(serde_json::Value::Null));
+            .ok_or_else(|| {
+                rquickjs::Error::new_from_js_message(
+                    "number",
+                    "JSON number",
+                    non_finite_message(path, f),
+                )
+            });
     }
     if let Some(s) = v.as_string() {
         return Ok(serde_json::Value::String(s.to_string()?));
@@ -94,7 +176,8 @@ fn js_to_json_inner<'js>(
         let mut out = Vec::with_capacity(arr.len());
         for i in 0..arr.len() {
             let item: JsValue = arr.get(i)?;
-            out.push(js_to_json_inner(ctx, item, depth + 1)?);
+            let child = ConvPath::child(path, PathSeg::Index(i));
+            out.push(js_to_json_inner(ctx, item, depth + 1, Some(&child))?);
         }
         return Ok(serde_json::Value::Array(out));
     }
@@ -108,7 +191,9 @@ fn js_to_json_inner<'js>(
             if val.is_undefined() {
                 continue;
             }
-            map.insert(k, js_to_json_inner(ctx, val, depth + 1)?);
+            let child = ConvPath::child(path, PathSeg::Key(k.as_str()));
+            let converted = js_to_json_inner(ctx, val, depth + 1, Some(&child))?;
+            map.insert(k, converted);
         }
         return Ok(serde_json::Value::Object(map));
     }
@@ -147,10 +232,14 @@ pub fn json_to_lua(lua: &Lua, v: &serde_json::Value) -> mlua::Result<LuaValue> {
 }
 
 pub fn lua_to_json(value: LuaValue) -> mlua::Result<serde_json::Value> {
-    lua_to_json_inner(value, 0)
+    lua_to_json_inner(value, 0, None)
 }
 
-fn lua_to_json_inner(value: LuaValue, depth: usize) -> mlua::Result<serde_json::Value> {
+fn lua_to_json_inner(
+    value: LuaValue,
+    depth: usize,
+    path: Option<&ConvPath<'_>>,
+) -> mlua::Result<serde_json::Value> {
     if depth >= JSON_CONVERSION_MAX_DEPTH {
         return Err(mlua::Error::RuntimeError(format!(
             "maximum conversion depth of {JSON_CONVERSION_MAX_DEPTH} exceeded"
@@ -160,9 +249,16 @@ fn lua_to_json_inner(value: LuaValue, depth: usize) -> mlua::Result<serde_json::
         LuaValue::Nil => Ok(serde_json::Value::Null),
         LuaValue::Boolean(b) => Ok(serde_json::Value::Bool(b)),
         LuaValue::Integer(i) => Ok(serde_json::Value::Number(serde_json::Number::from(i))),
-        LuaValue::Number(f) => Ok(serde_json::Number::from_f64(f)
+        // `from_f64` returns `None` for exactly the non-finite cases, so this is
+        // the math.huge/-math.huge/NaN rejection — the twin of the QuickJS one.
+        // See `non_finite_message`.
+        LuaValue::Number(f) => serde_json::Number::from_f64(f)
             .map(serde_json::Value::Number)
-            .unwrap_or(serde_json::Value::Null)),
+            .ok_or_else(|| mlua::Error::FromLuaConversionError {
+                from: "number",
+                to: "JSON number".to_string(),
+                message: Some(non_finite_message(path, f)),
+            }),
         LuaValue::String(s) => Ok(serde_json::Value::String(s.to_str()?.to_string())),
         LuaValue::Table(t) => {
             let len = t.raw_len();
@@ -204,7 +300,8 @@ fn lua_to_json_inner(value: LuaValue, depth: usize) -> mlua::Result<serde_json::
                 let mut out = Vec::with_capacity(len);
                 for i in 1..=len {
                     let v: LuaValue = t.get(i)?;
-                    out.push(lua_to_json_inner(v, depth + 1)?);
+                    let child = ConvPath::child(path, PathSeg::Index(i - 1));
+                    out.push(lua_to_json_inner(v, depth + 1, Some(&child))?);
                 }
                 Ok(serde_json::Value::Array(out))
             } else {
@@ -217,7 +314,9 @@ fn lua_to_json_inner(value: LuaValue, depth: usize) -> mlua::Result<serde_json::
                         LuaValue::Number(f) => f.to_string(),
                         _ => continue,
                     };
-                    map.insert(key_str, lua_to_json_inner(v, depth + 1)?);
+                    let child = ConvPath::child(path, PathSeg::Key(key_str.as_str()));
+                    let converted = lua_to_json_inner(v, depth + 1, Some(&child))?;
+                    map.insert(key_str, converted);
                 }
                 Ok(serde_json::Value::Object(map))
             }
@@ -275,6 +374,53 @@ mod tests {
                 assert_eq!(js_to_json(&ctx, value).unwrap(), expected);
             }
         });
+    }
+
+    #[test]
+    fn both_walkers_reject_a_non_finite_number_at_the_same_path() {
+        // The rejection is only useful if the author can find the field, and a
+        // path that differs between the runtimes is the divergence this seam
+        // exists to prevent. Luau's 1-based index is rebased to the JSON array
+        // position, so the twins name the identical path for the same data.
+        let expected = "non-finite number at `curve[1].t`";
+
+        let rt = rquickjs::Runtime::new().unwrap();
+        let js = rquickjs::Context::full(&rt).unwrap();
+        js.with(|ctx| {
+            let value: JsValue = ctx
+                .eval("({ curve: [{ t: 0 }, { t: Infinity }] })")
+                .unwrap();
+            let err = js_to_json(&ctx, value).unwrap_err().to_string();
+            assert!(err.contains(expected), "QuickJS: {err}");
+        });
+
+        let lua = Lua::new();
+        let value: LuaValue = lua
+            .load("return { curve = { { t = 0 }, { t = math.huge } } }")
+            .eval()
+            .unwrap();
+        let err = lua_to_json(value).unwrap_err().to_string();
+        assert!(err.contains(expected), "Luau: {err}");
+    }
+
+    #[test]
+    fn both_walkers_name_the_root_for_a_bare_non_finite_number() {
+        // Primitive arguments convert a bare value with no enclosing field.
+        let rt = rquickjs::Runtime::new().unwrap();
+        let js = rquickjs::Context::full(&rt).unwrap();
+        js.with(|ctx| {
+            let value: JsValue = ctx.eval("NaN").unwrap();
+            let err = js_to_json(&ctx, value).unwrap_err().to_string();
+            assert!(
+                err.contains("non-finite number at `<root>`"),
+                "QuickJS: {err}"
+            );
+        });
+
+        let lua = Lua::new();
+        let value: LuaValue = lua.load("return -math.huge").eval().unwrap();
+        let err = lua_to_json(value).unwrap_err().to_string();
+        assert!(err.contains("non-finite number at `<root>`"), "Luau: {err}");
     }
 
     #[test]

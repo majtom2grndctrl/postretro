@@ -809,36 +809,61 @@ fn both_parsers_reject_a_non_positive_engagement_radius_with_its_path() {
 }
 
 #[test]
-fn both_parsers_degrade_a_non_finite_engagement_radius_to_absent() {
-    // NOT a rejection, and deliberately pinned as such: the shared JSON bridge
-    // has no representation for Infinity/NaN, so both runtimes convert them to
-    // null before the descriptor sees a number, and `Option<f32>` reads null as
-    // absent. The finiteness rule still guards the raw-JSON and lowering paths
+fn both_parsers_reject_a_non_finite_engagement_radius_with_its_path() {
+    // Pinned to the OPPOSITE outcome before: the shared JSON bridge has no
+    // representation for Infinity/NaN, so both runtimes converted them to null,
+    // and `Option<f32>` read null as absent. That made `engagementRadius: -1` a
+    // clean validation error while `engagementRadius: Infinity` silently became
+    // the default — the same authoring mistake with two outcomes, on every
+    // optional numeric field of every descriptor. The bridge now rejects
+    // non-finite numbers and names the field. The finiteness rule still guards
+    // the raw-JSON and lowering paths
     // (`move_speed_and_engagement_radius_must_be_finite_and_positive`). What
-    // matters at this seam is that the two runtimes degrade IDENTICALLY.
-    for (js_value, lua_value) in [("Infinity", "math.huge"), ("NaN", "0/0")] {
-        let js_graph = eval_js(
-            &js_behavior(JS_NEAR_GUARD, "").replace(
-                "moveSpeed: 3,",
-                &format!("moveSpeed: 3, engagementRadius: {js_value},"),
-            ),
-            |ctx, v| entity_descriptor_from_js(ctx, v).unwrap(),
-        )
-        .behavior
-        .expect("JS behavior parsed");
-        let lua_graph = eval_lua(
-            &lua_behavior(LUA_NEAR_GUARD, "").replace(
-                "moveSpeed = 3,",
-                &format!("moveSpeed = 3, engagementRadius = {lua_value},"),
-            ),
-            |v| entity_descriptor_from_lua(v).unwrap(),
-        )
-        .behavior
-        .expect("Luau behavior parsed");
+    // matters at this seam is that the two runtimes reject on the same
+    // condition and report the same reason and path; only the VM-supplied
+    // wrapper around the message differs, as it does for the depth guard.
+    for (js_value, lua_value) in [
+        ("Infinity", "math.huge"),
+        ("-Infinity", "-math.huge"),
+        ("NaN", "0/0"),
+    ] {
+        let js = js_error(&js_behavior(JS_NEAR_GUARD, "").replace(
+            "moveSpeed: 3,",
+            &format!("moveSpeed: 3, engagementRadius: {js_value},"),
+        ));
+        let lua = lua_error(&lua_behavior(LUA_NEAR_GUARD, "").replace(
+            "moveSpeed = 3,",
+            &format!("moveSpeed = 3, engagementRadius = {lua_value},"),
+        ));
+        for err in [&js, &lua] {
+            assert!(
+                err.contains("non-finite number at `engagementRadius`")
+                    && err.contains("authored numbers must be finite"),
+                "{err}"
+            );
+        }
+    }
+}
 
-        assert_eq!(js_graph.engagement_radius, None);
-        assert_eq!(lua_graph.engagement_radius, None);
-        assert_eq!(js_graph, lua_graph);
+#[test]
+fn both_parsers_name_the_same_nested_path_for_a_non_finite_number() {
+    // The rejection is worth nothing to an author who cannot find the field, and
+    // a path that differs between runtimes is the divergence this seam exists to
+    // prevent. Nested under a state so the message has to walk more than one
+    // segment; the twins must name the identical path.
+    let js = js_error(&js_behavior(JS_NEAR_GUARD, "").replace(
+        r#"chase: { animation: "walk", motion: "chaseTarget" }"#,
+        r#"chase: { animation: "walk", motion: "chaseTarget", speedScale: Infinity }"#,
+    ));
+    let lua = lua_error(&lua_behavior(LUA_NEAR_GUARD, "").replace(
+        r#"chase = { animation = "walk", motion = "chaseTarget" }"#,
+        r#"chase = { animation = "walk", motion = "chaseTarget", speedScale = math.huge }"#,
+    ));
+    for err in [&js, &lua] {
+        assert!(
+            err.contains("non-finite number at `states.chase.speedScale`"),
+            "{err}"
+        );
     }
 }
 

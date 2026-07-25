@@ -1092,6 +1092,10 @@ fn spawn_platform_mover(registry: &mut EntityRegistry) -> EntityId {
         0.0,
         KinematicMoverMode::PingPong,
         false,
+        Vec3::ZERO,
+        0.0,
+        0.0,
+        false,
     );
     registry.set_component(id, mover).unwrap();
     id

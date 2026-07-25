@@ -23,7 +23,7 @@ pub enum MoverCommand {
     GoToPathNode(String),
 }
 
-/// Live deterministic phase for one linear moving-world payload.
+/// Live deterministic phase for one moving-world payload.
 ///
 /// The waypoint list, speed, wait, and mode are static path data seeded when the
 /// mover is constructed. The remaining fields are phase mirrored by the wire
@@ -37,6 +37,12 @@ pub struct KinematicMoverComponent {
     pub speed_mps: f32,
     pub wait_ms: f32,
     pub mode: KinematicMoverMode,
+    /// Static local-space rotation axis, normalized at construction.
+    pub spin_axis: Vec3,
+    /// Static angular acceleration used to approach the target spin rate.
+    pub spin_accel_rad_s2: f32,
+    /// Static rider-orientation policy, held locally rather than replicated.
+    pub carry_yaw: bool,
     pub segment_index: u16,
     pub direction_sign: i8,
     pub segment_elapsed_ms: f32,
@@ -46,6 +52,12 @@ pub struct KinematicMoverComponent {
     pub completed: bool,
     /// Runtime target waypoint index for `go_to_path_node`; replicated as phase.
     pub target_segment: Option<u16>,
+    /// Replicated accumulated spin phase, wrapped by the deterministic driver.
+    pub spin_angle_rad: f32,
+    /// Replicated current spin rate after the driver's acceleration ramp.
+    pub spin_rate_rad_s: f32,
+    /// Replicated target spin rate set by future authored commands.
+    pub spin_target_rate_rad_s: f32,
 }
 
 impl KinematicMoverComponent {
@@ -57,6 +69,10 @@ impl KinematicMoverComponent {
         wait_ms: f32,
         mode: KinematicMoverMode,
         started: bool,
+        spin_axis: Vec3,
+        initial_spin_rate_rad_s: f32,
+        spin_accel_rad_s2: f32,
+        carry_yaw: bool,
     ) -> Self {
         Self {
             mover_id,
@@ -65,6 +81,9 @@ impl KinematicMoverComponent {
             speed_mps,
             wait_ms,
             mode,
+            spin_axis: spin_axis.normalize_or_zero(),
+            spin_accel_rad_s2,
+            carry_yaw,
             segment_index: 0,
             direction_sign: 1,
             segment_elapsed_ms: 0.0,
@@ -73,6 +92,9 @@ impl KinematicMoverComponent {
             started,
             completed: false,
             target_segment: None,
+            spin_angle_rad: 0.0,
+            spin_rate_rad_s: initial_spin_rate_rad_s,
+            spin_target_rate_rad_s: initial_spin_rate_rad_s,
         }
     }
 }
@@ -92,6 +114,10 @@ mod tests {
             125.0,
             KinematicMoverMode::PingPong,
             true,
+            Vec3::new(0.0, 2.0, 0.0),
+            1.25,
+            0.75,
+            true,
         );
         let value = mover.clone().into_value();
 
@@ -101,5 +127,8 @@ mod tests {
         let json = serde_json::to_value(&value).unwrap();
         let back: ComponentValue = serde_json::from_value(json).unwrap();
         assert_eq!(back, value);
+        assert_eq!(mover.spin_axis, Vec3::Y);
+        assert_eq!(mover.spin_rate_rad_s, 1.25);
+        assert_eq!(mover.spin_target_rate_rad_s, 1.25);
     }
 }

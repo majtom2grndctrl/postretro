@@ -236,6 +236,10 @@ fn spawn_from_geometry(
             mover.wait_ms,
             mode,
             mover.start_on_spawn,
+            Vec3::ZERO,
+            0.0,
+            0.0,
+            false,
         );
         registry
             .set_component(entity, component)

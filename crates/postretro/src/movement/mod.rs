@@ -454,6 +454,9 @@ mod tests {
                     },
                     linear_velocity: velocity,
                     tick_delta,
+                    angular_velocity: Vec3::ZERO,
+                    tick_rotation_delta: glam::Quat::IDENTITY,
+                    carry_yaw: false,
                     tick_dt: DT,
                 },
             );

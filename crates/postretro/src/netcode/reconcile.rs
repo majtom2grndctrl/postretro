@@ -252,7 +252,7 @@ mod tests {
     use super::*;
 
     use crate::collision::CollisionWorld;
-    use glam::Vec3;
+    use glam::{Quat, Vec3};
     use parry3d::math::{Isometry, Point};
     use parry3d::shape::TriMesh;
 
@@ -842,6 +842,10 @@ mod tests {
             0.0,
             KinematicMoverMode::PingPong,
             true,
+            Vec3::ZERO,
+            0.0,
+            0.0,
+            false,
         );
         let mut history = MoverHistoryBuffer::default();
         history.record(
@@ -852,6 +856,9 @@ mod tests {
                     transform: Transform::default(),
                     linear_velocity: Vec3::new(12.0, 0.0, 0.0),
                     tick_delta: Vec3::new(0.2, 0.0, 0.0),
+                    angular_velocity: Vec3::ZERO,
+                    tick_rotation_delta: Quat::IDENTITY,
+                    carry_yaw: false,
                     tick_dt: DT,
                 },
                 phase: mover_phase,

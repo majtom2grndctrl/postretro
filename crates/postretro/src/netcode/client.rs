@@ -2272,6 +2272,10 @@ mod tests {
                     0.0,
                     KinematicMoverMode::PingPong,
                     true,
+                    Vec3::ZERO,
+                    0.0,
+                    0.0,
+                    false,
                 ),
             )
             .unwrap();

@@ -272,6 +272,10 @@ mod tests {
             wait_ms,
             mode,
             true,
+            Vec3::ZERO,
+            0.0,
+            0.0,
+            false,
         )
     }
 

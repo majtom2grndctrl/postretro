@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 
 use crate::collision::moving::{MoverPose, MoverPoseSource};
-use glam::Vec3;
+use glam::{Quat, Vec3};
 use postretro_entities::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, KinematicMoverComponent,
     KinematicMoverMode, Transform,
@@ -28,6 +28,9 @@ pub(crate) struct MoverTickState {
     pub(crate) transform: Transform,
     pub(crate) linear_velocity: Vec3,
     pub(crate) tick_delta: Vec3,
+    pub(crate) angular_velocity: Vec3,
+    pub(crate) tick_rotation_delta: Quat,
+    pub(crate) carry_yaw: bool,
     pub(crate) tick_dt: f32,
 }
 
@@ -56,6 +59,9 @@ impl MoverPoseSource for MoverTickStateTable {
             transform: state.transform,
             linear_velocity: state.linear_velocity,
             tick_delta: state.tick_delta,
+            angular_velocity: state.angular_velocity,
+            tick_rotation_delta: state.tick_rotation_delta,
+            carry_yaw: state.carry_yaw,
             tick_dt: state.tick_dt,
         })
     }
@@ -94,6 +100,9 @@ pub(crate) fn run_kinematic_mover_tick(
                 transform,
                 linear_velocity: pose.linear_velocity,
                 tick_delta: pose.tick_delta,
+                angular_velocity: pose.angular_velocity,
+                tick_rotation_delta: pose.tick_rotation_delta,
+                carry_yaw: pose.carry_yaw,
                 tick_dt: pose.tick_dt,
             },
         );
@@ -107,7 +116,15 @@ pub(crate) fn mover_pose_for_current_phase(
 ) -> MoverPose {
     let mut transform = transform;
     transform.position = position_for_phase(mover);
+    if mover.spin_angle_rad != 0.0
+        || mover.spin_rate_rad_s != 0.0
+        || mover.spin_target_rate_rad_s != 0.0
+    {
+        transform.rotation = Quat::from_axis_angle(mover.spin_axis, mover.spin_angle_rad);
+    }
     let linear_velocity = mover.current_linear_velocity;
+    let (angular_velocity, tick_rotation_delta) =
+        angular_kinematics_for_current_phase(mover, tick_dt);
     MoverPose {
         transform,
         linear_velocity,
@@ -116,6 +133,9 @@ pub(crate) fn mover_pose_for_current_phase(
         } else {
             Vec3::ZERO
         },
+        angular_velocity,
+        tick_rotation_delta,
+        carry_yaw: mover.carry_yaw,
         tick_dt,
     }
 }
@@ -125,6 +145,7 @@ pub(crate) fn advance_mover_phase_one_tick(
     transform: &mut Transform,
     tick_dt: f32,
 ) -> MoverPose {
+    let (angular_velocity, tick_rotation_delta) = advance_spin_phase(mover, transform, tick_dt);
     let start_position = position_for_phase(mover);
     transform.position = start_position;
     let end_position = advance_mover(mover, tick_dt);
@@ -140,8 +161,65 @@ pub(crate) fn advance_mover_phase_one_tick(
         transform: *transform,
         linear_velocity,
         tick_delta,
+        angular_velocity,
+        tick_rotation_delta,
+        carry_yaw: mover.carry_yaw,
         tick_dt,
     }
+}
+
+fn advance_spin_phase(
+    mover: &mut KinematicMoverComponent,
+    transform: &mut Transform,
+    tick_dt: f32,
+) -> (Vec3, Quat) {
+    let has_spin_work = mover.spin_rate_rad_s != 0.0 || mover.spin_target_rate_rad_s != 0.0;
+    let has_valid_tick = tick_dt.is_finite() && tick_dt > 0.0;
+    if !mover.started || mover.completed || !has_spin_work || !has_valid_tick {
+        return (Vec3::ZERO, Quat::IDENTITY);
+    }
+
+    mover.spin_rate_rad_s = ramp_spin_rate(
+        mover.spin_rate_rad_s,
+        mover.spin_target_rate_rad_s,
+        mover.spin_accel_rad_s2,
+        tick_dt,
+    );
+    mover.spin_angle_rad =
+        (mover.spin_angle_rad + mover.spin_rate_rad_s * tick_dt).rem_euclid(std::f32::consts::TAU);
+    transform.rotation = Quat::from_axis_angle(mover.spin_axis, mover.spin_angle_rad);
+
+    angular_kinematics_for_current_phase(mover, tick_dt)
+}
+
+fn ramp_spin_rate(current_rate: f32, target_rate: f32, accel_rad_s2: f32, tick_dt: f32) -> f32 {
+    if accel_rad_s2 == 0.0 {
+        return target_rate;
+    }
+
+    let max_change = accel_rad_s2 * tick_dt;
+    if current_rate < target_rate {
+        (current_rate + max_change).min(target_rate)
+    } else {
+        (current_rate - max_change).max(target_rate)
+    }
+}
+
+fn angular_kinematics_for_current_phase(
+    mover: &KinematicMoverComponent,
+    tick_dt: f32,
+) -> (Vec3, Quat) {
+    if !mover.started || mover.completed || mover.spin_rate_rad_s == 0.0 {
+        return (Vec3::ZERO, Quat::IDENTITY);
+    }
+
+    let angular_velocity = mover.spin_axis * mover.spin_rate_rad_s;
+    let tick_rotation_delta = if tick_dt.is_finite() && tick_dt > 0.0 {
+        Quat::from_axis_angle(mover.spin_axis, mover.spin_rate_rad_s * tick_dt)
+    } else {
+        Quat::IDENTITY
+    };
+    (angular_velocity, tick_rotation_delta)
 }
 
 fn advance_mover(mover: &mut KinematicMoverComponent, tick_dt: f32) -> Vec3 {
@@ -393,6 +471,10 @@ mod tests {
             wait_ms,
             mode,
             true,
+            Vec3::ZERO,
+            0.0,
+            0.0,
+            false,
         )
     }
 
@@ -416,6 +498,39 @@ mod tests {
         )
     }
 
+    fn assert_vec3_approx(actual: Vec3, expected: Vec3) {
+        assert!(
+            (actual - expected).length() < EPS,
+            "expected {expected:?}, got {actual:?}"
+        );
+    }
+
+    fn assert_quat_approx(actual: Quat, expected: Quat) {
+        assert!(
+            (actual.dot(expected).abs() - 1.0).abs() < EPS,
+            "expected {expected:?}, got {actual:?}"
+        );
+    }
+
+    fn pure_rotator(
+        initial_spin_rate_rad_s: f32,
+        spin_accel_rad_s2: f32,
+    ) -> KinematicMoverComponent {
+        KinematicMoverComponent::new(
+            7,
+            vec![Vec3::ZERO],
+            vec!["origin".to_string()],
+            0.0,
+            0.0,
+            KinematicMoverMode::Once,
+            true,
+            Vec3::Y,
+            initial_spin_rate_rad_s,
+            spin_accel_rad_s2,
+            true,
+        )
+    }
+
     #[test]
     fn mover_driver_replays_same_seed_deterministically() {
         let seed = sample_mover(KinematicMoverMode::PingPong, 125.0);
@@ -430,6 +545,234 @@ mod tests {
             a = (next_a.0, next_a.1);
             b = (next_b.0, next_b.1);
         }
+    }
+
+    #[test]
+    fn spin_driver_is_deterministic_and_wraps_angle() {
+        let mut a = (
+            pure_rotator(std::f32::consts::TAU + 0.5, 0.0),
+            transform_at(Vec3::ZERO),
+        );
+        let mut b = a.clone();
+
+        for dt in [0.25, 1.0, 0.5, 0.75] {
+            let next_a = tick_component(a.0, a.1, dt);
+            let next_b = tick_component(b.0, b.1, dt);
+            assert!((next_a.0.spin_angle_rad - next_b.0.spin_angle_rad).abs() < EPS);
+            assert_quat_approx(next_a.1.rotation, next_b.1.rotation);
+            a = (next_a.0, next_a.1);
+            b = (next_b.0, next_b.1);
+        }
+
+        let (mover, transform, _) = tick_component(
+            pure_rotator(std::f32::consts::TAU + 0.5, 0.0),
+            transform_at(Vec3::ZERO),
+            1.0,
+        );
+        assert!((mover.spin_angle_rad - 0.5).abs() < EPS);
+        assert!((0.0..std::f32::consts::TAU).contains(&mover.spin_angle_rad));
+        assert_quat_approx(transform.rotation, Quat::from_rotation_y(0.5));
+    }
+
+    #[test]
+    fn mid_spin_phase_replay_reproduces_orientation_and_pose_kinematics() {
+        let (mid_phase, mid_transform, _) =
+            tick_component(pure_rotator(2.0, 0.0), transform_at(Vec3::ZERO), 0.35);
+        let replay_pose = mover_pose_for_current_phase(mid_transform, &mid_phase, 0.2);
+        assert_vec3_approx(replay_pose.angular_velocity, Vec3::Y * 2.0);
+        assert_quat_approx(replay_pose.tick_rotation_delta, Quat::from_rotation_y(0.4));
+        assert!(replay_pose.carry_yaw);
+
+        let mut a = (mid_phase.clone(), mid_transform);
+        let mut b = (mid_phase, mid_transform);
+        for dt in [0.1, 0.3, 0.2] {
+            let next_a = tick_component(a.0, a.1, dt);
+            let next_b = tick_component(b.0, b.1, dt);
+            assert!((next_a.0.spin_angle_rad - next_b.0.spin_angle_rad).abs() < EPS);
+            assert_vec3_approx(next_a.2.get(7).unwrap().angular_velocity, Vec3::Y * 2.0);
+            assert_quat_approx(next_a.1.rotation, next_b.1.rotation);
+            a = (next_a.0, next_a.1);
+            b = (next_b.0, next_b.1);
+        }
+    }
+
+    #[test]
+    fn spin_rate_ramp_clamps_without_overshoot_and_snaps_at_zero_acceleration() {
+        let mut ramped = pure_rotator(0.0, 4.0);
+        ramped.spin_target_rate_rad_s = 3.0;
+        let (ramped, transform, table) = tick_component(ramped, transform_at(Vec3::ZERO), 0.5);
+        assert!((ramped.spin_rate_rad_s - 2.0).abs() < EPS);
+        assert!((ramped.spin_angle_rad - 1.0).abs() < EPS);
+        assert_vec3_approx(table.get(7).unwrap().angular_velocity, Vec3::Y * 2.0);
+        assert_quat_approx(transform.rotation, Quat::from_rotation_y(1.0));
+
+        let (ramped, transform, _) = tick_component(ramped, transform, 0.5);
+        assert!((ramped.spin_rate_rad_s - 3.0).abs() < EPS);
+        assert!((ramped.spin_angle_rad - 2.5).abs() < EPS);
+        assert_quat_approx(transform.rotation, Quat::from_rotation_y(2.5));
+
+        let mut snapped = pure_rotator(1.0, 0.0);
+        snapped.spin_target_rate_rad_s = 4.0;
+        let (snapped, transform, _) = tick_component(snapped, transform_at(Vec3::ZERO), 0.25);
+        assert!((snapped.spin_rate_rad_s - 4.0).abs() < EPS);
+        assert!((snapped.spin_angle_rad - 1.0).abs() < EPS);
+        assert_quat_approx(transform.rotation, Quat::from_rotation_y(1.0));
+
+        let mut reversing = pure_rotator(2.0, 3.0);
+        reversing.spin_target_rate_rad_s = -1.0;
+        let (reversing, transform, _) = tick_component(reversing, transform_at(Vec3::ZERO), 0.5);
+        assert!((reversing.spin_rate_rad_s - 0.5).abs() < EPS);
+        assert!((reversing.spin_angle_rad - 0.25).abs() < EPS);
+
+        let (reversing, _, _) = tick_component(reversing, transform, 0.5);
+        assert!((reversing.spin_rate_rad_s + 1.0).abs() < EPS);
+    }
+
+    #[test]
+    fn mid_ramp_phase_replay_reproduces_rate_and_orientation() {
+        let mut seed = pure_rotator(0.0, 1.5);
+        seed.spin_target_rate_rad_s = 4.0;
+        let (mid_phase, mid_transform, _) = tick_component(seed, transform_at(Vec3::ZERO), 0.75);
+        assert!((mid_phase.spin_rate_rad_s - 1.125).abs() < EPS);
+
+        let mut a = (mid_phase.clone(), mid_transform);
+        let mut b = (mid_phase, mid_transform);
+        for dt in [0.25, 0.5, 0.75] {
+            let next_a = tick_component(a.0, a.1, dt);
+            let next_b = tick_component(b.0, b.1, dt);
+            assert!((next_a.0.spin_rate_rad_s - next_b.0.spin_rate_rad_s).abs() < EPS);
+            assert!(
+                (next_a.0.spin_target_rate_rad_s - next_b.0.spin_target_rate_rad_s).abs() < EPS
+            );
+            assert!((next_a.0.spin_angle_rad - next_b.0.spin_angle_rad).abs() < EPS);
+            assert_quat_approx(next_a.1.rotation, next_b.1.rotation);
+            a = (next_a.0, next_a.1);
+            b = (next_b.0, next_b.1);
+        }
+    }
+
+    #[test]
+    fn spin_and_translation_compose_into_one_mover_pose() {
+        let mover = KinematicMoverComponent::new(
+            7,
+            vec![Vec3::ZERO, Vec3::new(2.0, 0.0, 0.0)],
+            vec!["start".to_string(), "finish".to_string()],
+            1.0,
+            0.0,
+            KinematicMoverMode::PingPong,
+            true,
+            Vec3::Y,
+            std::f32::consts::PI,
+            0.0,
+            true,
+        );
+
+        let (mover, transform, table) = tick_component(mover, transform_at(Vec3::ZERO), 0.5);
+        let state = table.get(7).unwrap();
+        assert_vec3_approx(transform.position, Vec3::new(0.5, 0.0, 0.0));
+        assert_quat_approx(
+            transform.rotation,
+            Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+        );
+        assert_vec3_approx(state.tick_delta, Vec3::new(0.5, 0.0, 0.0));
+        assert_vec3_approx(state.angular_velocity, Vec3::Y * std::f32::consts::PI);
+        assert_quat_approx(
+            state.tick_rotation_delta,
+            Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+        );
+        assert!(state.carry_yaw);
+        assert!(!mover.completed);
+    }
+
+    #[test]
+    fn pure_rotator_spins_without_completing_its_non_traversable_path() {
+        let (mover, transform, table) =
+            tick_component(pure_rotator(2.0, 0.0), transform_at(Vec3::ZERO), 1.0);
+        assert!(!mover.completed);
+        assert_vec3_approx(transform.position, Vec3::ZERO);
+        assert_quat_approx(transform.rotation, Quat::from_rotation_y(2.0));
+        assert_vec3_approx(table.get(7).unwrap().angular_velocity, Vec3::Y * 2.0);
+    }
+
+    #[test]
+    fn once_movers_stop_spinning_after_completion_while_ping_pong_movers_continue() {
+        let once = KinematicMoverComponent::new(
+            7,
+            vec![Vec3::ZERO, Vec3::X],
+            vec!["start".to_string(), "finish".to_string()],
+            1.0,
+            0.0,
+            KinematicMoverMode::Once,
+            true,
+            Vec3::Y,
+            1.0,
+            0.0,
+            false,
+        );
+        let (once, transform, table) = tick_component(once, transform_at(Vec3::ZERO), 1.0);
+        assert!(once.completed);
+        assert!((once.spin_angle_rad - 1.0).abs() < EPS);
+        assert_vec3_approx(table.get(7).unwrap().angular_velocity, Vec3::Y);
+
+        let (once, transform_after_stop, table) = tick_component(once, transform, 0.5);
+        assert!((once.spin_angle_rad - 1.0).abs() < EPS);
+        assert_quat_approx(transform_after_stop.rotation, transform.rotation);
+        assert_vec3_approx(table.get(7).unwrap().angular_velocity, Vec3::ZERO);
+        assert_quat_approx(table.get(7).unwrap().tick_rotation_delta, Quat::IDENTITY);
+        let completed_pose = mover_pose_for_current_phase(transform_after_stop, &once, 0.5);
+        assert_vec3_approx(completed_pose.angular_velocity, Vec3::ZERO);
+        assert_quat_approx(completed_pose.tick_rotation_delta, Quat::IDENTITY);
+
+        let ping_pong = KinematicMoverComponent::new(
+            7,
+            vec![Vec3::ZERO, Vec3::X],
+            vec!["start".to_string(), "finish".to_string()],
+            1.0,
+            0.0,
+            KinematicMoverMode::PingPong,
+            true,
+            Vec3::Y,
+            1.0,
+            0.0,
+            false,
+        );
+        let (ping_pong, transform, _) = tick_component(ping_pong, transform_at(Vec3::ZERO), 1.0);
+        let (ping_pong, _, table) = tick_component(ping_pong, transform, 0.5);
+        assert!(!ping_pong.completed);
+        assert!((ping_pong.spin_angle_rad - 1.5).abs() < EPS);
+        assert_vec3_approx(table.get(7).unwrap().angular_velocity, Vec3::Y);
+    }
+
+    #[test]
+    fn stop_freezes_spin_and_start_resumes_retained_rate_phase() {
+        let mut mover = pure_rotator(1.0, 2.0);
+        mover.spin_target_rate_rad_s = 4.0;
+        let (mut mover, transform, _) = tick_component(mover, transform_at(Vec3::ZERO), 0.5);
+        assert!((mover.spin_rate_rad_s - 2.0).abs() < EPS);
+        assert!((mover.spin_angle_rad - 1.0).abs() < EPS);
+
+        apply_mover_command(&mut mover, &MoverCommand::Stop);
+        let retained_rate = mover.spin_rate_rad_s;
+        let retained_target = mover.spin_target_rate_rad_s;
+        let retained_angle = mover.spin_angle_rad;
+        let (mut mover, frozen_transform, table) = tick_component(mover, transform, 0.5);
+        assert!((mover.spin_rate_rad_s - retained_rate).abs() < EPS);
+        assert!((mover.spin_target_rate_rad_s - retained_target).abs() < EPS);
+        assert!((mover.spin_angle_rad - retained_angle).abs() < EPS);
+        assert_quat_approx(frozen_transform.rotation, transform.rotation);
+        assert_vec3_approx(table.get(7).unwrap().angular_velocity, Vec3::ZERO);
+        assert_quat_approx(table.get(7).unwrap().tick_rotation_delta, Quat::IDENTITY);
+        let stopped_replay_pose = mover_pose_for_current_phase(frozen_transform, &mover, 0.5);
+        assert_vec3_approx(stopped_replay_pose.angular_velocity, Vec3::ZERO);
+        assert_quat_approx(stopped_replay_pose.tick_rotation_delta, Quat::IDENTITY);
+
+        apply_mover_command(&mut mover, &MoverCommand::Start);
+        let (mover, resumed_transform, table) = tick_component(mover, frozen_transform, 0.5);
+        assert!((mover.spin_rate_rad_s - 3.0).abs() < EPS);
+        assert!((mover.spin_target_rate_rad_s - 4.0).abs() < EPS);
+        assert!((mover.spin_angle_rad - 2.5).abs() < EPS);
+        assert_quat_approx(resumed_transform.rotation, Quat::from_rotation_y(2.5));
+        assert_vec3_approx(table.get(7).unwrap().angular_velocity, Vec3::Y * 3.0);
     }
 
     #[test]
@@ -536,6 +879,10 @@ mod tests {
             250.0,
             KinematicMoverMode::PingPong,
             true,
+            Vec3::ZERO,
+            0.0,
+            0.0,
+            false,
         );
         let mut transform = transform_at(Vec3::ZERO);
 
@@ -581,6 +928,10 @@ mod tests {
             100.0,
             KinematicMoverMode::PingPong,
             true,
+            Vec3::ZERO,
+            0.0,
+            0.0,
+            false,
         );
         apply_mover_command(&mut seed, &MoverCommand::GoToPathNode("c".to_string()));
         let mut a = (seed.clone(), transform_at(Vec3::ZERO));
@@ -609,6 +960,10 @@ mod tests {
             0.0,
             KinematicMoverMode::PingPong,
             true,
+            Vec3::ZERO,
+            0.0,
+            0.0,
+            false,
         );
 
         let (mover, transform, table) = tick_component(mover, transform_at(Vec3::ZERO), 1.0);

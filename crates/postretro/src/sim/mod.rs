@@ -1955,6 +1955,10 @@ mod tests {
                         0.0,
                         KinematicMoverMode::Once,
                         false,
+                        Vec3::ZERO,
+                        0.0,
+                        0.0,
+                        false,
                     ),
                 )
                 .unwrap();

@@ -4,7 +4,7 @@
 //! scene/query pipeline here: callers provide the static world, active mover
 //! colliders, and a pose source for the mover transform at the query tick.
 
-use glam::Vec3;
+use glam::{Quat, Vec3};
 use parry3d::math::{Isometry, Point, Vector};
 use parry3d::na::{Quaternion, Translation3, UnitQuaternion};
 use parry3d::query::{
@@ -47,6 +47,9 @@ pub(crate) struct MoverPose {
     pub(crate) transform: Transform,
     pub(crate) linear_velocity: Vec3,
     pub(crate) tick_delta: Vec3,
+    pub(crate) angular_velocity: Vec3,
+    pub(crate) tick_rotation_delta: Quat,
+    pub(crate) carry_yaw: bool,
     pub(crate) tick_dt: f32,
 }
 
@@ -464,6 +467,9 @@ mod tests {
                     },
                     linear_velocity: velocity,
                     tick_delta: delta,
+                    angular_velocity: Vec3::ZERO,
+                    tick_rotation_delta: Quat::IDENTITY,
+                    carry_yaw: false,
                     tick_dt: 0.1,
                 },
             );

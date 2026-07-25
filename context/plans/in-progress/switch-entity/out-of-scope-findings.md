@@ -78,22 +78,55 @@ the comment refers to is genuinely resolved, then drop the attribute.
 
 ---
 
-## 3. Dead primitive: `setFogScatter` **[confirmed]**
+## 3. Unregistered primitive: `setFogScatter` **[confirmed]**
+
+> **Correction (superseding this entry's original framing).** This was first written as the
+> reason campaign-test showed no pulsing fog. That diagnosis was wrong. The fog was missing
+> because `campaign-test.map` had no `fog_volume` tagged `pulse_fog`; the map author fixed
+> that in `7ed99d07`. `arena-lights.ts:127` guards the whole fog block with
+> `if (fogs.length > 0)`, so with an empty query **neither** fog reaction was defined — the
+> unregistered primitive was unreachable code, not the cause. Pulsing itself comes from
+> `fog.pulse(...)` → `setFogAnimation`, which **is** registered, which is why the pulse
+> returned with the entity alone.
+>
+> The defect below is real but was masked. `7ed99d07` unmasks it: campaign-test now takes the
+> `fogs.length > 0` branch, so the tag-targeted `setFogScatter` reaction is defined for the
+> first time and will log `[Scripting] primitive 'setFogScatter' is not registered; reaction
+> had no effect` at every level load. Consequence: the fog pulses, but the `0.4` baseline
+> never applies.
 
 Two shipping dev content scripts invoke a reaction primitive that Rust never registers:
 
 - `content/dev/scripts/fog-pulse-demo.ts:42`
 - `content/dev/scripts/arena-lights.ts:132`
 
-The registry only registers `setFogGlow` (`crates/postretro/src/fx/fog_reactions/mod.rs:24`)
-and no alias exists, so at runtime these hit the "primitive is not registered; reaction had
-no effect" path in `crates/scripting-core/src/reaction_dispatch.rs`. The canonical fog
-reference scene therefore has a silently dead reaction.
+`register_fog_reaction_primitives` (`crates/postretro/src/fx/fog_reactions/mod.rs:17-60`)
+registers `setFogDensity`, `setFogGlow`, `setFogEdgeSoftness`, `setFogFalloff`,
+`setFogParams`, and `setFogAnimation`. There is no `setFogScatter` and no alias, so these
+calls hit the not-registered path at `crates/scripting-core/src/reaction_dispatch.rs:392`.
 
-The rename to `setFogGlow` reached the TS typedef and `context/lib/scripting.md` §10.2 but
-not the Luau typedef (`sdk/lib/data_script.luau`, `SetFogScatterStep`),
-`docs/scripting-reference.md:795`, `sdk/lib/entities/fog_volumes.ts:23`, or the content.
-Fixing means picking one name and sweeping all six sites.
+**The fix is a rename plus an arg-key change — not just a rename.** `SetFogGlowArgs`
+(`set_fog_glow.rs:14`) has one field, `glow`, and the struct is
+`#[serde(rename_all = "camelCase")]` with no alias. Both content scripts pass
+`args: { scatter: 0.4 }`, so renaming the primitive alone converts a not-registered warning
+into a deserialization error. Both keys have to move together.
+
+`setFogGlow` is the current truth on the authoritative surface — the generated typedefs
+(`sdk/types/postretro.d.ts:900`, `sdk/types/postretro.d.luau:979`) and their templates
+(`crates/scripting-core/src/typedef/templates/sdk_lib.d.ts:153`, `sdk_lib.luau:233`) all say
+`setFogGlow`, and `committed_sdk_types_match_current_registry` guards them. The old name
+survives in hand-maintained files the generator does not own:
+
+- `sdk/lib/data_script.luau:106,108,168` (`SetFogScatterStep`)
+- `sdk/lib/data_script.ts:62,80` and `sdk/lib/index.ts:55` (re-exporting a
+  `SetFogScatterStep` that `postretro.d.ts` no longer declares)
+- `sdk/lib/entities/fog_volumes.ts:23` (doc comment)
+- `docs/scripting-reference.md:798`
+- the two content scripts above
+
+**Not affected by `7ed99d07`:** `campaign-test` is not in `GATE_FIXTURES`
+(`fixture_pipeline.rs:48-55`) and the golden-PRL test pins the animated-weight-maps `mixed`
+fixture, not campaign-test — so the map edit does not touch either §1 failure.
 
 ---
 

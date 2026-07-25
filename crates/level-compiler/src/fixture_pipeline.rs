@@ -31,12 +31,19 @@ use crate::{parse, partition, portals, visibility};
 /// `content/dev/maps/`. gate-heavily-lit is the compact, purpose-built heavily-lit
 /// stress fixture (a long narrow corridor whose >24 m length makes the warm-vs-cold
 /// SH approximation non-vacuous under the 16 m reach cutoff — see gate 3); it replaces
-/// campaign-test (194k probes, ~10 min/SH-bake) at a fraction of the cost. occlusion-test
-/// rounds out the heavily-lit coverage; soft_shadow_test and the animated-weight-map
-/// maps cover the remaining cases.
+/// campaign-test (194k probes, ~10 min/SH-bake) at a fraction of the cost.
+/// soft_shadow_test and the animated-weight-map maps cover the remaining cases.
+///
+/// Keep this list cheap. Bake cost tracks probe and texel counts, not `.map` size:
+/// the heavily-lit entries dominate while the animated-weight-map fixtures are
+/// sub-second each. occlusion-test was dropped as the single most expensive entry
+/// (~65% of the gates' runtime on its own). The coverage consciously given up is
+/// geometric complexity — gate-heavily-lit stresses light count over small
+/// geometry, so a determinism break that needs large, occluder-dense brushwork to
+/// show up is no longer gated here. Reach for a compact purpose-built fixture
+/// before re-adding a large map.
 pub const GATE_FIXTURES: &[&str] = &[
     "gate-heavily-lit",
-    "occlusion-test",
     "soft_shadow_test",
     "test_animated_weight_maps_cap",
     "test_animated_weight_maps_mixed",

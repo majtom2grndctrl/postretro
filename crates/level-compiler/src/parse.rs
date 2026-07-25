@@ -88,6 +88,10 @@ struct PendingKinematicMover {
     path: String,
     speed: f32,
     wait_ms: f32,
+    spin_axis: [f32; 3],
+    spin_speed_deg_s: f32,
+    spin_accel_deg_s2: f32,
+    carry_yaw: bool,
     move_mode: KinematicMoveMode,
     start_on_spawn: bool,
     brush_ids: Vec<BrushId>,
@@ -277,6 +281,29 @@ fn parse_kinematic_mover(
         );
     }
 
+    let spin_speed_deg_s =
+        parse_optional_finite_f32(props, "spin_speed", 0.0, "kinematic_mover", &name)?;
+    let spin_accel_deg_s2 =
+        parse_optional_finite_f32(props, "spin_accel", 0.0, "kinematic_mover", &name)?;
+    if spin_accel_deg_s2 < 0.0 {
+        anyhow::bail!(
+            "kinematic_mover `{name}` `spin_accel` must be finite and non-negative, got {spin_accel_deg_s2}"
+        );
+    }
+    let spin_axis = parse_kinematic_spin_axis(props, &name, spin_speed_deg_s)?;
+
+    let carry_yaw = match props
+        .get("carry_yaw")
+        .map(|value| value.trim())
+        .unwrap_or("0")
+    {
+        "1" | "true" | "True" => true,
+        "0" | "false" | "False" => false,
+        other => {
+            anyhow::bail!("kinematic_mover `{name}` `carry_yaw` must be 0/1, got `{other}`");
+        }
+    };
+
     let move_mode = match props
         .get("move_mode")
         .map(|value| value.trim())
@@ -315,10 +342,68 @@ fn parse_kinematic_mover(
         path,
         speed,
         wait_ms,
+        spin_axis,
+        spin_speed_deg_s,
+        spin_accel_deg_s2,
+        carry_yaw,
         move_mode,
         start_on_spawn,
         brush_ids,
     })
+}
+
+fn parse_kinematic_spin_axis(
+    props: &HashMap<String, String>,
+    name: &str,
+    spin_speed_deg_s: f32,
+) -> anyhow::Result<[f32; 3]> {
+    let Some(raw) = props.get("spin_axis") else {
+        if spin_speed_deg_s != 0.0 {
+            anyhow::bail!(
+                "kinematic_mover `{name}` `spin_axis` must be finite and non-zero when `spin_speed` is non-zero"
+            );
+        }
+        return Ok([0.0; 3]);
+    };
+
+    let components: Vec<&str> = raw.split_whitespace().collect();
+    if components.len() != 3 {
+        anyhow::bail!(
+            "kinematic_mover `{name}` `spin_axis` must contain exactly three components, got `{raw}`"
+        );
+    }
+    let mut axis = [0.0f32; 3];
+    for (index, component) in components.iter().enumerate() {
+        let parsed: f32 = component.parse().map_err(|error| {
+            anyhow::anyhow!(
+                "kinematic_mover `{name}` `spin_axis` component {index} `{component}` is not a valid float: {error}"
+            )
+        })?;
+        if !parsed.is_finite() {
+            anyhow::bail!(
+                "kinematic_mover `{name}` `spin_axis` component {index} is not finite: `{component}`"
+            );
+        }
+        axis[index] = parsed;
+    }
+
+    let axis = quake_to_engine(DVec3::new(
+        f64::from(axis[0]),
+        f64::from(axis[1]),
+        f64::from(axis[2]),
+    ));
+    let length = axis.length();
+    if length == 0.0 {
+        if spin_speed_deg_s != 0.0 {
+            anyhow::bail!(
+                "kinematic_mover `{name}` `spin_axis` must be finite and non-zero when `spin_speed` is non-zero"
+            );
+        }
+        return Ok([0.0; 3]);
+    }
+
+    let axis = axis / length;
+    Ok([axis.x as f32, axis.y as f32, axis.z as f32])
 }
 
 fn parse_optional_finite_f32(
@@ -1485,6 +1570,10 @@ fn resolve_kinematic_movers(
             path: pending.path,
             speed: pending.speed,
             wait_ms: pending.wait_ms,
+            spin_axis: pending.spin_axis,
+            spin_speed_deg_s: pending.spin_speed_deg_s,
+            spin_accel_deg_s2: pending.spin_accel_deg_s2,
+            carry_yaw: pending.carry_yaw,
             move_mode: pending.move_mode,
             start_on_spawn: pending.start_on_spawn,
             brush_volumes,
@@ -1562,9 +1651,9 @@ fn resolve_kinematic_path(
         current = waypoint.next.as_str();
     }
 
-    if path.len() < 2 {
+    if path.len() < 2 && mover.spin_speed_deg_s == 0.0 {
         anyhow::bail!(
-            "kinematic_mover `{}` path `{}` resolves to fewer than two waypoints",
+            "kinematic_mover `{}` path `{}` resolves to fewer than two waypoints without non-zero spin_speed",
             mover.name,
             mover.path
         );
@@ -2317,6 +2406,14 @@ mod tests {
 "origin" "0 0 64"
 }}
 "#
+        )
+    }
+
+    fn spinning_kinematic_test_map(path_next: &str) -> String {
+        kinematic_test_map(path_next).replacen(
+            "\"start_on_spawn\" \"1\"\n",
+            "\"start_on_spawn\" \"1\"\n\"spin_axis\" \"0 0 2\"\n\"spin_speed\" \"90\"\n\"spin_accel\" \"12.5\"\n\"carry_yaw\" \"1\"\n",
+            1,
         )
     }
 
@@ -3248,6 +3345,32 @@ mod tests {
     }
 
     #[test]
+    fn fgd_kinematic_mover_declares_spin_properties() {
+        let fgd_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../sdk/TrenchBroom/postretro.fgd"
+        );
+        let fgd = std::fs::read_to_string(fgd_path).expect("read committed postretro.fgd");
+        let mover_class = fgd
+            .split_once("= kinematic_mover :")
+            .and_then(|(_, rest)| rest.split_once("\n]"))
+            .map(|(body, _)| body)
+            .expect("postretro.fgd declares a `kinematic_mover` class with a closed body");
+
+        for property in [
+            "spin_axis(string) : \"Local spin axis as x y z\" : \"0 0 0\"",
+            "spin_speed(float) : \"Initial spin speed (degrees per second)\" : \"0\"",
+            "spin_accel(float) : \"Spin acceleration (degrees per second squared)\" : \"0\"",
+            "carry_yaw(choices) : \"Carry player yaw while rotating\" : 0 =",
+        ] {
+            assert!(
+                mover_class.contains(property),
+                "postretro.fgd kinematic_mover is missing `{property}`"
+            );
+        }
+    }
+
+    #[test]
     fn switch_without_reaction_or_target_compiles_inert() {
         // Parity with trigger_volume: no on_fire/on_exit/target_tag is a warning
         // from the shared resolve_trigger_volume path, not a compile error.
@@ -3655,6 +3778,26 @@ mod tests {
     }
 
     #[test]
+    fn kinematic_mover_spin_properties_encode_in_engine_space() {
+        let map_data = parse_inline_map(&spinning_kinematic_test_map("wp_b"))
+            .expect("spinning kinematic map should parse");
+        let mut texture_names =
+            postretro_level_format::texture_names::TextureNamesSection { names: Vec::new() };
+        let section = crate::kinematic_geometry::encode_kinematic_geometry_section(
+            &map_data.kinematic_movers,
+            &map_data.kinematic_waypoints,
+            &mut texture_names,
+        )
+        .expect("spinning mover should emit kinematic geometry");
+
+        let mover = &section.movers[0];
+        assert_eq!(mover.spin_axis, [0.0, 1.0, 0.0]);
+        assert_eq!(mover.spin_speed_deg_s, 90.0);
+        assert_eq!(mover.spin_accel_deg_s2, 12.5);
+        assert!(mover.carry_yaw);
+    }
+
+    #[test]
     fn kinematic_mover_missing_speed_uses_fgd_default() {
         let map_text = kinematic_test_map("wp_b").replace("\"speed\" \"2.5\"\n", "");
         let map_data =
@@ -3672,6 +3815,62 @@ mod tests {
             err.to_string().contains("fewer than two waypoints"),
             "diagnostic should name the invalid path length, got: {err}"
         );
+    }
+
+    #[test]
+    fn pure_rotator_with_one_waypoint_is_accepted() {
+        let map_data = parse_inline_map(&spinning_kinematic_test_map(""))
+            .expect("non-zero spin should permit a one-waypoint pure rotator");
+
+        assert_eq!(map_data.kinematic_movers.len(), 1);
+        assert_eq!(map_data.kinematic_movers[0].spin_speed_deg_s, 90.0);
+    }
+
+    #[test]
+    fn zero_speed_spin_with_nonzero_axis_is_normalized() {
+        let map_text = spinning_kinematic_test_map("wp_b")
+            .replace("\"spin_axis\" \"0 0 2\"", "\"spin_axis\" \"0 3 0\"")
+            .replace("\"spin_speed\" \"90\"", "\"spin_speed\" \"0\"");
+        let map_data = parse_inline_map(&map_text)
+            .expect("a normalized authored axis should be retained while spin is at rest");
+
+        assert_eq!(map_data.kinematic_movers[0].spin_axis, [-1.0, 0.0, 0.0]);
+        assert_eq!(map_data.kinematic_movers[0].spin_speed_deg_s, 0.0);
+    }
+
+    #[test]
+    fn kinematic_mover_rejects_non_finite_spin_speed() {
+        let map_text = spinning_kinematic_test_map("wp_b")
+            .replace("\"spin_speed\" \"90\"", "\"spin_speed\" \"nan\"");
+        let err = parse_inline_map(&map_text).expect_err("non-finite spin speed must reject");
+
+        assert!(err.to_string().contains("spin_speed") && err.to_string().contains("not finite"));
+    }
+
+    #[test]
+    fn kinematic_mover_rejects_negative_or_non_finite_spin_accel() {
+        for value in ["-1", "nan"] {
+            let map_text = spinning_kinematic_test_map("wp_b").replace(
+                "\"spin_accel\" \"12.5\"",
+                &format!("\"spin_accel\" \"{value}\""),
+            );
+            let err = parse_inline_map(&map_text)
+                .expect_err("negative or non-finite spin acceleration must reject");
+            assert!(err.to_string().contains("spin_accel"));
+        }
+    }
+
+    #[test]
+    fn kinematic_mover_rejects_invalid_spin_axis_for_active_spin() {
+        for value in ["0 0 0", "nan 0 0"] {
+            let map_text = spinning_kinematic_test_map("wp_b").replace(
+                "\"spin_axis\" \"0 0 2\"",
+                &format!("\"spin_axis\" \"{value}\""),
+            );
+            let err = parse_inline_map(&map_text)
+                .expect_err("active spin requires a finite, non-zero axis");
+            assert!(err.to_string().contains("spin_axis"));
+        }
     }
 
     #[test]

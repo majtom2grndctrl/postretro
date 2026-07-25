@@ -111,6 +111,26 @@ type-check in TypeScript.
 This is not cosmetic: clearing is the *only* correct way to author an off-then-on light
 (see §6), so the type surface currently blocks the sanctioned pattern.
 
+### An sdk_lib doc sentence has four hand-maintained copies **[confirmed]**
+
+Editing a doc comment in the scripting type surface means editing it in **four** places,
+and only one of them is discoverable from the others:
+
+1. `crates/scripting-core/src/typedef/templates/sdk_lib.d.ts` (and `.luau`) — the template
+2. `sdk/types/postretro.d.ts` (and `.d.luau`) — the committed generated output
+3. `crates/postretro/src/scripting/typedef/tests/fixtures/expected.d.ts` (and `.d.luau`) —
+   committed snapshot fixtures that embed the same sdk_lib block
+
+Nothing in 1 or 2 points at 3. Verifying that the template and the generated file agree —
+the obvious check, and a real one — still leaves the snapshot fixtures stale, and the only
+thing that catches it is running `typescript_snapshot_matches_full_registry` /
+`luau_snapshot_matches_full_registry`. This session hit exactly that: a one-sentence doc
+addition passed a template-vs-generated diff and still failed the full suite.
+
+Not a defect in the generator; the snapshot fixtures are doing their job. But the
+enforcement is discoverable only by failing, so a comment in the templates pointing at the
+fixture path would save the next person a confusing red gate.
+
 ### `build_pipeline.md` light row omits `_animated` **[confirmed]**
 
 `_animated` is a real FGD key (`sdk/TrenchBroom/postretro.fgd:112`), parsed by the

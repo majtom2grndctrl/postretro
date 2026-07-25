@@ -4,7 +4,7 @@
 
 use glam::Vec3;
 
-use super::transition::{is_meaningfully_closer, think_stride_for_distance};
+use super::engine_floor::{is_meaningfully_closer, think_stride_for_distance};
 use crate::nav::distance_xz;
 use postretro_entities::ComponentKind;
 use postretro_entities::components::brain::BrainComponent;
@@ -88,7 +88,7 @@ pub(super) fn selected_target_alive(registry: &EntityRegistry, target: EntityId)
 /// `context/research/cell-visibility-substrate.md` (and exact LOS work) without
 /// re-threading the FSM. If `retained_target` is still a valid, relevant player
 /// pawn, it is preferred unless another pawn is meaningfully closer by
-/// [`super::transition::TARGET_SWITCH_HYSTERESIS_DISTANCE`]. When
+/// [`super::engine_floor::TARGET_SWITCH_HYSTERESIS_DISTANCE`]. When
 /// `retained_outside_leash` is true, the retained pawn is no longer relevant for
 /// this acquisition tick and is excluded; the caller still owns any
 /// leash/range rules for replacements. This targeting path intentionally does

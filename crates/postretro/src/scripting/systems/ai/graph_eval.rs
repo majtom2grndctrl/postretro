@@ -14,7 +14,7 @@ use postretro_foundation::{
 
 use super::brain_programs::BrainEntityPrograms;
 use super::brain_scope::BrainScope;
-use super::transition::SteeringIntent;
+use super::engine_floor::SteeringIntent;
 
 /// Pick the state the brain moves to this tick, or `None` to stay put.
 ///

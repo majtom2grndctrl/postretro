@@ -23,12 +23,13 @@ use glam::{Quat, Vec3};
 
 mod brain_programs;
 mod brain_scope;
+mod engine_floor;
 mod graph_eval;
 mod targeting;
-mod transition;
 
 use brain_programs::BrainPrograms;
 use brain_scope::BrainFacts;
+use engine_floor::SteeringIntent;
 use graph_eval::{
     action_for_state, animation_for_state, chases, initial_index, select_transition, state_at,
     steering_for,
@@ -38,14 +39,11 @@ use targeting::{
     TargetPawn, acquisition_due, select_target, selected_target_alive, target_candidate,
     target_distance,
 };
-use transition::SteeringIntent;
 // `ai_tests` is included here via `#[path]`, so its `use super::*` resolves
 // against this module — the split moved these into submodules, but the tests
 // still name them unqualified.
 #[cfg(test)]
-use transition::{
-    TARGET_SWITCH_HYSTERESIS_DISTANCE, evaluate_transition, think_stride_for_distance,
-};
+use engine_floor::{TARGET_SWITCH_HYSTERESIS_DISTANCE, think_stride_for_distance};
 
 use crate::agent_steering;
 use crate::collision::CollisionWorld;

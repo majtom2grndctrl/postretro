@@ -1,4 +1,4 @@
-// AI brain component: the engine-owned enemy state machine's per-instance data.
+// AI brain component: the engine-owned enemy behavior graph's per-instance data.
 // Engine-internal — never reachable through `worldQuery` (the `PlayerMovement`
 // and `Agent` precedent, entity_model.md §7b). Carries the retained behavior
 // state graph, the current graph state, and the per-instance timers (attack
@@ -25,112 +25,6 @@ use crate::data_descriptors::{AiDescriptor, BehaviorGraphDescriptor, lower_ai_de
 use crate::registry::{EntityId, EntityRegistry, RegistryError};
 
 use super::mesh::MeshComponent;
-
-/// The closed set of logical states the legacy four-state transition core
-/// evaluates. The brain itself no longer carries one: it runs a behavior state
-/// graph whose states are authored (or lowered from `components.ai`). This enum
-/// and [`AiTuning`] survive as that core's inputs, which the lowered graph is
-/// differentially tested against.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum LogicalState {
-    /// At rest: no target acquired. The spawn state.
-    Idle,
-    /// A target is in detection range; the brain chases via the steering API.
-    Alert,
-    /// The target is in attack range; the brain applies damage on cooldown.
-    Attack,
-    /// The brain's entity reached zero HP. Not graph-reachable: the death sweep
-    /// latches HP-zero entities and the AI tick skips them.
-    Death,
-}
-
-impl LogicalState {
-    /// All four logical states, in evaluation order — the closed set a lowered
-    /// legacy graph's states correspond to one-for-one.
-    pub const ALL: [LogicalState; 4] = [
-        LogicalState::Idle,
-        LogicalState::Alert,
-        LogicalState::Attack,
-        LogicalState::Death,
-    ];
-
-    /// Stable lowercase label, matching the closed `states` wire keys
-    /// (`idle`/`alert`/`attack`/`death`). Used in warn diagnostics.
-    pub fn label(self) -> &'static str {
-        match self {
-            LogicalState::Idle => "idle",
-            LogicalState::Alert => "alert",
-            LogicalState::Attack => "attack",
-            LogicalState::Death => "death",
-        }
-    }
-}
-
-/// The four logical-state → animation-state name mappings, resolved from the
-/// descriptor's closed `states` block. The brain reads per-state animations off
-/// its graph instead; this survives as [`AiTuning`]'s state map, an input to the
-/// legacy transition core.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AiStateMap {
-    pub idle: String,
-    pub alert: String,
-    pub attack: String,
-    pub death: String,
-}
-
-impl AiStateMap {
-    /// The animation-state name mapped for a logical state.
-    pub fn animation_for(&self, state: LogicalState) -> &str {
-        match state {
-            LogicalState::Idle => &self.idle,
-            LogicalState::Alert => &self.alert,
-            LogicalState::Attack => &self.attack,
-            LogicalState::Death => &self.death,
-        }
-    }
-}
-
-/// The four-state transition core's resolved inputs: a 1:1 materialization of
-/// the legacy [`AiDescriptor`]'s authored fields plus its state map.
-///
-/// The brain does not carry this. Every legacy descriptor lowers to a behavior
-/// graph at spawn and the tick evaluates that graph, so what the core once read
-/// per tick now lives as guards (`detection_range`, `leash_range`), per-state
-/// animations, and the graph's own `attack`/`move_speed`/`death_despawn_ms`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AiTuning {
-    pub detection_range: f32,
-    pub attack_range: f32,
-    pub leash_range: f32,
-    pub attack_damage: f32,
-    pub attack_cooldown_ms: f32,
-    pub move_speed: f32,
-    pub death_despawn_ms: f32,
-    pub states: AiStateMap,
-}
-
-impl AiTuning {
-    /// Materialize resolved tuning from the parsed descriptor. A 1:1 copy: the
-    /// descriptor already validated every numeric field at parse time.
-    pub fn from_descriptor(desc: &AiDescriptor) -> Self {
-        Self {
-            detection_range: desc.detection_range,
-            attack_range: desc.attack_range,
-            leash_range: desc.leash_range,
-            attack_damage: desc.attack_damage,
-            attack_cooldown_ms: desc.attack_cooldown_ms,
-            move_speed: desc.move_speed,
-            death_despawn_ms: desc.death_despawn_ms,
-            states: AiStateMap {
-                idle: desc.states.idle.clone(),
-                alert: desc.states.alert.clone(),
-                attack: desc.states.attack.clone(),
-                death: desc.states.death.clone(),
-            },
-        }
-    }
-}
 
 /// Engine-internal AI brain: the retained behavior graph plus the live state it
 /// sits in. Seeded at spawn in the graph's `initial` state with every timer at

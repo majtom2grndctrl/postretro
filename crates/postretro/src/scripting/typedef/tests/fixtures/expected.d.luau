@@ -218,8 +218,10 @@ export type EntityTypeComponents = {
   mesh: MeshDescriptor?,
   --- Hit points plus an optional hitscan hitbox. A descriptor carrying this is directly map-placeable by canonicalName.
   health: HealthDescriptor?,
-  --- AI brain preset: detection/attack/leash ranges, attack tuning, move speed, despawn delay, and the logical-state → mesh animation-state map. Materializes a brain plus a navigation agent at spawn. Rides on health+mesh for map placement; it does not itself make a descriptor placeable.
+  --- AI brain preset: detection/attack/leash ranges, attack tuning, move speed, despawn delay, and the logical-state → mesh animation-state map. Materializes a brain plus a navigation agent at spawn. Rides on health+mesh for map placement; it does not itself make a descriptor placeable. Mutually exclusive with `behavior`.
   ai: AiDescriptor?,
+  --- Authored behavior state graph: named states with per-state motion/action/animation plus ordered IR transition guards. The graph replaces the legacy four-state `ai` preset; declaring both is a parse error. Materializes the same brain plus navigation agent at spawn.
+  behavior: BehaviorGraphDescriptor?,
 }
 
 --- Valid values: `semi`, `auto`.
@@ -323,6 +325,68 @@ export type AiDescriptor = {
   deathDespawnMs: number,
   --- Closed logical-state → mesh animation-state name mapping (idle / alert / attack / death). Each value must name a state declared in `components.mesh.animations`; validated at spawn.
   states: AiStateNames,
+}
+
+--- What a behavior-graph state does with the enemy's movement. Closed vocabulary: the engine owns steering; the state picks the mode. Valid values: `chaseTarget`, `hold`, `freeze`.
+export type MotionVerb =
+  --- Steer toward the selected target's combat slot.
+  "chaseTarget"
+  --- Clear the navigation destination and stand still.
+  | "hold"
+  --- Touch neither destination nor steering — terminal presentation.
+  | "freeze"
+
+--- What a behavior-graph state does besides moving. Omit the key for a state that takes no action. Valid values: `attack`.
+export type ActionVerb =
+  --- Cooldown-gated contact damage using the graph's `attack` block, which becomes required.
+  "attack"
+
+--- Attack tuning consumed by the `attack` action verb. Required exactly when some state declares that action.
+export type AttackParams = {
+  --- Damage dealt per attack. Must be finite and >= 0 (a negative value would heal the target through the damage chokepoint).
+  damage: number,
+  --- Distance within which the attack lands, in metres. Must be finite and > 0.
+  range: number,
+  --- Minimum interval between attacks, in milliseconds. Must be finite and > 0.
+  cooldownMs: number,
+}
+
+--- One authored graph edge: a destination state plus the guard that selects it. Guards are evaluated every tick — nothing a state is doing ever blocks evaluation — and the first true guard in declaration order wins.
+export type TransitionDescriptor = {
+  --- Destination state name. Must name a state declared in the same `states` map.
+  to: string,
+  --- Guard expression, built with the `runtime` builders over `brain.*` inputs and `state("name")` leaves. Must produce a boolean; validated at parse.
+  when: RuntimeValue,
+}
+
+--- One authored graph state: the animation it requests, what it does with motion and actions, and its ordered outgoing transitions.
+export type BehaviorStateDescriptor = {
+  --- Mesh animation-state name requested while this state is current. Must name a state declared in `components.mesh.animations`; resolved at spawn, where an unknown name warns and the prior animation is kept.
+  animation: string,
+  --- What this state does with steering.
+  motion: MotionVerb,
+  --- Optional action performed while this state is current. `"attack"` requires the graph's `attack` block.
+  action: ActionVerb?,
+  --- State-local edges, evaluated in declaration order after the graph's `interrupts`. Optional; defaults to none.
+  transitions: {TransitionDescriptor}?,
+  --- Optional named-event address fired through the post-tick drain when the brain enters this state.
+  onEnter: string?,
+}
+
+--- Authored behavior state graph attached to `EntityTypeDescriptor.components.behavior`. Descriptor-owned tuning: maps never override these. The engine owns target selection, steering, damage, and determinism; the graph owns which states exist and the ordered guards between them. Mutually exclusive with `components.ai`, which lowers to this same representation at spawn.
+export type BehaviorGraphDescriptor = {
+  --- State entered at spawn. Must name a declared state. It is also the state forced when the aggro gate closes or no target exists, so it should be rest-appropriate.
+  initial: string,
+  --- Declared states keyed by author-chosen name. Must be non-empty.
+  states: { [string]: BehaviorStateDescriptor },
+  --- Any-state edges, evaluated in declaration order BEFORE the current state's own transitions. An interrupt targeting the current state is skipped. Optional; defaults to none.
+  interrupts: {TransitionDescriptor}?,
+  --- Attack tuning for the `attack` action verb. Required exactly when some state declares that action.
+  attack: AttackParams?,
+  --- Pursuit movement speed in metres/sec, seeding the navigation agent. Must be finite and > 0.
+  moveSpeed: number,
+  --- Delay between death and despawn, in milliseconds (lets the death animation play out). Must be finite and > 0. Optional; defaults to 2000.
+  deathDespawnMs: number?,
 }
 
 --- Authored player-movement preset. `capsule`, `ground`, `air`, and `fall` are required. `dash`, `crouch`, and `viewFeel` are opt-in features; `forgiveness` has engine defaults when omitted. Distances use metres and time uses seconds unless a key is suffixed `Ms`.
@@ -1630,6 +1694,36 @@ export type Runtime = {
 --- Runtime-value builder vocabulary global.
 declare runtime: Runtime
 
+-- Behavior-graph guard inputs (sdk/lib/brain.luau). Pre-wrapped IR input leaves
+-- for the fixed `@brain.*` namespace plus the `@state.<name>` leaf builder --
+-- pure SDK sugar over the same data `runtime.read` returns, not primitives. The
+-- key set is the `BRAIN_INPUTS` table in crates/foundation/src/brain.rs.
+
+--- The fixed brain-fact namespace a transition guard may read. Each field is an
+--- IR input leaf, usable anywhere a `runtime` builder takes an operand.
+export type BrainInputs = {
+  --- `true` while the enemy has a selected target this tick (boolean).
+  hasTarget: RuntimeRead,
+  --- Distance to the selected target in metres, or `1e9` with no target -- so a bare `le(targetDistance, r)` reads false untargeted (number).
+  targetDistance: RuntimeRead,
+  --- Milliseconds since the brain entered its current state. A commitment window is a guard over this, not an engine mechanism (number).
+  timeInStateMs: RuntimeRead,
+  --- Milliseconds left on the attack cooldown; `0` once elapsed (number).
+  attackCooldownMs: RuntimeRead,
+  --- `true` on the think-stride ticks where acquisition is re-evaluated (boolean).
+  acquisitionDue: RuntimeRead,
+  --- The enemy's current hit points (number).
+  health: RuntimeRead,
+  --- The enemy's maximum hit points (number).
+  maxHealth: RuntimeRead,
+}
+
+--- Pre-wrapped guard input leaves for the fixed `@brain.*` namespace.
+declare brain: BrainInputs
+
+--- Read a per-entity state field as a guard input: `state("staggered")` is the `@state.staggered` leaf. Unset fields read as `0`. Impact policies and reactions write these; guards only read them.
+declare function state(name: string): RuntimeRead
+
 -- UI navigation intents — the closed gamepad-first nav vocabulary the input
 -- stage produces (keyboard arrows/enter/escape, D-pad, stick edges) and that UI
 -- authors reference in `capturesNav` and focus policy. Wire names mirror the
@@ -1756,6 +1850,10 @@ export type PostretroModule = {
   defineStore: typeof(defineStore),
   --- Build an additive write for a writable Number store slot.
   slot: typeof(slot),
+  --- Pre-wrapped behavior-graph guard inputs for the fixed `@brain.*` namespace.
+  brain: BrainInputs,
+  --- Build a `@state.<name>` guard input leaf for a per-entity state field.
+  state: typeof(state),
   emitter: typeof(emitter),
   smokeEmitter: typeof(smokeEmitter),
   sparkEmitter: typeof(sparkEmitter),

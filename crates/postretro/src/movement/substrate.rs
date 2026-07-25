@@ -479,7 +479,7 @@ pub(super) fn integrate_collision(
         // no floor contact this tick. The jump branch already cleared it.
         component.ground = GroundRef::Airborne;
     }
-    apply_mover_release_velocity(component, previous_ground, collision);
+    apply_mover_release_velocity(component, previous_ground, collision, current_pos);
 
     // Air-tick hysteresis. The step-up probe lifts the capsule only at genuine
     // walkable steps (pure walls skip the lift), but cornering events or the

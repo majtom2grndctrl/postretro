@@ -27,16 +27,17 @@ pub(super) fn apply_mover_carry(
     let GroundRef::Mover(mover_id) = previous_ground else {
         return position;
     };
-    collision
-        .poses
-        .pose(mover_id)
-        .map_or(position, |pose| position + pose.tick_delta)
+    collision.poses.pose(mover_id).map_or(position, |pose| {
+        let pivot = pose.transform.position - pose.tick_delta;
+        pivot + pose.tick_rotation_delta * (position - pivot) + pose.tick_delta
+    })
 }
 
 pub(super) fn apply_mover_release_velocity(
     component: &mut PlayerMovementComponent,
     previous_ground: GroundRef,
     collision: &CombinedCollisionWorld<'_>,
+    player_position: Vec3,
 ) {
     let GroundRef::Mover(mover_id) = previous_ground else {
         return;
@@ -45,7 +46,9 @@ pub(super) fn apply_mover_release_velocity(
         return;
     }
     if let Some(pose) = collision.poses.pose(mover_id) {
-        component.velocity += pose.linear_velocity;
+        let pivot = pose.transform.position - pose.tick_delta;
+        component.velocity +=
+            pose.linear_velocity + pose.angular_velocity.cross(player_position - pivot);
     }
 }
 

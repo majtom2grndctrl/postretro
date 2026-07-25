@@ -872,6 +872,54 @@ fn gameplay_capture_gate_for_frame(
         || modal_stack.top_capture_mode() == postretro_ui::descriptor::CaptureMode::Capture
 }
 
+fn world_up_yaw_delta(tick_rotation_delta: Quat) -> f32 {
+    if !tick_rotation_delta.is_finite() || tick_rotation_delta.length_squared() <= 1.0e-12 {
+        return 0.0;
+    }
+    let rotation = tick_rotation_delta.normalize();
+    let twist_length = (rotation.w * rotation.w + rotation.y * rotation.y).sqrt();
+    if twist_length <= 1.0e-6 {
+        return 0.0;
+    }
+
+    let yaw = 2.0 * (rotation.y / twist_length).atan2(rotation.w / twist_length);
+    (yaw + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI
+}
+
+fn yaw_after_mover_carry(camera_yaw: f32, carry_yaw: bool, tick_rotation_delta: Quat) -> f32 {
+    if carry_yaw {
+        camera_yaw + world_up_yaw_delta(tick_rotation_delta)
+    } else {
+        camera_yaw
+    }
+}
+
+/// Carry only the owning player's upright view from its prior settled mover pose.
+/// Input runs before this tick's mover update, so this intentionally uses the
+/// preceding tick's delta and reaches the host through `facing_yaw` replication.
+fn apply_mover_yaw_carry(
+    camera: &mut Camera,
+    registry: &postretro_entities::EntityRegistry,
+    mover_states: &kinematic_mover::MoverTickStateTable,
+) {
+    let Some(pawn) = followed_player_pawn(registry) else {
+        return;
+    };
+    let Ok(movement) =
+        registry.get_component::<postretro_foundation::PlayerMovementComponent>(pawn)
+    else {
+        return;
+    };
+    let postretro_foundation::GroundRef::Mover(mover_id) = movement.ground else {
+        return;
+    };
+    let Some(pose) = mover_states.get(mover_id) else {
+        return;
+    };
+
+    camera.yaw = yaw_after_mover_carry(camera.yaw, pose.carry_yaw, pose.tick_rotation_delta);
+}
+
 fn build_sim_command(
     snapshot: &input::ActionSnapshot,
     camera: &Camera,
@@ -2036,6 +2084,14 @@ impl ApplicationHandler for App {
                                 trigger_use_edges
                                     .insert(trigger_system::PlayerId::Local(pawn), true);
                             }
+                        }
+                        {
+                            let registry = script_ctx.registry.borrow();
+                            apply_mover_yaw_carry(
+                                &mut self.camera,
+                                &registry,
+                                &self.kinematic_mover_tick_states,
+                            );
                         }
                         let command = build_sim_command(
                             snapshot,
@@ -5908,6 +5964,79 @@ mod tests {
         // The lifecycle gate still suppresses the save before commit/restore.
         assert!(!should_save_persisted_state(false, false));
         assert!(!should_save_persisted_state(false, true));
+    }
+
+    #[test]
+    fn mover_yaw_carry_uses_only_world_up_rotation_when_enabled() {
+        const EPS: f32 = 1.0e-6;
+        let camera_yaw = 0.4;
+        let world_up_spin = glam::Quat::from_rotation_y(0.25);
+
+        assert!(
+            (yaw_after_mover_carry(camera_yaw, true, world_up_spin) - 0.65).abs() <= EPS,
+            "carry_yaw should add the mover's upright rotation"
+        );
+        assert!(
+            (world_up_yaw_delta(glam::Quat::from_rotation_x(0.25))).abs() <= EPS
+                && (world_up_yaw_delta(glam::Quat::from_rotation_z(-0.25))).abs() <= EPS,
+            "pitch and roll must never tilt or yaw the upright FPS camera"
+        );
+    }
+
+    #[test]
+    fn mover_yaw_carry_disabled_leaves_view_and_aim_unchanged() {
+        const EPS: f32 = 1.0e-6;
+        let mut camera = Camera::new(Vec3::new(2.0, 3.0, 4.0), 0.4, -0.2);
+        let before_aim = camera.aim_ray();
+        let before_pitch = camera.pitch;
+
+        camera.yaw = yaw_after_mover_carry(camera.yaw, false, glam::Quat::from_rotation_y(0.75));
+
+        assert!((camera.yaw - 0.4).abs() <= EPS);
+        assert!((camera.pitch - before_pitch).abs() <= EPS);
+        assert!((camera.aim_ray().0 - before_aim.0).length() <= EPS);
+        assert!((camera.aim_ray().1 - before_aim.1).length() <= EPS);
+    }
+
+    #[test]
+    fn mover_yaw_carry_reads_the_local_pawns_prior_grounded_mover_pose() {
+        use postretro_entities::{EntityRegistry, Transform};
+        use postretro_foundation::{GroundRef, PlayerMovementComponent};
+
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let mut movement = PlayerMovementComponent::from_descriptor(&minimal_player_descriptor());
+        movement.ground = GroundRef::Mover(7);
+        registry
+            .set_component(pawn, movement)
+            .expect("test pawn accepts movement state");
+        registry
+            .mark_local_player_pawn(pawn)
+            .expect("test pawn is the camera owner");
+
+        let mut mover_states = kinematic_mover::MoverTickStateTable::default();
+        mover_states.publish(
+            7,
+            kinematic_mover::MoverTickState {
+                entity: pawn,
+                transform: Transform::default(),
+                linear_velocity: Vec3::ZERO,
+                tick_delta: Vec3::ZERO,
+                angular_velocity: Vec3::Y,
+                tick_rotation_delta: glam::Quat::from_rotation_y(0.25),
+                carry_yaw: true,
+                tick_dt: 1.0 / 60.0,
+            },
+        );
+        let mut camera = Camera::new(Vec3::ZERO, 0.4, -0.2);
+
+        apply_mover_yaw_carry(&mut camera, &registry, &mover_states);
+
+        assert!((camera.yaw - 0.65).abs() <= 1.0e-6);
+        assert!(
+            (camera.pitch - -0.2).abs() <= 1.0e-6,
+            "yaw carry keeps the camera upright"
+        );
     }
 
     fn weapon_viewmodel_descriptor(

@@ -233,7 +233,9 @@ mod tests {
     use crate::collision::CollisionWorld;
     use crate::collision::moving::{
         CombinedCollisionWorld, MoverCollider, MoverPose, MoverPoseSource,
+        deepest_mover_push_penetration,
     };
+    use glam::Quat;
     use parry3d::math::{Isometry, Point};
     use parry3d::shape::{Capsule, TriMesh};
     use postretro_entities::Transform;
@@ -444,19 +446,40 @@ mod tests {
 
     impl TestMoverPoses {
         fn set(&mut self, mover_id: u32, position: Vec3, velocity: Vec3, tick_delta: Vec3) {
+            self.set_pose(
+                mover_id,
+                Transform {
+                    position,
+                    rotation: Quat::IDENTITY,
+                    scale: Vec3::ONE,
+                },
+                velocity,
+                tick_delta,
+                Vec3::ZERO,
+                Quat::IDENTITY,
+                false,
+            );
+        }
+
+        fn set_pose(
+            &mut self,
+            mover_id: u32,
+            transform: Transform,
+            linear_velocity: Vec3,
+            tick_delta: Vec3,
+            angular_velocity: Vec3,
+            tick_rotation_delta: Quat,
+            carry_yaw: bool,
+        ) {
             self.poses.insert(
                 mover_id,
                 MoverPose {
-                    transform: Transform {
-                        position,
-                        rotation: glam::Quat::IDENTITY,
-                        scale: Vec3::ONE,
-                    },
-                    linear_velocity: velocity,
+                    transform,
+                    linear_velocity,
                     tick_delta,
-                    angular_velocity: Vec3::ZERO,
-                    tick_rotation_delta: glam::Quat::IDENTITY,
-                    carry_yaw: false,
+                    angular_velocity,
+                    tick_rotation_delta,
+                    carry_yaw,
                     tick_dt: DT,
                 },
             );
@@ -650,6 +673,66 @@ mod tests {
     }
 
     #[test]
+    fn rotating_mover_carry_stays_planted_for_ten_revolutions_with_or_without_yaw_carry() {
+        const STEPS_PER_REVOLUTION: usize = 64;
+        const REVOLUTIONS: usize = 10;
+        const ROTATION_EPS: f32 = 2.0e-3;
+        const SURFACE_EPS: f32 = 0.03;
+
+        let world = empty_world();
+        let movers = [local_platform(7, 2.0)];
+        let step = std::f32::consts::TAU / STEPS_PER_REVOLUTION as f32;
+
+        for carry_yaw in [false, true] {
+            let mut poses = TestMoverPoses::default();
+            poses.set_pose(
+                7,
+                Transform::default(),
+                Vec3::ZERO,
+                Vec3::ZERO,
+                Vec3::ZERO,
+                Quat::IDENTITY,
+                carry_yaw,
+            );
+            let mut component = PlayerMovementComponent::from_descriptor(&canonical_descriptor());
+            let mut position = Vec3::new(0.75, 1.21, 0.25);
+            tick_on_mover(&mut component, &mut position, &world, &movers, &poses);
+            assert_eq!(component.ground, GroundRef::Mover(7));
+            let radius_xz = Vec2::new(position.x, position.z).length();
+            let surface_y = position.y;
+
+            for tick in 1..=STEPS_PER_REVOLUTION * REVOLUTIONS {
+                let angle = tick as f32 * step;
+                poses.set_pose(
+                    7,
+                    Transform {
+                        position: Vec3::ZERO,
+                        rotation: Quat::from_rotation_y(angle),
+                        scale: Vec3::ONE,
+                    },
+                    Vec3::ZERO,
+                    Vec3::ZERO,
+                    Vec3::Y * (step / DT),
+                    Quat::from_rotation_y(step),
+                    carry_yaw,
+                );
+                tick_on_mover(&mut component, &mut position, &world, &movers, &poses);
+
+                assert_eq!(component.ground, GroundRef::Mover(7));
+                assert!(
+                    (Vec2::new(position.x, position.z).length() - radius_xz).abs() <= ROTATION_EPS,
+                    "rotation carry drifted from the mover axis with carry_yaw={carry_yaw}: position={position:?}"
+                );
+                assert!(
+                    (position.y - surface_y).abs() <= SURFACE_EPS,
+                    "rotation carry drifted vertically with carry_yaw={carry_yaw}: y={} surface={surface_y}",
+                    position.y
+                );
+            }
+        }
+    }
+
+    #[test]
     fn leaving_mover_adds_linear_release_velocity_once() {
         let world = empty_world();
         let movers = [local_platform(7, 2.0)];
@@ -678,6 +761,64 @@ mod tests {
         assert!(
             (comp.velocity.x - 3.0).abs() < VEL_EPS,
             "release velocity must not accumulate after the transition"
+        );
+    }
+
+    #[test]
+    fn leaving_rotating_mover_adds_tangential_and_linear_velocity_once() {
+        let world = empty_world();
+        let mut poses = TestMoverPoses::default();
+        let angular_velocity = Vec3::Y * 2.0;
+        let tick_rotation_delta = Quat::from_rotation_y(0.2);
+        let linear_velocity = Vec3::new(3.0, 0.0, 4.0);
+        poses.set_pose(
+            7,
+            Transform::default(),
+            linear_velocity,
+            Vec3::ZERO,
+            angular_velocity,
+            tick_rotation_delta,
+            false,
+        );
+
+        let mut component = PlayerMovementComponent::from_descriptor(&canonical_descriptor());
+        component.ground = GroundRef::Mover(7);
+        let start_position = Vec3::new(1.0, 1.21, 0.0);
+        let carried_position = tick_rotation_delta * start_position;
+        let expected_release =
+            linear_velocity + angular_velocity.cross(carried_position - Vec3::ZERO);
+        let collision = CombinedCollisionWorld::new(&world, &[], &poses);
+
+        let (position, _) = tick(
+            &mut component,
+            &idle_input(),
+            &collision,
+            GRAVITY,
+            DT,
+            start_position,
+        );
+
+        assert_eq!(component.ground, GroundRef::Airborne);
+        assert!(
+            (component.velocity.x - expected_release.x).abs() <= VEL_EPS
+                && (component.velocity.z - expected_release.z).abs() <= VEL_EPS,
+            "release must add tangential angular_velocity × radius plus linear velocity: expected={expected_release:?}, actual={:?}",
+            component.velocity
+        );
+
+        let release_velocity = component.velocity;
+        let (_, _) = tick(
+            &mut component,
+            &idle_input(),
+            &collision,
+            GRAVITY,
+            DT,
+            position,
+        );
+        assert!(
+            (component.velocity.x - release_velocity.x).abs() <= VEL_EPS
+                && (component.velocity.z - release_velocity.z).abs() <= VEL_EPS,
+            "the release impulse must be applied only on the mover-ground transition"
         );
     }
 
@@ -741,6 +882,50 @@ mod tests {
         assert!(
             pos.x > 1.35,
             "fast mover crossing should push player to the far side; pos={pos:?}"
+        );
+    }
+
+    #[test]
+    fn advancing_rotated_mover_push_displaces_player_without_persistent_overlap() {
+        let world = empty_world();
+        let movers = [local_wall(7)];
+        let mut poses = TestMoverPoses::default();
+        poses.set_pose(
+            7,
+            Transform {
+                position: Vec3::new(0.0, 0.0, 1.0),
+                rotation: Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+                scale: Vec3::ONE,
+            },
+            Vec3::new(0.0, 0.0, 120.0),
+            Vec3::new(0.0, 0.0, 2.0),
+            Vec3::Y * (std::f32::consts::FRAC_PI_2 / DT),
+            Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+            false,
+        );
+        let mut component = PlayerMovementComponent::from_descriptor(&canonical_descriptor());
+        let mut position = Vec3::new(0.0, 1.2, 0.0);
+
+        tick_on_mover(&mut component, &mut position, &world, &movers, &poses);
+
+        assert!(
+            position.z > 1.35,
+            "an advancing rotated face should sweep the player beyond its final plane: position={position:?}"
+        );
+        let capsule = Capsule::new(
+            Point::new(0.0, -component.capsule.half_height, 0.0),
+            Point::new(0.0, component.capsule.half_height, 0.0),
+            component.capsule.radius,
+        );
+        assert!(
+            deepest_mover_push_penetration(
+                &movers,
+                &poses,
+                Point::new(position.x, position.y, position.z),
+                &capsule,
+            )
+            .is_none(),
+            "displaced player must not remain overlapped by the rotated mover"
         );
     }
 

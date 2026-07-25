@@ -24,10 +24,13 @@ use super::predict_reconcile_harness_test_fixtures::{
 };
 use super::prediction::{ORDINARY_CORRECTION_MAX_M, TELEPORT_CORRECTION_MIN_M};
 use super::reconcile::reconcile_local_pawn;
+use crate::kinematic_mover::apply_mover_command;
 use crate::movement::MovementInput;
 use crate::netcode::host_handle_client_message;
 use crate::sim::SimCommand;
-use postretro_entities::{KinematicMoverComponent, Transform, TriggerVolumeComponent};
+use postretro_entities::{
+    KinematicMoverComponent, MoverCommand, Transform, TriggerVolumeComponent,
+};
 use postretro_foundation::{GroundRef, PlayerMovementComponent};
 
 /// The mandated automated harness profile (Task 6 §B), applied in BOTH directions:
@@ -777,6 +780,180 @@ fn moving_platform_reconciles_under_mandated_profile_without_accumulating_drift(
     assert!(h.bystanders_alive());
 }
 
+#[test]
+fn rotating_platform_reconciles_phase_rider_and_tangential_release_under_mandated_profile() {
+    let mut h = LoopbackHarness::with_rotating_platform(mandated_link());
+    const ANGULAR_TOLERANCE_RAD: f32 = 0.12;
+    const RIDER_TOLERANCE_M: f32 = 0.35;
+    const RELEASE_VELOCITY_TOLERANCE_MPS: f32 = 0.08;
+
+    let mut orientation_errors = Vec::new();
+    let mut spin_rate_errors = Vec::new();
+    let mut rider_errors = Vec::new();
+    let mut set_spin_rate_fired = false;
+
+    for tick in 0..300 {
+        if tick == 140 {
+            let mover_id = h.host_mover.expect("rotating fixture has a host mover");
+            let mut mover = h
+                .host_registry
+                .get_component::<KinematicMoverComponent>(mover_id)
+                .expect("host rotating mover component")
+                .clone();
+            apply_mover_command(&mut mover, &MoverCommand::SetSpinRate(-90.0));
+            h.host_registry
+                .set_component(mover_id, mover)
+                .expect("update host spin target");
+            set_spin_rate_fired = true;
+        }
+
+        h.step(&idle_command());
+        let Some(client_pawn) = h.client_pawn else {
+            continue;
+        };
+
+        let host_rotation = h
+            .host_registry
+            .get_component::<Transform>(h.host_mover.expect("host mover"))
+            .expect("host mover transform")
+            .rotation;
+        let client_rotation = h
+            .client_registry
+            .get_component::<Transform>(h.client_mover.expect("client mover"))
+            .expect("client mover transform")
+            .rotation;
+        let orientation_error = wrapped_yaw_distance_rad(
+            yaw_from_rotation(host_rotation),
+            yaw_from_rotation(client_rotation),
+        );
+        assert!(
+            orientation_error <= ANGULAR_TOLERANCE_RAD,
+            "client-predicted rotating mover must stay within the angular tolerance; error={orientation_error:.4} rad"
+        );
+        orientation_errors.push(orientation_error);
+
+        if set_spin_rate_fired {
+            let host_rate = h
+                .host_registry
+                .get_component::<KinematicMoverComponent>(h.host_mover.expect("host mover"))
+                .expect("host mover phase")
+                .spin_rate_rad_s;
+            let client_rate = h
+                .client_registry
+                .get_component::<KinematicMoverComponent>(h.client_mover.expect("client mover"))
+                .expect("client mover phase")
+                .spin_rate_rad_s;
+            spin_rate_errors.push((host_rate - client_rate).abs());
+        }
+
+        let rider_error =
+            (h.host_position() - h.client_position().expect("armed client pawn")).length();
+        assert!(
+            rider_error <= RIDER_TOLERANCE_M,
+            "rider must reconcile its revolved position in place; error={rider_error:.4} m"
+        );
+        rider_errors.push(rider_error);
+        assert_eq!(h.host_ground(), GroundRef::Mover(MOVING_PLATFORM_ID));
+        assert_eq!(h.client_ground(), GroundRef::Mover(MOVING_PLATFORM_ID));
+        assert!(
+            h.client_registry.exists(client_pawn),
+            "rotating mover reconciliation must not replace the client pawn"
+        );
+    }
+
+    assert!(
+        set_spin_rate_fired,
+        "the scenario must issue a mid-ride set_spin_rate"
+    );
+    let host_phase = h
+        .host_registry
+        .get_component::<KinematicMoverComponent>(h.host_mover.expect("host mover"))
+        .expect("host mover phase");
+    let client_phase = h
+        .client_registry
+        .get_component::<KinematicMoverComponent>(h.client_mover.expect("client mover"))
+        .expect("client mover phase");
+    assert!(
+        (host_phase.spin_target_rate_rad_s - client_phase.spin_target_rate_rad_s).abs() <= 1.0e-4,
+        "the host-issued spin target must reconcile to the client"
+    );
+    assert!(
+        (host_phase.spin_rate_rad_s - client_phase.spin_rate_rad_s).abs() <= ANGULAR_TOLERANCE_RAD,
+        "the ramped current spin rate must reconcile after the mid-scenario command"
+    );
+    assert!(
+        h.client_mover_history_samples() > 0,
+        "rotating mover replay must use the existing full-transform mover history"
+    );
+    assert_non_accumulating(
+        "rotating mover orientation correction",
+        &orientation_errors,
+        ANGULAR_TOLERANCE_RAD * 0.5,
+    );
+    assert_non_accumulating(
+        "rotating mover spin-rate correction",
+        &spin_rate_errors,
+        ANGULAR_TOLERANCE_RAD * 0.5,
+    );
+    assert_non_accumulating(
+        "rotating rider position correction",
+        &rider_errors,
+        RIDER_TOLERANCE_M * 0.5,
+    );
+
+    // A jump leaves the platform mid-ride without adding horizontal locomotion, so
+    // the horizontal release velocity isolates the tangential mover term.
+    let mut jump_command = idle_command();
+    jump_command.movement.jump_pressed = true;
+    let mut previous_host_ground = h.host_ground();
+    let mut previous_client_ground = h.client_ground();
+    let mut host_release = None;
+    let mut client_release = None;
+    for _ in 0..90 {
+        h.step(&jump_command);
+
+        let host_ground = h.host_ground();
+        if matches!(previous_host_ground, GroundRef::Mover(MOVING_PLATFORM_ID))
+            && !matches!(host_ground, GroundRef::Mover(MOVING_PLATFORM_ID))
+        {
+            host_release = Some((h.host_velocity(), tangential_release_velocity(&h, true)));
+        }
+        previous_host_ground = host_ground;
+
+        let client_ground = h.client_ground();
+        if matches!(previous_client_ground, GroundRef::Mover(MOVING_PLATFORM_ID))
+            && !matches!(client_ground, GroundRef::Mover(MOVING_PLATFORM_ID))
+        {
+            client_release = Some((h.client_velocity(), tangential_release_velocity(&h, false)));
+        }
+        previous_client_ground = client_ground;
+
+        if host_release.is_some() && client_release.is_some() {
+            break;
+        }
+    }
+
+    let (host_release_velocity, host_tangential_velocity) =
+        host_release.expect("host rider leaves the rotating platform");
+    let (client_release_velocity, client_tangential_velocity) =
+        client_release.expect("client rider predicts the rotating-platform release");
+    assert!(
+        (horizontal(host_release_velocity) - host_tangential_velocity).length()
+            <= RELEASE_VELOCITY_TOLERANCE_MPS,
+        "host release must preserve tangential velocity; actual={host_release_velocity:?}, expected={host_tangential_velocity:?}"
+    );
+    assert!(
+        (horizontal(client_release_velocity) - client_tangential_velocity).length()
+            <= RELEASE_VELOCITY_TOLERANCE_MPS,
+        "client release must preserve tangential velocity; actual={client_release_velocity:?}, expected={client_tangential_velocity:?}"
+    );
+    assert!(
+        (client_tangential_velocity - host_tangential_velocity).length() <= RIDER_TOLERANCE_M,
+        "client and host must agree on the tangential release velocity"
+    );
+    assert!(h.bystanders_alive());
+}
+
 // A remote Use edge must cross the real client-input wire path before only the host
 // evaluates the trigger. The resulting target phase then returns through ordinary
 // mover replication for the client's locally predicted mover to reconcile against.
@@ -1096,6 +1273,45 @@ fn assert_non_accumulating(label: &str, samples: &[f32], tolerance: f32) {
         second <= first + tolerance,
         "{label}: second-half mean accumulated beyond tolerance; first={first:.5}, second={second:.5}, tolerance={tolerance:.5}"
     );
+}
+
+fn yaw_from_rotation(rotation: glam::Quat) -> f32 {
+    (2.0 * rotation.y.atan2(rotation.w)).rem_euclid(std::f32::consts::TAU)
+}
+
+fn wrapped_yaw_distance_rad(a: f32, b: f32) -> f32 {
+    ((a - b + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI).abs()
+}
+
+fn tangential_release_velocity(h: &LoopbackHarness, host: bool) -> Vec3 {
+    let (registry, mover_id, pawn) = if host {
+        (
+            &h.host_registry,
+            h.host_mover.expect("host mover"),
+            h.host_pawn,
+        )
+    } else {
+        (
+            &h.client_registry,
+            h.client_mover.expect("client mover"),
+            h.client_pawn.expect("client pawn"),
+        )
+    };
+    let mover = registry
+        .get_component::<KinematicMoverComponent>(mover_id)
+        .expect("rotating mover phase");
+    let mover_transform = registry
+        .get_component::<Transform>(mover_id)
+        .expect("rotating mover transform");
+    let player_position = registry
+        .get_component::<Transform>(pawn)
+        .expect("rider transform")
+        .position;
+    (mover.spin_axis * mover.spin_rate_rad_s).cross(player_position - mover_transform.position)
+}
+
+fn horizontal(velocity: Vec3) -> Vec3 {
+    Vec3::new(velocity.x, 0.0, velocity.z)
 }
 
 /// Drain `h` to the explicit drain condition, sending no new input. Caps iterations.

@@ -284,6 +284,9 @@ pub(crate) fn kinematic_mover_state_to_wire(
             mover.current_linear_velocity.z,
         ],
         target_segment: mover.target_segment,
+        spin_angle_rad: mover.spin_angle_rad,
+        spin_rate_rad_s: mover.spin_rate_rad_s,
+        spin_target_rate_rad_s: mover.spin_target_rate_rad_s,
     }
 }
 
@@ -465,6 +468,33 @@ mod tests {
             map_overrides: Default::default(),
             spawn_path,
         }
+    }
+
+    #[test]
+    fn kinematic_mover_wire_state_carries_rotating_phase_fields() {
+        let mut mover = KinematicMoverComponent::new(
+            41,
+            vec![Vec3::ZERO],
+            vec!["center".to_string()],
+            0.0,
+            0.0,
+            KinematicMoverMode::Once,
+            true,
+            Vec3::Y,
+            1.0,
+            2.0,
+            true,
+        );
+        mover.spin_angle_rad = 0.75;
+        mover.spin_rate_rad_s = 1.25;
+        mover.spin_target_rate_rad_s = -0.5;
+
+        let wire = kinematic_mover_state_to_wire(&mover);
+
+        assert_eq!(wire.mover_id, 41);
+        assert!((wire.spin_angle_rad - 0.75).abs() < f32::EPSILON);
+        assert!((wire.spin_rate_rad_s - 1.25).abs() < f32::EPSILON);
+        assert!((wire.spin_target_rate_rad_s + 0.5).abs() < f32::EPSILON);
     }
 
     /// Spawn a map-placed AI enemy the way `apply_data_archetype_dispatch` does: a

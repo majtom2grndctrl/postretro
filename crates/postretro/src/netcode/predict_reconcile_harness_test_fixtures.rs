@@ -66,6 +66,9 @@ pub(crate) const CLIENT_ID: u64 = 1;
 pub(crate) const START: Vec3 = Vec3::new(0.0, 1.21, 0.0);
 pub(crate) const MOVING_PLATFORM_ID: u32 = 77;
 pub(crate) const MOVING_PLATFORM_SPEED_MPS: f32 = 0.6;
+pub(crate) const ROTATING_PLATFORM_INITIAL_RATE_RAD_S: f32 = 1.2;
+pub(crate) const ROTATING_PLATFORM_ACCEL_RAD_S2: f32 = 2.4;
+pub(crate) const ROTATING_PLATFORM_RIDER_START: Vec3 = Vec3::new(1.0, 1.21, 0.0);
 
 /// Host playout (jitter buffer) warmup, in host ticks: the host buffers inbound
 /// commands for this many ticks before it begins resolving them, so the buffer has
@@ -487,6 +490,37 @@ impl LoopbackHarness {
             TriggerActivation::Use,
             MoverCommand::GoToPathNode("finish".into()),
         ));
+        h.mover_colliders
+            .push(platform_collider(MOVING_PLATFORM_ID));
+        host_register_loaded_movers(
+            &h.host_registry,
+            &mut h.allocator,
+            &mut h.replicable,
+            &mut h.host_loaded_movers,
+        );
+        h.mover_network_id = Some(h.allocator.stamp(host_mover));
+        h.host_mover = Some(host_mover);
+        h.client_mover = Some(client_mover);
+        h
+    }
+
+    /// A pure rotator with a rider planted one metre from its pivot. The static
+    /// axis/acceleration remain local on both peers; only the phase replicates.
+    pub(crate) fn with_rotating_platform(link: LinkConfig) -> Self {
+        let mut h = Self::new(link);
+        h.world = CollisionWorld::new();
+        h.host_registry
+            .set_component(
+                h.host_pawn,
+                Transform {
+                    position: ROTATING_PLATFORM_RIDER_START,
+                    ..Transform::default()
+                },
+            )
+            .expect("place rider on rotating platform");
+
+        let host_mover = spawn_rotating_platform_mover(&mut h.host_registry);
+        let client_mover = spawn_rotating_platform_mover(&mut h.client_registry);
         h.mover_colliders
             .push(platform_collider(MOVING_PLATFORM_ID));
         host_register_loaded_movers(
@@ -1095,6 +1129,25 @@ fn spawn_platform_mover(registry: &mut EntityRegistry) -> EntityId {
         Vec3::ZERO,
         0.0,
         0.0,
+        false,
+    );
+    registry.set_component(id, mover).unwrap();
+    id
+}
+
+fn spawn_rotating_platform_mover(registry: &mut EntityRegistry) -> EntityId {
+    let id = registry.spawn(Transform::default());
+    let mover = KinematicMoverComponent::new(
+        MOVING_PLATFORM_ID,
+        vec![Vec3::ZERO],
+        vec!["center".to_string()],
+        0.0,
+        0.0,
+        KinematicMoverMode::Once,
+        true,
+        Vec3::Y,
+        ROTATING_PLATFORM_INITIAL_RATE_RAD_S,
+        ROTATING_PLATFORM_ACCEL_RAD_S2,
         false,
     );
     registry.set_component(id, mover).unwrap();

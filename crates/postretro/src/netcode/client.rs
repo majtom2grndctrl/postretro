@@ -2107,6 +2107,9 @@ fn seed_kinematic_mover_phase(
     mover.completed = wire.completed;
     mover.current_linear_velocity = Vec3::from_array(wire.velocity);
     mover.target_segment = wire.target_segment;
+    mover.spin_angle_rad = wire.spin_angle_rad;
+    mover.spin_rate_rad_s = wire.spin_rate_rad_s;
+    mover.spin_target_rate_rad_s = wire.spin_target_rate_rad_s;
     Some(())
 }
 
@@ -2241,6 +2244,9 @@ mod tests {
             completed: false,
             velocity: [0.5, 0.0, 0.0],
             target_segment: None,
+            spin_angle_rad: 0.75,
+            spin_rate_rad_s: 1.25,
+            spin_target_rate_rad_s: 2.0,
         })
     }
 
@@ -2256,6 +2262,9 @@ mod tests {
             completed: false,
             velocity: [1.0, 0.0, 0.0],
             target_segment: None,
+            spin_angle_rad: 0.25,
+            spin_rate_rad_s: 1.5,
+            spin_target_rate_rad_s: 1.5,
         })
     }
 
@@ -2272,7 +2281,7 @@ mod tests {
                     0.0,
                     KinematicMoverMode::PingPong,
                     true,
-                    Vec3::ZERO,
+                    Vec3::Y,
                     0.0,
                     0.0,
                     false,
@@ -2473,6 +2482,9 @@ mod tests {
         assert_eq!(mover.segment_index, 1);
         assert_eq!(mover.direction_sign, -1);
         assert_eq!(mover.wait_remaining_ms, 5.0);
+        assert!((mover.spin_angle_rad - 0.75).abs() < EPSILON);
+        assert!((mover.spin_rate_rad_s - 1.25).abs() < EPSILON);
+        assert!((mover.spin_target_rate_rad_s - 2.0).abs() < EPSILON);
     }
 
     #[test]
@@ -2647,6 +2659,20 @@ mod tests {
             "advanced mover sample stores replay carry delta"
         );
         assert!((advanced.transform.position.x - 0.5).abs() < EPSILON);
+        assert!((advanced.angular_velocity - Vec3::Y * 1.5).length() < EPSILON);
+        assert!(
+            advanced
+                .tick_rotation_delta
+                .abs_diff_eq(Quat::from_rotation_y(0.375), EPSILON),
+            "replay derives the tick rotation from replicated rate, local axis, and dt"
+        );
+        assert!(
+            advanced
+                .transform
+                .rotation
+                .abs_diff_eq(Quat::from_rotation_y(1.0), EPSILON),
+            "fast-forwarded mover orientation derives from the replicated phase"
+        );
     }
 
     // --- Unknown-baseline delta: not applied, pending repair set, refresh requested,

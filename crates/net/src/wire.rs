@@ -69,7 +69,10 @@ pub struct NetworkId(pub u32);
 /// Bumped to 10 for E21 co-op avatar presentation: player movement gained
 /// replicated `aim_pitch`, and entity records gained active-weapon archetype
 /// metadata.
-pub const SNAPSHOT_VERSION: u16 = 10;
+///
+/// Bumped to 11 for E17 rotating movers: kinematic mover phase gained spin
+/// angle plus current and target angular rates.
+pub const SNAPSHOT_VERSION: u16 = 11;
 
 /// `record_kind` discriminant for a full-baseline (spawn / join / refresh) record.
 pub const RECORD_KIND_FULL_BASELINE: u16 = 0;
@@ -221,6 +224,9 @@ pub struct WireKinematicMoverState {
     pub completed: bool,
     pub velocity: [f32; 3],
     pub target_segment: Option<u16>,
+    pub spin_angle_rad: f32,
+    pub spin_rate_rad_s: f32,
+    pub spin_target_rate_rad_s: f32,
 }
 
 impl WireKinematicMoverState {
@@ -229,6 +235,9 @@ impl WireKinematicMoverState {
         self.segment_elapsed_ms.is_finite()
             && self.wait_remaining_ms.is_finite()
             && self.velocity.iter().all(|c| c.is_finite())
+            && self.spin_angle_rad.is_finite()
+            && self.spin_rate_rad_s.is_finite()
+            && self.spin_target_rate_rad_s.is_finite()
     }
 
     #[must_use]
@@ -1201,6 +1210,9 @@ mod tests {
             completed: false,
             velocity: [1.0, 0.0, -0.5],
             target_segment: Some(2),
+            spin_angle_rad: 1.25,
+            spin_rate_rad_s: -0.5,
+            spin_target_rate_rad_s: -1.0,
         }
     }
 
@@ -1841,14 +1853,14 @@ mod tests {
     }
 
     #[test]
-    fn e21_snapshot_version_rejects_pre_change_layout_before_records() {
-        const PRE_E21_SNAPSHOT_VERSION: u16 = 9;
+    fn e17_snapshot_version_rejects_immediately_previous_layout_before_records() {
+        const PRE_E17_SNAPSHOT_VERSION: u16 = 10;
         assert_eq!(
-            SNAPSHOT_VERSION, 10,
-            "E21 aim-pitch and active-weapon fields require snapshot version 10"
+            SNAPSHOT_VERSION, 11,
+            "E17 rotating-mover phase fields require snapshot version 11"
         );
         let raw = RawSnapshotMessage {
-            version: PRE_E21_SNAPSHOT_VERSION,
+            version: PRE_E17_SNAPSHOT_VERSION,
             sequence: 1,
             server_tick: 1,
             records: Vec::new(),
@@ -1859,7 +1871,7 @@ mod tests {
             raw.validate(),
             Err(ValidationError::VersionMismatch {
                 expected: SNAPSHOT_VERSION,
-                received: PRE_E21_SNAPSHOT_VERSION,
+                received: PRE_E17_SNAPSHOT_VERSION,
             })
         );
     }
@@ -1931,7 +1943,10 @@ mod tests {
                 local_player: false,
                 entity_class: None,
                 active_weapon_archetype: None,
-                components: vec![ComponentPayload::Transform(sample_transform())],
+                components: vec![
+                    ComponentPayload::Transform(sample_transform()),
+                    ComponentPayload::KinematicMoverState(sample_mover_state()),
+                ],
             },
             EntityRecord::Delta {
                 network_id: 1,
@@ -1941,7 +1956,10 @@ mod tests {
                 local_player: false,
                 entity_class: None,
                 active_weapon_archetype: None,
-                components: vec![ComponentPayload::Transform(sample_transform())],
+                components: vec![
+                    ComponentPayload::Transform(sample_transform()),
+                    ComponentPayload::KinematicMoverState(sample_mover_state()),
+                ],
             },
             EntityRecord::Despawn {
                 network_id: 1,
@@ -2500,6 +2518,9 @@ mod tests {
             |m: &mut WireKinematicMoverState| m.segment_elapsed_ms = f32::NAN,
             |m: &mut WireKinematicMoverState| m.wait_remaining_ms = f32::INFINITY,
             |m: &mut WireKinematicMoverState| m.velocity[2] = f32::NEG_INFINITY,
+            |m: &mut WireKinematicMoverState| m.spin_angle_rad = f32::NAN,
+            |m: &mut WireKinematicMoverState| m.spin_rate_rad_s = f32::INFINITY,
+            |m: &mut WireKinematicMoverState| m.spin_target_rate_rad_s = f32::NEG_INFINITY,
         ] {
             let mut mover = sample_mover_state();
             mutate(&mut mover);

@@ -1537,8 +1537,8 @@ mod tests {
 
     // -----------------------------------------------------------------------
     // Determinism GATES (2) and (3), over the real `content/dev/maps/` fixtures.
-    // `#[ignore]`d: each fixture bakes the full per-probe ray load (a few minutes
-    // across the gate fixture set). Run them with:
+    // `#[ignore]`d: each fixture bakes the full per-probe ray load (roughly a
+    // minute or two across the gate fixture set). Run them with:
     //   cargo test -p postretro-level-compiler -- --ignored --nocapture
     //       sh_cold_grouped_equals_monolithic_on_fixtures
     //       warm_sh_within_tolerance_on_fixtures

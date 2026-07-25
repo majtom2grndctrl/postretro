@@ -257,7 +257,8 @@ the visible-cell bitmask each frame, so per-frame cost still tracks visible anim
   real content rather than from the static 256.
 - **The golden PRL is currently red for an unrelated reason.**
   `mixed_fixture_without_script_membership_matches_pre_feature_golden_prl` is one of two
-  pre-existing `--ignored` failures on `main` (see `switch-entity/out-of-scope-findings.md` §1).
+  pre-existing `--ignored` failures on `main` (see
+  `context/plans/done/switch-entity/out-of-scope-findings.md` §1).
   A wire-format change requires regenerating that golden, and regenerating a golden that is already
   failing would absorb an unrelated regression permanently. Resolve or characterize that failure
   before Task 1 lands, and diff the byte delta rather than accepting a fresh bake.

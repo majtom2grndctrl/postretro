@@ -170,14 +170,18 @@
 // entity 8 -- the press indicator, authored on the dynamic tier. switch-demo.ts
 // holds it dark on spawn and fades it up on press, so it is the confirmation a
 // tester sees when the switch fires.
-// Placement was retuned by hand so the three lights read distinctly while
-// testing; it now sits mid-room rather than against the console, and at 400 it
-// is the brightest light here. It therefore reads as the room lighting up, not
-// as the console lighting up -- fine for confirming a press landed, weaker as a
-// check that the press is visible while looking AT the switch, which is what
-// the no-facing-check design makes it worth confirming. Move it back toward the
-// plate face (y 312, x 224, z 56) and back under the room lights if that is the
-// property being tested.
+// Sits 8 units off the switch plate face at y 312, centred on it in x and z, so
+// the confirmation lands where a tester is already looking. Activation has no
+// facing check, so the press can happen while looking away -- that is exactly
+// why the indicator has to be readable at the console rather than somewhere
+// else in the room.
+// Deliberately the brightest light in the map (400 against the room lights' 100
+// and 200) and deliberately NOT dim. An earlier pass authored it dim and
+// short-range on the theory that a console indicator should read as local
+// detail; in-engine it was then invisible against the room lighting, which
+// defeats the whole point of the fixture. Brightness is what makes a press
+// unmistakable; proximity to the plate is what makes it mean "this switch".
+// Keep both -- trading either one back costs the check this map exists for.
 // light_dynamic is a design decision, not a spelling of light. A baked light
 // that a script animates leaves the static lightmap for the animated-lightmap
 // atlas, and animated weight maps only cover atlas array layer 0 -- a face the
@@ -197,7 +201,7 @@
 // not this toggle.
 {
 "classname" "light_dynamic"
-"origin" "224 224 96"
+"origin" "224 304 56"
 "light" "400"
 "_color" "80 255 140"
 "_falloff_range" "133"

@@ -238,7 +238,8 @@ fn validate_kinematic_geometry(geometry: &KinematicGeometry) -> Result<(), PrlLo
             &geometry.waypoints,
             &waypoints,
         )?;
-        if resolved.len() < 2 {
+        let allow_single_waypoint = mover.spin_speed_deg_s != 0.0;
+        if resolved.len() < 2 && !allow_single_waypoint {
             return Err(section_validation(
                 "KinematicGeometry",
                 format!(
@@ -2712,6 +2713,32 @@ mod tests {
         let err = convert_kinematic_geometry_section(section).unwrap_err();
 
         assert_kinematic_validation_message(err, "zero-length segment");
+    }
+
+    #[test]
+    fn kinematic_geometry_accepts_single_waypoint_pure_rotator() {
+        let mut section = sample_kinematic_section();
+        section.movers[0].spin_axis = [0.0, 1.0, 0.0];
+        section.movers[0].spin_speed_deg_s = 90.0;
+        section.waypoints.truncate(1);
+        section.waypoints[0].next.clear();
+
+        let geometry = convert_kinematic_geometry_section(section)
+            .expect("a rotating mover can use a single waypoint");
+
+        assert_eq!(geometry.movers.len(), 1);
+        assert_eq!(geometry.waypoints.len(), 1);
+    }
+
+    #[test]
+    fn kinematic_geometry_rejects_single_waypoint_without_spin() {
+        let mut section = sample_kinematic_section();
+        section.waypoints.truncate(1);
+        section.waypoints[0].next.clear();
+
+        let err = convert_kinematic_geometry_section(section).unwrap_err();
+
+        assert_kinematic_validation_message(err, "at least 2 required");
     }
 
     #[test]

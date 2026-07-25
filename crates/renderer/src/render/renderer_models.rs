@@ -527,6 +527,10 @@ mod tests {
             vertices,
             indices,
             face_meta,
+            spin_axis: Vec3::ZERO,
+            spin_speed_deg_s: 0.0,
+            spin_accel_deg_s2: 0.0,
+            carry_yaw: false,
         }
     }
 

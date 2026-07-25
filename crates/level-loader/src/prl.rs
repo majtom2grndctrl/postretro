@@ -371,6 +371,10 @@ pub struct LoadedKinematicMover {
     pub vertices: Vec<PrlVertex>,
     pub indices: Vec<u32>,
     pub face_meta: Vec<postretro_level_format::geometry::FaceMeta>,
+    pub spin_axis: Vec3,
+    pub spin_speed_deg_s: f32,
+    pub spin_accel_deg_s2: f32,
+    pub carry_yaw: bool,
 }
 
 #[cfg(feature = "load-prl")]
@@ -397,6 +401,10 @@ impl From<KinematicMoverRecord> for LoadedKinematicMover {
             vertices: record.vertices,
             indices: record.indices,
             face_meta: record.face_meta,
+            spin_axis: Vec3::from(record.spin_axis),
+            spin_speed_deg_s: record.spin_speed_deg_s,
+            spin_accel_deg_s2: record.spin_accel_deg_s2,
+            carry_yaw: record.carry_yaw,
         }
     }
 }
@@ -4251,6 +4259,22 @@ mod tests {
         }
     }
 
+    #[test]
+    fn loaded_kinematic_mover_preserves_rotation_authoring_values() {
+        let mut record = sample_kinematic_section().movers.remove(0);
+        record.spin_axis = [0.0, 3.0, 4.0];
+        record.spin_speed_deg_s = -90.0;
+        record.spin_accel_deg_s2 = 180.0;
+        record.carry_yaw = true;
+
+        let mover = LoadedKinematicMover::from(record);
+
+        assert!((mover.spin_axis - Vec3::new(0.0, 3.0, 4.0)).length() <= 1.0e-6);
+        assert!((mover.spin_speed_deg_s + 90.0).abs() <= 1.0e-6);
+        assert!((mover.spin_accel_deg_s2 - 180.0).abs() <= 1.0e-6);
+        assert!(mover.carry_yaw);
+    }
+
     fn minimal_sections_with_kinematic(
         section: Option<postretro_level_format::kinematic_geometry::KinematicGeometrySection>,
     ) -> Vec<prl_format::SectionBlob> {
@@ -4319,6 +4343,29 @@ mod tests {
         assert_eq!(mover.vertices.len(), 3);
         assert_eq!(mover.indices, vec![0, 1, 2]);
         assert_eq!(world.kinematic_geometry.waypoints[0].next, "b");
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_v1_kinematic_mover_defaults_rotation_authoring_values() {
+        let mut legacy_section = sample_kinematic_section();
+        legacy_section.version = 1;
+        legacy_section.movers[0].spin_axis = [0.0, 3.0, 4.0];
+        legacy_section.movers[0].spin_speed_deg_s = 90.0;
+        legacy_section.movers[0].spin_accel_deg_s2 = 180.0;
+        legacy_section.movers[0].carry_yaw = true;
+        let tmp = write_prl_fixture(
+            minimal_sections_with_kinematic(Some(legacy_section)),
+            "postretro_test_kinematic_v1_rotation_defaults.prl",
+        );
+
+        let world = load_prl(tmp.to_str().unwrap()).expect("v1 kinematic mover should load");
+        let mover = &world.kinematic_geometry.movers[0];
+
+        assert!(mover.spin_axis.length() <= 1.0e-6);
+        assert!(mover.spin_speed_deg_s.abs() <= 1.0e-6);
+        assert!(mover.spin_accel_deg_s2.abs() <= 1.0e-6);
+        assert!(!mover.carry_yaw);
         std::fs::remove_file(&tmp).ok();
     }
 

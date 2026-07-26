@@ -170,13 +170,17 @@ who did not draft the spec. Same questions, opposite direction.
 The questions are defined normatively in `/validate-plan`. If the two lists
 disagree, `/validate-plan` wins — update this one to match.
 
-1. What problem is this actually solving — cause or symptom?
-2. Is it being solved at the right level (layer, ownership boundary,
-   mechanism vs policy)?
+1. What problem is this actually solving — cause or symptom — and what
+   observation produced it?
+2. Is it being solved at the right level? Name the placement axis first;
+   this repo has several beyond engine-vs-mod.
 3. What does this foreclose?
 4. What has this project already committed to that this touches?
-5. Is it proportionate — over-built, or scoped smaller than the real problem?
+5. Is this a one-way door, and what does undoing it cost?
 6. What is the strongest alternative, and why not that?
+
+Proportionality is not among them. Over-built and under-scoped are
+`/validate-plan` verdicts, settled by comparison against Q6's alternative.
 
 Asking a question is not the same as recording its answer. Only some produce
 spec text:
@@ -185,11 +189,11 @@ spec text:
 |---|---|
 | 1, 4, 6 | The `Direction` section. Cheap to write now, expensive to reconstruct. |
 | 2 | Record the *fact* of the placement and the reason for it, where the design decision lives. This is input for the reviewer, not a clearing of the question — a drafter who placed something in the wrong layer does not know it. "This belongs in the engine floor because…" is useful; "the layering was assessed and is correct" is noise. |
-| 3 | Record specific foreclosures where known. Never write "nothing significant" — that is the default answer and it carries no information. |
-| 5 | None. Self-assessed sizing is always "appropriate". Leave it to `/validate-plan`. |
+| 3, 5 | Record specific foreclosures and one-way doors where known, with what undoing them would cost. Both are factual and survive self-assessment. Never write "nothing significant" — that is the default answer and it carries no information; "nothing material" after actually looking is a fine answer. |
 
-Questions 2, 3 and 5 need a reader who has not spent the session inside the
-solution. Answer them for yourself; do not trust your own answer.
+Question 2 needs a reader who has not spent the session inside the solution —
+a drafter who placed something in the wrong layer does not know it. Answer it
+for yourself; do not trust your own answer.
 
 ### 6. Cross-check
 

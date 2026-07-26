@@ -3,9 +3,9 @@ name: validate-plan
 description: >
   Adversarial direction review of a spec: is this a reasonable solution to
   the problem at hand? One fresh reviewer judges framing, layer placement,
-  foreclosure, unstated divergence from prior commitments, sizing, and the
-  strongest alternative. Can conclude the work needs no spec, or a bigger
-  one. Run before detail review (`review-draft-spec`), after a draft
+  foreclosure, unstated divergence from prior commitments, reversibility,
+  and the strongest alternative. Can conclude the work needs no spec, or a
+  bigger one. Run before detail review (`review-draft-spec`), after a draft
   session, or a la carte on any spec whose direction has gone stale.
 argument-hint: "[plan-name]"
 context: fork
@@ -52,11 +52,11 @@ Dispatch prompt contains exactly:
 
 The reviewer answers six questions and must reach a verdict on each; "some concerns" is not an answer.
 
-1. **What problem is this actually solving?** One sentence. Cause or symptom of something upstream?
+1. **What problem is this actually solving, and what observation produced it?** One sentence for the problem — cause or symptom of something upstream? Then the evidence: a review finding, a bug, a modder request, or an anticipation. Anticipated problems are legitimate, but naming one as anticipated is how the strongest form of *Not a spec* — no one has hit this yet — becomes reachable.
 2. **Is it being solved at the right level?** Name the placement axis before judging it. This repo has several: engine-vs-mod, mechanism-vs-policy, host-vs-client authority, load-time-vs-runtime, descriptor-data-vs-engine-code, floor-vs-authored. Pick the ones in play; do not default to the first.
 3. **What does this foreclose?** What becomes harder or impossible afterward. "Nothing material" is a legitimate and common answer — say it plainly rather than manufacturing a foreclosure. What is banned is the empty hedge "nothing significant" standing in for not having looked.
 4. **What has this project already committed to that this touches?** Extend the step 1 floor. See *Precedence* below.
-5. **Is it proportionate?** Both directions: over-built for the problem, or scoped smaller than the real problem.
+5. **Is this a one-way door, and what does undoing it cost?** Distinct from Q3: foreclosure is what becomes impossible *afterward*, reversibility is what it costs to back out of *this*. It changes the calculus more than Q3 does — a reversible wrong direction is often worth shipping to learn from, while an irreversible right-looking one earns a reshape.
 6. **What is the strongest alternative, and why not that?** Propose a rival shape; do not just list concerns. Committing to an alternative forces a real judgment and gives the owner something to compare.
 
 **Verdict, one of:**
@@ -67,6 +67,8 @@ The reviewer answers six questions and must reach a verdict on each; "some conce
 - *Under-scoped* — the real problem is bigger than what is scoped. Say what is missing.
 
 The last two are first-class outcomes. A reviewer that can only grade direction good-or-bad never reaches them, and both are common.
+
+Proportionality is not a seventh question — it is this verdict set. Over-built resolves to *Not a spec*, under-sized to *Under-scoped*, and the comparison that settles either is Q6's alternative. Asking it separately just gets it answered twice.
 
 ### 3. Locked decisions
 

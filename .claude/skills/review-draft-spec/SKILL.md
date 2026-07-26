@@ -48,7 +48,20 @@ Receives:
   - Scope-boundary violations
   - Plumbing handwaves — "edit X to do Y" without stating how X gets access
   - Missing wire-format or FFI pins
+  - Unwarranted work-eliminating claims (see below) — report each as a finding
   - Anything else that forces an implementer to guess
+
+Plus an explicit sweep, run as its own pass rather than folded into general reading:
+
+> Extract every claim whose function is to eliminate work — to assert that some
+> code path, test, or task need not exist. Markers: "identical by construction,"
+> "follows automatically," "no separate test required," "derivable from," "same
+> as the X path," "trivially," "by symmetry." For each, ask whether the spec
+> states a checkable reason, grounded in named source, or only restates the
+> claim. Report every unwarranted one. These are usually true — say so where
+> they are, and do not manufacture doubt. But they are the only sentences in a
+> spec that produce no artifact to verify, so an unexamined one survives to
+> implementation and surfaces as a rewrite rather than a bug.
 
 Output: list of `{ location, problem, fix }` triples. "No issues found" if clean. No padding, no praise.
 
@@ -57,6 +70,7 @@ Output: list of `{ location, problem, fix }` triples. "No issues found" if clean
 Receives:
 - Full spec content inline
 - Instruction: "For every Rust/TS/Lua identifier the spec names — function, struct, type, field, enum variant, module path — open the file in source, confirm the spec's claim, report any divergence between the spec and current code reality. First step: extract the identifier list from the spec. Then resolve files via Glob/Grep. Then batch-read."
+- Additional instruction: "Where the spec warrants a work-eliminating claim by citing source — two paths called identical because they share a function, state called derivable because a field already holds it — verify the warrant, not just that the identifier exists. A warrant that names real code and still does not support the claim is the highest-value finding in this pass."
 
 Output: same `{ location, problem, fix }` triples. Each fix references the source location that contradicts the spec — cite by identifier and file, never by line number: fixes land in spec text (often AC or task paragraphs) that must survive future edits, and a line number is stale the moment the file changes.
 

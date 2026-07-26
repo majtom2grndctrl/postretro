@@ -40,11 +40,17 @@ Use subagents for exploration — codebase reading, pattern discovery, doc looku
 
 **Code-grounding is non-negotiable.** Every Rust/TS/Lua identifier the spec will name — function, struct, type, field, enum variant — must be confirmed against current source before the spec asserts anything about it. Don't write "X returns Y" or "X has fields A, B" from memory. Open the file, read the signature, then write. Memory drift is the largest single source of spec inaccuracy.
 
+**Warrant every work-eliminating claim.** Code-grounding's sibling failure: asserting from memory that something *need not be built*. A spec's riskiest sentences are the ones whose function is to buy it out of work it would otherwise owe — "identical by construction," "follows automatically," "no separate test required," "derivable from existing state," "same as the single-player path." Each removes a task, a test, or a code path, and each is the one kind of sentence that produces no artifact to check it against. They are usually true, which is what makes the false ones expensive: they survive to implementation and surface as rewrites, not as bugs.
+
+State the warrant inline — the specific reason, grounded in source, not a restatement of the claim. "Identical because both paths call `apply_command()` with the same input struct" is a warrant; "identical by construction" is the claim wearing a warrant's clothes. If the warrant cannot be written, the claim is a guess: spec the work instead, or record it as an open question. `/review-draft-spec` challenges every one of these, so an unwarranted claim costs a review round.
+
 **Oversized-file watch.** Watch source-file size while grounding. Flag any file already past ~800 lines that the plan will extend — a soft smell, not a gate. A cohesive 900-line table is fine; a tangled 600-line module may not be. Carry the flag forward as a split-first task (§3).
 
 **Research notes stay out of the spec.** If findings are useful but don't drive decisions, put them in a sibling `research.md` in the plan folder. The spec captures decisions and behavior, not the investigation that produced them.
 
 **Lifecycle diagram before tasks.** When the plan changes state or timing across seams — latches, deferred effects, cross-frame hand-offs — diagram the full lifecycle in Mermaid before writing tasks: `sequenceDiagram` for cross-seam flows (frame boundaries as participants when timing matters), `stateDiagram-v2` for latch/FSM lifecycles. No arrow without a read call site — the diagram drives code-grounding. Derive the Invariants table (§3) and task boundaries from it. Diagram goes to `research.md`; keep it in the spec only when it is the clearest statement of a pinned decision.
+
+**Enumerate observers, not just the flow.** A flow diagram traces one path and renders every vantage on it as a single line. When the same state is observed from more than one position — host and client, local and remote, live and replayed, authored and generated — the spec owes the cross-product of vantage × lifecycle stage, not the flow. Name the vantages explicitly, then say which ones differ and which are the same. A vantage asserted identical to another is a work-eliminating claim and needs its warrant.
 
 ### 3. Write the spec
 
@@ -145,6 +151,9 @@ AC names observable behavior. Someone who didn't write the plan must be able to 
 | "Movement feels good" | "Player walks slopes ≤ 45°; cannot pass through walls; jump launches when grounded" | "`CharacterController::step()` calls `trace_box()` with hull (16, 16, 56)" |
 | "Performance is acceptable" | "Frame time < 16ms on `assets/maps/stress.prl` at 1080p" | "BVH traversal ≤ 3.2ms measured via tracy" |
 | "Leaks are detected" | "`prl-build` exits non-zero on leaked map; writes `.pts` TrenchBroom loads" | "`LeakReport { seed_leaf, void_leaf, portal_path }` returned from `visibility::flood_fill()`" |
+| "Rider stays attached to the platform" | "Rider pose tracks the mover at rotation start, reversal, and stop; holds across a frame with zero fixed ticks and one with two" | "`RiderState::yaw_offset` written from `apply_mover_rotation()`" |
+
+The last row is the general lesson, not a movement one: AC written against steady state is the default failure mode. Steady state is where the behavior is easiest to describe and least likely to break. Name the edges — start, stop, reverse, completion, detach, zero-or-many iterations of whatever ticks.
 
 Named types, functions, and line numbers belong in the sketch — not AC. AC survives a rewrite of the implementation; a spec keyed to function names does not.
 
@@ -159,6 +168,10 @@ Rules:
 - Each phase completes fully before the next begins.
 
 One phase per line. No per-task sub-bullets unless a dependency needs calling out.
+
+**Thin slice before fan-out.** When a plan spans producer → boundary → consumer — anything where one side writes and another reads across a seam — phase 1 is a narrow vertical slice through every layer, integrated and exercised end to end. The fan-out comes after.
+
+Concurrent-by-default argues against this, and that is the point: under the plain rule the producer tasks are independent, so they all run first and integration lands last. That ordering keeps the spec's assumptions unfalsified until the widest possible moment. A slice exists to falsify them while rewrites are still cheap — it is a test of the spec, not a delivery increment, so make it the thinnest path that crosses every seam rather than the first useful feature. Name it as such in the phase line: "Phase 1 (sequential): Task 1 — thin slice, falsifies the boundary assumptions."
 
 ### 5b. Direction questions while drafting
 

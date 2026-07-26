@@ -725,7 +725,8 @@ fn select_target_returns_single_player_pawn() {
     let mut reg = EntityRegistry::new();
     let pawn = spawn_player(&mut reg, Vec3::new(5.0, 0.0, 0.0));
 
-    let target = select_target(&reg, Vec3::ZERO, None, false, None).expect("player target");
+    let (_, target) = select_target(&reg, Vec3::ZERO, None, false, None, None);
+    let target = target.expect("player target");
 
     assert_eq!(target.entity, pawn);
     assert!(target.position.abs_diff_eq(Vec3::new(5.0, 0.0, 0.0), EPS));
@@ -738,7 +739,8 @@ fn select_target_chooses_nearer_remote_pawn_over_marked_local_pawn() {
     let remote = spawn_player(&mut reg, Vec3::new(3.0, 0.0, 0.0));
     reg.mark_local_player_pawn(local).unwrap();
 
-    let target = select_target(&reg, Vec3::ZERO, None, false, None).expect("player target");
+    let (_, target) = select_target(&reg, Vec3::ZERO, None, false, None, None);
+    let target = target.expect("player target");
 
     assert_eq!(
         target.entity, remote,
@@ -753,8 +755,8 @@ fn select_target_keeps_retained_target_when_other_pawn_is_only_slightly_nearer()
     let retained = spawn_player(&mut reg, Vec3::new(10.0, 0.0, 0.0));
     let slightly_nearer = spawn_player(&mut reg, Vec3::new(9.5, 0.0, 0.0));
 
-    let target =
-        select_target(&reg, Vec3::ZERO, Some(retained), false, None).expect("player target");
+    let (_, target) = select_target(&reg, Vec3::ZERO, Some(retained), false, None, None);
+    let target = target.expect("player target");
 
     assert_eq!(
         target.entity, retained,
@@ -770,8 +772,8 @@ fn select_target_switches_when_other_pawn_is_meaningfully_closer() {
     let retained = spawn_player(&mut reg, Vec3::new(10.0, 0.0, 0.0));
     let closer = spawn_player(&mut reg, Vec3::new(8.5, 0.0, 0.0));
 
-    let target =
-        select_target(&reg, Vec3::ZERO, Some(retained), false, None).expect("player target");
+    let (_, target) = select_target(&reg, Vec3::ZERO, Some(retained), false, None, None);
+    let target = target.expect("player target");
 
     assert_eq!(
         target.entity, closer,
@@ -787,8 +789,8 @@ fn select_target_replaces_retained_target_when_retained_is_no_longer_player_pawn
     reg.remove_component::<PlayerMovementComponent>(retained)
         .unwrap();
 
-    let target =
-        select_target(&reg, Vec3::ZERO, Some(retained), false, None).expect("player target");
+    let (_, target) = select_target(&reg, Vec3::ZERO, Some(retained), false, None, None);
+    let target = target.expect("player target");
 
     assert_eq!(
         target.entity, replacement,
@@ -802,8 +804,8 @@ fn select_target_excludes_retained_target_when_leash_expires_on_acquisition_tick
     let retained = spawn_player(&mut reg, Vec3::new(30.0, 0.0, 0.0));
     let replacement = spawn_player(&mut reg, Vec3::new(12.0, 0.0, 0.0));
 
-    let target =
-        select_target(&reg, Vec3::ZERO, Some(retained), true, None).expect("player target");
+    let (_, target) = select_target(&reg, Vec3::ZERO, Some(retained), true, None, Some(20.0));
+    let target = target.expect("player target");
 
     assert_eq!(
         target.entity, replacement,
@@ -864,6 +866,40 @@ fn detection_sets_agent_destination_and_leash_clears_it() {
             .has_destination,
         "leaving leash must clear the destination",
     );
+}
+
+#[test]
+fn resting_legacy_enemy_does_not_acquire_between_leash_and_detection_ranges() {
+    let mut reg = EntityRegistry::new();
+    let mut warned = AiRuntime::new();
+    let mut t = tuning();
+    t.detection_range = 18.0;
+    t.leash_range = 8.0;
+    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain_with(t, LEGACY_IDLE_STATE), 50.0);
+
+    // This pawn is close enough for the lowered graph's detection guard, but
+    // outside the legacy engine-floor leash. It must never be acquired.
+    spawn_player(&mut reg, Vec3::new(10.0, 0.0, 0.0));
+
+    for tick in 0..16 {
+        run_ai_tick(&mut reg, &mut warned, 0.016);
+        assert_eq!(
+            enemy_state_name(&reg, enemy),
+            LEGACY_IDLE_STATE,
+            "tick {tick}: an out-of-leash candidate must not move the resting brain",
+        );
+        assert_eq!(
+            enemy_acquired_target(&reg, enemy),
+            None,
+            "tick {tick}: the legacy leash bounds fresh acquisition",
+        );
+        assert!(
+            !agent_steering::path_state(&reg, enemy)
+                .expect("agent present")
+                .has_destination,
+            "tick {tick}: an unacquired candidate must not request a destination",
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1147,6 +1183,51 @@ fn retained_target_outside_leash_clears_stale_destination_off_stride() {
             .expect("agent present")
             .has_destination,
         "leash escape must clear stale steering destinations even off-stride"
+    );
+}
+
+#[test]
+fn out_of_leash_retained_target_still_prices_the_think_stride() {
+    let mut reg = EntityRegistry::new();
+    let mut warned = AiRuntime::new();
+    let retained_position = Vec3::new(35.0, 0.0, 0.0);
+    let retained = spawn_player(&mut reg, retained_position);
+    let in_leash_replacement = spawn_player(&mut reg, Vec3::new(5.0, 0.0, 0.0));
+    let mut t = tuning();
+    t.detection_range = 40.0;
+    t.leash_range = 10.0;
+    let mut brain = brain_with(t, LEGACY_ALERT_STATE);
+    brain.acquired_target = Some(retained);
+    brain.think_stride_counter = 0;
+
+    let retained_distance = distance_xz(retained_position, Vec3::ZERO);
+    let stride = think_stride_for_distance(retained_distance);
+    assert!(
+        stride > 1,
+        "the retained target must use a strided distance band"
+    );
+    assert_ne!(
+        brain.think_stride_counter.wrapping_add(1) % stride,
+        0,
+        "the first tick must be off-stride for the retained target's distance band",
+    );
+    assert!(
+        !acquisition_due(&brain, Some(retained_distance)),
+        "the first tick must be off-stride according to the retained target's distance",
+    );
+
+    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 50.0);
+    run_ai_tick(&mut reg, &mut warned, 0.016);
+
+    assert_eq!(
+        enemy_acquired_target(&reg, enemy),
+        None,
+        "the off-stride leash clear must not replace the retained target yet",
+    );
+    assert_ne!(
+        enemy_acquired_target(&reg, enemy),
+        Some(in_leash_replacement),
+        "the nearer in-leash pawn proves that an empty stride distance would have replaced it",
     );
 }
 
@@ -1593,6 +1674,7 @@ fn distant_enemy_strides_detection_but_attack_still_fires() {
         // Detection range wide enough to include a far-band player.
         let mut t = tuning();
         t.detection_range = 40.0;
+        t.leash_range = 41.0;
         let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain_with(t, LEGACY_IDLE_STATE), 50.0);
         // 35 units: far band (> STRIDE_MID_DISTANCE 30), inside detection 40.
         spawn_player(&mut reg, Vec3::new(35.0, 0.0, 0.0));

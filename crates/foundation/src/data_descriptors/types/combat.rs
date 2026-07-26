@@ -291,6 +291,8 @@ impl AiDescriptor {
     /// - every range field (`detectionRange`, `attackRange`, `leashRange`,
     ///   `attackCooldownMs`, `moveSpeed`, `deathDespawnMs`) must be finite and
     ///   strictly positive;
+    /// - `leashRange` must be at least `detectionRange`, so a lowered legacy
+    ///   brain cannot acquire a target its engine-floor leash rejects;
     /// - `attackDamage` must be finite and non-negative (a negative
     ///   `attackDamage` would HEAL the player through `apply_damage`'s
     ///   subtraction).
@@ -314,6 +316,15 @@ impl AiDescriptor {
                     ),
                 });
             }
+        }
+        if self.leash_range < self.detection_range {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`components.ai.leashRange` ({}) must be >= \
+                     `components.ai.detectionRange` ({})",
+                    self.leash_range, self.detection_range
+                ),
+            });
         }
         for (field, value) in [("attackDamage", self.attack_damage)] {
             if !value.is_finite() || value < 0.0 {

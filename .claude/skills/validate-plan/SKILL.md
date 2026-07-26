@@ -36,6 +36,11 @@ Inline the full spec content — paths drift. Also pass the lineage from step 1,
 
 The reviewer answers six questions. It must reach a verdict on each; "some concerns" is not an answer.
 
+These six are defined here normatively. `draft-plan` restates them as a solo
+drafting exercise; on any disagreement this list wins and that one is updated to
+match. Restated rather than referenced on purpose — a drafter needs them inline,
+and the two uses pull in opposite directions.
+
 1. **What problem is this actually solving?** One sentence. Is that the cause or a symptom of something upstream?
 2. **Is it being solved at the right level?** Layer, ownership boundary, engine-vs-mod, mechanism-vs-policy. A right change in the wrong layer is the characteristic failure this pass exists to catch.
 3. **What does this foreclose?** What becomes harder or impossible afterward. Name specific foreclosures or state plainly that there are none — never "nothing significant".

@@ -163,8 +163,12 @@ One phase per line. No per-task sub-bullets unless a dependency needs calling ou
 ### 5b. Direction questions while drafting
 
 Six questions govern whether a spec is a reasonable solution to the problem at
-hand. `/validate-plan` asks all six adversarially at step 8; hold them in mind
-while drafting too, since they are cheaper to answer now than to repair later.
+hand. Here they are a solo exercise — generative, shaping what you write.
+`/validate-plan` asks the same six adversarially at step 8, through a reviewer
+who did not draft the spec. Same questions, opposite direction.
+
+The questions are defined normatively in `/validate-plan`. If the two lists
+disagree, `/validate-plan` wins — update this one to match.
 
 1. What problem is this actually solving — cause or symptom?
 2. Is it being solved at the right level (layer, ownership boundary,

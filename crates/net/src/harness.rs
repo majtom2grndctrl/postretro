@@ -268,10 +268,23 @@ mod tests {
         let (server_sock, server_addr) = bound_socket();
         let (client_sock, _client_addr) = bound_socket();
 
-        let mut server =
-            NetServer::new(server_sock, server_addr, 8, origin).expect("server transport");
-        let mut client =
-            NetClient::new(client_sock, server_addr, CLIENT_ID, origin).expect("client transport");
+        let static_fingerprint = [0x5a; 32];
+        let mut server = NetServer::new(
+            server_sock,
+            server_addr,
+            8,
+            origin,
+            Some(static_fingerprint),
+        )
+        .expect("server transport");
+        let mut client = NetClient::new(
+            client_sock,
+            server_addr,
+            CLIENT_ID,
+            origin,
+            Some(static_fingerprint),
+        )
+        .expect("client transport");
 
         server.add_relay_connection(CLIENT_ID);
         client.set_connected();

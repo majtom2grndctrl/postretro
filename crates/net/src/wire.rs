@@ -1091,6 +1091,9 @@ pub enum ServerMessage {
 pub struct ProtocolVersion {
     pub app_protocol_id: u32,
     pub wire_version: u32,
+    /// Opaque fingerprint of the loaded map's static kinematic inputs. The
+    /// engine computes it; this registry-blind crate only compares the bytes.
+    pub kinematic_static_fingerprint: [u8; 32],
 }
 
 /// Wire codec failure. Today the only failure mode is a bitcode decode error
@@ -1467,6 +1470,7 @@ mod tests {
         let handshake = ProtocolVersion {
             app_protocol_id: 0xCAFE_BABE,
             wire_version: 1,
+            kinematic_static_fingerprint: [0x5a; 32],
         };
         assert!(round_trips(&handshake));
     }

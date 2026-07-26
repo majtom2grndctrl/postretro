@@ -27,9 +27,9 @@ pub enum MoverCommand {
 
 /// Live deterministic phase for one moving-world payload.
 ///
-/// The waypoint list, speed, wait, and mode are static path data seeded when the
-/// mover is constructed. The remaining fields are phase mirrored by the wire
-/// payload without replicating the path itself.
+/// Waypoints, speed, wait, spin axis, acceleration, and carry policy are static
+/// data seeded when the mover is constructed. The remaining fields are phase
+/// mirrored by the wire payload without replicating the path itself.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct KinematicMoverComponent {
     pub mover_id: u32,
@@ -58,7 +58,7 @@ pub struct KinematicMoverComponent {
     pub spin_angle_rad: f32,
     /// Replicated current spin rate after the driver's acceleration ramp.
     pub spin_rate_rad_s: f32,
-    /// Replicated target spin rate set by future authored commands.
+    /// Replicated target spin rate set by mover commands.
     pub spin_target_rate_rad_s: f32,
 }
 

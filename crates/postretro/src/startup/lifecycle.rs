@@ -559,6 +559,17 @@ impl App {
         prm_cache_root: PathBuf,
     ) {
         self.retain_active_level_tags_for_install();
+        let kinematic_static_fingerprint =
+            crate::runtime_movers::kinematic_static_fingerprint(&world.kinematic_geometry);
+        if let Some(endpoint) = self
+            .session
+            .as_mut()
+            .expect("session installed before level install")
+            .net_endpoint
+            .as_mut()
+        {
+            endpoint.set_kinematic_static_fingerprint(kinematic_static_fingerprint);
+        }
         // The whole script tranche lives on `Session` (built post-first-pixel).
         // Level install only runs in Loading/Running, where the session is
         // installed. Clone the `ScriptCtx` handle (cheap `Rc` bump) so the many

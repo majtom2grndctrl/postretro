@@ -146,7 +146,7 @@ pub(crate) fn advance_mover_phase_one_tick(
     transform: &mut Transform,
     tick_dt: f32,
 ) -> MoverPose {
-    advance_spin_phase(mover, transform, tick_dt);
+    let (angular_velocity, tick_rotation_delta) = advance_spin_phase(mover, transform, tick_dt);
     let start_position = position_for_phase(mover);
     transform.position = start_position;
     let end_position = advance_mover(mover, tick_dt);
@@ -158,8 +158,6 @@ pub(crate) fn advance_mover_phase_one_tick(
         Vec3::ZERO
     };
     mover.current_linear_velocity = linear_velocity;
-    let (angular_velocity, tick_rotation_delta) =
-        angular_kinematics_for_current_phase(mover, tick_dt);
     MoverPose {
         transform: *transform,
         linear_velocity,
@@ -175,11 +173,11 @@ fn advance_spin_phase(
     mover: &mut KinematicMoverComponent,
     transform: &mut Transform,
     tick_dt: f32,
-) {
+) -> (Vec3, Quat) {
     let has_spin_work = mover.spin_rate_rad_s != 0.0 || mover.spin_target_rate_rad_s != 0.0;
     let has_valid_tick = tick_dt.is_finite() && tick_dt > 0.0;
     if !mover.started || mover.completed || !has_spin_work || !has_valid_tick {
-        return;
+        return (Vec3::ZERO, Quat::IDENTITY);
     }
 
     mover.spin_rate_rad_s = ramp_spin_rate(
@@ -188,9 +186,14 @@ fn advance_spin_phase(
         mover.spin_accel_rad_s2,
         tick_dt,
     );
+    let tick_angle_rad = mover.spin_rate_rad_s * tick_dt;
     mover.spin_angle_rad =
-        (mover.spin_angle_rad + mover.spin_rate_rad_s * tick_dt).rem_euclid(std::f32::consts::TAU);
+        (mover.spin_angle_rad + tick_angle_rad).rem_euclid(std::f32::consts::TAU);
     transform.rotation = Quat::from_axis_angle(mover.spin_axis, mover.spin_angle_rad);
+    (
+        mover.spin_axis * mover.spin_rate_rad_s,
+        Quat::from_axis_angle(mover.spin_axis, tick_angle_rad),
+    )
 }
 
 fn ramp_spin_rate(current_rate: f32, target_rate: f32, accel_rad_s2: f32, tick_dt: f32) -> f32 {
@@ -723,10 +726,10 @@ mod tests {
         assert_vec3_approx(table.get(7).unwrap().angular_velocity, Vec3::Y * 2.0);
     }
 
-    // Regression: completion used to publish an active angular delta that a
-    // reconstructed post-tick phase correctly gated to stopped.
+    // Regression: linear completion used to erase the rotation already applied
+    // earlier in the same tick from the published mover pose.
     #[test]
-    fn once_movers_stop_spinning_after_completion_while_ping_pong_movers_continue() {
+    fn once_movers_publish_final_tick_rotation_then_stop() {
         let once = KinematicMoverComponent::new(
             7,
             postretro_entities::KinematicMoverConfig {
@@ -746,8 +749,11 @@ mod tests {
         assert!(once.completed);
         assert!((once.spin_angle_rad - 1.0).abs() < EPS);
         let live_completion_pose = table.pose(7).unwrap();
-        assert_vec3_approx(live_completion_pose.angular_velocity, Vec3::ZERO);
-        assert_quat_approx(live_completion_pose.tick_rotation_delta, Quat::IDENTITY);
+        assert_vec3_approx(live_completion_pose.angular_velocity, Vec3::Y);
+        assert_quat_approx(
+            live_completion_pose.tick_rotation_delta,
+            Quat::from_rotation_y(1.0),
+        );
         let reconstructed_completion_pose = mover_pose_for_current_phase(transform, &once, 1.0);
         assert_eq!(
             live_completion_pose.transform,
@@ -757,13 +763,10 @@ mod tests {
             live_completion_pose.tick_delta,
             reconstructed_completion_pose.tick_delta,
         );
-        assert_vec3_approx(
-            live_completion_pose.angular_velocity,
-            reconstructed_completion_pose.angular_velocity,
-        );
+        assert_vec3_approx(reconstructed_completion_pose.angular_velocity, Vec3::ZERO);
         assert_quat_approx(
-            live_completion_pose.tick_rotation_delta,
             reconstructed_completion_pose.tick_rotation_delta,
+            Quat::IDENTITY,
         );
 
         let (once, transform_after_stop, table) = tick_component(once, transform, 0.5);

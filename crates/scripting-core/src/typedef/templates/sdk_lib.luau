@@ -75,6 +75,8 @@ export type MoverEntityHandle = {
   stop: (self: MoverEntityHandle) -> {MoverStopStep},
   reverse: (self: MoverEntityHandle) -> {MoverReverseStep},
   goToPathNode: (self: MoverEntityHandle, node: string) -> {MoverGoToPathNodeStep},
+  --- Sets degrees per second. A nonzero rate requires a nonzero `spin_axis`
+  --- on the mover's authored map entity.
   setSpinRate: (self: MoverEntityHandle, rate: number) -> {MoverSetSpinRateStep},
 }
 

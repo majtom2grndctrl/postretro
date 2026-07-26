@@ -42,6 +42,10 @@
     stop(): SequenceStep[];
     reverse(): SequenceStep[];
     goToPathNode(node: string): SequenceStep[];
+    /**
+     * Set the target spin rate in degrees per second.
+     * A nonzero rate requires the mover to author a nonzero `spin_axis` in its map entity.
+     */
     setSpinRate(rate: number): SequenceStep[];
   }
 

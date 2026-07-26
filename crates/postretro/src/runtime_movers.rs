@@ -56,6 +56,74 @@ pub(crate) fn build_loaded_mover_colliders(world: &LevelWorld) -> Vec<MoverColli
         .collect()
 }
 
+/// Canonical connection-time identity for every static input that can affect
+/// deterministic mover prediction or mover collision. The net crate treats the
+/// digest as opaque; keeping the byte recipe here preserves its engine boundary.
+pub(crate) fn kinematic_static_fingerprint(geometry: &KinematicGeometry) -> [u8; 32] {
+    const FINGERPRINT_EPOCH: u32 = 1;
+
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"postretro-kinematic-static");
+    hasher.update(&FINGERPRINT_EPOCH.to_le_bytes());
+    hash_len(&mut hasher, geometry.movers.len());
+    for mover in &geometry.movers {
+        hasher.update(&mover.mover_id.to_le_bytes());
+        hash_str(&mut hasher, &mover.name);
+        hash_len(&mut hasher, mover.tags.len());
+        for tag in &mover.tags {
+            hash_str(&mut hasher, tag);
+        }
+        hash_vec3(&mut hasher, mover.origin);
+        hash_str(&mut hasher, &mover.path);
+        hash_f32(&mut hasher, mover.speed_mps);
+        hash_f32(&mut hasher, mover.wait_ms);
+        hasher.update(&[mover.move_mode, u8::from(mover.start_on_spawn)]);
+        hash_vec3(&mut hasher, mover.spin_axis);
+        hash_f32(&mut hasher, mover.spin_speed_deg_s);
+        hash_f32(&mut hasher, mover.spin_accel_deg_s2);
+        hasher.update(&[u8::from(mover.carry_yaw)]);
+
+        hash_len(&mut hasher, mover.vertices.len());
+        for vertex in &mover.vertices {
+            for component in vertex.position {
+                hash_f32(&mut hasher, component);
+            }
+        }
+        hash_len(&mut hasher, mover.indices.len());
+        for index in &mover.indices {
+            hasher.update(&index.to_le_bytes());
+        }
+    }
+
+    hash_len(&mut hasher, geometry.waypoints.len());
+    for waypoint in &geometry.waypoints {
+        hash_str(&mut hasher, &waypoint.name);
+        hash_str(&mut hasher, &waypoint.next);
+        hash_vec3(&mut hasher, waypoint.origin);
+    }
+
+    *hasher.finalize().as_bytes()
+}
+
+fn hash_len(hasher: &mut blake3::Hasher, len: usize) {
+    hasher.update(&(len as u64).to_le_bytes());
+}
+
+fn hash_str(hasher: &mut blake3::Hasher, value: &str) {
+    hash_len(hasher, value.len());
+    hasher.update(value.as_bytes());
+}
+
+fn hash_vec3(hasher: &mut blake3::Hasher, value: Vec3) {
+    hash_f32(hasher, value.x);
+    hash_f32(hasher, value.y);
+    hash_f32(hasher, value.z);
+}
+
+fn hash_f32(hasher: &mut blake3::Hasher, value: f32) {
+    hasher.update(&value.to_bits().to_le_bytes());
+}
+
 pub(crate) struct KinematicMoverRenderCollector {
     /// Camera-PVS-visible instances for the beauty pass.
     instances: Vec<KinematicMoverInstance>,
@@ -480,6 +548,47 @@ mod tests {
             spin_accel_deg_s2: 0.0,
             carry_yaw: false,
         }
+    }
+
+    #[test]
+    fn kinematic_static_fingerprint_changes_for_prediction_inputs() {
+        let base = KinematicGeometry {
+            movers: vec![mover(1)],
+            waypoints: vec![
+                LoadedKinematicWaypoint {
+                    name: "a".to_string(),
+                    next: "b".to_string(),
+                    origin: Vec3::ZERO,
+                },
+                LoadedKinematicWaypoint {
+                    name: "b".to_string(),
+                    next: String::new(),
+                    origin: Vec3::X,
+                },
+            ],
+        };
+        let fingerprint = kinematic_static_fingerprint(&base);
+        assert_eq!(fingerprint, kinematic_static_fingerprint(&base));
+
+        let mut changed = base.clone();
+        changed.movers[0].spin_axis = Vec3::Y;
+        assert_ne!(fingerprint, kinematic_static_fingerprint(&changed));
+
+        let mut changed = base.clone();
+        changed.movers[0].spin_accel_deg_s2 = 90.0;
+        assert_ne!(fingerprint, kinematic_static_fingerprint(&changed));
+
+        let mut changed = base.clone();
+        changed.movers[0].carry_yaw = true;
+        assert_ne!(fingerprint, kinematic_static_fingerprint(&changed));
+
+        let mut changed = base.clone();
+        changed.waypoints[1].origin = Vec3::Z;
+        assert_ne!(fingerprint, kinematic_static_fingerprint(&changed));
+
+        let mut changed = base;
+        changed.movers[0].vertices[0].position[0] = 0.5;
+        assert_ne!(fingerprint, kinematic_static_fingerprint(&changed));
     }
 
     #[test]

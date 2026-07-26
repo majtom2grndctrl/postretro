@@ -520,7 +520,7 @@ impl NetEndpoint {
                 let public_addr = socket
                     .local_addr()
                     .map_err(|e| format!("host local_addr failed: {e}"))?;
-                let server = NetServer::new(socket, public_addr, MAX_CLIENTS, now())
+                let server = NetServer::new(socket, public_addr, MAX_CLIENTS, now(), None)
                     .map_err(|e| format!("host transport init failed: {e}"))?;
                 Ok(Some(NetEndpoint::Host {
                     server: Box::new(server),
@@ -550,7 +550,7 @@ impl NetEndpoint {
                 // Client id is arbitrary under unsecure auth; use the wall clock
                 // so two clients on one host do not collide.
                 let client_id = now().as_nanos() as u64;
-                let client = NetClient::new(socket, *addr, client_id, now())
+                let client = NetClient::new(socket, *addr, client_id, now(), None)
                     .map_err(|e| format!("client transport init failed: {e}"))?;
                 Ok(Some(NetEndpoint::Client {
                     client: Box::new(client),
@@ -560,6 +560,20 @@ impl NetEndpoint {
                     prediction: ClientPrediction::new(),
                     state_slots: Box::new(state_slots::ClientStateApply::new()),
                 }))
+            }
+        }
+    }
+
+    /// Bind multiplayer acceptance to the loaded map's canonical static mover
+    /// inputs. Transport handshakes wait for this value; changing it closes the
+    /// existing connection so prediction never reuses unvalidated PRL authoring.
+    pub(crate) fn set_kinematic_static_fingerprint(&mut self, fingerprint: [u8; 32]) {
+        match self {
+            NetEndpoint::Host { server, .. } => {
+                server.set_kinematic_static_fingerprint(fingerprint);
+            }
+            NetEndpoint::Client { client, .. } => {
+                client.set_kinematic_static_fingerprint(fingerprint);
             }
         }
     }

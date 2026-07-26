@@ -2703,10 +2703,10 @@ mod tests {
         );
     }
 
-    // Regression: once-mode completion retained a nonzero spin rate, so the
-    // live tick reported rotation while reconstruction/replay reported stopped.
+    // Regression: once-mode completion erased the angular kinematics applied
+    // during its final predicted tick from mover history.
     #[test]
-    fn mover_completion_tick_matches_reconstructed_and_replayed_angular_pose() {
+    fn mover_completion_history_preserves_final_tick_rotation_then_replays_stopped() {
         let mut registry = EntityRegistry::new();
         let mover_entity = spawn_loaded_mover(&mut registry, 42);
         let mut client = ClientReplication::new();
@@ -2753,7 +2753,13 @@ mod tests {
                 .rotation
                 .abs_diff_eq(Quat::from_rotation_y(1.0), EPSILON)
         );
-        for pose in [completion, reconstructed, replayed] {
+        assert!((completion.angular_velocity - Vec3::Y).length() < EPSILON);
+        assert!(
+            completion
+                .tick_rotation_delta
+                .abs_diff_eq(Quat::from_rotation_y(1.0), EPSILON)
+        );
+        for pose in [reconstructed, replayed] {
             assert_eq!(pose.angular_velocity, Vec3::ZERO);
             assert_eq!(pose.tick_rotation_delta, Quat::IDENTITY);
             assert!(

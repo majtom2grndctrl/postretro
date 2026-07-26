@@ -402,7 +402,7 @@ impl LoopbackHarness {
         // it only satisfies the `host_handle_client_message` signature.
         let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind ephemeral udp socket");
         let addr: SocketAddr = socket.local_addr().expect("resolve bound addr");
-        let server = NetServer::new(socket, addr, 8, Duration::from_secs(1))
+        let server = NetServer::new(socket, addr, 8, Duration::from_secs(1), Some([0x5a; 32]))
             .expect("construct harness NetServer");
 
         let command_queues = HostCommandQueues::new();

@@ -49,7 +49,7 @@ pub const PROTOCOL_ID: u32 = 0x_5052_4C34; // "PRL4" — E16 adds hit declaratio
 /// type changes (added field, reordered enum, bumped bitcode major). Carried as
 /// `ProtocolVersion::wire_version` and folded into the transport-level
 /// `protocol_id` so a wire-incompatible peer is refused at the netcode layer.
-pub const WIRE_VERSION: u32 = 11; // E17 rotating-mover phase fields
+pub const WIRE_VERSION: u32 = 12; // static-kinematic handshake fingerprint
 
 /// Transport-level gate fed to renet_netcode as the netcode `protocol_id: u64`.
 /// Packs both hand-bumped consts so the encrypted handshake itself fails for any
@@ -64,10 +64,11 @@ pub const fn transport_protocol_id() -> u64 {
 /// The app-level handshake value built from this build's protocol consts. Sent by
 /// the client as its first control message and validated by the server.
 #[must_use]
-pub const fn protocol_version() -> ProtocolVersion {
+pub const fn protocol_version(kinematic_static_fingerprint: [u8; 32]) -> ProtocolVersion {
     ProtocolVersion {
         app_protocol_id: PROTOCOL_ID,
         wire_version: WIRE_VERSION,
+        kinematic_static_fingerprint,
     }
 }
 
@@ -141,7 +142,7 @@ pub fn connection_config() -> ConnectionConfig {
 /// connection's first control message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RejectReason {
-    /// The `ProtocolVersion` this build expects (from `protocol_version()`).
+    /// The `ProtocolVersion` this server expects.
     pub expected: ProtocolVersion,
     /// The `ProtocolVersion` the client actually sent.
     pub received: ProtocolVersion,
@@ -151,12 +152,15 @@ impl std::fmt::Display for RejectReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "protocol mismatch: expected app_protocol_id={:#010x} wire_version={}, \
-             received app_protocol_id={:#010x} wire_version={}",
+            "protocol/content mismatch: expected app_protocol_id={:#010x} wire_version={} \
+             kinematic_static_fingerprint={}, received app_protocol_id={:#010x} wire_version={} \
+             kinematic_static_fingerprint={}",
             self.expected.app_protocol_id,
             self.expected.wire_version,
+            fingerprint_hex(&self.expected.kinematic_static_fingerprint),
             self.received.app_protocol_id,
             self.received.wire_version,
+            fingerprint_hex(&self.received.kinematic_static_fingerprint),
         )
     }
 }
@@ -205,6 +209,9 @@ pub struct NetServer {
     /// also models the terminal `Closed` state so post-close traffic is refused and
     /// the engine glue can run its remote-pawn cleanup on the close transition.
     slots: SlotTable,
+    /// Installed after the level loader has produced canonical static mover
+    /// inputs. Until then app handshakes remain queued and no client is accepted.
+    kinematic_static_fingerprint: Option<[u8; 32]>,
 }
 
 /// What one `update`/`poll_handshakes` poll produced this frame: the app-handshake
@@ -233,6 +240,7 @@ impl NetServer {
         public_addr: SocketAddr,
         max_clients: usize,
         current_time: Duration,
+        kinematic_static_fingerprint: Option<[u8; 32]>,
     ) -> Result<Self, NetcodeTransportError> {
         let server = RenetServer::new(connection_config());
         let server_config = ServerConfig {
@@ -247,7 +255,24 @@ impl NetServer {
             server,
             transport,
             slots: SlotTable::new(),
+            kinematic_static_fingerprint,
         })
+    }
+
+    /// Bind this server connection lifetime to the loaded map's canonical static
+    /// mover inputs. A different fingerprint closes every existing slot before
+    /// the new map can replicate; peers reconnect and pass the app gate again.
+    pub fn set_kinematic_static_fingerprint(&mut self, fingerprint: [u8; 32]) {
+        if self.kinematic_static_fingerprint == Some(fingerprint) {
+            return;
+        }
+        if self.kinematic_static_fingerprint.is_some() {
+            for client_id in self.server.clients_id() {
+                let _ = self.slots.on_close(client_id, CloseCause::Timeout);
+                self.server.disconnect(client_id);
+            }
+        }
+        self.kinematic_static_fingerprint = Some(fingerprint);
     }
 
     /// The address the underlying socket is bound to (resolves ephemeral `:0`).
@@ -302,7 +327,10 @@ impl NetServer {
     /// snapshot.
     fn process_control_messages(&mut self) -> Vec<HandshakeOutcome> {
         let mut outcomes = Vec::new();
-        let expected = protocol_version();
+        let Some(fingerprint) = self.kinematic_static_fingerprint else {
+            return outcomes;
+        };
+        let expected = protocol_version(fingerprint);
 
         for client_id in self.server.clients_id() {
             // A closed slot is terminal: refuse its control traffic. renet may still
@@ -536,6 +564,8 @@ pub struct NetClient {
     /// Whether the `ProtocolVersion` control message has been queued yet. The
     /// first `update` after connect sends it as the first reliable control message.
     handshake_sent: bool,
+    /// Installed from the loaded map before the first app handshake is sent.
+    kinematic_static_fingerprint: Option<[u8; 32]>,
 }
 
 impl NetClient {
@@ -548,6 +578,7 @@ impl NetClient {
         server_addr: SocketAddr,
         client_id: u64,
         current_time: Duration,
+        kinematic_static_fingerprint: Option<[u8; 32]>,
     ) -> Result<Self, NetcodeTransportError> {
         let client = RenetClient::new(connection_config());
         let authentication = ClientAuthentication::Unsecure {
@@ -561,7 +592,21 @@ impl NetClient {
             client,
             transport,
             handshake_sent: false,
+            kinematic_static_fingerprint,
         })
+    }
+
+    /// Bind this client connection lifetime to the loaded map's canonical static
+    /// mover inputs. Changing the fingerprint after the handshake disconnects:
+    /// continuing would reuse prediction against unvalidated static data.
+    pub fn set_kinematic_static_fingerprint(&mut self, fingerprint: [u8; 32]) {
+        if self.kinematic_static_fingerprint == Some(fingerprint) {
+            return;
+        }
+        if self.handshake_sent {
+            self.client.disconnect();
+        }
+        self.kinematic_static_fingerprint = Some(fingerprint);
     }
 
     /// Advance one frame: drive renet + the netcode transport, then, once the
@@ -573,9 +618,11 @@ impl NetClient {
         self.transport.update(dt, &mut self.client)?;
 
         if self.client.is_connected() && !self.handshake_sent {
-            let bytes = wire::encode(&protocol_version());
-            self.client.send_message(Channel::Control, bytes);
-            self.handshake_sent = true;
+            if let Some(fingerprint) = self.kinematic_static_fingerprint {
+                let bytes = wire::encode(&protocol_version(fingerprint));
+                self.client.send_message(Channel::Control, bytes);
+                self.handshake_sent = true;
+            }
         }
 
         self.transport.send_packets(&mut self.client)?;
@@ -654,21 +701,34 @@ impl NetClient {
     pub fn update_connections(&mut self, dt: Duration) {
         self.client.update(dt);
         if self.client.is_connected() && !self.handshake_sent {
-            let bytes = wire::encode(&protocol_version());
-            self.client.send_message(Channel::Control, bytes);
-            self.handshake_sent = true;
+            if let Some(fingerprint) = self.kinematic_static_fingerprint {
+                let bytes = wire::encode(&protocol_version(fingerprint));
+                self.client.send_message(Channel::Control, bytes);
+                self.handshake_sent = true;
+            }
         }
     }
 }
 
 /// Reconstruct a best-effort `ProtocolVersion` from a decode failure for logging.
 /// The bytes did not decode, so there is no real received version — surface the
-/// all-zero sentinel, which can never equal a real `protocol_version()`.
+/// all-zero sentinel, which cannot equal a configured live handshake.
 fn malformed_version(_err: &WireError) -> ProtocolVersion {
     ProtocolVersion {
         app_protocol_id: 0,
         wire_version: 0,
+        kinematic_static_fingerprint: [0; 32],
     }
+}
+
+fn fingerprint_hex(fingerprint: &[u8; 32]) -> String {
+    use std::fmt::Write as _;
+
+    let mut hex = String::with_capacity(64);
+    for byte in fingerprint {
+        let _ = write!(hex, "{byte:02x}");
+    }
+    hex
 }
 
 #[cfg(test)]
@@ -676,6 +736,8 @@ mod tests {
     use super::*;
     use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    const TEST_KINEMATIC_STATIC_FINGERPRINT: [u8; 32] = [0x5a; 32];
 
     fn now() -> Duration {
         SystemTime::now()
@@ -687,16 +749,17 @@ mod tests {
 
     #[test]
     fn validate_handshake_accepts_matching_versions() {
-        let v = protocol_version();
+        let v = protocol_version(TEST_KINEMATIC_STATIC_FINGERPRINT);
         assert_eq!(validate_handshake(v, v), Ok(()));
     }
 
     #[test]
     fn validate_handshake_rejects_divergent_wire_version() {
-        let expected = protocol_version();
+        let expected = protocol_version(TEST_KINEMATIC_STATIC_FINGERPRINT);
         let received = ProtocolVersion {
             app_protocol_id: expected.app_protocol_id,
             wire_version: expected.wire_version + 1,
+            kinematic_static_fingerprint: expected.kinematic_static_fingerprint,
         };
         let err =
             validate_handshake(expected, received).expect_err("divergent version must reject");
@@ -706,10 +769,11 @@ mod tests {
 
     #[test]
     fn validate_handshake_rejects_divergent_protocol_id() {
-        let expected = protocol_version();
+        let expected = protocol_version(TEST_KINEMATIC_STATIC_FINGERPRINT);
         let received = ProtocolVersion {
             app_protocol_id: expected.app_protocol_id ^ 0xFFFF,
             wire_version: expected.wire_version,
+            kinematic_static_fingerprint: expected.kinematic_static_fingerprint,
         };
         let err = validate_handshake(expected, received).expect_err("divergent id must reject");
         assert_eq!(err.expected, expected);
@@ -724,32 +788,49 @@ mod tests {
     }
 
     #[test]
-    fn e17_wire_version_refuses_immediately_previous_peer_on_both_gates() {
-        const PRE_E17_WIRE_VERSION: u32 = 10;
+    fn static_fingerprint_wire_version_refuses_immediately_previous_peer_on_both_gates() {
+        const PRE_STATIC_FINGERPRINT_WIRE_VERSION: u32 = 11;
 
         assert_eq!(
             PROTOCOL_ID, 0x_5052_4C34,
             "E16 message-vocabulary changes require the PRL4 app protocol id"
         );
         assert_eq!(
-            WIRE_VERSION, 11,
-            "E17 rotating-mover phase fields require wire version 11"
+            WIRE_VERSION, 12,
+            "static-kinematic handshake fingerprint requires wire version 12"
         );
         assert_ne!(
             transport_protocol_id(),
-            ((PROTOCOL_ID as u64) << 32) | (PRE_E17_WIRE_VERSION as u64),
-            "gate 1 rejects a pre-E17 transport protocol id before app decode"
+            ((PROTOCOL_ID as u64) << 32) | (PRE_STATIC_FINGERPRINT_WIRE_VERSION as u64),
+            "gate 1 rejects a pre-static-fingerprint transport protocol id before app decode"
         );
 
-        let expected = protocol_version();
-        let pre_e17 = ProtocolVersion {
+        let expected = protocol_version(TEST_KINEMATIC_STATIC_FINGERPRINT);
+        let previous = ProtocolVersion {
             app_protocol_id: PROTOCOL_ID,
-            wire_version: PRE_E17_WIRE_VERSION,
+            wire_version: PRE_STATIC_FINGERPRINT_WIRE_VERSION,
+            kinematic_static_fingerprint: [0; 32],
         };
-        let err = validate_handshake(expected, pre_e17)
-            .expect_err("gate 2 rejects the pre-E17 app ProtocolVersion");
+        let err = validate_handshake(expected, previous)
+            .expect_err("gate 2 rejects the pre-static-fingerprint app ProtocolVersion");
         assert_eq!(err.expected, expected);
-        assert_eq!(err.received, pre_e17);
+        assert_eq!(err.received, previous);
+    }
+
+    #[test]
+    fn validate_handshake_rejects_divergent_kinematic_static_fingerprint() {
+        let expected = protocol_version(TEST_KINEMATIC_STATIC_FINGERPRINT);
+        let received = ProtocolVersion {
+            kinematic_static_fingerprint: [0xa5; 32],
+            ..expected
+        };
+
+        let reason = validate_handshake(expected, received)
+            .expect_err("different static mover authoring must reject");
+
+        assert_eq!(reason.expected, expected);
+        assert_eq!(reason.received, received);
+        assert!(reason.to_string().contains("kinematic_static_fingerprint"));
     }
 
     #[test]
@@ -784,10 +865,22 @@ mod tests {
         let origin = Duration::from_secs(1);
         let (server_sock, server_addr) = bound_socket();
         let (client_sock, _client_addr) = bound_socket();
-        let mut server =
-            NetServer::new(server_sock, server_addr, 8, origin).expect("server transport");
-        let mut client = NetClient::new(client_sock, server_addr, RELAY_CLIENT, origin)
-            .expect("client transport");
+        let mut server = NetServer::new(
+            server_sock,
+            server_addr,
+            8,
+            origin,
+            Some(TEST_KINEMATIC_STATIC_FINGERPRINT),
+        )
+        .expect("server transport");
+        let mut client = NetClient::new(
+            client_sock,
+            server_addr,
+            RELAY_CLIENT,
+            origin,
+            Some(TEST_KINEMATIC_STATIC_FINGERPRINT),
+        )
+        .expect("client transport");
 
         server.add_relay_connection(RELAY_CLIENT);
         client.set_connected();
@@ -906,17 +999,29 @@ mod tests {
         let (server_sock, server_addr) = bound_socket();
         let (client_sock, _client_addr) = bound_socket();
 
-        let mut server =
-            NetServer::new(server_sock, server_addr, 8, now()).expect("server transport");
-        let mut client =
-            NetClient::new(client_sock, server_addr, 1, now()).expect("client transport");
+        let mut server = NetServer::new(
+            server_sock,
+            server_addr,
+            8,
+            now(),
+            Some(TEST_KINEMATIC_STATIC_FINGERPRINT),
+        )
+        .expect("server transport");
+        let mut client = NetClient::new(
+            client_sock,
+            server_addr,
+            1,
+            now(),
+            Some(TEST_KINEMATIC_STATIC_FINGERPRINT),
+        )
+        .expect("client transport");
 
         // The reject test needs the client to send a *diverged* app version while
         // keeping the transport handshake valid. We drive the renet/transport
         // connection manually so we control the exact control payload.
         let mut all_outcomes = Vec::new();
         let mut sent_diverged = false;
-        let diverged = client_version != protocol_version();
+        let diverged = client_version != protocol_version(TEST_KINEMATIC_STATIC_FINGERPRINT);
         let mut client_was_connected = false;
 
         for _ in 0..MAX_POLLS {
@@ -972,7 +1077,8 @@ mod tests {
 
     #[test]
     fn loopback_matching_version_is_accepted() {
-        let (server, outcomes, connected) = run_handshake(protocol_version());
+        let (server, outcomes, connected) =
+            run_handshake(protocol_version(TEST_KINEMATIC_STATIC_FINGERPRINT));
         assert!(
             connected,
             "transport connection should establish over loopback"
@@ -989,10 +1095,11 @@ mod tests {
 
     #[test]
     fn loopback_diverged_app_version_is_rejected_with_typed_reason() {
-        let expected = protocol_version();
+        let expected = protocol_version(TEST_KINEMATIC_STATIC_FINGERPRINT);
         let diverged = ProtocolVersion {
             app_protocol_id: expected.app_protocol_id,
             wire_version: expected.wire_version + 7,
+            kinematic_static_fingerprint: expected.kinematic_static_fingerprint,
         };
         let (server, outcomes, connected) = run_handshake(diverged);
         assert!(
@@ -1023,6 +1130,36 @@ mod tests {
                 .iter()
                 .any(|o| matches!(o, HandshakeOutcome::Accepted { .. })),
             "diverged client must never be accepted"
+        );
+    }
+
+    #[test]
+    fn loopback_mismatched_kinematic_static_content_is_rejected_before_snapshots() {
+        let expected = protocol_version(TEST_KINEMATIC_STATIC_FINGERPRINT);
+        let received = ProtocolVersion {
+            kinematic_static_fingerprint: [0xa5; 32],
+            ..expected
+        };
+
+        let (mut server, outcomes, connected) = run_handshake(received);
+
+        assert!(
+            connected,
+            "transport gate stays valid for an app content mismatch"
+        );
+        let reason = outcomes
+            .iter()
+            .find_map(|outcome| match outcome {
+                HandshakeOutcome::Rejected { reason, .. } => Some(*reason),
+                HandshakeOutcome::Accepted { .. } => None,
+            })
+            .expect("mismatched PRL static inputs must produce a typed rejection");
+        assert_eq!(reason.expected, expected);
+        assert_eq!(reason.received, received);
+        assert!(server.accepted_clients().is_empty());
+        assert!(
+            !server.send_snapshot(1, vec![1, 2, 3]),
+            "content-mismatched peer receives no entity state"
         );
     }
 }

@@ -117,6 +117,42 @@ fn lua_ai_non_finite_range_is_rejected() {
 }
 
 #[test]
+fn js_ai_leash_below_detection_is_rejected_with_paths_and_values() {
+    let src = r#"({ components: { ai: {
+        detectionRange: 17, attackRange: 2.2, leashRange: 11,
+        attackDamage: 8, attackCooldownMs: 1200, moveSpeed: 3.5,
+        deathDespawnMs: 1500,
+        states: { idle: "idle", alert: "walk", attack: "attack", death: "die" }
+    } } })"#;
+    let err = eval_js(src, |ctx, v| entity_descriptor_from_js(ctx, v).unwrap_err());
+    let DescriptorError::InvalidShape { reason } = err else {
+        panic!("leash ordering must fail descriptor validation");
+    };
+    assert_eq!(
+        reason,
+        "`components.ai.leashRange` (11) must be >= `components.ai.detectionRange` (17)",
+    );
+}
+
+#[test]
+fn lua_ai_leash_below_detection_is_rejected_with_paths_and_values() {
+    let src = r#"return { components = { ai = {
+        detectionRange = 17, attackRange = 2.2, leashRange = 11,
+        attackDamage = 8, attackCooldownMs = 1200, moveSpeed = 3.5,
+        deathDespawnMs = 1500,
+        states = { idle = "idle", alert = "walk", attack = "attack", death = "die" }
+    } } }"#;
+    let err = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap_err());
+    let DescriptorError::InvalidShape { reason } = err else {
+        panic!("leash ordering must fail descriptor validation");
+    };
+    assert_eq!(
+        reason,
+        "`components.ai.leashRange` (11) must be >= `components.ai.detectionRange` (17)",
+    );
+}
+
+#[test]
 fn js_ai_negative_attack_damage_is_rejected() {
     // A negative attackDamage would HEAL the player through `apply_damage`'s
     // subtraction; aborted at parse.

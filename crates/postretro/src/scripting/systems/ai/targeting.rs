@@ -1,6 +1,6 @@
 // Enemy target-pawn selection: nearest/retained candidate ranking with
 // switch hysteresis, feeding the brain tick's per-enemy target.
-// See: context/lib/entity_model.md §2 (engine components)
+// See: context/lib/entity_model.md §7c (enemy brain component)
 
 use glam::Vec3;
 
@@ -48,7 +48,8 @@ fn nearest_target_candidate(
     from: Vec3,
     visible: Option<&dyn Fn(EntityId) -> bool>,
     exclude: Option<EntityId>,
-) -> Option<TargetCandidate> {
+    leash_range: Option<f32>,
+) -> (Option<TargetCandidate>, Option<TargetCandidate>) {
     registry
         .iter_with_kind(ComponentKind::PlayerMovement)
         .filter_map(|(entity, _)| {
@@ -57,7 +58,21 @@ fn nearest_target_candidate(
             }
             target_candidate(registry, entity, from, visible)
         })
-        .min_by(|a, b| a.distance.total_cmp(&b.distance))
+        .fold((None, None), |(mut nearest, mut eligible), candidate| {
+            if nearest.is_none_or(|current: TargetCandidate| {
+                candidate.distance.total_cmp(&current.distance).is_lt()
+            }) {
+                nearest = Some(candidate);
+            }
+            if leash_range.is_none_or(|leash| candidate.distance <= leash)
+                && eligible.is_none_or(|current: TargetCandidate| {
+                    candidate.distance.total_cmp(&current.distance).is_lt()
+                })
+            {
+                eligible = Some(candidate);
+            }
+            (nearest, eligible)
+        })
 }
 
 pub(super) fn target_distance(target: TargetPawn, from: Vec3) -> f32 {
@@ -80,19 +95,28 @@ pub(super) fn selected_target_alive(registry: &EntityRegistry, target: EntityId)
         .unwrap_or(false)
 }
 
+pub(super) fn retained_is_outside_leash(
+    candidate: TargetCandidate,
+    leash_range: Option<f32>,
+) -> bool {
+    leash_range.is_some_and(|leash| candidate.distance > leash)
+}
+
 /// Select the player pawn this enemy should pursue.
 ///
 /// This is the AI targeting extension point: v1 ranks all
 /// [`ComponentKind::PlayerMovement`] pawns by nearest XZ distance from `from`.
 /// The optional predicate is the future visibility/relevance seam intended for
 /// `context/research/cell-visibility-substrate.md` (and exact LOS work) without
-/// re-threading the FSM. If `retained_target` is still a valid, relevant player
-/// pawn, it is preferred unless another pawn is meaningfully closer by
+/// re-threading the FSM. It returns both the nearest offered candidate, without
+/// applying the leash, and the leash-eligible selected target. The former prices
+/// the think stride; the latter governs acquisition. If `retained_target` is
+/// still a valid, leash-eligible player pawn, it is preferred unless another
+/// pawn is meaningfully closer by
 /// [`super::engine_floor::TARGET_SWITCH_HYSTERESIS_DISTANCE`]. When
-/// `retained_outside_leash` is true, the retained pawn is no longer relevant for
-/// this acquisition tick and is excluded; the caller still owns any
-/// leash/range rules for replacements. This targeting path intentionally does
-/// not consult the registry's local-player marker, which is client-side
+/// `retained_outside_leash` is true, the retained pawn is excluded from both
+/// scan results for this acquisition tick. This targeting path intentionally
+/// does not consult the registry's local-player marker, which is client-side
 /// convenience state.
 pub(crate) fn select_target(
     registry: &EntityRegistry,
@@ -100,18 +124,21 @@ pub(crate) fn select_target(
     retained_target: Option<EntityId>,
     retained_outside_leash: bool,
     visible: Option<&dyn Fn(EntityId) -> bool>,
-) -> Option<TargetPawn> {
+    leash_range: Option<f32>,
+) -> (Option<TargetCandidate>, Option<TargetPawn>) {
     let retained = retained_target
         .filter(|_| !retained_outside_leash)
-        .and_then(|entity| target_candidate(registry, entity, from, visible));
-    let nearest = nearest_target_candidate(
+        .and_then(|entity| target_candidate(registry, entity, from, visible))
+        .filter(|candidate| !retained_is_outside_leash(*candidate, leash_range));
+    let (nearest_offered, nearest_eligible) = nearest_target_candidate(
         registry,
         from,
         visible,
         retained_target.filter(|_| retained_outside_leash),
+        leash_range,
     );
 
-    match (retained, nearest) {
+    let selected = match (retained, nearest_eligible) {
         (Some(retained), Some(nearest))
             if nearest.target.entity != retained.target.entity
                 && is_meaningfully_closer(nearest.distance, retained.distance) =>
@@ -121,5 +148,7 @@ pub(crate) fn select_target(
         (Some(retained), _) => Some(retained.target),
         (None, Some(nearest)) => Some(nearest.target),
         (None, None) => None,
-    }
+    };
+
+    (nearest_offered, selected)
 }

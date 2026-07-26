@@ -44,8 +44,8 @@ use graph_eval::{
 };
 pub(crate) use graph_eval::{locomotion_animation, rest_animation};
 use targeting::{
-    TargetPawn, acquisition_due, select_target, selected_target_alive, target_candidate,
-    target_distance,
+    TargetPawn, acquisition_due, retained_is_outside_leash, select_target, selected_target_alive,
+    target_candidate, target_distance,
 };
 // `ai_tests` is included here via `#[path]`, so its `use super::*` resolves
 // against this module — the split moved these into submodules, but the tests
@@ -432,20 +432,19 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                 .flatten();
             let retained = retained_target
                 .and_then(|entity| target_candidate(registry, entity, snap.position, None));
-            let nearest = retained
+            let leash_range = brain.leash_range;
+            let (nearest, nearest_selection) = retained
                 .is_none()
-                .then(|| select_target(registry, snap.position, None, false, None))
-                .flatten();
-            let current_target = retained.map(|candidate| candidate.target).or(nearest);
-            let current_distance =
-                current_target.map(|target| target_distance(target, snap.position));
+                .then(|| select_target(registry, snap.position, None, false, None, leash_range))
+                .unwrap_or((None, None));
+            let current_candidate = retained.or(nearest);
+            let current_distance = current_candidate.map(|candidate| candidate.distance);
             let evaluate_acquisition = acquisition_due(&brain, current_distance);
 
             // The engine floor's retention leash. A brain without one (an
             // authored graph) never escapes here: its guards own disengagement.
-            let leash_range = brain.leash_range;
-            let retained_outside_leash = retained
-                .is_some_and(|retained| leash_range.is_some_and(|leash| retained.distance > leash));
+            let retained_outside_leash =
+                retained.is_some_and(|retained| retained_is_outside_leash(retained, leash_range));
             let target = if retained_outside_leash {
                 // Leash escape for the already-retained target is cheap because the
                 // retained pawn has already been read. Clear immediately instead of
@@ -458,37 +457,49 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                         retained.map(|retained| retained.target.entity),
                         true,
                         None,
+                        leash_range,
                     )
-                    .filter(|target| {
-                        leash_range
-                            .is_none_or(|leash| target_distance(*target, snap.position) <= leash)
-                    })
+                    .1
                 } else {
                     None
                 }
             } else if evaluate_acquisition {
                 match retained {
-                    Some(retained) => select_target(
-                        registry,
-                        snap.position,
-                        Some(retained.target.entity),
-                        false,
-                        None,
-                    ),
+                    Some(retained) => {
+                        select_target(
+                            registry,
+                            snap.position,
+                            Some(retained.target.entity),
+                            false,
+                            None,
+                            leash_range,
+                        )
+                        .1
+                    }
                     // `nearest` above IS this scan: it runs exactly when
                     // `retained` is `None`, with the same arguments, over a
                     // registry nothing has touched since. Re-running it made
                     // every non-engaged brain pay the pawn scan twice on each
                     // stride-due tick — the think stride adding work instead of
                     // removing it.
-                    None if retained_target.is_none() => nearest,
+                    None if retained_target.is_none() => nearest_selection,
                     // A retained id that no longer resolves to a candidate still
                     // seeds hysteresis, so this scan is genuinely a different
                     // one.
-                    None => select_target(registry, snap.position, retained_target, false, None),
+                    None => {
+                        select_target(
+                            registry,
+                            snap.position,
+                            retained_target,
+                            false,
+                            None,
+                            leash_range,
+                        )
+                        .1
+                    }
                 }
             } else {
-                current_target
+                current_candidate.map(|candidate| candidate.target)
             };
             (target, evaluate_acquisition)
         } else {

@@ -85,6 +85,26 @@ longer sees a beyond-leash pawn's real distance in `@brain.targetDistance` — i
 reads the `BRAIN_NO_TARGET_DISTANCE` sentinel instead. Every lowered `idle`
 guard is `le`, which reads false either way, so no lowered edge changes.
 
+### 2.1 The seed's open question, answered
+
+`context/research/enemy-aggro-model.md` asks whether acquisition range belongs
+to the engine floor or to authored guards, and defers the answer to this spec.
+It is both, split by tier:
+
+- **Legacy `components.ai`:** the floor's leash, now symmetric (`index.md`
+  Task 3). Two authored scalars, an engine rule relating them, v0 behavior
+  preserved.
+- **Authored graphs:** the candidate filter. A distance clause over
+  `@candidate.distance` *is* an acquisition radius — per graph, expressed in the
+  same vocabulary as every other eligibility rule, with no precedence question
+  against the guards because it runs before selection rather than after.
+
+That is why the predecessor's rejection of a `components.behavior` range still
+holds and is no longer a gap: the authored spelling exists, it just is not a
+scalar field. The successor risk is a perception spec reading the pin as a wall
+and proposing `detectionRange` on the behavior block, so the pin now says where
+to look instead.
+
 ---
 
 ## 3. Finding B — reframed as a missing vocabulary, not a missing check
@@ -124,6 +144,25 @@ Making candidacy **per-graph rather than per-state** is what keeps it out of the
 state machine: no ordering question, no first-true-wins interaction, no "which
 state was I in when I acquired". One expression, compiled once, asked of each
 candidate.
+
+### 3.3a Why the candidate scope carries `@state.*`
+
+An earlier shape gave the filter engine facts only — health, max health, the
+death latch, distance. It type-checks and it fixes the hostage bug, but it
+reproduces the defect one level up: **the vocabulary would be engine-closed to
+health**, so every target property a mod invents stays unreachable from
+candidacy and each one arrives as a request to append another engine fact. The
+three designs §3.2 uses to *justify* moving the rule out of the engine —
+revivable downed pawns, reanimating enemies, targets untargetable while
+invulnerable — are exactly that shape. Two of them are mod concepts with no
+engine component to read.
+
+`scripting.md` §11 already names the fix and calls it the composition seam
+between adopters: *"an impact policy writes one, a behavior guard reads it, and
+neither names the other."* Omitting the state half would sever that seam
+precisely at acquisition, the one place this plan exists to open. Carrying it
+costs the machinery that already exists (`intern_state_field`, §6) and no new
+concept: the leaf spelling is unchanged, and the scope decides the entity.
 
 ### 3.4 No-target reading for target-side facts — the decision and its evidence
 
@@ -218,7 +257,8 @@ hardcoded in every mod instead of once in the engine.
 notion for this — `alive_players` / `player_is_present_for_trigger_occupancy`".
 It does not. `player_is_present_for_trigger_occupancy`
 (`crates/postretro/src/sim/mod.rs:64`) is `registry.exists(player.pawn)` — pure
-existence, no health read. The seed doc is unedited; the correction is here.
+existence, no health read. The seed still carries the claim; the correction
+lives here.
 
 ---
 
@@ -282,11 +322,15 @@ The hot path is enemy × candidate × acquisition tick. Grounded in
   new lifecycle seam.
 - **Scope.** The filter needs its own `BindingScope`, because handles are
   scope-instance-relative and the brain scope names the *evaluating enemy*. A
-  candidate scope is the `BrainScope` shape minus the `@state.*` half: a
-  fixed-size array of `IrValue` written by index. `BrainScope::refresh` is
-  already documented and alloc-probe-tested as allocation-free
-  (`brain_scope.rs:99–102`); the candidate refresh is strictly simpler, with no
-  interned-name vector at all.
+  candidate scope is the `BrainScope` shape pointed at a different entity: the
+  fixed-slot array written by index, plus the same interned `@state.*` snapshot.
+  `BrainScope::refresh` is already documented and alloc-probe-tested as
+  allocation-free (`brain_scope.rs:99–102`), and the interning that makes it so
+  runs at bind alone (`intern_state_field`, `brain_scope.rs:137`) — refresh only
+  writes `values[i]` from the current entity. Carrying the state half across
+  costs the candidate refresh one extra component lookup and one pass over a
+  snapshot whose length is the union of field names any bound filter mentions,
+  typically one or two. No allocation either way.
 - **Evaluation.** `eval_value(&program, &scope)` over a bound tree of scalar
   reads — the same call the per-tick guard window already makes.
 - **Registry reads.** `get_component` yields references; no clone, no alloc.
@@ -325,4 +369,21 @@ detection, threat prioritization, pack aggro, aggression profiles, memory and
 search. Each waits for a real consumer. The `visible` predicate on
 `select_target` remains the untouched perception seam; the candidacy filter sits
 *downstream* of it, so the engine keeps deciding what is perceivable and the mod
-decides what is worth engaging.
+decides what is worth engaging. That split is about *conservatism*, not layers:
+the floor may gate on a test no policy could disagree with, and anything past
+that is taste and must be published as a fact rather than enforced.
+
+How each would land on what this plan leaves behind, so a successor does not
+re-derive it:
+
+| Dimension | Lands at | Cost after this plan |
+|---|---|---|
+| Sight (LOS) | Split by conservatism: the Cell→Cell broad-phase gates the offer set through `visible`; the exact raycast publishes as `@candidate.visible` | New resolver. Nothing here moves. Raycasts are opt-in per graph — a bind-time scan of the filter's input names says whether any are needed. |
+| Sound | Also the offer set — a heard target is one the enemy cannot see | New resolver, plus per-brain memory for "heard at X", which is episodic and does not fit a per-tick fact table. |
+| Per-archetype aggression | Descriptor tuning read through a filter or guard clause | Additive. |
+| Target properties (faction, disguise, wielded weapon class) | `@candidate.*` append if the engine owns the component, `@state.*` if the mod does | Additive either way — that is what the state half buys. |
+| Threat / most-recently-damaged | `@candidate.*` — the candidate scope is refreshed per (enemy, candidate), so it *is* the per-pair context | Additive. The memory already exists: `HealthComponent`'s bounded contributor ledger records `last_attacker` and `accumulated_damage` on the victim, and an enemy is the victim when a player shoots it. Constrained by the ledger's fidelity, not by a missing seam. |
+
+An enum-valued fact (weapon class, faction) has no precedent here: the IR carries
+numbers and booleans only, so the first one to land must pick a numbering and
+document it. Not a blocker, just unowned.

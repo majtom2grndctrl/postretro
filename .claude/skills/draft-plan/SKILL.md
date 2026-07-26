@@ -64,6 +64,18 @@ Create `context/plans/drafts/<feature-name>/index.md`.
 ### Out of scope
 - Explicit non-goals. No "TBD" — decide or drop.
 
+## Direction
+(Three short subsections. See "Direction questions while drafting" below.)
+
+**Problem.** One sentence. The cause, not a symptom of it.
+
+**Prior commitments.** What the project already decided that this touches, cited.
+Where this diverges, say so and argue it — unstated divergence is the defect,
+divergence itself is often right.
+
+**Alternatives rejected.** The strongest rival shape and why not it. Cheap now,
+expensive to reconstruct later.
+
 ## Acceptance criteria
 - [ ] Verifiable conditions for "done."
 
@@ -148,6 +160,41 @@ Rules:
 
 One phase per line. No per-task sub-bullets unless a dependency needs calling out.
 
+### 5b. Direction questions while drafting
+
+Six questions govern whether a spec is a reasonable solution to the problem at
+hand. Here they are a solo exercise — generative, shaping what you write.
+`/validate-plan` asks the same six adversarially at step 8, through a reviewer
+who did not draft the spec. Same questions, opposite direction.
+
+The questions are defined normatively in `/validate-plan`. If the two lists
+disagree, `/validate-plan` wins — update this one to match.
+
+1. What problem is this actually solving — cause or symptom — and what
+   observation produced it?
+2. Is it being solved at the right level? Name the placement axis first;
+   this repo has several beyond engine-vs-mod.
+3. What does this foreclose?
+4. What has this project already committed to that this touches?
+5. Is this a one-way door, and what does undoing it cost?
+6. What is the strongest alternative, and why not that?
+
+Proportionality is not among them. Over-built and under-scoped are
+`/validate-plan` verdicts, settled by comparison against Q6's alternative.
+
+Asking a question is not the same as recording its answer. Only some produce
+spec text:
+
+| | Artifact |
+|---|---|
+| 1, 4, 6 | The `Direction` section. Cheap to write now, expensive to reconstruct. |
+| 2 | Record the *fact* of the placement and the reason for it, where the design decision lives. This is input for the reviewer, not a clearing of the question — a drafter who placed something in the wrong layer does not know it. "This belongs in the engine floor because…" is useful; "the layering was assessed and is correct" is noise. |
+| 3, 5 | Record specific foreclosures and one-way doors where known, with what undoing them would cost. Both are factual and survive self-assessment. Never write "nothing significant" — that is the default answer and it carries no information; "nothing material" after actually looking is a fine answer. |
+
+Question 2 needs a reader who has not spent the session inside the solution —
+a drafter who placed something in the wrong layer does not know it. Answer it
+for yourself; do not trust your own answer.
+
 ### 6. Cross-check
 
 Before committing, walk the spec:
@@ -164,10 +211,23 @@ Stage and commit the plan folder (`index.md` + optional `research.md`).
 
 **Do not update `context/lib/` during drafting.** Durable capture happens at promotion — after review. Reviewer agents often reshape the spec; library updates should land once, against the final shape.
 
-### 8. Report
+### 8. Validate direction
+
+Run `/validate-plan <name>` on each plan the session produced, before reporting.
+
+It dispatches a fresh reviewer to judge direction — is this a reasonable solution
+to the problem at hand — at an altitude this session cannot reach for its own
+work. Immersion is what makes a locally-correct wrong shape feel obviously right,
+and a drafting session is maximally immersed.
+
+Surface its verdict; never act on a *Reshape*, *Not a spec*, or *Under-scoped*
+finding unilaterally. Those are owner decisions.
+
+### 9. Report
 
 - What was planned, or if the session produced no plan (scope already covered, etc.)
 - Task count and phase summary
+- The `/validate-plan` verdict per plan
 - Open questions left for the user
 - Plan lives in `drafts/` — not ready for `/orchestrate` until promoted
 

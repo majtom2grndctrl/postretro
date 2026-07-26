@@ -260,8 +260,9 @@ pub struct AiStateNames {
 
 /// Authored AI brain component preset attached to an entity type descriptor.
 /// Descriptor-owned tuning (entity_model.md §4): maps never override these. The
-/// runtime data-archetype spawn path materializes this into an AI brain
-/// component with logical state, timers, and resolved tuning.
+/// runtime data-archetype spawn path lowers this into a `BehaviorGraphDescriptor`
+/// (`lower_ai_descriptor`), materialized into an AI brain component with the
+/// resolved graph, its current state index, and per-instance timers.
 ///
 /// Wire keys are camelCase (boundary inventory): `detectionRange`,
 /// `attackRange`, `leashRange`, `attackDamage`, `attackCooldownMs`, `moveSpeed`,

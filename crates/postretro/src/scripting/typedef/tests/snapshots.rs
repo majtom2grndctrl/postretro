@@ -169,6 +169,16 @@ fn rust_to_ts_known_types() {
         "number"
     );
     assert_eq!(rust_to_ts("glam::Vec3"), "Vec3");
+    // A behavior-graph guard field is a raw `IrNode` in Rust; its author
+    // surface is the `RuntimeValue` union (scripting.md §11).
+    assert_eq!(
+        rust_to_ts("postretro_foundation::ir::IrNode"),
+        "RuntimeValue"
+    );
+    assert_eq!(
+        rust_to_ts("BehaviorStates"),
+        "{ readonly [state: string]: BehaviorStateDescriptor }"
+    );
 }
 
 #[test]
@@ -177,6 +187,16 @@ fn rust_to_luau_known_types() {
     assert_eq!(rust_to_luau("bool"), "boolean");
     assert_eq!(rust_to_luau("core::option::Option<u32>"), "number?");
     assert_eq!(rust_to_luau("alloc::vec::Vec<u32>"), "{number}");
+    // Both runtimes share `common.rs`; the guard and state-map spellings must
+    // resolve on the Luau side too rather than falling through as-is.
+    assert_eq!(
+        rust_to_luau("postretro_foundation::ir::IrNode"),
+        "RuntimeValue"
+    );
+    assert_eq!(
+        rust_to_luau("BehaviorStates"),
+        "{ [string]: BehaviorStateDescriptor }"
+    );
 }
 
 #[test]

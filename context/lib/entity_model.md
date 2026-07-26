@@ -43,8 +43,9 @@ Capabilities attach via component columns in the registry. Current engine compon
 | Health | Hit points (`max`, `current`) plus optional hitscan hitbox (one world-aligned AABB, fixed per archetype); declared via the `components.health` descriptor block. Health-bearing entities are damage targets. They are hitscan-targetable when they have an authored AABB hitbox or a zone-bearing skinned model (§7). |
 | KinematicMover | Engine-owned deterministic mover driver seeded from PRL `KinematicGeometry`; readable through `world.query({ component: "kinematic_mover" })`, whose SDK handle builds declarative mover-command reactions |
 | TriggerVolume | Engine-owned, serializable host-authoritative touch/use state for an invisible level-authored AABB. Named `on_fire` / `on_exit` reactions fan out effects; an exit fires only after that player's activation fired. Tracks occupancy; arming reopens Touch activation for already-standing players, while Use remains press-driven. |
+| Brain | Engine-internal enemy behavior: the entity's authored behavior state graph, the state it currently occupies, and its per-instance timers. Engine-owned evaluation, author-owned states and transitions (§7c). |
 
-Type-specific data lives in the component. An entity is "a player" by virtue of carrying `PlayerMovement`, not by belonging to a typed collection. Other entity types follow the same pattern: enemies use an **Agent** component for navmesh path-following and collide-and-slide movement, plus an **AI brain** component for engine-owned combat behavior. Doors, projectiles, and pickups should attach their behavior through components instead of typed collections.
+Type-specific data lives in the component. An entity is "a player" by virtue of carrying `PlayerMovement`, not by belonging to a typed collection. Other entity types follow the same pattern: enemies use an **Agent** component for navmesh path-following and collide-and-slide movement, plus a **Brain** component carrying the behavior state graph the AI tick evaluates (§7c). Doors, projectiles, and pickups should attach their behavior through components instead of typed collections.
 
 ---
 
@@ -115,7 +116,7 @@ Game logic runs at a fixed tick rate, decoupled from render framerate. Renderer 
 | 1 | Kinematic mover tick | Advances deterministic mover transforms and tick deltas before player movement consumes mover collision/carry |
 | 2 | Player movement tick | Input-driven; resolves capsule physics and position before anything reads player state |
 | 3 | Trigger tick | Host evaluates touch-entry and use-overlap triggers after player movement; commands mutate mover phase for the next mover tick |
-| 4 | AI brain tick | Updates engine-owned combat/behavior state after player movement settles |
+| 4 | AI brain tick | Selects targets, evaluates each enemy's behavior graph, and applies the selected state's motion and action after player movement settles (§7c) |
 | 5 | Host camera callback | Host-side camera/aim work runs after movement and AI, before aim-dependent steering and weapon systems |
 | 6 | Agent steering tick | Applies navigation steering after AI decisions and host camera work |
 | 7 | Weapon reload and fire tick | Advances reloads and transfers completed reloads from pawn reserves before consuming resolved fire and aim data; firing may spawn impact effects and apply damage |
@@ -188,6 +189,27 @@ Movement is purely engine-internal. Scripts cannot read or write `PlayerMovement
 Movement design intent — the custom-kinematic foundation, the declarative author surface, the state-machine seam, and the FPS-flexibility band — lives in `movement.md`. This section covers only the component's place in the entity model.
 
 A player pawn is present only when a `player_spawn` entity in the level resolves to a movement descriptor. When no pawn exists, the engine falls back to a fly-camera so maps are navigable without a player descriptor.
+
+---
+
+## 7c. Enemy Brain Component
+
+Enemy behavior is an **authored state graph**, not an engine-closed state enum. The descriptor declares named states; each state fixes a motion verb, an optional action verb, the mesh animation state it requests, and an ordered list of outgoing transitions. A separate ordered `interrupts` list holds any-state transitions. Transition guards are IR expressions (`scripting.md` §11) over a brain-local binding scope; they are bound once at spawn and evaluated by the engine every tick.
+
+**Ownership split.** The author owns which states exist, what each one does, and the ordered guards between them. The engine owns everything else: target selection and retention, think-stride time-slicing of acquisition, target-switch hysteresis, combat-slot resolution, steering, facing, damage application through the chokepoint, and the aggro gate. Motion and action verbs are closed vocabularies — a state selects an engine behavior, it does not describe one.
+
+**One brain representation.** Both authoring spellings produce the same component. The legacy four-state block lowers to an equivalent generated graph at spawn, so there is exactly one evaluator code path and no fork to keep in sync.
+
+Invariants the evaluator upholds:
+
+- **Guards evaluate every tick.** No state, animation, or cooldown latches evaluation off. A commitment window is an authored guard over time-in-state, never an engine mechanism.
+- **Interrupts first, then the current state's own transitions**, each in declaration order, first true wins. An interrupt naming the current state is skipped — interrupts fire as transitions, never as self re-entry.
+- **Guards are read-only.** Per-entity state fields are written by impact policies and reactions; guards only read them. That is how a hit-driven reaction and an authored interrupt compose without either knowing about the other.
+- **Bound guard programs are derived data.** They live in the evaluator, never on the component, so they are never serialized and never affect component equality. They rebuild from the retained graph whenever the entity is seen.
+- **Animation is subordinate to graph state.** An unknown animation name warns once at spawn and keeps the prior animation at tick time; it never aborts the tick. A state that pursues without acting is a locomotion state: its animation is a travel cycle, so it yields to the graph's initial-state animation at a standstill. That makes the initial state's animation the graph's rest pose, and authors should pick it accordingly.
+- **Death is not a graph transition.** The death sweep latches a zero-HP enemy and the AI tick skips it from then on; an authored impact policy owns the death animation and the despawn delay.
+
+Graph evaluation is host-only. Clients consume replicated animation state and never evaluate guards.
 
 ---
 

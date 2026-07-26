@@ -755,6 +755,7 @@ mod tests {
             mesh: None,
             health: None,
             ai: None,
+            behavior: None,
         });
 
         let resolved = resolve_entity_type("grunt", &data);
@@ -770,6 +771,7 @@ mod tests {
                 mesh: None,
                 health: None,
                 ai: None,
+                behavior: None,
             })
         );
     }

@@ -67,7 +67,7 @@ pub(crate) fn collect_agent_overlay_snapshots_for_view(
         let state_label = registry
             .get_component::<BrainComponent>(id)
             .ok()
-            .map(|brain| brain.state.label().to_string());
+            .and_then(|brain| brain.state_name().map(str::to_string));
         let xz_speed = Vec3::new(agent.velocity.x, 0.0, agent.velocity.z).length();
         let flags = AgentOverlayLabelFlags {
             arrived: agent.arrived,

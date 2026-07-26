@@ -4,7 +4,7 @@
 //
 // See: context/lib/scripting.md §2
 
-import { defineEntity } from "postretro";
+import { brain, defineEntity, runtime } from "postretro";
 import type { EntityTypeDescriptor } from "postretro";
 
 /** Classname for entities driven by `rotator_driver.{ts,luau}`. */
@@ -13,15 +13,25 @@ export const ROTATOR_DRIVER_CLASSNAME = "game_rotator_driver";
 /** Classname for entities targeted/observed by `damage_source.{ts,luau}`. */
 export const DAMAGE_SOURCE_CLASSNAME = "game_damage_source";
 
-/** Classname for the map-placeable reference enemy (`health` + `mesh` + `ai`). */
+/**
+ * Classname for the map-placeable reference enemy
+ * (`health` + `mesh` + `behavior`).
+ */
 export const REFERENCE_ENEMY_CLASSNAME = "reference_enemy";
 
 /** Classname for the minimal E21 pose-modifier fixture enemy. */
 export const POSE_FIXTURE_ENEMY_CLASSNAME = "pose_fixture_enemy";
 
+/** Distance at which the reference enemy notices a player, in metres. */
+const REFERENCE_DETECTION_RANGE = 16;
+/** Distance within which its melee swing connects, in metres. */
+const REFERENCE_ATTACK_RANGE = 2;
+/** Distance past which it gives up and returns to rest, in metres. */
+const REFERENCE_LEASH_RANGE = 50;
+
 /**
- * The map-placeable reference enemy: a full health + animated-mesh + AI-brain
- * archetype that exercises the M10 enemy loop end to end. It is directly
+ * The map-placeable reference enemy: a full health + animated-mesh + behavior-
+ * graph archetype that exercises the M10 enemy loop end to end. It is directly
  * placeable from a `.map` via `"classname" "reference_enemy"` because it carries
  * `components.health` and `components.mesh` (the canonicalName dispatch keys off
  * those placeable components).
@@ -31,11 +41,58 @@ export const POSE_FIXTURE_ENEMY_CLASSNAME = "pose_fixture_enemy";
  * `content/dev/models/reference_enemy_kaykit_knight/` and pruned to the four
  * clips named below. See that folder's `license.txt`.
  *
- * The `mesh.animations` keys are author-defined logical state names; each maps
- * to one of the model's real clip names. The `ai.states` block maps the brain's
- * four logical states (idle / alert / attack / death) onto those mesh state
- * names — the cross-component link the FSM drives each tick. (`alert` is the
- * brain's chase/pursuit state, which plays the `walk` locomotion clip.)
+ * The `mesh.animations` keys are author-defined names; each maps to one of the
+ * model's real clip names. Every `behavior.states.*.animation` names one of
+ * them — the cross-component link the brain drives each tick.
+ *
+ * The graph is the reference authoring of the classic three-state pursuit
+ * shape:
+ *
+ * ```text
+ *   ANY   --(!hasTarget)-->                            idle   (interrupt)
+ *   idle  --(acquisitionDue && dist <= attackRange)-->  attack
+ *   idle  --(acquisitionDue && dist <= detectionRange)--> alert
+ *   alert --(dist <= attackRange)-->                    attack
+ *   alert --(dist >  leashRange)-->                     idle
+ *   attack --(dist >  attackRange)-->                   alert
+ * ```
+ *
+ * Three authoring notes worth copying:
+ *
+ * - **`acquisitionDue` conjunction.** Detection is time-sliced by the engine's
+ *   think stride, so both `idle` edges only fire on an acquisition tick. The IR
+ *   has no `and` opcode yet, so the conjunction is spelled
+ *   `select(cond, inner, false)`. The attack-range and leash edges are
+ *   deliberately NOT gated: they must answer every tick, so a strided
+ *   acquisition gap can never suppress an in-range swing or hold a fled player
+ *   under pursuit.
+ * - **`idle → attack` is declared first.** Guards are first-true-wins in
+ *   declaration order, so the "already in contact range on the tick we notice
+ *   them" edge has to precede the plain detection edge to be reachable.
+ * - **The stand-down interrupt is declared first of all.** Interrupts run
+ *   before any state-local guard, so losing the target outranks every range
+ *   edge and the enemy stands down in ONE tick. It is not optional polish:
+ *   `brain.targetDistance` reads a `1e9` sentinel with no target, and that
+ *   sentinel is ONE-DIRECTIONAL. `le`/`lt` guards read false untargeted (safe,
+ *   which is why the entry edges need no `hasTarget` conjunction), but
+ *   `gt`/`ge` guards read TRUE — so without this interrupt the two disengage
+ *   guards below both fire on target loss and walk the enemy
+ *   `attack → alert → idle` over two ticks, playing the travel animation for
+ *   one of them with nothing to travel toward. The IR has no `not` opcode, so
+ *   the negation is spelled `select(hasTarget, false, true)`.
+ *
+ * There is no `death` state: death is not a graph transition. The engine's
+ * death sweep latches a zero-HP enemy and the authored impact policy plays the
+ * `death` mesh clip and despawns after its own delay — despawn timing belongs
+ * entirely to that policy's `despawn` effect, and the behavior block carries no
+ * despawn field of its own.
+ *
+ * The graph also owns its own leash: there is no engine-side range limit on
+ * an authored `chaseTarget` state. `alert`'s `dist > REFERENCE_LEASH_RANGE`
+ * exit above is what stops pursuit — omit an exit guard like it and the
+ * enemy chases from anywhere on the level. Engagement and disengagement are
+ * both graph-authored here: the range edges against `brain.targetDistance`,
+ * plus the interrupt for the case where there is no distance to read.
  */
 export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
   canonicalName: REFERENCE_ENEMY_CLASSNAME,
@@ -86,22 +143,89 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
         speedScale: true,
       },
     },
-    // The AI brain. Ranges are in metres; cooldown/despawn in ms; moveSpeed in
-    // m/s. `states` maps the brain's four logical states onto the mesh state
-    // names above.
-    ai: {
-      detectionRange: 16,
-      attackRange: 2,
-      leashRange: 50,
-      attackDamage: 8,
-      attackCooldownMs: 1200,
+    // The behavior state graph. Ranges are in metres; cooldown in ms; moveSpeed
+    // in m/s. Every `animation` names a `mesh.animations` key above.
+    behavior: {
+      initial: "idle",
       moveSpeed: 3,
-      deathDespawnMs: 4000,
+      attack: { damage: 8, range: REFERENCE_ATTACK_RANGE, cooldownMs: 1200 },
+      // Where engaged chasers STAND: the radius of the ring of combat slots the
+      // engine spreads them around the target. Pure spacing, and distinct from
+      // `attack.range` above, which gates DAMAGE and nothing else. Omitting it
+      // falls back to `attack.range`, which is the value used here — it is
+      // authored explicitly anyway, because the two are separate knobs and a
+      // graph that later retunes its swing reach should not silently re-space
+      // its pack. A pure-pursuit graph (`chaseTarget`, no `action`) has no
+      // `attack.range` to fall back on and wants this field outright.
+      engagementRadius: REFERENCE_ATTACK_RANGE,
+      // Stand down the instant the target is gone. Declared first so it
+      // outranks every state-local guard — see the doc comment above for why
+      // the `gt` disengage guards below cannot do this job themselves.
+      interrupts: [
+        {
+          to: "idle",
+          when: runtime.select(brain.hasTarget, false, true),
+        },
+      ],
       states: {
-        idle: "idle",
-        alert: "walk",
-        attack: "attack",
-        death: "death",
+        // At rest. `initial` doubles as the state the engine forces when the
+        // aggro gate closes — that gate is the only thing that overrides guard
+        // evaluation — and as the animation a travelling state falls back to at
+        // a standstill, so it is authored rest-appropriate. Losing the target
+        // is NOT such an override: guards keep running, which is why the
+        // stand-down above is authored as an ordinary interrupt.
+        idle: {
+          animation: "idle",
+          motion: "hold",
+          transitions: [
+            {
+              to: "attack",
+              when: runtime.select(
+                brain.acquisitionDue,
+                runtime.le(brain.targetDistance, REFERENCE_ATTACK_RANGE),
+                false,
+              ),
+            },
+            {
+              to: "alert",
+              when: runtime.select(
+                brain.acquisitionDue,
+                runtime.le(brain.targetDistance, REFERENCE_DETECTION_RANGE),
+                false,
+              ),
+            },
+          ],
+        },
+        // Pursuit. No action of its own, so the engine treats it as the
+        // locomotion state: it plays `walk` while travelling and yields to the
+        // `idle` rest animation when stopped.
+        alert: {
+          animation: "walk",
+          motion: "chaseTarget",
+          transitions: [
+            {
+              to: "attack",
+              when: runtime.le(brain.targetDistance, REFERENCE_ATTACK_RANGE),
+            },
+            {
+              to: "idle",
+              when: runtime.gt(brain.targetDistance, REFERENCE_LEASH_RANGE),
+            },
+          ],
+        },
+        // Contact damage on the graph's `attack` cooldown while closing the
+        // last metre.
+        attack: {
+          animation: "attack",
+          motion: "chaseTarget",
+          action: "attack",
+          transitions: [
+            {
+              to: "alert",
+              when: runtime.gt(brain.targetDistance, REFERENCE_ATTACK_RANGE),
+            },
+          ],
+        },
       },
     },
   },
@@ -113,6 +237,10 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
  * `joint_zones` test fixture, with a no-op clip so target acquisition supplies
  * the animated mesh's pose inputs. This is a triangle marker, not production
  * character art.
+ *
+ * It stays on the legacy `components.ai` block on purpose: `ai` lowers to a
+ * behavior graph at spawn, and keeping one shipped archetype on that spelling
+ * keeps the lowering path exercised by real content rather than by tests alone.
  */
 export const poseFixtureEnemyEntity: EntityTypeDescriptor = defineEntity({
   canonicalName: POSE_FIXTURE_ENEMY_CLASSNAME,
@@ -162,8 +290,8 @@ export const poseFixtureEnemyEntity: EntityTypeDescriptor = defineEntity({
  * Data-archetype entries used by the reference behaviors. The rotator and
  * damage-source entries are pure tag/transform carriers; the behaviors locate
  * their work via `worldQuery` filters on tags authored on the placement. The
- * reference enemy is a full health + mesh + ai archetype, map-placeable by its
- * `canonicalName`.
+ * reference enemy is a full health + mesh + behavior archetype, map-placeable
+ * by its `canonicalName`.
  *
  * Spread into `ModManifest.entities`.
  */

@@ -59,7 +59,12 @@ pub struct MeshAnimation {
     /// the wire (boundary inventory).
     #[serde(rename = "defaultState")]
     pub default_state: String,
-    /// The currently-active state name. Seeded to `default_state` at spawn.
+    /// The currently-active state name. Seeded to `default_state` at spawn —
+    /// except on a brain-bearing entity, where spawn-time validation re-seats it
+    /// to the behavior graph's rest animation (the `initial` state's) when the two
+    /// disagree, so the enemy presents what its graph asks for rather than the
+    /// mesh default it would otherwise hold until its first state change. See
+    /// `components::brain::validate_brain_animation_states`.
     pub current_state: String,
     /// Clock timestamp the current state was entered at. `None` until the
     /// resolve pass fills it (pending).

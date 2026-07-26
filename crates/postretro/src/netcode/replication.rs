@@ -392,13 +392,12 @@ mod tests {
 
     use glam::Vec3;
     use postretro_entities::components::agent::AgentComponent;
-    use postretro_entities::components::brain::{
-        AiStateMap, AiTuning, BrainComponent, LogicalState,
-    };
+    use postretro_entities::components::brain::BrainComponent;
     use postretro_entities::components::health::HealthComponent;
     use postretro_entities::components::mesh::{
         AnimationState, InterruptPolicy, MeshAnimation, MeshComponent,
     };
+    use postretro_entities::data_descriptors::{AiDescriptor, AiStateNames};
     use postretro_entities::provenance::{
         DescriptorComponentKind, DescriptorProvenance, DescriptorSpawnPath,
     };
@@ -408,32 +407,21 @@ mod tests {
     // real `BrainComponent` keeps the fixture honest about what an `ai` descriptor block
     // materializes.
     fn brain() -> BrainComponent {
-        BrainComponent {
-            state: LogicalState::Idle,
-            attack_cooldown_remaining_ms: 0.0,
-            think_stride_counter: 0,
-            death_despawn_remaining_ms: None,
-            locomotion_moving: false,
-            aggro_armed: true,
-            acquired_target: None,
-            combat_slot: None,
-            combat_slot_hold_ticks: 0,
-            tuning: AiTuning {
-                detection_range: 18.0,
-                attack_range: 2.0,
-                leash_range: 26.0,
-                attack_damage: 8.0,
-                attack_cooldown_ms: 1000.0,
-                move_speed: 3.5,
-                death_despawn_ms: 1500.0,
-                states: AiStateMap {
-                    idle: "idle".into(),
-                    alert: "locomotion".into(),
-                    attack: "attack".into(),
-                    death: "death".into(),
-                },
+        BrainComponent::from_descriptor(&AiDescriptor {
+            detection_range: 18.0,
+            attack_range: 2.0,
+            leash_range: 26.0,
+            attack_damage: 8.0,
+            attack_cooldown_ms: 1000.0,
+            move_speed: 3.5,
+            death_despawn_ms: 1500.0,
+            states: AiStateNames {
+                idle: "idle".into(),
+                alert: "locomotion".into(),
+                attack: "attack".into(),
+                death: "death".into(),
             },
-        }
+        })
     }
 
     fn agent() -> AgentComponent {

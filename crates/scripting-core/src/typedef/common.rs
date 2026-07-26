@@ -111,6 +111,17 @@ pub fn rust_to_ts(ty_name: &str) -> String {
         "HitboxDescriptor" => "HitboxDescriptor".to_string(),
         "AiDescriptor" => "AiDescriptor".to_string(),
         "AiStateNames" => "AiStateNames".to_string(),
+        "BehaviorGraphDescriptor" => "BehaviorGraphDescriptor".to_string(),
+        "BehaviorStateDescriptor" => "BehaviorStateDescriptor".to_string(),
+        "TransitionDescriptor" => "TransitionDescriptor".to_string(),
+        "AttackParams" => "AttackParams".to_string(),
+        "MotionVerb" => "MotionVerb".to_string(),
+        "ActionVerb" => "ActionVerb".to_string(),
+        "BehaviorStates" => "{ readonly [state: string]: BehaviorStateDescriptor }".to_string(),
+        // A transition guard is an authored IR tree. The Rust field is the raw
+        // `IrNode` (descriptor-partition rule); the author surface for that same
+        // tree is `RuntimeValue` (scripting.md §11, "Author-facing naming").
+        "IrNode" => "RuntimeValue".to_string(),
         "AnimationStateDescriptor" => "AnimationStateDescriptor".to_string(),
         "InterruptPolicy" => "InterruptPolicy".to_string(),
         "MeshAnimationStates" => {
@@ -249,6 +260,16 @@ pub fn rust_to_luau(ty_name: &str) -> String {
         "HitboxDescriptor" => "HitboxDescriptor".to_string(),
         "AiDescriptor" => "AiDescriptor".to_string(),
         "AiStateNames" => "AiStateNames".to_string(),
+        "BehaviorGraphDescriptor" => "BehaviorGraphDescriptor".to_string(),
+        "BehaviorStateDescriptor" => "BehaviorStateDescriptor".to_string(),
+        "TransitionDescriptor" => "TransitionDescriptor".to_string(),
+        "AttackParams" => "AttackParams".to_string(),
+        "MotionVerb" => "MotionVerb".to_string(),
+        "ActionVerb" => "ActionVerb".to_string(),
+        "BehaviorStates" => "{ [string]: BehaviorStateDescriptor }".to_string(),
+        // See the TS mapping: a guard's Rust type is the raw `IrNode`, whose
+        // author surface is `RuntimeValue`.
+        "IrNode" => "RuntimeValue".to_string(),
         "AnimationStateDescriptor" => "AnimationStateDescriptor".to_string(),
         "InterruptPolicy" => "InterruptPolicy".to_string(),
         "MeshAnimationStates" => "{ [string]: AnimationStateDescriptor }".to_string(),

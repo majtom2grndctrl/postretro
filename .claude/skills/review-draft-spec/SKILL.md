@@ -58,7 +58,7 @@ Receives:
 - Full spec content inline
 - Instruction: "For every Rust/TS/Lua identifier the spec names — function, struct, type, field, enum variant, module path — open the file in source, confirm the spec's claim, report any divergence between the spec and current code reality. First step: extract the identifier list from the spec. Then resolve files via Glob/Grep. Then batch-read."
 
-Output: same `{ location, problem, fix }` triples. Each fix references the source location that contradicts the spec.
+Output: same `{ location, problem, fix }` triples. Each fix references the source location that contradicts the spec — cite by identifier and file, never by line number: fixes land in spec text (often AC or task paragraphs) that must survive future edits, and a line number is stale the moment the file changes.
 
 ### 4. Aggregate
 

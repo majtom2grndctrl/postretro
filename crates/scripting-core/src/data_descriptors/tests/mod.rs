@@ -4,6 +4,7 @@
 mod common;
 
 mod ai;
+mod behavior;
 mod entity;
 mod frontend;
 mod g2_fields;

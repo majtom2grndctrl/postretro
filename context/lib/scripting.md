@@ -423,9 +423,15 @@ Start the node set minimal: named-input leaves, arithmetic, `clamp`, `lerp`, `se
 
 - **Movement** — the first adopter: authored movement policy over a movement-local scope.
 - **Impact policies** — authored hit policy over an entity/impact scope, including writes to per-entity numeric state fields.
-- **Enemy behavior graphs** — authored transition guards over a brain scope (`entity_model.md` §7c). The scope pairs a fixed table of engine-computed brain facts (target presence and distance, time in state, attack cooldown, whether acquisition is re-evaluated this tick, health) with the same per-entity state fields impact policies write. Guards are read-only: the brain scope resolves no outputs at all. Two scope implementations share one name-resolution rule — a value-free one both descriptor parsers bind against at declaration time, so a bad guard is a parse error with the offending state and transition index named, and a live one the tick refreshes per enemy. The SDK ships pre-wrapped input leaves for the fixed namespace plus a builder for per-entity state leaves, so a guard reads as an expression over named facts rather than hand-built IR.
+- **Enemy behavior graphs** — authored transition guards over a brain scope, and authored target candidacy over a candidate scope (`entity_model.md` §7c). Both are read-only: neither resolves any output.
+  - The **brain scope** pairs a fixed table of engine-computed facts about the evaluating enemy and its selected target (target presence and distance, the target's health and whether its death latch has fired, time in state, attack cooldown, whether acquisition is re-evaluated this tick, own health) with the same per-entity state fields impact policies write.
+  - The **candidate scope** is a second scope over its own fixed fact table, resolved against a *different* entity than the one evaluating — refreshed per (enemy, candidate) pair during a ranking scan. It is therefore the design's only per-pair evaluation context: any enemy × candidate relation that reduces to a number or a boolean belongs there as a fact, not as new per-pair storage on the brain.
 
-Per-entity state fields are the composition seam between adopters: an impact policy writes one, a behavior guard reads it, and neither names the other.
+  Each scope has two implementations sharing one name-resolution rule — a value-free one both descriptor parsers bind against at declaration time, so a bad expression is a parse error naming the authored path, and a live one the tick refreshes. The SDK ships pre-wrapped input leaves for each fixed namespace plus a builder for per-entity state leaves, so an expression reads as one over named facts rather than hand-built IR.
+
+Both fixed fact tables are **append-only**: a name's position in the table is its runtime read handle, so an insertion or reorder silently re-points every bound program.
+
+Per-entity state fields are the composition seam between adopters: an impact policy writes one, a behavior guard reads it, and neither names the other. That seam is same-entity by construction — the only entity-scoped write path targets the entity an impact landed on, so writer and reader are always the same entity. Marking entity A for entity B's expression to read is not expressible today, and a scope that needs it must settle the write path first.
 
 ---
 

@@ -818,22 +818,21 @@ enemy — Task 4's clean-trip confirmation predates this rewrite.
 | 3 | Task 2 | Consumes Task 1's settled input table; adds the filter to the eligible accumulator Task 3 built; extends the same evaluator side-table |
 | 4 | Task 5 | Documents the contract the first four settle; regenerates typedefs once |
 
-## Promotion prerequisites
+## Durable decisions, captured
 
-`context_style_guide.md` §194 gates `drafts/` → `ready/` on capturing durable
-decisions in `context/lib/`. Two are durable and neither is a task.
+Settled on promotion, so a task agent finds them in `context/lib/` rather than
+here:
 
-- `entity_model.md` §7c gives the engine "target selection and retention"
-  outright. That stops being true: the engine offers candidates and the graph
-  filters them. Amend the ownership split, and add an invariant that per-graph
-  candidacy is read-only and evaluated per offered candidate, never against the
-  retained target.
-- `scripting.md` §11's adopter list describes the brain scope as the enemy
-  behavior graph's only binding scope. Add the candidate scope as a second one
-  resolved against a different entity, over its own fixed fact table. Update
-  §11's enumeration of the brain fact table, which does not yet mention
-  target-side facts, and state that the candidate scope is read-only on the same
-  terms as the brain scope.
+| Decision | Landed in |
+|---|---|
+| The ownership split: the engine offers candidates, the graph decides which are worth engaging; perceivable vs. worth-engaging is where the line falls | `entity_model.md` §7c |
+| Candidacy is per-graph eligibility, read-only, per offered candidate, never against the retained target, and never a rank | `entity_model.md` §7c |
+| Target selection holds no aliveness policy; the death latch and not a health comparison is the authored death signal | `entity_model.md` §7c |
+| The leash is symmetric and stays engine-side because retention clears every tick; an authored graph bounds acquisition with a distance clause instead | `entity_model.md` §7c |
+| The think stride is cost machinery and shares no data path with relevance rules | `entity_model.md` §7c |
+| The candidate scope as a second binding scope, resolved against a different entity, and the only per-pair evaluation context | `scripting.md` §11 |
+| Both fixed fact tables are append-only — position is the runtime read handle | `scripting.md` §11 |
+| The per-entity state seam is same-entity by construction, which is what blocks candidate-scoped `@state.*` | `scripting.md` §11 |
 
 ## Boundary inventory
 

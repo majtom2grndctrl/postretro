@@ -2,9 +2,10 @@
 // See: context/lib/scripting.md §11
 
 /**
- * Tween shape consumed by `setSpinRate`. Mirrors the Rust `SpinAnimation`
- * storage struct. `rate_curve` must be nonempty when supplied at the
- * primitive seam; this type is structural and does not enforce that here.
+ * Tween shape consumed by the billboard-emitter reaction primitive
+ * `setSpinRate`. Mirrors the Rust `SpinAnimation` storage struct.
+ * `rate_curve` must be nonempty when supplied at the primitive seam; this
+ * type is structural and does not enforce that here.
  */
 export type SpinAnimation = {
   duration: number;

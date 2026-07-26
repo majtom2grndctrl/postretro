@@ -10,6 +10,9 @@ export type MoverEntityHandle = {
   stop: (self: MoverEntityHandle) -> {MoverStopStep},
   reverse: (self: MoverEntityHandle) -> {MoverReverseStep},
   goToPathNode: (self: MoverEntityHandle, node: string) -> {MoverGoToPathNodeStep},
+  --- Sets degrees per second. A nonzero rate requires a nonzero `spin_axis`
+  --- on the mover's authored map entity.
+  setSpinRate: (self: MoverEntityHandle, rate: number) -> {MoverSetSpinRateStep},
 }
 
 local MoversSdk = {}
@@ -31,6 +34,9 @@ function MoversSdk.wrapMoverEntity(snapshot: MoverEntity): MoverEntityHandle
     end,
     goToPathNode = function(_self: MoverEntityHandle, node: string): {MoverGoToPathNodeStep}
       return { { id = id, primitive = "moverGoToPathNode", args = { node = node } } }
+    end,
+    setSpinRate = function(_self: MoverEntityHandle, rate: number): {MoverSetSpinRateStep}
+      return { { id = id, primitive = "moverSetSpinRate", args = { rate = rate } } }
     end,
   }
 end

@@ -68,6 +68,7 @@ export type MoverStartStep = import("postretro").MoverStartStep;
 export type MoverStopStep = import("postretro").MoverStopStep;
 export type MoverReverseStep = import("postretro").MoverReverseStep;
 export type MoverGoToPathNodeStep = import("postretro").MoverGoToPathNodeStep;
+export type MoverSetSpinRateStep = import("postretro").MoverSetSpinRateStep;
 export type ArmTriggerStep = import("postretro").ArmTriggerStep;
 export type DisarmTriggerStep = import("postretro").DisarmTriggerStep;
 
@@ -86,6 +87,7 @@ export type SequenceStep =
   | MoverStopStep
   | MoverReverseStep
   | MoverGoToPathNodeStep
+  | MoverSetSpinRateStep
   | ArmTriggerStep
   | DisarmTriggerStep;
 

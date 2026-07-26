@@ -284,6 +284,11 @@ pub(crate) fn kinematic_mover_state_to_wire(
             mover.current_linear_velocity.z,
         ],
         target_segment: mover.target_segment,
+        spin_angle_rad: mover.spin_angle_rad,
+        spin_angle_before_tick_rad: mover.spin_angle_before_tick_rad,
+        was_active_this_tick: mover.was_active_this_tick,
+        spin_rate_rad_s: mover.spin_rate_rad_s,
+        spin_target_rate_rad_s: mover.spin_target_rate_rad_s,
     }
 }
 
@@ -465,6 +470,39 @@ mod tests {
             map_overrides: Default::default(),
             spawn_path,
         }
+    }
+
+    #[test]
+    fn kinematic_mover_wire_state_carries_rotating_phase_fields() {
+        let mut mover = KinematicMoverComponent::new(
+            41,
+            postretro_entities::KinematicMoverConfig {
+                waypoints: vec![Vec3::ZERO],
+                waypoint_names: vec!["center".to_string()],
+                speed_mps: 0.0,
+                wait_ms: 0.0,
+                mode: KinematicMoverMode::Once,
+                started: true,
+                spin_axis: Vec3::Y,
+                initial_spin_rate_rad_s: 1.0,
+                spin_accel_rad_s2: 2.0,
+                carry_yaw: true,
+            },
+        );
+        mover.spin_angle_rad = 0.75;
+        mover.spin_angle_before_tick_rad = 0.5;
+        mover.was_active_this_tick = true;
+        mover.spin_rate_rad_s = 1.25;
+        mover.spin_target_rate_rad_s = -0.5;
+
+        let wire = kinematic_mover_state_to_wire(&mover);
+
+        assert_eq!(wire.mover_id, 41);
+        assert!((wire.spin_angle_rad - 0.75).abs() < f32::EPSILON);
+        assert!((wire.spin_angle_before_tick_rad - 0.5).abs() < f32::EPSILON);
+        assert!(wire.was_active_this_tick);
+        assert!((wire.spin_rate_rad_s - 1.25).abs() < f32::EPSILON);
+        assert!((wire.spin_target_rate_rad_s + 0.5).abs() < f32::EPSILON);
     }
 
     /// Spawn a map-placed AI enemy the way `apply_data_archetype_dispatch` does: a

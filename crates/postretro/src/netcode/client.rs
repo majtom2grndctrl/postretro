@@ -91,7 +91,7 @@ struct RemoteEnemyWalkPlayback {
 
 /// Descriptor-derived locomotion data for a remote player avatar. Remote player
 /// meshes deliberately remain presentation-only; this cache lets the client derive
-/// idle/walk/run from the interpolated pose without attaching PlayerMovement.
+/// idle/walk/run from replicated intrinsic velocity without attaching PlayerMovement.
 #[derive(Debug, Clone)]
 struct RemotePlayerLocomotion {
     idle_state: String,
@@ -101,7 +101,7 @@ struct RemotePlayerLocomotion {
     run_speed: f32,
     walk_derived_travel_speed: Option<f32>,
     run_derived_travel_speed: Option<f32>,
-    /// Last state selected from the displayed remote velocity. Snapshot application
+    /// Last state selected from the interpolated intrinsic player velocity. Snapshot application
     /// compares its authoritative state against this prediction before correcting.
     client_derived_state: Option<String>,
     /// Server state currently being honored through its authored crossfade window.
@@ -131,6 +131,16 @@ pub(crate) struct RemotePlayerLocomotionReference {
 pub(crate) struct ClientPresentationInputs {
     pub(crate) aim_pitches: HashMap<NetworkId, f32>,
     pub(crate) heading_yaws: HashMap<NetworkId, f32>,
+}
+
+const MIN_PRESENTED_HORIZONTAL_SPEED_SQ: f32 = 1.0e-8;
+
+fn horizontal_speed(velocity: Vec3) -> f32 {
+    Vec3::new(velocity.x, 0.0, velocity.z).length()
+}
+
+fn is_horizontal_motion(velocity: &Vec3) -> bool {
+    velocity.x * velocity.x + velocity.z * velocity.z > MIN_PRESENTED_HORIZONTAL_SPEED_SQ
 }
 
 /// A wire payload the client received but deliberately did not apply, recorded as a
@@ -452,6 +462,10 @@ pub(crate) struct MoverCorrection {
     pub(crate) network_id: NetworkId,
     pub(crate) mover_id: u32,
     pub(crate) magnitude: f32,
+    /// Authoritative/predicted-to-target-tick mover state that replaced the
+    /// client's live phase. App refreshes its live pose table from this before
+    /// input carry or render presentation can consume stale angular motion.
+    pub(crate) authoritative_state: crate::kinematic_mover::MoverTickState,
 }
 
 impl ClientReplication {
@@ -1232,8 +1246,8 @@ impl ClientReplication {
     /// into the per-entity interpolation buffer stamped by `server_tick`. A
     /// `PlayerMovementState` payload applies only to an entity that already carries a
     /// local `PlayerMovementComponent`; otherwise it is ignored with a typed
-    /// diagnostic (Phase 2's dumb mover is Transform-only). Its `velocity` is still
-    /// captured for the interpolation buffer's bounded extrapolation on starvation.
+    /// diagnostic (Phase 2's dumb mover is Transform-only). Its intrinsic velocity
+    /// is still captured for bounded extrapolation and remote-player presentation.
     #[allow(clippy::too_many_arguments)]
     fn apply_components_to(
         &mut self,
@@ -1246,16 +1260,19 @@ impl ClientReplication {
         components: &[ComponentPayload],
         outcome: &mut ApplyOutcome,
     ) -> bool {
-        // Capture the record's movement velocity (if any) up front: it stamps the
-        // interpolation sample so a Transform-bearing record can extrapolate on
-        // starvation. The Phase 2 dumb mover carries no movement payload, so this stays
-        // None and its starvation path holds the last pose.
+        // Capture the record's intrinsic movement velocity (if any) up front. It
+        // stamps the Transform sample for bounded extrapolation and keeps player
+        // locomotion separate from mover-carried world-transform displacement.
         let record_movement = components.iter().find_map(|payload| match payload {
             ComponentPayload::PlayerMovementState(m) if payload_is_finite(payload) => Some(*m),
             _ => None,
         });
-        let record_velocity = record_movement.map(|movement| Vec3::from_array(movement.velocity));
+        let record_intrinsic_velocity =
+            record_movement.map(|movement| Vec3::from_array(movement.velocity));
         let record_aim_pitch = record_movement.map_or(0.0, |movement| movement.aim_pitch);
+        let record_has_transform = components
+            .iter()
+            .any(|payload| matches!(payload, ComponentPayload::Transform(_)));
 
         // The local predicted pawn is reconcile-driven: its authoritative pose +
         // movement subset are captured by `capture_local_reconcile` and the reconcile
@@ -1305,6 +1322,16 @@ impl ClientReplication {
                     network_id,
                     mover_id: plan.mover_id,
                     magnitude: (current.position - plan.transform.position).length(),
+                    authoritative_state: crate::kinematic_mover::MoverTickState {
+                        entity: id,
+                        transform: plan.pose.transform,
+                        linear_velocity: plan.pose.linear_velocity,
+                        tick_delta: plan.pose.tick_delta,
+                        angular_velocity: plan.pose.angular_velocity,
+                        tick_rotation_delta: plan.pose.tick_rotation_delta,
+                        carry_yaw: plan.pose.carry_yaw,
+                        tick_dt: plan.pose.tick_dt,
+                    },
                 });
             }
             let _ = registry.set_component(id, plan.phase.clone());
@@ -1352,7 +1379,7 @@ impl ClientReplication {
                             TransformSample {
                                 server_tick,
                                 transform,
-                                velocity: record_velocity,
+                                intrinsic_velocity: record_intrinsic_velocity,
                                 aim_pitch: record_aim_pitch,
                             },
                         );
@@ -1416,6 +1443,20 @@ impl ClientReplication {
                     }
                 }
             }
+        }
+        if !record_has_transform
+            && let Some(intrinsic_velocity) = record_intrinsic_velocity
+            && !is_local
+            && mover_apply.is_none()
+            && !invalid_bound_mover_payload
+            && bound_mover_id.is_none()
+        {
+            self.interp.record_intrinsic_velocity(
+                network_id,
+                server_tick,
+                intrinsic_velocity,
+                record_aim_pitch,
+            );
         }
         true
     }
@@ -1491,8 +1532,6 @@ impl ClientReplication {
         render_server_tick: f64,
         frame_anim_time: f64,
     ) -> InterpolationSampleStats {
-        const MIN_HORIZONTAL_LEN_SQ: f32 = 1.0e-8;
-
         let mut stats = InterpolationSampleStats::default();
         self.presented_player_inputs.aim_pitches.clear();
         self.presented_player_inputs.heading_yaws.clear();
@@ -1529,10 +1568,11 @@ impl ClientReplication {
                         .aim_pitches
                         .insert(network_id, pose.aim_pitch);
                 }
-                let velocity = pose.horizontal_velocity;
-                if velocity.is_finite()
-                    && velocity.x * velocity.x + velocity.z * velocity.z > MIN_HORIZONTAL_LEN_SQ
-                {
+                let intrinsic_velocity = pose
+                    .intrinsic_velocity
+                    .filter(|velocity| velocity.is_finite());
+                let intrinsic_speed_xz = intrinsic_velocity.map_or(0.0, horizontal_speed);
+                if let Some(velocity) = intrinsic_velocity.filter(is_horizontal_motion) {
                     let heading_yaw = crate::sim::player_travel_heading_yaw(velocity, 0.0);
                     self.presented_player_inputs
                         .heading_yaws
@@ -1542,7 +1582,7 @@ impl ClientReplication {
                     registry,
                     network_id,
                     entity_id,
-                    pose.speed_xz,
+                    intrinsic_speed_xz,
                     frame_anim_time,
                 );
             }
@@ -1767,9 +1807,9 @@ impl ClientReplication {
         let _ = registry.set_component(entity_id, mesh);
     }
 
-    /// Derive one remote avatar's locomotion state and rate from the exact
-    /// interpolated pose rendered this frame. The host's mesh state remains the
-    /// correction authority; this is only the responsive between-snapshot path.
+    /// Derive one remote avatar's locomotion state and rate from the interpolated
+    /// intrinsic player velocity. The host's mesh state remains the correction
+    /// authority; this is only the responsive between-snapshot path.
     fn update_remote_player_locomotion(
         &mut self,
         registry: &mut EntityRegistry,
@@ -1985,6 +2025,7 @@ struct MoverApplyPlan {
     mover_id: u32,
     phase: KinematicMoverComponent,
     transform: Transform,
+    pose: MoverPose,
     history_samples: Vec<MoverHistorySample>,
 }
 
@@ -2045,6 +2086,7 @@ fn prepare_mover_apply(
         mover_id: wire.mover_id,
         phase: predicted_phase,
         transform: predicted_pose.transform,
+        pose: predicted_pose,
         history_samples,
     })
 }
@@ -2107,6 +2149,11 @@ fn seed_kinematic_mover_phase(
     mover.completed = wire.completed;
     mover.current_linear_velocity = Vec3::from_array(wire.velocity);
     mover.target_segment = wire.target_segment;
+    mover.spin_angle_rad = wire.spin_angle_rad;
+    mover.spin_angle_before_tick_rad = wire.spin_angle_before_tick_rad;
+    mover.was_active_this_tick = wire.was_active_this_tick;
+    mover.spin_rate_rad_s = wire.spin_rate_rad_s;
+    mover.spin_target_rate_rad_s = wire.spin_target_rate_rad_s;
     Some(())
 }
 
@@ -2194,6 +2241,15 @@ mod tests {
         })
     }
 
+    fn transform_payload_at(position: [f32; 3], facing_yaw: f32) -> ComponentPayload {
+        let rotation = Quat::from_rotation_y(facing_yaw);
+        ComponentPayload::Transform(WireTransform {
+            position,
+            rotation: [rotation.x, rotation.y, rotation.z, rotation.w],
+            scale: [1.0, 1.0, 1.0],
+        })
+    }
+
     fn movement_payload() -> ComponentPayload {
         movement_payload_with_velocity([1.0, 0.0, 0.0])
     }
@@ -2241,6 +2297,11 @@ mod tests {
             completed: false,
             velocity: [0.5, 0.0, 0.0],
             target_segment: None,
+            spin_angle_rad: 0.75,
+            spin_angle_before_tick_rad: 0.5,
+            was_active_this_tick: true,
+            spin_rate_rad_s: 1.25,
+            spin_target_rate_rad_s: 2.0,
         })
     }
 
@@ -2256,6 +2317,11 @@ mod tests {
             completed: false,
             velocity: [1.0, 0.0, 0.0],
             target_segment: None,
+            spin_angle_rad: 0.25,
+            spin_angle_before_tick_rad: 0.0,
+            was_active_this_tick: true,
+            spin_rate_rad_s: 1.5,
+            spin_target_rate_rad_s: 1.5,
         })
     }
 
@@ -2266,12 +2332,18 @@ mod tests {
                 id,
                 KinematicMoverComponent::new(
                     mover_id,
-                    vec![Vec3::ZERO, Vec3::X],
-                    vec!["start".to_string(), "finish".to_string()],
-                    1.0,
-                    0.0,
-                    KinematicMoverMode::PingPong,
-                    true,
+                    postretro_entities::KinematicMoverConfig {
+                        waypoints: vec![Vec3::ZERO, Vec3::X],
+                        waypoint_names: vec!["start".to_string(), "finish".to_string()],
+                        speed_mps: 1.0,
+                        wait_ms: 0.0,
+                        mode: KinematicMoverMode::PingPong,
+                        started: true,
+                        spin_axis: Vec3::Y,
+                        initial_spin_rate_rad_s: 0.0,
+                        spin_accel_rad_s2: 0.0,
+                        carry_yaw: false,
+                    },
                 ),
             )
             .unwrap();
@@ -2469,6 +2541,39 @@ mod tests {
         assert_eq!(mover.segment_index, 1);
         assert_eq!(mover.direction_sign, -1);
         assert_eq!(mover.wait_remaining_ms, 5.0);
+        assert!((mover.spin_angle_rad - 0.75).abs() < EPSILON);
+        assert!((mover.spin_angle_before_tick_rad - 0.5).abs() < EPSILON);
+        assert!(mover.was_active_this_tick);
+        assert!((mover.spin_rate_rad_s - 1.25).abs() < EPSILON);
+        assert!((mover.spin_target_rate_rad_s - 2.0).abs() < EPSILON);
+    }
+
+    #[test]
+    fn non_finite_mover_angular_payloads_do_not_reach_phase_seeding() {
+        for (field, poison) in [
+            ("spin_angle_rad", f32::NAN),
+            ("spin_angle_before_tick_rad", f32::NAN),
+            ("spin_rate_rad_s", f32::INFINITY),
+            ("spin_target_rate_rad_s", f32::NEG_INFINITY),
+        ] {
+            let mut payload = mover_payload(42);
+            let ComponentPayload::KinematicMoverState(wire) = &mut payload else {
+                unreachable!("mover_payload returns a kinematic mover payload");
+            };
+            match field {
+                "spin_angle_rad" => wire.spin_angle_rad = poison,
+                "spin_angle_before_tick_rad" => wire.spin_angle_before_tick_rad = poison,
+                "spin_rate_rad_s" => wire.spin_rate_rad_s = poison,
+                "spin_target_rate_rad_s" => wire.spin_target_rate_rad_s = poison,
+                _ => unreachable!("test covers every replicated angular field"),
+            }
+
+            assert!(!payload_is_finite(&payload), "{field} must be finite");
+            assert!(
+                first_mover_state(&[payload]).is_none(),
+                "a non-finite {field} must be rejected before phase seeding"
+            );
+        }
     }
 
     #[test]
@@ -2643,6 +2748,93 @@ mod tests {
             "advanced mover sample stores replay carry delta"
         );
         assert!((advanced.transform.position.x - 0.5).abs() < EPSILON);
+        assert!((advanced.angular_velocity - Vec3::Y * 1.5).length() < EPSILON);
+        assert!(
+            advanced
+                .tick_rotation_delta
+                .abs_diff_eq(Quat::from_rotation_y(0.375), EPSILON),
+            "fast-forward replay reports the rotation its phase advance actually applied"
+        );
+        assert!(
+            advanced
+                .transform
+                .rotation
+                .abs_diff_eq(Quat::from_rotation_y(1.0), EPSILON),
+            "fast-forwarded mover orientation derives from the replicated phase"
+        );
+    }
+
+    // Regression: once-mode completion erased the angular kinematics applied
+    // during its final predicted tick from mover history.
+    #[test]
+    fn mover_completion_history_preserves_final_tick_rotation_then_replays_stopped() {
+        let mut registry = EntityRegistry::new();
+        let mover_entity = spawn_loaded_mover(&mut registry, 42);
+        let mut client = ClientReplication::new();
+        let mut mover = moving_mover_payload(42);
+        let ComponentPayload::KinematicMoverState(wire) = &mut mover else {
+            unreachable!("moving_mover_payload returns a mover payload");
+        };
+        wire.mode = 0;
+        wire.spin_angle_rad = 0.0;
+        wire.spin_rate_rad_s = 1.0;
+        wire.spin_target_rate_rad_s = 1.0;
+
+        client.apply_snapshot_with_mover_target_tick(
+            &mut registry,
+            &snapshot(
+                0,
+                100,
+                vec![full_baseline(7, 1, vec![transform_payload(0.0), mover])],
+            ),
+            101,
+            1.0,
+        );
+
+        let completion = client
+            .mover_history()
+            .pose_at_tick(42, 101, 1.0)
+            .expect("completion tick history sample");
+        let phase = registry
+            .get_component::<KinematicMoverComponent>(mover_entity)
+            .expect("live mover phase after completion");
+        let transform = *registry
+            .get_component::<Transform>(mover_entity)
+            .expect("live mover transform after completion");
+        let reconstructed = mover_pose_for_current_phase(transform, phase, 1.0);
+        let replayed = client
+            .mover_history()
+            .pose_at_tick(42, 102, 1.0)
+            .expect("replay from completed phase");
+
+        assert!(phase.completed);
+        assert!(
+            completion
+                .transform
+                .rotation
+                .abs_diff_eq(Quat::from_rotation_y(1.0), EPSILON)
+        );
+        assert!((completion.angular_velocity - Vec3::Y).length() < EPSILON);
+        assert!(
+            completion
+                .tick_rotation_delta
+                .abs_diff_eq(Quat::from_rotation_y(1.0), EPSILON)
+        );
+        assert!((reconstructed.angular_velocity - completion.angular_velocity).length() < EPSILON);
+        assert!(
+            reconstructed
+                .tick_rotation_delta
+                .abs_diff_eq(completion.tick_rotation_delta, EPSILON),
+            "replicated completion phase must reconstruct the actual completion tick"
+        );
+        assert_eq!(replayed.angular_velocity, Vec3::ZERO);
+        assert_eq!(replayed.tick_rotation_delta, Quat::IDENTITY);
+        assert!(
+            replayed
+                .transform
+                .rotation
+                .abs_diff_eq(Quat::from_rotation_y(1.0), EPSILON)
+        );
     }
 
     // --- Unknown-baseline delta: not applied, pending repair set, refresh requested,
@@ -3613,8 +3805,218 @@ mod tests {
         assert_eq!(after, &before, "non-walk state must not rebase or write");
     }
 
+    // Regression: rotating mover carry made stationary remote riders animate and face along their orbit.
     #[test]
-    fn remote_player_locomotion_uses_presented_velocity_and_crossfades_authoritative_mismatch() {
+    fn remote_player_orbiting_with_zero_intrinsic_velocity_stays_idle_and_facing() {
+        const FACING_YAW: f32 = 0.6;
+
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                100,
+                vec![full_baseline(
+                    7,
+                    1,
+                    vec![
+                        transform_payload_at([3.0, 0.0, 0.0], FACING_YAW),
+                        movement_payload_with_velocity([0.0, 0.0, 0.0]),
+                    ],
+                )],
+            ),
+        );
+        let id = *client.map().get(&NetworkId(7)).expect("remote mapped");
+        registry.set_component(id, remote_player_mesh()).unwrap();
+        client.cache_remote_player_locomotion(
+            NetworkId(7),
+            Some(RemotePlayerLocomotionReference {
+                idle_state: "idle".to_string(),
+                walk_state: "walk_forward".to_string(),
+                run_state: None,
+                walk_speed: 60.0,
+                run_speed: 60.0,
+                walk_derived_travel_speed: None,
+                run_derived_travel_speed: None,
+            }),
+        );
+
+        // The player stays still relative to the platform while their world Transform
+        // sweeps a quarter-orbit around its pivot. The sparse delta intentionally
+        // omits PlayerMovementState, as normal delta replication does for zero velocity.
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                1,
+                110,
+                vec![delta(
+                    7,
+                    1,
+                    2,
+                    vec![transform_payload_at([0.0, 0.0, 3.0], FACING_YAW)],
+                )],
+            ),
+        );
+        client.sample_into_registry(&mut registry, 105.0, 1.0);
+
+        let animation = registry
+            .get_component::<MeshComponent>(id)
+            .unwrap()
+            .animation
+            .as_ref()
+            .unwrap();
+        assert_eq!(animation.current_state, "idle");
+        assert!(animation.previous_state.is_none());
+        assert!(
+            client
+                .presented_player_inputs()
+                .heading_yaws
+                .get(&NetworkId(7))
+                .is_none(),
+            "zero intrinsic velocity falls back to the replicated facing Transform"
+        );
+        let (presented_yaw, _, _) = registry
+            .interpolated_transform(id, 0.5)
+            .unwrap()
+            .rotation
+            .to_euler(glam::EulerRot::YXZ);
+        assert!((presented_yaw - FACING_YAW).abs() <= EPSILON);
+
+        for (sequence, baseline_ref, new_baseline_id) in [(2, 2, 3), (3, 3, 4)] {
+            client.apply_snapshot(
+                &mut registry,
+                &snapshot(
+                    sequence,
+                    110 + sequence,
+                    vec![delta(
+                        7,
+                        baseline_ref,
+                        new_baseline_id,
+                        vec![mesh_animation_payload("idle")],
+                    )],
+                ),
+            );
+            client.sample_into_registry(&mut registry, 105.0, 1.0);
+            let animation = registry
+                .get_component::<MeshComponent>(id)
+                .unwrap()
+                .animation
+                .as_ref()
+                .unwrap();
+            assert_eq!(animation.current_state, "idle");
+            assert!(animation.previous_state.is_none());
+        }
+    }
+
+    #[test]
+    fn remote_player_locomotion_and_heading_use_intrinsic_velocity_over_orbit_motion() {
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                100,
+                vec![full_baseline(
+                    7,
+                    1,
+                    vec![
+                        transform_payload_at([3.0, 0.0, 0.0], 0.75),
+                        movement_payload_with_velocity([0.0, 0.0, -60.0]),
+                    ],
+                )],
+            ),
+        );
+        let id = *client.map().get(&NetworkId(7)).expect("remote mapped");
+        registry.set_component(id, remote_player_mesh()).unwrap();
+        client.cache_remote_player_locomotion(
+            NetworkId(7),
+            Some(RemotePlayerLocomotionReference {
+                idle_state: "idle".to_string(),
+                walk_state: "walk_forward".to_string(),
+                run_state: None,
+                walk_speed: 60.0,
+                run_speed: 60.0,
+                walk_derived_travel_speed: None,
+                run_derived_travel_speed: None,
+            }),
+        );
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                1,
+                110,
+                vec![delta(
+                    7,
+                    1,
+                    2,
+                    vec![
+                        transform_payload_at([0.0, 0.0, 3.0], 0.75),
+                        movement_payload_with_velocity([0.0, 0.0, -60.0]),
+                    ],
+                )],
+            ),
+        );
+        client.sample_into_registry(&mut registry, 105.0, 1.0);
+
+        let animation = registry
+            .get_component::<MeshComponent>(id)
+            .unwrap()
+            .animation
+            .as_ref()
+            .unwrap();
+        assert_eq!(animation.current_state, "walk_forward");
+        assert!((animation.rate - 1.0).abs() <= EPSILON);
+        let heading_yaw = client
+            .presented_player_inputs()
+            .heading_yaws
+            .get(&NetworkId(7))
+            .copied()
+            .expect("nonzero intrinsic velocity supplies player travel heading");
+        assert!(
+            heading_yaw.abs() <= EPSILON,
+            "-Z intrinsic velocity is yaw zero"
+        );
+
+        // A movement-only idle delta must update presentation even though the
+        // carried Transform has no new sample this snapshot.
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                2,
+                111,
+                vec![delta(
+                    7,
+                    2,
+                    3,
+                    vec![movement_payload_with_velocity([0.0, 0.0, 0.0])],
+                )],
+            ),
+        );
+        client.sample_into_registry(&mut registry, 111.0, 1.02);
+        assert_eq!(
+            registry
+                .get_component::<MeshComponent>(id)
+                .unwrap()
+                .animation
+                .as_ref()
+                .unwrap()
+                .current_state,
+            "idle"
+        );
+        assert!(
+            client
+                .presented_player_inputs()
+                .heading_yaws
+                .get(&NetworkId(7))
+                .is_none(),
+            "movement-only idle clears the lower-body travel override"
+        );
+    }
+
+    #[test]
+    fn remote_player_locomotion_uses_intrinsic_velocity_and_crossfades_authoritative_mismatch() {
         let mut registry = EntityRegistry::new();
         let mut client = ClientReplication::new();
         client.apply_snapshot(

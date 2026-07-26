@@ -18,10 +18,9 @@
 //   - `t` older than the oldest sample: HOLD the oldest pose (we have not buffered
 //     far enough back; clamping to the oldest is the least-wrong visible pose).
 //   - `t` newer than the newest sample (starvation): EXTRAPOLATE forward from the
-//     newest pose using its last-known velocity for at most `MAX_EXTRAPOLATION` of
-//     server time, then HOLD the newest pose. Velocity is only present when the
-//     wire carried a movement payload; the Phase 2 dumb mover is `Transform`-only,
-//     so its starvation path is hold-immediately (no velocity to extrapolate with).
+//     newest pose using the velocity derived from its newest transform segment for at
+//     most `MAX_EXTRAPOLATION` of server time, then HOLD the newest pose. A buffer
+//     with no adjacent transform samples holds immediately.
 
 use std::collections::HashMap;
 use std::collections::VecDeque;
@@ -227,16 +226,16 @@ fn adaptive_interpolation_delay_ticks(
     ticks as u32
 }
 
-/// One buffered remote pose, stamped by the server tick it was valid at. `velocity`
-/// is the last-known world-space velocity from a movement payload, used only for
-/// bounded forward extrapolation on starvation; `None` for `Transform`-only entities
-/// (the Phase 2 dumb mover), whose starvation path holds immediately. `aim_pitch`
-/// is the presentation pitch sampled with the transform from the same snapshot.
+/// One buffered remote pose, stamped by the server tick it was valid at.
+/// `intrinsic_velocity` is the replicated player-movement velocity, which excludes
+/// mover carry and is used only for remote-player presentation. World-transform
+/// extrapolation derives velocity from adjacent transform samples. `aim_pitch` is the
+/// presentation pitch sampled with the transform from the same snapshot.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct TransformSample {
     pub(crate) server_tick: u32,
     pub(crate) transform: Transform,
-    pub(crate) velocity: Option<Vec3>,
+    pub(crate) intrinsic_velocity: Option<Vec3>,
     pub(crate) aim_pitch: f32,
 }
 
@@ -257,6 +256,10 @@ pub(crate) struct PresentedPose {
     /// Avatar pose uses its direction for lower-body heading; held poses report
     /// zero so callers fall back to the displayed transform yaw.
     pub(crate) horizontal_velocity: Vec3,
+    /// Interpolated replicated player-movement velocity. This stays distinct from
+    /// [`Self::horizontal_velocity`]: a rider's transform can orbit with a mover
+    /// while their player-controlled velocity remains stationary.
+    pub(crate) intrinsic_velocity: Option<Vec3>,
     /// Interpolated remote camera pitch for avatar pose presentation.
     pub(crate) aim_pitch: f32,
 }
@@ -343,6 +346,7 @@ impl EntityBuffer {
                 source: PoseSource::HeldOldest,
                 speed_xz: 0.0,
                 horizontal_velocity: Vec3::ZERO,
+                intrinsic_velocity: self.intrinsic_velocity_at_or_before(oldest.server_tick),
                 aim_pitch: oldest.aim_pitch,
             });
         }
@@ -373,6 +377,7 @@ impl EntityBuffer {
                     source: PoseSource::Interpolated,
                     speed_xz: xz_speed_between(a, b),
                     horizontal_velocity: xz_velocity_between(a, b),
+                    intrinsic_velocity: self.interpolated_intrinsic_velocity(a, b, alpha),
                     aim_pitch: a.aim_pitch + (b.aim_pitch - a.aim_pitch) * alpha,
                 });
             }
@@ -386,19 +391,26 @@ impl EntityBuffer {
             source: PoseSource::HeldNewest,
             speed_xz: 0.0,
             horizontal_velocity: Vec3::ZERO,
+            intrinsic_velocity: self.intrinsic_velocity_at_or_before(newest.server_tick),
             aim_pitch: newest.aim_pitch,
         })
     }
 
-    /// Starvation branch: the render target is at/after the newest sample. If the
-    /// newest sample carried a velocity and the overshoot is within the bounded
-    /// window, extrapolate position forward (rotation/scale held — no angular wire
-    /// velocity to extrapolate); otherwise hold the newest pose.
+    /// Starvation branch: the render target is at/after the newest sample. If an
+    /// adjacent transform sample supplies world velocity and the overshoot is within
+    /// the bounded window, extrapolate position forward (rotation/scale held — no
+    /// angular wire velocity to extrapolate); otherwise hold the newest pose.
     fn extrapolate_or_hold(&self, newest: &TransformSample, target_tick: f64) -> PresentedPose {
         let overshoot_ticks = target_tick - f64::from(newest.server_tick);
         let overshoot_micros = overshoot_ticks * crate::netcode::SERVER_TICK_MICROS as f64;
 
-        match newest.velocity {
+        match self
+            .samples
+            .iter()
+            .rev()
+            .nth(1)
+            .and_then(|previous| transform_velocity_between(previous, newest))
+        {
             Some(velocity) if overshoot_micros <= MAX_EXTRAPOLATION_MICROS => {
                 // Position advances by velocity × elapsed seconds; orientation and
                 // scale hold (the wire carries no angular velocity).
@@ -414,16 +426,18 @@ impl EntityBuffer {
                     source: PoseSource::Extrapolated,
                     speed_xz: xz_speed(velocity),
                     horizontal_velocity: Vec3::new(velocity.x, 0.0, velocity.z),
+                    intrinsic_velocity: self.intrinsic_velocity_at_or_before(newest.server_tick),
                     aim_pitch: newest.aim_pitch,
                 }
             }
-            // No velocity (Transform-only mover) or past the extrapolation window:
-            // hold the last known pose.
+            // No adjacent transform sample or past the extrapolation window: hold the
+            // last known pose.
             _ => PresentedPose {
                 transform: newest.transform,
                 source: PoseSource::HeldNewest,
                 speed_xz: 0.0,
                 horizontal_velocity: Vec3::ZERO,
+                intrinsic_velocity: self.intrinsic_velocity_at_or_before(newest.server_tick),
                 aim_pitch: newest.aim_pitch,
             },
         }
@@ -439,13 +453,52 @@ impl EntityBuffer {
         if newest.server_tick < latest_accepted_server_tick {
             return false;
         }
-        if let Some(velocity) = newest.velocity {
+        if let Some(velocity) = newest.intrinsic_velocity {
             return velocity.length_squared() > STARVATION_VELOCITY_EPSILON_SQ;
         }
         let Some(previous) = self.samples.iter().rev().nth(1) else {
             return false;
         };
         transform_changed(&previous.transform, &newest.transform)
+    }
+
+    /// Most recent replicated intrinsic velocity at or before `server_tick`.
+    /// Movement-state deltas are sparse, so a Transform-only delta inherits the
+    /// last authoritative movement velocity rather than becoming transform-only.
+    fn intrinsic_velocity_at_or_before(&self, server_tick: u32) -> Option<Vec3> {
+        self.samples
+            .iter()
+            .rev()
+            .filter(|sample| sample.server_tick <= server_tick)
+            .find_map(|sample| sample.intrinsic_velocity)
+    }
+
+    fn transform_at_or_before(&self, server_tick: u32) -> Option<Transform> {
+        self.samples
+            .iter()
+            .rev()
+            .find(|sample| sample.server_tick <= server_tick)
+            .map(|sample| sample.transform)
+    }
+
+    /// Resolve the intrinsic player velocity alongside the transform interpolation.
+    /// Transform-only entities retain `None`; remote players linearly interpolate the
+    /// two authoritative movement states, falling back to the available prior state
+    /// while an out-of-order sparse delta is waiting for its predecessor.
+    fn interpolated_intrinsic_velocity(
+        &self,
+        a: &TransformSample,
+        b: &TransformSample,
+        alpha: f32,
+    ) -> Option<Vec3> {
+        match (
+            self.intrinsic_velocity_at_or_before(a.server_tick),
+            self.intrinsic_velocity_at_or_before(b.server_tick),
+        ) {
+            (Some(a_velocity), Some(b_velocity)) => Some(a_velocity.lerp(b_velocity, alpha)),
+            (Some(velocity), None) | (None, Some(velocity)) => Some(velocity),
+            (None, None) => None,
+        }
     }
 }
 
@@ -465,13 +518,21 @@ fn xz_speed_between(a: &TransformSample, b: &TransformSample) -> f32 {
 /// ground plane. Kept alongside [`xz_speed_between`] so avatar lower-body heading
 /// and locomotion rate derive from exactly the same presented segment.
 fn xz_velocity_between(a: &TransformSample, b: &TransformSample) -> Vec3 {
+    transform_velocity_between(a, b).map_or(Vec3::ZERO, |velocity| {
+        Vec3::new(velocity.x, 0.0, velocity.z)
+    })
+}
+
+/// Average world-space velocity across adjacent server-tick-stamped transforms.
+/// Equal-tick samples are merged on insert, but `None` keeps starvation conservative
+/// if malformed in-memory data bypasses that invariant.
+fn transform_velocity_between(a: &TransformSample, b: &TransformSample) -> Option<Vec3> {
     let tick_span = b.server_tick.saturating_sub(a.server_tick);
     if tick_span == 0 {
-        return Vec3::ZERO;
+        return None;
     }
     let span_secs = tick_span as f32 * crate::netcode::SERVER_TICK_MICROS as f32 / 1_000_000.0;
-    let displacement = b.transform.position - a.transform.position;
-    Vec3::new(displacement.x / span_secs, 0.0, displacement.z / span_secs)
+    Some((b.transform.position - a.transform.position) / span_secs)
 }
 
 /// Per-remote-entity interpolation buffers, keyed by `NetworkId`. Receives
@@ -495,6 +556,31 @@ impl RemoteInterpolationBuffer {
     /// duplicate-tick arrivals are positioned/merged by tick (see [`EntityBuffer`]).
     pub(crate) fn record(&mut self, network_id: NetworkId, sample: TransformSample) {
         self.buffers.entry(network_id).or_default().insert(sample);
+    }
+
+    /// Record a movement-only snapshot delta against the latest known transform.
+    /// Player movement can change without a Transform delta (for example when a
+    /// rider stops moving relative to a still-moving base), but avatar presentation
+    /// must still observe the new intrinsic velocity at that server tick.
+    pub(crate) fn record_intrinsic_velocity(
+        &mut self,
+        network_id: NetworkId,
+        server_tick: u32,
+        intrinsic_velocity: Vec3,
+        aim_pitch: f32,
+    ) {
+        let Some(buffer) = self.buffers.get_mut(&network_id) else {
+            return;
+        };
+        let Some(transform) = buffer.transform_at_or_before(server_tick) else {
+            return;
+        };
+        buffer.insert(TransformSample {
+            server_tick,
+            transform,
+            intrinsic_velocity: Some(intrinsic_velocity),
+            aim_pitch,
+        });
     }
 
     /// Drop an entity's buffer (it despawned). Idempotent.
@@ -619,7 +705,7 @@ mod tests {
                 rotation: Quat::IDENTITY,
                 scale: Vec3::ONE,
             },
-            velocity: None,
+            intrinsic_velocity: None,
             aim_pitch: 0.0,
         }
     }
@@ -987,14 +1073,14 @@ mod tests {
         assert!((pose.transform.position.x - 3.0).abs() < POS_EPS);
     }
 
-    // --- Extrapolation: forward by velocity up to exactly 100 ms, then hold. ---
+    // --- Extrapolation: forward by transform velocity up to exactly 100 ms, then hold. ---
 
     #[test]
     fn extrapolates_with_velocity_then_holds_at_cutoff() {
         let mut buf = RemoteInterpolationBuffer::new();
         let id = NetworkId(1);
-        // Newest sample at tick 100, x=0, moving horizontally at 5 m/s. The
-        // vertical component must not affect displayed ground-plane speed.
+        // Newest sample at tick 100, moving at (3, 10, 4) m/s. The vertical
+        // component must not affect displayed ground-plane speed.
         let moving = TransformSample {
             server_tick: 100,
             transform: Transform {
@@ -1002,12 +1088,23 @@ mod tests {
                 rotation: Quat::IDENTITY,
                 scale: Vec3::ONE,
             },
-            velocity: Some(Vec3::new(3.0, 10.0, 4.0)),
+            intrinsic_velocity: Some(Vec3::new(3.0, 10.0, 4.0)),
             aim_pitch: 0.0,
         };
-        // A prior sample so the buffer is not single-sample (does not change the
-        // starvation branch, but mirrors real traffic).
-        buf.record(id, sample(97, -3.0));
+        let segment_secs = 3.0 * DEFAULT_MICROS_PER_TICK as f32 / 1_000_000.0;
+        buf.record(
+            id,
+            TransformSample {
+                server_tick: 97,
+                transform: Transform {
+                    position: -Vec3::new(3.0, 10.0, 4.0) * segment_secs,
+                    rotation: Quat::IDENTITY,
+                    scale: Vec3::ONE,
+                },
+                intrinsic_velocity: Some(Vec3::new(3.0, 10.0, 4.0)),
+                aim_pitch: 0.0,
+            },
+        );
         buf.record(id, moving);
 
         // 100 ms past tick 100 is the cutoff. At 60 Hz that is 6 ticks
@@ -1051,9 +1148,11 @@ mod tests {
                 rotation: Quat::IDENTITY,
                 scale: Vec3::ONE,
             },
-            velocity: Some(Vec3::new(2.0, 0.0, 0.0)),
+            intrinsic_velocity: Some(Vec3::new(2.0, 0.0, 0.0)),
             aim_pitch: 0.0,
         };
+        let segment_secs = 3.0 * DEFAULT_MICROS_PER_TICK as f32 / 1_000_000.0;
+        buf.record(id, sample(997, -2.0 * segment_secs));
         buf.record(id, moving);
 
         // The cutoff in ticks: overshoot_micros == 100_000 at exactly this overshoot.
@@ -1080,9 +1179,9 @@ mod tests {
     }
 
     #[test]
-    fn transform_only_mover_holds_immediately_on_starvation() {
-        // The Phase 2 dumb mover is Transform-only (velocity None): starvation holds
-        // the last pose immediately, never extrapolates.
+    fn transform_only_entity_without_transform_history_holds_on_starvation() {
+        // A single transform cannot establish velocity, so starvation holds the last
+        // pose even for Transform-only entities.
         let mut buf = RemoteInterpolationBuffer::new();
         let id = NetworkId(1);
         buf.record(id, sample(200, 7.0)); // velocity None
@@ -1090,6 +1189,111 @@ mod tests {
         let pose = buf.presented_pose(id, 205.0).expect("starved");
         assert_eq!(pose.source, PoseSource::HeldNewest);
         assert!((pose.transform.position.x - 7.0).abs() < POS_EPS);
+    }
+
+    #[test]
+    fn transform_only_entity_extrapolates_from_transform_history() {
+        let mut buf = RemoteInterpolationBuffer::new();
+        let id = NetworkId(1);
+        let segment_secs = 3.0 * DEFAULT_MICROS_PER_TICK as f32 / 1_000_000.0;
+        buf.record(id, sample(200, 0.0));
+        buf.record(id, sample(203, 2.0 * segment_secs));
+
+        let pose = buf.presented_pose(id, 205.0).expect("starved");
+        let elapsed_secs = 2.0 * DEFAULT_MICROS_PER_TICK as f32 / 1_000_000.0;
+        assert_eq!(pose.source, PoseSource::Extrapolated);
+        assert!((pose.transform.position.x - 2.0 * (segment_secs + elapsed_secs)).abs() < POS_EPS);
+        assert_eq!(pose.intrinsic_velocity, None);
+    }
+
+    #[test]
+    fn starvation_extrapolates_stationary_carried_rider_from_transform_history() {
+        let mut buf = RemoteInterpolationBuffer::new();
+        let id = NetworkId(1);
+        let carry_velocity = 2.0;
+        let segment_secs = 3.0 * DEFAULT_MICROS_PER_TICK as f32 / 1_000_000.0;
+        buf.record(
+            id,
+            TransformSample {
+                server_tick: 100,
+                transform: Transform {
+                    position: Vec3::ZERO,
+                    rotation: Quat::IDENTITY,
+                    scale: Vec3::ONE,
+                },
+                intrinsic_velocity: Some(Vec3::ZERO),
+                aim_pitch: 0.0,
+            },
+        );
+        buf.record(
+            id,
+            TransformSample {
+                server_tick: 103,
+                transform: Transform {
+                    position: Vec3::new(carry_velocity * segment_secs, 0.0, 0.0),
+                    rotation: Quat::IDENTITY,
+                    scale: Vec3::ONE,
+                },
+                intrinsic_velocity: Some(Vec3::ZERO),
+                aim_pitch: 0.0,
+            },
+        );
+
+        let pose = buf.presented_pose(id, 105.9).expect("starved");
+        let elapsed_secs = 2.9 * DEFAULT_MICROS_PER_TICK as f32 / 1_000_000.0;
+        assert_eq!(pose.source, PoseSource::Extrapolated);
+        assert!(
+            (pose.transform.position.x - carry_velocity * (segment_secs + elapsed_secs)).abs()
+                < POS_EPS
+        );
+        assert!((pose.speed_xz - carry_velocity).abs() < POS_EPS);
+        assert_eq!(pose.intrinsic_velocity, Some(Vec3::ZERO));
+    }
+
+    #[test]
+    fn starvation_extrapolates_walking_carried_rider_from_transform_history() {
+        let mut buf = RemoteInterpolationBuffer::new();
+        let id = NetworkId(1);
+        let carry_velocity = 2.0;
+        let intrinsic_velocity = Vec3::new(1.0, 0.0, 0.0);
+        let world_velocity = carry_velocity + intrinsic_velocity.x;
+        let segment_secs = 3.0 * DEFAULT_MICROS_PER_TICK as f32 / 1_000_000.0;
+        buf.record(
+            id,
+            TransformSample {
+                server_tick: 100,
+                transform: Transform {
+                    position: Vec3::ZERO,
+                    rotation: Quat::IDENTITY,
+                    scale: Vec3::ONE,
+                },
+                intrinsic_velocity: Some(intrinsic_velocity),
+                aim_pitch: 0.0,
+            },
+        );
+        buf.record(
+            id,
+            TransformSample {
+                server_tick: 103,
+                transform: Transform {
+                    position: Vec3::new(world_velocity * segment_secs, 0.0, 0.0),
+                    rotation: Quat::IDENTITY,
+                    scale: Vec3::ONE,
+                },
+                intrinsic_velocity: Some(intrinsic_velocity),
+                aim_pitch: 0.0,
+            },
+        );
+
+        let pose = buf.presented_pose(id, 105.9).expect("starved");
+        let elapsed_secs = 2.9 * DEFAULT_MICROS_PER_TICK as f32 / 1_000_000.0;
+        assert_eq!(pose.source, PoseSource::Extrapolated);
+        assert!(
+            (pose.transform.position.x - world_velocity * (segment_secs + elapsed_secs)).abs()
+                < POS_EPS
+        );
+        assert!((pose.speed_xz - world_velocity).abs() < POS_EPS);
+        assert_eq!(pose.intrinsic_velocity, Some(intrinsic_velocity));
     }
 
     // --- Buffer keyed by NetworkId: samples for different entities never cross. ---

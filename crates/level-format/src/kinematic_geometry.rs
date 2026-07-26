@@ -6,9 +6,12 @@ use std::collections::HashSet;
 
 use crate::FormatError;
 use crate::geometry::{FaceMeta, Vertex};
+use glam::Vec3;
 
-pub const KINEMATIC_GEOMETRY_VERSION: u16 = 1;
+pub const KINEMATIC_GEOMETRY_VERSION: u16 = 2;
+const KINEMATIC_GEOMETRY_VERSION_V1: u16 = 1;
 pub const KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH: f32 = f32::EPSILON;
+const KINEMATIC_WAYPOINT_MIN_ENCODED_BYTES: usize = 4 + 4 + 12;
 const MOVE_MODE_ONCE: u8 = 0;
 const MOVE_MODE_PING_PONG: u8 = 1;
 
@@ -43,6 +46,10 @@ pub struct KinematicMoverRecord {
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u32>,
     pub face_meta: Vec<FaceMeta>,
+    pub spin_axis: [f32; 3],
+    pub spin_speed_deg_s: f32,
+    pub spin_accel_deg_s2: f32,
+    pub carry_yaw: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -58,7 +65,7 @@ impl KinematicGeometrySection {
         buf.extend_from_slice(&self.version.to_le_bytes());
         write_count(&mut buf, self.movers.len());
         for mover in &self.movers {
-            write_mover(&mut buf, mover);
+            write_mover(&mut buf, mover, self.version);
         }
         write_count(&mut buf, self.waypoints.len());
         for waypoint in &self.waypoints {
@@ -72,21 +79,33 @@ impl KinematicGeometrySection {
     pub fn from_bytes(data: &[u8]) -> crate::Result<Self> {
         let mut offset = 0usize;
         let version = read_u16(data, &mut offset, "version")?;
-        if version != KINEMATIC_GEOMETRY_VERSION {
+        if version != KINEMATIC_GEOMETRY_VERSION_V1 && version != KINEMATIC_GEOMETRY_VERSION {
             return invalid_data(format!(
-                "kinematic geometry: unsupported version {version} (expected {KINEMATIC_GEOMETRY_VERSION})"
+                "kinematic geometry: unsupported version {version} (expected 1 or {KINEMATIC_GEOMETRY_VERSION})"
             ));
         }
 
         let mover_count = read_count(data, &mut offset, "mover count")?;
         let mut movers = Vec::with_capacity(mover_count);
         for mover_idx in 0..mover_count {
-            movers.push(read_mover(data, &mut offset, mover_idx)?);
+            movers.push(read_mover(data, &mut offset, mover_idx, version)?);
         }
         validate_unique_mover_ids(&movers)?;
 
         let waypoint_count = read_count(data, &mut offset, "waypoint count")?;
-        let mut waypoints = Vec::with_capacity(waypoint_count);
+        let waypoint_bytes_remaining = data.len().saturating_sub(offset);
+        if waypoint_count > waypoint_bytes_remaining / KINEMATIC_WAYPOINT_MIN_ENCODED_BYTES {
+            return invalid_data(format!(
+                "kinematic geometry: waypoint count {waypoint_count} exceeds the {waypoint_bytes_remaining} bytes remaining"
+            ));
+        }
+        let mut waypoints = Vec::new();
+        waypoints.try_reserve_exact(waypoint_count).map_err(|_| {
+            FormatError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("kinematic geometry: cannot reserve {waypoint_count} waypoints"),
+            ))
+        })?;
         for waypoint_idx in 0..waypoint_count {
             let name = read_string(data, &mut offset, &format!("waypoint {waypoint_idx} name"))?;
             let next = read_string(data, &mut offset, &format!("waypoint {waypoint_idx} next"))?;
@@ -131,7 +150,7 @@ fn validate_unique_mover_ids(movers: &[KinematicMoverRecord]) -> crate::Result<(
     Ok(())
 }
 
-fn write_mover(buf: &mut Vec<u8>, mover: &KinematicMoverRecord) {
+fn write_mover(buf: &mut Vec<u8>, mover: &KinematicMoverRecord, version: u16) {
     buf.extend_from_slice(&mover.mover_id.to_le_bytes());
     write_string(buf, &mover.name);
     write_count(buf, mover.tags.len());
@@ -158,12 +177,20 @@ fn write_mover(buf: &mut Vec<u8>, mover: &KinematicMoverRecord) {
         buf.extend_from_slice(&face.leaf_index.to_le_bytes());
         buf.extend_from_slice(&face.texture_index.to_le_bytes());
     }
+
+    if version == KINEMATIC_GEOMETRY_VERSION {
+        write_vec3(buf, mover.spin_axis);
+        buf.extend_from_slice(&mover.spin_speed_deg_s.to_le_bytes());
+        buf.extend_from_slice(&mover.spin_accel_deg_s2.to_le_bytes());
+        buf.push(if mover.carry_yaw { 1 } else { 0 });
+    }
 }
 
 fn read_mover(
     data: &[u8],
     offset: &mut usize,
     mover_idx: usize,
+    version: u16,
 ) -> crate::Result<KinematicMoverRecord> {
     let mover_id = read_u32(data, offset, &format!("mover {mover_idx} id"))?;
     let name = read_string(data, offset, &format!("mover {mover_idx} name"))?;
@@ -232,9 +259,32 @@ fn read_mover(
         });
     }
 
-    validate_mover_geometry(mover_idx, origin, speed, wait_ms, &vertices, &indices)?;
+    let (spin_axis, spin_speed_deg_s, spin_accel_deg_s2, carry_yaw) =
+        if version == KINEMATIC_GEOMETRY_VERSION {
+            let spin_axis = read_vec3(data, offset, &format!("mover {mover_idx} spin_axis"))?;
+            let spin_speed_deg_s =
+                read_f32(data, offset, &format!("mover {mover_idx} spin_speed_deg_s"))?;
+            let spin_accel_deg_s2 = read_f32(
+                data,
+                offset,
+                &format!("mover {mover_idx} spin_accel_deg_s2"),
+            )?;
+            let carry_yaw_raw = read_u8(data, offset, &format!("mover {mover_idx} carry_yaw"))?;
+            let carry_yaw = match carry_yaw_raw {
+                0 => false,
+                1 => true,
+                value => {
+                    return invalid_data(format!(
+                        "kinematic geometry: mover {mover_idx} has invalid carry_yaw byte {value}"
+                    ));
+                }
+            };
+            (spin_axis, spin_speed_deg_s, spin_accel_deg_s2, carry_yaw)
+        } else {
+            ([0.0; 3], 0.0, 0.0, false)
+        };
 
-    Ok(KinematicMoverRecord {
+    let mover = KinematicMoverRecord {
         mover_id,
         name,
         tags,
@@ -247,7 +297,13 @@ fn read_mover(
         vertices,
         indices,
         face_meta,
-    })
+        spin_axis,
+        spin_speed_deg_s,
+        spin_accel_deg_s2,
+        carry_yaw,
+    };
+    validate_mover_geometry(mover_idx, &mover)?;
+    Ok(mover)
 }
 
 fn write_vertex(buf: &mut Vec<u8>, vertex: &Vertex) {
@@ -350,41 +406,66 @@ fn read_vertex(
     })
 }
 
-fn validate_mover_geometry(
-    mover_idx: usize,
-    origin: [f32; 3],
-    speed: f32,
-    wait_ms: f32,
-    vertices: &[Vertex],
-    indices: &[u32],
-) -> crate::Result<()> {
-    if !origin.iter().all(|component| component.is_finite()) {
+fn validate_mover_geometry(mover_idx: usize, mover: &KinematicMoverRecord) -> crate::Result<()> {
+    if !mover.origin.iter().all(|component| component.is_finite()) {
         return invalid_data(format!(
-            "kinematic geometry: mover {mover_idx} origin is non-finite: {origin:?}"
+            "kinematic geometry: mover {mover_idx} origin is non-finite: {:?}",
+            mover.origin
         ));
     }
-    if !speed.is_finite() || speed <= 0.0 {
+    if !mover.speed.is_finite() || mover.speed <= 0.0 {
         return invalid_data(format!(
-            "kinematic geometry: mover {mover_idx} speed must be finite and positive, got {speed}"
+            "kinematic geometry: mover {mover_idx} speed must be finite and positive, got {}",
+            mover.speed
         ));
     }
-    if !wait_ms.is_finite() || wait_ms < 0.0 {
+    if !mover.wait_ms.is_finite() || mover.wait_ms < 0.0 {
         return invalid_data(format!(
-            "kinematic geometry: mover {mover_idx} wait_ms must be finite and non-negative, got {wait_ms}"
+            "kinematic geometry: mover {mover_idx} wait_ms must be finite and non-negative, got {}",
+            mover.wait_ms
         ));
     }
-    if indices.len() % 3 != 0 {
+    if !mover
+        .spin_axis
+        .iter()
+        .all(|component| component.is_finite())
+    {
+        return invalid_data(format!(
+            "kinematic geometry: mover {mover_idx} spin_axis is non-finite: {:?}",
+            mover.spin_axis
+        ));
+    }
+    if !mover.spin_speed_deg_s.is_finite() {
+        return invalid_data(format!(
+            "kinematic geometry: mover {mover_idx} spin_speed_deg_s must be finite, got {}",
+            mover.spin_speed_deg_s
+        ));
+    }
+    if mover.spin_speed_deg_s != 0.0
+        && Vec3::from_array(mover.spin_axis).normalize_or_zero() == Vec3::ZERO
+    {
+        return invalid_data(format!(
+            "kinematic geometry: mover {mover_idx} has nonzero spin_speed_deg_s but spin_axis normalizes to zero"
+        ));
+    }
+    if !mover.spin_accel_deg_s2.is_finite() || mover.spin_accel_deg_s2 < 0.0 {
+        return invalid_data(format!(
+            "kinematic geometry: mover {mover_idx} spin_accel_deg_s2 must be finite and non-negative, got {}",
+            mover.spin_accel_deg_s2
+        ));
+    }
+    if mover.indices.len() % 3 != 0 {
         return invalid_data(format!(
             "kinematic geometry: mover {mover_idx} index count {} is not divisible by 3",
-            indices.len()
+            mover.indices.len()
         ));
     }
-    if vertices.is_empty() || indices.is_empty() {
+    if mover.vertices.is_empty() || mover.indices.is_empty() {
         return invalid_data(format!(
             "kinematic geometry: mover {mover_idx} geometry must contain vertices and indices"
         ));
     }
-    for (vertex_idx, vertex) in vertices.iter().enumerate() {
+    for (vertex_idx, vertex) in mover.vertices.iter().enumerate() {
         if !vertex
             .position
             .iter()
@@ -407,11 +488,11 @@ fn validate_mover_geometry(
             ));
         }
     }
-    for (index_idx, &vertex_index) in indices.iter().enumerate() {
-        if vertex_index as usize >= vertices.len() {
+    for (index_idx, &vertex_index) in mover.indices.iter().enumerate() {
+        if vertex_index as usize >= mover.vertices.len() {
             return invalid_data(format!(
                 "kinematic geometry: mover {mover_idx} index {index_idx} references vertex {vertex_index} out of range for {} vertices",
-                vertices.len()
+                mover.vertices.len()
             ));
         }
     }
@@ -561,6 +642,10 @@ mod tests {
                     leaf_index: 0,
                     texture_index: 3,
                 }],
+                spin_axis: [0.0, 1.0, 0.0],
+                spin_speed_deg_s: 90.0,
+                spin_accel_deg_s2: 45.0,
+                carry_yaw: true,
             }],
             waypoints: vec![
                 KinematicWaypointRecord {
@@ -578,7 +663,7 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_preserves_records() {
+    fn v2_round_trip_preserves_records() {
         let section = sample_section();
         let restored = KinematicGeometrySection::from_bytes(&section.to_bytes()).unwrap();
         assert_eq!(section, restored);
@@ -588,11 +673,70 @@ mod tests {
     fn empty_section_round_trips_with_version_and_zero_counts() {
         let section = KinematicGeometrySection::default();
         let bytes = section.to_bytes();
-        assert_eq!(bytes, vec![1, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(bytes, vec![2, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(
             KinematicGeometrySection::from_bytes(&bytes).unwrap(),
             section
         );
+    }
+
+    #[test]
+    fn rejects_unsupported_section_version() {
+        let bytes = vec![3, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let error = KinematicGeometrySection::from_bytes(&bytes)
+            .expect_err("unsupported kinematic geometry section versions must reject");
+        assert!(error.to_string().contains("expected 1 or 2"));
+    }
+
+    #[test]
+    fn v1_fixture_decodes_with_default_spin_fields_and_exact_legacy_bytes() {
+        let section = v1_fixture_section();
+        let fixture = exact_v1_fixture();
+        assert_eq!(section.to_bytes(), fixture);
+
+        let restored = KinematicGeometrySection::from_bytes(&fixture).unwrap();
+        assert_eq!(restored.version, KINEMATIC_GEOMETRY_VERSION_V1);
+        assert_eq!(restored.movers.len(), 1);
+        assert_eq!(restored.movers[0].spin_axis, [0.0; 3]);
+        assert_eq!(restored.movers[0].spin_speed_deg_s, 0.0);
+        assert_eq!(restored.movers[0].spin_accel_deg_s2, 0.0);
+        assert!(!restored.movers[0].carry_yaw);
+    }
+
+    #[test]
+    fn v2_appends_spin_fields_after_legacy_mover_payload() {
+        let v1 = v1_fixture_section();
+        let v1_bytes = v1.to_bytes();
+        let mover_end = v1_bytes.len() - 4; // final v1 waypoint count
+
+        let mut v2 = v1;
+        v2.version = KINEMATIC_GEOMETRY_VERSION;
+        v2.movers[0].spin_axis = [1.0, 2.0, 3.0];
+        v2.movers[0].spin_speed_deg_s = -90.0;
+        v2.movers[0].spin_accel_deg_s2 = 12.5;
+        v2.movers[0].carry_yaw = true;
+        let v2_bytes = v2.to_bytes();
+
+        let mut expected_append = Vec::new();
+        for component in [1.0f32, 2.0, 3.0] {
+            expected_append.extend_from_slice(&component.to_le_bytes());
+        }
+        expected_append.extend_from_slice(&(-90.0f32).to_le_bytes());
+        expected_append.extend_from_slice(&12.5f32.to_le_bytes());
+        expected_append.push(1);
+
+        assert_eq!(&v2_bytes[..2], &[2, 0]);
+        assert_eq!(&v2_bytes[2..mover_end], &v1_bytes[2..mover_end]);
+        assert_eq!(
+            &v2_bytes[mover_end..mover_end + expected_append.len()],
+            expected_append.as_slice()
+        );
+        assert_eq!(
+            &v2_bytes[mover_end + expected_append.len()..],
+            &v1_bytes[mover_end..]
+        );
+        assert_eq!(v2_bytes.len(), v1_bytes.len() + 21);
+        assert_eq!(KinematicGeometrySection::from_bytes(&v2_bytes).unwrap(), v2);
     }
 
     #[test]
@@ -618,6 +762,77 @@ mod tests {
         let index = find_first_move_mode_and_bool_offset(&bytes).1;
         bytes[index] = 2;
         assert!(KinematicGeometrySection::from_bytes(&bytes).is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_v2_carry_yaw_bool() {
+        let mut bytes = sample_section().to_bytes();
+        let index = find_first_mover_v2_append_offset(&bytes) + 20;
+        bytes[index] = 2;
+        assert!(KinematicGeometrySection::from_bytes(&bytes).is_err());
+    }
+
+    #[test]
+    fn rejects_truncated_v2_spin_append() {
+        let mut bytes = sample_section().to_bytes();
+        let append_offset = find_first_mover_v2_append_offset(&bytes);
+        bytes.truncate(append_offset + 20);
+        assert!(KinematicGeometrySection::from_bytes(&bytes).is_err());
+    }
+
+    #[test]
+    fn rejects_v2_spin_axis_as_impossible_v1_waypoint_count() {
+        let mut section = sample_section();
+        section.movers[0].spin_axis = [1.0, 0.0, 0.0];
+        let mut bytes = section.to_bytes();
+        bytes[..2].copy_from_slice(&KINEMATIC_GEOMETRY_VERSION_V1.to_le_bytes());
+
+        let error = KinematicGeometrySection::from_bytes(&bytes)
+            .expect_err("a v2 body marked v1 must reject before waypoint allocation");
+
+        assert!(error.to_string().contains("waypoint count"));
+    }
+
+    #[test]
+    fn rejects_non_finite_v2_spin_values() {
+        let append_offset = find_first_mover_v2_append_offset(&sample_section().to_bytes());
+
+        for (field_offset, value) in [
+            (0usize, f32::NAN),
+            (12usize, f32::NAN),
+            (16usize, f32::INFINITY),
+        ] {
+            let mut bytes = sample_section().to_bytes();
+            bytes[append_offset + field_offset..append_offset + field_offset + 4]
+                .copy_from_slice(&value.to_le_bytes());
+            assert!(KinematicGeometrySection::from_bytes(&bytes).is_err());
+        }
+    }
+
+    #[test]
+    fn rejects_v2_nonzero_spin_with_axis_that_normalizes_to_zero() {
+        for spin_axis in [[0.0; 3], [f32::MIN_POSITIVE; 3]] {
+            let mut section = sample_section();
+            section.movers[0].spin_axis = spin_axis;
+            section.movers[0].spin_speed_deg_s = 90.0;
+
+            let error = KinematicGeometrySection::from_bytes(&section.to_bytes())
+                .expect_err("nonzero v2 spin requires a normalizable axis");
+
+            assert!(error.to_string().contains("spin_axis normalizes to zero"));
+        }
+    }
+
+    #[test]
+    fn accepts_v2_zero_spin_with_zero_axis_for_delayed_or_disabled_spin() {
+        let mut section = sample_section();
+        section.movers[0].spin_axis = [0.0; 3];
+        section.movers[0].spin_speed_deg_s = 0.0;
+
+        let restored = KinematicGeometrySection::from_bytes(&section.to_bytes()).unwrap();
+
+        assert_eq!(restored.movers[0].spin_axis, [0.0; 3]);
+        assert_eq!(restored.movers[0].spin_speed_deg_s, 0.0);
     }
 
     #[test]
@@ -673,6 +888,78 @@ mod tests {
         offset += 4; // speed
         offset += 4; // wait
         (offset, offset + 1)
+    }
+
+    fn find_first_mover_v2_append_offset(bytes: &[u8]) -> usize {
+        let mut offset = find_first_move_mode_and_bool_offset(bytes).1 + 1;
+        let vertex_count = read_u32_for_test(bytes, &mut offset) as usize;
+        offset += vertex_count * 36;
+        let index_count = read_u32_for_test(bytes, &mut offset) as usize;
+        offset += index_count * 4;
+        let face_count = read_u32_for_test(bytes, &mut offset) as usize;
+        offset + face_count * 8
+    }
+
+    fn v1_fixture_section() -> KinematicGeometrySection {
+        KinematicGeometrySection {
+            version: KINEMATIC_GEOMETRY_VERSION_V1,
+            movers: vec![KinematicMoverRecord {
+                mover_id: 7,
+                name: "m".to_string(),
+                tags: Vec::new(),
+                origin: [0.0; 3],
+                path: "p".to_string(),
+                speed: 1.0,
+                wait_ms: 0.0,
+                move_mode: MOVE_MODE_ONCE,
+                start_on_spawn: true,
+                vertices: vec![
+                    Vertex {
+                        position: [0.0; 3],
+                        uv: [0.0; 2],
+                        normal_oct: [0; 2],
+                        tangent_packed: [0; 2],
+                        lightmap_uv: [0; 2],
+                        lightmap_layer: 0,
+                        _padding: 0,
+                    };
+                    3
+                ],
+                indices: vec![0, 1, 2],
+                face_meta: Vec::new(),
+                spin_axis: [1.0, 2.0, 3.0],
+                spin_speed_deg_s: 90.0,
+                spin_accel_deg_s2: 10.0,
+                carry_yaw: true,
+            }],
+            waypoints: Vec::new(),
+        }
+    }
+
+    fn exact_v1_fixture() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&7u32.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.push(b'm');
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&[0; 12]);
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.push(b'p');
+        bytes.extend_from_slice(&1.0f32.to_le_bytes());
+        bytes.extend_from_slice(&0.0f32.to_le_bytes());
+        bytes.push(MOVE_MODE_ONCE);
+        bytes.push(1);
+        bytes.extend_from_slice(&3u32.to_le_bytes());
+        bytes.extend_from_slice(&[0; 36 * 3]);
+        bytes.extend_from_slice(&3u32.to_le_bytes());
+        for index in 0..3u32 {
+            bytes.extend_from_slice(&index.to_le_bytes());
+        }
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes
     }
 
     fn skip_string(bytes: &[u8], offset: &mut usize) {

@@ -30,6 +30,10 @@ mod impact_policy;
 mod input;
 mod kinematic_mover;
 mod movement;
+// App-side debug-line geometry for rotating kinematic movers. This owns no GPU
+// state; the renderer only consumes its emitted lines.
+#[cfg(feature = "dev-tools")]
+mod mover_diagnostics;
 // The runtime nav graph is built in every build whenever a level carries a
 // baked navmesh; pathfinding consumes its query surface.
 mod nav;
@@ -625,6 +629,10 @@ pub(crate) struct App {
     /// Live fixed-tick mover poses, published before player movement consumes
     /// the combined collision query.
     kinematic_mover_tick_states: kinematic_mover::MoverTickStateTable,
+    /// Owning pawn ground reference captured at the start of the exact tick
+    /// that consumed the pending mover pose delta. The next Input stage uses
+    /// it to gate that delta's yaw carry.
+    mover_yaw_carry_ground: postretro_foundation::GroundRef,
     /// Render-stage CPU collector for loaded kinematic mover brush instances.
     kinematic_mover_render: runtime_movers::KinematicMoverRenderCollector,
     /// Per-level trigger event bindings resolved from the final composed
@@ -870,6 +878,121 @@ fn gameplay_capture_gate_for_frame(
 ) -> bool {
     ui_captured_gameplay_at_frame_start
         || modal_stack.top_capture_mode() == postretro_ui::descriptor::CaptureMode::Capture
+}
+
+fn world_up_yaw_delta(tick_rotation_delta: Quat) -> f32 {
+    if !tick_rotation_delta.is_finite() || tick_rotation_delta.length_squared() <= 1.0e-12 {
+        return 0.0;
+    }
+    let rotation = tick_rotation_delta.normalize();
+    let twist_length = (rotation.w * rotation.w + rotation.y * rotation.y).sqrt();
+    if twist_length <= 1.0e-6 {
+        return 0.0;
+    }
+
+    let yaw = 2.0 * (rotation.y / twist_length).atan2(rotation.w / twist_length);
+    (yaw + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI
+}
+
+fn yaw_after_mover_carry(camera_yaw: f32, carry_yaw: bool, tick_rotation_delta: Quat) -> f32 {
+    if carry_yaw {
+        camera_yaw + world_up_yaw_delta(tick_rotation_delta)
+    } else {
+        camera_yaw
+    }
+}
+
+/// Carry only the owning player's upright view from its prior mover pose.
+/// Input runs before this tick's mover update, so the pose and captured ground
+/// reference both belong to the exact preceding tick.
+fn apply_mover_yaw_carry(
+    camera: &mut Camera,
+    carry_ground: postretro_foundation::GroundRef,
+    mover_states: &kinematic_mover::MoverTickStateTable,
+) {
+    let postretro_foundation::GroundRef::Mover(mover_id) = carry_ground else {
+        return;
+    };
+    let Some(pose) = mover_states.get(mover_id) else {
+        return;
+    };
+
+    camera.yaw = yaw_after_mover_carry(camera.yaw, pose.carry_yaw, pose.tick_rotation_delta);
+}
+
+/// Presentation-only fraction of the mover rotation that the next input seam will
+/// commit in full. The simulation-facing camera yaw and `facing_yaw` remain settled
+/// at fixed-tick boundaries.
+fn mover_yaw_render_residual(
+    carry_ground: postretro_foundation::GroundRef,
+    mover_states: &kinematic_mover::MoverTickStateTable,
+    alpha: f32,
+) -> f32 {
+    let postretro_foundation::GroundRef::Mover(mover_id) = carry_ground else {
+        return 0.0;
+    };
+    let Some(pose) = mover_states.get(mover_id) else {
+        return 0.0;
+    };
+    if !pose.carry_yaw {
+        return 0.0;
+    }
+
+    world_up_yaw_delta(pose.tick_rotation_delta) * alpha.clamp(0.0, 1.0)
+}
+
+fn effective_render_yaw(
+    settled_camera_yaw: f32,
+    carry_ground: postretro_foundation::GroundRef,
+    mover_states: &kinematic_mover::MoverTickStateTable,
+    alpha: f32,
+) -> f32 {
+    settled_camera_yaw + mover_yaw_render_residual(carry_ground, mover_states, alpha)
+}
+
+/// Reconcile the mover pose table at the same seam that owns camera yaw. The
+/// start-of-tick correction preserves the rider's camera-to-platform offset;
+/// the refreshed tick delta is then committed once by the ordinary input seam.
+fn apply_authoritative_mover_corrections(
+    camera: &mut camera::Camera,
+    carry_ground: postretro_foundation::GroundRef,
+    mover_states: &mut kinematic_mover::MoverTickStateTable,
+    corrections: &[netcode::MoverCorrection],
+) {
+    for correction in corrections {
+        let authoritative = correction.authoritative_state;
+        let previous = mover_states.get(correction.mover_id).copied();
+        if carry_ground == postretro_foundation::GroundRef::Mover(correction.mover_id)
+            && authoritative.carry_yaw
+            && let Some(previous) = previous
+        {
+            let predicted_tick_start =
+                previous.tick_rotation_delta.inverse() * previous.transform.rotation;
+            let authoritative_tick_start =
+                authoritative.tick_rotation_delta.inverse() * authoritative.transform.rotation;
+            let start_correction = authoritative_tick_start * predicted_tick_start.inverse();
+            camera.yaw += world_up_yaw_delta(start_correction);
+        }
+        mover_states.publish(correction.mover_id, authoritative);
+    }
+}
+
+fn camera_right_for_yaw(yaw: f32) -> Vec3 {
+    Vec3::new(yaw.cos(), 0.0, -yaw.sin())
+}
+
+fn local_player_ground(
+    registry: &postretro_entities::EntityRegistry,
+) -> postretro_foundation::GroundRef {
+    followed_player_pawn(registry)
+        .and_then(|pawn| {
+            registry
+                .get_component::<postretro_foundation::PlayerMovementComponent>(pawn)
+                .ok()
+        })
+        .map_or(postretro_foundation::GroundRef::Airborne, |movement| {
+            movement.ground
+        })
 }
 
 fn build_sim_command(
@@ -2037,6 +2160,15 @@ impl ApplicationHandler for App {
                                     .insert(trigger_system::PlayerId::Local(pawn), true);
                             }
                         }
+                        {
+                            let registry = script_ctx.registry.borrow();
+                            apply_mover_yaw_carry(
+                                &mut self.camera,
+                                self.mover_yaw_carry_ground,
+                                &self.kinematic_mover_tick_states,
+                            );
+                            self.mover_yaw_carry_ground = local_player_ground(&registry);
+                        }
                         let command = build_sim_command(
                             snapshot,
                             &self.camera,
@@ -2238,6 +2370,14 @@ impl ApplicationHandler for App {
                 }
 
                 let host_owner_state_projected = self.host_owner_state_projection_due();
+                // Regression: a turntable's transform slerps through this tick while
+                // carry_yaw previously held the local view until the next input seam.
+                let render_camera_yaw = effective_render_yaw(
+                    self.camera.yaw,
+                    self.mover_yaw_carry_ground,
+                    &self.kinematic_mover_tick_states,
+                    frame_result.alpha,
+                );
 
                 // Task 6 client remote interpolation: sample each remote entity's
                 // buffer at `estimated_server_tick - interpolation_delay` and write the
@@ -2251,7 +2391,7 @@ impl ApplicationHandler for App {
                 // generate renderer-facing pose inputs here from the freshly
                 // interpolated displayed transforms. These transient mesh fields
                 // are client presentation only and never enter replication.
-                self.update_client_presentation_pose_inputs(frame_anim_time);
+                self.update_client_presentation_pose_inputs(frame_anim_time, render_camera_yaw);
                 self.run_client_fire_path_post_loop(
                     gameplay_snapshot.as_ref(),
                     zero_tick_fire_snapshot.as_ref(),
@@ -2519,10 +2659,12 @@ impl ApplicationHandler for App {
                 // The evaluator owns the integrator state (`self.view_feel_state`)
                 // and never sees the camera basis; we derive its two velocity-space
                 // inputs from the pawn velocity and the camera RIGHT vector here,
-                // then map its scalar output back onto that basis. `camera.right()`
-                // is the yaw-derived, Y-free, unit-length right vector the
-                // `view_feel_inputs`/`map_output_to_camera` helpers expect.
-                let camera_right = self.camera.right();
+                // then map its scalar output back onto that basis. The same
+                // carry-yaw-adjusted render angle that enters `RenderCamera` below
+                // supplies the yaw-derived, Y-free, unit-length right vector that
+                // `view_feel_inputs`/`map_output_to_camera` expect, so view feel and
+                // the view matrix do not disagree during a sub-tick turntable rotation.
+                let camera_right = camera_right_for_yaw(render_camera_yaw);
                 // Match the camera-follow resolver above: marked local pawn
                 // first, then the legacy first PlayerMovement+Transform
                 // fallback. View feel only runs when that driving pawn carries
@@ -2577,7 +2719,7 @@ impl ApplicationHandler for App {
                 let render_camera = camera::RenderCamera::new(
                     presented_eye,
                     self.camera.aspect(),
-                    self.camera.yaw + vf_yaw_offset,
+                    render_camera_yaw + vf_yaw_offset,
                     self.camera.pitch + vf_pitch_offset,
                     vf_roll,
                     vf_eye_offset,
@@ -3119,6 +3261,17 @@ impl ApplicationHandler for App {
                         // and the map carried a baked navmesh.
                         if let Some(nav_graph) = self.nav_graph.as_ref() {
                             render::nav_diagnostics::emit(renderer, nav_graph);
+                        }
+                        // Rotating-mover spin axes and orientation. The app owns the
+                        // registry read and line geometry; renderer only consumes the
+                        // established debug-line primitive.
+                        if session
+                            .debug_ui
+                            .as_ref()
+                            .is_some_and(|debug_ui| debug_ui.is_visible())
+                        {
+                            let registry = script_ctx.registry.borrow();
+                            mover_diagnostics::emit(renderer, &registry);
                         }
                         // All-agent path/velocity/destination overlay. The
                         // registry was read once before egui; this emit pass
@@ -4605,8 +4758,9 @@ impl App {
                         // so it is in the replicable set before `net_serialize_and_send`
                         // runs `host_replicate` post-loop and the pawn lands in the first
                         // snapshot. `SlotEvent::Accepted` never reaches `poll.lifecycle`
-                        // (the transport discards it at `on_accept`); lifecycle carries
-                        // `Closed` only. Both paths mutate the registry, so take one
+                        // (`HandshakeOutcome::Accepted` is the accept lane); lifecycle
+                        // carries `Closed` only, including map-fingerprint closes retained
+                        // between polls. Both paths mutate the registry, so take one
                         // game-logic-owned borrow when either has work.
                         if !poll.handshakes.is_empty() || !poll.lifecycle.is_empty() {
                             let mut registry = script_ctx.registry.borrow_mut();
@@ -4746,29 +4900,37 @@ impl App {
                 // disjoint RefCells; both borrows coexist for the duration of the apply.
                 let mut registry = script_ctx.registry.borrow_mut();
                 let mut slot_table = script_ctx.slot_table.borrow_mut();
-                let combined_collision = collision::moving::CombinedCollisionWorld::new(
-                    collision_world,
-                    &self.kinematic_mover_colliders,
-                    &self.kinematic_mover_tick_states,
-                );
                 let mover_target_tick = time_sync
                     .estimated_server_tick()
                     .map(|tick| tick.floor().clamp(0.0, f64::from(u32::MAX)) as u32);
-                let apply_outcome = netcode::client_receive_and_apply(
-                    &mut registry,
-                    &mut slot_table,
-                    client,
-                    replication,
-                    state_slots,
-                    prediction,
-                    &net_descriptors,
-                    hit_zone_store,
-                    host_agent_params,
-                    &combined_collision,
-                    gravity,
-                    crate::frame_timing::TICK_DURATION.as_secs_f32(),
-                    dt,
-                    mover_target_tick,
+                let apply_outcome = {
+                    let combined_collision = collision::moving::CombinedCollisionWorld::new(
+                        collision_world,
+                        &self.kinematic_mover_colliders,
+                        &self.kinematic_mover_tick_states,
+                    );
+                    netcode::client_receive_and_apply(
+                        &mut registry,
+                        &mut slot_table,
+                        client,
+                        replication,
+                        state_slots,
+                        prediction,
+                        &net_descriptors,
+                        hit_zone_store,
+                        host_agent_params,
+                        &combined_collision,
+                        gravity,
+                        crate::frame_timing::TICK_DURATION.as_secs_f32(),
+                        dt,
+                        mover_target_tick,
+                    )
+                };
+                apply_authoritative_mover_corrections(
+                    &mut self.camera,
+                    self.mover_yaw_carry_ground,
+                    &mut self.kinematic_mover_tick_states,
+                    &apply_outcome.mover_corrections,
                 );
                 if apply_outcome.owner_private_weapon_cooldown_fresh {
                     if let Some(state) = self.client_weapon_state.as_mut() {
@@ -5111,7 +5273,11 @@ impl App {
         self.remote_player_presentation = presentation;
     }
 
-    fn update_client_presentation_pose_inputs(&mut self, frame_anim_time: f64) {
+    fn update_client_presentation_pose_inputs(
+        &mut self,
+        frame_anim_time: f64,
+        render_camera_yaw: f32,
+    ) {
         if !self.is_connected_client() {
             return;
         }
@@ -5128,7 +5294,7 @@ impl App {
                 netcode::NetEndpoint::Host { .. } => None,
             })
             .unwrap_or_default();
-        let camera_aim = (self.camera.pitch, self.camera.yaw);
+        let camera_aim = (self.camera.pitch, render_camera_yaw);
         let mut registry = session.scripting.script_ctx.registry.borrow_mut();
         sim::update_presentation_pose_inputs(
             &mut registry,
@@ -5908,6 +6074,391 @@ mod tests {
         // The lifecycle gate still suppresses the save before commit/restore.
         assert!(!should_save_persisted_state(false, false));
         assert!(!should_save_persisted_state(false, true));
+    }
+
+    fn mover_yaw_states(
+        carry_yaw: bool,
+        tick_rotation_delta: Quat,
+    ) -> kinematic_mover::MoverTickStateTable {
+        use postretro_entities::Transform;
+
+        let mut mover_states = kinematic_mover::MoverTickStateTable::default();
+        mover_states.publish(
+            7,
+            kinematic_mover::MoverTickState {
+                entity: postretro_entities::EntityId::from_raw(0),
+                transform: Transform::default(),
+                linear_velocity: Vec3::ZERO,
+                tick_delta: Vec3::ZERO,
+                angular_velocity: Vec3::Y,
+                tick_rotation_delta,
+                carry_yaw,
+                tick_dt: 1.0 / 60.0,
+            },
+        );
+        mover_states
+    }
+
+    // Regression: rotating-mover carry held the camera until the next tick while the
+    // platform slerped immediately, producing a periodic camera/platform yaw jitter.
+    #[test]
+    fn mover_yaw_render_residual_tracks_platform_slerp_through_tick_boundaries() {
+        const EPS: f32 = 1.0e-6;
+        let tick_yaw = 0.25;
+        let mover_states = mover_yaw_states(true, Quat::from_rotation_y(tick_yaw));
+        let settled_yaw = 0.8;
+
+        for (alpha, expected) in [
+            (0.0, settled_yaw),
+            (0.25, settled_yaw + tick_yaw * 0.25),
+            (0.5, settled_yaw + tick_yaw * 0.5),
+            (0.75, settled_yaw + tick_yaw * 0.75),
+            (1.0, settled_yaw + tick_yaw),
+        ] {
+            let render_yaw = effective_render_yaw(
+                settled_yaw,
+                postretro_foundation::GroundRef::Mover(7),
+                &mover_states,
+                alpha,
+            );
+            assert!(
+                (render_yaw - expected).abs() <= EPS,
+                "alpha {alpha} should keep the camera locked to the interpolated platform"
+            );
+        }
+
+        let yaw_at_tick_end = effective_render_yaw(
+            settled_yaw,
+            postretro_foundation::GroundRef::Mover(7),
+            &mover_states,
+            1.0,
+        );
+        let yaw_at_next_tick_start = effective_render_yaw(
+            settled_yaw + tick_yaw,
+            postretro_foundation::GroundRef::Mover(7),
+            &mover_states,
+            0.0,
+        );
+        assert!(
+            (yaw_at_tick_end - yaw_at_next_tick_start).abs() <= EPS,
+            "the next fixed-tick carry must absorb the full prior residual"
+        );
+        assert!(
+            (settled_yaw - 0.8).abs() <= EPS,
+            "render presentation must not mutate fixed-tick camera yaw"
+        );
+
+        let render_right = camera_right_for_yaw(yaw_at_tick_end);
+        let expected_right = Vec3::new(yaw_at_tick_end.cos(), 0.0, -yaw_at_tick_end.sin());
+        assert!(
+            (render_right - expected_right).length() <= EPS,
+            "view-facing render calculations must use the same carry-adjusted yaw"
+        );
+
+        let raw_view =
+            camera::RenderCamera::new(Vec3::ZERO, 16.0 / 9.0, settled_yaw, 0.0, 0.0, Vec3::ZERO)
+                .view_projection;
+        let carried_view = camera::RenderCamera::new(
+            Vec3::ZERO,
+            16.0 / 9.0,
+            yaw_at_tick_end,
+            0.0,
+            0.0,
+            Vec3::ZERO,
+        )
+        .view_projection;
+        assert!(
+            raw_view
+                .to_cols_array()
+                .iter()
+                .zip(carried_view.to_cols_array())
+                .any(|(raw, carried)| (raw - carried).abs() > EPS),
+            "the carry-adjusted yaw must reach render-camera construction"
+        );
+    }
+
+    #[test]
+    fn mover_yaw_render_residual_excludes_disabled_and_non_upright_rotation() {
+        const EPS: f32 = 1.0e-6;
+        let disabled = mover_yaw_states(false, Quat::from_rotation_y(0.5));
+        let tilted = mover_yaw_states(true, Quat::from_rotation_x(0.5));
+
+        for mover_states in [&disabled, &tilted] {
+            assert!(
+                mover_yaw_render_residual(
+                    postretro_foundation::GroundRef::Mover(7),
+                    mover_states,
+                    0.75,
+                )
+                .abs()
+                    <= EPS
+            );
+        }
+    }
+
+    #[test]
+    fn mover_yaw_render_residual_uses_only_the_current_catch_up_tick() {
+        const EPS: f32 = 1.0e-6;
+        let prior_carry = 0.1 + 0.2;
+        let current_tick_yaw = 0.4;
+        let mover_states = mover_yaw_states(true, Quat::from_rotation_y(current_tick_yaw));
+
+        let render_yaw = effective_render_yaw(
+            0.3 + prior_carry,
+            postretro_foundation::GroundRef::Mover(7),
+            &mover_states,
+            0.5,
+        );
+        assert!(
+            (render_yaw - (0.3 + prior_carry + current_tick_yaw * 0.5)).abs() <= EPS,
+            "a catch-up frame must retain only the final current-tick residual"
+        );
+    }
+
+    // Regression: mover reconciliation replaced phase/Transform but left the live
+    // carry table stale, permanently offsetting an owning camera from its platform.
+    #[test]
+    fn authoritative_mover_correction_refreshes_zero_tick_yaw_and_commits_once() {
+        use postretro_entities::{EntityId, Transform};
+        use postretro_foundation::GroundRef;
+
+        const EPS: f32 = 1.0e-6;
+        let entity = EntityId::from_raw(0);
+        let mut mover_states = kinematic_mover::MoverTickStateTable::default();
+        mover_states.publish(
+            7,
+            kinematic_mover::MoverTickState {
+                entity,
+                transform: Transform {
+                    rotation: Quat::from_rotation_y(0.6),
+                    ..Transform::default()
+                },
+                linear_velocity: Vec3::ZERO,
+                tick_delta: Vec3::ZERO,
+                angular_velocity: Vec3::Y * 0.2,
+                tick_rotation_delta: Quat::from_rotation_y(0.2),
+                carry_yaw: true,
+                tick_dt: 1.0,
+            },
+        );
+        let authoritative = kinematic_mover::MoverTickState {
+            entity,
+            transform: Transform {
+                rotation: Quat::from_rotation_y(0.35),
+                ..Transform::default()
+            },
+            linear_velocity: Vec3::ZERO,
+            tick_delta: Vec3::ZERO,
+            angular_velocity: Vec3::Y * 0.25,
+            tick_rotation_delta: Quat::from_rotation_y(0.25),
+            carry_yaw: true,
+            tick_dt: 1.0,
+        };
+        let correction = netcode::MoverCorrection {
+            network_id: postretro_net::wire::NetworkId(70),
+            mover_id: 7,
+            magnitude: 0.0,
+            authoritative_state: authoritative,
+        };
+        let mut camera = Camera::new(Vec3::ZERO, 1.0, 0.0);
+
+        apply_authoritative_mover_corrections(
+            &mut camera,
+            GroundRef::Mover(7),
+            &mut mover_states,
+            &[correction],
+        );
+
+        assert!(
+            (camera.yaw - 0.7).abs() <= EPS,
+            "the -0.3 rad authoritative start-phase correction applies once"
+        );
+        assert!(
+            (effective_render_yaw(camera.yaw, GroundRef::Mover(7), &mover_states, 0.5,) - 0.825)
+                .abs()
+                <= EPS,
+            "a zero-tick render must use the refreshed authoritative residual"
+        );
+
+        apply_mover_yaw_carry(&mut camera, GroundRef::Mover(7), &mover_states);
+        assert!(
+            (camera.yaw - 0.95).abs() <= EPS,
+            "the ordinary input seam commits only the authoritative tick delta"
+        );
+        apply_authoritative_mover_corrections(
+            &mut camera,
+            GroundRef::Mover(7),
+            &mut mover_states,
+            &[correction],
+        );
+        assert!(
+            (camera.yaw - 0.95).abs() <= EPS,
+            "reapplying the same authority cannot duplicate its correction"
+        );
+    }
+
+    #[test]
+    fn authoritative_mover_correction_preserves_carry_yaw_off_camera_authority() {
+        use postretro_entities::{EntityId, Transform};
+        use postretro_foundation::GroundRef;
+
+        let entity = EntityId::from_raw(0);
+        let mut mover_states = mover_yaw_states(false, Quat::from_rotation_y(0.2));
+        let correction = netcode::MoverCorrection {
+            network_id: postretro_net::wire::NetworkId(70),
+            mover_id: 7,
+            magnitude: 0.0,
+            authoritative_state: kinematic_mover::MoverTickState {
+                entity,
+                transform: Transform {
+                    rotation: Quat::from_rotation_y(1.0),
+                    ..Transform::default()
+                },
+                linear_velocity: Vec3::ZERO,
+                tick_delta: Vec3::ZERO,
+                angular_velocity: Vec3::Y,
+                tick_rotation_delta: Quat::from_rotation_y(0.4),
+                carry_yaw: false,
+                tick_dt: 1.0,
+            },
+        };
+        let mut camera = Camera::new(Vec3::ZERO, 0.6, -0.2);
+
+        apply_authoritative_mover_corrections(
+            &mut camera,
+            GroundRef::Mover(7),
+            &mut mover_states,
+            &[correction],
+        );
+
+        assert!((camera.yaw - 0.6).abs() <= 1.0e-6);
+        assert!((camera.pitch + 0.2).abs() <= 1.0e-6);
+        assert!(mover_yaw_render_residual(GroundRef::Mover(7), &mover_states, 1.0).abs() <= 1.0e-6);
+    }
+
+    #[test]
+    fn mover_yaw_carry_uses_only_world_up_rotation_when_enabled() {
+        const EPS: f32 = 1.0e-6;
+        let camera_yaw = 0.4;
+        let world_up_spin = glam::Quat::from_rotation_y(0.25);
+
+        assert!(
+            (yaw_after_mover_carry(camera_yaw, true, world_up_spin) - 0.65).abs() <= EPS,
+            "carry_yaw should add the mover's upright rotation"
+        );
+        assert!(
+            (world_up_yaw_delta(glam::Quat::from_rotation_x(0.25))).abs() <= EPS
+                && (world_up_yaw_delta(glam::Quat::from_rotation_z(-0.25))).abs() <= EPS,
+            "pitch and roll must never tilt or yaw the upright FPS camera"
+        );
+    }
+
+    #[test]
+    fn mover_yaw_carry_disabled_leaves_view_and_aim_unchanged() {
+        const EPS: f32 = 1.0e-6;
+        let mut camera = Camera::new(Vec3::new(2.0, 3.0, 4.0), 0.4, -0.2);
+        let before_aim = camera.aim_ray();
+        let before_pitch = camera.pitch;
+
+        camera.yaw = yaw_after_mover_carry(camera.yaw, false, glam::Quat::from_rotation_y(0.75));
+
+        assert!((camera.yaw - 0.4).abs() <= EPS);
+        assert!((camera.pitch - before_pitch).abs() <= EPS);
+        assert!((camera.aim_ray().0 - before_aim.0).length() <= EPS);
+        assert!((camera.aim_ray().1 - before_aim.1).length() <= EPS);
+    }
+
+    #[test]
+    fn mover_yaw_carry_reads_the_captured_tick_start_ground_and_prior_pose() {
+        use postretro_entities::{EntityRegistry, Transform};
+        use postretro_foundation::{GroundRef, PlayerMovementComponent};
+
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let mut movement = PlayerMovementComponent::from_descriptor(&minimal_player_descriptor());
+        movement.ground = GroundRef::Mover(7);
+        registry
+            .set_component(pawn, movement)
+            .expect("test pawn accepts movement state");
+        registry
+            .mark_local_player_pawn(pawn)
+            .expect("test pawn is the camera owner");
+
+        let mut mover_states = kinematic_mover::MoverTickStateTable::default();
+        mover_states.publish(
+            7,
+            kinematic_mover::MoverTickState {
+                entity: pawn,
+                transform: Transform::default(),
+                linear_velocity: Vec3::ZERO,
+                tick_delta: Vec3::ZERO,
+                angular_velocity: Vec3::Y,
+                tick_rotation_delta: glam::Quat::from_rotation_y(0.25),
+                carry_yaw: true,
+                tick_dt: 1.0 / 60.0,
+            },
+        );
+        let mut camera = Camera::new(Vec3::ZERO, 0.4, -0.2);
+
+        apply_mover_yaw_carry(&mut camera, GroundRef::Mover(7), &mover_states);
+
+        assert!((camera.yaw - 0.65).abs() <= 1.0e-6);
+        assert!(
+            (camera.pitch - -0.2).abs() <= 1.0e-6,
+            "yaw carry keeps the camera upright"
+        );
+    }
+
+    // Regression: settled post-tick ground incorrectly granted landing carry
+    // and dropped the final carry on a jump/detach tick.
+    #[test]
+    fn mover_yaw_carry_eligibility_uses_the_position_carry_ticks_start_ground() {
+        use postretro_entities::{EntityRegistry, Transform};
+        use postretro_foundation::{GroundRef, PlayerMovementComponent};
+
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let mut movement = PlayerMovementComponent::from_descriptor(&minimal_player_descriptor());
+        movement.ground = GroundRef::Mover(7);
+        registry.set_component(pawn, movement).unwrap();
+        registry.mark_local_player_pawn(pawn).unwrap();
+
+        let mut mover_states = kinematic_mover::MoverTickStateTable::default();
+        mover_states.publish(
+            7,
+            kinematic_mover::MoverTickState {
+                entity: pawn,
+                transform: Transform::default(),
+                linear_velocity: Vec3::ZERO,
+                tick_delta: Vec3::ZERO,
+                angular_velocity: Vec3::Y,
+                tick_rotation_delta: glam::Quat::from_rotation_y(0.25),
+                carry_yaw: true,
+                tick_dt: 1.0 / 60.0,
+            },
+        );
+
+        let mut landing_camera = Camera::new(Vec3::ZERO, 0.4, 0.0);
+        assert_eq!(local_player_ground(&registry), GroundRef::Mover(7));
+        apply_mover_yaw_carry(&mut landing_camera, GroundRef::Airborne, &mover_states);
+        assert!(
+            (landing_camera.yaw - 0.4).abs() <= 1.0e-6,
+            "landing must not gain rotation produced before contact"
+        );
+
+        let mut detached = registry
+            .get_component::<PlayerMovementComponent>(pawn)
+            .unwrap()
+            .clone();
+        detached.ground = GroundRef::Airborne;
+        registry.set_component(pawn, detached).unwrap();
+        let mut detach_camera = Camera::new(Vec3::ZERO, 0.4, 0.0);
+        assert_eq!(local_player_ground(&registry), GroundRef::Airborne);
+        apply_mover_yaw_carry(&mut detach_camera, GroundRef::Mover(7), &mover_states);
+        assert!(
+            (detach_camera.yaw - 0.65).abs() <= 1.0e-6,
+            "jump/detach must retain the final rotation consumed while planted"
+        );
     }
 
     fn weapon_viewmodel_descriptor(

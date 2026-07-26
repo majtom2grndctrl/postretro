@@ -45,8 +45,8 @@ struct EmitterBridgeState {
     /// per emitter (spec §"Budget enforcement").
     last_warn_time: f32,
     /// Last spin animation observed on the component. Used to detect external
-    /// mutations (e.g. a `setSpinRate` reaction installing a new tween or
-    /// clearing one mid-flight) so [`spin_elapsed`] can be reset on transition.
+    /// mutations (e.g. the billboard-emitter `setSpinRate` reaction installing or
+    /// clearing a tween mid-flight) so [`spin_elapsed`] can be reset on transition.
     /// Without this, a mid-tween cancellation would leak elapsed time into the
     /// next tween.
     last_spin_animation: Option<SpinAnimation>,
@@ -250,7 +250,7 @@ impl EmitterBridge {
             // --- 3. Spin animation tween. Runs after emission per spec
             // ("After emission: if spin_animation.is_some() …"). When the
             // component's `spin_animation` differs from what the bridge saw
-            // last frame (external mutation via `setSpinRate`), reset
+            // last frame (external mutation via billboard-emitter `setSpinRate`), reset
             // `spin_elapsed` so a new tween starts at t = 0 and a cleared
             // tween does not leak elapsed time into a later install.
             if state.last_spin_animation != component.spin_animation {

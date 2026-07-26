@@ -4,7 +4,7 @@
 //! scene/query pipeline here: callers provide the static world, active mover
 //! colliders, and a pose source for the mover transform at the query tick.
 
-use glam::Vec3;
+use glam::{Quat, Vec3};
 use parry3d::math::{Isometry, Point, Vector};
 use parry3d::na::{Quaternion, Translation3, UnitQuaternion};
 use parry3d::query::{
@@ -16,6 +16,9 @@ use super::{COS_WALKABLE, CollisionWorld, SKIN_DISTANCE, cast_capsule, cast_ray}
 use postretro_entities::Transform;
 
 const HIT_TOI_TIE_EPSILON: f32 = 1.0e-5;
+const MAX_ROTATION_SWEEP_STEP_RAD: f32 = 5.0_f32.to_radians();
+const MIN_ROTATION_SWEEP_STEP_RAD: f32 = 0.5_f32.to_radians();
+const MAX_ROTATION_SWEEP_STEPS: usize = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CollisionSource {
@@ -47,6 +50,9 @@ pub(crate) struct MoverPose {
     pub(crate) transform: Transform,
     pub(crate) linear_velocity: Vec3,
     pub(crate) tick_delta: Vec3,
+    pub(crate) angular_velocity: Vec3,
+    pub(crate) tick_rotation_delta: Quat,
+    pub(crate) carry_yaw: bool,
     pub(crate) tick_dt: f32,
 }
 
@@ -94,6 +100,7 @@ impl<'a> CombinedCollisionWorld<'a> {
 pub(crate) struct MoverCollider {
     pub(crate) mover_id: u32,
     local_mesh: TriMesh,
+    local_radius: f32,
 }
 
 impl MoverCollider {
@@ -106,9 +113,14 @@ impl MoverCollider {
             return None;
         }
         let points = vertices.iter().map(|v| Point::new(v.x, v.y, v.z)).collect();
+        let local_radius = vertices
+            .iter()
+            .map(|vertex| vertex.length())
+            .fold(0.0_f32, f32::max);
         Some(Self {
             mover_id,
             local_mesh: TriMesh::new(points, triangles.to_vec()),
+            local_radius,
         })
     }
 }
@@ -263,51 +275,262 @@ fn deepest_mover_push_penetration_inner(
             continue;
         };
         let delta = pose.tick_delta;
-        if !delta.is_finite() || delta.length_squared() <= f32::EPSILON * f32::EPSILON {
+        if !delta.is_finite() {
             continue;
         }
-        let mut previous_transform = pose.transform;
-        previous_transform.position -= delta;
-        let previous_iso = transform_isometry(previous_transform);
-        let options = ShapeCastOptions {
-            max_time_of_impact: 1.0,
-            target_distance: SKIN_DISTANCE,
-            stop_at_penetration: false,
-            ..Default::default()
-        };
-        let Ok(Some(hit)) = cast_shapes(
-            &previous_iso,
-            &Vector::new(delta.x, delta.y, delta.z),
-            &mover.local_mesh,
-            &capsule_iso,
-            &Vector::zeros(),
-            capsule,
-            options,
-        ) else {
-            continue;
-        };
-        if !hit.time_of_impact.is_finite() || hit.time_of_impact < 0.0 || hit.time_of_impact > 1.0 {
+        let has_translation = delta.length_squared() > f32::EPSILON * f32::EPSILON;
+        let has_rotation = tick_rotation_angle(pose) > f32::EPSILON;
+        if !has_translation && !has_rotation {
             continue;
         }
-        let normal = swept_push_normal(*hit.transform1_by(&previous_iso).normal1, delta);
-        let remaining = (1.0 - hit.time_of_impact).max(0.0);
-        let mut depth = delta.dot(normal).max(0.0) * remaining + SKIN_DISTANCE;
-        if depth <= SKIN_DISTANCE {
-            depth = delta.length() * remaining + SKIN_DISTANCE;
-        }
-        if !normal.is_finite() || normal.length_squared() <= 0.0 || !depth.is_finite() {
+        if !mover_swept_sphere_may_reach_capsule(mover, pose, pos, capsule) {
             continue;
         }
-        if deepest.as_ref().is_none_or(|current| depth > current.depth) {
-            deepest = Some(MoverPenetration {
-                mover_id: mover.mover_id,
-                normal,
-                depth,
-            });
-        }
+        sweep_mover_against_capsule(mover, pose, capsule, &capsule_iso, &mut deepest);
     }
 
     deepest
+}
+
+/// Conservative broad phase for the expensive sampled angular sweep. Rotation
+/// keeps every mover point inside its origin-centered bounding sphere; expanding
+/// the origin's translation segment by the capsule bounding sphere cannot reject
+/// a real contact. Non-finite inputs fall through to the narrow phase.
+fn mover_swept_sphere_may_reach_capsule(
+    mover: &MoverCollider,
+    pose: MoverPose,
+    capsule_position: Point<f32>,
+    capsule: &Capsule,
+) -> bool {
+    let scale = pose.transform.scale.abs().max_element();
+    let mover_radius = mover.local_radius * scale;
+    let capsule_center_local = capsule.center();
+    let capsule_center = Vec3::new(
+        capsule_position.x + capsule_center_local.x,
+        capsule_position.y + capsule_center_local.y,
+        capsule_position.z + capsule_center_local.z,
+    );
+    let capsule_radius = (capsule.segment.a - capsule_center_local)
+        .norm()
+        .max((capsule.segment.b - capsule_center_local).norm())
+        + capsule.radius;
+    let end = pose.transform.position;
+    let start = end - pose.tick_delta;
+    if !mover_radius.is_finite()
+        || !capsule_radius.is_finite()
+        || !capsule_center.is_finite()
+        || !start.is_finite()
+        || !end.is_finite()
+    {
+        return true;
+    }
+
+    let segment = end - start;
+    let segment_len_sq = segment.length_squared();
+    let closest = if segment_len_sq > f32::EPSILON {
+        let t = ((capsule_center - start).dot(segment) / segment_len_sq).clamp(0.0, 1.0);
+        start + segment * t
+    } else {
+        start
+    };
+    let reach = mover_radius + capsule_radius + SKIN_DISTANCE;
+    capsule_center.distance_squared(closest) <= reach * reach
+}
+
+fn sweep_mover_against_capsule(
+    mover: &MoverCollider,
+    pose: MoverPose,
+    capsule: &Capsule,
+    capsule_iso: &Isometry<f32>,
+    deepest: &mut Option<MoverPenetration>,
+) {
+    let steps = rotation_sweep_steps(mover, pose, capsule.radius);
+    let final_iso = transform_isometry(pose.transform);
+    let options = ShapeCastOptions {
+        max_time_of_impact: 1.0,
+        target_distance: SKIN_DISTANCE,
+        stop_at_penetration: false,
+        ..Default::default()
+    };
+
+    for step in 0..steps {
+        let start_t = step as f32 / steps as f32;
+        let end_t = (step + 1) as f32 / steps as f32;
+        let start_transform = mover_sweep_transform(pose, start_t);
+        let end_transform = mover_sweep_transform(pose, end_t);
+        let start_iso = transform_isometry(start_transform);
+        let segment_delta = end_transform.position - start_transform.position;
+
+        if let Ok(Some(hit)) = cast_shapes(
+            &start_iso,
+            &Vector::new(segment_delta.x, segment_delta.y, segment_delta.z),
+            &mover.local_mesh,
+            capsule_iso,
+            &Vector::zeros(),
+            capsule,
+            options,
+        ) {
+            if hit.time_of_impact.is_finite() && (0.0..=1.0).contains(&hit.time_of_impact) {
+                let hit_t = start_t + (end_t - start_t) * hit.time_of_impact;
+                let hit_transform = mover_sweep_transform(pose, hit_t);
+                let remaining_motion = surface_motion_to_final(
+                    transform_isometry(hit_transform),
+                    final_iso,
+                    hit.witness1,
+                );
+                let normal =
+                    swept_push_normal(*hit.transform1_by(&start_iso).normal1, remaining_motion);
+                let remaining = (1.0 - hit_t).max(0.0);
+                let translation_fallback = pose.tick_delta.length() * remaining;
+                record_swept_push(
+                    deepest,
+                    mover.mover_id,
+                    normal,
+                    remaining_motion,
+                    translation_fallback,
+                    0.0,
+                );
+            }
+        }
+
+        // A linear shape cast cannot express angular velocity. Sample each
+        // reconstructed orientation and carry the contacted material point to
+        // the final pose so a rotating face that crosses and ends clear still
+        // produces the displace-only push.
+        let Ok(Some(sample_contact)) = contact(
+            capsule_iso,
+            capsule,
+            &start_iso,
+            &mover.local_mesh,
+            SKIN_DISTANCE,
+        ) else {
+            continue;
+        };
+        if sample_contact.dist > 0.0 {
+            continue;
+        }
+        let remaining_motion = surface_motion_to_final(start_iso, final_iso, sample_contact.point2);
+        let normal = swept_push_normal(-*sample_contact.normal1, remaining_motion);
+        record_swept_push(
+            deepest,
+            mover.mover_id,
+            normal,
+            remaining_motion,
+            pose.tick_delta.length() * (1.0 - start_t),
+            -sample_contact.dist,
+        );
+    }
+}
+
+fn rotation_sweep_steps(mover: &MoverCollider, pose: MoverPose, capsule_radius: f32) -> usize {
+    let angle = tick_rotation_angle(pose);
+    if angle <= f32::EPSILON {
+        return 1;
+    }
+    let arc_budget = (capsule_radius * 0.5).max(SKIN_DISTANCE);
+    let step_angle = if mover.local_radius > f32::EPSILON {
+        (arc_budget / mover.local_radius)
+            .clamp(MIN_ROTATION_SWEEP_STEP_RAD, MAX_ROTATION_SWEEP_STEP_RAD)
+    } else {
+        MAX_ROTATION_SWEEP_STEP_RAD
+    };
+    ((angle / step_angle).ceil() as usize).clamp(1, MAX_ROTATION_SWEEP_STEPS)
+}
+
+fn mover_sweep_transform(pose: MoverPose, t: f32) -> Transform {
+    let end_rotation = normalized_rotation(pose.transform.rotation);
+    let rotation = if let Some((axis, angle)) = authored_tick_rotation(pose) {
+        let start_rotation =
+            normalized_rotation(Quat::from_axis_angle(axis, -angle) * end_rotation);
+        normalized_rotation(Quat::from_axis_angle(axis, angle * t) * start_rotation)
+    } else {
+        let start_rotation = normalized_rotation(
+            normalized_rotation(pose.tick_rotation_delta).conjugate() * end_rotation,
+        );
+        start_rotation.slerp(end_rotation, t)
+    };
+    Transform {
+        position: pose.transform.position - pose.tick_delta * (1.0 - t),
+        rotation,
+        scale: pose.transform.scale,
+    }
+}
+
+fn tick_rotation_angle(pose: MoverPose) -> f32 {
+    authored_tick_rotation(pose).map_or_else(
+        || {
+            let rotation = normalized_rotation(pose.tick_rotation_delta);
+            2.0 * rotation.w.abs().clamp(0.0, 1.0).acos()
+        },
+        |(_, angle)| angle,
+    )
+}
+
+fn authored_tick_rotation(pose: MoverPose) -> Option<(Vec3, f32)> {
+    if !pose.tick_dt.is_finite() || pose.tick_dt <= 0.0 || !pose.angular_velocity.is_finite() {
+        return None;
+    }
+    let angular_speed = pose.angular_velocity.length();
+    if !angular_speed.is_finite() || angular_speed <= f32::EPSILON {
+        return None;
+    }
+    let angle = angular_speed * pose.tick_dt;
+    if !angle.is_finite() || angle <= f32::EPSILON {
+        return None;
+    }
+    Some((pose.angular_velocity / angular_speed, angle))
+}
+
+fn normalized_rotation(rotation: Quat) -> Quat {
+    if rotation.is_finite() && rotation.length_squared() > 1.0e-12 {
+        rotation.normalize()
+    } else {
+        Quat::IDENTITY
+    }
+}
+
+fn surface_motion_to_final(
+    sample_iso: Isometry<f32>,
+    final_iso: Isometry<f32>,
+    world_point: Point<f32>,
+) -> Vec3 {
+    let local_point = sample_iso.inverse_transform_point(&world_point);
+    let final_point = final_iso.transform_point(&local_point);
+    Vec3::new(
+        final_point.x - world_point.x,
+        final_point.y - world_point.y,
+        final_point.z - world_point.z,
+    )
+}
+
+fn record_swept_push(
+    deepest: &mut Option<MoverPenetration>,
+    mover_id: u32,
+    normal: Vec3,
+    remaining_motion: Vec3,
+    translation_fallback: f32,
+    penetration_depth: f32,
+) {
+    if !normal.is_finite() || normal.length_squared() <= 0.0 {
+        return;
+    }
+    let projected_motion = remaining_motion.dot(normal).max(0.0);
+    let motion_depth = if projected_motion > f32::EPSILON {
+        projected_motion
+    } else {
+        remaining_motion.length().max(translation_fallback)
+    };
+    let depth = motion_depth + penetration_depth.max(0.0) + SKIN_DISTANCE;
+    if !depth.is_finite() {
+        return;
+    }
+    if deepest.as_ref().is_none_or(|current| depth > current.depth) {
+        *deepest = Some(MoverPenetration {
+            mover_id,
+            normal,
+            depth,
+        });
+    }
 }
 
 fn choose_nearest(nearest: &mut Option<CombinedCastHit>, candidate: Option<CombinedCastHit>) {
@@ -454,17 +677,61 @@ mod tests {
 
     impl TestPoseSource {
         fn insert(&mut self, mover_id: u32, position: Vec3, velocity: Vec3, delta: Vec3) {
+            self.insert_pose(
+                mover_id,
+                Transform {
+                    position,
+                    rotation: Quat::IDENTITY,
+                    scale: Vec3::ONE,
+                },
+                velocity,
+                delta,
+                Quat::IDENTITY,
+            );
+        }
+
+        fn insert_pose(
+            &mut self,
+            mover_id: u32,
+            transform: Transform,
+            velocity: Vec3,
+            delta: Vec3,
+            tick_rotation_delta: Quat,
+        ) {
             self.poses.insert(
                 mover_id,
                 MoverPose {
-                    transform: Transform {
-                        position,
-                        rotation: Quat::IDENTITY,
-                        scale: Vec3::ONE,
-                    },
+                    transform,
                     linear_velocity: velocity,
                     tick_delta: delta,
+                    angular_velocity: Vec3::ZERO,
+                    tick_rotation_delta,
+                    carry_yaw: false,
                     tick_dt: 0.1,
+                },
+            );
+        }
+
+        fn insert_rotating_pose(
+            &mut self,
+            mover_id: u32,
+            transform: Transform,
+            velocity: Vec3,
+            delta: Vec3,
+            angular_velocity: Vec3,
+            tick_rotation_delta: Quat,
+            tick_dt: f32,
+        ) {
+            self.poses.insert(
+                mover_id,
+                MoverPose {
+                    transform,
+                    linear_velocity: velocity,
+                    tick_delta: delta,
+                    angular_velocity,
+                    tick_rotation_delta,
+                    carry_yaw: false,
+                    tick_dt,
                 },
             );
         }
@@ -666,5 +933,173 @@ mod tests {
             "crossing mover should push by the remaining sweep, got {}",
             penetration.depth
         );
+    }
+
+    #[test]
+    fn swept_contact_motion_tracks_mover_witness_through_rotation() {
+        let sample_iso = Isometry::identity();
+        let rotating_final_iso = transform_isometry(Transform {
+            position: Vec3::new(0.5, 0.0, 0.0),
+            rotation: Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+            scale: Vec3::ONE,
+        });
+        let linear_final_iso = Isometry::translation(0.5, 0.0, 0.0);
+        let capsule_center = Point::new(0.0, 1.0, 0.0);
+        let mover_witness = Point::new(1.0, 1.0, 0.0);
+
+        let witness_rotation_motion =
+            surface_motion_to_final(sample_iso, rotating_final_iso, mover_witness);
+        let center_rotation_motion =
+            surface_motion_to_final(sample_iso, rotating_final_iso, capsule_center);
+        assert!(
+            (witness_rotation_motion - center_rotation_motion).length() > EPS,
+            "rotation must use the mover contact witness, not the capsule center"
+        );
+
+        let witness_linear_motion =
+            surface_motion_to_final(sample_iso, linear_final_iso, mover_witness);
+        let center_linear_motion =
+            surface_motion_to_final(sample_iso, linear_final_iso, capsule_center);
+        assert!(
+            (witness_linear_motion - center_linear_motion).length() < EPS,
+            "pure translation must preserve the existing linear sweep motion"
+        );
+    }
+
+    // Regression: the advancing sweep rebuilt the previous position with the
+    // final orientation, so rotation-only crossings inside that advancing tick
+    // disappeared when both endpoint poses were clear.
+    #[test]
+    fn advancing_rotating_sweep_detects_face_crossing_with_clear_endpoints() {
+        let movers = [local_wall_collider(42)];
+        let mut poses = TestPoseSource::default();
+        let rotation_delta = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        poses.insert_rotating_pose(
+            42,
+            Transform {
+                position: Vec3::new(0.02, 0.0, 0.0),
+                rotation: rotation_delta,
+                scale: Vec3::ONE,
+            },
+            Vec3::new(0.2, 0.0, 0.0),
+            Vec3::new(0.02, 0.0, 0.0),
+            Vec3::Y * std::f32::consts::FRAC_PI_2 / 0.1,
+            rotation_delta,
+            0.1,
+        );
+        let capsule = test_capsule();
+        let capsule_position = Point::new(0.7, 1.0, 0.7);
+
+        assert!(
+            deepest_mover_penetration(&movers, &poses, capsule_position, &capsule).is_none(),
+            "the final rotated face must be clear so the sweep is the only detector"
+        );
+        let penetration =
+            deepest_mover_push_penetration(&movers, &poses, capsule_position, &capsule)
+                .expect("the rotating face crosses the capsule between clear endpoints");
+        assert_eq!(penetration.mover_id, 42);
+        assert!(penetration.normal.is_finite());
+        assert!(
+            penetration.depth > SKIN_DISTANCE,
+            "rotational sweep must produce a behaviorally meaningful displacement"
+        );
+    }
+
+    // Regression: quaternion slerp chose the short arc for authored turns over
+    // pi, so intermediate sweep samples followed the wrong rotation.
+    #[test]
+    fn rotating_sweep_transform_preserves_authored_winding_past_pi() {
+        let angle = std::f32::consts::PI * 1.5;
+        let pose = MoverPose {
+            transform: Transform {
+                position: Vec3::ZERO,
+                rotation: Quat::from_rotation_y(angle),
+                scale: Vec3::ONE,
+            },
+            linear_velocity: Vec3::ZERO,
+            tick_delta: Vec3::ZERO,
+            angular_velocity: Vec3::Y * angle,
+            tick_rotation_delta: Quat::from_rotation_y(angle),
+            carry_yaw: false,
+            tick_dt: 1.0,
+        };
+
+        let one_third = mover_sweep_transform(pose, 1.0 / 3.0);
+        assert!(
+            one_third
+                .rotation
+                .abs_diff_eq(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2), EPS),
+            "the sample must follow the authored 270-degree turn, not the quaternion short arc"
+        );
+
+        let mover = local_wall_collider(42);
+        let large_turn = MoverPose {
+            angular_velocity: Vec3::Y * (std::f32::consts::TAU * 1_000.0),
+            tick_rotation_delta: Quat::IDENTITY,
+            ..pose
+        };
+        assert_eq!(
+            rotation_sweep_steps(&mover, large_turn, test_capsule().radius),
+            MAX_ROTATION_SWEEP_STEPS,
+            "large authored turns must remain bounded"
+        );
+    }
+
+    // Regression: a full-turn delta is quaternion-equivalent to identity, so
+    // the rotating face crossed the capsule without any sweep samples.
+    #[test]
+    fn rotating_sweep_detects_full_turn_crossing_with_clear_endpoints() {
+        let movers = [local_wall_collider(42)];
+        let mut poses = TestPoseSource::default();
+        poses.insert_rotating_pose(
+            42,
+            Transform::default(),
+            Vec3::ZERO,
+            Vec3::ZERO,
+            Vec3::Y * std::f32::consts::TAU,
+            Quat::from_rotation_y(std::f32::consts::TAU),
+            1.0,
+        );
+        let capsule = test_capsule();
+        let capsule_position = Point::new(0.7, 1.0, 0.7);
+
+        assert!(
+            deepest_mover_penetration(&movers, &poses, capsule_position, &capsule).is_none(),
+            "the coincident full-turn endpoints must remain clear"
+        );
+        let penetration =
+            deepest_mover_push_penetration(&movers, &poses, capsule_position, &capsule)
+                .expect("the full-turn sweep should detect its intermediate crossing");
+        assert_eq!(penetration.mover_id, 42);
+        assert!(penetration.normal.is_finite());
+        assert!(penetration.depth > SKIN_DISTANCE);
+    }
+
+    #[test]
+    fn rotational_sweep_broad_phase_rejects_far_movers_without_rejecting_crossings() {
+        let mover = local_wall_collider(42);
+        let capsule = test_capsule();
+        let pose = MoverPose {
+            transform: Transform::default(),
+            linear_velocity: Vec3::ZERO,
+            tick_delta: Vec3::ZERO,
+            angular_velocity: Vec3::Y * std::f32::consts::TAU,
+            tick_rotation_delta: Quat::IDENTITY,
+            carry_yaw: false,
+            tick_dt: 1.0,
+        };
+
+        assert!(!mover_swept_sphere_may_reach_capsule(
+            &mover,
+            pose,
+            Point::new(1_000.0, 1_000.0, 1_000.0),
+            &capsule,
+        ));
+        assert!(mover_swept_sphere_may_reach_capsule(
+            &mover,
+            pose,
+            Point::new(0.7, 1.0, 0.7),
+            &capsule,
+        ));
     }
 }

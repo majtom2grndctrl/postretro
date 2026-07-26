@@ -509,3 +509,35 @@
 "_shadow_type" "static_light_map"
 "_tags" "kinematic_qa ranker_static"
 }
+// entity 41 -- Pure rotating carousel. It sits in the open central west bay:
+// the closest mover track remains over 80 map units away and no static wall or
+// face can trap a rider against the rotating slab.
+{
+"classname" "kinematic_mover"
+"name" "rotating_carousel"
+"path" "carousel_origin"
+"speed" "1"
+"wait_ms" "0"
+"move_mode" "once"
+"start_on_spawn" "1"
+"spin_axis" "0 0 1"
+"spin_speed" "45"
+"spin_accel" "180"
+"carry_yaw" "1"
+"_tags" "dev kinematic_platform rotating_carousel"
+// brush 0 -- Asymmetric footprint makes orientation carry visible.
+{
+( 560 48 16 ) ( 560 -48 32 ) ( 560 -48 16 ) metal/metal_rough_046a 0 0 0 1 1
+( 560 -48 16 ) ( 720 -48 32 ) ( 720 -48 16 ) metal/metal_rough_046a 0 0 0 1 1
+( 560 -48 16 ) ( 720 48 16 ) ( 560 48 16 ) metal/metal_rough_046a 0 0 0 1 1
+( 560 48 32 ) ( 720 -48 32 ) ( 560 -48 32 ) metal/metal_rough_046a 0 0 0 1 1
+( 720 48 16 ) ( 560 48 32 ) ( 560 48 16 ) metal/metal_rough_046a 0 0 0 1 1
+( 720 -48 16 ) ( 720 48 32 ) ( 720 48 16 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 42
+{
+"classname" "kinematic_waypoint"
+"name" "carousel_origin"
+"origin" "640 0 24"
+}

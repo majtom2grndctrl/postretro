@@ -10,7 +10,7 @@ use super::*;
 /// of `Renderer::new` so the boot splash presents before this runs. Pure function
 /// of its arguments, which makes `finish_full_init` restartable across surface
 /// recreation.
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub(crate) fn build_full_renderer(
     device: &wgpu::Device,
     queue: &wgpu::Queue,

@@ -252,7 +252,7 @@ mod tests {
     use super::*;
 
     use crate::collision::CollisionWorld;
-    use glam::Vec3;
+    use glam::{Quat, Vec3};
     use parry3d::math::{Isometry, Point};
     use parry3d::shape::TriMesh;
 
@@ -261,6 +261,7 @@ mod tests {
         WireMovementState, WirePlayerMovementState,
     };
 
+    use crate::kinematic_mover::{MoverTickState, MoverTickStateTable};
     use crate::netcode::client::MoverHistorySample;
     use crate::netcode::movement_state::movement_state_to_wire;
     use crate::netcode::prediction::{
@@ -836,12 +837,18 @@ mod tests {
 
         let mover_phase = KinematicMoverComponent::new(
             42,
-            vec![Vec3::ZERO, Vec3::X],
-            vec!["start".to_string(), "finish".to_string()],
-            1.0,
-            0.0,
-            KinematicMoverMode::PingPong,
-            true,
+            postretro_entities::KinematicMoverConfig {
+                waypoints: vec![Vec3::ZERO, Vec3::X],
+                waypoint_names: vec!["start".to_string(), "finish".to_string()],
+                speed_mps: 1.0,
+                wait_ms: 0.0,
+                mode: KinematicMoverMode::PingPong,
+                started: true,
+                spin_axis: Vec3::ZERO,
+                initial_spin_rate_rad_s: 0.0,
+                spin_accel_rad_s2: 0.0,
+                carry_yaw: false,
+            },
         );
         let mut history = MoverHistoryBuffer::default();
         history.record(
@@ -852,6 +859,9 @@ mod tests {
                     transform: Transform::default(),
                     linear_velocity: Vec3::new(12.0, 0.0, 0.0),
                     tick_delta: Vec3::new(0.2, 0.0, 0.0),
+                    angular_velocity: Vec3::ZERO,
+                    tick_rotation_delta: Quat::IDENTITY,
+                    carry_yaw: false,
                     tick_dt: DT,
                 },
                 phase: mover_phase,
@@ -880,6 +890,127 @@ mod tests {
         assert!(
             (replayed.x - (START.x + 0.2)).abs() < EPSILON,
             "replayed command consumed mover carry delta for server tick 11"
+        );
+    }
+
+    // Regression: angular replay fell back to the live mover table, so a
+    // reconciled rider could stay stationary and detach without spin velocity.
+    #[test]
+    fn replay_uses_historical_angular_pose_instead_of_wrong_live_pose() {
+        let world = floor_world();
+        let mut registry = EntityRegistry::new();
+        let mut prediction = ClientPrediction::new();
+        let id = spawn_armed_pawn(&mut registry, &mut prediction, NetworkId(16));
+
+        let mut start_component = component();
+        start_component.ground = GroundRef::Mover(42);
+        registry.set_component(id, start_component.clone()).unwrap();
+        prediction
+            .predict_tick(
+                neutral_command(5),
+                (
+                    *registry.get_component::<Transform>(id).unwrap(),
+                    start_component,
+                ),
+                &world,
+                GRAVITY,
+                DT,
+            )
+            .unwrap();
+
+        let mut authoritative = authoritative_movement();
+        authoritative.ground = WireGroundRef::Mover(42);
+        authoritative.velocity = [0.0, 0.0, 0.0];
+
+        let mover_phase = KinematicMoverComponent::new(
+            42,
+            postretro_entities::KinematicMoverConfig {
+                waypoints: vec![Vec3::ZERO],
+                waypoint_names: vec!["pivot".to_string()],
+                speed_mps: 0.0,
+                wait_ms: 0.0,
+                mode: KinematicMoverMode::PingPong,
+                started: true,
+                spin_axis: Vec3::Y,
+                initial_spin_rate_rad_s: 2.0,
+                spin_accel_rad_s2: 0.0,
+                carry_yaw: false,
+            },
+        );
+        let historical_rotation = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        let mut history = MoverHistoryBuffer::default();
+        history.record(
+            42,
+            MoverHistorySample {
+                server_tick: 11,
+                pose: MoverPose {
+                    transform: Transform::default(),
+                    linear_velocity: Vec3::ZERO,
+                    tick_delta: Vec3::ZERO,
+                    angular_velocity: Vec3::Y * 2.0,
+                    tick_rotation_delta: historical_rotation,
+                    carry_yaw: false,
+                    tick_dt: DT,
+                },
+                phase: mover_phase,
+            },
+        );
+
+        let mut wrong_live_pose = MoverTickStateTable::default();
+        wrong_live_pose.publish(
+            42,
+            MoverTickState {
+                entity: id,
+                transform: Transform::default(),
+                linear_velocity: Vec3::ZERO,
+                tick_delta: Vec3::ZERO,
+                angular_velocity: Vec3::ZERO,
+                tick_rotation_delta: Quat::IDENTITY,
+                carry_yaw: false,
+                tick_dt: DT,
+            },
+        );
+        let live_collision = CombinedCollisionWorld::new(&world, &[], &wrong_live_pose);
+        let authoritative_transform = Transform {
+            position: Vec3::new(1.0, START.y, 0.0),
+            ..Transform::default()
+        };
+
+        reconcile_local_pawn_with_mover_history(
+            &mut registry,
+            &mut prediction,
+            id,
+            authoritative_transform,
+            Some(&authoritative),
+            Some(4),
+            10,
+            Some(&history),
+            &live_collision,
+            GRAVITY,
+            DT,
+        )
+        .unwrap();
+
+        let replayed = predicted_position(&registry, id);
+        let expected_position = historical_rotation * authoritative_transform.position;
+        assert!(
+            (Vec3::new(replayed.x, 0.0, replayed.z)
+                - Vec3::new(expected_position.x, 0.0, expected_position.z))
+            .length()
+                < EPSILON,
+            "historical angular delta must revolve the planted rider; replayed={replayed:?}"
+        );
+        let velocity = registry
+            .get_component::<PlayerMovementComponent>(id)
+            .unwrap()
+            .velocity;
+        let expected_tangent = (Vec3::Y * 2.0).cross(expected_position);
+        assert!(
+            (Vec3::new(velocity.x, 0.0, velocity.z)
+                - Vec3::new(expected_tangent.x, 0.0, expected_tangent.z))
+            .length()
+                < EPSILON,
+            "historical angular velocity must drive tangential detach; velocity={velocity:?}"
         );
     }
 

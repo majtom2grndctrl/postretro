@@ -56,7 +56,7 @@ mod trigger_state_channel_harness_test;
 #[cfg(test)]
 mod enemy_replication_harness_test;
 
-pub(crate) use client::{ClientPresentationInputs, ClientReplication};
+pub(crate) use client::{ClientPresentationInputs, ClientReplication, MoverCorrection};
 pub(crate) use command_queue::{
     HostCommandQueues, MovementOwners, ResolvedPawnCommand, WeaponOwners,
     host_resolve_remote_commands,
@@ -430,6 +430,9 @@ pub(crate) struct ClientApplyFrameOutcome {
     pub(crate) materialized_remote_entity_presentation: bool,
     pub(crate) armed_local_pawn: Option<ClientArmedLocalPawn>,
     pub(crate) owner_private_weapon_cooldown_fresh: bool,
+    /// Final authoritative mover correction per mover received this frame.
+    /// App consumes these after snapshot apply to refresh the live carry table.
+    pub(crate) mover_corrections: Vec<client::MoverCorrection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -520,7 +523,7 @@ impl NetEndpoint {
                 let public_addr = socket
                     .local_addr()
                     .map_err(|e| format!("host local_addr failed: {e}"))?;
-                let server = NetServer::new(socket, public_addr, MAX_CLIENTS, now())
+                let server = NetServer::new(socket, public_addr, MAX_CLIENTS, now(), None)
                     .map_err(|e| format!("host transport init failed: {e}"))?;
                 Ok(Some(NetEndpoint::Host {
                     server: Box::new(server),
@@ -550,7 +553,7 @@ impl NetEndpoint {
                 // Client id is arbitrary under unsecure auth; use the wall clock
                 // so two clients on one host do not collide.
                 let client_id = now().as_nanos() as u64;
-                let client = NetClient::new(socket, *addr, client_id, now())
+                let client = NetClient::new(socket, *addr, client_id, now(), None)
                     .map_err(|e| format!("client transport init failed: {e}"))?;
                 Ok(Some(NetEndpoint::Client {
                     client: Box::new(client),
@@ -560,6 +563,22 @@ impl NetEndpoint {
                     prediction: ClientPrediction::new(),
                     state_slots: Box::new(state_slots::ClientStateApply::new()),
                 }))
+            }
+        }
+    }
+
+    /// Bind multiplayer acceptance to the loaded map's canonical static mover
+    /// inputs. Transport handshakes wait for this value. Changing it closes the
+    /// existing connection and delivers a close on the next poll, so ordinary host
+    /// lifecycle cleanup despawns remote pawns and clears slot-owned state before
+    /// prediction can reuse different PRL authoring.
+    pub(crate) fn set_kinematic_static_fingerprint(&mut self, fingerprint: [u8; 32]) {
+        match self {
+            NetEndpoint::Host { server, .. } => {
+                server.set_kinematic_static_fingerprint(fingerprint);
+            }
+            NetEndpoint::Client { client, .. } => {
+                client.set_kinematic_static_fingerprint(fingerprint);
             }
         }
     }
@@ -923,6 +942,10 @@ fn kinematic_mover_is_finite(m: &WireKinematicMoverState) -> bool {
     m.segment_elapsed_ms.is_finite()
         && m.wait_remaining_ms.is_finite()
         && m.velocity.iter().all(|c| c.is_finite())
+        && m.spin_angle_rad.is_finite()
+        && m.spin_angle_before_tick_rad.is_finite()
+        && m.spin_rate_rad_s.is_finite()
+        && m.spin_target_rate_rad_s.is_finite()
 }
 
 /// Every f32 field of a wire movement payload is finite. Mirrors the untrusted-
@@ -1010,6 +1033,17 @@ pub(crate) fn client_receive_and_apply(
             target_tick,
             tick_dt,
         );
+        for correction in &outcome.mover_corrections {
+            if let Some(existing) = frame_outcome
+                .mover_corrections
+                .iter_mut()
+                .find(|existing| existing.mover_id == correction.mover_id)
+            {
+                *existing = *correction;
+            } else {
+                frame_outcome.mover_corrections.push(*correction);
+            }
+        }
 
         // M15 Phase 3.5: apply this snapshot's replicated-state records. Validated as a
         // whole batch against the local schema, then committed all-or-nothing through
@@ -1808,8 +1842,9 @@ pub(crate) fn host_unregister_own_pawn(
 /// Apply this frame's slot lifecycle transitions to the host's remote-pawn state
 /// (Task 4). `ServerPoll.lifecycle` carries `SlotEvent::Closed` only — accepts are
 /// driven from the handshake verdict via [`host_handle_accept`], never lifecycle.
-/// Each close (clean disconnect or timeout — one cleanup path) despawns the slot's
-/// pawn, drops it from the replicable set, and drops the slot mapping.
+/// Each close (clean disconnect, timeout, or static-fingerprint change — one cleanup
+/// path) despawns the slot's pawn, drops it from the replicable set, and clears its
+/// replication, ownership, command, state-slot, and combat bookkeeping.
 ///
 /// Game-logic-owned: the registry mutation flows through `EntityRegistry::despawn`.
 /// The mutable registry borrow is threaded in by the caller so this module never
@@ -1882,10 +1917,9 @@ pub(crate) fn host_handle_lifecycle(
                     );
                 }
             }
-            // Accepts never reach lifecycle (the transport discards `SlotEvent::Accepted`
-            // at `on_accept`); the spawn is driven from the handshake verdict instead, so
-            // this arm is unreachable in production. Kept exhaustive (no `_`) so a new
-            // SlotEvent variant is a compile error here.
+            // Accepts never reach lifecycle (the transport uses
+            // `HandshakeOutcome::Accepted` instead); the spawn is driven from that
+            // verdict. Kept exhaustive so a new SlotEvent variant is a compile error.
             SlotEvent::Accepted { .. } => {}
         }
     }

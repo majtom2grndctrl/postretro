@@ -337,6 +337,14 @@
     path(string) : "First kinematic_waypoint name" : ""
     speed(float) : "Movement speed (meters per second)" : "1.0"
     wait_ms(float) : "Endpoint wait (milliseconds)" : "0"
+    spin_axis(string) : "Local spin axis as x y z" : "0 0 0"
+    spin_speed(float) : "Initial spin speed (degrees per second)" : "0"
+    spin_accel(float) : "Spin acceleration (degrees per second squared)" : "0"
+    carry_yaw(choices) : "Carry world-up player yaw while rotating; never pitch or roll" : 0 =
+    [
+        0 : "Off"
+        1 : "On"
+    ]
     move_mode(choices) : "Move mode" : "once" =
     [
         "once" : "Once"

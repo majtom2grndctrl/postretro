@@ -111,7 +111,7 @@ export type BillboardEmitterComponent = {
   spin_animation: SpinAnimation?,
 }
 
---- Spin-rate tween carried by a billboard emitter and consumed by `setSpinRate`.
+--- Spin-rate tween carried by a billboard emitter and consumed by the billboard-emitter reaction primitive `setSpinRate`.
 export type SpinAnimation = {
   --- Tween duration in seconds. Must be finite and > 0.
   duration: number,
@@ -885,6 +885,9 @@ export type MoverEntityHandle = {
   stop: (self: MoverEntityHandle) -> {MoverStopStep},
   reverse: (self: MoverEntityHandle) -> {MoverReverseStep},
   goToPathNode: (self: MoverEntityHandle, node: string) -> {MoverGoToPathNodeStep},
+  --- Sets degrees per second. A nonzero rate requires a nonzero `spin_axis`
+  --- on the mover's authored map entity.
+  setSpinRate: (self: MoverEntityHandle, rate: number) -> {MoverSetSpinRateStep},
 }
 
 --- Typed trigger handle returned by `world:query({ component = "trigger_volume" })`.
@@ -1101,6 +1104,12 @@ export type MoverGoToPathNodeStep = {
   args: { node: string },
 }
 
+export type MoverSetSpinRateStep = {
+  id: EntityId,
+  primitive: "moverSetSpinRate",
+  args: { rate: number },
+}
+
 export type ArmTriggerStep = {
   id: EntityId | "@trigger",
   primitive: "armTrigger",
@@ -1115,7 +1124,7 @@ export type DisarmTriggerStep = {
 
 --- Union of every supported sequence step shape. New sequenced primitives
 --- extend this union.
-export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | ArmTriggerStep | DisarmTriggerStep
+export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | ArmTriggerStep | DisarmTriggerStep
 
 --- Sequence reaction body: ordered per-entity primitive invocations. Steps
 --- run in array order at dispatch.

@@ -247,6 +247,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
         collision_world: collision::CollisionWorld::new(),
         kinematic_mover_colliders: Vec::new(),
         kinematic_mover_tick_states: kinematic_mover::MoverTickStateTable::default(),
+        mover_yaw_carry_ground: postretro_foundation::GroundRef::Airborne,
         kinematic_mover_render: runtime_movers::KinematicMoverRenderCollector::new(),
         trigger_bindings: crate::trigger_bindings::TriggerBindingTable::default(),
         trigger_pool_report: crate::trigger_pools::TriggerPoolInstallReport::default(),

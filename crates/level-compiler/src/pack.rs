@@ -1234,6 +1234,10 @@ mod tests {
                 vertices: geometry.vertices,
                 indices: geometry.indices,
                 face_meta: geometry.faces,
+                spin_axis: [0.0; 3],
+                spin_speed_deg_s: 0.0,
+                spin_accel_deg_s2: 0.0,
+                carry_yaw: false,
             }],
             waypoints: vec![
                 KinematicWaypointRecord {

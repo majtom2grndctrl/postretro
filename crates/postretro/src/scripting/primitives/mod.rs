@@ -166,7 +166,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("SpinAnimation")
-        .doc("Spin-rate tween carried by a billboard emitter and consumed by `setSpinRate`.")
+        .doc("Spin-rate tween carried by a billboard emitter and consumed by the billboard-emitter reaction primitive `setSpinRate`.")
         .field(
             "duration",
             "f32",

@@ -281,10 +281,23 @@ fn relay_pair() -> (NetServer, NetClient) {
         .expect("fixture server resolves loopback address");
     let client_socket =
         UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("fixture client binds loopback socket");
-    let server = NetServer::new(server_socket, server_addr, 1, origin)
-        .expect("fixture server transport constructs");
-    let client = NetClient::new(client_socket, server_addr, CLIENT_ID, origin)
-        .expect("fixture client transport constructs");
+    let static_fingerprint = [0x5a; 32];
+    let server = NetServer::new(
+        server_socket,
+        server_addr,
+        1,
+        origin,
+        Some(static_fingerprint),
+    )
+    .expect("fixture server transport constructs");
+    let client = NetClient::new(
+        client_socket,
+        server_addr,
+        CLIENT_ID,
+        origin,
+        Some(static_fingerprint),
+    )
+    .expect("fixture client transport constructs");
     (server, client)
 }
 

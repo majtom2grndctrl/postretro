@@ -98,6 +98,7 @@ impl App {
         self.collision_world.clear();
         self.kinematic_mover_colliders.clear();
         self.kinematic_mover_tick_states.clear();
+        self.mover_yaw_carry_ground = postretro_foundation::GroundRef::Airborne;
         self.kinematic_mover_render.clear();
         self.trigger_bindings = TriggerBindingTable::default();
         self.trigger_pool_report = TriggerPoolInstallReport::default();
@@ -558,6 +559,17 @@ impl App {
         prm_cache_root: PathBuf,
     ) {
         self.retain_active_level_tags_for_install();
+        let kinematic_static_fingerprint =
+            crate::runtime_movers::kinematic_static_fingerprint(&world.kinematic_geometry);
+        if let Some(endpoint) = self
+            .session
+            .as_mut()
+            .expect("session installed before level install")
+            .net_endpoint
+            .as_mut()
+        {
+            endpoint.set_kinematic_static_fingerprint(kinematic_static_fingerprint);
+        }
         // The whole script tranche lives on `Session` (built post-first-pixel).
         // Level install only runs in Loading/Running, where the session is
         // installed. Clone the `ScriptCtx` handle (cheap `Rc` bump) so the many
@@ -2021,6 +2033,7 @@ mod tests {
             collision_world: crate::collision::CollisionWorld::new(),
             kinematic_mover_colliders: Vec::new(),
             kinematic_mover_tick_states: crate::kinematic_mover::MoverTickStateTable::default(),
+            mover_yaw_carry_ground: postretro_foundation::GroundRef::Airborne,
             kinematic_mover_render: crate::runtime_movers::KinematicMoverRenderCollector::new(),
             trigger_bindings: crate::trigger_bindings::TriggerBindingTable::default(),
             trigger_pool_report: TriggerPoolInstallReport::default(),

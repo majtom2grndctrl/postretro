@@ -5,13 +5,14 @@ use glam::{Vec2, Vec3};
 use parry3d::math::{Point, Vector};
 use parry3d::shape::Capsule;
 
+use crate::collision::SKIN_DISTANCE;
 use crate::collision::moving::{
-    CollisionSource, CombinedCastHit, CombinedCollisionWorld, cast_capsule_combined,
-    cast_ray_combined, deepest_mover_push_penetration,
-    deepest_mover_push_penetration_excluding_swept,
+    CombinedCastHit, CombinedCollisionWorld, cast_capsule_combined, cast_ray_combined,
 };
-use crate::collision::{SKIN_DISTANCE, cast_capsule};
 use crate::movement::SubstrateResult;
+use crate::movement::mover_carry::{
+    apply_mover_carry, apply_mover_release_velocity, displace_from_movers, ground_ref_from_hit,
+};
 use postretro_foundation::{GroundRef, PlayerMovementComponent};
 
 /// Separation nudge along the contact normal applied when parry reports a
@@ -478,7 +479,7 @@ pub(super) fn integrate_collision(
         // no floor contact this tick. The jump branch already cleared it.
         component.ground = GroundRef::Airborne;
     }
-    apply_mover_release_velocity(component, previous_ground, collision);
+    apply_mover_release_velocity(component, previous_ground, collision, current_pos);
 
     // Air-tick hysteresis. The step-up probe lifts the capsule only at genuine
     // walkable steps (pure walls skip the lift), but cornering events or the
@@ -536,93 +537,6 @@ fn cast_ray_query(
         dir,
         max_toi,
     )
-}
-
-fn ground_ref_from_hit(hit: CombinedCastHit) -> GroundRef {
-    match hit.source {
-        CollisionSource::Static => GroundRef::World,
-        CollisionSource::Mover(mover_id) => GroundRef::Mover(mover_id),
-    }
-}
-
-fn apply_mover_carry(
-    position: Vec3,
-    previous_ground: GroundRef,
-    collision: &CombinedCollisionWorld<'_>,
-) -> Vec3 {
-    let GroundRef::Mover(mover_id) = previous_ground else {
-        return position;
-    };
-    collision
-        .poses
-        .pose(mover_id)
-        .map_or(position, |pose| position + pose.tick_delta)
-}
-
-fn apply_mover_release_velocity(
-    component: &mut PlayerMovementComponent,
-    previous_ground: GroundRef,
-    collision: &CombinedCollisionWorld<'_>,
-) {
-    let GroundRef::Mover(mover_id) = previous_ground else {
-        return;
-    };
-    if component.ground == GroundRef::Mover(mover_id) {
-        return;
-    }
-    if let Some(pose) = collision.poses.pose(mover_id) {
-        component.velocity += pose.linear_velocity;
-    }
-}
-
-fn displace_from_movers(
-    _component: &PlayerMovementComponent,
-    previous_ground: GroundRef,
-    collision: &CombinedCollisionWorld<'_>,
-    capsule: &Capsule,
-    position: Vec3,
-) -> Vec3 {
-    if collision.movers.is_empty() {
-        return position;
-    }
-    let pos = Point::new(position.x, position.y, position.z);
-    let penetration = match previous_ground {
-        GroundRef::Mover(mover_id) => deepest_mover_push_penetration_excluding_swept(
-            collision.movers,
-            collision.poses,
-            pos,
-            capsule,
-            mover_id,
-        ),
-        GroundRef::Airborne | GroundRef::World => {
-            deepest_mover_push_penetration(collision.movers, collision.poses, pos, capsule)
-        }
-    };
-    let Some(penetration) = penetration else {
-        return position;
-    };
-    let candidate = position + penetration.normal * penetration.depth;
-    let blocked = cast_capsule(
-        collision.static_world,
-        Point::new(position.x, position.y, position.z),
-        capsule,
-        Vector::new(
-            penetration.normal.x,
-            penetration.normal.y,
-            penetration.normal.z,
-        ),
-        penetration.depth,
-    )
-    .is_some();
-    if blocked {
-        #[cfg(debug_assertions)]
-        log::warn!(
-            "[Movement] mover {} push was blocked by static geometry; pinch/crush resolution is deferred",
-            penetration.mover_id
-        );
-        return position;
-    }
-    candidate
 }
 
 /// Which extreme of the capsule stays geometrically fixed when the capsule is

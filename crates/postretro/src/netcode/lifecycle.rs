@@ -707,8 +707,10 @@ mod tests {
         );
     }
 
+    // Regression sink for fingerprint-driven closes: transport delivers the same
+    // cause-agnostic Closed event, and gameplay must clear every slot-owned domain.
     #[test]
-    fn descriptor_accept_maps_and_close_unmaps_active_weapon_owner() {
+    fn descriptor_accept_and_lifecycle_close_clear_all_slot_owned_state() {
         let mut registry = EntityRegistry::new();
         let mut slot_pawns = SlotPawns::new();
         let mut allocator = NetworkIdAllocator::new();

@@ -805,12 +805,18 @@ mod tests {
                 id,
                 KinematicMoverComponent::new(
                     1,
-                    vec![Vec3::ZERO, Vec3::new(2.0, 0.0, 0.0)],
-                    vec!["start".into(), "end".into()],
-                    1.0,
-                    0.0,
-                    KinematicMoverMode::Once,
-                    false,
+                    postretro_entities::KinematicMoverConfig {
+                        waypoints: vec![Vec3::ZERO, Vec3::new(2.0, 0.0, 0.0)],
+                        waypoint_names: vec!["start".into(), "end".into()],
+                        speed_mps: 1.0,
+                        wait_ms: 0.0,
+                        mode: KinematicMoverMode::Once,
+                        started: false,
+                        spin_axis: Vec3::ZERO,
+                        initial_spin_rate_rad_s: 0.0,
+                        spin_accel_rad_s2: 0.0,
+                        carry_yaw: false,
+                    },
                 ),
             )
             .unwrap();

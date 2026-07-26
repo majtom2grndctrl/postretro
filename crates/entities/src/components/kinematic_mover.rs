@@ -21,13 +21,15 @@ pub enum MoverCommand {
     Stop,
     Reverse,
     GoToPathNode(String),
+    /// Set the authored target spin rate in degrees per second.
+    SetSpinRate(f32),
 }
 
-/// Live deterministic phase for one linear moving-world payload.
+/// Live deterministic phase for one moving-world payload.
 ///
-/// The waypoint list, speed, wait, and mode are static path data seeded when the
-/// mover is constructed. The remaining fields are phase mirrored by the wire
-/// payload without replicating the path itself.
+/// Waypoints, speed, wait, spin axis, acceleration, and carry policy are static
+/// data seeded when the mover is constructed. The remaining fields are phase
+/// mirrored by the wire payload without replicating the path itself.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct KinematicMoverComponent {
     pub mover_id: u32,
@@ -37,6 +39,12 @@ pub struct KinematicMoverComponent {
     pub speed_mps: f32,
     pub wait_ms: f32,
     pub mode: KinematicMoverMode,
+    /// Static local-space rotation axis, normalized at construction.
+    pub spin_axis: Vec3,
+    /// Static angular acceleration used to approach the target spin rate.
+    pub spin_accel_rad_s2: f32,
+    /// Static rider-orientation policy, held locally rather than replicated.
+    pub carry_yaw: bool,
     pub segment_index: u16,
     pub direction_sign: i8,
     pub segment_elapsed_ms: f32,
@@ -46,33 +54,64 @@ pub struct KinematicMoverComponent {
     pub completed: bool,
     /// Runtime target waypoint index for `go_to_path_node`; replicated as phase.
     pub target_segment: Option<u16>,
+    /// Replicated accumulated spin phase, wrapped by the deterministic driver.
+    pub spin_angle_rad: f32,
+    /// Replicated spin phase at the start of the most recently simulated tick.
+    /// Together with `spin_angle_rad`, this reconstructs the exact rotation that
+    /// tick applied even when argument reduction or phase wrapping occurred.
+    pub spin_angle_before_tick_rad: f32,
+    /// Whether the mover was active at the start of the most recently simulated
+    /// tick. Commands may change `started`/`completed` after that tick; replay
+    /// uses this provenance instead of the post-command gate.
+    pub was_active_this_tick: bool,
+    /// Replicated current spin rate after the driver's acceleration ramp.
+    pub spin_rate_rad_s: f32,
+    /// Replicated target spin rate set by mover commands.
+    pub spin_target_rate_rad_s: f32,
+}
+
+/// Static mover authoring data and its initial runtime phase.
+///
+/// Rates are expressed in radians, and the constructor normalizes `spin_axis`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct KinematicMoverConfig {
+    pub waypoints: Vec<Vec3>,
+    pub waypoint_names: Vec<String>,
+    pub speed_mps: f32,
+    pub wait_ms: f32,
+    pub mode: KinematicMoverMode,
+    pub started: bool,
+    pub spin_axis: Vec3,
+    pub initial_spin_rate_rad_s: f32,
+    pub spin_accel_rad_s2: f32,
+    pub carry_yaw: bool,
 }
 
 impl KinematicMoverComponent {
-    pub fn new(
-        mover_id: u32,
-        waypoints: Vec<Vec3>,
-        waypoint_names: Vec<String>,
-        speed_mps: f32,
-        wait_ms: f32,
-        mode: KinematicMoverMode,
-        started: bool,
-    ) -> Self {
+    pub fn new(mover_id: u32, config: KinematicMoverConfig) -> Self {
         Self {
             mover_id,
-            waypoints,
-            waypoint_names,
-            speed_mps,
-            wait_ms,
-            mode,
+            waypoints: config.waypoints,
+            waypoint_names: config.waypoint_names,
+            speed_mps: config.speed_mps,
+            wait_ms: config.wait_ms,
+            mode: config.mode,
+            spin_axis: config.spin_axis.normalize_or_zero(),
+            spin_accel_rad_s2: config.spin_accel_rad_s2,
+            carry_yaw: config.carry_yaw,
             segment_index: 0,
             direction_sign: 1,
             segment_elapsed_ms: 0.0,
             wait_remaining_ms: 0.0,
             current_linear_velocity: Vec3::ZERO,
-            started,
+            started: config.started,
             completed: false,
             target_segment: None,
+            spin_angle_rad: 0.0,
+            spin_angle_before_tick_rad: 0.0,
+            was_active_this_tick: false,
+            spin_rate_rad_s: config.initial_spin_rate_rad_s,
+            spin_target_rate_rad_s: config.initial_spin_rate_rad_s,
         }
     }
 }
@@ -86,12 +125,18 @@ mod tests {
     fn kinematic_mover_component_registers_kind_and_round_trips_serde() {
         let mover = KinematicMoverComponent::new(
             9,
-            vec![Vec3::ZERO, Vec3::new(1.0, 2.0, 3.0)],
-            vec!["start".to_string(), "finish".to_string()],
-            2.5,
-            125.0,
-            KinematicMoverMode::PingPong,
-            true,
+            KinematicMoverConfig {
+                waypoints: vec![Vec3::ZERO, Vec3::new(1.0, 2.0, 3.0)],
+                waypoint_names: vec!["start".to_string(), "finish".to_string()],
+                speed_mps: 2.5,
+                wait_ms: 125.0,
+                mode: KinematicMoverMode::PingPong,
+                started: true,
+                spin_axis: Vec3::new(0.0, 2.0, 0.0),
+                initial_spin_rate_rad_s: 1.25,
+                spin_accel_rad_s2: 0.75,
+                carry_yaw: true,
+            },
         );
         let value = mover.clone().into_value();
 
@@ -101,5 +146,25 @@ mod tests {
         let json = serde_json::to_value(&value).unwrap();
         let back: ComponentValue = serde_json::from_value(json).unwrap();
         assert_eq!(back, value);
+        assert_eq!(mover.spin_axis, Vec3::Y);
+        assert_eq!(mover.spin_rate_rad_s, 1.25);
+        assert_eq!(mover.spin_target_rate_rad_s, 1.25);
+    }
+
+    #[test]
+    fn set_spin_rate_command_uses_snake_case_degrees_payload() {
+        let command = MoverCommand::SetSpinRate(-90.0);
+
+        assert_eq!(
+            serde_json::to_value(&command).unwrap(),
+            serde_json::json!({ "set_spin_rate": -90.0 })
+        );
+        assert_eq!(
+            serde_json::from_value::<MoverCommand>(serde_json::json!({
+                "set_spin_rate": 180.0
+            }))
+            .unwrap(),
+            MoverCommand::SetSpinRate(180.0)
+        );
     }
 }

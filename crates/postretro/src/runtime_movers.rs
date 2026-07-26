@@ -56,6 +56,74 @@ pub(crate) fn build_loaded_mover_colliders(world: &LevelWorld) -> Vec<MoverColli
         .collect()
 }
 
+/// Canonical connection-time identity for every static input that can affect
+/// deterministic mover prediction or mover collision. The net crate treats the
+/// digest as opaque; keeping the byte recipe here preserves its engine boundary.
+pub(crate) fn kinematic_static_fingerprint(geometry: &KinematicGeometry) -> [u8; 32] {
+    const FINGERPRINT_EPOCH: u32 = 1;
+
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"postretro-kinematic-static");
+    hasher.update(&FINGERPRINT_EPOCH.to_le_bytes());
+    hash_len(&mut hasher, geometry.movers.len());
+    for mover in &geometry.movers {
+        hasher.update(&mover.mover_id.to_le_bytes());
+        hash_str(&mut hasher, &mover.name);
+        hash_len(&mut hasher, mover.tags.len());
+        for tag in &mover.tags {
+            hash_str(&mut hasher, tag);
+        }
+        hash_vec3(&mut hasher, mover.origin);
+        hash_str(&mut hasher, &mover.path);
+        hash_f32(&mut hasher, mover.speed_mps);
+        hash_f32(&mut hasher, mover.wait_ms);
+        hasher.update(&[mover.move_mode, u8::from(mover.start_on_spawn)]);
+        hash_vec3(&mut hasher, mover.spin_axis);
+        hash_f32(&mut hasher, mover.spin_speed_deg_s);
+        hash_f32(&mut hasher, mover.spin_accel_deg_s2);
+        hasher.update(&[u8::from(mover.carry_yaw)]);
+
+        hash_len(&mut hasher, mover.vertices.len());
+        for vertex in &mover.vertices {
+            for component in vertex.position {
+                hash_f32(&mut hasher, component);
+            }
+        }
+        hash_len(&mut hasher, mover.indices.len());
+        for index in &mover.indices {
+            hasher.update(&index.to_le_bytes());
+        }
+    }
+
+    hash_len(&mut hasher, geometry.waypoints.len());
+    for waypoint in &geometry.waypoints {
+        hash_str(&mut hasher, &waypoint.name);
+        hash_str(&mut hasher, &waypoint.next);
+        hash_vec3(&mut hasher, waypoint.origin);
+    }
+
+    *hasher.finalize().as_bytes()
+}
+
+fn hash_len(hasher: &mut blake3::Hasher, len: usize) {
+    hasher.update(&(len as u64).to_le_bytes());
+}
+
+fn hash_str(hasher: &mut blake3::Hasher, value: &str) {
+    hash_len(hasher, value.len());
+    hasher.update(value.as_bytes());
+}
+
+fn hash_vec3(hasher: &mut blake3::Hasher, value: Vec3) {
+    hash_f32(hasher, value.x);
+    hash_f32(hasher, value.y);
+    hash_f32(hasher, value.z);
+}
+
+fn hash_f32(hasher: &mut blake3::Hasher, value: f32) {
+    hasher.update(&value.to_bits().to_le_bytes());
+}
+
 pub(crate) struct KinematicMoverRenderCollector {
     /// Camera-PVS-visible instances for the beauty pass.
     instances: Vec<KinematicMoverInstance>,
@@ -214,8 +282,35 @@ fn spawn_from_geometry(
     let mut spawned = Vec::with_capacity(geometry.movers.len());
 
     for mover in &geometry.movers {
-        let (waypoints, waypoint_names) =
-            resolve_waypoint_chain(mover, &geometry.waypoints, &waypoint_indices)?;
+        let spin_axis = mover.spin_axis.normalize_or_zero();
+        let initial_spin_rate_rad_s = mover.spin_speed_deg_s.to_radians();
+        let spin_accel_rad_s2 = mover.spin_accel_deg_s2.to_radians();
+        if mover.spin_speed_deg_s != 0.0 && initial_spin_rate_rad_s == 0.0 {
+            return Err(RuntimeMoverLoadError::new(format!(
+                "mover {} (`{}`) has nonzero spin_speed_deg_s that becomes zero after conversion to radians/sec",
+                mover.mover_id, mover.name
+            )));
+        }
+        if mover.spin_accel_deg_s2 > 0.0 && spin_accel_rad_s2 == 0.0 {
+            return Err(RuntimeMoverLoadError::new(format!(
+                "mover {} (`{}`) has positive spin_accel_deg_s2 that becomes zero after conversion to radians/sec²",
+                mover.mover_id, mover.name
+            )));
+        }
+        let has_initial_spin = initial_spin_rate_rad_s != 0.0;
+        if has_initial_spin && spin_axis == Vec3::ZERO {
+            return Err(RuntimeMoverLoadError::new(format!(
+                "mover {} (`{}`) has nonzero spin_speed_deg_s but a zero spin_axis",
+                mover.mover_id, mover.name
+            )));
+        }
+        let allow_single_waypoint = has_initial_spin;
+        let (waypoints, waypoint_names) = resolve_waypoint_chain(
+            mover,
+            &geometry.waypoints,
+            &waypoint_indices,
+            allow_single_waypoint,
+        )?;
         let mode = mover_mode(mover)?;
         let transform = Transform {
             position: mover.origin,
@@ -230,13 +325,20 @@ fn spawn_from_geometry(
         };
         let component = KinematicMoverComponent::new(
             mover.mover_id,
-            waypoints,
-            waypoint_names,
-            mover.speed_mps,
-            mover.wait_ms,
-            mode,
-            mover.start_on_spawn,
+            postretro_entities::KinematicMoverConfig {
+                waypoints,
+                waypoint_names,
+                speed_mps: mover.speed_mps,
+                wait_ms: mover.wait_ms,
+                mode,
+                started: mover.start_on_spawn,
+                spin_axis,
+                initial_spin_rate_rad_s,
+                spin_accel_rad_s2,
+                carry_yaw: mover.carry_yaw,
+            },
         );
+        log::info!("{}", kinematic_mover_load_summary(mover, &component));
         registry
             .set_component(entity, component)
             .map_err(|err| RuntimeMoverLoadError::new(err.to_string()))?;
@@ -244,6 +346,27 @@ fn spawn_from_geometry(
     }
 
     Ok(spawned)
+}
+
+/// Author-readable static and seeded-phase diagnostics emitted during level
+/// install. Rates are converted back to the FGD's degrees-per-second units.
+fn kinematic_mover_load_summary(
+    loaded: &LoadedKinematicMover,
+    component: &KinematicMoverComponent,
+) -> String {
+    let axis = component.spin_axis;
+    format!(
+        "[Loader] kinematic mover {} (`{}`): spin static(axis=[{:.3}, {:.3}, {:.3}], accel={:.2} deg/s², carry_yaw={}); phase(current_rate={:.2} deg/s, target_rate={:.2} deg/s)",
+        loaded.mover_id,
+        loaded.name,
+        axis.x,
+        axis.y,
+        axis.z,
+        component.spin_accel_rad_s2.to_degrees(),
+        component.carry_yaw,
+        component.spin_rate_rad_s.to_degrees(),
+        component.spin_target_rate_rad_s.to_degrees(),
+    )
 }
 
 fn build_mover_collider(mover: &LoadedKinematicMover) -> Option<MoverCollider> {
@@ -336,6 +459,7 @@ fn resolve_waypoint_chain(
     mover: &LoadedKinematicMover,
     waypoints: &[LoadedKinematicWaypoint],
     waypoint_indices: &HashMap<&str, usize>,
+    allow_single_waypoint: bool,
 ) -> Result<(Vec<Vec3>, Vec<String>), RuntimeMoverLoadError> {
     if mover.path.is_empty() {
         return Err(RuntimeMoverLoadError::new(format!(
@@ -370,7 +494,7 @@ fn resolve_waypoint_chain(
         current = waypoint.next.as_str();
     }
 
-    if resolved.len() < 2 {
+    if resolved.len() < 2 && !allow_single_waypoint {
         return Err(RuntimeMoverLoadError::new(format!(
             "mover {} (`{}`) path `{}` resolves to {} waypoint(s); at least 2 required",
             mover.mover_id,
@@ -433,7 +557,84 @@ mod tests {
             ],
             indices: vec![0, 1, 2],
             face_meta: Vec::new(),
+            spin_axis: Vec3::ZERO,
+            spin_speed_deg_s: 0.0,
+            spin_accel_deg_s2: 0.0,
+            carry_yaw: false,
         }
+    }
+
+    #[test]
+    fn kinematic_static_fingerprint_changes_for_prediction_inputs() {
+        let base = KinematicGeometry {
+            movers: vec![mover(1)],
+            waypoints: vec![
+                LoadedKinematicWaypoint {
+                    name: "a".to_string(),
+                    next: "b".to_string(),
+                    origin: Vec3::ZERO,
+                },
+                LoadedKinematicWaypoint {
+                    name: "b".to_string(),
+                    next: String::new(),
+                    origin: Vec3::X,
+                },
+            ],
+        };
+        let fingerprint = kinematic_static_fingerprint(&base);
+        assert_eq!(fingerprint, kinematic_static_fingerprint(&base));
+
+        let mut changed = base.clone();
+        changed.movers[0].spin_axis = Vec3::Y;
+        assert_ne!(fingerprint, kinematic_static_fingerprint(&changed));
+
+        let mut changed = base.clone();
+        changed.movers[0].spin_accel_deg_s2 = 90.0;
+        assert_ne!(fingerprint, kinematic_static_fingerprint(&changed));
+
+        let mut changed = base.clone();
+        changed.movers[0].carry_yaw = true;
+        assert_ne!(fingerprint, kinematic_static_fingerprint(&changed));
+
+        let mut changed = base.clone();
+        changed.waypoints[1].origin = Vec3::Z;
+        assert_ne!(fingerprint, kinematic_static_fingerprint(&changed));
+
+        let mut changed = base;
+        changed.movers[0].vertices[0].position[0] = 0.5;
+        assert_ne!(fingerprint, kinematic_static_fingerprint(&changed));
+    }
+
+    #[test]
+    fn load_summary_separates_static_spin_fields_from_seeded_phase_in_author_units() {
+        let mut loaded = mover(1);
+        loaded.name = "carousel".to_string();
+        loaded.spin_axis = Vec3::new(0.0, 0.0, 3.0);
+        loaded.spin_speed_deg_s = -90.0;
+        loaded.spin_accel_deg_s2 = 45.0;
+        loaded.carry_yaw = true;
+        let component = KinematicMoverComponent::new(
+            loaded.mover_id,
+            postretro_entities::KinematicMoverConfig {
+                waypoints: vec![loaded.origin],
+                waypoint_names: vec!["carousel".to_string()],
+                speed_mps: loaded.speed_mps,
+                wait_ms: loaded.wait_ms,
+                mode: KinematicMoverMode::PingPong,
+                started: loaded.start_on_spawn,
+                spin_axis: loaded.spin_axis,
+                initial_spin_rate_rad_s: loaded.spin_speed_deg_s.to_radians(),
+                spin_accel_rad_s2: loaded.spin_accel_deg_s2.to_radians(),
+                carry_yaw: loaded.carry_yaw,
+            },
+        );
+
+        let summary = kinematic_mover_load_summary(&loaded, &component);
+
+        assert!(summary.contains("spin static(axis=[0.000, 0.000, 1.000]"));
+        assert!(summary.contains("accel=45.00 deg/s²"));
+        assert!(summary.contains("carry_yaw=true"));
+        assert!(summary.contains("phase(current_rate=-90.00 deg/s, target_rate=-90.00 deg/s)"));
     }
 
     fn geometry(mode: u8) -> KinematicGeometry {
@@ -541,6 +742,11 @@ mod tests {
         assert_eq!(mover.waypoint_names, ["a", "b"]);
         assert_eq!(mover.speed_mps, 2.0);
         assert_eq!(mover.wait_ms, 125.0);
+        assert_eq!(mover.spin_axis, Vec3::ZERO);
+        assert_eq!(mover.spin_rate_rad_s, 0.0);
+        assert_eq!(mover.spin_target_rate_rad_s, 0.0);
+        assert_eq!(mover.spin_accel_rad_s2, 0.0);
+        assert!(!mover.carry_yaw);
         assert!(mover.started);
         assert!(matches!(
             registry.has_component_kind(id, ComponentKind::KinematicMover),
@@ -561,7 +767,102 @@ mod tests {
         let mut short = geometry(0);
         short.waypoints.truncate(1);
         short.waypoints[0].next.clear();
-        assert!(spawn_from_geometry(&mut EntityRegistry::new(), &short).is_err());
+        let err = spawn_from_geometry(&mut EntityRegistry::new(), &short).unwrap_err();
+        assert!(err.to_string().contains("at least 2 required"));
+    }
+
+    #[test]
+    fn pure_rotator_spawns_with_one_waypoint_and_ticks_without_completing() {
+        let mut pure_rotator = geometry(0);
+        pure_rotator.waypoints.truncate(1);
+        pure_rotator.waypoints[0].next.clear();
+        pure_rotator.movers[0].spin_axis = Vec3::new(0.0, 3.0, 4.0);
+        pure_rotator.movers[0].spin_speed_deg_s = 90.0;
+        pure_rotator.movers[0].spin_accel_deg_s2 = 180.0;
+        pure_rotator.movers[0].carry_yaw = true;
+
+        let mut registry = EntityRegistry::new();
+        let id = spawn_from_geometry(&mut registry, &pure_rotator).unwrap()[0];
+        let mover = registry
+            .get_component::<KinematicMoverComponent>(id)
+            .expect("pure rotator must receive a mover component");
+        assert_eq!(mover.waypoints, vec![Vec3::new(1.0, 2.0, 3.0)]);
+        assert_eq!(mover.waypoint_names, ["a"]);
+        assert!((mover.spin_axis - Vec3::new(0.0, 0.6, 0.8)).length() <= 1.0e-6);
+        assert!((mover.spin_rate_rad_s - std::f32::consts::FRAC_PI_2).abs() <= 1.0e-6);
+        assert!((mover.spin_target_rate_rad_s - std::f32::consts::FRAC_PI_2).abs() <= 1.0e-6);
+        assert!((mover.spin_accel_rad_s2 - std::f32::consts::PI).abs() <= 1.0e-6);
+        assert!(mover.carry_yaw);
+        assert!(mover.spin_angle_rad.abs() <= 1.0e-6);
+
+        let mut table = crate::kinematic_mover::MoverTickStateTable::default();
+        crate::kinematic_mover::run_kinematic_mover_tick(&mut registry, &mut table, 0.5);
+
+        let mover = registry
+            .get_component::<KinematicMoverComponent>(id)
+            .expect("pure rotator component must remain installed");
+        assert!(!mover.completed);
+        let transform = registry
+            .get_component::<Transform>(id)
+            .expect("pure rotator transform must remain installed");
+        assert!((transform.position - Vec3::new(1.0, 2.0, 3.0)).length() <= 1.0e-6);
+        let expected_rotation =
+            Quat::from_axis_angle(Vec3::new(0.0, 0.6, 0.8), std::f32::consts::FRAC_PI_4);
+        assert!((transform.rotation.dot(expected_rotation).abs() - 1.0).abs() <= 1.0e-6);
+    }
+
+    #[test]
+    fn spawning_nonzero_spin_with_zero_axis_fails_clearly() {
+        let mut invalid = geometry(0);
+        invalid.movers[0].spin_speed_deg_s = 90.0;
+
+        let err = spawn_from_geometry(&mut EntityRegistry::new(), &invalid).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("nonzero spin_speed_deg_s but a zero spin_axis")
+        );
+    }
+
+    // Regression: bypassing loader validation could still authorize a motionless pure rotator.
+    #[test]
+    fn spawning_nonzero_spin_that_underflows_in_radians_fails_clearly() {
+        let mut invalid = geometry(0);
+        invalid.movers[0].spin_axis = Vec3::Y;
+        invalid.movers[0].spin_speed_deg_s = f32::from_bits(1);
+
+        let err = spawn_from_geometry(&mut EntityRegistry::new(), &invalid).unwrap_err();
+
+        assert!(err.to_string().contains("conversion to radians/sec"));
+    }
+
+    // Regression: bypassing loader validation could turn a positive ramp into snap behavior.
+    #[test]
+    fn spawning_positive_spin_accel_that_underflows_in_radians_fails_clearly() {
+        let mut invalid = geometry(0);
+        invalid.movers[0].spin_accel_deg_s2 = f32::from_bits(1);
+
+        let err = spawn_from_geometry(&mut EntityRegistry::new(), &invalid).unwrap_err();
+
+        assert!(err.to_string().contains("conversion to radians/sec²"));
+    }
+
+    #[test]
+    fn zero_initial_spin_preserves_authored_axis_for_later_spin_up() {
+        let mut delayed_spin = geometry(0);
+        delayed_spin.movers[0].spin_axis = Vec3::new(0.0, 2.0, 0.0);
+        delayed_spin.movers[0].spin_accel_deg_s2 = 180.0;
+
+        let mut registry = EntityRegistry::new();
+        let id = spawn_from_geometry(&mut registry, &delayed_spin).unwrap()[0];
+        let mover = registry
+            .get_component::<KinematicMoverComponent>(id)
+            .expect("delayed spin mover must receive a mover component");
+
+        assert!((mover.spin_axis - Vec3::Y).length() <= 1.0e-6);
+        assert!(mover.spin_rate_rad_s.abs() <= 1.0e-6);
+        assert!(mover.spin_target_rate_rad_s.abs() <= 1.0e-6);
+        assert!((mover.spin_accel_rad_s2 - std::f32::consts::PI).abs() <= 1.0e-6);
     }
 
     #[test]

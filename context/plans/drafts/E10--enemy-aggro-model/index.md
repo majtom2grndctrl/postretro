@@ -456,7 +456,7 @@ why the death latch, not `le(targetHealth, 0)`, is the death test, and that a
 filter over `candidate.distance` **is** the authored acquisition radius — the
 reason no descriptor field spells one, and the answer to the question the seed
 research left open. `primitives/mod.rs` does not own the `brain` interface —
-`BrainInputs` and the `brain` declaration are hand-written into the three
+`BrainInputs` and the `brain` declaration are hand-written into the two
 template files Task 1 names. The typedef work splits accordingly: in
 `crates/postretro/src/scripting/primitives/mod.rs`, update the `components.ai`
 `detectionRange` and `leashRange` field descriptions (lines 346-348) to state
@@ -616,7 +616,7 @@ successor spec inherits it instead of re-deriving it.
   LOS would bake in one point on that spectrum, which is structurally the same
   defect as the hardcoded aliveness rule this plan removes. The cost objection
   answers itself through the IR: `IrNode::dispatch_input_names`
-  (`crates/foundation/src/ir/mod.rs:181`) reveals at **bind time** whether a
+  (`crates/foundation/src/ir/mod.rs:185`) reveals at **bind time** whether a
   filter reads that leaf, so a graph that never mentions it pays for no raycasts
   and perception is priced per graph by what its author actually asked for. What
   is genuinely open is only the resolver's own shape, which waits on a consumer.

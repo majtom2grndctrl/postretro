@@ -2,7 +2,7 @@
 
 > **Status:** draft.
 >
-> **Depends on:** `context/plans/in-progress/E17--rotating-movers/` and its two
+> **Depends on:** `context/plans/done/E17--rotating-movers/` and its two
 > play-test fixes: intrinsic remote-player locomotion velocity and render-interpolated
 > `carry_yaw`.
 

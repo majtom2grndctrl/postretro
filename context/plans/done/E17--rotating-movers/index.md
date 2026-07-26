@@ -1,6 +1,6 @@
 # E17-D — Rotation and Orientation Carry
 
-> **Status:** in progress.
+> **Status:** done — shipped as E17-D rotation and orientation carry.
 >
 > **Epic:** 17 — Kinematic Geometry and Moving Platforms.
 >

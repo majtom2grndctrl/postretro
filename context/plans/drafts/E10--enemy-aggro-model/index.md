@@ -69,8 +69,10 @@ the rest of taste already lives.
 
 - [ ] A graph can author an interrupt that stands the brain down when its
       selected target's death latch has fired; an enemy engaged with a co-op
-      pawn that dies releases it on the next tick and engages a live pawn
-      standing beside it, even inside the switch-hysteresis margin.
+      pawn that dies releases it on the tick after the death sweep commits, and
+      engages a live pawn standing beside it, even inside the switch-hysteresis
+      margin. The same holds whether the pawn was killed by weapon fire or by
+      another enemy's attack.
 - [ ] With no selected target, every target-side fact reads its type's zero, and
       the boolean death fact reads false. A guard reading a target-side fact
       untargeted never fires a stand-down *ahead of* the has-target interrupt,
@@ -109,11 +111,12 @@ the rest of taste already lives.
 - [ ] Authoring `components.ai` with a leash range below its detection range is
       a validation error in both runtimes, naming both field values.
 - [ ] A behavior graph whose engaging states offer no edge to a non-engaging
-      state validates successfully and logs one warning naming those states.
+      state validates successfully and returns one finding naming those states,
+      asserted on directly rather than through captured log output.
 - [ ] A behavior graph with engaging states and no has-target interrupt
-      validates successfully and logs one warning explaining the sentinel
-      asymmetry. Warnings fire once per descriptor validation, not per spawn and
-      not per tick.
+      validates successfully and returns one finding explaining the sentinel
+      asymmetry. Findings are produced once per descriptor validation, not per
+      spawn and not per tick.
 - [ ] The shipped reference enemy trips neither warning, authors both the
       target-death interrupt and the candidate filter, and is behavior-identical
       to its Luau twin.
@@ -146,9 +149,21 @@ reads its declared type's zero: no new sentinel constant is introduced, and the
 doc comments must say plainly that `@brain.hasTarget` is the only authoritative
 presence test and that the existing `BRAIN_NO_TARGET_DISTANCE` remains the lone
 exception to the zero convention. The Bool latch fact, not a health comparison,
-is the death signal: it is unambiguous with no target, and it carries the death
-sweep's full definition (which includes non-finite health) rather than an
-author's re-derivation of it. Populate the facts in
+is the death signal, for three reasons. It is unambiguous with no target. It
+carries the death sweep's full definition (which includes non-finite health)
+rather than an author's re-derivation of it. And it is the only one of the two
+that is order-independent: `run_death_sweep` runs last in the tick, while enemy
+attacks apply damage synchronously inside the AI tick
+(`ai/mod.rs:796`), so a pawn killed by another enemy reads `targetHealth` as `0`
+for enemies iterated after its killer and `targetDied` as `false` for all of
+them. The health read is coupled to iteration order for that one tick; the latch
+is uniform. Authors must therefore not conjoin `le(targetHealth, 0)` to get a
+same-tick test — it would import iteration order into an authored guard.
+Same-tick suppression is already the floor's job: `selected_target_alive` reads
+health directly and is current within the tick, so an enemy cannot damage a pawn
+that died earlier in the same AI tick. The contract the docs state is that
+`targetDied` becomes true on the tick after death is committed, uniformly for
+every observer. Populate the facts in
 `crates/postretro/src/scripting/systems/ai/brain_scope.rs`: `BrainFacts` folds
 distance and identity into one binding — `target: Option<(EntityId, f32)>` —
 preserving the existing "cannot disagree" guarantee, and its doc comment
@@ -245,10 +260,21 @@ ordinary acquisition scan applies no range limit — which is the whole
 oscillation. Move the rule into `targeting.rs` so the oversized tick module only
 passes a value: the ranking scan and the selection entry point take the brain's
 optional leash and reject any candidate beyond it, and `ai/mod.rs` passes
-`brain.leash_range` at the same four call sites Task 2 touches. The existing
-post-hoc leash filter on the replacement search collapses into the new parameter
-rather than remaining a second spelling. A brain with no leash — every authored
-graph — keeps today's unbounded behavior exactly. Separately, add the ordering
+`brain.leash_range` at the same four call sites Task 2 touches. Symmetric means
+one spelling, so the leash applies inside the chokepoint to **both** arms — the
+retained-target lookup and the ranking scan. Both existing caller-side spellings
+go: the post-hoc filter on the replacement search and `retained_outside_leash`
+in `ai/mod.rs`, which is the asymmetry this task exists to remove. A brain with
+no leash — every authored graph — keeps today's unbounded behavior exactly.
+
+One thing the leash must not reach: the think stride. `ai/mod.rs` derives
+`current_distance` from the early non-engaged scan and feeds it to
+`acquisition_due`, whose `None` arm means *due every tick*. Filtering that scan
+by the leash turns a far-band strided enemy into a full-scan-every-tick enemy —
+the exact inversion of what the stride is for. The stride is cost machinery and
+the leash is a relevance rule; they must not share a data path. Derive the
+stride's distance from an unfiltered nearest-pawn read and apply the leash only
+to the value that becomes the selected target. Separately, add the ordering
 rule to `AiDescriptor::validate`
 (`crates/foundation/src/data_descriptors/types/combat.rs`): after the
 six-field range loop (`:302-317`) and before the `attackDamage` check
@@ -286,11 +312,15 @@ no-target sentinel makes `gt`/`ge` read true. Detect the read by reusing
 than hand-rolling a second tree walk for an input node naming the has-target
 constant — it is already colocated with the closed opcode set, so adding an
 opcode must update it, and its `Vec<String>` allocation is fine at validation
-time. Foundation already depends on `log`, so emit via `log::warn!` —
-validation returns a `Result` and these are not errors, so they do not join
-the return type. Messages carry the offending state names and the
-`components.behavior` path prefix, and fire once per descriptor validation,
-which is once per parse and not per spawn.
+time. The lint entry point **returns** its findings rather than logging them,
+and `validate` logs what it returns via `log::warn!` — foundation already
+depends on `log`. Findings are not errors, so they do not join the `Result`.
+This follows the existing bind-failure path, which chose an observable latch
+over raw logging for the same reason: a warning nothing can assert on is a
+warning nothing protects. Tests assert on the returned findings; no log-capture
+harness is needed, and none exists reachable from foundation. Messages carry the
+offending state names and the `components.behavior` path prefix, and fire once
+per descriptor validation, which is once per parse and not per spawn.
 Existing in-tree fixture graphs will start warning —
 `the_wire_shape_round_trips_through_camel_case_json`
 (`crates/foundation/src/data_descriptors/types/behavior.rs:743`) trips both
@@ -375,7 +405,7 @@ union, so the boolean-only constraint on `candidateFilter` is runtime-enforced
 |---|---|---|---|
 | The engine floor holds no aliveness policy for target selection; the attack gate's aliveness check is the floor's only health read and stays a damage gate | Task 2 (by not adding one) | Any future "obvious fix" adding a health test to candidacy or retention | AC 8, 5 |
 | Target-side facts read their type's zero with no target; `@brain.hasTarget` is the sole authoritative presence test, and the distance sentinel remains the lone exception | Task 1 | Any new target-side fact choosing a non-zero no-target reading | AC 2 |
-| The death latch, not a health comparison, is the authored death signal — it is unambiguous untargeted and carries the sweep's non-finite arm | Task 1 | Docs and reference authoring must not teach `le(targetHealth, 0)` as the death test | AC 1, 13, 14 |
+| The death latch, not a health comparison, is the authored death signal — it is unambiguous untargeted, carries the sweep's non-finite arm, and is the only one of the two that every observer reads alike. `targetDied` turns true on the tick after death commits, uniformly | Task 1 | Docs and reference authoring must not teach `le(targetHealth, 0)` as the death test, nor as a same-tick conjunct — the health read is coupled to AI iteration order for one tick after a kill | AC 1, 13, 14 |
 | Candidacy is per-graph eligibility; disengagement is per-state policy. The filter never runs against the retained target | Task 2 | The shared candidate lookup also resolves the retained target — the filter must sit in the ranking scan only | AC 1, 3, 15 |
 | The floor decides what is *perceivable* — which entities the scan is offered, and later the `visible` predicate — while the graph decides which offered candidates are worth engaging. The filter is strictly downstream of `visible` and can only narrow the offer set | Task 2 | A perception spec exposing a `@candidate.visible` fact and moving line-of-sight policy into the filter; any filter arm that widens what the scan considers | Design constraint — not observable until a resolver exists |
 | The filter answers eligibility, never order: it produces a boolean, and ranking stays nearest-with-hysteresis | Task 2 | A threat or priority spec widening the filter to a score rather than adding its own seam | AC 3, 7 |
@@ -386,6 +416,7 @@ union, so the boolean-only constraint on `candidateFilter` is runtime-enforced
 | Acquisition-path evaluation is zero-alloc per tick; the filter adds a constant factor to an existing traversal, never a new walk | Task 2 | Candidate-scope refresh must not intern, clone, or collect — the `@state.*` snapshot grows at bind alone | AC 6 |
 | The floor's leash is symmetric: a target beyond it is neither acquired nor retained | Task 3 | Any new acquisition path bypassing the selection chokepoint; the ordering validator alone cannot enforce it, since Rust fixtures bypass validation | AC 9 |
 | A brain with no leash keeps unbounded acquisition, with disengagement owned by its guards | Task 3 | Any default value substituted for the absent leash | AC 5 |
+| The think stride is cost machinery and shares no data path with relevance rules. Its distance comes from an unfiltered read, so no leash or filter can silently reprice it | Task 3 | Deriving `current_distance` from a filtered scan — `acquisition_due` reads a `None` distance as *due every tick*, inverting the stride | AC 5 |
 | Acquisition-range authority stays engine-side and legacy-only: no descriptor field spells disengagement range. An authored graph bounds acquisition with a distance filter instead | Predecessor (pinned), extended by Task 2 | Task 3 must thread the existing component field, never introduce an authored one; a future perception spec must reach for the filter before a new descriptor range | AC 5, 14, 16 |
 | Engagement radius stays combat-slot spread only — never acquisition, retention, or damage | Predecessor (pinned) | Any task tempted to reuse it as an acquisition radius | AC 5 |
 | Graph diagnostics are warnings, never errors: a relentless pursuer is a legitimate authored design | Task 4 | Escalation to a validation error would reject shipping content | AC 11, 12 |
@@ -423,7 +454,9 @@ behavior: {
     // Then target death. `brain.targetDied` is false with no target, so this
     // edge is inert untargeted and the interrupt above stays the one that
     // handles loss. Do NOT spell this `le(brain.targetHealth, 0)`: with no
-    // target that reads zero and fires for the wrong reason.
+    // target that reads zero and fires for the wrong reason, and for one tick
+    // after a kill it reads zero only for enemies iterated after the killer.
+    // The latch is the same for everyone; the health read is not.
     { to: "idle", when: brain.targetDied },
   ],
   // ... states as before
@@ -435,27 +468,59 @@ behavior: {
 - Warning and error messages name state names and the `components.behavior`
   path but not the owning entity's canonical name, which the descriptor
   validators do not have in hand. Threading it would widen every descriptor
-  type's validator signature. Accepted as-is; revisit if authors report the
-  diagnostics as hard to place.
-- **Where line of sight lands once it exists.** This plan puts perception
-  upstream of candidacy: the floor decides what is perceivable, the filter
-  narrows what is worth engaging. That leaves one call for the perception spec —
-  whether visibility stays a floor gate on the offer set, or is *also* published
-  as a `@candidate.visible` fact so a graph can author "engage only what I can
-  see" as taste. Both read as consistent with the split; only the second lets a
-  mod hold fire on an unseen target without an engine change, and only the first
-  keeps one answer to "what can this enemy perceive". Not decided here because
-  no resolver exists yet to decide it against.
-- **Where target ranking lands.** Two homes are now plausible and the seed
-  research assumes the first: widening the `visible` predicate from `bool` to a
-  weight, or a second per-graph IR expression producing a score over the same
-  `@candidate.*` namespace this plan builds. The second is the cheaper one after
-  this plan lands — namespace, scope, binding, and staleness are all in place —
-  and it puts ranking policy on the taste side with eligibility. Whichever wins,
-  the filter stays boolean: a score belongs in its own seam, not in a widened
-  return type.
-- **Threat and last-attacker policies have no seam.** "Prefer whoever just hurt
-  me" is a relation over enemy × candidate, and both scopes are per-entity: the
-  brain scope names one enemy, the candidate scope one candidate. Expressing it
-  needs per-pair memory on the brain, which nothing here provides and no task
-  should improvise. The dimension is deferred whole, not half-seamed.
+  type's validator signature. A third path exists and is untried: annotate at
+  the parser call site, which does know the name, rather than inside the
+  validators. Accepted as-is for this plan; that is the option to reach for
+  first if authors report the diagnostics as hard to place.
+- **How Task 2 hands the evaluator a filter and a mutable scope at once.** The
+  bound filter comes from `programs.get(entity)`, a shared borrow of
+  `BrainPrograms`, while refreshing the shared candidate scope per candidate
+  needs `&mut` on the same struct. Today the two never overlap — the existing
+  refresh completes before the lookup — but the filter must stay live across the
+  whole scan. Two mechanisms work: one accessor returning both disjoint borrows,
+  or interior mutability on the candidate scope's fixed array so refresh takes
+  `&self`. No principle picks between them; the implementer should choose on the
+  shape of the surrounding code and say which in the task's commit.
+- **Line of sight splits by conservatism, not by layer.** The choice is not
+  floor-gate *or* published fact — it is both, cut where the one-right-answer
+  test cuts. A conservative Cell→Cell broad-phase
+  (`research/cell-visibility-substrate.md`) removes only what *no* policy could
+  perceive, so it gates the offer set as correctness. The exact eye-to-target
+  BVH raycast is where taste starts — a blind grunt, a psychic boss, and an
+  enemy that hunts by sound are all valid designs — so it is published as
+  `@candidate.visible` and never gates the floor. Gating the offer set on exact
+  LOS would bake in one point on that spectrum, which is structurally the same
+  defect as the hardcoded aliveness rule this plan removes. The cost objection
+  answers itself through the IR: `IrNode::dispatch_input_names`
+  (`crates/foundation/src/ir/mod.rs:181`) reveals at **bind time** whether a
+  filter reads that leaf, so a graph that never mentions it pays for no raycasts
+  and perception is priced per graph by what its author actually asked for. What
+  is genuinely open is only the resolver's own shape, which waits on a consumer.
+- **Target ranking lands as a second IR expression, not a widened predicate.**
+  The seed research assumes the alternative — widening `visible` from `bool` to
+  a weight — but that puts *preference* inside the *perception* predicate, which
+  the perceivable/worth-engaging invariant above forbids. Ranking is pure taste:
+  nearest, weakest, most-recently-damaged are all valid designs. So it belongs
+  beside eligibility, as a per-graph score expression over the same
+  `@candidate.*` namespace this plan builds — where namespace, scope, binding,
+  and staleness are already in place. The filter stays boolean and the score
+  stays separate: folding them by encoding ineligibility as a sentinel score is
+  the exact shape of `BRAIN_NO_TARGET_DISTANCE`, which shipped as a real defect.
+  *Where* is settled; *when* still waits on a consumer.
+- **Threat and last-attacker land on the candidate scope, not a new mechanism.**
+  The candidate scope is refreshed per *(enemy, candidate)*, so it is the
+  design's only per-pair evaluation context. Any enemy × candidate relation that
+  reduces to a number or a boolean is a `@candidate.*` fact — no per-pair
+  storage on the brain is needed to express one. The memory already exists too:
+  `HealthComponent` carries a bounded per-source contributor ledger
+  (`crates/entities/src/components/health.rs:151-159`) with `accumulated_damage`,
+  `hit_count`, and `last_attacker`, maintained by the damage chokepoint. The
+  enemy is the victim when a player shoots it, so its own health component
+  already records who hurt it and how much. `@candidate.damageDealtToMe` is a
+  scan of that bounded ledger for entries whose `last_attacker` is this
+  candidate; `@candidate.isLastAttacker` is the boolean collapse of the same.
+  What genuinely constrains a threat spec is the ledger's *shape*, not the seam:
+  it is keyed by `source_id` with the attacker as a field, and its overflow
+  bucket carries no source id, so an attacker evicted from the exact ledger is
+  indistinguishable from one that never fired. A threat spec must decide whether
+  that fidelity is enough before adding storage.

@@ -369,18 +369,20 @@ detection, threat prioritization, pack aggro, aggression profiles, memory and
 search. Each waits for a real consumer. The `visible` predicate on
 `select_target` remains the untouched perception seam; the candidacy filter sits
 *downstream* of it, so the engine keeps deciding what is perceivable and the mod
-decides what is worth engaging.
+decides what is worth engaging. That split is about *conservatism*, not layers:
+the floor may gate on a test no policy could disagree with, and anything past
+that is taste and must be published as a fact rather than enforced.
 
 How each would land on what this plan leaves behind, so a successor does not
 re-derive it:
 
 | Dimension | Lands at | Cost after this plan |
 |---|---|---|
-| Sight (LOS) | `visible`, widening the offer set | New resolver. Nothing here moves. |
+| Sight (LOS) | Split by conservatism: the Cell→Cell broad-phase gates the offer set through `visible`; the exact raycast publishes as `@candidate.visible` | New resolver. Nothing here moves. Raycasts are opt-in per graph — a bind-time scan of the filter's input names says whether any are needed. |
 | Sound | Also the offer set — a heard target is one the enemy cannot see | New resolver, plus per-brain memory for "heard at X", which is episodic and does not fit a per-tick fact table. |
 | Per-archetype aggression | Descriptor tuning read through a filter or guard clause | Additive. |
 | Target properties (faction, disguise, wielded weapon class) | `@candidate.*` append if the engine owns the component, `@state.*` if the mod does | Additive either way — that is what the state half buys. |
-| Threat / most-recently-damaged | Nowhere yet | Needs per-enemy×candidate memory and a ranking seam. Both absent by design; see `index.md` Open questions. |
+| Threat / most-recently-damaged | `@candidate.*` — the candidate scope is refreshed per (enemy, candidate), so it *is* the per-pair context | Additive. The memory already exists: `HealthComponent`'s bounded contributor ledger records `last_attacker` and `accumulated_damage` on the victim, and an enemy is the victim when a player shoots it. Constrained by the ledger's fidelity, not by a missing seam. |
 
 An enum-valued fact (weapon class, faction) has no precedent here: the IR carries
 numbers and booleans only, so the first one to land must pick a numbering and

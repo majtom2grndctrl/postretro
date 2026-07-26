@@ -248,9 +248,9 @@ inflates and the first test fails.
 The `BrainInputs` block is hand-written text in two typedef templates:
 `crates/scripting-core/src/typedef/templates/sdk_lib.d.ts` (`export interface
 BrainInputs {`, line 842) and `sdk_lib.luau` (`export type BrainInputs = {`,
-line 1073). Task 1 edits both, or the typedef drift test fails from Phase 1
+line 1073). Task 1 edits both, or the typedef drift test fails from Phase 2
 through Phase 4. `committed_sdk_types_match_current_registry` (`committed.rs:8`)
-goes red from Phase 1 for the same reason — committed artifacts are regenerated
+goes red from Phase 2 for the same reason — committed artifacts are regenerated
 only in Phase 4. Both are expected-red windows, closed by Task 5.
 `virtual_module.luau` needs no Task 1 edit; it names the type without declaring
 its fields.
@@ -337,30 +337,18 @@ directly to price the think stride. Filtering there would make the engine decide
 disengagement again, which the graph owns: see the "Candidacy is per-graph
 eligibility" invariant and AC 15.
 
-The scan today is a `filter_map` + `min_by` (`targeting.rs:52-60`) returning one
-`Option<TargetCandidate>`, and the filter cannot simply join that `filter_map` —
-dropping a candidate there would also drop it from the distance the stride
-reads. `nearest_target_candidate` becomes a single fold over the same iterator
-carrying two accumulators: the nearest candidate over every offered pawn with
-neither filter nor leash consulted, and the nearest *eligible* candidate with
-both consulted. `select_target` propagates both.
+Task 3 already turned that scan into a single fold with two accumulators — the
+nearest candidate over every offered pawn, and the nearest *eligible* one — and
+gave `select_target` its two-value return. The filter is the second relevance
+rule to ride that shape: it joins the leash on the eligible accumulator and
+never touches the raw-distance one. The scan's shape does not change here.
 
-That shape is Task 2's to land, not Task 3's. Phase 2 introduces the first
-relevance rule the scan carries, and `select_target` at `ai/mod.rs:437` is
-exactly what `current_distance` is derived from when no target is retained
-(`:439-441`). A Phase 2 that filtered the single existing return value would
-ship the stride inversion Task 3 exists to prevent, one phase early. Task 2
-therefore pins `select_target`'s final signature — the bound filter, the shared
-candidate scope, and `Option<f32>` for Task 3's leash, threaded as `None` from
-every call site until Task 3 populates it — and its final two-value return.
-
-The scan and the selection entry point take the bound filter and the shared
-candidate scope as two parameters, never `&BrainPrograms`, which would hand
-`targeting.rs` guard programs it has no business reading. `ai/mod.rs` passes
-them at its four existing `select_target` call sites: the early non-engaged scan
-(`:437`), the leash-escape replacement (`:455`), and both acquisition-due
-branches (`:471`, `:488`). The reuse at `:484` is not a fifth site — it consumes
-`:437`'s result rather than scanning again.
+`select_target` gains the bound filter and the shared candidate scope as two
+parameters, never `&BrainPrograms`, which would hand `targeting.rs` guard
+programs it has no business reading. `ai/mod.rs` passes them at the four call
+sites Task 3 established: the early non-engaged scan (`ai/mod.rs:437`), the
+leash-escape replacement (`:455`), and both acquisition-due branches (`:471`,
+`:488`).
 
 Getting both out of the side-table at once needs one accessor: the filter is a
 shared borrow, the scope a mutable one, and the scan holds the filter across
@@ -438,7 +426,7 @@ this phase, exactly as Task 1 does for `BrainInputs` — including the top-level
 (`surface.rs:202`) iterates `POSTRETRO_ROOT_MODULE_EXPORTS` and asserts the
 generated Luau contains `"candidate:"`, so it goes red the moment that constant
 gains the entry. Landing the drift test without the template blocks leaves it
-red from Phase 2 to Phase 4. Task 5 keeps only `virtual_module.luau` and the
+red from Phase 3 to Phase 4. Task 5 keeps only `virtual_module.luau` and the
 regeneration.
 
 Task 2 and Task 4 both extend `BehaviorGraphDescriptor::validate`: all errors,
@@ -475,7 +463,7 @@ over fresh acquisition it already has over retention.
 an authored guard edge: `alert → idle` when `targetDistance > leashRange`
 (`behavior_lowering.rs:69-183`). So the cheaper fix looks obvious — emit
 `candidateFilter: le(candidate.distance, leashRange)` alongside it, bound legacy
-acquisition through the mechanism Task 2 builds, and delete most of this task.
+acquisition through the filter Task 2 adds, and delete most of this task.
 That fails on retention, not acquisition. The floor clears an out-of-leash
 retained target on *every* tick (`ai/mod.rs:447-468`; only the replacement
 search is strided), whereas the filter is consulted inside `select_target`,
@@ -486,17 +474,17 @@ spelled a second time in the graph. That is what "symmetric" buys: one number,
 one owner, both arms.
 
 Move the rule into `targeting.rs` so the oversized tick module only passes a
-value. The eligible accumulator of Task 2's fold and the selection entry point
-take the brain's optional leash and reject any candidate beyond it, and
-`ai/mod.rs` passes `brain.leash_range` at the same four call sites Task 2
-touches, replacing the `None` threaded there. The leash does **not** go inside
-`target_candidate` (`targeting.rs:27`), which stays a raw distance read because
-`ai/mod.rs:434` calls it directly to price the think stride; inside
-`nearest_target_candidate` it touches the *eligible* accumulator only, never the
-raw-distance one. Leashing either read makes `current_distance` `None` for an
-out-of-leash retained target, and `acquisition_due` reads `None` as due every
-tick. A brain with no leash — every authored graph — keeps today's unbounded
-behavior exactly.
+value. `nearest_target_candidate` and the selection entry point take the brain's
+optional leash and reject any candidate beyond it, and `ai/mod.rs` passes
+`brain.leash_range` at its four `select_target` call sites: the early
+non-engaged scan (`:437`), the leash-escape replacement (`:455`), and both
+acquisition-due branches (`:471`, `:488`). The reuse at `:484` is not a fifth
+site — it consumes `:437`'s result rather than scanning again. The leash does
+**not** go inside `target_candidate` (`targeting.rs:27`), which stays a raw
+distance read because `ai/mod.rs:434` calls it directly to price the think
+stride. Leashing that read makes `current_distance` `None` for an out-of-leash
+retained target, and `acquisition_due` reads `None` as due every tick. A brain
+with no leash — every authored graph — keeps today's unbounded behavior exactly.
 
 **What neither the leash nor the filter may reach: the think stride.**
 `ai/mod.rs` derives `current_distance` from the retained candidate when a
@@ -513,13 +501,27 @@ them apart takes three distinct paths through the chokepoint:
 | Retained-target eligibility | yes | no (AC 15) |
 | Ranking-scan selection | yes | yes |
 
-So the scan returns two values in one pass: the unfiltered, unleashed nearest
-distance, and the best eligible candidate. That is Task 2's shape; Task 3 fills
-its leash arm. Two values is a requirement, not a convenience — re-running the
-scan to get the second is the regression `ai/mod.rs:478-483` records as already
-fixed, and the early scan's result is reused verbatim as the selection on the
-non-engaged acquisition branch (`:484`). Any shape that splits the pass
-reintroduces the double scan.
+So the scan returns two values in one pass, and Task 3 is what builds that
+shape. `nearest_target_candidate` is a `filter_map` + `min_by`
+(`targeting.rs:52-60`) returning one `Option<TargetCandidate>`, and the leash
+cannot simply join that `filter_map` — dropping a candidate there would also
+drop it from the distance the stride reads. It becomes a single fold over the
+same iterator carrying two accumulators: the nearest candidate over every
+offered pawn, unleashed and unfiltered, and the nearest *eligible* candidate.
+`select_target` propagates both. Two values is a requirement, not a
+convenience — re-running the scan to get the second is the regression
+`ai/mod.rs:478-483` records as already fixed, and the early scan's result is
+reused verbatim as the selection on the non-engaged acquisition branch (`:484`).
+Any shape that splits the pass reintroduces the double scan. Task 2 adds the
+filter to the eligible accumulator two phases later and changes nothing else
+about it.
+
+Building the fold here rather than with the filter is deliberate. The leash is
+the only relevance rule with coverage already in the tree — three
+inverted-tuning fixtures, AC 9, and AC 17's legacy half — so the stride
+separation is exercised by real tests from Phase 1. A filter-first order would
+land the same machinery motivated by a rule whose fixtures do not exist until
+Task 2 authors graphs to create them.
 
 The retained-target lookup stays a read, yielding the candidate and its distance
 unconditionally, so an out-of-leash retained target still prices the stride.
@@ -531,10 +533,13 @@ the comparison itself has exactly one spelling — that is what "one spelling"
 means here, not that the boolean disappears. The name deliberately avoids
 `retained_outside_leash`, already a `bool` *parameter* of `select_target`
 (`targeting.rs:101`) documented at `:92-94`; two things of that name in one
-module would shadow inside `select_target`'s body. Task 2 already pinned
-`select_target`'s signature and two-value return, so Task 3 changes no
-signature: it fills the leash parameter and implements the comparison inside the
-chokepoint. The post-hoc `.filter(...)` on the replacement search (`:462-465`)
+module would shadow inside `select_target`'s body. Task 3 pins `select_target`'s
+leash parameter and its two-value return; Task 2 extends the same signature two
+phases later with the bound filter and the shared candidate scope. It changes
+twice because it must — `CandidateScope` does not exist until Task 2 creates it,
+so Task 3 cannot pre-thread a parameter of that type the way it could a bare
+`Option<f32>`. AC 5 bounds the total edit surface across the plan, not per
+phase. The post-hoc `.filter(...)` on the replacement search (`:462-465`)
 vanishes, since the scan now applies the leash itself. The leash-escape branch
 keeps its cheap immediate clear and its strided replacement, so the four call
 sites stay four.
@@ -656,7 +661,7 @@ disengagement, the target-side facts' no-target zero readings and why
 `candidate.distance` **is** the authored acquisition radius — the reason no
 descriptor field spells one, and the answer to the question the seed research
 left open. Anchors to extend: `### @brain.* guard inputs` (line 620, a
-hand-maintained table with no drift test guarding it, stale from Phase 1 until
+hand-maintained table with no drift test guarding it, stale from Phase 2 until
 this task), `### The no-target trap` (648), `### The level-wide pursuer` (702),
 and `## components.behavior` (429).
 
@@ -686,9 +691,9 @@ enemy — Task 4's clean-trip confirmation predates this rewrite.
 
 | Phase | Tasks | Why |
 |---|---|---|
-| 1 (concurrent) | Task 1, Task 4 | Disjoint: guard-input table and brain scope versus descriptor lint module |
-| 2 | Task 2 | Consumes Task 1's settled input table; extends the same evaluator side-table |
-| 3 | Task 3 | Shares `targeting.rs` and the same four selection call sites with Task 2 |
+| 1 (concurrent) | Task 3, Task 4 | Disjoint: engine selection chokepoint versus foundation descriptor lint module. Task 3 leads because it builds the two-value scan against the only relevance rule with fixtures already in the tree |
+| 2 | Task 1 | Shares `ai/mod.rs` and `ai_tests.rs` with Task 3 — different regions, but its `BrainFacts` fold consumes the selected target Task 3's block produces |
+| 3 | Task 2 | Consumes Task 1's settled input table; adds the filter to the eligible accumulator Task 3 built; extends the same evaluator side-table |
 | 4 | Task 5 | Documents the contract the first four settle; regenerates typedefs once |
 
 ## Promotion prerequisites
@@ -751,7 +756,7 @@ union, so the boolean-only constraint on `candidateFilter` is runtime-enforced
 | `refresh` takes `&mut self`, which is what makes "grows at bind, written by index at refresh" a compile-time fact. Simultaneous access to a filter and its scope comes from splitting the side-table by field, not from interior mutability | Task 2 | Wrapping the fixed array in a `RefCell` to dodge a borrow error would demote the guarantee to a convention, and the alloc probe would not catch it — `RefCell` does not allocate | Review gate — AC 6's probe explicitly cannot catch this |
 | The floor's leash is symmetric: a target beyond it is neither acquired nor retained. Retention is why the leash stays floor-owned — the floor clears every tick, while a filter is consulted only when acquisition is due | Task 3 | Any new acquisition path bypassing the selection chokepoint; the ordering validator alone cannot enforce it, since Rust fixtures bypass validation; a future spec moving the bound into lowering would silently lose the off-stride clear | AC 9 |
 | A brain with no leash keeps unbounded acquisition, with disengagement owned by its guards | Task 3 | Any default value substituted for the absent leash | AC 5 |
-| The think stride is cost machinery and shares no data path with relevance rules. Its distance comes from an unfiltered, unleashed read on both sources — the retained candidate and the early scan — so neither leash nor filter can silently reprice it. The scan returns the stride's distance and the eligible selection from one pass | Task 3, constrained by Task 2 | Deriving `current_distance` from a filtered or leashed value — `acquisition_due` reads a `None` distance as *due every tick*, inverting the stride. Splitting the scan into two passes reintroduces the double scan `ai/mod.rs:478-483` records as already fixed. Putting the leash inside `target_candidate` inverts the stride and no legacy fixture catches it | AC 17, 5 |
+| The think stride is cost machinery and shares no data path with relevance rules. Its distance comes from an unfiltered, unleashed read on both sources — the retained candidate and the early scan — so neither leash nor filter can silently reprice it. The scan returns the stride's distance and the eligible selection from one pass | Task 3, extended by Task 2 | Deriving `current_distance` from a filtered or leashed value — `acquisition_due` reads a `None` distance as *due every tick*, inverting the stride. Splitting the scan into two passes reintroduces the double scan `ai/mod.rs:478-483` records as already fixed. Putting the leash inside `target_candidate` inverts the stride and no legacy fixture catches it | AC 17, 5 |
 | Acquisition-range authority stays engine-side and legacy-only: no descriptor field spells disengagement range. An authored graph bounds acquisition with a distance filter instead | Predecessor (pinned), extended by Task 2 | Task 3 must thread the existing component field, never introduce an authored one; a future perception spec must reach for the filter before a new descriptor range | AC 5, 14, 16 |
 | Engagement radius stays combat-slot spread only — never acquisition, retention, or damage | Predecessor (pinned) | Any task tempted to reuse it as an acquisition radius | AC 5 |
 | Graph diagnostics are warnings, never errors: a relentless pursuer is a legitimate authored design | Task 4 | Escalation to a validation error would reject shipping content | AC 11, 12 |

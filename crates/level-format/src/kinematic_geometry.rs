@@ -11,6 +11,7 @@ use glam::Vec3;
 pub const KINEMATIC_GEOMETRY_VERSION: u16 = 2;
 const KINEMATIC_GEOMETRY_VERSION_V1: u16 = 1;
 pub const KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH: f32 = f32::EPSILON;
+const KINEMATIC_WAYPOINT_MIN_ENCODED_BYTES: usize = 4 + 4 + 12;
 const MOVE_MODE_ONCE: u8 = 0;
 const MOVE_MODE_PING_PONG: u8 = 1;
 
@@ -92,7 +93,19 @@ impl KinematicGeometrySection {
         validate_unique_mover_ids(&movers)?;
 
         let waypoint_count = read_count(data, &mut offset, "waypoint count")?;
-        let mut waypoints = Vec::with_capacity(waypoint_count);
+        let waypoint_bytes_remaining = data.len().saturating_sub(offset);
+        if waypoint_count > waypoint_bytes_remaining / KINEMATIC_WAYPOINT_MIN_ENCODED_BYTES {
+            return invalid_data(format!(
+                "kinematic geometry: waypoint count {waypoint_count} exceeds the {waypoint_bytes_remaining} bytes remaining"
+            ));
+        }
+        let mut waypoints = Vec::new();
+        waypoints.try_reserve_exact(waypoint_count).map_err(|_| {
+            FormatError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("kinematic geometry: cannot reserve {waypoint_count} waypoints"),
+            ))
+        })?;
         for waypoint_idx in 0..waypoint_count {
             let name = read_string(data, &mut offset, &format!("waypoint {waypoint_idx} name"))?;
             let next = read_string(data, &mut offset, &format!("waypoint {waypoint_idx} next"))?;
@@ -765,6 +778,19 @@ mod tests {
         let append_offset = find_first_mover_v2_append_offset(&bytes);
         bytes.truncate(append_offset + 20);
         assert!(KinematicGeometrySection::from_bytes(&bytes).is_err());
+    }
+
+    #[test]
+    fn rejects_v2_spin_axis_as_impossible_v1_waypoint_count() {
+        let mut section = sample_section();
+        section.movers[0].spin_axis = [1.0, 0.0, 0.0];
+        let mut bytes = section.to_bytes();
+        bytes[..2].copy_from_slice(&KINEMATIC_GEOMETRY_VERSION_V1.to_le_bytes());
+
+        let error = KinematicGeometrySection::from_bytes(&bytes)
+            .expect_err("a v2 body marked v1 must reject before waypoint allocation");
+
+        assert!(error.to_string().contains("waypoint count"));
     }
 
     #[test]

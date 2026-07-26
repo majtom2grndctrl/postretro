@@ -111,7 +111,7 @@ export type BillboardEmitterComponent = {
   spin_animation: SpinAnimation?,
 }
 
---- Spin-rate tween carried by a billboard emitter and consumed by `setSpinRate`.
+--- Spin-rate tween carried by a billboard emitter and consumed by the billboard-emitter reaction primitive `setSpinRate`.
 export type SpinAnimation = {
   --- Tween duration in seconds. Must be finite and > 0.
   duration: number,

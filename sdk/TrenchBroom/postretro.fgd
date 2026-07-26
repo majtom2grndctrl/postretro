@@ -340,7 +340,7 @@
     spin_axis(string) : "Local spin axis as x y z" : "0 0 0"
     spin_speed(float) : "Initial spin speed (degrees per second)" : "0"
     spin_accel(float) : "Spin acceleration (degrees per second squared)" : "0"
-    carry_yaw(choices) : "Carry player yaw while rotating" : 0 =
+    carry_yaw(choices) : "Carry world-up player yaw while rotating; never pitch or roll" : 0 =
     [
         0 : "Off"
         1 : "On"

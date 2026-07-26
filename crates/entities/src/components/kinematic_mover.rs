@@ -56,6 +56,14 @@ pub struct KinematicMoverComponent {
     pub target_segment: Option<u16>,
     /// Replicated accumulated spin phase, wrapped by the deterministic driver.
     pub spin_angle_rad: f32,
+    /// Replicated spin phase at the start of the most recently simulated tick.
+    /// Together with `spin_angle_rad`, this reconstructs the exact rotation that
+    /// tick applied even when argument reduction or phase wrapping occurred.
+    pub spin_angle_before_tick_rad: f32,
+    /// Whether the mover was active at the start of the most recently simulated
+    /// tick. Commands may change `started`/`completed` after that tick; replay
+    /// uses this provenance instead of the post-command gate.
+    pub was_active_this_tick: bool,
     /// Replicated current spin rate after the driver's acceleration ramp.
     pub spin_rate_rad_s: f32,
     /// Replicated target spin rate set by mover commands.
@@ -100,6 +108,8 @@ impl KinematicMoverComponent {
             completed: false,
             target_segment: None,
             spin_angle_rad: 0.0,
+            spin_angle_before_tick_rad: 0.0,
+            was_active_this_tick: false,
             spin_rate_rad_s: config.initial_spin_rate_rad_s,
             spin_target_rate_rad_s: config.initial_spin_rate_rad_s,
         }

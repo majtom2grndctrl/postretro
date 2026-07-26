@@ -286,7 +286,7 @@ fn deepest_mover_push_penetration_inner(
         if !mover_swept_sphere_may_reach_capsule(mover, pose, pos, capsule) {
             continue;
         }
-        sweep_mover_against_capsule(mover, pose, pos, capsule, &capsule_iso, &mut deepest);
+        sweep_mover_against_capsule(mover, pose, capsule, &capsule_iso, &mut deepest);
     }
 
     deepest
@@ -340,7 +340,6 @@ fn mover_swept_sphere_may_reach_capsule(
 fn sweep_mover_against_capsule(
     mover: &MoverCollider,
     pose: MoverPose,
-    capsule_position: Point<f32>,
     capsule: &Capsule,
     capsule_iso: &Isometry<f32>,
     deepest: &mut Option<MoverPenetration>,
@@ -377,7 +376,7 @@ fn sweep_mover_against_capsule(
                 let remaining_motion = surface_motion_to_final(
                     transform_isometry(hit_transform),
                     final_iso,
-                    capsule_position,
+                    hit.witness1,
                 );
                 let normal =
                     swept_push_normal(*hit.transform1_by(&start_iso).normal1, remaining_motion);
@@ -933,6 +932,37 @@ mod tests {
             penetration.depth > 1.0,
             "crossing mover should push by the remaining sweep, got {}",
             penetration.depth
+        );
+    }
+
+    #[test]
+    fn swept_contact_motion_tracks_mover_witness_through_rotation() {
+        let sample_iso = Isometry::identity();
+        let rotating_final_iso = transform_isometry(Transform {
+            position: Vec3::new(0.5, 0.0, 0.0),
+            rotation: Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+            scale: Vec3::ONE,
+        });
+        let linear_final_iso = Isometry::translation(0.5, 0.0, 0.0);
+        let capsule_center = Point::new(0.0, 1.0, 0.0);
+        let mover_witness = Point::new(1.0, 1.0, 0.0);
+
+        let witness_rotation_motion =
+            surface_motion_to_final(sample_iso, rotating_final_iso, mover_witness);
+        let center_rotation_motion =
+            surface_motion_to_final(sample_iso, rotating_final_iso, capsule_center);
+        assert!(
+            (witness_rotation_motion - center_rotation_motion).length() > EPS,
+            "rotation must use the mover contact witness, not the capsule center"
+        );
+
+        let witness_linear_motion =
+            surface_motion_to_final(sample_iso, linear_final_iso, mover_witness);
+        let center_linear_motion =
+            surface_motion_to_final(sample_iso, linear_final_iso, capsule_center);
+        assert!(
+            (witness_linear_motion - center_linear_motion).length() < EPS,
+            "pure translation must preserve the existing linear sweep motion"
         );
     }
 

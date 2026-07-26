@@ -49,7 +49,7 @@ pub const PROTOCOL_ID: u32 = 0x_5052_4C34; // "PRL4" — E16 adds hit declaratio
 /// type changes (added field, reordered enum, bumped bitcode major). Carried as
 /// `ProtocolVersion::wire_version` and folded into the transport-level
 /// `protocol_id` so a wire-incompatible peer is refused at the netcode layer.
-pub const WIRE_VERSION: u32 = 12; // static-kinematic handshake fingerprint
+pub const WIRE_VERSION: u32 = 13; // mover replay tick provenance
 
 /// Transport-level gate fed to renet_netcode as the netcode `protocol_id: u64`.
 /// Packs both hand-bumped consts so the encrypted handshake itself fails for any
@@ -209,6 +209,10 @@ pub struct NetServer {
     /// also models the terminal `Closed` state so post-close traffic is refused and
     /// the engine glue can run its remote-pawn cleanup on the close transition.
     slots: SlotTable,
+    /// Close transitions created outside a poll (currently map/static-fingerprint
+    /// changes). The next poll delivers each transition once through the same
+    /// lifecycle lane as socket disconnects.
+    pending_lifecycle: Vec<SlotEvent>,
     /// Installed after the level loader has produced canonical static mover
     /// inputs. Until then app handshakes remain queued and no client is accepted.
     kinematic_static_fingerprint: Option<[u8; 32]>,
@@ -255,20 +259,25 @@ impl NetServer {
             server,
             transport,
             slots: SlotTable::new(),
+            pending_lifecycle: Vec::new(),
             kinematic_static_fingerprint,
         })
     }
 
     /// Bind this server connection lifetime to the loaded map's canonical static
     /// mover inputs. A different fingerprint closes every existing slot before
-    /// the new map can replicate; peers reconnect and pass the app gate again.
+    /// the new map can replicate. Accepted-slot close transitions are retained for
+    /// the next poll so engine cleanup runs exactly once; peers then reconnect and
+    /// pass the app gate again.
     pub fn set_kinematic_static_fingerprint(&mut self, fingerprint: [u8; 32]) {
         if self.kinematic_static_fingerprint == Some(fingerprint) {
             return;
         }
         if self.kinematic_static_fingerprint.is_some() {
             for client_id in self.server.clients_id() {
-                let _ = self.slots.on_close(client_id, CloseCause::Timeout);
+                if let Some(close) = self.slots.on_close(client_id, CloseCause::Timeout) {
+                    self.pending_lifecycle.push(close);
+                }
                 self.server.disconnect(client_id);
             }
         }
@@ -297,7 +306,7 @@ impl NetServer {
         // surfaces a close event when an *accepted* slot closes (so the glue cleans
         // up its slot-owned pawn). A closed slot is terminal — post-close traffic is
         // refused below.
-        let mut lifecycle = Vec::new();
+        let mut lifecycle = std::mem::take(&mut self.pending_lifecycle);
         while let Some(event) = self.server.get_event() {
             match event {
                 ServerEvent::ClientConnected { client_id } => {
@@ -531,11 +540,11 @@ impl NetServer {
     /// Run the app-level handshake gate over already-delivered control messages.
     /// Used by the in-memory relay, which moves packets itself and so cannot use
     /// `update`'s socket path. Returns this poll's `ServerPoll` (handshake verdicts +
-    /// any slot close transitions). The relay drives close transitions explicitly
-    /// via [`NetServer::close_relay_connection`]; close events surfaced here come
-    /// from a renet-initiated disconnect (e.g. a handshake reject's `disconnect`).
+    /// any slot close transitions). The relay usually drives close transitions
+    /// explicitly via [`NetServer::close_relay_connection`]; this poll also delivers
+    /// closes retained by a static-fingerprint change and any renet disconnect.
     pub fn poll_handshakes(&mut self) -> ServerPoll {
-        let mut lifecycle = Vec::new();
+        let mut lifecycle = std::mem::take(&mut self.pending_lifecycle);
         while let Some(event) = self.server.get_event() {
             match event {
                 ServerEvent::ClientConnected { client_id } => {
@@ -788,31 +797,31 @@ mod tests {
     }
 
     #[test]
-    fn static_fingerprint_wire_version_refuses_immediately_previous_peer_on_both_gates() {
-        const PRE_STATIC_FINGERPRINT_WIRE_VERSION: u32 = 11;
+    fn mover_replay_provenance_wire_version_refuses_previous_peer_on_both_gates() {
+        const PRE_MOVER_REPLAY_PROVENANCE_WIRE_VERSION: u32 = 12;
 
         assert_eq!(
             PROTOCOL_ID, 0x_5052_4C34,
             "E16 message-vocabulary changes require the PRL4 app protocol id"
         );
         assert_eq!(
-            WIRE_VERSION, 12,
-            "static-kinematic handshake fingerprint requires wire version 12"
+            WIRE_VERSION, 13,
+            "mover replay provenance requires wire version 13"
         );
         assert_ne!(
             transport_protocol_id(),
-            ((PROTOCOL_ID as u64) << 32) | (PRE_STATIC_FINGERPRINT_WIRE_VERSION as u64),
-            "gate 1 rejects a pre-static-fingerprint transport protocol id before app decode"
+            ((PROTOCOL_ID as u64) << 32) | (PRE_MOVER_REPLAY_PROVENANCE_WIRE_VERSION as u64),
+            "gate 1 rejects the previous mover layout before app decode"
         );
 
         let expected = protocol_version(TEST_KINEMATIC_STATIC_FINGERPRINT);
         let previous = ProtocolVersion {
             app_protocol_id: PROTOCOL_ID,
-            wire_version: PRE_STATIC_FINGERPRINT_WIRE_VERSION,
+            wire_version: PRE_MOVER_REPLAY_PROVENANCE_WIRE_VERSION,
             kinematic_static_fingerprint: [0; 32],
         };
         let err = validate_handshake(expected, previous)
-            .expect_err("gate 2 rejects the pre-static-fingerprint app ProtocolVersion");
+            .expect_err("gate 2 rejects the previous mover layout");
         assert_eq!(err.expected, expected);
         assert_eq!(err.received, previous);
     }
@@ -970,6 +979,33 @@ mod tests {
             server.close_relay_connection(RELAY_CLIENT, CloseCause::Disconnect),
             None,
             "close is terminal and idempotent"
+        );
+    }
+
+    // Regression: map fingerprint changes closed accepted slots internally but
+    // discarded the only close event, so gameplay never cleaned up their pawns.
+    #[test]
+    fn fingerprint_change_surfaces_exactly_one_close_event() {
+        let (mut server, _client) = relay_accepted_pair();
+
+        server.set_kinematic_static_fingerprint([0xA5; 32]);
+
+        let first = server.poll_handshakes();
+        assert_eq!(
+            first.lifecycle,
+            [SlotEvent::Closed {
+                client_id: RELAY_CLIENT,
+                cause: CloseCause::Timeout,
+            }],
+            "the next poll delivers the fingerprint-driven close to engine cleanup"
+        );
+        assert!(server.is_closed(RELAY_CLIENT));
+        assert!(server.accepted_clients().is_empty());
+
+        let second = server.poll_handshakes();
+        assert!(
+            second.lifecycle.is_empty(),
+            "the later renet disconnect and subsequent polls must not duplicate cleanup"
         );
     }
 

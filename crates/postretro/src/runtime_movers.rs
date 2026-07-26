@@ -283,7 +283,21 @@ fn spawn_from_geometry(
 
     for mover in &geometry.movers {
         let spin_axis = mover.spin_axis.normalize_or_zero();
-        let has_initial_spin = mover.spin_speed_deg_s != 0.0;
+        let initial_spin_rate_rad_s = mover.spin_speed_deg_s.to_radians();
+        let spin_accel_rad_s2 = mover.spin_accel_deg_s2.to_radians();
+        if mover.spin_speed_deg_s != 0.0 && initial_spin_rate_rad_s == 0.0 {
+            return Err(RuntimeMoverLoadError::new(format!(
+                "mover {} (`{}`) has nonzero spin_speed_deg_s that becomes zero after conversion to radians/sec",
+                mover.mover_id, mover.name
+            )));
+        }
+        if mover.spin_accel_deg_s2 > 0.0 && spin_accel_rad_s2 == 0.0 {
+            return Err(RuntimeMoverLoadError::new(format!(
+                "mover {} (`{}`) has positive spin_accel_deg_s2 that becomes zero after conversion to radians/sec²",
+                mover.mover_id, mover.name
+            )));
+        }
+        let has_initial_spin = initial_spin_rate_rad_s != 0.0;
         if has_initial_spin && spin_axis == Vec3::ZERO {
             return Err(RuntimeMoverLoadError::new(format!(
                 "mover {} (`{}`) has nonzero spin_speed_deg_s but a zero spin_axis",
@@ -319,8 +333,8 @@ fn spawn_from_geometry(
                 mode,
                 started: mover.start_on_spawn,
                 spin_axis,
-                initial_spin_rate_rad_s: mover.spin_speed_deg_s.to_radians(),
-                spin_accel_rad_s2: mover.spin_accel_deg_s2.to_radians(),
+                initial_spin_rate_rad_s,
+                spin_accel_rad_s2,
                 carry_yaw: mover.carry_yaw,
             },
         );
@@ -808,6 +822,29 @@ mod tests {
             err.to_string()
                 .contains("nonzero spin_speed_deg_s but a zero spin_axis")
         );
+    }
+
+    // Regression: bypassing loader validation could still authorize a motionless pure rotator.
+    #[test]
+    fn spawning_nonzero_spin_that_underflows_in_radians_fails_clearly() {
+        let mut invalid = geometry(0);
+        invalid.movers[0].spin_axis = Vec3::Y;
+        invalid.movers[0].spin_speed_deg_s = f32::from_bits(1);
+
+        let err = spawn_from_geometry(&mut EntityRegistry::new(), &invalid).unwrap_err();
+
+        assert!(err.to_string().contains("conversion to radians/sec"));
+    }
+
+    // Regression: bypassing loader validation could turn a positive ramp into snap behavior.
+    #[test]
+    fn spawning_positive_spin_accel_that_underflows_in_radians_fails_clearly() {
+        let mut invalid = geometry(0);
+        invalid.movers[0].spin_accel_deg_s2 = f32::from_bits(1);
+
+        let err = spawn_from_geometry(&mut EntityRegistry::new(), &invalid).unwrap_err();
+
+        assert!(err.to_string().contains("conversion to radians/sec²"));
     }
 
     #[test]

@@ -61,7 +61,7 @@ Version compatibility is enforced **twice**, because the two gates catch differe
 
 **Gate 2 — app-level `ProtocolVersion`.** The client's *first reliable control message* carries the two build values plus an opaque static-kinematic fingerprint. The fingerprint covers every loaded PRL input used by mover prediction and collision: mover identity, path, speed/wait/mode, spin axis/speed/acceleration, carry policy, waypoint graph, and mover collision vertices/indices. Client handshake waits until level install computes it. Server acceptance waits until its own level installs one. Any version or fingerprint mismatch is a **typed reject reason** (carrying expected vs received), logged with a `[Net]` tag, and the client is disconnected. **No entity state is sent or applied to a rejected client** — the snapshot send path refuses any client that has not passed this gate. A connected-but-not-yet-validated client is held in a pending state that receives nothing.
 
-The two gates are not redundant. Gate 1 stops wire-incompatible peers cheaply at the encryption layer. Gate 2 proves app compatibility and shared static mover content before prediction can arm. A connection is bound to that fingerprint for its lifetime. Installing different static mover content closes it; peers reconnect and validate the new map. This mirrors the `BakedIr` exact-match version-epoch discipline (`scripting.md` §11): exact inputs validated up front, mismatch refused rather than migrated.
+The two gates are not redundant. Gate 1 stops wire-incompatible peers cheaply at the encryption layer. Gate 2 proves app compatibility and shared static mover content before prediction can arm. A connection is bound to that fingerprint for its lifetime. Installing different static mover content closes it and emits the ordinary slot-close lifecycle event exactly once. Host cleanup despawns the remote pawn and clears its replication, ownership, command, state-slot, and combat state before the peer reconnects and validates the new map. This mirrors the `BakedIr` exact-match version-epoch discipline (`scripting.md` §11): exact inputs validated up front, mismatch refused rather than migrated.
 
 ## Game-logic-owned apply invariant
 
@@ -76,7 +76,7 @@ The net crate emits typed snapshots and **never mutates the registry.** All regi
 
 On every client game-logic frame, apply received snapshots before state-crossing detection. Snapshot apply mints a frame-stamped `SnapshotsApplied` witness; crossing detection consumes it after game logic settles same-frame local slot writes. The witness cannot be forged or reused from a prior frame, so crossings always observe received replicated state before they inspect the slot table.
 
-Current component payloads are `Transform`, `PlayerMovementState`, `MeshAnimationState`, and `KinematicMoverState`, added in `ComponentKind` numeric order. `PlayerMovementState` includes presentation-only `aim_pitch` for remote-avatar pose presentation. `MeshAnimationState` carries the current animation state name; descriptor mesh data stays local. `KinematicMoverState` carries phase only: `mover_id`, segment index, direction, mode, elapsed/wait milliseconds, started/completed flags, velocity, optional target segment for move-and-hold, and rotating phase (`spin_angle_rad`, current spin rate, target spin rate). Static path, collision geometry, and spin authoring (axis, acceleration, `carry_yaw`) stay in PRL `KinematicGeometry`; the handshake fingerprint proves cross-peer parity before this phase is trusted.
+Current component payloads are `Transform`, `PlayerMovementState`, `MeshAnimationState`, and `KinematicMoverState`, added in `ComponentKind` numeric order. `PlayerMovementState` includes presentation-only `aim_pitch` for remote-avatar pose presentation. `MeshAnimationState` carries the current animation state name; descriptor mesh data stays local. `KinematicMoverState` carries phase only: `mover_id`, segment index, direction, mode, elapsed/wait milliseconds, started/completed flags, velocity, optional target segment for move-and-hold, and rotating phase (`spin_angle_rad`, pre-tick spin angle, active-at-tick-start provenance, current spin rate, target spin rate). Tick provenance lets replay reconstruct the motion that actually produced the authoritative pose when completion or a later command changed the post-tick gate. Static path, collision geometry, and spin authoring (axis, acceleration, `carry_yaw`) stay in PRL `KinematicGeometry`; the handshake fingerprint proves cross-peer parity before this phase is trusted.
 
 Player movement grounding is a widened ground reference (`Airborne`, `World`, or `Mover(mover_id)`) rather than a bare boolean. The net crate validates only the enum shape and finite numeric fields; resolving a mover id to a loaded local mover is engine-owned client apply.
 
@@ -285,9 +285,10 @@ any changed message layout — including a later, independent field addition to 
 already-shipped message — bumps the wire-version (layout) constant again, independently of
 any vocabulary change. `SNAPSHOT_VERSION` is untouched by anything that rides
 `ClientMessage`/`ServerMessage` on the Input channel; it bumps only when a change lands on
-the snapshot record itself. Rotating-mover phase fields use `SNAPSHOT_VERSION` 11.
-The static-kinematic handshake field uses `WIRE_VERSION` 12, so version-11 peers
-are refused by both handshake gates.
+the snapshot record itself. Rotating-mover phase fields use `SNAPSHOT_VERSION` 11;
+mover replay provenance advances it to 12. The static-kinematic handshake field
+uses `WIRE_VERSION` 12; mover replay provenance advances it to 13, so version-12
+peers are refused by both handshake gates.
 
 ## Phase boundaries
 

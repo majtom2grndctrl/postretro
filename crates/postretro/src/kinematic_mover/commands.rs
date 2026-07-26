@@ -1,4 +1,5 @@
 //! Declarative mover command application and scripting registrations.
+//! See: context/lib/scripting.md §10.6
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -59,7 +60,6 @@ pub(crate) fn apply_mover_command(mover: &mut KinematicMoverComponent, command: 
                 return;
             }
             mover.started = false;
-            mover.current_linear_velocity = Vec3::ZERO;
         }
         MoverCommand::Reverse => {
             if mover.waypoints.len() < 2 {
@@ -389,7 +389,11 @@ mod tests {
         apply_mover_command(&mut mover, &MoverCommand::Stop);
         assert!(!mover.started);
         assert_eq!(mover.segment_elapsed_ms, 750.0);
-        assert_eq!(mover.current_linear_velocity, Vec3::ZERO);
+        assert_eq!(
+            mover.current_linear_velocity,
+            Vec3::X,
+            "post-command phase retains the motion of the tick that just ran"
+        );
         let stopped = mover.clone();
         apply_mover_command(&mut mover, &MoverCommand::Stop);
         assert_eq!(mover, stopped);

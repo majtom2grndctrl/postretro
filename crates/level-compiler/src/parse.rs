@@ -285,9 +285,19 @@ fn parse_kinematic_mover(
         parse_optional_finite_f32(props, "spin_speed", 0.0, "kinematic_mover", &name)?;
     let spin_accel_deg_s2 =
         parse_optional_finite_f32(props, "spin_accel", 0.0, "kinematic_mover", &name)?;
+    if spin_speed_deg_s != 0.0 && spin_speed_deg_s.to_radians() == 0.0 {
+        anyhow::bail!(
+            "kinematic_mover `{name}` non-zero `spin_speed` becomes zero after conversion to radians/sec"
+        );
+    }
     if spin_accel_deg_s2 < 0.0 {
         anyhow::bail!(
             "kinematic_mover `{name}` `spin_accel` must be finite and non-negative, got {spin_accel_deg_s2}"
+        );
+    }
+    if spin_accel_deg_s2 > 0.0 && spin_accel_deg_s2.to_radians() == 0.0 {
+        anyhow::bail!(
+            "kinematic_mover `{name}` positive `spin_accel` becomes zero after conversion to radians/sec²"
         );
     }
     let spin_axis = parse_kinematic_spin_axis(props, &name, spin_speed_deg_s)?;
@@ -3363,7 +3373,7 @@ mod tests {
             "spin_axis(string) : \"Local spin axis as x y z\" : \"0 0 0\"",
             "spin_speed(float) : \"Initial spin speed (degrees per second)\" : \"0\"",
             "spin_accel(float) : \"Spin acceleration (degrees per second squared)\" : \"0\"",
-            "carry_yaw(choices) : \"Carry player yaw while rotating\" : 0 =",
+            "carry_yaw(choices) : \"Carry world-up player yaw while rotating; never pitch or roll\" : 0 =",
         ] {
             assert!(
                 mover_class.contains(property),
@@ -3862,6 +3872,20 @@ mod tests {
         assert!(err.to_string().contains("spin_speed") && err.to_string().contains("not finite"));
     }
 
+    // Regression: a degree-domain pure rotator could pass admission but convert to zero radians.
+    #[test]
+    fn kinematic_mover_rejects_nonzero_spin_speed_that_underflows_in_radians() {
+        let map_text = spinning_kinematic_test_map("")
+            .replace("\"spin_speed\" \"90\"", "\"spin_speed\" \"1e-45\"");
+        let err = parse_inline_map(&map_text)
+            .expect_err("a non-zero spin speed must stay non-zero in the runtime unit");
+
+        assert!(
+            err.to_string().contains("spin_speed")
+                && err.to_string().contains("conversion to radians/sec")
+        );
+    }
+
     #[test]
     fn kinematic_mover_rejects_negative_or_non_finite_spin_accel() {
         for value in ["-1", "nan"] {
@@ -3873,6 +3897,20 @@ mod tests {
                 .expect_err("negative or non-finite spin acceleration must reject");
             assert!(err.to_string().contains("spin_accel"));
         }
+    }
+
+    // Regression: positive degree-domain acceleration could convert to zero and snap the ramp.
+    #[test]
+    fn kinematic_mover_rejects_positive_spin_accel_that_underflows_in_radians() {
+        let map_text = spinning_kinematic_test_map("wp_b")
+            .replace("\"spin_accel\" \"12.5\"", "\"spin_accel\" \"1e-45\"");
+        let err = parse_inline_map(&map_text)
+            .expect_err("positive spin acceleration must stay positive in the runtime unit");
+
+        assert!(
+            err.to_string().contains("spin_accel")
+                && err.to_string().contains("conversion to radians/sec²")
+        );
     }
 
     #[test]

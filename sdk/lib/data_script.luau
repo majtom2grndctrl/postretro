@@ -76,16 +76,17 @@ export type PrimitiveReactionDescriptor = {
   onComplete: string?,
 }
 
---- Tween shape used by `setSpinRate`. Mirrors the Rust
---- `SpinAnimation` storage struct.
+--- Tween shape used by the billboard-emitter reaction primitive
+--- `setSpinRate`. Mirrors the Rust `SpinAnimation` storage struct.
 export type SpinAnimation = {
   duration: number,
   rate_curve: {number},
 }
 
 --- One step in a `sequence` reaction body. Sequence steps target a single
---- `EntityId`; tag-targeted primitives (`setEmitterRate`, `setSpinRate`)
---- belong on the `reactions:` -> `Primitive` path, not on `sequence`.
+--- `EntityId`; tag-targeted primitives (`setEmitterRate`, billboard-emitter
+--- `setSpinRate`) belong on the `reactions:` -> `Primitive` path, not on
+--- `sequence`.
 export type SetLightAnimationStep = {
   id: number,
   primitive: "setLightAnimation",

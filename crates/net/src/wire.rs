@@ -72,7 +72,10 @@ pub struct NetworkId(pub u32);
 ///
 /// Bumped to 11 for E17 rotating movers: kinematic mover phase gained spin
 /// angle plus current and target angular rates.
-pub const SNAPSHOT_VERSION: u16 = 11;
+///
+/// Bumped to 12 for mover replay provenance: kinematic mover phase gained the
+/// pre-tick spin angle and active-at-tick-start flag.
+pub const SNAPSHOT_VERSION: u16 = 12;
 
 /// `record_kind` discriminant for a full-baseline (spawn / join / refresh) record.
 pub const RECORD_KIND_FULL_BASELINE: u16 = 0;
@@ -192,10 +195,10 @@ impl WireMovementState {
 
 impl WirePlayerMovementState {
     /// Whether every replicated float is finite (no NaN/inf): velocity, all live
-    /// timers, capsule dimensions, and the active state's payload. Checked at
-    /// `validate` so a non-finite movement state is rejected before typed apply and
-    /// never reaches the registry. Integer counters and bools cannot be non-finite,
-    /// so they are not checked.
+    /// timers, capsule dimensions, aim pitch, and the active state's payload. Checked
+    /// at `validate` so a non-finite movement state is rejected before typed apply and
+    /// never reaches the registry. Integer counters and bools cannot be non-finite, so
+    /// they are not checked.
     #[must_use]
     fn all_finite(&self) -> bool {
         self.velocity.iter().all(|c| c.is_finite())
@@ -225,6 +228,8 @@ pub struct WireKinematicMoverState {
     pub velocity: [f32; 3],
     pub target_segment: Option<u16>,
     pub spin_angle_rad: f32,
+    pub spin_angle_before_tick_rad: f32,
+    pub was_active_this_tick: bool,
     pub spin_rate_rad_s: f32,
     pub spin_target_rate_rad_s: f32,
 }
@@ -236,6 +241,7 @@ impl WireKinematicMoverState {
             && self.wait_remaining_ms.is_finite()
             && self.velocity.iter().all(|c| c.is_finite())
             && self.spin_angle_rad.is_finite()
+            && self.spin_angle_before_tick_rad.is_finite()
             && self.spin_rate_rad_s.is_finite()
             && self.spin_target_rate_rad_s.is_finite()
     }
@@ -1214,6 +1220,8 @@ mod tests {
             velocity: [1.0, 0.0, -0.5],
             target_segment: Some(2),
             spin_angle_rad: 1.25,
+            spin_angle_before_tick_rad: 1.0,
+            was_active_this_tick: true,
             spin_rate_rad_s: -0.5,
             spin_target_rate_rad_s: -1.0,
         }
@@ -1857,14 +1865,14 @@ mod tests {
     }
 
     #[test]
-    fn e17_snapshot_version_rejects_immediately_previous_layout_before_records() {
-        const PRE_E17_SNAPSHOT_VERSION: u16 = 10;
+    fn mover_replay_provenance_snapshot_version_rejects_immediately_previous_layout() {
+        const PRE_MOVER_REPLAY_PROVENANCE_SNAPSHOT_VERSION: u16 = 11;
         assert_eq!(
-            SNAPSHOT_VERSION, 11,
-            "E17 rotating-mover phase fields require snapshot version 11"
+            SNAPSHOT_VERSION, 12,
+            "mover replay provenance requires snapshot version 12"
         );
         let raw = RawSnapshotMessage {
-            version: PRE_E17_SNAPSHOT_VERSION,
+            version: PRE_MOVER_REPLAY_PROVENANCE_SNAPSHOT_VERSION,
             sequence: 1,
             server_tick: 1,
             records: Vec::new(),
@@ -1875,7 +1883,7 @@ mod tests {
             raw.validate(),
             Err(ValidationError::VersionMismatch {
                 expected: SNAPSHOT_VERSION,
-                received: PRE_E17_SNAPSHOT_VERSION,
+                received: PRE_MOVER_REPLAY_PROVENANCE_SNAPSHOT_VERSION,
             })
         );
     }
@@ -2438,12 +2446,13 @@ mod tests {
 
     // --- Non-finite PlayerMovementState rejection ---
 
-    /// Every replicated float field of a `PlayerMovementState` must be finite; a
-    /// NaN/inf in any of them is rejected before typed apply, so no non-finite
-    /// movement state reaches the registry. Each case mutates exactly one field.
+    /// Every replicated float field of a `PlayerMovementState`, including aim pitch,
+    /// must be finite; a NaN/inf in any of them is rejected before typed apply, so no
+    /// non-finite movement state reaches the registry. Each case mutates exactly one
+    /// field.
     #[test]
     fn non_finite_movement_state_rejects_each_field() {
-        let mutators: [fn(&mut WirePlayerMovementState); 9] = [
+        let mutators: [fn(&mut WirePlayerMovementState); 10] = [
             |m| m.velocity[0] = f32::NAN,
             |m| m.velocity[2] = f32::INFINITY,
             |m| m.dash_cooldown_ms = f32::NAN,
@@ -2451,6 +2460,7 @@ mod tests {
             |m| m.jump_buffer_timer_ms = f32::NEG_INFINITY,
             |m| m.capsule_half_height = f32::NAN,
             |m| m.capsule_eye_height = f32::INFINITY,
+            |m| m.aim_pitch = f32::NEG_INFINITY,
             |m| {
                 m.movement_state = WireMovementState::Dash {
                     elapsed_ms: f32::NAN,
@@ -2523,6 +2533,7 @@ mod tests {
             |m: &mut WireKinematicMoverState| m.wait_remaining_ms = f32::INFINITY,
             |m: &mut WireKinematicMoverState| m.velocity[2] = f32::NEG_INFINITY,
             |m: &mut WireKinematicMoverState| m.spin_angle_rad = f32::NAN,
+            |m: &mut WireKinematicMoverState| m.spin_angle_before_tick_rad = f32::NAN,
             |m: &mut WireKinematicMoverState| m.spin_rate_rad_s = f32::INFINITY,
             |m: &mut WireKinematicMoverState| m.spin_target_rate_rad_s = f32::NEG_INFINITY,
         ] {

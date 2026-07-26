@@ -5,8 +5,8 @@
 --   - `BillboardEmitter` — entity-shape type for named instances and
 --     per-instance overrides. The engine handles
 --     `classname "billboard_emitter"` natively (see plan-3 sub-plan 6).
---   - `SpinAnimation` — tween shape for the `setSpinRate` reaction
---     primitive.
+--   - `SpinAnimation` — tween shape for the billboard-emitter
+--     `setSpinRate` reaction primitive.
 --   - `ComponentDescriptor` — the shape every component constructor
 --     returns (`{ kind, value }`).
 --   - `emitter(props)` — pure component constructor with synchronous
@@ -23,8 +23,8 @@
 -- Public types
 -- ---------------------------------------------------------------------
 
---- Tween shape consumed by `setSpinRate`. Mirrors the Rust
---- `SpinAnimation` storage struct.
+--- Tween shape consumed by the billboard-emitter reaction primitive
+--- `setSpinRate`. Mirrors the Rust `SpinAnimation` storage struct.
 export type SpinAnimation = {
   duration: number,
   rate_curve: {number},

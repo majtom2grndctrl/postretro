@@ -285,6 +285,8 @@ pub(crate) fn kinematic_mover_state_to_wire(
         ],
         target_segment: mover.target_segment,
         spin_angle_rad: mover.spin_angle_rad,
+        spin_angle_before_tick_rad: mover.spin_angle_before_tick_rad,
+        was_active_this_tick: mover.was_active_this_tick,
         spin_rate_rad_s: mover.spin_rate_rad_s,
         spin_target_rate_rad_s: mover.spin_target_rate_rad_s,
     }
@@ -488,6 +490,8 @@ mod tests {
             },
         );
         mover.spin_angle_rad = 0.75;
+        mover.spin_angle_before_tick_rad = 0.5;
+        mover.was_active_this_tick = true;
         mover.spin_rate_rad_s = 1.25;
         mover.spin_target_rate_rad_s = -0.5;
 
@@ -495,6 +499,8 @@ mod tests {
 
         assert_eq!(wire.mover_id, 41);
         assert!((wire.spin_angle_rad - 0.75).abs() < f32::EPSILON);
+        assert!((wire.spin_angle_before_tick_rad - 0.5).abs() < f32::EPSILON);
+        assert!(wire.was_active_this_tick);
         assert!((wire.spin_rate_rad_s - 1.25).abs() < f32::EPSILON);
         assert!((wire.spin_target_rate_rad_s + 0.5).abs() < f32::EPSILON);
     }

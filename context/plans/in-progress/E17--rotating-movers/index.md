@@ -1,6 +1,6 @@
 # E17-D — Rotation and Orientation Carry
 
-> **Status:** ready (reviewed — structural + implementability; awaiting implementation).
+> **Status:** in progress.
 >
 > **Epic:** 17 — Kinematic Geometry and Moving Platforms.
 >
@@ -48,6 +48,11 @@ linear movers.
   `Mover(id)` revolves about the mover's spin axis (through the mover origin) by the
   tick's rotation delta, then translates by the linear tick delta — staying planted on
   the same spot of a turntable. This is non-optional; without it the rider slides off.
+- **Remote rider presentation.** Mover carry changes a rider's world position, not
+  their locomotion. Before time sync, remote presentation remains idle and has no
+  motion-derived heading. After time sync, remote-player locomotion and lower-body travel
+  heading use replicated intrinsic velocity; zero intrinsic velocity stays idle and uses
+  replicated facing. Transform-only entities keep transform-derived presentation.
 - **Yaw/orientation carry (authored toggle, default off).** A per-mover `carry_yaw`
   bool. When set, the rider's view yaw carries with the platform's rotation about
   world-up (turntables meant to reorient the player). When unset (the default), the
@@ -57,7 +62,10 @@ linear movers.
   client, riding the existing `facing_yaw` input replication; no new player-orientation
   wire field. The host does not independently apply yaw carry to a remote pawn: the carry
   is applied once, on the owning client, and reaches the host and other clients only
-  through the already-carried replicated `facing_yaw` — never double-counted.
+  through the already-carried replicated `facing_yaw` — never double-counted. Fixed-tick
+  yaw remains authoritative. Render presentation adds only the alpha-scaled world-up yaw
+  still due from the current eligible mover tick, without mutating settled camera yaw,
+  movement input, or replicated facing.
 - **Leave/detach velocity policy.** On transition off a `Mover` reference, the player
   inherits the tangential linear velocity `angular_velocity × (player_pos − pivot)` at
   the leave position, in addition to A's linear release. The player gains no angular
@@ -121,7 +129,9 @@ linear movers.
   authored spin) and still rejects a non-spinning mover whose `path` resolves to fewer
   than two waypoints, each with a diagnostic. A non-finite `spin_speed`, a non-finite or
   negative `spin_accel`, or a non-finite/zero-length `spin_axis` paired with non-zero
-  `spin_speed` is rejected.
+  `spin_speed` is rejected. A non-zero `spin_speed` or positive `spin_accel` that becomes
+  zero after conversion to runtime radians is rejected at compiler, loader, and runtime
+  admission boundaries.
 - [ ] **AC3.** A previously compiled PRL with a version-1 `KinematicGeometry` section
   still loads; its movers default to zero spin, zero accel, and `carry_yaw = false`
   (version-2 adds the spin fields; the loader accepts both).
@@ -141,30 +151,28 @@ linear movers.
   planted on the same surface spot (XZ offset from the axis constant within ε, Y within ε
   of the surface) and does not slide off or accumulate drift — verified in the
   deterministic sim. (Position/planted carry, independent of `carry_yaw`.)
-- [ ] **AC8.** With `carry_yaw` set, the rider's view yaw advances with the platform's
-  world-up rotation each grounded tick; platform pitch/roll produce no camera pitch or
-  roll (upright invariant) — holds identically single-player and on a connected client
-  **by construction**: yaw carry is applied on the owning client at the look seam and
-  reaches others only through A's already-tested `facing_yaw` replication, so no separate
-  connected-client yaw test is required (single-player and connected are the same
-  client-local code path).
+- [ ] **AC8.** With `carry_yaw` set, settled view yaw advances with the platform's
+  world-up rotation each grounded tick. At render alpha `0`, `.25`, `.5`, `.75`, and `1`,
+  the camera-to-platform relative yaw is continuous across tick boundaries: presentation
+  applies only the current eligible tick's alpha-scaled world-up residual. Platform
+  pitch/roll produce no camera pitch or roll; catch-up frames neither double-apply nor
+  retain a residual. Settled camera yaw and replicated `facing_yaw` remain unchanged by
+  presentation — carry still reaches peers once through the owning client's input path.
 - [ ] **AC9.** With `carry_yaw` unset (the default), the platform revolves the rider's
   position (AC7 still holds) but the rider's view yaw and aim are untouched — the camera
-  yaw is unchanged by the platform's spin, preserving aim authority — holds identically
-  single-player and on a connected client **by construction**, for the same reason as AC8:
-  `facing_yaw` is untouched on the owning client and that (unchanged) value is what
-  replicates.
+  yaw and render yaw are unchanged by the platform's spin, preserving aim authority —
+  holds identically single-player and on a connected client **by construction**, for the
+  same reason as AC8: `facing_yaw` is untouched on the owning client and that (unchanged)
+  value is what replicates.
 - [ ] **AC10.** Leaving a rotating platform imparts the tangential linear velocity at the
   leave point (`angular_velocity × radius`) plus A's linear release, and no player angular
   velocity — verified deterministically single-player and in connected-client replay.
-- [ ] **AC11.** The swept displace-out-of-penetration assertion uses an **advancing+rotating**
-  mover (linear tick delta present) pushing into a stationary player: it still displaces the
-  player out of penetration (A's displace-only push, now over rotating geometry); no
-  tunneling, no persistent overlap. (The swept-push path early-continues when the linear tick
-  delta ≈ 0, so it does not model a *pure* rotator's sweep — a pure rotator's penetration is
-  instead handled by the per-tick static-overlap displacement, with no persistent overlap;
-  deep high-speed pure-rotational swept tunneling is out of scope this slice — displace-only
-  push, crush/blocking deferred to E17-E.)
+- [ ] **AC11.** The swept displace-out-of-penetration assertions cover an
+  **advancing+rotating** mover and a *pure* rotator pushing into a stationary player.
+  `collision/moving.rs` samples the angular sweep, including pure rotation, then applies
+  final-pose recovery when needed. The covered cases displace the player without persistent
+  overlap. This remains A's displace-only push; crush and blocking semantics are deferred to
+  E17-E.
 - [ ] **AC12.** In the deterministic net harness at the E15 profile (`LinkConfig { delay:
   45, jitter: 60, loss_probability: 0.05 }` + fixed seed), the client's predicted mover
   orientation tracks the host within a dedicated angular tolerance (radians, authored
@@ -173,14 +181,25 @@ linear movers.
   mid-scenario reconciles
   the ramp with no accumulating correction; and a rider reconciles its revolved position
   in place without steady-state drift.
-- [ ] **AC13.** `SNAPSHOT_VERSION` and `WIRE_VERSION` are bumped (the app-protocol/
-  vocabulary id is intentionally unchanged — no new message); the wire carries
-  `spin_angle_rad`, the current rate, and the target rate; wire drift/round-trip guards
-  pass; a peer on the old version is refused at the handshake.
+- [ ] **AC13.** The rotating phase fields bump `SNAPSHOT_VERSION` 10 → 11 and advance
+  `WIRE_VERSION` 10 → 11. The subsequent static-kinematic fingerprint handshake advances
+  `WIRE_VERSION` 11 → 12. Replay provenance advances `SNAPSHOT_VERSION` 11 → 12 and
+  `WIRE_VERSION` 12 → 13; 13 is the current wire version. The app-protocol/vocabulary id is
+  unchanged — no new message. The wire carries `spin_angle_rad`, the current rate, and the
+  target rate; drift/round-trip guards pass; a peer on an old version is refused at the
+  handshake.
 - [ ] **AC14.** No new `unsafe`; no non-renderer module imports `wgpu`; no renderer source
   changes (CI-grep / review gates, not runnable unit tests).
 - [ ] **AC15.** Non-spinning movers and mover-less/static maps behave and reconcile
   exactly as before (existing mover and movement suites pass unchanged).
+- [ ] **AC16.** A remote player whose transform revolves with a mover but whose replicated
+  intrinsic velocity is zero remains idle and uses replicated facing for lower-body
+  heading. A non-zero intrinsic velocity drives remote-player locomotion and travel
+  heading even when its world displacement differs. Before time sync, remote presentation
+  remains idle with no motion-derived heading; after time sync it uses intrinsic velocity.
+  Movement-only samples are accepted as defensive client compatibility, not normal server
+  emission: normal player deltas include both `Transform` and `PlayerMovementState`.
+  Transform-only entities retain transform-derived behavior.
 
 ## Tasks
 
@@ -297,19 +316,25 @@ yaw before `facing_yaw` is resolved, so it rides existing input replication. Whe
 seam runs in the Input stage, one stage ahead of the Game-logic stage that produces this
 tick's mover pose; it reads the previous tick's settled mover pose via the ground ref's
 `Mover(id)` (grounding is itself a prior-tick fact) and carries that prior-tick
-`tick_rotation_delta`. This one-tick lag is accepted and required: carrying the same-tick
-delta would move the read into game logic and need a new player-orientation wire field,
-which is out of scope. Pitch/roll of the platform contribute nothing to the camera (upright
-invariant). Thread the new `MoverPose` angular fields (incl. `carry_yaw`) through the replay
-pose source unchanged in shape. Tests (deterministic sim): ≥10-revolution planted-rider
-carry (constant axis-relative XZ offset, Y within ε) with `carry_yaw` both on and off; yaw
-carry advances with world-up spin only when `carry_yaw` is set and is zero when it is unset
-or for a pure pitch/roll axis; aim/view unchanged in the `carry_yaw`-off case; tangential
-detach velocity direction and magnitude; no player angular momentum; push displacement over
-a rotating face. Note: the mover collider is already posed with `Transform.rotation` in the
-collision isometry (`collision/moving.rs`), so `displace_from_movers` and the carry sweep
-test against the rotated collider with no new posing code — the rotating-face push follows
-automatically once the driver writes `Transform.rotation`.
+`tick_rotation_delta`. This one-tick lag remains the fixed-tick authority path: carrying the
+same-tick delta there would move input into game logic and need a new player-orientation wire
+field. At render time, add the current eligible mover tick's alpha-scaled world-up yaw as a
+presentation-only residual to the settled yaw. Use the resulting effective yaw consistently
+for camera construction, render-rate view-feel basis, and connected-client presentation aim.
+The residual must not mutate camera yaw, `MovementInput.facing_yaw`, or replication state; it
+is zero for `carry_yaw = false`, missing ground/mover state, and pitch/roll-only rotation.
+Pitch/roll of the platform contribute nothing to the camera (upright invariant). Thread the
+new `MoverPose` angular fields (incl. `carry_yaw`) through the replay pose source unchanged
+in shape. Tests (deterministic sim): ≥10-revolution planted-rider carry (constant
+axis-relative XZ offset, Y within ε) with `carry_yaw` both on and off; yaw carry advances
+with world-up spin only when `carry_yaw` is set and is zero when it is unset or for a pure
+pitch/roll axis; render-alpha continuity and catch-up residual coverage; aim/view unchanged
+in the `carry_yaw`-off case; tangential detach velocity direction and magnitude; no player
+angular momentum; sampled angular-sweep and final-pose-recovery displacement for advancing
+and pure rotating faces. `collision/moving.rs` already poses the mover collider with
+`Transform.rotation`, samples angular sweeps including pure rotators, and performs
+final-pose recovery. This remains displace-only; Task 2 does not add crush or blocking
+semantics.
 
 ### Task 3: PRL format, FGD, and compiler
 
@@ -329,10 +354,11 @@ rejection in `resolve_kinematic_path` for the pure-rotator case; thread the fiel
 (`encode_kinematic_geometry_section`, which maps `MapKinematicMover → KinematicMoverRecord`).
 `pack.rs` needs no change — it only serializes the already-built section (the byte
 serialization is in `crates/level-format/src/kinematic_geometry.rs`, named above). Validate
-finite `spin_speed` and finite non-negative `spin_accel`, and when `spin_speed` is non-zero
-require a finite non-zero `spin_axis` (normalize at compile) and allow the mover's `path` to
-resolve to a single waypoint (its origin) — a **pure rotator**; when `spin_speed` is zero
-keep A's ≥2-waypoint requirement. The per-record decoder `read_mover`
+finite `spin_speed` and finite non-negative `spin_accel`. Reject a non-zero speed or positive
+acceleration that becomes zero after conversion to runtime radians. When `spin_speed` is
+non-zero, require a finite non-zero `spin_axis` (normalize at compile) and allow the mover's
+`path` to resolve to a single waypoint (its origin) — a **pure rotator**; when `spin_speed`
+is zero keep A's ≥2-waypoint requirement. The per-record decoder `read_mover`
 (`crates/level-format/src/kinematic_geometry.rs:163`) has no version parameter today —
 thread the section version into it so v1 skips the spin fields (default) and v2 reads them.
 Serialization/round-trip tests for both section versions; the existing test
@@ -369,33 +395,40 @@ at the mover-phase serialize site `kinematic_mover_state_to_wire`
 `seed_kinematic_mover_phase` (`crates/postretro/src/netcode/client.rs:2090`) — not
 `wire_convert`, which only handles `SimCommand`↔`InputCommand`. Bump `SNAPSHOT_VERSION` 10 → 11 in
 `crates/net/src/wire.rs` (update the drift guard near `wire.rs:1847`,
-`PRE_E21_SNAPSHOT_VERSION`) and `WIRE_VERSION` 10 → 11 in `crates/net/src/transport.rs`
-(update the drift guard near `transport.rs:735`). Client apply seeds the predictive driver's
+`PRE_E21_SNAPSHOT_VERSION`). The rotating phase layout advances `WIRE_VERSION` 10 → 11;
+the subsequent static-kinematic fingerprint handshake advances it 11 → 12. Replay
+provenance later advances `SNAPSHOT_VERSION` 11 → 12 and `WIRE_VERSION` 12 → 13,
+which is the current version in `crates/net/src/transport.rs`. Client apply seeds the
+predictive driver's
 `spin_angle_rad`, `spin_rate_rad_s`, and `spin_target_rate_rad_s` from the replicated phase
 so orientation and the ramp reconcile rather than free-run; the client re-runs the ramp
 identically from the replicated current+target rate and the locally-held static accel
 (host-authoritative target — the host evaluates the firing trigger per `networking.md`).
 
 The mover-history buffer already stores the full authoritative `Transform` per tick, so a
-rider's replay reads the historical rotation for *position*. The replay `MoverPose`'s
-`tick_rotation_delta` and `angular_velocity`, however, are derived analytically on the client
-in `mover_pose_for_current_phase` (`crates/postretro/src/kinematic_mover.rs:129`, already
-imported by `netcode/client.rs`) from the replicated **current rate**, the locally-held static
-`spin_axis` (from the local PRL), `dt`, and the replicated `started`/`completed` flags (both
-already on `KinematicMoverState`) — not reconstructed from consecutive history quaternions.
-It must populate `angular_velocity`/`tick_rotation_delta` from the replicated current rate +
-local static axis + dt under the identical active-tick gate; left unwired it returns
-ZERO/IDENTITY and client orientation silently won't reconcile (only AC12's angular tolerance
-would catch it). The client applies the identical active-tick gate as the host driver: the angular fields use the
-post-ramp current rate only while `started && !completed && rate ≠ 0`; otherwise
-`angular_velocity = Vec3::ZERO` and `tick_rotation_delta = Quat::IDENTITY`. Deriving from
-`{current rate, axis, dt}` alone would read the wire's retained non-zero current rate for a
-stopped or completed mover as spurious carry/release; gating on `started`/`completed` matches
-the host's zero/identity report instead, which protects AC10 and AC12 for the
-stop/complete-during-ride cases. `carry_yaw` is likewise held locally from the PRL and never
-crosses the wire. The existing harness builder `with_moving_platform` constructs a linear
-translator, not a rotator — the rotating-platform scenario needs a new rotating-platform
-fixture in the harness. The command-injection seam already exists:
+rider's replay reads the historical rotation for *position*. Replay also needs to describe
+the tick that produced that pose, not the later command/completion state. Replicate
+`spin_angle_before_tick_rad` and `was_active_this_tick` beside the existing spin phase.
+`mover_pose_for_current_phase` derives `tick_rotation_delta` from the pre/post phase
+orientations and gates angular velocity on `was_active_this_tick`; it does not reconstruct
+the prior tick from post-command `started`/`completed`. This preserves natural completion
+and start/stop/reverse/go-to transition ticks and makes the delta match the rotation actually
+applied after f32 phase wrapping/argument reduction. `carry_yaw` remains local PRL data and
+never crosses the wire.
+
+Before time sync, remote-player presentation remains idle and derives no heading from motion.
+After time sync, retain replicated intrinsic velocity beside each transform sample and
+interpolate or inherit it across sparse snapshots. Use that velocity, not world-transform
+displacement, for remote-player locomotion selection and lower-body travel heading; omit the
+heading override at zero velocity so replicated facing remains the fallback. Accept a
+movement-only snapshot delta as defensive client compatibility by recording it against the
+most recent transform; normal server player deltas emit both `Transform` and
+`PlayerMovementState`, so they must not be asserted to be movement-only. This path applies
+only to remote players; transform-only entities retain transform-derived presentation.
+
+The existing harness builder `with_moving_platform` constructs a linear translator, not a
+rotator — the rotating-platform scenario needs a new rotating-platform fixture in the harness.
+The command-injection seam already exists:
 `predict_reconcile_harness.rs` exposes `host_registry`/`host_mover`, so a test fires
 `set_spin_rate` by mutating the host mover directly, as the existing remote-trigger tests do.
 Extend the
@@ -404,7 +437,9 @@ assert the client's predicted orientation tracks the host within an angular tole
 accumulating correction (reuse `assert_non_accumulating`); fire a `set_spin_rate` command
 mid-scenario and assert the ramp reconciles with no accumulating correction; assert a rider
 reconciles its revolved position in place; and include a leave-mid-ride assertion that the
-tangential release matches the single-player policy.
+tangential release matches the single-player policy. Add remote-presentation samples for a
+stationary rider through an orbit, a rider with non-zero intrinsic velocity, and a
+defensive movement-only stop update.
 
 Note on crate boundaries: `kinematic_mover_state_to_wire`, `seed_kinematic_mover_phase`,
 `assert_non_accumulating`, and `MOVER_TOLERANCE_M` are grouped above with the wire edits by
@@ -460,7 +495,7 @@ references linear-only motion.
 | current rate | `spin_rate_rad_s: f32` (phase, replicated) | wire `WireKinematicMoverState.spin_rate_rad_s: f32` | n/a | seeded from `spin_speed` |
 | target rate | `spin_target_rate_rad_s: f32` (phase, replicated) | wire `WireKinematicMoverState.spin_target_rate_rad_s: f32` | `MoverEntityHandle.setSpinRate(rate)` → `moverSetSpinRate` | seeded from `spin_speed` |
 | set-spin-rate command | `MoverCommand::SetSpinRate(f32)` (deg/s), `apply_mover_command` | rides existing command/reaction replication (mutates target-rate phase) | `moverSetSpinRate` primitive, args `{ rate }` | n/a |
-| angular kinematics | `MoverPose`/`MoverTickState` `angular_velocity: Vec3`, `tick_rotation_delta: Quat` | not on the wire (derived from current rate + static axis + dt) | n/a | n/a |
+| angular kinematics | `MoverPose`/`MoverTickState` `angular_velocity: Vec3`, `tick_rotation_delta: Quat` | derived from current rate + static axis + replicated pre/post phase and tick-active provenance | n/a | n/a |
 | pure rotator | single-element `waypoints`/`waypoint_names`, non-traversable | PRL `path` resolving to 1 waypoint + non-zero spin | n/a | `path` → one `kinematic_waypoint` |
 | yaw orientation carry | added into `MovementInput.facing_yaw` at the look seam, gated by `carry_yaw` | rides existing `WireMovementInput`/command replication | n/a | n/a |
 
@@ -468,7 +503,8 @@ references linear-only motion.
 
 One `bitcode` delta on an existing type; no new snapshot record kind, no new PRL section.
 
-- **`WireKinematicMoverState`** gains `spin_angle_rad: f32`, `spin_rate_rad_s: f32`, and
+- **`WireKinematicMoverState`** gains `spin_angle_rad: f32`, `spin_angle_before_tick_rad: f32`,
+  `was_active_this_tick: bool`, `spin_rate_rad_s: f32`, and
   `spin_target_rate_rad_s: f32`, appended after `target_segment` in declaration order
   (bitcode owns the bit layout). `all_finite` adds all three; phase-tag validation
   (`direction`/`mode`) is unchanged. Update raw↔typed conversion, baseline/delta, and
@@ -479,9 +515,11 @@ One `bitcode` delta on an existing type; no new snapshot record kind, no new PRL
   `spin_axis` (`f32`×3), `spin_speed_deg_s` (`f32`), `spin_accel_deg_s2` (`f32`), and
   `carry_yaw` (one byte) are appended to each `KinematicMoverRecord`. `from_bytes` accepts
   `{1, 2}`; version 1 decodes to zero spin / zero accel / `carry_yaw = false`.
-- Bump `SNAPSHOT_VERSION` 10 → 11 in `crates/net/src/wire.rs` and `WIRE_VERSION` 10 → 11 in
-  `crates/net/src/transport.rs` (both existing-type layout changes — networking.md's
-  two-gate handshake).
+- The rotating phase layout bumps `SNAPSHOT_VERSION` 10 → 11 in `crates/net/src/wire.rs`
+  and advances `WIRE_VERSION` 10 → 11. The subsequent static-kinematic fingerprint
+  handshake advances `WIRE_VERSION` 11 → 12. Replay provenance advances
+  `SNAPSHOT_VERSION` 11 → 12 and `WIRE_VERSION` 12 → 13; 13 is current
+  (networking.md's two-gate handshake).
 
 ## Invariants
 
@@ -490,9 +528,10 @@ One `bitcode` delta on an existing type; no new snapshot record kind, no new PRL
 | Driver is a pure function of `{phase incl. spin_angle_rad + current/target rate, static incl. axis/accel, dt}` — host and client reproduce identical orientation and ramp | Task 1 | any command verb (`stop`/`start`/`reverse`/`set_spin_rate`) must not add clock/RNG/host state to spin | AC4, AC5, AC6, AC12 |
 | Ramp advances current→target by `spin_accel * dt` each active tick (snap when accel 0); `set_spin_rate` sets target only; `stop` freezes without zeroing the rate phase | Task 1 (ramp), Task 1b (verb) | the ramp clamps to avoid overshoot; `stop` retains rate phase so `start` resumes | AC5, AC6 |
 | Position/planted carry is always on; carry order is revolve-about-pivot → translate → collision, each tick | Task 2 | `integrate_collision` runs carry before step-up/sweep; reversing the order slides the rider | AC7 |
-| Yaw carry runs only when `carry_yaw` is set; only world-up spin carries to the camera; pitch/roll never tilt it; `carry_yaw` off leaves view/aim untouched | Task 2 (seam), Task 3/4 (thread `carry_yaw`) | the look-seam gate reads `pose.carry_yaw` and projects `tick_rotation_delta` onto world-up only | AC8, AC9 |
+| Fixed-tick yaw remains authoritative; render presentation adds only the current eligible tick's world-up residual | Task 2 | input carry commits once; camera construction, view-feel, and presentation aim consume the same effective yaw; pitch/roll and `carry_yaw`-off produce zero residual | AC8, AC9 |
 | Detach adds tangential *linear* velocity once, no player angular momentum | Task 2 | `apply_mover_release_velocity` on `Mover → !Mover` transition | AC10 |
 | Orientation and ramp reconcile from replicated `{spin_angle_rad, current rate, target rate}`, no accumulating drift | Task 1 (phase), Task 5 (wire + seed) | client apply seeds all three before predicting; a missing seed free-runs orientation or the ramp | AC12, AC13 |
+| Mover carry changes remote-player world position, not intrinsic locomotion | Task 5 | before time sync remote presentation is idle with no motion-derived heading; afterward animation and lower-body heading use replicated intrinsic velocity, while zero velocity falls back to replicated facing; transform-only entities retain transform-derived presentation | AC16 |
 | Version-1 PRLs still load (zero spin/accel, `carry_yaw` false); non-spinning movers unchanged | Task 3 | `from_bytes` version gate; compiler ≥2-waypoint rule stays for zero-spin movers | AC3, AC15 |
 
 ## Open questions

@@ -238,6 +238,24 @@ fn validate_kinematic_geometry(geometry: &KinematicGeometry) -> Result<(), PrlLo
             &geometry.waypoints,
             &waypoints,
         )?;
+        if mover.spin_speed_deg_s != 0.0 && mover.spin_speed_deg_s.to_radians() == 0.0 {
+            return Err(section_validation(
+                "KinematicGeometry",
+                format!(
+                    "mover {} (`{}`) has nonzero spin_speed_deg_s that becomes zero after conversion to radians/sec",
+                    mover.mover_id, mover.name
+                ),
+            ));
+        }
+        if mover.spin_accel_deg_s2 > 0.0 && mover.spin_accel_deg_s2.to_radians() == 0.0 {
+            return Err(section_validation(
+                "KinematicGeometry",
+                format!(
+                    "mover {} (`{}`) has positive spin_accel_deg_s2 that becomes zero after conversion to radians/sec²",
+                    mover.mover_id, mover.name
+                ),
+            ));
+        }
         if mover.spin_speed_deg_s != 0.0 && mover.spin_axis.normalize_or_zero() == Vec3::ZERO {
             return Err(section_validation(
                 "KinematicGeometry",
@@ -2752,6 +2770,31 @@ mod tests {
 
             assert_kinematic_validation_message(err, "spin_axis normalizes to zero");
         }
+    }
+
+    // Regression: non-zero PRL degrees could authorize a pure rotator that is static in radians.
+    #[test]
+    fn kinematic_geometry_rejects_nonzero_spin_speed_that_underflows_in_radians() {
+        let mut section = sample_kinematic_section();
+        section.movers[0].spin_axis = [0.0, 1.0, 0.0];
+        section.movers[0].spin_speed_deg_s = f32::from_bits(1);
+        section.waypoints.truncate(1);
+        section.waypoints[0].next.clear();
+
+        let err = convert_kinematic_geometry_section(section).unwrap_err();
+
+        assert_kinematic_validation_message(err, "conversion to radians/sec");
+    }
+
+    // Regression: positive PRL acceleration could become zero radians and turn a ramp into a snap.
+    #[test]
+    fn kinematic_geometry_rejects_positive_spin_accel_that_underflows_in_radians() {
+        let mut section = sample_kinematic_section();
+        section.movers[0].spin_accel_deg_s2 = f32::from_bits(1);
+
+        let err = convert_kinematic_geometry_section(section).unwrap_err();
+
+        assert_kinematic_validation_message(err, "conversion to radians/sec²");
     }
 
     #[test]

@@ -45,7 +45,8 @@ The fixture uses two complete world-material bundles:
 - **Rotating-carousel station (x 560–720, y -48–48).** The asymmetric Metal
   slab is a pure rotator around its single `carousel_origin` waypoint. It
   starts at 45 deg/s about the authored vertical axis, carries rider yaw, and
-  declares a 180 deg/s² spin acceleration for rate-command testing. Its open
+  declares a 180 deg/s² spin acceleration to support external/scripted
+  rate-command testing via the mover `setSpinRate` command. Its open
   bay has no nearby wall or mover face that can pinch a rider during rotation.
 
 ## Manual Checks

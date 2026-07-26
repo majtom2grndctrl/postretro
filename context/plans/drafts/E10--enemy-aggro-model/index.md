@@ -230,11 +230,44 @@ ranking scan's per-pawn `filter_map` and **not** in the shared candidate lookup
 that also resolves the retained target — filtering retention there would make
 the engine decide disengagement again, which is the graph's job per Task 1.
 Plumbing: the scan and the selection entry point take the enemy's bound filter
-and the shared candidate scope as parameters, and `ai/mod.rs` passes them at its
-existing selection call sites (the early non-engaged scan, the leash-escape
-replacement, and both acquisition-due branches) from the side-table entry it
-already looks up for guard evaluation. `None` means no filter: nothing is
-evaluated and the scan is byte-for-byte today's. Lowering emits no filter, so
+and the shared candidate scope as two parameters — never `&BrainPrograms`, which
+would hand `targeting.rs` guard programs it has no business reading. `ai/mod.rs`
+passes them at its existing selection call sites (the early non-engaged scan,
+the leash-escape replacement, and both acquisition-due branches).
+
+Getting both out of the side-table at once needs one accessor, because the
+filter is a shared borrow and the scope a mutable one, and the scan holds the
+filter across repeated per-candidate refreshes. Split them by field:
+
+```rust
+// Proposed design
+pub(crate) fn candidate_filter_context(
+    &mut self,
+    entity: EntityId,
+) -> (Option<&BoundProgram<CandidateScope>>, &mut CandidateScope) {
+    (
+        self.entries.get(&entity).and_then(|entry| entry.candidate_filter()),
+        &mut self.candidate_scope,
+    )
+}
+```
+
+The borrow checker splits `&mut self` across distinct fields inside the body, so
+this needs no interior mutability and costs nothing at runtime. It is also the
+discipline the evaluator already follows: `select_transition` takes the graph,
+the entry, and the scope as separate parameters rather than the table itself,
+precisely so the caller owns the split.
+
+`CandidateScope::refresh` therefore stays `&mut self`. That is not incidental —
+the `&mut` is what makes "grows only at bind, written by index at refresh" a
+compile-time fact rather than a convention. A `RefCell` on the fixed array would
+buy the same call pattern and give that up, and the alloc probe would not
+notice, since `RefCell` does not allocate. The existing `RefCell`s on the state
+half are a *bind*-phase need — `BindingScope`'s methods take `&self` and
+interning happens during bind — and are not a precedent for the refresh path.
+
+`None` means no filter: nothing is evaluated and the scan is byte-for-byte
+today's. Lowering emits no filter, so
 legacy brains are unchanged. Extend the SDK with a `candidate` prelude object in
 both runtimes — pre-wrapped leaves for the fixed table. Unlike a new key on
 `brain`, a new prelude *object* is gated by an explicit Luau allowlist mirrored
@@ -414,6 +447,7 @@ union, so the boolean-only constraint on `candidateFilter` is runtime-enforced
 | An unauthored graph is bit-identical to today; legacy lowering emits no new edge and no filter; legacy acquisition changes only by gaining the leash bound | Task 2, Task 3 | Any default filter, or a lowering that emits a target-death edge | AC 5, 8, 9 |
 | Bound programs stay derived data in the evaluator side-table, rebuilt via the `Arc` pointer-identity staleness test; the filter joins them rather than riding the component | Predecessor, extended by Task 2 | A filter program stored on `BrainComponent` would reintroduce serde and equality coupling | AC 6 |
 | Acquisition-path evaluation is zero-alloc per tick; the filter adds a constant factor to an existing traversal, never a new walk | Task 2 | Candidate-scope refresh must not intern, clone, or collect — the `@state.*` snapshot grows at bind alone | AC 6 |
+| `refresh` takes `&mut self`, which is what makes "grows at bind, written by index at refresh" a compile-time fact. Simultaneous access to a filter and its scope comes from splitting the side-table by field, not from interior mutability | Task 2 | Wrapping the fixed array in a `RefCell` to dodge a borrow error would demote the guarantee to a convention, and the alloc probe would not catch it — `RefCell` does not allocate | AC 6 |
 | The floor's leash is symmetric: a target beyond it is neither acquired nor retained | Task 3 | Any new acquisition path bypassing the selection chokepoint; the ordering validator alone cannot enforce it, since Rust fixtures bypass validation | AC 9 |
 | A brain with no leash keeps unbounded acquisition, with disengagement owned by its guards | Task 3 | Any default value substituted for the absent leash | AC 5 |
 | The think stride is cost machinery and shares no data path with relevance rules. Its distance comes from an unfiltered read, so no leash or filter can silently reprice it | Task 3 | Deriving `current_distance` from a filtered scan — `acquisition_due` reads a `None` distance as *due every tick*, inverting the stride | AC 5 |
@@ -463,7 +497,7 @@ behavior: {
 }
 ```
 
-## Open questions
+## Accepted trade-offs
 
 - Warning and error messages name state names and the `components.behavior`
   path but not the owning entity's canonical name, which the descriptor
@@ -472,15 +506,12 @@ behavior: {
   the parser call site, which does know the name, rather than inside the
   validators. Accepted as-is for this plan; that is the option to reach for
   first if authors report the diagnostics as hard to place.
-- **How Task 2 hands the evaluator a filter and a mutable scope at once.** The
-  bound filter comes from `programs.get(entity)`, a shared borrow of
-  `BrainPrograms`, while refreshing the shared candidate scope per candidate
-  needs `&mut` on the same struct. Today the two never overlap — the existing
-  refresh completes before the lookup — but the filter must stay live across the
-  whole scan. Two mechanisms work: one accessor returning both disjoint borrows,
-  or interior mutability on the candidate scope's fixed array so refresh takes
-  `&self`. No principle picks between them; the implementer should choose on the
-  shape of the surrounding code and say which in the task's commit.
+
+## Where the deferred dimensions land
+
+Each waits for a real consumer. *Where* each lands is decided here so a
+successor spec inherits it instead of re-deriving it.
+
 - **Line of sight splits by conservatism, not by layer.** The choice is not
   floor-gate *or* published fact — it is both, cut where the one-right-answer
   test cuts. A conservative Cell→Cell broad-phase

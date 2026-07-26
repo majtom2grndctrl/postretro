@@ -184,7 +184,7 @@ spec text:
 | | Artifact |
 |---|---|
 | 1, 4, 6 | The `Direction` section. Cheap to write now, expensive to reconstruct. |
-| 2 | Record the placement and its rationale where the design decision lives. Not a verdict — "this belongs in the engine floor because…" is useful; "the layering was assessed and is correct" is noise. |
+| 2 | Record the *fact* of the placement and the reason for it, where the design decision lives. This is input for the reviewer, not a clearing of the question — a drafter who placed something in the wrong layer does not know it. "This belongs in the engine floor because…" is useful; "the layering was assessed and is correct" is noise. |
 | 3 | Record specific foreclosures where known. Never write "nothing significant" — that is the default answer and it carries no information. |
 | 5 | None. Self-assessed sizing is always "appropriate". Leave it to `/validate-plan`. |
 

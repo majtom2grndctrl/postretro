@@ -93,7 +93,7 @@ rest of taste already lives.
       | Edit | Detail |
       |---|---|
       | `target_candidate` | Signature unchanged |
-      | `select_target`, `nearest_target_candidate` | Gain the leash and filter parameters and the two-value return |
+      | `select_target`, `nearest_target_candidate` | Gain the leash parameter, the bound-filter and `&mut CandidateScope` parameters, and the two-value return. Both already take `&EntityRegistry` |
       | Doc comments | `select_target`'s is rewritten; it is the only one of the three carrying one (`targeting.rs:83-96`) |
       | New in `targeting.rs` | `retained_is_outside_leash` |
       | Call sites | Four `select_target` sites in `ai/mod.rs`, six direct ones in `ai_tests.rs:728-806` |
@@ -234,7 +234,7 @@ pre-wrapped input leaves. Two drift tests guard two different surfaces:
 
 | Test | Location | Guards |
 |---|---|---|
-| `brain_sdk_helpers_cover_every_brain_input` | `crates/scripting-core/src/data_descriptors/tests/behavior.rs:372` | `BRAIN_INPUTS` count vs. occurrences of the literal `"@brain.` in `sdk/lib/brain.ts` alone — `brain.luau` is not counted |
+| `brain_sdk_helpers_cover_every_brain_input` | `crates/scripting-core/src/data_descriptors/tests/behavior.rs:372` | Both preludes: `brain.luau` is evaluated and its `brain` table's keys set-compared to `BRAIN_INPUTS` (`behavior.rs:398`) with per-leaf `op`/`name` checks (`:403-407`); `brain.ts` is text-matched per input, with its `"@brain.` literal count compared to `BRAIN_INPUTS.len()` (`:417-421`) |
 | `brain_input_typedefs_match_the_foundation_table` | `crates/postretro/src/scripting/typedef/tests/surface.rs:584` | The emitted `BrainInputs` typedef block |
 
 New doc-comment prose in `brain.ts` must not contain `"@brain.`, or the count
@@ -243,10 +243,10 @@ inflates and the first test fails.
 The `BrainInputs` block is hand-written text in two typedef templates:
 `crates/scripting-core/src/typedef/templates/sdk_lib.d.ts` (`export interface
 BrainInputs {`, line 842) and `sdk_lib.luau` (`export type BrainInputs = {`,
-line 1073). Task 1 edits both, or the typedef drift test fails from Phase 2
-through Phase 4. `committed_sdk_types_match_current_registry` (`committed.rs:8`)
-goes red from Phase 2 for the same reason — committed artifacts are regenerated
-only in Phase 4. Both are expected-red windows, closed by Task 5.
+line 1073). Task 1 edits both in the same phase, so the typedef drift test never
+goes red. `committed_sdk_types_match_current_registry` (`committed.rs:8`) is the
+plan's one expected-red window: committed artifacts are regenerated only in
+Phase 4, so it stands red from Phase 2 until Task 5 closes it.
 `virtual_module.luau` needs no Task 1 edit; it names the type without declaring
 its fields.
 
@@ -259,12 +259,21 @@ Sites that break under the `BrainFacts` fold:
 | `brain_programs.rs:716`, `:754`, `:801`, `:858` | Construction |
 | `ai_tests.rs:373` | Construction, in the guard-evaluation harness |
 | `brain_scope.rs:114-122` | Seven-element fixed-slot array against `[IrValue; BRAIN_INPUTS.len()]` |
+| `brain_scope.rs:346`, `:348` (`expected_fixed_value` body) | Field reads of `facts.target_distance` |
 
 `expected_fixed_value` (`brain_scope.rs:344`) ends in a `panic!` catch-all, not
 a wildcard, so a missing arm fails
 `refresh_projects_engine_facts_and_health_into_the_fixed_slots` at test runtime
 with a naming message rather than at compile time. The genuine compile failures
-are the array literal and every `BrainFacts` construction site.
+are the array literal, every `BrainFacts` construction site, and the two
+`facts.target_distance` reads in `expected_fixed_value`. The `panic!`
+catch-all defers only the missing-arm failure to test runtime.
+
+Task 1 owns the runnable tests for AC 2 — every target-side fact reads its
+type's zero with no selected target and `targetDied` reads false — and the
+brain half of AC 17: `@brain.targetHealth` and `@brain.targetMaxHealth` read a
+selected target's `HealthComponent`, and zero when that component is absent.
+Both extend `refresh_projects_engine_facts_and_health_into_the_fixed_slots`.
 
 ### Task 2: Per-graph candidate filter
 
@@ -280,7 +289,9 @@ graphs must still deserialize. That is the only direction that matters:
 carrying `candidateFilter`, which is why the key is additive content rather than
 replicated state. The raw node follows the same descriptor-partition rule as
 transition guards — the bound program is derived data the evaluator owns, never
-a descriptor field.
+a descriptor field. `primitives/mod.rs` is the typedef-generation registry, not
+the parse path, so script authoring of `candidateFilter` works from Phase 3
+through the descriptor's serde; Task 5 registers it for the emitted types.
 
 The filter needs its own namespace and its own declaration-time binding scope,
 both in a new module `crates/foundation/src/candidate.rs`, beside `brain.rs`
@@ -311,9 +322,11 @@ transition. Both runtimes emit that string.
 `CANDIDATE_INPUTS`, never grown. Its refresh signature is `refresh(&mut self,
 registry: &EntityRegistry, candidate: EntityId, from: Vec3)`, mirroring
 `BrainScope::refresh`, with `from` the enemy position
-`nearest_target_candidate` already holds. A candidate with no `HealthComponent`
-reads zeros for the three health facts, the same absent-component contract the
-brain scope honors.
+`nearest_target_candidate` already holds.
+`nearest_target_candidate` and `select_target` already take `&EntityRegistry`
+(`targeting.rs:47`, `:98`), so the scan needs no new registry plumbing to call
+it. A candidate with no `HealthComponent` reads zeros for the three health
+facts, the same absent-component contract the brain scope honors.
 
 Binding rides the existing evaluator side-table. `BrainPrograms` holds one
 shared candidate scope alongside its brain scope, and `BrainEntityPrograms`
@@ -339,7 +352,9 @@ parameters, never `&BrainPrograms`, which would hand `targeting.rs` guard
 programs it has no business reading. `ai/mod.rs` passes them at the four call
 sites Task 3 established: the early non-engaged scan (`ai/mod.rs:437`), the
 leash-escape replacement (`:455`), and both acquisition-due branches (`:471`,
-`:488`).
+`:488`). The six direct `select_target` call sites in `ai_tests.rs:728-806` are
+compile-broken by this signature change and updated here; their assertions are
+unchanged.
 
 Getting both out of the side-table at once needs one accessor: the filter is a
 shared borrow, the scope a mutable one, and the scan holds the filter across
@@ -381,33 +396,39 @@ today's. Lowering emits no filter, so legacy brains are unchanged.
 
 **SDK surface.** Extend both runtimes with a `candidate` prelude object of
 pre-wrapped leaves for the fixed table. `candidate` is a third top-level export
-of the **existing** `sdk/lib/brain.{ts,luau}` module, not a new SDK module: that
-module already owns the guard-input vocabulary, and `state` is literally shared
-between the two scopes, so splitting them across two files would fork one
-vocabulary. Unlike a new key on the `brain` object, a new top-level export is
+of the **existing** `sdk/lib/brain.{ts,luau}` module, not a new SDK module:
+`sdk/lib/brain.ts` already owns the guard-input vocabulary, and `candidate` is
+a second view of the same enemy-behavior authoring surface, so a new module
+would fork one vocabulary across two files. Unlike a new key on the `brain`
+object, a new top-level export is
 gated by an explicit allowlist mirrored in six places:
 
 | Site | What changes |
 |---|---|
 | `BRAIN_LUAU_FIELDS` (`crates/scripting-core/src/luau_prelude.rs:222`) | `&["brain", "state"]` — the module's *exports*, not the `brain` object's fields — gains `"candidate"` |
-| `POSTRETRO_ROOT_MODULE_EXPORTS` (`luau_prelude.rs:290`) | Gains `"candidate"` |
-| `luau_require.rs:446` | Gains `"candidate"` |
+| `POSTRETRO_ROOT_MODULE_EXPORTS` (`luau_prelude.rs:271`; insert beside `"brain"` at `:290`) | Gains `"candidate"` |
+| `luau_require.rs:446` | Test-only exact-key assertion (`#[cfg(test)]`, `assert_exact_string_keys` on the root module); gains `"candidate"` or the test goes red |
 | `crates/script-compiler/src/light_membership.rs:496,502` | Both `copy_lua_fields` call sites |
 | `sdk/lib/index.ts:18-19` | Re-exports `{ brain, state }`; gains `candidate` |
 
 `CANDIDATE_INPUTS` needs its own drift-test pair mirroring the Task 1 names:
 `candidate_input_typedefs_match_the_foundation_table` (order-sensitive
 `Vec<String>` equality, per AC 13) and `candidate_sdk_helpers_cover_every_candidate_input`
-(sets and counts, deliberately not order-sensitive). Task 2 therefore also
+(sets and counts, deliberately not order-sensitive), counting occurrences of
+the literal `"@candidate.` in `sdk/lib/brain.ts` alone against
+`CANDIDATE_INPUTS.len()`, and set-comparing the `candidate` table's keys out
+of `sdk/lib/brain.luau`. New doc-comment prose in either file must not contain
+that literal. Task 2 therefore also
 writes the `CandidateInputs` blocks into `sdk_lib.d.ts` and `sdk_lib.luau` in
 this phase, exactly as Task 1 does for `BrainInputs` — including the top-level
 `candidate` declaration lines, not just the interface blocks.
 `luau_virtual_module_types_and_require_overloads_are_generated`
-(`surface.rs:202`) iterates `POSTRETRO_ROOT_MODULE_EXPORTS` and asserts the
-generated Luau contains `"candidate:"`, so it goes red the moment that constant
-gains the entry. Landing the drift test without the template blocks leaves it
-red from Phase 3 to Phase 4. Task 5 keeps only `virtual_module.luau` and the
-regeneration.
+(`surface.rs:164`; the `POSTRETRO_ROOT_MODULE_EXPORTS` loop is at `:202`)
+iterates `POSTRETRO_ROOT_MODULE_EXPORTS` and asserts the generated Luau contains
+`"candidate:"`, so it goes red unconditionally in Phase 3 the moment that
+constant gains the entry, and is closed in Phase 4 by Task 5's
+`virtual_module.luau:120` edit; Task 2's `sdk_lib` blocks do not close it. Task 5 keeps only `virtual_module.luau` and
+the regeneration.
 
 Task 2 and Task 4 both extend `BehaviorGraphDescriptor::validate`: all errors,
 filter bind included, run first, and the lints run only on the success path, so
@@ -425,7 +446,7 @@ no alloc measurement reaches; its verifier is a twin of
 asserting filter-program pointer identity across two `sync` calls with an
 unchanged `Arc`. Task 2 also owns the runnable tests for AC 1 (a co-op pawn
 dies, the enemy releases it and engages a live pawn beside it, its graph
-authoring both interrupt and filter), AC 3, AC 14, AC 15, the candidate
+authoring both interrupt and filter), AC 3, AC 14, AC 15, AC 16's filter half, the candidate
 half of AC 17, and AC 7's runnable half.
 
 ### Task 3: Leash bounds acquisition
@@ -500,7 +521,9 @@ the only relevance rule with coverage already in the tree — three
 inverted-tuning fixtures, AC 8, and AC 16's legacy half — so the stride
 separation is exercised by real tests from Phase 1. A filter-first order would
 land the same machinery motivated by a rule whose fixtures do not exist until
-Task 2 authors graphs to create them.
+Task 2 authors graphs to create them. Task 3 owns AC 16's legacy half: a new
+far-band fixture counting acquisition-due ticks against the band's divisor
+with a retained target outside the leash.
 
 The retained-target lookup stays a read, yielding the candidate and its distance
 unconditionally, so an out-of-leash retained target still prices the stride.
@@ -518,7 +541,9 @@ phases later with the bound filter and the shared candidate scope. It changes
 twice because it must — `CandidateScope` does not exist until Task 2 creates it,
 so Task 3 cannot pre-thread a parameter of that type the way it could a bare
 `Option<f32>`. AC 4 bounds the total edit surface across the plan, not per
-phase. The post-hoc `.filter(...)` on the replacement search (`:462-465`)
+phase. The six direct `select_target` call sites in `ai_tests.rs:728-806` are
+compile-broken by the signature change and updated here; their assertions are
+unchanged. The post-hoc `.filter(...)` on the replacement search (`:462-465`)
 vanishes, since the scan now applies the leash itself. The leash-escape branch
 keeps its cheap immediate clear and its strided replacement, so the four call
 sites stay four.
@@ -528,7 +553,8 @@ sites stay four.
 range loop (`:302-317`) and before the `attackDamage` check (`:318-326`), so
 both operands are known finite when the error reports. Reject a descriptor whose
 `leashRange` is below its `detectionRange`, naming both values in the
-established `components.ai.<field>` style. Both runtimes funnel through that
+established `components.ai.<field>` style pinned in the boundary inventory.
+Both runtimes funnel through that
 validator, so one edit covers QuickJS and Luau.
 
 Rust fixtures construct `AiDescriptor` literally and bypass validation, which is
@@ -547,6 +573,12 @@ A fourth, `distant_enemy_strides_detection_but_attack_still_fires`
 still passes, but a leash-bounded scan rejects that pawn outright and the
 assertion stops exercising the stride it is named for. Retune its `leash_range`
 above 40. This is the one existing AI test whose tuning Task 3 changes.
+
+The three fixtures pass unmodified and stand as the no-regression floor;
+neither asserts AC 8's shape. Task 3 adds AC 8's fixture — a seeded-at-rest
+enemy with a pawn between the two radii, asserting no destination request and
+no state change across the window — and AC 9's two validation tests, one per
+runtime, each asserting the error names both field values.
 
 ### Task 4: Graph disengagement lints
 
@@ -618,8 +650,13 @@ The third constrains the authoring. It traces
 `from_descriptor(&reference_ai_descriptor())` and asserts identical traces,
 while `reference_player_x` (`:3976`) sweeps the pawn to 30 and 80 units. Legacy
 lowering emits no filter, so the authored filter's distance bound must equal the
-legacy descriptor's `detectionRange` or the two traces diverge. Pin the radius
-to that value and say so in the authoring comment.
+legacy descriptor's `detectionRange` or the two traces diverge.
+`reference_ai_descriptor()` (`ai_tests.rs:3770`) is detection 16 / leash 50, so
+it already satisfies Task 3's ordering rule and its effective acquisition
+bound is `detectionRange`. Pin the radius to that value and say so in the
+authoring comment. `reference_player_x` never kills the pawn, so the filter's
+death clause and the target-death interrupt are inert across the trace; only
+the distance clause can diverge.
 
 The reference enemy's comments are the de-facto authoring documentation and must
 teach four things:
@@ -628,6 +665,8 @@ teach four things:
   `hasTarget`.
 - The death latch, not a health comparison, is the death test — and why.
 - Candidacy is per-graph eligibility; disengagement is per-state policy.
+- The filter's acquisition radius is pinned to the legacy descriptor's range
+  so the authored and lowered traces agree.
 
 Extend `docs/scripting-reference.md` with the floor's acquisition contract: what
 the engine offers as candidates, what it never decides (aliveness), the legacy
@@ -649,7 +688,7 @@ two templates Task 1 names.
 | Target | Change |
 |---|---|
 | `crates/postretro/src/scripting/primitives/mod.rs` | `components.ai` `detectionRange` and `leashRange` descriptions (lines 346 and 348; `:347` is `attackRange`, untouched) state the ordering constraint and the leash's widened role |
-| Same file | Register the `candidateFilter` field on `BehaviorGraphDescriptor` |
+| Same file | Register the `candidateFilter` field on `BehaviorGraphDescriptor`; typedef surface only |
 | `virtual_module.luau:120` | Gains `candidate: CandidateInputs,` on `PostretroModule` beside `brain: BrainInputs,` — the one typedef template Task 1 does not touch |
 
 The current `leashRange` description says "Distance from its origin past which
@@ -668,7 +707,7 @@ enemy — Task 4's clean-trip confirmation predates this rewrite.
 
 | Phase | Tasks | Why |
 |---|---|---|
-| 1 (concurrent) | Task 3, Task 4 | Disjoint: engine selection chokepoint versus foundation descriptor lint module. Task 3 leads because it builds the two-value scan against the only relevance rule with fixtures already in the tree |
+| 1 (concurrent) | Task 3, Task 4 | Disjoint files: `targeting.rs`, `ai/mod.rs`, and `combat.rs` versus a new `behavior_lints.rs` and `behavior.rs`'s `validate` call site. Task 3 leads because it builds the two-value scan against the only relevance rule with fixtures already in the tree |
 | 2 | Task 1 | Shares `ai/mod.rs` and `ai_tests.rs` with Task 3 — different regions, but its `BrainFacts` fold consumes the selected target Task 3's block produces |
 | 3 | Task 2 | Consumes Task 1's settled input table; adds the filter to the eligible accumulator Task 3 built; extends the same evaluator side-table |
 | 4 | Task 5 | Documents the contract the first four settle; regenerates typedefs once |
@@ -700,6 +739,7 @@ decisions in `context/lib/`. Two are durable and neither is a task.
 | Has-target fact (existing; listed because Task 4's lint matches on it) | `BRAIN_HAS_TARGET_INPUT` | `"@brain.hasTarget"` | `brain.hasTarget` | `brain.hasTarget` |
 | Candidate filter field | `BehaviorGraphDescriptor::candidate_filter: Option<IrNode>` | `"candidateFilter"` | `candidateFilter?: RuntimeValue` | `candidateFilter: RuntimeValue?` |
 | Filter error path | — | `"components.behavior.candidateFilter"` | — | — |
+| Ordering error path | — | `"components.ai.leashRange"`, `"components.ai.detectionRange"` | — | — |
 | Candidate facts table | `CANDIDATE_INPUTS` | — | `candidate.*` prelude object | `candidate.*` |
 | Candidate distance | `CANDIDATE_DISTANCE_INPUT` | `"@candidate.distance"` | `candidate.distance` | `candidate.distance` |
 | Candidate health | `CANDIDATE_HEALTH_INPUT` | `"@candidate.health"` | `candidate.health` | `candidate.health` |
@@ -708,9 +748,8 @@ decisions in `context/lib/`. Two are durable and neither is a task.
 | Candidate input prefix | `CANDIDATE_INPUT_PREFIX` | `"@candidate."` | — | — |
 | Candidate inputs type | — | — | `CandidateInputs` | `CandidateInputs` |
 
-No FGD column: all of it is descriptor-owned tuning, never map-overridable. The
-state leaf reuses the guard spelling on purpose — the scope binds it, so no
-second name exists for the same field. `RuntimeValue` is the number|boolean
+No FGD column: all of it is descriptor-owned tuning, never map-overridable.
+`RuntimeValue` is the number|boolean
 union, so the boolean-only constraint on `candidateFilter` is runtime-enforced
 (AC 6) and deliberately not expressed in the typedef.
 

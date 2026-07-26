@@ -238,6 +238,15 @@ fn validate_kinematic_geometry(geometry: &KinematicGeometry) -> Result<(), PrlLo
             &geometry.waypoints,
             &waypoints,
         )?;
+        if mover.spin_speed_deg_s != 0.0 && mover.spin_axis.normalize_or_zero() == Vec3::ZERO {
+            return Err(section_validation(
+                "KinematicGeometry",
+                format!(
+                    "mover {} (`{}`) has nonzero spin_speed_deg_s but spin_axis normalizes to zero",
+                    mover.mover_id, mover.name
+                ),
+            ));
+        }
         let allow_single_waypoint = mover.spin_speed_deg_s != 0.0;
         if resolved.len() < 2 && !allow_single_waypoint {
             return Err(section_validation(
@@ -2728,6 +2737,21 @@ mod tests {
 
         assert_eq!(geometry.movers.len(), 1);
         assert_eq!(geometry.waypoints.len(), 1);
+    }
+
+    #[test]
+    fn kinematic_geometry_rejects_single_waypoint_nonzero_spin_with_zero_axis() {
+        for spin_axis in [[0.0; 3], [f32::MIN_POSITIVE; 3]] {
+            let mut section = sample_kinematic_section();
+            section.movers[0].spin_axis = spin_axis;
+            section.movers[0].spin_speed_deg_s = 90.0;
+            section.waypoints.truncate(1);
+            section.waypoints[0].next.clear();
+
+            let err = convert_kinematic_geometry_section(section).unwrap_err();
+
+            assert_kinematic_validation_message(err, "spin_axis normalizes to zero");
+        }
     }
 
     #[test]

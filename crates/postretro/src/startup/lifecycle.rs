@@ -98,6 +98,7 @@ impl App {
         self.collision_world.clear();
         self.kinematic_mover_colliders.clear();
         self.kinematic_mover_tick_states.clear();
+        self.mover_yaw_carry_ground = postretro_foundation::GroundRef::Airborne;
         self.kinematic_mover_render.clear();
         self.trigger_bindings = TriggerBindingTable::default();
         self.trigger_pool_report = TriggerPoolInstallReport::default();
@@ -2021,6 +2022,7 @@ mod tests {
             collision_world: crate::collision::CollisionWorld::new(),
             kinematic_mover_colliders: Vec::new(),
             kinematic_mover_tick_states: crate::kinematic_mover::MoverTickStateTable::default(),
+            mover_yaw_carry_ground: postretro_foundation::GroundRef::Airborne,
             kinematic_mover_render: crate::runtime_movers::KinematicMoverRenderCollector::new(),
             trigger_bindings: crate::trigger_bindings::TriggerBindingTable::default(),
             trigger_pool_report: TriggerPoolInstallReport::default(),

@@ -300,7 +300,9 @@ fn parse_kinematic_mover(
         "1" | "true" | "True" => true,
         "0" | "false" | "False" => false,
         other => {
-            anyhow::bail!("kinematic_mover `{name}` `carry_yaw` must be 0/1, got `{other}`");
+            anyhow::bail!(
+                "kinematic_mover `{name}` `carry_yaw` must be `0`, `1`, `false`, `true`, `False`, or `True`, got `{other}`"
+            );
         }
     };
 
@@ -3795,6 +3797,19 @@ mod tests {
         assert_eq!(mover.spin_speed_deg_s, 90.0);
         assert_eq!(mover.spin_accel_deg_s2, 12.5);
         assert!(mover.carry_yaw);
+    }
+
+    #[test]
+    fn kinematic_mover_invalid_carry_yaw_reports_supported_values() {
+        let map_text = spinning_kinematic_test_map("wp_b")
+            .replace("\"carry_yaw\" \"1\"", "\"carry_yaw\" \"maybe\"");
+        let err = parse_inline_map(&map_text).expect_err("invalid carry_yaw must reject");
+
+        assert!(
+            err.to_string()
+                .contains("`carry_yaw` must be `0`, `1`, `false`, `true`, `False`, or `True`"),
+            "diagnostic should name every supported carry_yaw value, got: {err}"
+        );
     }
 
     #[test]

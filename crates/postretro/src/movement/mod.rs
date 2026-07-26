@@ -233,7 +233,7 @@ mod tests {
     use crate::collision::CollisionWorld;
     use crate::collision::moving::{
         CombinedCollisionWorld, MoverCollider, MoverPose, MoverPoseSource,
-        deepest_mover_push_penetration,
+        deepest_mover_penetration,
     };
     use glam::Quat;
     use parry3d::math::{Isometry, Point};
@@ -698,6 +698,7 @@ mod tests {
             let mut position = Vec3::new(0.75, 1.21, 0.25);
             tick_on_mover(&mut component, &mut position, &world, &movers, &poses);
             assert_eq!(component.ground, GroundRef::Mover(7));
+            let planted_offset = Vec3::new(position.x, 0.0, position.z);
             let radius_xz = Vec2::new(position.x, position.z).length();
             let surface_y = position.y;
 
@@ -719,6 +720,12 @@ mod tests {
                 tick_on_mover(&mut component, &mut position, &world, &movers, &poses);
 
                 assert_eq!(component.ground, GroundRef::Mover(7));
+                let expected_offset = Quat::from_rotation_y(angle) * planted_offset;
+                assert!(
+                    (Vec3::new(position.x, 0.0, position.z) - expected_offset).length()
+                        <= ROTATION_EPS,
+                    "rider must revolve with the surface, not merely preserve radius: carry_yaw={carry_yaw}, position={position:?}, expected={expected_offset:?}"
+                );
                 assert!(
                     (Vec2::new(position.x, position.z).length() - radius_xz).abs() <= ROTATION_EPS,
                     "rotation carry drifted from the mover axis with carry_yaw={carry_yaw}: position={position:?}"
@@ -771,11 +778,17 @@ mod tests {
         let angular_velocity = Vec3::Y * 2.0;
         let tick_rotation_delta = Quat::from_rotation_y(0.2);
         let linear_velocity = Vec3::new(3.0, 0.0, 4.0);
+        let start_pivot = Vec3::new(2.0, 0.0, 3.0);
+        let translation = Vec3::new(0.3, 0.0, -0.2);
         poses.set_pose(
             7,
-            Transform::default(),
+            Transform {
+                position: start_pivot + translation,
+                rotation: tick_rotation_delta,
+                scale: Vec3::ONE,
+            },
             linear_velocity,
-            Vec3::ZERO,
+            translation,
             angular_velocity,
             tick_rotation_delta,
             false,
@@ -783,10 +796,11 @@ mod tests {
 
         let mut component = PlayerMovementComponent::from_descriptor(&canonical_descriptor());
         component.ground = GroundRef::Mover(7);
-        let start_position = Vec3::new(1.0, 1.21, 0.0);
-        let carried_position = tick_rotation_delta * start_position;
+        let start_position = start_pivot + Vec3::new(1.0, 1.21, 0.0);
+        let carried_position =
+            start_pivot + tick_rotation_delta * (start_position - start_pivot) + translation;
         let expected_release =
-            linear_velocity + angular_velocity.cross(carried_position - Vec3::ZERO);
+            linear_velocity + angular_velocity.cross(carried_position - start_pivot);
         let collision = CombinedCollisionWorld::new(&world, &[], &poses);
 
         let (position, _) = tick(
@@ -886,39 +900,50 @@ mod tests {
     }
 
     #[test]
-    fn advancing_rotated_mover_push_displaces_player_without_persistent_overlap() {
+    fn advancing_rotating_face_crossing_displaces_player_without_persistent_overlap() {
         let world = empty_world();
         let movers = [local_wall(7)];
         let mut poses = TestMoverPoses::default();
+        let rotation_delta = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
         poses.set_pose(
             7,
             Transform {
-                position: Vec3::new(0.0, 0.0, 1.0),
-                rotation: Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+                position: Vec3::new(0.02, 0.0, 0.0),
+                rotation: rotation_delta,
                 scale: Vec3::ONE,
             },
-            Vec3::new(0.0, 0.0, 120.0),
-            Vec3::new(0.0, 0.0, 2.0),
+            Vec3::new(0.02, 0.0, 0.0) / DT,
+            Vec3::new(0.02, 0.0, 0.0),
             Vec3::Y * (std::f32::consts::FRAC_PI_2 / DT),
-            Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+            rotation_delta,
             false,
         );
         let mut component = PlayerMovementComponent::from_descriptor(&canonical_descriptor());
-        let mut position = Vec3::new(0.0, 1.2, 0.0);
-
-        tick_on_mover(&mut component, &mut position, &world, &movers, &poses);
-
-        assert!(
-            position.z > 1.35,
-            "an advancing rotated face should sweep the player beyond its final plane: position={position:?}"
-        );
+        let start_position = Vec3::new(0.7, 1.2, 0.7);
+        let mut position = start_position;
         let capsule = Capsule::new(
             Point::new(0.0, -component.capsule.half_height, 0.0),
             Point::new(0.0, component.capsule.half_height, 0.0),
             component.capsule.radius,
         );
         assert!(
-            deepest_mover_push_penetration(
+            deepest_mover_penetration(
+                &movers,
+                &poses,
+                Point::new(position.x, position.y, position.z),
+                &capsule,
+            )
+            .is_none(),
+            "the final pose must be clear so the rotational sweep is required"
+        );
+        tick_on_mover(&mut component, &mut position, &world, &movers, &poses);
+
+        assert!(
+            Vec2::new(position.x - start_position.x, position.z - start_position.z).length() > 0.1,
+            "the rotating face crossing must displace the stationary capsule: position={position:?}"
+        );
+        assert!(
+            deepest_mover_penetration(
                 &movers,
                 &poses,
                 Point::new(position.x, position.y, position.z),
@@ -926,6 +951,87 @@ mod tests {
             )
             .is_none(),
             "displaced player must not remain overlapped by the rotated mover"
+        );
+    }
+
+    #[test]
+    fn pure_rotation_final_overlap_is_displaced_without_persistent_overlap() {
+        let world = empty_world();
+        let movers = [local_wall(7)];
+        let mut poses = TestMoverPoses::default();
+        poses.set_pose(
+            7,
+            Transform::default(),
+            Vec3::ZERO,
+            Vec3::ZERO,
+            Vec3::Y * (std::f32::consts::FRAC_PI_2 / DT),
+            Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+            false,
+        );
+        let mut component = PlayerMovementComponent::from_descriptor(&canonical_descriptor());
+        let mut position = Vec3::new(0.1, 1.2, 0.7);
+        let capsule = Capsule::new(
+            Point::new(0.0, -component.capsule.half_height, 0.0),
+            Point::new(0.0, component.capsule.half_height, 0.0),
+            component.capsule.radius,
+        );
+        assert!(
+            deepest_mover_penetration(
+                &movers,
+                &poses,
+                Point::new(position.x, position.y, position.z),
+                &capsule,
+            )
+            .is_some(),
+            "the pure rotator must end overlapped for final-pose recovery"
+        );
+
+        tick_on_mover(&mut component, &mut position, &world, &movers, &poses);
+
+        assert!(
+            deepest_mover_penetration(
+                &movers,
+                &poses,
+                Point::new(position.x, position.y, position.z),
+                &capsule,
+            )
+            .is_none(),
+            "final-pose recovery must leave no persistent pure-rotation overlap"
+        );
+    }
+
+    #[test]
+    fn mover_carry_composes_revolution_before_translation() {
+        let world = empty_world();
+        let start_pivot = Vec3::new(2.0, 0.0, 3.0);
+        let translation = Vec3::new(1.0, 0.0, -2.0);
+        let rotation = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        let rider_start = start_pivot + Vec3::X;
+        let mut poses = TestMoverPoses::default();
+        poses.set_pose(
+            7,
+            Transform {
+                position: start_pivot + translation,
+                rotation,
+                scale: Vec3::ONE,
+            },
+            translation / DT,
+            translation,
+            Vec3::Y * (std::f32::consts::FRAC_PI_2 / DT),
+            rotation,
+            false,
+        );
+        let collision = CombinedCollisionWorld::new(&world, &[], &poses);
+
+        let carried =
+            super::mover_carry::apply_mover_carry(rider_start, GroundRef::Mover(7), &collision);
+        let expected = start_pivot + rotation * (rider_start - start_pivot) + translation;
+        let reversed = start_pivot + rotation * (rider_start + translation - start_pivot);
+
+        assert!((carried - expected).length() <= POS_EPS);
+        assert!(
+            (carried - reversed).length() > 0.5,
+            "test must fail if carry translates before revolving: carried={carried:?}, reversed={reversed:?}"
         );
     }
 

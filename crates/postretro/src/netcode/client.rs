@@ -2490,6 +2490,32 @@ mod tests {
     }
 
     #[test]
+    fn non_finite_mover_angular_payloads_do_not_reach_phase_seeding() {
+        for (field, poison) in [
+            ("spin_angle_rad", f32::NAN),
+            ("spin_rate_rad_s", f32::INFINITY),
+            ("spin_target_rate_rad_s", f32::NEG_INFINITY),
+        ] {
+            let mut payload = mover_payload(42);
+            let ComponentPayload::KinematicMoverState(wire) = &mut payload else {
+                unreachable!("mover_payload returns a kinematic mover payload");
+            };
+            match field {
+                "spin_angle_rad" => wire.spin_angle_rad = poison,
+                "spin_rate_rad_s" => wire.spin_rate_rad_s = poison,
+                "spin_target_rate_rad_s" => wire.spin_target_rate_rad_s = poison,
+                _ => unreachable!("test covers every replicated angular field"),
+            }
+
+            assert!(!payload_is_finite(&payload), "{field} must be finite");
+            assert!(
+                first_mover_state(&[payload]).is_none(),
+                "a non-finite {field} must be rejected before phase seeding"
+            );
+        }
+    }
+
+    #[test]
     fn mover_baseline_with_unknown_mover_id_does_not_spawn() {
         let mut registry = EntityRegistry::new();
         let mut client = ClientReplication::new();
@@ -2675,6 +2701,67 @@ mod tests {
                 .abs_diff_eq(Quat::from_rotation_y(1.0), EPSILON),
             "fast-forwarded mover orientation derives from the replicated phase"
         );
+    }
+
+    // Regression: once-mode completion retained a nonzero spin rate, so the
+    // live tick reported rotation while reconstruction/replay reported stopped.
+    #[test]
+    fn mover_completion_tick_matches_reconstructed_and_replayed_angular_pose() {
+        let mut registry = EntityRegistry::new();
+        let mover_entity = spawn_loaded_mover(&mut registry, 42);
+        let mut client = ClientReplication::new();
+        let mut mover = moving_mover_payload(42);
+        let ComponentPayload::KinematicMoverState(wire) = &mut mover else {
+            unreachable!("moving_mover_payload returns a mover payload");
+        };
+        wire.mode = 0;
+        wire.spin_angle_rad = 0.0;
+        wire.spin_rate_rad_s = 1.0;
+        wire.spin_target_rate_rad_s = 1.0;
+
+        client.apply_snapshot_with_mover_target_tick(
+            &mut registry,
+            &snapshot(
+                0,
+                100,
+                vec![full_baseline(7, 1, vec![transform_payload(0.0), mover])],
+            ),
+            101,
+            1.0,
+        );
+
+        let completion = client
+            .mover_history()
+            .pose_at_tick(42, 101, 1.0)
+            .expect("completion tick history sample");
+        let phase = registry
+            .get_component::<KinematicMoverComponent>(mover_entity)
+            .expect("live mover phase after completion");
+        let transform = *registry
+            .get_component::<Transform>(mover_entity)
+            .expect("live mover transform after completion");
+        let reconstructed = mover_pose_for_current_phase(transform, phase, 1.0);
+        let replayed = client
+            .mover_history()
+            .pose_at_tick(42, 102, 1.0)
+            .expect("replay from completed phase");
+
+        assert!(phase.completed);
+        assert!(
+            completion
+                .transform
+                .rotation
+                .abs_diff_eq(Quat::from_rotation_y(1.0), EPSILON)
+        );
+        for pose in [completion, reconstructed, replayed] {
+            assert_eq!(pose.angular_velocity, Vec3::ZERO);
+            assert_eq!(pose.tick_rotation_delta, Quat::IDENTITY);
+            assert!(
+                pose.transform
+                    .rotation
+                    .abs_diff_eq(Quat::from_rotation_y(1.0), EPSILON)
+            );
+        }
     }
 
     // --- Unknown-baseline delta: not applied, pending repair set, refresh requested,

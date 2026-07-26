@@ -20,7 +20,7 @@ use postretro_net::wire::ClientMessage;
 
 use super::predict_reconcile_harness_test_fixtures::{
     CLIENT_ID, DT, GRAVITY, LoopbackHarness, MOVING_PLATFORM_ID, MOVING_PLATFORM_SPEED_MPS,
-    forward_command, idle_command, input_at, use_command,
+    ROTATING_PLATFORM_RIDER_START, forward_command, idle_command, input_at, use_command,
 };
 use super::prediction::{ORDINARY_CORRECTION_MAX_M, TELEPORT_CORRECTION_MIN_M};
 use super::reconcile::reconcile_local_pawn;
@@ -791,6 +791,8 @@ fn rotating_platform_reconciles_phase_rider_and_tangential_release_under_mandate
     let mut spin_rate_errors = Vec::new();
     let mut rider_errors = Vec::new();
     let mut set_spin_rate_fired = false;
+    let mut max_host_revolution_chord = 0.0_f32;
+    let mut max_client_revolution_chord = 0.0_f32;
 
     for tick in 0..300 {
         if tick == 140 {
@@ -848,6 +850,14 @@ fn rotating_platform_reconciles_phase_rider_and_tangential_release_under_mandate
 
         let rider_error =
             (h.host_position() - h.client_position().expect("armed client pawn")).length();
+        max_host_revolution_chord = max_host_revolution_chord.max(
+            (horizontal(h.host_position()) - horizontal(ROTATING_PLATFORM_RIDER_START)).length(),
+        );
+        max_client_revolution_chord = max_client_revolution_chord.max(
+            (horizontal(h.client_position().expect("armed client pawn"))
+                - horizontal(ROTATING_PLATFORM_RIDER_START))
+            .length(),
+        );
         assert!(
             rider_error <= RIDER_TOLERANCE_M,
             "rider must reconcile its revolved position in place; error={rider_error:.4} m"
@@ -884,6 +894,10 @@ fn rotating_platform_reconciles_phase_rider_and_tangential_release_under_mandate
     assert!(
         h.client_mover_history_samples() > 0,
         "rotating mover replay must use the existing full-transform mover history"
+    );
+    assert!(
+        max_host_revolution_chord > 1.0 && max_client_revolution_chord > 1.0,
+        "both riders must actually revolve instead of merely agreeing while stationary: host_chord={max_host_revolution_chord:.3}, client_chord={max_client_revolution_chord:.3}"
     );
     assert_non_accumulating(
         "rotating mover orientation correction",

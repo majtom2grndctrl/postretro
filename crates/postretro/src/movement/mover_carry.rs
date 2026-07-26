@@ -7,7 +7,8 @@ use parry3d::shape::Capsule;
 
 use crate::collision::cast_capsule;
 use crate::collision::moving::{
-    CollisionSource, CombinedCastHit, CombinedCollisionWorld, deepest_mover_push_penetration,
+    CollisionSource, CombinedCastHit, CombinedCollisionWorld, MoverPenetration,
+    deepest_mover_penetration, deepest_mover_push_penetration,
     deepest_mover_push_penetration_excluding_swept,
 };
 use postretro_foundation::{GroundRef, PlayerMovementComponent};
@@ -78,7 +79,38 @@ pub(super) fn displace_from_movers(
     let Some(penetration) = penetration else {
         return position;
     };
-    let candidate = position + penetration.normal * penetration.depth;
+    let Some(mut candidate) =
+        unblocked_mover_displacement(position, penetration, collision, capsule)
+    else {
+        return position;
+    };
+
+    // A rotating face can cross the capsule, then carry the first sweep
+    // displacement into a different side of its final pose. Settle that
+    // candidate with the same final-pose recovery pure rotators use.
+    for _ in 0..4 {
+        let candidate_point = Point::new(candidate.x, candidate.y, candidate.z);
+        let Some(final_penetration) =
+            deepest_mover_penetration(collision.movers, collision.poses, candidate_point, capsule)
+        else {
+            break;
+        };
+        let Some(recovered) =
+            unblocked_mover_displacement(candidate, final_penetration, collision, capsule)
+        else {
+            return position;
+        };
+        candidate = recovered;
+    }
+    candidate
+}
+
+fn unblocked_mover_displacement(
+    position: Vec3,
+    penetration: MoverPenetration,
+    collision: &CombinedCollisionWorld<'_>,
+    capsule: &Capsule,
+) -> Option<Vec3> {
     let blocked = cast_capsule(
         collision.static_world,
         Point::new(position.x, position.y, position.z),
@@ -97,7 +129,8 @@ pub(super) fn displace_from_movers(
             "[Movement] mover {} push was blocked by static geometry; pinch/crush resolution is deferred",
             penetration.mover_id
         );
-        return position;
+        None
+    } else {
+        Some(position + penetration.normal * penetration.depth)
     }
-    candidate
 }

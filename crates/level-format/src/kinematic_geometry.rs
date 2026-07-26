@@ -6,6 +6,7 @@ use std::collections::HashSet;
 
 use crate::FormatError;
 use crate::geometry::{FaceMeta, Vertex};
+use glam::Vec3;
 
 pub const KINEMATIC_GEOMETRY_VERSION: u16 = 2;
 const KINEMATIC_GEOMETRY_VERSION_V1: u16 = 1;
@@ -427,6 +428,13 @@ fn validate_mover_geometry(mover_idx: usize, mover: &KinematicMoverRecord) -> cr
             mover.spin_speed_deg_s
         ));
     }
+    if mover.spin_speed_deg_s != 0.0
+        && Vec3::from_array(mover.spin_axis).normalize_or_zero() == Vec3::ZERO
+    {
+        return invalid_data(format!(
+            "kinematic geometry: mover {mover_idx} has nonzero spin_speed_deg_s but spin_axis normalizes to zero"
+        ));
+    }
     if !mover.spin_accel_deg_s2.is_finite() || mover.spin_accel_deg_s2 < 0.0 {
         return invalid_data(format!(
             "kinematic geometry: mover {mover_idx} spin_accel_deg_s2 must be finite and non-negative, got {}",
@@ -773,6 +781,32 @@ mod tests {
                 .copy_from_slice(&value.to_le_bytes());
             assert!(KinematicGeometrySection::from_bytes(&bytes).is_err());
         }
+    }
+
+    #[test]
+    fn rejects_v2_nonzero_spin_with_axis_that_normalizes_to_zero() {
+        for spin_axis in [[0.0; 3], [f32::MIN_POSITIVE; 3]] {
+            let mut section = sample_section();
+            section.movers[0].spin_axis = spin_axis;
+            section.movers[0].spin_speed_deg_s = 90.0;
+
+            let error = KinematicGeometrySection::from_bytes(&section.to_bytes())
+                .expect_err("nonzero v2 spin requires a normalizable axis");
+
+            assert!(error.to_string().contains("spin_axis normalizes to zero"));
+        }
+    }
+
+    #[test]
+    fn accepts_v2_zero_spin_with_zero_axis_for_delayed_or_disabled_spin() {
+        let mut section = sample_section();
+        section.movers[0].spin_axis = [0.0; 3];
+        section.movers[0].spin_speed_deg_s = 0.0;
+
+        let restored = KinematicGeometrySection::from_bytes(&section.to_bytes()).unwrap();
+
+        assert_eq!(restored.movers[0].spin_axis, [0.0; 3]);
+        assert_eq!(restored.movers[0].spin_speed_deg_s, 0.0);
     }
 
     #[test]

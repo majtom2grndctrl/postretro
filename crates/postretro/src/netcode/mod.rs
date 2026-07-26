@@ -923,6 +923,9 @@ fn kinematic_mover_is_finite(m: &WireKinematicMoverState) -> bool {
     m.segment_elapsed_ms.is_finite()
         && m.wait_remaining_ms.is_finite()
         && m.velocity.iter().all(|c| c.is_finite())
+        && m.spin_angle_rad.is_finite()
+        && m.spin_rate_rad_s.is_finite()
+        && m.spin_target_rate_rad_s.is_finite()
 }
 
 /// Every f32 field of a wire movement payload is finite. Mirrors the untrusted-

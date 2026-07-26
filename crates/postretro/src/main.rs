@@ -629,6 +629,10 @@ pub(crate) struct App {
     /// Live fixed-tick mover poses, published before player movement consumes
     /// the combined collision query.
     kinematic_mover_tick_states: kinematic_mover::MoverTickStateTable,
+    /// Owning pawn ground reference captured at the start of the exact tick
+    /// that consumed the pending mover pose delta. The next Input stage uses
+    /// it to gate that delta's yaw carry.
+    mover_yaw_carry_ground: postretro_foundation::GroundRef,
     /// Render-stage CPU collector for loaded kinematic mover brush instances.
     kinematic_mover_render: runtime_movers::KinematicMoverRenderCollector,
     /// Per-level trigger event bindings resolved from the final composed
@@ -898,23 +902,15 @@ fn yaw_after_mover_carry(camera_yaw: f32, carry_yaw: bool, tick_rotation_delta: 
     }
 }
 
-/// Carry only the owning player's upright view from its prior settled mover pose.
-/// Input runs before this tick's mover update, so this intentionally uses the
-/// preceding tick's delta and reaches the host through `facing_yaw` replication.
+/// Carry only the owning player's upright view from its prior mover pose.
+/// Input runs before this tick's mover update, so the pose and captured ground
+/// reference both belong to the exact preceding tick.
 fn apply_mover_yaw_carry(
     camera: &mut Camera,
-    registry: &postretro_entities::EntityRegistry,
+    carry_ground: postretro_foundation::GroundRef,
     mover_states: &kinematic_mover::MoverTickStateTable,
 ) {
-    let Some(pawn) = followed_player_pawn(registry) else {
-        return;
-    };
-    let Ok(movement) =
-        registry.get_component::<postretro_foundation::PlayerMovementComponent>(pawn)
-    else {
-        return;
-    };
-    let postretro_foundation::GroundRef::Mover(mover_id) = movement.ground else {
+    let postretro_foundation::GroundRef::Mover(mover_id) = carry_ground else {
         return;
     };
     let Some(pose) = mover_states.get(mover_id) else {
@@ -922,6 +918,20 @@ fn apply_mover_yaw_carry(
     };
 
     camera.yaw = yaw_after_mover_carry(camera.yaw, pose.carry_yaw, pose.tick_rotation_delta);
+}
+
+fn local_player_ground(
+    registry: &postretro_entities::EntityRegistry,
+) -> postretro_foundation::GroundRef {
+    followed_player_pawn(registry)
+        .and_then(|pawn| {
+            registry
+                .get_component::<postretro_foundation::PlayerMovementComponent>(pawn)
+                .ok()
+        })
+        .map_or(postretro_foundation::GroundRef::Airborne, |movement| {
+            movement.ground
+        })
 }
 
 fn build_sim_command(
@@ -2093,9 +2103,10 @@ impl ApplicationHandler for App {
                             let registry = script_ctx.registry.borrow();
                             apply_mover_yaw_carry(
                                 &mut self.camera,
-                                &registry,
+                                self.mover_yaw_carry_ground,
                                 &self.kinematic_mover_tick_states,
                             );
+                            self.mover_yaw_carry_ground = local_player_ground(&registry);
                         }
                         let command = build_sim_command(
                             snapshot,
@@ -6014,7 +6025,7 @@ mod tests {
     }
 
     #[test]
-    fn mover_yaw_carry_reads_the_local_pawns_prior_grounded_mover_pose() {
+    fn mover_yaw_carry_reads_the_captured_tick_start_ground_and_prior_pose() {
         use postretro_entities::{EntityRegistry, Transform};
         use postretro_foundation::{GroundRef, PlayerMovementComponent};
 
@@ -6045,12 +6056,64 @@ mod tests {
         );
         let mut camera = Camera::new(Vec3::ZERO, 0.4, -0.2);
 
-        apply_mover_yaw_carry(&mut camera, &registry, &mover_states);
+        apply_mover_yaw_carry(&mut camera, GroundRef::Mover(7), &mover_states);
 
         assert!((camera.yaw - 0.65).abs() <= 1.0e-6);
         assert!(
             (camera.pitch - -0.2).abs() <= 1.0e-6,
             "yaw carry keeps the camera upright"
+        );
+    }
+
+    // Regression: settled post-tick ground incorrectly granted landing carry
+    // and dropped the final carry on a jump/detach tick.
+    #[test]
+    fn mover_yaw_carry_eligibility_uses_the_position_carry_ticks_start_ground() {
+        use postretro_entities::{EntityRegistry, Transform};
+        use postretro_foundation::{GroundRef, PlayerMovementComponent};
+
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        let mut movement = PlayerMovementComponent::from_descriptor(&minimal_player_descriptor());
+        movement.ground = GroundRef::Mover(7);
+        registry.set_component(pawn, movement).unwrap();
+        registry.mark_local_player_pawn(pawn).unwrap();
+
+        let mut mover_states = kinematic_mover::MoverTickStateTable::default();
+        mover_states.publish(
+            7,
+            kinematic_mover::MoverTickState {
+                entity: pawn,
+                transform: Transform::default(),
+                linear_velocity: Vec3::ZERO,
+                tick_delta: Vec3::ZERO,
+                angular_velocity: Vec3::Y,
+                tick_rotation_delta: glam::Quat::from_rotation_y(0.25),
+                carry_yaw: true,
+                tick_dt: 1.0 / 60.0,
+            },
+        );
+
+        let mut landing_camera = Camera::new(Vec3::ZERO, 0.4, 0.0);
+        assert_eq!(local_player_ground(&registry), GroundRef::Mover(7));
+        apply_mover_yaw_carry(&mut landing_camera, GroundRef::Airborne, &mover_states);
+        assert!(
+            (landing_camera.yaw - 0.4).abs() <= 1.0e-6,
+            "landing must not gain rotation produced before contact"
+        );
+
+        let mut detached = registry
+            .get_component::<PlayerMovementComponent>(pawn)
+            .unwrap()
+            .clone();
+        detached.ground = GroundRef::Airborne;
+        registry.set_component(pawn, detached).unwrap();
+        let mut detach_camera = Camera::new(Vec3::ZERO, 0.4, 0.0);
+        assert_eq!(local_player_ground(&registry), GroundRef::Airborne);
+        apply_mover_yaw_carry(&mut detach_camera, GroundRef::Mover(7), &mover_states);
+        assert!(
+            (detach_camera.yaw - 0.65).abs() <= 1.0e-6,
+            "jump/detach must retain the final rotation consumed while planted"
         );
     }
 

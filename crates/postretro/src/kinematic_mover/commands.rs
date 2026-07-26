@@ -62,6 +62,9 @@ pub(crate) fn apply_mover_command(mover: &mut KinematicMoverComponent, command: 
             mover.current_linear_velocity = Vec3::ZERO;
         }
         MoverCommand::Reverse => {
+            if mover.waypoints.len() < 2 {
+                return;
+            }
             reanchor_direction(mover, if mover.direction_sign >= 0 { -1 } else { 1 });
             mover.started = true;
             mover.completed = false;
@@ -110,6 +113,16 @@ pub(crate) fn apply_mover_command(mover: &mut KinematicMoverComponent, command: 
             if !rate_deg_s.is_finite() {
                 log::warn!(
                     "[Mover] set_spin_rate for mover {} has non-finite rate; skipping",
+                    mover.mover_id
+                );
+                return;
+            }
+            if *rate_deg_s != 0.0
+                && (!mover.spin_axis.is_finite()
+                    || mover.spin_axis.normalize_or_zero() == Vec3::ZERO)
+            {
+                log::warn!(
+                    "[Mover] set_spin_rate for mover {} requires a non-zero spin axis; skipping",
                     mover.mover_id
                 );
                 return;
@@ -328,6 +341,12 @@ mod tests {
         )
     }
 
+    fn spin_capable_mover(mode: KinematicMoverMode, wait_ms: f32) -> KinematicMoverComponent {
+        let mut mover = sample_mover(mode, wait_ms);
+        mover.spin_axis = Vec3::Y;
+        mover
+    }
+
     fn transform_at(position: Vec3) -> postretro_entities::Transform {
         postretro_entities::Transform {
             position,
@@ -391,7 +410,7 @@ mod tests {
 
     #[test]
     fn set_spin_rate_converts_degrees_and_mutates_only_target_rate() {
-        let mut mover = sample_mover(KinematicMoverMode::PingPong, 250.0);
+        let mut mover = spin_capable_mover(KinematicMoverMode::PingPong, 250.0);
         mover.direction_sign = -1;
         mover.segment_elapsed_ms = 750.0;
         mover.wait_remaining_ms = 100.0;
@@ -418,6 +437,132 @@ mod tests {
             apply_mover_command(&mut candidate, &MoverCommand::SetSpinRate(rate));
             assert_eq!(candidate, mover);
         }
+    }
+
+    // Regression: a zero-axis v1/default mover accepted a nonzero target and
+    // reached axis-angle construction with an invalid angular phase.
+    #[test]
+    fn set_spin_rate_with_non_normalizable_axis_is_a_no_op_through_tick() {
+        for spin_axis in [Vec3::ZERO, Vec3::splat(f32::MIN_POSITIVE)] {
+            let mut registry = EntityRegistry::new();
+            let entity = registry.spawn(transform_at(Vec3::ZERO));
+            let mut mover = sample_mover(KinematicMoverMode::PingPong, 0.0);
+            mover.spin_axis = spin_axis;
+            registry.set_component(entity, mover.clone()).unwrap();
+
+            apply_mover_command_to_known_movers(
+                &mut registry,
+                &[entity],
+                &MoverCommand::SetSpinRate(180.0),
+            );
+            let mut tick_states = super::super::MoverTickStateTable::default();
+            super::super::run_kinematic_mover_tick(&mut registry, &mut tick_states, 0.25);
+
+            let after = registry
+                .get_component::<KinematicMoverComponent>(entity)
+                .unwrap();
+            let transform = registry
+                .get_component::<postretro_entities::Transform>(entity)
+                .unwrap();
+            let tick = tick_states.get(after.mover_id).unwrap();
+            assert_eq!(after.spin_target_rate_rad_s, 0.0);
+            assert_eq!(after.spin_rate_rad_s, 0.0);
+            assert_eq!(after.spin_angle_rad, 0.0);
+            assert!((transform.position - Vec3::new(0.25, 0.0, 0.0)).length() < 1.0e-6);
+            assert!(transform.rotation.is_finite());
+            assert!(transform.rotation.abs_diff_eq(Quat::IDENTITY, 1.0e-6));
+            assert_eq!(tick.angular_velocity, Vec3::ZERO);
+            assert_eq!(tick.tick_rotation_delta, Quat::IDENTITY);
+        }
+    }
+
+    #[test]
+    fn set_spin_rate_zero_remains_valid_for_a_zero_axis_mover() {
+        let mut mover = sample_mover(KinematicMoverMode::PingPong, 0.0);
+        mover.spin_target_rate_rad_s = 1.0;
+
+        apply_mover_command(&mut mover, &MoverCommand::SetSpinRate(0.0));
+
+        assert_eq!(mover.spin_target_rate_rad_s, 0.0);
+    }
+
+    #[test]
+    fn set_spin_rate_spins_up_zero_rate_mover_with_authored_axis() {
+        let mut registry = EntityRegistry::new();
+        let entity = registry.spawn(transform_at(Vec3::ZERO));
+        registry
+            .set_component(
+                entity,
+                spin_capable_mover(KinematicMoverMode::PingPong, 0.0),
+            )
+            .unwrap();
+
+        apply_mover_command_to_known_movers(
+            &mut registry,
+            &[entity],
+            &MoverCommand::SetSpinRate(180.0),
+        );
+        let mut tick_states = super::super::MoverTickStateTable::default();
+        super::super::run_kinematic_mover_tick(&mut registry, &mut tick_states, 0.25);
+
+        let mover = registry
+            .get_component::<KinematicMoverComponent>(entity)
+            .unwrap();
+        let transform = registry
+            .get_component::<postretro_entities::Transform>(entity)
+            .unwrap();
+        assert!((mover.spin_rate_rad_s - std::f32::consts::PI).abs() < 1.0e-6);
+        assert!((mover.spin_target_rate_rad_s - std::f32::consts::PI).abs() < 1.0e-6);
+        assert!((mover.spin_angle_rad - std::f32::consts::FRAC_PI_4).abs() < 1.0e-6);
+        assert!(
+            transform
+                .rotation
+                .abs_diff_eq(Quat::from_rotation_y(std::f32::consts::FRAC_PI_4), 1.0e-6)
+        );
+    }
+
+    // Regression: reverse is linear-path control and must not restart a
+    // stopped one-waypoint pure rotator.
+    #[test]
+    fn reverse_does_not_resume_stopped_pure_rotator() {
+        let mut mover = KinematicMoverComponent::new(
+            7,
+            postretro_entities::KinematicMoverConfig {
+                waypoints: vec![Vec3::ZERO],
+                waypoint_names: vec!["origin".to_string()],
+                speed_mps: 0.0,
+                wait_ms: 0.0,
+                mode: KinematicMoverMode::Once,
+                started: true,
+                spin_axis: Vec3::Y,
+                initial_spin_rate_rad_s: 1.0,
+                spin_accel_rad_s2: 0.0,
+                carry_yaw: false,
+            },
+        );
+        apply_mover_command(&mut mover, &MoverCommand::Stop);
+        let stopped = mover.clone();
+
+        apply_mover_command(&mut mover, &MoverCommand::Reverse);
+
+        assert_eq!(mover, stopped);
+        let mut transform = transform_at(Vec3::ZERO);
+        let pose = super::super::advance_mover_phase_one_tick(&mut mover, &mut transform, 0.25);
+        assert_eq!(mover.spin_angle_rad, 0.0);
+        assert_eq!(pose.angular_velocity, Vec3::ZERO);
+        assert_eq!(pose.tick_rotation_delta, Quat::IDENTITY);
+    }
+
+    #[test]
+    fn reverse_still_resumes_stopped_translating_mover() {
+        let mut mover = sample_mover(KinematicMoverMode::PingPong, 0.0);
+        apply_mover_command(&mut mover, &MoverCommand::Stop);
+
+        apply_mover_command(&mut mover, &MoverCommand::Reverse);
+
+        assert!(mover.started);
+        assert!(!mover.completed);
+        assert_eq!(mover.direction_sign, -1);
     }
 
     #[test]
@@ -470,7 +615,7 @@ mod tests {
         reaction_registry_entities
             .set_component(
                 reaction_target,
-                sample_mover(KinematicMoverMode::PingPong, 0.0),
+                spin_capable_mover(KinematicMoverMode::PingPong, 0.0),
             )
             .unwrap();
 
@@ -478,7 +623,10 @@ mod tests {
         let kvp_target = kvp_registry.spawn(transform_at(Vec3::ZERO));
         assert_eq!(reaction_target, kvp_target, "fixture registries must align");
         kvp_registry
-            .set_component(kvp_target, sample_mover(KinematicMoverMode::PingPong, 0.0))
+            .set_component(
+                kvp_target,
+                spin_capable_mover(KinematicMoverMode::PingPong, 0.0),
+            )
             .unwrap();
 
         let sequence_ctx = ScriptCtx::new();
@@ -491,7 +639,7 @@ mod tests {
             .borrow_mut()
             .set_component(
                 sequence_target,
-                sample_mover(KinematicMoverMode::PingPong, 0.0),
+                spin_capable_mover(KinematicMoverMode::PingPong, 0.0),
             )
             .unwrap();
 

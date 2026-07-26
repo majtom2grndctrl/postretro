@@ -542,6 +542,10 @@ fn the_shipped_reference_enemy_graph_is_identical_in_both_authorings() {
         ts, luau,
         "the shipped reference enemy's two authorings must produce the identical graph"
     );
+    assert!(
+        postretro_foundation::data_descriptors::types::behavior_lints::inspect(&ts).is_empty(),
+        "the shipped reference enemy authors both disengagement paths"
+    );
 
     // The absolute pin: the shape the engine's behavior tests assume.
     assert_eq!(ts.initial, "idle");

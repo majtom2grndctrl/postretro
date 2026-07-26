@@ -10,6 +10,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::brain::bind_brain_guard;
 use crate::data_descriptors::DescriptorError;
+use crate::data_descriptors::types::behavior_lints;
 use crate::ir::{IrNode, IrType};
 
 /// What a state does with the enemy's movement while it is current. Closed
@@ -345,6 +346,17 @@ impl BehaviorGraphDescriptor {
                 self.validate_transition(transition, &path, Some(name.as_str()))?;
             }
         }
+        for lint in behavior_lints::inspect(&self) {
+            let states = lint.states.join(", ");
+            match lint.kind {
+                behavior_lints::BehaviorLintKind::LevelWidePursuer => log::warn!(
+                    "components.behavior: engaging states [{states}] pursue without a state-local transition to a non-engaging state"
+                ),
+                behavior_lints::BehaviorLintKind::NoHasTargetInterrupt => log::warn!(
+                    "components.behavior: engaging states [{states}] lack an interrupt reading @brain.hasTarget; target loss otherwise falls through distance guards, whose no-target sentinel makes gt/ge true"
+                ),
+            }
+        }
         Ok(self)
     }
 
@@ -521,6 +533,14 @@ mod tests {
     #[test]
     fn a_well_formed_graph_validates() {
         graph().validate().expect("graph validates");
+    }
+
+    #[test]
+    fn disengagement_lints_do_not_reject_an_authored_graph() {
+        let mut graph = graph();
+        graph.states.get_mut("chase").unwrap().motion = MotionVerb::ChaseTarget;
+
+        assert!(graph.validate().is_ok(), "lints are warnings, not errors");
     }
 
     #[test]

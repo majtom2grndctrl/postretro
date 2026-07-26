@@ -75,18 +75,25 @@ rest of taste already lives.
       as well as the interrupt: standing down clears the target, so the next
       scan is offered the corpse with no retained target to seed hysteresis, and
       without the filter the corpse is simply re-acquired. An integration
-      criterion over Tasks 1 and 2, not a Task 1 one.
-- [ ] With no selected target, every target-side fact reads its type's zero and
-      the boolean death fact reads false. A graph with no has-target interrupt
-      is exactly what lint two warns about.
+      criterion over Tasks 1 and 2, not a Task 1 one. The latch is set by a
+      different system than the one under test — `sweep_deaths`
+      (`health.rs:77`) has one non-test caller, `impact_effects.rs:360`, and
+      `run_ai_tick` does not run it — so the fixture drives the latch itself
+      between ticks, directly or by calling `sweep_deaths`.
+- [ ] With no selected target, each of the three new target-side facts reads its
+      type's zero and the boolean death fact reads false. `@brain.targetDistance`
+      is excluded: it is a target-side fact and keeps `BRAIN_NO_TARGET_DISTANCE`,
+      the lone exception to the zero convention. A graph with no has-target
+      interrupt is exactly what lint two warns about.
 - [ ] A graph can author a candidate filter that excludes dead pawns. An enemy
       whose only nearby pawn is dead acquires nothing and stays at rest; the
       same enemy with a live pawn in range engages normally.
 - [ ] A graph with no candidate filter and a brain with no leash select targets
-      exactly as today. No existing AI test changes its asserted behavior, with
-      the exceptions each owning task names: the three reference-enemy parity
-      tests in Task 5, which track authored content rather than engine behavior,
-      and the one retuned stride fixture in Task 3. Within the target-selection
+      exactly as today. Review gate, not a runnable test: no existing AI test
+      changes its asserted behavior, with the exceptions each owning task names —
+      the three reference-enemy parity tests in Task 5, which track authored
+      content rather than engine behavior, and the one retuned stride fixture in
+      Task 3. Within the target-selection
       surface — `targeting.rs` and `ai/mod.rs`'s selection block — the
       mechanical edits are exactly these:
 
@@ -100,14 +107,19 @@ rest of taste already lives.
       | `BrainFacts` | Target identity folds in at the one tick site (`ai/mod.rs:557`) |
 
       This bounds that surface only; every task adds its own new types and
-      fields elsewhere. Review gate, not a runnable test: `engagementRadius` is
-      still read for combat-slot spread alone.
+      fields elsewhere — including Task 2's mechanical churn across the 30
+      `BehaviorGraphDescriptor` struct literals, which is outside this bound.
+      Also a review gate: `engagementRadius` is still read for combat-slot
+      spread alone.
 - [ ] A candidate filter is compiled once per bound brain, inside `sync`, on the
       same `Arc` pointer-identity staleness edge that rebinds the graph's
-      guards — never on a tick where the `Arc` is unchanged, and never per
-      candidate. It evaluates per candidate with no heap allocation on the
-      acquisition path: the fixed fact array is written by index at refresh and
-      never grown (alloc-probe assertion, matching the substrate invariant).
+      guards — never on a tick where the `Arc` is unchanged. It evaluates per
+      candidate with no heap allocation on the acquisition path: the fixed fact
+      array is written by index at refresh and never grown (alloc-probe
+      assertion, matching the substrate invariant). "Compiled never per
+      candidate" is a review gate — no alloc probe or staleness test reaches it,
+      since a per-candidate rebind inside the armed window would show up as an
+      allocation but one outside it would not.
 - [ ] A candidate filter that fails to bind is a validation error in both
       QuickJS and Luau, with the authored path in the message. A filter
       producing a non-boolean is rejected the same way.
@@ -124,9 +136,11 @@ rest of taste already lives.
       no tick.
 - [ ] Authoring `components.ai` with a leash range below its detection range is
       a validation error in both runtimes, naming both field values.
-- [ ] A behavior graph whose engaging states offer no edge to a non-engaging
-      state validates successfully and returns one finding naming those states,
-      asserted on directly rather than through captured log output.
+- [ ] A behavior graph whose engaging states declare no state-local transition
+      to a non-engaging state validates successfully and returns one finding
+      naming every engaging state, in `states` key order, asserted on directly
+      rather than through captured log output. Graph-level interrupts do not
+      count as such an edge — see Task 4 for why.
 - [ ] A behavior graph with engaging states and no has-target interrupt
       validates successfully and returns one finding explaining the sentinel
       asymmetry. Findings are produced once per descriptor validation, not per
@@ -159,17 +173,25 @@ rest of taste already lives.
 - [ ] An authored graph whose filter is `le(candidate.distance, R)` acquires a
       pawn at `R - ε` and does not acquire one at `R + ε`, with no `leashRange`
       in play.
-- [ ] A relevance rule never reprices the think stride. The observable is
-      `acquisition_due`, not the scan — for a non-engaged enemy the scan runs
-      every tick by design and prices the stride. A far-band enemy whose only
-      nearby pawn its filter excludes, and a legacy far-band enemy whose
-      retained target sits outside its leash, both go acquisition-due on the far
-      band's cadence rather than every tick. Asserted by counting
-      acquisition-due ticks over a fixed window against the band's divisor,
-      because every other criterion here — and all three legacy leash
-      fixtures — passes under the stride-inverting wiring, in which the
-      relevance rule empties `current_distance` and `acquisition_due` reads
-      `None` as due every tick.
+- [ ] A relevance rule never reprices the think stride. Under the
+      stride-inverting wiring the relevance rule empties `current_distance` and
+      `acquisition_due` reads `None` as due every tick — and every other
+      criterion here, plus all three legacy leash fixtures, passes under it. So
+      this criterion is the only thing standing between the plan and that
+      inversion, and each half needs an observable the inverted wiring actually
+      fails. Calling `acquisition_due` directly is not one: the test would
+      supply its own distance and re-derive the answer rather than observe the
+      wiring. The two halves observe it differently, because the states differ
+      in how long they last:
+
+      | Half | State | Observable |
+      |---|---|---|
+      | Legacy (Task 3) | Transient — one tick. The floor clears an out-of-leash retained target on the tick it sees it, and the brain rescans from non-engaged thereafter | A single tick. Engaged, `think_stride_counter` at 0, retained pawn at far-band distance outside the leash, a second pawn inside it. Correct: the far band's divisor makes tick 1 not due, the strided replacement does not run, and `acquired_target` is `None` after it. Inverted: `current_distance` is `None`, tick 1 is due, and the replacement search returns the second pawn |
+      | Filter (Task 2) | Stable — the filter never drops a retained target (AC 14), so a far-band engaged enemy holds it indefinitely | A window. The graph authors an edge guarded on `@brain.acquisitionDue` and the test counts state flips across it. Correct: the far band's divisor. Inverted: every tick |
+
+      `think_stride_for_distance` (`engine_floor.rs:35`) is `pub(crate)`, so both
+      derive the divisor from the band rather than hardcoding it; `STRIDE_FAR`
+      itself is private and stays that way.
 - [ ] Populated, the health facts read the entity's component. With a selected
       target carrying a `HealthComponent`, `@brain.targetHealth` and
       `@brain.targetMaxHealth` read its current and maximum values; a target
@@ -177,7 +199,11 @@ rest of taste already lives.
       `@candidate.health` and `@candidate.maxHealth` against each offered
       candidate during a ranking scan. AC 2 covers only the untargeted zeros, so
       without this nothing asserts these four facts are wired to anything. Brain
-      half is Task 1's, candidate half Task 2's.
+      half is Task 1's, candidate half Task 2's. The brain half needs its
+      fixture retuned as well as extended: `seeded_registry`
+      (`brain_scope.rs:232`) gives both entities `max: 40.0`, so a
+      `targetMaxHealth` wired to the *enemy's* component passes. The two
+      entities must carry distinct `max` values.
 
 ## Tasks
 
@@ -230,7 +256,12 @@ so it builds the folded binding at that one call site. Nothing else moves.
 resolves through `resolve_brain_input`.
 
 Extend the hand-maintained `brain` prelude object in both runtimes with three
-pre-wrapped input leaves. Two drift tests guard two different surfaces:
+pre-wrapped input leaves. In `brain.ts` each leaf must be spelled exactly
+`{property}: Object.freeze(runtime.read("{name}"))` — the TS half of the drift
+test below text-matches that literal. The `BrainSdk.brain` doc comment in
+`brain.luau` (`:25-28`) enumerates the field names in prose and no test reads
+it, so it goes stale silently; extend it too. Two drift tests guard two
+different surfaces:
 
 | Test | Location | Guards |
 |---|---|---|
@@ -274,6 +305,12 @@ type's zero with no selected target and `targetDied` reads false — and the
 brain half of AC 17: `@brain.targetHealth` and `@brain.targetMaxHealth` read a
 selected target's `HealthComponent`, and zero when that component is absent.
 Both extend `refresh_projects_engine_facts_and_health_into_the_fixed_slots`.
+That test's helper takes one health component — `expected_fixed_value(name,
+facts, health: &HealthComponent)` — and it is the *enemy's*. The three new arms
+need the target's, so the helper gains a second health parameter. Retune
+`seeded_registry` (`:232`) as AC 17 requires: its two entities differ in
+`current` but share `max: 40.0`, which lets a `targetMaxHealth` wired to the
+enemy pass.
 
 ### Task 2: Per-graph candidate filter
 
@@ -292,6 +329,17 @@ transition guards — the bound program is derived data the evaluator owns, neve
 a descriptor field. `primitives/mod.rs` is the typedef-generation registry, not
 the parse path, so script authoring of `candidateFilter` works from Phase 3
 through the descriptor's serde; Task 5 registers it for the emitted types.
+
+The descriptor has no `Default` derive and is built by 30 struct literals across
+seven files — `behavior.rs:498`, `behavior_lowering.rs:70`,
+`entities/src/components/brain.rs:590`, `brain_programs.rs`, `ai_tests.rs`,
+`builtins/data_archetype_test_fixtures.rs`, and
+`netcode/enemy_replication_harness_test.rs` — so the new field compile-breaks
+all of them. The additions are mechanical `candidate_filter: None`; AC 4 bounds
+the target-selection surface and does not cover this churn. While editing the
+type, correct its doc comment (`behavior.rs:130`), which gives the engine
+"target selection" outright — the same claim the promotion prerequisites amend
+in `entity_model.md`.
 
 The filter needs its own namespace and its own declaration-time binding scope,
 both in a new module `crates/foundation/src/candidate.rs`, beside `brain.rs`
@@ -418,17 +466,25 @@ gated by an explicit allowlist mirrored in six places:
 the literal `"@candidate.` in `sdk/lib/brain.ts` alone against
 `CANDIDATE_INPUTS.len()`, and set-comparing the `candidate` table's keys out
 of `sdk/lib/brain.luau`. New doc-comment prose in either file must not contain
-that literal. Task 2 therefore also
+that literal, and must not contain the string `BrainInputs` either: the brain
+drift test finds its block by `skip_while(|line| !line.contains("BrainInputs"))`
+(`surface.rs:593`) and would latch onto the wrong one. Task 2 therefore also
 writes the `CandidateInputs` blocks into `sdk_lib.d.ts` and `sdk_lib.luau` in
 this phase, exactly as Task 1 does for `BrainInputs` — including the top-level
 `candidate` declaration lines, not just the interface blocks.
+
 `luau_virtual_module_types_and_require_overloads_are_generated`
 (`surface.rs:164`; the `POSTRETRO_ROOT_MODULE_EXPORTS` loop is at `:202`)
 iterates `POSTRETRO_ROOT_MODULE_EXPORTS` and asserts the generated Luau contains
-`"candidate:"`, so it goes red unconditionally in Phase 3 the moment that
-constant gains the entry, and is closed in Phase 4 by Task 5's
-`virtual_module.luau:120` edit; Task 2's `sdk_lib` blocks do not close it. Task 5 keeps only `virtual_module.luau` and
-the regeneration.
+`"candidate:"`. Task 2's own `declare candidate: CandidateInputs` line satisfies
+it within this phase: `generate_luau` concatenates the `sdk_lib.luau` block
+ahead of `virtual_module.luau` (`typedef/luau.rs:252`) and the check is a
+substring test over the whole output — `declare brain: BrainInputs`
+(`sdk_lib.luau:1091`) is what satisfies `brain:` today. So there is no red
+window, and the test does **not** guard the `PostretroModule` entry. Task 5's
+`virtual_module.luau:120` edit is what makes `require("postretro").candidate`
+type-check, and only review catches its absence. Task 5 keeps only
+`virtual_module.luau` and the regeneration.
 
 Task 2 and Task 4 both extend `BehaviorGraphDescriptor::validate`: all errors,
 filter bind included, run first, and the lints run only on the success path, so
@@ -442,12 +498,22 @@ allocates, which is why the existing probe's own comment puts binding outside
 the armed window; the twin follows it. That test is AC 5's zero-alloc verifier. AC 5's other half — that the
 filter compiles on the `Arc` staleness edge and not per tick — is a `sync` claim
 no alloc measurement reaches; its verifier is a twin of
-`sync_leaves_an_unchanged_brain_bound_without_rebinding` (`brain_programs.rs:527`),
-asserting filter-program pointer identity across two `sync` calls with an
-unchanged `Arc`. Task 2 also owns the runnable tests for AC 1 (a co-op pawn
+`sync_leaves_an_unchanged_brain_bound_without_rebinding` (`brain_programs.rs:527`).
+Twin its *observable*, not a pointer comparison: `sync` rebinds by
+`self.entries.insert(entity, entry)` (`:147`), which replaces a `HashMap` value
+in place, so the bound program's address survives a rebind and a pointer
+assertion passes even for a rebind-every-tick implementation. The existing test
+uses a warn-once latch for exactly that reason — a filter with one unbindable
+leaf warns on bind, and a rebind re-warns. Assert the latch stays empty across
+the second `sync`.
+
+Task 2 also owns the runnable tests for AC 1 (a co-op pawn
 dies, the enemy releases it and engages a live pawn beside it, its graph
 authoring both interrupt and filter), AC 3, AC 14, AC 15, AC 16's filter half, the candidate
-half of AC 17, and AC 7's runnable half.
+half of AC 17, and AC 7's runnable half. AC 1's fixture must drive the death
+latch itself: `HealthComponent.death_handled` is set by `sweep_deaths`
+(`health.rs:77`), whose one non-test caller is `impact_effects.rs:360` —
+`run_ai_tick` never runs it, so no AI-test tick path latches a death.
 
 ### Task 3: Leash bounds acquisition
 
@@ -508,7 +574,9 @@ cannot simply join that `filter_map` — dropping a candidate there would also
 drop it from the distance the stride reads. It becomes a single fold over the
 same iterator carrying two accumulators: the nearest candidate over every
 offered pawn, unleashed and unfiltered, and the nearest *eligible* candidate.
-`select_target` propagates both. Two values is a requirement, not a
+Both accumulators honor the existing `exclude` parameter — it drops a pawn from
+the offer set rather than judging its relevance, so it is not one of the three
+paths above. `select_target` propagates both. Two values is a requirement, not a
 convenience — re-running the scan to get the second is the regression
 `ai/mod.rs:478-483` records as already fixed, and the early scan's result is
 reused verbatim as the selection on the non-engaged acquisition branch (`:484`).
@@ -521,9 +589,19 @@ the only relevance rule with coverage already in the tree — three
 inverted-tuning fixtures, AC 8, and AC 16's legacy half — so the stride
 separation is exercised by real tests from Phase 1. A filter-first order would
 land the same machinery motivated by a rule whose fixtures do not exist until
-Task 2 authors graphs to create them. Task 3 owns AC 16's legacy half: a new
-far-band fixture counting acquisition-due ticks against the band's divisor
-with a retained target outside the leash.
+Task 2 authors graphs to create them.
+
+Task 3 owns AC 16's legacy half. That state lasts exactly one tick — the floor
+clears an out-of-leash retained target on the tick it sees it, and the brain
+rescans from non-engaged afterwards — so the fixture asserts one tick, not a
+window. Seed an engaged legacy brain with `think_stride_counter` at 0, its
+retained pawn at far-band distance outside the leash, and a second pawn inside
+it. Correct wiring: `current_distance` is the retained pawn's real distance, the
+far band's divisor makes tick 1 not due, the strided replacement never runs, and
+`acquired_target` is `None` after the tick. Inverted wiring: `current_distance`
+is `None`, tick 1 is due, and the replacement search returns the second pawn.
+Derive the divisor from `think_stride_for_distance` (`engine_floor.rs:35`,
+`pub(crate)`) rather than hardcoding it — `STRIDE_FAR` is private and stays so.
 
 The retained-target lookup stays a read, yielding the candidate and its distance
 unconditionally, so an out-of-leash retained target still prices the stride.
@@ -552,10 +630,10 @@ sites stay four.
 (`crates/foundation/src/data_descriptors/types/combat.rs`) after the six-field
 range loop (`:302-317`) and before the `attackDamage` check (`:318-326`), so
 both operands are known finite when the error reports. Reject a descriptor whose
-`leashRange` is below its `detectionRange`, naming both values in the
-established `components.ai.<field>` style pinned in the boundary inventory.
-Both runtimes funnel through that
-validator, so one edit covers QuickJS and Luau.
+`leashRange` is below its `detectionRange`, naming both values and both paths —
+`components.ai.leashRange` and `components.ai.detectionRange`, the style the
+adjacent range loop's format string already establishes. Both runtimes funnel
+through that validator, so one edit covers QuickJS and Luau.
 
 Rust fixtures construct `AiDescriptor` literally and bypass validation, which is
 why the floor rule must stand on its own. Three inverted-tuning fixtures pass
@@ -578,7 +656,8 @@ The three fixtures pass unmodified and stand as the no-regression floor;
 neither asserts AC 8's shape. Task 3 adds AC 8's fixture — a seeded-at-rest
 enemy with a pawn between the two radii, asserting no destination request and
 no state change across the window — and AC 9's two validation tests, one per
-runtime, each asserting the error names both field values.
+runtime, each asserting the error names both field values. Their home is the
+existing dual-runtime `crates/scripting-core/src/data_descriptors/tests/ai.rs`.
 
 ### Task 4: Graph disengagement lints
 
@@ -594,8 +673,18 @@ rather than over a resolved state index.
 
 | Lint | Condition | Warning |
 |---|---|---|
-| `LevelWidePursuer` | At least one engaging state, and no engaging state declares a transition to a non-engaging state | Pursues without limit; names the engaging states |
+| `LevelWidePursuer` | At least one engaging state, and no engaging state declares a state-local transition to a non-engaging state | Pursues without limit; names the engaging states |
 | `NoHasTargetInterrupt` | At least one engaging state, and no interrupt whose guard tree reads the has-target input | Target loss will be handled through distance guards, where the no-target sentinel makes `gt`/`ge` read true |
+
+`LevelWidePursuer` reads state-local `transitions` only, never the graph-level
+`interrupts` vector. The two lints answer different questions: lint two is about
+losing a target, lint one about never letting go of one it still has. Counting
+interrupts in lint one would collapse them — any graph with a has-target
+interrupt would pass lint one, so lint one would fire only where lint two
+already does, and a graph that chases a live pawn across the level forever would
+go unwarned. Both lints report their findings against every engaging state, in
+`states` key order (the descriptor's `BTreeMap`, so name-sorted and
+deterministic).
 
 Detect the read by reusing `IrNode::dispatch_input_names`
 (`crates/foundation/src/ir/mod.rs:185`) rather than hand-rolling a second tree
@@ -608,7 +697,10 @@ time.
 The entry point is `behavior_lints::inspect(&BehaviorGraphDescriptor) ->
 Vec<BehaviorLint>`, where `BehaviorLint { kind: BehaviorLintKind, states:
 Vec<String> }` carries its kind and the offending state names, so "one finding
-naming those states" is checkable. It **returns** findings rather than logging
+naming those states" is checkable. Declare the module in
+`data_descriptors/types/mod.rs` and re-export `BehaviorLint` and
+`BehaviorLintKind` alongside the other descriptor types, so AC 10 and AC 11 can
+assert on them from outside the module. It **returns** findings rather than logging
 them; `validate` is a thin caller that logs them via `log::warn!` — foundation
 already depends on `log`. Findings are not errors, so they do not join the
 `Result`. AC 10 and AC 11 call `inspect` directly. This follows the existing
@@ -635,28 +727,41 @@ Author the new vocabulary into the reference enemy
 (`sdk/behaviors/reference/entities.{ts,luau}`, identical spellings): a
 target-death stand-down interrupt declared immediately after the existing
 has-target interrupt, and a candidate filter excluding dead pawns and bounding
-acquisition by distance.
+acquisition by distance. The TS file imports its vocabulary — `import { brain,
+defineEntity, runtime } from "postretro"` (`entities.ts:7`) gains `candidate`;
+the Luau twin reads globals and needs no import line.
 
-Three existing parity tests are affected:
+Four existing sites are affected:
 
 | Test | Location | Effect |
 |---|---|---|
 | `the_shipped_reference_enemy_graph_is_identical_in_both_authorings` | `crates/scripting-core/src/data_descriptors/tests/behavior.rs:533` | Pins interrupt targets as `vec!["idle"]`; becomes `vec!["idle", "idle"]` |
 | `the_reference_oracle_matches_the_shipped_authored_graph` | `ai_tests.rs:3954` | Mirrors the shipped graph in Rust; gains the same interrupt and filter |
 | `the_authored_reference_graph_is_behavior_identical_to_the_legacy_block` | `ai_tests.rs:4016` | Traces authored against lowered legacy over 200 ticks |
+| `shipped_reference_behavior_graph` | `ai_tests.rs:3897` | Evaluates `entities.luau` in a hand-built Lua state setting only `runtime`, `brain`, and `defineEntity`. Authoring `candidate.*` makes it panic on a nil global; it needs the `candidate` table from `brain.luau` set as a fourth |
+
+That last one is the reference enemy's only consumer that does not go through a
+real prelude, so Task 2's six-site allowlist table does not reach it.
 
 The third constrains the authoring. It traces
 `BrainComponent::from_graph(&reference_behavior_graph())` against
-`from_descriptor(&reference_ai_descriptor())` and asserts identical traces,
-while `reference_player_x` (`:3976`) sweeps the pawn to 30 and 80 units. Legacy
-lowering emits no filter, so the authored filter's distance bound must equal the
-legacy descriptor's `detectionRange` or the two traces diverge.
-`reference_ai_descriptor()` (`ai_tests.rs:3770`) is detection 16 / leash 50, so
-it already satisfies Task 3's ordering rule and its effective acquisition
-bound is `detectionRange`. Pin the radius to that value and say so in the
-authoring comment. `reference_player_x` never kills the pawn, so the filter's
-death clause and the target-death interrupt are inert across the trace; only
-the distance clause can diverge.
+`from_descriptor(&reference_ai_descriptor())` and asserts identical traces, and
+`BrainTrace` (`:3966`) carries an `acquired` field — target selection is part of
+what "identical" covers, not just state and animation. `reference_player_x`
+(`:3976`) parks the pawn at 30 for ticks 0-9 and at 80 from tick 170.
+
+**Pin the filter's radius to 50.** After Task 3 the floor bounds legacy
+acquisition by `leashRange`, not `detectionRange`, and
+`reference_ai_descriptor()` (`ai_tests.rs:3770`) is detection 16 / leash 50. At
+tick 0 the legacy twin therefore acquires the pawn at 30 (inside its leash) and
+holds it in `idle` on the graph's detection guard — `acquired` is true. A filter
+pinned to `detectionRange` would refuse that pawn and read false, diverging on
+ticks 0-9. A filter is nonetheless required: without one the authored graph, which
+carries no leash, would acquire the pawn at 80 that the legacy floor rejects.
+Fifty is the value that makes both ends agree, and the authoring comment says
+so. `reference_player_x` never kills the pawn, so the filter's death clause and
+the target-death interrupt are inert across the trace; only the distance clause
+can diverge.
 
 The reference enemy's comments are the de-facto authoring documentation and must
 teach four things:
@@ -665,8 +770,9 @@ teach four things:
   `hasTarget`.
 - The death latch, not a health comparison, is the death test — and why.
 - Candidacy is per-graph eligibility; disengagement is per-state policy.
-- The filter's acquisition radius is pinned to the legacy descriptor's range
-  so the authored and lowered traces agree.
+- The filter's acquisition radius is pinned to the legacy descriptor's
+  `leashRange` — the floor's acquisition bound for the lowered twin — so the
+  authored and lowered traces agree.
 
 Extend `docs/scripting-reference.md` with the floor's acquisition contract: what
 the engine offers as candidates, what it never decides (aliveness), the legacy
@@ -688,7 +794,7 @@ two templates Task 1 names.
 | Target | Change |
 |---|---|
 | `crates/postretro/src/scripting/primitives/mod.rs` | `components.ai` `detectionRange` and `leashRange` descriptions (lines 346 and 348; `:347` is `attackRange`, untouched) state the ordering constraint and the leash's widened role |
-| Same file | Register the `candidateFilter` field on `BehaviorGraphDescriptor`; typedef surface only |
+| Same file | Register the `candidateFilter` field on `BehaviorGraphDescriptor` as type `"IrNode"`, mirroring the `when` field (`:387`) — `common.rs` maps it to `RuntimeValue`. Typedef surface only |
 | `virtual_module.luau:120` | Gains `candidate: CandidateInputs,` on `PostretroModule` beside `brain: BrainInputs,` — the one typedef template Task 1 does not touch |
 
 The current `leashRange` description says "Distance from its origin past which

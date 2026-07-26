@@ -457,6 +457,16 @@ mod tests {
     }
 
     #[test]
+    fn lowered_legacy_graph_has_no_disengagement_lints() {
+        let graph = lower_ai_descriptor(&sample_descriptor());
+
+        assert!(
+            crate::data_descriptors::types::behavior_lints::inspect(&graph).is_empty(),
+            "the lowering supplies both a local disengagement edge and has-target interrupt"
+        );
+    }
+
+    #[test]
     fn no_lowered_state_declares_a_transition_to_itself() {
         // `validate` rejects a state-local self-edge (it blocks every
         // lower-priority transition instead of re-entering), so the lowering

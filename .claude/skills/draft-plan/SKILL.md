@@ -64,6 +64,18 @@ Create `context/plans/drafts/<feature-name>/index.md`.
 ### Out of scope
 - Explicit non-goals. No "TBD" — decide or drop.
 
+## Direction
+(Three short subsections. See "Direction questions while drafting" below.)
+
+**Problem.** One sentence. The cause, not a symptom of it.
+
+**Prior commitments.** What the project already decided that this touches, cited.
+Where this diverges, say so and argue it — unstated divergence is the defect,
+divergence itself is often right.
+
+**Alternatives rejected.** The strongest rival shape and why not it. Cheap now,
+expensive to reconstruct later.
+
 ## Acceptance criteria
 - [ ] Verifiable conditions for "done."
 
@@ -148,6 +160,33 @@ Rules:
 
 One phase per line. No per-task sub-bullets unless a dependency needs calling out.
 
+### 5b. Direction questions while drafting
+
+Six questions govern whether a spec is a reasonable solution to the problem at
+hand. `/validate-plan` asks all six adversarially at step 8; hold them in mind
+while drafting too, since they are cheaper to answer now than to repair later.
+
+1. What problem is this actually solving — cause or symptom?
+2. Is it being solved at the right level (layer, ownership boundary,
+   mechanism vs policy)?
+3. What does this foreclose?
+4. What has this project already committed to that this touches?
+5. Is it proportionate — over-built, or scoped smaller than the real problem?
+6. What is the strongest alternative, and why not that?
+
+Asking a question is not the same as recording its answer. Only some produce
+spec text:
+
+| | Artifact |
+|---|---|
+| 1, 4, 6 | The `Direction` section. Cheap to write now, expensive to reconstruct. |
+| 2 | Record the placement and its rationale where the design decision lives. Not a verdict — "this belongs in the engine floor because…" is useful; "the layering was assessed and is correct" is noise. |
+| 3 | Record specific foreclosures where known. Never write "nothing significant" — that is the default answer and it carries no information. |
+| 5 | None. Self-assessed sizing is always "appropriate". Leave it to `/validate-plan`. |
+
+Questions 2, 3 and 5 need a reader who has not spent the session inside the
+solution. Answer them for yourself; do not trust your own answer.
+
 ### 6. Cross-check
 
 Before committing, walk the spec:
@@ -164,10 +203,23 @@ Stage and commit the plan folder (`index.md` + optional `research.md`).
 
 **Do not update `context/lib/` during drafting.** Durable capture happens at promotion — after review. Reviewer agents often reshape the spec; library updates should land once, against the final shape.
 
-### 8. Report
+### 8. Validate direction
+
+Run `/validate-plan <name>` on each plan the session produced, before reporting.
+
+It dispatches a fresh reviewer to judge direction — is this a reasonable solution
+to the problem at hand — at an altitude this session cannot reach for its own
+work. Immersion is what makes a locally-correct wrong shape feel obviously right,
+and a drafting session is maximally immersed.
+
+Surface its verdict; never act on a *Reshape*, *Not a spec*, or *Under-scoped*
+finding unilaterally. Those are owner decisions.
+
+### 9. Report
 
 - What was planned, or if the session produced no plan (scope already covered, etc.)
 - Task count and phase summary
+- The `/validate-plan` verdict per plan
 - Open questions left for the user
 - Plan lives in `drafts/` — not ready for `/orchestrate` until promoted
 

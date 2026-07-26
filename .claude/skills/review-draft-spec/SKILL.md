@@ -14,6 +14,8 @@ description: >
 
 Two reviewers in parallel. One broad, one anchored to source. Aggregate findings, auto-apply mechanical fixes, recommend whether to apply more, re-review, or promote.
 
+Detail altitude. Direction — is this a reasonable solution to the problem at all — belongs to `/validate-plan` and runs first; findings here are keyed to the spec's current shape, and a reshape invalidates them.
+
 ## Process
 
 ### 1. Locate the spec

@@ -26,7 +26,7 @@ Engine-owned resources can only ever decrease. `apply_damage_with_context` subtr
 
 ### Out of scope
 
-- **Per-player mod currency (XP, score, credits).** Grant covers engine-owned resources only. Mod currency is a store write, and a *per-player* one needs the cross-entity per-entity-state write path — `E16--per-player-currency`, which sequences after this spec. Team-shared currency already works today via `slot.add`.
+- **Per-player mod currency (XP, score, credits).** Grant covers engine-owned resources only. Mod currency is a store write, and a *per-player* one needs per-owner slot cardinality keyed by a player identity that outlives the level — `E16--per-player-currency`, which sequences after this spec and is parked pending the session work that owns that identity. Team-shared currency already works today via `slot.add`.
 - **Damage numbers.** The roadmap item bundles them, but the closed effect set has no path to presentation and the `combat presentation substrate` roadmap item owns that display layer. Recommend amending the roadmap item.
 - **Loot drops.** Spawning a pickup entity on death is a spawn effect, not a grant. Belongs with the `pickup` roadmap item (Weapon Systems). This chokepoint is what such an item calls into when walked over.
 - **Armor.** No armor component exists anywhere in the engine; it belongs to the Damage & Defenses milestone. The `Effect` union stays open to a third arm.

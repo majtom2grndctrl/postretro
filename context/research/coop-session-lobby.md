@@ -93,17 +93,23 @@ needs the rejoin key above to be settled first.
 
 Two mechanisms, two jobs — conflating them is the obvious mistake.
 
-- **Mod identity is declared.** The manifest declares an id and a version; the client sends
-  them at admission; the host compares. This catches honest drift (wrong mod, stale version),
-  which is the actual failure mode among friends. It does not catch tampering, and should not
-  claim to.
-- **Map content is hashed.** The fingerprint stays content-derived because prediction
-  correctness depends on byte-level parity of mover authoring, not on anyone's honesty.
+- **Mod identity is declared.** The manifest declares an id and a version. The **id** gates
+  admission — it is the namespace that makes a map catalog id resolvable on both peers. The
+  **version** is carried for display and never compared. Neither catches tampering, and
+  neither should claim to.
+- **Compatibility is hashed, not declared.** Two content digests decide whether peers can
+  play together: one over the mod's simulated surface (`entities`, `store_declarations`),
+  one over the level's (mover authoring plus static world collision). Prediction correctness
+  depends on byte-level parity of what a client simulates against, not on anyone's honesty —
+  and not on an author remembering to bump a string. The full tiering of what server
+  authority absorbs and what it cannot is in
+  [Co-op Content Compatibility](./coop-content-compatibility.md).
 
-A content hash over the whole mod was considered and is wrong here: it breaks every dev
+A content hash over the *whole* mod was considered and is wrong here: it breaks every dev
 iteration loop (hot reload changes the hash mid-session), makes legitimate client-side
 differences fatal, and buys a property — tamper detection — that is an explicit non-goal
-(`index.md` §4, anti-cheat).
+(`index.md` §4, anti-cheat). Scoping the digest to the lanes a client actually simulates
+against keeps the property and drops the breakage.
 
 The manifest carries a mod name today and no id or version. Adding them is small; the
 consequence is that mod identity becomes a wire-visible contract.
@@ -183,7 +189,11 @@ live endpoint accepting connections — not a new top-level app state.
 - **The store is never cleared on level unload.** Anything keyed by a pawn id resets at every
   level change while global slots survive.
 - **Networked mod sync and mid-level mod hot-swap are non-goals** (`boot_sequence.md` §8).
-  Matching mods is in scope; shipping them to a client is not.
+  Matching mods is in scope; shipping them to a client is not. Scripts are small enough to
+  send (160K against 337M of art in the dev mod) but sending them fixes only the script-side
+  third of the breaking surface, inverts boot ordering, and feeds peer-controlled input to a
+  C interpreter — reasoned through in
+  [Co-op Content Compatibility](./coop-content-compatibility.md) §5.
 - **Session state must be enumerable, not scattered.** What survives a level transition should
   be a named set, because a future host migration is that same set plus a live-world layer,
   handed to a different destination. Level unload already clears the world and keeps the store;

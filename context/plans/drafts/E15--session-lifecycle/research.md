@@ -23,6 +23,12 @@ Findings behind the spec's decisions, including why its scope changed once.
 | The manifest requires `name` and carries no id or version; four parse sites read it (two runtimes × initial/staged) | `crates/scripting-core/src/runtime/mod_init_exec.rs`, `crates/scripting-core/src/staged_manifest.rs` |
 | The net endpoint is built during `Session::build`, and mod init runs after — so mod identity cannot be a construction argument | `context/lib/boot_sequence.md` §1 |
 | The accept lane spawns the slot pawn; `lifecycle` carries closes only | `crates/postretro/src/main.rs` — the `HandshakeOutcome` match, `host_handle_lifecycle` |
+| The client's local static-collision trimesh is built from `LevelWorld` vertices and indices, and nothing hashes them — the second, larger fail-open | `crates/postretro/src/collision/mod.rs` — `CollisionWorld::populate_from_level` |
+| Client movement prediction runs against that local collision source, and client-authoritative hit declaration casts against the world the client renders while the host validates against its own static geometry | `crates/postretro/src/netcode/prediction.rs` (`MovementCollisionSource`), `context/lib/networking.md` §Combat authority |
+| Player movement tuning is descriptor-authored, so a manifest edit changes what the client predicts with | `crates/postretro/src/movement/mod.rs` — `PlayerMovementComponent::from_descriptor` |
+| Clients suppress AI-enemy spawns entirely and attach mesh presentation only, which is why enemy placement and brain tuning cannot break compatibility | `context/lib/networking.md` §Phase boundaries |
+| Only `entities` and `store_declarations` are re-committed on a staged reload — theme and fonts are not — so a non-atomic-replace manifest lane already ships | `context/plans/done/mod-map-catalog/index.md` |
+| Scripts are 160K of the dev mod's 337M (textures 291M, models 43M, maps 3.0M), so script sync is cheap on bytes and still does not cover the breaking surface | measured under `content/dev/` |
 
 ## Slot lifecycle
 
@@ -33,9 +39,9 @@ it joined on.
 ```mermaid
 stateDiagram-v2
     [*] --> Pending: transport connect
-    Pending --> Admitted: admission matches<br/>(protocol + mod identity)
+    Pending --> Admitted: admission matches<br/>(protocol + mod id + mod digest)
     Pending --> Closed: admission mismatch<br/>(typed reason sent, disconnect deferred one poll)
-    Admitted --> Participating: content parity matches<br/>(level identity + fingerprint)
+    Admitted --> Participating: content parity matches<br/>(level identity + level digest)
     Admitted --> Admitted: parity mismatch —<br/>no state flows, connection survives
     Participating --> Admitted: host installs a different level<br/>(demotion runs the existing close cleanup,<br/>relevel names the next map)
     Admitted --> Closed: disconnect or timeout
@@ -96,14 +102,33 @@ opaque value. Two questions, two fields:
 - Carrying identity separately makes the common mismatch readable — "the host is on
   `city-03`, you are on `city-04`" rather than a 32-byte diff. The typed reject reason's
   whole point is an actionable expected-vs-received payload.
-- The fingerprint keeps its documented domain, so no rename, no epoch bump, and no
-  `networking.md` rewrite.
+- The two answer different questions. Identity is "which map"; the digest is "is the
+  content the same". Keeping them apart is what lets the digest's domain be widened later
+  on its own merits — which this spec then does, adding static world collision — without
+  that widening being confused for an identity fix.
 - The relevel message names a catalog id. Once parity already carries the host's level
   identity, relevel is adding a *direction* to a value the protocol moves, not a new noun.
 
 Hashing the `.prl` bytes was the other candidate and stays rejected under both shapes:
 strictly stronger, and it makes a cross-platform bake difference a hard connection
 failure — a bake-determinism question this spec has no standing to answer.
+
+## What widening the fingerprint retired
+
+Adding static world collision to the parity digest closed a hole, and it also weakened an
+argument this spec had been leaning on. Recorded because the swap should be visible.
+
+The merge was partly argued on catalog ids being mod-scoped: two mods can declare the same
+map id over different `.prl` files, so two peers on different mods compare level identity
+equal — and, if both maps were mover-less, compare fingerprints equal too. The second half
+of that no longer holds. Differing brushwork now diverges on content regardless of whether
+the mods match.
+
+What replaces it is stronger, not weaker. The two digests are halves of one policy computed
+at the two moments the spec already installs values, and neither covers for the other: a mod
+fork that changes only scripts ships identical map bytes and is caught at admission, never at
+parity; a map edit is caught at parity, never at admission. That is a structural reason they
+belong in one spec, where the earlier argument was a contingent one about a specific hole.
 
 ## Rejected while drafting
 
@@ -112,9 +137,18 @@ failure — a bake-determinism question this spec has no standing to answer.
   redesigned into it immediately.
 - **Semver ranges on the mod version.** Invites a compatibility policy with no way to
   test it. Exact string match; the author bumps the version when the contract changes.
-- **A content hash over the mod.** Breaks hot reload mid-session and buys tamper
-  detection, an explicit non-goal (`index.md` §4). `E16--impact-policy-substrate` already
-  settled the general rule: explicit author-assigned ids, not content-derived ones.
+- **A content hash over the *whole* mod.** Breaks hot reload mid-session, makes legitimate
+  client-side differences fatal, and buys tamper detection, an explicit non-goal
+  (`index.md` §4). Superseded rather than simply rejected: the spec now hashes a *scoped*
+  surface — `entities` and `store_declarations`, the lanes a client simulates against —
+  which keeps the compatibility property and drops the breakage. `E16--impact-policy-substrate`'s
+  rule (explicit author-assigned ids, not content-derived ones) still governs **identity**;
+  it never governed parity, which has been content-derived since the fingerprint shipped.
+- **Exact mod-version equality as the admission gate.** The first draft's rule, dropped
+  after the tiering analysis in `research/coop-content-compatibility.md`. It refuses on a
+  value that does not track the breaking surface: an author who edits a light bumps it and
+  blocks a friend, and an author who retunes player movement may not bump it at all. The
+  version is still required and still crosses the wire — for display, never for comparison.
 - **Reusing `ProtocolVersion` with the mod fields appended.** It is `Copy` and the mod id
   is a string. More importantly the two stages fire at different times, so one message
   re-creates the ordering inversion the spec exists to remove.

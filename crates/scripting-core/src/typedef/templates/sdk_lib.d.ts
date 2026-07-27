@@ -862,6 +862,12 @@
     readonly health: RuntimeRead;
     /** The enemy's maximum hit points (number). */
     readonly maxHealth: RuntimeRead;
+    /** The selected target's current hit points (number). */
+    readonly targetHealth: RuntimeRead;
+    /** The selected target's maximum hit points (number). */
+    readonly targetMaxHealth: RuntimeRead;
+    /** `true` once the selected target's death sweep has handled it (boolean). */
+    readonly targetDied: RuntimeRead;
   }
 
   /** Pre-wrapped guard input leaves for the fixed `@brain.*` namespace. */

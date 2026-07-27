@@ -717,7 +717,7 @@ mod tests {
                                 // No target means no distance to read: the scope
                                 // projects `hasTarget` false and the distance
                                 // sentinel, which is what the interrupt sees.
-                                target_distance: has_target.then_some(distance),
+                                target: has_target.then_some((entity, distance)),
                                 time_in_state_ms: 0.0,
                                 attack_cooldown_ms: 0.0,
                                 acquisition_due,
@@ -752,7 +752,7 @@ mod tests {
             &registry,
             entity,
             BrainFacts {
-                target_distance: None,
+                target: None,
                 time_in_state_ms: 0.0,
                 attack_cooldown_ms: 0.0,
                 acquisition_due: true,
@@ -798,8 +798,8 @@ mod tests {
         // from the deserialized twin. Both must answer every sampled row the
         // same way, which is what "programs rebind from the retained graph"
         // means operationally.
-        let facts = |distance: f32, acquisition_due: bool| BrainFacts {
-            target_distance: Some(distance),
+        let facts = |entity: EntityId, distance: f32, acquisition_due: bool| BrainFacts {
+            target: Some((entity, distance)),
             time_in_state_ms: 320.0,
             attack_cooldown_ms: 0.0,
             acquisition_due,
@@ -825,7 +825,7 @@ mod tests {
                     programs.scope_mut().refresh(
                         &registry,
                         entity,
-                        facts(distance, acquisition_due),
+                        facts(entity, distance, acquisition_due),
                     );
                     let entry = programs.get(entity).expect("the brain is bound");
                     rows.push(step_graph(
@@ -856,7 +856,7 @@ mod tests {
         programs.sync(&registry, &mut HashSet::new());
         let idle_index = graph_state_index(&graph, LEGACY_IDLE_STATE).unwrap();
         let facts = BrainFacts {
-            target_distance: Some(1.0),
+            target: Some((entity, 1.0)),
             time_in_state_ms: 0.0,
             attack_cooldown_ms: 0.0,
             acquisition_due: true,

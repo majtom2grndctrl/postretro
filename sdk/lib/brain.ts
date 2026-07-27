@@ -37,6 +37,12 @@ export interface BrainInputs {
   readonly health: RuntimeRead;
   /** The enemy's maximum hit points (number). */
   readonly maxHealth: RuntimeRead;
+  /** The selected target's current hit points (number). */
+  readonly targetHealth: RuntimeRead;
+  /** The selected target's maximum hit points (number). */
+  readonly targetMaxHealth: RuntimeRead;
+  /** `true` once the selected target's death sweep has handled it (boolean). */
+  readonly targetDied: RuntimeRead;
 }
 
 /** Pre-wrapped guard input leaves for the fixed `@brain.*` namespace. */
@@ -48,6 +54,9 @@ export const brain: BrainInputs = Object.freeze({
   acquisitionDue: Object.freeze(runtime.read("@brain.acquisitionDue")),
   health: Object.freeze(runtime.read("@brain.health")),
   maxHealth: Object.freeze(runtime.read("@brain.maxHealth")),
+  targetHealth: Object.freeze(runtime.read("@brain.targetHealth")),
+  targetMaxHealth: Object.freeze(runtime.read("@brain.targetMaxHealth")),
+  targetDied: Object.freeze(runtime.read("@brain.targetDied")),
 });
 
 /** Read a per-entity state field as a guard input: `state("staggered")` is the

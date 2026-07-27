@@ -520,10 +520,12 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         // and its re-seat: an unvalidated graph whose `initial` names nothing
         // simply stays put rather than being pushed to an arbitrary state.
         let resting_index = initial_index(&brain.graph).unwrap_or(prior_state_index);
-        // Distance to the FINALLY selected pawn, or `None` with no target —
-        // read by the guards (as `@brain.targetDistance`/`@brain.hasTarget`) and
-        // by the attack range gate, so the two can never disagree.
-        let selected_distance = target.map(|target| target_distance(target, snap.position));
+        // The FINALLY selected pawn's identity and distance, or `None` with no
+        // target. This one binding feeds the guard facts and attack range gate,
+        // so neither can disagree about which target they describe.
+        let selected_target =
+            target.map(|target| (target.entity, target_distance(target, snap.position)));
+        let selected_distance = selected_target.map(|(_, distance)| distance);
         let (next_index, steering) = if !brain.aggro_armed {
             // THE AGGRO GATE, and the only thing that suppresses evaluation. Its
             // v1 disengage policy is hold: a closed brain consults neither target
@@ -566,7 +568,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                 registry,
                 snap.id,
                 BrainFacts {
-                    target_distance: selected_distance,
+                    target: selected_target,
                     time_in_state_ms: brain.time_in_state_ms,
                     attack_cooldown_ms: brain.attack_cooldown_remaining_ms,
                     acquisition_due: evaluate_acquisition,

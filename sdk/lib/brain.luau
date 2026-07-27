@@ -25,7 +25,7 @@ local BrainSdk = {}
 --- Pre-wrapped guard input leaves for the fixed `@brain.*` namespace:
 --- `hasTarget` (boolean), `targetDistance` (number; `1e9` with no target),
 --- `timeInStateMs`, `attackCooldownMs`, `acquisitionDue` (boolean), `health`,
---- and `maxHealth`.
+--- `maxHealth`, `targetHealth`, `targetMaxHealth`, and `targetDied` (boolean).
 BrainSdk.brain = table.freeze({
   hasTarget = input("@brain.hasTarget"),
   targetDistance = input("@brain.targetDistance"),
@@ -34,6 +34,9 @@ BrainSdk.brain = table.freeze({
   acquisitionDue = input("@brain.acquisitionDue"),
   health = input("@brain.health"),
   maxHealth = input("@brain.maxHealth"),
+  targetHealth = input("@brain.targetHealth"),
+  targetMaxHealth = input("@brain.targetMaxHealth"),
+  targetDied = input("@brain.targetDied"),
 })
 
 --- Read a per-entity state field as a guard input: `state("staggered")` is the

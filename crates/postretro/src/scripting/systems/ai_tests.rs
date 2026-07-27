@@ -371,7 +371,7 @@ fn step_lowered(
         &reg,
         enemy,
         BrainFacts {
-            target_distance: Some(distance),
+            target: Some((enemy, distance)),
             time_in_state_ms: 0.0,
             attack_cooldown_ms: 0.0,
             acquisition_due,

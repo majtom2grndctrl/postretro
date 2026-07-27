@@ -23,6 +23,10 @@ use crate::ir::{
 pub const BRAIN_INPUT_PREFIX: &str = "@brain.";
 
 /// `true` while the enemy has a selected target this tick.
+///
+/// This is the sole authoritative target-presence test. Target-side facts read
+/// their type's zero with no selected target; [`BRAIN_NO_TARGET_DISTANCE`] is
+/// the lone exception to that convention.
 pub const BRAIN_HAS_TARGET_INPUT: &str = "@brain.hasTarget";
 /// Distance to the selected target, or [`BRAIN_NO_TARGET_DISTANCE`] with none.
 pub const BRAIN_TARGET_DISTANCE_INPUT: &str = "@brain.targetDistance";
@@ -36,6 +40,15 @@ pub const BRAIN_ACQUISITION_DUE_INPUT: &str = "@brain.acquisitionDue";
 pub const BRAIN_HEALTH_INPUT: &str = "@brain.health";
 /// The enemy's maximum hit points.
 pub const BRAIN_MAX_HEALTH_INPUT: &str = "@brain.maxHealth";
+/// The selected target's current hit points, or `0.0` with no target or no
+/// target health component.
+pub const BRAIN_TARGET_HEALTH_INPUT: &str = "@brain.targetHealth";
+/// The selected target's maximum hit points, or `0.0` with no target or no
+/// target health component.
+pub const BRAIN_TARGET_MAX_HEALTH_INPUT: &str = "@brain.targetMaxHealth";
+/// Whether the selected target's death sweep latch has fired, or `false` with
+/// no target or no target health component.
+pub const BRAIN_TARGET_DIED_INPUT: &str = "@brain.targetDied";
 
 /// The distance reported for [`BRAIN_TARGET_DISTANCE_INPUT`] when the enemy has
 /// no selected target.
@@ -66,7 +79,7 @@ pub const BRAIN_NO_TARGET_DISTANCE: f32 = 1.0e9;
 /// it, so refresh must write the same slots in the same order. Names use the
 /// camelCase idiom of the script surface (scripting.md §4) inside the
 /// `@`-reserved ephemeral-dispatch-input namespace (scripting.md §5).
-pub const BRAIN_INPUTS: [(&str, IrType); 7] = [
+pub const BRAIN_INPUTS: [(&str, IrType); 10] = [
     (BRAIN_HAS_TARGET_INPUT, IrType::Bool),
     (BRAIN_TARGET_DISTANCE_INPUT, IrType::Number),
     (BRAIN_TIME_IN_STATE_MS_INPUT, IrType::Number),
@@ -74,6 +87,9 @@ pub const BRAIN_INPUTS: [(&str, IrType); 7] = [
     (BRAIN_ACQUISITION_DUE_INPUT, IrType::Bool),
     (BRAIN_HEALTH_INPUT, IrType::Number),
     (BRAIN_MAX_HEALTH_INPUT, IrType::Number),
+    (BRAIN_TARGET_HEALTH_INPUT, IrType::Number),
+    (BRAIN_TARGET_MAX_HEALTH_INPUT, IrType::Number),
+    (BRAIN_TARGET_DIED_INPUT, IrType::Bool),
 ];
 
 /// What a brain input name resolves to, independent of where the values live.

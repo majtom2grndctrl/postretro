@@ -266,10 +266,8 @@ impl BehaviorGraphDescriptor {
     /// else the `attack` block's `range`, else
     /// [`Self::DEFAULT_ENGAGEMENT_RADIUS`].
     ///
-    /// The `attack.range` step is load-bearing for legacy parity: lowering
-    /// leaves `engagement_radius` as `None`, so a lowered graph resolves to the
-    /// legacy `attackRange` — the exact value the pre-graph engine fed combat-slot
-    /// resolution.
+    /// When `engagement_radius` is absent, `attack.range` supplies the combat-slot
+    /// spacing radius before the graph's default applies.
     pub fn engagement_radius(&self) -> f32 {
         self.engagement_radius
             .or_else(|| self.attack.map(|attack| attack.range))
@@ -277,7 +275,7 @@ impl BehaviorGraphDescriptor {
     }
 
     /// The shared parse-time validator both runtimes funnel through, so QuickJS
-    /// and Luau cannot diverge (the `AiDescriptor::validate` precedent).
+    /// and Luau cannot diverge (the shared descriptor-validator precedent).
     ///
     /// Structural rules, all pathed so the message names the offending state and
     /// transition index:
@@ -861,8 +859,8 @@ mod tests {
             3.5,
             "the explicit field outranks the `attack.range` fallback"
         );
-        // Serialize emits the defaulted keys explicitly (the `AiDescriptor`
-        // convention: no `skip_serializing_if`), so identity is asserted by
+        // Serialize emits the defaulted keys explicitly (no
+        // `skip_serializing_if`), so identity is asserted by
         // re-deserializing rather than by byte-comparing the two JSON values.
         let reparsed: BehaviorGraphDescriptor =
             serde_json::from_value(serde_json::to_value(&validated).unwrap()).unwrap();

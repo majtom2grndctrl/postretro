@@ -23,12 +23,6 @@ const STRIDE_FAR: u32 = 12;
 /// Target switching hysteresis in world units on the XZ plane. A retained target
 /// stays sticky unless another pawn is MORE than this much closer, preventing
 /// co-op target churn when players are only slightly offset from one another.
-pub(super) const TARGET_SWITCH_HYSTERESIS_DISTANCE: f32 = 1.0;
-
-pub(super) fn is_meaningfully_closer(candidate_distance: f32, retained_distance: f32) -> bool {
-    candidate_distance + TARGET_SWITCH_HYSTERESIS_DISTANCE < retained_distance
-}
-
 /// The think stride (in ticks) for an enemy at `distance` (XZ) from the player:
 /// `1` near, larger as the player recedes. Pure helper so the stride policy is
 /// testable in isolation.
@@ -67,4 +61,9 @@ pub(crate) enum SteeringIntent {
     /// animation, ragdoll, or scripted mover can drive the frozen entity
     /// without this arm fighting it.
     Hold,
+}
+pub(super) const TARGET_SWITCH_HYSTERESIS_DISTANCE: f32 = 1.0;
+
+pub(super) fn is_meaningfully_closer(candidate_distance: f32, retained_distance: f32) -> bool {
+    candidate_distance + TARGET_SWITCH_HYSTERESIS_DISTANCE < retained_distance
 }

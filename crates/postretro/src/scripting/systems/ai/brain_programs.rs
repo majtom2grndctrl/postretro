@@ -339,7 +339,9 @@ fn bind_guard(
     None
 }
 
-#[cfg(test)]
+// Lowering/parity coverage is retired with the legacy descriptor. Task 3
+// replaces this suite with direct-graph regressions.
+#[cfg(any())]
 mod tests {
     use super::super::brain_scope::BrainFacts;
     use super::super::engine_floor::SteeringIntent;

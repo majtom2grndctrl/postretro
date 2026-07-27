@@ -92,20 +92,23 @@ mod tests {
         registry
             .set_component(
                 brain,
-                BrainComponent::from_descriptor(&postretro_foundation::AiDescriptor {
-                    detection_range: 1.0,
-                    attack_range: 0.5,
-                    leash_range: 2.0,
-                    attack_damage: 1.0,
-                    attack_cooldown_ms: 1.0,
+                BrainComponent::from_graph(&postretro_foundation::BehaviorGraphDescriptor {
+                    initial: "idle".to_string(),
+                    states: std::collections::BTreeMap::from([(
+                        "idle".to_string(),
+                        postretro_foundation::BehaviorStateDescriptor {
+                            animation: "idle".to_string(),
+                            motion: postretro_foundation::MotionVerb::Hold,
+                            action: None,
+                            transitions: Vec::new(),
+                            on_enter: None,
+                        },
+                    )]),
+                    interrupts: Vec::new(),
+                    candidate_filter: None,
+                    attack: None,
+                    engagement_radius: None,
                     move_speed: 1.0,
-                    death_despawn_ms: 1.0,
-                    states: postretro_foundation::AiStateNames {
-                        idle: "idle".into(),
-                        alert: "alert".into(),
-                        attack: "attack".into(),
-                        death: "death".into(),
-                    },
                 }),
             )
             .unwrap();

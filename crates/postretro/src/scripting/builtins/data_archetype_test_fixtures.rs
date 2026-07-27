@@ -12,8 +12,8 @@ use glam::Vec3;
 use crate::scripting::map_entity::MapEntity;
 use postretro_foundation::{BRAIN_TARGET_DISTANCE_INPUT, IrNode, IrValue};
 use postretro_scripting_core::data_descriptors::{
-    ActionVerb, AiDescriptor, AiStateNames, AttackParams, BehaviorGraphDescriptor,
-    BehaviorStateDescriptor, EntityTypeDescriptor, MotionVerb, TransitionDescriptor,
+    ActionVerb, AttackParams, BehaviorGraphDescriptor, BehaviorStateDescriptor,
+    EntityTypeDescriptor, MotionVerb, TransitionDescriptor,
 };
 
 /// A `MapEntity` placement with the given classname and raw KVP bag. Origin is a
@@ -85,38 +85,15 @@ pub(crate) fn mesh_descriptor(classname: &str, animated: bool) -> EntityTypeDesc
             locomotion: None,
         }),
         health: None,
-        ai: None,
         behavior: None,
     }
 }
 
-/// Minimal valid `ai` block: its mere presence is what attaches `Brain` +
-/// `Agent`, which is the single thing the pre-materialization classifier and
-/// the live predicate both key on. Tuning values are not exercised here.
-fn sample_ai_descriptor() -> AiDescriptor {
-    AiDescriptor {
-        detection_range: 18.0,
-        attack_range: 2.0,
-        leash_range: 26.0,
-        attack_damage: 8.0,
-        attack_cooldown_ms: 1200.0,
-        move_speed: 3.5,
-        death_despawn_ms: 1500.0,
-        states: AiStateNames {
-            idle: "idle".into(),
-            alert: "walk".into(),
-            attack: "attack".into(),
-            death: "die".into(),
-        },
-    }
-}
-
-/// An AI-enemy descriptor in the LEGACY `components.ai` spelling: a mesh
-/// placement (so it is directly map-placeable) plus an `ai` block (so
-/// materialization attaches `Brain` + `Agent`).
+/// An AI-enemy descriptor: a mesh placement (so it is directly map-placeable)
+/// plus a behavior graph (so materialization attaches `Brain` + `Agent`).
 pub(crate) fn ai_enemy_descriptor(classname: &str) -> EntityTypeDescriptor {
     let mut descriptor = mesh_descriptor(classname, true);
-    descriptor.ai = Some(sample_ai_descriptor());
+    descriptor.behavior = Some(sample_behavior_graph());
     descriptor
 }
 

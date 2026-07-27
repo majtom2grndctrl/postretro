@@ -285,7 +285,6 @@ mod tests {
                 locomotion: None,
             }),
             health: None,
-            ai: None,
             behavior: None,
         }
     }

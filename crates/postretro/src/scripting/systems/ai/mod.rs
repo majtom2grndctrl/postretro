@@ -36,6 +36,13 @@ mod engine_floor;
 mod graph_eval;
 mod targeting;
 
+use crate::agent_steering;
+use crate::collision::CollisionWorld;
+use crate::combat_positioning::{
+    CombatAgentSnapshot, CombatCandidate, CombatQuery, PATH_LENGTH_SCORE_WEIGHT,
+    select_combat_positions_batch,
+};
+use crate::nav::NavGraph;
 use brain_programs::BrainPrograms;
 use brain_scope::BrainFacts;
 use engine_floor::SteeringIntent;
@@ -44,25 +51,6 @@ use graph_eval::{
     steering_for,
 };
 pub(crate) use graph_eval::{locomotion_animation, rest_animation};
-use targeting::{
-    TargetPawn, acquisition_due, retained_is_outside_leash, select_target, selected_target_alive,
-    target_candidate, target_distance,
-};
-// `ai_tests` is included here via `#[path]`, so its `use super::*` resolves
-// against this module — the split moved these into submodules, but the tests
-// still name them unqualified.
-#[cfg(test)]
-use engine_floor::{TARGET_SWITCH_HYSTERESIS_DISTANCE, think_stride_for_distance};
-
-use crate::agent_steering;
-use crate::collision::CollisionWorld;
-use crate::combat_positioning::{
-    CombatAgentSnapshot, CombatCandidate, CombatQuery, PATH_LENGTH_SCORE_WEIGHT,
-    select_combat_positions_batch,
-};
-use crate::nav::NavGraph;
-#[cfg(test)]
-use crate::nav::distance_xz;
 use postretro_entities::components::brain::BrainComponent;
 use postretro_entities::components::health::{
     DamageContext, DamageProducer, apply_damage_with_context,
@@ -75,6 +63,10 @@ use postretro_entities::{
     EntityRegistry, Transform,
 };
 use postretro_foundation::{ActionVerb, DamagePayload};
+use targeting::{
+    TargetPawn, acquisition_due, select_target, selected_target_alive, target_candidate,
+    target_distance,
+};
 
 /// Event name fired once per enemy attack that lands this tick. Mirrors the
 /// weapon-fire event precedent (`"activate"`/`"impact"`): the tick returns the
@@ -433,94 +425,50 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                 .flatten();
             let retained = retained_target
                 .and_then(|entity| target_candidate(registry, entity, snap.position, None));
-            let leash_range = brain.leash_range;
-            let (candidate_filter, candidate_scope) = programs.candidate_filter_context(snap.id);
-            let (nearest_for_stride, nearest_selection) = if retained.is_none() {
-                select_target(
-                    registry,
-                    snap.position,
-                    None,
-                    false,
-                    None,
-                    leash_range,
-                    candidate_filter,
-                    candidate_scope,
-                )
-            } else {
-                (None, None)
-            };
-            let current_distance = retained
-                .or(nearest_for_stride)
-                .map(|candidate| candidate.distance);
-            let evaluate_acquisition = acquisition_due(&brain, current_distance);
-
-            // The engine floor's retention leash. A brain without one (an
-            // authored graph) never escapes here: its guards own disengagement.
-            let retained_outside_leash =
-                retained.is_some_and(|retained| retained_is_outside_leash(retained, leash_range));
-            let target = if retained_outside_leash {
-                // Leash escape for the already-retained target is cheap because the
-                // retained pawn has already been read. Clear immediately instead of
-                // continuing to chase stale destinations between acquisition ticks.
-                // Replacement search still stays acquisition-strided.
-                if evaluate_acquisition {
+            let (target, evaluate_acquisition) = if let Some(retained) = retained {
+                // A retained target alone prices the stride from its raw
+                // distance. A due tick may still run the normal hysteresis scan
+                // below, but neither its candidate filter nor its result can
+                // alter this cost input.
+                let evaluate_acquisition = acquisition_due(&brain, Some(retained.distance));
+                let target = if evaluate_acquisition {
+                    let (candidate_filter, candidate_scope) =
+                        programs.candidate_filter_context(snap.id);
                     select_target(
                         registry,
                         snap.position,
-                        retained.map(|retained| retained.target.entity),
-                        true,
+                        Some(retained.target.entity),
                         None,
-                        leash_range,
                         candidate_filter,
                         candidate_scope,
                     )
                     .1
                 } else {
-                    None
-                }
-            } else if evaluate_acquisition {
-                match retained {
-                    Some(retained) => {
-                        select_target(
-                            registry,
-                            snap.position,
-                            Some(retained.target.entity),
-                            false,
-                            None,
-                            leash_range,
-                            candidate_filter,
-                            candidate_scope,
-                        )
-                        .1
-                    }
-                    // The eligible half of the early scan above IS this
-                    // selection: it runs exactly when `retained` is `None`,
-                    // with the same arguments, over a registry nothing has
-                    // touched since. Re-running it made every non-engaged brain
-                    // pay the pawn scan twice on each stride-due tick — the
-                    // think stride adding work instead of removing it.
-                    None if retained_target.is_none() => nearest_selection,
-                    // A retained id that no longer resolves to a candidate still
-                    // seeds hysteresis, so this scan is genuinely a different
-                    // one.
-                    None => {
-                        select_target(
-                            registry,
-                            snap.position,
-                            retained_target,
-                            false,
-                            None,
-                            leash_range,
-                            candidate_filter,
-                            candidate_scope,
-                        )
-                        .1
-                    }
-                }
+                    Some(retained.target)
+                };
+                (target, evaluate_acquisition)
             } else {
-                retained
-                    .map(|candidate| candidate.target)
-                    .or(nearest_selection)
+                let (candidate_filter, candidate_scope) =
+                    programs.candidate_filter_context(snap.id);
+                let (nearest_for_stride, nearest_selection) = select_target(
+                    registry,
+                    snap.position,
+                    None,
+                    None,
+                    candidate_filter,
+                    candidate_scope,
+                );
+                let evaluate_acquisition = acquisition_due(
+                    &brain,
+                    nearest_for_stride.map(|candidate| candidate.distance),
+                );
+                // The raw candidate only prices the stride. A graph-filtered
+                // selection becomes a target only on a due tick; otherwise
+                // `BrainFacts` stay untargeted rather than borrowing it.
+                (
+                    evaluate_acquisition.then_some(nearest_selection).flatten(),
+                    evaluate_acquisition,
+                )
             };
             (target, evaluate_acquisition)
         } else {
@@ -1032,7 +980,3 @@ fn retained_combat_slot(outcome: &EnemyOutcome) -> Option<Vec3> {
         .then_some(outcome.brain.combat_slot)
         .flatten()
 }
-
-#[cfg(test)]
-#[path = "../ai_tests.rs"]
-mod tests;

@@ -9,8 +9,7 @@ use super::common::*;
 // same `BehaviorGraphDescriptor` serde + `validate` chokepoint, so acceptance
 // and every rejection below is identical by construction. Tested on a bare
 // descriptor value with NO entity materialized: the state → mesh
-// animation-state mapping is cross-component and stays a SPAWN-time check, as
-// it is for `components.ai`.
+// animation-state mapping is cross-component and stays a SPAWN-time check.
 
 /// Guard source shared by the JS fixtures: `targetDistance <= 16`.
 const JS_NEAR_GUARD: &str = r#"{ op: "le", a: { op: "input", name: "@brain.targetDistance" }, b: { op: "const", value: 16 } }"#;
@@ -78,7 +77,6 @@ fn js_entity_descriptor_parses_a_behavior_graph() {
     // Absent `engagementRadius` falls back to `attack.range` (the fixture's 2).
     assert_eq!(graph.engagement_radius, None);
     assert_eq!(graph.engagement_radius(), 2.0);
-    assert!(d.ai.is_none());
 }
 
 #[test]
@@ -697,14 +695,6 @@ fn shipped_pose_fixture_is_a_direct_graph_with_valid_mesh_animation_states() {
     let ts = shipped_reference_descriptor_from_typescript("poseFixtureEnemyEntity");
     let luau = shipped_reference_descriptor_from_luau("poseFixtureEnemyEntity");
 
-    assert!(
-        ts.ai.is_none(),
-        "the TS pose fixture has no legacy AI block"
-    );
-    assert!(
-        luau.ai.is_none(),
-        "the Luau pose fixture has no legacy AI block"
-    );
     assert_eq!(
         ts.behavior, luau.behavior,
         "the pose graphs stay in lockstep"

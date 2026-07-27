@@ -14,8 +14,7 @@ use postretro_entities::{ComponentKind, EntityId, EntityRegistry};
 ///   player-start / net-slot / default-weapon spawn), AND
 /// - its **live** registry columns carry BOTH `ComponentKind::Brain` AND
 ///   `ComponentKind::Agent` (the engine-owned AI brain + navigation agent a brain
-///   block materializes together, in either of its two spellings: the legacy
-///   `components.ai` preset or an authored `components.behavior` graph — see
+///   `components.behavior` graph materializes together — see
 ///   `data_archetype::attach_descriptor_components`).
 ///
 /// Contract notes for importers:

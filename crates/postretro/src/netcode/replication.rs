@@ -402,30 +402,34 @@ mod tests {
     use postretro_entities::components::mesh::{
         AnimationState, InterruptPolicy, MeshAnimation, MeshComponent,
     };
-    use postretro_entities::data_descriptors::{AiDescriptor, AiStateNames};
+    use postretro_entities::data_descriptors::{
+        BehaviorGraphDescriptor, BehaviorStateDescriptor, MotionVerb,
+    };
     use postretro_entities::provenance::{
         DescriptorComponentKind, DescriptorProvenance, DescriptorSpawnPath,
     };
     use postretro_entities::{ComponentValue, Transform};
 
-    // A minimal valid AI brain — the predicate only needs the component PRESENT, but a
-    // real `BrainComponent` keeps the fixture honest about what an `ai` descriptor block
-    // materializes.
+    // A minimal valid graph brain — the predicate only needs the component
+    // present, but a real `BrainComponent` keeps the fixture honest.
     fn brain() -> BrainComponent {
-        BrainComponent::from_descriptor(&AiDescriptor {
-            detection_range: 18.0,
-            attack_range: 2.0,
-            leash_range: 26.0,
-            attack_damage: 8.0,
-            attack_cooldown_ms: 1000.0,
+        BrainComponent::from_graph(&BehaviorGraphDescriptor {
+            initial: "idle".to_string(),
+            states: std::collections::BTreeMap::from([(
+                "idle".to_string(),
+                BehaviorStateDescriptor {
+                    animation: "idle".to_string(),
+                    motion: MotionVerb::Hold,
+                    action: None,
+                    transitions: Vec::new(),
+                    on_enter: None,
+                },
+            )]),
+            interrupts: Vec::new(),
+            candidate_filter: None,
+            attack: None,
+            engagement_radius: None,
             move_speed: 3.5,
-            death_despawn_ms: 1500.0,
-            states: AiStateNames {
-                idle: "idle".into(),
-                alert: "locomotion".into(),
-                attack: "attack".into(),
-                death: "death".into(),
-            },
         })
     }
 

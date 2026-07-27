@@ -2,9 +2,10 @@
 // See: context/lib/scripting.md
 
 use super::super::*;
+use rquickjs::object::Filter;
 
 /// Deserialize an entity-type descriptor from a JS object. Shape:
-/// `{ canonicalName?: string, defaultWeapon?: string, components?: { mesh?: MeshDescriptor, movement?: PlayerMovementDescriptor, weapon?: WeaponDescriptor, health?: HealthDescriptor, ai?: AiDescriptor, behavior?: BehaviorGraphDescriptor, light?: LightDescriptor, emitter?: BillboardEmitterComponent } }`.
+/// `{ canonicalName?: string, defaultWeapon?: string, components?: { mesh?: MeshDescriptor, movement?: PlayerMovementDescriptor, weapon?: WeaponDescriptor, health?: HealthDescriptor, behavior?: BehaviorGraphDescriptor, light?: LightDescriptor, emitter?: BillboardEmitterComponent } }`.
 /// Component sub-objects parse via `serde_json` after a recursive walk through
 /// the existing `js_to_json` helper — matches how `LightAnimation` /
 /// `BillboardEmitterComponent` cross the FFI elsewhere.
@@ -45,7 +46,6 @@ pub fn entity_descriptor_from_js<'js>(
     let mut weapon = None;
     let mut mesh = None;
     let mut health = None;
-    let mut ai = None;
     let mut behavior = None;
 
     if obj.contains_key("components").map_err(js_err)? {
@@ -104,17 +104,12 @@ pub fn entity_descriptor_from_js<'js>(
                     health = Some(descriptor.validate()?);
                 }
             }
-            if components_obj.contains_key("ai").map_err(js_err)? {
-                let raw: JsValue = components_obj.get("ai").map_err(js_err)?;
-                if !raw.is_null() && !raw.is_undefined() {
-                    let json = conv::js_to_json(ctx, raw).map_err(js_err)?;
-                    let descriptor: AiDescriptor = serde_json::from_value(json).map_err(|e| {
-                        DescriptorError::InvalidShape {
-                            reason: format!("`components.ai` invalid: {e}"),
-                        }
-                    })?;
-                    ai = Some(descriptor.validate()?);
-                }
+            if has_own_string_key(&components_obj, "ai")? {
+                return Err(DescriptorError::InvalidShape {
+                    reason:
+                        "`components.ai` has been retired; author `components.behavior` instead"
+                            .to_string(),
+                });
             }
             if components_obj.contains_key("behavior").map_err(js_err)? {
                 let raw: JsValue = components_obj.get("behavior").map_err(js_err)?;
@@ -171,11 +166,20 @@ pub fn entity_descriptor_from_js<'js>(
         weapon,
         mesh,
         health,
-        ai,
         behavior,
     };
-    descriptor.validate_component_exclusivity()?;
     Ok(descriptor)
+}
+
+/// `Object::contains_key` follows the JavaScript prototype chain. The migration
+/// boundary deliberately rejects only an own legacy key: inherited data is not
+/// authored descriptor content, while an own `null` or `undefined` key is.
+fn has_own_string_key(object: &Object<'_>, wanted: &str) -> Result<bool, DescriptorError> {
+    object
+        .own_keys::<String>(Filter::new().string())
+        .try_fold(false, |found, key| {
+            Ok(found || key.map_err(js_err)? == wanted)
+        })
 }
 
 /// The generic JSON bridge intentionally maps unsupported VM values to JSON

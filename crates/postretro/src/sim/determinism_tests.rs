@@ -40,8 +40,9 @@ use postretro_entities::components::mesh::{
     RATE_MIN, resolve_pending_animation_stamps,
 };
 use postretro_entities::components::weapon::WeaponComponent;
-use postretro_entities::data_descriptors::{AiDescriptor, AiStateNames};
-use postretro_entities::data_descriptors::{LEGACY_ALERT_STATE, LEGACY_ATTACK_STATE};
+use postretro_entities::data_descriptors::{
+    ActionVerb, AttackParams, BehaviorGraphDescriptor, BehaviorStateDescriptor, MotionVerb,
+};
 use postretro_entities::{
     CrossingCondition, CrossingDescriptor, DataRegistry, EntityId, EntityRegistry, MoverCommand,
     NamedReaction, PrimitiveDescriptor, ReactionDescriptor, ReplicationScope, ScriptCtx,
@@ -63,6 +64,8 @@ const DT: f32 = 1.0 / 60.0;
 const GRAVITY: f32 = -20.0;
 const POSITION_EPSILON: f32 = 0.001;
 const VELOCITY_EPSILON: f32 = 0.001;
+const ALERT_STATE: &str = "alert";
+const ATTACK_STATE: &str = "attack";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Role {
@@ -880,24 +883,7 @@ fn spawn_enemy(registry: &mut EntityRegistry, position: Vec3) -> EntityId {
         ..Transform::default()
     });
     registry
-        .set_component(
-            id,
-            BrainComponent::from_descriptor(&AiDescriptor {
-                detection_range: 8.0,
-                attack_range: 2.0,
-                leash_range: 12.0,
-                attack_damage: 7.0,
-                attack_cooldown_ms: 1000.0,
-                move_speed: 0.0,
-                death_despawn_ms: 1000.0,
-                states: AiStateNames {
-                    idle: "idle".to_string(),
-                    alert: "alert".to_string(),
-                    attack: "attack".to_string(),
-                    death: "death".to_string(),
-                },
-            }),
-        )
+        .set_component(id, BrainComponent::from_graph(&enemy_graph(0.0, "alert")))
         .expect("enemy brain component should attach");
     registry
         .set_component(
@@ -1053,30 +1039,73 @@ fn open_floor_nav_graph() -> NavGraph {
     })
 }
 
-/// A legacy brain staged directly into one of its lowered graph states.
-fn brain_in_state(descriptor: &AiDescriptor, state: &str) -> BrainComponent {
-    let mut brain = BrainComponent::from_descriptor(descriptor);
+/// A direct-graph brain staged directly into one of its declared states.
+fn brain_in_state(graph: &BehaviorGraphDescriptor, state: &str) -> BrainComponent {
+    let mut brain = BrainComponent::from_graph(graph);
     brain.state_index =
-        graph_state_index(&brain.graph, state).expect("the lowered graph declares the state");
+        graph_state_index(&brain.graph, state).expect("the graph declares the state");
     brain
 }
 
-fn driven_agent_descriptor() -> AiDescriptor {
-    AiDescriptor {
-        detection_range: 40.0,
-        attack_range: 2.0,
-        leash_range: 48.0,
-        attack_damage: 7.0,
-        attack_cooldown_ms: 1000.0,
-        move_speed: 3.5,
-        death_despawn_ms: 1000.0,
-        states: AiStateNames {
-            idle: "idle".to_string(),
-            alert: "locomotion".to_string(),
-            attack: "attack".to_string(),
-            death: "death".to_string(),
-        },
+fn enemy_graph(move_speed: f32, locomotion_animation: &str) -> BehaviorGraphDescriptor {
+    BehaviorGraphDescriptor {
+        initial: "idle".to_string(),
+        states: std::collections::BTreeMap::from([
+            (
+                "idle".to_string(),
+                BehaviorStateDescriptor {
+                    animation: "idle".to_string(),
+                    motion: MotionVerb::Hold,
+                    action: None,
+                    transitions: Vec::new(),
+                    on_enter: None,
+                },
+            ),
+            (
+                ALERT_STATE.to_string(),
+                BehaviorStateDescriptor {
+                    animation: locomotion_animation.to_string(),
+                    motion: MotionVerb::ChaseTarget,
+                    action: None,
+                    transitions: Vec::new(),
+                    on_enter: None,
+                },
+            ),
+            (
+                ATTACK_STATE.to_string(),
+                BehaviorStateDescriptor {
+                    animation: "attack".to_string(),
+                    motion: MotionVerb::ChaseTarget,
+                    action: Some(ActionVerb::Attack),
+                    transitions: Vec::new(),
+                    on_enter: None,
+                },
+            ),
+            (
+                "death".to_string(),
+                BehaviorStateDescriptor {
+                    animation: "death".to_string(),
+                    motion: MotionVerb::Freeze,
+                    action: None,
+                    transitions: Vec::new(),
+                    on_enter: None,
+                },
+            ),
+        ]),
+        interrupts: Vec::new(),
+        candidate_filter: None,
+        attack: Some(AttackParams {
+            damage: 7.0,
+            range: 2.0,
+            cooldown_ms: 1000.0,
+        }),
+        engagement_radius: None,
+        move_speed,
     }
+}
+
+fn driven_agent_graph() -> BehaviorGraphDescriptor {
+    enemy_graph(3.5, "locomotion")
 }
 
 fn driven_agent_mesh(current_state: &str) -> MeshComponent {
@@ -1113,7 +1142,7 @@ fn spawn_driven_agent(
         ..Transform::default()
     });
     registry
-        .set_component(enemy, brain_in_state(&driven_agent_descriptor(), state))
+        .set_component(enemy, brain_in_state(&driven_agent_graph(), state))
         .expect("driven agent brain should attach");
     registry
         .set_component(enemy, AgentComponent::new(0.35, 1.8, 0.4, 3.5))
@@ -1233,7 +1262,7 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
         let enemy = spawn_driven_agent(
             &mut registry,
             Vec3::new(5.0, 1.21, 5.0),
-            LEGACY_ATTACK_STATE,
+            ATTACK_STATE,
             "attack",
         );
         let mut mesh = registry
@@ -1280,7 +1309,7 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
         let enemy = spawn_driven_agent(
             &mut registry,
             Vec3::new(5.0, 1.21, 5.0),
-            LEGACY_ALERT_STATE,
+            ALERT_STATE,
             "locomotion",
         );
         let mut mesh = registry
@@ -1436,7 +1465,7 @@ fn update_brain_playback_rate_scales_from_clip_travel_speed() {
     let enemy = spawn_driven_agent(
         &mut registry,
         Vec3::new(5.0, 1.21, 5.0),
-        LEGACY_ALERT_STATE,
+        ALERT_STATE,
         "locomotion",
     );
     // Force a known post-steering velocity; the producer reads
@@ -1485,7 +1514,7 @@ fn update_brain_playback_rate_skips_scaling_when_speed_scale_off() {
     let enemy = spawn_driven_agent(
         &mut registry,
         Vec3::new(5.0, 1.21, 5.0),
-        LEGACY_ALERT_STATE,
+        ALERT_STATE,
         "locomotion",
     );
     let mut mesh = registry
@@ -1566,7 +1595,7 @@ fn local_locomotion_rate_precedence_matrix_is_override_then_derived_then_fallbac
         let enemy = spawn_driven_agent(
             &mut registry,
             Vec3::new(5.0, 1.21, 5.0),
-            LEGACY_ALERT_STATE,
+            ALERT_STATE,
             "locomotion",
         );
         let mut mesh = registry
@@ -1812,7 +1841,7 @@ fn simulate_tick_writes_target_aim_and_tick_end_heading_pose_inputs() {
         let enemy = spawn_driven_agent(
             &mut registry,
             Vec3::new(5.0, 1.21, 5.0),
-            LEGACY_ATTACK_STATE,
+            ATTACK_STATE,
             "attack",
         );
         let mut brain = registry
@@ -1878,7 +1907,7 @@ fn pose_inputs_fallbacks_and_vertical_targets_remain_finite() {
         });
         let brain = BrainComponent {
             acquired_target,
-            ..brain_in_state(&driven_agent_descriptor(), LEGACY_ATTACK_STATE)
+            ..brain_in_state(&driven_agent_graph(), ATTACK_STATE)
         };
         registry.set_component(entity, brain).unwrap();
 

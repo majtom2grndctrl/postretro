@@ -20,9 +20,7 @@ use super::MapEntity;
 use postretro_entities::AmmoReserve;
 use postretro_entities::components::agent::attach_agent;
 use postretro_entities::components::billboard_emitter::BillboardEmitterComponent;
-use postretro_entities::components::brain::{
-    attach_brain, attach_brain_graph, validate_brain_animation_states,
-};
+use postretro_entities::components::brain::{attach_brain_graph, validate_brain_animation_states};
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::light::{FalloffKind, LightComponent, LightKind};
 use postretro_entities::components::mesh::{
@@ -277,13 +275,9 @@ pub(crate) fn ai_capsule_center_from_feet_offset(
     -capsule_center_to_feet_origin_offset(params.radius, params.height)
 }
 
-/// Whether this descriptor authors a brain, in either of its two spellings: the
-/// legacy `components.ai` preset or an authored `components.behavior` graph.
-/// Parse-time validation guarantees at most one is present, and the spawn path
-/// lowers the legacy one into the same graph the authored one carries, so every
-/// site that used to ask "is there an `ai` block?" asks this instead.
+/// Whether this descriptor authors a behavior-graph brain.
 fn descriptor_carries_brain(descriptor: &EntityTypeDescriptor) -> bool {
-    descriptor.ai.is_some() || descriptor.behavior.is_some()
+    descriptor.behavior.is_some()
 }
 
 /// Whether materializing this descriptor would attach the engine-owned AI pair
@@ -535,24 +529,17 @@ pub(crate) fn attach_descriptor_components(
         owned_components.insert(DescriptorComponentKind::Health);
     }
 
-    // A brain block materializes the engine-owned brain AND a movable navigation
-    // agent (the tick drives the agent each tick). The two authoring spellings
-    // meet here: a legacy `ai` preset lowers to the graph an authored `behavior`
-    // block carries directly, so exactly one `BrainComponent` shape leaves this
-    // site regardless of which block was authored.
+    // A behavior graph materializes the engine-owned brain AND a movable
+    // navigation agent (the tick drives the agent each tick).
     //
     // The agent's capsule is seeded from the navmesh's baked `NavAgentParams`
     // (passed down from the attach call site — never read inside the component).
     // When the map has no navmesh (`agent_params == None`), the capsule falls
     // back to an engine default and the agent simply cannot path. Move speed
-    // comes from whichever block was authored. After both components land, the
-    // brain's state → animation-state map is validated against the entity's mesh
+    // comes from the graph. After both components land, the brain's state →
+    // animation-state map is validated against the entity's mesh
     // (cross-component: neither block could see the mesh at its own parse).
-    let brain_move_speed = if let Some(ai_desc) = descriptor.ai.as_ref() {
-        // `set_component`/`attach_*` only fail on a stale id — just returned.
-        let _ = attach_brain(registry, id, ai_desc);
-        Some(ai_desc.move_speed)
-    } else if let Some(behavior) = descriptor.behavior.as_ref() {
+    let brain_move_speed = if let Some(behavior) = descriptor.behavior.as_ref() {
         let _ = attach_brain_graph(registry, id, behavior);
         Some(behavior.move_speed)
     } else {
@@ -987,7 +974,6 @@ mod tests {
             weapon: None,
             mesh: None,
             health: None,
-            ai: None,
             behavior: None,
         }
     }
@@ -1210,7 +1196,6 @@ mod tests {
                 }),
                 zone_multipliers: std::collections::HashMap::new(),
             }),
-            ai: None,
             behavior: None,
         }];
         let placements = vec![placement("target_dummy", &[])];
@@ -1604,7 +1589,6 @@ mod tests {
             weapon: None,
             mesh: None,
             health: None,
-            ai: None,
             behavior: None,
         }];
         let placements = vec![placement(
@@ -1649,7 +1633,6 @@ mod tests {
             weapon: None,
             mesh: None,
             health: None,
-            ai: None,
             behavior: None,
         }];
         let placements = vec![placement("campfire", &[("velocity", "9.0 9.0 9.0")])];
@@ -1691,7 +1674,6 @@ mod tests {
             weapon: None,
             mesh: None,
             health: None,
-            ai: None,
             behavior: None,
         }];
         let placements = vec![placement("campfire", &[("initial_rate", "20.5")])];
@@ -1730,7 +1712,6 @@ mod tests {
             weapon: None,
             mesh: None,
             health: None,
-            ai: None,
             behavior: None,
         }];
         let placements = vec![placement("burstfire", &[("initial_burst", "24")])];
@@ -1771,7 +1752,6 @@ mod tests {
             weapon: None,
             mesh: None,
             health: None,
-            ai: None,
             behavior: None,
         }];
         let placements = vec![placement(
@@ -1822,7 +1802,6 @@ mod tests {
             weapon: None,
             mesh: None,
             health: None,
-            ai: None,
             behavior: None,
         }];
 
@@ -1890,7 +1869,6 @@ mod tests {
             weapon: None,
             mesh: None,
             health: None,
-            ai: None,
             behavior: None,
         }];
         let placements = vec![placement("ghost", &[]), placement("ghost", &[])];
@@ -2000,7 +1978,6 @@ mod tests {
             weapon: None,
             mesh: None,
             health: None,
-            ai: None,
             behavior: None,
         }
     }
@@ -2025,7 +2002,6 @@ mod tests {
             }),
             mesh: None,
             health: None,
-            ai: None,
             behavior: None,
         }
     }
@@ -2052,7 +2028,6 @@ mod tests {
             weapon: None,
             mesh: None,
             health: None,
-            ai: None,
             behavior: None,
         }
     }
@@ -2105,7 +2080,6 @@ mod tests {
             weapon: None,
             mesh: None,
             health: None,
-            ai: None,
             behavior: None,
         }
     }

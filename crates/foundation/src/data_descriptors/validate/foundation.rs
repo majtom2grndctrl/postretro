@@ -22,6 +22,35 @@ pub fn validate_primitive_name(name: String) -> Result<String, DescriptorError> 
     Ok(name)
 }
 
+/// Validate the shared identifier syntax used for authored resource keys.
+///
+/// Callers supply their complete descriptor field path so diagnostics stay
+/// accurate when another authoring surface shares this key space.
+pub fn validate_ascii_identifier(field_path: &str, value: &str) -> Result<(), DescriptorError> {
+    if value.is_empty() {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!("`{field_path}` must be a non-empty ASCII identifier"),
+        });
+    }
+    if value.len() > 64 {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`{field_path}` must be at most 64 bytes, got {}",
+                value.len()
+            ),
+        });
+    }
+    if !value
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b':' | b'-'))
+    {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!("`{field_path}` must match [A-Za-z0-9_.:-] and be ASCII"),
+        });
+    }
+    Ok(())
+}
+
 /// Validate a dash expression node at declaration: wrap it in a read-only
 /// [`BakedIr`] envelope and `bind` it against [`MovementScope::for_validation`],
 /// then require the bound program's root type to match the field's expected

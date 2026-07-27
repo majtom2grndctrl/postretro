@@ -5,7 +5,9 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::data_descriptors::{DescriptorError, is_portable_content_relative_asset_path};
+use crate::data_descriptors::{
+    DescriptorError, is_portable_content_relative_asset_path, validate_ascii_identifier,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -117,7 +119,7 @@ impl WeaponDescriptor {
             }
         }
         if let Some(WeaponResource::Ammo(ammo)) = self.resource.as_ref() {
-            validate_ascii_identifier("resource.type", &ammo.ammo_type)?;
+            validate_ascii_identifier("components.weapon.resource.type", &ammo.ammo_type)?;
             for (field, value) in [
                 ("magazine", ammo.magazine),
                 ("costPerShot", ammo.cost_per_shot),
@@ -137,32 +139,7 @@ impl WeaponDescriptor {
 }
 
 fn validate_credit_source(value: &str) -> Result<(), DescriptorError> {
-    validate_ascii_identifier("creditSource", value)
-}
-
-fn validate_ascii_identifier(field: &str, value: &str) -> Result<(), DescriptorError> {
-    if value.is_empty() {
-        return Err(DescriptorError::InvalidShape {
-            reason: format!("`components.weapon.{field}` must be a non-empty ASCII identifier"),
-        });
-    }
-    if value.len() > 64 {
-        return Err(DescriptorError::InvalidShape {
-            reason: format!(
-                "`components.weapon.{field}` must be at most 64 bytes, got {}",
-                value.len()
-            ),
-        });
-    }
-    if !value
-        .bytes()
-        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b':' | b'-'))
-    {
-        return Err(DescriptorError::InvalidShape {
-            reason: format!("`components.weapon.{field}` must match [A-Za-z0-9_.:-] and be ASCII"),
-        });
-    }
-    Ok(())
+    validate_ascii_identifier("components.weapon.creditSource", value)
 }
 
 /// Authored health component preset attached to an entity type descriptor.

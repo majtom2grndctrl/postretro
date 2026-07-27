@@ -914,8 +914,8 @@ fn both_parsers_reject_a_non_finite_engagement_radius_with_its_path() {
     // clean validation error while `engagementRadius: Infinity` silently became
     // the default — the same authoring mistake with two outcomes, on every
     // optional numeric field of every descriptor. The bridge now rejects
-    // non-finite numbers and names the field. The finiteness rule still guards
-    // the raw-JSON and lowering paths
+    // non-finite numbers and names the field. Descriptor validation also guards
+    // move speed and engagement radius
     // (`move_speed_and_engagement_radius_must_be_finite_and_positive`). What
     // matters at this seam is that the two runtimes reject on the same
     // condition and report the same reason and path; only the VM-supplied
@@ -1001,11 +1001,9 @@ fn both_parsers_reject_a_state_local_transition_targeting_its_own_state() {
 
 #[test]
 fn both_parsers_accept_a_self_targeting_interrupt() {
-    // Deliberately asymmetric with the state-local rule above, and pinned here
-    // so a future reader does not "fix" the inconsistency: the evaluator SKIPS
-    // an interrupt naming the current state rather than letting it win, so it
-    // blocks nothing — and the legacy lowering emits exactly this shape for its
-    // "stand down on target loss" edge.
+    // Deliberately asymmetric with the state-local rule above: a direct behavior
+    // graph may name its current state in an interrupt. The evaluator skips that
+    // interrupt rather than letting it win, so it blocks nothing.
     let js = eval_js(
         &js_behavior(JS_NEAR_GUARD, "").replace(
             "moveSpeed: 3,",

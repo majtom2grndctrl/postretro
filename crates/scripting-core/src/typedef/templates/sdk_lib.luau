@@ -1072,15 +1072,17 @@ export type Runtime = {
 --- Runtime-value builder vocabulary global.
 declare runtime: Runtime
 
--- Behavior-graph guard inputs (sdk/lib/brain.luau). Pre-wrapped IR input leaves
--- for the fixed `@brain.*` namespace plus the `@state.<name>` leaf builder --
--- pure SDK sugar over the same data `runtime.read` returns, not primitives. The
--- key set is the `BRAIN_INPUTS` table in crates/foundation/src/brain.rs.
+-- Behavior-graph guard and candidate inputs (sdk/lib/brain.luau). Pre-wrapped
+-- IR input leaves for the fixed brain and candidate namespaces plus the
+-- `@state.<name>` leaf builder -- pure SDK sugar over the same data
+-- `runtime.read` returns, not primitives. The key sets mirror `BRAIN_INPUTS` in
+-- crates/foundation/src/brain.rs and `CANDIDATE_INPUTS` in
+-- crates/foundation/src/candidate.rs.
 
 --- The fixed brain-fact namespace a transition guard may read. Each field is an
 --- IR input leaf, usable anywhere a `runtime` builder takes an operand.
 export type BrainInputs = {
-  --- `true` while the enemy has a selected target this tick (boolean).
+  --- `true` while the enemy has a selected target this tick. This is the only authoritative target-presence test (boolean).
   hasTarget: RuntimeRead,
   --- Distance to the selected target in metres, or `1e9` with no target -- so a bare `le(targetDistance, r)` reads false untargeted (number).
   targetDistance: RuntimeRead,
@@ -1094,11 +1096,11 @@ export type BrainInputs = {
   health: RuntimeRead,
   --- The enemy's maximum hit points (number).
   maxHealth: RuntimeRead,
-  --- The selected target's current hit points (number).
+  --- The selected target's current hit points, or zero with no target or no health component (number).
   targetHealth: RuntimeRead,
-  --- The selected target's maximum hit points (number).
+  --- The selected target's maximum hit points, or zero with no target or no health component (number).
   targetMaxHealth: RuntimeRead,
-  --- `true` once the selected target's death sweep has handled it (boolean).
+  --- `true` once the selected target's death sweep has handled it; false with no target (boolean).
   targetDied: RuntimeRead,
 }
 

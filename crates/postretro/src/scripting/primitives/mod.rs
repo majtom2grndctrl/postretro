@@ -393,12 +393,12 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("motion", "MotionVerb", "What this state does with steering.")
         .field("action?", "ActionVerb", "Optional action performed while this state is current. `\"attack\"` requires the graph's `attack` block.")
         .field("transitions?", "Vec<TransitionDescriptor>", "State-local edges, evaluated in declaration order after the graph's `interrupts`. Optional; defaults to none.")
-        .field("onEnter?", "String", "Optional named-event address fired through the post-tick drain when the brain enters this state.")
+        .field("onEnter?", "String", "Optional named-event address fired through the post-tick drain when a transition changes the brain into this state. Initial spawn does not fire it.")
         .finish();
     registry
         .register_type("BehaviorGraphDescriptor")
-        .doc("Authored behavior state graph attached to `EntityTypeDescriptor.components.behavior`. Descriptor-owned tuning: maps never override these. The engine owns target selection, steering, damage, and determinism; the graph owns which states exist and the ordered guards between them. Mutually exclusive with `components.ai`, which lowers to this same representation at spawn.")
-        .field("initial", "String", "State entered at spawn. Must name a declared state. It is also the state forced when the aggro gate closes or no target exists, so it should be rest-appropriate.")
+        .doc("Authored behavior state graph attached to `EntityTypeDescriptor.components.behavior`. Descriptor-owned tuning: maps never override these. The engine owns the offered-target set, ranking and retention, steering, damage, and determinism; the graph owns candidate eligibility, which states exist, and the ordered guards between them. Mutually exclusive with `components.ai`, which lowers to this same representation at spawn.")
+        .field("initial", "String", "State entered at spawn. Must name a declared state. It is also forced when the aggro gate closes, so it should be rest-appropriate. Having no target does not force this state; guards still evaluate.")
         .field("states", "BehaviorStates", "Declared states keyed by author-chosen name. Must be non-empty.")
         .field("interrupts?", "Vec<TransitionDescriptor>", "Any-state edges, evaluated in declaration order BEFORE the current state's own transitions. An interrupt targeting the current state is skipped. Optional; defaults to none.")
         .field("candidateFilter?", "IrNode", "Optional boolean eligibility predicate evaluated per candidate the engine offers during acquisition. It can only narrow that offer set; it does not rank candidates or drop a retained target.")

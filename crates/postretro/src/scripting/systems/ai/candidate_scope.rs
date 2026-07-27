@@ -1,14 +1,12 @@
 // Live binding scope for per-offered-candidate behavior predicates.
+// See: context/lib/scripting.md §11
 
-use glam::Vec3;
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::{EntityId, EntityRegistry};
 use postretro_foundation::{
     BindingScope, CANDIDATE_INPUTS, CandidateInputRef, IrValue, ResolvedInput, ResolvedOutput,
     resolve_candidate_input,
 };
-
-use crate::nav::distance_xz;
 
 /// Read handle for a fixed candidate fact.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,14 +31,15 @@ impl CandidateScope {
 
     /// Refresh the offered candidate facts. Missing health deliberately reads
     /// as zero/false so a stale candidate snapshot can never leak across scans.
-    pub(crate) fn refresh(&mut self, registry: &EntityRegistry, candidate: EntityId, from: Vec3) {
+    pub(crate) fn refresh(
+        &mut self,
+        registry: &EntityRegistry,
+        candidate: EntityId,
+        distance: f32,
+    ) {
         let health = registry.get_component::<HealthComponent>(candidate).ok();
         self.fixed = [
-            IrValue::Number(
-                registry
-                    .get_component::<postretro_entities::Transform>(candidate)
-                    .map_or(0.0, |transform| distance_xz(transform.position, from)),
-            ),
+            IrValue::Number(distance),
             IrValue::Number(health.map_or(0.0, |health| health.current)),
             IrValue::Number(health.map_or(0.0, |health| health.max)),
             IrValue::Bool(health.is_some_and(|health| health.death_handled)),
@@ -77,6 +76,7 @@ impl BindingScope for CandidateScope {
 mod tests {
     use super::*;
     use crate::alloc_probe::AllocSnapshot;
+    use glam::Vec3;
     use postretro_entities::{EntityRegistry, Transform};
     use postretro_foundation::{
         BakedIr, CANDIDATE_DIED_INPUT, CANDIDATE_DISTANCE_INPUT, CANDIDATE_HEALTH_INPUT,
@@ -105,7 +105,7 @@ mod tests {
             )
             .expect("candidate is live");
         let mut scope = CandidateScope::for_validation();
-        scope.refresh(&registry, candidate, Vec3::ZERO);
+        scope.refresh(&registry, candidate, 5.0);
         for (name, expected) in [
             (CANDIDATE_DISTANCE_INPUT, IrValue::Number(5.0)),
             (CANDIDATE_HEALTH_INPUT, IrValue::Number(7.0)),
@@ -125,7 +125,7 @@ mod tests {
             ..Transform::default()
         });
         let mut scope = CandidateScope::for_validation();
-        scope.refresh(&registry, candidate, Vec3::ZERO);
+        scope.refresh(&registry, candidate, 1.0);
         for (name, expected) in [
             (CANDIDATE_HEALTH_INPUT, IrValue::Number(0.0)),
             (CANDIDATE_MAX_HEALTH_INPUT, IrValue::Number(0.0)),
@@ -164,11 +164,11 @@ mod tests {
             &scope,
         )
         .expect("candidate filter binds");
-        scope.refresh(&registry, first, Vec3::ZERO);
+        scope.refresh(&registry, first, 5.0);
         let _ = eval_value(&program, &scope);
 
         let snapshot = AllocSnapshot::arm();
-        scope.refresh(&registry, second, Vec3::ZERO);
+        scope.refresh(&registry, second, 8.0);
         let value = eval_value(&program, &scope);
         assert_eq!(
             snapshot.allocs_since(),

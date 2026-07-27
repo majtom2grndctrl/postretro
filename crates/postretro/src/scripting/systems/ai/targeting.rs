@@ -72,7 +72,7 @@ fn nearest_target_candidate(
             // Eligibility is per offered candidate only: retained lookup stays
             // above this scan and never consults the graph's policy.
             let filter_allows = candidate_filter.is_none_or(|filter| {
-                candidate_scope.refresh(registry, candidate.target.entity, from);
+                candidate_scope.refresh(registry, candidate.target.entity, candidate.distance);
                 eval_value(filter, candidate_scope) == IrValue::Bool(true)
             });
             if leash_range.is_none_or(|leash| candidate.distance <= leash)
@@ -121,15 +121,18 @@ pub(super) fn retained_is_outside_leash(
 /// The optional predicate is the future visibility/relevance seam intended for
 /// `context/research/cell-visibility-substrate.md` (and exact LOS work) without
 /// re-threading the FSM. It returns both the nearest offered candidate, without
-/// applying the leash, and the leash-eligible selected target. The former prices
-/// the think stride; the latter governs acquisition. If `retained_target` is
-/// still a valid, leash-eligible player pawn, it is preferred unless another
-/// pawn is meaningfully closer by
-/// [`super::engine_floor::TARGET_SWITCH_HYSTERESIS_DISTANCE`]. When
-/// `retained_outside_leash` is true, the retained pawn is excluded from both
-/// scan results for this acquisition tick. This targeting path intentionally
-/// does not consult the registry's local-player marker, which is client-side
-/// convenience state.
+/// applying the leash, and the selected target. New acquisition requires both
+/// leash and candidate-filter eligibility. The former prices the think stride;
+/// the latter governs acquisition. If `retained_target` is still a valid,
+/// leash-eligible player pawn, it is preferred unless another pawn is
+/// meaningfully closer by
+/// [`super::engine_floor::TARGET_SWITCH_HYSTERESIS_DISTANCE`].
+/// The retained pawn is resolved separately and excluded from both scan results,
+/// so its candidate filter is never evaluated and does not drop it. When
+/// `retained_outside_leash` is true, it is also ineligible for retention on this
+/// acquisition tick. This targeting path intentionally does not consult the
+/// registry's local-player marker, which is client-side convenience state.
+#[allow(clippy::too_many_arguments)] // Keep the targeting chokepoint's independent policy inputs explicit.
 pub(crate) fn select_target(
     registry: &EntityRegistry,
     from: Vec3,
@@ -148,7 +151,7 @@ pub(crate) fn select_target(
         registry,
         from,
         visible,
-        retained_target.filter(|_| retained_outside_leash),
+        retained_target,
         leash_range,
         candidate_filter,
         candidate_scope,

@@ -435,23 +435,23 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                 .and_then(|entity| target_candidate(registry, entity, snap.position, None));
             let leash_range = brain.leash_range;
             let (candidate_filter, candidate_scope) = programs.candidate_filter_context(snap.id);
-            let (nearest, nearest_selection) = retained
-                .is_none()
-                .then(|| {
-                    select_target(
-                        registry,
-                        snap.position,
-                        None,
-                        false,
-                        None,
-                        leash_range,
-                        candidate_filter,
-                        candidate_scope,
-                    )
-                })
-                .unwrap_or((None, None));
-            let current_candidate = retained.or(nearest);
-            let current_distance = current_candidate.map(|candidate| candidate.distance);
+            let (nearest_for_stride, nearest_selection) = if retained.is_none() {
+                select_target(
+                    registry,
+                    snap.position,
+                    None,
+                    false,
+                    None,
+                    leash_range,
+                    candidate_filter,
+                    candidate_scope,
+                )
+            } else {
+                (None, None)
+            };
+            let current_distance = retained
+                .or(nearest_for_stride)
+                .map(|candidate| candidate.distance);
             let evaluate_acquisition = acquisition_due(&brain, current_distance);
 
             // The engine floor's retention leash. A brain without one (an
@@ -493,12 +493,12 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                         )
                         .1
                     }
-                    // `nearest` above IS this scan: it runs exactly when
-                    // `retained` is `None`, with the same arguments, over a
-                    // registry nothing has touched since. Re-running it made
-                    // every non-engaged brain pay the pawn scan twice on each
-                    // stride-due tick — the think stride adding work instead of
-                    // removing it.
+                    // The eligible half of the early scan above IS this
+                    // selection: it runs exactly when `retained` is `None`,
+                    // with the same arguments, over a registry nothing has
+                    // touched since. Re-running it made every non-engaged brain
+                    // pay the pawn scan twice on each stride-due tick — the
+                    // think stride adding work instead of removing it.
                     None if retained_target.is_none() => nearest_selection,
                     // A retained id that no longer resolves to a candidate still
                     // seeds hysteresis, so this scan is genuinely a different
@@ -518,7 +518,9 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                     }
                 }
             } else {
-                current_candidate.map(|candidate| candidate.target)
+                retained
+                    .map(|candidate| candidate.target)
+                    .or(nearest_selection)
             };
             (target, evaluate_acquisition)
         } else {

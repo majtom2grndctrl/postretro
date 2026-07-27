@@ -840,15 +840,17 @@
   export const runtime: Runtime;
 
   // -------------------------------------------------------------------------
-  // Behavior-graph guard inputs (sdk/lib/brain.ts). Pre-wrapped IR input leaves
-  // for the fixed `@brain.*` namespace plus the `@state.<name>` leaf builder —
-  // pure SDK sugar over `runtime.read`, not primitives. The property set is the
-  // `BRAIN_INPUTS` table in crates/foundation/src/brain.rs.
+  // Behavior-graph guard and candidate inputs (sdk/lib/brain.ts). Pre-wrapped
+  // IR input leaves for the fixed brain and candidate namespaces plus the
+  // `@state.<name>` leaf builder — pure SDK sugar over `runtime.read`, not
+  // primitives. The property sets mirror `BRAIN_INPUTS` in
+  // crates/foundation/src/brain.rs and `CANDIDATE_INPUTS` in
+  // crates/foundation/src/candidate.rs.
 
   /** The fixed brain-fact namespace a transition guard may read. Each property
    * is an IR input leaf, usable anywhere a `runtime` builder takes an operand. */
   export interface BrainInputs {
-    /** `true` while the enemy has a selected target this tick (boolean). */
+    /** `true` while the enemy has a selected target this tick. This is the only authoritative target-presence test (boolean). */
     readonly hasTarget: RuntimeRead;
     /** Distance to the selected target in metres, or `1e9` with no target — so a bare `le(targetDistance, r)` reads false untargeted (number). */
     readonly targetDistance: RuntimeRead;
@@ -862,11 +864,11 @@
     readonly health: RuntimeRead;
     /** The enemy's maximum hit points (number). */
     readonly maxHealth: RuntimeRead;
-    /** The selected target's current hit points (number). */
+    /** The selected target's current hit points, or zero with no target or no health component (number). */
     readonly targetHealth: RuntimeRead;
-    /** The selected target's maximum hit points (number). */
+    /** The selected target's maximum hit points, or zero with no target or no health component (number). */
     readonly targetMaxHealth: RuntimeRead;
-    /** `true` once the selected target's death sweep has handled it (boolean). */
+    /** `true` once the selected target's death sweep has handled it; false with no target (boolean). */
     readonly targetDied: RuntimeRead;
   }
 

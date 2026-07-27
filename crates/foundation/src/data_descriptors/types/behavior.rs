@@ -133,8 +133,8 @@ pub struct BehaviorStateDescriptor {
 /// determinism; this descriptor owns which states exist, what each one does,
 /// the ordered guards between them, and optional candidate eligibility.
 ///
-/// Wire keys are camelCase: `initial`, `states`, `interrupts`, `attack`,
-/// `engagementRadius`, `moveSpeed`.
+/// Wire keys are camelCase: `initial`, `states`, `interrupts`,
+/// `candidateFilter`, `attack`, `engagementRadius`, `moveSpeed`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BehaviorGraphDescriptor {

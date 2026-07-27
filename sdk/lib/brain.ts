@@ -1,16 +1,17 @@
-// Behavior-graph guard inputs: pre-wrapped IR input leaves for the fixed
-// `@brain.*` namespace, plus the `@state.<name>` leaf builder.
+// Behavior-graph guard and candidate inputs: pre-wrapped IR input leaves for
+// the fixed brain and candidate namespaces, plus the `@state.<name>` leaf
+// builder.
 //
 // These are pure SDK sugar over `runtime.read(...)` — no primitive, no FFI. A
 // leaf is plain data (`{ op: "input", name }`), so sharing one frozen node
 // across every guard that reads it is safe: the `runtime` builders never mutate
 // their operands.
 //
-// SYNC OBLIGATION: `brain`'s properties are the `BRAIN_INPUTS` table in
-// `crates/foundation/src/brain.rs`, one property per entry, named by stripping
-// the `@brain.` prefix. `brain.luau` carries the same set. Adding a brain input
-// means editing all three; `brain_sdk_helpers_cover_every_brain_input` (in
-// `crates/scripting-core/src/data_descriptors/tests/behavior.rs`) fails until
+// SYNC OBLIGATION: `brain` mirrors the `BRAIN_INPUTS` table in
+// `crates/foundation/src/brain.rs`; `candidate` mirrors `CANDIDATE_INPUTS` in
+// `crates/foundation/src/candidate.rs`. `brain.luau` carries both sets. Adding
+// an input means editing both preludes; the SDK-helper drift tests in
+// `crates/scripting-core/src/data_descriptors/tests/behavior.rs` fail until
 // they agree.
 // See: context/lib/scripting.md §11 · context/lib/entity_model.md §4
 
@@ -20,7 +21,8 @@ import { runtime } from "./runtime";
 /** The fixed brain-fact namespace a transition guard may read. Each property is
  * an IR input leaf, usable anywhere a `runtime` builder takes an operand. */
 export interface BrainInputs {
-  /** `true` while the enemy has a selected target this tick (boolean). */
+  /** `true` while the enemy has a selected target this tick. This is the only
+   * authoritative target-presence test (boolean). */
   readonly hasTarget: RuntimeRead;
   /** Distance to the selected target in metres, or `1e9` with no target — so a
    * bare `le(targetDistance, r)` reads false untargeted (number). */
@@ -37,11 +39,14 @@ export interface BrainInputs {
   readonly health: RuntimeRead;
   /** The enemy's maximum hit points (number). */
   readonly maxHealth: RuntimeRead;
-  /** The selected target's current hit points (number). */
+  /** The selected target's current hit points, or zero with no target or no
+   * health component (number). */
   readonly targetHealth: RuntimeRead;
-  /** The selected target's maximum hit points (number). */
+  /** The selected target's maximum hit points, or zero with no target or no
+   * health component (number). */
   readonly targetMaxHealth: RuntimeRead;
-  /** `true` once the selected target's death sweep has handled it (boolean). */
+  /** `true` once the selected target's death sweep has handled it; false with
+   * no target (boolean). */
   readonly targetDied: RuntimeRead;
 }
 

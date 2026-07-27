@@ -35,11 +35,11 @@ use postretro_entities::data_descriptors::{
 use postretro_entities::registry::{EntityId, EntityRegistry, Transform};
 use postretro_entities::{EntityStateComponent, ScriptCtx};
 use postretro_foundation::{
-    ActionVerb, AttackParams, BRAIN_HAS_TARGET_INPUT, BRAIN_TARGET_DIED_INPUT,
-    BRAIN_TARGET_DISTANCE_INPUT, BRAIN_TIME_IN_STATE_MS_INPUT, BakedIr, BehaviorGraphDescriptor,
-    BehaviorStateDescriptor, BoundProgram, CANDIDATE_DIED_INPUT, CANDIDATE_DISTANCE_INPUT,
-    CURRENT_IR_VERSION, ImpactEventDescriptor, IrNode, IrValue, MotionVerb, TransitionDescriptor,
-    bind,
+    ActionVerb, AttackParams, BRAIN_ACQUISITION_DUE_INPUT, BRAIN_HAS_TARGET_INPUT,
+    BRAIN_TARGET_DIED_INPUT, BRAIN_TARGET_DISTANCE_INPUT, BRAIN_TIME_IN_STATE_MS_INPUT, BakedIr,
+    BehaviorGraphDescriptor, BehaviorStateDescriptor, BindingScope, BoundProgram,
+    CANDIDATE_DIED_INPUT, CANDIDATE_DISTANCE_INPUT, CURRENT_IR_VERSION, ImpactEventDescriptor,
+    IrNode, IrValue, MotionVerb, TransitionDescriptor, bind,
 };
 use postretro_scripting_core::data_descriptors::{
     AirParams, CapsuleParams, FallParams, ForgivenessParams, GroundParams,
@@ -919,12 +919,18 @@ fn candidate_filter_excludes_dead_offered_pawn_but_allows_live_one() {
 }
 
 #[test]
-fn candidate_filter_never_drops_a_retained_target() {
+fn candidate_filter_is_never_evaluated_for_a_retained_target() {
     let mut registry = EntityRegistry::new();
     let retained = spawn_player(&mut registry, Vec3::new(2.0, 0.0, 0.0));
-    let filter = bind_candidate_filter_for_test(IrNode::Const {
-        value: IrValue::Bool(false),
+    let filter = bind_candidate_filter_for_test(IrNode::Gt {
+        a: Box::new(IrNode::Input {
+            name: CANDIDATE_DISTANCE_INPUT.into(),
+        }),
+        b: Box::new(IrNode::Const {
+            value: IrValue::Number(100.0),
+        }),
     });
+    let mut candidate_scope = CandidateScope::for_validation();
     let (_, target) = select_target(
         &registry,
         Vec3::ZERO,
@@ -933,9 +939,18 @@ fn candidate_filter_never_drops_a_retained_target() {
         None,
         None,
         Some(&filter),
-        &mut CandidateScope::for_validation(),
+        &mut candidate_scope,
     );
     assert_eq!(target.expect("retained candidate stays").entity, retained);
+    let distance = candidate_scope
+        .resolve_input(CANDIDATE_DISTANCE_INPUT)
+        .expect("candidate distance input")
+        .handle;
+    assert_eq!(
+        candidate_scope.read(&distance),
+        IrValue::Number(0.0),
+        "the untouched validation snapshot proves the retained pawn never entered filter evaluation"
+    );
 }
 
 #[test]
@@ -3621,6 +3636,200 @@ fn death_interrupt_releases_a_latched_target_and_filter_reacquires_a_live_pawn()
     run_ai_tick(&mut registry, &mut runtime, 0.016);
     assert_eq!(enemy_acquired_target(&registry, enemy), Some(live));
     assert_eq!(enemy_state_name(&registry, enemy), "charge");
+}
+
+#[test]
+fn candidate_filter_does_not_reprice_retained_target_think_stride() {
+    let graph = BehaviorGraphDescriptor {
+        initial: "alpha".to_string(),
+        states: BTreeMap::from([
+            (
+                "alpha".to_string(),
+                authored_state(
+                    "locomotion",
+                    MotionVerb::ChaseTarget,
+                    None,
+                    vec![edge(
+                        "beta",
+                        IrNode::Input {
+                            name: BRAIN_ACQUISITION_DUE_INPUT.into(),
+                        },
+                    )],
+                ),
+            ),
+            (
+                "beta".to_string(),
+                authored_state(
+                    "locomotion",
+                    MotionVerb::ChaseTarget,
+                    None,
+                    vec![edge(
+                        "alpha",
+                        IrNode::Input {
+                            name: BRAIN_ACQUISITION_DUE_INPUT.into(),
+                        },
+                    )],
+                ),
+            ),
+        ]),
+        interrupts: Vec::new(),
+        candidate_filter: Some(IrNode::Const {
+            value: IrValue::Bool(false),
+        }),
+        attack: None,
+        engagement_radius: None,
+        move_speed: 3.5,
+    };
+    let mut registry = EntityRegistry::new();
+    let retained_position = Vec3::new(35.0, 0.0, 0.0);
+    let retained = spawn_player(&mut registry, retained_position);
+    let mut brain = authored_brain(&graph, "alpha");
+    brain.acquired_target = Some(retained);
+    brain.think_stride_counter = 0;
+    let enemy = spawn_enemy(&mut registry, Vec3::ZERO, brain, 50.0);
+    let stride = think_stride_for_distance(distance_xz(retained_position, Vec3::ZERO));
+    assert!(stride > 1, "fixture must exercise a strided distance band");
+    let mut runtime = AiRuntime::new();
+    let mut prior_state = enemy_state_name(&registry, enemy);
+    let mut flips = 0;
+
+    for tick in 1..=stride * 2 {
+        run_ai_tick(&mut registry, &mut runtime, 0.016);
+        let state = enemy_state_name(&registry, enemy);
+        if state != prior_state {
+            flips += 1;
+            assert_eq!(
+                tick % stride,
+                0,
+                "the acquisitionDue edge may fire only at the raw-distance stride"
+            );
+            prior_state = state;
+        }
+    }
+
+    assert_eq!(
+        flips, 2,
+        "a filter that rejects offered candidates must not make a far retained target due every tick"
+    );
+    assert_eq!(enemy_acquired_target(&registry, enemy), Some(retained));
+}
+
+// Regression: the raw nearest candidate used to price an off-stride tick bypassed
+// candidate eligibility and became the brain's acquired target.
+#[test]
+fn off_stride_idle_brain_does_not_acquire_a_candidate_rejected_by_its_filter() {
+    let mut graph = target_probe_graph();
+    graph.candidate_filter = Some(IrNode::Const {
+        value: IrValue::Bool(false),
+    });
+    let mut registry = EntityRegistry::new();
+    let candidate_position = Vec3::new(35.0, 0.0, 0.0);
+    spawn_player(&mut registry, candidate_position);
+    let mut brain = authored_brain(&graph, "rest");
+    brain.think_stride_counter = 0;
+    let next_counter = brain.think_stride_counter.wrapping_add(1);
+    let enemy = spawn_enemy(&mut registry, Vec3::ZERO, brain, 50.0);
+    let stride = think_stride_for_distance(distance_xz(candidate_position, Vec3::ZERO));
+    assert!(stride > 1, "fixture must exercise a strided distance band");
+    assert_ne!(
+        next_counter % stride,
+        0,
+        "the first tick must be outside the acquisition stride"
+    );
+    let mut runtime = AiRuntime::new();
+
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+
+    assert_eq!(
+        enemy_state_name(&registry, enemy),
+        "rest",
+        "the hasTarget engagement guard must see no eligible target"
+    );
+    assert_eq!(
+        enemy_acquired_target(&registry, enemy),
+        None,
+        "raw nearest distance may price the stride but must not acquire the rejected pawn"
+    );
+}
+
+#[test]
+fn target_died_latch_becomes_visible_after_a_same_ai_tick_kill_and_sweep() {
+    let observer_graph = BehaviorGraphDescriptor {
+        initial: "rest".to_string(),
+        states: BTreeMap::from([
+            (
+                "rest".to_string(),
+                authored_state("idle", MotionVerb::Hold, None, Vec::new()),
+            ),
+            (
+                "watch".to_string(),
+                authored_state("locomotion", MotionVerb::ChaseTarget, None, Vec::new()),
+            ),
+        ]),
+        interrupts: vec![edge(
+            "rest",
+            IrNode::Input {
+                name: BRAIN_TARGET_DIED_INPUT.into(),
+            },
+        )],
+        candidate_filter: Some(IrNode::Select {
+            cond: Box::new(IrNode::Input {
+                name: CANDIDATE_DIED_INPUT.into(),
+            }),
+            a: Box::new(IrNode::Const {
+                value: IrValue::Bool(false),
+            }),
+            b: Box::new(IrNode::Const {
+                value: IrValue::Bool(true),
+            }),
+        }),
+        attack: None,
+        engagement_radius: None,
+        move_speed: 3.5,
+    };
+    let mut attacker_graph = pursuit_graph();
+    attacker_graph.attack = Some(AttackParams {
+        damage: 100.0,
+        range: 2.0,
+        cooldown_ms: 1000.0,
+    });
+
+    let mut registry = EntityRegistry::new();
+    let pawn = spawn_player(&mut registry, Vec3::new(1.0, 0.0, 0.0));
+    let mut observer_brain = authored_brain(&observer_graph, "watch");
+    observer_brain.acquired_target = Some(pawn);
+    let observer = spawn_enemy(&mut registry, Vec3::ZERO, observer_brain, 50.0);
+    let mut attacker_brain = authored_brain(&attacker_graph, "strike");
+    attacker_brain.acquired_target = Some(pawn);
+    spawn_enemy(&mut registry, Vec3::ZERO, attacker_brain, 50.0);
+    let mut runtime = AiRuntime::new();
+
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+
+    let health = registry.get_component::<HealthComponent>(pawn).unwrap();
+    assert_eq!(health.current, 0.0, "the other enemy killed the pawn");
+    assert!(
+        !health.death_handled,
+        "damage in the AI apply pass does not preempt the later death sweep"
+    );
+    assert_eq!(
+        enemy_state_name(&registry, observer),
+        "watch",
+        "all brains read targetDied=false during the compute pass before damage lands"
+    );
+
+    crate::scripting_systems::health::sweep_deaths(&mut registry);
+    assert!(
+        registry
+            .get_component::<HealthComponent>(pawn)
+            .unwrap()
+            .death_handled,
+        "the death sweep commits the latch between AI ticks"
+    );
+
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+    assert_eq!(enemy_state_name(&registry, observer), "rest");
+    assert_eq!(enemy_acquired_target(&registry, observer), None);
 }
 
 fn enemy_time_in_state(reg: &EntityRegistry, enemy: EntityId) -> f32 {

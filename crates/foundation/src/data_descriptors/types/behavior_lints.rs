@@ -1,6 +1,5 @@
 // Parse-time advisory diagnostics for authored behavior graphs.
-// See: context/lib/entity_model.md §7c (brain lifecycle) ·
-//      context/lib/scripting.md §11 (guard IR)
+// See: context/lib/entity_model.md §7c (brain lifecycle) · context/lib/scripting.md §11 (guard IR)
 
 use crate::brain::BRAIN_HAS_TARGET_INPUT;
 use crate::data_descriptors::types::behavior::{
@@ -37,7 +36,8 @@ pub fn inspect(graph: &BehaviorGraphDescriptor) -> Vec<BehaviorLint> {
     let engaging_states = graph
         .states
         .iter()
-        .filter_map(|(name, state)| is_engaging(state).then(|| name.clone()))
+        .filter(|(_, state)| is_engaging(state))
+        .map(|(name, _)| name.clone())
         .collect::<Vec<_>>();
     if engaging_states.is_empty() {
         return Vec::new();

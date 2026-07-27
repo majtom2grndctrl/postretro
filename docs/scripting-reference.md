@@ -433,10 +433,11 @@ block is a **behavior state graph**: you declare named states, what each one doe
 while it is current, and the ordered guards that move between them. The engine
 owns the **offer set** for target selection, steering, combat spacing, damage,
 animation switching, and determinism; the graph owns which states exist and when
-the brain changes state. The offer set is the set of entities the engine can
-perceive as candidates. The engine makes no aliveness judgement while choosing
-among it: an unfiltered graph can select a dead pawn, though the attack gate
-still will not hit one. A graph's optional `candidateFilter` decides which
+the brain changes state. **Currently, the offer set is player pawns.** A future
+engine-owned perception predicate will narrow that set to candidates an enemy
+can perceive. The engine makes no aliveness judgement while choosing among the
+current offer set: an unfiltered graph can select a dead pawn, though the attack
+gate still will not hit one. A graph's optional `candidateFilter` decides which
 offered candidates are worth engaging; it can only narrow the offer set and
 never ranks candidates or drops a target already retained.
 

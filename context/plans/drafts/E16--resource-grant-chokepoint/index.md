@@ -149,7 +149,9 @@ Ship the reference economy a mod replaces wholesale, in the dev mod. Add a grant
 
 ```ts
 // Proposed design — the engine has no concept of a reward; this is reference content.
-const ammoOnKill = defineImpactEvent("dev:ammo-on-kill", { tag: "enemy" }, (impact) => {
+// Filtered on the dummies, not `enemy`: combat-demo's one enemy-tagged entity
+// is the zombie that resurrects, so it would never settle a kill edge.
+const ammoOnKill = defineImpactEvent("dev:ammo-on-kill", { tag: "dummy" }, (impact) => {
   const killed = impact.target.healthBefore.gt(0).and(impact.target.healthAfter.le(0));
   return [
     // The kill EDGE, not a level gate: a level gate re-pays on every corpse hit.

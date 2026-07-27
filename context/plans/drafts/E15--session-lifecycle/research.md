@@ -27,7 +27,9 @@ Findings behind the spec's decisions, including why its scope changed once.
 | Client movement prediction runs against that local collision source, and client-authoritative hit declaration casts against the world the client renders while the host validates against its own static geometry | `crates/postretro/src/netcode/prediction.rs` (`MovementCollisionSource`), `context/lib/networking.md` §Combat authority |
 | Player movement tuning is descriptor-authored, so a manifest edit changes what the client predicts with | `crates/postretro/src/movement/mod.rs` — `PlayerMovementComponent::from_descriptor` |
 | Clients suppress AI-enemy spawns entirely and attach mesh presentation only, which is why enemy placement and brain tuning cannot break compatibility | `context/lib/networking.md` §Phase boundaries |
-| Only `entities` and `store_declarations` are re-committed on a staged reload — theme and fonts are not — so a non-atomic-replace manifest lane already ships | `context/plans/done/mod-map-catalog/index.md` |
+| A staged reload re-commits nearly every manifest lane — `entities`, `store_declarations`, `maps`, `reactions`, `crossings`, `trigger_events`, `trigger_pools`, `events`, the `render` profile, `ui_trees`, `theme`, `frontend`. `fonts` is the only lane never re-committed; it is absent from `StagedManifest`. So a non-atomic-replace manifest lane already ships, and it is exactly one | `crates/scripting-core/src/staged_manifest/transfer.rs`; `commit_staged_manifest_result` in `crates/scripting-core/src/runtime/core.rs`; `App::poll_staged_manifest_results` in `crates/postretro/src/startup/staged_manifest_lifecycle.rs`; `App::commit_staged_ui_manifest` in `crates/postretro/src/main.rs` |
+| Most of `EntityTypeDescriptor` is host-authoritative (`ai`, `health`, `weapon`, `default_weapon`, `behavior`) or presentation (`light`, `emitter`, `mesh`); only `canonical_name` and `movement` feed client simulation | `crates/entities/src/data_descriptors/types/entity.rs` — `EntityTypeDescriptor` |
+| State-slot parity already ships: both peers compare a schema fingerprint derived from the replicated slot declarations | `crates/postretro/src/netcode/state_slots.rs` — `ReplicatedSlotSchema` |
 | Scripts are 160K of the dev mod's 337M (textures 291M, models 43M, maps 3.0M), so script sync is cheap on bytes and still does not cover the breaking surface | measured under `content/dev/` |
 
 ## Slot lifecycle
@@ -70,9 +72,8 @@ the deferred-disconnect mechanism serves admission only, which shrinks the spec'
 wrong.** The rule that survives is: admission carries a value only if a mismatch on it can
 never become a match. That is true of the protocol constants, and true of the mod id because
 identity is frozen at first commit. It was *not* true of the mod compatibility digest, which
-the first draft nonetheless gated at admission — a staged reload re-commits `entities` and
-`store_declarations`, the two lanes the digest hashes, so its value changes under a live
-connection. The draft made its own premise true by declining to observe the change, freezing
+the first draft nonetheless gated at admission — a staged reload re-commits `entities`, which
+the digest reads, so its value changes under a live connection. The draft made its own premise true by declining to observe the change, freezing
 the digest at first commit, which bought the premise at the price of gating live connections
 on a stale value in exactly the builds where co-op is developed and playtested.
 
@@ -85,7 +86,7 @@ when a spec adds a state, re-examine every decision it made before the state exi
 The dev-loop objection that killed a whole-mod content hash does not transfer to the
 rehashing digest, and the distinction is worth keeping straight. That hash moved on every
 byte of every script and its consequence was a **closed** connection; this one moves only
-when a simulated lane changes and its consequence is a **hold** that resolves the moment the
+when a hashed field changes and its consequence is a **hold** that resolves the moment the
 peers agree again. Same mechanism, two orders of magnitude apart in both trigger frequency
 and blast radius.
 
@@ -149,9 +150,36 @@ the mods match.
 
 What replaces it is stronger, not weaker. The two digests are halves of one policy computed
 at the two moments the spec already installs values, and neither covers for the other: a mod
-fork that changes only scripts ships identical map bytes and is caught at admission, never at
-parity; a map edit is caught at parity, never at admission. That is a structural reason they
-belong in one spec, where the earlier argument was a contingent one about a specific hole.
+fork that retunes player movement ships identical map bytes and moves only the mod digest;
+differing brushwork moves only the level digest. That is a structural reason they belong in
+one spec, where the earlier argument was a contingent one about a specific hole.
+
+## What shrinking the mod digest retired
+
+Detail review cut the mod digest's domain from two whole manifest lanes to, per entity type,
+the `canonical_name` and the `PlayerMovementDescriptor` under `movement`, minus that
+descriptor's render-only `view_feel` field. Unnamed descriptors are excluded. Recorded for
+the same reason as the section above: an argument was retired, not just a number.
+
+Hashing `entities` wholesale contradicted the spec's own tiering. Most of
+`EntityTypeDescriptor` is host-authoritative — `ai`, `health`, `weapon`, `default_weapon`,
+`behavior` — and clients suppress AI-enemy spawns entirely, so those fields are Tier 2 in
+`research/coop-content-compatibility.md`. The rest — `light`, `emitter`, `mesh` — is
+presentation. Hashing the lane would have demoted every peer on an enemy retune or a light
+tweak: the same failure mode the spec rejects a declared mod version for, reintroduced by
+the mechanism meant to replace it.
+
+State-slot parity left the digest in the same pass. It is owned by the shipped
+`ReplicatedSlotSchema` fingerprint, which both peers already compare, so hashing
+`store_declarations` would have duplicated a live gate with a coarser diagnostic.
+
+The denylist mechanism survives; its granularity moved. It is no longer "hash every lane
+except the named exclusions" but "hash every field of a small named set of descriptor types
+except the named exclusions." Exhaustive destructuring still makes a field added later fail
+the build rather than default to unhashed, which is the whole reason to prefer a denylist.
+What it no longer buys is coverage of descriptor *types* nobody named — a new
+client-simulated descriptor is still a manual widening, caught by the rule in
+`research/coop-content-compatibility.md` §6 rather than by the compiler.
 
 ## Which corroborating documents are independent, and which are not
 
@@ -186,10 +214,11 @@ count it three times. Two corollaries for anyone validating this spec later:
 - **A content hash over the *whole* mod.** Breaks hot reload mid-session, makes legitimate
   client-side differences fatal, and buys tamper detection, an explicit non-goal
   (`index.md` §4). Superseded rather than simply rejected: the spec now hashes a *scoped*
-  surface — `entities` and `store_declarations`, the lanes a client simulates against —
-  which keeps the compatibility property and drops the breakage. Note the two independent
-  reasons the breakage is gone, since collapsing them invites a bad inference: the domain
-  shrank from every byte to two lanes, *and* the consequence softened from close to demote.
+  surface — per entity type, the `canonical_name` and the movement descriptor a client
+  predicts with — which keeps the compatibility property and drops the breakage. Note the two
+  independent reasons the breakage is gone, since collapsing them invites a bad inference: the
+  domain shrank from every byte to two fields per named entity type, *and* the consequence
+  softened from close to demote.
   Either alone would leave a usable dev loop; neither is a reason to widen the domain back. `E16--impact-policy-substrate`'s
   rule (explicit author-assigned ids, not content-derived ones) still governs **identity**;
   it never governed parity, which has been content-derived since the fingerprint shipped.

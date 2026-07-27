@@ -98,11 +98,15 @@ Two mechanisms, two jobs — conflating them is the obvious mistake.
   **version** is carried for display and never compared. Neither catches tampering, and
   neither should claim to.
 - **Compatibility is hashed, not declared.** Two content digests decide whether peers can
-  play together: one over the mod's simulated surface (`entities`, `store_declarations`),
-  one over the level's (mover authoring plus static world collision). Prediction correctness
-  depends on byte-level parity of what a client simulates against, not on anyone's honesty —
-  and not on an author remembering to bump a string. The full tiering of what server
-  authority absorbs and what it cannot is in
+  play together: one over the mod's simulated surface — per entity type, the canonical name
+  and the player-movement descriptor a client predicts with, minus that descriptor's
+  render-only view-feel field — and one over the level's (mover authoring plus static world
+  collision). Host-authoritative fields (AI, health, weapon, behavior) and presentation
+  fields (light, emitter, mesh) stay unhashed, because server authority already absorbs
+  them; state-slot parity is owned by the shipped replicated-slot schema fingerprint both
+  peers already compare. Prediction correctness depends on byte-level parity of what a
+  client simulates against, not on anyone's honesty — and not on an author remembering to
+  bump a string. The full tiering of what server authority absorbs and what it cannot is in
   [Co-op Content Compatibility](./coop-content-compatibility.md).
 - **A declared mismatch closes; a hashed one holds.** Only the id can refuse a connection,
   because only the id is immutable for a connection's lifetime. Both digests can be
@@ -120,7 +124,7 @@ Two mechanisms, two jobs — conflating them is the obvious mistake.
 A content hash over the *whole* mod was considered and is wrong here: it breaks every dev
 iteration loop (hot reload changes the hash mid-session), makes legitimate client-side
 differences fatal, and buys a property — tamper detection — that is an explicit non-goal
-(`index.md` §4, anti-cheat). Scoping the digest to the lanes a client actually simulates
+(`index.md` §4, anti-cheat). Scoping the digest to the fields a client actually simulates
 against keeps the property and drops the breakage.
 
 The manifest carries a mod name today and no id or version. Adding them is small; the

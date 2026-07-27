@@ -61,13 +61,15 @@ Nothing corrects these. This is the whole compatibility problem.
 | # | Surface | Why it breaks | Lives in |
 |---|---|---|---|
 | 1 | **Static world collision geometry** | Client movement prediction runs against the local `CollisionWorld`; client-authoritative hit declaration casts against the world the client renders, and the host validates against *its* static geometry. Divergence means reconciliation fighting and false-rejected shots — silently. | `.prl` (`LevelWorld` vertices/indices) |
-| 2 | **`PlayerMovementDescriptor` tuning** | Descriptor-authored and used by client prediction. Changed speed, jump, or crouch diverges every tick. | manifest `entities` |
-| 3 | **Entity class identity** | Clients materialize remote entities by `entity_class`. A renamed or removed class leaves the client unable to materialize what the host names. | manifest `entities` |
+| 2 | **`PlayerMovementDescriptor` tuning** | Descriptor-authored and used by client prediction. Changed speed, jump, dash, or crouch diverges every tick. `view_feel` is the one exception — a render-only camera effect. | manifest `entities` |
+| 3 | **Entity class identity** | Clients materialize remote entities by `entity_class`, matched against a descriptor's `canonical_name`. A renamed or removed name leaves the client unable to materialize what the host names. | manifest `entities` |
 | 4 | **State-slot schema** | Clients apply replicated state-slot records against their local declaration. | manifest `store_declarations` |
-| 5 | **World gravity set from a reaction** | Feeds local prediction; both peers run reactions. | manifest / map KVP |
+| 5 | **World gravity set from a reaction** | Feeds local prediction; both peers run reactions. | manifest `reactions` / map KVP |
 
-Tier 3 splits cleanly in two — items 1 and 5's map half live in the level, items 2–4 in the
-mod — and that split is why the policy has two digests rather than one.
+Tier 3 does not reduce to one mechanism. Item 1 and item 5's map half belong to the level
+digest. Items 2 and 3 belong to the mod digest. Item 4 is already covered by a shipped schema
+fingerprint and needs nothing new. Item 5's reaction half is covered by nothing — see
+*Knowingly uncovered* in §3.
 
 ## 3. The policy
 
@@ -86,17 +88,50 @@ reinstalled under a live connection: the level pair at each install, the mod dig
 staged reload. A mismatch on a parity value is therefore a *hold* with a diagnostic, never a
 disconnect — it is a fact scheduled to become true again.
 
-- The **mod compatibility digest** covers `entities` and `store_declarations` — Tier 3
-  items 2–4. It deliberately excludes `render`, `theme`, `fonts`, `ui_trees`, and
-  `frontend`, because hashing presentation would break co-op on every cosmetic edit, and
-  excludes `maps`, because a catalog divergence is a recoverable named case.
+- The **mod compatibility digest** covers two things per entity type in the manifest's
+  `entities` lane: the `canonical_name`, and the `PlayerMovementDescriptor` under `movement`
+  — Tier 3 items 2 and 3. Nothing else on `EntityTypeDescriptor` is client-simulated.
+  `default_weapon`, `weapon`, `health`, `ai`, and `behavior` are host-authoritative — Tier 2
+  by §2, safe to change freely; `light`, `emitter`, and `mesh` are presentation. Hashing the
+  lane wholesale would demote every peer on an enemy retune, which is the exact false refusal
+  content-derived compatibility exists to prevent. Within the movement descriptor,
+  `view_feel` is skipped as render-only; the other nine fields are prediction inputs and are
+  hashed. A descriptor whose `canonical_name` is `None` is excluded outright: a client
+  materializes remote entities by matching `entity_class` against `canonical_name`, so an
+  unnamed descriptor cannot cross the wire and cannot diverge.
 - The **level content digest** is the static-kinematic fingerprint widened to cover static
   world collision — Tier 3 item 1 — on the same rule that put mover collision there: a
   deterministic prediction input belongs in the parity hash.
+- **State-slot parity is not the mod digest's.** A schema fingerprint over replicated state
+  slots already ships: the replicated-slot schema hashes every replicated slot's dotted name,
+  type, range, and scope under its own stream version, and both peers already compare it on
+  every snapshot carrying state records. A second mechanism over `store_declarations` would
+  duplicate it. It has one live defect: the schema is built lazily and cached for the process
+  with no reset path, so it goes stale after a staged reload that adds a store namespace. Fix
+  that where it lives; do not route around it with a digest.
 - **Mod id still gates** because it is the namespace that makes a map catalog id resolvable
   on both peers.
 - **Mod version never gates.** Exact equality blocks a friend on the previous build over a
   Tier 2 change no client ever simulates.
+
+The recipe reaches nothing else in the manifest. Presentation lanes — `render`, `theme`,
+`fonts`, `ui_trees`, `frontend` — are never reached, because hashing presentation would break
+co-op on every cosmetic edit. `maps` is never reached, because a catalog divergence is a
+recoverable named case.
+
+### Knowingly uncovered
+
+`reactions`, `crossings`, `events`, `trigger_events`, and `trigger_pools` are simulated, not
+presentational, and no digest covers them. Tier 3 item 5 — world gravity set from a reaction
+— lives in exactly this set. A mod whose reaction lane differs can pass both gates and
+diverge on locally-simulated gravity.
+
+This is a named gap, not an oversight, and the fix is not to widen the digest over those
+lanes. That repeats the mistake the `entities` lane already demonstrates: it demotes peers
+over changes no client simulates. Closing it properly means deciding which reaction effects
+are client-local prediction inputs and hashing those. Until that decision is made the gap is
+stated rather than omitted, because §6's rule is that silence about an uncovered simulated
+input is the failure mode worth preventing.
 
 ### Why not an author-declared compatibility key
 
@@ -116,15 +151,40 @@ diagnostic, and they re-participate when the peers agree again. Both halves matt
 neither substitutes for the other. Mod **identity** is the one value frozen across reloads —
 first-commit-wins — because admission is terminal and has no state to demote to.
 
-### The digest domain is a denylist
+### The digest domain is a denylist — at field granularity
 
-Hash every field the recipe reaches and name the specific exclusions; never the reverse. An
-allowlist is the mechanism that produced the static-collision omission in the first place — a
-field added later by someone who never reads the recipe defaults to unhashed, and no test
-catches a field you forgot. Under a denylist the same omission fails loud (a cosmetic edit
-demotes peers, visible immediately) instead of silent (prediction fighting, traced back to
-nothing). In Rust the enforcement is exhaustive destructuring with no `..` rest pattern, so a
-new field fails the build until someone decides which side it is on.
+The denylist works over **fields inside a named type**, never over whole manifest lanes.
+Naming a lane and hashing all of it is what produces false refusals. Naming a type and hashing
+all of its fields is what prevents silent omissions. So the rule has two halves and both are
+load-bearing:
+
+1. **The set of types the recipe reaches is named explicitly and kept deliberately small** —
+   `EntityTypeDescriptor`, `PlayerMovementDescriptor`, and the structs beneath it. Widening
+   that set is a decision, made once, in the open.
+2. **Within each named type, every field is bound by exhaustive destructuring with no `..`
+   rest pattern**, so a newly added field fails the build until someone classifies it as
+   hashed or skipped.
+
+An allowlist of field names is the mechanism that produced the static-collision omission in
+the first place — a field added later by someone who never reads the recipe defaults to
+unhashed, and no test catches a field you forgot. Under exhaustive destructuring the same
+omission fails loud (a cosmetic edit demotes peers, visible immediately) instead of silent
+(prediction fighting, traced back to nothing).
+
+Three further requirements, all correctness rather than ergonomics:
+
+- **Every map-valued field the recipe reaches hashes in key-sorted order.** A
+  `std::collections::HashMap` under the default `RandomState` iterates in an order that
+  differs *per process*, so two peers on byte-identical content would otherwise compute
+  different digests. Descriptor data already carries such maps —
+  `HealthDescriptor::zone_multipliers` is one — so the hazard is live the moment the type set
+  widens.
+- **Struct destructuring gives no exhaustiveness over enums.** An enum in the domain needs a
+  `match` with no wildcard arm. Separate rule, separate enforcement; the destructuring rule
+  does not imply it.
+- **The mod digest carries its own epoch constant**, bumped whenever the recipe changes,
+  mirroring the level digest's. Without it, a recipe change that alters the byte stream lets
+  an old peer's digest accidentally match a new peer's.
 
 ## 4. How often is a change non-breaking?
 
@@ -148,8 +208,9 @@ tables growing inside them. A total conversion multiplies art, not script mass.
 
 **Three things are the objection:**
 
-1. **It fixes the cheap third.** Script sync covers Tier 3 items 2–4 and leaves item 1
-   untouched — the expensive one, in `.prl` bakes, with the worst failure mode. Making joins
+1. **It fixes the cheap third.** Script sync covers everything Tier 3 sources from the mod —
+   items 2–4 and item 5's reaction half — and leaves item 1 untouched: the expensive one, in
+   `.prl` bakes, with the worst failure mode. Making joins
    genuinely content-safe means shipping maps, which pulls textures and models: the 337M, not
    the 160K.
 2. **Boot ordering inverts.** Mod init runs after `Session::build` constructs the net

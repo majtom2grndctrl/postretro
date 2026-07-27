@@ -184,6 +184,12 @@ live endpoint accepting connections — not a new top-level app state.
   level change while global slots survive.
 - **Networked mod sync and mid-level mod hot-swap are non-goals** (`boot_sequence.md` §8).
   Matching mods is in scope; shipping them to a client is not.
+- **Session state must be enumerable, not scattered.** What survives a level transition should
+  be a named set, because a future host migration is that same set plus a live-world layer,
+  handed to a different destination. Level unload already clears the world and keeps the store;
+  the risk is a transition built as ad-hoc patches to whichever tables happen to break, which
+  works and leaves no boundary anyone can later serialize. Name the boundary — building a
+  serializer for it is the later spec's job, not this band's.
 
 ---
 

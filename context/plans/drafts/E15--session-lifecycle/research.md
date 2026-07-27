@@ -48,6 +48,18 @@ below `Participating`; a demotion runs the same per-slot cleanup a close runs, b
 level unload invalidates every id those tables hold; and the slot survives the whole
 transition, which is only true if the transport is polled across it.
 
+**The self-loop is the load-bearing edge.** `Admitted → Admitted` on a parity mismatch —
+rather than `Admitted → Closed` — is what makes the two gate stages structurally different
+rather than merely sequential. Admission facts are connection-scoped and can never become
+true later, so a mismatch there closes. Parity is level-scoped and is designed to become
+true one install later, so closing on it is a category error, and it would race the spec's
+own criteria: a client's parity for level A can still be in flight when the host installs
+level B, and a host that closed on mismatch would tear down a client it demoted one frame
+earlier. The first draft of the index carried the content cause in the reject-and-close lane
+beside protocol and mod, contradicting this diagram; direction review caught it, and the
+index now matches. Consequence worth noting: the deferred-disconnect mechanism serves
+admission only, which shrinks the spec's own "trimmable part."
+
 ## Why this merged with the level-transition spec
 
 Drafted first as admission alone, with server-authoritative level transitions as a
@@ -108,5 +120,8 @@ failure — a bake-determinism question this spec has no standing to answer.
   re-creates the ordering inversion the spec exists to remove.
 - **Making the relevel message carry a path rather than a catalog id.** A path is
   machine-local and resolves against a filesystem the peer does not share. The catalog is
-  the only namespace in which one string resolves on both peers — which is also why mod
-  matching has to gate admission before any relevel is sent.
+  the only namespace in which one string resolves on both peers. The catalog's *mod-scoped*
+  half of that argument — two mods may declare the same map id over different `.prl` files,
+  so level identity does not discriminate until admission has proven the mods match — moved
+  into the index's Decisions, beside level identity, because it is the argument that carries
+  the merge rather than a note about message payloads.

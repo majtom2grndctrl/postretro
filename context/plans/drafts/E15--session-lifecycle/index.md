@@ -44,8 +44,9 @@ over the wire, and clients follow. The connection outlives the map it joined on.
 - **Host-side net reset on level unload**, which today early-returns for the host role.
 - **Transport polling across the unload→install window**, so a load longer than the
   netcode timeout does not drop every peer.
-- **A typed reject reason delivered to the client**, distinguishing protocol, mod, and
-  content divergence.
+- **A typed diagnostic delivered to the client**, distinguishing protocol, mod, and
+  content divergence. Protocol and mod causes refuse and close; a content cause is
+  informational and the slot holds — see Decisions.
 - **Level identity as its own compared value**, closing the fingerprint's fail-open.
 
 ### Out of scope
@@ -61,6 +62,14 @@ over the wire, and clients follow. The connection outlives the map it joined on.
   serialize it.
 - **A client asking the host to change level.** Map authority is server-owned. The
   authorized-requester concept arrives with host-as-client packaging (Phase 4).
+- **`loadLevel`'s co-op semantics.** The shipped system reaction still loads locally on
+  every peer, a connected client included. `coop-session-lobby.md` §6 records that it must
+  eventually become a request the server may refuse, inert on a non-authoritative client —
+  a semantic change to a published primitive (`index.md` §2). Deferred to spec 3 with the
+  rest of the authoring surface, and named here rather than left to silence. Under this
+  spec's hold-on-parity-mismatch rule the interim behavior is benign: a client whose mod
+  loads a different level stops participating, is told why, and re-participates at the
+  host's next relevel. It is not a disconnect.
 - **Shipping mod content to a client that lacks it.** Networked mod sync is a stated
   non-goal (`boot_sequence.md` §8). Matching is in scope; distribution is not.
 - **Tamper resistance.** Mod identity is declared, not proven — see Decisions.
@@ -117,14 +126,15 @@ pawns no longer exist), and the transport goes unpolled across every load.
   is the only safe response to unvalidatable content when no protocol exists for reaching
   agreement. Demotion preserves the actual guarantee (nothing replicates while content is
   unproven) and drops only the disconnection.
-- **Divergence 2, named.** `mod-map-catalog` establishes the manifest's hot-reload
-  discipline as *atomic replace at the staged-commit boundary*, degrade-never-abort.
-  Mod identity is **first-commit-wins across reloads** instead, so after this spec every
-  manifest lane is atomic-replace except these two fields. Deliberate: mid-session
-  identity churn would silently invalidate admission decisions already made for live
-  connections. This is a divergence from the manifest's commit discipline, not an
-  instance of it — the `boot_sequence.md` persistence-overlay rule it resembles is a
-  different lane.
+- **Divergence 2, named — and smaller than it first looked.** `mod-map-catalog`
+  establishes the manifest's hot-reload discipline as *atomic replace at the staged-commit
+  boundary*, degrade-never-abort. Mod identity is **first-commit-wins across reloads**
+  instead. Deliberate: mid-session identity churn would silently invalidate admission
+  decisions already made for live connections. But the same plan records that only
+  `entities` and `store_declarations` are re-committed on a staged reload — *theme and
+  fonts are not* — so a manifest lane that is not atomic-replaced already ships. Mod
+  identity joins an existing minority rather than becoming the first exception. Worth a
+  comment at the commit site as a second instance, not as a warning about a unique one.
 
 **Placement.** The gate stays in `postretro-net`: pure comparison over opaque values,
 where both existing gates live, unit-testable without a socket. The compared values are
@@ -155,13 +165,24 @@ crate must not see.
   the map does not match — and because a relevel naming a catalog id is only sound if the
   mods match, since the catalog is mod-supplied.
 - *Close and reconnect on level change.* Preserves the shipped invariant verbatim and
-  reaches the same end state. Rejected on three counts, none of which is prediction
-  safety: no reconnect path exists (the client's handshake flag never resets), the
-  unload→install window is unpolled so the reconnect would race a timeout, and a
-  reconnect re-mints the client id, which is wall-clock nanos per connection. The last
-  matters most downstream — `E16--per-player-currency`'s third shape died on precisely
-  this, its "value survives a level transition" criterion contradicting its
-  seat-released-on-disconnect rule because a level change closed every connection.
+  reaches the same end state. Two obvious objections do not survive scrutiny, and are named
+  so they are not reached for again: the unpolled window is fixed by this spec's own Task 5,
+  so it cannot also be a reason to reject the rival; and the client-id re-mint (wall-clock
+  nanos per connection) is precisely what spec 2's seat exists to stop keying off. What does
+  reject it: no reconnect path exists at all — the client's handshake flag never resets and
+  the endpoint is constructed once in `Session::build` — so the rival is *more* work, not
+  less; and it turns every level change into a fresh renet_netcode teardown and rebuild,
+  which on a direct-connect transport with no relay is a fresh NAT, firewall, and handshake
+  failure opportunity. A session that plays four maps runs that gauntlet four times.
+  Downstream it is also what `E16--per-player-currency`'s third shape died on: its "value
+  survives a level transition" criterion contradicted its seat-released-on-disconnect rule,
+  because a level change closed every connection.
+- *No new slot state — keep `Pending`/`Accepted`/`Closed` and make participation
+  `accepted && parity_ok` in a side map.* The cheapest rival to the slot-machine change.
+  Rejected because a demotion needs a transition *edge* to fire the per-slot cleanup on, and
+  a boolean flipping in a side table gives you nothing to hang that event on — the cleanup
+  is the half that matters. A side map is also exactly the "second waiting mechanism" the
+  gate design in Task 3 refuses on its own terms.
 - *Folding level identity into the fingerprint hash.* Considered and rejected after
   review. The fail-open is an *identity* failure ("different maps"), not a *content
   parity* failure ("prediction inputs diverge"); making a content hash accidentally
@@ -211,8 +232,25 @@ crate must not see.
 - **Level identity is the catalog id, falling back to the content-root-relative path**
   for an uncatalogued level. It is opaque to the net crate. The fingerprint keeps its
   shipped domain — mover authoring and collision — unchanged, unrenamed, and unbumped.
+  A catalog id is **mod-scoped**, which is why this decision and mod identity cannot live in
+  different specs: two mods may each declare a map `id: "combat-demo"` over different `.prl`
+  files, so two peers on different mods compare identity *equal* — and if both maps are
+  mover-less, fingerprint equal too. The invariant "level identity discriminates any two
+  distinct levels" is **false** unless admission has already proven the mods match. Mod
+  identity is load-bearing for the fail-open fix, not merely for its own diagnostics. That is
+  the argument that carries the merge.
 - **Parity compares both values and reports which diverged.** Identity mismatch names
   both maps; fingerprint mismatch means same map, different content.
+- **A parity mismatch holds the slot at admitted; it never closes it.** Admission facts —
+  protocol, mod — are connection-scoped and can never become true later, so a mismatch there
+  is terminal and closes. Parity is level-scoped and is *designed* to become true one install
+  later; closing on a fact scheduled to change is a category error, and it would reintroduce
+  for the client-initiated case exactly the disconnect this spec removes for the
+  host-initiated one. It would also race the spec's own criteria: a client's parity message
+  for level A can still be in flight when the host installs level B, so a host that closed on
+  mismatch would tear down a client it demoted one frame earlier. The content cause is
+  therefore a *diagnostic* delivered to a still-connected client, and the deferred-disconnect
+  mechanism serves admission rejects only.
 - **A relevel names a catalog id, so a host on a raw-path level sends none.** Its clients
   stay admitted until they install a matching level themselves. This keeps the documented
   loopback dev recipe working and keeps the relevel message honest — the catalog is the
@@ -250,13 +288,15 @@ crate must not see.
       two diverged, and receives no entity records.
 - [ ] A client whose protocol constants diverge is refused with a protocol cause, not a
       mod or content cause.
-- [ ] A refused client observes the typed reason before its connection closes.
+- [ ] A client refused at admission — protocol or mod — observes the typed reason before
+      its connection closes.
 - [ ] Two maps that differ only in ways the fingerprint ignores — including two maps with
       no movers at all — produce different parity values, and a client on one does not
       participate on the other.
-- [ ] A content mismatch names the host's map identity in the reject reason; a
-      same-identity fingerprint mismatch is reported as a content divergence rather than
-      an identity one.
+- [ ] A client whose level fails parity **keeps its connection**, receives a content
+      diagnostic naming the host's map identity, and re-participates at the host's next
+      matching install without reconnecting; a same-identity fingerprint mismatch is
+      reported as a content divergence rather than an identity one.
 - [ ] A host installing a different catalog level **keeps** its clients connected: each
       drops to admitted, stops receiving entity records, and its pawn, replication,
       ownership, command, state-slot, and combat state are cleared exactly as a
@@ -325,9 +365,12 @@ after construction: admission evaluates once identity is present, parity once th
 pair is present, each queuing until then — extending the shipped early-return rather than
 adding a second waiting mechanism. Installing a different level pair **demotes**
 participating slots instead of closing them. Gate `send_snapshot` and the accepted-client
-accessor on participating only. On reject, enqueue the typed reason on Control and close
-the slot immediately, but defer the socket disconnect to the next poll via a small
-pending-disconnect list on `NetServer`, so the reliable message flushes first. On the
+accessor on participating only. On an **admission** reject — protocol or mod — enqueue the
+typed reason on Control and close the slot immediately, but defer the socket disconnect to
+the next poll via a small pending-disconnect list on `NetServer`, so the reliable message
+flushes first. A **parity** mismatch is not a reject: enqueue the content cause as a
+diagnostic and leave the slot at `Admitted`, unclosed — parity is level-scoped and becomes
+true at the next matching install, so there is nothing to tear down. On the
 client, split `handshake_sent` into an admission flag sent once on connect and a parity
 flag re-armed whenever the level pair changes, replacing today's self-disconnect. Bump
 `PROTOCOL_ID` and `WIRE_VERSION`. Unit-test the gate and the slot machine without sockets.
@@ -338,8 +381,10 @@ Give the host a way to name the next map and the client a way to follow it. Add 
 server→client relevel message on the reliable Control channel carrying one map catalog id,
 sent to every admitted and participating slot when the host installs a catalogued level and
 on admission for a client joining a host that already has one — so a late joiner is told
-the current map without waiting for the next transition. A host whose active level has no
-catalog id sends nothing. On the client, surface received relevel messages out of the
+the current map without waiting for the next transition. Sending to admitted slots is also
+what recovers a slot held on a parity mismatch: it is the message that tells a diverged
+client which map would let it participate. A host whose active level has no catalog id
+sends nothing. On the client, surface received relevel messages out of the
 endpoint poll as a typed value the engine drains; the engine enqueues
 `LevelRequest::Load(LevelSource::Catalog(id))` through the shipped request path, which
 already unloads any active level first. Ignore a relevel naming the level already active or
@@ -399,7 +444,8 @@ from Task 2, and the client-follow drain from Task 4.
 | Level identity discriminates any two distinct levels | Task 6 (catalog id, path fallback) | The per-level gate is a no-op if two levels can collide | AC 6, 11 |
 | A connection's id survives a level change | Task 3 (demote, never close), Task 5 (window stays polled) | Later specs key player identity off a connection that must not be re-minted | AC 9, 10 |
 | Admission and parity queue independently until their source installs | Task 3 (two `Option`s, two early returns) | Coupling them re-creates the ordering inversion this spec removes | AC 1, 2 |
-| A refused peer learns the cause before teardown | Task 3 (deferred disconnect) | A future reject path that disconnects inline drops the message | AC 3, 4, 5, 7 |
+| A peer refused at admission learns the cause before teardown | Task 3 (deferred disconnect) | A future reject path that disconnects inline drops the message | AC 3, 4, 5 |
+| A parity mismatch never closes a connection | Task 3 (hold at admitted) | Any later content check that rejects instead of holding re-creates the disconnect this spec removes, and races an in-flight parity message against a just-installed level | AC 7, 8 |
 | A relevel never restarts the load it names | Task 4 (active/in-flight suppression) | Late-join and transition both send; a third sender must suppress too | AC 9 |
 
 ## Boundary inventory
@@ -442,10 +488,11 @@ export default defineMod({
   compatibility key distinct from the display version — one more field, moving the
   judgement to the author who can actually make it. Cheap to add later; noted in case the
   friction bites early.
-- **Reject-reason delivery is the trimmable part.** The deferred disconnect is one list
-  and one poll, and the rest of the spec works without it. If it fights renet's teardown,
-  the fallback is a host-side log only, at the cost of a player who cannot tell a wrong
-  mod from an unreachable host.
+- **Reject-reason delivery is the trimmable part.** It now covers admission rejects only —
+  a parity mismatch holds the connection open, so its diagnostic needs no deferral at all —
+  which shrinks it to one list and one poll on the protocol/mod path. The rest of the spec
+  works without it. If it fights renet's teardown, the fallback is a host-side log only, at
+  the cost of a player who cannot tell a wrong mod from an unreachable host.
 - **Mid-load relevel.** Task 4 suppresses a relevel naming the in-flight level, but a
   relevel naming a *different* map while a load is in flight is left to the shipped request
   path's ordering. If that path cannot preempt an in-flight load cleanly, the honest v1 is

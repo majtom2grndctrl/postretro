@@ -39,9 +39,8 @@ use super::candidate_scope::CandidateScope;
 ///
 /// A `None` slot is a DISABLED edge: its guard failed to bind, so the evaluator
 /// treats it as permanently false rather than aborting the brain. Authored
-/// guards are bind-validated at parse and lowered legacy guards are engine
-/// generated, so a `None` here means one of those two contracts broke — hence
-/// the warn at bind time.
+/// guards are bind-validated at parse, so a `None` here means that contract
+/// broke — hence the warn at bind time.
 pub(crate) struct BrainEntityPrograms {
     /// The graph these programs were bound from — the same shared handle the
     /// brain carries. Retained so `sync` can tell a still-valid entry from one

@@ -35,6 +35,10 @@ mod engine_floor;
 mod graph_eval;
 mod targeting;
 
+#[cfg(test)]
+#[path = "../ai_tests.rs"]
+mod ai_tests;
+
 use crate::agent_steering;
 use crate::collision::CollisionWorld;
 use crate::combat_positioning::{
@@ -575,11 +579,8 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         // cooldown has elapsed, the SELECTED target is inside the graph's
         // `attack.range`, and it is still alive — apply the configured damage
         // once and arm the cooldown. Checked every tick.
-        // The range gate is what makes `attack.range` mean something for an
-        // authored graph, where a state can declare the action at any distance;
-        // a lowered legacy graph is unaffected, because its ungated
-        // `attack → alert` edge already leaves the attacking state on the first
-        // tick the target exceeds that same range.
+        // The range gate lets a graph declare the action without making it
+        // connect from across the room.
         // A graph with no `attack` block configures no range and no damage, so
         // it never attacks.
         // Gating on the selected target's Health stops attack/event spam against

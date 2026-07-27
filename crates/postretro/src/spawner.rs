@@ -257,10 +257,10 @@ fn spawn_resolved_spawners(
                 // the fixed-tick path.
                 context.queue_mesh_clip_resolve(enemy);
             }
-            // `attach_brain` initializes this timer to zero. Seed only after the
-            // descriptor has attached its components so a newly spawned enemy
-            // cannot attack before remote interpolation's maximum delay has
-            // elapsed and the remote presentation has had time to arrive.
+            // Behavior-graph attachment initializes this timer to zero. Seed
+            // only after the descriptor has attached its components so a newly
+            // spawned enemy cannot attack before remote interpolation's maximum
+            // delay has elapsed and the remote presentation has had time to arrive.
             if let Ok(mut brain) = registry.get_component::<BrainComponent>(enemy).cloned() {
                 brain.attack_cooldown_remaining_ms = brain
                     .attack_cooldown_remaining_ms

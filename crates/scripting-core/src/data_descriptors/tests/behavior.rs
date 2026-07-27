@@ -487,10 +487,11 @@ const REFERENCE_ENTITIES_LUAU_SRC: &str =
 /// descriptor on `globalThis` so the value is read back independently of however
 /// the bundler wraps the module's own exports.
 fn shipped_reference_descriptor_from_typescript(export_name: &str) -> EntityTypeDescriptor {
+    static NEXT_FIXTURE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let fixture_id = NEXT_FIXTURE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let directory = std::env::temp_dir().join(format!(
-        "postretro-reference-enemy-{}-{}",
+        "postretro-reference-enemy-{}-{fixture_id}",
         std::process::id(),
-        line!()
     ));
     std::fs::create_dir_all(&directory).expect("create reference-enemy fixture directory");
     let entry = directory.join("entities.ts");

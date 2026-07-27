@@ -11,16 +11,17 @@ use std::collections::BTreeMap;
 use glam::Vec3;
 use parry3d::math::{Isometry, Point};
 use parry3d::shape::TriMesh;
-use postretro_level_format::navmesh::{NavMeshSection, NavPortal, NavRegion, NAVMESH_VERSION};
+use postretro_level_format::navmesh::{NAVMESH_VERSION, NavMeshSection, NavPortal, NavRegion};
 
 use super::candidate_scope::CandidateScope;
+use super::engine_floor::{TARGET_SWITCH_HYSTERESIS_DISTANCE, think_stride_for_distance};
 use super::*;
 use crate::agent_steering;
 use crate::collision::CollisionWorld;
 use crate::impact_policy::ImpactPolicyRuntime;
-use crate::nav::NavGraph;
+use crate::nav::{NavGraph, distance_xz};
 use postretro_entities::components::agent::AgentComponent;
-use postretro_entities::components::brain::{graph_state_index, BrainComponent};
+use postretro_entities::components::brain::{BrainComponent, graph_state_index};
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::mesh::{
     AnimationState, InterruptPolicy, MeshAnimation, MeshComponent,
@@ -29,11 +30,11 @@ use postretro_entities::components::player_movement::PlayerMovementComponent;
 use postretro_entities::registry::{EntityId, EntityRegistry, Transform};
 use postretro_entities::{EntityStateComponent, ScriptCtx};
 use postretro_foundation::{
-    bind, ActionVerb, AttackParams, BakedIr, BehaviorGraphDescriptor, BehaviorStateDescriptor,
-    BindingScope, BoundProgram, ImpactEventDescriptor, IrNode, IrValue, MotionVerb,
-    TransitionDescriptor, BRAIN_ACQUISITION_DUE_INPUT, BRAIN_HAS_TARGET_INPUT,
-    BRAIN_TARGET_DIED_INPUT, BRAIN_TARGET_DISTANCE_INPUT, BRAIN_TIME_IN_STATE_MS_INPUT,
-    CANDIDATE_DIED_INPUT, CANDIDATE_DISTANCE_INPUT, CURRENT_IR_VERSION,
+    ActionVerb, AttackParams, BRAIN_ACQUISITION_DUE_INPUT, BRAIN_HAS_TARGET_INPUT,
+    BRAIN_TARGET_DIED_INPUT, BRAIN_TARGET_DISTANCE_INPUT, BRAIN_TIME_IN_STATE_MS_INPUT, BakedIr,
+    BehaviorGraphDescriptor, BehaviorStateDescriptor, BindingScope, BoundProgram,
+    CANDIDATE_DIED_INPUT, CANDIDATE_DISTANCE_INPUT, CURRENT_IR_VERSION, ImpactEventDescriptor,
+    IrNode, IrValue, MotionVerb, TransitionDescriptor, bind,
 };
 use postretro_scripting_core::data_descriptors::{
     AirParams, CapsuleParams, FallParams, ForgivenessParams, GroundParams,
@@ -777,8 +778,6 @@ fn select_target_returns_single_player_pawn() {
         &reg,
         Vec3::ZERO,
         None,
-        false,
-        None,
         None,
         None,
         &mut CandidateScope::for_validation(),
@@ -799,8 +798,6 @@ fn select_target_chooses_nearer_remote_pawn_over_marked_local_pawn() {
     let (_, target) = select_target(
         &reg,
         Vec3::ZERO,
-        None,
-        false,
         None,
         None,
         None,
@@ -825,8 +822,6 @@ fn select_target_keeps_retained_target_when_other_pawn_is_only_slightly_nearer()
         &reg,
         Vec3::ZERO,
         Some(retained),
-        false,
-        None,
         None,
         None,
         &mut CandidateScope::for_validation(),
@@ -851,8 +846,6 @@ fn select_target_switches_when_other_pawn_is_meaningfully_closer() {
         &reg,
         Vec3::ZERO,
         Some(retained),
-        false,
-        None,
         None,
         None,
         &mut CandidateScope::for_validation(),
@@ -877,8 +870,6 @@ fn select_target_replaces_retained_target_when_retained_is_no_longer_player_pawn
         &reg,
         Vec3::ZERO,
         Some(retained),
-        false,
-        None,
         None,
         None,
         &mut CandidateScope::for_validation(),
@@ -888,31 +879,6 @@ fn select_target_replaces_retained_target_when_retained_is_no_longer_player_pawn
     assert_eq!(
         target.entity, replacement,
         "a retained id without PlayerMovement is invalid and cannot stay sticky",
-    );
-}
-
-#[test]
-fn select_target_excludes_retained_target_when_leash_expires_on_acquisition_tick() {
-    let mut reg = EntityRegistry::new();
-    let retained = spawn_player(&mut reg, Vec3::new(30.0, 0.0, 0.0));
-    let replacement = spawn_player(&mut reg, Vec3::new(12.0, 0.0, 0.0));
-
-    let (_, target) = select_target(
-        &reg,
-        Vec3::ZERO,
-        Some(retained),
-        true,
-        None,
-        Some(20.0),
-        None,
-        &mut CandidateScope::for_validation(),
-    );
-    let target = target.expect("player target");
-
-    assert_eq!(
-        target.entity, replacement,
-        "once acquisition evaluates the retained pawn outside leash, another \
-         valid pawn may be selected even without hysteresis superiority",
     );
 }
 
@@ -942,8 +908,6 @@ fn candidate_filter_excludes_dead_offered_pawn_but_allows_live_one() {
         &registry,
         Vec3::ZERO,
         None,
-        false,
-        None,
         None,
         Some(&filter),
         &mut CandidateScope::for_validation(),
@@ -968,8 +932,6 @@ fn candidate_filter_is_never_evaluated_for_a_retained_target() {
         &registry,
         Vec3::ZERO,
         Some(retained),
-        false,
-        None,
         None,
         Some(&filter),
         &mut candidate_scope,
@@ -1004,8 +966,6 @@ fn candidate_distance_filter_honors_the_acquisition_boundary() {
         &inside,
         Vec3::ZERO,
         None,
-        false,
-        None,
         None,
         Some(&filter),
         &mut CandidateScope::for_validation(),
@@ -1020,8 +980,6 @@ fn candidate_distance_filter_honors_the_acquisition_boundary() {
     let (_, selected) = select_target(
         &outside,
         Vec3::ZERO,
-        None,
-        false,
         None,
         None,
         Some(&filter),
@@ -1911,17 +1869,16 @@ fn distant_enemy_strides_detection_but_attack_still_fires() {
     }
 
     // 2) Zero HP does not force a direct graph into a death state, even on a
-    // non-think tick.
+    // non-think tick. Seed the already-engaged remote pawn so the graph is
+    // exercising its retained-target path rather than standing down because a
+    // fresh acquisition is strided off.
     {
         let mut reg = EntityRegistry::new();
         let mut warned = AiRuntime::new();
-        let enemy = spawn_enemy(
-            &mut reg,
-            Vec3::ZERO,
-            brain_with(tuning(), TEST_ALERT_STATE),
-            0.0,
-        );
-        spawn_player(&mut reg, Vec3::new(35.0, 0.0, 0.0));
+        let pawn = spawn_player(&mut reg, Vec3::new(35.0, 0.0, 0.0));
+        let mut brain = brain_with(test_graph_with(40.0, 41.0), TEST_ALERT_STATE);
+        brain.acquired_target = Some(pawn);
+        let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 0.0);
         run_ai_tick(&mut reg, &mut warned, 0.016);
         assert_eq!(
             enemy_state_name(&reg, enemy),
@@ -2669,9 +2626,11 @@ fn integrated_chase_loop_keeps_all_chasers_moving_past_replan_budget() {
     let mut reg = EntityRegistry::new();
     let mut warned = AiRuntime::new();
 
-    // A (near-)stationary player at one end of the floor, inside detection range
-    // of the cluster so all chasers stay in Alert and pursue.
-    let player = spawn_player(&mut reg, Vec3::new(20.0, 0.0, 8.0));
+    // A stationary player within the direct graph's 18-unit detection range of
+    // the entire cluster, but far enough away that the chasers remain in the
+    // pursuit phase for this short run.
+    let player_pos = Vec3::new(20.0, 0.0, 14.0);
+    let player = spawn_player(&mut reg, player_pos);
 
     // More chasers than the per-tick replan budget, clustered near the far end.
     let chaser_count = agent_steering::REPLAN_BUDGET_PER_TICK + 3;
@@ -2724,9 +2683,8 @@ fn integrated_chase_loop_keeps_all_chasers_moving_past_replan_budget() {
             state.position
         );
         // It moved toward, not away from, the (stationary) player.
-        let player_xz = Vec3::new(20.0, 0.0, 8.0);
         assert!(
-            distance_xz(state.position, player_xz) < distance_xz(start, player_xz),
+            distance_xz(state.position, player_pos) < distance_xz(start, player_pos),
             "chaser {id} should be closer to the player than at start",
         );
     }
@@ -3268,7 +3226,8 @@ fn attack_entry_tick_does_not_double_restart_the_clip() {
 // Observed in play: an enemy chasing the player froze mid-pursuit with
 // `state:alert speed:0.00 arrived:false blocked:true has_path:false` after the
 // player rounded a corner (and again when the player moved farther away while
-// still inside leash). Root cause: navmesh erosion leaves a wall-margin band
+// still inside its graph's authored pursuit range). Root cause: navmesh erosion
+// leaves a wall-margin band
 // that capsules legitimately occupy (an agent pushed wall-ward by full-speed
 // corner rounding; a player hugging a corner to peek), and `find_path` returned
 // `None` for any endpoint in that band — the steering tick then latched
@@ -3451,7 +3410,8 @@ fn e2e_pursuit_around_corner_never_freezes_and_closes_on_the_target() {
             );
             // INV1: the frozen state — blocked, no path, not moving — is not a
             // legal resting state on ANY tick while the target is live and
-            // inside leash. This is the exact HUD signature from live play.
+            // inside its graph's authored pursuit range. This is the exact HUD
+            // signature from live play.
             let speed_xz =
                 (state.velocity.x * state.velocity.x + state.velocity.z * state.velocity.z).sqrt();
             let frozen = state.blocked && !state.has_path && speed_xz < 1.0e-3;
@@ -4659,7 +4619,7 @@ struct BrainTrace {
 }
 
 /// Where the player stands on `tick` — out of detection, inside detection,
-/// in contact, backing off, and finally past the leash.
+/// in contact, backing off, and finally past its authored stand-down range.
 fn reference_player_x(tick: u32) -> f32 {
     match tick {
         0..=9 => 30.0,

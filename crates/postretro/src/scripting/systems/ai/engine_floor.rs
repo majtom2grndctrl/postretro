@@ -6,10 +6,9 @@
 
 /// Think-stride bands. Target acquisition is time-sliced by player distance:
 /// near enemies re-evaluate every tick, mid enemies every few ticks, distant
-/// enemies rarely. The cheap retained-target leash check and the
-/// attack-in-range/cooldown check are NOT strided — they run every tick
-/// regardless, so a strided acquisition gap can never suppress an in-stride
-/// attack or leash escape.
+/// enemies rarely. Retained-target reads and attack-in-range/cooldown checks
+/// are NOT strided — they run every tick regardless, so a strided acquisition
+/// gap cannot suppress an in-range attack.
 ///
 /// Distances are XZ ground distances (the navmesh plane); the bands are coarse
 /// by design — stride is a cost knob, not a gameplay contract.

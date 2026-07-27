@@ -193,8 +193,8 @@ pub struct BehaviorGraphDescriptor {
     /// Resolution order is [`BehaviorGraphDescriptor::engagement_radius`]: this
     /// field, else `attack.range`, else
     /// [`BehaviorGraphDescriptor::DEFAULT_ENGAGEMENT_RADIUS`]. The `attack.range`
-    /// step is what keeps a lowered legacy graph — which always leaves this
-    /// field `None` — behavior-identical to the pre-graph engine.
+    /// fallback keeps combat-slot spacing useful when an attack graph omits an
+    /// explicit engagement radius.
     #[serde(default)]
     pub engagement_radius: Option<f32>,
     /// Pursuit movement speed in metres/sec, seeding the navigation agent.
@@ -614,7 +614,7 @@ mod tests {
             BehaviorGraphDescriptor::DEFAULT_ENGAGEMENT_RADIUS
         );
 
-        // An `attack` block supplies the fallback — the legacy-parity path.
+        // An `attack` block supplies the fallback for an authored attack graph.
         let with_attack = BehaviorGraphDescriptor {
             attack: Some(AttackParams {
                 damage: 8.0,
@@ -666,8 +666,7 @@ mod tests {
 
     #[test]
     fn a_self_targeting_interrupt_is_accepted() {
-        // The evaluator skips it, so it blocks nothing — and the lowering emits
-        // exactly this shape for the legacy "no target stands down" rule.
+        // The evaluator skips it, so it blocks nothing.
         let mut g = graph();
         g.interrupts = vec![TransitionDescriptor {
             to: "idle".to_string(),

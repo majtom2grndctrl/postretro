@@ -27,8 +27,8 @@ use std::sync::Arc;
 
 use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry};
 use postretro_foundation::{
-    bind, BakedIr, BehaviorGraphDescriptor, BoundProgram, IrType, TransitionDescriptor,
-    CURRENT_IR_VERSION,
+    BakedIr, BehaviorGraphDescriptor, BoundProgram, CURRENT_IR_VERSION, IrType,
+    TransitionDescriptor, bind,
 };
 
 use super::brain_scope::BrainScope;
@@ -346,13 +346,13 @@ mod tests {
     use super::super::graph_eval::{select_transition, steering_for};
     use super::*;
     use crate::alloc_probe::AllocSnapshot;
-    use postretro_entities::components::brain::{
-        attach_brain_graph, graph_state_index, BrainComponent,
-    };
     use postretro_entities::Transform;
+    use postretro_entities::components::brain::{
+        BrainComponent, attach_brain_graph, graph_state_index,
+    };
     use postretro_foundation::{
-        BehaviorStateDescriptor, IrNode, IrValue, MotionVerb, BRAIN_HAS_TARGET_INPUT,
-        BRAIN_TARGET_DIED_INPUT, BRAIN_TARGET_DISTANCE_INPUT,
+        BRAIN_HAS_TARGET_INPUT, BRAIN_TARGET_DIED_INPUT, BRAIN_TARGET_DISTANCE_INPUT,
+        BehaviorStateDescriptor, IrNode, IrValue, MotionVerb,
     };
     use std::collections::BTreeMap;
 

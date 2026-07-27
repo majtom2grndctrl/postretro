@@ -160,7 +160,12 @@ fn committed_sdk_types_contain_behavior_graph_without_legacy_ai() {
                 "committed {label} typedefs missing `{needle}` — regenerate and commit"
             );
         }
-        for legacy in ["AiDescriptor", "AiStateNames", "leashRange", "components.ai"] {
+        for legacy in [
+            "AiDescriptor",
+            "AiStateNames",
+            "leashRange",
+            "components.ai",
+        ] {
             assert!(
                 !generated.contains(legacy),
                 "{label} generator output still advertises retired `{legacy}`"

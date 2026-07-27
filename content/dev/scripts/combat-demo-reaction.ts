@@ -3,9 +3,9 @@
 // Reactions are surfaced through `setupLevel`'s returned `LevelManifest`, NOT
 // through the mod manifest. The map wires this file in via its worldspawn
 // `data_script` KVP; the engine runs `setupLevel(ctx)` at level load and drains
-// `{ reactions }` into the per-level reaction registry.
+// `{ reactions, triggerEvents }` into the per-level registries.
 //
-// This file declares the two reactions that close the combat loop end to end:
+// This file declares the combat reactions and a trigger-fed reference pickup:
 //
 //   1. A `progress` reaction named `combatDummyProgress` over the `dummy` spawn
 //      tag. Its denominator (the
@@ -22,6 +22,10 @@
 //      `player`-tagged entity, so the player's HP drops and the readonly
 //      `player.health` HUD slot follows.
 //
+//   3. `ammoPickup` grants the trigger's activators 24 `bullets.light` ammo on
+//      the `ammo_pickup` volume's enter edge. This is reference content only:
+//      the engine has no concept of a reward, so a mod replaces the policy.
+//
 // Why this chain and not a simpler one:
 //   - `levelLoad` fires before the first rendered frame, so an `applyDamage`
 //     hung off `levelLoad` would drop HP invisibly (and there is nothing dead
@@ -37,7 +41,13 @@
 //
 // See content/dev/maps/combat-demo.README.md for the full end-to-end walkthrough.
 
-import { type NamedReactionDescriptor, defineReaction } from "postretro";
+import {
+  type NamedReactionDescriptor,
+  type TriggerEventDescriptor,
+  defineReaction,
+  grantAmmo,
+  onTriggerEvent,
+} from "postretro";
 
 // Half the dummies must die before the player takes the retaliation hit.
 const KILL_FRACTION = 0.5;
@@ -47,8 +57,12 @@ const RETALIATION_DAMAGE = 35;
 // The event name fired by progress and handled by the applyDamage reaction.
 const RETALIATION_EVENT = "dummiesCleared";
 const PROGRESS_REACTION = "combatDummyProgress";
+const AMMO_PICKUP_REACTION = "combat.ammoPickup";
 
-export function setupLevel(_ctx: unknown): { reactions: NamedReactionDescriptor[] } {
+export function setupLevel(_ctx: unknown): {
+  reactions: NamedReactionDescriptor[];
+  triggerEvents: TriggerEventDescriptor[];
+} {
   const reactions: NamedReactionDescriptor[] = [];
 
   // (a) Progress threshold over the dummy tag. `fire` names the event emitted
@@ -69,5 +83,16 @@ export function setupLevel(_ctx: unknown): { reactions: NamedReactionDescriptor[
     }),
   );
 
-  return { reactions };
+  // The volume is a repeating dispenser in v1: it deliberately does not
+  // disarm after paying the current activators.
+  const ammoPickup = defineReaction(AMMO_PICKUP_REACTION, (on) =>
+    grantAmmo(on.activators, "bullets.light", 24),
+  );
+  reactions.push(ammoPickup);
+
+  const triggerEvents: TriggerEventDescriptor[] = [
+    onTriggerEvent({ tag: "ammo_pickup" }, "enter", [ammoPickup]),
+  ];
+
+  return { reactions, triggerEvents };
 }

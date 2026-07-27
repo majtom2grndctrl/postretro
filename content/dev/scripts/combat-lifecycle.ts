@@ -5,7 +5,8 @@
 // target and queues recovery; a follow-up hit while it is down gibs it. Keeping
 // this in the dev mod's manifest, rather than the map data script, demonstrates
 // the reusable mod-global tier that future enemy, reward, and presentation
-// policies build on.
+// policies build on. Reward behavior is reference content only: the engine has
+// no concept of a reward, so a mod replaces these policies wholesale.
 
 import { defineImpactEvent } from "postretro";
 
@@ -71,6 +72,18 @@ export const enemyDeath = defineImpactEvent(
         do: [target.playAnim("death"), target.despawn({ afterMs: CORPSE_LINGER_MS })],
       },
     ];
+  },
+);
+
+// REFERENCE CONTENT — this mod-global kill payout is one possible economy
+// policy, not engine behavior. A real mod replaces it with its own policy.
+export const ammoOnKill = defineImpactEvent(
+  "dev:ammo-on-kill",
+  { tag: "dummy" },
+  (impact) => {
+    const killed = impact.target.healthBefore.gt(0).and(impact.target.healthAfter.le(0));
+
+    return [{ when: killed, do: [impact.source.grantAmmo("bullets.light", 8)] }];
   },
 );
 

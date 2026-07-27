@@ -64,12 +64,18 @@ Nothing corrects these. This is the whole compatibility problem.
 | 2 | **`PlayerMovementDescriptor` tuning** | Descriptor-authored and used by client prediction. Changed speed, jump, dash, or crouch diverges every tick. `view_feel` is the one exception — a render-only camera effect. | manifest `entities` |
 | 3 | **Entity class identity** | Clients materialize remote entities by `entity_class`, matched against a descriptor's `canonical_name`. A renamed or removed name leaves the client unable to materialize what the host names. | manifest `entities` |
 | 4 | **State-slot schema** | Clients apply replicated state-slot records against their local declaration. | manifest `store_declarations` |
-| 5 | **World gravity set from a reaction** | Feeds local prediction; both peers run reactions. | manifest `reactions` / map KVP |
+| 5 | **World gravity set from a reaction** | Feeds local prediction; both peers run reactions. Wants replication, not a digest — see below. | manifest `reactions` / map KVP |
 
-Tier 3 does not reduce to one mechanism. Item 1 and item 5's map half belong to the level
-digest. Items 2 and 3 belong to the mod digest. Item 4 is already covered by a shipped schema
-fingerprint and needs nothing new. Item 5's reaction half is covered by nothing — see
-*Knowingly uncovered* in §3.
+Tier 3 does not reduce to one mechanism. Item 1 belongs to the level digest. Items 2 and 3
+belong to the mod digest. Item 4 is already covered by a shipped schema fingerprint and needs
+nothing new.
+
+Item 5 is not a digest problem. The correct fix is to **replicate** world gravity — absorb it
+under server authority, the Tier 2 mechanism §2 already describes. That is strictly better
+than a digest: it makes the peers agree instead of refusing when they don't, and it retires
+the map half along with the reaction half. The redirect is out of scope for the E15
+session-lifecycle spec, which names the hazard but does not implement it, so until it lands
+item 5 is covered by nothing — see *Knowingly uncovered* in §3.
 
 ## 3. The policy
 
@@ -99,6 +105,28 @@ disconnect — it is a fact scheduled to become true again.
   hashed. A descriptor whose `canonical_name` is `None` is excluded outright: a client
   materializes remote entities by matching `entity_class` against `canonical_name`, so an
   unnamed descriptor cannot cross the wire and cannot diverge.
+- **The IR substrate is inside the hashed domain, and hashing it is a general capability
+  rather than a dash special case.** `DashParams` carries five `NumberOrIr` fields
+  (`boost_speed`, `momentum_retention`, `steer_control`, `dash_drag`, `cooldown_ms`) and one
+  `BoolOrIr` (`preserve_vertical`); both are `enum { Literal(..), Ir(IrNode) }` over
+  `postretro_foundation::ir::IrNode`. `IrNode` has 15 variants (`Const`, `Input`, `Add`,
+  `Sub`, `Mul`, `Div`, `Clamp`, `Lerp`, `Lt`, `Le`, `Gt`, `Ge`, `Eq`, `Ne`, `Select`), is
+  tree-recursive through `Box<IrNode>`, and `IrValue` is `Bool(bool) | Number(f32)`. Movement
+  is the substrate's *first* adopter, not its only one — `E18--ir-valued-reactions` has
+  shipped and `E10--enemy-stagger` drafts against `NumberOrIr` — so the recipe hashes IR with
+  a reusable `IrNode`/`IrValue` walker, not a dash-shaped one. No choice of domain avoids the
+  enum.
+- **The mod digest also covers three mod-global registry lanes**, all cheap:
+  `global_trigger_events` (`TriggerEventDescriptor` — `tag`, `event`, `fire`, `levels`, all
+  `String`/`Vec<String>`),
+  `global_trigger_pools` (`TriggerPoolDescriptor` — `tag`, `arm`, `levels`, with
+  `TriggerPoolArm::{Count(u32), Percentage(f64)}`), and `global_crossings` (`ScopedCrossing` →
+  `CrossingDescriptor` — `slot`, `condition`, `max`, `edge`, `fire`, with
+  `CrossingCondition::{Below, Above, Ir}`). Crossings evaluate predicates over state slots on
+  both peers, so divergent thresholds dispatch different events off identical replicated
+  state. They are cheap precisely because the `IrNode` walker the `dash` fields already force
+  into existence covers `CrossingCondition::Ir` unchanged. The `f64` in
+  `TriggerPoolArm::Percentage` needs a `hash_f64` helper; only `hash_f32` exists today.
 - The **level content digest** is the static-kinematic fingerprint widened to cover static
   world collision — Tier 3 item 1 — on the same rule that put mover collision there: a
   deterministic prediction input belongs in the parity hash.
@@ -114,24 +142,52 @@ disconnect — it is a fact scheduled to become true again.
 - **Mod version never gates.** Exact equality blocks a friend on the previous build over a
   Tier 2 change no client ever simulates.
 
-The recipe reaches nothing else in the manifest. Presentation lanes — `render`, `theme`,
-`fonts`, `ui_trees`, `frontend` — are never reached, because hashing presentation would break
-co-op on every cosmetic edit. `maps` is never reached, because a catalog divergence is a
-recoverable named case.
+Beyond those lanes the recipe reaches nothing else in the manifest. Presentation lanes —
+`render`, `theme`, `fonts`, `ui_trees`, `frontend` — are never reached, because hashing
+presentation would break co-op on every cosmetic edit. `maps` is never reached, because a
+catalog divergence is a recoverable named case.
 
 ### Knowingly uncovered
 
-`reactions`, `crossings`, `events`, `trigger_events`, and `trigger_pools` are simulated, not
-presentational, and no digest covers them. Tier 3 item 5 — world gravity set from a reaction
-— lives in exactly this set. A mod whose reaction lane differs can pass both gates and
-diverge on locally-simulated gravity.
+Two gaps remain, and they are different problems.
 
-This is a named gap, not an oversight, and the fix is not to widen the digest over those
-lanes. That repeats the mistake the `entities` lane already demonstrates: it demotes peers
-over changes no client simulates. Closing it properly means deciding which reaction effects
-are client-local prediction inputs and hashing those. Until that decision is made the gap is
-stated rather than omitted, because §6's rule is that silence about an uncovered simulated
-input is the failure mode worth preventing.
+**1. The `reactions` and `events` lanes** — `ScopedReaction` / `NamedReaction` /
+`ReactionDescriptor`, and `ImpactEventDescriptor`. Simulated, not presentational, and no
+digest reaches them. The blocker is not an IR-encoding question; the IR walker exists. It is
+two things:
+
+- `SequenceStep::id` is `SequenceTarget::{Entity(EntityId), Activators, FiredTrigger}`, and
+  `EntityId` is a newtype over `u32` — a runtime allocation handle, not content. Hashing it
+  binds the digest to spawn order.
+- The decisive one: whether a reaction is prediction-relevant is keyed by
+  `PrimitiveDescriptor::primitive`, an **open string namespace**, not by struct shape. The
+  entire denylist discipline rests on exhaustive destructuring producing a compile error, and
+  no compile error is possible for "someone added a new prediction-relevant primitive."
+  Hashing the lane wholesale reintroduces the Tier 2 false refusal — a `playSound` or
+  `setEmitterRate` argument change would demote every peer. Hashing a primitive allowlist is
+  the exact allowlist mechanism that produced the static-collision fail-open.
+
+The `serde_json::Value` payloads on these lanes — `PrimitiveDescriptor::args`,
+`SequenceStep::args`, `ImpactEventDescriptor::policy` — are *not* the blocker. `preserve_order`
+is not enabled in this workspace, so `serde_json::Map` is a `BTreeMap` and iterates in
+key-sorted order deterministically.
+
+Tier 3 item 5 — world gravity set from a reaction — lives in this gap. A mod whose reaction
+lane differs passes both gates and diverges on locally-simulated gravity. Its fix is
+replication rather than a wider digest; see §2.
+
+**2. Level-local reactions and crossings fall between the two digests.** `DataRegistry` keeps
+two separate sets: per-level `reactions` / `crossings` / `trigger_events` / `trigger_pools`
+populated from `setupLevel()`, and mod-global `global_reactions` / `global_crossings` /
+`global_trigger_events` / `global_trigger_pools` populated from the manifest. The mod digest
+reads the global lanes. The level content digest hashes `.prl` geometry and mover data.
+Script-declared, level-local declarations are in neither. This is distinct from gap 1: the
+level-local crossing and trigger lanes carry no blocker of their own — the recipe that covers
+their `global_*` counterparts would cover them unchanged — they simply sit where no digest
+looks. Level-local reactions are in both gaps at once.
+
+These are named gaps, not oversights. Stating them beats omitting them, because §6's rule is
+that silence about an uncovered simulated input is the failure mode worth preventing.
 
 ### Why not an author-declared compatibility key
 
@@ -159,8 +215,15 @@ all of its fields is what prevents silent omissions. So the rule has two halves 
 load-bearing:
 
 1. **The set of types the recipe reaches is named explicitly and kept deliberately small** —
-   `EntityTypeDescriptor`, `PlayerMovementDescriptor`, and the structs beneath it. Widening
-   that set is a decision, made once, in the open.
+   `EntityTypeDescriptor` (`canonical_name` and `movement` only), `PlayerMovementDescriptor`,
+   and the structs beneath it, which are `CapsuleParams`, `GroundParams`, `SpeedParams`,
+   `AirParams`, `FallParams`, `DashParams`, `ForgivenessParams`, and `CrouchParams`.
+   `ViewFeelParams` is outside the set — `view_feel` is skipped as render-only. The closure is
+   recursive, so naming it means naming every struct in it, not just the root. Beyond that:
+   `IrNode` / `IrValue`, reached through `DashParams`, and the registry-lane types
+   `TriggerEventDescriptor`, `TriggerPoolDescriptor` / `TriggerPoolArm`, `ScopedCrossing` /
+   `CrossingDescriptor` / `CrossingCondition`. Widening that set is a decision, made once, in
+   the open.
 2. **Within each named type, every field is bound by exhaustive destructuring with no `..`
    rest pattern**, so a newly added field fails the build until someone classifies it as
    hashed or skipped.
@@ -171,17 +234,25 @@ unhashed, and no test catches a field you forgot. Under exhaustive destructuring
 omission fails loud (a cosmetic edit demotes peers, visible immediately) instead of silent
 (prediction fighting, traced back to nothing).
 
-Three further requirements, all correctness rather than ergonomics:
+Four further requirements, all correctness rather than ergonomics:
 
 - **Every map-valued field the recipe reaches hashes in key-sorted order.** A
   `std::collections::HashMap` under the default `RandomState` iterates in an order that
   differs *per process*, so two peers on byte-identical content would otherwise compute
-  different digests. Descriptor data already carries such maps —
-  `HealthDescriptor::zone_multipliers` is one — so the hazard is live the moment the type set
-  widens.
+  different digests. No map-valued field is reachable in today's domain — the obvious
+  candidate, `HealthDescriptor::zone_multipliers`, sits behind `health`, which is skipped as
+  host-authoritative — so this is a forward-looking guard for the moment the type set widens.
+  It would already be satisfied on the reaction lanes' JSON payloads, which are `BTreeMap`-backed.
+  The determinism hazards that *are* live in today's domain are `f32` bit-pattern hashing and
+  the recursive `IrNode` walk.
 - **Struct destructuring gives no exhaustiveness over enums.** An enum in the domain needs a
   `match` with no wildcard arm. Separate rule, separate enforcement; the destructuring rule
   does not imply it.
+- **Hash the IR structurally, never by serializing it.** `IrNode`'s serde format is pinned and
+  byte-matched, which makes serializing it tempting. Don't. A structural walk with an
+  exhaustive `match` and no wildcard arm is what turns a newly added variant into a compile
+  error; serializing turns it into a silently changed digest for every peer on both builds,
+  which is the failure this whole section exists to prevent.
 - **The mod digest carries its own epoch constant**, bumped whenever the recipe changes,
   mirroring the level digest's. Without it, a recipe change that alters the byte stream lets
   an old peer's digest accidentally match a new peer's.

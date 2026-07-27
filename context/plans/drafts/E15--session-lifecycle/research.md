@@ -15,7 +15,8 @@ Findings behind the spec's decisions, including why its scope changed once.
 | The handshake carries three fields and is `Copy` | `crates/net/src/wire.rs` — `ProtocolVersion` |
 | Both protocol constants are hand-bumped and packed into the transport gate | `crates/net/src/transport.rs` — `PROTOCOL_ID`, `WIRE_VERSION`, `transport_protocol_id` |
 | The server→client envelope carries time-sync and shot verdicts only — there is no relevel vocabulary | `crates/net/src/wire.rs` — `ServerMessage` |
-| The fingerprint hashes the mover list, mover collision vertices/indices, and waypoints — nothing identifying the level | `crates/postretro/src/runtime_movers.rs` — `kinematic_static_fingerprint` |
+| The fingerprint hashes the mover list, mover collision vertices/indices, and waypoints — nothing identifying the level. Signature is `kinematic_static_fingerprint(geometry: &KinematicGeometry) -> [u8; 32]`, `pub(crate)`, and its `FINGERPRINT_EPOCH` is a **function-local** `const` = 1, not a shared one | `crates/postretro/src/runtime_movers.rs` — `kinematic_static_fingerprint` |
+| Its hash helpers — `hash_len`, `hash_str`, `hash_vec3`, `hash_f32` — are **private free functions** in that same file. A sibling recipe module cannot call them without a visibility change | `crates/postretro/src/runtime_movers.rs` |
 | The level's own identity is resolved one line before the fingerprint is computed, on the same `&mut self` | `crates/postretro/src/startup/lifecycle.rs` — `retain_active_level_tags_for_install` sets `active_level_source`, then `install_level_payload` computes the fingerprint |
 | A catalog load resolves against the engine-global map registry, which survives level unload — so one string is enough to name a map on both peers | `context/lib/boot_sequence.md` §4, §6 |
 | The level-scoped client reset early-returns for the host role, so no host-side table is cleared on unload | `crates/postretro/src/netcode/mod.rs` — `reset_level_scoped_client_state` |
@@ -31,6 +32,19 @@ Findings behind the spec's decisions, including why its scope changed once.
 | Most of `EntityTypeDescriptor` is host-authoritative (`ai`, `health`, `weapon`, `default_weapon`, `behavior`) or presentation (`light`, `emitter`, `mesh`); only `canonical_name` and `movement` feed client simulation | `crates/entities/src/data_descriptors/types/entity.rs` — `EntityTypeDescriptor` |
 | State-slot parity already ships: both peers compare a schema fingerprint derived from the replicated slot declarations | `crates/postretro/src/netcode/state_slots.rs` — `ReplicatedSlotSchema` |
 | Scripts are 160K of the dev mod's 337M (textures 291M, models 43M, maps 3.0M), so script sync is cheap on bytes and still does not cover the breaking surface | measured under `content/dev/` |
+| `PlayerMovementDescriptor`'s hashed fields are structs, not scalars: `CapsuleParams`, `GroundParams` (which nests `SpeedParams`), `AirParams`, `FallParams`, `DashParams`, `ForgivenessParams`, `CrouchParams`. `view_feel: Option<ViewFeelParams>` is the render-only one | `crates/foundation/src/data_descriptors/types/movement.rs` |
+| `DashParams` carries five `NumberOrIr` (`boost_speed`, `momentum_retention`, `steer_control`, `dash_drag`, `cooldown_ms`), one `BoolOrIr` (`preserve_vertical`), and `air_dashes: u32` — so `movement` reaches the IR | same file |
+| `NumberOrIr` / `BoolOrIr` are `enum { Literal(..), Ir(IrNode) }`. Their doc comments scope them to dash *today*, and they sit in the shared typedef surface | same file; `crates/scripting-core/src/typedef/common.rs` |
+| `IrNode` has **15** variants (`Const`, `Input`, `Add`, `Sub`, `Mul`, `Div`, `Clamp`, `Lerp`, `Lt`, `Le`, `Gt`, `Ge`, `Eq`, `Ne`, `Select`) and is tree-recursive through `Box<IrNode>`; `IrValue` is `Bool(bool)` / `Number(f32)`. The module doc names movement as **"the first adopter"** of the substrate | `crates/foundation/src/ir/mod.rs` |
+| `HealthDescriptor::zone_multipliers` is a `std::collections::HashMap<String, f32>`, but it is reachable only through `EntityTypeDescriptor::health`, which the digest skips as host-authoritative — so **no map-valued field is reachable in the hashed domain** | `crates/foundation/src/data_descriptors/types/combat.rs` |
+| `serde_json`'s `preserve_order` feature is **not** enabled in this workspace, so `serde_json::Map` is a `BTreeMap` and iterates key-sorted deterministically | workspace `Cargo.toml` |
+| `EntityId` is a newtype over `u32` — a runtime allocation handle, not content | `crates/entities/src/registry.rs` |
+| `TriggerEventDescriptor { tag, event, fire, levels }` is `String`/`Vec<String>` throughout and already derives `Hash`; `TriggerPoolDescriptor { tag, arm, levels }`, with `TriggerPoolArm::{Count(u32), Percentage(f64)}` | `crates/entities/src/data_descriptors/types/reactions.rs` |
+| `CrossingDescriptor { slot: Option<String>, condition, max: f32, edge: Option<String>, fire: Vec<String> }`, with `CrossingCondition::{Below { threshold }, Above { threshold }, Ir(IrNode)}` — the same `IrNode` `movement` reaches | same file |
+| `PrimitiveDescriptor { primitive: String, target, tag, on_complete, args: serde_json::Value }`; `SequenceStep { id: SequenceTarget, primitive: String, args: serde_json::Value }`; `SequenceTarget::{Entity(EntityId), Activators, FiredTrigger}` | same file |
+| `DataRegistry` keeps per-level `reactions`/`crossings`/`trigger_events`/`trigger_pools`, committed by `setupLevel()`, separate from mod-global `global_reactions`/`global_crossings`/`global_trigger_events`/`global_trigger_pools`, committed from the manifest | `crates/entities/src/data_registry.rs` |
+| The control decode skips clients already accepted — `if self.slots.is_accepted(client_id)` — under a comment reading "A client already accepted may send later control traffic" | `crates/net/src/transport.rs` — `NetServer::process_control_messages` |
+| The `defineMod` declaration and its doc comment are **hand-written templates**, not registry-generated | `crates/scripting-core/src/typedef/templates/sdk_lib.d.ts`, `sdk_lib.luau` |
 
 ## Slot lifecycle
 
@@ -176,10 +190,74 @@ State-slot parity left the digest in the same pass. It is owned by the shipped
 The denylist mechanism survives; its granularity moved. It is no longer "hash every lane
 except the named exclusions" but "hash every field of a small named set of descriptor types
 except the named exclusions." Exhaustive destructuring still makes a field added later fail
-the build rather than default to unhashed, which is the whole reason to prefer a denylist.
-What it no longer buys is coverage of descriptor *types* nobody named — a new
-client-simulated descriptor is still a manual widening, caught by the rule in
-`research/coop-content-compatibility.md` §6 rather than by the compiler.
+the build rather than default to unhashed, which is the whole reason to prefer a denylist —
+provided the destructuring reaches all the way down. It has to be stated at the right depth:
+the values it protects sit one and two levels below the two types the spec names, inside
+`DashParams` and the `IrNode` beneath it. What it no longer buys is coverage of descriptor
+*types* nobody named — a new client-simulated descriptor is still a manual widening, caught
+by the rule in `research/coop-content-compatibility.md` §6 rather than by the compiler.
+
+## What generalizing the IR hasher bought
+
+The spec's original framing treated `DashParams`'s IR-valued fields as an obstacle: the
+movement descriptor was assumed to be scalars, and it is not. That framing had the direction
+of travel wrong. The IR is a substrate mid-adoption — its module doc calls movement "the first
+adopter", `E18--ir-valued-reactions` shipped, and `E10--enemy-stagger` drafts against
+`NumberOrIr`. A recipe shaped around dash specifically would be correct for exactly one
+adoption step, and would then fail open on the next one, silently, on a field added by someone
+who never read the recipe. That is the same failure the static-collision hole already
+demonstrated.
+
+Building a general `IrNode`/`IrValue` walker instead paid for itself immediately.
+`global_crossings` carries `CrossingCondition::Ir(IrNode)` — the same type — so covering that
+lane became nearly free once the walker existed.
+
+**The design rule that fell out: hash the IR structurally, not by serializing it.**
+Serializing is the tempting shortcut. `IrNode`'s serde format is pinned and byte-matched, so a
+hash over the serialized form would be stable *and* would auto-cover every variant added
+later. That auto-coverage is the defect. A new variant the walker does not handle is a compile
+error; a new variant a serializer handles is nothing at all. The compile error is the entire
+mechanism, and serializing trades it away.
+
+## What the digests do not cover
+
+An earlier draft named five knowingly-uncovered manifest lanes: `reactions`, `crossings`,
+`events`, `trigger_events`, and `trigger_pools`. Scoping brought three inside the mod digest.
+`global_trigger_events` and `global_trigger_pools` are `String`/`Vec<String>` plus one small
+enum; `global_crossings` came with the IR walker. Two remain: **`reactions` and `events`**.
+
+The reason previously recorded for deferring them — that reactions carry "their own
+IR-encoding question" — is wrong. They do carry IR, and it is the question the walker already
+answers. The two real blockers are different:
+
+- **`SequenceTarget::Entity(EntityId)` is a runtime handle**, a newtype over `u32` the registry
+  hands out, not content. Two peers on byte-identical mods can hold different values there.
+- **Prediction relevance is keyed by `PrimitiveDescriptor::primitive`, an open string
+  namespace** rather than a struct shape. This is the decisive one. Every other digest domain
+  is decided by exhaustive destructuring, which turns an unclassified addition into a compile
+  error. A string key admits no such error: a primitive added later is just a string the recipe
+  has never seen.
+
+Both ways out are mechanisms this spec already rejected. Hashing all reactions wholesale
+reintroduces the Tier 2 false refusal the disposition table exists to prevent. Hashing an
+allowlist of prediction-relevant primitives is the allowlist mechanism that produced the
+static-collision fail-open. The `serde_json::Value` payloads are **not** the blocker:
+`preserve_order` is off in this workspace, so `serde_json::Map` is a `BTreeMap` and iterates
+key-sorted.
+
+**A gap nobody had recorded: level-local reactions and crossings.** Scripts declare reactions
+and crossings from `setupLevel()`, and `DataRegistry` keeps those per-level lanes separate from
+the mod-global ones the manifest commits. Neither digest reaches them. The mod digest reads the
+`global_*` lanes; the level digest hashes `.prl` geometry and mover data, which is not where
+script-declared content lives. So two peers running the same map under mods whose level scripts
+differ agree on both digests and diverge on locally-simulated behavior. Named here on the same
+rule that makes the uncovered lane set explicit at all.
+
+**Tier 3 item 5 changed disposition: replicate, not hash.** World gravity set from a reaction
+was cited as the concrete cost of the uncovered reaction lanes. Hashing is the wrong instrument
+for it. Gravity is world state the server owns, so it is absorbed by server authority — Tier 2
+under the project's own model — and replication makes peers *agree*, where a digest only makes
+them refuse when they do not. The E15 spec names it out of scope rather than implementing it.
 
 ## Which corroborating documents are independent, and which are not
 
@@ -203,6 +281,24 @@ count it three times. Two corollaries for anyone validating this spec later:
 - The genuinely independent evidence for the policy is in the code, not the prose: the
   suppression list in `networking.md` §Phase boundaries (which is what makes Tier 2 large)
   and `CollisionWorld::populate_from_level` (which is what makes Tier 3 item 1 real).
+
+## Drafting errors, and the pattern behind each
+
+Three from this review round. The correction is cheap; the pattern is the part worth keeping.
+
+- **The spec claimed its chosen digest domain avoided the IR enum.** It does not. `movement`
+  reaches `dash`, and `DashParams` reaches the same `IrNode` the spec cites elsewhere as a
+  reason to leave state-slot parity to `ReplicatedSlotSchema`. The pattern: *a rationale for
+  choosing between two designs was written without opening the types the chosen one reaches.*
+  This is the third consecutive review in which Task 6 failed on an unopened type.
+- **The cross-process determinism criterion, and the invariant supporting it, were anchored to
+  `zone_multipliers`** — a field the spec's own disposition table excludes, since it is
+  reachable only through host-authoritative `health`. The pattern: *an example survived a
+  domain change that removed it from the domain.*
+- **The exhaustive-destructure guarantee was stated over `EntityTypeDescriptor` and
+  `PlayerMovementDescriptor`**, when the values it protects live one and two levels below
+  them. The pattern: *a guarantee was scoped to the types the recipe names rather than the
+  types it reaches.*
 
 ## Rejected while drafting
 

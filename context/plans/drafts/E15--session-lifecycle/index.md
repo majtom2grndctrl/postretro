@@ -89,6 +89,11 @@ over the wire, and clients follow. The connection outlives the map it joined on.
   and feeds peer-controlled input to a C interpreter. Matching is in scope; distribution is
   not, and if it ever lands it belongs out-of-band, not on a reliable game channel. Reasoned
   through in `research/coop-content-compatibility.md`.
+- **Replicating world gravity, and the rest of the Tier 3 item 5 redirect.** This spec
+  concludes that reaction-set world gravity should be absorbed by server authority rather than
+  gated by a digest, and says so in Decisions. Implementing it means widening what the host
+  replicates, which has no dependency on this spec's gate and no reason to ride along with it.
+  Named as the correct fix so a later reader does not reach for a reaction-lane hash instead.
 - **Tamper resistance.** Mod identity is declared, not proven — see Decisions.
 - **Hashing the `.prl` bytes wholesale.** Decided against, not deferred by omission — it
   makes a cross-platform bake difference a hard connection failure, which is a
@@ -332,9 +337,14 @@ notice, because this is the first time the answer is "engine."
   agree again.
   Identity's freeze stays a documented divergence (Divergence 2); the digest is no longer
   part of it.
-- **The mod compatibility digest covers two named types, not two manifest lanes.** Per
-  registered entity type: the `canonical_name` a client materializes by, and the
-  `PlayerMovementDescriptor` it predicts with. Nothing else. The full per-field disposition
+- **The mod compatibility digest covers a recursive type closure plus three mod-global lanes,
+  never a lane wholesale.** Per registered entity type: the `canonical_name` a client
+  materializes by, and the `PlayerMovementDescriptor` it predicts with — *including every
+  tuning struct beneath `movement`*, since that is where the predicted values actually live.
+  Plus `global_trigger_events`, `global_trigger_pools`, and `global_crossings`. Nothing else.
+  Crossings earn their place on their own terms: both peers evaluate them over the same
+  replicated slots, so differing thresholds dispatch different events off identical state.
+  The full per-field disposition
   is in Task 6, and it has **three** categories rather than two — hashed, skipped because
   presentation, skipped because host-authoritative. That third category is the correction: an
   earlier draft said "hash the `entities` lane exhaustively," which would have hashed `ai`,
@@ -345,29 +355,58 @@ notice, because this is the first time the answer is "engine."
   direction.
 - **State-slot parity is not this digest's job.** `ReplicatedSlotSchema` already hashes every
   replicated slot's name, type, range, and scope under its own stream version, and both peers
-  already compare it. A second mechanism over the same data is duplication, and it is what
-  pulled private fields and a 30-variant IR enum into a domain meant to be destructured. The
-  shipped fingerprint owns this; Task 7 fixes its one real defect, which is that it is
-  process-cached with no reset and goes stale across a staged reload.
-- **Within each named type the digest is a denylist, not an allowlist.** Bind every field by
+  already compare it. A second mechanism over the same data is duplication, and that
+  duplication — plus `SlotRecord`'s and `StoreDeclarationSet`'s private fields — is the whole
+  reason. An earlier draft also claimed this domain avoided the IR enum; it does not, since
+  `DashParams` reaches the same `IrNode` (15 variants, not the 30 that draft asserted). That
+  argument is struck and the decision stands on duplication alone. The shipped fingerprint
+  owns this; Task 7 fixes its one real defect, which is that it is process-cached with no
+  reset and goes stale across a staged reload.
+- **The IR walker is built as a general capability, and that is a deliberate over-build.**
+  `NumberOrIr`/`BoolOrIr` appear only under `dash` today, but the IR module names movement as
+  "the first adopter," `E18--ir-valued-reactions` has shipped, and `E10--enemy-stagger` drafts
+  against the same wrappers. "IR is dash-only" describes adoption progress, not the type
+  system. A dash-shaped recipe would rebuild this spec's own fail-open the first time a
+  movement field becomes IR-valued, so the walker is written over `IrNode`/`IrValue` once and
+  reused. It pays for itself inside this spec: `CrossingCondition::Ir` is what makes
+  `global_crossings` cheap enough to cover. The IR is hashed **structurally, never by
+  serializing** — serializing would auto-cover new variants and thereby destroy the compile
+  error that is the entire enforcement mechanism.
+- **Within every reached type the digest is a denylist, not an allowlist.** Bind every field by
   exhaustive destructuring and name the specific skips — not the reverse. An allowlist ("hash
   the fields a client simulates against") is the exact mechanism that produced the
   static-collision fail-open this spec exists to fix: a field added later by someone who never
   reads the recipe defaults to *unhashed*, and no test catches a field you forgot. A denylist
   makes the same omission fail loud instead of silent. Scope the claim honestly, though: it is
-  a guarantee about fields *inside* `EntityTypeDescriptor` and `PlayerMovementDescriptor`, not
-  about manifest lanes. A new **lane** still escapes it, which is why the uncovered set below
-  is named rather than assumed empty.
-- **Five simulated manifest lanes are knowingly uncovered, and named.** `reactions`,
-  `crossings`, `events`, `trigger_events`, and `trigger_pools` are committed into the data
-  registry and the impact-policy runtime; none is presentation, and no digest covers them.
-  Tier 3 item 5 in `research/coop-content-compatibility.md` — world gravity set from a
-  reaction, which feeds local prediction on both peers — lives in exactly this set. The
-  consequence, stated rather than discovered later: two mods whose reaction lanes differ can
-  pass both gates and diverge on locally-simulated gravity. Hashing the reaction lanes is its
-  own problem, with its own IR-encoding question, and it is not smuggled into this spec. It is
-  named here because a spec whose central argument is that silent fail-opens are the danger
-  does not get to leave its own uncovered set implicit.
+  a guarantee about fields inside the types the recipe **reaches** — which is the recursive
+  closure, not the two types it names at the top — and not about manifest lanes. A new **lane**
+  still escapes it, which is why the uncovered set below is named rather than assumed empty.
+- **Two lanes remain knowingly uncovered — down from five — and the reason changed.**
+  `reactions` and `events` are not hashed. `trigger_events`, `trigger_pools`, and `crossings`
+  now are, at mod-global scope. The earlier reason for deferring all five was "its own
+  IR-encoding question"; Task 6 answers that question, which is what let three of them in. What
+  keeps the other two out is structural, not effort: `SequenceTarget::Entity(EntityId)` carries
+  a runtime `u32` allocation handle rather than content, and — decisively — prediction-relevance
+  is keyed by `PrimitiveDescriptor::primitive`, an **open string namespace**. Every guarantee
+  here rests on exhaustive destructuring producing a compile error, and no compile error exists
+  for "someone added a new prediction-relevant primitive." Both ways around it are mechanisms
+  this spec has already rejected: hashing wholesale is the Tier 2 false refusal, hashing a
+  primitive allowlist is the fail-open. Consequence, stated rather than discovered later: two
+  mods whose reaction lanes differ can pass both gates and diverge on locally-simulated state.
+- **Level-local reactions and crossings are covered by neither digest, and that is a third
+  gap.** `DataRegistry` separates the mod-global lanes from the per-level ones `setupLevel()`
+  populates. The mod digest reads the globals; the level content digest hashes `.prl` geometry
+  and mover data. Script-declared per-level content sits between the two schedules. Named, not
+  closed — closing it means deciding whether the level digest can depend on script execution,
+  which is a boot-ordering question this spec has no reason to open.
+- **Tier 3 item 5 should be replicated, not hashed — and that fix is out of scope here.**
+  World gravity set from a reaction feeds local prediction on both peers, and the instinct is
+  to hash the lane that sets it. The better answer is server authority: replicate the value and
+  the peers agree, where a digest only lets them refuse each other when they disagree. That is
+  the Tier 2 mechanism `research/coop-content-compatibility.md` already describes, applied to a
+  case currently filed under Tier 3. This spec names the hazard and the correct redirect; it
+  does not implement it, because widening what the host replicates is a replication-surface
+  change with no dependency on the gate this spec builds.
 - **The level content digest is the existing fingerprint, widened to cover static world
   collision.** `CollisionWorld::populate_from_level` builds the client's local trimesh from
   `LevelWorld::vertices` and `LevelWorld::indices`; client movement prediction runs against
@@ -438,8 +477,10 @@ notice, because this is the first time the answer is "engine."
   each carrying expected and received. The type is one enum rather than two so a single
   `Display` serves every diagnostic, but the closing and holding sets are distinguishable at
   the type level rather than by convention, so a later cause cannot be added to the wrong
-  lane by omission. `RejectReason` and `HandshakeOutcome` lose `Copy` and gain `Clone`; call
-  sites update in the same pass.
+  lane by omission. `RejectReason` is **deleted**, not wrapped: `HandshakeOutcome::Rejected`
+  carries a `ClosingCause` directly, and the `Display` and `std::error::Error` impls move to
+  `DivergenceReason`. `HandshakeOutcome` loses `Copy`; it already derives `Clone`. Call sites
+  update in the same pass.
 - **Both protocol constants bump.** New message vocabulary bumps the app protocol id; the
   changed layout bumps the wire version. Independent bumps, both apply.
 - **Single-player is untouched.** No endpoint is constructed, so no gate runs, no relevel
@@ -472,21 +513,35 @@ notice, because this is the first time the answer is "engine."
       identities**, and the mismatch is reported by name rather than as a hash diff.
 - [ ] Two mods differing only in a **hashed** field — an entity's `canonical_name`, or any
       `PlayerMovementDescriptor` field other than `view_feel` — produce different mod digests.
+      This must hold for a field nested two levels down (`SpeedParams::run`), not only for a
+      top-level one, or the criterion passes against a non-recursive recipe.
+- [ ] Two mods differing only in a `DashParams` field produce different mod digests in **both**
+      forms: as differing `Literal`s, and as structurally different `Ir` expressions that a
+      serializer-free structural walk must distinguish. Two structurally equal `IrNode` trees
+      hash equal.
+- [ ] Two mods differing only in a mod-global **crossing** — a threshold, an edge, or an IR
+      predicate — produce different mod digests; so do two differing only in a mod-global
+      trigger event or trigger pool.
 - [ ] Two mods differing only in `ai`, `health`, `weapon`, `default_weapon`, or `behavior`
       produce the **same** mod digest and interoperate. So do two differing only in `light`,
-      `emitter`, `mesh`, `view_feel`, or any presentation lane.
+      `emitter`, `mesh`, `view_feel`, or any presentation lane. So do two differing only in a
+      `reactions` or `events` entry — those lanes are uncovered by decision, and a test pins
+      that as intended rather than leaving it to look like an oversight.
 - [ ] Declaring the same entity types in a different source order produces the same mod
-      digest, and a descriptor with no `canonical_name` does not affect it at all.
+      digest, and a descriptor with no `canonical_name` does not affect it at all. The same
+      holds independently for each of the three mod-global lanes.
 - [ ] The same content hashes to the same mod digest **in two separate processes**, including
-      a descriptor carrying a populated `zone_multipliers` map.
-- [ ] Adding a field to `EntityTypeDescriptor` or `PlayerMovementDescriptor` without touching
-      the digest recipe **fails to compile** — the recipe destructures exhaustively, so a new
-      field cannot default to unhashed. Verified by the pattern being present at review, not
-      by a runtime test.
+      a descriptor whose movement tuning carries non-trivial `f32` values and an `Ir`
+      expression tree — the two determinism hazards actually reachable in the domain.
+- [ ] Adding a field to `EntityTypeDescriptor`, `PlayerMovementDescriptor`, **any struct
+      beneath `movement`**, or any of the three lane descriptor types without touching the
+      digest recipe **fails to compile**; so does adding an `IrNode` variant. The recipe
+      destructures exhaustively and matches without wildcards, so neither can default to
+      unhashed. Verified by the pattern being present at review, not by a runtime test.
 - [ ] A client whose level fails parity **keeps its connection**, receives a content
       diagnostic naming the host's map identity, and re-participates at the host's next
-      matching install without reconnecting; a same-identity fingerprint mismatch is
-      reported as a content divergence rather than an identity one.
+      matching install without reconnecting; a same-identity **level-content-digest** mismatch
+      is reported as a content divergence rather than an identity one.
 - [ ] A host installing a different catalog level **keeps** its clients connected: each
       drops to admitted, stops receiving entity records, and its pawn, replication,
       ownership, command, state-slot, and combat state are cleared exactly as a
@@ -512,10 +567,16 @@ notice, because this is the first time the answer is "engine."
 - [ ] After a host level change, no host-side level-scoped table retains an entry keyed by an
       id the unload invalidated, and the replicated-slot schema is rebuilt rather than served
       from the process cache.
+- [ ] A staged reload that adds or removes a store namespace rebuilds the replicated-slot
+      schema on **both** host and client rather than serving either process cache — so the two
+      peers never compare a schema fingerprint derived from declarations neither is running.
+- [ ] A client demoted while participating despawns its mapped remote entities and disarms
+      prediction, on both demotion triggers — level change and mod digest — rather than
+      retaining a tableau that no longer updates.
 - [ ] A redundant relevel naming the level already active or already in flight does not
       restart the load.
-- [ ] A client joining a host that **already has a level installed** receives a relevel for
-      the current map on admission, without waiting for the next transition.
+- [ ] A client joining a host that **already has a catalogued level installed** receives a
+      relevel for the current map on admission, without waiting for the next transition.
 - [ ] A relevel naming a catalog id absent from the client's catalog logs a diagnostic naming
       the id and leaves the client admitted rather than closing it.
 - [ ] Single-player boot constructs no endpoint and reaches Running unchanged.
@@ -540,7 +601,9 @@ module-qualified — `use postretro_net::transport::{NetClient, NetServer}` in
 `crates/postretro/src/netcode/mod.rs`, `transport::HandshakeOutcome` in `main.rs` — and
 `lib.rs` carries no re-exports today, so a `pub use` there mints a new path instead of
 preserving the existing one. Relocate the existing gate unit tests with their
-subject. No behavior change.
+subject. No behavior change. Verified by the relocated gate unit tests passing unchanged; no
+acceptance criterion covers this task, by design — it is a move, and every criterion below
+describes behavior the move preserves.
 
 ### Task 2: Mod identity in the manifest
 
@@ -551,7 +614,12 @@ where the doc strings live. `sdk/types/postretro.d.ts` and the Luau typedef are 
 artifacts**; both carry a "do not edit by hand" banner and
 `committed_sdk_types_match_current_registry` fails CI on a hand edit. Regenerate them with
 `gen-script-types`, along with the `expected.d.ts` / `expected.d.luau` fixtures under
-`crates/postretro/src/scripting/typedef/tests/fixtures/`. Note the parity guard in the same
+`crates/postretro/src/scripting/typedef/tests/fixtures/`. **But `defineMod` itself is not
+generated.** Its declaration and doc comment are hand-written templates —
+`crates/scripting-core/src/typedef/templates/sdk_lib.d.ts` and `sdk_lib.luau` — copied verbatim
+by regeneration, and they currently tell authors that `config.name` is the only required
+field. Edit both, or the shipped SDK keeps documenting `id` and `version` as optional after
+they become mandatory, and no CI guard catches it. Note the parity guard in the same
 file — `mod_manifest_registered_type_matches_mod_manifest_result` pins the registered field
 list to `ModManifestResult`'s, so it fails the moment the Rust fields land without the
 registration, which makes the two edits a single change rather than two.
@@ -564,8 +632,8 @@ existing required-`name` shape, so a missing field is an `InvalidArgument` namin
 field and the source path. Validate the id against `[A-Za-z0-9_.:-]` at parse, **anchored over
 the whole string**, minimum length 1, compared case-sensitively at admission; the version is
 any non-empty string. Carry both on `ModManifestResult` beside `name` **and on
-`StagedManifest`** (`crates/scripting-core/src/staged_manifest/transfer.rs`) — a fifth type,
-and the one the staged path actually hands to the main thread. Without it the main-thread
+`StagedManifest`** (`crates/scripting-core/src/staged_manifest/transfer.rs`) — a fifth edit
+site, and the one the staged path actually hands to the main thread. Without it the main-thread
 commit cannot see the staged values and the first-wins warning has nothing to compare. Commit
 them with the rest of the manifest at mod init, but make the commit **first-wins across
 reloads**: a staged manifest whose id or version differs from the installed one logs a warning
@@ -592,23 +660,42 @@ self-describing, so a second client→server Control message would decode as the
 erroring. The crate already solved this on `Channel::Input`, and the comment above
 `ClientMessage` in `wire.rs` states the rule: the receiver decodes one enum and matches on
 the variant rather than guessing an untagged payload's type. Add the Control equivalents —
-a client→server envelope carrying admission and parity, a server→client envelope carrying the
-divergence diagnostic and Task 4's relevel — as **appended** variants in the same style, and
-replace the untagged decode with a match. The messages are bitcode wire types, so they are
+a client→server envelope carrying admission and parity, and a server→client envelope carrying
+the divergence diagnostic — as **appended** variants in the same style, and replace the
+untagged decode with a match. This task defines both envelopes and the divergence variant
+only; Task 4 appends the relevel variant to the server→client one. Say so at the definition
+site so the two tasks do not both claim it. The messages are bitcode wire types, so they are
 defined in `wire.rs` beside `ClientMessage`/`ServerMessage` and *compared* in Task 1's
-`handshake.rs`; `ProtocolVersion` stays in `wire.rs` too. Note that the admission message
-carries `String` fields, so it cannot be `Copy` and its constructor cannot stay a `const fn`
-the way `protocol_version` is today.
+`handshake.rs`; `ProtocolVersion` stays in `wire.rs` too. It **drops
+`kinematic_static_fingerprint`**, keeping only `app_protocol_id` and `wire_version`, and
+becomes the admission variant's constants payload — the fingerprint moves to the parity
+message, so leaving the field in place would put a mutable value back in the admission lane
+by accident. Note that the admission message carries `String` fields, so it cannot be `Copy`
+and its constructor cannot stay a `const fn` the way `protocol_version` is today.
 
 **Slots must retain what they declared.** `SlotTable` is `HashMap<ClientId, SlotState>` —
 state only, no payload — and `process_control_messages` drops `received` after comparing. The
 shipped fingerprint setter sidesteps this by closing *every* client unconditionally rather
 than comparing per-slot, which is exactly what this spec replaces. Per-slot demotion needs
-each slot's last-declared parity triple retained, so widen the slot record to carry it (or add
-a parallel map on `NetServer` beside `pending_lifecycle`) and say which. `SlotState` loses
-`Copy` as a consequence, the same way `RejectReason` does. The
-version field is carried for diagnostics and **must not be compared** — comment it at the
-comparison site so a later reader does not "fix" the omission.
+each slot's last-declared parity triple retained. **Use a parallel map** —
+`HashMap<ClientId, ParityDeclaration>` on `NetServer` beside `pending_lifecycle`, cleared on
+close — rather than widening the slot record. `SlotState` therefore **keeps `Copy`**; it gains
+a variant and nothing else. (This is not the "second waiting mechanism" the gate design
+refuses: it retains a received value, it does not decide anything.)
+
+**Delete the already-accepted skip.** `process_control_messages` currently returns early for
+any client where `self.slots.is_accepted(client_id)` holds, under a comment reading "A client
+already accepted may send later control traffic." Under this design a `Participating` client
+re-arms and re-sends parity on **every** level install, so that skip swallows precisely the
+message the whole spec depends on. Drain and evaluate Control for slots in `Pending`,
+`Admitted`, **and** `Participating`: an admission message from an already-admitted slot is
+ignored (admission is once-only per connection), a parity message is re-evaluated on every
+arrival.
+
+The version field is carried for diagnostics and **must not gate** — the only comparison
+permitted is the one that emits a host-side `info` log naming both versions when an admitted
+client's version differs from the installed one. Comment it at the comparison site so a later
+reader neither "fixes" the missing gate nor deletes the log.
 
 **The divergence reason is a two-level enum**, not a flat one:
 `DivergenceReason::{Closing(ClosingCause), Holding(HoldingCause)}`, with `Display` on the
@@ -617,12 +704,26 @@ only by matching on it — which is the convention this is meant to replace, so 
 the point rather than decoration. `ClosingCause` covers protocol and mod id; `HoldingCause`
 covers mod digest, level identity, and level digest. Each carries expected and received, with
 the mod-id cause quoting both peers' declared versions and the level causes distinguishing an
-identity mismatch from a same-identity digest mismatch. `RejectReason` today is a **struct**
-with an `impl std::error::Error`; say whether it becomes the outer wrapper and keeps that impl
-or is replaced. `RejectReason` and `HandshakeOutcome` **lose `Copy`; they already derive
-`Clone`.** The real work is two reuse-after-move sites in `process_control_messages` (the
+identity mismatch from a same-identity digest mismatch. Each cause's payload is pinned:
+
+| Cause | Lane | Payload |
+|---|---|---|
+| `Protocol` | closing | `expected: ProtocolVersion`, `received: ProtocolVersion` (two `u32`s each, post-drop) |
+| `ModId` | closing | `expected: String`, `received: String`, plus `expected_version: String`, `received_version: String` for the diagnostic |
+| `ModDigest` | holding | `expected: [u8; 32]`, `received: [u8; 32]` |
+| `LevelIdentity` | holding | `expected: String`, `received: String` |
+| `LevelDigest` | holding | `identity: String`, `expected: [u8; 32]`, `received: [u8; 32]` — identity is carried so the diagnostic can say "same map, different content" |
+
+`RejectReason` today is a **struct** with an `impl std::error::Error`. It is **deleted**:
+`HandshakeOutcome::Rejected` carries a `ClosingCause` directly, and the `Display` and
+`std::error::Error` impls move to `DivergenceReason`. Keeping it as an outer wrapper would
+leave two spellings of the same idea, and its `ProtocolVersion`-typed fields are invalidated
+by the message split anyway. `HandshakeOutcome` **loses `Copy`; it already derives `Clone`.**
+The real work is two reuse-after-move sites in `process_control_messages` (the
 malformed-decode and validate-failure branches each move `reason` into `reject` and then reuse
-it in the outcome) plus three `Some(*reason)` derefs in the loopback tests.
+it in the outcome) plus two `Some(*reason)` derefs, in
+`loopback_diverged_app_version_is_rejected_with_typed_reason` and
+`loopback_mismatched_kinematic_static_content_is_rejected_before_snapshots`.
 
 **Slot machine.** Add an `Admitted` **variant to `SlotState`** between `Pending` and
 `Accepted`, rename `Accepted` to `Participating`, and add the demotion transition
@@ -640,9 +741,21 @@ clarifications the shipped shape forces:
 
 **Verdict lanes.** `ServerPoll` today carries `handshakes` and `lifecycle`, and
 `HandshakeOutcome` is exactly `Accepted`/`Rejected`. A parity *pass* and a parity *hold* map
-to neither. Name which vector carries each of the three new verdicts — admission pass,
-participation transition, parity hold — adding a third field or new outcome variants rather
-than leaving an implementer to invent the vocabulary Task 7 then consumes. Note that the
+to neither, so the vocabulary is fixed here rather than left for Task 7 to invent:
+
+| Verdict | Rides | Shape |
+|---|---|---|
+| admission pass | `handshakes` | `HandshakeOutcome::Admitted { client_id }` |
+| admission reject | `handshakes` | `HandshakeOutcome::Rejected { client_id, cause: ClosingCause }` |
+| parity hold | `handshakes` | `HandshakeOutcome::ParityHeld { client_id, cause: HoldingCause }` |
+| participation transition | `lifecycle` | `SlotEvent::Participating { client_id }` |
+| demotion | `lifecycle` | `SlotEvent::Demoted { client_id, cause: HoldingCause }` |
+
+`ServerPoll` keeps its two vectors — no third field. The split follows the shipped rule:
+`handshakes` carries *gate verdicts about a message just evaluated*, `lifecycle` carries *slot
+state transitions the engine must clean up after*. `process_control_messages` returns both.
+Task 7 hangs the pawn spawn on `SlotEvent::Participating` and the cleanup on
+`SlotEvent::Demoted`. Note that the
 accept signal deliberately rides `handshakes` and not `lifecycle` today, and that
 `SlotEvent::Accepted` is matched-but-ignored in `crates/postretro/src/netcode/mod.rs` under a
 comment saying the arm is kept exhaustive so a new variant is a compile error — so the new
@@ -673,13 +786,25 @@ commit, so there is nothing to tear down.
 **Both poll entry points.** `NetServer::update` and `NetServer::poll_handshakes` each
 independently drain `pending_lifecycle`, run the `ServerEvent` loop, and call
 `process_control_messages`; only `update` calls `transport.send_packets`, and
-`poll_handshakes` is the in-memory relay path `harness.rs` and the loopback tests use. "The
-next poll" must mean both, or relay-driven tests wedge on an undrained pending-disconnect list.
+`poll_handshakes` is the in-memory relay path `harness.rs` and `transport.rs`'s relay tests
+(`relay_accepted_pair`, `fingerprint_change_surfaces_exactly_one_close_event`) use — the
+real-UDP loopback tests drive `NetServer::update` through `run_handshake`. "The next poll"
+must mean both, or relay-driven tests wedge on an undrained pending-disconnect list.
 
-**Client side.** Split `handshake_sent` into an admission flag sent once on connect and a
-parity flag re-armed whenever either parity source changes — level install **or** staged mod
-commit — replacing today's self-disconnect. The flag is duplicated across `NetClient::update`
-and `NetClient::update_connections`, so the split lands twice, and its accessor is the
+**Client side — installed values first.** `NetClient` today has exactly one installed-value
+setter, `set_kinematic_static_fingerprint`. It needs the same shape as the server: an
+`Option<(mod id, mod version)>` for admission and the two parity `Option`s — `Option<mod
+digest>` and `Option<(level identity, level digest)>` — each with a named setter Task 7 calls.
+The client compares nothing; it only declares. Both roles' setters are named in Task 7.
+
+**Client side — flags.** Split `handshake_sent` into an admission flag and a parity flag,
+replacing today's self-disconnect. The admission flag is **not** "sent once on connect": mod
+identity is not installed until mod init, which runs after `Session::build` constructs the
+endpoint, so it is sent once on the first poll at which the transport is connected *and* the
+identity is present — the same queue-until-installed rule the server's gate uses, applied on
+the sending side. The parity flag re-arms whenever either parity source changes — level
+install **or** staged mod commit. Both flags are duplicated across `NetClient::update` and
+`NetClient::update_connections`, so the split lands twice, and the accessor is the
 loop-termination condition in `harness.rs`'s `pump_client_to_server`.
 
 Bump `PROTOCOL_ID` and `WIRE_VERSION`, and re-stage the existing both-gates regression test in
@@ -691,8 +816,9 @@ re-participating and re-emitting its promotion.
 
 ### Task 4: Relevel message and client-follow
 
-Give the host a way to name the next map and the client a way to follow it. Add a
-server→client relevel variant to Task 3's Control envelope carrying one map catalog id,
+Give the host a way to name the next map and the client a way to follow it. **Append** a
+relevel variant to the server→client Control envelope Task 3 defines — Task 3 reserves the
+slot and defines no relevel; this task adds it — carrying one map catalog id,
 sent to every admitted and participating slot when the host installs a catalogued level and
 on admission for a client joining a host that already has one — so a late joiner is told
 the current map without waiting for the next transition. Sending to admitted slots is also
@@ -709,11 +835,13 @@ that, not the parity value. Send from both poll entry points, as Task 3 requires
 send.
 
 On the client, surface received relevel messages out of the endpoint poll as a typed value the
-engine drains — say whether that changes `NetClient::update`'s return type to a `ClientPoll`
-(there is no such type today; `update` returns `Result<(), _>` and `update_connections` returns
-`()`) or types the existing `NetClient::drain_control`, which returns `Vec<Vec<u8>>` and has no
-callers. The drain must run from the world-less frames Task 5 opens, not only from Running,
-since a relevel can arrive while an earlier load is in flight. The engine enqueues
+engine drains. **Retype the existing `NetClient::drain_control`** from `Vec<Vec<u8>>` to
+`Vec<ServerControlMessage>` — it has no callers today, so the change costs nothing — rather
+than introducing a `ClientPoll` return type. A `ClientPoll` would mean changing
+`NetClient::update`'s signature (`Result<(), _>` today) *and* `update_connections`'s (`()`),
+touching every call site to carry a value only this task consumes. The drain must run from the
+world-less frames Task 5 opens as well as from Running, since a relevel can arrive while an
+earlier load is in flight. The engine enqueues
 `LevelRequest::Load(LevelSource::Catalog(id))` through the shipped request path, which
 already unloads any active level first. Ignore a relevel naming the level already active or
 already in flight, so a redundant send does not restart a load. An id absent from the local
@@ -743,8 +871,12 @@ So: advance the net endpoint from **every world-less frame** — the loading fra
 `crates/postretro/src/main.rs`. Transport advance, handshake processing, and keepalive only.
 Do **not** apply snapshots or run any game logic there: there is no world outside Running,
 and the snapshot-apply ordering contract (apply before state-crossing detection, within the
-Game-logic stage) has no meaning there. Splash is out — it is two frames and precedes
-`Session::build`; say so rather than leaving the reader to wonder.
+Game-logic stage) has no meaning there. Splash is out, though not for the reason an earlier
+draft gave: `Session::build` runs *inside* the final splash frame, via `install_pending_session`
+in `run_splash_frame` (`crates/postretro/src/startup/splash_lifecycle.rs`), which then
+transitions straight to Frontend or Loading and returns. So splash does not precede the
+endpoint's construction — it contains it — but no splash frame ever holds a constructed
+endpoint past that transition, so none needs to advance it.
 
 Relevel delivery is **not** this task — it belongs to Task 4, which owns the message, and
 Task 4 must state that its client-side drain runs from these frames too, since a relevel can
@@ -766,9 +898,12 @@ builds the client's trimesh from. Hash them with the existing `hash_len`/`hash_f
 and in the same shape the per-mover vertex/index loop already uses, so a zero-triangle level
 is distinguishable from another zero-triangle level by nothing *in this field* — which is
 correct, because level identity carries that. Bump `FINGERPRINT_EPOCH` to 2; note it is a
-function-local `const` inside the recipe, not a shared constant. Take `&LevelWorld` (or the
-two slices) rather than `&KinematicGeometry`; the caller in `install_level_payload` already
-holds `world`. Rename to `level_content_digest` — it is no longer kinematic-only — and carry
+function-local `const` inside the recipe, not a shared constant. **Add** the world parameter,
+do not substitute it: the signature becomes
+`pub(crate) fn level_content_digest(geometry: &KinematicGeometry, world: &LevelWorld) -> [u8; 32]`.
+Replacing `&KinematicGeometry` would silently drop the mover list, per-mover collision, and
+waypoints the fingerprint covers today; the caller in `install_level_payload` already holds
+both. Rename to `level_content_digest` — it is no longer kinematic-only — and carry
 the rename through its engine-side call chain, which reaches outside this file:
 `NetEndpoint::set_kinematic_static_fingerprint` (`crates/postretro/src/netcode/mod.rs`) and
 its caller in `install_level_payload`. Test that two levels differing **only** in static
@@ -776,15 +911,20 @@ collision produce different digests, that identical geometry with differing enti
 produces the same one, and that two mover-less levels with different brushwork no longer
 collide.
 
-**Mod compatibility digest.** Two named types, not two manifest lanes.
+**Mod compatibility digest.** Two entity-descriptor types and their nested tuning structs,
+plus three mod-global registry lanes. Not the `entities` lane wholesale, and not every lane.
 
 *Source.* Read from `ScriptCtx::data_registry` after mod init commits, **not** from
 `ModManifestResult`: `ScriptingCore::drain_manifest_registrations` does
 `std::mem::take(&mut manifest.entities)`, so the manifest's own `entities` is an empty `Vec`
 by the time anything could hash it. The registry is the same read `App::net_poll_and_apply`
-already uses to build `net_descriptors`, so this adds no new access path.
+already uses to build `net_descriptors`, so this adds no new access path. Read the
+**mod-global** lanes specifically — `global_trigger_events`, `global_trigger_pools`,
+`global_crossings` — not their per-level counterparts. `DataRegistry` holds both sets
+separately, the globals populated from the manifest and the per-level ones from
+`setupLevel()`; only the globals are mod content. The per-level ones are a named gap, below.
 
-*Domain.* Per entity type in the registry, hash exactly two things:
+*Domain, part 1: entity descriptors.* Per entity type in the registry, hash exactly two things:
 
 | Field of `EntityTypeDescriptor` | Disposition |
 |---|---|
@@ -802,46 +942,166 @@ prevent. Inside `PlayerMovementDescriptor` the nine remaining fields (`capsule`,
 `air`, `fall`, `stuck_stop_enabled`, `stuck_stop_threshold`, `dash`, `forgiveness`, `crouch`)
 are all prediction inputs; `view_feel` is documented render-only and is the one skip.
 
+**The domain is recursive, and naming only the two outer types was a defect.** Seven of those
+nine fields are structs, not scalars — the tuning values a client actually predicts with live
+one and two levels down (`GroundParams::accel`, `SpeedParams::run`, `AirParams::jump_velocity`).
+The hashed closure is therefore `EntityTypeDescriptor`, `PlayerMovementDescriptor`, **and every
+struct beneath `movement`**: `CapsuleParams`, `GroundParams`, `SpeedParams`, `AirParams`,
+`FallParams`, `DashParams`, `ForgivenessParams`, `CrouchParams`. The destructure rule below
+applies to each of them. Scoped to the two outer types alone, adding `AirParams::air_control`
+would compile clean and default to unhashed — the exact silent omission the rule exists to
+stop, one level down from where it was looking.
+
+*The IR walker is a general sub-recipe, not a dash special case.* `DashParams` carries five
+`NumberOrIr` fields (`boost_speed`, `momentum_retention`, `steer_control`, `dash_drag`,
+`cooldown_ms`), one `BoolOrIr` (`preserve_vertical`), and a plain `air_dashes: u32`. Both
+wrappers are `enum { Literal(..), Ir(IrNode) }` over `postretro_foundation::ir::IrNode` — 15
+variants (`Const`, `Input`, `Add`, `Sub`, `Mul`, `Div`, `Clamp`, `Lerp`, `Lt`, `Le`, `Gt`,
+`Ge`, `Eq`, `Ne`, `Select`), tree-recursive through `Box<IrNode>`, with
+`IrValue::{Bool(bool), Number(f32)}` at the leaves. So the recipe walks an IR tree, and it
+writes that walker as a reusable capability — `hash_number_or_ir`, `hash_bool_or_ir`,
+`hash_ir_node`, `hash_ir_value` — rather than inlining it at dash's six fields.
+
+The reason is adoption trajectory, not tidiness. The IR module's own doc names movement as
+"**the first adopter**" of the substrate; `E18--ir-valued-reactions` has already shipped,
+`E10--enemy-stagger` drafts against `NumberOrIr`, and the wrappers sit in the shared typedef
+surface (`crates/scripting-core/src/typedef/common.rs`). "IR appears only under `dash`" is a
+statement about how far adoption has got, not a property of the types. A dash-shaped recipe
+would rebuild this spec's own fail-open the first time `GroundParams::accel` becomes
+IR-valued — a new prediction input, silently unhashed. The general walker also pays for
+itself immediately: it is what makes `global_crossings` cheap, below.
+
+**Hash the IR structurally, not by serializing it.** `IrNode`'s serde representation is
+pinned and byte-matched, which makes `serde_json::to_vec` tempting, and it would even
+auto-cover new variants. Reject it: serializing produces no compile error, so a new variant
+would silently change every digest instead of stopping the build — and the compile error is
+the entire mechanism this recipe is built on. Walk it with an exhaustive `match`, no wildcard
+arm, a discriminant byte per variant, `Box` recursion, a length-prefixed `hash_str` for
+`Input { name }`, and `hash_f32` bit patterns for `IrValue::Number`.
+
+An earlier draft of this task claimed the chosen domain *avoided* the IR enum, and offered
+that as a reason to prefer it over hashing state-slot data. That was false — `dash` reaches
+the same `IrNode` — and it is struck. (It also said "~30 variants"; there are 15.) The real
+reason state slots stay out is duplication with a shipped fingerprint, which still holds.
+
 Descriptors whose `canonical_name` is `None` are **excluded entirely**. A client materializes
 remote entities by `entity_class` matched against `canonical_name`, so an unnamed descriptor
 cannot cross the wire — which also supplies the total order the sort needs, since the
-remaining set is keyed by a present name.
+remaining set is keyed by a present name, and `DataRegistry::upsert_entity_type` already
+guarantees that name is unique. The sort is therefore total without a tiebreak.
+
+*Domain, part 2: three mod-global registry lanes.* All three are prediction-relevant, none is
+presentation, and all three are cheap once the IR walker exists. Hash each lane's entries in a
+key-sorted order (by `tag` for the trigger lanes; for crossings by `slot` then `fire`, with a
+structural tiebreak, since `slot` is `Option` and not unique):
+
+| Lane | Shape | Notes |
+|---|---|---|
+| `global_trigger_events` | `TriggerEventDescriptor { tag, event, fire, levels }` | all `String`/`Vec<String>`; already derives `Hash` |
+| `global_trigger_pools` | `TriggerPoolDescriptor { tag, arm, levels }`, `TriggerPoolArm::{Count(u32), Percentage(f64)}` | needs a **`hash_f64`** helper — only `hash_f32` exists today |
+| `global_crossings` | `ScopedCrossing { crossing, levels }`; `CrossingDescriptor { slot: Option<String>, condition, max: f32, edge: Option<String>, fire: Vec<String> }`; `CrossingCondition::{Below{threshold}, Above{threshold}, Ir(IrNode)}` | the `Ir` arm is why the general walker pays for itself |
+
+Crossings are the load-bearing one. Both peers run the crossing detector over the same
+replicated slot values, so two mods whose thresholds or predicates differ dispatch **different
+events off identical state** — divergence with no map involved and nothing today to catch it.
+
+*Two lanes stay uncovered, and the reason is not the one an earlier draft gave.* `reactions`
+and `events` are **not** hashed. The previous reason — "its own IR-encoding question" — is
+retired, because this task now answers that question. The real blockers are two. First,
+`SequenceStep::id` is `SequenceTarget::{Entity(EntityId), Activators, FiredTrigger}` and
+`EntityId` is a newtype over `u32`: a runtime allocation handle, not content, so hashing it
+would bind the digest to spawn order. Second and decisively, whether a reaction is
+prediction-relevant is keyed by `PrimitiveDescriptor::primitive` — an **open string
+namespace**, not a struct shape. Every guarantee in this recipe rests on exhaustive
+destructuring producing a compile error, and no compile error is reachable for "someone added
+a new prediction-relevant primitive." Both escapes are mechanisms this spec has already
+rejected elsewhere: hashing the lanes wholesale demotes every peer when a `playSound` or
+`setEmitterRate` argument changes, which is the Tier 2 false refusal; hashing an allowlist of
+primitives is the allowlist mechanism that produced the static-collision fail-open. Note that
+the `serde_json::Value` payloads are *not* the obstacle — `preserve_order` is off in this
+workspace, so `serde_json::Map` is a `BTreeMap` and iterates key-sorted for free.
+
+*A third gap, newly identified and covered by neither digest.* `DataRegistry` holds per-level
+`reactions`/`crossings`/`trigger_events`/`trigger_pools` from `setupLevel()` separately from
+the mod-global lanes above. The mod digest reads the globals; the level content digest hashes
+`.prl` geometry and mover data. **Level-local, script-declared crossings and reactions fall
+between them.** The crossing and trigger halves have no blocker of their own — only no digest
+that looks there, because they install on the level schedule rather than the mod one. Named
+here rather than left implicit; closing it is a level-digest-schedule question this spec does
+not open.
 
 *State slots are not in this digest.* `ReplicatedSlotSchema`
 (`crates/postretro/src/netcode/state_slots.rs`) already hashes every replicated slot's dotted
 name, type, range, and scope under its own `FINGERPRINT_STREAM_VERSION`, and both peers
-already compare it. Do not build a second mechanism over the same data — that duplication is
-what dragged `SlotRecord`'s private `write_generation`, `StoreDeclarationSet`'s private
-`BTreeMap`, and `SlotSchema::accumulate`'s ~30-variant `IrNode` into a domain that cannot be
-destructured. State-slot parity is that fingerprint's job; this task's only slot-related work
-is the cache defect Task 7 fixes.
+already compare it. Do not build a second mechanism over the same data. The blocker is
+duplication plus the private fields a second recipe would have to reach — `SlotRecord`'s
+`write_generation` and `StoreDeclarationSet`'s `BTreeMap`. It is **not** the `IrNode` that
+`SlotSchema::accumulate` holds: this recipe walks that enum anyway, and an earlier draft both
+offered it as a reason and miscounted it at ~30 variants. State-slot parity is that
+fingerprint's job; this task's only slot-related work is the cache defect Task 7 fixes.
 
-*Determinism rules, all three load-bearing.* Every map-valued field the recipe reaches is
-hashed in **key-sorted order** — `HealthDescriptor::zone_multipliers` is a
-`std::collections::HashMap` with `RandomState`, whose iteration order differs *per process*,
-so without this two peers on byte-identical content compute different digests. Enums are
-hashed through a `match` with **no wildcard arm** — struct destructuring gives no
-exhaustiveness over enums, so that is a separate rule and not a consequence of the first.
-`Option` writes a presence byte, and every string and sequence is length-prefixed via
-`hash_str`/`hash_len`, so two distinct descriptor sets cannot concatenate to the same stream.
+*Determinism rules.* Enums are hashed through a `match` with **no wildcard arm** — struct
+destructuring gives no exhaustiveness over enums, so this is a separate rule and not a
+consequence of the destructure rule. It binds hardest on `IrNode`'s 15 variants and on
+`CrossingCondition`. `Option` writes a presence byte, and every string and sequence is
+length-prefixed via `hash_str`/`hash_len`, so two distinct descriptor sets cannot concatenate
+to the same stream. Floats hash as bit patterns through `hash_f32` (and a new `hash_f64` for
+`TriggerPoolArm::Percentage`), never through formatting.
 
-*Enforcement.* Within each named type, destructure exhaustively — `let Descriptor { a, b, ..
-}` is forbidden, no rest pattern — bind every field, and route skips through two labelled
-blocks, `// not hashed: host-authoritative` and `// not hashed: presentation`. Adding a field
-then fails to compile until someone classifies it. That compile error is the mechanism. Note
-what it does and does not buy: it is a claim about fields **inside the types named above**,
-not about manifest lanes. Applying it at lane granularity is exactly the overreach the
-domain table above corrects.
+Map-valued fields are hashed in **key-sorted order**. State plainly what this rule is doing
+here: **no map-valued field is reachable in today's domain.** An earlier draft justified the
+rule with `HealthDescriptor::zone_multipliers`, a `std::collections::HashMap` with
+`RandomState` — but it hangs off `EntityTypeDescriptor::health`, which the disposition table
+skips as host-authoritative, so the recipe never sees it. The example outlived the domain
+change that excluded it. The rule stays as a forward-looking guard, satisfied in advance by
+the `BTreeMap`-backed JSON payloads should the reaction lanes ever come in, and it is not
+what makes today's digest cross-process stable. What does: `f32` bit patterns, the
+`IrNode` walk, and the lane sort orders above.
 
-*Epoch.* The mod digest carries its own epoch constant, bumped whenever the recipe changes —
-the level digest has `FINGERPRINT_EPOCH` and this needs the equivalent.
+*Enforcement.* Within **every** type the recipe reaches — the two entity types, the eight
+structs beneath `movement`, the three lane descriptor types, and `IrNode`/`IrValue` — bind
+every field by exhaustive destructuring. `let Descriptor { a, b, .. }` is forbidden, no rest
+pattern; enums match with no wildcard arm. Route skips through two labelled blocks,
+`// not hashed: host-authoritative` and `// not hashed: presentation`. Adding a field then
+fails to compile until someone classifies it, and that compile error is the mechanism. Scope
+the claim honestly: it is a guarantee about fields inside the **reached** types, not about
+manifest lanes. A new *lane* still escapes it, which is why the uncovered set above is named
+rather than assumed empty. Two earlier drafts got this scope wrong in opposite directions —
+one applied it at lane granularity, which would have hashed host-authoritative fields; the
+next scoped it to two named types, which left the values it protects one level below the
+guarantee.
 
-Place the recipe engine-side (a sibling of the level recipe), not in `scripting-core`: the
-manifest lane stays unaware of netcode, exactly as the mover recipe keeps its byte layout out
-of the net crate. Test: order-insensitivity; that a `movement` edit moves the digest; that an
-`ai`, `health`, or `weapon` edit does **not**; that a presentation edit does not; and that a
-descriptor carrying a populated `zone_multipliers` map hashes identically across two
-processes.
+*Placement, signature, and shared helpers.* Put the recipe engine-side as a sibling of the
+level recipe — `crates/postretro/src/mod_digest.rs` — not in `scripting-core`: the manifest
+lane stays unaware of netcode, exactly as the mover recipe keeps its byte layout out of the
+net crate. It is a pure function over borrowed slices, so Task 7 owns every registry access:
+
+```rust
+pub(crate) fn mod_compatibility_digest(
+    entities: &[EntityTypeDescriptor],
+    trigger_events: &[TriggerEventDescriptor],
+    trigger_pools: &[TriggerPoolDescriptor],
+    crossings: &[ScopedCrossing],
+) -> [u8; 32]
+```
+
+`hash_len`, `hash_str`, `hash_vec3`, and `hash_f32` are **private free functions inside
+`runtime_movers.rs`** today, so a sibling module cannot call them. Move all four, plus the new
+`hash_f64` and the IR walker, into a shared `pub(crate)` module — `crates/postretro/src/content_hash.rs` —
+that both recipes import. That move is part of this task, not an incidental refactor: without
+it the two recipes either duplicate the helpers or diverge.
+
+*Epoch.* A function-local `const MOD_DIGEST_EPOCH: u32 = 1`, mirroring `FINGERPRINT_EPOCH`'s
+shape and bumped whenever the recipe changes.
+
+Test: order-insensitivity across all four inputs; that a `movement` edit moves the digest,
+including one nested two levels down (`SpeedParams::run`) and one behind an IR wrapper
+(`DashParams::boost_speed` as both a `Literal` and an `Ir`); that two structurally different
+`IrNode` trees hash differently and two equal ones hash the same; that an `ai`, `health`, or
+`weapon` edit does **not** move it; that a presentation edit does not; that a `view_feel` edit
+does not; that a crossing threshold or predicate edit **does**; that a trigger-event or
+trigger-pool edit does; and that the same content hashes identically **in two separate
+processes** — the real hazards being `f32` bit patterns and the `IrNode` walk, not map order.
 
 ### Task 7: Engine lifecycle wiring
 
@@ -851,8 +1111,13 @@ through the same `session.net_endpoint` borrow `install_level_payload` uses; sin
 has no endpoint and skips. Install once, first-commit-wins, and on a staged reload that
 changes either value log the warning Task 2 specifies.
 
-**Mod digest:** compute Task 6's recipe over `ScriptCtx::data_registry` and install it as the
-parity lane's first source — at mod init **and again after every staged commit**, since a
+Both roles need setters, not just the host: `NetEndpoint` installs identity and both parity
+sources on `NetServer` (which compares) and on `NetClient` (which only declares), so every
+setter named in this task lands twice. Single-player has no endpoint and skips.
+
+**Mod digest:** compute Task 6's recipe over `ScriptCtx::data_registry` — passing `entities`,
+`global_trigger_events`, `global_trigger_pools`, and `global_crossings` as the four slices its
+signature takes — and install it as the parity lane's first source — at mod init **and again after every staged commit**, since a
 staged reload re-commits the entity registrations the recipe reads. The staged seam is
 `App::poll_staged_manifest_results`
 (`crates/postretro/src/startup/staged_manifest_lifecycle.rs`), which the spec previously left
@@ -877,11 +1142,23 @@ it alongside Task 6's widened level digest, computed from the same `world` alrea
 Also install the relevel catalog id Task 4 needs — set when the source is `Catalog`, cleared
 otherwise. **Accept seam:** the pawn spawn currently keyed off the accept outcome in
 `main.rs` moves to the participation transition; a pawn needs a level, which is what parity
-now proves. **Demotion:** route the new demotion event into `host_handle_lifecycle` so it
+now proves. **Demotion:** route `SlotEvent::Demoted` into `host_handle_lifecycle` so it
 runs the same per-slot cleanup a close runs — do not duplicate that cleanup. **Host unload
 reset:** `reset_level_scoped_client_state` early-returns for the host role today; give it a
 host arm that clears the level-scoped host tables (movement owners, slot pawns, replicable
 set, weapon owners, open shots, command queues) whose entries the unload has invalidated.
+These are **two different cleanups** and the spec means both: the per-slot close cleanup keyed
+by `ClientId` that a demotion reuses, and the level-scoped host table reset keyed by level
+lifetime. Neither subsumes the other — a mod-digest demotion runs the first with no level
+change, a level unload runs the second for tables no live slot owns.
+
+**Client-side demotion.** A client that receives a `Holding` diagnostic while participating
+must react, and the two demotion triggers differ: a level-change demotion clears the client's
+world by unloading it, while a mod-digest demotion leaves the world loaded. The seam is the
+`NetworkId → EntityId` map and prediction arming. Default behavior, pending the open question
+below: despawn mapped remotes and disarm prediction on **any** demotion, so the two triggers
+converge on one client-side state rather than leaving a frozen tableau on one path. Named here
+so resolving that question is an edit to this paragraph rather than a new task.
 
 **Replicated-slot schema cache — work, not a check.** An earlier draft said "confirm the host
 state-replication schema is rebuilt per level rather than cached for the process." It is not:
@@ -891,6 +1168,14 @@ on level unload **and** on a staged commit that changes store declarations. This
 beyond tidiness now that state-slot parity is owned by `ReplicatedSlotSchema` rather than by
 the mod digest: a staged reload that adds a namespace otherwise leaves both peers comparing a
 fingerprint derived from schema neither is still running.
+
+**Write the session-state ledger down.** The roadmap requires session-surviving state be
+enumerated rather than accreted, and this spec claims to open that ledger three times without
+anything recording it. Add the list to `context/lib/networking.md` in the same pass: one entry
+— the connection, comprising its `ClientId`, its `SlotState`, and its retained parity
+declaration — plus the subtraction rule that defines the rest (everything level-scoped and
+everything per-slot clears on demotion, so what survives is exactly what a demotion does not
+touch). Spec 2 adds the seat and roster to a named list rather than discovering one.
 
 Keep the `main.rs` edit to redirecting the two triggers — splitting that file
 is out of scope and explicitly deferred by `runtime-level-lifecycle`.
@@ -907,14 +1192,26 @@ named rather than assumed away:
   `NetServer::accepted_clients` is called from `crates/postretro/src/main.rs` and
   `crates/postretro/src/netcode/mod.rs`, `NetServer::is_accepted` from
   `trigger_state_channel_harness_test.rs`, and the exhaustive `SlotEvent::Accepted` arm in
-  `netcode/mod.rs` breaks on the new demotion variant by design. Task 3 therefore carries a
-  mechanical rename pass over `crates/postretro`, or keeps deprecated aliases until Task 7 —
-  pick one, because without either the workspace does not compile at the end of Phase 2.
+  `netcode/mod.rs` breaks on the new demotion variant by design. Task 3 therefore **keeps
+  `#[deprecated]` aliases** for `accepted_clients`/`is_accepted` and defers the mechanical
+  rename to Task 7, rather than carrying a rename pass over `crates/postretro` in Phase 2.
+  Without one of the two the workspace does not compile at the end of Phase 2; the alias branch
+  is chosen because it also resolves two of the three file collisions below.
 - **Task 6 has one existing caller.** `kinematic_static_fingerprint` is called today from
   `install_level_payload`, and Task 6 both renames it and changes its parameter, so Task 6
   updates that call site in place. Task 7 later rewrites the surrounding lines. This is a
   two-line overlap, not a conflict, but it is not "no caller until Phase 4" as an earlier
   draft claimed.
+- **Three same-file collisions inside Phase 2, resolved by rule rather than by hope.** Task 5
+  and Task 6 both edit `crates/postretro/src/startup/lifecycle.rs` — Task 5 the loading frame,
+  Task 6 the `install_level_payload` call site — in disjoint functions, so they merge. Task 5
+  and Task 3's rename pass both edit `crates/postretro/src/main.rs`, and Task 3's rename pass
+  and Task 6's rename both edit `crates/postretro/src/netcode/mod.rs`. Resolve those two by
+  **taking the deprecated-alias branch** of the choice above: Task 3 keeps
+  `accepted_clients`/`is_accepted` as `#[deprecated]` aliases and does not touch `main.rs` or
+  `netcode/mod.rs` bodies, leaving the mechanical rename to Task 7 in Phase 4. The one
+  unavoidable break stays: the exhaustive `SlotEvent` arm in `netcode/mod.rs` must gain the
+  demotion variant in Task 3, which is a one-arm edit rather than a file-wide pass.
 
 **Phase 3 (sequential):** Task 4 — consumes Task 3's slot states and Control envelope.
 **Phase 4 (sequential):** Task 7 — consumes the setters from Task 3, the committed identity
@@ -924,23 +1221,25 @@ from Task 2, both recipes from Task 6, and the client-follow drain from Task 4.
 
 | Invariant | Established by | Preserved / threatened at | Verified by |
 |---|---|---|---|
-| No entity state reaches a slot below participating | Task 3 (send gating) | Every new send path must gate on participation, not admission or connection | AC 1, 3, 4, 16 |
-| **Admission carries only values that cannot change for a live connection** | Task 3 (lane assignment), Task 2 (identity frozen at first commit) | The lane is chosen by convenience, not by mutability — a future compared value put in admission "because it is known early" becomes an unrecoverable close the moment it can be reinstalled. The mod digest was exactly that mistake, caught on review | AC 4, 22 |
-| Content parity is proven for the *current* content, not the joining one | Task 3 (demotion on source replacement), Task 7 (per-install level pair, per-commit mod digest) | A demotion that failed to clear state would leave stale ids addressable; a parity value that stopped being reinstalled would gate on history | AC 16, 17, 22 |
-| A demotion clears exactly what a close clears | Task 3 (event), Task 7 (routed into the existing cleanup) | Shared with the close path — a second cleanup implementation would drift. Both demotion triggers, level and mod digest, run the one path | AC 16, 22 |
+| No entity state reaches a slot below participating | Task 3 (send gating) | Every new send path must gate on participation, not admission or connection | AC 1, 3, 4, 18 |
+| **Admission carries only values that cannot change for a live connection** | Task 3 (lane assignment), Task 2 (identity frozen at first commit) | The lane is chosen by convenience, not by mutability — a future compared value put in admission "because it is known early" becomes an unrecoverable close the moment it can be reinstalled. The mod digest was exactly that mistake, caught on review | AC 4, 24 |
+| Content parity is proven for the *current* content, not the joining one | Task 3 (demotion on source replacement), Task 7 (per-install level pair, per-commit mod digest) | A demotion that failed to clear state would leave stale ids addressable; a parity value that stopped being reinstalled would gate on history | AC 18, 19, 24 |
+| A demotion clears exactly what a close clears | Task 3 (event), Task 7 (routed into the existing cleanup) | Shared with the close path — a second cleanup implementation would drift. Both demotion triggers, level and mod digest, run the one path, host side and client side | AC 18, 24, 28 |
 | Level identity discriminates any two distinct levels | Task 7 (catalog id, normalized path fallback) | The per-level gate is a no-op if two levels can collide, and the addressing-mode case is the one that collides in practice | AC 9 |
 | The level digest discriminates content the identity cannot | Task 6 (static collision folded in, epoch 2) | Two maps sharing an identity but differing in brushwork must not compare equal — this is the fail-open the spec exists to close, and it is only tested if identity is held constant | AC 8 |
-| Every input a client simulates against is either covered by a digest **or named as uncovered** | Task 6 (both recipes), Decisions (the five reaction lanes) | A new client-local simulation input added later is silently ungated unless its recipe is widened too — static collision was exactly that omission. The weaker "or named" form is deliberate: the reaction lanes are uncovered, and a total-coverage claim would be false | AC 8, 10, 14 |
-| The mod digest describes the content the host is running now | Task 7 (re-hash on every staged commit) | Freezing it — the first draft's rule — gates live connections on a value the reload already replaced, silently, in the builds where co-op is developed | AC 22, 23 |
-| The mod digest is stable across processes | Task 6 (key-sorted map hashing) | `HashMap` iteration order varies per process; without the sort two peers on identical content never agree, and the failure looks like a content mismatch rather than a recipe bug | AC 13 |
-| Host-authoritative fields never affect compatibility | Task 6 (three-category disposition table) | Hashing `ai`, `health`, or `weapon` demotes peers on an enemy retune — the false refusal the whole content-derived policy exists to prevent | AC 11 |
-| Mod version is carried and never compared | Task 2 (SDK docs), Task 3 (commented at the comparison site) | It rides the same message as a gating value; a later reader "completing" the comparison silently reinstates exact-version equality and its false refusals | AC 5 |
-| Presentation never affects compatibility | Task 6 (digest domain, exclusions named in labelled blocks) | Widening the mod digest to meshes, lights, emitters, or `view_feel` breaks co-op on every cosmetic edit | AC 11, 23 |
-| A connection's id survives a level change | Task 3 (demote, never close), Task 5 (world-less frames stay polled) | Later specs key player identity off a connection that must not be re-minted | AC 17, 18 |
-| Admission and parity queue independently until their source installs | Task 3 (separate `Option`s, separate early returns) | Coupling them re-creates the ordering inversion this spec removes | AC 1, 2 |
+| Every input a client simulates against is either covered by a digest **or named as uncovered** | Task 6 (both recipes, three mod-global lanes), Decisions (`reactions`/`events`, and level-local script content) | A new client-local simulation input added later is silently ungated unless its recipe is widened too — static collision was exactly that omission. The weaker "or named" form is deliberate: two lanes and the level-local set are uncovered, and a total-coverage claim would be false | AC 8, 10, 11, 12, 16 |
+| **The digest reaches every value it protects, not just the types it names** | Task 6 (recursive closure through `movement`'s eight sub-structs; the general `IrNode`/`IrValue` walker) | A recipe scoped to the outer types leaves the predicted values one and two levels below the guarantee — and an IR-valued field walked dash-shaped fails open the moment a second field adopts the substrate | AC 10, 11, 16 |
+| The mod digest describes the content the host is running now | Task 7 (re-hash on every staged commit) | Freezing it — the first draft's rule — gates live connections on a value the reload already replaced, silently, in the builds where co-op is developed | AC 24, 25 |
+| The mod digest is stable across processes | Task 6 (`f32` bit patterns, structural `IrNode` walk, per-lane sort orders) | The reachable hazards are float formatting and IR traversal order, not map iteration — no map-valued field is in the domain, and anchoring this to one that is not reachable is how the criterion came to pass vacuously | AC 15 |
+| Host-authoritative fields never affect compatibility | Task 6 (three-category disposition table) | Hashing `ai`, `health`, or `weapon` demotes peers on an enemy retune — the false refusal the whole content-derived policy exists to prevent | AC 13 |
+| Mod version is carried and never compared | Task 2 (SDK docs), Task 3 (commented at the comparison site; the one permitted comparison emits a log) | It rides the same message as a gating value; a later reader "completing" the comparison silently reinstates exact-version equality and its false refusals | AC 5 |
+| Presentation never affects compatibility | Task 6 (digest domain, exclusions named in labelled blocks) | Widening the mod digest to meshes, lights, emitters, or `view_feel` breaks co-op on every cosmetic edit | AC 13, 25 |
+| The replicated-slot schema describes declarations both peers are still running | Task 7 (reset on level unload and on a staged commit that changes store declarations) | It is `get_or_insert_with`-cached with no reset today, host and client alike — so a staged reload leaves two peers comparing a fingerprint over declarations neither still has | AC 26, 27 |
+| A connection's id survives a level change | Task 3 (demote, never close), Task 5 (world-less frames stay polled) | Later specs key player identity off a connection that must not be re-minted | AC 19, 20 |
+| Admission and parity queue independently until their source installs | Task 3 (separate `Option`s, separate early returns, both roles) | Coupling them re-creates the ordering inversion this spec removes | AC 1, 2 |
 | A peer refused at admission learns the cause before teardown | Task 3 (deferred disconnect, best-effort) | A future reject path that disconnects inline drops the message entirely | AC 3, 6, 7 |
-| No content divergence ever closes a connection | Task 3 (hold at admitted, closing and holding causes separated at the type level) | Any later content check that rejects instead of holding re-creates the disconnect this spec removes, and races an in-flight parity message against a just-installed level | AC 4, 15, 16, 22, 27 |
-| A relevel never restarts the load it names | Task 4 (active/in-flight suppression) | Late-join and transition both send; a third sender must suppress too | AC 25, 26 |
+| No content divergence ever closes a connection | Task 3 (hold at admitted, closing and holding causes separated at the type level) | Any later content check that rejects instead of holding re-creates the disconnect this spec removes, and races an in-flight parity message against a just-installed level | AC 4, 17, 18, 24, 31 |
+| A relevel never restarts the load it names | Task 4 (active/in-flight suppression) | Late-join and transition both send; a third sender must suppress too | AC 29, 30 |
 
 ## Boundary inventory
 
@@ -948,15 +1247,16 @@ from Task 2, both recipes from Task 6, and the client-follow drain from Task 4.
 |---|---|---|---|---|
 | mod id | `String` on `ModManifestResult` **and `StagedManifest`** | admission variant field | `id: string` | `id: string` |
 | mod version | `String` on both, same as above | admission variant field, carried not compared | `version: string` | `version: string` |
-| mod compatibility digest | `[u8; 32]`, engine-derived from `ScriptCtx::data_registry`, re-derived per staged commit | **parity** variant field | n/a (derived) | n/a (derived) |
+| protocol constants | `ProtocolVersion { app_protocol_id: u32, wire_version: u32 }` — `kinematic_static_fingerprint` dropped | admission variant field | n/a | n/a |
+| mod compatibility digest | `[u8; 32]`, engine-derived from four `ScriptCtx::data_registry` slices (`entities`, `global_trigger_events`, `global_trigger_pools`, `global_crossings`), re-derived per staged commit | **parity** variant field | n/a (derived) | n/a (derived) |
 | level identity (parity) | engine-derived `String` — catalog id, else normalized content-root-relative path | parity variant field | catalog `id` (existing) | same |
 | relevel catalog id | `Option<String>` on `NetServer`, installed only for a catalogued level | relevel variant field | catalog `id` (existing) | same |
 | level content digest | `[u8; 32]`, widened domain, epoch 2 | parity variant field | n/a | n/a |
 | client→server Control envelope | tagged enum in `wire.rs`, mirroring `ClientMessage` | Control, client→server; carries admission + parity | n/a | n/a |
 | server→client Control envelope | tagged enum in `wire.rs`, mirroring `ServerMessage` | Control, server→client; carries relevel + divergence | n/a | n/a |
-| divergence reason | `DivergenceReason::{Closing(ClosingCause), Holding(HoldingCause)}` — 2 closing (protocol, mod id), 3 holding (mod digest, level identity, level digest) | inside the server→client envelope | n/a | n/a |
-| slot state | `SlotState::{Pending, Admitted, Participating, Closed { cause }}`, no longer `Copy` | not replicated | n/a | n/a |
-| retained slot declaration | the last parity triple a slot declared, held per slot | not replicated | n/a | n/a |
+| divergence reason | `DivergenceReason::{Closing(ClosingCause), Holding(HoldingCause)}` — 2 closing (protocol, mod id), 3 holding (mod digest, level identity, level digest); per-cause payloads pinned in Task 3's table. Carries `Display` + `std::error::Error`; `RejectReason` is deleted | inside the server→client envelope | n/a | n/a |
+| slot state | `SlotState::{Pending, Admitted, Participating, Closed { cause }}` — **stays `Copy`**; the declaration lives beside it, not inside it | not replicated | n/a | n/a |
+| retained slot declaration | `HashMap<ClientId, ParityDeclaration>` on `NetServer` beside `pending_lifecycle`, cleared on close | not replicated | n/a | n/a |
 
 ## Script syntax examples
 
@@ -989,9 +1289,12 @@ export default defineMod({
   `research/coop-content-compatibility.md`.
 - **~~Stable-key sort vs canonical serialization~~ — settled.** Sort by `canonical_name`,
   which is total over the hashed set because descriptors lacking one are excluded from the
-  digest entirely. The nested question the detail review surfaced — map-valued fields whose
-  iteration order varies per *process* — is not an ordering preference but a correctness
-  requirement, and is now a Task 6 rule and an invariant.
+  digest entirely and `DataRegistry::upsert_entity_type` guarantees the name unique. Each
+  mod-global lane carries its own sort order. The nested question a detail review raised —
+  map-valued fields whose iteration order varies per *process* — turned out not to arise:
+  no map-valued field is reachable in the domain. The rule survives as a forward-looking
+  guard; the determinism hazards that are real here are `f32` bit patterns and the `IrNode`
+  walk.
 - **Reject-reason delivery is the trimmable part, and it shrank again.** It covers
   admission rejects only — every content divergence now holds the connection open, so its
   diagnostic rides an ordinary reliable message with no deferral — which leaves one list and
@@ -1008,13 +1311,18 @@ export default defineMod({
   replaces a queued `Load` and applies the newer one on completion, so the hoped-for v1 rule is
   the existing behavior. Its one exception — an early return during the **boot** load — is now
   named in Task 4 and is benign, since a client in boot load has not been admitted yet.
-- **Whether the client should despawn materialized remotes on a mod-digest demotion.** The
-  level-change demotion clears the client's world by unloading it. A mod-digest demotion leaves
-  the world loaded, so the client keeps its `NetworkId→EntityId` map and its remote pawns, which
-  simply stop updating — a frozen tableau rather than a clean state. Either despawn mapped
-  remotes and disarm prediction on demotion, or accept the freeze and say so. The second
-  demotion trigger created this case; it did not exist when the demotion rule was written.
-- **`networking.md` update at promotion.** The fingerprint-binds-the-connection sentence is
-  overturned, the slot lifecycle gains a state and a transition, the handshake section
-  describes one app message where there will be three, and the crate boundary gains a
-  server→client control message family.
+- **~~Whether the client should despawn materialized remotes on a mod-digest demotion~~ —
+  answered with a default, and the default is the reversible one.** The level-change demotion
+  clears the client's world by unloading it; a mod-digest demotion leaves it loaded, so the
+  client would keep its `NetworkId→EntityId` map and its remote pawns, which simply stop
+  updating. Task 7 despawns mapped remotes and disarms prediction on **both** triggers, so the
+  two converge on one client-side state. Recorded rather than closed silently because the
+  alternative — accept the frozen tableau — is defensible if the freeze turns out to read
+  better than a vanish during a brief hot-reload demotion. Changing it is an edit to one Task 7
+  paragraph and AC 28.
+- **~~`networking.md` update at promotion~~ — now Task 7 work, not a promotion chore.** The
+  fingerprint-binds-the-connection sentence is overturned, the slot lifecycle gains a state and
+  a transition, the handshake section describes one app message where there will be three, and
+  the crate boundary gains a server→client control message family. Task 7 also writes the
+  session-state ledger there, which the roadmap requires and which this spec claimed three
+  times without anything delivering it.

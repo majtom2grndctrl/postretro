@@ -1368,7 +1368,11 @@ Every fire evaluates gates and effect operands from one pre-effect snapshot, the
 
 `setHealth` clamps its evaluated value to `[0, maxHealth]`. Only a finite positive stored result counts as recovery: it re-arms death detection and clears pending and live kill credit from the recovered down. A value stored as zero leaves the target down and preserves its one-shot latch and credit. Numeric literals must be finite. If IR arithmetic produces a non-finite result, the total evaluator converts it to zero before `setHealth` runs.
 
+`impact.source.grantHealth(amount)` and `impact.source.grantAmmo(type, amount)` add a resource to the damager, not to the entity that was hit. They accept only `@impact.source`; an authored `@impact.target` grant is rejected while the policy binds. This is deliberately asymmetric: target healing remains expressible as `target.setHealth(target.healthAfter.plus(amount))`, but v1 has no target-addressed absolute-ammo write. Amount expressions still read the impact target's snapshot (`@impact.*` and `target.state(...)`); there is no source-scoped fact vocabulary. An absent or stale source skips that one effect, and a source without the required health or ammo-reserve component warns and skips it without aborting sibling effects. Ammo pool keys use the same identifier grammar as weapon resource types.
+
 `slot(ref).add(delta)` is snapshot read-modify-write, not an atomic increment. If one fire writes the same slot more than once, every operand reads the same starting value and the last applied write wins. Impact policies currently run only for in-tick weapon and AI damage; `applyDamage` reactions and other app-drain producers run no policy in v1.
+
+That producer gate also applies to source grants: a script-fired `applyDamage` can create an impact record but never evaluates `impact.source.grantHealth` or `impact.source.grantAmmo` in v1. In-tick weapon and AI impacts are the only producers that can credit their damager through this arm.
 
 The E16 TypeScript spikes are executable when a local TypeScript compiler is available:
 

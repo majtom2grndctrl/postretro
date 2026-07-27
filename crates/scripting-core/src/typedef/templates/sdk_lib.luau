@@ -365,6 +365,8 @@ type ImpactEffectWire =
   | { primitive: "playAnim", target: "@impact.target", args: { clip: string } }
   | { primitive: "setHealth", target: "@impact.target", args: { value: any, afterMs: number? } }
   | { primitive: "setState", target: "@impact.target", args: { name: string, value: any } }
+  | { primitive: "grantHealth", target: "@impact.source", args: { amount: any } }
+  | { primitive: "grantAmmo", target: "@impact.source", args: { type: string, amount: any } }
   | { primitive: "slot.add", args: { slot: string, delta: any } }
 type ImpactEffectCapability = { __impactEffectCapability: true }
 --- Closed impact effect lowered only by SDK constructors.
@@ -386,7 +388,17 @@ export type TargetHandle = {
   state: (self: TargetHandle, name: string) -> NumberRef,
   setState: (self: TargetHandle, name: string, value: NumberValue) -> Effect,
 }
-export type SourceHandle = { __impactSourceBrand: true }
+export type SourceHandle = {
+  __impactSourceBrand: true,
+  --- Add health to the impact damager. A fire with no damager skips this
+  --- effect; app-drain impacts run no policy in v1. Amount expressions read
+  --- impact-target facts/state only: v1 has no source-scoped fact vocabulary.
+  grantHealth: (self: SourceHandle, amount: NumberValue) -> Effect,
+  --- Add an ammo-pool balance to the impact damager. A fire with no damager
+  --- skips this effect; app-drain impacts run no policy in v1. Amount
+  --- expressions remain impact-target scoped; v1 has no source facts.
+  grantAmmo: (self: SourceHandle, type: string, amount: NumberValue) -> Effect,
+}
 export type NumberSlot = { add: (self: NumberSlot, delta: NumberValue) -> Effect }
 export type Impact = { target: TargetHandle, source: SourceHandle, amount: NumberRef }
 export type ImpactEvent = {

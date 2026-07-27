@@ -233,6 +233,8 @@ type ImpactEffectWire =
   | { primitive: "playAnim", target: "@impact.target", args: { clip: string } }
   | { primitive: "setHealth", target: "@impact.target", args: { value: any, afterMs: number? } }
   | { primitive: "setState", target: "@impact.target", args: { name: string, value: any } }
+  | { primitive: "grantHealth", target: "@impact.source", args: { amount: any } }
+  | { primitive: "grantAmmo", target: "@impact.source", args: { type: string, amount: any } }
   | { primitive: "slot.add", args: { slot: string, delta: any } }
 type ImpactEffectCapability = { __impactEffectCapability: true }
 -- Constructors retain the only lowering capability. A hand-authored table is
@@ -257,7 +259,17 @@ export type TargetHandle = {
   setState: (self: TargetHandle, name: string, value: NumberValue) -> Effect,
 }
 
-export type SourceHandle = { __impactSourceBrand: true }
+export type SourceHandle = {
+  __impactSourceBrand: true,
+  --- Add health to the impact damager. A fire with no damager skips this
+  --- effect; app-drain impacts run no policy in v1. Amount expressions read
+  --- impact-target facts/state only: v1 has no source-scoped fact vocabulary.
+  grantHealth: (self: SourceHandle, amount: NumberValue) -> Effect,
+  --- Add an ammo-pool balance to the impact damager. A fire with no damager
+  --- skips this effect; app-drain impacts run no policy in v1. Amount
+  --- expressions remain impact-target scoped; v1 has no source facts.
+  grantAmmo: (self: SourceHandle, type: string, amount: NumberValue) -> Effect,
+}
 
 export type NumberSlot = {
   add: (self: NumberSlot, delta: NumberValue) -> Effect,
@@ -581,6 +593,16 @@ local function impactEffect(primitive: string, args: { [string]: any }?): Effect
   end
 end
 
+local function sourceImpactEffect(primitive: string, args: { [string]: any }?): Effect
+  local wire = { primitive = primitive, target = "@impact.source", args = args } :: any
+  return function(capability: ImpactEffectCapability): ImpactEffectWire
+    if capability ~= IMPACT_EFFECT_CAPABILITY then
+      error("impact effects can only be lowered by the SDK", 2)
+    end
+    return wire
+  end
+end
+
 local IMPACT_TARGET: TargetHandle = table.freeze({
   healthBefore = numberRef({ op = "input", name = "@impact.healthBefore" }),
   healthAfter = numberRef({ op = "input", name = "@impact.healthAfter" }),
@@ -606,9 +628,19 @@ local IMPACT_TARGET: TargetHandle = table.freeze({
   end,
 })
 
+local IMPACT_SOURCE: SourceHandle = table.freeze({
+  __impactSourceBrand = true,
+  grantHealth = function(_self: SourceHandle, amount: NumberValue): Effect
+    return sourceImpactEffect("grantHealth", { amount = numberNode(amount) })
+  end,
+  grantAmmo = function(_self: SourceHandle, ammoType: string, amount: NumberValue): Effect
+    return sourceImpactEffect("grantAmmo", { type = ammoType, amount = numberNode(amount) })
+  end,
+}) :: any
+
 local IMPACT: Impact = table.freeze({
   target = IMPACT_TARGET,
-  source = table.freeze({}) :: any,
+  source = IMPACT_SOURCE,
   amount = numberRef({ op = "input", name = "@impact.amount" }),
 })
 

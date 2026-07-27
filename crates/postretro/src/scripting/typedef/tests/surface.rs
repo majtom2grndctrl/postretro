@@ -509,7 +509,7 @@ fn impact_policy_surface_uses_author_ids_and_closed_effect_union() {
         "Luau defineImpactEvent must require an author id"
     );
     // Luau uses an SDK-internal lowering capability rather than a forgeable
-    // structural brand. The author-facing vocabulary is the five builders.
+    // structural brand. The author-facing vocabulary is the seven builders.
     assert!(
         ts.contains("export interface Effect { readonly [effectBrand]: true; }")
             && luau.contains("export type Effect = (ImpactEffectCapability) -> ImpactEffectWire")
@@ -544,6 +544,16 @@ fn impact_policy_surface_uses_author_ids_and_closed_effect_union() {
             "setState: (self: TargetHandle, name: string, value: NumberValue) -> Effect,",
         ),
         (
+            "grantHealth",
+            "grantHealth(amount: NumberValue): Effect;",
+            "grantHealth: (self: SourceHandle, amount: NumberValue) -> Effect,",
+        ),
+        (
+            "grantAmmo",
+            "grantAmmo(type: string, amount: NumberValue): Effect;",
+            "grantAmmo: (self: SourceHandle, type: string, amount: NumberValue) -> Effect,",
+        ),
+        (
             "slot.add",
             "export interface NumberSlot { add(delta: NumberValue): Effect; }",
             "export type NumberSlot = { add: (self: NumberSlot, delta: NumberValue) -> Effect }",
@@ -561,14 +571,22 @@ fn impact_policy_surface_uses_author_ids_and_closed_effect_union() {
     }
     assert_eq!(
         ts.matches("): Effect;").count(),
-        5,
-        "TypeScript must expose exactly the five closed impact-effect builders"
+        7,
+        "TypeScript must expose exactly the seven closed impact-effect builders"
     );
     assert_eq!(
         luau.matches("-> Effect").count(),
-        5,
-        "Luau must expose exactly the five closed impact-effect builders"
+        7,
+        "Luau must expose exactly the seven closed impact-effect builders"
     );
+    // TypeScript intentionally keeps the wire union private behind the opaque
+    // Effect brand; the SourceHandle signatures above are its public contract.
+    for wire in [
+        "grantHealth\", target: \"@impact.source",
+        "grantAmmo\", target: \"@impact.source",
+    ] {
+        assert!(luau.contains(wire), "Luau grant wire must target source");
+    }
 }
 
 /// The emitted `BrainInputs` shape is a second spelling of `BRAIN_INPUTS`.

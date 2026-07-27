@@ -638,6 +638,8 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
                   impact.target.healthAfter.clamp(0, impact.target.maxHealth),
                   { afterMs: 30 },
                 ),
+                impact.source.grantHealth(impact.amount.plus(2)),
+                impact.source.grantAmmo("cells", hits.plus(3)),
                 impact.target.playAnim("shatter"),
                 slot(counters.state.broken).add(1),
                 impact.target.despawn(),
@@ -693,6 +695,8 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
                   impact.target.healthAfter:clamp(0, impact.target.maxHealth),
                   { afterMs = 30 }
                 ),
+                impact.source:grantHealth(impact.amount:plus(2)),
+                impact.source:grantAmmo("cells", hits:plus(3)),
                 impact.target:playAnim("shatter"),
                 Postretro.slot(counters.state.broken):add(1),
                 impact.target:despawn(),
@@ -814,7 +818,36 @@ fn impact_policy_sdk_lowering_matches_across_authoring_runtimes() {
         })
     );
     assert_eq!(
+        base["policy"][1]["do"][1],
+        serde_json::json!({
+            "primitive": "grantHealth",
+            "target": "@impact.source",
+            "args": {
+                "amount": {
+                    "op": "add",
+                    "a": { "op": "input", "name": "@impact.amount" },
+                    "b": { "op": "const", "value": 2 },
+                },
+            },
+        })
+    );
+    assert_eq!(
         base["policy"][1]["do"][2],
+        serde_json::json!({
+            "primitive": "grantAmmo",
+            "target": "@impact.source",
+            "args": {
+                "type": "cells",
+                "amount": {
+                    "op": "add",
+                    "a": { "op": "input", "name": "@state.hits" },
+                    "b": { "op": "const", "value": 3 },
+                },
+            },
+        })
+    );
+    assert_eq!(
+        base["policy"][1]["do"][4],
         serde_json::json!({
             "primitive": "slot.add",
             "args": {

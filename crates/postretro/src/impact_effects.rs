@@ -2,6 +2,7 @@
 // See: context/lib/scripting.md §11 · context/lib/entity_model.md §5.
 
 use postretro_entities::components::brain::BrainComponent;
+use postretro_entities::components::grant::{grant_ammo, grant_health};
 use postretro_entities::components::health::{
     HealthComponent, PendingKillCredit, set_health_absolute,
 };
@@ -40,6 +41,8 @@ impl From<&PendingKillCredit> for KillReportCredit {
 pub(crate) enum ImpactEffect {
     Despawn { after_ms: Option<f32> },
     SetHealth { value: f32, after_ms: Option<f32> },
+    GrantHealth { amount: f32 },
+    GrantAmmo { pool: String, amount: f32 },
     PlayAnimation { state: String },
 }
 
@@ -52,6 +55,12 @@ pub(crate) fn apply_effect(registry: &mut EntityRegistry, target: EntityId, effe
         ImpactEffect::Despawn { after_ms } => despawn(registry, target, *after_ms),
         ImpactEffect::SetHealth { value, after_ms } => {
             set_health(registry, target, *value, *after_ms)
+        }
+        ImpactEffect::GrantHealth { amount } => {
+            let _ = grant_health(registry, target, *amount);
+        }
+        ImpactEffect::GrantAmmo { pool, amount } => {
+            let _ = grant_ammo(registry, target, pool, *amount);
         }
         ImpactEffect::PlayAnimation { state } => {
             let _ = play_animation(registry, target, state);

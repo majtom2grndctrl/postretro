@@ -303,7 +303,13 @@
     state(name: string): NumberRef;
     setState(name: string, value: NumberValue): Effect;
   }
-  export interface SourceHandle { readonly [sourceBrand]: true; }
+  export interface SourceHandle {
+    readonly [sourceBrand]: true;
+    /** Add health to the impact damager. A fire with no damager skips this effect; app-drain impacts run no policy in v1. Amount expressions read impact-target facts and state only: v1 has no source-scoped fact vocabulary. */
+    grantHealth(amount: NumberValue): Effect;
+    /** Add an ammo-pool balance to the impact damager. A fire with no damager skips this effect; app-drain impacts run no policy in v1. Amount expressions remain impact-target scoped; v1 has no source facts. */
+    grantAmmo(type: string, amount: NumberValue): Effect;
+  }
   export interface NumberSlot { add(delta: NumberValue): Effect; }
   export type Impact = Readonly<{ target: TargetHandle; source: SourceHandle; amount: NumberRef }>;
   export interface ImpactEvent {

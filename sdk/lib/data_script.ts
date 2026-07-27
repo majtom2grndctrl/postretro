@@ -205,6 +205,8 @@ type ImpactEffectWire =
   | { primitive: "playAnim"; target: "@impact.target"; args: { clip: string } }
   | { primitive: "setHealth"; target: "@impact.target"; args: { value: RuntimeValue; afterMs?: number } }
   | { primitive: "setState"; target: "@impact.target"; args: { name: string; value: RuntimeValue } }
+  | { primitive: "grantHealth"; target: "@impact.source"; args: { amount: RuntimeValue } }
+  | { primitive: "grantAmmo"; target: "@impact.source"; args: { type: string; amount: RuntimeValue } }
   | { primitive: "slot.add"; args: { slot: string; delta: RuntimeValue } };
 
 /** Opaque closed impact effect. Construct through TargetHandle or slot(...).add(). */
@@ -230,6 +232,18 @@ export interface TargetHandle {
 
 export interface SourceHandle {
   readonly [sourceBrand]: true;
+  /**
+   * Add health to the impact damager. A fire with no damager skips this effect;
+   * app-drain impacts run no policy in v1. Amount expressions read impact-target
+   * facts and state only: v1 has no source-scoped fact vocabulary.
+   */
+  grantHealth(amount: NumberValue): Effect;
+  /**
+   * Add an ammo-pool balance to the impact damager. A fire with no damager
+   * skips this effect; app-drain impacts run no policy in v1. Amount expressions
+   * remain impact-target scoped; v1 has no source facts.
+   */
+  grantAmmo(type: string, amount: NumberValue): Effect;
 }
 
 export interface NumberSlot {
@@ -310,6 +324,13 @@ function impactEffect(
   return { primitive, target: "@impact.target", args } as ImpactEffectWire as unknown as Effect;
 }
 
+function sourceImpactEffect(
+  primitive: string,
+  args?: Record<string, unknown>,
+): Effect {
+  return { primitive, target: "@impact.source", args } as ImpactEffectWire as unknown as Effect;
+}
+
 const IMPACT_TARGET: TargetHandle = Object.freeze({
   healthBefore: numberRef({ op: "input", name: "@impact.healthBefore" }),
   healthAfter: numberRef({ op: "input", name: "@impact.healthAfter" }),
@@ -333,9 +354,14 @@ const IMPACT_TARGET: TargetHandle = Object.freeze({
   },
 });
 
+const IMPACT_SOURCE: SourceHandle = Object.freeze({
+  grantHealth: (amount) => sourceImpactEffect("grantHealth", { amount: numberNode(amount) }),
+  grantAmmo: (type, amount) => sourceImpactEffect("grantAmmo", { type, amount: numberNode(amount) }),
+}) as SourceHandle;
+
 const IMPACT: Impact = Object.freeze({
   target: IMPACT_TARGET,
-  source: Object.freeze({}) as SourceHandle,
+  source: IMPACT_SOURCE,
   amount: numberRef({ op: "input", name: "@impact.amount" }),
 });
 

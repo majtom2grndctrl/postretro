@@ -101,7 +101,7 @@ Two mechanisms, two jobs — conflating them is the obvious mistake.
   play together: one over the mod's simulated surface — per entity type, the canonical name
   and the player-movement descriptor a client predicts with, minus that descriptor's
   render-only view-feel field — and one over the level's (mover authoring plus static world
-  collision). Host-authoritative fields (AI, health, weapon, behavior) and presentation
+  collision). Host-authoritative fields (health, weapon, behavior) and presentation
   fields (light, emitter, mesh) stay unhashed, because server authority already absorbs
   them; state-slot parity is owned by the shipped replicated-slot schema fingerprint both
   peers already compare. Prediction correctness depends on byte-level parity of what a

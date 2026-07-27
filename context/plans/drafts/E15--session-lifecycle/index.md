@@ -347,8 +347,8 @@ notice, because this is the first time the answer is "engine."
   The full per-field disposition
   is in Task 6, and it has **three** categories rather than two — hashed, skipped because
   presentation, skipped because host-authoritative. That third category is the correction: an
-  earlier draft said "hash the `entities` lane exhaustively," which would have hashed `ai`,
-  `health`, `weapon`, and `default_weapon`. Those are Tier 2 in
+  earlier draft said "hash the `entities` lane exhaustively," which would have hashed
+  `behavior`, `health`, `weapon`, and `default_weapon`. Those are Tier 2 in
   `research/coop-content-compatibility.md` — host-owned, safe to change freely — so the rule
   as written would have demoted every peer on an enemy retune. That is the exact false
   refusal content-derived compatibility exists to prevent, arrived at from the other
@@ -522,7 +522,7 @@ notice, because this is the first time the answer is "engine."
 - [ ] Two mods differing only in a mod-global **crossing** — a threshold, an edge, or an IR
       predicate — produce different mod digests; so do two differing only in a mod-global
       trigger event or trigger pool.
-- [ ] Two mods differing only in `ai`, `health`, `weapon`, `default_weapon`, or `behavior`
+- [ ] Two mods differing only in `health`, `weapon`, `default_weapon`, or `behavior`
       produce the **same** mod digest and interoperate. So do two differing only in `light`,
       `emitter`, `mesh`, `view_feel`, or any presentation lane. So do two differing only in a
       `reactions` or `events` entry — those lanes are uncovered by decision, and a test pins
@@ -930,12 +930,12 @@ separately, the globals populated from the manifest and the per-level ones from
 |---|---|
 | `canonical_name` | **hashed** — the wire's entity class |
 | `movement` (`PlayerMovementDescriptor`) | **hashed**, minus `view_feel` |
-| `default_weapon`, `weapon`, `health`, `ai`, `behavior` | skipped — **host-authoritative** |
+| `default_weapon`, `weapon`, `health`, `behavior` (`BehaviorGraphDescriptor`) | skipped — **host-authoritative** |
 | `light`, `emitter`, `mesh` | skipped — **presentation** |
 
 Three categories, not two. A field can be excluded because a client never sees it *or*
 because the host owns it, and collapsing those into one "presentation" bucket is what an
-earlier draft got wrong: `ai`, `health`, and `weapon` are Tier 2 in
+earlier draft got wrong: `behavior`, `health`, and `weapon` are Tier 2 in
 `research/coop-content-compatibility.md` — safe to change freely — so hashing them would
 demote every peer on an enemy retune, which is the false refusal this whole policy exists to
 prevent. Inside `PlayerMovementDescriptor` the nine remaining fields (`capsule`, `ground`,
@@ -1097,7 +1097,7 @@ shape and bumped whenever the recipe changes.
 Test: order-insensitivity across all four inputs; that a `movement` edit moves the digest,
 including one nested two levels down (`SpeedParams::run`) and one behind an IR wrapper
 (`DashParams::boost_speed` as both a `Literal` and an `Ir`); that two structurally different
-`IrNode` trees hash differently and two equal ones hash the same; that an `ai`, `health`, or
+`IrNode` trees hash differently and two equal ones hash the same; that a `behavior`, `health`, or
 `weapon` edit does **not** move it; that a presentation edit does not; that a `view_feel` edit
 does not; that a crossing threshold or predicate edit **does**; that a trigger-event or
 trigger-pool edit does; and that the same content hashes identically **in two separate
@@ -1231,7 +1231,7 @@ from Task 2, both recipes from Task 6, and the client-follow drain from Task 4.
 | **The digest reaches every value it protects, not just the types it names** | Task 6 (recursive closure through `movement`'s eight sub-structs; the general `IrNode`/`IrValue` walker) | A recipe scoped to the outer types leaves the predicted values one and two levels below the guarantee — and an IR-valued field walked dash-shaped fails open the moment a second field adopts the substrate | AC 10, 11, 16 |
 | The mod digest describes the content the host is running now | Task 7 (re-hash on every staged commit) | Freezing it — the first draft's rule — gates live connections on a value the reload already replaced, silently, in the builds where co-op is developed | AC 24, 25 |
 | The mod digest is stable across processes | Task 6 (`f32` bit patterns, structural `IrNode` walk, per-lane sort orders) | The reachable hazards are float formatting and IR traversal order, not map iteration — no map-valued field is in the domain, and anchoring this to one that is not reachable is how the criterion came to pass vacuously | AC 15 |
-| Host-authoritative fields never affect compatibility | Task 6 (three-category disposition table) | Hashing `ai`, `health`, or `weapon` demotes peers on an enemy retune — the false refusal the whole content-derived policy exists to prevent | AC 13 |
+| Host-authoritative fields never affect compatibility | Task 6 (three-category disposition table) | Hashing `behavior`, `health`, or `weapon` demotes peers on an enemy retune — the false refusal the whole content-derived policy exists to prevent | AC 13 |
 | Mod version is carried and never compared | Task 2 (SDK docs), Task 3 (commented at the comparison site; the one permitted comparison emits a log) | It rides the same message as a gating value; a later reader "completing" the comparison silently reinstates exact-version equality and its false refusals | AC 5 |
 | Presentation never affects compatibility | Task 6 (digest domain, exclusions named in labelled blocks) | Widening the mod digest to meshes, lights, emitters, or `view_feel` breaks co-op on every cosmetic edit | AC 13, 25 |
 | The replicated-slot schema describes declarations both peers are still running | Task 7 (reset on level unload and on a staged commit that changes store declarations) | It is `get_or_insert_with`-cached with no reset today, host and client alike — so a staged reload leaves two peers comparing a fingerprint over declarations neither still has | AC 26, 27 |

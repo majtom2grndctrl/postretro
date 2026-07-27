@@ -97,7 +97,7 @@ disconnect — it is a fact scheduled to become true again.
 - The **mod compatibility digest** covers two things per entity type in the manifest's
   `entities` lane: the `canonical_name`, and the `PlayerMovementDescriptor` under `movement`
   — Tier 3 items 2 and 3. Nothing else on `EntityTypeDescriptor` is client-simulated.
-  `default_weapon`, `weapon`, `health`, `ai`, and `behavior` are host-authoritative — Tier 2
+  `default_weapon`, `weapon`, `health`, and `behavior` are host-authoritative — Tier 2
   by §2, safe to change freely; `light`, `emitter`, and `mesh` are presentation. Hashing the
   lane wholesale would demote every peer on an enemy retune, which is the exact false refusal
   content-derived compatibility exists to prevent. Within the movement descriptor,

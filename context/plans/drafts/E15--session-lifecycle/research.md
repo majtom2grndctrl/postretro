@@ -29,7 +29,8 @@ Findings behind the spec's decisions, including why its scope changed once.
 | Player movement tuning is descriptor-authored, so a manifest edit changes what the client predicts with | `crates/postretro/src/movement/mod.rs` — `PlayerMovementComponent::from_descriptor` |
 | Clients suppress AI-enemy spawns entirely and attach mesh presentation only, which is why enemy placement and brain tuning cannot break compatibility | `context/lib/networking.md` §Phase boundaries |
 | A staged reload re-commits nearly every manifest lane — `entities`, `store_declarations`, `maps`, `reactions`, `crossings`, `trigger_events`, `trigger_pools`, `events`, the `render` profile, `ui_trees`, `theme`, `frontend`. `fonts` is the only lane never re-committed; it is absent from `StagedManifest`. So a non-atomic-replace manifest lane already ships, and it is exactly one | `crates/scripting-core/src/staged_manifest/transfer.rs`; `commit_staged_manifest_result` in `crates/scripting-core/src/runtime/core.rs`; `App::poll_staged_manifest_results` in `crates/postretro/src/startup/staged_manifest_lifecycle.rs`; `App::commit_staged_ui_manifest` in `crates/postretro/src/main.rs` |
-| Most of `EntityTypeDescriptor` is host-authoritative (`ai`, `health`, `weapon`, `default_weapon`, `behavior`) or presentation (`light`, `emitter`, `mesh`); only `canonical_name` and `movement` feed client simulation | `crates/entities/src/data_descriptors/types/entity.rs` — `EntityTypeDescriptor` |
+| Most of `EntityTypeDescriptor` is host-authoritative (`health`, `weapon`, `default_weapon`, `behavior`) or presentation (`light`, `emitter`, `mesh`); only `canonical_name` and `movement` feed client simulation | `crates/entities/src/data_descriptors/types/entity.rs` — `EntityTypeDescriptor` |
+| `EntityTypeDescriptor` has **9** fields, not the 10 an earlier draft enumerated: `ai` was retired by `E10--retire-legacy-ai`, landing on main after this spec's digest table was written. `behavior` (`BehaviorGraphDescriptor`) is the surviving host-authoritative AI mechanism | `crates/entities/src/data_descriptors/types/entity.rs` |
 | State-slot parity already ships: both peers compare a schema fingerprint derived from the replicated slot declarations | `crates/postretro/src/netcode/state_slots.rs` — `ReplicatedSlotSchema` |
 | Scripts are 160K of the dev mod's 337M (textures 291M, models 43M, maps 3.0M), so script sync is cheap on bytes and still does not cover the breaking surface | measured under `content/dev/` |
 | `PlayerMovementDescriptor`'s hashed fields are structs, not scalars: `CapsuleParams`, `GroundParams` (which nests `SpeedParams`), `AirParams`, `FallParams`, `DashParams`, `ForgivenessParams`, `CrouchParams`. `view_feel: Option<ViewFeelParams>` is the render-only one | `crates/foundation/src/data_descriptors/types/movement.rs` |
@@ -176,7 +177,7 @@ descriptor's render-only `view_feel` field. Unnamed descriptors are excluded. Re
 the same reason as the section above: an argument was retired, not just a number.
 
 Hashing `entities` wholesale contradicted the spec's own tiering. Most of
-`EntityTypeDescriptor` is host-authoritative — `ai`, `health`, `weapon`, `default_weapon`,
+`EntityTypeDescriptor` is host-authoritative — `health`, `weapon`, `default_weapon`,
 `behavior` — and clients suppress AI-enemy spawns entirely, so those fields are Tier 2 in
 `research/coop-content-compatibility.md`. The rest — `light`, `emitter`, `mesh` — is
 presentation. Hashing the lane would have demoted every peer on an enemy retune or a light

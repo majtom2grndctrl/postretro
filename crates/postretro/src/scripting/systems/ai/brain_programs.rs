@@ -27,8 +27,8 @@ use std::sync::Arc;
 
 use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry};
 use postretro_foundation::{
-    BakedIr, BehaviorGraphDescriptor, BoundProgram, CURRENT_IR_VERSION, IrType,
-    TransitionDescriptor, bind,
+    bind, BakedIr, BehaviorGraphDescriptor, BoundProgram, IrType, TransitionDescriptor,
+    CURRENT_IR_VERSION,
 };
 
 use super::brain_scope::BrainScope;
@@ -339,44 +339,22 @@ fn bind_guard(
     None
 }
 
-// Lowering/parity coverage is retired with the legacy descriptor. Task 3
-// replaces this suite with direct-graph regressions.
-#[cfg(any())]
+#[cfg(test)]
 mod tests {
     use super::super::brain_scope::BrainFacts;
     use super::super::engine_floor::SteeringIntent;
     use super::super::graph_eval::{select_transition, steering_for};
     use super::*;
     use crate::alloc_probe::AllocSnapshot;
-    use postretro_entities::Transform;
     use postretro_entities::components::brain::{
-        BrainComponent, attach_brain, attach_brain_graph, graph_state_index,
+        attach_brain_graph, graph_state_index, BrainComponent,
     };
-    use postretro_entities::data_descriptors::{
-        AiDescriptor, AiStateNames, BehaviorStateDescriptor, LEGACY_ALERT_STATE,
-        LEGACY_ATTACK_STATE, LEGACY_DEATH_STATE, LEGACY_IDLE_STATE, MotionVerb,
-        lower_ai_descriptor,
+    use postretro_entities::Transform;
+    use postretro_foundation::{
+        BehaviorStateDescriptor, IrNode, IrValue, MotionVerb, BRAIN_HAS_TARGET_INPUT,
+        BRAIN_TARGET_DIED_INPUT, BRAIN_TARGET_DISTANCE_INPUT,
     };
-    use postretro_foundation::{IrNode, IrValue};
     use std::collections::BTreeMap;
-
-    fn sample_descriptor() -> AiDescriptor {
-        AiDescriptor {
-            detection_range: 18.0,
-            attack_range: 2.2,
-            leash_range: 26.0,
-            attack_damage: 8.0,
-            attack_cooldown_ms: 1200.0,
-            move_speed: 3.5,
-            death_despawn_ms: 1500.0,
-            states: AiStateNames {
-                idle: "idle".into(),
-                alert: "walk".into(),
-                attack: "attack".into(),
-                death: "die".into(),
-            },
-        }
-    }
 
     /// The single-state graph used for lifecycle assertions; its one guard is
     /// deliberately trivial so the tests read as lifecycle, not evaluation.
@@ -406,86 +384,113 @@ mod tests {
         }
     }
 
-    /// The v0 four-state transition core, restated over plain scalars.
-    ///
-    /// This is the DIFFERENTIAL ORACLE the lowered graph's generated guards are
-    /// tested against, and deliberately a second, independent implementation of
-    /// the legacy rules rather than a table of the same edges — a table can be
-    /// edited to agree with a broken lowering, a restatement of the rules
-    /// cannot. It lives here, in the test module, because the v0 core itself is
-    /// gone from the engine: nothing but this drift guard ever needed it.
-    ///
-    /// Closed transition set (`ai` is the descriptor being lowered):
-    /// - NO TARGET, from ANY state: `idle` with steering cleared. The v0 tick
-    ///   never reached the transition core without a pawn — its `else` arm
-    ///   forced `Idle` + `Clear` outright — so that arm is restated here as the
-    ///   `has_target == false` row. In the lowered graph this is the ONE edge
-    ///   that is not a restatement of a v0 rule but a generated interrupt
-    ///   (`!hasTarget → idle`), which is exactly why it has to be sampled: with
-    ///   a target on every row it evaluates false everywhere and a
-    ///   wrong-but-present interrupt would pass.
-    /// - `idle` → `attack` when acquisition fires and the target is inside
-    ///   detection AND attack range (the "newly alerted, already in contact"
-    ///   branch, nested inside the detection check);
-    /// - `idle` → `alert` when acquisition fires and the target is inside
-    ///   detection range;
-    /// - `alert` → `attack` whenever the target is inside attack range
-    ///   (NOT acquisition-gated);
-    /// - `alert` → `idle` when acquisition fires and the target is beyond leash;
-    /// - `attack` → `alert` whenever the target leaves attack range
-    ///   (NOT acquisition-gated);
-    /// - `death` is terminal and touches no steering.
-    fn v0_transition(
-        ai: &AiDescriptor,
-        current: &str,
-        has_target: bool,
-        distance: f32,
-        acquisition_due: bool,
-    ) -> (&'static str, SteeringIntent) {
-        if !has_target {
-            return (LEGACY_IDLE_STATE, SteeringIntent::Clear);
+    fn edge(to: &str, when: IrNode) -> TransitionDescriptor {
+        TransitionDescriptor {
+            to: to.to_string(),
+            when,
         }
-        match current {
-            LEGACY_IDLE_STATE => {
-                if acquisition_due && distance <= ai.detection_range {
-                    if distance <= ai.attack_range {
-                        (LEGACY_ATTACK_STATE, SteeringIntent::Chase)
-                    } else {
-                        (LEGACY_ALERT_STATE, SteeringIntent::Chase)
-                    }
-                } else {
-                    (LEGACY_IDLE_STATE, SteeringIntent::Clear)
-                }
-            }
-            LEGACY_ALERT_STATE => {
-                if distance <= ai.attack_range {
-                    (LEGACY_ATTACK_STATE, SteeringIntent::Chase)
-                } else if acquisition_due && distance > ai.leash_range {
-                    (LEGACY_IDLE_STATE, SteeringIntent::Clear)
-                } else {
-                    (LEGACY_ALERT_STATE, SteeringIntent::Chase)
-                }
-            }
-            LEGACY_ATTACK_STATE => {
-                if distance > ai.attack_range {
-                    (LEGACY_ALERT_STATE, SteeringIntent::Chase)
-                } else {
-                    (LEGACY_ATTACK_STATE, SteeringIntent::Chase)
-                }
-            }
-            LEGACY_DEATH_STATE => (LEGACY_DEATH_STATE, SteeringIntent::Hold),
-            other => panic!("`{other}` is not a lowered legacy state"),
+    }
+
+    fn target_within(distance: f32) -> IrNode {
+        IrNode::Le {
+            a: Box::new(IrNode::Input {
+                name: BRAIN_TARGET_DISTANCE_INPUT.to_string(),
+            }),
+            b: Box::new(IrNode::Const {
+                value: IrValue::Number(distance),
+            }),
+        }
+    }
+
+    fn target_lost() -> IrNode {
+        IrNode::Select {
+            cond: Box::new(IrNode::Input {
+                name: BRAIN_HAS_TARGET_INPUT.to_string(),
+            }),
+            a: Box::new(IrNode::Const {
+                value: IrValue::Bool(false),
+            }),
+            b: Box::new(IrNode::Const {
+                value: IrValue::Bool(true),
+            }),
+        }
+    }
+
+    /// An authored graph with interrupts, state-local guards, and a candidate
+    /// filter so synchronization covers all program kinds without relying on a
+    /// hidden engine preset.
+    fn authored_graph() -> BehaviorGraphDescriptor {
+        BehaviorGraphDescriptor {
+            initial: "rest".to_string(),
+            states: BTreeMap::from([
+                (
+                    "rest".to_string(),
+                    BehaviorStateDescriptor {
+                        animation: "idle".to_string(),
+                        motion: MotionVerb::Hold,
+                        action: None,
+                        transitions: vec![
+                            edge("attack", target_within(2.0)),
+                            edge(
+                                "rest",
+                                IrNode::Const {
+                                    value: IrValue::Bool(false),
+                                },
+                            ),
+                        ],
+                        on_enter: None,
+                    },
+                ),
+                (
+                    "attack".to_string(),
+                    BehaviorStateDescriptor {
+                        animation: "attack".to_string(),
+                        motion: MotionVerb::ChaseTarget,
+                        action: None,
+                        transitions: vec![edge(
+                            "rest",
+                            IrNode::Gt {
+                                a: Box::new(IrNode::Input {
+                                    name: BRAIN_TARGET_DISTANCE_INPUT.to_string(),
+                                }),
+                                b: Box::new(IrNode::Const {
+                                    value: IrValue::Number(2.0),
+                                }),
+                            },
+                        )],
+                        on_enter: None,
+                    },
+                ),
+            ]),
+            interrupts: vec![
+                edge("rest", target_lost()),
+                edge(
+                    "rest",
+                    IrNode::Input {
+                        name: BRAIN_TARGET_DIED_INPUT.to_string(),
+                    },
+                ),
+            ],
+            candidate_filter: Some(IrNode::Le {
+                a: Box::new(IrNode::Input {
+                    name: "@candidate.distance".to_string(),
+                }),
+                b: Box::new(IrNode::Const {
+                    value: IrValue::Number(50.0),
+                }),
+            }),
+            attack: None,
+            engagement_radius: None,
+            move_speed: 3.0,
         }
     }
 
     /// One step of the PRODUCTION selector and the PRODUCTION verb mapping,
     /// reported as `(state name, steering intent)`.
     ///
-    /// Deliberately not a restatement of the ordered-guard walk: the point of
-    /// the drift guard below is that the shipped `select_transition` and
-    /// `steering_for` answer what the v0 oracle answers, which a test-local copy
-    /// of either would quietly stop proving. Staying put is the current state
-    /// with its own motion verb, matching the v0 core's same-state rows.
+    /// This deliberately uses the shipped selector and verb mapping instead of
+    /// duplicating ordered-guard semantics in the test. Staying put uses the
+    /// current state's motion verb.
     fn step_graph(
         graph: &BehaviorGraphDescriptor,
         programs: &BrainEntityPrograms,
@@ -512,7 +517,7 @@ mod tests {
 
     #[test]
     fn sync_binds_every_guard_of_a_newly_spawned_brain() {
-        let graph = lower_ai_descriptor(&sample_descriptor());
+        let graph = authored_graph();
         let (registry, entity) = registry_with_brain(&graph);
         let mut programs = BrainPrograms::new();
         let mut warned = HashSet::new();
@@ -522,12 +527,12 @@ mod tests {
         let entry = programs.get(entity).expect("the spawned brain is bound");
         assert_eq!(
             entry.interrupts().len(),
-            1,
-            "the lowered graph's one any-state edge is the no-target stand-down"
+            2,
+            "the authored graph's two any-state guards are bound"
         );
         assert!(
             entry.interrupts().iter().all(Option::is_some),
-            "the generated stand-down guard binds"
+            "the authored interrupt guards bind"
         );
         for (index, (name, state)) in graph.states.iter().enumerate() {
             let bound = entry.transitions(index);
@@ -541,6 +546,10 @@ mod tests {
                 "every generated guard in `{name}` binds"
             );
         }
+        assert!(
+            entry.candidate_filter().is_some(),
+            "the authored candidate filter binds beside the brain guards"
+        );
         assert!(warned.is_empty(), "a clean bind warns about nothing");
     }
 
@@ -572,7 +581,7 @@ mod tests {
         programs.sync(&registry, &mut warned);
         assert_eq!(programs.get(entity).unwrap().transitions(0).len(), 1);
 
-        let replacement = lower_ai_descriptor(&sample_descriptor());
+        let replacement = authored_graph();
         let restored = serde_json::from_value::<BrainComponent>(
             serde_json::to_value(BrainComponent::from_graph(&replacement)).unwrap(),
         )
@@ -583,9 +592,9 @@ mod tests {
         programs.sync(&registry, &mut warned);
 
         let entry = programs.get(entity).expect("the restored brain is bound");
-        let idle_index = graph_state_index(&replacement, LEGACY_IDLE_STATE).unwrap();
+        let rest_index = graph_state_index(&replacement, "rest").unwrap();
         assert_eq!(
-            entry.transitions(idle_index).len(),
+            entry.transitions(rest_index).len(),
             2,
             "the programs describe the graph the component now carries"
         );
@@ -722,7 +731,7 @@ mod tests {
         // spawn, despawn, or re-seed. With none of those pending it must do no
         // work the allocator can see — it sits just outside the guarded per-tick
         // guard window, so nothing else would catch a regression here.
-        let graph = lower_ai_descriptor(&sample_descriptor());
+        let graph = authored_graph();
         let (registry, _) = registry_with_brain(&graph);
         let mut programs = BrainPrograms::new();
         let mut warned = HashSet::new();
@@ -747,125 +756,14 @@ mod tests {
     }
 
     #[test]
-    fn the_lowered_graph_reproduces_the_v0_transition_core_edge_for_edge() {
-        // Drift guard: every (state × has-target × distance × acquisition) row
-        // the legacy core answers must be the row the lowered graph's ordered
-        // guards answer. The expectation is an independent restatement of the
-        // v0 rules (`v0_transition`), not a transcription of the lowered edges.
-        //
-        // The has-target dimension is what reaches the generated
-        // `!hasTarget → idle` interrupt. Sampled from `attack` in particular:
-        // that is the state whose only other exit is the attack-range edge, so
-        // deleting the interrupt leaves it in `attack` on the sentinel. (From
-        // `alert` the leash edge is itself true on the sentinel and reaches
-        // `idle` anyway, so `alert` alone would not detect the loss.)
-        let ai = sample_descriptor();
-        let graph = lower_ai_descriptor(&ai);
-        let (registry, entity) = registry_with_brain(&graph);
-        let mut programs = BrainPrograms::new();
-        let mut warned = HashSet::new();
-        programs.sync(&registry, &mut warned);
-        assert!(warned.is_empty(), "every generated guard binds");
-
-        // Sample each threshold and both sides of it, plus the ordering between
-        // attack and detection range.
-        let distances = [
-            0.0,
-            ai.attack_range - 0.1,
-            ai.attack_range,
-            ai.attack_range + 0.1,
-            ai.detection_range - 0.1,
-            ai.detection_range,
-            ai.detection_range + 0.1,
-            ai.leash_range,
-            ai.leash_range + 0.1,
-            120.0,
-        ];
-        for current in [
-            LEGACY_IDLE_STATE,
-            LEGACY_ALERT_STATE,
-            LEGACY_ATTACK_STATE,
-            LEGACY_DEATH_STATE,
-        ] {
-            if current == LEGACY_DEATH_STATE {
-                // `death` is terminal in both: the graph never enters it and it
-                // declares no edges, so `step_graph` can only report itself.
-                assert!(
-                    graph.states[LEGACY_DEATH_STATE].transitions.is_empty(),
-                    "death stays terminal in the lowered graph"
-                );
-            }
-            for has_target in [false, true] {
-                for distance in distances {
-                    for acquisition_due in [false, true] {
-                        let expected =
-                            v0_transition(&ai, current, has_target, distance, acquisition_due);
-
-                        programs.scope_mut().refresh(
-                            &registry,
-                            entity,
-                            BrainFacts {
-                                // No target means no distance to read: the scope
-                                // projects `hasTarget` false and the distance
-                                // sentinel, which is what the interrupt sees.
-                                target: has_target.then_some((entity, distance)),
-                                time_in_state_ms: 0.0,
-                                attack_cooldown_ms: 0.0,
-                                acquisition_due,
-                            },
-                        );
-                        let entry = programs.get(entity).expect("the brain stays bound");
-                        let (next, steering) = step_graph(&graph, entry, programs.scope(), current);
-
-                        assert_eq!(
-                            (next.as_str(), steering),
-                            expected,
-                            "state `{current}` at distance {distance} \
-                             (hasTarget = {has_target}, acquisitionDue = {acquisition_due})"
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn a_lowered_brain_with_no_target_stays_idle_under_the_distance_sentinel() {
-        // The no-target sentinel must read false through every range guard, so
-        // an enemy with nothing to chase never leaves `idle` on guard evidence
-        // alone.
-        let graph = lower_ai_descriptor(&sample_descriptor());
-        let (registry, entity) = registry_with_brain(&graph);
-        let mut programs = BrainPrograms::new();
-        programs.sync(&registry, &mut HashSet::new());
-
-        programs.scope_mut().refresh(
-            &registry,
-            entity,
-            BrainFacts {
-                target: None,
-                time_in_state_ms: 0.0,
-                attack_cooldown_ms: 0.0,
-                acquisition_due: true,
-            },
-        );
-        let entry = programs.get(entity).unwrap();
-        let (next, steering) = step_graph(&graph, entry, programs.scope(), LEGACY_IDLE_STATE);
-        assert_eq!(
-            (next.as_str(), steering),
-            (LEGACY_IDLE_STATE, SteeringIntent::Clear)
-        );
-    }
-
-    #[test]
     fn a_round_tripped_brain_carries_no_programs_and_rebinds_from_its_retained_graph() {
         // Bound programs are DERIVED data: they live here, not on the
         // component, so serde cannot reach them and component equality cannot
         // see them. What crosses the wire is the retained graph, and that is
         // enough to rebuild guards that answer identically.
-        let graph = lower_ai_descriptor(&sample_descriptor());
+        let graph = authored_graph();
         let mut brain = BrainComponent::from_graph(&graph);
-        brain.state_index = graph_state_index(&graph, LEGACY_ALERT_STATE).unwrap();
+        brain.state_index = graph_state_index(&graph, "attack").unwrap();
         brain.time_in_state_ms = 320.0;
 
         let json = serde_json::to_value(&brain).expect("brain serializes");
@@ -919,12 +817,7 @@ mod tests {
                         facts(entity, distance, acquisition_due),
                     );
                     let entry = programs.get(entity).expect("the brain is bound");
-                    rows.push(step_graph(
-                        &graph,
-                        entry,
-                        programs.scope(),
-                        LEGACY_ALERT_STATE,
-                    ));
+                    rows.push(step_graph(&graph, entry, programs.scope(), "attack"));
                 }
             }
             answers.push(rows);
@@ -941,11 +834,11 @@ mod tests {
         // refreshing the scope for one enemy and walking its ordered guards
         // must not allocate. Binding and interning happen in `sync`, before the
         // probe is armed — which is exactly where allocation is allowed.
-        let graph = lower_ai_descriptor(&sample_descriptor());
+        let graph = authored_graph();
         let (registry, entity) = registry_with_brain(&graph);
         let mut programs = BrainPrograms::new();
         programs.sync(&registry, &mut HashSet::new());
-        let idle_index = graph_state_index(&graph, LEGACY_IDLE_STATE).unwrap();
+        let rest_index = graph_state_index(&graph, "rest").unwrap();
         let facts = BrainFacts {
             target: Some((entity, 1.0)),
             time_in_state_ms: 0.0,
@@ -959,7 +852,7 @@ mod tests {
             &graph,
             programs.get(entity).expect("bound"),
             programs.scope(),
-            idle_index,
+            rest_index,
         );
 
         let snapshot = AllocSnapshot::arm();
@@ -968,41 +861,19 @@ mod tests {
             &graph,
             programs.get(entity).expect("bound"),
             programs.scope(),
-            idle_index,
+            rest_index,
         );
         let allocs = snapshot.allocs_since();
 
         assert_eq!(selected, warm);
         assert_eq!(
             selected,
-            graph_state_index(&graph, LEGACY_ATTACK_STATE),
+            graph_state_index(&graph, "attack"),
             "the sampled row actually fires a transition, so guards really ran"
         );
         assert_eq!(
             allocs, 0,
             "scope refresh + ordered guard evaluation must perform zero heap allocations"
         );
-    }
-
-    #[test]
-    fn a_legacy_attached_brain_binds_through_the_same_lowering() {
-        // `attach_brain` (the legacy `components.ai` seam) and the authored seam
-        // land the same component shape, so the side-table cannot tell them
-        // apart.
-        let mut registry = EntityRegistry::new();
-        let entity = registry.spawn(Transform::default());
-        attach_brain(&mut registry, entity, &sample_descriptor()).unwrap();
-        let mut programs = BrainPrograms::new();
-        let mut warned = HashSet::new();
-
-        programs.sync(&registry, &mut warned);
-
-        let graph = lower_ai_descriptor(&sample_descriptor());
-        let alert_index = graph_state_index(&graph, LEGACY_ALERT_STATE).unwrap();
-        let attack_index = graph_state_index(&graph, LEGACY_ATTACK_STATE).unwrap();
-        let entry = programs.get(entity).expect("legacy brains bind too");
-        assert_eq!(entry.transitions(alert_index).len(), 2);
-        assert_eq!(entry.transitions(attack_index).len(), 1);
-        assert!(warned.is_empty());
     }
 }

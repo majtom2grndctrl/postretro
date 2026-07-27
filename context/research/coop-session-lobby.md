@@ -195,21 +195,27 @@ live endpoint accepting connections — not a new top-level app state.
 
 ## 7. Spec sequence
 
-Four specs, in dependency order. The first two are engine-only; the third unblocks per-player
-mod state; the fourth is the authoring surface.
+Three specs, in dependency order. The first is engine-only; the second unblocks per-player
+mod state; the third is the authoring surface.
 
-1. **Session admission.** Split the handshake; add mod id/version to the manifest and to gate
-   2's admission stage. No map involvement. Unblocks a client that exists before it has a map.
-2. **Server-authoritative level transitions.** The relevel message, host-side net reset on
-   unload, per-level fingerprint re-validation, transport polling across the load window, and
-   the fail-open fix. The largest spec and the one that fixes both live defects.
-3. **Seat, session identity, and roster.** The durable per-player key, the client-asserted
+1. **Session lifecycle.** Split the handshake into admission and content parity; add mod
+   id/version to the manifest; demote rather than close on a level change; the relevel
+   message and client-follow; host-side net reset on unload; transport polling across the
+   load window; the fail-open fix. The largest spec, and the one that fixes both live
+   defects. Drafted: `plans/drafts/E15--session-lifecycle/`.
+2. **Seat, session identity, and roster.** The durable per-player key, the client-asserted
    player id, and the engine-published roster facts the UI and the predicate read.
-4. **Lobby authoring surface.** The session scope and its join predicate, the lifecycle
+3. **Lobby authoring surface.** The session scope and its join predicate, the lifecycle
    reaction addresses, and the reference lobby in the dev mod.
 
-`E16--per-player-currency` is parked on spec 3 — its three failed shapes were all attempts to
-key per-player state without a durable identity.
+Spec 1 was first scoped as two — admission, then transitions — and merged after direction
+review. The split failed on its own evidence: the admission half had to pull the fail-open
+fix across the seam because its central invariant failed silently without it, and both its
+headline criteria were claims about surviving a window the other half owned. The work
+divides by layer (gate, wire, engine lifecycle), not by capability.
+
+`E16--per-player-currency` is parked on spec 2 — its shapes were all attempts to key
+per-player state without a durable identity.
 
 ---
 

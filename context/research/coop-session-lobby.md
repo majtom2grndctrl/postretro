@@ -129,7 +129,7 @@ What the author can own is the shape the engine already uses everywhere else.
 |---|---|
 | Roster, seats, session id | The predicate that gates admission |
 | The admission decision itself | The UI that displays the lobby |
-| Session phase (lobby / loading / in-level) | Reactions fired on lifecycle edges |
+| Only the phases netcode must distinguish | The session's phase vocabulary, and reactions on lifecycle edges |
 | Map authority and the relevel protocol | Which map the session starts on |
 | Connection lifecycle and cleanup | What "ready" means |
 
@@ -149,10 +149,16 @@ Each publishes a dispatch scope. The mod's *response* to a join lives here; the 
 lives in the predicate. Separating them is what keeps the decision synchronous and the
 response deferred.
 
+**Session phase is authored, not an engine enum.** The engine distinguishes only what netcode
+needs for correctness — whether a level is installed, whether a load is in flight — and
+publishes that as a fact. The session's *own* phases are a mod-declared store slot the join
+predicate reads. A lobby-then-match shooter, a persistent hub world, and a campaign with no
+lobby at all are validly different games; a Rust enum picks a winner among them. The slot
+machinery already ships, so this costs nothing.
+
 **The lobby UI is mostly already shipped.** The frontend hub gives a menu tree, a menu camera,
 and an optional background level (`boot_sequence.md` §4). A lobby is the Frontend state with a
-live endpoint accepting connections. Session phase should be a *fact published from* the
-existing app state, not a new top-level app state.
+live endpoint accepting connections — not a new top-level app state.
 
 ---
 

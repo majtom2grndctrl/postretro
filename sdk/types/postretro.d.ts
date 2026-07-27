@@ -310,11 +310,11 @@ declare module "postretro" {
 
   /** Authored AI brain component preset attached to `EntityTypeDescriptor.components.ai`. Descriptor-owned tuning: maps never override these. Lowers at spawn to a behavior graph and materializes the engine-owned brain (graph + current state + timers) and a movable navigation agent. Distances are in metres, times in milliseconds, `moveSpeed` in metres/sec. The `states` block links the brain's states to mesh animation states; that cross-component mapping is validated at spawn (the ai block cannot see the mesh block at its own parse). */
   export type AiDescriptor = {
-    /** Distance at which the brain notices a target and leaves idle, in metres. Must be finite and > 0. */
+    /** Distance at which the brain notices a target and leaves idle, in metres. Must be finite and > 0; `leashRange` must be >= this value. */
     detectionRange: number;
     /** Distance within which the brain attacks rather than pursues, in metres. Must be finite and > 0. */
     attackRange: number;
-    /** Distance from its origin past which the brain disengages and returns, in metres. Must be finite and > 0. */
+    /** Distance from the enemy's current position that bounds both target acquisition and retention, in metres. Must be finite and > 0 and >= `detectionRange`. */
     leashRange: number;
     /** Damage dealt per attack. Must be finite and >= 0 (a negative value would heal the target through the damage chokepoint). */
     attackDamage: number;
@@ -382,6 +382,8 @@ declare module "postretro" {
     states: { readonly [state: string]: BehaviorStateDescriptor };
     /** Any-state edges, evaluated in declaration order BEFORE the current state's own transitions. An interrupt targeting the current state is skipped. Optional; defaults to none. */
     interrupts?: ReadonlyArray<TransitionDescriptor>;
+    /** Optional boolean eligibility predicate evaluated per candidate the engine offers during acquisition. It can only narrow that offer set; it does not rank candidates or drop a retained target. */
+    candidateFilter?: RuntimeValue;
     /** Attack tuning for the `attack` action verb. Required exactly when some state declares that action. */
     attack?: AttackParams;
     /** Pursuit movement speed in metres/sec, seeding the navigation agent. Must be finite and > 0. */
@@ -1472,10 +1474,31 @@ declare module "postretro" {
     readonly health: RuntimeRead;
     /** The enemy's maximum hit points (number). */
     readonly maxHealth: RuntimeRead;
+    /** The selected target's current hit points (number). */
+    readonly targetHealth: RuntimeRead;
+    /** The selected target's maximum hit points (number). */
+    readonly targetMaxHealth: RuntimeRead;
+    /** `true` once the selected target's death sweep has handled it (boolean). */
+    readonly targetDied: RuntimeRead;
   }
 
   /** Pre-wrapped guard input leaves for the fixed `@brain.*` namespace. */
   export const brain: BrainInputs;
+
+  /** Facts about one offered target, evaluated during acquisition. */
+  export interface CandidateInputs {
+    /** XZ distance from the evaluating enemy (number). */
+    readonly distance: RuntimeRead;
+    /** Current hit points, or zero when absent (number). */
+    readonly health: RuntimeRead;
+    /** Maximum hit points, or zero when absent (number). */
+    readonly maxHealth: RuntimeRead;
+    /** `true` once the death sweep has handled this candidate (boolean). */
+    readonly died: RuntimeRead;
+  }
+
+  /** Pre-wrapped leaves for graph candidate eligibility. */
+  export const candidate: CandidateInputs;
 
   /** Read a per-entity state field as a guard input: `state("staggered")` is the `@state.staggered` leaf. Unset fields read as `0`. Impact policies and reactions write these; guards only read them. */
   export function state(name: string): RuntimeRead;

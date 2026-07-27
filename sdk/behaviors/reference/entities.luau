@@ -22,7 +22,7 @@ M.REFERENCE_ENEMY_CLASSNAME = "reference_enemy"
 local DETECTION_RANGE = 16
 --- Distance within which its melee swing connects, in metres.
 local ATTACK_RANGE = 2
---- Distance past which it gives up and returns to rest, in metres.
+--- Legacy leash and this graph's acquisition radius, in metres.
 local LEASH_RANGE = 50
 
 --- The map-placeable reference enemy: a full health + animated-mesh +
@@ -44,7 +44,7 @@ local LEASH_RANGE = 50
 --- shape:
 ---
 --- ```text
----   ANY   --(!hasTarget)-->                            idle   (interrupt)
+---   ANY   --(!hasTarget || targetDied)-->               idle   (interrupt)
 ---   idle  --(acquisitionDue && dist <= ATTACK_RANGE)--> attack
 ---   idle  --(acquisitionDue && dist <= DETECTION_RANGE)--> alert
 ---   alert --(dist <= ATTACK_RANGE)-->                  attack
@@ -64,7 +64,7 @@ local LEASH_RANGE = 50
 --- * `idle -> attack` is declared first. Guards are first-true-wins in
 ---   declaration order, so the "already in contact range on the tick we notice
 ---   them" edge has to precede the plain detection edge to be reachable.
---- * The stand-down interrupt is declared first of all. Interrupts run before
+--- * The stand-down interrupts are declared first of all. Interrupts run before
 ---   any state-local guard, so losing the target outranks every range edge and
 ---   the enemy stands down in ONE tick. It is not optional polish:
 ---   `brain.targetDistance` reads a `1e9` sentinel with no target, and that
@@ -74,7 +74,11 @@ local LEASH_RANGE = 50
 ---   guards below both fire on target loss and walk the enemy
 ---   `attack -> alert -> idle` over two ticks, playing the travel animation for
 ---   one of them with nothing to travel toward. The IR has no `not` opcode, so
----   the negation is spelled `select(hasTarget, false, true)`.
+---   the negation is spelled `select(hasTarget, false, true)`. The target facts
+---   are meaningful only under `hasTarget`: they read zero (and `targetDied`
+---   reads false) untargeted. Test death with the sweep's `targetDied` latch,
+---   never `le(targetHealth, 0)`, which also fires with no target and misses
+---   the latch's full definition.
 ---
 --- There is no `death` state: death is not a graph transition. The engine's
 --- death sweep latches a zero-HP enemy and the authored impact policy plays the
@@ -82,12 +86,18 @@ local LEASH_RANGE = 50
 --- entirely to that policy's `despawn` effect, and the behavior block carries
 --- no despawn field of its own.
 ---
---- The graph also owns its own leash: there is no engine-side range limit on
---- an authored `chaseTarget` state. `alert`'s `dist > LEASH_RANGE` exit above
---- is what stops pursuit — omit an exit guard like it and the enemy chases
---- from anywhere on the level. Engagement and disengagement are both
---- graph-authored here: the range edges against `brain.targetDistance`, plus
---- the interrupt for the case where there is no distance to read.
+--- The graph owns candidacy and disengagement separately. `candidateFilter`
+--- runs once for every candidate the engine offers and only decides whether it
+--- is eligible; it neither ranks candidates nor drops the target already held.
+--- The state exits and interrupts above are the graph's disengagement policy.
+--- There is no engine-side range limit on an authored `chaseTarget` state, so
+--- the `alert` exit is still what stops pursuit.
+---
+--- `candidate.distance <= LEASH_RANGE` is this graph's acquisition radius. It
+--- is deliberately 50, the legacy descriptor's `leashRange`, not its detection
+--- range: the lowered legacy twin's floor applies that leash to acquisition and
+--- retention from the enemy's current position. Keeping this filter at 50 makes
+--- the authored and lowered traces agree.
 M.referenceEnemyEntity = defineEntity({
   canonicalName = M.REFERENCE_ENEMY_CLASSNAME,
   components = {
@@ -145,11 +155,22 @@ M.referenceEnemyEntity = defineEntity({
       -- its pack. A pure-pursuit graph (`chaseTarget`, no `action`) has no
       -- `attack.range` to fall back on and wants this field outright.
       engagementRadius = ATTACK_RANGE,
+      -- Candidate eligibility is per graph and only narrows the engine's offer
+      -- set. Dead pawns are never newly acquired; the distance clause is this
+      -- graph's authored acquisition radius, not a descriptor range field.
+      candidateFilter = runtime.select(
+        candidate.died,
+        false,
+        runtime.le(candidate.distance, LEASH_RANGE)
+      ),
       -- Stand down the instant the target is gone. Declared first so it
       -- outranks every state-local guard -- see the doc comment above for why
       -- the `gt` disengage guards below cannot do this job themselves.
       interrupts = {
         { to = "idle", when = runtime.select(brain.hasTarget, false, true) },
+        -- The death sweep's latch is false untargeted. Do not compare
+        -- `targetHealth` to zero: target facts are zero with no target too.
+        { to = "idle", when = brain.targetDied },
       },
       states = {
         -- At rest. `initial` doubles as the state the engine forces when the

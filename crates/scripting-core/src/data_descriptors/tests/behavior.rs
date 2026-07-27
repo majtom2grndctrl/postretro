@@ -663,8 +663,12 @@ fn the_shipped_reference_enemy_graph_is_identical_in_both_authorings() {
             .iter()
             .map(|edge| edge.to.as_str())
             .collect::<Vec<_>>(),
-        vec!["idle"],
-        "the single any-state edge is the stand-down on target loss"
+        vec!["idle", "idle"],
+        "the ordered any-state edges stand down on target loss, then target death"
+    );
+    assert!(
+        ts.candidate_filter.is_some(),
+        "the reference graph filters dead candidates and bounds acquisition"
     );
     for (state, targets) in [
         ("idle", vec!["attack", "alert"]),

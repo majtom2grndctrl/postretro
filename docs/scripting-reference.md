@@ -431,8 +431,14 @@ tick time. Each row below rejects the descriptor with a descriptive
 Attach a `behavior` block to an entity descriptor to give it an enemy brain. The
 block is a **behavior state graph**: you declare named states, what each one does
 while it is current, and the ordered guards that move between them. The engine
-owns target selection, steering, combat spacing, damage, animation switching, and
-determinism; the graph owns which states exist and when the brain changes state.
+owns the **offer set** for target selection, steering, combat spacing, damage,
+animation switching, and determinism; the graph owns which states exist and when
+the brain changes state. The offer set is the set of entities the engine can
+perceive as candidates. The engine makes no aliveness judgement while choosing
+among it: an unfiltered graph can select a dead pawn, though the attack gate
+still will not hit one. A graph's optional `candidateFilter` decides which
+offered candidates are worth engaging; it can only narrow the offer set and
+never ranks candidates or drops a target already retained.
 
 Guards are [runtime values](#runtime-values) — the same `runtime.*` builders as
 dash fields, bound against a brain-fact namespace instead of the movement one.
@@ -442,8 +448,14 @@ is re-evaluated every tick.
 `components.behavior` and `components.ai` are two spellings of one brain.
 Declaring both is a load error.
 
+The legacy `components.ai.leashRange` remains engine-owned: measured from the
+enemy's **current position**, it bounds both fresh acquisition and retained
+targets, and must be at least `detectionRange`. An authored graph has no matching
+range field. Its state guards own disengagement, while a distance clause in
+`candidateFilter` owns any authored acquisition radius.
+
 ```typescript
-import { brain, defineEntity, runtime } from "postretro";
+import { brain, candidate, defineEntity, runtime } from "postretro";
 
 defineEntity({
   canonicalName: "grunt",
@@ -463,9 +475,18 @@ defineEntity({
       moveSpeed: 3,
       attack: { damage: 8, range: 2, cooldownMs: 1200 },
       engagementRadius: 2,
+      // Eligibility is checked only for candidates the engine offers. This
+      // graph will not newly acquire corpses or candidates beyond 50 metres.
+      candidateFilter: runtime.select(
+        candidate.died,
+        false,
+        runtime.le(candidate.distance, 50),
+      ),
       // Lost the target? Stand down this tick, before any range guard runs.
       interrupts: [
         { to: "idle", when: runtime.select(brain.hasTarget, false, true) },
+        // The death latch is unambiguous; `le(targetHealth, 0)` is not.
+        { to: "idle", when: brain.targetDied },
       ],
       states: {
         idle: {
@@ -504,6 +525,7 @@ defineEntity({
 | `initial` | `string` | The state entered at spawn. Must name a declared state. It is also the state the engine forces when the **aggro gate** closes, and the graph's **rest pose** (see *Animation* below) — so author it rest-appropriate. |
 | `states` | `{ [name]: BehaviorState }` | The declared states, keyed by a name you choose. Must declare at least one. Duplicate names are rejected. |
 | `interrupts` | `Transition[]` (optional) | Any-state edges, evaluated in declaration order **before** the current state's own transitions. Defaults to none. |
+| `candidateFilter` | `RuntimeValue` (optional) | Boolean eligibility predicate evaluated once per candidate the engine offers during a ranking scan. It can exclude candidates but cannot rank them and is never checked against a retained target. Use `candidate.distance` here to bound **acquisition**; there is no authored descriptor range field for it. |
 | `attack` | `{ damage, range, cooldownMs }` (optional) | Tuning for the `attack` action verb. **Required** whenever any state declares `action: "attack"`. Permitted even when none does, because `attack.range` is what `engagementRadius` falls back to. `damage` must be finite and `>= 0` (a negative payload would *heal* through the damage chokepoint); `range` and `cooldownMs` must be finite and `> 0`. |
 | `engagementRadius` | `number` (optional) | Radius in metres of the ring of combat slots the engine spreads engaged agents around their target. Finite and `> 0`. See *`attack.range` vs `engagementRadius`* below. |
 | `moveSpeed` | `number` | Pursuit movement speed in metres/sec, seeding the navigation agent. Finite and `> 0`. |
@@ -621,7 +643,10 @@ These are the rules you cannot author a graph without.
 
 A behavior guard binds against a fixed, read-only **brain** namespace. Import
 `brain` from `"postretro"` and use its properties as operands; each is the
-pre-wrapped input leaf for the matching `@brain.*` name.
+pre-wrapped input leaf for the matching `@brain.*` name. `brain.hasTarget` is
+the sole authoritative presence test: with no target, every target-side fact
+below reads its type's zero and `brain.targetDied` reads `false`. The lone
+exception is `brain.targetDistance`, which keeps its `1e9` sentinel.
 
 | `brain` property | `read` name | Type | Meaning |
 |------------------|-------------|------|---------|
@@ -632,6 +657,9 @@ pre-wrapped input leaf for the matching `@brain.*` name.
 | `brain.acquisitionDue` | `@brain.acquisitionDue` | `boolean` | True on the think-stride ticks where the engine re-evaluates acquisition. Detection is time-sliced; conjoin this onto detection edges so they only fire on an acquisition tick. |
 | `brain.health` | `@brain.health` | `number` | The enemy's current hit points. |
 | `brain.maxHealth` | `@brain.maxHealth` | `number` | The enemy's maximum hit points. |
+| `brain.targetHealth` | `@brain.targetHealth` | `number` | The selected target's current hit points, or `0` with no target or no health component. Meaningful only when `hasTarget` is true. |
+| `brain.targetMaxHealth` | `@brain.targetMaxHealth` | `number` | The selected target's maximum hit points, or `0` with no target or no health component. Meaningful only when `hasTarget` is true. |
+| `brain.targetDied` | `@brain.targetDied` | `boolean` | Whether the selected target's death sweep latch has fired; `false` with no target or no health component. Meaningful only when `hasTarget` is true. |
 
 Plus one open namespace: `state("name")` reads the per-entity state field `name`
 as a number (`@state.name`). Impact policies and reactions write these fields;
@@ -649,8 +677,10 @@ Reading any other name is a load error.
 
 **This is the single most important thing in this section.**
 
-With no selected target, `brain.hasTarget` reads `false` and
-`brain.targetDistance` reads a `1e9` sentinel. The sentinel is
+With no selected target, `brain.hasTarget` reads `false`, every target-health
+fact reads `0`, `brain.targetDied` reads `false`, and
+`brain.targetDistance` reads a `1e9` sentinel. Never infer target presence from
+the zero values: `brain.hasTarget` is the sole presence test. The sentinel is
 **one-directional**:
 
 - `le` / `lt` guards read **false** untargeted. Safe — that is why an entry edge
@@ -678,6 +708,17 @@ Keep your `gt`/`ge` range edges as they are; the interrupt is what makes them
 safe. Alternatively, gate an individual edge directly:
 `runtime.select(brain.hasTarget, runtime.gt(brain.targetDistance, 50), false)`.
 
+To stand down for a dead selected target, use the death sweep's latch after the
+`hasTarget` interrupt:
+
+```typescript
+{ to: "idle", when: brain.targetDied },
+```
+
+Do **not** spell this `runtime.le(brain.targetHealth, 0)`: that expression also
+fires when there is no target, because target health reads zero then, and it
+does not carry the engine death sweep's complete definition.
+
 ### `attack.range` vs `engagementRadius`
 
 Two separate knobs that are easy to conflate:
@@ -701,10 +742,25 @@ pack.
 
 ### The level-wide pursuer
 
-There is deliberately **no engine leash for authored graphs.** Target selection
-has no range limit, and an authored graph carries no engine-side disengagement
-range. A `chaseTarget` state with no exit guard validates cleanly and pursues
-from anywhere on the level, through the whole map, forever.
+There is deliberately **no engine leash for authored graphs.** An authored graph
+has no engine-side disengagement range. A `chaseTarget` state with no exit guard
+validates cleanly and pursues from anywhere on the level, through the whole map,
+forever.
+
+An authored graph can still bound fresh acquisition with `candidateFilter`:
+`runtime.le(candidate.distance, 50)` is its acquisition radius, not a descriptor
+field and not a retained-target check. The engine offers candidates first, then
+this per-graph predicate may reject them; retention and disengagement remain the
+state graph's job. Import `candidate` and combine it with any policy you want,
+for example rejecting dead candidates as well:
+
+```typescript
+candidateFilter: runtime.select(
+  candidate.died,
+  false,
+  runtime.le(candidate.distance, 50),
+),
+```
 
 An authored graph owns **both** engagement and disengagement. Give every pursuit
 state an exit:

@@ -37,8 +37,9 @@ use postretro_entities::{EntityStateComponent, ScriptCtx};
 use postretro_foundation::{
     ActionVerb, AttackParams, BRAIN_HAS_TARGET_INPUT, BRAIN_TARGET_DIED_INPUT,
     BRAIN_TARGET_DISTANCE_INPUT, BRAIN_TIME_IN_STATE_MS_INPUT, BakedIr, BehaviorGraphDescriptor,
-    BehaviorStateDescriptor, BoundProgram, CURRENT_IR_VERSION, ImpactEventDescriptor, IrNode,
-    IrValue, MotionVerb, TransitionDescriptor, bind,
+    BehaviorStateDescriptor, BoundProgram, CANDIDATE_DIED_INPUT, CANDIDATE_DISTANCE_INPUT,
+    CURRENT_IR_VERSION, ImpactEventDescriptor, IrNode, IrValue, MotionVerb, TransitionDescriptor,
+    bind,
 };
 use postretro_scripting_core::data_descriptors::{
     AirParams, CapsuleParams, FallParams, ForgivenessParams, GroundParams,
@@ -4140,8 +4141,9 @@ fn reference_ai_descriptor() -> AiDescriptor {
 /// Detection is conjoined with `@brain.acquisitionDue` (the IR has no `and`
 /// opcode, so conjunction is `select(cond, inner, false)`); the attack-range and
 /// leash edges are deliberately ungated, matching the engine floor's own
-/// unstrided attack and retention-leash checks. The single interrupt is the
-/// shipped stand-down on target loss.
+/// unstrided attack and retention-leash checks. The ordered interrupts stand
+/// down for target loss, then for the death latch. Its candidate filter excludes
+/// dead pawns and uses the legacy leash as its acquisition radius.
 ///
 /// This is the oracle the parity test compares against, so a drifted
 /// transcription would assert nothing —
@@ -4207,19 +4209,33 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
         // two ticks (and one travel-animation frame) to leave `attack`. The IR
         // has no `not` opcode, so the negation is `select(hasTarget, false,
         // true)` — the same shape the lowering emits.
-        interrupts: vec![edge(
-            "idle",
-            IrNode::Select {
-                cond: Box::new(brain_input(BRAIN_HAS_TARGET_INPUT)),
-                a: Box::new(IrNode::Const {
-                    value: IrValue::Bool(false),
-                }),
+        interrupts: vec![
+            edge(
+                "idle",
+                IrNode::Select {
+                    cond: Box::new(brain_input(BRAIN_HAS_TARGET_INPUT)),
+                    a: Box::new(IrNode::Const {
+                        value: IrValue::Bool(false),
+                    }),
+                    b: Box::new(IrNode::Const {
+                        value: IrValue::Bool(true),
+                    }),
+                },
+            ),
+            edge("idle", brain_input(BRAIN_TARGET_DIED_INPUT)),
+        ],
+        candidate_filter: Some(IrNode::Select {
+            cond: Box::new(brain_input(CANDIDATE_DIED_INPUT)),
+            a: Box::new(IrNode::Const {
+                value: IrValue::Bool(false),
+            }),
+            b: Box::new(IrNode::Le {
+                a: Box::new(brain_input(CANDIDATE_DISTANCE_INPUT)),
                 b: Box::new(IrNode::Const {
-                    value: IrValue::Bool(true),
+                    value: IrValue::Number(ai.leash_range),
                 }),
-            },
-        )],
-        candidate_filter: None,
+            }),
+        }),
         attack: Some(AttackParams {
             damage: ai.attack_damage,
             range: ai.attack_range,
@@ -4263,12 +4279,16 @@ fn shipped_reference_behavior_graph() -> BehaviorGraphDescriptor {
         .eval()
         .expect("brain.luau evaluates");
     let brain: mlua::Table = brain_sdk.get("brain").expect("brain.luau exports `brain`");
+    let candidate: mlua::Table = brain_sdk
+        .get("candidate")
+        .expect("brain.luau exports `candidate`");
     let define_entity = lua
         .create_function(|_, descriptor: mlua::Table| Ok(descriptor))
         .expect("stub defineEntity");
     let globals = lua.globals();
     globals.set("runtime", runtime).unwrap();
     globals.set("brain", brain).unwrap();
+    globals.set("candidate", candidate).unwrap();
     globals.set("defineEntity", define_entity).unwrap();
 
     let module: mlua::Table = lua

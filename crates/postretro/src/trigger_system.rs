@@ -1692,7 +1692,7 @@ mod tests {
         spawn_context.replace_level_data(
             [(
                 "cultist".to_string(),
-                crate::scripting::builtins::data_archetype_test_fixtures::ai_enemy_descriptor(
+                crate::scripting::builtins::data_archetype_test_fixtures::behavior_enemy_descriptor(
                     "cultist",
                 ),
             )]

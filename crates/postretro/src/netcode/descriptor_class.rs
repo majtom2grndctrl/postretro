@@ -107,7 +107,7 @@ mod tests {
         apply_data_archetype_dispatch, descriptor_materializes_ai_enemy, find_descriptor,
     };
     use crate::scripting::builtins::data_archetype_test_fixtures::{
-        ai_enemy_descriptor, mesh_descriptor, placement,
+        behavior_enemy_descriptor, mesh_descriptor, placement,
     };
 
     #[test]
@@ -122,7 +122,7 @@ mod tests {
         // classifier and the netcode live predicate — the scripting tree must not
         // reach up into `crate::netcode` (dependency arrow is netcode → scripting).
         let descriptors = vec![
-            ai_enemy_descriptor("grunt"),
+            behavior_enemy_descriptor("grunt"),
             mesh_descriptor("crate", false),
         ];
         let placements = vec![placement("grunt", &[]), placement("crate", &[])];
@@ -148,7 +148,7 @@ mod tests {
     #[test]
     fn runtime_spawn_requires_the_same_live_ai_pair_and_stamps_its_class() {
         let descriptors = vec![
-            ai_enemy_descriptor("grunt"),
+            behavior_enemy_descriptor("grunt"),
             mesh_descriptor("crate", false),
         ];
         let placements = vec![placement("grunt", &[]), placement("crate", &[])];

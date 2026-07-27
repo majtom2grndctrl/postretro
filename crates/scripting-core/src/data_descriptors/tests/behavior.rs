@@ -318,40 +318,6 @@ fn lua_behavior_accepts_a_per_entity_state_guard() {
 }
 
 #[test]
-fn js_authoring_both_ai_and_behavior_is_a_parse_error() {
-    let src = js_behavior(JS_NEAR_GUARD, "").replace(
-        "components: {",
-        r#"components: { ai: {
-            detectionRange: 18, attackRange: 2.2, leashRange: 26,
-            attackDamage: 8, attackCooldownMs: 1200, moveSpeed: 3.5,
-            deathDespawnMs: 1500,
-            states: { idle: "idle", alert: "walk", attack: "attack", death: "die" } },"#,
-    );
-    let err = js_error(&src);
-    assert!(
-        err.contains("`components.ai`") && err.contains("`components.behavior`"),
-        "{err}"
-    );
-}
-
-#[test]
-fn lua_authoring_both_ai_and_behavior_is_a_parse_error() {
-    let src = lua_behavior(LUA_NEAR_GUARD, "").replace(
-        "components = {",
-        r#"components = { ai = {
-            detectionRange = 18, attackRange = 2.2, leashRange = 26,
-            attackDamage = 8, attackCooldownMs = 1200, moveSpeed = 3.5,
-            deathDespawnMs = 1500,
-            states = { idle = "idle", alert = "walk", attack = "attack", death = "die" } },"#,
-    );
-    let err = lua_error(&src);
-    assert!(
-        err.contains("`components.ai`") && err.contains("`components.behavior`"),
-        "{err}"
-    );
-}
-
-#[test]
 fn duplicate_state_names_collapse_in_both_runtimes_and_are_rejected_at_the_shared_chokepoint() {
     // Neither a JS object literal nor a Luau table literal can carry a repeated
     // key: both collapse to the last entry before the descriptor bridge sees

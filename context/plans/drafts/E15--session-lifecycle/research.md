@@ -25,7 +25,7 @@ Findings behind the spec's decisions, including why its scope changed once.
 | The net endpoint is built during `Session::build`, and mod init runs after — so mod identity cannot be a construction argument | `context/lib/boot_sequence.md` §1 |
 | The accept lane spawns the slot pawn; `lifecycle` carries closes only | `crates/postretro/src/main.rs` — the `HandshakeOutcome` match, `host_handle_lifecycle` |
 | The client's local static-collision trimesh is built from `LevelWorld` vertices and indices, and nothing hashes them — the second, larger fail-open | `crates/postretro/src/collision/mod.rs` — `CollisionWorld::populate_from_level` |
-| Client movement prediction runs against that local collision source, and client-authoritative hit declaration casts against the world the client renders while the host validates against its own static geometry | `crates/postretro/src/netcode/prediction.rs` (`MovementCollisionSource`), `context/lib/networking.md` §Combat authority |
+| Client movement prediction runs against that local collision source, and client-authoritative hit declaration casts against the world the client renders while the host validates against its own static geometry | `MovementCollisionSource` is defined `pub(crate) trait` in `crates/postretro/src/movement/mod.rs`; `crates/postretro/src/netcode/prediction.rs` consumes it as `&impl MovementCollisionSource`, `context/lib/networking.md` §Combat authority |
 | Player movement tuning is descriptor-authored, so a manifest edit changes what the client predicts with | `crates/postretro/src/movement/mod.rs` — `PlayerMovementComponent::from_descriptor` |
 | Clients suppress AI-enemy spawns entirely and attach mesh presentation only, which is why enemy placement and brain tuning cannot break compatibility | `context/lib/networking.md` §Phase boundaries |
 | A staged reload re-commits nearly every manifest lane — `entities`, `store_declarations`, `maps`, `reactions`, `crossings`, `trigger_events`, `trigger_pools`, `events`, the `render` profile, `ui_trees`, `theme`, `frontend`. `fonts` is the only lane never re-committed; it is absent from `StagedManifest`. So a non-atomic-replace manifest lane already ships, and it is exactly one | `crates/scripting-core/src/staged_manifest/transfer.rs`; `commit_staged_manifest_result` in `crates/scripting-core/src/runtime/core.rs`; `App::poll_staged_manifest_results` in `crates/postretro/src/startup/staged_manifest_lifecycle.rs`; `App::commit_staged_ui_manifest` in `crates/postretro/src/main.rs` |
@@ -179,7 +179,7 @@ the same reason as the section above: an argument was retired, not just a number
 Hashing `entities` wholesale contradicted the spec's own tiering. Most of
 `EntityTypeDescriptor` is host-authoritative — `health`, `weapon`, `default_weapon`,
 `behavior` — and clients suppress AI-enemy spawns entirely, so those fields are Tier 2 in
-`research/coop-content-compatibility.md`. The rest — `light`, `emitter`, `mesh` — is
+`context/research/coop-content-compatibility.md`. The rest — `light`, `emitter`, `mesh` — is
 presentation. Hashing the lane would have demoted every peer on an enemy retune or a light
 tweak: the same failure mode the spec rejects a declared mod version for, reintroduced by
 the mechanism meant to replace it.
@@ -196,15 +196,18 @@ provided the destructuring reaches all the way down. It has to be stated at the 
 the values it protects sit one and two levels below the two types the spec names, inside
 `DashParams` and the `IrNode` beneath it. What it no longer buys is coverage of descriptor
 *types* nobody named — a new client-simulated descriptor is still a manual widening, caught
-by the rule in `research/coop-content-compatibility.md` §6 rather than by the compiler.
+by the rule in `context/research/coop-content-compatibility.md` §6 rather than by the compiler.
 
 ## What generalizing the IR hasher bought
 
 The spec's original framing treated `DashParams`'s IR-valued fields as an obstacle: the
 movement descriptor was assumed to be scalars, and it is not. That framing had the direction
 of travel wrong. The IR is a substrate mid-adoption — its module doc calls movement "the first
-adopter", `E18--ir-valued-reactions` shipped, and `E10--enemy-stagger` drafts against
-`NumberOrIr`. A recipe shaped around dash specifically would be correct for exactly one
+adopter", `E18--ir-valued-reactions` shipped, and `E10--enemy-stagger` is a planned adopter
+currently deferred on `CombatScope`: it lists IR-authored stagger tuning as out of scope,
+shipping plain descriptor scalars upgradeable additively to `NumberOrIr` per the dash precedent
+once Epic 16's `CombatScope` lands, not a spec drafting against the wrappers today. A recipe
+shaped around dash specifically would be correct for exactly one
 adoption step, and would then fail open on the next one, silently, on a field added by someone
 who never read the recipe. That is the same failure the static-collision hole already
 demonstrated.
@@ -266,13 +269,13 @@ Direction review flagged this and it belongs on the record, because the next rev
 otherwise read agreement where there is only restatement.
 
 Three documents now state that co-op compatibility is decided by content rather than by a
-declared version: this spec, `research/coop-content-compatibility.md`, and
-`research/coop-session-lobby.md` §4. The third is **not** independent support. Before commit
+declared version: this spec, `context/research/coop-content-compatibility.md`, and
+`context/research/coop-session-lobby.md` §4. The third is **not** independent support. Before commit
 `f9a8973` it said the opposite — "the manifest declares an id and a version; the client sends
 them at admission; the host compares" — and it was rewritten in the same commit that made the
 decision. The roadmap's Phase 3.75 sub-bullet (line ~201) was rewritten in that commit too.
 
-So the honest inventory is: one argument (in `coop-content-compatibility.md`), stated in three
+So the honest inventory is: one argument (in `context/research/coop-content-compatibility.md`), stated in three
 places. It is a good argument and it survives review on its merits, but a reader must not
 count it three times. Two corollaries for anyone validating this spec later:
 
@@ -320,7 +323,7 @@ Three from this review round. The correction is cheap; the pattern is the part w
   rule (explicit author-assigned ids, not content-derived ones) still governs **identity**;
   it never governed parity, which has been content-derived since the fingerprint shipped.
 - **Exact mod-version equality as the admission gate.** The first draft's rule, dropped
-  after the tiering analysis in `research/coop-content-compatibility.md`. It refuses on a
+  after the tiering analysis in `context/research/coop-content-compatibility.md`. It refuses on a
   value that does not track the breaking surface: an author who edits a light bumps it and
   blocks a friend, and an author who retunes player movement may not bump it at all. The
   version is still required and still crosses the wire — for display, never for comparison.

@@ -1,5 +1,9 @@
 # Enemy Aggro Model
 
+> **Superseded — historical reference only.** Do not implement this plan's
+> `components.ai` or leash architecture. Active work:
+> [`E10--retire-legacy-ai`](../E10--retire-legacy-ai/).
+
 ## Goal
 
 Close three acquisition/leash defects the behavior-state-graph review panel

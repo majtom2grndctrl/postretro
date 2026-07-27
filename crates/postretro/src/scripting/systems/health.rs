@@ -174,7 +174,7 @@ pub(crate) fn sweep_deaths(registry: &mut EntityRegistry) -> DeathReport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use postretro_entities::components::brain::attach_brain;
+    use postretro_entities::components::brain::attach_brain_graph;
     use postretro_entities::components::health::{
         ContributorLedgerRecord, DamageContext, DamageProducer, apply_damage_with_context,
         set_health_absolute,
@@ -183,35 +183,32 @@ mod tests {
     use postretro_entities::registry::Transform;
     use postretro_foundation::DamagePayload;
     use postretro_scripting_core::data_descriptors::{
-        AiDescriptor, AiStateNames, AirParams, CapsuleParams, FallParams, GroundParams,
-        HealthDescriptor, PlayerMovementDescriptor, SpeedParams,
+        AirParams, BehaviorGraphDescriptor, BehaviorStateDescriptor, CapsuleParams, FallParams,
+        GroundParams, HealthDescriptor, MotionVerb, PlayerMovementDescriptor, SpeedParams,
     };
-
-    /// A minimal valid AI descriptor so a brain can be attached to mark an
-    /// entity as brain-bearing for the sweep's branch. The tuning values are not
-    /// read by the sweep — only the Brain component's *presence* matters.
-    fn ai_descriptor() -> AiDescriptor {
-        AiDescriptor {
-            detection_range: 18.0,
-            attack_range: 2.0,
-            leash_range: 26.0,
-            attack_damage: 8.0,
-            attack_cooldown_ms: 1000.0,
-            move_speed: 3.5,
-            death_despawn_ms: 1500.0,
-            states: AiStateNames {
-                idle: "idle".into(),
-                alert: "walk".into(),
-                attack: "attack".into(),
-                death: "die".into(),
-            },
-        }
-    }
 
     /// Attach a Brain component, marking the entity as brain-bearing for the
     /// sweep. Mirrors `make_player`: the sweep branches on component *presence*.
     fn make_brain(registry: &mut EntityRegistry, id: EntityId) {
-        attach_brain(registry, id, &ai_descriptor()).unwrap();
+        let graph = BehaviorGraphDescriptor {
+            initial: "idle".to_string(),
+            states: std::collections::BTreeMap::from([(
+                "idle".to_string(),
+                BehaviorStateDescriptor {
+                    animation: "idle".to_string(),
+                    motion: MotionVerb::Hold,
+                    action: None,
+                    transitions: Vec::new(),
+                    on_enter: None,
+                },
+            )]),
+            interrupts: Vec::new(),
+            candidate_filter: None,
+            attack: None,
+            engagement_radius: None,
+            move_speed: 3.5,
+        };
+        attach_brain_graph(registry, id, &graph).unwrap();
     }
 
     fn health(max: f32) -> HealthDescriptor {

@@ -9,8 +9,7 @@ use super::common::*;
 // same `BehaviorGraphDescriptor` serde + `validate` chokepoint, so acceptance
 // and every rejection below is identical by construction. Tested on a bare
 // descriptor value with NO entity materialized: the state → mesh
-// animation-state mapping is cross-component and stays a SPAWN-time check, as
-// it is for `components.ai`.
+// animation-state mapping is cross-component and stays a SPAWN-time check.
 
 /// Guard source shared by the JS fixtures: `targetDistance <= 16`.
 const JS_NEAR_GUARD: &str = r#"{ op: "le", a: { op: "input", name: "@brain.targetDistance" }, b: { op: "const", value: 16 } }"#;
@@ -78,7 +77,6 @@ fn js_entity_descriptor_parses_a_behavior_graph() {
     // Absent `engagementRadius` falls back to `attack.range` (the fixture's 2).
     assert_eq!(graph.engagement_radius, None);
     assert_eq!(graph.engagement_radius(), 2.0);
-    assert!(d.ai.is_none());
 }
 
 #[test]
@@ -96,6 +94,37 @@ fn lua_entity_descriptor_parses_a_behavior_graph() {
     assert_eq!(graph.attack.expect("attack block").cooldown_ms, 1200.0);
     assert_eq!(graph.engagement_radius, None);
     assert_eq!(graph.engagement_radius(), 2.0);
+}
+
+#[test]
+fn both_runtimes_reject_invalid_or_non_boolean_candidate_filters_with_the_authored_path() {
+    let js_invalid = js_behavior(JS_NEAR_GUARD, "").replace(
+        "moveSpeed: 3,",
+        r#"moveSpeed: 3, candidateFilter: { op: "input", name: "@candidate.missing" },"#,
+    );
+    let lua_invalid = lua_behavior(LUA_NEAR_GUARD, "").replace(
+        "moveSpeed = 3,",
+        r#"moveSpeed = 3, candidateFilter = { op = "input", name = "@candidate.missing" },"#,
+    );
+    let js_number = js_behavior(JS_NEAR_GUARD, "").replace(
+        "moveSpeed: 3,",
+        "moveSpeed: 3, candidateFilter: { op: \"const\", value: 1 },",
+    );
+    let lua_number = lua_behavior(LUA_NEAR_GUARD, "").replace(
+        "moveSpeed = 3,",
+        "moveSpeed = 3, candidateFilter = { op = \"const\", value = 1 },",
+    );
+    for error in [
+        js_error(&js_invalid),
+        lua_error(&lua_invalid),
+        js_error(&js_number),
+        lua_error(&lua_number),
+    ] {
+        assert!(
+            error.contains("components.behavior.candidateFilter"),
+            "{error}"
+        );
+    }
 }
 
 #[test]
@@ -289,40 +318,6 @@ fn lua_behavior_accepts_a_per_entity_state_guard() {
 }
 
 #[test]
-fn js_authoring_both_ai_and_behavior_is_a_parse_error() {
-    let src = js_behavior(JS_NEAR_GUARD, "").replace(
-        "components: {",
-        r#"components: { ai: {
-            detectionRange: 18, attackRange: 2.2, leashRange: 26,
-            attackDamage: 8, attackCooldownMs: 1200, moveSpeed: 3.5,
-            deathDespawnMs: 1500,
-            states: { idle: "idle", alert: "walk", attack: "attack", death: "die" } },"#,
-    );
-    let err = js_error(&src);
-    assert!(
-        err.contains("`components.ai`") && err.contains("`components.behavior`"),
-        "{err}"
-    );
-}
-
-#[test]
-fn lua_authoring_both_ai_and_behavior_is_a_parse_error() {
-    let src = lua_behavior(LUA_NEAR_GUARD, "").replace(
-        "components = {",
-        r#"components = { ai = {
-            detectionRange = 18, attackRange = 2.2, leashRange = 26,
-            attackDamage = 8, attackCooldownMs = 1200, moveSpeed = 3.5,
-            deathDespawnMs = 1500,
-            states = { idle = "idle", alert = "walk", attack = "attack", death = "die" } },"#,
-    );
-    let err = lua_error(&src);
-    assert!(
-        err.contains("`components.ai`") && err.contains("`components.behavior`"),
-        "{err}"
-    );
-}
-
-#[test]
 fn duplicate_state_names_collapse_in_both_runtimes_and_are_rejected_at_the_shared_chokepoint() {
     // Neither a JS object literal nor a Luau table literal can carry a repeated
     // key: both collapse to the last entry before the descriptor bridge sees
@@ -427,6 +422,53 @@ fn brain_sdk_helpers_cover_every_brain_input() {
     assert!(BRAIN_TS_SRC.contains(r#"runtime.read("@state." + name)"#));
 }
 
+/// Candidate helpers are a separate fixed vocabulary. The TypeScript literal
+/// count deliberately catches an added documentation spelling as well as a
+/// missing wrapper, while the Luau half checks the module's exposed key set.
+#[test]
+fn candidate_sdk_helpers_cover_every_candidate_input() {
+    const BRAIN_TS_SRC: &str = include_str!("../../../../../sdk/lib/brain.ts");
+    const BRAIN_LUAU_SRC: &str = include_str!("../../../../../sdk/lib/brain.luau");
+    use postretro_foundation::candidate::CANDIDATE_INPUTS;
+
+    let lua = mlua::Lua::new();
+    let module: Table = lua
+        .load(BRAIN_LUAU_SRC)
+        .set_name("sdk/lib/brain.luau")
+        .eval()
+        .expect("brain.luau evaluates");
+    let candidate: Table = module
+        .get("candidate")
+        .expect("brain.luau exports `candidate`");
+    let luau_keys: BTreeSet<String> = candidate
+        .clone()
+        .pairs::<String, LuaValue>()
+        .map(|entry| entry.expect("candidate entry").0)
+        .collect();
+    let expected: BTreeSet<String> = CANDIDATE_INPUTS
+        .iter()
+        .map(|(name, _)| name.strip_prefix("@candidate.").unwrap().to_string())
+        .collect();
+    assert_eq!(luau_keys, expected);
+
+    for (name, _) in CANDIDATE_INPUTS {
+        let property = name.strip_prefix("@candidate.").unwrap();
+        let leaf: Table = candidate.get(property).expect("candidate input leaf");
+        assert_eq!(leaf.get::<String>("op").unwrap(), "input");
+        assert_eq!(leaf.get::<String>("name").unwrap(), name);
+        assert!(
+            BRAIN_TS_SRC.contains(&format!(
+                "{property}: Object.freeze(runtime.read(\"{name}\"))"
+            )),
+            "sdk/lib/brain.ts must wrap `{name}` as `{property}`"
+        );
+    }
+    assert_eq!(
+        BRAIN_TS_SRC.matches("\"@candidate.").count(),
+        CANDIDATE_INPUTS.len()
+    );
+}
+
 // --- the shipped reference enemy (both authorings) ------------------------
 
 /// The TypeScript authoring of the map-placeable reference enemy — the one
@@ -444,17 +486,18 @@ const REFERENCE_ENTITIES_LUAU_SRC: &str =
 /// The module is compiled VERBATIM: a trailing statement stashes the exported
 /// descriptor on `globalThis` so the value is read back independently of however
 /// the bundler wraps the module's own exports.
-fn shipped_reference_enemy_from_typescript() -> EntityTypeDescriptor {
+fn shipped_reference_descriptor_from_typescript(export_name: &str) -> EntityTypeDescriptor {
+    static NEXT_FIXTURE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let fixture_id = NEXT_FIXTURE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let directory = std::env::temp_dir().join(format!(
-        "postretro-reference-enemy-{}-{}",
+        "postretro-reference-enemy-{}-{fixture_id}",
         std::process::id(),
-        line!()
     ));
     std::fs::create_dir_all(&directory).expect("create reference-enemy fixture directory");
     let entry = directory.join("entities.ts");
     std::fs::write(
         &entry,
-        format!("{REFERENCE_ENTITIES_TS_SRC}\nglobalThis.__referenceEnemy = referenceEnemyEntity;"),
+        format!("{REFERENCE_ENTITIES_TS_SRC}\nglobalThis.__referenceEntity = {export_name};"),
     )
     .expect("write reference-enemy fixture");
     let entry = std::fs::canonicalize(&entry).expect("canonicalize reference-enemy fixture");
@@ -470,9 +513,9 @@ fn shipped_reference_enemy_from_typescript() -> EntityTypeDescriptor {
         let _: JsValue = crate::quickjs::run_script(&ctx, &bundled, "entities.ts")
             .expect("the shipped reference entities module evaluates");
         let value: JsValue =
-            crate::quickjs::run_script(&ctx, "globalThis.__referenceEnemy", "read")
-                .expect("the module exported `referenceEnemyEntity`");
-        entity_descriptor_from_js(&ctx, value).expect("the shipped TS reference enemy parses")
+            crate::quickjs::run_script(&ctx, "globalThis.__referenceEntity", "read")
+                .expect("the module exported the requested reference descriptor");
+        entity_descriptor_from_js(&ctx, value).expect("the shipped TS reference descriptor parses")
     })
 }
 
@@ -480,7 +523,7 @@ fn shipped_reference_enemy_from_typescript() -> EntityTypeDescriptor {
 /// module in a real mod-rooted Luau state (whose prelude supplies the
 /// `defineEntity` / `runtime` / `brain` globals it authors against) and parse the
 /// result with the production Luau descriptor bridge.
-fn shipped_reference_enemy_from_luau() -> EntityTypeDescriptor {
+fn shipped_reference_descriptor_from_luau(export_name: &str) -> EntityTypeDescriptor {
     let lua = crate::luau::build_lua_state(
         &[],
         None,
@@ -491,14 +534,22 @@ fn shipped_reference_enemy_from_luau() -> EntityTypeDescriptor {
     // function keeps the shipped source verbatim while letting this reach the
     // one export under test.
     let source = format!(
-        "local M = (function()\n{REFERENCE_ENTITIES_LUAU_SRC}\nend)()\nreturn M.referenceEnemyEntity"
+        "local M = (function()\n{REFERENCE_ENTITIES_LUAU_SRC}\nend)()\nreturn M.{export_name}"
     );
     let value: LuaValue = lua
         .load(&source)
         .set_name("sdk/behaviors/reference/entities.luau")
         .eval()
         .expect("the shipped reference entities module evaluates");
-    entity_descriptor_from_lua(value).expect("the shipped Luau reference enemy parses")
+    entity_descriptor_from_lua(value).expect("the shipped Luau reference descriptor parses")
+}
+
+fn shipped_reference_enemy_from_typescript() -> EntityTypeDescriptor {
+    shipped_reference_descriptor_from_typescript("referenceEnemyEntity")
+}
+
+fn shipped_reference_enemy_from_luau() -> EntityTypeDescriptor {
+    shipped_reference_descriptor_from_luau("referenceEnemyEntity")
 }
 
 /// The shipped reference enemy is the one archetype a real map places, and it is
@@ -518,17 +569,8 @@ fn shipped_reference_enemy_from_luau() -> EntityTypeDescriptor {
 /// when both twins are changed together in a way that leaves the shipped enemy
 /// disagreeing with the shape the engine's parity tests assume.
 ///
-/// WHAT THIS DOES NOT CATCH. Only `components.behavior` is compared; the
-/// archetype's `health` and `mesh` blocks (including whether every
-/// `states.*.animation` names a declared `mesh.animations` key — a SPAWN-time,
-/// cross-component check) are outside this guard. The legacy `components.ai`
-/// fixture enemy in the same file is not covered here either. And this proves
-/// the two AUTHORINGS agree, not that either is good gameplay — that the shipped
-/// graph behaves like the legacy block it replaced is
-/// `the_authored_reference_graph_is_behavior_identical_to_the_legacy_block`, and
-/// that the Rust oracle THAT test uses still matches this shipped graph is
-/// `the_reference_oracle_matches_the_shipped_authored_graph` (both in the
-/// engine's `ai_tests.rs`).
+/// The pose fixture below extends the same production-path coverage to the
+/// cross-component mesh-animation names its direct graph drives.
 #[test]
 fn the_shipped_reference_enemy_graph_is_identical_in_both_authorings() {
     let ts = shipped_reference_enemy_from_typescript()
@@ -541,6 +583,10 @@ fn the_shipped_reference_enemy_graph_is_identical_in_both_authorings() {
     assert_eq!(
         ts, luau,
         "the shipped reference enemy's two authorings must produce the identical graph"
+    );
+    assert!(
+        postretro_foundation::data_descriptors::types::behavior_lints::inspect(&ts).is_empty(),
+        "the shipped reference enemy authors both disengagement paths"
     );
 
     // The absolute pin: the shape the engine's behavior tests assume.
@@ -581,8 +627,12 @@ fn the_shipped_reference_enemy_graph_is_identical_in_both_authorings() {
             .iter()
             .map(|edge| edge.to.as_str())
             .collect::<Vec<_>>(),
-        vec!["idle"],
-        "the single any-state edge is the stand-down on target loss"
+        vec!["idle", "idle", "idle"],
+        "the ordered any-state edges stand down on target loss, target death, then range"
+    );
+    assert!(
+        ts.candidate_filter.is_some(),
+        "the reference graph filters dead candidates and bounds acquisition"
     );
     for (state, targets) in [
         ("idle", vec!["attack", "alert"]),
@@ -598,6 +648,54 @@ fn the_shipped_reference_enemy_graph_is_identical_in_both_authorings() {
             targets,
             "`{state}` edge targets, in declaration order"
         );
+    }
+}
+
+/// The E21 pose-modifier fixture is a real, shipped animated mesh rather than a
+/// test-only descriptor. Its direct graph must survive both production parser
+/// paths, stay identical between authorings, and drive only declared mesh
+/// animation states. That final assertion mirrors the spawn-time validation
+/// contract at the descriptor boundary, where this test can show the full
+/// authored data that reaches the loader.
+#[test]
+fn shipped_pose_fixture_is_a_direct_graph_with_valid_mesh_animation_states() {
+    let ts = shipped_reference_descriptor_from_typescript("poseFixtureEnemyEntity");
+    let luau = shipped_reference_descriptor_from_luau("poseFixtureEnemyEntity");
+
+    assert_eq!(
+        ts.behavior, luau.behavior,
+        "the pose graphs stay in lockstep"
+    );
+    assert_eq!(
+        ts.mesh, luau.mesh,
+        "the pose mesh declarations stay in lockstep"
+    );
+
+    for descriptor in [&ts, &luau] {
+        let graph = descriptor
+            .behavior
+            .as_ref()
+            .expect("the pose fixture carries a direct behavior graph");
+        let mesh = descriptor
+            .mesh
+            .as_ref()
+            .expect("the pose fixture carries an animated mesh");
+        assert_eq!(
+            graph
+                .interrupts
+                .iter()
+                .map(|edge| edge.to.as_str())
+                .collect::<Vec<_>>(),
+            vec!["idle", "idle", "idle"],
+            "target loss, target death, then authored 50 m stand-down remain ordered"
+        );
+        for state in graph.states.values() {
+            assert!(
+                mesh.animations.contains_key(&state.animation),
+                "behavior state animation `{}` must be declared by the pose mesh",
+                state.animation
+            );
+        }
     }
 }
 
@@ -816,8 +914,8 @@ fn both_parsers_reject_a_non_finite_engagement_radius_with_its_path() {
     // clean validation error while `engagementRadius: Infinity` silently became
     // the default — the same authoring mistake with two outcomes, on every
     // optional numeric field of every descriptor. The bridge now rejects
-    // non-finite numbers and names the field. The finiteness rule still guards
-    // the raw-JSON and lowering paths
+    // non-finite numbers and names the field. Descriptor validation also guards
+    // move speed and engagement radius
     // (`move_speed_and_engagement_radius_must_be_finite_and_positive`). What
     // matters at this seam is that the two runtimes reject on the same
     // condition and report the same reason and path; only the VM-supplied
@@ -903,11 +1001,9 @@ fn both_parsers_reject_a_state_local_transition_targeting_its_own_state() {
 
 #[test]
 fn both_parsers_accept_a_self_targeting_interrupt() {
-    // Deliberately asymmetric with the state-local rule above, and pinned here
-    // so a future reader does not "fix" the inconsistency: the evaluator SKIPS
-    // an interrupt naming the current state rather than letting it win, so it
-    // blocks nothing — and the legacy lowering emits exactly this shape for its
-    // "stand down on target loss" edge.
+    // Deliberately asymmetric with the state-local rule above: a direct behavior
+    // graph may name its current state in an interrupt. The evaluator skips that
+    // interrupt rather than letting it win, so it blocks nothing.
     let js = eval_js(
         &js_behavior(JS_NEAR_GUARD, "").replace(
             "moveSpeed: 3,",

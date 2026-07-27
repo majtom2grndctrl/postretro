@@ -20,9 +20,7 @@ use super::MapEntity;
 use postretro_entities::AmmoReserve;
 use postretro_entities::components::agent::attach_agent;
 use postretro_entities::components::billboard_emitter::BillboardEmitterComponent;
-use postretro_entities::components::brain::{
-    attach_brain, attach_brain_graph, validate_brain_animation_states,
-};
+use postretro_entities::components::brain::{attach_brain_graph, validate_brain_animation_states};
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::light::{FalloffKind, LightComponent, LightKind};
 use postretro_entities::components::mesh::{
@@ -277,13 +275,9 @@ pub(crate) fn ai_capsule_center_from_feet_offset(
     -capsule_center_to_feet_origin_offset(params.radius, params.height)
 }
 
-/// Whether this descriptor authors a brain, in either of its two spellings: the
-/// legacy `components.ai` preset or an authored `components.behavior` graph.
-/// Parse-time validation guarantees at most one is present, and the spawn path
-/// lowers the legacy one into the same graph the authored one carries, so every
-/// site that used to ask "is there an `ai` block?" asks this instead.
+/// Whether this descriptor authors a behavior-graph brain.
 fn descriptor_carries_brain(descriptor: &EntityTypeDescriptor) -> bool {
-    descriptor.ai.is_some() || descriptor.behavior.is_some()
+    descriptor.behavior.is_some()
 }
 
 /// Whether materializing this descriptor would attach the engine-owned AI pair
@@ -535,24 +529,17 @@ pub(crate) fn attach_descriptor_components(
         owned_components.insert(DescriptorComponentKind::Health);
     }
 
-    // A brain block materializes the engine-owned brain AND a movable navigation
-    // agent (the tick drives the agent each tick). The two authoring spellings
-    // meet here: a legacy `ai` preset lowers to the graph an authored `behavior`
-    // block carries directly, so exactly one `BrainComponent` shape leaves this
-    // site regardless of which block was authored.
+    // A behavior graph materializes the engine-owned brain AND a movable
+    // navigation agent (the tick drives the agent each tick).
     //
     // The agent's capsule is seeded from the navmesh's baked `NavAgentParams`
     // (passed down from the attach call site — never read inside the component).
     // When the map has no navmesh (`agent_params == None`), the capsule falls
     // back to an engine default and the agent simply cannot path. Move speed
-    // comes from whichever block was authored. After both components land, the
-    // brain's state → animation-state map is validated against the entity's mesh
+    // comes from the graph. After both components land, the brain's state →
+    // animation-state map is validated against the entity's mesh
     // (cross-component: neither block could see the mesh at its own parse).
-    let brain_move_speed = if let Some(ai_desc) = descriptor.ai.as_ref() {
-        // `set_component`/`attach_*` only fail on a stale id — just returned.
-        let _ = attach_brain(registry, id, ai_desc);
-        Some(ai_desc.move_speed)
-    } else if let Some(behavior) = descriptor.behavior.as_ref() {
+    let brain_move_speed = if let Some(behavior) = descriptor.behavior.as_ref() {
         let _ = attach_brain_graph(registry, id, behavior);
         Some(behavior.move_speed)
     } else {
@@ -969,7 +956,7 @@ mod tests {
     // the netcode agreement test can reuse them without a private-helper reach
     // or a duplicate copy. See testing_guide.md §4.
     use super::super::data_archetype_test_fixtures::{
-        ai_enemy_descriptor, behavior_enemy_descriptor, mesh_descriptor, placement,
+        behavior_enemy_descriptor, mesh_descriptor, placement,
     };
 
     fn light_descriptor(classname: &str, is_dynamic: bool) -> EntityTypeDescriptor {
@@ -987,7 +974,6 @@ mod tests {
             weapon: None,
             mesh: None,
             health: None,
-            ai: None,
             behavior: None,
         }
     }
@@ -1047,14 +1033,14 @@ mod tests {
             "movement-pawn meshes are authored at feet while transforms are capsule centers"
         );
 
-        let ai = ai_enemy_descriptor("grunt");
+        let behavior = behavior_enemy_descriptor("grunt");
         let agent_params = NavAgentParams {
             radius: 0.2,
             height: 2.0,
             ..DEFAULT_AGENT_PARAMS
         };
         assert_eq!(
-            descriptor_mesh_component(&ai, Some(agent_params))
+            descriptor_mesh_component(&behavior, Some(agent_params))
                 .expect("AI descriptor materializes")
                 .origin_offset,
             capsule_center_to_feet_origin_offset(agent_params.radius, agent_params.height),
@@ -1210,7 +1196,6 @@ mod tests {
                 }),
                 zone_multipliers: std::collections::HashMap::new(),
             }),
-            ai: None,
             behavior: None,
         }];
         let placements = vec![placement("target_dummy", &[])];
@@ -1604,7 +1589,6 @@ mod tests {
             weapon: None,
             mesh: None,
             health: None,
-            ai: None,
             behavior: None,
         }];
         let placements = vec![placement(
@@ -1649,7 +1633,6 @@ mod tests {
             weapon: None,
             mesh: None,
             health: None,
-            ai: None,
             behavior: None,
         }];
         let placements = vec![placement("campfire", &[("velocity", "9.0 9.0 9.0")])];
@@ -1691,7 +1674,6 @@ mod tests {
             weapon: None,
             mesh: None,
             health: None,
-            ai: None,
             behavior: None,
         }];
         let placements = vec![placement("campfire", &[("initial_rate", "20.5")])];
@@ -1730,7 +1712,6 @@ mod tests {
             weapon: None,
             mesh: None,
             health: None,
-            ai: None,
             behavior: None,
         }];
         let placements = vec![placement("burstfire", &[("initial_burst", "24")])];
@@ -1771,7 +1752,6 @@ mod tests {
             weapon: None,
             mesh: None,
             health: None,
-            ai: None,
             behavior: None,
         }];
         let placements = vec![placement(
@@ -1822,7 +1802,6 @@ mod tests {
             weapon: None,
             mesh: None,
             health: None,
-            ai: None,
             behavior: None,
         }];
 
@@ -1890,7 +1869,6 @@ mod tests {
             weapon: None,
             mesh: None,
             health: None,
-            ai: None,
             behavior: None,
         }];
         let placements = vec![placement("ghost", &[]), placement("ghost", &[])];
@@ -2000,7 +1978,6 @@ mod tests {
             weapon: None,
             mesh: None,
             health: None,
-            ai: None,
             behavior: None,
         }
     }
@@ -2025,7 +2002,6 @@ mod tests {
             }),
             mesh: None,
             health: None,
-            ai: None,
             behavior: None,
         }
     }
@@ -2052,7 +2028,6 @@ mod tests {
             weapon: None,
             mesh: None,
             health: None,
-            ai: None,
             behavior: None,
         }
     }
@@ -2105,7 +2080,6 @@ mod tests {
             weapon: None,
             mesh: None,
             health: None,
-            ai: None,
             behavior: None,
         }
     }
@@ -2474,35 +2448,13 @@ mod tests {
 
     // ---- E10 Task 5: connected-client AI-enemy spawn suppression ----
 
-    /// Builds an enemy archetype descriptor from a classname.
-    type DescriptorBuilder = fn(&str) -> EntityTypeDescriptor;
-
-    /// One authoring spelling: the block name that carries the brain, paired
-    /// with the fixture builder that produces a descriptor using it.
-    type BrainSpelling = (&'static str, DescriptorBuilder);
-
-    /// Both authoring spellings of an enemy archetype, keyed by the block that
-    /// carries the brain. Every predicate gated on `descriptor_carries_brain`
-    /// must behave identically across this pair — the shipped reference enemy
-    /// uses the `behavior` spelling, so a predicate that only handled `ai` would
-    /// regress exactly the class a real map places.
-    fn brain_spellings() -> [BrainSpelling; 2] {
-        [
-            ("ai", ai_enemy_descriptor as DescriptorBuilder),
-            ("behavior", behavior_enemy_descriptor),
-        ]
-    }
-
     #[test]
-    fn descriptor_materializes_ai_enemy_keys_on_either_brain_block() {
-        // A brain block — `ai` OR `behavior` — is the sole AI classifier;
-        // light/mesh/health-only descriptors are non-AI props.
-        for (spelling, build) in brain_spellings() {
-            assert!(
-                descriptor_materializes_ai_enemy(&build("grunt")),
-                "the `{spelling}` spelling must classify as an AI enemy"
-            );
-        }
+    fn behavior_descriptor_materializes_ai_enemy() {
+        // An authored behavior graph is the sole AI classifier; light,
+        // mesh, and health-only descriptors are non-AI props.
+        assert!(descriptor_materializes_ai_enemy(
+            &behavior_enemy_descriptor("grunt")
+        ));
         assert!(!descriptor_materializes_ai_enemy(&mesh_descriptor(
             "prop", false
         )));
@@ -2513,25 +2465,22 @@ mod tests {
 
     #[test]
     fn client_filter_drops_ai_enemy_placements_keeps_props() {
-        // The connected-client pre-dispatch filter drops AI-enemy placements —
-        // in either authoring spelling — and keeps non-AI props in the same map.
-        for (spelling, build) in brain_spellings() {
-            let descriptors = vec![build("grunt"), mesh_descriptor("crate", false)];
-            let placements = vec![
-                placement("grunt", &[]),
-                placement("crate", &[]),
-                placement("grunt", &[]),
-            ];
+        // The connected-client pre-dispatch filter drops behavior-authored
+        // AI-enemy placements and keeps non-AI props in the same map.
+        let descriptors = vec![
+            behavior_enemy_descriptor("grunt"),
+            mesh_descriptor("crate", false),
+        ];
+        let placements = vec![
+            placement("grunt", &[]),
+            placement("crate", &[]),
+            placement("grunt", &[]),
+        ];
 
-            let kept = filter_out_client_ai_enemies(&placements, &descriptors);
+        let kept = filter_out_client_ai_enemies(&placements, &descriptors);
 
-            assert_eq!(
-                kept.len(),
-                1,
-                "`{spelling}`: both grunt placements dropped, crate kept"
-            );
-            assert_eq!(kept[0].classname, "crate");
-        }
+        assert_eq!(kept.len(), 1, "both grunt placements dropped, crate kept");
+        assert_eq!(kept[0].classname, "crate");
     }
 
     #[test]
@@ -2543,33 +2492,31 @@ mod tests {
         // suppressed enemies' models into the level-load upload union: the
         // map-referenced AI enemy's model is collected; non-AI props and
         // unknown classnames contribute nothing.
-        for (spelling, build) in brain_spellings() {
-            let mut grunt = build("grunt");
-            grunt.mesh.as_mut().unwrap().attachments =
-                [("hand".to_string(), "models/grunt_prop.gltf".to_string())]
-                    .into_iter()
-                    .collect();
-            let descriptors = vec![grunt, mesh_descriptor("crate", false)];
-            let placements = vec![
-                placement("grunt", &[]),
-                placement("crate", &[]),
-                placement("grunt", &[]),
-                placement("mystery", &[]),
-            ];
+        let mut grunt = behavior_enemy_descriptor("grunt");
+        grunt.mesh.as_mut().unwrap().attachments =
+            [("hand".to_string(), "models/grunt_prop.gltf".to_string())]
+                .into_iter()
+                .collect();
+        let descriptors = vec![grunt, mesh_descriptor("crate", false)];
+        let placements = vec![
+            placement("grunt", &[]),
+            placement("crate", &[]),
+            placement("grunt", &[]),
+            placement("mystery", &[]),
+        ];
 
-            let models = suppressed_ai_enemy_mesh_models(&placements, &descriptors);
+        let models = suppressed_ai_enemy_mesh_models(&placements, &descriptors);
 
-            // The AI enemy holder and its attachment model are both deduped across
-            // placements; the non-AI crate and unknown classname add nothing.
-            assert_eq!(
-                models,
-                vec![
-                    "decraniated".to_string(),
-                    "models/grunt_prop.gltf".to_string()
-                ],
-                "`{spelling}`: the suppressed enemy's models must still preload"
-            );
-        }
+        // The AI enemy holder and its attachment model are both deduped across
+        // placements; the non-AI crate and unknown classname add nothing.
+        assert_eq!(
+            models,
+            vec![
+                "decraniated".to_string(),
+                "models/grunt_prop.gltf".to_string()
+            ],
+            "the suppressed enemy's models must still preload"
+        );
     }
 
     #[test]
@@ -2652,7 +2599,7 @@ mod tests {
     fn client_filter_retains_unknown_classname_placements() {
         // A placement with no descriptor match is not an AI enemy; the filter
         // retains it so the dispatch's own unknown-classname diagnostics fire.
-        let descriptors = vec![ai_enemy_descriptor("grunt")];
+        let descriptors = vec![behavior_enemy_descriptor("grunt")];
         let placements = vec![placement("mystery", &[]), placement("grunt", &[])];
 
         let kept = filter_out_client_ai_enemies(&placements, &descriptors);
@@ -2668,7 +2615,7 @@ mod tests {
         // single-player) path but NONE through the connected-client filtered
         // path. The non-AI prop materializes in BOTH.
         let descriptors = vec![
-            ai_enemy_descriptor("grunt"),
+            behavior_enemy_descriptor("grunt"),
             mesh_descriptor("crate", false),
         ];
         let placements = vec![placement("grunt", &[]), placement("crate", &[])];
@@ -2740,40 +2687,31 @@ mod tests {
     }
 
     #[test]
-    fn brain_descriptor_materialization_yields_live_brain_and_agent() {
+    fn behavior_descriptor_materialization_yields_live_brain_and_agent() {
         // Invariant the suppression mechanism rests on: a brain descriptor
-        // materialization attaches BOTH live `Brain` and `Agent` columns, in
-        // EITHER authoring spelling. Without this, `is_networked_ai_enemy`
-        // (which reads those live columns) and the pre-materialization
-        // `descriptor_materializes_ai_enemy` could disagree.
-        for (spelling, build) in brain_spellings() {
-            let descriptors = vec![build("grunt")];
-            let placements = vec![placement("grunt", &[])];
-            let mut reg = EntityRegistry::new();
-            apply_data_archetype_dispatch(
-                &placements,
-                &descriptors,
-                &HashSet::new(),
-                &mut reg,
-                None,
-            );
+        // materialization attaches BOTH live `Brain` and `Agent` columns.
+        // Without this, `is_networked_ai_enemy` (which reads those live columns)
+        // and the pre-materialization `descriptor_materializes_ai_enemy` could
+        // disagree.
+        let descriptors = vec![behavior_enemy_descriptor("grunt")];
+        let placements = vec![placement("grunt", &[])];
+        let mut reg = EntityRegistry::new();
+        apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg, None);
 
-            let (id, _) = reg
-                .iter_with_kind(ComponentKind::Brain)
-                .next()
-                .unwrap_or_else(|| panic!("`{spelling}` descriptor materializes a Brain"));
-            assert!(
-                matches!(reg.has_component_kind(id, ComponentKind::Agent), Ok(true)),
-                "`{spelling}` descriptor materializes an Agent alongside the Brain"
-            );
-        }
+        let (id, _) = reg
+            .iter_with_kind(ComponentKind::Brain)
+            .next()
+            .expect("behavior descriptor materializes a Brain");
+        assert!(
+            matches!(reg.has_component_kind(id, ComponentKind::Agent), Ok(true)),
+            "behavior descriptor materializes an Agent alongside the Brain"
+        );
     }
 
     #[test]
-    fn both_brain_spellings_get_the_same_capsule_center_to_feet_offsets() {
+    fn behavior_descriptor_gets_capsule_center_to_feet_offsets() {
         // The other two branches gated on "carries a brain": the spawn transform
-        // shift and the mesh render-origin offset. They are equal-and-opposite,
-        // and neither may depend on which block spelled the brain.
+        // shift and the mesh render-origin offset. They are equal-and-opposite.
         use postretro_foundation::NavAgentParams;
 
         let params = Some(NavAgentParams {
@@ -2782,21 +2720,19 @@ mod tests {
             step_height: 0.3,
             max_slope_deg: 45.0,
         });
-        for (spelling, build) in brain_spellings() {
-            let descriptor = build("grunt");
-            let shift = ai_capsule_center_from_feet_offset(&descriptor, params);
-            assert_eq!(
-                shift,
-                Vec3::new(0.0, 0.8, 0.0),
-                "`{spelling}`: the spawn transform lifts feet-authored origins to capsule center"
-            );
-            let mesh = descriptor_mesh_component(&descriptor, params)
-                .unwrap_or_else(|| panic!("`{spelling}` descriptor carries a mesh"));
-            assert_eq!(
-                mesh.origin_offset, -shift,
-                "`{spelling}`: the mesh renders back down at the feet"
-            );
-        }
+        let descriptor = behavior_enemy_descriptor("grunt");
+        let shift = ai_capsule_center_from_feet_offset(&descriptor, params);
+        assert_eq!(
+            shift,
+            Vec3::new(0.0, 0.8, 0.0),
+            "the spawn transform lifts feet-authored origins to capsule center"
+        );
+        let mesh = descriptor_mesh_component(&descriptor, params)
+            .expect("behavior descriptor carries a mesh");
+        assert_eq!(
+            mesh.origin_offset, -shift,
+            "the mesh renders back down at the feet"
+        );
         assert_eq!(
             descriptor_mesh_component(&mesh_descriptor("crate", false), params)
                 .unwrap()
@@ -2808,9 +2744,8 @@ mod tests {
 
     #[test]
     fn behavior_descriptor_spawn_seeds_the_authored_graph_on_the_brain() {
-        // The `behavior` spelling must reach the SAME component the `ai`
-        // spelling lowers to: the authored graph is retained verbatim and the
-        // brain starts in its `initial` state.
+        // The authored graph is retained verbatim and the brain starts in its
+        // `initial` state.
         use postretro_entities::components::brain::BrainComponent;
 
         let descriptor = behavior_enemy_descriptor("grunt");
@@ -2837,10 +2772,10 @@ mod tests {
     }
 
     #[test]
-    fn ai_enemy_enabled_on_spawn_false_seeds_closed_aggro_gate() {
+    fn behavior_enemy_enabled_on_spawn_false_seeds_closed_aggro_gate() {
         use postretro_entities::components::brain::BrainComponent;
 
-        let descriptors = vec![ai_enemy_descriptor("sealed_grunt")];
+        let descriptors = vec![behavior_enemy_descriptor("sealed_grunt")];
         let placements = vec![placement("sealed_grunt", &[("enabled_on_spawn", "false")])];
         let mut reg = EntityRegistry::new();
         apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg, None);
@@ -2856,10 +2791,10 @@ mod tests {
     }
 
     #[test]
-    fn ai_enemy_missing_or_malformed_enabled_on_spawn_defaults_gate_open() {
+    fn behavior_enemy_missing_or_malformed_enabled_on_spawn_defaults_gate_open() {
         use postretro_entities::components::brain::BrainComponent;
 
-        let descriptors = vec![ai_enemy_descriptor("grunt")];
+        let descriptors = vec![behavior_enemy_descriptor("grunt")];
         let placements = vec![
             placement("grunt", &[]),
             placement("grunt", &[("enabled_on_spawn", "not-a-bool")]),
@@ -2875,7 +2810,7 @@ mod tests {
     }
 
     #[test]
-    fn ai_descriptor_spawn_uses_capsule_center_transform_without_moving_authored_hitbox() {
+    fn behavior_descriptor_spawn_uses_capsule_center_transform_without_moving_authored_hitbox() {
         use postretro_entities::components::health::HealthComponent;
         use postretro_foundation::NavAgentParams;
         use postretro_scripting_core::data_descriptors::{HealthDescriptor, HitboxDescriptor};
@@ -2886,7 +2821,7 @@ mod tests {
             step_height: 0.3,
             max_slope_deg: 45.0,
         };
-        let mut descriptor = ai_enemy_descriptor("grunt");
+        let mut descriptor = behavior_enemy_descriptor("grunt");
         descriptor.health = Some(HealthDescriptor {
             max: 60.0,
             hitbox: Some(HitboxDescriptor {
@@ -2910,7 +2845,7 @@ mod tests {
         let (id, _) = reg
             .iter_with_kind(ComponentKind::Agent)
             .next()
-            .expect("ai descriptor materializes an Agent");
+            .expect("behavior descriptor materializes an Agent");
         let transform = reg.get_component::<Transform>(id).unwrap();
         assert_eq!(
             transform.position,

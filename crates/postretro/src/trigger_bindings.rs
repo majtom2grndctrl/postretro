@@ -906,7 +906,7 @@ fn bind_store_slot(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use postretro_entities::components::brain::{BrainComponent, attach_brain};
+    use postretro_entities::components::brain::{BrainComponent, attach_brain_graph};
     use postretro_entities::components::health::HealthComponent;
     use postretro_entities::{
         NumericRange, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue, Transform,
@@ -952,28 +952,28 @@ mod tests {
         id
     }
 
-    fn ai_descriptor() -> postretro_foundation::AiDescriptor {
-        postretro_foundation::AiDescriptor {
-            detection_range: 18.0,
-            attack_range: 2.0,
-            leash_range: 26.0,
-            attack_damage: 8.0,
-            attack_cooldown_ms: 1000.0,
-            move_speed: 3.5,
-            death_despawn_ms: 1500.0,
-            states: postretro_foundation::AiStateNames {
-                idle: "idle".into(),
-                alert: "walk".into(),
-                attack: "attack".into(),
-                death: "die".into(),
-            },
-        }
-    }
-
     fn spawn_brain(registry: &mut EntityRegistry, tag: &str) -> EntityId {
         let entity = registry.spawn(Transform::default());
         registry.set_tags(entity, vec![tag.into()]).unwrap();
-        attach_brain(registry, entity, &ai_descriptor()).unwrap();
+        let graph = postretro_foundation::BehaviorGraphDescriptor {
+            initial: "idle".to_string(),
+            states: std::collections::BTreeMap::from([(
+                "idle".to_string(),
+                postretro_foundation::BehaviorStateDescriptor {
+                    animation: "idle".to_string(),
+                    motion: postretro_foundation::MotionVerb::Hold,
+                    action: None,
+                    transitions: Vec::new(),
+                    on_enter: None,
+                },
+            )]),
+            interrupts: Vec::new(),
+            candidate_filter: None,
+            attack: None,
+            engagement_radius: None,
+            move_speed: 3.5,
+        };
+        attach_brain_graph(registry, entity, &graph).unwrap();
         entity
     }
 

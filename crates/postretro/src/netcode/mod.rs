@@ -100,7 +100,7 @@ use postretro_entities::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, EntityTypeDescriptor, SlotTable,
     Transform,
 };
-use postretro_foundation::{NavAgentParams, PlayerMovementComponent, lower_ai_descriptor};
+use postretro_foundation::{NavAgentParams, PlayerMovementComponent};
 use postretro_net::replication::ServerReplication;
 use postretro_net::timesync::{
     self, ClockEstimator, MonotonicClock, TimeSyncRequest, TimeSyncSender,
@@ -1166,13 +1166,10 @@ pub(crate) fn client_receive_and_apply(
                 // "The walking state" is picked by the same rule the host tick's
                 // animation substitution uses: the graph's locomotion state, which chases
                 // without an action of its own. The brain's graph is the descriptor's
-                // authored `behavior` block, or the lowering of its legacy `ai` block —
-                // in the spawn site's precedence, so both ends agree on what this enemy
-                // would carry.
+                // authored `behavior` block, so both ends agree on what this enemy carries.
                 let walk_reference = descriptor.and_then(|descriptor| {
                     let mesh = descriptor.mesh.as_ref()?;
-                    let lowered = descriptor.ai.as_ref().map(lower_ai_descriptor);
-                    let graph = lowered.as_ref().or(descriptor.behavior.as_ref())?;
+                    let graph = descriptor.behavior.as_ref()?;
                     let locomotion = scripting_systems::ai::locomotion_animation(graph)?;
                     let state = mesh.animations.get(locomotion)?;
                     let derived_travel_speed = hit_zone_store
@@ -2580,7 +2577,6 @@ mod tests {
             }),
             mesh: None,
             health: None,
-            ai: None,
             behavior: None,
         }];
         let mut weapon_owners = WeaponOwners::new();
@@ -3752,7 +3748,6 @@ mod tests {
                 locomotion: None,
             }),
             health: None,
-            ai: None,
             behavior: None,
         }
     }

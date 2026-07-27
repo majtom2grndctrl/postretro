@@ -132,8 +132,8 @@ pub(super) fn steering_for(motion: MotionVerb) -> SteeringIntent {
 /// agent is actually travelling — so it yields to the graph's rest animation at
 /// a standstill ([`animation_for_state`]), and it is the state off-host
 /// presentation derives its walk-playback reference from. A chasing state that
-/// DOES declare an action (the lowered `attack`) is not locomotion: its
-/// animation plays regardless of speed.
+/// DOES declare an action is not locomotion: its animation plays regardless of
+/// speed.
 fn is_locomotion_state(state: &BehaviorStateDescriptor) -> bool {
     state.motion == MotionVerb::ChaseTarget && state.action.is_none()
 }

@@ -571,7 +571,6 @@ mod tests {
             weapon: None,
             mesh: None,
             health: None,
-            ai: None,
             behavior: None,
         }
     }
@@ -602,7 +601,6 @@ mod tests {
             }),
             mesh: None,
             health: None,
-            ai: None,
             behavior: None,
         }
     }

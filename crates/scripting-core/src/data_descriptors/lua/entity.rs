@@ -4,7 +4,7 @@
 use super::super::*;
 
 /// Mirror of [`entity_descriptor_from_js`] for Luau tables. Shape:
-/// `{ canonicalName?: string, defaultWeapon?: string, components?: { mesh?: MeshDescriptor, movement?: PlayerMovementDescriptor, weapon?: WeaponDescriptor, health?: HealthDescriptor, ai?: AiDescriptor, behavior?: BehaviorGraphDescriptor, light?: LightDescriptor, emitter?: BillboardEmitterComponent } }`.
+/// `{ canonicalName?: string, defaultWeapon?: string, components?: { mesh?: MeshDescriptor, movement?: PlayerMovementDescriptor, weapon?: WeaponDescriptor, health?: HealthDescriptor, behavior?: BehaviorGraphDescriptor, light?: LightDescriptor, emitter?: BillboardEmitterComponent } }`.
 ///
 /// `canonicalName` is optional; absence means the descriptor has no direct
 /// map-placement form (see `EntityTypeDescriptor`).
@@ -60,7 +60,6 @@ pub fn entity_descriptor_from_lua(
     let mut weapon = None;
     let mut mesh = None;
     let mut health = None;
-    let mut ai = None;
     let mut behavior = None;
 
     if table.contains_key("components").map_err(lua_err)? {
@@ -140,13 +139,11 @@ pub fn entity_descriptor_from_lua(
             if components_table.contains_key("ai").map_err(lua_err)? {
                 let raw: LuaValue = components_table.get("ai").map_err(lua_err)?;
                 if !matches!(raw, LuaValue::Nil) {
-                    let json = conv::lua_to_json(raw).map_err(lua_err)?;
-                    let descriptor: AiDescriptor = serde_json::from_value(json).map_err(|e| {
-                        DescriptorError::InvalidShape {
-                            reason: format!("`components.ai` invalid: {e}"),
-                        }
-                    })?;
-                    ai = Some(descriptor.validate()?);
+                    return Err(DescriptorError::InvalidShape {
+                        reason:
+                            "`components.ai` has been retired; author `components.behavior` instead"
+                                .to_string(),
+                    });
                 }
             }
             if components_table.contains_key("behavior").map_err(lua_err)? {
@@ -204,10 +201,8 @@ pub fn entity_descriptor_from_lua(
         weapon,
         mesh,
         health,
-        ai,
         behavior,
     };
-    descriptor.validate_component_exclusivity()?;
     Ok(descriptor)
 }
 

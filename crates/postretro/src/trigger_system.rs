@@ -692,13 +692,13 @@ fn recorded_paired_exits() -> Vec<PlayerId> {
 mod tests {
     use super::*;
     use glam::Quat;
-    use postretro_entities::components::brain::{BrainComponent, attach_brain};
+    use postretro_entities::components::brain::{BrainComponent, attach_brain_graph};
     use postretro_entities::{
         KinematicMoverComponent, KinematicMoverMode, MoverCommand, ScriptCtx,
     };
     use postretro_foundation::{
-        AiDescriptor, AiStateNames, AirParams, CapsuleParams, FallParams, GroundParams,
-        PlayerMovementComponent, PlayerMovementDescriptor, SpeedParams,
+        AirParams, BehaviorGraphDescriptor, BehaviorStateDescriptor, CapsuleParams, FallParams,
+        GroundParams, MotionVerb, PlayerMovementComponent, PlayerMovementDescriptor, SpeedParams,
     };
     use postretro_scripting_core::data_descriptors::{
         NamedReaction, PrimitiveDescriptor, ReactionDescriptor, TriggerEventDescriptor,
@@ -1490,26 +1490,25 @@ mod tests {
         registry
             .set_tags(enemy, vec!["closet_enemies".into()])
             .expect("tag closet enemy");
-        attach_brain(
-            &mut registry,
-            enemy,
-            &AiDescriptor {
-                detection_range: 16.0,
-                attack_range: 2.0,
-                leash_range: 50.0,
-                attack_damage: 8.0,
-                attack_cooldown_ms: 1200.0,
-                move_speed: 3.0,
-                death_despawn_ms: 4000.0,
-                states: AiStateNames {
-                    idle: "idle".into(),
-                    alert: "alert".into(),
-                    attack: "attack".into(),
-                    death: "death".into(),
+        let graph = BehaviorGraphDescriptor {
+            initial: "idle".to_string(),
+            states: std::collections::BTreeMap::from([(
+                "idle".to_string(),
+                BehaviorStateDescriptor {
+                    animation: "idle".to_string(),
+                    motion: MotionVerb::Hold,
+                    action: None,
+                    transitions: Vec::new(),
+                    on_enter: None,
                 },
-            },
-        )
-        .expect("attach closed closet brain");
+            )]),
+            interrupts: Vec::new(),
+            candidate_filter: None,
+            attack: None,
+            engagement_radius: None,
+            move_speed: 3.0,
+        };
+        attach_brain_graph(&mut registry, enemy, &graph).expect("attach closed closet brain");
         let mut brain = registry
             .get_component::<BrainComponent>(enemy)
             .expect("closet brain attached")
@@ -1693,7 +1692,7 @@ mod tests {
         spawn_context.replace_level_data(
             [(
                 "cultist".to_string(),
-                crate::scripting::builtins::data_archetype_test_fixtures::ai_enemy_descriptor(
+                crate::scripting::builtins::data_archetype_test_fixtures::behavior_enemy_descriptor(
                     "cultist",
                 ),
             )]

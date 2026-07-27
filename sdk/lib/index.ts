@@ -15,8 +15,8 @@ export { world } from "./world";
 
 export { runtime } from "./runtime";
 
-export type { BrainInputs } from "./brain";
-export { brain, state } from "./brain";
+export type { BrainInputs, CandidateInputs } from "./brain";
+export { brain, candidate, state } from "./brain";
 
 export type { AnimatableScalar, AnimatableVec3 } from "./animation";
 

@@ -647,7 +647,6 @@ mod tests {
             weapon: None,
             mesh,
             health: None,
-            ai: None,
             behavior: None,
         }
     }

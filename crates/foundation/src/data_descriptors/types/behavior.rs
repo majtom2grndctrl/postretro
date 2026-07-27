@@ -9,7 +9,9 @@ use serde::de::{MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::brain::bind_brain_guard;
+use crate::candidate::bind_candidate_filter;
 use crate::data_descriptors::DescriptorError;
+use crate::data_descriptors::types::behavior_lints;
 use crate::ir::{IrNode, IrType};
 
 /// What a state does with the enemy's movement while it is current. Closed
@@ -127,12 +129,12 @@ pub struct BehaviorStateDescriptor {
 /// The authored behavior state graph carried by `components.behavior`.
 ///
 /// Descriptor-owned tuning (entity_model.md §4): maps never override these. The
-/// engine owns target selection, steering, damage, and determinism; this
-/// descriptor owns which states exist, what each one does, and the ordered
-/// guards between them.
+/// engine owns offered-target selection, ranking, steering, damage, and
+/// determinism; this descriptor owns which states exist, what each one does,
+/// the ordered guards between them, and optional candidate eligibility.
 ///
-/// Wire keys are camelCase: `initial`, `states`, `interrupts`, `attack`,
-/// `engagementRadius`, `moveSpeed`.
+/// Wire keys are camelCase: `initial`, `states`, `interrupts`,
+/// `candidateFilter`, `attack`, `engagementRadius`, `moveSpeed`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BehaviorGraphDescriptor {
@@ -151,7 +153,7 @@ pub struct BehaviorGraphDescriptor {
     /// `chaseTarget` state degrades to cleared steering because there is
     /// nothing to move relative to. A sealed enemy can therefore still flinch
     /// on an interrupt. A graph that wants to stand down on target loss authors
-    /// that edge itself — the lowering does exactly this for legacy brains.
+    /// that edge itself.
     ///
     /// [`BRAIN_NO_TARGET_DISTANCE`]: crate::brain::BRAIN_NO_TARGET_DISTANCE
     pub initial: String,
@@ -162,6 +164,11 @@ pub struct BehaviorGraphDescriptor {
     /// state's own transitions.
     #[serde(default)]
     pub interrupts: Vec<TransitionDescriptor>,
+    /// Optional read-only predicate over each offered candidate. It can only
+    /// narrow acquisition; it is never evaluated for an already retained target
+    /// and never participates in ranking.
+    #[serde(default)]
+    pub candidate_filter: Option<IrNode>,
     /// Tuning for the `attack` action verb. REQUIRED when some state declares
     /// that action; permitted (and meaningful) even when none does, because
     /// `attack.range` is what [`BehaviorGraphDescriptor::engagement_radius`]
@@ -186,8 +193,8 @@ pub struct BehaviorGraphDescriptor {
     /// Resolution order is [`BehaviorGraphDescriptor::engagement_radius`]: this
     /// field, else `attack.range`, else
     /// [`BehaviorGraphDescriptor::DEFAULT_ENGAGEMENT_RADIUS`]. The `attack.range`
-    /// step is what keeps a lowered legacy graph — which always leaves this
-    /// field `None` — behavior-identical to the pre-graph engine.
+    /// fallback keeps combat-slot spacing useful when an attack graph omits an
+    /// explicit engagement radius.
     #[serde(default)]
     pub engagement_radius: Option<f32>,
     /// Pursuit movement speed in metres/sec, seeding the navigation agent.
@@ -259,10 +266,8 @@ impl BehaviorGraphDescriptor {
     /// else the `attack` block's `range`, else
     /// [`Self::DEFAULT_ENGAGEMENT_RADIUS`].
     ///
-    /// The `attack.range` step is load-bearing for legacy parity: lowering
-    /// leaves `engagement_radius` as `None`, so a lowered graph resolves to the
-    /// legacy `attackRange` — the exact value the pre-graph engine fed combat-slot
-    /// resolution.
+    /// When `engagement_radius` is absent, `attack.range` supplies the combat-slot
+    /// spacing radius before the graph's default applies.
     pub fn engagement_radius(&self) -> f32 {
         self.engagement_radius
             .or_else(|| self.attack.map(|attack| attack.range))
@@ -270,7 +275,7 @@ impl BehaviorGraphDescriptor {
     }
 
     /// The shared parse-time validator both runtimes funnel through, so QuickJS
-    /// and Luau cannot diverge (the `AiDescriptor::validate` precedent).
+    /// and Luau cannot diverge (the shared descriptor-validator precedent).
     ///
     /// Structural rules, all pathed so the message names the offending state and
     /// transition index:
@@ -282,11 +287,13 @@ impl BehaviorGraphDescriptor {
     /// - `moveSpeed` is finite `> 0`; a present `engagementRadius` is finite `> 0`;
     /// - `attack` numerics are finite (`damage >= 0`, `range`/`cooldownMs > 0`),
     ///   and the block is present whenever a state declares the attack action;
-    /// - every guard binds against `BrainValidationScope` and produces a Bool.
+    /// - every guard binds against `BrainValidationScope` and produces a Bool;
+    /// - a present candidate filter binds against `CandidateValidationScope` and
+    ///   produces a Bool.
     ///
     /// Duplicate state names are rejected by [`deserialize_states`] upstream.
     /// The state → mesh animation-state mapping is cross-component and stays a
-    /// SPAWN-time check, as it is for `components.ai`.
+    /// SPAWN-time check.
     pub fn validate(self) -> Result<Self, DescriptorError> {
         if self.states.is_empty() {
             return Err(DescriptorError::InvalidShape {
@@ -343,6 +350,31 @@ impl BehaviorGraphDescriptor {
             for (index, transition) in state.transitions.iter().enumerate() {
                 let path = format!("states.{name}.transitions[{index}]");
                 self.validate_transition(transition, &path, Some(name.as_str()))?;
+            }
+        }
+        if let Some(filter) = self.candidate_filter.as_ref() {
+            let program =
+                bind_candidate_filter(filter).map_err(|e| DescriptorError::InvalidShape {
+                    reason: format!("`components.behavior.candidateFilter` is invalid: {e}"),
+                })?;
+            if program.root_type != IrType::Bool {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`components.behavior.candidateFilter` must produce a boolean, but its root produces {:?}",
+                        program.root_type
+                    ),
+                });
+            }
+        }
+        for lint in behavior_lints::inspect(&self) {
+            let states = lint.states.join(", ");
+            match lint.kind {
+                behavior_lints::BehaviorLintKind::LevelWidePursuer => log::warn!(
+                    "components.behavior: engaging states [{states}] pursue without a state-local transition to a non-engaging state"
+                ),
+                behavior_lints::BehaviorLintKind::NoHasTargetInterrupt => log::warn!(
+                    "components.behavior: engaging states [{states}] lack an interrupt reading @brain.hasTarget; target loss otherwise falls through distance guards, whose no-target sentinel makes gt/ge true"
+                ),
             }
         }
         Ok(self)
@@ -422,6 +454,7 @@ fn validate_positive(field: &str, value: f32) -> Result<(), DescriptorError> {
 mod tests {
     use super::*;
     use crate::brain::{BRAIN_TARGET_DISTANCE_INPUT, BRAIN_TIME_IN_STATE_MS_INPUT};
+    use crate::candidate::CANDIDATE_DIED_INPUT;
     use crate::ir::IrValue;
 
     // `ALL` is a hand-written array, so it needs a guard that a new variant
@@ -512,6 +545,7 @@ mod tests {
                 ("chase".to_string(), state("walk", Vec::new())),
             ]),
             interrupts: Vec::new(),
+            candidate_filter: None,
             attack: None,
             engagement_radius: None,
             move_speed: 3.0,
@@ -524,6 +558,53 @@ mod tests {
     }
 
     #[test]
+    fn candidate_filter_is_optional_and_validates_as_a_boolean() {
+        let parsed: BehaviorGraphDescriptor = serde_json::from_value(serde_json::json!({
+            "initial": "idle",
+            "moveSpeed": 3.0,
+            "states": { "idle": { "animation": "idle", "motion": "hold" } }
+        }))
+        .expect("old graph deserializes without candidateFilter");
+        assert!(parsed.candidate_filter.is_none());
+
+        let mut with_filter = graph();
+        with_filter.candidate_filter = Some(IrNode::Input {
+            name: CANDIDATE_DIED_INPUT.to_string(),
+        });
+        with_filter
+            .validate()
+            .expect("boolean candidate filter validates");
+
+        let mut bad_name = graph();
+        bad_name.candidate_filter = Some(IrNode::Input {
+            name: "@candidate.missing".to_string(),
+        });
+        let error = bad_name.validate().unwrap_err().to_string();
+        assert!(
+            error.contains("components.behavior.candidateFilter"),
+            "{error}"
+        );
+
+        let mut number = graph();
+        number.candidate_filter = Some(IrNode::Const {
+            value: IrValue::Number(1.0),
+        });
+        let error = number.validate().unwrap_err().to_string();
+        assert!(
+            error.contains("components.behavior.candidateFilter") && error.contains("boolean"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn disengagement_lints_do_not_reject_an_authored_graph() {
+        let mut graph = graph();
+        graph.states.get_mut("chase").unwrap().motion = MotionVerb::ChaseTarget;
+
+        assert!(graph.validate().is_ok(), "lints are warnings, not errors");
+    }
+
+    #[test]
     fn the_engagement_radius_resolves_field_then_attack_range_then_default() {
         // A pure-pursuit graph: no `engagementRadius`, no `attack` block. This
         // is the case that must NOT resolve to zero, since zero yields no
@@ -533,7 +614,7 @@ mod tests {
             BehaviorGraphDescriptor::DEFAULT_ENGAGEMENT_RADIUS
         );
 
-        // An `attack` block supplies the fallback — the legacy-parity path.
+        // An `attack` block supplies the fallback for an authored attack graph.
         let with_attack = BehaviorGraphDescriptor {
             attack: Some(AttackParams {
                 damage: 8.0,
@@ -585,8 +666,7 @@ mod tests {
 
     #[test]
     fn a_self_targeting_interrupt_is_accepted() {
-        // The evaluator skips it, so it blocks nothing — and the lowering emits
-        // exactly this shape for the legacy "no target stands down" rule.
+        // The evaluator skips it, so it blocks nothing.
         let mut g = graph();
         g.interrupts = vec![TransitionDescriptor {
             to: "idle".to_string(),
@@ -778,8 +858,8 @@ mod tests {
             3.5,
             "the explicit field outranks the `attack.range` fallback"
         );
-        // Serialize emits the defaulted keys explicitly (the `AiDescriptor`
-        // convention: no `skip_serializing_if`), so identity is asserted by
+        // Serialize emits the defaulted keys explicitly (no
+        // `skip_serializing_if`), so identity is asserted by
         // re-deserializing rather than by byte-comparing the two JSON values.
         let reparsed: BehaviorGraphDescriptor =
             serde_json::from_value(serde_json::to_value(&validated).unwrap()).unwrap();

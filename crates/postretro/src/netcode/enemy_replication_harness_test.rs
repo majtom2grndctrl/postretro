@@ -84,7 +84,10 @@ use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::components::brain::BrainComponent;
 use postretro_entities::components::mesh::{AnimationState, InterruptPolicy, MeshComponent};
 use postretro_entities::components::spawner::SpawnerComponent;
-use postretro_entities::data_descriptors::{AiDescriptor, AiStateNames};
+use postretro_entities::data_descriptors::{
+    ActionVerb, AttackParams, BehaviorGraphDescriptor, BehaviorStateDescriptor, MotionVerb,
+    TransitionDescriptor,
+};
 use postretro_entities::provenance::{
     DescriptorComponentKind, DescriptorProvenance, DescriptorSpawnPath,
 };
@@ -94,8 +97,8 @@ use postretro_entities::{
     TriggerActivation, TriggerFireMode, TriggerVolumeComponent,
 };
 use postretro_foundation::{
-    AirParams, CapsuleParams, FallParams, GroundParams, PlayerMovementComponent,
-    PlayerMovementDescriptor, SpeedParams,
+    AirParams, BRAIN_TARGET_DISTANCE_INPUT, CapsuleParams, FallParams, GroundParams, IrNode,
+    IrValue, PlayerMovementComponent, PlayerMovementDescriptor, SpeedParams,
 };
 
 use crate::scripting_systems::trigger_volume_bridge::TriggerVolumeBridge;
@@ -136,24 +139,26 @@ fn perfect_link() -> LinkConfig {
 
 // --- Descriptor + entity fixtures -------------------------------------------
 
-/// A valid AI brain — the predicate only needs `Brain` PRESENT, but a real
-/// `BrainComponent` keeps the fixture honest about what an `ai` descriptor block
-/// materializes.
+/// A valid graph brain — the predicate only needs `Brain` present, but a real
+/// `BrainComponent` keeps the fixture honest.
 fn brain() -> BrainComponent {
-    BrainComponent::from_descriptor(&AiDescriptor {
-        detection_range: 18.0,
-        attack_range: 2.0,
-        leash_range: 26.0,
-        attack_damage: 8.0,
-        attack_cooldown_ms: 1000.0,
+    BrainComponent::from_graph(&BehaviorGraphDescriptor {
+        initial: "idle".to_string(),
+        states: std::collections::BTreeMap::from([(
+            "idle".to_string(),
+            BehaviorStateDescriptor {
+                animation: "idle".to_string(),
+                motion: MotionVerb::Hold,
+                action: None,
+                transitions: Vec::new(),
+                on_enter: None,
+            },
+        )]),
+        interrupts: Vec::new(),
+        candidate_filter: None,
+        attack: None,
+        engagement_radius: None,
         move_speed: 3.5,
-        death_despawn_ms: 1500.0,
-        states: AiStateNames {
-            idle: "idle".into(),
-            alert: "locomotion".into(),
-            attack: "attack".into(),
-            death: "death".into(),
-        },
     })
 }
 
@@ -274,49 +279,12 @@ fn enemy_descriptor(class: &str) -> EntityTypeDescriptor {
             locomotion: None,
         }),
         health: None,
-        // The `ai` block is what `descriptor_materializes_ai_enemy` keys on — its
-        // presence is the sole AI classifier. A real `AiDescriptor` keeps the fixture
-        // honest about what an `ai` block resolves to.
-        ai: Some(ai_descriptor()),
-        behavior: None,
+        behavior: Some(enemy_behavior_graph()),
     }
 }
 
-/// A valid `AiDescriptor` — the suppression filter keys only on its PRESENCE, but a
-/// real one mirrors what the parser produces.
-fn ai_descriptor() -> postretro_foundation::AiDescriptor {
-    use postretro_foundation::{AiDescriptor, AiStateNames};
-    AiDescriptor {
-        detection_range: 18.0,
-        attack_range: 2.0,
-        leash_range: 26.0,
-        attack_damage: 8.0,
-        attack_cooldown_ms: 1000.0,
-        move_speed: 3.5,
-        death_despawn_ms: 1500.0,
-        states: AiStateNames {
-            idle: "idle".into(),
-            alert: "locomotion".into(),
-            attack: "attack".into(),
-            death: "death".into(),
-        },
-    }
-}
-
-/// The same enemy in the AUTHORED `components.behavior` spelling — the shape the
-/// shipped reference enemy has. The suppression seam keys on "carries a brain",
-/// not on which block spells it, so the netcode-facing predicate and filter must
-/// treat this identically to [`enemy_descriptor`].
-fn behavior_enemy_descriptor(class: &str) -> EntityTypeDescriptor {
-    use postretro_foundation::data_descriptors::types::behavior::{
-        ActionVerb, AttackParams, BehaviorGraphDescriptor, BehaviorStateDescriptor, MotionVerb,
-        TransitionDescriptor,
-    };
-    use postretro_foundation::{BRAIN_TARGET_DISTANCE_INPUT, IrNode, IrValue};
-
-    let mut descriptor = enemy_descriptor(class);
-    descriptor.ai = None;
-    descriptor.behavior = Some(BehaviorGraphDescriptor {
+fn enemy_behavior_graph() -> BehaviorGraphDescriptor {
+    BehaviorGraphDescriptor {
         initial: "idle".to_string(),
         states: std::collections::BTreeMap::from([
             (
@@ -351,6 +319,7 @@ fn behavior_enemy_descriptor(class: &str) -> EntityTypeDescriptor {
             ),
         ]),
         interrupts: Vec::new(),
+        candidate_filter: None,
         attack: Some(AttackParams {
             damage: 8.0,
             range: 2.0,
@@ -358,8 +327,13 @@ fn behavior_enemy_descriptor(class: &str) -> EntityTypeDescriptor {
         }),
         engagement_radius: None,
         move_speed: 3.5,
-    });
-    descriptor
+    }
+}
+
+/// Compatibility fixture name for coverage that compares the shared direct
+/// graph through host and client descriptor paths.
+fn behavior_enemy_descriptor(class: &str) -> EntityTypeDescriptor {
+    enemy_descriptor(class)
 }
 
 /// A `MapEntity` placement of `classname` (the connected-client install filter input).
@@ -403,7 +377,6 @@ fn prop_descriptor(class: &str) -> EntityTypeDescriptor {
             locomotion: None,
         }),
         health: None,
-        ai: None,
         behavior: None,
     }
 }
@@ -706,9 +679,8 @@ fn connected_client_has_exactly_one_remote_enemy_and_no_local_authoritative_copy
 }
 
 // The suppression seam keys on "carries a brain", and the shipped reference
-// enemy authors that brain as a `components.behavior` graph. Had the predicate
-// covered only the legacy `ai` spelling, a connected client would spawn a local
-// authoritative duplicate brain for exactly the class a real map places.
+// enemy authors that brain as a `components.behavior` graph. A connected client
+// must never spawn a local authoritative duplicate brain for that class.
 #[test]
 fn connected_client_suppresses_the_behavior_spelled_enemy_placement_too() {
     let descriptors = vec![

@@ -1105,6 +1105,21 @@ export type BrainInputs = {
 --- Pre-wrapped guard input leaves for the fixed `@brain.*` namespace.
 declare brain: BrainInputs
 
+--- Facts about one offered target, evaluated during acquisition.
+export type CandidateInputs = {
+  --- XZ distance from the evaluating enemy (number).
+  distance: RuntimeRead,
+  --- Current hit points, or zero when absent (number).
+  health: RuntimeRead,
+  --- Maximum hit points, or zero when absent (number).
+  maxHealth: RuntimeRead,
+  --- `true` once the death sweep has handled this candidate (boolean).
+  died: RuntimeRead,
+}
+
+--- Pre-wrapped leaves for graph candidate eligibility.
+declare candidate: CandidateInputs
+
 --- Read a per-entity state field as a guard input: `state("staggered")` is the `@state.staggered` leaf. Unset fields read as `0`. Impact policies and reactions write these; guards only read them.
 declare function state(name: string): RuntimeRead
 

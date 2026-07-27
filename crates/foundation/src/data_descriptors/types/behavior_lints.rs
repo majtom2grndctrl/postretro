@@ -121,6 +121,7 @@ mod tests {
             initial: "idle".to_string(),
             states,
             interrupts: Vec::new(),
+            candidate_filter: None,
             attack: None,
             engagement_radius: None,
             move_speed: 3.0,

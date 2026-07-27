@@ -645,6 +645,57 @@ fn brain_input_typedefs_match_the_foundation_table() {
     }
 }
 
+#[test]
+fn candidate_input_typedefs_match_the_foundation_table() {
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
+    use postretro_foundation::{CANDIDATE_INPUT_PREFIX, CANDIDATE_INPUTS};
+
+    fn field_names(output: &str) -> Vec<String> {
+        let mut lines = output
+            .lines()
+            .skip_while(|line| !line.contains("CandidateInputs"));
+        assert!(lines.next().is_some(), "`CandidateInputs` block missing");
+        let mut fields = Vec::new();
+        for line in lines {
+            let line = line.trim();
+            if line.starts_with("/**")
+                || line.starts_with('*')
+                || line.starts_with("---")
+                || line.is_empty()
+            {
+                continue;
+            }
+            if line.starts_with('}') {
+                break;
+            }
+            fields.push(
+                line.trim_start_matches("readonly ")
+                    .split(':')
+                    .next()
+                    .expect("candidate field has a name")
+                    .trim()
+                    .to_string(),
+            );
+        }
+        fields
+    }
+
+    let mut registry = PrimitiveRegistry::new();
+    register_all(&mut registry, ScriptCtx::new());
+    let expected: Vec<String> = CANDIDATE_INPUTS
+        .iter()
+        .map(|(name, _)| {
+            name.strip_prefix(CANDIDATE_INPUT_PREFIX)
+                .expect("candidate input carries its prefix")
+                .to_string()
+        })
+        .collect();
+    for output in [&generate_typescript(&registry), &generate_luau(&registry)] {
+        assert_eq!(field_names(output), expected);
+    }
+}
+
 /// Drift guard for the behavior-graph verb vocabularies. The registry
 /// registrations in `scripting/primitives/mod.rs` are a second spelling of the
 /// `MotionVerb` / `ActionVerb` enums, so this test derives the expected union

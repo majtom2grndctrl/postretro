@@ -161,6 +161,7 @@ fn sample_behavior_graph() -> BehaviorGraphDescriptor {
             ),
         ]),
         interrupts: Vec::new(),
+        candidate_filter: None,
         attack: Some(AttackParams {
             damage: 8.0,
             range: 2.0,

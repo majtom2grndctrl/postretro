@@ -11,6 +11,9 @@ use postretro_entities::components::brain::BrainComponent;
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::player_movement::PlayerMovementComponent;
 use postretro_entities::{EntityId, EntityRegistry, Transform};
+use postretro_foundation::{BoundProgram, IrValue, eval_value};
+
+use super::candidate_scope::CandidateScope;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct TargetPawn {
@@ -49,6 +52,8 @@ fn nearest_target_candidate(
     visible: Option<&dyn Fn(EntityId) -> bool>,
     exclude: Option<EntityId>,
     leash_range: Option<f32>,
+    candidate_filter: Option<&BoundProgram<CandidateScope>>,
+    candidate_scope: &mut CandidateScope,
 ) -> (Option<TargetCandidate>, Option<TargetCandidate>) {
     registry
         .iter_with_kind(ComponentKind::PlayerMovement)
@@ -64,7 +69,14 @@ fn nearest_target_candidate(
             }) {
                 nearest = Some(candidate);
             }
+            // Eligibility is per offered candidate only: retained lookup stays
+            // above this scan and never consults the graph's policy.
+            let filter_allows = candidate_filter.is_none_or(|filter| {
+                candidate_scope.refresh(registry, candidate.target.entity, from);
+                eval_value(filter, candidate_scope) == IrValue::Bool(true)
+            });
             if leash_range.is_none_or(|leash| candidate.distance <= leash)
+                && filter_allows
                 && eligible.is_none_or(|current: TargetCandidate| {
                     candidate.distance.total_cmp(&current.distance).is_lt()
                 })
@@ -125,6 +137,8 @@ pub(crate) fn select_target(
     retained_outside_leash: bool,
     visible: Option<&dyn Fn(EntityId) -> bool>,
     leash_range: Option<f32>,
+    candidate_filter: Option<&BoundProgram<CandidateScope>>,
+    candidate_scope: &mut CandidateScope,
 ) -> (Option<TargetCandidate>, Option<TargetPawn>) {
     let retained = retained_target
         .filter(|_| !retained_outside_leash)
@@ -136,6 +150,8 @@ pub(crate) fn select_target(
         visible,
         retained_target.filter(|_| retained_outside_leash),
         leash_range,
+        candidate_filter,
+        candidate_scope,
     );
 
     let selected = match (retained, nearest_eligible) {

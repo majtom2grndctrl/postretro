@@ -873,6 +873,21 @@
   /** Pre-wrapped guard input leaves for the fixed `@brain.*` namespace. */
   export const brain: BrainInputs;
 
+  /** Facts about one offered target, evaluated during acquisition. */
+  export interface CandidateInputs {
+    /** XZ distance from the evaluating enemy (number). */
+    readonly distance: RuntimeRead;
+    /** Current hit points, or zero when absent (number). */
+    readonly health: RuntimeRead;
+    /** Maximum hit points, or zero when absent (number). */
+    readonly maxHealth: RuntimeRead;
+    /** `true` once the death sweep has handled this candidate (boolean). */
+    readonly died: RuntimeRead;
+  }
+
+  /** Pre-wrapped leaves for graph candidate eligibility. */
+  export const candidate: CandidateInputs;
+
   /** Read a per-entity state field as a guard input: `state("staggered")` is the `@state.staggered` leaf. Unset fields read as `0`. Impact policies and reactions write these; guards only read them. */
   export function state(name: string): RuntimeRead;
 

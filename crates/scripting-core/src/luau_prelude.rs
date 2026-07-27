@@ -66,7 +66,7 @@ const ARRAY_METATABLE_GLOBAL: &str = "__postretroArrayMetatable";
 const RUNTIME_LUAU_SRC: &str = include_str!("../../../sdk/lib/runtime.luau");
 
 /// SDK library prelude — `brain.luau` returns the behavior-graph guard-input
-/// sugar (`brain`, `state`). Pure data assembly with no primitive dependency
+/// sugar (`brain`, `candidate`, `state`). Pure data assembly with no primitive dependency
 /// and no ordering constraint: it builds its IR input leaves literally rather
 /// than through the `runtime` global.
 const BRAIN_LUAU_SRC: &str = include_str!("../../../sdk/lib/brain.luau");
@@ -219,7 +219,7 @@ const GAME_STATE_FIELDS: &[&str] = &["getGameState"];
 
 /// Behavior-graph guard-input SDK fields lifted to globals after evaluating
 /// `brain.luau`.
-const BRAIN_LUAU_FIELDS: &[&str] = &["brain", "state"];
+const BRAIN_LUAU_FIELDS: &[&str] = &["brain", "candidate", "state"];
 
 /// Authoritative runtime export names for `require("postretro/ui")`.
 pub const POSTRETRO_UI_MODULE_EXPORTS: &[&str] = &[
@@ -288,6 +288,7 @@ pub const POSTRETRO_ROOT_MODULE_EXPORTS: &[&str] = &[
     "defineTriggerPool",
     "defineStore",
     "brain",
+    "candidate",
     "state",
     "emitter",
     "smokeEmitter",

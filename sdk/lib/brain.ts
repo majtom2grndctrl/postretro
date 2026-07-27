@@ -45,6 +45,18 @@ export interface BrainInputs {
   readonly targetDied: RuntimeRead;
 }
 
+/** Facts about one offered target, evaluated during acquisition. */
+export interface CandidateInputs {
+  /** XZ distance from the evaluating enemy (number). */
+  readonly distance: RuntimeRead;
+  /** Current hit points, or zero when absent (number). */
+  readonly health: RuntimeRead;
+  /** Maximum hit points, or zero when absent (number). */
+  readonly maxHealth: RuntimeRead;
+  /** `true` once the death sweep has handled this candidate (boolean). */
+  readonly died: RuntimeRead;
+}
+
 /** Pre-wrapped guard input leaves for the fixed `@brain.*` namespace. */
 export const brain: BrainInputs = Object.freeze({
   hasTarget: Object.freeze(runtime.read("@brain.hasTarget")),
@@ -57,6 +69,14 @@ export const brain: BrainInputs = Object.freeze({
   targetHealth: Object.freeze(runtime.read("@brain.targetHealth")),
   targetMaxHealth: Object.freeze(runtime.read("@brain.targetMaxHealth")),
   targetDied: Object.freeze(runtime.read("@brain.targetDied")),
+});
+
+/** Pre-wrapped leaves for graph candidate eligibility. */
+export const candidate: CandidateInputs = Object.freeze({
+  distance: Object.freeze(runtime.read("@candidate.distance")),
+  health: Object.freeze(runtime.read("@candidate.health")),
+  maxHealth: Object.freeze(runtime.read("@candidate.maxHealth")),
+  died: Object.freeze(runtime.read("@candidate.died")),
 });
 
 /** Read a per-entity state field as a guard input: `state("staggered")` is the

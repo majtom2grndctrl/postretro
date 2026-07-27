@@ -32,6 +32,7 @@ use postretro_foundation::{
 };
 
 use super::brain_scope::BrainScope;
+use super::candidate_scope::CandidateScope;
 
 /// One entity's bound guards, laid out to match its graph so the evaluator can
 /// index straight from the descriptor it is walking.
@@ -53,6 +54,9 @@ pub(crate) struct BrainEntityPrograms {
     /// Indexed by resolved state index (`graph.states` in `BTreeMap` order);
     /// each inner vec is parallel to that state's `transitions`.
     states: Vec<Vec<Option<BoundProgram<BrainScope>>>>,
+    /// Optional per-graph acquisition eligibility program. It uses the shared
+    /// candidate scope rather than the guard scope and remains evaluator data.
+    candidate_filter: Option<BoundProgram<CandidateScope>>,
 }
 
 impl BrainEntityPrograms {
@@ -70,11 +74,16 @@ impl BrainEntityPrograms {
             .map(Vec::as_slice)
             .unwrap_or_default()
     }
+
+    pub(crate) fn candidate_filter(&self) -> Option<&BoundProgram<CandidateScope>> {
+        self.candidate_filter.as_ref()
+    }
 }
 
 /// The evaluator's per-entity guard programs plus the shared binding scope.
 pub(crate) struct BrainPrograms {
     scope: BrainScope,
+    candidate_scope: CandidateScope,
     entries: HashMap<EntityId, BrainEntityPrograms>,
     /// The entities `sync` saw on its current pass. A field rather than a local
     /// purely so its capacity survives: `sync` runs every AI tick, and a local
@@ -87,6 +96,7 @@ impl BrainPrograms {
     pub(crate) fn new() -> Self {
         Self {
             scope: BrainScope::for_validation(),
+            candidate_scope: CandidateScope::for_validation(),
             entries: HashMap::new(),
             live: HashSet::new(),
         }
@@ -106,6 +116,20 @@ impl BrainPrograms {
     /// This entity's bound guards, or `None` when it carries no brain.
     pub(crate) fn get(&self, entity: EntityId) -> Option<&BrainEntityPrograms> {
         self.entries.get(&entity)
+    }
+
+    /// Borrow the optional filter and reusable refresh scope independently.
+    /// Acquisition holds the former over a scan while mutating the latter for
+    /// each offered candidate; no interior mutability is needed.
+    pub(crate) fn candidate_filter_context(
+        &mut self,
+        entity: EntityId,
+    ) -> (Option<&BoundProgram<CandidateScope>>, &mut CandidateScope) {
+        let (entries, candidate_scope) = (&self.entries, &mut self.candidate_scope);
+        let filter = entries
+            .get(&entity)
+            .and_then(BrainEntityPrograms::candidate_filter);
+        (filter, candidate_scope)
     }
 
     /// Reconcile the table with the registry's live brains.
@@ -142,7 +166,12 @@ impl BrainPrograms {
                 .get(&entity)
                 .is_some_and(|entry| Arc::ptr_eq(&entry.graph, &brain.graph));
             if !bound {
-                let entry = bind_graph(&self.scope, Arc::clone(&brain.graph), warned);
+                let entry = bind_graph(
+                    &self.scope,
+                    &self.candidate_scope,
+                    Arc::clone(&brain.graph),
+                    warned,
+                );
                 self.entries.insert(entity, entry);
             }
         }
@@ -189,6 +218,7 @@ fn ir_type_label(ir_type: IrType) -> &'static str {
 /// distinct failure and leaving those edges disabled.
 fn bind_graph(
     scope: &BrainScope,
+    candidate_scope: &CandidateScope,
     graph: Arc<BehaviorGraphDescriptor>,
     warned: &mut HashSet<String>,
 ) -> BrainEntityPrograms {
@@ -226,11 +256,46 @@ fn bind_graph(
                 .collect()
         })
         .collect();
+    let candidate_filter = graph
+        .candidate_filter
+        .as_ref()
+        .and_then(|filter| bind_candidate_filter_program(candidate_scope, &graph, filter, warned));
     BrainEntityPrograms {
         graph,
         interrupts,
         states,
+        candidate_filter,
     }
+}
+
+fn bind_candidate_filter_program(
+    scope: &CandidateScope,
+    graph: &BehaviorGraphDescriptor,
+    filter: &postretro_foundation::IrNode,
+    warned: &mut HashSet<String>,
+) -> Option<BoundProgram<CandidateScope>> {
+    let baked = BakedIr {
+        version: CURRENT_IR_VERSION,
+        output: None,
+        root: filter.clone(),
+    };
+    let reason = match bind(&baked, scope) {
+        Ok(program) if program.root_type == IrType::Bool => return Some(program),
+        Ok(program) => format!(
+            "its root produces {}, not a boolean",
+            ir_type_label(program.root_type)
+        ),
+        Err(error) => error.to_string(),
+    };
+    let initial = &graph.initial;
+    if warned.insert(format!("candidate-filter:{initial}:{reason}")) {
+        log::warn!(
+            "[AI] behavior candidate filter could not be bound ({reason}); it is disabled for \
+             the rest of the run. The graph starts in `{initial}`. Warned once per distinct \
+             graph and reason."
+        );
+    }
+    None
 }
 
 fn bind_guard(
@@ -332,6 +397,7 @@ mod tests {
                 },
             )]),
             interrupts: Vec::new(),
+            candidate_filter: None,
             attack: None,
             engagement_radius: None,
             move_speed: 3.0,
@@ -545,6 +611,29 @@ mod tests {
             "an unchanged brain keeps the programs it already has"
         );
         assert!(programs.get(entity).unwrap().transitions(0)[0].is_none());
+    }
+
+    #[test]
+    fn sync_leaves_an_unchanged_candidate_filter_bound_without_rewarning() {
+        // The observable is the warn-once latch, not a program address: a
+        // HashMap replacement can retain an allocation address across a rebind.
+        let mut graph = minimal_graph("idle");
+        graph.candidate_filter = Some(IrNode::Input {
+            name: "@candidate.morale".to_string(),
+        });
+        let (registry, entity) = registry_with_brain(&graph);
+        let mut programs = BrainPrograms::new();
+        let mut warned = HashSet::new();
+        programs.sync(&registry, &mut warned);
+        assert!(programs.get(entity).unwrap().candidate_filter().is_none());
+        warned.clear();
+
+        programs.sync(&registry, &mut warned);
+
+        assert!(
+            warned.is_empty(),
+            "an unchanged graph must not bind and warn about its filter again"
+        );
     }
 
     #[test]

@@ -15,6 +15,7 @@ use parry3d::math::{Isometry, Point};
 use parry3d::shape::TriMesh;
 use postretro_level_format::navmesh::{NAVMESH_VERSION, NavMeshSection, NavPortal, NavRegion};
 
+use super::candidate_scope::CandidateScope;
 use super::*;
 use crate::agent_steering;
 use crate::collision::CollisionWorld;
@@ -34,9 +35,10 @@ use postretro_entities::data_descriptors::{
 use postretro_entities::registry::{EntityId, EntityRegistry, Transform};
 use postretro_entities::{EntityStateComponent, ScriptCtx};
 use postretro_foundation::{
-    ActionVerb, AttackParams, BRAIN_HAS_TARGET_INPUT, BRAIN_TARGET_DISTANCE_INPUT,
-    BRAIN_TIME_IN_STATE_MS_INPUT, BehaviorGraphDescriptor, BehaviorStateDescriptor,
-    ImpactEventDescriptor, IrNode, IrValue, MotionVerb, TransitionDescriptor,
+    ActionVerb, AttackParams, BRAIN_HAS_TARGET_INPUT, BRAIN_TARGET_DIED_INPUT,
+    BRAIN_TARGET_DISTANCE_INPUT, BRAIN_TIME_IN_STATE_MS_INPUT, BakedIr, BehaviorGraphDescriptor,
+    BehaviorStateDescriptor, BoundProgram, CURRENT_IR_VERSION, ImpactEventDescriptor, IrNode,
+    IrValue, MotionVerb, TransitionDescriptor, bind,
 };
 use postretro_scripting_core::data_descriptors::{
     AirParams, CapsuleParams, FallParams, ForgivenessParams, GroundParams,
@@ -720,12 +722,33 @@ fn animation_switch_trigger_fires_on_state_or_locomotion_change_only() {
     assert!(!should_switch_animation(false, true, true));
 }
 
+fn bind_candidate_filter_for_test(node: IrNode) -> BoundProgram<CandidateScope> {
+    bind(
+        &BakedIr {
+            version: CURRENT_IR_VERSION,
+            output: None,
+            root: node,
+        },
+        &CandidateScope::for_validation(),
+    )
+    .expect("candidate filter binds")
+}
+
 #[test]
 fn select_target_returns_single_player_pawn() {
     let mut reg = EntityRegistry::new();
     let pawn = spawn_player(&mut reg, Vec3::new(5.0, 0.0, 0.0));
 
-    let (_, target) = select_target(&reg, Vec3::ZERO, None, false, None, None);
+    let (_, target) = select_target(
+        &reg,
+        Vec3::ZERO,
+        None,
+        false,
+        None,
+        None,
+        None,
+        &mut CandidateScope::for_validation(),
+    );
     let target = target.expect("player target");
 
     assert_eq!(target.entity, pawn);
@@ -739,7 +762,16 @@ fn select_target_chooses_nearer_remote_pawn_over_marked_local_pawn() {
     let remote = spawn_player(&mut reg, Vec3::new(3.0, 0.0, 0.0));
     reg.mark_local_player_pawn(local).unwrap();
 
-    let (_, target) = select_target(&reg, Vec3::ZERO, None, false, None, None);
+    let (_, target) = select_target(
+        &reg,
+        Vec3::ZERO,
+        None,
+        false,
+        None,
+        None,
+        None,
+        &mut CandidateScope::for_validation(),
+    );
     let target = target.expect("player target");
 
     assert_eq!(
@@ -755,7 +787,16 @@ fn select_target_keeps_retained_target_when_other_pawn_is_only_slightly_nearer()
     let retained = spawn_player(&mut reg, Vec3::new(10.0, 0.0, 0.0));
     let slightly_nearer = spawn_player(&mut reg, Vec3::new(9.5, 0.0, 0.0));
 
-    let (_, target) = select_target(&reg, Vec3::ZERO, Some(retained), false, None, None);
+    let (_, target) = select_target(
+        &reg,
+        Vec3::ZERO,
+        Some(retained),
+        false,
+        None,
+        None,
+        None,
+        &mut CandidateScope::for_validation(),
+    );
     let target = target.expect("player target");
 
     assert_eq!(
@@ -772,7 +813,16 @@ fn select_target_switches_when_other_pawn_is_meaningfully_closer() {
     let retained = spawn_player(&mut reg, Vec3::new(10.0, 0.0, 0.0));
     let closer = spawn_player(&mut reg, Vec3::new(8.5, 0.0, 0.0));
 
-    let (_, target) = select_target(&reg, Vec3::ZERO, Some(retained), false, None, None);
+    let (_, target) = select_target(
+        &reg,
+        Vec3::ZERO,
+        Some(retained),
+        false,
+        None,
+        None,
+        None,
+        &mut CandidateScope::for_validation(),
+    );
     let target = target.expect("player target");
 
     assert_eq!(
@@ -789,7 +839,16 @@ fn select_target_replaces_retained_target_when_retained_is_no_longer_player_pawn
     reg.remove_component::<PlayerMovementComponent>(retained)
         .unwrap();
 
-    let (_, target) = select_target(&reg, Vec3::ZERO, Some(retained), false, None, None);
+    let (_, target) = select_target(
+        &reg,
+        Vec3::ZERO,
+        Some(retained),
+        false,
+        None,
+        None,
+        None,
+        &mut CandidateScope::for_validation(),
+    );
     let target = target.expect("player target");
 
     assert_eq!(
@@ -804,7 +863,16 @@ fn select_target_excludes_retained_target_when_leash_expires_on_acquisition_tick
     let retained = spawn_player(&mut reg, Vec3::new(30.0, 0.0, 0.0));
     let replacement = spawn_player(&mut reg, Vec3::new(12.0, 0.0, 0.0));
 
-    let (_, target) = select_target(&reg, Vec3::ZERO, Some(retained), true, None, Some(20.0));
+    let (_, target) = select_target(
+        &reg,
+        Vec3::ZERO,
+        Some(retained),
+        true,
+        None,
+        Some(20.0),
+        None,
+        &mut CandidateScope::for_validation(),
+    );
     let target = target.expect("player target");
 
     assert_eq!(
@@ -812,6 +880,105 @@ fn select_target_excludes_retained_target_when_leash_expires_on_acquisition_tick
         "once acquisition evaluates the retained pawn outside leash, another \
          valid pawn may be selected even without hysteresis superiority",
     );
+}
+
+#[test]
+fn candidate_filter_excludes_dead_offered_pawn_but_allows_live_one() {
+    let mut registry = EntityRegistry::new();
+    let dead = spawn_player(&mut registry, Vec3::new(2.0, 0.0, 0.0));
+    let live = spawn_player(&mut registry, Vec3::new(4.0, 0.0, 0.0));
+    let mut health = registry
+        .get_component::<HealthComponent>(dead)
+        .unwrap()
+        .clone();
+    health.death_handled = true;
+    registry.set_component(dead, health).unwrap();
+    let filter = bind_candidate_filter_for_test(IrNode::Select {
+        cond: Box::new(IrNode::Input {
+            name: "@candidate.died".into(),
+        }),
+        a: Box::new(IrNode::Const {
+            value: IrValue::Bool(false),
+        }),
+        b: Box::new(IrNode::Const {
+            value: IrValue::Bool(true),
+        }),
+    });
+    let (_, target) = select_target(
+        &registry,
+        Vec3::ZERO,
+        None,
+        false,
+        None,
+        None,
+        Some(&filter),
+        &mut CandidateScope::for_validation(),
+    );
+    assert_eq!(target.expect("live candidate").entity, live);
+}
+
+#[test]
+fn candidate_filter_never_drops_a_retained_target() {
+    let mut registry = EntityRegistry::new();
+    let retained = spawn_player(&mut registry, Vec3::new(2.0, 0.0, 0.0));
+    let filter = bind_candidate_filter_for_test(IrNode::Const {
+        value: IrValue::Bool(false),
+    });
+    let (_, target) = select_target(
+        &registry,
+        Vec3::ZERO,
+        Some(retained),
+        false,
+        None,
+        None,
+        Some(&filter),
+        &mut CandidateScope::for_validation(),
+    );
+    assert_eq!(target.expect("retained candidate stays").entity, retained);
+}
+
+#[test]
+fn candidate_distance_filter_honors_the_acquisition_boundary() {
+    const RANGE: f32 = 10.0;
+    const EPSILON: f32 = 0.01;
+    let filter = bind_candidate_filter_for_test(IrNode::Le {
+        a: Box::new(IrNode::Input {
+            name: "@candidate.distance".into(),
+        }),
+        b: Box::new(IrNode::Const {
+            value: IrValue::Number(RANGE),
+        }),
+    });
+    let mut inside = EntityRegistry::new();
+    let inside_pawn = spawn_player(&mut inside, Vec3::new(RANGE - EPSILON, 0.0, 0.0));
+    let (_, selected) = select_target(
+        &inside,
+        Vec3::ZERO,
+        None,
+        false,
+        None,
+        None,
+        Some(&filter),
+        &mut CandidateScope::for_validation(),
+    );
+    assert_eq!(
+        selected.expect("R - epsilon is eligible").entity,
+        inside_pawn
+    );
+
+    let mut outside = EntityRegistry::new();
+    spawn_player(&mut outside, Vec3::new(RANGE + EPSILON, 0.0, 0.0));
+    let (_, selected) = select_target(
+        &outside,
+        Vec3::ZERO,
+        None,
+        false,
+        None,
+        None,
+        Some(&filter),
+        &mut CandidateScope::for_validation(),
+    );
+    assert!(selected.is_none(), "R + epsilon is ineligible");
 }
 
 // ---------------------------------------------------------------------------
@@ -1436,7 +1603,7 @@ fn no_attack_or_event_when_player_already_dead() {
         },
     )
     .unwrap();
-    spawn_enemy(
+    let enemy = spawn_enemy(
         &mut reg,
         Vec3::ZERO,
         brain_with(tuning(), LEGACY_IDLE_STATE),
@@ -1447,6 +1614,11 @@ fn no_attack_or_event_when_player_already_dead() {
         let events = run_ai_tick(&mut reg, &mut warned, 0.1);
         assert!(events.is_empty(), "no attack event against a dead player");
         assert_eq!(player_hp(&reg, pawn), 0.0, "a dead player takes no damage");
+        assert_eq!(
+            enemy_acquired_target(&reg, enemy),
+            Some(pawn),
+            "selection remains aliveness-free; only the attack gate rejects the pawn"
+        );
     }
 }
 
@@ -3342,6 +3514,7 @@ fn pursuit_graph() -> BehaviorGraphDescriptor {
             ("strike".to_string(), strike),
         ]),
         interrupts: Vec::new(),
+        candidate_filter: None,
         attack: Some(AttackParams {
             damage: 8.0,
             range: 2.0,
@@ -3357,6 +3530,96 @@ fn authored_brain(graph: &BehaviorGraphDescriptor, state: &str) -> BrainComponen
     brain.state_index =
         graph_state_index(graph, state).expect("the authored graph declares the state");
     brain
+}
+
+#[test]
+fn graph_candidate_filter_excludes_a_dead_pawn_and_acquires_a_live_one() {
+    let mut graph = pursuit_graph();
+    graph.candidate_filter = Some(IrNode::Select {
+        cond: Box::new(IrNode::Input {
+            name: "@candidate.died".into(),
+        }),
+        a: Box::new(IrNode::Const {
+            value: IrValue::Bool(false),
+        }),
+        b: Box::new(IrNode::Const {
+            value: IrValue::Bool(true),
+        }),
+    });
+    let mut registry = EntityRegistry::new();
+    let dead = spawn_player(&mut registry, Vec3::new(2.0, 0.0, 0.0));
+    let live = spawn_player(&mut registry, Vec3::new(4.0, 0.0, 0.0));
+    let mut dead_health = registry
+        .get_component::<HealthComponent>(dead)
+        .unwrap()
+        .clone();
+    dead_health.death_handled = true;
+    registry.set_component(dead, dead_health).unwrap();
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&graph, "rest"),
+        50.0,
+    );
+    let mut runtime = AiRuntime::new();
+
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+
+    assert_eq!(enemy_acquired_target(&registry, enemy), Some(live));
+    assert_eq!(enemy_state_name(&registry, enemy), "charge");
+}
+
+#[test]
+fn death_interrupt_releases_a_latched_target_and_filter_reacquires_a_live_pawn() {
+    let mut graph = pursuit_graph();
+    graph.interrupts = vec![edge(
+        "rest",
+        IrNode::Input {
+            name: BRAIN_TARGET_DIED_INPUT.into(),
+        },
+    )];
+    graph.candidate_filter = Some(IrNode::Select {
+        cond: Box::new(IrNode::Input {
+            name: "@candidate.died".into(),
+        }),
+        a: Box::new(IrNode::Const {
+            value: IrValue::Bool(false),
+        }),
+        b: Box::new(IrNode::Const {
+            value: IrValue::Bool(true),
+        }),
+    });
+    let mut registry = EntityRegistry::new();
+    let dying = spawn_player(&mut registry, Vec3::new(2.0, 0.0, 0.0));
+    let enemy = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        authored_brain(&graph, "rest"),
+        50.0,
+    );
+    let mut runtime = AiRuntime::new();
+
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+    assert_eq!(enemy_acquired_target(&registry, enemy), Some(dying));
+
+    // The death sweep is a separate system. Latch it between AI ticks exactly
+    // as the production sweep does, then offer another live pawn.
+    let mut health = registry
+        .get_component::<HealthComponent>(dying)
+        .unwrap()
+        .clone();
+    health.current = 0.0;
+    health.death_handled = true;
+    registry.set_component(dying, health).unwrap();
+    let live = spawn_player(&mut registry, Vec3::new(3.0, 0.0, 0.0));
+
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+    assert_eq!(enemy_state_name(&registry, enemy), "rest");
+    assert_eq!(enemy_acquired_target(&registry, enemy), None);
+
+    run_ai_tick(&mut registry, &mut runtime, 0.016);
+    assert_eq!(enemy_acquired_target(&registry, enemy), Some(live));
+    assert_eq!(enemy_state_name(&registry, enemy), "charge");
 }
 
 fn enemy_time_in_state(reg: &EntityRegistry, enemy: EntityId) -> f32 {
@@ -3481,6 +3744,7 @@ fn a_time_in_state_guard_exits_on_the_first_tick_the_window_elapses() {
             ),
         ]),
         interrupts: Vec::new(),
+        candidate_filter: None,
         attack: None,
         engagement_radius: None,
         move_speed: 3.5,
@@ -3547,6 +3811,7 @@ fn interrupt_graph(interrupts: Vec<TransitionDescriptor>) -> BehaviorGraphDescri
             ),
         ]),
         interrupts,
+        candidate_filter: None,
         attack: None,
         engagement_radius: None,
         move_speed: 3.5,
@@ -3753,6 +4018,7 @@ fn petrifying_graph() -> BehaviorGraphDescriptor {
             ),
         ]),
         interrupts: Vec::new(),
+        candidate_filter: None,
         attack: None,
         engagement_radius: None,
         move_speed: 3.5,
@@ -3953,6 +4219,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                 }),
             },
         )],
+        candidate_filter: None,
         attack: Some(AttackParams {
             damage: ai.attack_damage,
             range: ai.attack_range,
@@ -4451,6 +4718,7 @@ fn standing_attack_graph() -> BehaviorGraphDescriptor {
             ),
         )]),
         interrupts: Vec::new(),
+        candidate_filter: None,
         attack: Some(AttackParams {
             damage: 8.0,
             range: 2.0,

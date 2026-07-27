@@ -99,6 +99,37 @@ fn lua_entity_descriptor_parses_a_behavior_graph() {
 }
 
 #[test]
+fn both_runtimes_reject_invalid_or_non_boolean_candidate_filters_with_the_authored_path() {
+    let js_invalid = js_behavior(JS_NEAR_GUARD, "").replace(
+        "moveSpeed: 3,",
+        r#"moveSpeed: 3, candidateFilter: { op: "input", name: "@candidate.missing" },"#,
+    );
+    let lua_invalid = lua_behavior(LUA_NEAR_GUARD, "").replace(
+        "moveSpeed = 3,",
+        r#"moveSpeed = 3, candidateFilter = { op = "input", name = "@candidate.missing" },"#,
+    );
+    let js_number = js_behavior(JS_NEAR_GUARD, "").replace(
+        "moveSpeed: 3,",
+        "moveSpeed: 3, candidateFilter: { op: \"const\", value: 1 },",
+    );
+    let lua_number = lua_behavior(LUA_NEAR_GUARD, "").replace(
+        "moveSpeed = 3,",
+        "moveSpeed = 3, candidateFilter = { op = \"const\", value = 1 },",
+    );
+    for error in [
+        js_error(&js_invalid),
+        lua_error(&lua_invalid),
+        js_error(&js_number),
+        lua_error(&lua_number),
+    ] {
+        assert!(
+            error.contains("components.behavior.candidateFilter"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
 fn js_behavior_rejects_an_initial_naming_no_declared_state() {
     let src = js_behavior(JS_NEAR_GUARD, "").replace(r#"initial: "idle""#, r#"initial: "patrol""#);
     let err = js_error(&src);
@@ -425,6 +456,53 @@ fn brain_sdk_helpers_cover_every_brain_input() {
     let leaf: Table = state.call("staggered").expect("state(\"staggered\")");
     assert_eq!(leaf.get::<String>("name").unwrap(), "@state.staggered");
     assert!(BRAIN_TS_SRC.contains(r#"runtime.read("@state." + name)"#));
+}
+
+/// Candidate helpers are a separate fixed vocabulary. The TypeScript literal
+/// count deliberately catches an added documentation spelling as well as a
+/// missing wrapper, while the Luau half checks the module's exposed key set.
+#[test]
+fn candidate_sdk_helpers_cover_every_candidate_input() {
+    const BRAIN_TS_SRC: &str = include_str!("../../../../../sdk/lib/brain.ts");
+    const BRAIN_LUAU_SRC: &str = include_str!("../../../../../sdk/lib/brain.luau");
+    use postretro_foundation::candidate::CANDIDATE_INPUTS;
+
+    let lua = mlua::Lua::new();
+    let module: Table = lua
+        .load(BRAIN_LUAU_SRC)
+        .set_name("sdk/lib/brain.luau")
+        .eval()
+        .expect("brain.luau evaluates");
+    let candidate: Table = module
+        .get("candidate")
+        .expect("brain.luau exports `candidate`");
+    let luau_keys: BTreeSet<String> = candidate
+        .clone()
+        .pairs::<String, LuaValue>()
+        .map(|entry| entry.expect("candidate entry").0)
+        .collect();
+    let expected: BTreeSet<String> = CANDIDATE_INPUTS
+        .iter()
+        .map(|(name, _)| name.strip_prefix("@candidate.").unwrap().to_string())
+        .collect();
+    assert_eq!(luau_keys, expected);
+
+    for (name, _) in CANDIDATE_INPUTS {
+        let property = name.strip_prefix("@candidate.").unwrap();
+        let leaf: Table = candidate.get(property).expect("candidate input leaf");
+        assert_eq!(leaf.get::<String>("op").unwrap(), "input");
+        assert_eq!(leaf.get::<String>("name").unwrap(), name);
+        assert!(
+            BRAIN_TS_SRC.contains(&format!(
+                "{property}: Object.freeze(runtime.read(\"{name}\"))"
+            )),
+            "sdk/lib/brain.ts must wrap `{name}` as `{property}`"
+        );
+    }
+    assert_eq!(
+        BRAIN_TS_SRC.matches("\"@candidate.").count(),
+        CANDIDATE_INPUTS.len()
+    );
 }
 
 // --- the shipped reference enemy (both authorings) ------------------------

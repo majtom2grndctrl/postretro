@@ -153,6 +153,7 @@ pub fn lower_ai_descriptor(ai: &AiDescriptor) -> BehaviorGraphDescriptor {
             to: LEGACY_IDLE_STATE.to_string(),
             when: when_no_target(),
         }],
+        candidate_filter: None,
         attack: Some(AttackParams {
             damage: ai.attack_damage,
             range: ai.attack_range,

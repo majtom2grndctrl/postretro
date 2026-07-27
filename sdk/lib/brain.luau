@@ -39,6 +39,14 @@ BrainSdk.brain = table.freeze({
   targetDied = input("@brain.targetDied"),
 })
 
+--- Facts about one offered target, evaluated during acquisition.
+BrainSdk.candidate = table.freeze({
+  distance = input("@candidate.distance"),
+  health = input("@candidate.health"),
+  maxHealth = input("@candidate.maxHealth"),
+  died = input("@candidate.died"),
+})
+
 --- Read a per-entity state field as a guard input: `state("staggered")` is the
 --- `@state.staggered` leaf. Unset fields read as `0`. Impact policies and
 --- reactions write these; guards only read them.

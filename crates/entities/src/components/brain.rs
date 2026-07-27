@@ -622,6 +622,7 @@ mod tests {
                 ),
             ]),
             interrupts: Vec::new(),
+            candidate_filter: None,
             attack: Some(AttackParams {
                 damage: 5.0,
                 range: 2.0,

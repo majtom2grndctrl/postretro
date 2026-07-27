@@ -31,6 +31,7 @@ use glam::{Quat, Vec3};
 
 mod brain_programs;
 mod brain_scope;
+mod candidate_scope;
 mod engine_floor;
 mod graph_eval;
 mod targeting;
@@ -433,9 +434,21 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
             let retained = retained_target
                 .and_then(|entity| target_candidate(registry, entity, snap.position, None));
             let leash_range = brain.leash_range;
+            let (candidate_filter, candidate_scope) = programs.candidate_filter_context(snap.id);
             let (nearest, nearest_selection) = retained
                 .is_none()
-                .then(|| select_target(registry, snap.position, None, false, None, leash_range))
+                .then(|| {
+                    select_target(
+                        registry,
+                        snap.position,
+                        None,
+                        false,
+                        None,
+                        leash_range,
+                        candidate_filter,
+                        candidate_scope,
+                    )
+                })
                 .unwrap_or((None, None));
             let current_candidate = retained.or(nearest);
             let current_distance = current_candidate.map(|candidate| candidate.distance);
@@ -458,6 +471,8 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                         true,
                         None,
                         leash_range,
+                        candidate_filter,
+                        candidate_scope,
                     )
                     .1
                 } else {
@@ -473,6 +488,8 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                             false,
                             None,
                             leash_range,
+                            candidate_filter,
+                            candidate_scope,
                         )
                         .1
                     }
@@ -494,6 +511,8 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                             false,
                             None,
                             leash_range,
+                            candidate_filter,
+                            candidate_scope,
                         )
                         .1
                     }

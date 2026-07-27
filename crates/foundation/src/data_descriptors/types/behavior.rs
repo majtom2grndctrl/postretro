@@ -9,6 +9,7 @@ use serde::de::{MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::brain::bind_brain_guard;
+use crate::candidate::bind_candidate_filter;
 use crate::data_descriptors::DescriptorError;
 use crate::data_descriptors::types::behavior_lints;
 use crate::ir::{IrNode, IrType};
@@ -128,9 +129,9 @@ pub struct BehaviorStateDescriptor {
 /// The authored behavior state graph carried by `components.behavior`.
 ///
 /// Descriptor-owned tuning (entity_model.md §4): maps never override these. The
-/// engine owns target selection, steering, damage, and determinism; this
-/// descriptor owns which states exist, what each one does, and the ordered
-/// guards between them.
+/// engine owns offered-target selection, ranking, steering, damage, and
+/// determinism; this descriptor owns which states exist, what each one does,
+/// the ordered guards between them, and optional candidate eligibility.
 ///
 /// Wire keys are camelCase: `initial`, `states`, `interrupts`, `attack`,
 /// `engagementRadius`, `moveSpeed`.
@@ -163,6 +164,11 @@ pub struct BehaviorGraphDescriptor {
     /// state's own transitions.
     #[serde(default)]
     pub interrupts: Vec<TransitionDescriptor>,
+    /// Optional read-only predicate over each offered candidate. It can only
+    /// narrow acquisition; it is never evaluated for an already retained target
+    /// and never participates in ranking.
+    #[serde(default)]
+    pub candidate_filter: Option<IrNode>,
     /// Tuning for the `attack` action verb. REQUIRED when some state declares
     /// that action; permitted (and meaningful) even when none does, because
     /// `attack.range` is what [`BehaviorGraphDescriptor::engagement_radius`]
@@ -283,7 +289,9 @@ impl BehaviorGraphDescriptor {
     /// - `moveSpeed` is finite `> 0`; a present `engagementRadius` is finite `> 0`;
     /// - `attack` numerics are finite (`damage >= 0`, `range`/`cooldownMs > 0`),
     ///   and the block is present whenever a state declares the attack action;
-    /// - every guard binds against `BrainValidationScope` and produces a Bool.
+    /// - every guard binds against `BrainValidationScope` and produces a Bool;
+    /// - a present candidate filter binds against `CandidateValidationScope` and
+    ///   produces a Bool.
     ///
     /// Duplicate state names are rejected by [`deserialize_states`] upstream.
     /// The state → mesh animation-state mapping is cross-component and stays a
@@ -344,6 +352,20 @@ impl BehaviorGraphDescriptor {
             for (index, transition) in state.transitions.iter().enumerate() {
                 let path = format!("states.{name}.transitions[{index}]");
                 self.validate_transition(transition, &path, Some(name.as_str()))?;
+            }
+        }
+        if let Some(filter) = self.candidate_filter.as_ref() {
+            let program =
+                bind_candidate_filter(filter).map_err(|e| DescriptorError::InvalidShape {
+                    reason: format!("`components.behavior.candidateFilter` is invalid: {e}"),
+                })?;
+            if program.root_type != IrType::Bool {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`components.behavior.candidateFilter` must produce a boolean, but its root produces {:?}",
+                        program.root_type
+                    ),
+                });
             }
         }
         for lint in behavior_lints::inspect(&self) {
@@ -434,6 +456,7 @@ fn validate_positive(field: &str, value: f32) -> Result<(), DescriptorError> {
 mod tests {
     use super::*;
     use crate::brain::{BRAIN_TARGET_DISTANCE_INPUT, BRAIN_TIME_IN_STATE_MS_INPUT};
+    use crate::candidate::CANDIDATE_DIED_INPUT;
     use crate::ir::IrValue;
 
     // `ALL` is a hand-written array, so it needs a guard that a new variant
@@ -524,6 +547,7 @@ mod tests {
                 ("chase".to_string(), state("walk", Vec::new())),
             ]),
             interrupts: Vec::new(),
+            candidate_filter: None,
             attack: None,
             engagement_radius: None,
             move_speed: 3.0,
@@ -533,6 +557,45 @@ mod tests {
     #[test]
     fn a_well_formed_graph_validates() {
         graph().validate().expect("graph validates");
+    }
+
+    #[test]
+    fn candidate_filter_is_optional_and_validates_as_a_boolean() {
+        let parsed: BehaviorGraphDescriptor = serde_json::from_value(serde_json::json!({
+            "initial": "idle",
+            "moveSpeed": 3.0,
+            "states": { "idle": { "animation": "idle", "motion": "hold" } }
+        }))
+        .expect("old graph deserializes without candidateFilter");
+        assert!(parsed.candidate_filter.is_none());
+
+        let mut with_filter = graph();
+        with_filter.candidate_filter = Some(IrNode::Input {
+            name: CANDIDATE_DIED_INPUT.to_string(),
+        });
+        with_filter
+            .validate()
+            .expect("boolean candidate filter validates");
+
+        let mut bad_name = graph();
+        bad_name.candidate_filter = Some(IrNode::Input {
+            name: "@candidate.missing".to_string(),
+        });
+        let error = bad_name.validate().unwrap_err().to_string();
+        assert!(
+            error.contains("components.behavior.candidateFilter"),
+            "{error}"
+        );
+
+        let mut number = graph();
+        number.candidate_filter = Some(IrNode::Const {
+            value: IrValue::Number(1.0),
+        });
+        let error = number.validate().unwrap_err().to_string();
+        assert!(
+            error.contains("components.behavior.candidateFilter") && error.contains("boolean"),
+            "{error}"
+        );
     }
 
     #[test]

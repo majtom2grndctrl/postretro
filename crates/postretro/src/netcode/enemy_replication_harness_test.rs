@@ -351,6 +351,7 @@ fn behavior_enemy_descriptor(class: &str) -> EntityTypeDescriptor {
             ),
         ]),
         interrupts: Vec::new(),
+        candidate_filter: None,
         attack: Some(AttackParams {
             damage: 8.0,
             range: 2.0,

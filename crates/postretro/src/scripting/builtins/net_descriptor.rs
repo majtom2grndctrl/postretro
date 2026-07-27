@@ -252,8 +252,9 @@ mod tests {
     use postretro_entities::provenance::DescriptorProvenance;
     use postretro_entities::registry::Transform;
     use postretro_scripting_core::data_descriptors::{
-        AirParams, AmmoResource, CapsuleParams, FallParams, FireMode, GroundParams, MeshDescriptor,
-        PlayerMovementDescriptor, ResolutionMode, SpeedParams, WeaponDescriptor, WeaponResource,
+        AirParams, AmmoResource, BehaviorGraphDescriptor, BehaviorStateDescriptor, CapsuleParams,
+        FallParams, FireMode, GroundParams, MeshDescriptor, MotionVerb, PlayerMovementDescriptor,
+        ResolutionMode, SpeedParams, WeaponDescriptor, WeaponResource,
     };
     use std::collections::HashMap;
 
@@ -307,7 +308,6 @@ mod tests {
                 locomotion: None,
             }),
             health: None,
-            ai: None,
             behavior: None,
         }
     }
@@ -399,20 +399,23 @@ mod tests {
     #[test]
     fn remote_enemy_presentation_offsets_ai_mesh_from_capsule_center_to_feet() {
         let mut descriptor = enemy_mesh_descriptor("decraniated_mob", true);
-        descriptor.ai = Some(postretro_scripting_core::data_descriptors::AiDescriptor {
-            detection_range: 18.0,
-            attack_range: 2.0,
-            leash_range: 26.0,
-            attack_damage: 8.0,
-            attack_cooldown_ms: 1000.0,
+        descriptor.behavior = Some(BehaviorGraphDescriptor {
+            initial: "idle".to_string(),
+            states: std::collections::BTreeMap::from([(
+                "idle".to_string(),
+                BehaviorStateDescriptor {
+                    animation: "idle".to_string(),
+                    motion: MotionVerb::Hold,
+                    action: None,
+                    transitions: Vec::new(),
+                    on_enter: None,
+                },
+            )]),
+            interrupts: Vec::new(),
+            candidate_filter: None,
+            attack: None,
+            engagement_radius: None,
             move_speed: 3.5,
-            death_despawn_ms: 1500.0,
-            states: postretro_scripting_core::data_descriptors::AiStateNames {
-                idle: "idle".into(),
-                alert: "idle".into(),
-                attack: "attack".into(),
-                death: "idle".into(),
-            },
         });
         let descriptors = vec![descriptor];
         let mut reg = EntityRegistry::new();
@@ -591,7 +594,6 @@ mod tests {
             weapon: None,
             mesh: None,
             health: None,
-            ai: None,
             behavior: None,
         }
     }
@@ -606,7 +608,6 @@ mod tests {
             weapon: None,
             mesh: None,
             health: None,
-            ai: None,
             behavior: None,
         }
     }
@@ -631,7 +632,6 @@ mod tests {
             }),
             mesh: None,
             health: None,
-            ai: None,
             behavior: None,
         }
     }

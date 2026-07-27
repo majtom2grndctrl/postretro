@@ -1463,13 +1463,45 @@ mod tests {
         AnimationState, DEFAULT_CROSSFADE_MS, InterruptPolicy, MeshAnimation, MeshComponent,
         resolve_pending_animation_stamps,
     };
-    use postretro_entities::data_descriptors::{AiDescriptor, AiStateNames, LEGACY_ALERT_STATE};
+    use postretro_entities::data_descriptors::{
+        BehaviorGraphDescriptor, BehaviorStateDescriptor, MotionVerb,
+    };
 
-    /// A legacy brain staged directly into its lowered `alert` state.
-    fn alert_brain(descriptor: &AiDescriptor) -> BrainComponent {
-        let mut brain = BrainComponent::from_descriptor(descriptor);
-        brain.state_index = graph_state_index(&brain.graph, LEGACY_ALERT_STATE)
-            .expect("the lowered graph declares `alert`");
+    /// A direct-graph brain staged directly into its `alert` state.
+    fn alert_brain(move_speed: f32) -> BrainComponent {
+        let graph = BehaviorGraphDescriptor {
+            initial: "idle".to_string(),
+            states: BTreeMap::from([
+                (
+                    "idle".to_string(),
+                    BehaviorStateDescriptor {
+                        animation: "idle".to_string(),
+                        motion: MotionVerb::Hold,
+                        action: None,
+                        transitions: Vec::new(),
+                        on_enter: None,
+                    },
+                ),
+                (
+                    "alert".to_string(),
+                    BehaviorStateDescriptor {
+                        animation: "walk".to_string(),
+                        motion: MotionVerb::ChaseTarget,
+                        action: None,
+                        transitions: Vec::new(),
+                        on_enter: None,
+                    },
+                ),
+            ]),
+            interrupts: Vec::new(),
+            candidate_filter: None,
+            attack: None,
+            engagement_radius: None,
+            move_speed,
+        };
+        let mut brain = BrainComponent::from_graph(&graph);
+        brain.state_index =
+            graph_state_index(&brain.graph, "alert").expect("the graph declares `alert`");
         brain
     }
     use postretro_entities::{
@@ -3296,26 +3328,7 @@ mod tests {
             agent.planned_destination = Some(destination);
             agent.replan_cooldown_ticks = 10;
             registry.set_component(enemy, agent).unwrap();
-            registry
-                .set_component(
-                    enemy,
-                    alert_brain(&AiDescriptor {
-                        detection_range: 18.0,
-                        attack_range: 2.0,
-                        leash_range: 26.0,
-                        attack_damage: 8.0,
-                        attack_cooldown_ms: 1000.0,
-                        move_speed: 4.0,
-                        death_despawn_ms: 500.0,
-                        states: AiStateNames {
-                            idle: "idle".into(),
-                            alert: "walk".into(),
-                            attack: "attack".into(),
-                            death: "death".into(),
-                        },
-                    }),
-                )
-                .unwrap();
+            registry.set_component(enemy, alert_brain(4.0)).unwrap();
             crate::impact_effects::despawn(&mut registry, enemy, Some(500.0));
             (enemy, start)
         };

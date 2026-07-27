@@ -257,10 +257,10 @@ fn spawn_resolved_spawners(
                 // the fixed-tick path.
                 context.queue_mesh_clip_resolve(enemy);
             }
-            // `attach_brain` initializes this timer to zero. Seed only after the
-            // descriptor has attached its components so a newly spawned enemy
-            // cannot attack before remote interpolation's maximum delay has
-            // elapsed and the remote presentation has had time to arrive.
+            // Behavior-graph attachment initializes this timer to zero. Seed
+            // only after the descriptor has attached its components so a newly
+            // spawned enemy cannot attack before remote interpolation's maximum
+            // delay has elapsed and the remote presentation has had time to arrive.
             if let Ok(mut brain) = registry.get_component::<BrainComponent>(enemy).cloned() {
                 brain.attack_cooldown_remaining_ms = brain
                     .attack_cooldown_remaining_ms
@@ -315,13 +315,13 @@ mod tests {
     use postretro_scripting_core::data_registry::DataRegistry;
     use postretro_scripting_core::reaction_dispatch::ProgressTracker;
 
-    use crate::scripting::builtins::data_archetype_test_fixtures::ai_enemy_descriptor;
+    use crate::scripting::builtins::data_archetype_test_fixtures::behavior_enemy_descriptor;
     use crate::scripting_systems::ai::{ENEMY_ATTACK_EVENT, run_ai_tick};
 
     const TAG: &str = "closet";
 
     fn context() -> SpawnContext {
-        context_with_descriptor(ai_enemy_descriptor("cultist"))
+        context_with_descriptor(behavior_enemy_descriptor("cultist"))
     }
 
     fn test_agent_params() -> NavAgentParams {
@@ -339,7 +339,7 @@ mod tests {
     /// params change rather than hard-coding the raise.
     fn cultist_feet_to_center_shift() -> Vec3 {
         ai_capsule_center_from_feet_offset(
-            &ai_enemy_descriptor("cultist"),
+            &behavior_enemy_descriptor("cultist"),
             Some(test_agent_params()),
         )
     }
@@ -747,7 +747,7 @@ mod tests {
 
     #[test]
     fn descriptor_lights_follow_each_offset_runtime_spawn() {
-        let mut descriptor = ai_enemy_descriptor("cultist");
+        let mut descriptor = behavior_enemy_descriptor("cultist");
         descriptor.light = Some(LightDescriptor {
             color: [1.0, 0.5, 0.25],
             intensity: 3.0,

@@ -6,8 +6,8 @@ use std::collections::HashMap;
 use crate::components::billboard_emitter::BillboardEmitterComponent;
 use crate::components::mesh::{AnimationState, InterruptPolicy};
 use crate::data_descriptors::{
-    AiDescriptor, BehaviorGraphDescriptor, DescriptorError, HealthDescriptor,
-    PlayerMovementDescriptor, WeaponDescriptor,
+    BehaviorGraphDescriptor, DescriptorError, HealthDescriptor, PlayerMovementDescriptor,
+    WeaponDescriptor,
 };
 pub use postretro_foundation::data_descriptors::LightDescriptor;
 
@@ -304,9 +304,7 @@ impl MeshDescriptor {
 /// component presets. The level-load spawn path materializes these into a
 /// fresh ECS entity per matching placement.
 ///
-/// `ai` and `behavior` are two spellings of one brain: the legacy four-state
-/// preset and the authored state graph. Exactly one of them may be present —
-/// see [`EntityTypeDescriptor::validate_component_exclusivity`].
+/// `behavior` is the sole authoring surface for an enemy brain.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EntityTypeDescriptor {
     pub canonical_name: Option<String>,
@@ -317,23 +315,5 @@ pub struct EntityTypeDescriptor {
     pub weapon: Option<WeaponDescriptor>,
     pub mesh: Option<MeshDescriptor>,
     pub health: Option<HealthDescriptor>,
-    pub ai: Option<AiDescriptor>,
     pub behavior: Option<BehaviorGraphDescriptor>,
-}
-
-impl EntityTypeDescriptor {
-    /// Reject component combinations that cannot both materialize. Both FFI
-    /// paths call this before returning, so QuickJS and Luau cannot diverge.
-    ///
-    /// `components.ai` lowers at spawn to the same graph representation
-    /// `components.behavior` carries directly; authoring both would leave the
-    /// spawn path to pick a winner silently.
-    pub fn validate_component_exclusivity(&self) -> Result<(), DescriptorError> {
-        if self.ai.is_some() && self.behavior.is_some() {
-            return Err(DescriptorError::InvalidShape {
-                reason: "`components.ai` and `components.behavior` are two spellings of one brain; declare exactly one".to_string(),
-            });
-        }
-        Ok(())
-    }
 }

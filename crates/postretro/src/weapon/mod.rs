@@ -792,7 +792,6 @@ mod tests {
                 weapon: None,
                 mesh: None,
                 health: None,
-                ai: None,
                 behavior: None,
             },
             EntityTypeDescriptor {
@@ -804,7 +803,6 @@ mod tests {
                 weapon: Some(weapon_descriptor(FireMode::Semi, 100.0)),
                 mesh: None::<MeshDescriptor>,
                 health: None,
-                ai: None,
                 behavior: None,
             },
         ]

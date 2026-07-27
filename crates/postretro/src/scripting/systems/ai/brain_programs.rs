@@ -32,15 +32,15 @@ use postretro_foundation::{
 };
 
 use super::brain_scope::BrainScope;
+use super::candidate_scope::CandidateScope;
 
 /// One entity's bound guards, laid out to match its graph so the evaluator can
 /// index straight from the descriptor it is walking.
 ///
 /// A `None` slot is a DISABLED edge: its guard failed to bind, so the evaluator
 /// treats it as permanently false rather than aborting the brain. Authored
-/// guards are bind-validated at parse and lowered legacy guards are engine
-/// generated, so a `None` here means one of those two contracts broke — hence
-/// the warn at bind time.
+/// guards are bind-validated at parse, so a `None` here means that contract
+/// broke — hence the warn at bind time.
 pub(crate) struct BrainEntityPrograms {
     /// The graph these programs were bound from — the same shared handle the
     /// brain carries. Retained so `sync` can tell a still-valid entry from one
@@ -53,6 +53,9 @@ pub(crate) struct BrainEntityPrograms {
     /// Indexed by resolved state index (`graph.states` in `BTreeMap` order);
     /// each inner vec is parallel to that state's `transitions`.
     states: Vec<Vec<Option<BoundProgram<BrainScope>>>>,
+    /// Optional per-graph acquisition eligibility program. It uses the shared
+    /// candidate scope rather than the guard scope and remains evaluator data.
+    candidate_filter: Option<BoundProgram<CandidateScope>>,
 }
 
 impl BrainEntityPrograms {
@@ -70,11 +73,16 @@ impl BrainEntityPrograms {
             .map(Vec::as_slice)
             .unwrap_or_default()
     }
+
+    pub(crate) fn candidate_filter(&self) -> Option<&BoundProgram<CandidateScope>> {
+        self.candidate_filter.as_ref()
+    }
 }
 
 /// The evaluator's per-entity guard programs plus the shared binding scope.
 pub(crate) struct BrainPrograms {
     scope: BrainScope,
+    candidate_scope: CandidateScope,
     entries: HashMap<EntityId, BrainEntityPrograms>,
     /// The entities `sync` saw on its current pass. A field rather than a local
     /// purely so its capacity survives: `sync` runs every AI tick, and a local
@@ -87,6 +95,7 @@ impl BrainPrograms {
     pub(crate) fn new() -> Self {
         Self {
             scope: BrainScope::for_validation(),
+            candidate_scope: CandidateScope::for_validation(),
             entries: HashMap::new(),
             live: HashSet::new(),
         }
@@ -106,6 +115,20 @@ impl BrainPrograms {
     /// This entity's bound guards, or `None` when it carries no brain.
     pub(crate) fn get(&self, entity: EntityId) -> Option<&BrainEntityPrograms> {
         self.entries.get(&entity)
+    }
+
+    /// Borrow the optional filter and reusable refresh scope independently.
+    /// Acquisition holds the former over a scan while mutating the latter for
+    /// each offered candidate; no interior mutability is needed.
+    pub(crate) fn candidate_filter_context(
+        &mut self,
+        entity: EntityId,
+    ) -> (Option<&BoundProgram<CandidateScope>>, &mut CandidateScope) {
+        let (entries, candidate_scope) = (&self.entries, &mut self.candidate_scope);
+        let filter = entries
+            .get(&entity)
+            .and_then(BrainEntityPrograms::candidate_filter);
+        (filter, candidate_scope)
     }
 
     /// Reconcile the table with the registry's live brains.
@@ -142,7 +165,12 @@ impl BrainPrograms {
                 .get(&entity)
                 .is_some_and(|entry| Arc::ptr_eq(&entry.graph, &brain.graph));
             if !bound {
-                let entry = bind_graph(&self.scope, Arc::clone(&brain.graph), warned);
+                let entry = bind_graph(
+                    &self.scope,
+                    &self.candidate_scope,
+                    Arc::clone(&brain.graph),
+                    warned,
+                );
                 self.entries.insert(entity, entry);
             }
         }
@@ -189,6 +217,7 @@ fn ir_type_label(ir_type: IrType) -> &'static str {
 /// distinct failure and leaving those edges disabled.
 fn bind_graph(
     scope: &BrainScope,
+    candidate_scope: &CandidateScope,
     graph: Arc<BehaviorGraphDescriptor>,
     warned: &mut HashSet<String>,
 ) -> BrainEntityPrograms {
@@ -226,11 +255,46 @@ fn bind_graph(
                 .collect()
         })
         .collect();
+    let candidate_filter = graph
+        .candidate_filter
+        .as_ref()
+        .and_then(|filter| bind_candidate_filter_program(candidate_scope, &graph, filter, warned));
     BrainEntityPrograms {
         graph,
         interrupts,
         states,
+        candidate_filter,
     }
+}
+
+fn bind_candidate_filter_program(
+    scope: &CandidateScope,
+    graph: &BehaviorGraphDescriptor,
+    filter: &postretro_foundation::IrNode,
+    warned: &mut HashSet<String>,
+) -> Option<BoundProgram<CandidateScope>> {
+    let baked = BakedIr {
+        version: CURRENT_IR_VERSION,
+        output: None,
+        root: filter.clone(),
+    };
+    let reason = match bind(&baked, scope) {
+        Ok(program) if program.root_type == IrType::Bool => return Some(program),
+        Ok(program) => format!(
+            "its root produces {}, not a boolean",
+            ir_type_label(program.root_type)
+        ),
+        Err(error) => error.to_string(),
+    };
+    let initial = &graph.initial;
+    if warned.insert(format!("candidate-filter:{initial}:{reason}")) {
+        log::warn!(
+            "[AI] behavior candidate filter could not be bound ({reason}); it is disabled for \
+             the rest of the run. The graph starts in `{initial}`. Warned once per distinct \
+             graph and reason."
+        );
+    }
+    None
 }
 
 fn bind_guard(
@@ -283,33 +347,13 @@ mod tests {
     use crate::alloc_probe::AllocSnapshot;
     use postretro_entities::Transform;
     use postretro_entities::components::brain::{
-        BrainComponent, attach_brain, attach_brain_graph, graph_state_index,
+        BrainComponent, attach_brain_graph, graph_state_index,
     };
-    use postretro_entities::data_descriptors::{
-        AiDescriptor, AiStateNames, BehaviorStateDescriptor, LEGACY_ALERT_STATE,
-        LEGACY_ATTACK_STATE, LEGACY_DEATH_STATE, LEGACY_IDLE_STATE, MotionVerb,
-        lower_ai_descriptor,
+    use postretro_foundation::{
+        BRAIN_HAS_TARGET_INPUT, BRAIN_TARGET_DIED_INPUT, BRAIN_TARGET_DISTANCE_INPUT,
+        BehaviorStateDescriptor, IrNode, IrValue, MotionVerb,
     };
-    use postretro_foundation::{IrNode, IrValue};
     use std::collections::BTreeMap;
-
-    fn sample_descriptor() -> AiDescriptor {
-        AiDescriptor {
-            detection_range: 18.0,
-            attack_range: 2.2,
-            leash_range: 26.0,
-            attack_damage: 8.0,
-            attack_cooldown_ms: 1200.0,
-            move_speed: 3.5,
-            death_despawn_ms: 1500.0,
-            states: AiStateNames {
-                idle: "idle".into(),
-                alert: "walk".into(),
-                attack: "attack".into(),
-                death: "die".into(),
-            },
-        }
-    }
 
     /// The single-state graph used for lifecycle assertions; its one guard is
     /// deliberately trivial so the tests read as lifecycle, not evaluation.
@@ -332,92 +376,120 @@ mod tests {
                 },
             )]),
             interrupts: Vec::new(),
+            candidate_filter: None,
             attack: None,
             engagement_radius: None,
             move_speed: 3.0,
         }
     }
 
-    /// The v0 four-state transition core, restated over plain scalars.
-    ///
-    /// This is the DIFFERENTIAL ORACLE the lowered graph's generated guards are
-    /// tested against, and deliberately a second, independent implementation of
-    /// the legacy rules rather than a table of the same edges — a table can be
-    /// edited to agree with a broken lowering, a restatement of the rules
-    /// cannot. It lives here, in the test module, because the v0 core itself is
-    /// gone from the engine: nothing but this drift guard ever needed it.
-    ///
-    /// Closed transition set (`ai` is the descriptor being lowered):
-    /// - NO TARGET, from ANY state: `idle` with steering cleared. The v0 tick
-    ///   never reached the transition core without a pawn — its `else` arm
-    ///   forced `Idle` + `Clear` outright — so that arm is restated here as the
-    ///   `has_target == false` row. In the lowered graph this is the ONE edge
-    ///   that is not a restatement of a v0 rule but a generated interrupt
-    ///   (`!hasTarget → idle`), which is exactly why it has to be sampled: with
-    ///   a target on every row it evaluates false everywhere and a
-    ///   wrong-but-present interrupt would pass.
-    /// - `idle` → `attack` when acquisition fires and the target is inside
-    ///   detection AND attack range (the "newly alerted, already in contact"
-    ///   branch, nested inside the detection check);
-    /// - `idle` → `alert` when acquisition fires and the target is inside
-    ///   detection range;
-    /// - `alert` → `attack` whenever the target is inside attack range
-    ///   (NOT acquisition-gated);
-    /// - `alert` → `idle` when acquisition fires and the target is beyond leash;
-    /// - `attack` → `alert` whenever the target leaves attack range
-    ///   (NOT acquisition-gated);
-    /// - `death` is terminal and touches no steering.
-    fn v0_transition(
-        ai: &AiDescriptor,
-        current: &str,
-        has_target: bool,
-        distance: f32,
-        acquisition_due: bool,
-    ) -> (&'static str, SteeringIntent) {
-        if !has_target {
-            return (LEGACY_IDLE_STATE, SteeringIntent::Clear);
+    fn edge(to: &str, when: IrNode) -> TransitionDescriptor {
+        TransitionDescriptor {
+            to: to.to_string(),
+            when,
         }
-        match current {
-            LEGACY_IDLE_STATE => {
-                if acquisition_due && distance <= ai.detection_range {
-                    if distance <= ai.attack_range {
-                        (LEGACY_ATTACK_STATE, SteeringIntent::Chase)
-                    } else {
-                        (LEGACY_ALERT_STATE, SteeringIntent::Chase)
-                    }
-                } else {
-                    (LEGACY_IDLE_STATE, SteeringIntent::Clear)
-                }
-            }
-            LEGACY_ALERT_STATE => {
-                if distance <= ai.attack_range {
-                    (LEGACY_ATTACK_STATE, SteeringIntent::Chase)
-                } else if acquisition_due && distance > ai.leash_range {
-                    (LEGACY_IDLE_STATE, SteeringIntent::Clear)
-                } else {
-                    (LEGACY_ALERT_STATE, SteeringIntent::Chase)
-                }
-            }
-            LEGACY_ATTACK_STATE => {
-                if distance > ai.attack_range {
-                    (LEGACY_ALERT_STATE, SteeringIntent::Chase)
-                } else {
-                    (LEGACY_ATTACK_STATE, SteeringIntent::Chase)
-                }
-            }
-            LEGACY_DEATH_STATE => (LEGACY_DEATH_STATE, SteeringIntent::Hold),
-            other => panic!("`{other}` is not a lowered legacy state"),
+    }
+
+    fn target_within(distance: f32) -> IrNode {
+        IrNode::Le {
+            a: Box::new(IrNode::Input {
+                name: BRAIN_TARGET_DISTANCE_INPUT.to_string(),
+            }),
+            b: Box::new(IrNode::Const {
+                value: IrValue::Number(distance),
+            }),
+        }
+    }
+
+    fn target_lost() -> IrNode {
+        IrNode::Select {
+            cond: Box::new(IrNode::Input {
+                name: BRAIN_HAS_TARGET_INPUT.to_string(),
+            }),
+            a: Box::new(IrNode::Const {
+                value: IrValue::Bool(false),
+            }),
+            b: Box::new(IrNode::Const {
+                value: IrValue::Bool(true),
+            }),
+        }
+    }
+
+    /// An authored graph with interrupts, state-local guards, and a candidate
+    /// filter so synchronization covers all program kinds without relying on a
+    /// hidden engine preset.
+    fn authored_graph() -> BehaviorGraphDescriptor {
+        BehaviorGraphDescriptor {
+            initial: "rest".to_string(),
+            states: BTreeMap::from([
+                (
+                    "rest".to_string(),
+                    BehaviorStateDescriptor {
+                        animation: "idle".to_string(),
+                        motion: MotionVerb::Hold,
+                        action: None,
+                        transitions: vec![
+                            edge("attack", target_within(2.0)),
+                            edge(
+                                "rest",
+                                IrNode::Const {
+                                    value: IrValue::Bool(false),
+                                },
+                            ),
+                        ],
+                        on_enter: None,
+                    },
+                ),
+                (
+                    "attack".to_string(),
+                    BehaviorStateDescriptor {
+                        animation: "attack".to_string(),
+                        motion: MotionVerb::ChaseTarget,
+                        action: None,
+                        transitions: vec![edge(
+                            "rest",
+                            IrNode::Gt {
+                                a: Box::new(IrNode::Input {
+                                    name: BRAIN_TARGET_DISTANCE_INPUT.to_string(),
+                                }),
+                                b: Box::new(IrNode::Const {
+                                    value: IrValue::Number(2.0),
+                                }),
+                            },
+                        )],
+                        on_enter: None,
+                    },
+                ),
+            ]),
+            interrupts: vec![
+                edge("rest", target_lost()),
+                edge(
+                    "rest",
+                    IrNode::Input {
+                        name: BRAIN_TARGET_DIED_INPUT.to_string(),
+                    },
+                ),
+            ],
+            candidate_filter: Some(IrNode::Le {
+                a: Box::new(IrNode::Input {
+                    name: "@candidate.distance".to_string(),
+                }),
+                b: Box::new(IrNode::Const {
+                    value: IrValue::Number(50.0),
+                }),
+            }),
+            attack: None,
+            engagement_radius: None,
+            move_speed: 3.0,
         }
     }
 
     /// One step of the PRODUCTION selector and the PRODUCTION verb mapping,
     /// reported as `(state name, steering intent)`.
     ///
-    /// Deliberately not a restatement of the ordered-guard walk: the point of
-    /// the drift guard below is that the shipped `select_transition` and
-    /// `steering_for` answer what the v0 oracle answers, which a test-local copy
-    /// of either would quietly stop proving. Staying put is the current state
-    /// with its own motion verb, matching the v0 core's same-state rows.
+    /// This deliberately uses the shipped selector and verb mapping instead of
+    /// duplicating ordered-guard semantics in the test. Staying put uses the
+    /// current state's motion verb.
     fn step_graph(
         graph: &BehaviorGraphDescriptor,
         programs: &BrainEntityPrograms,
@@ -444,7 +516,7 @@ mod tests {
 
     #[test]
     fn sync_binds_every_guard_of_a_newly_spawned_brain() {
-        let graph = lower_ai_descriptor(&sample_descriptor());
+        let graph = authored_graph();
         let (registry, entity) = registry_with_brain(&graph);
         let mut programs = BrainPrograms::new();
         let mut warned = HashSet::new();
@@ -454,12 +526,12 @@ mod tests {
         let entry = programs.get(entity).expect("the spawned brain is bound");
         assert_eq!(
             entry.interrupts().len(),
-            1,
-            "the lowered graph's one any-state edge is the no-target stand-down"
+            2,
+            "the authored graph's two any-state guards are bound"
         );
         assert!(
             entry.interrupts().iter().all(Option::is_some),
-            "the generated stand-down guard binds"
+            "the authored interrupt guards bind"
         );
         for (index, (name, state)) in graph.states.iter().enumerate() {
             let bound = entry.transitions(index);
@@ -473,6 +545,10 @@ mod tests {
                 "every generated guard in `{name}` binds"
             );
         }
+        assert!(
+            entry.candidate_filter().is_some(),
+            "the authored candidate filter binds beside the brain guards"
+        );
         assert!(warned.is_empty(), "a clean bind warns about nothing");
     }
 
@@ -504,7 +580,7 @@ mod tests {
         programs.sync(&registry, &mut warned);
         assert_eq!(programs.get(entity).unwrap().transitions(0).len(), 1);
 
-        let replacement = lower_ai_descriptor(&sample_descriptor());
+        let replacement = authored_graph();
         let restored = serde_json::from_value::<BrainComponent>(
             serde_json::to_value(BrainComponent::from_graph(&replacement)).unwrap(),
         )
@@ -515,9 +591,9 @@ mod tests {
         programs.sync(&registry, &mut warned);
 
         let entry = programs.get(entity).expect("the restored brain is bound");
-        let idle_index = graph_state_index(&replacement, LEGACY_IDLE_STATE).unwrap();
+        let rest_index = graph_state_index(&replacement, "rest").unwrap();
         assert_eq!(
-            entry.transitions(idle_index).len(),
+            entry.transitions(rest_index).len(),
             2,
             "the programs describe the graph the component now carries"
         );
@@ -545,6 +621,29 @@ mod tests {
             "an unchanged brain keeps the programs it already has"
         );
         assert!(programs.get(entity).unwrap().transitions(0)[0].is_none());
+    }
+
+    #[test]
+    fn sync_leaves_an_unchanged_candidate_filter_bound_without_rewarning() {
+        // The observable is the warn-once latch, not a program address: a
+        // HashMap replacement can retain an allocation address across a rebind.
+        let mut graph = minimal_graph("idle");
+        graph.candidate_filter = Some(IrNode::Input {
+            name: "@candidate.morale".to_string(),
+        });
+        let (registry, entity) = registry_with_brain(&graph);
+        let mut programs = BrainPrograms::new();
+        let mut warned = HashSet::new();
+        programs.sync(&registry, &mut warned);
+        assert!(programs.get(entity).unwrap().candidate_filter().is_none());
+        warned.clear();
+
+        programs.sync(&registry, &mut warned);
+
+        assert!(
+            warned.is_empty(),
+            "an unchanged graph must not bind and warn about its filter again"
+        );
     }
 
     #[test]
@@ -631,7 +730,7 @@ mod tests {
         // spawn, despawn, or re-seed. With none of those pending it must do no
         // work the allocator can see — it sits just outside the guarded per-tick
         // guard window, so nothing else would catch a regression here.
-        let graph = lower_ai_descriptor(&sample_descriptor());
+        let graph = authored_graph();
         let (registry, _) = registry_with_brain(&graph);
         let mut programs = BrainPrograms::new();
         let mut warned = HashSet::new();
@@ -656,125 +755,14 @@ mod tests {
     }
 
     #[test]
-    fn the_lowered_graph_reproduces_the_v0_transition_core_edge_for_edge() {
-        // Drift guard: every (state × has-target × distance × acquisition) row
-        // the legacy core answers must be the row the lowered graph's ordered
-        // guards answer. The expectation is an independent restatement of the
-        // v0 rules (`v0_transition`), not a transcription of the lowered edges.
-        //
-        // The has-target dimension is what reaches the generated
-        // `!hasTarget → idle` interrupt. Sampled from `attack` in particular:
-        // that is the state whose only other exit is the attack-range edge, so
-        // deleting the interrupt leaves it in `attack` on the sentinel. (From
-        // `alert` the leash edge is itself true on the sentinel and reaches
-        // `idle` anyway, so `alert` alone would not detect the loss.)
-        let ai = sample_descriptor();
-        let graph = lower_ai_descriptor(&ai);
-        let (registry, entity) = registry_with_brain(&graph);
-        let mut programs = BrainPrograms::new();
-        let mut warned = HashSet::new();
-        programs.sync(&registry, &mut warned);
-        assert!(warned.is_empty(), "every generated guard binds");
-
-        // Sample each threshold and both sides of it, plus the ordering between
-        // attack and detection range.
-        let distances = [
-            0.0,
-            ai.attack_range - 0.1,
-            ai.attack_range,
-            ai.attack_range + 0.1,
-            ai.detection_range - 0.1,
-            ai.detection_range,
-            ai.detection_range + 0.1,
-            ai.leash_range,
-            ai.leash_range + 0.1,
-            120.0,
-        ];
-        for current in [
-            LEGACY_IDLE_STATE,
-            LEGACY_ALERT_STATE,
-            LEGACY_ATTACK_STATE,
-            LEGACY_DEATH_STATE,
-        ] {
-            if current == LEGACY_DEATH_STATE {
-                // `death` is terminal in both: the graph never enters it and it
-                // declares no edges, so `step_graph` can only report itself.
-                assert!(
-                    graph.states[LEGACY_DEATH_STATE].transitions.is_empty(),
-                    "death stays terminal in the lowered graph"
-                );
-            }
-            for has_target in [false, true] {
-                for distance in distances {
-                    for acquisition_due in [false, true] {
-                        let expected =
-                            v0_transition(&ai, current, has_target, distance, acquisition_due);
-
-                        programs.scope_mut().refresh(
-                            &registry,
-                            entity,
-                            BrainFacts {
-                                // No target means no distance to read: the scope
-                                // projects `hasTarget` false and the distance
-                                // sentinel, which is what the interrupt sees.
-                                target_distance: has_target.then_some(distance),
-                                time_in_state_ms: 0.0,
-                                attack_cooldown_ms: 0.0,
-                                acquisition_due,
-                            },
-                        );
-                        let entry = programs.get(entity).expect("the brain stays bound");
-                        let (next, steering) = step_graph(&graph, entry, programs.scope(), current);
-
-                        assert_eq!(
-                            (next.as_str(), steering),
-                            expected,
-                            "state `{current}` at distance {distance} \
-                             (hasTarget = {has_target}, acquisitionDue = {acquisition_due})"
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn a_lowered_brain_with_no_target_stays_idle_under_the_distance_sentinel() {
-        // The no-target sentinel must read false through every range guard, so
-        // an enemy with nothing to chase never leaves `idle` on guard evidence
-        // alone.
-        let graph = lower_ai_descriptor(&sample_descriptor());
-        let (registry, entity) = registry_with_brain(&graph);
-        let mut programs = BrainPrograms::new();
-        programs.sync(&registry, &mut HashSet::new());
-
-        programs.scope_mut().refresh(
-            &registry,
-            entity,
-            BrainFacts {
-                target_distance: None,
-                time_in_state_ms: 0.0,
-                attack_cooldown_ms: 0.0,
-                acquisition_due: true,
-            },
-        );
-        let entry = programs.get(entity).unwrap();
-        let (next, steering) = step_graph(&graph, entry, programs.scope(), LEGACY_IDLE_STATE);
-        assert_eq!(
-            (next.as_str(), steering),
-            (LEGACY_IDLE_STATE, SteeringIntent::Clear)
-        );
-    }
-
-    #[test]
     fn a_round_tripped_brain_carries_no_programs_and_rebinds_from_its_retained_graph() {
         // Bound programs are DERIVED data: they live here, not on the
         // component, so serde cannot reach them and component equality cannot
         // see them. What crosses the wire is the retained graph, and that is
         // enough to rebuild guards that answer identically.
-        let graph = lower_ai_descriptor(&sample_descriptor());
+        let graph = authored_graph();
         let mut brain = BrainComponent::from_graph(&graph);
-        brain.state_index = graph_state_index(&graph, LEGACY_ALERT_STATE).unwrap();
+        brain.state_index = graph_state_index(&graph, "attack").unwrap();
         brain.time_in_state_ms = 320.0;
 
         let json = serde_json::to_value(&brain).expect("brain serializes");
@@ -798,8 +786,8 @@ mod tests {
         // from the deserialized twin. Both must answer every sampled row the
         // same way, which is what "programs rebind from the retained graph"
         // means operationally.
-        let facts = |distance: f32, acquisition_due: bool| BrainFacts {
-            target_distance: Some(distance),
+        let facts = |entity: EntityId, distance: f32, acquisition_due: bool| BrainFacts {
+            target: Some((entity, distance)),
             time_in_state_ms: 320.0,
             attack_cooldown_ms: 0.0,
             acquisition_due,
@@ -825,15 +813,10 @@ mod tests {
                     programs.scope_mut().refresh(
                         &registry,
                         entity,
-                        facts(distance, acquisition_due),
+                        facts(entity, distance, acquisition_due),
                     );
                     let entry = programs.get(entity).expect("the brain is bound");
-                    rows.push(step_graph(
-                        &graph,
-                        entry,
-                        programs.scope(),
-                        LEGACY_ALERT_STATE,
-                    ));
+                    rows.push(step_graph(&graph, entry, programs.scope(), "attack"));
                 }
             }
             answers.push(rows);
@@ -850,13 +833,13 @@ mod tests {
         // refreshing the scope for one enemy and walking its ordered guards
         // must not allocate. Binding and interning happen in `sync`, before the
         // probe is armed — which is exactly where allocation is allowed.
-        let graph = lower_ai_descriptor(&sample_descriptor());
+        let graph = authored_graph();
         let (registry, entity) = registry_with_brain(&graph);
         let mut programs = BrainPrograms::new();
         programs.sync(&registry, &mut HashSet::new());
-        let idle_index = graph_state_index(&graph, LEGACY_IDLE_STATE).unwrap();
+        let rest_index = graph_state_index(&graph, "rest").unwrap();
         let facts = BrainFacts {
-            target_distance: Some(1.0),
+            target: Some((entity, 1.0)),
             time_in_state_ms: 0.0,
             attack_cooldown_ms: 0.0,
             acquisition_due: true,
@@ -868,7 +851,7 @@ mod tests {
             &graph,
             programs.get(entity).expect("bound"),
             programs.scope(),
-            idle_index,
+            rest_index,
         );
 
         let snapshot = AllocSnapshot::arm();
@@ -877,41 +860,19 @@ mod tests {
             &graph,
             programs.get(entity).expect("bound"),
             programs.scope(),
-            idle_index,
+            rest_index,
         );
         let allocs = snapshot.allocs_since();
 
         assert_eq!(selected, warm);
         assert_eq!(
             selected,
-            graph_state_index(&graph, LEGACY_ATTACK_STATE),
+            graph_state_index(&graph, "attack"),
             "the sampled row actually fires a transition, so guards really ran"
         );
         assert_eq!(
             allocs, 0,
             "scope refresh + ordered guard evaluation must perform zero heap allocations"
         );
-    }
-
-    #[test]
-    fn a_legacy_attached_brain_binds_through_the_same_lowering() {
-        // `attach_brain` (the legacy `components.ai` seam) and the authored seam
-        // land the same component shape, so the side-table cannot tell them
-        // apart.
-        let mut registry = EntityRegistry::new();
-        let entity = registry.spawn(Transform::default());
-        attach_brain(&mut registry, entity, &sample_descriptor()).unwrap();
-        let mut programs = BrainPrograms::new();
-        let mut warned = HashSet::new();
-
-        programs.sync(&registry, &mut warned);
-
-        let graph = lower_ai_descriptor(&sample_descriptor());
-        let alert_index = graph_state_index(&graph, LEGACY_ALERT_STATE).unwrap();
-        let attack_index = graph_state_index(&graph, LEGACY_ATTACK_STATE).unwrap();
-        let entry = programs.get(entity).expect("legacy brains bind too");
-        assert_eq!(entry.transitions(alert_index).len(), 2);
-        assert_eq!(entry.transitions(attack_index).len(), 1);
-        assert!(warned.is_empty());
     }
 }

@@ -146,9 +146,10 @@ mod tests {
     use postretro_entities::components::sprite_visual::SpriteVisual;
     use postretro_entities::components::weapon::WeaponComponent;
     use postretro_entities::{
-        AiDescriptor, AiStateNames, AirParams, AmmoReserve, CapsuleParams, ComponentValue,
-        DescriptorProvenance, DescriptorSpawnPath, FallParams, FireMode, FogVolumeComponent,
-        GroundParams, KinematicMoverComponent, KinematicMoverMode, MoverCommand,
+        ActionVerb, AirParams, AmmoReserve, AttackParams, BehaviorGraphDescriptor,
+        BehaviorStateDescriptor, CapsuleParams, ComponentValue, DescriptorProvenance,
+        DescriptorSpawnPath, FallParams, FireMode, FogVolumeComponent, GroundParams,
+        KinematicMoverComponent, KinematicMoverMode, MotionVerb, MoverCommand,
         PlayerMovementDescriptor, ResolutionMode, SpeedParams, Transform, TriggerActivation,
         TriggerFireMode, TriggerVolumeComponent, WeaponDescriptor,
     };
@@ -298,20 +299,27 @@ mod tests {
             }),
             ComponentKind::Agent => ComponentValue::Agent(AgentComponent::new(0.3, 1.6, 0.35, 5.0)),
             ComponentKind::Brain => {
-                ComponentValue::Brain(BrainComponent::from_descriptor(&AiDescriptor {
-                    detection_range: 10.0,
-                    attack_range: 2.0,
-                    leash_range: 15.0,
-                    attack_damage: 5.0,
-                    attack_cooldown_ms: 500.0,
+                ComponentValue::Brain(BrainComponent::from_graph(&BehaviorGraphDescriptor {
+                    initial: "idle".to_string(),
+                    states: std::collections::BTreeMap::from([(
+                        "idle".to_string(),
+                        BehaviorStateDescriptor {
+                            animation: "idle".to_string(),
+                            motion: MotionVerb::Hold,
+                            action: Some(ActionVerb::Attack),
+                            transitions: Vec::new(),
+                            on_enter: None,
+                        },
+                    )]),
+                    interrupts: Vec::new(),
+                    candidate_filter: None,
+                    attack: Some(AttackParams {
+                        damage: 5.0,
+                        range: 2.0,
+                        cooldown_ms: 500.0,
+                    }),
+                    engagement_radius: None,
                     move_speed: 3.0,
-                    death_despawn_ms: 1000.0,
-                    states: AiStateNames {
-                        idle: "idle".into(),
-                        alert: "alert".into(),
-                        attack: "attack".into(),
-                        death: "death".into(),
-                    },
                 }))
             }
             ComponentKind::KinematicMover => {

@@ -444,6 +444,7 @@ mod tests {
                 "defineStore",
                 "slot",
                 "brain",
+                "candidate",
                 "state",
                 "emitter",
                 "smokeEmitter",

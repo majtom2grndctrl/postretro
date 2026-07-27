@@ -1,6 +1,7 @@
 --!strict
--- Behavior-graph guard inputs: pre-wrapped IR input leaves for the fixed
--- `@brain.*` namespace, plus the `@state.<name>` leaf builder.
+-- Behavior-graph guard and candidate inputs: pre-wrapped IR input leaves for
+-- the fixed brain and candidate namespaces, plus the `@state.<name>` leaf
+-- builder.
 --
 -- Pure SDK sugar: a leaf is plain data (`{ op = "input", name = ... }`), the
 -- same value `runtime.read(name)` returns. Constructed literally here so this
@@ -8,11 +9,11 @@
 -- Frozen because the `runtime` builders never mutate their operands, so one
 -- shared leaf per input is safe across every guard that reads it.
 --
--- SYNC OBLIGATION: `brain`'s keys are the `BRAIN_INPUTS` table in
--- `crates/foundation/src/brain.rs`, one key per entry, named by stripping the
--- `@brain.` prefix. `brain.ts` carries the same set. Adding a brain input means
--- editing all three; `brain_sdk_helpers_cover_every_brain_input` (in
--- `crates/scripting-core/src/data_descriptors/tests/behavior.rs`) fails until
+-- SYNC OBLIGATION: `brain` mirrors the `BRAIN_INPUTS` table in
+-- `crates/foundation/src/brain.rs`; `candidate` mirrors `CANDIDATE_INPUTS` in
+-- `crates/foundation/src/candidate.rs`. `brain.ts` carries both sets. Adding an
+-- input means editing both preludes; the SDK-helper drift tests in
+-- `crates/scripting-core/src/data_descriptors/tests/behavior.rs` fail until
 -- they agree.
 -- See: context/lib/scripting.md §11 · context/lib/entity_model.md §4
 
@@ -23,9 +24,11 @@ end
 local BrainSdk = {}
 
 --- Pre-wrapped guard input leaves for the fixed `@brain.*` namespace:
---- `hasTarget` (boolean), `targetDistance` (number; `1e9` with no target),
+--- `hasTarget` (boolean; the only authoritative target-presence test),
+--- `targetDistance` (number; `1e9` with no target),
 --- `timeInStateMs`, `attackCooldownMs`, `acquisitionDue` (boolean), `health`,
---- and `maxHealth`.
+--- `maxHealth`, `targetHealth` and `targetMaxHealth` (zero with no target or
+--- health component), and `targetDied` (boolean; false with no target).
 BrainSdk.brain = table.freeze({
   hasTarget = input("@brain.hasTarget"),
   targetDistance = input("@brain.targetDistance"),
@@ -34,6 +37,17 @@ BrainSdk.brain = table.freeze({
   acquisitionDue = input("@brain.acquisitionDue"),
   health = input("@brain.health"),
   maxHealth = input("@brain.maxHealth"),
+  targetHealth = input("@brain.targetHealth"),
+  targetMaxHealth = input("@brain.targetMaxHealth"),
+  targetDied = input("@brain.targetDied"),
+})
+
+--- Facts about one offered target, evaluated during acquisition.
+BrainSdk.candidate = table.freeze({
+  distance = input("@candidate.distance"),
+  health = input("@candidate.health"),
+  maxHealth = input("@candidate.maxHealth"),
+  died = input("@candidate.died"),
 })
 
 --- Read a per-entity state field as a guard input: `state("staggered")` is the

@@ -1792,7 +1792,7 @@ mod tests {
     #[test]
     fn spawner_install_resolves_only_ai_descriptors_and_replaces_prior_level_data() {
         use crate::scripting::builtins::data_archetype_test_fixtures::{
-            ai_enemy_descriptor, mesh_descriptor,
+            behavior_enemy_descriptor, mesh_descriptor,
         };
         use crate::scripting::builtins::entity_spawner;
         use crate::scripting::map_entity::MapEntity;
@@ -1826,7 +1826,7 @@ mod tests {
         let diagnostics = resolve_spawners_for_level(
             &mut registry,
             &[
-                ai_enemy_descriptor("cultist"),
+                behavior_enemy_descriptor("cultist"),
                 mesh_descriptor("crate", false),
             ],
             Some(params),
@@ -1871,7 +1871,7 @@ mod tests {
 
     #[test]
     fn resolved_spawner_mesh_models_include_only_renderable_resolved_archetypes() {
-        use crate::scripting::builtins::data_archetype_test_fixtures::ai_enemy_descriptor;
+        use crate::scripting::builtins::data_archetype_test_fixtures::behavior_enemy_descriptor;
         use postretro_entities::components::spawner::SpawnerComponent;
 
         let mut registry = postretro_entities::EntityRegistry::new();
@@ -1895,13 +1895,13 @@ mod tests {
         add_spawner(&mut registry, "non_mesh", true);
         add_spawner(&mut registry, "absent", true);
 
-        let mut spawner_only = ai_enemy_descriptor("spawner_only");
+        let mut spawner_only = behavior_enemy_descriptor("spawner_only");
         spawner_only.mesh.as_mut().unwrap().model = "models/spawner_only.gltf".to_string();
         spawner_only.mesh.as_mut().unwrap().attachments =
             [("hand".to_string(), "models/spawner_prop.gltf".to_string())]
                 .into_iter()
                 .collect();
-        let mut non_mesh = ai_enemy_descriptor("non_mesh");
+        let mut non_mesh = behavior_enemy_descriptor("non_mesh");
         non_mesh.mesh = None;
 
         let models = resolved_spawner_mesh_models(&registry, &[spawner_only, non_mesh]);
@@ -2108,7 +2108,6 @@ mod tests {
             weapon: None,
             mesh: None,
             health: None,
-            ai: None,
             behavior: None,
         }
     }

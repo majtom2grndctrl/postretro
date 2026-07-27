@@ -30,12 +30,14 @@ use postretro_foundation::{
 /// because it is read straight from the registry during refresh.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct BrainFacts {
-    /// Distance to the selected target, or `None` when this enemy has none.
+    /// Selected target identity and distance, or `None` when this enemy has no
+    /// target.
     ///
-    /// One field feeds two inputs: `@brain.hasTarget` is its presence and
-    /// `@brain.targetDistance` its value (or [`BRAIN_NO_TARGET_DISTANCE`]), so
-    /// the two can never disagree about whether a target exists.
-    pub target_distance: Option<f32>,
+    /// One binding feeds every target-side input: `@brain.hasTarget` is its
+    /// presence, `@brain.targetDistance` its distance (or
+    /// [`BRAIN_NO_TARGET_DISTANCE`]), and the target health facts resolve its
+    /// entity. They therefore cannot disagree about whether a target exists.
+    pub target: Option<(EntityId, f32)>,
     /// Milliseconds since the brain entered its current graph state.
     pub time_in_state_ms: f32,
     /// Milliseconds remaining on the attack cooldown.
@@ -110,15 +112,25 @@ impl BrainScope {
         // may carry a graph), so absent health reads as zero rather than
         // skipping the refresh and leaving stale values behind.
         let health = registry.get_component::<HealthComponent>(entity).ok();
+        let target_health = facts
+            .target
+            .and_then(|(target, _)| registry.get_component::<HealthComponent>(target).ok());
         // Order is BRAIN_INPUTS order — the handle is the index.
         self.fixed = [
-            IrValue::Bool(facts.target_distance.is_some()),
-            IrValue::Number(facts.target_distance.unwrap_or(BRAIN_NO_TARGET_DISTANCE)),
+            IrValue::Bool(facts.target.is_some()),
+            IrValue::Number(
+                facts
+                    .target
+                    .map_or(BRAIN_NO_TARGET_DISTANCE, |(_, distance)| distance),
+            ),
             IrValue::Number(facts.time_in_state_ms),
             IrValue::Number(facts.attack_cooldown_ms),
             IrValue::Bool(facts.acquisition_due),
             IrValue::Number(health.map_or(0.0, |health| health.current)),
             IrValue::Number(health.map_or(0.0, |health| health.max)),
+            IrValue::Number(target_health.map_or(0.0, |health| health.current)),
+            IrValue::Number(target_health.map_or(0.0, |health| health.max)),
+            IrValue::Bool(target_health.is_some_and(|health| health.death_handled)),
         ];
 
         let state = registry.get_component::<EntityStateComponent>(entity).ok();
@@ -191,7 +203,8 @@ mod tests {
     use postretro_entities::Transform;
     use postretro_foundation::{
         BRAIN_ACQUISITION_DUE_INPUT, BRAIN_ATTACK_COOLDOWN_MS_INPUT, BRAIN_HAS_TARGET_INPUT,
-        BRAIN_HEALTH_INPUT, BRAIN_MAX_HEALTH_INPUT, BRAIN_TARGET_DISTANCE_INPUT,
+        BRAIN_HEALTH_INPUT, BRAIN_MAX_HEALTH_INPUT, BRAIN_TARGET_DIED_INPUT,
+        BRAIN_TARGET_DISTANCE_INPUT, BRAIN_TARGET_HEALTH_INPUT, BRAIN_TARGET_MAX_HEALTH_INPUT,
         BRAIN_TIME_IN_STATE_MS_INPUT, BakedIr, BindError, BoundProgram, BrainValidationScope,
         CURRENT_IR_VERSION, IrNode, bind, bind_brain_guard, eval_value,
     };
@@ -233,15 +246,18 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let first = registry.spawn(Transform::default());
         let second = registry.spawn(Transform::default());
-        for (entity, current, staggered) in [(first, 30.0, 1.0), (second, 12.0, 0.0)] {
+        for (entity, current, max, staggered, death_handled) in [
+            (first, 30.0, 40.0, 1.0, false),
+            (second, 12.0, 75.0, 0.0, true),
+        ] {
             registry
                 .set_component(
                     entity,
                     HealthComponent {
-                        max: 40.0,
+                        max,
                         current,
                         hitbox: None,
-                        death_handled: false,
+                        death_handled,
                         pending_kill_credit: None,
                         zone_multipliers: Default::default(),
                         contributor_ledger: Default::default(),
@@ -256,9 +272,9 @@ mod tests {
         (registry, first, second)
     }
 
-    fn engaged_facts() -> BrainFacts {
+    fn engaged_facts(target: EntityId) -> BrainFacts {
         BrainFacts {
-            target_distance: Some(7.5),
+            target: Some((target, 7.5)),
             time_in_state_ms: 250.0,
             attack_cooldown_ms: 400.0,
             acquisition_due: true,
@@ -341,17 +357,27 @@ mod tests {
     /// than a hand-listed, positionally-zipped array means a `BRAIN_INPUTS`
     /// entry added without a matching arm here panics at test time instead of
     /// silently dropping out of a shorter hand-written list.
-    fn expected_fixed_value(name: &str, facts: BrainFacts, health: &HealthComponent) -> IrValue {
+    fn expected_fixed_value(
+        name: &str,
+        facts: BrainFacts,
+        health: &HealthComponent,
+        target_health: &HealthComponent,
+    ) -> IrValue {
         match name {
-            BRAIN_HAS_TARGET_INPUT => IrValue::Bool(facts.target_distance.is_some()),
-            BRAIN_TARGET_DISTANCE_INPUT => {
-                IrValue::Number(facts.target_distance.unwrap_or(BRAIN_NO_TARGET_DISTANCE))
-            }
+            BRAIN_HAS_TARGET_INPUT => IrValue::Bool(facts.target.is_some()),
+            BRAIN_TARGET_DISTANCE_INPUT => IrValue::Number(
+                facts
+                    .target
+                    .map_or(BRAIN_NO_TARGET_DISTANCE, |(_, distance)| distance),
+            ),
             BRAIN_TIME_IN_STATE_MS_INPUT => IrValue::Number(facts.time_in_state_ms),
             BRAIN_ATTACK_COOLDOWN_MS_INPUT => IrValue::Number(facts.attack_cooldown_ms),
             BRAIN_ACQUISITION_DUE_INPUT => IrValue::Bool(facts.acquisition_due),
             BRAIN_HEALTH_INPUT => IrValue::Number(health.current),
             BRAIN_MAX_HEALTH_INPUT => IrValue::Number(health.max),
+            BRAIN_TARGET_HEALTH_INPUT => IrValue::Number(target_health.current),
+            BRAIN_TARGET_MAX_HEALTH_INPUT => IrValue::Number(target_health.max),
+            BRAIN_TARGET_DIED_INPUT => IrValue::Bool(target_health.death_handled),
             other => panic!(
                 "`{other}` is in BRAIN_INPUTS but `expected_fixed_value` has no case for it \
                  — add one alongside the new `refresh` slot"
@@ -361,7 +387,8 @@ mod tests {
 
     #[test]
     fn refresh_projects_engine_facts_and_health_into_the_fixed_slots() {
-        let (registry, enemy, _) = seeded_registry();
+        let (mut registry, enemy, target) = seeded_registry();
+        let target_without_health = registry.spawn(Transform::default());
         let mut scope = BrainScope::for_validation();
         // Bind before refresh: programs bind once and observe every later
         // snapshot, which is what lets one scope serve every enemy.
@@ -370,18 +397,21 @@ mod tests {
             .map(|(name, _)| bind_read(name, &scope))
             .collect();
 
-        let facts = engaged_facts();
+        let facts = engaged_facts(target);
         scope.refresh(&registry, enemy, facts);
         let health = registry
             .get_component::<HealthComponent>(enemy)
             .expect("seeded enemy has health");
+        let target_health = registry
+            .get_component::<HealthComponent>(target)
+            .expect("seeded target has health");
 
         // Iterating BRAIN_INPUTS itself (rather than a separate hand-listed,
         // positionally-zipped array) is what makes this loop cover a newly
         // added input automatically — the previous fixed-length `expected`
         // array silently truncated a longer BRAIN_INPUTS via `zip`.
         for (program, (name, _)) in programs.iter().zip(BRAIN_INPUTS.iter()) {
-            let want = expected_fixed_value(name, facts, health);
+            let want = expected_fixed_value(name, facts, health, target_health);
             match want {
                 IrValue::Number(number) => assert_number(eval_value(program, &scope), number),
                 IrValue::Bool(_) => {
@@ -389,11 +419,39 @@ mod tests {
                 }
             }
         }
+
+        let target_health_input = bind_read(BRAIN_TARGET_HEALTH_INPUT, &scope);
+        let target_max_health_input = bind_read(BRAIN_TARGET_MAX_HEALTH_INPUT, &scope);
+        let target_died_input = bind_read(BRAIN_TARGET_DIED_INPUT, &scope);
+
+        scope.refresh(
+            &registry,
+            enemy,
+            BrainFacts {
+                target: None,
+                ..facts
+            },
+        );
+        assert_number(eval_value(&target_health_input, &scope), 0.0);
+        assert_number(eval_value(&target_max_health_input, &scope), 0.0);
+        assert_eq!(eval_value(&target_died_input, &scope), IrValue::Bool(false));
+
+        scope.refresh(
+            &registry,
+            enemy,
+            BrainFacts {
+                target: Some((target_without_health, 7.5)),
+                ..facts
+            },
+        );
+        assert_number(eval_value(&target_health_input, &scope), 0.0);
+        assert_number(eval_value(&target_max_health_input, &scope), 0.0);
+        assert_eq!(eval_value(&target_died_input, &scope), IrValue::Bool(false));
     }
 
     #[test]
     fn refresh_reports_the_no_target_sentinel_and_clears_has_target() {
-        let (registry, enemy, _) = seeded_registry();
+        let (registry, enemy, target) = seeded_registry();
         let mut scope = BrainScope::for_validation();
         let has_target = bind_read(BRAIN_HAS_TARGET_INPUT, &scope);
         let distance = bind_read(BRAIN_TARGET_DISTANCE_INPUT, &scope);
@@ -402,8 +460,8 @@ mod tests {
             &registry,
             enemy,
             BrainFacts {
-                target_distance: None,
-                ..engaged_facts()
+                target: None,
+                ..engaged_facts(target)
             },
         );
 
@@ -445,14 +503,14 @@ mod tests {
             "snapshot stays parallel"
         );
 
-        scope.refresh(&registry, first, engaged_facts());
+        scope.refresh(&registry, first, engaged_facts(second));
         assert_number(eval_value(&staggered, &scope), 1.0);
         assert_number(eval_value(&staggered_again, &scope), 1.0);
         // A field this entity never had reads as zero, per EntityStateComponent.
         assert_number(eval_value(&unwritten, &scope), 0.0);
 
         // The same bound program follows the scope to the next enemy.
-        scope.refresh(&registry, second, engaged_facts());
+        scope.refresh(&registry, second, engaged_facts(first));
         assert_number(eval_value(&staggered, &scope), 0.0);
     }
 
@@ -515,11 +573,11 @@ mod tests {
         .expect("mixed guard binds");
 
         // Warm any one-time lazy state so the measured window is pure work.
-        scope.refresh(&registry, first, engaged_facts());
+        scope.refresh(&registry, first, engaged_facts(second));
         let _ = eval_value(&program, &scope);
 
         let snapshot = AllocSnapshot::arm();
-        scope.refresh(&registry, second, engaged_facts());
+        scope.refresh(&registry, second, engaged_facts(first));
         let value = eval_value(&program, &scope);
         let allocs = snapshot.allocs_since();
 

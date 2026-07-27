@@ -493,13 +493,13 @@ fn install_lua_prelude(lua: &Lua, mod_root: &Path) -> mlua::Result<()> {
     globals.set("runtime", runtime.clone())?;
 
     let brain = eval_lua_table(lua, BRAIN_LUAU, "sdk/lib/brain.luau")?;
-    copy_lua_fields(&globals, &brain, &["brain", "state"])?;
+    copy_lua_fields(&globals, &brain, &["brain", "candidate", "state"])?;
 
     let root = lua.create_table()?;
     root.set("world", world)?;
     root.set("runtime", runtime)?;
     copy_lua_fields(&root, &game_state, &["getGameState"])?;
-    copy_lua_fields(&root, &brain, &["brain", "state"])?;
+    copy_lua_fields(&root, &brain, &["brain", "candidate", "state"])?;
     copy_lua_fields(&root, &keyframes, &["timeline", "sequence"])?;
     copy_lua_fields(
         &root,

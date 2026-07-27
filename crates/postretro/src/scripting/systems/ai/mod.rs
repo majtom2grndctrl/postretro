@@ -3,9 +3,8 @@
 // See: context/lib/entity_model.md §5 (fixed-tick game logic) ·
 //      context/lib/scripting.md §10.5 (the contextual damage chokepoint)
 
-// Mods declare the state graph; Rust executes it. Every brain carries one
-// representation — a `BehaviorGraphDescriptor`, authored directly or lowered
-// from a legacy `components.ai` block — and this module drives exactly one
+// Mods declare the state graph; Rust executes it. Every brain carries an
+// authored `BehaviorGraphDescriptor`, and this module drives exactly one
 // evaluator over it. There is no live VM at tick: guards are IR programs bound
 // once per graph into the evaluator's side-table (`brain_programs.rs`) and read
 // through a refreshed scope (`brain_scope.rs`).
@@ -31,27 +30,14 @@ use glam::{Quat, Vec3};
 
 mod brain_programs;
 mod brain_scope;
+mod candidate_scope;
 mod engine_floor;
 mod graph_eval;
 mod targeting;
 
-use brain_programs::BrainPrograms;
-use brain_scope::BrainFacts;
-use engine_floor::SteeringIntent;
-use graph_eval::{
-    action_for_state, animation_for_state, engages, initial_index, select_transition, state_at,
-    steering_for,
-};
-pub(crate) use graph_eval::{locomotion_animation, rest_animation};
-use targeting::{
-    TargetPawn, acquisition_due, select_target, selected_target_alive, target_candidate,
-    target_distance,
-};
-// `ai_tests` is included here via `#[path]`, so its `use super::*` resolves
-// against this module — the split moved these into submodules, but the tests
-// still name them unqualified.
 #[cfg(test)]
-use engine_floor::{TARGET_SWITCH_HYSTERESIS_DISTANCE, think_stride_for_distance};
+#[path = "../ai_tests.rs"]
+mod ai_tests;
 
 use crate::agent_steering;
 use crate::collision::CollisionWorld;
@@ -60,8 +46,14 @@ use crate::combat_positioning::{
     select_combat_positions_batch,
 };
 use crate::nav::NavGraph;
-#[cfg(test)]
-use crate::nav::distance_xz;
+use brain_programs::BrainPrograms;
+use brain_scope::BrainFacts;
+use engine_floor::SteeringIntent;
+use graph_eval::{
+    action_for_state, animation_for_state, engages, initial_index, select_transition, state_at,
+    steering_for,
+};
+pub(crate) use graph_eval::{locomotion_animation, rest_animation};
 use postretro_entities::components::brain::BrainComponent;
 use postretro_entities::components::health::{
     DamageContext, DamageProducer, apply_damage_with_context,
@@ -74,6 +66,10 @@ use postretro_entities::{
     EntityRegistry, Transform,
 };
 use postretro_foundation::{ActionVerb, DamagePayload};
+use targeting::{
+    TargetPawn, acquisition_due, select_target, selected_target_alive, target_candidate,
+    target_distance,
+};
 
 /// Event name fired once per enemy attack that lands this tick. Mirrors the
 /// weapon-fire event precedent (`"activate"`/`"impact"`): the tick returns the
@@ -432,63 +428,50 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                 .flatten();
             let retained = retained_target
                 .and_then(|entity| target_candidate(registry, entity, snap.position, None));
-            let nearest = retained
-                .is_none()
-                .then(|| select_target(registry, snap.position, None, false, None))
-                .flatten();
-            let current_target = retained.map(|candidate| candidate.target).or(nearest);
-            let current_distance =
-                current_target.map(|target| target_distance(target, snap.position));
-            let evaluate_acquisition = acquisition_due(&brain, current_distance);
-
-            // The engine floor's retention leash. A brain without one (an
-            // authored graph) never escapes here: its guards own disengagement.
-            let leash_range = brain.leash_range;
-            let retained_outside_leash = retained
-                .is_some_and(|retained| leash_range.is_some_and(|leash| retained.distance > leash));
-            let target = if retained_outside_leash {
-                // Leash escape for the already-retained target is cheap because the
-                // retained pawn has already been read. Clear immediately instead of
-                // continuing to chase stale destinations between acquisition ticks.
-                // Replacement search still stays acquisition-strided.
-                if evaluate_acquisition {
+            let (target, evaluate_acquisition) = if let Some(retained) = retained {
+                // A retained target alone prices the stride from its raw
+                // distance. A due tick may still run the normal hysteresis scan
+                // below, but neither its candidate filter nor its result can
+                // alter this cost input.
+                let evaluate_acquisition = acquisition_due(&brain, Some(retained.distance));
+                let target = if evaluate_acquisition {
+                    let (candidate_filter, candidate_scope) =
+                        programs.candidate_filter_context(snap.id);
                     select_target(
                         registry,
                         snap.position,
-                        retained.map(|retained| retained.target.entity),
-                        true,
-                        None,
-                    )
-                    .filter(|target| {
-                        leash_range
-                            .is_none_or(|leash| target_distance(*target, snap.position) <= leash)
-                    })
-                } else {
-                    None
-                }
-            } else if evaluate_acquisition {
-                match retained {
-                    Some(retained) => select_target(
-                        registry,
-                        snap.position,
                         Some(retained.target.entity),
-                        false,
                         None,
-                    ),
-                    // `nearest` above IS this scan: it runs exactly when
-                    // `retained` is `None`, with the same arguments, over a
-                    // registry nothing has touched since. Re-running it made
-                    // every non-engaged brain pay the pawn scan twice on each
-                    // stride-due tick — the think stride adding work instead of
-                    // removing it.
-                    None if retained_target.is_none() => nearest,
-                    // A retained id that no longer resolves to a candidate still
-                    // seeds hysteresis, so this scan is genuinely a different
-                    // one.
-                    None => select_target(registry, snap.position, retained_target, false, None),
-                }
+                        candidate_filter,
+                        candidate_scope,
+                    )
+                    .1
+                } else {
+                    Some(retained.target)
+                };
+                (target, evaluate_acquisition)
             } else {
-                current_target
+                let (candidate_filter, candidate_scope) =
+                    programs.candidate_filter_context(snap.id);
+                let (nearest_for_stride, nearest_selection) = select_target(
+                    registry,
+                    snap.position,
+                    None,
+                    None,
+                    candidate_filter,
+                    candidate_scope,
+                );
+                let evaluate_acquisition = acquisition_due(
+                    &brain,
+                    nearest_for_stride.map(|candidate| candidate.distance),
+                );
+                // The raw candidate only prices the stride. A graph-filtered
+                // selection becomes a target only on a due tick; otherwise
+                // `BrainFacts` stay untargeted rather than borrowing it.
+                (
+                    evaluate_acquisition.then_some(nearest_selection).flatten(),
+                    evaluate_acquisition,
+                )
             };
             (target, evaluate_acquisition)
         } else {
@@ -509,10 +492,12 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         // and its re-seat: an unvalidated graph whose `initial` names nothing
         // simply stays put rather than being pushed to an arbitrary state.
         let resting_index = initial_index(&brain.graph).unwrap_or(prior_state_index);
-        // Distance to the FINALLY selected pawn, or `None` with no target —
-        // read by the guards (as `@brain.targetDistance`/`@brain.hasTarget`) and
-        // by the attack range gate, so the two can never disagree.
-        let selected_distance = target.map(|target| target_distance(target, snap.position));
+        // The FINALLY selected pawn's identity and distance, or `None` with no
+        // target. This one binding feeds the guard facts and attack range gate,
+        // so neither can disagree about which target they describe.
+        let selected_target =
+            target.map(|target| (target.entity, target_distance(target, snap.position)));
+        let selected_distance = selected_target.map(|(_, distance)| distance);
         let (next_index, steering) = if !brain.aggro_armed {
             // THE AGGRO GATE, and the only thing that suppresses evaluation. Its
             // v1 disengage policy is hold: a closed brain consults neither target
@@ -555,7 +540,7 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
                 registry,
                 snap.id,
                 BrainFacts {
-                    target_distance: selected_distance,
+                    target: selected_target,
                     time_in_state_ms: brain.time_in_state_ms,
                     attack_cooldown_ms: brain.attack_cooldown_remaining_ms,
                     acquisition_due: evaluate_acquisition,
@@ -594,11 +579,8 @@ pub(crate) fn run_ai_tick_with_navigation_and_impact(
         // cooldown has elapsed, the SELECTED target is inside the graph's
         // `attack.range`, and it is still alive — apply the configured damage
         // once and arm the cooldown. Checked every tick.
-        // The range gate is what makes `attack.range` mean something for an
-        // authored graph, where a state can declare the action at any distance;
-        // a lowered legacy graph is unaffected, because its ungated
-        // `attack → alert` edge already leaves the attacking state on the first
-        // tick the target exceeds that same range.
+        // The range gate lets a graph declare the action without making it
+        // connect from across the room.
         // A graph with no `attack` block configures no range and no damage, so
         // it never attacks.
         // Gating on the selected target's Health stops attack/event spam against
@@ -998,7 +980,3 @@ fn retained_combat_slot(outcome: &EnemyOutcome) -> Option<Vec3> {
         .then_some(outcome.brain.combat_slot)
         .flatten()
 }
-
-#[cfg(test)]
-#[path = "../ai_tests.rs"]
-mod tests;

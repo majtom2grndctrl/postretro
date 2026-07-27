@@ -6484,7 +6484,6 @@ mod tests {
             }),
             mesh: None,
             health: None,
-            ai: None,
             behavior: None,
         }
     }
@@ -8709,12 +8708,12 @@ mod tests {
 
     #[test]
     fn spawner_only_archetype_is_preuploaded_for_both_roles_and_host_spawn_resolves_clips() {
-        use crate::scripting::builtins::data_archetype_test_fixtures::ai_enemy_descriptor;
+        use crate::scripting::builtins::data_archetype_test_fixtures::behavior_enemy_descriptor;
         use postretro_entities::components::mesh::MeshComponent;
         use postretro_entities::components::spawner::SpawnerComponent;
         use postretro_entities::{ComponentKind, EntityRegistry, Transform};
 
-        let mut descriptor = ai_enemy_descriptor("spawner_only");
+        let mut descriptor = behavior_enemy_descriptor("spawner_only");
         descriptor.mesh.as_mut().unwrap().model = "models/spawner_only.gltf".to_string();
         descriptor.mesh.as_mut().unwrap().attachments =
             [("hand".to_string(), "models/spawner_prop.gltf".to_string())]
@@ -8945,7 +8944,6 @@ mod tests {
                 locomotion: None,
             }),
             health: None,
-            ai: None,
             behavior: None,
         }];
 

@@ -179,7 +179,6 @@ pub(crate) fn entity_descriptors() -> Vec<EntityTypeDescriptor> {
         weapon: None,
         mesh: None,
         health: None,
-        ai: None,
         behavior: None,
     }]
 }

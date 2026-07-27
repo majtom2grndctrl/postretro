@@ -4,6 +4,7 @@
 #![deny(unsafe_code)]
 
 pub mod brain;
+pub mod candidate;
 pub mod data_descriptors;
 pub mod foundation_pods;
 pub mod ir;
@@ -14,8 +15,14 @@ pub mod value_types;
 pub use brain::{
     BRAIN_ACQUISITION_DUE_INPUT, BRAIN_ATTACK_COOLDOWN_MS_INPUT, BRAIN_HAS_TARGET_INPUT,
     BRAIN_HEALTH_INPUT, BRAIN_INPUT_PREFIX, BRAIN_INPUTS, BRAIN_MAX_HEALTH_INPUT,
-    BRAIN_NO_TARGET_DISTANCE, BRAIN_TARGET_DISTANCE_INPUT, BRAIN_TIME_IN_STATE_MS_INPUT,
+    BRAIN_NO_TARGET_DISTANCE, BRAIN_TARGET_DIED_INPUT, BRAIN_TARGET_DISTANCE_INPUT,
+    BRAIN_TARGET_HEALTH_INPUT, BRAIN_TARGET_MAX_HEALTH_INPUT, BRAIN_TIME_IN_STATE_MS_INPUT,
     BrainInputRef, BrainValidationScope, bind_brain_guard, resolve_brain_input,
+};
+pub use candidate::{
+    CANDIDATE_DIED_INPUT, CANDIDATE_DISTANCE_INPUT, CANDIDATE_HEALTH_INPUT, CANDIDATE_INPUT_PREFIX,
+    CANDIDATE_INPUTS, CANDIDATE_MAX_HEALTH_INPUT, CandidateInputRef, CandidateValidationScope,
+    bind_candidate_filter, resolve_candidate_input,
 };
 pub use data_descriptors::*;
 pub use foundation_pods::{DamagePayload, ModMapEntry, NavAgentParams};

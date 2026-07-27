@@ -118,6 +118,8 @@ export type PostretroModule = {
   slot: typeof(slot),
   --- Pre-wrapped behavior-graph guard inputs for the fixed `@brain.*` namespace.
   brain: BrainInputs,
+  --- Pre-wrapped candidate-filter inputs for the fixed `@candidate.*` namespace.
+  candidate: CandidateInputs,
   --- Build a `@state.<name>` guard input leaf for a per-entity state field.
   state: typeof(state),
   emitter: typeof(emitter),

@@ -968,7 +968,7 @@ export type ProgressReactionDescriptor = {
 
 --- Primitive reaction body: invokes the named Rust primitive. With `tag`, it
 --- targets entities carrying that tag and mutates them. Tag-targeted primitives
--- include emitter/fog/mover commands, `applyDamage`, `setAnimationState`,
+-- include emitter/fog/mover commands, `applyDamage`, `grantHealth`, `grantAmmo`, `setAnimationState`,
 -- `updateEnemyState`, `spawnFromSpawner`, `armTrigger`, and `disarmTrigger`; arm/disarm use their empty typed args
 --- below. Without `tag`, it is a system reaction (no entities) that enqueues a
 --- typed engine command — `playSound`, `rumble`, `flashScreen`, the UI-stack
@@ -1267,6 +1267,8 @@ export type TriggerPoolDescriptor = { tag: string, arm: number?, armPercentage: 
 export type TriggerEventOptions = { levels: {string}? }
 declare function onTriggerEvent(filter: { tag: string }, event: "enter" | "exit", fire: {Reaction<any> | string}, options: TriggerEventOptions?): TriggerEventDescriptor
 declare function damage(target: ActivatorsTarget | string, amount: number): PrimitiveReactionDescriptor
+declare function grantHealth(target: ActivatorsTarget | string, amount: number): PrimitiveReactionDescriptor
+declare function grantAmmo(target: ActivatorsTarget | string, type: string, amount: number): PrimitiveReactionDescriptor
 --- Select a live enemy group by tag. Its tag resolves at reaction fire time.
 export type EnemyGroupFilter = { tag: string? }
 --- Typed, additive partial for consequential enemy-state updates.

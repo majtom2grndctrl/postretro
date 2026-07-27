@@ -21,6 +21,7 @@ use postretro_scripting_core::reaction_dispatch::PrepartitionedReactionStep;
 use postretro_scripting_core::store_bridge::{json_value_for_slot, validate_slot_value};
 use serde::Deserialize;
 
+use crate::grant::{GrantAmmoArgs, GrantHealthArgs};
 use crate::health::reactions::ApplyDamageArgs;
 use crate::kinematic_mover::{MoverCommandDiagnostics, MoverSetSpinRateArgs};
 use crate::scripting::reactions::animation::SetAnimationStateArgs;
@@ -42,6 +43,8 @@ const CONSEQUENTIAL_PRIMITIVES: &[&str] = &[
     "moverGoToPathNode",
     "moverSetSpinRate",
     "applyDamage",
+    "grantHealth",
+    "grantAmmo",
     "armTrigger",
     "disarmTrigger",
     "setState",
@@ -757,6 +760,42 @@ fn bind_command(
                 amount: args.amount,
             })
         }
+        "grantHealth" => {
+            let args: GrantHealthArgs =
+                match serde_json::from_value::<GrantHealthArgs>(args.clone()) {
+                    Ok(args) if args.amount.is_finite() => args,
+                    Ok(_) => {
+                        log::warn!("[Trigger] grantHealth amount is non-finite; not binding");
+                        return None;
+                    }
+                    Err(error) => {
+                        log::warn!("[Trigger] grantHealth has invalid args; not binding: {error}");
+                        return None;
+                    }
+                };
+            Some(BoundTriggerCommand::GrantHealth {
+                target: target(primitive)?,
+                amount: args.amount,
+            })
+        }
+        "grantAmmo" => {
+            let args: GrantAmmoArgs = match serde_json::from_value::<GrantAmmoArgs>(args.clone()) {
+                Ok(args) if args.amount.is_finite() => args,
+                Ok(_) => {
+                    log::warn!("[Trigger] grantAmmo amount is non-finite; not binding");
+                    return None;
+                }
+                Err(error) => {
+                    log::warn!("[Trigger] grantAmmo has invalid args; not binding: {error}");
+                    return None;
+                }
+            };
+            Some(BoundTriggerCommand::GrantAmmo {
+                target: target(primitive)?,
+                ammo_type: args.ammo_type,
+                amount: args.amount,
+            })
+        }
         "armTrigger" => Some(BoundTriggerCommand::Arm {
             target: target(primitive)?,
         }),
@@ -906,6 +945,7 @@ fn bind_store_slot(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use postretro_entities::components::ammo_reserve::AmmoReserve;
     use postretro_entities::components::brain::{BrainComponent, attach_brain_graph};
     use postretro_entities::components::health::HealthComponent;
     use postretro_entities::{
@@ -1366,6 +1406,183 @@ mod tests {
             )
             .unwrap();
         id
+    }
+
+    fn ammo_reserve(registry: &mut EntityRegistry) -> EntityId {
+        let id = registry.spawn(Transform::default());
+        registry.set_component(id, AmmoReserve::new()).unwrap();
+        id
+    }
+
+    #[test]
+    fn grant_commands_bind_negative_amounts_for_the_chokepoint_to_reject() {
+        let slots = SlotTable::new();
+        let health = bind_command(
+            "grantHealth",
+            Some(BoundTarget::Activators),
+            &serde_json::json!({ "amount": -1.0 }),
+            &slots,
+            None,
+        )
+        .expect("negative health grant must reach the chokepoint");
+        assert_eq!(health.kind(), BoundTriggerCommandKind::GrantHealth);
+
+        let ammo = bind_command(
+            "grantAmmo",
+            Some(BoundTarget::Activators),
+            &serde_json::json!({ "type": "bullets.light", "amount": -1.0 }),
+            &slots,
+            None,
+        )
+        .expect("negative ammo grant must reach the chokepoint");
+        assert_eq!(ammo.kind(), BoundTriggerCommandKind::GrantAmmo);
+    }
+
+    #[test]
+    fn activator_grant_commands_mutate_only_the_current_activator() {
+        let mut registry = EntityRegistry::new();
+        let trigger = spawn_trigger(&mut registry, "grant");
+        let health_recipient = health(&mut registry);
+        let mut health_component = registry
+            .get_component::<HealthComponent>(health_recipient)
+            .unwrap()
+            .clone();
+        health_component.current = 60.0;
+        registry
+            .set_component(health_recipient, health_component)
+            .unwrap();
+        let ammo_recipient = ammo_reserve(&mut registry);
+        let bystander = health(&mut registry);
+        let mut data = DataRegistry::new();
+        data.populate_level(
+            vec![
+                NamedReaction {
+                    name: "grant".into(),
+                    descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                        primitive: "grantHealth".into(),
+                        target: Some("@activators".into()),
+                        tag: None,
+                        on_complete: None,
+                        args: serde_json::json!({ "amount": 25.0 }),
+                    }),
+                },
+                NamedReaction {
+                    name: "grant".into(),
+                    descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                        primitive: "grantAmmo".into(),
+                        target: Some("@activators".into()),
+                        tag: None,
+                        on_complete: None,
+                        args: serde_json::json!({ "type": "bullets.light", "amount": 8.0 }),
+                    }),
+                },
+            ],
+            Vec::new(),
+            &[],
+        );
+        let table = TriggerBindingTable::build(&registry, &data, &SlotTable::new());
+
+        let health_execution = table.execute(
+            trigger,
+            TriggerEventEdge::Enter,
+            &mut registry,
+            &mut SlotTable::new(),
+            &TriggerFireContext {
+                activator: Some(health_recipient),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            health_execution.commands,
+            vec![
+                BoundTriggerCommandKind::GrantHealth,
+                BoundTriggerCommandKind::GrantAmmo,
+            ]
+        );
+        assert_eq!(
+            registry
+                .get_component::<HealthComponent>(health_recipient)
+                .unwrap()
+                .current,
+            85.0,
+            "the first activator receives the health grant"
+        );
+        assert_eq!(
+            registry
+                .get_component::<HealthComponent>(bystander)
+                .unwrap()
+                .current,
+            100.0
+        );
+
+        table.execute(
+            trigger,
+            TriggerEventEdge::Enter,
+            &mut registry,
+            &mut SlotTable::new(),
+            &TriggerFireContext {
+                activator: Some(ammo_recipient),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            registry
+                .get_component::<AmmoReserve>(ammo_recipient)
+                .unwrap()
+                .available("bullets.light"),
+            8
+        );
+    }
+
+    #[test]
+    fn tag_grant_skips_missing_components_without_aborting_other_targets() {
+        let mut registry = EntityRegistry::new();
+        let trigger = spawn_trigger(&mut registry, "grant");
+        let bare = registry.spawn(Transform::default());
+        let recipient = ammo_reserve(&mut registry);
+        registry.set_tags(bare, vec!["pickup".into()]).unwrap();
+        registry.set_tags(recipient, vec!["pickup".into()]).unwrap();
+        let mut data = DataRegistry::new();
+        data.populate_level(
+            vec![primitive(
+                "grant",
+                "grantAmmo",
+                Some("pickup"),
+                serde_json::json!({ "type": "bullets.light", "amount": 6.0 }),
+                None,
+            )],
+            Vec::new(),
+            &[],
+        );
+        let table = TriggerBindingTable::build(&registry, &data, &SlotTable::new());
+        let captured = crate::scripting::reactions::log_capture::capture(|| {
+            table.execute(
+                trigger,
+                TriggerEventEdge::Enter,
+                &mut registry,
+                &mut SlotTable::new(),
+                &TriggerFireContext::default(),
+            );
+        });
+
+        assert_eq!(
+            registry
+                .get_component::<AmmoReserve>(recipient)
+                .unwrap()
+                .available("bullets.light"),
+            6
+        );
+        let warnings: Vec<_> = captured
+            .iter()
+            .filter(|(level, _)| *level == log::Level::Warn)
+            .map(|(_, message)| message.clone())
+            .collect();
+        assert_eq!(
+            warnings,
+            vec![format!(
+                "[Grant] grantAmmo: entity {bare} has no AmmoReserve; skipping"
+            )]
+        );
     }
 
     #[test]

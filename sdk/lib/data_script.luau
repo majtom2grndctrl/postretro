@@ -62,7 +62,7 @@ export type ProgressReactionDescriptor = {
 
 --- Primitive reaction body: invokes the named Rust primitive. With `tag`, it
 --- targets entities carrying that tag and mutates them. Tag-targeted primitives
--- include emitter/fog/mover commands, `applyDamage`, `setAnimationState`,
+-- include emitter/fog/mover commands, `applyDamage`, `grantHealth`, `grantAmmo`, `setAnimationState`,
 -- `updateEnemyState`, `spawnFromSpawner`, `armTrigger`, and `disarmTrigger`; arm/disarm use empty args. Without `tag`,
 --- it is a system reaction (no entities) that enqueues a typed engine command
 --- — `playSound`, `rumble`, `flashScreen`, the UI-stack reactions. `args`
@@ -389,6 +389,24 @@ function DataScriptSdk.damage(target: ActivatorsTarget | string, amount: number)
   end
   local wireTarget: any = if target == ACTIVATORS_TARGET then "@activators" else "@invalid"
   return { primitive = "applyDamage", target = wireTarget, args = { amount = amount } }
+end
+
+--- Grant health to the current trigger activators or every entity with a tag.
+function DataScriptSdk.grantHealth(target: ActivatorsTarget | string, amount: number): PrimitiveReactionDescriptor
+  if type(target) == "string" then
+    return { primitive = "grantHealth", tag = target, args = { amount = amount } }
+  end
+  local wireTarget: any = if target == ACTIVATORS_TARGET then "@activators" else "@invalid"
+  return { primitive = "grantHealth", target = wireTarget, args = { amount = amount } }
+end
+
+--- Grant an ammo-reserve pool to the current trigger activators or every entity with a tag.
+function DataScriptSdk.grantAmmo(target: ActivatorsTarget | string, ammoType: string, amount: number): PrimitiveReactionDescriptor
+  if type(target) == "string" then
+    return { primitive = "grantAmmo", tag = target, args = { type = ammoType, amount = amount } }
+  end
+  local wireTarget: any = if target == ACTIVATORS_TARGET then "@activators" else "@invalid"
+  return { primitive = "grantAmmo", target = wireTarget, args = { type = ammoType, amount = amount } }
 end
 
 --- Selects a live enemy group addressed when a reaction fires.

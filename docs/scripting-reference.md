@@ -1360,6 +1360,38 @@ only when the kill threshold is reached, however many ticks later that is. The
 canonical progress use is a threshold that fires an event of the same name — see
 [the combat-demo walkthrough](../content/dev/maps/combat-demo.README.md).
 
+### `grantHealth` and `grantAmmo`
+
+```typescript
+import { defineReaction, grantAmmo } from "postretro";
+
+const ammoPickup = defineReaction((on) =>
+  grantAmmo(on.activators, "bullets.light", 24),
+);
+
+const healStation = defineReaction("healStation", {
+  primitive: "grantHealth",
+  tag: "player",
+  args: { amount: 25 },
+});
+```
+
+`grantHealth(target, amount)` adds health through the engine's shared resource
+grant chokepoint. `grantAmmo(target, type, amount)` credits the named ammo
+reserve pool through that same chokepoint. Each target is either a tag string
+or the `on.activators` token supplied to a trigger-event reaction. The tag form
+fans out across every current match; the activator form credits the one player
+whose trigger edge fired.
+
+Amounts are finite numbers declared at load. A negative amount is a warn-and-no-op
+at the chokepoint, never a subtraction path. `grantAmmo` pool keys must use the
+same ASCII identifier grammar as weapon resource types; a well-formed pool does
+not need a weapon to exist yet. Missing health or ammo-reserve components warn
+and skip that recipient while sibling targets continue. These reaction grants
+are independent of impact-policy producer gating, so a trigger pickup can grant
+resources even though source-addressed impact grants run only for in-tick weapon
+and AI impacts in v1.
+
 ### Impact policies
 
 `defineImpactEvent("namespace:id", filter, build)` declares what an in-tick hit means. IDs are portable ASCII addresses: colon-separated non-empty segments using letters, digits, `_`, `.`, or `-`, up to 128 bytes. An override must add a `tag`; it can only narrow the base target set.
@@ -1525,6 +1557,10 @@ export function setupLevel(): LevelManifest {
 | Fog reaction primitive targets an entity lacking `FogVolumeComponent` | Skipped with `log::warn!` (tag-typo guard). |
 | `applyDamage` `amount` is negative or non-finite | The whole dispatch is a `log::warn!` no-op — no target takes damage (healing is out of scope). |
 | `applyDamage` targets an entity lacking a health component | Skipped with `log::warn!` (tag-typo guard); other matched targets still take damage. |
+| `grantHealth` / `grantAmmo` names no tag or `@activators` target | Rejected while the setup descriptor loads. |
+| `grantHealth` / `grantAmmo` amount is not a finite JSON number | Rejected while the setup descriptor loads. |
+| `grantAmmo` pool key is malformed | Rejected while the setup descriptor loads using the weapon-resource identifier grammar. |
+| A grant recipient lacks the required component | The chokepoint emits one `log::warn!` and skips that recipient; sibling targets still receive their grants. |
 
 ---
 

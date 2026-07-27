@@ -194,6 +194,8 @@ pub fn primitive_descriptor_from_lua(
         serde_json::Value::Object(Default::default())
     };
 
+    validate_grant_reaction(&primitive, tag.as_deref(), target.as_deref(), &args)?;
+
     Ok(PrimitiveDescriptor {
         primitive,
         target,
@@ -201,6 +203,53 @@ pub fn primitive_descriptor_from_lua(
         on_complete,
         args,
     })
+}
+
+/// Luau twin of the QuickJS primitive-specific grant validation. The two
+/// authoring runtimes must reject the same malformed reaction descriptors.
+fn validate_grant_reaction(
+    primitive: &str,
+    tag: Option<&str>,
+    target: Option<&str>,
+    args: &serde_json::Value,
+) -> Result<(), DescriptorError> {
+    if !matches!(primitive, "grantHealth" | "grantAmmo") {
+        return Ok(());
+    }
+
+    if tag.is_none() && target != Some("@activators") {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "primitive `{primitive}` requires exactly one of a `tag` or target `@activators`"
+            ),
+        });
+    }
+
+    let object = args
+        .as_object()
+        .ok_or_else(|| DescriptorError::InvalidShape {
+            reason: format!("primitive `{primitive}` `args` must be an object"),
+        })?;
+    let Some(amount) = object.get("amount").and_then(serde_json::Value::as_f64) else {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!("primitive `{primitive}` `args.amount` must be a finite number"),
+        });
+    };
+    if !amount.is_finite() {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!("primitive `{primitive}` `args.amount` must be a finite number"),
+        });
+    }
+
+    if primitive == "grantAmmo" {
+        let Some(ammo_type) = object.get("type").and_then(serde_json::Value::as_str) else {
+            return Err(DescriptorError::InvalidShape {
+                reason: "primitive `grantAmmo` `args.type` must be a string".to_string(),
+            });
+        };
+        validate_ascii_identifier("grantAmmo.type", ammo_type)?;
+    }
+    Ok(())
 }
 
 pub fn sequence_steps_from_lua(arr: &Table) -> Result<Vec<SequenceStep>, DescriptorError> {

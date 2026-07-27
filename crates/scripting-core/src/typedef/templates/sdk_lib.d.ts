@@ -119,7 +119,7 @@
     progress: { tag: string; at: number; fire: string };
   };
 
-  /** Primitive reaction body: invokes the named Rust primitive. With `tag`, it targets entities carrying that tag and mutates them. Tag-targeted primitives include emitter/fog/mover commands, `applyDamage`, `setAnimationState`, `updateEnemyState`, `spawnFromSpawner`, `armTrigger`, and `disarmTrigger`; arm/disarm use their empty typed args below. Without `tag`, it is a system reaction (no entities) that enqueues a typed engine command — `playSound`, `rumble`, `flashScreen`, the UI-stack reactions. `args` carries the primitive's typed payload (e.g. `{ rate: 0 }` for `setEmitterRate`, `{ sound: "alarm" }` for `playSound`). */
+  /** Primitive reaction body: invokes the named Rust primitive. With `tag`, it targets entities carrying that tag and mutates them. Tag-targeted primitives include emitter/fog/mover commands, `applyDamage`, `grantHealth`, `grantAmmo`, `setAnimationState`, `updateEnemyState`, `spawnFromSpawner`, `armTrigger`, and `disarmTrigger`; arm/disarm use their empty typed args below. Without `tag`, it is a system reaction (no entities) that enqueues a typed engine command — `playSound`, `rumble`, `flashScreen`, the UI-stack reactions. `args` carries the primitive's typed payload (e.g. `{ rate: 0 }` for `setEmitterRate`, `{ sound: "alarm" }` for `playSound`). */
   export type PrimitiveReactionDescriptor = {
     primitive: string;
     tag?: string;
@@ -415,6 +415,8 @@
   export type TriggerEventOptions = { levels?: string[] };
   export function onTriggerEvent(filter: { tag: string }, event: "enter" | "exit", fire: (Reaction<{}> | Reaction<TriggerEventParams> | string)[], options?: TriggerEventOptions): TriggerEventDescriptor;
   export function damage(target: ActivatorsTarget | string, amount: number): PrimitiveReactionDescriptor;
+  export function grantHealth(target: ActivatorsTarget | string, amount: number): PrimitiveReactionDescriptor;
+  export function grantAmmo(target: ActivatorsTarget | string, type: string, amount: number): PrimitiveReactionDescriptor;
   /** Select a live enemy group by tag. Its tag resolves at reaction fire time. */
   export type EnemyGroupFilter = { tag?: string };
   /** Typed, additive partial for consequential enemy-state updates. */

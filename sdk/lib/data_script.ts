@@ -510,6 +510,35 @@ export function damage(target: ActivatorsTarget | string, amount: number): Primi
   return { primitive: "applyDamage", target: wireTarget, args: { amount } } as PrimitiveReactionDescriptor;
 }
 
+/** Grant health to the current trigger activators or every entity with a tag. */
+export function grantHealth(
+  target: ActivatorsTarget | string,
+  amount: number,
+): PrimitiveReactionDescriptor {
+  if (typeof target === "string") {
+    return { primitive: "grantHealth", tag: target, args: { amount } };
+  }
+  const wireTarget = target === ACTIVATORS_TARGET ? "@activators" : "@invalid";
+  return { primitive: "grantHealth", target: wireTarget, args: { amount } } as PrimitiveReactionDescriptor;
+}
+
+/** Grant an ammo-reserve pool to the current trigger activators or every entity with a tag. */
+export function grantAmmo(
+  target: ActivatorsTarget | string,
+  type: string,
+  amount: number,
+): PrimitiveReactionDescriptor {
+  if (typeof target === "string") {
+    return { primitive: "grantAmmo", tag: target, args: { type, amount } };
+  }
+  const wireTarget = target === ACTIVATORS_TARGET ? "@activators" : "@invalid";
+  return {
+    primitive: "grantAmmo",
+    target: wireTarget,
+    args: { type, amount },
+  } as PrimitiveReactionDescriptor;
+}
+
 /** Arm the trigger volume that fired the current event. */
 export function armTrigger(target: TriggerTarget): SequenceStep[] {
   const wireTarget = target === TRIGGER_TARGET ? "@trigger" : "@invalid";

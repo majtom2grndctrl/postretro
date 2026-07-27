@@ -115,8 +115,7 @@ across all levels.
 | `canonicalName` | `string` (optional) | The `.map` classname this archetype matches. Omit it for descriptors that are not directly map-placeable. Built-in classnames (e.g. `billboard_emitter`) take precedence. |
 | `components.emitter` | `ComponentValue` (optional) | Emitter component attached at spawn. Use `smokeEmitter`, `sparkEmitter`, or `emitter()`. |
 | `components.light` | `{ color: [r, g, b], range: number, intensity: number, is_dynamic: boolean }` (optional) | Light component attached at spawn. Descriptor-spawned lights are always treated as dynamic regardless of `is_dynamic`. |
-| `components.behavior` | `BehaviorGraphDescriptor` (optional) | Authored enemy behavior state graph — named states, motion/action verbs, and ordered transition guards. See [`components.behavior`](#componentsbehavior). Mutually exclusive with `components.ai`. |
-| `components.ai` | `AiDescriptor` (optional) | Legacy fixed four-state enemy brain (`detectionRange`, `attackRange`, `leashRange`, `attackDamage`, `attackCooldownMs`, `moveSpeed`, `deathDespawnMs`, `states`). Still supported: it **lowers to a behavior graph at spawn**, so it runs on the same evaluator with the same tick semantics. Prefer `components.behavior` for new work — everything below the four fixed states is unreachable from `ai`. Mutually exclusive with `components.behavior`. |
+| `components.behavior` | `BehaviorGraphDescriptor` (optional) | Authored enemy behavior graph — named states, motion/action verbs, candidate eligibility, and ordered transition guards. It owns acquisition and stand-down policy. See [`components.behavior`](#componentsbehavior). |
 
 **Manifest commit:** returned descriptors validate as a group after
 the mod manifest succeeds. A failed mod init changes neither the entity registry nor
@@ -446,14 +445,11 @@ dash fields, bound against a brain-fact namespace instead of the movement one.
 Your script still runs only at load: a guard crosses into the engine as data and
 is re-evaluated every tick.
 
-`components.behavior` and `components.ai` are two spellings of one brain.
-Declaring both is a load error.
-
-The legacy `components.ai.leashRange` remains engine-owned: measured from the
-enemy's **current position**, it bounds both fresh acquisition and retained
-targets, and must be at least `detectionRange`. An authored graph has no matching
-range field. Its state guards own disengagement, while a distance clause in
-`candidateFilter` owns any authored acquisition radius.
+Every engagement policy is explicit in the graph. A distance clause in
+`candidateFilter` bounds **fresh acquisition** only; it is never evaluated
+against a retained target. Ordered transitions and interrupts own retained-target
+stand-down, commonly through `brain.targetDistance`. The engine supplies no
+default acquisition or disengagement range.
 
 ```typescript
 import { brain, candidate, defineEntity, runtime } from "postretro";
@@ -743,8 +739,8 @@ pack.
 
 ### The level-wide pursuer
 
-There is deliberately **no engine leash for authored graphs.** An authored graph
-has no engine-side disengagement range. A `chaseTarget` state with no exit guard
+There is deliberately **no engine-owned acquisition or disengagement range.** A
+`chaseTarget` state with no exit guard
 validates cleanly and pursues from anywhere on the level, through the whole map,
 forever.
 
@@ -772,7 +768,7 @@ chase: {
   motion: "chaseTarget",
   transitions: [
     { to: "swing", when: runtime.le(brain.targetDistance, 2) },
-    // The leash. Without this line, the chase never ends.
+    // Stand down beyond 50 m. Without this line, the chase never ends.
     { to: "idle", when: runtime.gt(brain.targetDistance, 50) },
   ],
 },

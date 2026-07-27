@@ -118,16 +118,12 @@ fn committed_sdk_types_contain_weapon_ammo_resource() {
     }
 }
 
-/// Positive-content guard for the `AiDescriptor` typedef registration.
-/// The drift test (`committed_sdk_types_match_current_registry`) only proves
-/// the committed files MATCH the generator — it would pass vacuously if
-/// `AiDescriptor` were never registered and therefore never emitted on
-/// either side. This test asserts the type, its closed `states` block, and
-/// the `ai` component slot are actually present in the committed typedefs and
-/// in fresh generator output, so a regression that drops the registration
-/// fails loudly rather than silently passing.
+/// Guard the sole behavior-graph SDK surface against both registration loss and
+/// legacy vocabulary reappearing. The drift test
+/// (`committed_sdk_types_match_current_registry`) only proves that committed
+/// files MATCH the generator; it cannot prove which surface either contains.
 #[test]
-fn committed_sdk_types_contain_ai_descriptor() {
+fn committed_sdk_types_contain_behavior_graph_without_legacy_ai() {
     use crate::scripting::typedef::register_all;
     use postretro_entities::ctx::ScriptCtx;
 
@@ -150,27 +146,49 @@ fn committed_sdk_types_contain_ai_descriptor() {
     for (label, generated, committed) in
         [("ts", &ts, &committed_ts), ("luau", &luau, &committed_luau)]
     {
-        for needle in ["AiDescriptor", "AiStateNames", "detectionRange"] {
+        for needle in [
+            "BehaviorGraphDescriptor",
+            "candidateFilter",
+            "retained-target stand-down",
+        ] {
             assert!(
                 generated.contains(needle),
-                "{label} generator output missing `{needle}` — AiDescriptor not registered?"
+                "{label} generator output missing `{needle}` — behavior graph not registered?"
             );
             assert!(
                 committed.contains(needle),
                 "committed {label} typedefs missing `{needle}` — regenerate and commit"
             );
         }
+        for legacy in ["AiDescriptor", "AiStateNames", "leashRange", "components.ai"] {
+            assert!(
+                !generated.contains(legacy),
+                "{label} generator output still advertises retired `{legacy}`"
+            );
+            assert!(
+                !committed.contains(legacy),
+                "committed {label} typedefs still advertise retired `{legacy}`"
+            );
+        }
     }
 
-    // The `ai` component slot must be wired into EntityTypeComponents on
-    // both surfaces (TS uses `?:`, Luau uses a trailing `?`).
+    // EntityTypeComponents exposes the behavior graph and no retired `ai` slot
+    // (TS uses `?:`, Luau uses a trailing `?`).
     assert!(
-        committed_ts.contains("ai?: AiDescriptor | null;"),
-        "committed TS typedefs missing the `ai` component slot"
+        committed_ts.contains("behavior?: BehaviorGraphDescriptor | null;"),
+        "committed TS typedefs missing the behavior component slot"
     );
     assert!(
-        committed_luau.contains("ai: AiDescriptor?,"),
-        "committed Luau typedefs missing the `ai` component slot"
+        committed_luau.contains("behavior: BehaviorGraphDescriptor?,"),
+        "committed Luau typedefs missing the behavior component slot"
+    );
+    assert!(
+        !committed_ts.contains("ai?:"),
+        "committed TS typedefs still contain an `ai` component slot"
+    );
+    assert!(
+        !committed_luau.contains("ai:"),
+        "committed Luau typedefs still contain an `ai` component slot"
     );
 }
 

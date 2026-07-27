@@ -153,7 +153,7 @@ pub struct BehaviorGraphDescriptor {
     /// `chaseTarget` state degrades to cleared steering because there is
     /// nothing to move relative to. A sealed enemy can therefore still flinch
     /// on an interrupt. A graph that wants to stand down on target loss authors
-    /// that edge itself — the lowering does exactly this for legacy brains.
+    /// that edge itself.
     ///
     /// [`BRAIN_NO_TARGET_DISTANCE`]: crate::brain::BRAIN_NO_TARGET_DISTANCE
     pub initial: String,
@@ -293,7 +293,7 @@ impl BehaviorGraphDescriptor {
     ///
     /// Duplicate state names are rejected by [`deserialize_states`] upstream.
     /// The state → mesh animation-state mapping is cross-component and stays a
-    /// SPAWN-time check, as it is for `components.ai`.
+    /// SPAWN-time check.
     pub fn validate(self) -> Result<Self, DescriptorError> {
         if self.states.is_empty() {
             return Err(DescriptorError::InvalidShape {

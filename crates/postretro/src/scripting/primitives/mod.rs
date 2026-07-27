@@ -276,8 +276,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("weapon?", "Option<WeaponDescriptor>", "Weapon tuning preset. Weapon archetypes are instantiated as wieldable entities when referenced by `defaultWeapon`.")
         .field("mesh?", "Option<MeshDescriptor>", "Mesh preset: model handle plus an optional per-state animation map. A descriptor carrying this is directly map-placeable by canonicalName.")
         .field("health?", "Option<HealthDescriptor>", "Hit points plus an optional hitscan hitbox. A descriptor carrying this is directly map-placeable by canonicalName.")
-        .field("ai?", "Option<AiDescriptor>", "AI brain preset: detection/attack/leash ranges, attack tuning, move speed, despawn delay, and the logical-state → mesh animation-state map. Materializes a brain plus a navigation agent at spawn. Rides on health+mesh for map placement; it does not itself make a descriptor placeable. Mutually exclusive with `behavior`.")
-        .field("behavior?", "Option<BehaviorGraphDescriptor>", "Authored behavior state graph: named states with per-state motion/action/animation plus ordered IR transition guards. The graph replaces the legacy four-state `ai` preset; declaring both is a parse error. Materializes the same brain plus navigation agent at spawn.")
+        .field("behavior?", "Option<BehaviorGraphDescriptor>", "Authored enemy behavior graph: named states with per-state motion/action/animation plus ordered IR transition guards. It materializes a brain plus a navigation agent at spawn. The graph owns candidate eligibility, fresh-acquisition policy, and retained-target stand-down through ordered guards.")
         .finish();
     registry
         .register_enum("FireMode")
@@ -333,26 +332,6 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("zoneMultipliers?", "ZoneMultipliers", "Per-skeletal-zone damage multipliers, tag → factor (e.g. `{ head: 1.5 }`). A shot on a tagged zone scales the weapon's payload by this factor; an absent zone or unlisted tag applies 1.0. Each factor must be finite and >= 0. Optional; defaults to empty.")
         .finish();
     registry
-        .register_type("AiStateNames")
-        .doc("The closed logical-state → animation-state name mapping carried by `AiDescriptor.states`. Each value names a state declared in the entity's `components.mesh.animations`; the brain switches the mesh to the matching state when it enters that logical state. All four keys are required and the set is closed (no other keys allowed).")
-        .field("idle", "String", "Mesh state played while the brain is idle (no target). Must name a declared mesh animation state.")
-        .field("alert", "String", "Mesh state played while the brain is alerted and pursuing a target (the chase/locomotion state). Must name a declared mesh animation state.")
-        .field("attack", "String", "Mesh state played while the brain attacks. Must name a declared mesh animation state.")
-        .field("death", "String", "Mesh state played when the brain dies. Must name a declared mesh animation state.")
-        .finish();
-    registry
-        .register_type("AiDescriptor")
-        .doc("Authored AI brain component preset attached to `EntityTypeDescriptor.components.ai`. Descriptor-owned tuning: maps never override these. Lowers at spawn to a behavior graph and materializes the engine-owned brain (graph + current state + timers) and a movable navigation agent. Distances are in metres, times in milliseconds, `moveSpeed` in metres/sec. The `states` block links the brain's states to mesh animation states; that cross-component mapping is validated at spawn (the ai block cannot see the mesh block at its own parse).")
-        .field("detectionRange", "f32", "Distance at which the brain notices a target and leaves idle, in metres. Must be finite and > 0; `leashRange` must be >= this value.")
-        .field("attackRange", "f32", "Distance within which the brain attacks rather than pursues, in metres. Must be finite and > 0.")
-        .field("leashRange", "f32", "Distance from the enemy's current position that bounds both target acquisition and retention, in metres. Must be finite and > 0 and >= `detectionRange`.")
-        .field("attackDamage", "f32", "Damage dealt per attack. Must be finite and >= 0 (a negative value would heal the target through the damage chokepoint).")
-        .field("attackCooldownMs", "f32", "Minimum interval between attacks, in milliseconds. Must be finite and > 0.")
-        .field("moveSpeed", "f32", "Pursuit movement speed in metres/sec, seeding the navigation agent. Must be finite and > 0.")
-        .field("deathDespawnMs", "f32", "Delay between death and despawn, in milliseconds. Must be finite and > 0. Carried for legacy shape parity only; despawn timing is owned by the death/despawn effect path, not by this value.")
-        .field("states", "AiStateNames", "Closed logical-state → mesh animation-state name mapping (idle / alert / attack / death). Each value must name a state declared in `components.mesh.animations`; validated at spawn.")
-        .finish();
-    registry
         .register_enum("MotionVerb")
         .doc("What a behavior-graph state does with the enemy's movement. Closed vocabulary: the engine owns steering; the state picks the mode.")
         .variant(
@@ -397,7 +376,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .finish();
     registry
         .register_type("BehaviorGraphDescriptor")
-        .doc("Authored behavior state graph attached to `EntityTypeDescriptor.components.behavior`. Descriptor-owned tuning: maps never override these. The engine owns the offered-target set, ranking and retention, steering, damage, and determinism; the graph owns candidate eligibility, which states exist, and the ordered guards between them. Mutually exclusive with `components.ai`, which lowers to this same representation at spawn.")
+        .doc("Authored behavior state graph attached to `EntityTypeDescriptor.components.behavior`. Descriptor-owned tuning: maps never override these. The engine owns the offered-target set, ranking and retention, steering, damage, and determinism; the graph owns candidate eligibility, fresh-acquisition policy, its states, and ordered guards, including retained-target stand-down.")
         .field("initial", "String", "State entered at spawn. Must name a declared state. It is also forced when the aggro gate closes, so it should be rest-appropriate. Having no target does not force this state; guards still evaluate.")
         .field("states", "BehaviorStates", "Declared states keyed by author-chosen name. Must be non-empty.")
         .field("interrupts?", "Vec<TransitionDescriptor>", "Any-state edges, evaluated in declaration order BEFORE the current state's own transitions. An interrupt targeting the current state is skipped. Optional; defaults to none.")

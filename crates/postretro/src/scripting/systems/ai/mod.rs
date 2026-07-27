@@ -3,9 +3,8 @@
 // See: context/lib/entity_model.md §5 (fixed-tick game logic) ·
 //      context/lib/scripting.md §10.5 (the contextual damage chokepoint)
 
-// Mods declare the state graph; Rust executes it. Every brain carries one
-// representation — a `BehaviorGraphDescriptor`, authored directly or lowered
-// from a legacy `components.ai` block — and this module drives exactly one
+// Mods declare the state graph; Rust executes it. Every brain carries an
+// authored `BehaviorGraphDescriptor`, and this module drives exactly one
 // evaluator over it. There is no live VM at tick: guards are IR programs bound
 // once per graph into the evaluator's side-table (`brain_programs.rs`) and read
 // through a refreshed scope (`brain_scope.rs`).

@@ -104,6 +104,18 @@ Two mechanisms, two jobs — conflating them is the obvious mistake.
   and not on an author remembering to bump a string. The full tiering of what server
   authority absorbs and what it cannot is in
   [Co-op Content Compatibility](./coop-content-compatibility.md).
+- **A declared mismatch closes; a hashed one holds.** Only the id can refuse a connection,
+  because only the id is immutable for a connection's lifetime. Both digests can be
+  reinstalled while a peer is connected — the level digest at every install, the mod digest
+  at every staged reload — so a divergence on either demotes the peer and tells it why,
+  and it re-participates when the two sides agree again.
+
+> **History note.** Before the session-lifecycle spec, this section said the manifest declares
+> an id and a version and the host compares **both**, catching "wrong mod, stale version."
+> That is the position the digests overturn: a declared version does not track the breaking
+> surface in either direction — it blocks a friend over a lighting tweak, and it stays put
+> when someone retunes player movement. Recorded so the change reads as a decision rather
+> than as how it always was.
 
 A content hash over the *whole* mod was considered and is wrong here: it breaks every dev
 iteration loop (hot reload changes the hash mid-session), makes legitimate client-side

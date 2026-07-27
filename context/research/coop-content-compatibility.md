@@ -73,11 +73,18 @@ mod — and that split is why the policy has two digests rather than one.
 
 **Compatibility is decided by content, at the two moments the session gate already runs.**
 
-| Stage | Compares | Gates on |
+| Stage | Compares | On mismatch |
 |---|---|---|
-| **Admission** | mod id, mod compatibility digest | both |
+| **Admission** | mod id | refuse and close |
 | | mod version | nothing — display and diagnostics only |
-| **Content parity** | level identity, level content digest | both |
+| **Content parity** | mod compatibility digest, level identity, level content digest | hold, never close |
+
+The split is by **mutability**, not by subject. Admission carries only what cannot change
+for a live connection — the protocol constants, and the mod id, which is frozen at first
+commit. Every content-derived value sits in parity, because every one of them can be
+reinstalled under a live connection: the level pair at each install, the mod digest at each
+staged reload. A mismatch on a parity value is therefore a *hold* with a diagnostic, never a
+disconnect — it is a fact scheduled to become true again.
 
 - The **mod compatibility digest** covers `entities` and `store_declarations` — Tier 3
   items 2–4. It deliberately excludes `render`, `theme`, `fonts`, `ui_trees`, and
@@ -101,9 +108,23 @@ wrong. A digest cannot be got wrong.
 
 It changes on every hot reload, breaking the dev iteration loop, and it makes legitimate
 client-side differences fatal. Scoping the digest to the simulated surface is what makes
-content-derived compatibility usable. Both digests are **first-commit-wins** across hot
-reloads for the same reason; hot reload is debug-only, so this is a release guarantee and a
-debug best-effort.
+content-derived compatibility usable.
+
+Scoping is only half of it, though. The other half is that a divergence **holds** rather than
+closes: a staged reload that moves the mod digest demotes affected peers to admitted with a
+diagnostic, and they re-participate when the peers agree again. Both halves matter and
+neither substitutes for the other. Mod **identity** is the one value frozen across reloads —
+first-commit-wins — because admission is terminal and has no state to demote to.
+
+### The digest domain is a denylist
+
+Hash every field the recipe reaches and name the specific exclusions; never the reverse. An
+allowlist is the mechanism that produced the static-collision omission in the first place — a
+field added later by someone who never reads the recipe defaults to unhashed, and no test
+catches a field you forgot. Under a denylist the same omission fails loud (a cosmetic edit
+demotes peers, visible immediately) instead of silent (prediction fighting, traced back to
+nothing). In Rust the enforcement is exhaustive destructuring with no `..` rest pattern, so a
+new field fails the build until someone decides which side it is on.
 
 ## 4. How often is a change non-breaking?
 
@@ -155,3 +176,13 @@ Static world collision is the cautionary case: it was always a client-local pred
 and was never hashed, so the gate has been passing maps it should have refused since
 prediction shipped. The failure is silent, which is what makes the rule worth stating as a
 rule rather than leaving to review.
+
+A rule alone does not enforce anything, which is why the digest domains are denylists — the
+compile error is what actually holds the line, and this paragraph is what explains why the
+compile error is there. And a second rule, for the lane rather than the domain:
+
+> **A compared value goes in admission only if a mismatch on it can never become a match.
+> Everything else is parity, and parity holds rather than closes.**
+
+Both rules exist because the same mistake is easy in two places: putting a value where it is
+convenient rather than where its mutability says it belongs.

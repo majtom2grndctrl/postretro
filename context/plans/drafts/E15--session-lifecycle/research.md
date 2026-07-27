@@ -39,11 +39,11 @@ it joined on.
 ```mermaid
 stateDiagram-v2
     [*] --> Pending: transport connect
-    Pending --> Admitted: admission matches<br/>(protocol + mod id + mod digest)
+    Pending --> Admitted: admission matches<br/>(protocol constants + mod id)
     Pending --> Closed: admission mismatch<br/>(typed reason sent, disconnect deferred one poll)
-    Admitted --> Participating: content parity matches<br/>(level identity + level digest)
+    Admitted --> Participating: content parity matches<br/>(mod digest + level identity + level digest)
     Admitted --> Admitted: parity mismatch —<br/>no state flows, connection survives
-    Participating --> Admitted: host installs a different level<br/>(demotion runs the existing close cleanup,<br/>relevel names the next map)
+    Participating --> Admitted: host replaces the parity triple<br/>(level install, or staged commit moving the mod digest;<br/>demotion runs the existing close cleanup)
     Admitted --> Closed: disconnect or timeout
     Participating --> Closed: disconnect or timeout
     Closed --> [*]
@@ -56,15 +56,38 @@ transition, which is only true if the transport is polled across it.
 
 **The self-loop is the load-bearing edge.** `Admitted → Admitted` on a parity mismatch —
 rather than `Admitted → Closed` — is what makes the two gate stages structurally different
-rather than merely sequential. Admission facts are connection-scoped and can never become
-true later, so a mismatch there closes. Parity is level-scoped and is designed to become
-true one install later, so closing on it is a category error, and it would race the spec's
-own criteria: a client's parity for level A can still be in flight when the host installs
-level B, and a host that closed on mismatch would tear down a client it demoted one frame
-earlier. The first draft of the index carried the content cause in the reject-and-close lane
-beside protocol and mod, contradicting this diagram; direction review caught it, and the
-index now matches. Consequence worth noting: the deferred-disconnect mechanism serves
-admission only, which shrinks the spec's own "trimmable part."
+rather than merely sequential. Admission facts can never become true later, so a mismatch
+there closes. Parity values are all designed to become true later, so closing on one is a
+category error, and it would race the spec's own criteria: a client's parity for level A can
+still be in flight when the host installs level B, and a host that closed on mismatch would
+tear down a client it demoted one frame earlier. The first draft of the index carried the
+content cause in the reject-and-close lane beside protocol and mod, contradicting this
+diagram; direction review caught it, and the index now matches. Consequence worth noting:
+the deferred-disconnect mechanism serves admission only, which shrinks the spec's own
+"trimmable part."
+
+**Which lane a value belongs in is decided by mutability, and the first draft got one
+wrong.** The rule that survives is: admission carries a value only if a mismatch on it can
+never become a match. That is true of the protocol constants, and true of the mod id because
+identity is frozen at first commit. It was *not* true of the mod compatibility digest, which
+the first draft nonetheless gated at admission — a staged reload re-commits `entities` and
+`store_declarations`, the two lanes the digest hashes, so its value changes under a live
+connection. The draft made its own premise true by declining to observe the change, freezing
+the digest at first commit, which bought the premise at the price of gating live connections
+on a stale value in exactly the builds where co-op is developed and playtested.
+
+The trap was framing the choice as freeze-versus-rehash-and-close. Both options are bad, and
+the spec's own new mechanism supplies a third: **rehash and demote**. That option only exists
+because this spec invents a state to demote *to*, which is why the first draft could not see
+it — it was reasoning with the vocabulary the shipped code had. Worth recording as a pattern:
+when a spec adds a state, re-examine every decision it made before the state existed.
+
+The dev-loop objection that killed a whole-mod content hash does not transfer to the
+rehashing digest, and the distinction is worth keeping straight. That hash moved on every
+byte of every script and its consequence was a **closed** connection; this one moves only
+when a simulated lane changes and its consequence is a **hold** that resolves the moment the
+peers agree again. Same mechanism, two orders of magnitude apart in both trigger frequency
+and blast radius.
 
 ## Why this merged with the level-transition spec
 
@@ -130,6 +153,29 @@ fork that changes only scripts ships identical map bytes and is caught at admiss
 parity; a map edit is caught at parity, never at admission. That is a structural reason they
 belong in one spec, where the earlier argument was a contingent one about a specific hole.
 
+## Which corroborating documents are independent, and which are not
+
+Direction review flagged this and it belongs on the record, because the next reviewer will
+otherwise read agreement where there is only restatement.
+
+Three documents now state that co-op compatibility is decided by content rather than by a
+declared version: this spec, `research/coop-content-compatibility.md`, and
+`research/coop-session-lobby.md` §4. The third is **not** independent support. Before commit
+`f9a8973` it said the opposite — "the manifest declares an id and a version; the client sends
+them at admission; the host compares" — and it was rewritten in the same commit that made the
+decision. The roadmap's Phase 3.75 sub-bullet (line ~201) was rewritten in that commit too.
+
+So the honest inventory is: one argument (in `coop-content-compatibility.md`), stated in three
+places. It is a good argument and it survives review on its merits, but a reader must not
+count it three times. Two corollaries for anyone validating this spec later:
+
+- The roadmap's **Phase 3.75 paragraph** and the three-spec decomposition are owner-set and
+  are legitimate external referents. The **sub-bullet for this spec** is not — it is drafter
+  output and tracks the draft.
+- The genuinely independent evidence for the policy is in the code, not the prose: the
+  suppression list in `networking.md` §Phase boundaries (which is what makes Tier 2 large)
+  and `CollisionWorld::populate_from_level` (which is what makes Tier 3 item 1 real).
+
 ## Rejected while drafting
 
 - **Telling the client only that it was admitted.** Superseded by the merge: the relevel
@@ -141,7 +187,10 @@ belong in one spec, where the earlier argument was a contingent one about a spec
   client-side differences fatal, and buys tamper detection, an explicit non-goal
   (`index.md` §4). Superseded rather than simply rejected: the spec now hashes a *scoped*
   surface — `entities` and `store_declarations`, the lanes a client simulates against —
-  which keeps the compatibility property and drops the breakage. `E16--impact-policy-substrate`'s
+  which keeps the compatibility property and drops the breakage. Note the two independent
+  reasons the breakage is gone, since collapsing them invites a bad inference: the domain
+  shrank from every byte to two lanes, *and* the consequence softened from close to demote.
+  Either alone would leave a usable dev loop; neither is a reason to widen the domain back. `E16--impact-policy-substrate`'s
   rule (explicit author-assigned ids, not content-derived ones) still governs **identity**;
   it never governed parity, which has been content-derived since the fingerprint shipped.
 - **Exact mod-version equality as the admission gate.** The first draft's rule, dropped

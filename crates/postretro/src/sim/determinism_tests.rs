@@ -1129,8 +1129,7 @@ fn driven_agent_mesh(current_state: &str) -> MeshComponent {
     )
 }
 
-/// Spawn a legacy-descriptor enemy staged directly into one of its lowered
-/// graph states, named as the lowering names it.
+/// Spawn a behavior-graph enemy staged directly into one of its declared states.
 fn spawn_driven_agent(
     registry: &mut EntityRegistry,
     position: Vec3,
@@ -1714,12 +1713,12 @@ fn host_player_locomotion_selects_walk_and_calibrates_rate_before_replication() 
 // the outer app loop drains their clip-index resolve queue.
 #[test]
 fn spawner_path_first_rate_pass_uses_derived_clip_calibration_before_index_resolve() {
-    use crate::scripting::builtins::data_archetype_test_fixtures::ai_enemy_descriptor;
+    use crate::scripting::builtins::data_archetype_test_fixtures::behavior_enemy_descriptor;
     use crate::spawner::SpawnContext;
     use postretro_entities::components::spawner::SpawnerComponent;
     use postretro_model::skeleton::{AnimationClip, Skeleton};
 
-    let mut descriptor = ai_enemy_descriptor("runtime_enemy");
+    let mut descriptor = behavior_enemy_descriptor("runtime_enemy");
     let mesh_desc = descriptor.mesh.as_mut().unwrap();
     mesh_desc.animations.insert(
         "walk".to_string(),

@@ -89,14 +89,6 @@ pub(crate) fn mesh_descriptor(classname: &str, animated: bool) -> EntityTypeDesc
     }
 }
 
-/// An AI-enemy descriptor: a mesh placement (so it is directly map-placeable)
-/// plus a behavior graph (so materialization attaches `Brain` + `Agent`).
-pub(crate) fn ai_enemy_descriptor(classname: &str) -> EntityTypeDescriptor {
-    let mut descriptor = mesh_descriptor(classname, true);
-    descriptor.behavior = Some(sample_behavior_graph());
-    descriptor
-}
-
 /// Minimal valid `components.behavior` graph over the two animation states
 /// [`mesh_descriptor`] declares (`idle` default + `attack`): rest in `idle`
 /// until the target closes, then chase-and-attack. `initial`'s animation is the
@@ -149,11 +141,8 @@ fn sample_behavior_graph() -> BehaviorGraphDescriptor {
     }
 }
 
-/// An AI-enemy descriptor in the AUTHORED `components.behavior` spelling — the
-/// sibling of [`ai_enemy_descriptor`] and the shape the shipped reference enemy
-/// now has. Same mesh placement; the brain arrives as a graph instead of a
-/// legacy preset, which is the other arm every "does this descriptor carry a
-/// brain?" predicate must accept.
+/// A behavior-authored enemy descriptor: map-placeable mesh plus a graph that
+/// materializes `Brain` and `Agent`.
 pub(crate) fn behavior_enemy_descriptor(classname: &str) -> EntityTypeDescriptor {
     let mut descriptor = mesh_descriptor(classname, true);
     descriptor.behavior = Some(sample_behavior_graph());

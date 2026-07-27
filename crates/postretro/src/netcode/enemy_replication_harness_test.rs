@@ -679,9 +679,8 @@ fn connected_client_has_exactly_one_remote_enemy_and_no_local_authoritative_copy
 }
 
 // The suppression seam keys on "carries a brain", and the shipped reference
-// enemy authors that brain as a `components.behavior` graph. Had the predicate
-// covered only the legacy `ai` spelling, a connected client would spawn a local
-// authoritative duplicate brain for exactly the class a real map places.
+// enemy authors that brain as a `components.behavior` graph. A connected client
+// must never spawn a local authoritative duplicate brain for that class.
 #[test]
 fn connected_client_suppresses_the_behavior_spelled_enemy_placement_too() {
     let descriptors = vec![

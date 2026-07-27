@@ -522,7 +522,7 @@ const REFERENCE_ENTITIES_LUAU_SRC: &str =
 /// The module is compiled VERBATIM: a trailing statement stashes the exported
 /// descriptor on `globalThis` so the value is read back independently of however
 /// the bundler wraps the module's own exports.
-fn shipped_reference_enemy_from_typescript() -> EntityTypeDescriptor {
+fn shipped_reference_descriptor_from_typescript(export_name: &str) -> EntityTypeDescriptor {
     let directory = std::env::temp_dir().join(format!(
         "postretro-reference-enemy-{}-{}",
         std::process::id(),
@@ -532,7 +532,7 @@ fn shipped_reference_enemy_from_typescript() -> EntityTypeDescriptor {
     let entry = directory.join("entities.ts");
     std::fs::write(
         &entry,
-        format!("{REFERENCE_ENTITIES_TS_SRC}\nglobalThis.__referenceEnemy = referenceEnemyEntity;"),
+        format!("{REFERENCE_ENTITIES_TS_SRC}\nglobalThis.__referenceEntity = {export_name};"),
     )
     .expect("write reference-enemy fixture");
     let entry = std::fs::canonicalize(&entry).expect("canonicalize reference-enemy fixture");
@@ -548,9 +548,9 @@ fn shipped_reference_enemy_from_typescript() -> EntityTypeDescriptor {
         let _: JsValue = crate::quickjs::run_script(&ctx, &bundled, "entities.ts")
             .expect("the shipped reference entities module evaluates");
         let value: JsValue =
-            crate::quickjs::run_script(&ctx, "globalThis.__referenceEnemy", "read")
-                .expect("the module exported `referenceEnemyEntity`");
-        entity_descriptor_from_js(&ctx, value).expect("the shipped TS reference enemy parses")
+            crate::quickjs::run_script(&ctx, "globalThis.__referenceEntity", "read")
+                .expect("the module exported the requested reference descriptor");
+        entity_descriptor_from_js(&ctx, value).expect("the shipped TS reference descriptor parses")
     })
 }
 
@@ -558,7 +558,7 @@ fn shipped_reference_enemy_from_typescript() -> EntityTypeDescriptor {
 /// module in a real mod-rooted Luau state (whose prelude supplies the
 /// `defineEntity` / `runtime` / `brain` globals it authors against) and parse the
 /// result with the production Luau descriptor bridge.
-fn shipped_reference_enemy_from_luau() -> EntityTypeDescriptor {
+fn shipped_reference_descriptor_from_luau(export_name: &str) -> EntityTypeDescriptor {
     let lua = crate::luau::build_lua_state(
         &[],
         None,
@@ -569,14 +569,22 @@ fn shipped_reference_enemy_from_luau() -> EntityTypeDescriptor {
     // function keeps the shipped source verbatim while letting this reach the
     // one export under test.
     let source = format!(
-        "local M = (function()\n{REFERENCE_ENTITIES_LUAU_SRC}\nend)()\nreturn M.referenceEnemyEntity"
+        "local M = (function()\n{REFERENCE_ENTITIES_LUAU_SRC}\nend)()\nreturn M.{export_name}"
     );
     let value: LuaValue = lua
         .load(&source)
         .set_name("sdk/behaviors/reference/entities.luau")
         .eval()
         .expect("the shipped reference entities module evaluates");
-    entity_descriptor_from_lua(value).expect("the shipped Luau reference enemy parses")
+    entity_descriptor_from_lua(value).expect("the shipped Luau reference descriptor parses")
+}
+
+fn shipped_reference_enemy_from_typescript() -> EntityTypeDescriptor {
+    shipped_reference_descriptor_from_typescript("referenceEnemyEntity")
+}
+
+fn shipped_reference_enemy_from_luau() -> EntityTypeDescriptor {
+    shipped_reference_descriptor_from_luau("referenceEnemyEntity")
 }
 
 /// The shipped reference enemy is the one archetype a real map places, and it is
@@ -596,17 +604,8 @@ fn shipped_reference_enemy_from_luau() -> EntityTypeDescriptor {
 /// when both twins are changed together in a way that leaves the shipped enemy
 /// disagreeing with the shape the engine's parity tests assume.
 ///
-/// WHAT THIS DOES NOT CATCH. Only `components.behavior` is compared; the
-/// archetype's `health` and `mesh` blocks (including whether every
-/// `states.*.animation` names a declared `mesh.animations` key — a SPAWN-time,
-/// cross-component check) are outside this guard. The legacy `components.ai`
-/// fixture enemy in the same file is not covered here either. And this proves
-/// the two AUTHORINGS agree, not that either is good gameplay — that the shipped
-/// graph behaves like the legacy block it replaced is
-/// `the_authored_reference_graph_is_behavior_identical_to_the_legacy_block`, and
-/// that the Rust oracle THAT test uses still matches this shipped graph is
-/// `the_reference_oracle_matches_the_shipped_authored_graph` (both in the
-/// engine's `ai_tests.rs`).
+/// The pose fixture below extends the same production-path coverage to the
+/// cross-component mesh-animation names its direct graph drives.
 #[test]
 fn the_shipped_reference_enemy_graph_is_identical_in_both_authorings() {
     let ts = shipped_reference_enemy_from_typescript()
@@ -663,8 +662,8 @@ fn the_shipped_reference_enemy_graph_is_identical_in_both_authorings() {
             .iter()
             .map(|edge| edge.to.as_str())
             .collect::<Vec<_>>(),
-        vec!["idle", "idle"],
-        "the ordered any-state edges stand down on target loss, then target death"
+        vec!["idle", "idle", "idle"],
+        "the ordered any-state edges stand down on target loss, target death, then range"
     );
     assert!(
         ts.candidate_filter.is_some(),
@@ -684,6 +683,62 @@ fn the_shipped_reference_enemy_graph_is_identical_in_both_authorings() {
             targets,
             "`{state}` edge targets, in declaration order"
         );
+    }
+}
+
+/// The E21 pose-modifier fixture is a real, shipped animated mesh rather than a
+/// test-only descriptor. Its direct graph must survive both production parser
+/// paths, stay identical between authorings, and drive only declared mesh
+/// animation states. That final assertion mirrors the spawn-time validation
+/// contract at the descriptor boundary, where this test can show the full
+/// authored data that reaches the loader.
+#[test]
+fn shipped_pose_fixture_is_a_direct_graph_with_valid_mesh_animation_states() {
+    let ts = shipped_reference_descriptor_from_typescript("poseFixtureEnemyEntity");
+    let luau = shipped_reference_descriptor_from_luau("poseFixtureEnemyEntity");
+
+    assert!(
+        ts.ai.is_none(),
+        "the TS pose fixture has no legacy AI block"
+    );
+    assert!(
+        luau.ai.is_none(),
+        "the Luau pose fixture has no legacy AI block"
+    );
+    assert_eq!(
+        ts.behavior, luau.behavior,
+        "the pose graphs stay in lockstep"
+    );
+    assert_eq!(
+        ts.mesh, luau.mesh,
+        "the pose mesh declarations stay in lockstep"
+    );
+
+    for descriptor in [&ts, &luau] {
+        let graph = descriptor
+            .behavior
+            .as_ref()
+            .expect("the pose fixture carries a direct behavior graph");
+        let mesh = descriptor
+            .mesh
+            .as_ref()
+            .expect("the pose fixture carries an animated mesh");
+        assert_eq!(
+            graph
+                .interrupts
+                .iter()
+                .map(|edge| edge.to.as_str())
+                .collect::<Vec<_>>(),
+            vec!["idle", "idle", "idle"],
+            "target loss, target death, then authored 50 m stand-down remain ordered"
+        );
+        for state in graph.states.values() {
+            assert!(
+                mesh.animations.contains_key(&state.animation),
+                "behavior state animation `{}` must be declared by the pose mesh",
+                state.animation
+            );
+        }
     }
 }
 

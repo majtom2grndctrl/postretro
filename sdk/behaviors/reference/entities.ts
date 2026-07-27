@@ -26,8 +26,8 @@ export const POSE_FIXTURE_ENEMY_CLASSNAME = "pose_fixture_enemy";
 const REFERENCE_DETECTION_RANGE = 16;
 /** Distance within which its melee swing connects, in metres. */
 const REFERENCE_ATTACK_RANGE = 2;
-/** Legacy leash and this graph's acquisition radius, in metres. */
-const REFERENCE_LEASH_RANGE = 50;
+/** Graph-authored acquisition and stand-down radius, in metres. */
+const REFERENCE_AGGRO_RANGE = 50;
 
 /**
  * The map-placeable reference enemy: a full health + animated-mesh + behavior-
@@ -49,11 +49,11 @@ const REFERENCE_LEASH_RANGE = 50;
  * shape:
  *
  * ```text
- *   ANY   --(!hasTarget || targetDied)-->               idle   (interrupt)
+ *   ANY   --(!hasTarget || targetDied || dist > aggroRange)--> idle (interrupt)
  *   idle  --(acquisitionDue && dist <= attackRange)-->  attack
  *   idle  --(acquisitionDue && dist <= detectionRange)--> alert
  *   alert --(dist <= attackRange)-->                    attack
- *   alert --(dist >  leashRange)-->                     idle
+ *   alert --(dist >  aggroRange)-->                     idle
  *   attack --(dist >  attackRange)-->                   alert
  * ```
  *
@@ -62,7 +62,7 @@ const REFERENCE_LEASH_RANGE = 50;
  * - **`acquisitionDue` conjunction.** Detection is time-sliced by the engine's
  *   think stride, so both `idle` edges only fire on an acquisition tick. The IR
  *   has no `and` opcode yet, so the conjunction is spelled
- *   `select(cond, inner, false)`. The attack-range and leash edges are
+ *   `select(cond, inner, false)`. The attack-range edge is
  *   deliberately NOT gated: they must answer every tick, so a strided
  *   acquisition gap can never suppress an in-range swing or hold a fled player
  *   under pursuit.
@@ -75,11 +75,10 @@ const REFERENCE_LEASH_RANGE = 50;
  *   `brain.targetDistance` reads a `1e9` sentinel with no target, and that
  *   sentinel is ONE-DIRECTIONAL. `le`/`lt` guards read false untargeted (safe,
  *   which is why the entry edges need no `hasTarget` conjunction), but
- *   `gt`/`ge` guards read TRUE — so without this interrupt the two disengage
- *   guards below both fire on target loss and walk the enemy
- *   `attack → alert → idle` over two ticks, playing the travel animation for
- *   one of them with nothing to travel toward. The IR has no `not` opcode, so
- *   the negation is spelled `select(hasTarget, false, true)`. The target
+ *   `gt`/`ge` guards read TRUE — so the target-distance stand-down guard could
+ *   fire on target loss without the earlier interrupt. The IR has no `not`
+ *   opcode, so the negation
+ *   is spelled `select(hasTarget, false, true)`. The target
  *   facts are meaningful only under `hasTarget`: they read zero (and
  *   `targetDied` reads false) untargeted. Test death with the sweep's
  *   `targetDied` latch, never `le(targetHealth, 0)`, which also fires with no
@@ -96,13 +95,11 @@ const REFERENCE_LEASH_RANGE = 50;
  * is eligible; it neither ranks candidates nor drops the target already held.
  * The state exits and interrupts above are the graph's disengagement policy.
  * There is no engine-side range limit on an authored `chaseTarget` state, so
- * the `alert` exit is still what stops pursuit.
+ * its range edges and the third interrupt are authored stand-down policy.
  *
- * `candidate.distance <= REFERENCE_LEASH_RANGE` is this graph's acquisition
- * radius. It is deliberately 50, the legacy descriptor's `leashRange`, not
- * its detection range: the lowered legacy twin's floor applies that leash to
- * acquisition and retention from the enemy's current position. Keeping this
- * filter at 50 makes the authored and lowered traces agree.
+ * `candidate.distance <= REFERENCE_AGGRO_RANGE` is this graph's authored
+ * acquisition radius. The matching third interrupt is its authored stand-down
+ * policy for a retained target.
  */
 export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
   canonicalName: REFERENCE_ENEMY_CLASSNAME,
@@ -174,7 +171,7 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
       candidateFilter: runtime.select(
         candidate.died,
         false,
-        runtime.le(candidate.distance, REFERENCE_LEASH_RANGE),
+        runtime.le(candidate.distance, REFERENCE_AGGRO_RANGE),
       ),
       // Stand down the instant the target is gone. Declared first so it
       // outranks every state-local guard — see the doc comment above for why
@@ -187,6 +184,13 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
         // The death sweep's latch is false untargeted. Do not compare
         // `targetHealth` to zero: target facts are zero with no target too.
         { to: "idle", when: brain.targetDied },
+        // Candidate eligibility applies only while acquiring. This graph owns
+        // its retained-target limit explicitly, after target-loss and
+        // target-death handling.
+        {
+          to: "idle",
+          when: runtime.gt(brain.targetDistance, REFERENCE_AGGRO_RANGE),
+        },
       ],
       states: {
         // At rest. `initial` doubles as the state the engine forces when the
@@ -230,7 +234,7 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
             },
             {
               to: "idle",
-              when: runtime.gt(brain.targetDistance, REFERENCE_LEASH_RANGE),
+              when: runtime.gt(brain.targetDistance, REFERENCE_AGGRO_RANGE),
             },
           ],
         },
@@ -259,9 +263,8 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
  * the animated mesh's pose inputs. This is a triangle marker, not production
  * character art.
  *
- * It stays on the legacy `components.ai` block on purpose: `ai` lowers to a
- * behavior graph at spawn, and keeping one shipped archetype on that spelling
- * keeps the lowering path exercised by real content rather than by tests alone.
+ * It uses the same direct behavior graph as the map-placeable reference enemy
+ * so its animated mesh receives the exact production brain inputs.
  */
 export const poseFixtureEnemyEntity: EntityTypeDescriptor = defineEntity({
   canonicalName: POSE_FIXTURE_ENEMY_CLASSNAME,
@@ -289,19 +292,72 @@ export const poseFixtureEnemyEntity: EntityTypeDescriptor = defineEntity({
       },
       defaultState: "idle",
     },
-    ai: {
-      detectionRange: 16,
-      attackRange: 2,
-      leashRange: 50,
-      attackDamage: 8,
-      attackCooldownMs: 1200,
+    behavior: {
+      initial: "idle",
       moveSpeed: 3,
-      deathDespawnMs: 4000,
+      attack: { damage: 8, range: REFERENCE_ATTACK_RANGE, cooldownMs: 1200 },
+      engagementRadius: REFERENCE_ATTACK_RANGE,
+      candidateFilter: runtime.select(
+        candidate.died,
+        false,
+        runtime.le(candidate.distance, REFERENCE_AGGRO_RANGE),
+      ),
+      interrupts: [
+        { to: "idle", when: runtime.select(brain.hasTarget, false, true) },
+        { to: "idle", when: brain.targetDied },
+        {
+          to: "idle",
+          when: runtime.gt(brain.targetDistance, REFERENCE_AGGRO_RANGE),
+        },
+      ],
       states: {
-        idle: "idle",
-        alert: "walk",
-        attack: "attack",
-        death: "death",
+        idle: {
+          animation: "idle",
+          motion: "hold",
+          transitions: [
+            {
+              to: "attack",
+              when: runtime.select(
+                brain.acquisitionDue,
+                runtime.le(brain.targetDistance, REFERENCE_ATTACK_RANGE),
+                false,
+              ),
+            },
+            {
+              to: "alert",
+              when: runtime.select(
+                brain.acquisitionDue,
+                runtime.le(brain.targetDistance, REFERENCE_DETECTION_RANGE),
+                false,
+              ),
+            },
+          ],
+        },
+        alert: {
+          animation: "walk",
+          motion: "chaseTarget",
+          transitions: [
+            {
+              to: "attack",
+              when: runtime.le(brain.targetDistance, REFERENCE_ATTACK_RANGE),
+            },
+            {
+              to: "idle",
+              when: runtime.gt(brain.targetDistance, REFERENCE_AGGRO_RANGE),
+            },
+          ],
+        },
+        attack: {
+          animation: "attack",
+          motion: "chaseTarget",
+          action: "attack",
+          transitions: [
+            {
+              to: "alert",
+              when: runtime.gt(brain.targetDistance, REFERENCE_ATTACK_RANGE),
+            },
+          ],
+        },
       },
     },
   },

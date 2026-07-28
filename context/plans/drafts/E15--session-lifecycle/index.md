@@ -630,8 +630,9 @@ message carries `String` fields, so it cannot be `Copy` and its constructor cann
 
 **Slots must retain what they declared.** `SlotTable` is `HashMap<ClientId, SlotState>` — state
 only, no payload — and `process_control_messages` drops `received` after comparing. The shipped
-fingerprint setter sidesteps this by closing *every* client unconditionally rather than comparing
-per-slot. Per-slot re-evaluation needs each slot's last-declared parity triple retained: it is
+fingerprint setter sidesteps this by closing every client on a changed fingerprint rather than
+comparing per-slot. Per-slot re-evaluation needs each slot's last-declared `ParityDeclaration`
+retained: it is
 the left-hand side of the predicate, and promotion needs it as much as demotion does. **Use a
 parallel map** — `HashMap<ClientId, ParityDeclaration>` on `NetServer` beside `pending_lifecycle`,
 cleared on close — rather than widening the slot record. `SlotState` therefore **keeps `Copy`**;
@@ -648,10 +649,13 @@ received and discarded per-message. Under this design a `Participating` client r
 re-sends parity on **every** level install, so that `continue` swallows precisely the message the
 spec depends on. Drain and evaluate Control for slots in `Pending`, `Admitted`, **and**
 `Participating`: an admission message from an already-admitted slot is ignored (admission is
-once-only per connection), a parity message is re-evaluated on every arrival. The genuine
-function-level early return is separate and stays as-is: the
-`let Some(fingerprint) = self.kinematic_static_fingerprint else { return outcomes; }` guard, which
-is what this spec's "extend the shipped early-return" rule refers to.
+once-only per connection), a parity message is re-evaluated on every arrival. The shipped
+function-level early return — `let Some(fingerprint) = self.kinematic_static_fingerprint else
+{ return outcomes; }` — is **replaced**, not retained: it exists only to build the expected
+`ProtocolVersion` on the line below it, and the fingerprint leaves that type. What the
+"extend the shipped early-return" rule preserves is its shape, not its body — admission queues
+until the mod identity is installed, parity until the mod digest is, each returning early exactly
+as the fingerprint guard does today.
 
 The version field is carried for diagnostics and **must not gate**. The only permitted comparison
 emits a host-side `info` log naming both versions when an admitted client's version differs from
@@ -1168,7 +1172,7 @@ Map-valued fields are hashed in **key-sorted order**, and **no map-valued field 
 today's domain** — the three lanes are strings, sequences, scalars, and two enums. The rule stays
 as a forward-looking guard, satisfied in advance by the `BTreeMap`-backed JSON payloads should the
 reaction lanes ever come in. What makes today's digest cross-process stable is `f32`/`f64` bit
-patterns, the `IrNode` walk, and the lane sort orders above.
+patterns, the `IrNode` walk, and the per-entry digest sort.
 
 *Enforcement.* Within **every** type the recipe reaches — the six lane descriptor types
 (`ScopedCrossing`, `CrossingDescriptor`, `CrossingCondition`, `TriggerEventDescriptor`,
@@ -1548,8 +1552,8 @@ scripting-core, the net crate, the world-less frames, the two hash recipes and t
   carrying a rename pass over `crates/postretro` in Phase 2. Without one of the two the workspace
   does not compile at the end of Phase 2; the alias branch also resolves one of the file
   collisions below. `set_kinematic_static_fingerprint` takes the same branch, on both
-  `NetServer`/`NetClient` and the `NetEndpoint` dispatcher: it stays with its shipped
-  close-every-client semantics as a `#[deprecated]` alias, deleted by Task 7's mechanical pass
+  `NetServer`/`NetClient` and the `NetEndpoint` dispatcher: it stays with its shipped per-role
+  semantics, stated in Task 3, as a `#[deprecated]` alias deleted by Task 7's mechanical pass
   rather than removed here.
 - **Task 5's regression test crosses into Phase 4.** AC-GATE-1's real regression test — admitting
   a client while the host sits in Frontend with no level installed — needs mod identity installed

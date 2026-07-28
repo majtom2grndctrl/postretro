@@ -352,7 +352,17 @@ Ids are stable. They are never reused and never renumbered; a new criterion take
 number in its area. Cite the id, never the position.
 
 Not cited by any Invariants row, and standing alone: AC-GATE-9, AC-MANIFEST-1,
-AC-DIGEST-3, AC-DIGEST-6, AC-DIGEST-12, AC-LEVEL-4, AC-BOOT-4.
+AC-DIGEST-3, AC-DIGEST-6, AC-DIGEST-12, AC-LEVEL-4, AC-BOOT-4, AC-BOOT-5.
+
+Criteria asserting on a log record use `crates/test-log-capture`, already a dev-dependency of all
+three crates this spec touches. Each names the exact level — the harness matches levels exactly,
+not as a minimum — and the body substring it pins. That substring becomes contract
+(`context/lib/testing_guide.md` §3), so pin the shortest phrase that discriminates and leave the
+rest of the line editable.
+
+Criteria marked **review gate** are not runnable: a compile-time guarantee, a two-process recipe,
+or an absence over an open set. Each names a runnable substitute covering what can be covered; the
+gate itself is checked by reading the diff.
 
 - [ ] **AC-GATE-1** — A client connecting to a host with no level installed is admitted, holds
       the connection open, receives no entity records, and is told `HostLevelAbsent` — the cause
@@ -367,13 +377,17 @@ AC-DIGEST-3, AC-DIGEST-6, AC-DIGEST-12, AC-LEVEL-4, AC-BOOT-4.
       mod digest — not the id and not the level — is what diverged. It participates again as
       soon as the two digests agree, whichever peer moved.
 - [ ] **AC-GATE-5** — A client whose mod **version** differs but whose id and digest match
-      **participates normally**; the version difference appears in a host-side log and nowhere
-      else.
+      **participates normally**. The difference surfaces as a host-side `Info` record naming both
+      versions — pinned substring `mod version differs` — and gates nothing: no reject, no
+      demotion, no digest movement.
 - [ ] **AC-GATE-6** — A client whose protocol constants diverge is refused with a protocol cause,
       not a mod or content cause.
 - [ ] **AC-GATE-7** — A client refused at admission — protocol or mod id — observes the typed
-      reason before its connection closes, over the in-memory relay and the unconditioned
-      loopback. Task 4's router's `Closing` arm is what delivers it.
+      reason before its connection closes. Task 4's router's `Closing` arm is what delivers it.
+      The in-memory relay is the gate. The loopback half extends the bounded-poll harness the
+      shipped loopback tests already use (`MAX_POLLS` iterations, no blocking wait, in
+      `crates/net/src/transport.rs`), asserting on the settled outcome — a starved socket fails
+      loudly rather than hanging.
 - [ ] **AC-LEVEL-1** — Two maps that differ only in ways the shipped fingerprint ignored — two
       maps with no movers at all but different brushwork, and two maps whose only difference is
       static world collision geometry — produce different **level content digests** while carrying
@@ -382,18 +396,26 @@ AC-DIGEST-3, AC-DIGEST-6, AC-DIGEST-12, AC-LEVEL-4, AC-BOOT-4.
 - [ ] **AC-LEVEL-2** — A catalogued level and the same `.prl` loaded by raw path produce
       **different level identities**, and the mismatch is reported by name rather than as a hash
       diff. Two distinct catalog ids within one mod also produce **different level identities**,
-      and a client on one does not participate on the other.
+      and a client on one does not participate on the other. Exercised against `level_identity`
+      directly — which is why Task 7 extracts it, `install_level_payload` needing a renderer.
 - [ ] **AC-DIGEST-1** — A client whose **local movement tuning differs from the host's** —
       including a value nested two levels down (`SpeedParams::run`) and one behind an IR wrapper
       (`DashParams::boost_speed`) — participates and predicts **identically to the host**. It
       simulates against the replicated values, so its local descriptor never reaches prediction.
       The client's own `view_feel` is unchanged by the join.
-- [ ] **AC-DIGEST-2** — A client whose local `weapon.range` differs from the host's has its
-      **legitimate shots accepted**: a shot at a target within the host's range is not rejected,
-      and a shot beyond the host's range is rejected regardless of the client's local value.
+- [ ] **AC-DIGEST-2** — A client whose local `default_weapon` fire tuning differs from the host's
+      **installs the host's four replicated values** — `range`, `cooldown_ms`, `fire_mode`,
+      `resolution` — and predicts with them; its local values never reach prediction, and the
+      divergence demotes nobody. Host-side hit validation is deliberately not what this criterion
+      tests: `AuthorizedShot::range` is already filled from the host's own weapon component
+      (`crates/postretro/src/sim/mod.rs`), so a criterion phrased around shot acceptance would pass
+      against today's tree unchanged.
 - [ ] **AC-DIGEST-3** — Adding an entity type to one peer's mod **demotes nobody** and changes no
       digest. A client that receives a remote entity of an unregistered class stays participating
-      and leaves that entity transform-only, which is the shipped degradation.
+      and leaves that entity transform-only — the shipped degradation, observed through
+      `materialize_net_mesh_presentation`'s existing `Warn` record, pinned substring `not
+      registered; leaving remote entity transform-only`. That is the unregistered-class arm; the
+      meshless arm beside it logs at `Debug` and is a different case.
 - [ ] **AC-DIGEST-4** — Two mods differing only in a mod-global **crossing** — a threshold, an
       edge, or an IR predicate — produce different mod digests; so do two differing only in a
       mod-global trigger event or trigger pool. Structurally different `IrNode` trees must be
@@ -405,14 +427,21 @@ AC-DIGEST-3, AC-DIGEST-6, AC-DIGEST-12, AC-LEVEL-4, AC-BOOT-4.
       or `events` entry; those lanes are uncovered by decision, and a test pins that as intended.
 - [ ] **AC-DIGEST-6** — Declaring the same entries in a different source order produces the same
       mod digest, independently for each of the three mod-global lanes.
-- [ ] **AC-DIGEST-7** — The same content hashes to the same mod digest **in two separate
-      processes**, including a crossing carrying non-trivial `f32`/`f64` values and an `Ir`
-      expression tree — the two determinism hazards actually reachable in the domain.
-- [ ] **AC-DIGEST-8** — Adding a field to any of the six lane descriptor types — `ScopedCrossing`,
-      `CrossingDescriptor`, `CrossingCondition`, `TriggerEventDescriptor`,
-      `TriggerPoolDescriptor`, `TriggerPoolArm` — without touching the digest recipe **fails to
-      compile**; so does adding an `IrNode` or `IrValue` variant. The sentinel destructures exist
-      and bind every field, verified once at review and enforced by the compiler thereafter.
+- [ ] **AC-DIGEST-7** — The same content hashes to the same mod digest **across processes and
+      builds**, including a crossing carrying non-trivial `f32`/`f64` values and an `Ir`
+      expression tree — the two determinism hazards actually reachable in the domain. Pinned by a
+      committed digest constant, not a spawned subprocess: the constant was computed in a different
+      process from every run that checks it, and it additionally catches a recipe change nobody
+      meant to make. Blessed through the same env-var handle as the payload fixture, named in the
+      failure message.
+- [ ] **AC-DIGEST-8** — **Review gate — a compile-time guarantee, so nothing runs it.** Adding a
+      field to any of the six lane descriptor types — `ScopedCrossing`, `CrossingDescriptor`,
+      `CrossingCondition`, `TriggerEventDescriptor`, `TriggerPoolDescriptor`, `TriggerPoolArm` —
+      without touching the digest recipe **fails to compile**; so does adding an `IrNode` or
+      `IrValue` variant. Review confirms the sentinel destructures bind every field by name with no
+      rest pattern and match every variant with no wildcard; the compiler enforces it thereafter.
+      Runnable substitute: AC-DIGEST-4, which proves the reached fields are hashed rather than
+      merely bound.
 - [ ] **AC-GATE-8** — A client whose level fails parity **keeps its connection**, receives a
       content diagnostic naming the host's map identity, and re-participates at the host's next
       matching install without reconnecting; a same-identity **level-content-digest** mismatch is
@@ -430,16 +459,20 @@ AC-DIGEST-3, AC-DIGEST-6, AC-DIGEST-12, AC-LEVEL-4, AC-BOOT-4.
 - [ ] **AC-BOOT-1** — A level install that takes longer than the netcode timeout does not drop
       any peer; connections established before the load are still connected after it.
 - [ ] **AC-LEVEL-4** — A host on a raw-path level sends no relevel and does not disconnect its
-      clients; the documented two-process loopback recipe — both peers launched with the same map
-      path — still reaches participation.
-- [ ] **AC-MANIFEST-1** — A manifest missing the mod id or version fails mod init with a
-      diagnostic naming the field. So does an id that is empty, over 64 bytes, non-ASCII, or
+      clients. **Review gate** for the second half: the documented two-process loopback recipe —
+      both peers launched with the same map path — still reaches participation. Runnable
+      substitute: over the in-memory relay, two peers whose identity was derived from the same
+      content-root-relative path reach participating with no relevel sent.
+- [ ] **AC-MANIFEST-1** — A manifest missing the mod id or version fails mod init with an
+      `InvalidArgument` naming the field and the source path — a returned error, not a log, and
+      asserted at all four parse sites. So does an id that is empty, over 64 bytes, non-ASCII, or
       carries a character outside `[A-Za-z0-9_.:-]`. An id with **no namespace separator** — a
       bare `dev` — passes: namespacing is a recommendation. A version passes whatever its shape,
       semver or not, so long as it is non-empty.
 - [ ] **AC-MANIFEST-2** — **Debug-build criterion.** A staged hot reload that changes the mod
-      **id or version** warns and leaves the installed value unchanged, **including in
-      single-player where no endpoint exists**; no slot changes state.
+      **id or version** logs exactly one `Warn` record — pinned substring `mod identity is frozen`
+      — and leaves the installed value unchanged, **including in single-player where no endpoint
+      exists**; no slot changes state.
 - [ ] **AC-DIGEST-9** — **Debug-build criterion.** A staged hot reload that changes a mod-global
       trigger event, trigger pool, or crossing **recomputes and reinstalls** the mod digest;
       participating slots whose declared digest no longer matches drop to admitted with a
@@ -461,30 +494,37 @@ AC-DIGEST-3, AC-DIGEST-6, AC-DIGEST-12, AC-LEVEL-4, AC-BOOT-4.
       installs it and predicts with the new values. No digest moves and no slot is demoted —
       replication converges where a digest would have refused.
 - [ ] **AC-DIGEST-11** — **Debug-build criterion.** A staged hot reload that changes any other
-      part of the `entities` lane moves no digest, sends no payload, and demotes nobody.
+      part of the `entities` lane leaves the mod digest byte-equal, leaves every participating
+      slot's `last_sent_tuning` entry unchanged so no payload is sent, and pushes no
+      `SlotEvent::Demoted`.
 - [ ] **AC-DIGEST-12** — A payload carrying a `TUNING_PAYLOAD_EPOCH` the receiver does not
-      recognize logs a typed error naming both epochs, leaves prediction inert, and demotes
-      nobody. The committed canonical-JSON fixture fails when any replicated descriptor field's
-      rendering changes.
-- [ ] **AC-BOOT-2** — After a host level change, no host-side level-scoped table retains an entry
-      keyed by an id the unload invalidated, and the replicated-slot schema is rebuilt rather
-      than served from the process cache.
+      recognize leaves prediction inert and demotes nobody, logging an `Error` record naming both
+      epochs — pinned substring `tuning payload epoch`. The committed canonical-JSON fixture fails
+      when any replicated descriptor field's rendering changes.
+- [ ] **AC-BOOT-2** — After a host level change, each of the six level-scoped host tables Task 7
+      names — movement owners, slot pawns, replicable set, weapon owners, open shots, command
+      queues — holds no entry the unload invalidated, and the replicated-slot schema is rebuilt
+      rather than served from the process cache. Enumerated rather than phrased as an absence, so
+      the criterion runs.
 - [ ] **AC-BOOT-3** — **Debug-build criterion.** A staged reload that adds or removes a store
       namespace rebuilds the replicated-slot schema on **both** host and client rather than
       serving either process cache — so the two peers never compare a schema fingerprint derived
       from declarations neither is running.
 - [ ] **AC-LIFECYCLE-5** — A client demoted while participating despawns its mapped remote
       entities and disarms prediction, on both demotion triggers — level change and mod digest —
-      rather than retaining a tableau that no longer updates. On re-promotion it re-arms from the
-      host's next `local_player` baseline, with no promotion message and no client-side latch to
-      clear.
+      rather than retaining a tableau that no longer updates. Both triggers reach
+      `NetEndpoint::demote_client_state` with no branch, which is the seam under test. On
+      re-promotion it re-arms from the host's next `local_player` baseline. **Review gate** for the
+      rest: no promotion message joins the Control variant set, and no client-side latch is added
+      for one to clear.
 - [ ] **AC-LIFECYCLE-6** — A host that stops holding a level without installing another
       **demotes** every participating slot with the `HostLevelAbsent` cause, which names no map in
       either direction, and closes none. Its clients hold at admitted with no
       level parity installed and no relevel catalog id — the same state a client joining a
       level-less host reaches — and re-participate at the host's next matching install. Exercised
-      on **both** paths that reach it: an unload to Frontend, and a suspend, which tears down level
-      state without unloading.
+      on **both** paths that reach it through `App::clear_net_level_parity` — which is why Task 7
+      extracts it: an unload to Frontend, and a suspend, whose winit callback is unreachable under
+      `cargo test`.
 - [ ] **AC-LIFECYCLE-7** — A participating client that unloads its level without installing
       another re-declares parity with no level half. The host demotes it with the level-absent
       cause; entity records stop; the connection survives; it re-participates at its next matching
@@ -495,16 +535,26 @@ AC-DIGEST-3, AC-DIGEST-6, AC-DIGEST-12, AC-LEVEL-4, AC-BOOT-4.
       receives a relevel for the current map on admission, without waiting for the next
       transition.
 - [ ] **AC-LEVEL-7** — A relevel naming a catalog id absent from the client's catalog logs a
-      diagnostic naming the id and leaves the client admitted rather than closing it.
+      `Warn` record naming the id — pinned substring `relevel names unknown catalog id` — and
+      leaves the client admitted rather than closing it.
 - [ ] **AC-BOOT-4** — Single-player boot constructs no endpoint and reaches Running unchanged.
-- [ ] **AC-GATE-9** — A peer built before this change is refused at the transport gate, before
-      any app message is decoded.
-- [ ] **AC-GATE-10** — A slot held at admitted that keeps sending input traffic **stays
-      connected** past the point its Input channel would have overflowed `CHANNEL_MEMORY_BYTES`'s
-      5 MiB budget (`crates/net/src/transport.rs`). No traffic of any kind, time-sync included,
-      reaches the simulation while the slot is held, and the client re-converges after promotion.
-      Asserted over sustained sends, not a single message — the failure this criterion exists for
-      is a buffer filling over time, not a message being mishandled once.
+- [ ] **AC-BOOT-5** — A host with no mod identity installed — the debug run with no start script —
+      logs exactly one `Warn` record at the first connect that arrives, pinned substring `no mod
+      identity installed`, and one only however many connects follow. The slot queues at `Pending`
+      under the queue-until-installed rule, so without the record the hang is silent.
+- [ ] **AC-GATE-9** — **Review gate.** A peer built before this change is refused at the transport
+      gate, before any app message is decoded — no in-tree test can build the old peer. Runnable
+      substitute: a client offering the pre-change protocol id and wire version, both written as
+      literals in the test, is refused with no control message decoded. Review confirms those
+      literals are the values this change moved away from.
+- [ ] **AC-GATE-10** — A slot held at admitted that keeps sending input traffic has its Input
+      channel **drained and discarded every poll**: the channel is empty after each poll, and no
+      message of any kind — time-sync included — reaches the simulation while the slot is held.
+      Asserted over sustained sends across many polls, so received-but-undelivered bytes stay
+      bounded rather than accumulating; the `CHANNEL_MEMORY_BYTES` 5 MiB disconnect
+      (`crates/net/src/transport.rs`) is the consequence this bounds, not the assertion — reaching
+      it in a test would mean pushing 5 MiB through the transport. The client re-converges after
+      promotion.
 
 ## Tasks
 
@@ -589,7 +639,8 @@ placed only in the committed-staged path would read an emptied manifest on boot.
 no-start-script boot, the first committed staged reload seeds it instead. **Compare and warn**
 only in `ScriptRuntime::commit_staged_manifest_result`'s committed path: both operands are in
 scope there, the staged values ride the built-manifest status and the installed values live on
-the same runtime, and a later divergent commit warns and leaves the cell alone. The decisive
+the same runtime, and a later divergent commit warns and leaves the cell alone. The warning's body
+contains `[Scripting] mod identity is frozen`, which AC-MANIFEST-2 pins. The decisive
 reason it cannot live on the endpoint side: **AC-MANIFEST-2 must hold in single-player, where no
 endpoint exists** — an endpoint-side owner could not satisfy it at all. This applies to
 **identity only** — the mod compatibility digest Task 7 installs is re-hashed on every staged
@@ -684,8 +735,8 @@ channel the queue, not a buffer this task adds.
 
 The version field is carried for diagnostics and **must not gate**. The only permitted comparison
 emits a host-side `info` log naming both versions when an admitted client's version differs from
-the installed one. Comment it at the comparison site so a later reader neither "fixes" the missing
-gate nor deletes the log.
+the installed one; its body contains `[Net] mod version differs`, which AC-GATE-5 pins. Comment it
+at the comparison site so a later reader neither "fixes" the missing gate nor deletes the log.
 
 **The divergence reason is a two-level enum**, not a flat one:
 `DivergenceReason::{Closing(ClosingCause), Holding(HoldingCause)}`, with `Display` on the outer so
@@ -1020,8 +1071,9 @@ as from Running, since a relevel can arrive while an earlier load is in flight. 
 enqueues `LevelRequest::Load(LevelSource::Catalog(id))` through the shipped request path, which
 already unloads any active level first. Ignore a relevel naming the level already active or
 already in flight, so a redundant send does not restart a load. An id absent from the local
-catalog logs a diagnostic naming the id and leaves the client admitted — the recoverable case,
-since the mods matched but the catalogs diverged.
+catalog warns, naming the id, and leaves the client admitted — the recoverable case, since the mods
+matched but the catalogs diverged. AC-LEVEL-7 pins the warning's body substring:
+`[Net] relevel names unknown catalog id`.
 
 **Mid-load relevel is settled, not open.** `App::enqueue_level_request` already queues a newer
 `Load` over a queued one and applies it when the in-flight load completes, so the v1 rule is the
@@ -1291,8 +1343,13 @@ structurally different `IrNode` trees hash differently and two equal ones hash t
 edit to the `entities` lane moves it — `movement`, `weapon`, `default_weapon`, `health`,
 `behavior`, `canonical_name`, presentation, in one table-driven test, pinning that the whole lane
 is out of the domain by decision; that two mods differing only in a `reactions` or `events` entry
-produce the **same** digest, pinning AC-DIGEST-5's uncovered-lanes claim; and that the same
-content hashes identically **in two separate processes**.
+produce the **same** digest, pinning AC-DIGEST-5's uncovered-lanes claim; and that a fixed lane set
+carrying non-trivial `f32`/`f64` values and an `Ir` tree hashes to a **committed digest constant**.
+That constant is the cross-process check — it was computed in a different process from every run
+that reads it — and it wants the same bless handle as the payload fixture: an env-var-gated mode
+that rewrites it from the current recipe, named in the failure message alongside the reminder to
+bump `MOD_DIGEST_EPOCH` if the recipe change was intentional. Spawning a subprocess would prove
+less and cost a test harness.
 
 **Replicated tuning payload.** The engine-side codec for the values the host sends instead of the
 client resolving them. Pure encode and decode plus their tests; Task 7 owns both call sites.
@@ -1303,7 +1360,14 @@ side, where the descriptor vocabulary already lives. Name them: `pub(crate) stru
 decode_tuning_payload(&[u8]) -> Result<TuningPayload, TuningPayloadError>`, all in this file. It
 carries, for one slot's pawn: the
 `PlayerMovementDescriptor` with `view_feel` cleared, and the four weapon fire fields reached
-through `default_weapon` — `range`, `cooldown_ms`, `fire_mode`, `resolution`. Both halves are
+through `default_weapon` — `range`, `cooldown_ms`, `fire_mode`, `resolution`. **Cleared, not
+removed.** `Option<ViewFeelParams>` carries no `skip_serializing_if`, so the field renders as JSON
+`null` and the fixture pins that. Keep the descriptor embedded rather than mirroring its fields
+into a payload-local struct: a hand-mirrored copy would silently fail to replicate the next tuning
+field someone adds, which is the divergence class this payload exists to close. What guarantees the
+host cannot overwrite a client's view feel is the install seam in Task 7, where the client fills
+the field from its own local descriptor — a guarantee that survives any later change to the
+encoding. Both halves are
 `Option`: a pawn class with no `movement` block, or no resolvable `default_weapon`, sends `None`,
 and the client leaves that half of prediction inert exactly as it does today when the local
 lookup fails.
@@ -1326,9 +1390,10 @@ and two builds one field apart exchange payloads that decode cleanly and diverge
 parts close it:
 
 - A `TUNING_PAYLOAD_EPOCH: u32` const, serialized as the payload's leading field and checked at
-  decode. A mismatch is a typed error naming both epochs, logged, prediction left inert — the same
-  degradation the spec already ships, now legible instead of silent. Mirror `FINGERPRINT_EPOCH`'s
-  and `MOD_DIGEST_EPOCH`'s shape.
+  decode. A mismatch is a typed error naming both epochs, logged at `error` with a body containing
+  `[Net] tuning payload epoch` (AC-DIGEST-12 pins it), prediction left inert — the same degradation
+  the spec already ships, now legible instead of silent. Mirror `FINGERPRINT_EPOCH`'s and
+  `MOD_DIGEST_EPOCH`'s shape.
 - A **committed fixture** pinning a fully-populated payload's canonical JSON, at
   `crates/postretro/src/netcode/tests/fixtures/tuning_payload.expected.json` — the netcode suite's
   own fixtures directory, not the typedef suite's; a netcode payload fixture misfiled under
@@ -1362,9 +1427,9 @@ net crate cannot validate what it forwards, so the engine is the only place a ma
 be caught.
 
 Test: round-trip fidelity across every tuning struct, including a `DashParams` field in both
-`Literal` and `Ir` form and a nested `SpeedParams::run`; that `view_feel` is absent from the
-encoded form; that both `Option` halves round-trip as `None`; and that a truncated buffer
-decodes to an error rather than a panic.
+`Literal` and `Ir` form and a nested `SpeedParams::run`; that the encoded form carries no view-feel
+tuning whatever the source descriptor held; that both `Option` halves round-trip as `None`; and
+that a truncated buffer decodes to an error rather than a panic.
 
 ### Task 7: Engine lifecycle wiring
 
@@ -1376,9 +1441,10 @@ mod init and after each committed staged poll, and install it on the net endpoin
 uses — mirroring the fingerprint setter's shape. This is mechanical: idempotent first-wins
 installation, no comparison and no warning — Task 2's cell already decided which commit wins, this
 task only carries the result to the endpoint. A debug run with no start script commits no manifest,
-so no identity ever installs: log once at the first connect that arrives with no identity
-installed, so a client queuing at `Pending` forever under the queue-until-installed rule is a
-legible failure rather than a silent hang.
+so no identity ever installs: warn once — and once only, however many connects follow — at the
+first connect that arrives with no identity installed, so a client queuing at `Pending` forever
+under the queue-until-installed rule is a legible failure rather than a silent hang. The body
+contains `[Net] no mod identity installed`, which AC-BOOT-5 pins.
 
 This wiring is what makes admission reachable at all, so this task owns AC-GATE-1's real
 regression test — a client admitted while the host sits in Frontend with no level installed. Task

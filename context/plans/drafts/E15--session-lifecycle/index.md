@@ -237,7 +237,7 @@ Rivals are listed in Direction and argued in `research.md`.
   IR is hashed **structurally, never by serializing** — serializing auto-covers new variants and
   destroys the compile error that is the enforcement mechanism. The tuning payload serializes IR
   instead: auto-coverage is a defect for a digest and a feature for a payload.
-- **Within every reached type the digest is a denylist, not an allowlist.** Bind every field by
+- **Within every reached type the mod digest is a denylist, not an allowlist.** Bind every field by
   exhaustive destructuring and name any skip. An allowlist ("hash the fields a client simulates
   against") is the mechanism that produced the static-collision fail-open this spec exists to fix:
   a field added later defaults to *unhashed*, and no test catches a field you forgot. The
@@ -378,7 +378,7 @@ AC-DIGEST-3, AC-DIGEST-6, AC-DIGEST-12, AC-LEVEL-4, AC-BOOT-4.
       not a mod or content cause.
 - [ ] **AC-GATE-7** — A client refused at admission — protocol or mod id — observes the typed
       reason before its connection closes, over the in-memory relay and the unconditioned
-      loopback.
+      loopback. Task 4's router's `Closing` arm is what delivers it.
 - [ ] **AC-LEVEL-1** — Two maps that differ only in ways the shipped fingerprint ignored — two
       maps with no movers at all but different brushwork, and two maps whose only difference is
       static world collision
@@ -487,9 +487,10 @@ AC-DIGEST-3, AC-DIGEST-6, AC-DIGEST-12, AC-LEVEL-4, AC-BOOT-4.
       clear.
 - [ ] **AC-LIFECYCLE-6** — A host that stops holding a level without installing another
       **demotes** every participating slot and closes none. Its clients hold at admitted with no
-      level parity installed — the same state a client joining a level-less host reaches — and
-      re-participate at the host's next matching install. Exercised on **both** paths that reach
-      it: an unload to Frontend, and a suspend, which tears down level state without unloading.
+      level parity installed and no relevel catalog id — the same state a client joining a
+      level-less host reaches — and re-participate at the host's next matching install. Exercised
+      on **both** paths that reach it: an unload to Frontend, and a suspend, which tears down level
+      state without unloading.
 - [ ] **AC-LIFECYCLE-7** — A participating client that unloads its level without installing
       another re-declares parity with no level half. The host demotes it with the level-absent
       cause; entity records stop; the connection survives; it re-participates at its next matching
@@ -507,7 +508,8 @@ AC-DIGEST-3, AC-DIGEST-6, AC-DIGEST-12, AC-LEVEL-4, AC-BOOT-4.
 - [ ] **AC-GATE-10** — A slot held at admitted that keeps sending input traffic **stays
       connected** past the point its Input channel would have overflowed `CHANNEL_MEMORY_BYTES`'s
       5 MiB budget (`crates/net/src/transport.rs`), and none of that traffic
-      reaches the simulation. Its time-sync continues to be answered. Asserted over sustained
+      reaches the simulation. No traffic of any kind, time-sync included, reaches the simulation
+      while the slot is held, and the client re-converges after promotion. Asserted over sustained
       sends, not a single message — the failure this criterion exists for is a buffer filling
       over time, not a message being mishandled once.
 
@@ -848,14 +850,14 @@ message just evaluated, `lifecycle` carries transitions the engine must clean up
 **Gate inbound traffic, not just sends.** `NetServer` owns the drain, following the crate's
 registry-blindness rule — draining by slot state needs no registry, and `NetServer::drain_input`
 already ships the closed-slot drain-and-drop this extends: the poll drains and discards Input for
-every slot below `Participating`, answering time-sync in place. The engine's existing per-client
-drain keeps its participating gate unchanged; the two never see the same client. A slot below
-`Participating` has its Input channel drained every poll but processed only for time-sync: input
-commands, acks, baseline-refresh requests, and hit declarations are dropped, mirroring the shipped
-closed-slot drain-and-drop. Time-sync keeps flowing because the echo carries no entity state and a
-warm clock estimate makes re-promotion seamless — the crate already documents that time-sync may
-flow to a connected client before it passes the app handshake. The drain is mandatory, not an
-optimization: `main.rs` drains input only for accepted clients today, so a held slot's Input
+every slot below `Participating`. The engine's existing per-client drain keeps its participating
+gate unchanged; the two never see the same client. A slot below `Participating` has its Input
+channel drained and discarded entirely every poll: input commands, acks, baseline-refresh requests,
+hit declarations, and time-sync are all dropped, mirroring the shipped closed-slot drain-and-drop.
+Time-sync is not exempted: a promoted client re-converges its clock from the resumed stream exactly
+as it does on first join, the same recovery argument this spec already makes for prediction arming,
+and nothing latches. The drain is mandatory, not an optimization: `main.rs` drains input only for
+accepted clients today, so a held slot's Input
 channel is never drained at all, and a reliable channel that overflows its memory budget —
 `CHANNEL_MEMORY_BYTES`, 5 MiB, under a comment reading "Reliable channels disconnect on overflow;
 unreliable channels drop the oldest" — disconnects the peer, violating this spec's own "no content
@@ -956,13 +958,16 @@ engine drains. **Retype the existing `NetClient::drain_control`** from `Vec<Vec<
 `Vec<ServerControlMessage>` — it has no callers today, so the change costs nothing — rather than
 introducing a `ClientPoll` return type, which would mean changing `NetClient::update`'s signature
 (`Result<(), _>` today) *and* `update_connections`'s (`()`), touching every call site to carry a
-value only this task consumes. **One router serves all three variants.** The drain returns every
-server→client Control variant — relevel, the `Holding` divergence diagnostic, and the tuning
-payload — not just relevel; two drains over one reliable queue would steal each other's messages.
-One engine-side router dispatches by variant: relevel to `App::enqueue_level_request`, a `Holding`
-diagnostic to Task 7's client-side demotion, and the tuning payload to Task 7's payload install.
-This task defines the drain and its relevel arm; Task 7 adds the other two arms to the same
-router, not a second drain. The drain must run from the world-less frames Task 5 opens as well
+value only this task consumes. **One router serves all four variants.** The drain returns every
+server→client Control variant — relevel, the divergence diagnostic in both its `Closing` and
+`Holding` arms, and the tuning payload — not just relevel; two drains over one reliable queue would
+steal each other's messages. One engine-side router dispatches by variant: relevel to
+`App::enqueue_level_request`, a `Closing` diagnostic to this task's own arm, a `Holding` diagnostic
+to Task 7's client-side demotion, and the tuning payload to Task 7's payload install. This task
+defines the drain, its relevel arm, and its `Closing` arm — the `Closing` arm logs the typed cause
+and surfaces it to the player-facing path the Open questions section names, a client-side
+"incompatible host" message; Task 7 adds the `Holding` and tuning-payload arms to the same router,
+not a second drain. The drain must run from the world-less frames Task 5 opens as well
 as from Running, since a relevel can arrive while an earlier load is in flight. The engine
 enqueues `LevelRequest::Load(LevelSource::Catalog(id))` through the shipped request path, which
 already unloads any active level first. Ignore a relevel naming the level already active or
@@ -1007,8 +1012,12 @@ bounded by Task 7's two-cleanups distinction: the **per-slot cleanup** keyed by 
 movement owners, slot pawns, replicable set, weapon owners, open shots, command queues — is
 world-independent and reachable on a world-less frame; the **level-scoped host table reset** keyed
 by level lifetime is bound to a level, and on the unload path it has already run by the time this
-poll executes. Registry despawns are not reachable here and do not need to be — the unload cleared
-the registry wholesale before the demotion event was even queued.
+poll executes. `host_handle_lifecycle` takes the registry borrow as its first parameter, so the
+world-less call site threads the session-owned `script_ctx.registry`. On the unload path the
+despawns are no-ops by the time the event drains, because the drain happens on a later poll, after
+`EntityRegistry::clear_for_level_unload` emptied the registry; the stale-id error is already
+swallowed. On the **suspend** path the registry is never cleared, so the despawns do real work
+there — which is the case that makes threading the borrow mandatory rather than optional.
 
 **The boundary is a predicate on endpoint presence, not a state enumeration.** Restate it as: the
 world-less poll runs on any presented frame where a net endpoint exists and no `Running` frame ran
@@ -1348,8 +1357,9 @@ Both installs happen only where an endpoint exists. `install_level_payload` comp
 fingerprint today before it tests for one; move the computation inside that test, since Task 6's
 recipe now walks the world collision buffers and Phase 4 installs every level twice on a host.
 
-**Unload clears the level parity.** The same `set_level_parity(None)` call, made from the unload
-path beside the host-role reset below. Frontend-with-clients-connected is a session state this
+**Unload clears the level parity.** The same `set_level_parity(None)` call, and
+`set_relevel_catalog_id(None)`, made from the unload path beside the host-role reset below.
+Frontend-with-clients-connected is a session state this
 spec already reaches from the join side — a client admitted before any level installs — and
 returning to it from a loaded level must land in the same place. Clearing routes through Task 3's
 one re-evaluation function like every other install, so demotion follows from the predicate and no
@@ -1360,10 +1370,11 @@ unload-specific transition is written.
 `active_level_source` — without calling `unload_level`, and keeps the session and its endpoint
 alive across the boot-state reset to `Booting`. Left alone, a resumed host would still hold its
 slots participating against a world it no longer has. Route the suspend path through the same
-`set_level_parity(None)` call the unload path uses, **and** through the same host-side
-level-scoped table reset — `reset_level_scoped_client_state`'s host arm, below — since suspend
-calls `clear_surface_lifetime_level_state`, not `unload_level`, and that host arm otherwise never
-runs on this path. So routed, a suspend leaves the same host state an unload does.
+`set_level_parity(None)` and `set_relevel_catalog_id(None)` calls the unload path uses, **and**
+through the same host-side level-scoped table reset — `reset_level_scoped_client_state`'s host
+arm, below — since suspend calls `clear_surface_lifetime_level_state`, not `unload_level`, and that
+host arm otherwise never runs on this path. So routed, a suspend leaves the same net-endpoint and
+host-table state an unload does.
 
 **Participation seam:** the pawn spawn currently keyed off the accept outcome in `main.rs` moves
 to `SlotEvent::Participating`; a pawn needs a level, which is what parity now proves. That event

@@ -27,17 +27,23 @@ Findings behind the spec's decisions, including why its scope changed once.
 | The client's local static-collision trimesh is built from `LevelWorld` vertices and indices, and nothing hashes them — the second, larger fail-open | `crates/postretro/src/collision/mod.rs` — `CollisionWorld::populate_from_level` |
 | Client movement prediction runs against that local collision source, and client-authoritative hit declaration casts against the world the client renders while the host validates against its own static geometry | `MovementCollisionSource` is defined `pub(crate) trait` in `crates/postretro/src/movement/mod.rs`; `crates/postretro/src/netcode/prediction.rs` consumes it as `&impl MovementCollisionSource`, `context/lib/networking.md` §Combat authority |
 | Player movement tuning is descriptor-authored, so a manifest edit changes what the client predicts with | `crates/postretro/src/movement/mod.rs` — `PlayerMovementComponent::from_descriptor` |
+| The client resolves its own local movement tuning today: `entity_class` → `canonical_name` → `descriptor.movement` → `PlayerMovementComponent::from_descriptor`. This is one of the two sites replication redirects | `crates/postretro/src/scripting/builtins/net_descriptor.rs` — `materialize_net_local_movement_component` |
+| The client also resolves its own weapon fire values today — pawn class, then `default_weapon`, then `range`/`cooldown_ms`/`fire_mode`/`resolution` into client fire prediction. Four fields the digest's disposition table filed as host-authoritative. The second redirected site | `crates/postretro/src/weapon/mod.rs` — `ClientWeaponState::from_local_pawn_descriptor` |
+| Shipped code already degrades an unknown entity class rather than refusing — logs "leaving remote entity transform-only (will not render)" and returns `false`; the remote-enemy helper documents the same rule. This is why hashing `canonical_name` bought nothing | `crates/postretro/src/scripting/builtins/net_descriptor.rs` — `materialize_net_mesh_presentation`; `crates/postretro/src/netcode/remote_materialize.rs` — `materialize_armed_remote_enemy` |
+| `crates/net` depends on renet, renet_netcode, bitcode, and log — no `foundation`, no `entities`. Every opaque value on its wire today is a fixed-size `[u8; 32]`, so a variable-length engine-serialized payload is a new pattern there | `crates/net/Cargo.toml`; `crates/net/src/wire.rs` |
+| `PlayerMovementDescriptor` and every struct beneath it derive `Serialize`/`Deserialize`, as do `NumberOrIr`/`BoolOrIr` (both `#[serde(untagged)]`) and `IrNode` — so the replicated payload needs no new codec, and `serde_json` is already a `postretro` dependency | `crates/foundation/src/data_descriptors/types/movement.rs`; `crates/postretro/Cargo.toml` |
+| World gravity is mutated mid-level by the `worldSetGravity` primitive, not fixed at level load — so it is not a participation-transition value and cannot ride the tuning payload | `crates/entities/src/ctx.rs` — the gravity cell and its `worldSetGravity` mutation |
 | Clients suppress AI-enemy spawns entirely and attach mesh presentation only, which is why enemy placement and brain tuning cannot break compatibility | `context/lib/networking.md` §Phase boundaries |
 | A staged reload re-commits nearly every manifest lane — `entities`, `store_declarations`, `maps`, `reactions`, `crossings`, `trigger_events`, `trigger_pools`, `events`, the `render` profile, `ui_trees`, `theme`, `frontend`. `fonts` is the only lane never re-committed; it is absent from `StagedManifest`. So a non-atomic-replace manifest lane already ships, and it is exactly one | `crates/scripting-core/src/staged_manifest/transfer.rs`; `commit_staged_manifest_result` in `crates/scripting-core/src/runtime/core.rs`; `App::poll_staged_manifest_results` in `crates/postretro/src/startup/staged_manifest_lifecycle.rs`; `App::commit_staged_ui_manifest` in `crates/postretro/src/main.rs` |
-| Most of `EntityTypeDescriptor` is host-authoritative (`health`, `weapon`, `default_weapon`, `behavior`) or presentation (`light`, `emitter`, `mesh`); only `canonical_name` and `movement` feed client simulation | `crates/entities/src/data_descriptors/types/entity.rs` — `EntityTypeDescriptor` |
+| Most of `EntityTypeDescriptor` is host-authoritative (`health`, `behavior`) or presentation (`light`, `emitter`, `mesh`). `movement` feeds client simulation, and so do four fields reached through `default_weapon` — which an earlier draft of this spec filed host-authoritative. Those are the values the host replicates | `crates/entities/src/data_descriptors/types/entity.rs` — `EntityTypeDescriptor` |
 | `EntityTypeDescriptor` has **9** fields, not the 10 an earlier draft enumerated: `ai` was retired by `E10--retire-legacy-ai`, landing on main after this spec's digest table was written. `behavior` (`BehaviorGraphDescriptor`) is the surviving host-authoritative AI mechanism | `crates/entities/src/data_descriptors/types/entity.rs` |
 | State-slot parity already ships: both peers compare a schema fingerprint derived from the replicated slot declarations | `crates/postretro/src/netcode/state_slots.rs` — `ReplicatedSlotSchema` |
 | Scripts are 160K of the dev mod's 337M (textures 291M, models 43M, maps 3.0M), so script sync is cheap on bytes and still does not cover the breaking surface | measured under `content/dev/` |
-| `PlayerMovementDescriptor`'s hashed fields are structs, not scalars: `CapsuleParams`, `GroundParams` (which nests `SpeedParams`), `AirParams`, `FallParams`, `DashParams`, `ForgivenessParams`, `CrouchParams`. `view_feel: Option<ViewFeelParams>` is the render-only one | `crates/foundation/src/data_descriptors/types/movement.rs` |
-| `DashParams` carries five `NumberOrIr` (`boost_speed`, `momentum_retention`, `steer_control`, `dash_drag`, `cooldown_ms`), one `BoolOrIr` (`preserve_vertical`), and `air_dashes: u32` — so `movement` reaches the IR | same file |
+| `PlayerMovementDescriptor`'s replicated fields are structs, not scalars: `CapsuleParams`, `GroundParams` (which nests `SpeedParams`), `AirParams`, `FallParams`, `DashParams`, `ForgivenessParams`, `CrouchParams`. `view_feel: Option<ViewFeelParams>` is the render-only one and stays local | `crates/foundation/src/data_descriptors/types/movement.rs` |
+| `DashParams` carries five `NumberOrIr` (`boost_speed`, `momentum_retention`, `steer_control`, `dash_drag`, `cooldown_ms`), one `BoolOrIr` (`preserve_vertical`), and `air_dashes: u32` — so the replicated payload carries IR, and used to be why the digest did | same file |
 | `NumberOrIr` / `BoolOrIr` are `enum { Literal(..), Ir(IrNode) }`. Their doc comments scope them to dash *today*, and they sit in the shared typedef surface | same file; `crates/scripting-core/src/typedef/common.rs` |
 | `IrNode` has **15** variants (`Const`, `Input`, `Add`, `Sub`, `Mul`, `Div`, `Clamp`, `Lerp`, `Lt`, `Le`, `Gt`, `Ge`, `Eq`, `Ne`, `Select`) and is tree-recursive through `Box<IrNode>`; `IrValue` is `Bool(bool)` / `Number(f32)`. The module doc names movement as **"the first adopter"** of the substrate | `crates/foundation/src/ir/mod.rs` |
-| `HealthDescriptor::zone_multipliers` is a `std::collections::HashMap<String, f32>`, but it is reachable only through `EntityTypeDescriptor::health`, which the digest skips as host-authoritative — so **no map-valued field is reachable in the hashed domain** | `crates/foundation/src/data_descriptors/types/combat.rs` |
+| `HealthDescriptor::zone_multipliers` is a `std::collections::HashMap<String, f32>`, but it hangs off `EntityTypeDescriptor::health`, which no digest domain has ever reached — so **no map-valued field is reachable in the hashed domain**, under either the entity-closure shape or the three-lane one that replaced it | `crates/foundation/src/data_descriptors/types/combat.rs` |
 | `serde_json`'s `preserve_order` feature is **not** enabled in this workspace, so `serde_json::Map` is a `BTreeMap` and iterates key-sorted deterministically | workspace `Cargo.toml` |
 | `EntityId` is a newtype over `u32` — a runtime allocation handle, not content | `crates/entities/src/registry.rs` |
 | `TriggerEventDescriptor { tag, event, fire, levels }` is `String`/`Vec<String>` throughout and already derives `Hash`; `TriggerPoolDescriptor { tag, arm, levels }`, with `TriggerPoolArm::{Count(u32), Percentage(f64)}` | `crates/entities/src/data_descriptors/types/reactions.rs` |
@@ -87,8 +93,8 @@ the deferred-disconnect mechanism serves admission only, which shrinks the spec'
 wrong.** The rule that survives is: admission carries a value only if a mismatch on it can
 never become a match. That is true of the protocol constants, and true of the mod id because
 identity is frozen at first commit. It was *not* true of the mod compatibility digest, which
-the first draft nonetheless gated at admission — a staged reload re-commits `entities`, which
-the digest reads, so its value changes under a live connection. The draft made its own premise true by declining to observe the change, freezing
+the first draft nonetheless gated at admission — a staged reload re-commits the trigger and
+crossing lanes the digest reads, so its value changes under a live connection. The draft made its own premise true by declining to observe the change, freezing
 the digest at first commit, which bought the premise at the price of gating live connections
 on a stale value in exactly the builds where co-op is developed and playtested.
 
@@ -165,16 +171,19 @@ the mods match.
 
 What replaces it is stronger, not weaker. The two digests are halves of one policy computed
 at the two moments the spec already installs values, and neither covers for the other: a mod
-fork that retunes player movement ships identical map bytes and moves only the mod digest;
+fork that retunes a mod-global crossing ships identical map bytes and moves only the mod digest;
 differing brushwork moves only the level digest. That is a structural reason they belong in
-one spec, where the earlier argument was a contingent one about a specific hole.
+one spec, where the earlier argument was a contingent one about a specific hole. (The example
+used to be "retunes player movement." Movement is replicated now, so it moves neither digest —
+the structural point stands, the illustration had to change with the domain.)
 
 ## What shrinking the mod digest retired
 
 Detail review cut the mod digest's domain from two whole manifest lanes to, per entity type,
 the `canonical_name` and the `PlayerMovementDescriptor` under `movement`, minus that
-descriptor's render-only `view_feel` field. Unnamed descriptors are excluded. Recorded for
-the same reason as the section above: an argument was retired, not just a number.
+descriptor's render-only `view_feel` field. Unnamed descriptors were excluded. That shape was
+itself later retired — see the next section — but the argument against hashing a lane wholesale
+survives both revisions and still governs `reactions`.
 
 Hashing `entities` wholesale contradicted the spec's own tiering. Most of
 `EntityTypeDescriptor` is host-authoritative — `health`, `weapon`, `default_weapon`,
@@ -188,33 +197,100 @@ State-slot parity left the digest in the same pass. It is owned by the shipped
 `ReplicatedSlotSchema` fingerprint, which both peers already compare, so hashing
 `store_declarations` would have duplicated a live gate with a coarser diagnostic.
 
-The denylist mechanism survives; its granularity moved. It is no longer "hash every lane
-except the named exclusions" but "hash every field of a small named set of descriptor types
-except the named exclusions." Exhaustive destructuring still makes a field added later fail
-the build rather than default to unhashed, which is the whole reason to prefer a denylist —
-provided the destructuring reaches all the way down. It has to be stated at the right depth:
-the values it protects sit one and two levels below the two types the spec names, inside
-`DashParams` and the `IrNode` beneath it. What it no longer buys is coverage of descriptor
-*types* nobody named — a new client-simulated descriptor is still a manual widening, caught
-by the rule in `context/research/coop-content-compatibility.md` §6 rather than by the compiler.
+## Why hashing the entity closure was tried, and what dropped it
 
-## What generalizing the IR hasher bought
+The shape above — a per-field disposition over `EntityTypeDescriptor`, plus a recursive hash of
+everything beneath the fields it kept — was the spec's design for two review rounds. It is
+recorded in full here because it is a plausible design that fails for a reason worth knowing,
+and a future reader reaching for a digest over descriptor fields should read this first.
+
+**The domain it defined.** Per registered entity type, the `canonical_name` a client
+materializes by and the `PlayerMovementDescriptor` it predicts with, minus render-only
+`view_feel`. Because seven of `PlayerMovementDescriptor`'s nine remaining fields are structs,
+the hashed set was a recursive closure: `CapsuleParams`, `GroundParams`, `SpeedParams`,
+`AirParams`, `FallParams`, `DashParams`, `ForgivenessParams`, `CrouchParams`, and the
+`IrNode`/`IrValue` tree beneath `DashParams`. Scoping the exhaustive-destructure rule to the two
+outer types alone was a defect caught on review: `AirParams::air_control` would have compiled
+clean and defaulted to unhashed, one level below where the guarantee was looking.
+
+**The disposition table it needed.** Every field of `EntityTypeDescriptor` was classified into
+one of three categories, and the third was itself a correction — an earlier draft had only
+"hashed" and "presentation," which would have hashed the host-authoritative fields:
+
+| Field of `EntityTypeDescriptor` | Disposition |
+|---|---|
+| `canonical_name` | hashed — the wire's entity class |
+| `movement` (`PlayerMovementDescriptor`) | hashed, minus `view_feel` |
+| `default_weapon`, `weapon`, `health`, `behavior` | skipped — host-authoritative |
+| `light`, `emitter`, `mesh` | skipped — presentation |
+
+**The two misclassifications, which are the evidence.** The table is wrong in two independent
+places, and both were written by authors who had the tiering argument in front of them.
+
+- `weapon` and `default_weapon` are filed host-authoritative. They are not, entirely:
+  `ClientWeaponState::from_local_pawn_descriptor` (`crates/postretro/src/weapon/mod.rs`) resolves
+  the pawn's `default_weapon` and copies `range`, `cooldown_ms`, `fire_mode`, and `resolution`
+  into client-side fire prediction. Four fields a client simulates against, filed as fields it
+  never sees. A fail-open, in the row that was supposed to prevent them.
+- `canonical_name` is hashed. It should not be: shipped code already degrades an unknown entity
+  class rather than refusing. `materialize_net_mesh_presentation` logs "leaving remote entity
+  transform-only (will not render)" and returns `false`; `materialize_armed_remote_enemy`
+  documents the same rule. Hashing it bought no safety and cost a demotion of every peer on
+  every entity type a mod adds. A false refusal, in a table whose stated purpose was to prevent
+  false refusals.
+
+One error in each direction, in a four-row table, written by people trying hard. That is
+evidence about the mechanism. Any design whose safety depends on a human correctly classifying
+each field of a growing struct will be wrong at the rate a human is wrong, and the wrongness is
+silent in both directions — a fail-open never fires, and a false refusal looks like a
+compatibility mismatch rather than a bug.
+
+**What replaced it, and why the replacement makes the failures unreachable.** The spec already
+contained the answer, applied to exactly one case. Its Tier 3 item 5 note argued that world
+gravity should be replicated rather than hashed, because "replication makes peers agree, where a
+digest only lets them refuse each other when they disagree." Generalized: hash only what cannot
+be replicated. The host sends its authoritative movement descriptor and the four weapon fire
+fields; the client installs them and stops reading its own registry for those values. Neither
+misclassification has anywhere left to live — there is no table, so `weapon` cannot be filed
+wrong, and `canonical_name` is not compared at all. The distinction is between guarding a
+judgement and deleting the step that needed one.
+
+**What the digest kept.** Three mod-global registry lanes — `global_trigger_events`,
+`global_trigger_pools`, `global_crossings` — hashed wholesale, no categories. Crossings are the
+reason the digest survives at all: both peers *evaluate* crossings over the same replicated slot
+values, and `context/lib/networking.md`'s snapshot-apply ordering has clients evaluate them over
+same-frame local slot writes. The divergence is in a computation each peer runs, not in a value
+the host could send, so replication has nothing to offer and a hash is the only instrument left.
+
+**The cost the replacement carries, recorded so it is not rediscovered as a surprise.**
+`crates/net` depends on renet, bitcode, and log — not `foundation`, not `entities` — and every
+opaque value on its wire today is a fixed-size `[u8; 32]`. Replicated descriptor values cross as
+an engine-serialized variable-length payload the crate forwards without interpreting. A typed
+wire mirror was the alternative and was rejected: it would make the net crate learn the
+descriptor vocabulary, which breaks the registry-blind commitment, and would put a second
+definition of every tuning field one refactor away from drifting.
+
+**The behavior semantic it introduces.** The host owns tuning. A modder testing a movement
+change in co-op sees the host's values, not their own.
+
+## What generalizing the IR hasher bought, and what stopped justifying it
 
 The spec's original framing treated `DashParams`'s IR-valued fields as an obstacle: the
-movement descriptor was assumed to be scalars, and it is not. That framing had the direction
-of travel wrong. The IR is a substrate mid-adoption — its module doc calls movement "the first
-adopter", `E18--ir-valued-reactions` shipped, and `E10--enemy-stagger` is a planned adopter
-currently deferred on `CombatScope`: it lists IR-authored stagger tuning as out of scope,
-shipping plain descriptor scalars upgradeable additively to `NumberOrIr` per the dash precedent
-once Epic 16's `CombatScope` lands, not a spec drafting against the wrappers today. A recipe
-shaped around dash specifically would be correct for exactly one
-adoption step, and would then fail open on the next one, silently, on a field added by someone
-who never read the recipe. That is the same failure the static-collision hole already
-demonstrated.
+movement descriptor was assumed to be scalars, and it is not. Building a general
+`IrNode`/`IrValue` walker rather than a dash-shaped one was justified on adoption trajectory —
+the IR module's doc calls movement "the first adopter", `E18--ir-valued-reactions` shipped, and
+`E10--enemy-stagger` is a planned adopter currently deferred on `CombatScope`, shipping plain
+descriptor scalars upgradeable additively to `NumberOrIr` per the dash precedent. A recipe
+shaped around dash specifically would be correct for exactly one adoption step and would then
+fail open on the next, silently, on a field added by someone who never read the recipe.
 
-Building a general `IrNode`/`IrValue` walker instead paid for itself immediately.
-`global_crossings` carries `CrossingCondition::Ir(IrNode)` — the same type — so covering that
-lane became nearly free once the walker existed.
+**That argument is now unnecessary, and it is recorded rather than deleted because it was the
+stated reason for a design choice that survived.** `movement` left the digest's domain with the
+rest of the entity closure, and `DashParams`' `NumberOrIr`/`BoolOrIr` fields left with it. The
+walker stays load-bearing on its own terms: `global_crossings` carries
+`CrossingCondition::Ir(IrNode)`, which is in the remaining domain, so the walk is required
+rather than anticipatory. The spec no longer has to argue that a general capability is worth
+over-building, which is a smaller claim to defend.
 
 **The design rule that fell out: hash the IR structurally, not by serializing it.**
 Serializing is the tempting shortcut. `IrNode`'s serde format is pinned and byte-matched, so a
@@ -222,6 +298,11 @@ hash over the serialized form would be stable *and* would auto-cover every varia
 later. That auto-coverage is the defect. A new variant the walker does not handle is a compile
 error; a new variant a serializer handles is nothing at all. The compile error is the entire
 mechanism, and serializing trades it away.
+
+The rule has a clean boundary now that replication exists beside it. The tuning payload *does*
+serialize IR, deliberately: a new `IrNode` variant should replicate without anyone editing the
+codec. Auto-coverage is a defect for a digest and a feature for a payload, and the two rules are
+about different instruments rather than in tension.
 
 ## What the digests do not cover
 
@@ -243,11 +324,17 @@ answers. The two real blockers are different:
   has never seen.
 
 Both ways out are mechanisms this spec already rejected. Hashing all reactions wholesale
-reintroduces the Tier 2 false refusal the disposition table exists to prevent. Hashing an
-allowlist of prediction-relevant primitives is the allowlist mechanism that produced the
-static-collision fail-open. The `serde_json::Value` payloads are **not** the blocker:
+reintroduces the Tier 2 false refusal — every peer demoted when a `playSound` argument changes.
+Hashing an allowlist of prediction-relevant primitives is the allowlist mechanism that produced
+the static-collision fail-open. The `serde_json::Value` payloads are **not** the blocker:
 `preserve_order` is off in this workspace, so `serde_json::Map` is a `BTreeMap` and iterates
 key-sorted.
+
+The denylist mechanism the digest keeps has a scope limit worth restating, because it survived
+every domain change. Exhaustive destructuring makes a *field* added later fail the build rather
+than default to unhashed. It buys nothing about *lanes* nobody named. A new client-simulated
+lane is still a manual widening, caught by the rule in
+`context/research/coop-content-compatibility.md` §6 rather than by the compiler.
 
 **A gap nobody had recorded: level-local reactions and crossings.** Scripts declare reactions
 and crossings from `setupLevel()`, and `DataRegistry` keeps those per-level lanes separate from
@@ -257,11 +344,15 @@ script-declared content lives. So two peers running the same map under mods whos
 differ agree on both digests and diverge on locally-simulated behavior. Named here on the same
 rule that makes the uncovered lane set explicit at all.
 
-**Tier 3 item 5 changed disposition: replicate, not hash.** World gravity set from a reaction
-was cited as the concrete cost of the uncovered reaction lanes. Hashing is the wrong instrument
-for it. Gravity is world state the server owns, so it is absorbed by server authority — Tier 2
-under the project's own model — and replication makes peers *agree*, where a digest only makes
-them refuse when they do not. The E15 spec names it out of scope rather than implementing it.
+**Tier 3 item 5 changed disposition: replicate, not hash — and this is where the spec's
+governing principle came from.** World gravity set from a reaction was cited as the concrete
+cost of the uncovered reaction lanes. Hashing is the wrong instrument for it. Gravity is world
+state the server owns, so it is absorbed by server authority — Tier 2 under the project's own
+model — and replication makes peers *agree*, where a digest only makes them refuse when they do
+not. That sentence was written about one value and never generalized; generalizing it is what
+retired the entity-closure digest. Gravity itself still does not ship in E15, and the reason is
+now mechanical rather than one of scope: `worldSetGravity` mutates it mid-level, so it is not a
+participation-transition value and needs a continuous replication lane instead.
 
 ## Which corroborating documents are independent, and which are not
 
@@ -290,19 +381,22 @@ count it three times. Two corollaries for anyone validating this spec later:
 
 Three from this review round. The correction is cheap; the pattern is the part worth keeping.
 
-- **The spec claimed its chosen digest domain avoided the IR enum.** It does not. `movement`
-  reaches `dash`, and `DashParams` reaches the same `IrNode` the spec cites elsewhere as a
+- **The spec claimed its chosen digest domain avoided the IR enum.** It did not. `movement`
+  reached `dash`, and `DashParams` reached the same `IrNode` the spec cites elsewhere as a
   reason to leave state-slot parity to `ReplicatedSlotSchema`. The pattern: *a rationale for
   choosing between two designs was written without opening the types the chosen one reaches.*
-  This is the third consecutive review in which Task 6 failed on an unopened type.
+  This is the third consecutive review in which Task 6 failed on an unopened type — and the
+  fourth found `weapon`/`default_weapon` misfiled for the same reason, which is what finally
+  retired the design rather than patching it.
 - **The cross-process determinism criterion, and the invariant supporting it, were anchored to
-  `zone_multipliers`** — a field the spec's own disposition table excludes, since it is
+  `zone_multipliers`** — a field the spec's own disposition table excluded, since it is
   reachable only through host-authoritative `health`. The pattern: *an example survived a
   domain change that removed it from the domain.*
 - **The exhaustive-destructure guarantee was stated over `EntityTypeDescriptor` and
-  `PlayerMovementDescriptor`**, when the values it protects live one and two levels below
+  `PlayerMovementDescriptor`**, when the values it protected lived one and two levels below
   them. The pattern: *a guarantee was scoped to the types the recipe names rather than the
-  types it reaches.*
+  types it reaches.* Overtaken rather than fixed — both types left the domain — but the pattern
+  is the durable part and it binds on any future recursive recipe.
 
 ## Rejected while drafting
 
@@ -314,11 +408,10 @@ Three from this review round. The correction is cheap; the pattern is the part w
 - **A content hash over the *whole* mod.** Breaks hot reload mid-session, makes legitimate
   client-side differences fatal, and buys tamper detection, an explicit non-goal
   (`index.md` §4). Superseded rather than simply rejected: the spec now hashes a *scoped*
-  surface — per entity type, the `canonical_name` and the movement descriptor a client
-  predicts with — which keeps the compatibility property and drops the breakage. Note the two
-  independent reasons the breakage is gone, since collapsing them invites a bad inference: the
-  domain shrank from every byte to two fields per named entity type, *and* the consequence
-  softened from close to demote.
+  surface — three mod-global registry lanes — which keeps the compatibility property and drops
+  the breakage. Note the two independent reasons the breakage is gone, since collapsing them
+  invites a bad inference: the domain shrank from every byte to three lanes, *and* the
+  consequence softened from close to demote.
   Either alone would leave a usable dev loop; neither is a reason to widen the domain back. `E16--impact-policy-substrate`'s
   rule (explicit author-assigned ids, not content-derived ones) still governs **identity**;
   it never governed parity, which has been content-derived since the fingerprint shipped.

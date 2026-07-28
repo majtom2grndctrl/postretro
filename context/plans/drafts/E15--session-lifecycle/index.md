@@ -299,9 +299,10 @@ Rivals are listed in Direction and argued in `research.md`.
   and defined by subtraction, so the next spec's seat and roster are added to a named list rather
   than discovered.
 - **The transport is polled during every world-less frame — Frontend and Loading — for transport
-  advance and keepalive only.** No snapshot apply, no game logic; there is no world in either
-  state. Frontend coverage is what makes the headline case — a client admitted before any level
-  installs — reachable at all.
+  advance, keepalive, handshake processing, and Control drain.** No snapshot apply, no
+  state-crossing detection, no simulation tick; there is no world in either state. Frontend
+  coverage is what makes the headline case — a client admitted before any level installs —
+  reachable at all.
 - **A reject sends its reason before disconnecting.** The slot closes immediately so no further
   traffic is honored; only the socket teardown defers one poll, letting the reliable message
   flush. Without it a player on the wrong mod cannot distinguish a version mismatch from an
@@ -341,15 +342,18 @@ AC-DIGEST-3, AC-DIGEST-6, AC-LEVEL-4, AC-BOOT-4.
 - [ ] **AC-GATE-6** — A client whose protocol constants diverge is refused with a protocol cause,
       not a mod or content cause.
 - [ ] **AC-GATE-7** — A client refused at admission — protocol or mod id — observes the typed
-      reason before its connection closes.
+      reason before its connection closes, over the in-memory relay and the unconditioned
+      loopback.
 - [ ] **AC-LEVEL-1** — Two maps that differ only in ways the shipped fingerprint ignored — two
-      maps with no movers at all, and two maps whose only difference is static world collision
+      maps with no movers at all but different brushwork, and two maps whose only difference is
+      static world collision
       geometry — produce different **level content digests** while carrying the **same level
       identity**, and a client on one does not participate on the other. Identity must not be
       what discriminates, or the criterion passes with the epoch untouched.
 - [ ] **AC-LEVEL-2** — A catalogued level and the same `.prl` loaded by raw path produce
       **different level identities**, and the mismatch is reported by name rather than as a hash
-      diff.
+      diff. Two distinct catalog ids within one mod also produce **different level identities**,
+      and a client on one does not participate on the other.
 - [ ] **AC-DIGEST-1** — A client whose **local movement tuning differs from the host's** —
       including a value nested two levels down (`SpeedParams::run`) and one behind an IR wrapper
       (`DashParams::boost_speed`) — participates and predicts **identically to the host**. It
@@ -460,7 +464,10 @@ AC-DIGEST-3, AC-DIGEST-6, AC-LEVEL-4, AC-BOOT-4.
 a message family to it. Split first, behavior-preserving: move the pure gate surface into a new
 `crates/net/src/handshake.rs` beside `slots.rs` — the validation function, the reject reason with
 its `Display` and `Error` impls, the protocol-constant accessors (`PROTOCOL_ID`, `WIRE_VERSION`,
-`transport_protocol_id`, `protocol_version`), and the malformed/hex helpers. What moves is the
+`transport_protocol_id`, `protocol_version`), and the malformed/hex helpers. The relocation is
+transitional: `RejectReason` moves here as part of the behavior-preserving split, and Task 3
+deletes it outright, putting `DivergenceReason` and both impls in `wire.rs` — a reader should not
+treat this placement as durable. What moves is the
 **comparison** surface, not the wire surface: `ProtocolVersion` is a bitcode type and stays in
 `wire.rs`, and `transport.rs` contains no wire-serialized type today. `transport.rs` keeps the
 renet plumbing: socket, channels, `NetServer`/`NetClient`, the poll loop, and send gating.
@@ -468,8 +475,11 @@ Re-export **from `transport.rs`** (`pub use crate::handshake::*;`), not from `li
 imports are module-qualified — `use postretro_net::transport::{NetClient, NetServer}` in
 `crates/postretro/src/netcode/mod.rs`, `transport::HandshakeOutcome` in `main.rs` — and `lib.rs`
 carries no re-exports today, so a `pub use` there mints a new path instead of preserving the
-existing one. Relocate the existing gate unit tests with their subject. No behavior change and no
-acceptance criterion: it is a move, verified by the relocated tests passing unchanged.
+existing one. Split the existing gate unit tests with their subject: the pure comparison tests
+over the validation function and the hex/malformed helpers move to `handshake.rs`; every test that
+constructs a `NetServer` or `NetClient` stays in `transport.rs` — including the relay-pair fixture
+and the loopback tests Task 3 names. No behavior change and no acceptance criterion: it is a move,
+unchanged in body, with imports re-pathed.
 
 ### Task 2: Mod identity in the manifest
 
@@ -521,11 +531,14 @@ the recoverable parity lane rather than the terminal admission one. Comment both
 commit site together: identity is frozen because admission has no recovery path, the digest is
 refreshed because parity does. The freeze diverges from the atomic-replace discipline most
 manifest lanes follow — note at the same site that `fonts` is already non-re-committed, so mod
-identity joins an existing minority of one rather than becoming a unique exception. Update the
-one shipped manifest under `content/`, `content/dev/start-script.ts`, to declare both fields. The
-Script syntax examples block matches that manifest's shape: `maps` imports `mapCatalog` from
-`content/dev/scripts/frontend-menu`, because no shipped manifest inlines `defineMapCatalog([...])`
-and an example that does teaches a shape nobody uses.
+identity joins an existing minority of one rather than becoming a unique exception. Update all
+three committed `defineMod` call sites under `content/` to declare both fields:
+`content/dev/start-script.ts`, `content/dev/scripts/frontend-level-select-fixture.ts`, and
+`content/dev/scripts/frontend-level-select-fixture.luau`. The `.ts` fixture is a `tsc --noEmit`
+review gate — `content/dev/scripts/tsconfig.json` includes it — so a missing required field fails
+that gate. The Script syntax examples block matches that manifest's shape: `maps` imports
+`mapCatalog` from `content/dev/scripts/frontend-menu`, because the example mirrors the *runtime*
+manifest, which imports its catalog; the two fixtures inline `defineMapCatalog([...])` instead.
 
 ### Task 3: Two-stage gate and the slot machine
 
@@ -615,6 +628,11 @@ pinned:
 | `LevelIdentity` | holding | `expected: String`, `received: String` |
 | `LevelDigest` | holding | `identity: String`, `expected: [u8; 32]`, `received: [u8; 32]` — identity is carried so the diagnostic can say "same map, different content" |
 
+`HoldingCause` carries exactly one cause, so when two or three parity values diverge at once — the
+common case on a mod fork that also changed maps — a fixed precedence decides which is reported:
+mod digest first, since it is map-independent, then level identity, then level digest; only the
+first is reported.
+
 `RejectReason` today is a **struct** with an `impl std::error::Error`. It is **deleted**:
 `HandshakeOutcome::Rejected` carries a `ClosingCause` directly, and the `Display` and
 `std::error::Error` impls move to `DivergenceReason`. An outer wrapper would leave two spellings
@@ -656,8 +674,9 @@ cause in the state or needs none. Two derivation rules replace every special cas
 - **Any exit from `Participating` emits the cleanup event** — `Demoted { client_id, cause }` to
   `Admitted`, `Closed { client_id, cause }` to `Closed`. The two share a trigger by construction,
   so "a demotion clears exactly what a close clears" becomes the shape of the code rather than an
-  assertion. `Admitted → Closed` is silent because no exit from `Participating` occurred, so the
-  double-run the shipped `on_close` guard prevents is unreachable rather than guarded against.
+  assertion. `Admitted → Closed` emits nothing because no exit from `Participating` occurred, so a
+  slot demoted and then closed runs the cleanup exactly once by derivation rather than by a
+  once-only method.
 - **Any entry to `Participating` emits `Participating { client_id }`** — first admission and
   re-promotion alike. Task 7 hangs the pawn spawn on it, so a re-promoted slot gets a pawn with no
   "must re-emit" rider anywhere.
@@ -690,8 +709,11 @@ vocabulary is fixed here rather than left for Task 7 to invent:
 `SlotEvent` derives `Copy` today in `crates/net/src/slots.rs`; `HoldingCause` carries `String` and
 `[u8; 32]` payloads, so `SlotEvent::Demoted { client_id, cause: HoldingCause }` costs `SlotEvent`
 its `Copy` derive — it keeps `Clone`. `host_handle_lifecycle`
-(`crates/postretro/src/netcode/mod.rs`) takes `lifecycle: &[SlotEvent]`, so by-value binding sites
-there break and need updating to bind by reference or clone.
+(`crates/postretro/src/netcode/mod.rs`) takes `lifecycle: &[SlotEvent]` and iterates `for event in
+lifecycle` over the slice, matching on `&SlotEvent` and dereferencing `*client_id`, so the
+exhaustive match arm there gains the demotion variant. The only `SlotEvent`-by-value uses are the
+`pending_lifecycle` moves in `crates/net/src/transport.rs` and the `assert_eq!` comparisons in its
+relay tests, both of which survive on `Clone` + `PartialEq`.
 
 `ServerPoll` keeps its two vectors — no third field. The split follows the shipped rule:
 `handshakes` carries *gate verdicts about a message just evaluated*, `lifecycle` carries *slot
@@ -734,10 +756,12 @@ unclosed — every parity value becomes true again at the next matching install 
 **Both poll entry points.** `NetServer::update` and `NetServer::poll_handshakes` each
 independently drain `pending_lifecycle`, run the `ServerEvent` loop, and call
 `process_control_messages`; only `update` calls `transport.send_packets`, and `poll_handshakes`
-is the in-memory relay path `harness.rs` and `transport.rs`'s relay tests (`relay_accepted_pair`,
-`fingerprint_change_surfaces_exactly_one_close_event`) use — the real-UDP loopback tests drive
-`NetServer::update` through `run_handshake`. "The next poll" must mean both, or relay-driven
-tests wedge on an undrained pending-disconnect list.
+is the in-memory relay path `harness.rs` and `transport.rs`'s relay-pair fixture,
+`relay_accepted_pair`, feed — used by
+`close_relay_connection_surfaces_close_event_and_refuses_traffic`,
+`input_from_a_closed_slot_is_ignored`, and `fingerprint_change_surfaces_exactly_one_close_event` —
+the real-UDP loopback tests drive `NetServer::update` through `run_handshake`. "The next poll" must
+mean both, or relay-driven tests wedge on an undrained pending-disconnect list.
 
 **Client side — installed values first.** `NetClient` today has exactly one installed-value
 setter, `set_kinematic_static_fingerprint`. It needs the same shape as the server: an
@@ -1036,7 +1060,10 @@ Wire the engine's halves to the new gate. **Mod identity:** after mod init commi
 id and version on the net endpoint through a setter mirroring the fingerprint's, reached through
 the same `session.net_endpoint` borrow `install_level_payload` uses. Install once,
 first-commit-wins, and on a staged reload that changes either value log the warning Task 2
-specifies.
+specifies. A debug run with no start script commits no manifest, so no identity ever installs: log
+once at the first connect that arrives with no identity installed, so a client queuing at
+`Pending` forever under the queue-until-installed rule is a legible failure rather than a silent
+hang.
 
 Both roles need setters, not just the host: `NetEndpoint` installs identity and both parity
 sources on `NetServer` (which compares) and on `NetClient` (which only declares), so every setter
@@ -1050,14 +1077,18 @@ reads. The staged seam is `App::poll_staged_manifest_results`
 (`crates/postretro/src/startup/staged_manifest_lifecycle.rs`). The entire staged-manifest
 mechanism is debug-build-only: `ScriptRuntime::poll_staged_manifest_builds` returns an empty
 `Vec` in release, and `ScriptRuntime::commit_staged_manifest_result` wraps its body in
-`#[cfg(debug_assertions)]` and otherwise returns a fourth outcome variant,
+`#[cfg(debug_assertions)]` and otherwise returns one of five outcome variants,
 `StagedManifestCommitOutcome::ReleaseNoop` (both in `crates/scripting-core/src/runtime/core.rs`).
-Four things the seam forces: install only on `StagedManifestCommitOutcome::Committed`; cover all
-four outcome variants in the match at the seam, `ReleaseNoop` included; place the install inside
-a `self.session` borrow scope compatible with the one that function already scopes around
-`commit_staged_manifest_result`, so App methods can re-borrow; and define the digest for the
-`NoStartScript` committed case, which clears lanes — the empty-registry digest, not a skip, since
-skipping would leave a stale value installed. Reinstalling a digest re-evaluates the
+Four things the seam forces: install only on `StagedManifestCommitOutcome::Committed`; the type has
+**five** variants — `Committed`, `DiscardedStale`, `FailedBuild`, `Rejected`, `ReleaseNoop` — and
+`App::poll_staged_manifest_results` reads the outcome today only through
+`matches!(outcome, StagedManifestCommitOutcome::Committed { .. })`, so an exhaustive match over all
+five is new work, not an extension of an existing one; place the install inside a `self.session`
+borrow scope compatible with the one that function already scopes around
+`commit_staged_manifest_result`, so App methods can re-borrow; and the last is the `Committed`
+outcome whose `result.status` is `StagedManifestBuildStatus::NoStartScript`, which clears lanes and
+takes the empty-registry digest rather than a skip, since skipping would leave a stale value
+installed. Reinstalling a digest re-evaluates the
 participation predicate through Task 3's single re-evaluation function, which demotes slots that
 stopped matching **and promotes slots that started matching again**. There is no separate
 demotion or promotion trigger to write here: there is one install, and the predicate follows it.
@@ -1068,7 +1099,7 @@ immediately before the digest is computed. The catalog id when present. The path
 real work: `resolve_level_source`'s `Path` arm stores `map_path.to_string_lossy()`, the raw CLI
 argument exactly as typed, absolute or CWD-relative, so two peers launched from different working
 directories would diverge on identity while running the same file. Relativize against
-`App::content_root`, emit forward slashes, case-sensitive, no `.`/`..` segments, and state the
+`App.content_root`, emit forward slashes, case-sensitive, no `.`/`..` segments, and state the
 behavior for a path outside the content root: use the normalized absolute path, and accept that
 it only matches a peer launched identically. Install it alongside Task 6's widened level digest,
 computed from the same `world` already in scope. Also install the relevel catalog id Task 4
@@ -1149,9 +1180,11 @@ touch). Spec 2 adds the seat and roster to a named list rather than discovering 
 
 **Update the rest of `context/lib/networking.md` in the same pass.** Four edits: the
 fingerprint-binds-the-connection sentence is overturned — a content change demotes, never closes;
-the slot lifecycle gains a state and a transition; the handshake section describes one app
-message where there are now three; and the crate boundary gains a server→client control message
-family.
+the slot lifecycle is documented there for the first time, as a new subsection or folded into the
+first edit — the doc today has no slot lifecycle, no `SlotState`, and no `Pending`/`Accepted`
+states, only the phrase "emits the ordinary slot-close lifecycle event exactly once" inside the
+sentence the first edit rewrites; the handshake section describes one app message where there are
+now three; and the crate boundary gains a server→client control message family.
 
 Keep the `main.rs` edit to redirecting the two triggers, plus the deferred
 `accepted_clients`/`is_accepted` mechanical rename pass Sequencing assigns this task. Splitting
@@ -1179,7 +1212,10 @@ scripting-core, the net crate, the world-less frames, the two hash recipes and t
 - **Task 6 has one existing caller.** `kinematic_static_fingerprint` is called today from
   `install_level_payload`, and Task 6 both renames it and changes its parameter, so Task 6 updates
   that call site in place. Task 7 later rewrites the surrounding lines — a two-line overlap, not a
-  conflict.
+  conflict. `kinematic_static_fingerprint` also has six in-file call sites inside
+  `runtime_movers.rs`'s own `#[cfg(test)] fn kinematic_static_fingerprint_changes_for_prediction_inputs`,
+  all needing the rename and the new `world` argument, so the parameter change is not a one-line
+  edit.
 - **Task 6's third output lands in an already-touched file.**
   `crates/postretro/src/netcode/tuning_payload.rs` is new, but its `mod` declaration goes in
   `crates/postretro/src/netcode/mod.rs`, which Task 6 already edits for the
@@ -1189,22 +1225,33 @@ scripting-core, the net crate, the world-less frames, the two hash recipes and t
   `crates/postretro/src/startup/lifecycle.rs` — Task 5 the loading frame, Task 6 the
   `install_level_payload` call site — in disjoint functions, so they merge. Task 5 and Task 3's
   rename pass both edit `crates/postretro/src/main.rs`, and Task 3's rename pass and Task 6's
-  rename both edit `crates/postretro/src/netcode/mod.rs`. Resolve those two by **taking the
+  rename both edit `crates/postretro/src/netcode/mod.rs`. Two breaks are unavoidable regardless of
+  which branch Task 3 takes: the exhaustive `SlotEvent` arm in `netcode/mod.rs`, and the
+  exhaustive `HandshakeOutcome` match in `main.rs` — `main.rs` matches `HandshakeOutcome` over
+  `Accepted { client_id }` and `Rejected { client_id, reason }`, and Task 3's Verdict-lanes table
+  renames `Accepted` to `Admitted`, adds `ParityHeld`, and retypes `Rejected`'s payload from
+  `RejectReason` to `ClosingCause`, so all three break that match. Task 3 makes both compile as
+  minimal arm edits — `Admitted` handled as today's `Accepted`, `ParityHeld` logged and ignored,
+  and the `SlotEvent` arm gains the demotion variant — rather than a file-wide pass; Task 7 moves
+  the pawn spawn off that `main.rs` arm in Phase 4. Resolve the rest by **taking the
   deprecated-alias branch** above: Task 3 keeps `accepted_clients`/`is_accepted` as
-  `#[deprecated]` aliases and does not touch `main.rs` or `netcode/mod.rs` bodies, leaving the
-  mechanical rename to Task 7 in Phase 4. One unavoidable break stays: the exhaustive `SlotEvent`
-  arm in `netcode/mod.rs` gains the demotion variant in Task 3, a one-arm edit rather than a
-  file-wide pass. The fourth: Task 6 creates `crates/postretro/src/mod_digest.rs` and
-  `crates/postretro/src/content_hash.rs`, whose `mod` declarations land in `main.rs`, the same
-  binary crate root Task 5 edits — two lines, in a different region from Task 5's loading-frame
-  edit.
+  `#[deprecated]` aliases, which is unaffected by the two arm edits above, leaving the mechanical
+  rename pass to Task 7 in Phase 4. The fourth collision: Task 6 creates
+  `crates/postretro/src/mod_digest.rs` and `crates/postretro/src/content_hash.rs`, whose `mod`
+  declarations land in `main.rs`, the same binary crate root Task 5 edits — two lines, in a
+  different region from Task 5's loading-frame edit.
 
 **Phase 3 (sequential):** Task 4 — consumes Task 3's slot states and Control envelope.
 **Phase 4 (sequential):** Task 7 — consumes the setters from Task 3, the committed identity
 from Task 2, both recipes and the payload codec from Task 6, and the client-follow drain from
-Task 4. It is the only task that touches
-`crates/postretro/src/scripting/builtins/net_descriptor.rs` and
-`crates/postretro/src/weapon/mod.rs`, so the two consuming-site rewrites collide with nothing.
+Task 4. Its two consuming-site rewrites touch real call sites elsewhere:
+`ClientWeaponState::from_local_pawn_descriptor` (`crates/postretro/src/weapon/mod.rs`) is called
+from `crates/postretro/src/main.rs`; `materialize_net_local_movement_component`
+(`crates/postretro/src/scripting/builtins/net_descriptor.rs`) is called from
+`crates/postretro/src/netcode/remote_materialize.rs`,
+`crates/postretro/src/netcode/predict_reconcile_harness.rs`, and
+`crates/postretro/src/netcode/predict_reconcile_harness_test_fixtures.rs`. `main.rs` is already on
+Task 5's and Task 6's lists, so Task 7 is a fourth `main.rs` toucher rather than a clean file.
 
 ## Invariants
 
@@ -1245,7 +1292,7 @@ Task 4. It is the only task that touches
 | client→server Control envelope | tagged enum in `wire.rs`, mirroring `ClientMessage` | Control, client→server; carries admission + parity | n/a | n/a |
 | server→client Control envelope | tagged enum in `wire.rs`, mirroring `ServerMessage` | Control, server→client; carries relevel + divergence + tuning payload | n/a | n/a |
 | divergence reason | `DivergenceReason::{Closing(ClosingCause), Holding(HoldingCause)}` — 2 closing (protocol, mod id), 3 holding (mod digest, level identity, level digest); per-cause payloads pinned in Task 3's table. Carries `Display` + `std::error::Error`; `RejectReason` is deleted | inside the server→client envelope | n/a | n/a |
-| slot state | `SlotState::{Pending, Admitted, Participating, Closed { cause }}` — **stays `Copy`**; the declaration lives beside it, not inside it. `SlotTable`'s only mutating primitive is a private `transition(client_id, next, holding)`; `on_accept` and `on_close` are gone, and `admit`/`participate`/`demote`/`close` are thin wrappers over it | not replicated | n/a | n/a |
+| slot state | `SlotState::{Pending, Admitted, Participating, Closed { cause }}` — **stays `Copy`**; the declaration lives beside it, not inside it. `SlotTable`'s only mutating primitive that **emits events** is a private `transition(client_id, next, holding)`; `on_connect` is unchanged and emits nothing. `on_accept` and `on_close` are gone, and `admit`/`participate`/`demote`/`close` are thin wrappers over `transition` | not replicated | n/a | n/a |
 | `SlotEvent` | `SlotEvent::{Participating { client_id }, Demoted { client_id, cause: HoldingCause }, Closed { client_id, cause: CloseCause }}` — **loses `Copy`** (via `HoldingCause`'s `String`/`[u8; 32]` payload), keeps `Clone`. Every variant is **derived from the (old, new) state pair**, never decided inside a mutating method: entry to `Participating` emits the first, the two exits from `Participating` emit the other two | not replicated | n/a | n/a |
 | retained slot declaration | `HashMap<ClientId, ParityDeclaration>` on `NetServer` beside `pending_lifecycle`, cleared on close; `ParityDeclaration { mod_digest: [u8; 32], level_identity: String, level_digest: [u8; 32] }` | not replicated | n/a | n/a |
 | last-sent tuning payload | engine-side, per participating slot; a change detector for the staged-commit re-send, cleared on close and on demotion | not replicated | n/a | n/a |
@@ -1254,7 +1301,7 @@ Task 4. It is the only task that touches
 
 ```ts
 // Proposed design — two new required fields; everything else is unchanged. The `maps`
-// import mirrors the one shipped manifest, `content/dev/start-script.ts`.
+// import mirrors the runtime manifest, `content/dev/start-script.ts`.
 import { mapCatalog } from "./scripts/frontend-menu";
 
 export default defineMod({

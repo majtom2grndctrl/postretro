@@ -1,157 +1,162 @@
 # Research — test log capture
 
-Grounding notes for `index.md`. Decisions live in the spec; this is what produced them.
+Grounding for `index.md`. Decisions live in the spec; this is what produced them.
 
-## The premise was half right
+## Four ad-hoc loggers, not zero
 
-"No log-capture exists anywhere in `crates/`" is true for *test* capture, but two
-pieces of prior art matter.
+Grep `set_logger|set_boxed_logger|env_logger::` — `set_logger` alone misses
+`level-compiler`'s `set_boxed_logger`. Seven install sites, four of them test-only:
 
-### 1. `crates/level-compiler/src/logger.rs` — a shipped `log::Log` impl
+| File | Shape | Race handling |
+|---|---|---|
+| `ui/src/theme_gate_test.rs` | `CountingLogger` + `WARN_COUNT` + `WARN_TEST_LOCK` | Probe, then `eprintln!` and pass |
+| `ui/src/tree/tests/local_state.rs` | Same shape, **own private** `WARN_COUNT` | Same |
+| `postretro/src/scripting/reactions/log_capture.rs` | Thread-local `Vec<(Level, String)>`, `set_max_level(Trace)`, closure API | Swallows `Err`; `capture()` returns empty |
+| `renderer/src/lighting/lightmap.rs` (`#[cfg(test)]`) | Thread-local, `OnceLock<bool>` recording the `set_logger` result | Returns `None`; caller `eprintln!`s and passes |
 
-Production code, not test infrastructure: the warning sink behind the compiler's
-plain and interactive reporters. It already defines
+The three production installers stay: `env_logger::init` (`postretro/src/main.rs`),
+`env_logger::try_init` (`postretro/src/bin/gen_script_types.rs`), and `set_boxed_logger`
+in `level-compiler`'s `logger::install`, called only from its `main.rs`.
 
-```rust
-pub struct CapturedRecord {
-    pub level: Level,
-    pub target: String,
-    pub message: String,
-}
+The `postretro` test logger is a single-crate prototype of this plan: thread-local buffer,
+`Trace` max level, closure scoping. It drops `target` and is `pub(crate)`. The `renderer`
+one already records the `set_logger` result in a `OnceLock<bool>` — the mechanism Task 1
+describes as new.
+
+## The live defect is one test, and it is not the one first suspected
+
+`CARGO_PROFILE_TEST_SPLIT_DEBUGINFO=off cargo test -p postretro-ui --lib -- --nocapture`
+— 237 pass, and one skip line prints on every run:
+
+```
+[local_state_tests] skipping warn-count assertion: another logger was installed before ours
 ```
 
-— the exact three-field owned record the harness needs (`logger.rs:13-19`), plus
-`install()` calling `log::set_boxed_logger` + `log::set_max_level` (`logger.rs:141-152`)
-and an `env_filter::Filter` for `RUST_LOG`-compatible directives.
+`theme_gate_test`'s logger wins the race every run; `local_state`'s loses every run. They
+are not interchangeable — each owns a private `WARN_COUNT` static, so the loser's probe
+increments the winner's counter and its own stays zero.
 
-Not reusable from `crates/net`: `postretro-level-compiler` is a **binary** crate
-carrying `shambler`, `ratatui`, `crossterm`, `nalgebra`, `bvh`, `rayon`. An edge
-from `net` to it inverts the layering in `development_guide.md` §Workspace. The new
-crate mirrors the field set and the `install()` shape; it shares no code.
+So `local_bind_with_no_enclosing_scope_degrades_to_literal_and_warns_at_build` — a test
+named for a warn — has **both** warn assertions dead: the exactly-one-warn check and the
+hot-path-stays-log-free check. It reports `ok` on its fallback-text assertion alone.
 
-### 2. `crates/ui/src/theme_gate_test.rs:200-322` — an ad-hoc test logger, already fighting the race
+The three `theme_gate_test` cases do assert today. Their skip arms are latent, and any
+third logger in that binary — including this harness, mid-migration — turns them off.
+That is why Task 2 converts both files or neither.
 
-A `CountingLogger` behind a `Once`, a process-global `AtomicUsize WARN_COUNT`, and a
-process-global `Mutex WARN_TEST_LOCK` that serializes the three tests using it. Its own
-comment states the failure mode:
+## Why `CapturedRecord` cannot be shared
 
-```rust
-// Ignore an Err: another test (or env_logger) may have set a logger
-// first; the count is only meaningful under the serial lock anyway, and a
-// pre-installed logger means our counter never increments — guarded below.
-```
+`crates/level-compiler/src/lib.rs` exports `bc5` and `texture_mips` only; `logger` is
+`pub mod logger;` in `main.rs`. Not library surface, so "it is a binary crate" is the
+wrong reason — `xtask` takes a normal dependency on the lib. Layering is the second
+reason and it holds: `crate-graph.md` puts `net` below `level-compiler`.
 
-`warns_for_build` returns `Option<usize>`; all three call sites (`:254`, `:287`, `:317`)
-`eprintln!("… skipping: another logger is installed")` and pass. **A broken harness
-reads as green.** This is the strongest available argument for the loud-panic
-requirement (AC-8) and the reason the UI migration is the thin slice — it is a real
-exactly-once consumer that exists today.
+`development_guide.md` §Workspace's table types the crate as "binary", which is where the
+wrong reason came from. Fix at promotion.
 
-## Cross-thread logging is real, and grounded
+## Task 4's three sites
 
-`crates/postretro/src/startup/worker.rs:42-63` — `spawn_level_worker` runs on a
-`thread::spawn`ed worker and emits:
+Each already has behavioral coverage. The log record is what is unasserted.
 
-- `log::info!("[Loader] PRL loaded successfully from {path_str}")`
-- `log::warn!("[Loader] PRL file not found: {p} — starting without map")`
-
-A thread-local buffer cannot see these. That is the whole reason for orphan counting
-(AC-9) and for holding the buffer behind `Arc<Mutex<…>>` in the thread-local slot
-rather than a bare `RefCell<Vec<…>>` — a `Send` handle is then additive.
-
-`crates/scripting-core/src/staged_manifest.rs:65` also spawns a worker, but it is
-**not** a hazard for E15's six `Debug-build criterion` hot-reload ACs: the file contains
-zero `log::` calls. The worker returns structured `StagedManifestDiagnostic` values
-over an `mpsc` channel; the commit-and-warn site E15 Task 2 adds runs on the polling
-(main) thread.
-
-## The E15 demand, verified
-
-Verified log-asserting ACs (`context/plans/drafts/E15--session-lifecycle/index.md`):
-
-| AC | Line | Demand |
+| Crate | Site | What the log adds |
 |---|---|---|
-| AC-GATE-5 | 338 | version skew "appears in a host-side log and nowhere else" — `info`, both versions. Task 6 detail at `:592-595` |
-| AC-MANIFEST-2 | 409 | staged reload changing mod id/version "**warns** and leaves the installed value unchanged". Detail at `:1038` |
-| AC-LEVEL-7 | 449 | absent catalog id "logs a diagnostic naming the id". Detail at `:802` |
-| AC-DIGEST-3 | 361 | transform-only degradation; `materialize_net_mesh_presentation` logs it (`:210`) |
+| `net` | `process_control_messages` (`transport.rs`) — `info` accept, `warn` reject | `loopback_matching_version_is_accepted` and `loopback_diverged_app_version_is_rejected_with_typed_reason` assert the `HandshakeOutcome`; the operator-facing diagnostic never has been. `renet` is polled, not threaded, so both records land on the test thread |
+| `scripting-core` | `write_script_store_slot`, `write_state_slot_json`, `apply_text_edit` (`store_bridge.rs`) | All three return `Ok(())`. The slot value discriminates refusal from a differing write; only the log says which of the three refused. `write_store_slot` labels errors `storeWrite` too but has no readonly guard — not a target |
+| `postretro` | `materialize_net_mesh_presentation` (`scripting/builtins/net_descriptor.rs`) — `warn` unregistered class, `debug` meshless | Both return `false`; level and body are the only discriminator. `remote_enemy_presentation_unknown_class_leaves_transform_only` covers the first branch's return value. The meshless branch has no test at all |
 
-Plus the wire-decode failure path (`:1024`), the absent-half degradation (`:1100`), and
-the boot-load early-return warning (`:807`). The `[Net]` body tag is live today:
-`crates/net/src/transport.rs:365,390,394`. `development_guide.md` §6.1 makes the
-`[Subsystem]` prefix a rule, which is why **body substring is the primary key** and
-target is a secondary filter.
+Fixture feasibility, checked: `ScriptCtx::new()` (`crates/entities/src/ctx.rs`) is a plain
+`Rc<RefCell<_>>` struct — no rquickjs or mlua runtime needed — and `SlotSchema` with
+`readonly: true` is directly constructible. Each readonly guard runs before value
+conversion, so no valid payload is required.
 
-## Shipped log-only degradation paths (Task 3's real targets)
+## `log` 0.4.29 semantics
 
-Task 3 was originally "emit a record, assert the record" — a test of the `log` crate, not
-of this one. Grounding turned up three shipped sites per the keep-if-it-tests-our-logger
-rule, all currently untested:
+Pinned in `Cargo.lock`; read from the registry source.
 
-| Crate | Site | Why the log is the only observable |
-|---|---|---|
-| `net` | `transport.rs:390` (`info`, `[Net] client {id} accepted`), `:394` (`warn`, `[Net] rejecting client {id}`) | Reached today by `loopback_matching_version_is_accepted` and `loopback_diverged_app_version_is_rejected_with_typed_reason`, which drive a real `NetServer` over a bound UDP socket. `HandshakeOutcome` is asserted; the operator-facing diagnostic never is. Exactly the pair E15's admission criteria extend |
-| `scripting-core` | `store_bridge.rs:75`, `:116`, `:139` — `storeWrite`, `setState`, text-edit | All three **return `Ok(())`** after refusing a write to a read-only slot. The caller cannot distinguish refusal from success. The only existing readonly test (`:806`) covers declaration validation, not the write refusal |
-| `postretro` | `scripting/builtins/net_descriptor.rs:226` (`warn`, unregistered class), `:233` (`debug`, no mesh block) | Both return `false` from `materialize_net_mesh_presentation`, so the return value cannot discriminate the two causes — level and body are the only signal. This is E15's AC-DIGEST-3 site, and the one place `debug`-level capture (AC-CAP-4) is exercised against real engine code |
+- Runtime max level defaults to `Off` (`AtomicUsize::new(0)`, and `LevelFilter::Off` is
+  discriminant 0). Without `set_max_level` the macros short-circuit and capture nothing.
+- `set_logger` is one-shot via `compare_exchange`; the loser gets `Err`. A `static`
+  zero-sized impl satisfies the `&'static` bound with no `unsafe`.
+- `set_max_level` is a relaxed store to a process-global — genuinely process-wide.
+- `Level` and `LevelFilter` are distinct types with derived `PartialEq`, so exact-level
+  matching is enforceable.
+- `record.args()` returns `&Arguments`, so formatting before touching the thread-local is
+  possible — the re-entrancy warrant holds.
+- No `max_level_*` or `release_max_level_*` feature is enabled anywhere in the workspace,
+  so `STATIC_MAX_LEVEL` is `Trace` under `cargo test` and `debug`/`trace` capture is
+  reachable.
 
-The `postretro` row is also the clearest illustration of the boundary in
-`Alternatives rejected`: a return value *does* exist here, so a value assertion covers
-"transform-only." It cannot cover *why*, and the two reasons are deliberately logged at
-different levels.
+## Cross-thread logging
+
+`run_worker`, called from the `thread::spawn` closure in `spawn_level_worker`
+(`crates/postretro/src/startup/worker.rs`), emits `[Loader]` info and warn off-thread. A
+thread-local buffer cannot see them — hence orphan counting, and the `Arc<Mutex<_>>` slot
+that keeps a `Send` handle additive.
+
+`crates/scripting-core/src/staged_manifest.rs` also spawns a worker but contains zero
+`log::` calls; it returns `StagedManifestDiagnostic` over `mpsc`. Not a hazard for E15's
+hot-reload criteria, whose commit-and-warn site runs on the polling thread.
+
+libtest capture routing, for the stderr decision: output capture is per test thread, so
+same-thread orphans are captured and attributed to whichever test owns that thread, and
+cross-thread orphans always print.
 
 ## Workspace-member side effects
 
-`crates/xtask/src/crate_graph.rs` builds its graph from `cargo metadata --no-deps`,
-keeping only **normal (non-dev, non-build)** edges (`crate_graph.rs:32-42`, module doc
-`:1-20`). Consequences of adding a dev-only member:
+`crate_graph.rs` reduces `cargo metadata --no-deps` to normal (non-dev, non-build) edges
+in `collect_graph`. A dev-only member adds a node with no edges:
 
-- `layering_invariants_hold` (`:496`) is unaffected — it asserts on `postretro`
-  dependents, `foundation` deps, and `entities` deps only, none of which move.
-- `render_doc` (`:~330`) enumerates `graph.layers()` over **all** members. A zero-edge
-  member lands in `Layer 0 (leaves)`, so the committed `context/lib/crate-graph.md`
-  goes stale and `crate-graph --check` returns 1 (`check_committed_doc`). Regeneration
-  via `--write` is mandatory in the same commit.
-- `dependents_ranking` omits crates nothing depends on, so the chokepoint section is
+- `layering_invariants_hold` asserts only on `postretro` dependents, `foundation`
+  dependencies, and `entities` dependencies. Unaffected.
+- `layers` ranks every entry of `graph.crates`, so a zero-edge member lands at rank 0 and
+  `render_doc` emits it under `Layer 0 (leaves)`. `check_committed_doc` then returns 1.
+  Regeneration is mandatory in the same commit.
+- `dependents_ranking` omits crates with no dependents, so the chokepoint section is
   untouched.
-- `development_guide.md` §Workspace says "17 crates in a Cargo workspace" and carries a
-  per-crate table — both need the new row at promotion.
 
-## `testing_logger` status
+## E15's log-keyed criteria
 
-crates.io: latest version **0.1.1, published 2018-08-07**, ~3.9M downloads,
-`github.com/brucechapman/rust_testing_logger`. Same thread-local shape. Missing: an
-exactly-once helper, and any loud signal when it loses the `set_logger` race — the
-precise defect the `crates/ui` prior art demonstrates.
+| AC | Demand |
+|---|---|
+| AC-GATE-5 | Version skew "appears in a host-side log and nowhere else" — `info`, both versions |
+| AC-MANIFEST-2 | Staged reload changing mod id/version "warns and leaves the installed value unchanged" |
+| AC-LEVEL-7 | Absent catalog id "logs a diagnostic naming the id" |
+| AC-DIGEST-3 | Transform-only degradation, logged at the `net_descriptor` site above |
+
+Plus the wire-decode failure path, the absent-half degradation, and the boot-load
+early-return warning. `development_guide.md` §6.1 makes the `[Subsystem]` body prefix a
+rule, which is why body substring is the primary key and target the secondary filter.
+
+## `testing_logger`
+
+crates.io: latest 0.1.1, published 2018-08-07, ~3.9M downloads,
+`github.com/brucechapman/rust_testing_logger`. Same thread-local shape. No exactly-once
+helper, and no signal when it loses the `set_logger` race. Not in `Cargo.lock`, so this
+metadata came from crates.io rather than the repo.
 
 ## Guard lifecycle
 
 ```mermaid
 stateDiagram-v2
     [*] --> NoLogger
-    NoLogger --> Installed : first LogCapture::start() — set_logger + set_max_level(Trace)
-    NoLogger --> Contended : set_logger returns Err (another logger owns the process)
-    Contended --> [*] : start() panics naming the conflict (never captures silently)
+    NoLogger --> Installed : first start() — set_logger + set_max_level(Trace)
+    NoLogger --> Contended : set_logger returns Err
+    Contended --> [*] : start() panics naming the conflict
 
     state Installed {
         [*] --> Detached
-        Detached --> Attached : start() puts a fresh Arc<Mutex<Vec>> in the thread-local slot
-        Attached --> Attached : log() formats, clones the Arc, pushes in order
-        Attached --> Detached : Drop clears the slot (runs on unwind too)
+        Detached --> Attached : start() installs a fresh Arc<Mutex<Vec>>
+        Attached --> Attached : log() formats, clones the Arc, releases the Ref, locks, pushes
+        Attached --> Detached : Drop takes the slot — runs on unwind too
         Attached --> Panic : start() called again on this thread
     }
 
     note right of Detached
-        A record logged here has no buffer:
-        ORPHANS += 1, reported in every
-        assertion failure message.
+        No buffer: orphan counter += 1,
+        record to stderr. try_with also
+        lands here during TLS teardown.
     end note
 ```
 
-`start()` clears by *installing a fresh buffer*, and `Drop` clears by *removing it* —
-so "cleared on construction and on drop" needs no drain call and holds identically
-under a panicking test, whose unwind runs `Drop`.
-
-Re-entrancy note: `record.args().to_string()` runs caller `Display` impls, which may
-themselves log. The logger formats the message **before** touching the thread-local,
-and clones the `Arc` out of a shared borrow before locking, so a re-entrant log cannot
-deadlock or double-borrow.
+`start()` clears by installing a fresh buffer; `Drop` clears by taking it. No drain call,
+and identical behavior under a panicking test.

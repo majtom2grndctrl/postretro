@@ -3,7 +3,7 @@
 > **Read this when:** deciding whether a content or script change breaks co-op, adding a new
 > client-local simulation input, or considering networked content distribution.
 > **Status:** design intent. The mechanism is specced in
-> `plans/drafts/E15--session-lifecycle/`; nothing here is shipped.
+> `plans/ready/E15--session-lifecycle/`; nothing here is shipped.
 > **Related:** [Networking](../lib/networking.md) · [Co-op Session and Lobby](./coop-session-lobby.md) · [Boot Sequence](../lib/boot_sequence.md) §8
 
 ---

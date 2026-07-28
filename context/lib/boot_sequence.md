@@ -142,6 +142,8 @@ Clear-on-unload contract:
 
 Frontend is a no-level steady state. Renderer and audio may exist, but world, collision, fog, level sounds, and per-level registries are empty. Frontend rendering uses a world-less clear and skips gameplay/HUD reads that require a level.
 
+Frontend is **not** a peerless state. A net endpoint outlives every level, so a host can sit in Frontend with clients connected — the ordinary condition between maps, not an edge case — and the transport is polled from world-less frames to keep it alive (`networking.md` §Transport contract). Unloading clears the host's installed level parity, which demotes those peers rather than leaving them participating against a torn-down world.
+
 The mod frontend hub is the player-facing menu flow. A committed `frontend` manifest block names the menu tree, required static menu camera pose, and optional background level catalog id. With no background level, the menu sits over the world-less Frontend state. With one, the menu is pushed first, then the background catalog id loads as the only active level; UI capture suppresses gameplay controls and the menu camera pose is held every frame. If the named menu tree is missing, the engine fallback frontend menu is pushed before any backdrop load starts. Starting a catalog map clears pushed menus, unloads any backdrop, and loads the selected map. `returnToFrontend()` and `ui.quitToMenu` share the return path: present the frontend menu, unload active level, then reload the declared backdrop if present.
 
 ## 5. Shutdown

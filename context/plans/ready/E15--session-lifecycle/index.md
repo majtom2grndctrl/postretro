@@ -119,7 +119,7 @@ commitments, and four divergences":
 
 1. `context/lib/networking.md`'s "a connection is bound to that fingerprint for its lifetime.
    Installing different static mover content closes it" is overturned — a content change demotes,
-   never closes. Task 7 rewrites that sentence.
+   never closes. Rewritten at promotion, ahead of the code.
 2. Mod id and version are first-commit-wins across hot reloads, against the atomic-replace
    discipline `mod-map-catalog` sets for manifest lanes. `fonts` is the existing
    non-re-committed lane, so identity joins a minority of one.
@@ -1664,20 +1664,15 @@ mechanism to keep correct for a cost this spec is not paying elsewhere. Now that
 by `ReplicatedSlotSchema` rather than by the mod digest, a staged reload that adds a namespace
 otherwise leaves both peers comparing a fingerprint derived from schema neither is still running.
 
-**Write the session-state ledger down.** Add the list to `context/lib/networking.md` in the same
-pass: one entry — the connection, comprising its `ClientId`, its `SlotState`, and its retained
-parity declaration — plus the subtraction rule that defines the rest (everything level-scoped and
-everything per-slot clears on demotion, so what survives is exactly what a demotion does not
-touch). Spec 2 adds the seat and roster to a named list rather than discovering one.
-
-**Update the rest of `context/lib/networking.md` in the same pass.** Four edits: the
-fingerprint-binds-the-connection sentence is overturned — a content change demotes, never closes;
-the slot lifecycle is documented there for the first time, as a new subsection or folded into the
-first edit — the doc today has no slot lifecycle, no `SlotState`, and no `Pending`/`Accepted`
-states, only the phrase "emits the ordinary slot-close lifecycle event exactly once" inside the
-sentence the first edit rewrites; the handshake section describes one app message where there are
-now two client→server gate messages; and the crate boundary gains a server→client control message
-family.
+**The durable contract is already written; verify it rather than author it.** Promotion to `ready/`
+landed the architectural layer in `context/lib/networking.md` ahead of this code: the two-stage
+gate and its mutability rule, the slot lifecycle and the participation predicate, the
+replicate-versus-hash rule with its named uncovered set, level identity versus level content
+digest, mod identity, and the session-state ledger. `boot_sequence.md` §4 records that Frontend is
+not a peerless state. Read those sections as the contract this task implements. The remaining doc
+work is confined to what only the finished code can settle: correct anything the implementation
+had to do differently, and re-check the manual loopback recipe's checklist, which quotes a log
+string from the pre-split vocabulary.
 
 Keep the `main.rs` edit to redirecting the two tuning-consuming call sites, adding the `Holding`
 and tuning-payload arms to Task 4's `client_drain_control` router, plus the deferred

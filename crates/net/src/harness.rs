@@ -286,6 +286,15 @@ mod tests {
         )
         .expect("client transport");
 
+        // E15 admission is immutable and parity is a separate live predicate.
+        // This relay fixture intentionally installs a complete matching triple.
+        server.set_mod_identity("test.mod".to_string(), "1.0.0".to_string());
+        server.set_mod_digest(Some(static_fingerprint));
+        server.set_level_parity(Some(("test-level".to_string(), static_fingerprint)));
+        client.set_mod_identity("test.mod".to_string(), "1.0.0".to_string());
+        client.set_mod_digest(Some(static_fingerprint));
+        client.set_level_parity(Some(("test-level".to_string(), static_fingerprint)));
+
         server.add_relay_connection(CLIENT_ID);
         client.set_connected();
         (server, client)

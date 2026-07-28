@@ -3809,6 +3809,7 @@ dependencies = [
  "bitcode",
  "log",
  "postretro-test-log-capture",
+ "proptest",
  "renet",
  "renet_netcode",
 ]

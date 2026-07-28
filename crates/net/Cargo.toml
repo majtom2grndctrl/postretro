@@ -31,3 +31,4 @@ dev-tools = []
 
 [dev-dependencies]
 postretro-test-log-capture.workspace = true
+proptest.workspace = true

@@ -1,16 +1,6 @@
-// renet/renet_netcode transport: polled, non-blocking UDP server/client over std sockets.
-// See: context/lib/networking.md
-//
-// renet 2.0 separates the *connection layer* (`RenetServer`/`RenetClient`, which
-// own channels and produce/consume opaque packet payloads) from the *netcode
-// transport* (`NetcodeServerTransport`/`NetcodeClientTransport`, which encrypt
-// those payloads and move them over a non-blocking `std::net::UdpSocket`). We wrap
-// both into `NetServer`/`NetClient` with a synchronous `update(dt)` surface: no
-// spawned runtime, no threads — the caller polls each frame (development_guide
-// §4.2). The connection-layer packet I/O (`get_packets_to_send` /
-// `process_packet*`) is re-exposed for the in-memory harness (`harness.rs`),
-// which drives the same payloads without touching UDP.
+// Polled, registry-blind renet transport and E15 two-stage control gate.
 
+use std::collections::HashMap;
 use std::net::{SocketAddr, UdpSocket};
 use std::time::Duration;
 
@@ -24,32 +14,10 @@ use renet_netcode::{
 };
 
 use crate::slots::{CloseCause, SlotEvent, SlotState, SlotTable};
-use crate::wire::{self, ProtocolVersion};
+use crate::wire::{self, ClientControlMessage, ParityDeclaration, ServerControlMessage};
 
 pub use crate::handshake::*;
 
-/// Classify a renet [`DisconnectReason`] into the engine-visible [`CloseCause`].
-/// A clean client-initiated disconnect is `Disconnect`; every other reason
-/// (transport timeout, channel/serialization error, server-initiated) folds into
-/// `Timeout` — from the cleanup path's view they are all "the link went away and
-/// we must reclaim the slot". `DisconnectedByServer` is the server reclaiming the
-/// slot itself (e.g. an app-handshake reject), also a non-clean close.
-fn close_cause_from(reason: DisconnectReason) -> CloseCause {
-    match reason {
-        DisconnectReason::DisconnectedByClient => CloseCause::Disconnect,
-        _ => CloseCause::Timeout,
-    }
-}
-
-/// Named renet channels. The `u8` ids are the channel identifiers shared by the
-/// server and client `ChannelConfig` lists.
-///
-/// - `Control` — reliable-ordered: the version handshake and spawn/despawn.
-///   Order matters and loss is unacceptable.
-/// - `Snapshot` — unreliable: snapshot replication records: full baselines,
-///   deltas, despawn tombstones, and state records. Ack/refresh repairs missed baselines.
-/// - `Input` — reliable-ordered: carries client→server acks, baseline-refresh
-///   requests, and time-sync probes, plus server→client time-sync echoes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Channel {
     Control = 0,
@@ -63,16 +31,9 @@ impl From<Channel> for u8 {
     }
 }
 
-/// Per-channel byte budget before back-pressure. Reliable channels disconnect on
-/// overflow; unreliable channels drop the oldest. Matches renet's own default.
 const CHANNEL_MEMORY_BYTES: usize = 5 * 1024 * 1024;
-
-/// Reliable resend cadence for the control channel. renet's default.
 const RELIABLE_RESEND: Duration = Duration::from_millis(300);
 
-/// Build the three-channel `ConnectionConfig` shared by server and client. Both
-/// peers must agree on the channel layout, so a single constructor produces both
-/// the `server_channels_config` and `client_channels_config`.
 #[must_use]
 pub fn connection_config() -> ConnectionConfig {
     let channels = vec![
@@ -96,7 +57,6 @@ pub fn connection_config() -> ConnectionConfig {
             },
         },
     ];
-
     ConnectionConfig {
         available_bytes_per_tick: 60_000,
         server_channels_config: channels.clone(),
@@ -104,63 +64,52 @@ pub fn connection_config() -> ConnectionConfig {
     }
 }
 
-/// A handshake result surfaced to the caller after `update`. The accept path lets
-/// the caller begin replicating to that client; the reject path carries the typed
-/// reason already logged and acted on (client disconnected) by `update`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+fn close_cause_from(reason: DisconnectReason) -> CloseCause {
+    match reason {
+        DisconnectReason::DisconnectedByClient => CloseCause::Disconnect,
+        _ => CloseCause::Timeout,
+    }
+}
+
+/// A verdict about a Control message. Lifecycle effects are reported separately.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HandshakeOutcome {
-    /// The client passed the app gate and is now accepted.
-    Accepted { client_id: ClientId },
-    /// The client failed the app gate; it has been disconnected and no entity
-    /// state was sent.
+    Admitted {
+        client_id: ClientId,
+    },
     Rejected {
         client_id: ClientId,
-        reason: RejectReason,
+        cause: ClosingCause,
+    },
+    ParityHeld {
+        client_id: ClientId,
+        cause: HoldingCause,
     },
 }
 
-/// Synchronous, non-blocking server: renet connection layer + netcode UDP
-/// transport, plus the app-level handshake gate. Poll `update(dt)` each frame;
-/// it drives renet, drains the netcode socket, validates pending handshakes, and
-/// returns this frame's handshake outcomes. No spawned runtime or threads.
-pub struct NetServer {
-    server: RenetServer,
-    transport: NetcodeServerTransport,
-    /// Per-client connection slot state and accepted->closed lifecycle transitions
-    /// (`slots.rs`). Replaces the Phase 1 pending/accepted-only handshake map: it
-    /// also models the terminal `Closed` state so post-close traffic is refused and
-    /// the engine glue can run its remote-pawn cleanup on the close transition.
-    slots: SlotTable,
-    /// Close transitions created outside a poll (currently map/static-fingerprint
-    /// changes). The next poll delivers each transition once through the same
-    /// lifecycle lane as socket disconnects.
-    pending_lifecycle: Vec<SlotEvent>,
-    /// Installed after the level loader has produced canonical static mover
-    /// inputs. Until then app handshakes remain queued and no client is accepted.
-    kinematic_static_fingerprint: Option<[u8; 32]>,
-}
-
-/// What one `update`/`poll_handshakes` poll produced this frame: the app-handshake
-/// verdicts (accept/reject, for logging and per-client replication registration) and
-/// the slot lifecycle close events (clean disconnect or timeout) the engine glue
-/// turns into remote-pawn cleanup. Accept transitions ride `handshakes` as
-/// `HandshakeOutcome::Accepted`; close transitions ride `lifecycle`.
 #[derive(Debug, Default)]
-#[must_use = "a poll reports client accept/reject and slot close transitions; handle or explicitly ignore"]
+#[must_use = "a poll carries gate verdicts and slot lifecycle transitions"]
 pub struct ServerPoll {
-    /// App-handshake verdicts produced this poll.
     pub handshakes: Vec<HandshakeOutcome>,
-    /// Slot close transitions produced this poll (accepted slots that went closed).
     pub lifecycle: Vec<SlotEvent>,
 }
 
+/// Synchronous server transport. It knows only opaque declarations and slot ids.
+pub struct NetServer {
+    server: RenetServer,
+    transport: NetcodeServerTransport,
+    slots: SlotTable,
+    parity_declarations: HashMap<ClientId, ParityDeclaration>,
+    pending_lifecycle: Vec<SlotEvent>,
+    pending_disconnects: Vec<ClientId>,
+    mod_identity: Option<(String, String)>,
+    mod_digest: Option<[u8; 32]>,
+    level_parity: Option<(String, [u8; 32])>,
+    // Retained only for the Phase-2 compatibility setter below.
+    legacy_kinematic_static_fingerprint: Option<[u8; 32]>,
+}
+
 impl NetServer {
-    /// Bind a server to `socket` (already bound, e.g. `UdpSocket::bind`). The
-    /// netcode transport is configured with `transport_protocol_id()` as its
-    /// gate and is set non-blocking internally. `current_time` is the monotonic
-    /// duration the netcode layer uses as its clock origin (typically
-    /// `SystemTime::now().duration_since(UNIX_EPOCH)`); callers in tests can pass
-    /// any fixed origin.
     pub fn new(
         socket: UdpSocket,
         public_addr: SocketAddr,
@@ -169,81 +118,77 @@ impl NetServer {
         kinematic_static_fingerprint: Option<[u8; 32]>,
     ) -> Result<Self, NetcodeTransportError> {
         let server = RenetServer::new(connection_config());
-        let server_config = ServerConfig {
-            current_time,
-            max_clients,
-            protocol_id: transport_protocol_id(),
-            public_addresses: vec![public_addr],
-            authentication: ServerAuthentication::Unsecure,
-        };
-        let transport = NetcodeServerTransport::new(server_config, socket)?;
+        let transport = NetcodeServerTransport::new(
+            ServerConfig {
+                current_time,
+                max_clients,
+                protocol_id: transport_protocol_id(),
+                public_addresses: vec![public_addr],
+                authentication: ServerAuthentication::Unsecure,
+            },
+            socket,
+        )?;
         Ok(Self {
             server,
             transport,
             slots: SlotTable::new(),
+            parity_declarations: HashMap::new(),
             pending_lifecycle: Vec::new(),
-            kinematic_static_fingerprint,
+            pending_disconnects: Vec::new(),
+            mod_identity: None,
+            mod_digest: None,
+            level_parity: None,
+            legacy_kinematic_static_fingerprint: kinematic_static_fingerprint,
         })
     }
 
-    /// Bind this server connection lifetime to the loaded map's canonical static
-    /// mover inputs. A different fingerprint closes every existing slot before
-    /// the new map can replicate. Accepted-slot close transitions are retained for
-    /// the next poll so engine cleanup runs exactly once; peers then reconnect and
-    /// pass the app gate again.
+    pub fn set_mod_identity(&mut self, id: String, version: String) {
+        self.mod_identity = Some((id, version));
+    }
+
+    pub fn set_mod_digest(&mut self, digest: Option<[u8; 32]>) {
+        self.mod_digest = digest;
+        // Parity deliberately queues until its first required source exists.
+        if self.mod_digest.is_some() {
+            let _ = self.reevaluate_parity(None);
+        }
+    }
+
+    pub fn set_level_parity(&mut self, level: Option<(String, [u8; 32])>) {
+        self.level_parity = level;
+        let _ = self.reevaluate_parity(None);
+    }
+
+    /// Phase-2 compatibility shim. Its old close-on-change behavior is preserved;
+    /// new lifecycle code must use mod/level parity setters instead.
+    #[deprecated(note = "use set_mod_digest and set_level_parity")]
     pub fn set_kinematic_static_fingerprint(&mut self, fingerprint: [u8; 32]) {
-        if self.kinematic_static_fingerprint == Some(fingerprint) {
+        if self.legacy_kinematic_static_fingerprint == Some(fingerprint) {
             return;
         }
-        if self.kinematic_static_fingerprint.is_some() {
+        if self.legacy_kinematic_static_fingerprint.is_some() {
             for client_id in self.server.clients_id() {
-                if let Some(close) = self.slots.on_close(client_id, CloseCause::Timeout) {
-                    self.pending_lifecycle.push(close);
+                if let Some(event) = self.close_slot(client_id, CloseCause::Timeout) {
+                    self.pending_lifecycle.push(event);
                 }
                 self.server.disconnect(client_id);
             }
         }
-        self.kinematic_static_fingerprint = Some(fingerprint);
+        self.legacy_kinematic_static_fingerprint = Some(fingerprint);
     }
 
-    /// The address the underlying socket is bound to (resolves ephemeral `:0`).
     #[must_use]
     pub fn local_addr(&self) -> Vec<SocketAddr> {
         self.transport.addresses()
     }
 
-    /// Advance one frame: drive renet, drain the socket, then validate any pending
-    /// handshakes that arrived this frame. Returns the handshake outcomes produced
-    /// this frame (acceptances and the typed rejections). Flushes outbound packets
-    /// at the end so anything sent before/after `update` leaves the socket.
-    ///
-    /// Non-blocking: the netcode transport drains the socket to `WouldBlock` and
-    /// returns. Never blocks the caller.
     pub fn update(&mut self, dt: Duration) -> Result<ServerPoll, NetcodeTransportError> {
+        self.apply_pending_disconnects();
         self.server.update(dt);
         self.transport.update(dt, &mut self.server)?;
-
-        // Reap connection lifecycle events: a connect opens a Pending slot; a
-        // disconnect closes the slot, classifying clean-disconnect vs timeout, and
-        // surfaces a close event when an *accepted* slot closes (so the glue cleans
-        // up its slot-owned pawn). A closed slot is terminal — post-close traffic is
-        // refused below.
-        let mut lifecycle = std::mem::take(&mut self.pending_lifecycle);
-        while let Some(event) = self.server.get_event() {
-            match event {
-                ServerEvent::ClientConnected { client_id } => {
-                    self.slots.on_connect(client_id);
-                }
-                ServerEvent::ClientDisconnected { client_id, reason } => {
-                    if let Some(close) = self.slots.on_close(client_id, close_cause_from(reason)) {
-                        lifecycle.push(close);
-                    }
-                }
-            }
-        }
-
+        self.collect_server_events();
         let handshakes = self.process_control_messages();
-
+        let lifecycle = std::mem::take(&mut self.pending_lifecycle);
         self.transport.send_packets(&mut self.server);
         Ok(ServerPoll {
             handshakes,
@@ -251,126 +196,234 @@ impl NetServer {
         })
     }
 
-    /// Drain the control channel for every client and, for those still `Pending`,
-    /// validate the first message as the `ProtocolVersion` handshake. This is the
-    /// app-level gate: it runs *before* any entity state is sent (callers only
-    /// `send_snapshot` to `accepted` clients), so a rejected client receives no
-    /// snapshot.
-    fn process_control_messages(&mut self) -> Vec<HandshakeOutcome> {
-        let mut outcomes = Vec::new();
-        let Some(fingerprint) = self.kinematic_static_fingerprint else {
-            return outcomes;
-        };
-        let expected = protocol_version(fingerprint);
+    fn apply_pending_disconnects(&mut self) {
+        for client_id in std::mem::take(&mut self.pending_disconnects) {
+            self.server.disconnect(client_id);
+        }
+    }
 
-        for client_id in self.server.clients_id() {
-            // A closed slot is terminal: refuse its control traffic. renet may still
-            // surface a buffered message from a peer mid-disconnect; the slot model
-            // says that peer is gone, so drop it without a handshake decision.
-            if self.slots.is_closed(client_id) {
-                continue;
-            }
-            while let Some(bytes) = self.server.receive_message(client_id, Channel::Control) {
-                // A client already accepted may send later control traffic.
-                // No post-handshake control messages are defined today; drain
-                // and ignore so the channel buffer does not accumulate.
-                if self.slots.is_accepted(client_id) {
-                    continue;
-                }
-
-                let received: ProtocolVersion = match wire::decode(&bytes) {
-                    Ok(v) => v,
-                    Err(err) => {
-                        // A malformed first message is not a valid handshake. Treat
-                        // a decode failure as a reject with the all-zero version so
-                        // the operator sees something actionable, then disconnect.
-                        log::warn!(
-                            "[Net] handshake decode failed for client {client_id}: {err}; \
-                             disconnecting"
-                        );
-                        let reason = RejectReason {
-                            expected,
-                            received: malformed_version(&err),
-                        };
-                        self.reject(client_id, reason);
-                        outcomes.push(HandshakeOutcome::Rejected { client_id, reason });
-                        break;
-                    }
-                };
-
-                match validate_handshake(expected, received) {
-                    Ok(()) => {
-                        // The slot transitions Pending->Accepted exactly once; the
-                        // emitted `SlotEvent::Accepted` is not surfaced here (the
-                        // `HandshakeOutcome::Accepted` below carries the same accept
-                        // signal the caller already consumes). The slot table is now
-                        // the source of truth for `is_accepted`/`accepted_clients`.
-                        // The caller must spawn the slot pawn from its
-                        // `HandshakeOutcome::Accepted` handling — the accept signal
-                        // rides `handshakes`, not `lifecycle`.
-                        let _ = self.slots.on_accept(client_id);
-                        log::info!("[Net] client {client_id} accepted (protocol {received:?})");
-                        outcomes.push(HandshakeOutcome::Accepted { client_id });
-                    }
-                    Err(reason) => {
-                        log::warn!("[Net] rejecting client {client_id}: {reason}");
-                        self.reject(client_id, reason);
-                        outcomes.push(HandshakeOutcome::Rejected { client_id, reason });
-                        break;
+    fn collect_server_events(&mut self) {
+        while let Some(event) = self.server.get_event() {
+            match event {
+                ServerEvent::ClientConnected { client_id } => self.slots.on_connect(client_id),
+                ServerEvent::ClientDisconnected { client_id, reason } => {
+                    if let Some(event) = self.close_slot(client_id, close_cause_from(reason)) {
+                        self.pending_lifecycle.push(event);
                     }
                 }
             }
         }
+    }
 
+    fn process_control_messages(&mut self) -> Vec<HandshakeOutcome> {
+        let mut outcomes = Vec::new();
+        let Some((expected_id, expected_version)) = self.mod_identity.clone() else {
+            return outcomes;
+        };
+        let expected_protocol = protocol_version();
+
+        for client_id in self.server.clients_id() {
+            if self.slots.is_closed(client_id) {
+                while self
+                    .server
+                    .receive_message(client_id, Channel::Control)
+                    .is_some()
+                {}
+                continue;
+            }
+            // Once admitted, the next queued Control message can only be parity;
+            // leave it reliably queued until the required installed digest exists.
+            if !matches!(self.slots.state(client_id), Some(SlotState::Pending))
+                && self.mod_digest.is_none()
+            {
+                continue;
+            }
+            while let Some(bytes) = self.server.receive_message(client_id, Channel::Control) {
+                let message: ClientControlMessage = match wire::decode(&bytes) {
+                    Ok(message) => message,
+                    Err(err) => {
+                        let cause = ClosingCause::Protocol {
+                            expected: expected_protocol,
+                            received: malformed_version(&err),
+                        };
+                        self.reject(client_id, cause.clone());
+                        outcomes.push(HandshakeOutcome::Rejected { client_id, cause });
+                        break;
+                    }
+                };
+                match message {
+                    ClientControlMessage::Admission {
+                        protocol,
+                        mod_id,
+                        mod_version,
+                    } => {
+                        if !matches!(self.slots.state(client_id), Some(SlotState::Pending)) {
+                            continue;
+                        }
+                        let cause = match validate_handshake(expected_protocol, protocol) {
+                            Ok(()) if mod_id == expected_id => None,
+                            Ok(()) => Some(ClosingCause::ModId {
+                                expected: expected_id.clone(),
+                                received: mod_id,
+                                expected_version: expected_version.clone(),
+                                received_version: mod_version.clone(),
+                            }),
+                            Err(cause) => Some(cause),
+                        };
+                        if let Some(cause) = cause {
+                            log::warn!(
+                                "[Net] rejecting client {client_id}: {}",
+                                DivergenceReason::Closing(cause.clone())
+                            );
+                            self.reject(client_id, cause.clone());
+                            outcomes.push(HandshakeOutcome::Rejected { client_id, cause });
+                            break;
+                        }
+                        // Version is intentionally diagnostic-only: it must never gate.
+                        if mod_version != expected_version {
+                            log::info!(
+                                "[Net] mod version differs for client {client_id}: host={} client={mod_version}",
+                                expected_version
+                            );
+                        }
+                        let _ = self.slots.admit(client_id);
+                        outcomes.push(HandshakeOutcome::Admitted { client_id });
+                        if self.mod_digest.is_some() {
+                            if let Some(cause) = self.reevaluate_parity(Some(client_id)) {
+                                self.send_divergence(client_id, cause.clone());
+                                outcomes.push(HandshakeOutcome::ParityHeld { client_id, cause });
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                    ClientControlMessage::Parity(declaration) => {
+                        self.parity_declarations.insert(client_id, declaration);
+                        if self.mod_digest.is_none() {
+                            break;
+                        }
+                        let was_participating = self.is_participating(client_id);
+                        if let Some(cause) = self.reevaluate_parity(Some(client_id)) {
+                            if !was_participating {
+                                self.send_divergence(client_id, cause.clone());
+                            }
+                            outcomes.push(HandshakeOutcome::ParityHeld { client_id, cause });
+                        }
+                    }
+                }
+                if self.mod_digest.is_none() {
+                    break;
+                }
+            }
+        }
         outcomes
     }
 
-    /// Disconnect a client at the app-handshake reject and close its slot. The
-    /// slot moves to `Closed { Timeout }` (a server-initiated reject is a non-clean
-    /// close from the slot model's view); renet flushes the disconnect over the
-    /// transport on the next `send_packets`. A pending (never-accepted) reject emits
-    /// no lifecycle event — there was no slot-owned pawn to clean up.
-    fn reject(&mut self, client_id: ClientId, _reason: RejectReason) {
-        let _ = self.slots.on_close(client_id, CloseCause::Timeout);
-        self.server.disconnect(client_id);
+    fn reject(&mut self, client_id: ClientId, cause: ClosingCause) {
+        self.send_control(
+            client_id,
+            wire::encode(&ServerControlMessage::Divergence(
+                DivergenceReason::Closing(cause),
+            )),
+        );
+        let _ = self.close_slot(client_id, CloseCause::Timeout);
+        if !self.pending_disconnects.contains(&client_id) {
+            self.pending_disconnects.push(client_id);
+        }
     }
 
-    /// Has the given client passed the app-level handshake and not since closed?
+    fn send_divergence(&mut self, client_id: ClientId, cause: HoldingCause) {
+        self.send_control(
+            client_id,
+            wire::encode(&ServerControlMessage::Divergence(
+                DivergenceReason::Holding(cause),
+            )),
+        );
+    }
+
+    /// Enforce the single participation predicate after any source install or
+    /// parity arrival. Install-driven transitions land in `pending_lifecycle`.
+    fn reevaluate_parity(&mut self, only: Option<ClientId>) -> Option<HoldingCause> {
+        let ids = only.map_or_else(|| self.server.clients_id(), |id| vec![id]);
+        let mut selected_cause = None;
+        for client_id in ids {
+            let state = self.slots.state(client_id);
+            if !matches!(state, Some(SlotState::Admitted | SlotState::Participating)) {
+                continue;
+            }
+            let cause = parity_cause(
+                self.mod_digest,
+                self.level_parity.as_ref(),
+                self.parity_declarations.get(&client_id),
+            );
+            match cause {
+                None => {
+                    if let Some(event) = self.slots.participate(client_id) {
+                        self.pending_lifecycle.push(event);
+                    }
+                }
+                Some(cause) => {
+                    if matches!(state, Some(SlotState::Participating)) {
+                        if let Some(event) = self.slots.demote(client_id, cause.clone()) {
+                            self.pending_lifecycle.push(event);
+                            self.send_divergence(client_id, cause.clone());
+                        }
+                    }
+                    if only == Some(client_id) {
+                        selected_cause = Some(cause);
+                    }
+                }
+            }
+        }
+        selected_cause
+    }
+
+    fn close_slot(&mut self, client_id: ClientId, cause: CloseCause) -> Option<SlotEvent> {
+        self.parity_declarations.remove(&client_id);
+        self.slots.close(client_id, cause)
+    }
+
+    #[must_use]
+    pub fn is_participating(&self, client_id: ClientId) -> bool {
+        self.slots.is_participating(client_id)
+    }
+
+    #[deprecated(note = "use is_participating")]
     #[must_use]
     pub fn is_accepted(&self, client_id: ClientId) -> bool {
-        self.slots.is_accepted(client_id)
+        self.is_participating(client_id)
     }
 
-    /// Has the given client's slot closed (clean disconnect or timeout)?
     #[must_use]
     pub fn is_closed(&self, client_id: ClientId) -> bool {
         self.slots.is_closed(client_id)
     }
 
-    /// The current lifecycle state of a slot, or `None` if the client is unknown.
     #[must_use]
     pub fn slot_state(&self, client_id: ClientId) -> Option<SlotState> {
         self.slots.state(client_id)
     }
 
-    /// Client ids that have passed the handshake and may receive entity state.
-    /// Closed slots are excluded.
     #[must_use]
-    pub fn accepted_clients(&self) -> Vec<ClientId> {
-        self.slots.accepted_clients()
+    pub fn participating_clients(&self) -> Vec<ClientId> {
+        self.slots.participating_clients()
     }
 
-    /// All transport-connected client ids (regardless of handshake state).
+    #[deprecated(note = "use participating_clients")]
+    #[must_use]
+    pub fn accepted_clients(&self) -> Vec<ClientId> {
+        self.participating_clients()
+    }
+
     #[must_use]
     pub fn connected_clients(&self) -> Vec<ClientId> {
         self.server.clients_id()
     }
 
-    /// Send a snapshot buffer to an accepted client over the unreliable snapshot
-    /// channel. No-op (returns `false`) for a client that has not passed the app
-    /// gate — this is the invariant that "no entity state is sent after reject".
+    /// Snapshots and Input are both participation-gated; held peers are drained
+    /// so their reliable channel cannot overflow and disconnect them indirectly.
     pub fn send_snapshot(&mut self, client_id: ClientId, snapshot: Vec<u8>) -> bool {
-        if !self.is_accepted(client_id) {
+        if !self.is_participating(client_id) {
             return false;
         }
         self.server
@@ -378,108 +431,73 @@ impl NetServer {
         true
     }
 
-    /// Drain any input-channel messages from a client (Phase 2 acks, refresh
-    /// requests, time-sync probes). A **closed** slot's input is refused: once the
-    /// slot is gone its peer must not influence replication state, so any buffered
-    /// message renet still surfaces is dropped (the stale-packets-after-close gate).
     pub fn drain_input(&mut self, client_id: ClientId) -> Vec<Vec<u8>> {
-        if self.slots.is_closed(client_id) {
-            // Drain-and-drop so renet's buffer does not grow, but return nothing.
-            while self
-                .server
-                .receive_message(client_id, Channel::Input)
-                .is_some()
-            {}
-            return Vec::new();
-        }
-        let mut out = Vec::new();
+        let participating = self.is_participating(client_id);
+        let mut messages = Vec::new();
         while let Some(bytes) = self.server.receive_message(client_id, Channel::Input) {
-            out.push(bytes.to_vec());
+            if !participating {
+                continue;
+            }
+            // Exhaustively classify recognized input envelopes. Net still leaves
+            // their interpretation to the engine and forwards malformed bytes.
+            match wire::decode::<crate::wire::ClientMessage>(&bytes) {
+                Ok(crate::wire::ClientMessage::Input(_))
+                | Ok(crate::wire::ClientMessage::Ack(_))
+                | Ok(crate::wire::ClientMessage::BaselineRefresh(_))
+                | Ok(crate::wire::ClientMessage::TimeSync(_))
+                | Ok(crate::wire::ClientMessage::StateBaselineRefresh(_))
+                | Ok(crate::wire::ClientMessage::HitDeclaration(_))
+                | Err(_) => messages.push(bytes.to_vec()),
+            }
         }
-        out
+        messages
     }
 
-    /// Send a buffer to a client on the reliable-ordered `Channel::Input`.
-    /// Unlike `send_snapshot`, this raw channel send is not gated on app
-    /// acceptance: time-sync may flow to a connected client before it has passed
-    /// the app handshake (the echo carries no entity state). Callers that send
-    /// owner-private app facts, such as `ServerMessage::ShotVerdicts`, must gate
-    /// delivery to the owning accepted client.
+    /// Control may be sent to an admitted/closed slot to deliver a hold/reject
+    /// diagnostic before socket teardown. Payload semantics remain engine-owned.
+    pub fn send_control(&mut self, client_id: ClientId, payload: Vec<u8>) {
+        self.server
+            .send_message(client_id, Channel::Control, payload);
+    }
+
     pub fn send_input(&mut self, client_id: ClientId, payload: Vec<u8>) {
         self.server.send_message(client_id, Channel::Input, payload);
     }
 
-    /// Connection-level packets renet wants delivered to `client_id`, *bypassing*
-    /// the netcode UDP transport. The in-memory harness (`harness.rs`) hands these
-    /// straight to the peer's `process_packet`. Returns `Vec<Vec<u8>>` (renet's
-    /// `Vec<Payload>`); an unknown client yields an empty `Vec`.
     pub fn packets_to_send(&mut self, client_id: ClientId) -> Vec<Vec<u8>> {
         self.server
             .get_packets_to_send(client_id)
             .unwrap_or_default()
     }
 
-    /// Feed a connection-level packet received out-of-band (the in-memory relay)
-    /// into renet for `client_id`. Mirror of `packets_to_send`. Ignores packets
-    /// for unknown clients.
     pub fn process_packet_from(&mut self, packet: &[u8], client_id: ClientId) {
         let _ = self.server.process_packet_from(packet, client_id);
     }
 
-    /// Register a client with the renet connection layer without going through the
-    /// netcode transport — required by the in-memory relay, which establishes the
-    /// connection itself. Mirrors `RenetServer::add_connection` and seeds the slot
-    /// as `Pending`.
     pub fn add_relay_connection(&mut self, client_id: ClientId) {
         self.server.add_connection(client_id);
         self.slots.on_connect(client_id);
     }
 
-    /// Force-close a relay slot with `cause`, mirroring a transport disconnect for
-    /// the in-memory harness (which moves packets itself and so never sees a renet
-    /// disconnect event). Returns the `SlotEvent::Closed` when an accepted slot
-    /// closes — the same lifecycle signal `update` surfaces over a real socket — so
-    /// harness-driven tests exercise the identical cleanup path. A clean disconnect
-    /// passes `CloseCause::Disconnect`; a timeout passes `CloseCause::Timeout`.
     #[must_use]
     pub fn close_relay_connection(
         &mut self,
         client_id: ClientId,
         cause: CloseCause,
     ) -> Option<SlotEvent> {
-        // Tell renet to drop the connection too so subsequent relay packets for this
-        // client are ignored by the connection layer.
         self.server.remove_connection(client_id);
-        self.slots.on_close(client_id, cause)
+        self.close_slot(client_id, cause)
     }
 
-    /// Drive only the renet connection layer (no socket). The in-memory relay calls
-    /// this instead of `update`, then drains handshakes via `poll_handshakes`.
     pub fn update_connections(&mut self, dt: Duration) {
         self.server.update(dt);
     }
 
-    /// Run the app-level handshake gate over already-delivered control messages.
-    /// Used by the in-memory relay, which moves packets itself and so cannot use
-    /// `update`'s socket path. Returns this poll's `ServerPoll` (handshake verdicts +
-    /// any slot close transitions). The relay usually drives close transitions
-    /// explicitly via [`NetServer::close_relay_connection`]; this poll also delivers
-    /// closes retained by a static-fingerprint change and any renet disconnect.
     pub fn poll_handshakes(&mut self) -> ServerPoll {
-        let mut lifecycle = std::mem::take(&mut self.pending_lifecycle);
-        while let Some(event) = self.server.get_event() {
-            match event {
-                ServerEvent::ClientConnected { client_id } => {
-                    self.slots.on_connect(client_id);
-                }
-                ServerEvent::ClientDisconnected { client_id, reason } => {
-                    if let Some(close) = self.slots.on_close(client_id, close_cause_from(reason)) {
-                        lifecycle.push(close);
-                    }
-                }
-            }
-        }
+        self.apply_pending_disconnects();
+        self.collect_server_events();
         let handshakes = self.process_control_messages();
+        let lifecycle = std::mem::take(&mut self.pending_lifecycle);
         ServerPoll {
             handshakes,
             lifecycle,
@@ -487,23 +505,62 @@ impl NetServer {
     }
 }
 
-/// Synchronous, non-blocking client: renet connection layer + netcode UDP
-/// transport. Poll `update(dt)` each frame. No spawned runtime or threads.
+/// `None` means the declaration and installed triple match. The order here is
+/// the published holding-diagnostic precedence.
+fn parity_cause(
+    installed_mod_digest: Option<[u8; 32]>,
+    installed_level: Option<&(String, [u8; 32])>,
+    declaration: Option<&ParityDeclaration>,
+) -> Option<HoldingCause> {
+    let Some(installed_mod_digest) = installed_mod_digest else {
+        return Some(HoldingCause::HostLevelAbsent);
+    };
+    let Some(declaration) = declaration else {
+        return Some(HoldingCause::HostLevelAbsent);
+    };
+    if declaration.mod_digest != installed_mod_digest {
+        return Some(HoldingCause::ModDigest {
+            expected: installed_mod_digest,
+            received: declaration.mod_digest,
+        });
+    }
+    let Some((expected_identity, expected_digest)) = installed_level else {
+        return Some(HoldingCause::HostLevelAbsent);
+    };
+    let Some((received_identity, received_digest)) = &declaration.level else {
+        return Some(HoldingCause::LevelAbsent {
+            expected_identity: expected_identity.clone(),
+        });
+    };
+    if received_identity != expected_identity {
+        return Some(HoldingCause::LevelIdentity {
+            expected: expected_identity.clone(),
+            received: received_identity.clone(),
+        });
+    }
+    if received_digest != expected_digest {
+        return Some(HoldingCause::LevelDigest {
+            identity: expected_identity.clone(),
+            expected: *expected_digest,
+            received: *received_digest,
+        });
+    }
+    None
+}
+
+/// Synchronous client transport. It declares values but never compares them.
 pub struct NetClient {
     client: RenetClient,
     transport: NetcodeClientTransport,
-    /// Whether the `ProtocolVersion` control message has been queued yet. The
-    /// first `update` after connect sends it as the first reliable control message.
-    handshake_sent: bool,
-    /// Installed from the loaded map before the first app handshake is sent.
-    kinematic_static_fingerprint: Option<[u8; 32]>,
+    admission_sent: bool,
+    parity_sent: bool,
+    mod_identity: Option<(String, String)>,
+    mod_digest: Option<[u8; 32]>,
+    level_parity: Option<(String, [u8; 32])>,
+    legacy_kinematic_static_fingerprint: Option<[u8; 32]>,
 }
 
 impl NetClient {
-    /// Connect to `server_addr` from `socket`. `client_id` identifies this client
-    /// to the (unsecure) netcode layer; `current_time` is the netcode clock origin
-    /// (see `NetServer::new`). The netcode transport uses `transport_protocol_id()`
-    /// so a wire-incompatible server is refused before the connection forms.
     pub fn new(
         socket: UdpSocket,
         server_addr: SocketAddr,
@@ -512,515 +569,188 @@ impl NetClient {
         kinematic_static_fingerprint: Option<[u8; 32]>,
     ) -> Result<Self, NetcodeTransportError> {
         let client = RenetClient::new(connection_config());
-        let authentication = ClientAuthentication::Unsecure {
-            protocol_id: transport_protocol_id(),
-            client_id,
-            server_addr,
-            user_data: None,
-        };
-        let transport = NetcodeClientTransport::new(current_time, authentication, socket)?;
+        let transport = NetcodeClientTransport::new(
+            current_time,
+            ClientAuthentication::Unsecure {
+                client_id,
+                protocol_id: transport_protocol_id(),
+                server_addr,
+                user_data: None,
+            },
+            socket,
+        )?;
         Ok(Self {
             client,
             transport,
-            handshake_sent: false,
-            kinematic_static_fingerprint,
+            admission_sent: false,
+            parity_sent: false,
+            mod_identity: None,
+            mod_digest: None,
+            level_parity: None,
+            legacy_kinematic_static_fingerprint: kinematic_static_fingerprint,
         })
     }
 
-    /// Bind this client connection lifetime to the loaded map's canonical static
-    /// mover inputs. Changing the fingerprint after the handshake disconnects:
-    /// continuing would reuse prediction against unvalidated static data.
-    pub fn set_kinematic_static_fingerprint(&mut self, fingerprint: [u8; 32]) {
-        if self.kinematic_static_fingerprint == Some(fingerprint) {
-            return;
-        }
-        if self.handshake_sent {
-            self.client.disconnect();
-        }
-        self.kinematic_static_fingerprint = Some(fingerprint);
+    pub fn set_mod_identity(&mut self, id: String, version: String) {
+        self.mod_identity = Some((id, version));
     }
 
-    /// Advance one frame: drive renet + the netcode transport, then, once the
-    /// transport connection is established, queue the `ProtocolVersion` handshake
-    /// as the first reliable control message (exactly once). Flushes outbound
-    /// packets at the end. Non-blocking.
+    pub fn set_mod_digest(&mut self, digest: Option<[u8; 32]>) {
+        if self.mod_digest != digest {
+            self.mod_digest = digest;
+            self.parity_sent = false;
+        }
+    }
+
+    pub fn set_level_parity(&mut self, level: Option<(String, [u8; 32])>) {
+        if self.level_parity != level {
+            self.level_parity = level;
+            self.parity_sent = false;
+        }
+    }
+
+    #[deprecated(note = "use set_mod_digest and set_level_parity")]
+    pub fn set_kinematic_static_fingerprint(&mut self, fingerprint: [u8; 32]) {
+        if self.legacy_kinematic_static_fingerprint == Some(fingerprint) {
+            return;
+        }
+        if self.admission_sent {
+            self.client.disconnect();
+        }
+        self.legacy_kinematic_static_fingerprint = Some(fingerprint);
+    }
+
+    fn queue_control_messages(&mut self) {
+        if !self.client.is_connected() {
+            return;
+        }
+        if !self.admission_sent {
+            if let Some((mod_id, mod_version)) = self.mod_identity.clone() {
+                self.client.send_message(
+                    Channel::Control,
+                    wire::encode(&ClientControlMessage::Admission {
+                        protocol: protocol_version(),
+                        mod_id,
+                        mod_version,
+                    }),
+                );
+                self.admission_sent = true;
+            }
+        }
+        if !self.parity_sent {
+            if let Some(mod_digest) = self.mod_digest {
+                self.client.send_message(
+                    Channel::Control,
+                    wire::encode(&ClientControlMessage::Parity(ParityDeclaration {
+                        mod_digest,
+                        level: self.level_parity.clone(),
+                    })),
+                );
+                self.parity_sent = true;
+            }
+        }
+    }
+
     pub fn update(&mut self, dt: Duration) -> Result<(), NetcodeTransportError> {
         self.client.update(dt);
         self.transport.update(dt, &mut self.client)?;
-
-        if self.client.is_connected() && !self.handshake_sent {
-            if let Some(fingerprint) = self.kinematic_static_fingerprint {
-                let bytes = wire::encode(&protocol_version(fingerprint));
-                self.client.send_message(Channel::Control, bytes);
-                self.handshake_sent = true;
-            }
-        }
-
+        self.queue_control_messages();
         self.transport.send_packets(&mut self.client)?;
         Ok(())
     }
 
-    /// Is the transport-level connection established?
     #[must_use]
     pub fn is_connected(&self) -> bool {
         self.client.is_connected()
     }
 
-    /// Has the client queued its handshake control message yet?
     #[must_use]
-    pub fn handshake_sent(&self) -> bool {
-        self.handshake_sent
+    pub fn admission_sent(&self) -> bool {
+        self.admission_sent
     }
 
-    /// Send a buffer over the reliable-ordered input channel. Carries
-    /// `ClientMessage` variants: input commands, acks, baseline-refresh requests,
-    /// hit declarations, and time-sync probes (`ClientMessage::TimeSync`).
+    #[deprecated(note = "use admission_sent")]
+    #[must_use]
+    pub fn handshake_sent(&self) -> bool {
+        self.admission_sent
+    }
+
     pub fn send_input(&mut self, input: Vec<u8>) {
         self.client.send_message(Channel::Input, input);
     }
 
-    /// Drain input-channel buffers received this frame (reliable-ordered). The
-    /// server sends `ServerMessage` envelopes here.
     pub fn drain_input(&mut self) -> Vec<Vec<u8>> {
-        let mut out = Vec::new();
-        while let Some(bytes) = self.client.receive_message(Channel::Input) {
-            out.push(bytes.to_vec());
-        }
-        out
+        drain_client_channel(&mut self.client, Channel::Input)
     }
 
-    /// Drain snapshot buffers received this frame (unreliable channel).
     pub fn drain_snapshots(&mut self) -> Vec<Vec<u8>> {
-        let mut out = Vec::new();
-        while let Some(bytes) = self.client.receive_message(Channel::Snapshot) {
-            out.push(bytes.to_vec());
-        }
-        out
+        drain_client_channel(&mut self.client, Channel::Snapshot)
     }
 
-    /// Drain control-channel buffers received this frame (reliable-ordered).
-    /// No server→client control messages are defined today; exposed so callers
-    /// can drain without depending on the channel layout staying empty.
     pub fn drain_control(&mut self) -> Vec<Vec<u8>> {
-        let mut out = Vec::new();
-        while let Some(bytes) = self.client.receive_message(Channel::Control) {
-            out.push(bytes.to_vec());
-        }
-        out
+        drain_client_channel(&mut self.client, Channel::Control)
     }
 
-    /// Connection-level packets renet wants delivered to the server, bypassing the
-    /// netcode UDP transport. The in-memory harness (`harness.rs`) hands these to
-    /// the server's `process_packet_from`.
     pub fn packets_to_send(&mut self) -> Vec<Vec<u8>> {
         self.client.get_packets_to_send()
     }
 
-    /// Feed a connection-level packet received out-of-band (the relay) into renet.
     pub fn process_packet(&mut self, packet: &[u8]) {
         self.client.process_packet(packet);
     }
 
-    /// Mark the renet connection established without the netcode handshake — the
-    /// in-memory relay establishes the connection itself.
     pub fn set_connected(&mut self) {
         self.client.set_connected();
     }
 
-    /// Drive only the renet connection layer (no socket), then queue the handshake
-    /// once connected. The in-memory relay calls this instead of `update`.
     pub fn update_connections(&mut self, dt: Duration) {
         self.client.update(dt);
-        if self.client.is_connected() && !self.handshake_sent {
-            if let Some(fingerprint) = self.kinematic_static_fingerprint {
-                let bytes = wire::encode(&protocol_version(fingerprint));
-                self.client.send_message(Channel::Control, bytes);
-                self.handshake_sent = true;
-            }
-        }
+        self.queue_control_messages();
     }
+}
+
+fn drain_client_channel(client: &mut RenetClient, channel: Channel) -> Vec<Vec<u8>> {
+    let mut out = Vec::new();
+    while let Some(bytes) = client.receive_message(channel) {
+        out.push(bytes.to_vec());
+    }
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use log::Level;
-    use postretro_test_log_capture::LogCapture;
-    use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    const TEST_KINEMATIC_STATIC_FINGERPRINT: [u8; 32] = [0x5a; 32];
-
-    fn now() -> Duration {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock is after the unix epoch")
-    }
+    use proptest::prelude::*;
 
     #[test]
-    fn channel_ids_are_distinct_and_ordered() {
-        assert_eq!(u8::from(Channel::Control), 0);
-        assert_eq!(u8::from(Channel::Snapshot), 1);
-        assert_eq!(u8::from(Channel::Input), 2);
-    }
-
-    #[test]
-    fn connection_config_registers_three_channels() {
-        let config = connection_config();
-        assert_eq!(config.server_channels_config.len(), 3);
-        assert_eq!(config.client_channels_config.len(), 3);
-    }
-
-    // --- Slot lifecycle over the in-memory relay (no UDP). ---
-    //
-    // These prove the transport-level close gate: once a slot closes, the server
-    // surfaces the close transition and refuses that peer's input/snapshot traffic.
-    // The relay moves connection-layer packets directly; the netcode handshake never
-    // runs, so the app handshake is driven by relaying the client's control message.
-
-    use crate::slots::{CloseCause, SlotEvent, SlotState};
-
-    const RELAY_CLIENT: ClientId = 7;
-    const RELAY_DT: Duration = Duration::from_millis(16);
-
-    /// Stand up a relay-connected server/client pair and drive the app handshake to
-    /// acceptance by relaying the client's first control message.
-    fn relay_accepted_pair() -> (NetServer, NetClient) {
-        let origin = Duration::from_secs(1);
-        let (server_sock, server_addr) = bound_socket();
-        let (client_sock, _client_addr) = bound_socket();
-        let mut server = NetServer::new(
-            server_sock,
-            server_addr,
-            8,
-            origin,
-            Some(TEST_KINEMATIC_STATIC_FINGERPRINT),
-        )
-        .expect("server transport");
-        let mut client = NetClient::new(
-            client_sock,
-            server_addr,
-            RELAY_CLIENT,
-            origin,
-            Some(TEST_KINEMATIC_STATIC_FINGERPRINT),
-        )
-        .expect("client transport");
-
-        server.add_relay_connection(RELAY_CLIENT);
-        client.set_connected();
-
-        // Pump client->server until the handshake control message is delivered and the
-        // app gate accepts. Direct passthrough (no conditioner) so it settles fast.
-        for _ in 0..16 {
-            client.update_connections(RELAY_DT);
-            for packet in client.packets_to_send() {
-                server.process_packet_from(&packet, RELAY_CLIENT);
-            }
-            server.update_connections(RELAY_DT);
-            let poll = server.poll_handshakes();
-            if poll
-                .handshakes
-                .iter()
-                .any(|o| matches!(o, HandshakeOutcome::Accepted { .. }))
-            {
-                break;
-            }
-        }
-        assert!(
-            server.is_accepted(RELAY_CLIENT),
-            "relay client should accept"
-        );
-        (server, client)
-    }
-
-    /// Relay one round of client->server packets so a just-sent input message lands
-    /// in the server's connection-layer receive buffer.
-    fn relay_client_to_server(server: &mut NetServer, client: &mut NetClient) {
-        client.update_connections(RELAY_DT);
-        for packet in client.packets_to_send() {
-            server.process_packet_from(&packet, RELAY_CLIENT);
-        }
-        server.update_connections(RELAY_DT);
-    }
-
-    #[test]
-    fn close_relay_connection_surfaces_close_event_and_refuses_traffic() {
-        let (mut server, _client) = relay_accepted_pair();
-
-        // A clean disconnect surfaces the close transition with the Disconnect cause.
-        let event = server.close_relay_connection(RELAY_CLIENT, CloseCause::Disconnect);
-        assert_eq!(
-            event,
-            Some(SlotEvent::Closed {
-                client_id: RELAY_CLIENT,
-                cause: CloseCause::Disconnect,
-            })
-        );
-        assert!(server.is_closed(RELAY_CLIENT));
-        assert!(!server.is_accepted(RELAY_CLIENT));
-        assert_eq!(
-            server.slot_state(RELAY_CLIENT),
-            Some(SlotState::Closed {
-                cause: CloseCause::Disconnect
-            })
-        );
-
-        // Post-close: a snapshot send is refused and accepted_clients excludes it.
-        assert!(
-            !server.send_snapshot(RELAY_CLIENT, vec![1, 2, 3]),
-            "a closed slot receives no entity state"
-        );
-        assert!(server.accepted_clients().is_empty());
-    }
-
-    #[test]
-    fn input_from_a_closed_slot_is_ignored() {
-        let (mut server, mut client) = relay_accepted_pair();
-
-        // Client sends an input message; relay it so it lands in the server's buffer.
-        client.send_input(vec![9, 9, 9]);
-        relay_client_to_server(&mut server, &mut client);
-
-        // Close the slot BEFORE the server drains. The buffered (now stale) input must
-        // be dropped, not returned.
-        let _ = server.close_relay_connection(RELAY_CLIENT, CloseCause::Timeout);
-        assert!(
-            server.drain_input(RELAY_CLIENT).is_empty(),
-            "stale input from a closed slot is ignored"
-        );
-
-        // A second close (e.g. a redundant disconnect event) is a no-op transition.
-        assert_eq!(
-            server.close_relay_connection(RELAY_CLIENT, CloseCause::Disconnect),
-            None,
-            "close is terminal and idempotent"
-        );
-    }
-
-    // Regression: map fingerprint changes closed accepted slots internally but
-    // discarded the only close event, so gameplay never cleaned up their pawns.
-    #[test]
-    fn fingerprint_change_surfaces_exactly_one_close_event() {
-        let (mut server, _client) = relay_accepted_pair();
-
-        server.set_kinematic_static_fingerprint([0xA5; 32]);
-
-        let first = server.poll_handshakes();
-        assert_eq!(
-            first.lifecycle,
-            [SlotEvent::Closed {
-                client_id: RELAY_CLIENT,
-                cause: CloseCause::Timeout,
-            }],
-            "the next poll delivers the fingerprint-driven close to engine cleanup"
-        );
-        assert!(server.is_closed(RELAY_CLIENT));
-        assert!(server.accepted_clients().is_empty());
-
-        let second = server.poll_handshakes();
-        assert!(
-            second.lifecycle.is_empty(),
-            "the later renet disconnect and subsequent polls must not duplicate cleanup"
-        );
-    }
-
-    // --- Loopback integration: accept and reject over real UDP sockets. ---
-    //
-    // Bounded poll loop (never an unbounded/blocking wait). The netcode transport
-    // is non-blocking, so each `update` drains and returns; we sleep a few ms
-    // between polls to let packets traverse loopback. If the sandbox starves these
-    // sockets the loop exits after MAX_POLLS without hanging — the pure-function
-    // tests above remain the primary gate. No flakiness was observed across runs.
-
-    const MAX_POLLS: usize = 400;
-    const POLL_DT: Duration = Duration::from_millis(16);
-    const POLL_SLEEP: Duration = Duration::from_millis(3);
-
-    fn bound_socket() -> (UdpSocket, SocketAddr) {
-        let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind ephemeral udp socket");
-        let addr = socket.local_addr().expect("resolve bound addr");
-        (socket, addr)
-    }
-
-    /// Drive a server + client to a settled state, collecting server handshake
-    /// outcomes. `client_version` is the app-level `ProtocolVersion` the client
-    /// sends — diverging it (while the transport `protocol_id` stays equal) lets
-    /// the connection establish and then be app-rejected.
-    fn run_handshake(client_version: ProtocolVersion) -> (NetServer, Vec<HandshakeOutcome>, bool) {
-        let (server_sock, server_addr) = bound_socket();
-        let (client_sock, _client_addr) = bound_socket();
-
-        let mut server = NetServer::new(
-            server_sock,
-            server_addr,
-            8,
-            now(),
-            Some(TEST_KINEMATIC_STATIC_FINGERPRINT),
-        )
-        .expect("server transport");
-        let mut client = NetClient::new(
-            client_sock,
-            server_addr,
-            1,
-            now(),
-            Some(TEST_KINEMATIC_STATIC_FINGERPRINT),
-        )
-        .expect("client transport");
-
-        // The reject test needs the client to send a *diverged* app version while
-        // keeping the transport handshake valid. We drive the renet/transport
-        // connection manually so we control the exact control payload.
-        let mut all_outcomes = Vec::new();
-        let mut sent_diverged = false;
-        let diverged = client_version != protocol_version(TEST_KINEMATIC_STATIC_FINGERPRINT);
-        let mut client_was_connected = false;
-
-        for _ in 0..MAX_POLLS {
-            // Client side: drive transport; once connected, send the chosen version
-            // exactly once (overriding NetClient's own handshake for the reject case).
-            client.client.update(POLL_DT);
-            client
-                .transport
-                .update(POLL_DT, &mut client.client)
-                .expect("client transport update");
-            if client.is_connected() {
-                client_was_connected = true;
-                if diverged {
-                    if !sent_diverged {
-                        let bytes = wire::encode(&client_version);
-                        client.client.send_message(Channel::Control, bytes);
-                        sent_diverged = true;
-                    }
-                } else if !client.handshake_sent {
-                    let bytes = wire::encode(&client_version);
-                    client.client.send_message(Channel::Control, bytes);
-                    client.handshake_sent = true;
-                }
-            }
-            client
-                .transport
-                .send_packets(&mut client.client)
-                .expect("client send packets");
-
-            // Server side: full update (drains socket, validates handshakes).
-            let poll = server.update(POLL_DT).expect("server update");
-            all_outcomes.extend(poll.handshakes);
-
-            // Stop once we have a verdict (accept or reject seen).
-            if !all_outcomes.is_empty() {
-                // Give the disconnect/ack a couple more frames to flush, then stop.
-                for _ in 0..3 {
-                    std::thread::sleep(POLL_SLEEP);
-                    client.client.update(POLL_DT);
-                    let _ = client.transport.update(POLL_DT, &mut client.client);
-                    let _ = client.transport.send_packets(&mut client.client);
-                    let extra = server.update(POLL_DT).expect("server update");
-                    all_outcomes.extend(extra.handshakes);
-                }
-                break;
-            }
-
-            std::thread::sleep(POLL_SLEEP);
-        }
-
-        (server, all_outcomes, client_was_connected)
-    }
-
-    #[test]
-    fn loopback_matching_version_is_accepted() {
-        let capture = LogCapture::start();
-        let (server, outcomes, connected) =
-            run_handshake(protocol_version(TEST_KINEMATIC_STATIC_FINGERPRINT));
-        assert!(
-            connected,
-            "transport connection should establish over loopback"
-        );
-        let accepted = outcomes
-            .iter()
-            .find_map(|o| match o {
-                HandshakeOutcome::Accepted { client_id } => Some(*client_id),
-                HandshakeOutcome::Rejected { .. } => None,
-            })
-            .expect("matching version should be accepted");
-        assert!(server.is_accepted(accepted));
-        capture.assert_logged_from(
-            Level::Info,
-            "postretro_net",
-            &format!("[Net] client {accepted} accepted (protocol "),
-        );
-        capture.assert_not_logged(Level::Warn, "[Net] rejecting client ");
-    }
-
-    #[test]
-    fn loopback_diverged_app_version_is_rejected_with_typed_reason() {
-        let capture = LogCapture::start();
-        let expected = protocol_version(TEST_KINEMATIC_STATIC_FINGERPRINT);
-        let diverged = ProtocolVersion {
-            app_protocol_id: expected.app_protocol_id,
-            wire_version: expected.wire_version + 7,
-            kinematic_static_fingerprint: expected.kinematic_static_fingerprint,
+    fn parity_precedence_reports_mod_before_level() {
+        let declaration = ParityDeclaration {
+            mod_digest: [2; 32],
+            level: None,
         };
-        let (server, outcomes, connected) = run_handshake(diverged);
-        assert!(
-            connected,
-            "transport connection must establish (transport protocol_id is equal) so the \
-             app gate can reject it"
-        );
-
-        let reason = outcomes
-            .iter()
-            .find_map(|o| match o {
-                HandshakeOutcome::Rejected { reason, .. } => Some(*reason),
-                HandshakeOutcome::Accepted { .. } => None,
-            })
-            .expect("diverged app version must produce a typed reject reason");
-        assert_eq!(reason.expected, expected);
-        assert_eq!(reason.received, diverged);
-
-        // No client remains accepted: the reject path sends no entity state.
-        assert!(
-            server.accepted_clients().is_empty(),
-            "a rejected client must not be accepted (and thus receives no snapshot)"
-        );
-
-        // And the send_snapshot guard refuses any post-reject entity state.
-        assert!(
-            !outcomes
-                .iter()
-                .any(|o| matches!(o, HandshakeOutcome::Accepted { .. })),
-            "diverged client must never be accepted"
-        );
-        capture.assert_logged_from(Level::Warn, "postretro_net", "[Net] rejecting client ");
-        capture.assert_not_logged(Level::Info, "accepted (protocol ");
+        assert!(matches!(
+            parity_cause(Some([1; 32]), None, Some(&declaration)),
+            Some(HoldingCause::ModDigest { .. })
+        ));
     }
 
-    #[test]
-    fn loopback_mismatched_kinematic_static_content_is_rejected_before_snapshots() {
-        let expected = protocol_version(TEST_KINEMATIC_STATIC_FINGERPRINT);
-        let received = ProtocolVersion {
-            kinematic_static_fingerprint: [0xa5; 32],
-            ..expected
-        };
-
-        let (mut server, outcomes, connected) = run_handshake(received);
-
-        assert!(
-            connected,
-            "transport gate stays valid for an app content mismatch"
-        );
-        let reason = outcomes
-            .iter()
-            .find_map(|outcome| match outcome {
-                HandshakeOutcome::Rejected { reason, .. } => Some(*reason),
-                HandshakeOutcome::Accepted { .. } => None,
-            })
-            .expect("mismatched PRL static inputs must produce a typed rejection");
-        assert_eq!(reason.expected, expected);
-        assert_eq!(reason.received, received);
-        assert!(server.accepted_clients().is_empty());
-        assert!(
-            !server.send_snapshot(1, vec![1, 2, 3]),
-            "content-mismatched peer receives no entity state"
-        );
+    proptest! {
+        #[test]
+        fn participation_predicate_matches_complete_installed_triple(
+            mod_byte in any::<u8>(),
+            level_byte in any::<u8>(),
+            declared_mod_byte in any::<u8>(),
+            declared_level_byte in any::<u8>(),
+            installed_level in any::<bool>(),
+            declared_level in any::<bool>(),
+        ) {
+            let installed = installed_level.then(|| ("map".to_string(), [level_byte; 32]));
+            let declaration = ParityDeclaration {
+                mod_digest: [declared_mod_byte; 32],
+                level: declared_level.then(|| ("map".to_string(), [declared_level_byte; 32])),
+            };
+            let participates = parity_cause(Some([mod_byte; 32]), installed.as_ref(), Some(&declaration)).is_none();
+            prop_assert_eq!(participates, installed_level && declared_level && mod_byte == declared_mod_byte && level_byte == declared_level_byte);
+        }
     }
 }

@@ -1090,16 +1090,147 @@ pub enum ServerMessage {
     ShotVerdicts(ShotVerdictsMessage),
 }
 
-/// Handshake message. Every connection is gated on a matching `ProtocolVersion`
-/// before any other bitcode payload is decoded — the bitcode byte format is
-/// unstable across crate majors, so a mismatch must be rejected up front.
+/// Build constants carried by the immutable admission declaration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
 pub struct ProtocolVersion {
     pub app_protocol_id: u32,
     pub wire_version: u32,
-    /// Opaque fingerprint of the loaded map's static kinematic inputs. The
-    /// engine computes it; this registry-blind crate only compares the bytes.
-    pub kinematic_static_fingerprint: [u8; 32],
+}
+
+/// Current content declaration retained for one client slot. `level: None`
+/// explicitly means the client has no installed level.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct ParityDeclaration {
+    pub mod_digest: [u8; 32],
+    pub level: Option<(String, [u8; 32])>,
+}
+
+/// Tagged client -> server Control envelope. New variants must be appended.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub enum ClientControlMessage {
+    Admission {
+        protocol: ProtocolVersion,
+        mod_id: String,
+        /// Diagnostic-only: a mod version intentionally never gates admission.
+        mod_version: String,
+    },
+    Parity(ParityDeclaration),
+}
+
+/// A terminal immutable-admission mismatch.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub enum ClosingCause {
+    Protocol {
+        expected: ProtocolVersion,
+        received: ProtocolVersion,
+    },
+    ModId {
+        expected: String,
+        received: String,
+        expected_version: String,
+        received_version: String,
+    },
+}
+
+/// A recoverable content mismatch. Variant order is also diagnostic precedence.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub enum HoldingCause {
+    ModDigest {
+        expected: [u8; 32],
+        received: [u8; 32],
+    },
+    HostLevelAbsent,
+    LevelAbsent {
+        expected_identity: String,
+    },
+    LevelIdentity {
+        expected: String,
+        received: String,
+    },
+    LevelDigest {
+        identity: String,
+        expected: [u8; 32],
+        received: [u8; 32],
+    },
+}
+
+/// A divergence is statically either terminal or recoverable.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub enum DivergenceReason {
+    Closing(ClosingCause),
+    Holding(HoldingCause),
+}
+
+impl std::fmt::Display for DivergenceReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Closing(ClosingCause::Protocol { expected, received }) => write!(
+                f,
+                "protocol mismatch: expected app_protocol_id={:#010x} wire_version={}, received app_protocol_id={:#010x} wire_version={}",
+                expected.app_protocol_id,
+                expected.wire_version,
+                received.app_protocol_id,
+                received.wire_version,
+            ),
+            Self::Closing(ClosingCause::ModId {
+                expected,
+                received,
+                expected_version,
+                received_version,
+            }) => write!(
+                f,
+                "mod id mismatch: expected {expected} ({expected_version}), received {received} ({received_version})"
+            ),
+            Self::Holding(HoldingCause::ModDigest { expected, received }) => write!(
+                f,
+                "mod digest differs: expected {}, received {}",
+                digest_hex(expected),
+                digest_hex(received)
+            ),
+            Self::Holding(HoldingCause::HostLevelAbsent) => write!(
+                f,
+                "host has no level installed; this slot will re-participate on the host's next install"
+            ),
+            Self::Holding(HoldingCause::LevelAbsent { expected_identity }) => {
+                write!(f, "no level installed; host is running {expected_identity}")
+            }
+            Self::Holding(HoldingCause::LevelIdentity { expected, received }) => write!(
+                f,
+                "level identity differs: expected {expected}, received {received}"
+            ),
+            Self::Holding(HoldingCause::LevelDigest {
+                identity,
+                expected,
+                received,
+            }) => write!(
+                f,
+                "level content differs for {identity}: expected {}, received {}",
+                digest_hex(expected),
+                digest_hex(received)
+            ),
+        }
+    }
+}
+
+impl std::error::Error for DivergenceReason {}
+
+fn digest_hex(digest: &[u8; 32]) -> String {
+    use std::fmt::Write as _;
+    let mut hex = String::with_capacity(64);
+    for byte in digest {
+        let _ = write!(hex, "{byte:02x}");
+    }
+    hex
+}
+
+/// Tagged server -> client Control envelope. Task 4 appends relevel here; this
+/// task deliberately reserves no placeholder discriminant.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub enum ServerControlMessage {
+    Divergence(DivergenceReason),
+    /// Opaque engine-serialized tuning. Net is a registry-blind courier and must
+    /// never decode, compare, or validate this descriptor payload.
+    Tuning(Vec<u8>),
 }
 
 /// Wire codec failure. Today the only failure mode is a bitcode decode error
@@ -1478,9 +1609,31 @@ mod tests {
         let handshake = ProtocolVersion {
             app_protocol_id: 0xCAFE_BABE,
             wire_version: 1,
-            kinematic_static_fingerprint: [0x5a; 32],
         };
         assert!(round_trips(&handshake));
+    }
+
+    #[test]
+    fn control_envelopes_round_trip_without_untyped_decode() {
+        let admission = ClientControlMessage::Admission {
+            protocol: ProtocolVersion {
+                app_protocol_id: 7,
+                wire_version: 9,
+            },
+            mod_id: "postretro.test".to_string(),
+            mod_version: "1.2.3".to_string(),
+        };
+        assert!(round_trips(&admission));
+        assert!(round_trips(&ClientControlMessage::Parity(
+            ParityDeclaration {
+                mod_digest: [0x5a; 32],
+                level: Some(("map-a".to_string(), [0xa5; 32])),
+            }
+        )));
+        assert!(round_trips(&ServerControlMessage::Divergence(
+            DivergenceReason::Holding(HoldingCause::HostLevelAbsent),
+        )));
+        assert!(round_trips(&ServerControlMessage::Tuning(vec![1, 2, 3])));
     }
 
     #[test]

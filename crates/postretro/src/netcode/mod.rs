@@ -1917,7 +1917,9 @@ pub(crate) fn host_handle_lifecycle(
             // Accepts never reach lifecycle (the transport uses
             // `HandshakeOutcome::Accepted` instead); the spawn is driven from that
             // verdict. Kept exhaustive so a new SlotEvent variant is a compile error.
-            SlotEvent::Accepted { .. } => {}
+            SlotEvent::Participating { .. } => {}
+            // Task 7 routes a demotion through the same cleanup path as close.
+            SlotEvent::Demoted { .. } => {}
         }
     }
 }

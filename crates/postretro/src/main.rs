@@ -4767,7 +4767,7 @@ impl App {
                             let mut registry = script_ctx.registry.borrow_mut();
                             for outcome in &poll.handshakes {
                                 match outcome {
-                                    HandshakeOutcome::Accepted { client_id } => {
+                                    HandshakeOutcome::Admitted { client_id } => {
                                         log::info!("[Net] client {client_id} accepted");
                                         replication.register_client(*client_id);
                                         // M15 Phase 3.5: register the accepted client with
@@ -4821,8 +4821,13 @@ impl App {
                                             }
                                         }
                                     }
-                                    HandshakeOutcome::Rejected { client_id, reason } => {
-                                        log::warn!("[Net] client {client_id} rejected: {reason}");
+                                    HandshakeOutcome::Rejected { client_id, cause } => {
+                                        log::warn!("[Net] client {client_id} rejected: {cause:?}");
+                                    }
+                                    HandshakeOutcome::ParityHeld { client_id, cause } => {
+                                        log::info!(
+                                            "[Net] client {client_id} held for content parity: {cause:?}"
+                                        );
                                     }
                                 }
                             }

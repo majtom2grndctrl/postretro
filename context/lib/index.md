@@ -29,6 +29,7 @@
 - **Scripting / primitives / SDK types / scripting crate boundaries / VM compile firewall** → `scripting.md`
 - **Reaction dispatch model / event sources / dispatch scopes / reaction parameters / occupancy exposure** → `scripting.md` §12
 - **Netcode / multiplayer / co-op / replication / transport / wire format** → `networking.md`
+- **Joining a session / admission vs content parity / slot lifecycle / host level change / what gates vs what replicates** → `networking.md` §Admission and content parity · §Slot lifecycle · §What gates, and what replicates instead
 - **Game / mod author docs (human-facing, not agent context)** → `docs/`
 - **Collision (world/entity)** → `entity_model.md` §7
 - **Navigation / navmesh / pathfinding representation** → `build_pipeline.md` §Navigation bake

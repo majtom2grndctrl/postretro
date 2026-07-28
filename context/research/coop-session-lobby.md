@@ -228,7 +228,7 @@ mod state; the third is the authoring surface.
    id/version to the manifest; demote rather than close on a level change; the relevel
    message and client-follow; host-side net reset on unload; transport polling across the
    load window; the fail-open fix. The largest spec, and the one that fixes both live
-   defects. Drafted: `plans/drafts/E15--session-lifecycle/`.
+   defects. Ready: `plans/ready/E15--session-lifecycle/`.
 2. **Seat, session identity, and roster.** The durable per-player key, the client-asserted
    player id, and the engine-published roster facts the UI and the predicate read.
 3. **Lobby authoring surface.** The session scope and its join predicate, the lifecycle

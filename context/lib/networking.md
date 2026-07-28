@@ -22,6 +22,8 @@ The transport is **synchronous and frame-polled** — no async runtime, no tokio
 
 The caller advances the transport once per frame: it drives renet, drains the socket to `WouldBlock`, processes events, and flushes outbound packets — then returns. It never blocks. This honors the event-loop ownership invariant (`development_guide.md` §4.2): winit owns the loop, and the netcode poll slots into the frame's Game-logic stage without stalling it.
 
+**Every frame, not every gameplay frame.** The poll is keyed on endpoint presence, not on boot state: a frame that runs no world — frontend, a level load in flight, a resumed splash — still advances the transport. Two things depend on that. A level install longer than the netcode timeout would otherwise drop every peer mid-load, and a client must be joinable before either peer has a level installed at all, which is the ordinary state between maps. A world-less poll does transport advance, keepalive, gate evaluation, and the reliable control drain — never snapshot apply, state-crossing detection, or a simulation tick, none of which mean anything without a world. One limit is honest and accepted: a suspension longer than the timeout drops peers regardless, because no frames run at all while suspended. The rule is only that no *running* frame leaves a live endpoint unpolled.
+
 renet 2.0 separates two layers, and the transport wraps both: a **connection layer** (owns channels, produces/consumes opaque packet payloads) and a **netcode transport** (encrypts payloads, moves them over UDP). The connection-layer packet I/O is also re-exposed directly so the in-memory harness can drive the same payloads without a socket.
 
 ## Channel model
@@ -30,7 +32,7 @@ Three channels, fixed layout, agreed by both peers (the layout is folded into th
 
 | Channel | Delivery | Carries |
 |---------|----------|---------|
-| Control | reliable-ordered | version handshake and typed rejects |
+| Control | reliable-ordered | join traffic both ways: compatibility declarations client→server; level changes, divergence causes, and the replicated tuning payload server→client |
 | Snapshot | unreliable | server snapshots: entity records, state-slot records, server tick metadata |
 | Input | reliable-ordered | client input commands, replication acks, baseline-refresh requests, state-refresh requests, time-sync probes |
 
@@ -53,15 +55,88 @@ Clients acknowledge replication progress over the reliable Input channel. Acks a
 
 The codec surface is two functions (encode, decode) over these types. Decode of a short, corrupted, or over-long buffer is always a typed `Err`, never a panic — the transport must survive a hostile or truncated packet.
 
+**One payload is opaque to the net crate and variable-length.** The replicated tuning values (see *What gates, and what replicates instead*) cross as bytes the crate never decodes, compares, or validates; every other opaque value on the wire is a fixed-size digest. A typed mirror would make the crate learn the engine's descriptor vocabulary, breaking the registry-blindness the whole boundary rests on — so the payload is engine-serialized at both ends and the crate is a courier. The cost is real and accepted: a malformed payload is the engine's to detect, because the crate cannot validate what it forwards.
+
 ## Two-gate handshake
 
 Version compatibility is enforced **twice**, because the two gates catch different failures at different layers. Both gates derive from the same two build constants — an app protocol id and a wire-format version. The app id bumps when the message *vocabulary* changes (a new control message, a changed channel layout); the wire version bumps when any wire type's bitcode byte layout changes (added field, reordered enum, bumped bitcode major).
 
 **Gate 1 — transport `protocol_id` (u64).** Both constants are packed into the netcode `protocol_id`. A peer whose `(protocol_id, wire_version)` pair differs fails the *encrypted netcode handshake itself* — the connection never establishes. This catches wire-incompatible peers before any app code runs.
 
-**Gate 2 — app-level `ProtocolVersion`.** The client's *first reliable control message* carries the two build values plus an opaque static-kinematic fingerprint. The fingerprint covers every loaded PRL input used by mover prediction and collision: mover identity, path, speed/wait/mode, spin axis/speed/acceleration, carry policy, waypoint graph, and mover collision vertices/indices. Client handshake waits until level install computes it. Server acceptance waits until its own level installs one. Any version or fingerprint mismatch is a **typed reject reason** (carrying expected vs received), logged with a `[Net]` tag, and the client is disconnected. **No entity state is sent or applied to a rejected client** — the snapshot send path refuses any client that has not passed this gate. A connected-but-not-yet-validated client is held in a pending state that receives nothing.
+**Gate 2 — the app gate**, carried over the reliable Control channel and evaluated in two stages, below. It proves app compatibility and shared content before prediction can arm.
 
-The two gates are not redundant. Gate 1 stops wire-incompatible peers cheaply at the encryption layer. Gate 2 proves app compatibility and shared static mover content before prediction can arm. A connection is bound to that fingerprint for its lifetime. Installing different static mover content closes it and emits the ordinary slot-close lifecycle event exactly once. Host cleanup despawns the remote pawn and clears its replication, ownership, command, state-slot, and combat state before the peer reconnects and validates the new map. This mirrors the `BakedIr` exact-match version-epoch discipline (`scripting.md` §11): exact inputs validated up front, mismatch refused rather than migrated.
+The two gates are not redundant. Gate 1 stops wire-incompatible peers cheaply at the encryption layer, before a single bitcode payload is interpreted. Gate 2 reasons about content, which the encryption layer cannot see. **No entity state is sent or applied to a client that has not cleared both** — the snapshot send path refuses it.
+
+### Admission and content parity
+
+The app gate splits by **mutability**, not by subject. A value belongs to the earlier stage only if a mismatch on it can *never* later become a match.
+
+**Admission** carries what cannot change for a live connection: the two build constants and the mod's declared id. Nothing can make a mismatch here true later, so a mismatch is terminal — the peer is told the typed cause and disconnected, the teardown deferred one poll so the reliable message flushes first. Without that deferral a player on the wrong mod cannot distinguish a refusal from an unreachable host.
+
+**Content parity** carries everything derived from loaded content: a mod compatibility digest, the identity of the installed level, and that level's content digest. Every one of these is *designed* to become true later — a level digest at the next install, a mod digest at the next reload. So a parity mismatch **never closes the connection**. It holds the slot below participating, names which of the three diverged, and clears itself when the values agree, whichever peer moved.
+
+This overturns the earlier rule that a connection was bound to its content fingerprint for its lifetime, with a content change closing it. **Content divergence is a diagnostic to a still-connected peer, not a disconnect.** Closing would also race the design's own timing: a client's declaration for one level can still be in flight when the host installs the next, so a host that closed on mismatch would tear down a peer it had already demoted a frame earlier.
+
+Putting a mutable value in admission is the failure this split exists to prevent — it converts a recoverable content difference into an unrecoverable disconnect. That is the question to ask of any value added later.
+
+The two stages queue independently. Each is evaluated once the value it compares against is installed, and the reliable channel is what holds a message that arrives early — neither stage waits on the other, and coupling them re-creates the ordering inversion where a peer cannot join until a map exists.
+
+## Slot lifecycle
+
+A connection moves through four stages: **pending** (connected, nothing proven), **admitted** (the immutable values match — the connection is live and receives no entity state), **participating** (content parity holds; snapshots flow), and **closed**. Only a participating slot receives entity records.
+
+**Participation is a predicate, not a pair of transitions.** A slot participates if and only if its last declaration matches the host's currently installed parity values, re-evaluated for every slot after every parity source is reinstalled. Demotion and promotion are two readings of one comparison, and there is one place that comparison happens — a later parity source cannot implement half of it.
+
+Specifying this as transitions is the trap, and the level path hides it. A client re-declares at every level install, so a demote-only implementation looks correct there. The mod-digest path has no re-declaration and therefore no recovery: a slot held by a host-side reload would stay held forever even after the host reverted the edit, because the client's declaration never moves and it has no reason to re-send.
+
+Two rules derive every per-slot effect from the state pair rather than from whichever method ran:
+
+- **Any exit from participating clears that slot's state** — pawn, replication, ownership, command, state-slot, and combat — whatever the destination. A demotion clears exactly what a close clears because both are the same edge, and a slot demoted and then closed clears once, not twice.
+- **Any entry to participating registers the slot and spawns its pawn** — first admission and re-promotion alike, so a re-promoted slot needs no special case and no "must re-emit" rider.
+
+The connection survives; its state does not. A client id is stable across a level change, which is what later specs key player identity to.
+
+**A held slot is gated in both directions.** It is sent no entity state, and its inbound traffic is drained and discarded. The drain is not an optimization: an undrained reliable channel overflows its memory budget and the transport disconnects the peer — which would break the never-close guarantee through a path that never decided anything.
+
+**The host names the next map; clients follow.** A level change demotes every participating slot rather than closing it, and the host sends the next map's catalog id over Control. A late joiner is told the current map on admission, so it does not wait for the next transition. Map authority is server-owned; a client never asks for a level change. A host running an uncatalogued level sends nothing — a catalog is the only namespace in which one string resolves on both peers — and its clients stay admitted until they install a matching level themselves.
+
+A held slot is bounded by the transport, not by the gate: a peer that never reaches parity holds an admitted slot for as long as its keepalive survives. Accepted, because the case it covers is a peer on the *right* mod whose content diverged, which is recoverable by construction. A genuinely wrong mod still closes, on the id, at admission.
+
+## What gates, and what replicates instead
+
+**Hash only what cannot be replicated.** A digest is a fallback, not a first instrument: replication makes two peers *agree*, where a digest only lets them refuse each other. Every value a client simulates against that the host can send is sent — at the participation transition the host resolves that slot's pawn tuning and the client installs it instead of reading its own registry.
+
+The client predicts with the host's numbers, never its own, and the sites that resolve tuning keep **no fallback to the local registry** for a replicated value. A fallback fires only on the peers whose content differs, which is precisely the case replication exists to fix. This is a behavior semantic, not just a mechanism: a modder testing a movement change in co-op sees the host's values, not their own. Render-only tuning stays local, so a player's own view-feel settings survive a join.
+
+What stays hashed is what replication cannot reach: a *computation* both peers run independently over the same replicated state, and content too large to send. Reaching for a hash on a value the host could have sent produces a false refusal — the mistake a later widening is most likely to make.
+
+**The covered set is partial by decision, and the gap is named.** Script-declared reaction and event lanes are not hashed. One carries runtime allocation handles rather than content; in the other, whether a declaration is prediction-relevant is keyed by an open string namespace, so no compile-time guarantee is reachable for "someone added a new prediction-relevant primitive." Both escapes are mechanisms rejected elsewhere: hashing the lanes wholesale demotes every peer when a sound argument changes, and hashing a chosen subset is the same fail-open pattern that once left static collision geometry unchecked. Level-local script content, declared at level setup, falls between the two digests' schedules and is uncovered for a third reason — neither digest looks there. Two mods differing only in these lanes pass both stages and can diverge on locally-simulated state. A total-coverage claim would be false.
+
+Within a type the digest does reach, the recipe is a **denylist**: bind every field and name any skip, so a field added later is a compile error rather than a silent omission. An allowlist is what produced the fail-open above — a new field defaults to unhashed, and no test catches the one you forgot. The guarantee covers fields inside reached types, not whole lanes; a new lane still escapes, which is why the uncovered set is enumerated rather than assumed empty.
+
+### Level identity and level content digest
+
+Two values answering two questions. **Identity** says *which map* — the catalog id, falling back to a normalized content-root-relative path for an uncatalogued level. **The content digest** says *is the content the same*.
+
+The digest's membership rule is one line: **a deterministic input to client prediction belongs in the hash.** That rule is what put mover identity, path, motion, carry policy, and mover collision geometry in it, and what later added the static world collision the client builds its own trimesh from — the same fail-open recurring on a second surface, because movement prediction and client-authoritative hit declaration both run against that trimesh. Anything a client *simulates against* and the host cannot send is a candidate; presentation is not.
+
+They stay separate rather than folded together because same-map-different-content is a different diagnosis from wrong-map, and a player can act on the difference. Identity alone cannot discriminate: a catalog id is **mod-scoped**, so two mods may each declare the same id over different files. Admission closes that case, not identity.
+
+The digest is deliberately not a hash of the compiled level bytes. That would turn a cross-platform bake difference into a hard connection failure.
+
+### Mod identity
+
+The manifest declares a stable id and a version. **The id gates** — it is the namespace that makes a catalog id resolvable, so peers must declare the same one. **The version never gates.** It rides the same message and serves display and diagnostics only; exact-version equality would refuse a friend on the previous build over a change no client simulates. Because a gating and a non-gating value share one message, the no-compare rule is commented at the comparison site rather than left to inference.
+
+Both are **frozen at first commit** and do not move across a hot reload, diverging from the atomic-replace discipline most manifest lanes follow. Admission is terminal, so a mid-session id change would invalidate decisions already made, with no state to demote those connections to. The compatibility digest is the opposite case and re-hashes on every reload, because parity has a recovery path.
+
+Identity is declared, not proven — tamper resistance is a non-goal, and neither field is a security mechanism.
+
+## Session-state ledger
+
+State that survives a level change, enumerated rather than accreted. One entry today: **the connection** — its id, its lifecycle stage, and its last parity declaration.
+
+The rest is defined by subtraction. Everything level-scoped and everything per-slot clears on demotion, so what survives a session is exactly what a demotion does not touch. Later specs add the seat and the roster to this list rather than discovering one.
 
 ## Game-logic-owned apply invariant
 
@@ -76,7 +151,7 @@ The net crate emits typed snapshots and **never mutates the registry.** All regi
 
 On every client game-logic frame, apply received snapshots before state-crossing detection. Snapshot apply mints a frame-stamped `SnapshotsApplied` witness; crossing detection consumes it after game logic settles same-frame local slot writes. The witness cannot be forged or reused from a prior frame, so crossings always observe received replicated state before they inspect the slot table.
 
-Current component payloads are `Transform`, `PlayerMovementState`, `MeshAnimationState`, and `KinematicMoverState`, added in `ComponentKind` numeric order. `PlayerMovementState` includes presentation-only `aim_pitch` for remote-avatar pose presentation. `MeshAnimationState` carries the current animation state name; descriptor mesh data stays local. `KinematicMoverState` carries phase only: `mover_id`, segment index, direction, mode, elapsed/wait milliseconds, started/completed flags, velocity, optional target segment for move-and-hold, and rotating phase (`spin_angle_rad`, pre-tick spin angle, active-at-tick-start provenance, current spin rate, target spin rate). Tick provenance lets replay reconstruct the motion that actually produced the authoritative pose when completion or a later command changed the post-tick gate. Static path, collision geometry, and spin authoring (axis, acceleration, `carry_yaw`) stay in PRL `KinematicGeometry`; the handshake fingerprint proves cross-peer parity before this phase is trusted.
+Current component payloads are `Transform`, `PlayerMovementState`, `MeshAnimationState`, and `KinematicMoverState`, added in `ComponentKind` numeric order. `PlayerMovementState` includes presentation-only `aim_pitch` for remote-avatar pose presentation. `MeshAnimationState` carries the current animation state name; descriptor mesh data stays local. `KinematicMoverState` carries phase only: `mover_id`, segment index, direction, mode, elapsed/wait milliseconds, started/completed flags, velocity, optional target segment for move-and-hold, and rotating phase (`spin_angle_rad`, pre-tick spin angle, active-at-tick-start provenance, current spin rate, target spin rate). Tick provenance lets replay reconstruct the motion that actually produced the authoritative pose when completion or a later command changed the post-tick gate. Static path, collision geometry, and spin authoring (axis, acceleration, `carry_yaw`) stay in PRL `KinematicGeometry`; the level content digest proves cross-peer parity before this phase is trusted.
 
 Player movement grounding is a widened ground reference (`Airborne`, `World`, or `Mover(mover_id)`) rather than a bare boolean. The net crate validates only the enum shape and finite numeric fields; resolving a mover id to a loaded local mover is engine-owned client apply.
 
@@ -97,6 +172,8 @@ Role is selected once at startup from CLI flags; default is **single-player with
 | *(none)* | Single-player. Net inert. |
 | `--host [port]` | Listen server. Bare `--host` uses the default port. |
 | `--connect <ip:port>` | Client connecting to an explicit address. |
+
+**No endpoint, no gate.** Single-player constructs no endpoint, so no compatibility value is computed, no gate runs, and a level change announces nothing. Nothing branches on player count — the absent endpoint *is* the branch, which is why the compatibility digests are computed inside that check rather than unconditionally and discarded.
 
 `--host` and `--connect` are mutually exclusive. **Direct connect only** — no discovery, no matchmaking, no relay. Endpoint construction can fail (socket bind, transport init); a failure is logged and **degrades to single-player** rather than blocking boot — a netcode setup error never stops the engine from running. Clients receive host-authoritative replication, predict their own pawn locally, and reconcile against host acks.
 
@@ -298,7 +375,7 @@ Phase 1/2 plans are historical. Do not read their old full-snapshot, no-despawn,
 
 Replicable-set policy is gameplay-authoritative first. Player pawns, AI/enemies, movers, and other networked gameplay objects go on the wire. Deterministic client-local or baked data — particles, sprite visuals, lights, fog volumes, and shared `.prl` map data — stays off the wire unless gameplay authority requires otherwise.
 
-Mover prediction is phase-seeded and separate from the pawn command-ring predictor. The host replicates authoritative mover phase; clients re-run the deterministic mover driver from that phase and reconcile in place, mapped by `NetworkId`. Rotating movers seed angle plus current and target spin rates; clients combine that phase with fingerprint-validated local PRL axis, acceleration, path, collision geometry, and carry policy. There is no provisional client-created mover copy.
+Mover prediction is phase-seeded and separate from the pawn command-ring predictor. The host replicates authoritative mover phase; clients re-run the deterministic mover driver from that phase and reconcile in place, mapped by `NetworkId`. Rotating movers seed angle plus current and target spin rates; clients combine that phase with local PRL axis, acceleration, path, collision geometry, and carry policy, all covered by the level content digest. There is no provisional client-created mover copy.
 
 Trigger volumes are shared baked map data, not replicated state. Clients send a `use_pressed` input bit with movement input; only the host evaluates touch/use overlap and fires trigger commands. A fired command mutates replicated mover phase, including its optional target segment, so clients reconcile the resulting motion without ever evaluating the trigger locally.
 

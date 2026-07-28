@@ -597,53 +597,18 @@ fn upload_placeholder_shadowmask(device: &wgpu::Device, queue: &wgpu::Queue) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
-    use std::sync::OnceLock;
 
-    use log::{Level, Log, Metadata, Record};
+    use log::Level;
     use postretro_level_format::lightmap::LightmapMode;
 
-    thread_local! {
-        static LOG_BUFFER: RefCell<Option<Vec<(Level, String)>>> = const { RefCell::new(None) };
-    }
-
-    struct CaptureLogger;
-
-    impl Log for CaptureLogger {
-        fn enabled(&self, _metadata: &Metadata<'_>) -> bool {
-            true
-        }
-
-        fn log(&self, record: &Record<'_>) {
-            LOG_BUFFER.with(|buffer| {
-                if let Some(records) = buffer.borrow_mut().as_mut() {
-                    records.push((record.level(), format!("{}", record.args())));
-                }
-            });
-        }
-
-        fn flush(&self) {}
-    }
-
-    static CAPTURE_LOGGER: CaptureLogger = CaptureLogger;
-    static LOGGER_INSTALLED: OnceLock<bool> = OnceLock::new();
-
-    fn capture_logs(f: impl FnOnce()) -> Option<Vec<(Level, String)>> {
-        let logger_installed =
-            *LOGGER_INSTALLED.get_or_init(|| match log::set_logger(&CAPTURE_LOGGER) {
-                Ok(()) => {
-                    log::set_max_level(log::LevelFilter::Trace);
-                    true
-                }
-                Err(_) => false,
-            });
-        if !logger_installed {
-            return None;
-        }
-
-        LOG_BUFFER.with(|buffer| *buffer.borrow_mut() = Some(Vec::new()));
+    fn capture_logs(f: impl FnOnce()) -> Vec<(Level, String)> {
+        let capture = postretro_test_log_capture::LogCapture::start();
         f();
-        Some(LOG_BUFFER.with(|buffer| buffer.borrow_mut().take().unwrap_or_default()))
+        capture
+            .records()
+            .into_iter()
+            .map(|record| (record.level, record.message))
+            .collect()
     }
 
     fn fake_section(width: u32, height: u32) -> LightmapSection {
@@ -688,14 +653,9 @@ mod tests {
     #[test]
     fn oversize_section_logs_renderer_prefixed_error() {
         let oversize = fake_section(16_384, 8192);
-        let Some(captured) = capture_logs(|| {
+        let captured = capture_logs(|| {
             assert!(filter_usable_section(Some(&oversize), 8192, 256).is_none());
-        }) else {
-            eprintln!(
-                "skipping lightmap log-capture assertion: another test logger is already installed"
-            );
-            return;
-        };
+        });
 
         assert!(
             captured.iter().any(|(level, message)| {

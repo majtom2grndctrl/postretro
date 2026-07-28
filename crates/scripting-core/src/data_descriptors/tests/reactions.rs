@@ -1033,6 +1033,84 @@ fn luau_trigger_target_tokens_preserve_wrong_builder_tokens_for_validation() {
 }
 
 #[test]
+fn grant_reactions_accept_tag_and_activator_forms_identically_in_both_vms() {
+    let js = eval_js(
+        r#"({ reactions: [
+            { name: "health", primitive: "grantHealth", tag: "player", args: { amount: 12.5 } },
+            { name: "ammo", primitive: "grantAmmo", target: "@activators", args: { type: "bullets.light", amount: 8 } }
+        ] })"#,
+        |ctx, value| LevelManifest::from_js_value(ctx, value).unwrap(),
+    );
+    let lua = eval_lua(
+        r#"return { reactions = {
+            { name = "health", primitive = "grantHealth", tag = "player", args = { amount = 12.5 } },
+            { name = "ammo", primitive = "grantAmmo", target = "@activators", args = { type = "bullets.light", amount = 8 } },
+        } }"#,
+        |value| LevelManifest::from_lua_value(value).unwrap(),
+    );
+
+    assert_eq!(js, lua);
+    let [health, ammo] = js.reactions.as_slice() else {
+        panic!("both valid grant reactions must load");
+    };
+    let ReactionDescriptor::Primitive(health) = &health.descriptor else {
+        panic!("health grant must remain primitive");
+    };
+    assert_eq!(health.tag.as_deref(), Some("player"));
+    let ReactionDescriptor::Primitive(ammo) = &ammo.descriptor else {
+        panic!("ammo grant must remain primitive");
+    };
+    assert_eq!(ammo.target.as_deref(), Some("@activators"));
+}
+
+#[test]
+fn malformed_grant_reactions_reject_the_whole_manifest_identically_in_both_vms() {
+    let cases = [
+        (
+            r#"({ reactions: [{ name: "missingTarget", primitive: "grantHealth", args: { amount: 1 } }, { name: "good", primitive: "playSound" }] })"#,
+            r#"return { reactions = { { name = "missingTarget", primitive = "grantHealth", args = { amount = 1 } }, { name = "good", primitive = "playSound" } } }"#,
+            "requires exactly one",
+        ),
+        (
+            r#"({ reactions: [{ name: "emptyTag", primitive: "grantHealth", tag: "", args: { amount: 1 } }, { name: "good", primitive: "playSound" }] })"#,
+            r#"return { reactions = { { name = "emptyTag", primitive = "grantHealth", tag = "", args = { amount = 1 } }, { name = "good", primitive = "playSound" } } }"#,
+            "non-empty `tag`",
+        ),
+        (
+            r#"({ reactions: [{ name: "runtimeAmount", primitive: "grantHealth", tag: "player", args: { amount: { op: "const", value: 1 } } }] })"#,
+            r#"return { reactions = { { name = "runtimeAmount", primitive = "grantHealth", tag = "player", args = { amount = { op = "const", value = 1 } } } } }"#,
+            "args.amount",
+        ),
+        (
+            r#"({ reactions: [{ name: "f64OnlyAmount", primitive: "grantAmmo", tag: "player", args: { type: "bullets.light", amount: 1e100 } }, { name: "good", primitive: "playSound" }] })"#,
+            r#"return { reactions = { { name = "f64OnlyAmount", primitive = "grantAmmo", tag = "player", args = { type = "bullets.light", amount = 1e100 } }, { name = "good", primitive = "playSound" } } }"#,
+            "representable as f32",
+        ),
+        (
+            r#"({ reactions: [{ name: "badPool", primitive: "grantAmmo", tag: "player", args: { type: "bad pool", amount: 1 } }] })"#,
+            r#"return { reactions = { { name = "badPool", primitive = "grantAmmo", tag = "player", args = { type = "bad pool", amount = 1 } } } }"#,
+            "grantAmmo.type",
+        ),
+        (
+            r#"({ reactions: [{ name: "both", primitive: "grantAmmo", tag: "player", target: "@activators", args: { type: "bullets.light", amount: 1 } }] })"#,
+            r#"return { reactions = { { name = "both", primitive = "grantAmmo", tag = "player", target = "@activators", args = { type = "bullets.light", amount = 1 } } } }"#,
+            "both `target` and `tag`",
+        ),
+    ];
+
+    for (js_source, lua_source, expected) in cases {
+        let js_error = eval_js(js_source, |ctx, value| {
+            LevelManifest::from_js_value(ctx, value).unwrap_err()
+        });
+        let lua_error = eval_lua(lua_source, |value| {
+            LevelManifest::from_lua_value(value).unwrap_err()
+        });
+        assert!(js_error.to_string().contains(expected), "{js_error}");
+        assert!(lua_error.to_string().contains(expected), "{lua_error}");
+    }
+}
+
+#[test]
 fn non_string_crossing_edges_degrade_identically_in_both_vms() {
     // Regression: VM field readers rejected these descriptors before shared
     // edge normalization could warn and preserve shipped single-edge behavior.

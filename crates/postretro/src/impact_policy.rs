@@ -1,12 +1,14 @@
 // Runtime-owned impact-policy binding and per-fire evaluation.
-// See: context/plans/in-progress/E16--impact-policy-substrate/index.md (Task 5).
+// See: context/lib/scripting.md (Impact-policy composition and evaluation).
 
-use postretro_entities::components::health::{DamageProducer, ImpactDispatch};
-use postretro_entities::{EntityId, ScriptCtx};
-use postretro_foundation::ImpactEventDescriptor;
+use postretro_entities::ScriptCtx;
+use postretro_entities::components::health::{
+    DamageProducer, IMPACT_SOURCE_TOKEN, IMPACT_TARGET_TOKEN, ImpactDispatch,
+};
 use postretro_foundation::ir::{
     BakedIr, BoundProgram, CURRENT_IR_VERSION, IrNode, IrType, IrValue, bind, eval_value,
 };
+use postretro_foundation::{ImpactEventDescriptor, validate_ascii_identifier};
 use postretro_scripting_core::ir_scopes::{EntityOutputHandle, EntityScope};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
@@ -54,14 +56,35 @@ enum BoundEffect {
     PlayAnimation {
         state: String,
     },
+    GrantHealth {
+        amount: BoundProgram<EntityScope>,
+    },
+    GrantAmmo {
+        pool: String,
+        amount: BoundProgram<EntityScope>,
+    },
+}
+
+/// Which opaque impact command-target token a planned effect resolves at apply.
+///
+/// Numeric IR operands remain bound to the impact target scope; this only
+/// chooses the entity that receives a command after evaluation completes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CommandRecipient {
+    Target,
+    Source,
 }
 
 enum PlannedEffect {
     Write {
+        recipient: CommandRecipient,
         handle: EntityOutputHandle,
         value: IrValue,
     },
-    Command(ImpactEffect),
+    Command {
+        recipient: CommandRecipient,
+        effect: ImpactEffect,
+    },
 }
 
 impl ImpactPolicyRuntime {
@@ -228,20 +251,22 @@ impl ImpactPolicyRuntime {
                         BoundEffect::PlayAnimation { .. } => self.presentation.push(planned),
                         BoundEffect::Write(_)
                         | BoundEffect::SetHealth { .. }
-                        | BoundEffect::Despawn { .. } => self.consequential.push(planned),
+                        | BoundEffect::Despawn { .. }
+                        | BoundEffect::GrantHealth { .. }
+                        | BoundEffect::GrantAmmo { .. } => self.consequential.push(planned),
                     }
                 }
             }
         }
 
-        self.apply_planned(registry, dispatch.target, false);
-        self.apply_planned(registry, dispatch.target, true);
+        self.apply_planned(registry, &dispatch, false);
+        self.apply_planned(registry, &dispatch, true);
     }
 
     fn apply_planned(
         &mut self,
         registry: &mut postretro_entities::EntityRegistry,
-        target: EntityId,
+        dispatch: &ImpactDispatch,
         presentation: bool,
     ) {
         let effects = if presentation {
@@ -252,11 +277,30 @@ impl ImpactPolicyRuntime {
         effects.reverse();
         while let Some(effect) = effects.pop() {
             match effect {
-                PlannedEffect::Write { handle, value } => {
-                    self.scope.write_with_registry(registry, &handle, value)
+                PlannedEffect::Write {
+                    recipient: CommandRecipient::Target,
+                    handle,
+                    value,
+                } => self.scope.write_with_registry(registry, &handle, value),
+                PlannedEffect::Write {
+                    recipient: CommandRecipient::Source,
+                    ..
+                } => {
+                    debug_assert!(
+                        false,
+                        "impact writes are bound to the target-scoped entity state"
+                    );
                 }
-                PlannedEffect::Command(effect) => {
-                    apply_effect(registry, target, &effect);
+                PlannedEffect::Command { recipient, effect } => {
+                    let recipient = match recipient {
+                        CommandRecipient::Target => Some(dispatch.target),
+                        CommandRecipient::Source => {
+                            dispatch.source.filter(|source| registry.exists(*source))
+                        }
+                    };
+                    if let Some(recipient) = recipient {
+                        apply_effect(registry, recipient, &effect);
+                    }
                 }
             }
         }
@@ -348,19 +392,19 @@ fn bind_effect(entry: &Value, scope: &EntityScope) -> Result<BoundEffect, String
 
     match primitive {
         "despawn" => {
-            require_impact_target(target, primitive)?;
+            require_impact_token(target, primitive, IMPACT_TARGET_TOKEN)?;
             Ok(BoundEffect::Despawn {
                 after_ms: optional_ms(args)?,
             })
         }
         "playAnim" => {
-            require_impact_target(target, primitive)?;
+            require_impact_token(target, primitive, IMPACT_TARGET_TOKEN)?;
             Ok(BoundEffect::PlayAnimation {
                 state: required_string(args, "clip", "playAnim args")?.to_string(),
             })
         }
         "setHealth" => {
-            require_impact_target(target, primitive)?;
+            require_impact_token(target, primitive, IMPACT_TARGET_TOKEN)?;
             let value = bind_read(
                 args.get("value")
                     .ok_or_else(|| "setHealth args is missing `value`".to_string())?,
@@ -372,6 +416,35 @@ fn bind_effect(entry: &Value, scope: &EntityScope) -> Result<BoundEffect, String
             Ok(BoundEffect::SetHealth {
                 value,
                 after_ms: optional_ms(args)?,
+            })
+        }
+        "grantHealth" => {
+            require_impact_token(target, primitive, IMPACT_SOURCE_TOKEN)?;
+            let amount = bind_read(
+                args.get("amount")
+                    .ok_or_else(|| "grantHealth args is missing `amount`".to_string())?,
+                scope,
+            )?;
+            if amount.root_type != IrType::Number {
+                return Err("grantHealth `amount` must evaluate to a number".to_string());
+            }
+            Ok(BoundEffect::GrantHealth { amount })
+        }
+        "grantAmmo" => {
+            require_impact_token(target, primitive, IMPACT_SOURCE_TOKEN)?;
+            let pool = required_string(args, "type", "grantAmmo args")?;
+            validate_ascii_identifier("grantAmmo.type", pool).map_err(|error| error.to_string())?;
+            let amount = bind_read(
+                args.get("amount")
+                    .ok_or_else(|| "grantAmmo args is missing `amount`".to_string())?,
+                scope,
+            )?;
+            if amount.root_type != IrType::Number {
+                return Err("grantAmmo `amount` must evaluate to a number".to_string());
+            }
+            Ok(BoundEffect::GrantAmmo {
+                pool: pool.to_string(),
+                amount,
             })
         }
         "setState" if target == Some("@impact.target") => {
@@ -446,6 +519,7 @@ fn bind_number_write(
 fn plan_effect(effect: &BoundEffect, scope: &EntityScope) -> PlannedEffect {
     match effect {
         BoundEffect::Write(program) => PlannedEffect::Write {
+            recipient: CommandRecipient::Target,
             handle: program
                 .output
                 .as_ref()
@@ -453,20 +527,38 @@ fn plan_effect(effect: &BoundEffect, scope: &EntityScope) -> PlannedEffect {
                 .clone(),
             value: eval_value(program, scope),
         },
-        BoundEffect::SetHealth { value, after_ms } => {
-            PlannedEffect::Command(ImpactEffect::SetHealth {
+        BoundEffect::SetHealth { value, after_ms } => PlannedEffect::Command {
+            recipient: CommandRecipient::Target,
+            effect: ImpactEffect::SetHealth {
                 value: number(eval_value(value, scope)),
                 after_ms: *after_ms,
-            })
-        }
-        BoundEffect::Despawn { after_ms } => PlannedEffect::Command(ImpactEffect::Despawn {
-            after_ms: *after_ms,
-        }),
-        BoundEffect::PlayAnimation { state } => {
-            PlannedEffect::Command(ImpactEffect::PlayAnimation {
+            },
+        },
+        BoundEffect::Despawn { after_ms } => PlannedEffect::Command {
+            recipient: CommandRecipient::Target,
+            effect: ImpactEffect::Despawn {
+                after_ms: *after_ms,
+            },
+        },
+        BoundEffect::PlayAnimation { state } => PlannedEffect::Command {
+            recipient: CommandRecipient::Target,
+            effect: ImpactEffect::PlayAnimation {
                 state: state.clone(),
-            })
-        }
+            },
+        },
+        BoundEffect::GrantHealth { amount } => PlannedEffect::Command {
+            recipient: CommandRecipient::Source,
+            effect: ImpactEffect::GrantHealth {
+                amount: number(eval_value(amount, scope)),
+            },
+        },
+        BoundEffect::GrantAmmo { pool, amount } => PlannedEffect::Command {
+            recipient: CommandRecipient::Source,
+            effect: ImpactEffect::GrantAmmo {
+                pool: pool.clone(),
+                amount: number(eval_value(amount, scope)),
+            },
+        },
     }
 }
 
@@ -500,11 +592,15 @@ fn optional_ms(args: &Map<String, Value>) -> Result<Option<f32>, String> {
     Ok(Some(value as f32))
 }
 
-fn require_impact_target(target: Option<&str>, primitive: &str) -> Result<(), String> {
-    if target == Some("@impact.target") {
+fn require_impact_token(
+    target: Option<&str>,
+    primitive: &str,
+    expected_token: &str,
+) -> Result<(), String> {
+    if target == Some(expected_token) {
         Ok(())
     } else {
-        Err(format!("{primitive} must target @impact.target"))
+        Err(format!("{primitive} must target {expected_token}"))
     }
 }
 
@@ -518,7 +614,7 @@ fn number(value: IrValue) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use postretro_entities::Transform;
+    use postretro_entities::components::ammo_reserve::AmmoReserve;
     use postretro_entities::components::health::{
         DamageContext, HealthComponent, apply_damage_with_context,
     };
@@ -526,6 +622,7 @@ mod tests {
     use postretro_entities::slot_table::{
         NumericRange, ReplicationScope, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
     };
+    use postretro_entities::{EntityId, Transform};
     use postretro_foundation::DamagePayload;
     use serde_json::json;
 
@@ -568,6 +665,22 @@ mod tests {
         })
     }
 
+    fn grant_health(amount: Value) -> Value {
+        json!({
+            "primitive": "grantHealth",
+            "target": "@impact.source",
+            "args": { "amount": amount },
+        })
+    }
+
+    fn grant_ammo(pool: &str, amount: Value) -> Value {
+        json!({
+            "primitive": "grantAmmo",
+            "target": "@impact.source",
+            "args": { "type": pool, "amount": amount },
+        })
+    }
+
     fn number_slot(value: f32) -> SlotRecord {
         SlotRecord::new(SlotSchema {
             slot_type: SlotType::Number,
@@ -603,8 +716,41 @@ mod tests {
         target
     }
 
+    fn source(ctx: &ScriptCtx, with_health: bool, with_ammo: bool) -> EntityId {
+        let mut registry = ctx.registry.borrow_mut();
+        let source = registry.spawn(Transform::default());
+        if with_health {
+            registry
+                .set_component(
+                    source,
+                    HealthComponent::from_descriptor(&HealthDescriptor {
+                        max: 100.0,
+                        hitbox: None,
+                        zone_multipliers: Default::default(),
+                    }),
+                )
+                .expect("source is live");
+        }
+        if with_ammo {
+            registry
+                .set_component(source, AmmoReserve::new())
+                .expect("source is live");
+        }
+        source
+    }
+
     fn hit(ctx: &ScriptCtx, target: EntityId, producer: DamageProducer) {
-        let context = DamageContext::new("impact-policy-test", producer);
+        hit_from(ctx, target, None, producer);
+    }
+
+    fn hit_from(
+        ctx: &ScriptCtx,
+        target: EntityId,
+        source: Option<EntityId>,
+        producer: DamageProducer,
+    ) {
+        let mut context = DamageContext::new("impact-policy-test", producer);
+        context.attacker = source;
         apply_damage_with_context(
             &mut ctx.registry.borrow_mut(),
             target,
@@ -1008,6 +1154,185 @@ mod tests {
     }
 
     #[test]
+    fn source_grants_credit_the_damager_with_target_scoped_operands() {
+        let ctx = ScriptCtx::new();
+        let target = target(&ctx, &["crate"]);
+        let source = source(&ctx, true, true);
+        {
+            let mut registry = ctx.registry.borrow_mut();
+            let mut health = registry
+                .get_component::<HealthComponent>(source)
+                .expect("source has health")
+                .clone();
+            health.current = 50.0;
+            registry.set_component(source, health).unwrap();
+        }
+
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_global_events(vec![event(
+            "source-grant",
+            "crate",
+            vec![
+                grant_health(input("@impact.amount")),
+                grant_ammo("cells", input("@impact.amount")),
+            ],
+        )]);
+
+        hit_from(&ctx, target, Some(source), DamageProducer::InTick);
+        evaluate_pending(&ctx, &mut runtime);
+
+        let registry = ctx.registry.borrow();
+        assert_eq!(
+            registry
+                .get_component::<HealthComponent>(source)
+                .expect("source remains live")
+                .current,
+            51.0,
+            "grantHealth applies to the damager while its operand reads the impact snapshot",
+        );
+        assert_eq!(
+            registry
+                .get_component::<AmmoReserve>(source)
+                .expect("source has reserve")
+                .available("cells"),
+            1,
+        );
+        assert_eq!(
+            registry
+                .get_component::<HealthComponent>(target)
+                .expect("target remains live")
+                .current,
+            99.0,
+            "the damaged target does not receive source-addressed grants",
+        );
+    }
+
+    #[test]
+    fn absent_or_stale_source_skips_only_the_source_grant() {
+        let ctx = ScriptCtx::new();
+        let target = target(&ctx, &["crate"]);
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_global_events(vec![event(
+            "source-may-be-absent",
+            "crate",
+            vec![
+                grant_health(number(5.0)),
+                state_write(
+                    "sibling_runs",
+                    json!({ "op": "add", "a": input("@state.sibling_runs"), "b": number(1.0) }),
+                ),
+            ],
+        )]);
+
+        let captured = crate::scripting::reactions::log_capture::capture(|| {
+            hit(&ctx, target, DamageProducer::InTick);
+            evaluate_pending(&ctx, &mut runtime);
+
+            let source = source(&ctx, true, false);
+            hit_from(&ctx, target, Some(source), DamageProducer::InTick);
+            ctx.registry
+                .borrow_mut()
+                .despawn(source)
+                .expect("source is live before evaluation");
+            evaluate_pending(&ctx, &mut runtime);
+        });
+
+        assert_eq!(state(&ctx, target, "sibling_runs"), 2.0);
+        assert!(
+            captured.is_empty(),
+            "an absent or stale command source is a silent per-effect skip: {captured:?}"
+        );
+    }
+
+    #[test]
+    fn skipped_grant_component_warns_without_aborting_sibling_effects() {
+        let ctx = ScriptCtx::new();
+        let target = target(&ctx, &["crate"]);
+        let source = source(&ctx, false, false);
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_global_events(vec![event(
+            "missing-recipient-components",
+            "crate",
+            vec![
+                grant_health(number(5.0)),
+                grant_ammo("cells", number(4.0)),
+                state_write("sibling_runs", number(1.0)),
+            ],
+        )]);
+
+        let captured = crate::scripting::reactions::log_capture::capture(|| {
+            hit_from(&ctx, target, Some(source), DamageProducer::InTick);
+            evaluate_pending(&ctx, &mut runtime);
+        });
+
+        assert_eq!(state(&ctx, target, "sibling_runs"), 1.0);
+        assert!(captured.iter().any(|(level, message)| {
+            *level == log::Level::Warn && message.contains("[Grant] grantHealth")
+        }));
+        assert!(captured.iter().any(|(level, message)| {
+            *level == log::Level::Warn && message.contains("[Grant] grantAmmo")
+        }));
+    }
+
+    #[test]
+    fn negative_source_grant_warns_and_sibling_effect_continues() {
+        let ctx = ScriptCtx::new();
+        let target = target(&ctx, &["crate"]);
+        let source = source(&ctx, true, false);
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_global_events(vec![event(
+            "negative-source-grant",
+            "crate",
+            vec![
+                grant_health(number(-1.0)),
+                state_write("sibling_runs", number(1.0)),
+            ],
+        )]);
+
+        let captured = crate::scripting::reactions::log_capture::capture(|| {
+            hit_from(&ctx, target, Some(source), DamageProducer::InTick);
+            evaluate_pending(&ctx, &mut runtime);
+        });
+
+        assert_eq!(state(&ctx, target, "sibling_runs"), 1.0);
+        assert!(captured.iter().any(|(level, message)| {
+            *level == log::Level::Warn
+                && message.contains("[Grant] grantHealth: amount -1 is negative or non-finite")
+        }));
+    }
+
+    #[test]
+    fn invalid_ammo_pool_skips_its_policy_while_siblings_still_bind_and_run() {
+        let ctx = ScriptCtx::new();
+        let target = target(&ctx, &["crate"]);
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        let captured = crate::scripting::reactions::log_capture::capture(|| {
+            runtime.replace_global_events(vec![
+                event(
+                    "invalid-pool",
+                    "crate",
+                    vec![grant_ammo("not valid", number(1.0))],
+                ),
+                event(
+                    "valid-sibling",
+                    "crate",
+                    vec![state_write("sibling_runs", number(1.0))],
+                ),
+            ]);
+        });
+
+        hit(&ctx, target, DamageProducer::InTick);
+        evaluate_pending(&ctx, &mut runtime);
+
+        assert_eq!(state(&ctx, target, "sibling_runs"), 1.0);
+        assert!(captured.iter().any(|(level, message)| {
+            *level == log::Level::Warn
+                && message.contains("policy `invalid-pool` was skipped during bind")
+                && message.contains("`grantAmmo.type` must match [A-Za-z0-9_.:-]")
+        }));
+    }
+
+    #[test]
     fn app_drain_dispatches_are_consumed_without_policy_evaluation() {
         let ctx = ScriptCtx::new();
         let target = target(&ctx, &["crate"]);
@@ -1015,7 +1340,7 @@ mod tests {
         runtime.replace_global_events(vec![event(
             "app-drain",
             "crate",
-            vec![state_write("ran", number(1.0))],
+            vec![grant_health(number(10.0)), state_write("ran", number(1.0))],
         )]);
 
         hit(&ctx, target, DamageProducer::AppDrain);
@@ -1087,6 +1412,60 @@ mod tests {
                 "target-bearing arm accepted the wrong token: {malformed}"
             );
         }
+    }
+
+    #[test]
+    fn source_grant_wire_requires_source_token_and_number_amount() {
+        let scope = EntityScope::impact(ScriptCtx::new());
+
+        for (primitive, args) in [
+            ("grantHealth", json!({ "amount": number(1.0) })),
+            (
+                "grantAmmo",
+                json!({ "type": "cells", "amount": number(1.0) }),
+            ),
+        ] {
+            for target in [None, Some("@impact.target")] {
+                let mut effect = serde_json::json!({
+                    "primitive": primitive,
+                    "args": args,
+                });
+                if let Some(target) = target {
+                    effect["target"] = json!(target);
+                }
+                assert_eq!(
+                    bind_effect(&effect, &scope)
+                        .err()
+                        .expect("grant arm must reject wrong target"),
+                    format!("{primitive} must target @impact.source"),
+                    "grant arm accepted a non-source command target: {effect}",
+                );
+            }
+        }
+
+        let health_boolean = json!({
+            "primitive": "grantHealth",
+            "target": "@impact.source",
+            "args": { "amount": { "op": "const", "value": true } },
+        });
+        assert_eq!(
+            bind_effect(&health_boolean, &scope)
+                .err()
+                .expect("grantHealth boolean root must reject"),
+            "grantHealth `amount` must evaluate to a number"
+        );
+
+        let ammo_boolean = json!({
+            "primitive": "grantAmmo",
+            "target": "@impact.source",
+            "args": { "type": "cells", "amount": { "op": "const", "value": true } },
+        });
+        assert_eq!(
+            bind_effect(&ammo_boolean, &scope)
+                .err()
+                .expect("grantAmmo boolean root must reject"),
+            "grantAmmo `amount` must evaluate to a number"
+        );
     }
 
     #[test]

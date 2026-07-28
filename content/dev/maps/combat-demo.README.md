@@ -1,6 +1,6 @@
-# combat-demo — impact lifecycle, health + damage, and enemy AI / pathfinding
+# combat-demo — impact lifecycle, resource grants, health + damage, and enemy AI / pathfinding
 
-DEMO CONTENT exercising two M10 loops end to end:
+DEMO CONTENT exercising three connected paths end to end:
 
 1. **Impact-derived lifecycle.** A descriptor-declared health+hitbox entity is
    placed in a map and hit by the shipped weapon. A **mod-global** impact policy
@@ -22,6 +22,12 @@ DEMO CONTENT exercising two M10 loops end to end:
    south of the center pillar, so the agent rounds it in the open and never gets
    stuck.
 
+3. **Reference resource grants.** The engine has no concept of a reward. This
+   dev mod supplies two replaceable policies instead: a dummy kill-edge impact
+   policy grants its damager 8 `bullets.light`, while a nearby trigger volume
+   grants its entering activators 24 `bullets.light`. The walkthrough keeps the
+   two entry points visibly distinct.
+
 ## Floor plan
 
 Interior `x 0..1024`, `y 0..512`, floor `z=0`, ceiling `z=128` (top-down; x east,
@@ -37,14 +43,14 @@ the agent capsule can wedge into.
          #..............................................................#
          #..............................................................#
          #..........##..........##..........##..........................#
-         #...P..d.d..##....d.....##..........##.....................E....#
+         #...P.A.d.d..##....d.....##..........##.....................E....#
          #...........##..........##..........##.........................#
          #..............................................................#
          #..............................................................#
   y=0    ################################################################
          x=0    256 320   480 544   704 768                          1024
 
-  # = wall / pillar   . = floor   P = player_spawn   E = reference_enemy   d = dummy
+  # = wall / pillar   . = floor   P = player_spawn   A = ammo pickup   E = reference_enemy   d = dummy
   WEST pillar x[256,320]   CENTER pillar x[480,544] (on the P->E line)   EAST pillar x[704,768]
   Route: P -> detour north OR south of the center pillar (~208 units clear) -> E.
 ```
@@ -159,16 +165,21 @@ to reach you.
 - `content/dev/scripts/combat-demo-reaction.ts` — the level **data script**
   (`setupLevel`). Returns a `progress` reaction over the `dummy` tag firing
   `dummiesCleared`, and an `applyDamage` reaction NAMED `dummiesCleared` targeting
-  the `player` tag. Wired into the map via the worldspawn `data_script` KVP.
+  the `player` tag. It also binds the `ammo_pickup` trigger's enter edge to a
+  24-`bullets.light` grant for its activators. Wired into the map via the
+  worldspawn `data_script` KVP.
 - `content/dev/scripts/combat-lifecycle.ts` — a **mod-global**
   `defineImpactEvent` registered from `start-script.ts`. `target_dummy` is
   exclusive to combat-demo, so it works when the map is opened from the catalog
   or directly by CLI while still composing with the level-local progress reactions.
+  Its `dev:ammo-on-kill` policy is reference content: it pays the damager 8
+  `bullets.light` on a dummy kill edge, but a mod replaces the policy wholesale.
 - `content/dev/maps/combat-demo.map` — one large open arena (axis-aligned box
   brushes, plane style mirrored from `campaign-test.map`) with a `player_spawn`
   tagged `player` (far west), four `target_dummy` instances tagged `dummy` (just
   east of the player, in front of it), a `reference_enemy` tagged `enemy` and
-  `combat-zombie` (far east), three free-standing full-height pillars near the centerline, and seven
+  `combat-zombie` (far east), a touch-triggered `ammo_pickup_volume` just east
+  of spawn, three free-standing full-height pillars near the centerline, and seven
   `light`s spread across the enlarged space. The center pillar blocks the straight
   player→enemy line, so the pathfinding has to route around it; the wide ≥160-unit
   clearance on every side keeps the agent from wedging. See the floor plan above.
@@ -205,11 +216,11 @@ The descriptor → `components.health` → model-authored hit-zone capsules → 
   (12 + 12 + 12 = 36 ≥ 30), but **do not remove it**: the mod-global policy queues
   `setHealth(maxHealth, { afterMs: 3000 })`. The target remains ray-targetable at
   zero HP, then re-arms when it recovers. This is the foundation for future
-  stagger, revive, glory-kill, reward, and presentation policies.
+  stagger, revive, glory-kill, mod-owned reward, and presentation policies.
 
 - While a dummy is down, land a **fourth shot**. That follow-up hit reaches -12;
-  the policy's level gate calls `despawn()`, so the dummy disappears and only then
-  contributes its frozen kill credit to progress.
+  the policy's level gate calls `despawn()`, so the dummy disappears, leaves the
+  resurrection loop, and only then contributes its frozen kill credit to progress.
   There is no distinct down animation in the current single-clip fixture model;
   verify the down/recovery loop by waiting three seconds and downing it again.
 
@@ -234,6 +245,27 @@ The descriptor → `components.health` → model-authored hit-zone capsules → 
   reaction handlers. It matches the `applyDamage` reaction registered under the
   same name, which routes **35 damage** to the `player`-tagged pawn. The player's
   HP drops from 100 to 65, and the readonly `player.health` HUD slot follows.
+
+## Resource-grant walkthrough (reference content)
+
+The engine intentionally does not classify any event as a reward. The two grants
+below are dev-mod reference content that another mod replaces with its own
+policies; they exercise two distinct recipient paths.
+
+1. **Kill payout — impact source.** Shoot a `target_dummy` three times with the
+   reference pistol. The third hit crosses from positive health to zero or below,
+   so `dev:ammo-on-kill` grants the damager **8 `bullets.light`**. This is a kill
+   edge, not a corpse-hit level gate. `combatDummyLifecycle` resurrects a merely
+   downed dummy after three seconds, so downing it again earns another 8-ammo
+   payout. A follow-up fourth hit while it is down reaches the `-12` gib threshold
+   instead: it removes that dummy from the loop and does not pay the kill edge.
+
+2. **Volume payout — trigger activator.** From the player start, walk east through
+   `ammo_pickup_volume` (the `A` in the floor plan). Its `onTriggerEvent` enter
+   binding grants the entering player **24 `bullets.light`**, independently of
+   combat. The touch volume uses `fire_mode: multiple` with a 3-second rearm and
+   deliberately never self-disarms in v1, so leave it, wait three seconds, and
+   enter again for another volume payout.
 
 ## Why the chain is `progress → named event → applyDamage`, not a simpler trigger
 

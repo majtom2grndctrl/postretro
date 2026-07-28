@@ -19,8 +19,10 @@ impl LevelManifest {
             let mut out = Vec::with_capacity(arr.len());
             for i in 0..arr.len() {
                 let item: JsValue = arr.get(i).map_err(js_err)?;
+                let is_resource_grant = is_resource_grant_reaction_js(&item);
                 match named_reaction_from_js(ctx, item) {
                     Ok(reaction) => out.push(reaction),
+                    Err(error) if is_resource_grant => return Err(error),
                     Err(error) => log::warn!(
                         "[Scripting] setupLevel: reactions[{i}] is malformed and was skipped: {error}"
                     ),
@@ -57,6 +59,27 @@ impl LevelManifest {
             ui_trees,
         })
     }
+}
+
+/// Resource grants alter engine-owned state. Their descriptor contract is
+/// intentionally strict: unlike ordinary malformed reaction entries, a bad
+/// grant rejects the setup manifest rather than silently omitting a pickup or
+/// reward path.
+fn is_resource_grant_reaction_js<'js>(value: &JsValue<'js>) -> bool {
+    let Ok(object) = Object::from_value(value.clone()) else {
+        return false;
+    };
+    let primitive: JsValue = match object.get("primitive") {
+        Ok(primitive) => primitive,
+        Err(_) => return false,
+    };
+    let Some(primitive) = primitive.as_string() else {
+        return false;
+    };
+    matches!(
+        primitive.to_string().ok().as_deref(),
+        Some("grantHealth" | "grantAmmo")
+    )
 }
 
 /// Drain the optional static renderer profile from a QuickJS mod manifest.

@@ -24,6 +24,7 @@ mod collision;
 mod combat_positioning;
 mod frame_timing;
 mod fx;
+mod grant;
 mod health;
 mod impact_effects;
 mod impact_policy;

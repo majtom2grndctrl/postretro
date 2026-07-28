@@ -780,6 +780,81 @@ fn slot_value_kind(value: &SlotValue) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use log::Level;
+    use postretro_test_log_capture::LogCapture;
+
+    const READONLY_SLOT: &str = "test.readonly";
+
+    fn readonly_slot() -> SlotRecord {
+        SlotRecord::new(SlotSchema {
+            slot_type: SlotType::Number,
+            default: Some(SlotValue::Number(100.0)),
+            range: Some(NumericRange {
+                min: 0.0,
+                max: 100.0,
+            }),
+            persist: false,
+            readonly: true,
+            ownership: SlotOwnership::Engine,
+            network: ReplicationScope::None,
+            accumulate: None,
+        })
+    }
+
+    fn context_with_readonly_slot() -> ScriptCtx {
+        let ctx = ScriptCtx::new();
+        ctx.slot_table
+            .borrow_mut()
+            .insert(READONLY_SLOT.to_string(), readonly_slot())
+            .expect("test readonly slot should be vacant");
+        ctx
+    }
+
+    #[test]
+    fn write_script_store_slot_returns_success_and_logs_readonly_refusal() {
+        let ctx = context_with_readonly_slot();
+        let capture = LogCapture::start();
+
+        write_script_store_slot(
+            &ctx,
+            READONLY_SLOT,
+            ScriptSlotValue::Unsupported("unsupported"),
+        )
+        .expect("readonly script writes are refused without an error");
+
+        capture.assert_logged_once(
+            Level::Warn,
+            "[Scripting] storeWrite: rejected write to readonly slot `test.readonly`",
+        );
+    }
+
+    #[test]
+    fn write_state_slot_json_returns_success_and_logs_readonly_refusal() {
+        let ctx = context_with_readonly_slot();
+        let capture = LogCapture::start();
+
+        write_state_slot_json(&ctx, READONLY_SLOT, &serde_json::json!({ "invalid": true }))
+            .expect("readonly JSON writes are refused without an error");
+
+        capture.assert_logged_once(
+            Level::Warn,
+            "[Scripting] setState: rejected write to readonly slot `test.readonly`",
+        );
+    }
+
+    #[test]
+    fn apply_text_edit_returns_success_and_logs_readonly_refusal() {
+        let ctx = context_with_readonly_slot();
+        let capture = LogCapture::start();
+
+        apply_text_edit(&ctx, READONLY_SLOT, TextEdit::Append("ignored"))
+            .expect("readonly text edits are refused without an error");
+
+        capture.assert_logged_once(
+            Level::Warn,
+            "[Scripting] text-edit: rejected write to readonly slot `test.readonly`",
+        );
+    }
 
     #[test]
     fn store_declaration_parses_numeric_accumulator_ir() {

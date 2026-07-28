@@ -97,6 +97,8 @@ export type PostretroModule = {
   --- Define a pure impact-policy descriptor. Register it only through `events`.
   defineImpactEvent: typeof(defineImpactEvent),
   damage: typeof(damage),
+  grantHealth: typeof(grantHealth),
+  grantAmmo: typeof(grantAmmo),
   enemies: typeof(enemies),
   spawner: typeof(spawner),
   armTrigger: typeof(armTrigger),

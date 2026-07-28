@@ -743,6 +743,8 @@ fn fingerprint_hex(fingerprint: &[u8; 32]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use log::Level;
+    use postretro_test_log_capture::LogCapture;
     use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1113,6 +1115,7 @@ mod tests {
 
     #[test]
     fn loopback_matching_version_is_accepted() {
+        let capture = LogCapture::start();
         let (server, outcomes, connected) =
             run_handshake(protocol_version(TEST_KINEMATIC_STATIC_FINGERPRINT));
         assert!(
@@ -1127,10 +1130,17 @@ mod tests {
             })
             .expect("matching version should be accepted");
         assert!(server.is_accepted(accepted));
+        capture.assert_logged_from(
+            Level::Info,
+            "postretro_net",
+            &format!("[Net] client {accepted} accepted (protocol "),
+        );
+        capture.assert_not_logged(Level::Warn, "[Net] rejecting client ");
     }
 
     #[test]
     fn loopback_diverged_app_version_is_rejected_with_typed_reason() {
+        let capture = LogCapture::start();
         let expected = protocol_version(TEST_KINEMATIC_STATIC_FINGERPRINT);
         let diverged = ProtocolVersion {
             app_protocol_id: expected.app_protocol_id,
@@ -1167,6 +1177,8 @@ mod tests {
                 .any(|o| matches!(o, HandshakeOutcome::Accepted { .. })),
             "diverged client must never be accepted"
         );
+        capture.assert_logged_from(Level::Warn, "postretro_net", "[Net] rejecting client ");
+        capture.assert_not_logged(Level::Info, "accepted (protocol ");
     }
 
     #[test]

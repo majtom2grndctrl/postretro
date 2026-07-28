@@ -3677,6 +3677,7 @@ dependencies = [
  "postretro-renderer",
  "postretro-script-compiler",
  "postretro-scripting-core",
+ "postretro-test-log-capture",
  "postretro-ui",
  "postretro-visibility",
  "proptest",
@@ -3807,6 +3808,7 @@ version = "0.1.0"
 dependencies = [
  "bitcode",
  "log",
+ "postretro-test-log-capture",
  "renet",
  "renet_netcode",
 ]
@@ -3859,6 +3861,7 @@ dependencies = [
  "postretro-render-cpu",
  "postretro-render-data",
  "postretro-scripting-core",
+ "postretro-test-log-capture",
  "postretro-ui",
  "postretro-visibility",
  "proptest",
@@ -3901,10 +3904,18 @@ dependencies = [
  "postretro-foundation",
  "postretro-level-format",
  "postretro-script-compiler",
+ "postretro-test-log-capture",
  "rquickjs",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "postretro-test-log-capture"
+version = "0.1.0"
+dependencies = [
+ "log",
 ]
 
 [[package]]
@@ -3916,6 +3927,7 @@ dependencies = [
  "log",
  "postretro-entities",
  "postretro-scripting-core",
+ "postretro-test-log-capture",
  "serde",
  "serde_json",
  "taffy",

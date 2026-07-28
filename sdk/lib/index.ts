@@ -102,6 +102,8 @@ export {
   defineStore,
   slot,
   damage,
+  grantHealth,
+  grantAmmo,
   armTrigger,
   disarmTrigger,
   onTriggerEvent,

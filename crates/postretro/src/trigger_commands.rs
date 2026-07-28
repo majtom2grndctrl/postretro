@@ -30,6 +30,15 @@ pub(crate) enum BoundTriggerCommand {
         target: BoundTarget,
         amount: f32,
     },
+    GrantHealth {
+        target: BoundTarget,
+        amount: f32,
+    },
+    GrantAmmo {
+        target: BoundTarget,
+        ammo_type: String,
+        amount: f32,
+    },
     Arm {
         target: BoundTarget,
     },
@@ -101,6 +110,8 @@ impl ResolvedTargets<'_> {
 pub(crate) enum BoundTriggerCommandKind {
     Mover,
     Damage,
+    GrantHealth,
+    GrantAmmo,
     Arm,
     Disarm,
     StoreSlot,
@@ -190,6 +201,26 @@ impl BoundTriggerCommand {
                     log::warn!("[Trigger] applyDamage binding failed: {error}");
                 }
             }
+            Self::GrantHealth { target, amount } => {
+                let targets = target.resolve(registry, fire_context);
+                for &target in targets.as_slice() {
+                    let _ = postretro_entities::components::grant::grant_health(
+                        registry, target, *amount,
+                    );
+                }
+            }
+            Self::GrantAmmo {
+                target,
+                ammo_type,
+                amount,
+            } => {
+                let targets = target.resolve(registry, fire_context);
+                for &target in targets.as_slice() {
+                    let _ = postretro_entities::components::grant::grant_ammo(
+                        registry, target, ammo_type, *amount,
+                    );
+                }
+            }
             Self::Arm { target } => arm_trigger_targets(
                 registry,
                 target.resolve(registry, fire_context).as_slice(),
@@ -250,6 +281,8 @@ impl BoundTriggerCommand {
         match self {
             Self::Mover { .. } => BoundTriggerCommandKind::Mover,
             Self::Damage { .. } => BoundTriggerCommandKind::Damage,
+            Self::GrantHealth { .. } => BoundTriggerCommandKind::GrantHealth,
+            Self::GrantAmmo { .. } => BoundTriggerCommandKind::GrantAmmo,
             Self::Arm { .. } => BoundTriggerCommandKind::Arm,
             Self::Disarm { .. } => BoundTriggerCommandKind::Disarm,
             Self::StoreSlot { .. } => BoundTriggerCommandKind::StoreSlot,

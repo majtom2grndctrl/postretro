@@ -28,3 +28,6 @@ log.workspace = true
 # Gates the in-crate latency-sim harness module. The engine forwards this via
 # its own `dev-tools` feature.
 dev-tools = []
+
+[dev-dependencies]
+postretro-test-log-capture.workspace = true

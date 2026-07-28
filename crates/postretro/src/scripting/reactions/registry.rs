@@ -13,6 +13,10 @@ pub(crate) fn register_enemy_state_reaction_primitives(registry: &mut ReactionPr
     crate::scripting::reactions::enemy_state::register_enemy_state_reaction_primitives(registry);
 }
 
+pub(crate) fn register_grant_reactions(registry: &mut ReactionPrimitiveRegistry) {
+    crate::grant::register_grant_reactions(registry);
+}
+
 pub(crate) use crate::fx::fog_reactions::{
     register_fog_reaction_primitives, register_sequenced_fog_primitives,
 };
@@ -84,5 +88,13 @@ mod tests {
         let mut r = ReactionPrimitiveRegistry::new();
         register_enemy_state_reaction_primitives(&mut r);
         assert!(r.contains("updateEnemyState"));
+    }
+
+    #[test]
+    fn grant_registrar_exposes_additive_resource_primitives() {
+        let mut r = ReactionPrimitiveRegistry::new();
+        register_grant_reactions(&mut r);
+        assert!(r.contains("grantHealth"));
+        assert!(r.contains("grantAmmo"));
     }
 }

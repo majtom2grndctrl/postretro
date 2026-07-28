@@ -248,6 +248,7 @@ pub(crate) fn materialize_net_mesh_presentation(
 mod tests {
     use super::*;
     use glam::{Quat, Vec3};
+    use log::Level;
     use postretro_entities::components::mesh::{AnimationState, InterruptPolicy};
     use postretro_entities::provenance::DescriptorProvenance;
     use postretro_entities::registry::Transform;
@@ -256,6 +257,7 @@ mod tests {
         FallParams, FireMode, GroundParams, MeshDescriptor, MotionVerb, PlayerMovementDescriptor,
         ResolutionMode, SpeedParams, WeaponDescriptor, WeaponResource,
     };
+    use postretro_test_log_capture::LogCapture;
     use std::collections::HashMap;
 
     /// Minimal in-memory descriptor carrying only a mesh block. `animated` selects
@@ -533,6 +535,7 @@ mod tests {
         let descriptors = vec![enemy_mesh_descriptor("decraniated_mob", true)];
         let mut reg = EntityRegistry::new();
         let id = spawn_transform_only(&mut reg);
+        let capture = LogCapture::start();
 
         let attached =
             materialize_net_mesh_presentation("not_a_class", &descriptors, &mut reg, id, None);
@@ -541,6 +544,35 @@ mod tests {
             reg.has_component_kind(id, ComponentKind::Mesh),
             Ok(false),
             "unknown class leaves the entity transform-only"
+        );
+        capture.assert_logged(
+            Level::Warn,
+            "[Net] remote entity_class `not_a_class` not registered",
+        );
+    }
+
+    #[test]
+    fn remote_enemy_presentation_meshless_descriptor_leaves_transform_only() {
+        let descriptors = vec![EntityTypeDescriptor {
+            mesh: None,
+            ..enemy_mesh_descriptor("meshless_enemy", false)
+        }];
+        let mut reg = EntityRegistry::new();
+        let id = spawn_transform_only(&mut reg);
+        let capture = LogCapture::start();
+
+        let attached =
+            materialize_net_mesh_presentation("meshless_enemy", &descriptors, &mut reg, id, None);
+
+        assert!(!attached, "meshless descriptor attaches nothing");
+        assert_eq!(
+            reg.has_component_kind(id, ComponentKind::Mesh),
+            Ok(false),
+            "meshless descriptor leaves the entity transform-only"
+        );
+        capture.assert_logged(
+            Level::Debug,
+            "[Net] remote entity_class `meshless_enemy` has no mesh block",
         );
     }
 

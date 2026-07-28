@@ -199,12 +199,31 @@ fn luau_virtual_module_types_and_require_overloads_are_generated() {
         "luau output missing literal require overloads with string fallback:\n{luau}"
     );
 
-    for export in POSTRETRO_ROOT_MODULE_EXPORTS {
-        assert!(
-            luau.contains(&format!("{export}:")),
-            "PostretroModule missing root export `{export}`"
-        );
-    }
+    let root_module = luau
+        .split_once("export type PostretroModule = {\n")
+        .and_then(|(_, rest)| rest.split_once("\n}\n\ndeclare require:"))
+        .map(|(block, _)| block)
+        .expect("Luau output must contain a complete PostretroModule declaration");
+    let actual_root_exports = root_module
+        .lines()
+        .filter_map(|line| {
+            line.strip_prefix("  ")
+                .and_then(|field| field.split_once(": "))
+                .and_then(|(name, _)| {
+                    name.bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+                        .then_some(name)
+                })
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    let expected_root_exports = POSTRETRO_ROOT_MODULE_EXPORTS
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        actual_root_exports, expected_root_exports,
+        "PostretroModule fields must match the runtime root-module export inventory"
+    );
 
     for export in POSTRETRO_UI_MODULE_EXPORTS {
         assert!(
@@ -509,7 +528,7 @@ fn impact_policy_surface_uses_author_ids_and_closed_effect_union() {
         "Luau defineImpactEvent must require an author id"
     );
     // Luau uses an SDK-internal lowering capability rather than a forgeable
-    // structural brand. The author-facing vocabulary is the five builders.
+    // structural brand. The author-facing vocabulary is the seven builders.
     assert!(
         ts.contains("export interface Effect { readonly [effectBrand]: true; }")
             && luau.contains("export type Effect = (ImpactEffectCapability) -> ImpactEffectWire")
@@ -544,6 +563,16 @@ fn impact_policy_surface_uses_author_ids_and_closed_effect_union() {
             "setState: (self: TargetHandle, name: string, value: NumberValue) -> Effect,",
         ),
         (
+            "grantHealth",
+            "grantHealth(amount: NumberValue): Effect;",
+            "grantHealth: (self: SourceHandle, amount: NumberValue) -> Effect,",
+        ),
+        (
+            "grantAmmo",
+            "grantAmmo(type: string, amount: NumberValue): Effect;",
+            "grantAmmo: (self: SourceHandle, type: string, amount: NumberValue) -> Effect,",
+        ),
+        (
             "slot.add",
             "export interface NumberSlot { add(delta: NumberValue): Effect; }",
             "export type NumberSlot = { add: (self: NumberSlot, delta: NumberValue) -> Effect }",
@@ -561,14 +590,22 @@ fn impact_policy_surface_uses_author_ids_and_closed_effect_union() {
     }
     assert_eq!(
         ts.matches("): Effect;").count(),
-        5,
-        "TypeScript must expose exactly the five closed impact-effect builders"
+        7,
+        "TypeScript must expose exactly the seven closed impact-effect builders"
     );
     assert_eq!(
         luau.matches("-> Effect").count(),
-        5,
-        "Luau must expose exactly the five closed impact-effect builders"
+        7,
+        "Luau must expose exactly the seven closed impact-effect builders"
     );
+    // TypeScript intentionally keeps the wire union private behind the opaque
+    // Effect brand; the SourceHandle signatures above are its public contract.
+    for wire in [
+        "grantHealth\", target: \"@impact.source",
+        "grantAmmo\", target: \"@impact.source",
+    ] {
+        assert!(luau.contains(wire), "Luau grant wire must target source");
+    }
 }
 
 /// The emitted `BrainInputs` shape is a second spelling of `BRAIN_INPUTS`.

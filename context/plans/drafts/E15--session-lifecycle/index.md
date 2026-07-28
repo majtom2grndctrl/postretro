@@ -518,17 +518,27 @@ its `Display` and `Error` impls, the protocol-constant accessors (`PROTOCOL_ID`,
 **comparison** surface, not the wire surface: `ProtocolVersion` is a bitcode type and stays in
 `wire.rs`, and `transport.rs` contains no wire-serialized type today. `transport.rs` keeps the
 renet plumbing: socket, channels, `NetServer`/`NetClient`, the poll loop, and send gating.
-Re-export **from `transport.rs`** (`pub use crate::handshake::*;`), not from `lib.rs`: downstream
-imports are module-qualified — `use postretro_net::transport::{NetClient, NetServer}` in
-`crates/postretro/src/netcode/mod.rs`, `transport::HandshakeOutcome` in `main.rs` — and `lib.rs`
-carries no re-exports today, so a `pub use` there mints a new path instead of preserving the
-existing one. Split the existing gate unit tests with their subject: the pure comparison tests
-over the validation function and the hex/malformed helpers move to `handshake.rs`; every test that
-constructs a `NetServer` or `NetClient` stays in `transport.rs` — including the relay-pair fixture
-and the loopback tests Task 3 names. No behavior change and no acceptance criterion: it is a move,
-unchanged in body, with imports re-pathed. `RejectReason` moves here as part of the
-behavior-preserving split, and Task 3 deletes it outright, putting `DivergenceReason` and both
-impls in `wire.rs`; this placement is transitional.
+`crates/net/src/lib.rs` today holds only `pub mod` declarations; add `pub mod handshake;` beside
+`pub mod slots;` so the new module is visible. Re-export **from `transport.rs`** (`pub use
+crate::handshake::*;`), not from `lib.rs`: downstream imports are module-qualified — `use
+postretro_net::transport::{NetClient, NetServer}` in `crates/postretro/src/netcode/mod.rs`,
+`transport::HandshakeOutcome` in `main.rs` — and `lib.rs` carries no re-exports today, so a `pub
+use` there mints a new path instead of preserving the existing one. Keeping both — the `pub mod`
+in `lib.rs` and the re-export in `transport.rs` — is what makes both paths resolve, and what lets
+Task 3 re-export its three types "through `handshake.rs`". Split the existing gate unit tests with
+their subject: the pure comparison tests over the validation function and the hex/malformed
+helpers move to `handshake.rs`; every test that constructs a `NetServer` or `NetClient` stays in
+`transport.rs` — including the relay-pair fixture and the loopback tests Task 3 names.
+`mover_replay_provenance_wire_version_refuses_previous_peer_on_both_gates` constructs no
+`NetServer`/`NetClient` — it calls `validate_handshake`, `protocol_version`, and
+`transport_protocol_id` only — so it moves to `handshake.rs` with the pure comparison tests, not
+`transport.rs`; Task 3 re-stages it there. The moved tests reference
+`TEST_KINEMATIC_STATIC_FINGERPRINT`, defined today in `transport.rs`'s `mod tests`; duplicate it
+into `handshake.rs`'s test module — the two suites are independent after the split. No behavior
+change and no acceptance criterion otherwise: it is a move, unchanged in body, with imports
+re-pathed. `RejectReason` moves here as part of the behavior-preserving split, and Task 3 deletes
+it outright, putting `DivergenceReason` and both impls in `wire.rs`; this placement is
+transitional.
 
 ### Task 2: Mod identity in the manifest
 
@@ -568,25 +578,33 @@ Carry both on `ModManifestResult` beside `name` **and on `StagedManifest`**
 staged path hands to the main thread. Without it the main-thread commit cannot see the staged
 values and the first-wins warning has nothing to compare.
 
-**Own the first-wins comparison and the warning here, not on the endpoint side.** Add a
-committed-identity cell on `ScriptRuntime`, seeded by whichever commit carries an identity first —
-boot mod init, or for a no-start-script boot the first committed staged reload — with later
-divergent commits warning and leaving the cell alone. The comparison lives at
-`ScriptRuntime::commit_staged_manifest_result`'s committed path: both operands are in scope there,
-the staged values ride the built-manifest status and the installed values live on the same
-runtime. The decisive reason it cannot live on the endpoint side: **AC-MANIFEST-2 must hold in
-single-player, where no endpoint exists** — an endpoint-side owner could not satisfy it at all.
-This applies to **identity only** — the mod compatibility digest Task 7 installs is re-hashed on
-every staged commit. Comment both rules at the commit site together: identity is frozen because
-admission has no recovery path, the digest is refreshed because parity does. The freeze diverges
+**Own the first-wins comparison and the warning here, not on the endpoint side.** Add a private
+committed-identity cell on `ScriptRuntime`, exposed as `pub fn committed_mod_identity(&self) ->
+Option<(&str, &str)>` (`crates/scripting-core/src/runtime/core.rs`). Seed it at two sites, not
+one. **Seed** inside `ScriptRuntime::run_mod_init`, immediately after the `ModManifestResult` is
+stored and before any drain: boot mod init never reaches `commit_staged_manifest_result`, and
+`drain_manifest_registrations` plus `run_deferred_mod_init`
+(`crates/postretro/src/startup/splash_lifecycle.rs`) `mem::take` the manifest's lanes, so a seed
+placed only in the committed-staged path would read an emptied manifest on boot. For a
+no-start-script boot, the first committed staged reload seeds it instead. **Compare and warn**
+only in `ScriptRuntime::commit_staged_manifest_result`'s committed path: both operands are in
+scope there, the staged values ride the built-manifest status and the installed values live on
+the same runtime, and a later divergent commit warns and leaves the cell alone. The decisive
+reason it cannot live on the endpoint side: **AC-MANIFEST-2 must hold in single-player, where no
+endpoint exists** — an endpoint-side owner could not satisfy it at all. This applies to
+**identity only** — the mod compatibility digest Task 7 installs is re-hashed on every staged
+commit. Comment both rules at the commit site together: identity is frozen because admission has
+no recovery path, the digest is refreshed because parity does. The freeze diverges
 from the atomic-replace discipline most manifest lanes follow — note at the same site that `fonts`
 is already non-re-committed, so mod
 identity joins an existing minority of one rather than becoming a unique exception. Update all
 three committed `defineMod` call sites under `content/` to declare both fields:
 `content/dev/start-script.ts`, `content/dev/scripts/frontend-level-select-fixture.ts`, and
 `content/dev/scripts/frontend-level-select-fixture.luau`. The `.ts` fixture is a `tsc --noEmit`
-review gate — `content/dev/scripts/tsconfig.json` includes it — so a missing required field fails
-that gate. The Script syntax examples block matches that manifest's shape: `maps` imports
+review gate — `content/dev/scripts/tsconfig.json`'s `"include": ["./**/*.ts"]` covers
+`content/dev/scripts/frontend-level-select-fixture.ts`, so a missing required field there fails
+that gate. It does **not** cover `content/dev/start-script.ts`, one directory up: a missing or
+malformed field there is caught only at runtime, by the new parse validation, never by CI. The Script syntax examples block matches that manifest's shape: `maps` imports
 `mapCatalog` from `content/dev/scripts/frontend-menu`, because the example mirrors the *runtime*
 manifest, which imports its catalog; the two fixtures inline `defineMapCatalog([...])` instead.
 
@@ -656,7 +674,11 @@ function-level early return — `let Some(fingerprint) = self.kinematic_static_f
 `ProtocolVersion` on the line below it, and the fingerprint leaves that type. What the
 "extend the shipped early-return" rule preserves is its shape, not its body — admission queues
 until the mod identity is installed, parity until the mod digest is, each returning early exactly
-as the fingerprint guard does today.
+as the fingerprint guard does today. Concretely: keep the **function-level** early return — do not
+call `receive_message` at all while the required installed value is absent — so a message that
+arrives before its installed value exists is neither dropped nor evaluated; renet's reliable
+buffer holds it until the install. This function-level early return is what makes the reliable
+channel the queue, not a buffer this task adds.
 
 The version field is carried for diagnostics and **must not gate**. The only permitted comparison
 emits a host-side `info` log naming both versions when an admitted client's version differs from
@@ -760,6 +782,11 @@ destination. `close(client_id, cause: CloseCause)` keeps the shipped `on_close` 
 the sibling-matching name; rename its call sites in the same pass. `on_connect` is unchanged: it
 seeds `Pending` if absent, never resurrects a `Closed` slot, and emits nothing.
 
+**Keep the deprecated accessor aliases.** `NetServer::accepted_clients` and
+`NetServer::is_accepted` stay as `#[deprecated]` aliases over the participating-gated accessors,
+so `main.rs`, `netcode/mod.rs`, `harness.rs`, and `trigger_state_channel_harness_test.rs` still
+compile at the end of Phase 2. Task 7 deletes both.
+
 **Verdict lanes.** `ServerPoll` today carries `handshakes` and `lifecycle`, and `HandshakeOutcome`
 is exactly `Accepted`/`Rejected`. A parity *pass* and a parity *hold* map to neither, so the
 vocabulary is fixed here rather than left for Task 7 to invent:
@@ -791,7 +818,13 @@ Task 7 hangs the pawn spawn on `SlotEvent::Participating` and the cleanup on `Sl
 The accept signal deliberately rides `handshakes` and not `lifecycle` today, and
 `SlotEvent::Accepted` is matched-but-ignored in `crates/postretro/src/netcode/mod.rs` under a
 comment saying the arm is kept exhaustive so a new variant is a compile error — so the new
-demotion variant breaks that file by design.
+demotion variant breaks that file by design. `main.rs`'s exhaustive match over `HandshakeOutcome`
+breaks the same way, by design, for the same reason. Both breaks are minimal arm edits, not a
+file-wide pass: in `crates/postretro/src/main.rs`, `HandshakeOutcome::Admitted` is handled exactly
+as today's `Accepted` — it keeps calling `replication.register_client`,
+`state_slots.register_client`, and `host_handle_accept_descriptor` — and `ParityHeld` is logged
+and ignored; in `host_handle_lifecycle`'s `SlotEvent` match, the new `Demoted` arm is an empty
+placeholder carrying a `// Task 7 routes this to the close cleanup` comment.
 
 **Installed values, named.** `NetServer` holds the mod identity behind `set_mod_identity(id:
 String, version: String)`, and the parity sources behind two setters — `set_mod_digest(Option<[u8;
@@ -924,11 +957,14 @@ than falling silent. Both flags are duplicated across `NetClient::update` and
 `NetClient::update_connections`, so the split lands twice, and the accessor is the
 loop-termination condition in `harness.rs`'s `pump_client_to_server`.
 
-Bump `PROTOCOL_ID` and `WIRE_VERSION`, and re-stage the existing both-gates regression test in
-`transport.rs` — which hard-asserts their exact values with bump-specific failure messages — to
-the new pair, with the previous pair as the refused peer. That test satisfies AC-GATE-9.
+Bump `PROTOCOL_ID` and `WIRE_VERSION`, and re-stage the existing both-gates regression test,
+`mover_replay_provenance_wire_version_refuses_previous_peer_on_both_gates`, in `handshake.rs` —
+which hard-asserts their exact values with bump-specific failure messages — to the new pair, with
+the previous pair as the refused peer. That test satisfies AC-GATE-9.
 
-Unit-test the gate and the slot machine without sockets. The slot machine's central test is a
+Unit-test the gate and the slot machine without sockets. `crates/net/Cargo.toml` has no
+`[dev-dependencies]` section today; add one with `proptest = { workspace = true }` — the
+workspace pin is `proptest = "1"` in the root `Cargo.toml`. The slot machine's central test is a
 **property**, not a case list: over generated sequences of installs and declarations across both
 parity sources, assert that after every install, every slot is `Participating` if and only if the
 installed triple is complete, the declared level half is `Some`, and all three values match. Beside

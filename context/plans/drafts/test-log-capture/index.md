@@ -3,13 +3,15 @@
 ## Goal
 
 Give tests a parallel-safe way to assert on `log` records — level, target, and message
-body, in emission order. Two distinct demands, and they are not equally settled. The
-**shipped** one: three `crates/ui` criteria are manual review gates whose test code
-passes without asserting anything. The **anticipated** one: several acceptance criteria
-in the unpromoted `E15--session-lifecycle` draft are written against warns and
-diagnostics, and will land as review gates unless capture exists first. Substrate ahead
-of consumer is house style here (`E16--impact-policy-substrate`, `M15--p0-headless-sim-seam`),
-but the E15 half is a forecast, not debt.
+body, in emission order. Two demands, both settled. `E15--session-lifecycle` has been
+through several review rounds with its log-keyed criteria intact, and this plan is
+prioritized as its prerequisite: without capture those criteria ship as review gates.
+Separately, three `crates/ui` criteria are manual gates today whose test code passes
+without asserting anything, and Task 3 covers three more shipped degradation paths whose
+only observable is a log record.
+
+**This is a prerequisite of E15.** E15 is unblocked once the guard semantics are
+validated against a real consumer — the end of Phase 2 — not at the end of this plan.
 
 ## Scope
 
@@ -101,14 +103,15 @@ won the race. A harness that reads green when it is broken is worse than none.
   already does it twice — `StagedManifestDiagnostic` returned over an `mpsc` channel from
   `crates/scripting-core/src/staged_manifest.rs`, and E15's own
   `DivergenceReason::{Closing, Holding}`, which AC-GATE-7 requires the client observe as
-  a typed value. **Not rejected wholesale — bounded.** Where an outcome channel already
-  exists beside the log line, the value assertion is the better test and E15 should
-  prefer it; AC-MANIFEST-2 and AC-LEVEL-7 both sit in that position. Log capture is for
-  the residue it cannot reach: values E15 has decided **must not gate**, whose only
-  permitted effect is the log line (AC-GATE-5's version skew), and properties *of the
-  logging itself* (`crates/ui`'s warn-once-per-build, emitted inside token resolution
-  with no outcome channel). Adopting the rival everywhere it fits shrinks E15's
-  log-keyed criteria; it does not empty them, and it does not touch the shipped defect.
+  a typed value. **Not rejected wholesale — bounded, and E15 already drew the line.**
+  Its gating diagnostics *are* typed values; the log-keyed criteria are the residue that
+  survived several review rounds, and this plan takes that split as given rather than
+  reopening it. What the rival cannot reach, and why capture is still needed: values E15
+  has decided **must not gate**, whose only permitted effect is the log line (AC-GATE-5's
+  version skew); properties *of the logging itself* (`crates/ui`'s warn-once-per-build,
+  emitted inside token resolution with no outcome channel); and refusals that return
+  success to the caller (`crates/scripting-core`'s read-only slot writes, Task 3). The
+  rival would not have touched the shipped defect either.
 - **`testing_logger` from crates.io** — same thread-local shape, and the closest rival
   among log-capture implementations.
   Rejected on three grounds: latest release is 0.1.1 published 2018-08-07 (unmaintained
@@ -246,11 +249,17 @@ change: `crate_graph.rs` enumerates every workspace member when rendering layers
 the new zero-edge member lands in `Layer 0 (leaves)` and `crate-graph --check` returns
 non-zero until the doc is rewritten.
 
+Add the `[dev-dependencies]` edge to all four consumer crates in this task, not in the
+tasks that first use it: `crates/ui`, `crates/net`, and `crates/scripting-core` need the
+section created; `crates/postretro` already has one. The three E15 crates carry the edge
+unused until Task 3, which is deliberate — E15 needs those manifest lines and must not
+wait on Task 3's tests to get them. `unused_crate_dependencies` is allow-by-default, so
+an unused dev edge is silent.
+
 ### Task 2: Convert the UI warning-count tests
 
-Add `postretro-test-log-capture` to a new `[dev-dependencies]` section in
-`crates/ui/Cargo.toml` (the file has none today) and rewrite the block at
-`crates/ui/src/theme_gate_test.rs:200-322`. Delete `CountingLogger`, the `WARN_COUNT`
+Rewrite the block at `crates/ui/src/theme_gate_test.rs:200-322`; Task 1 has already added
+the `[dev-dependencies]` edge. Delete `CountingLogger`, the `WARN_COUNT`
 static, the `LOGGER_INIT` `Once`, the `WARN_TEST_LOCK` mutex, and `install_logger`.
 Rewrite `warns_for_build` to construct a guard, build the tree, and return a plain
 `usize` rather than `Option<usize>` — the probe-and-skip branch exists only because the
@@ -264,11 +273,11 @@ parallel runner against three tests in one binary that previously had to seriali
 
 ### Task 3: Cover three log-only degradation paths
 
-Add `postretro-test-log-capture` to `[dev-dependencies]` in `crates/net/Cargo.toml`
-(which has no such section yet), `crates/postretro/Cargo.toml`, and
-`crates/scripting-core/Cargo.toml`. Then add one real behavioral test per crate against
-an **existing** log site — not a synthetic emission. Each of the three is a shipped
-degradation path in the sense of `testing_guide.md` §1, and each is currently untested.
+Task 1 has already added the three `[dev-dependencies]` edges, so this task is tests
+only and blocks nothing. Add one real behavioral test per crate against an **existing**
+log site — not a synthetic emission. Each of the three is a shipped degradation path in
+the sense of `testing_guide.md` §1, and each is currently untested. None is an E15
+behavior; this task can land alongside E15 work rather than ahead of it.
 
 *`crates/net`.* `transport.rs:390` logs `[Net] client {id} accepted (protocol …)` at
 `info` and `:394` logs `[Net] rejecting client {id}: {reason}` at `warn`. Both already
@@ -304,11 +313,14 @@ its justification.
 
 ## Sequencing
 
-**Phase 1 (sequential):** Task 1 — the crate must exist before anything can depend on it.
+**Phase 1 (sequential):** Task 1 — the crate and all four dev-dependency edges must exist
+before anything can depend on them.
 **Phase 2 (sequential):** Task 2 — thin slice. Falsifies parallel isolation, exactly-once
-semantics, and the dev-dependency edge against a real consumer before Task 3 replicates
-the wiring three more times.
-**Phase 3 (sequential):** Task 3 — consumes the guard semantics Task 2 validates.
+semantics, and the dev-dependency edge against the one real consumer that exists today.
+**E15 unblocks here**, not at the end of Phase 3.
+**Phase 3 (concurrent with E15):** Task 3 — consumes the guard semantics Task 2
+validates, and gates nothing. Off the critical path by construction: Task 1 carries the
+manifest edges, and none of Task 3's three tests touches E15 behavior.
 
 ## Invariants
 
@@ -364,15 +376,12 @@ capture.assert_not_logged(Level::Warn, "[Net] rejecting client 1");
   log sites where the record is the sole observable, and none of them were tested. Task 3
   now covers those instead, and AC-REACH-1 with it. The per-binary no-competing-logger
   property rides along as a side effect rather than as the justification.
-- **Upstream lock this spec rests on.** E15 Task 6: "The version field is carried for
-  diagnostics and **must not gate**. The only permitted comparison emits a host-side
-  `info` log." That decision is what makes AC-GATE-5 log-only, and it is the strongest
-  single reason the diagnostic-as-value alternative cannot replace this harness. If it
-  were reopened and version skew carried any typed outcome, E15's log-keyed demand would
-  shrink to the wire-decode and absent-half degradation paths, and the case for a
-  workspace crate would rest on the `crates/ui` defect alone — at which point a local
-  diagnostics value on the UI build result is the cheaper fix and this plan should not
-  be built. Not relitigated here; flagged because it is load-bearing.
+- ~~**Upstream lock this spec rests on.**~~ **Closed.** E15 Task 6's "the version field
+  is carried for diagnostics and **must not gate**; the only permitted comparison emits
+  a host-side `info` log" has held across several E15 review rounds. It is a settled
+  decision this plan depends on, not an open one — recorded here as a dependency so a
+  later reader knows AC-GATE-5's log-only shape is deliberate, and that reopening it
+  would change what E15 needs from this harness rather than the other way round.
 - **Cross-thread capture.** Left out deliberately, and the per-thread slot's
   `Arc<Mutex<_>>` keeps the door open for a `Send` handle a spawned thread can install.
   The concrete trigger for building it: a test needing to assert the `[Loader]` warns

@@ -12,6 +12,7 @@
 - **Crate dependency graph / blast radius / what depends on X** → `crate-graph.md` (generated); live queries via `cargo run -p xtask -- crate-graph --rdeps <crate>`
 - **Context file writing / updates** → `context_style_guide.md`
 - **Testing** → `testing_guide.md`
+- **Asserting on log output / log capture in tests** → `testing_guide.md` §3 · entry point `crates/test-log-capture`
 - **Rendering pipeline / lighting** → `rendering_pipeline.md`
 - **Frame capture / offscreen readback / headless (surfaceless) rendering** → `rendering_pipeline.md` §7.8 · `plans/done/E20--frame-capture`
 - **PRL format / level compiler / runtime portal vis** → `build_pipeline.md`
@@ -39,7 +40,7 @@
 - **Draft plans / future features** → `plans/drafts/`
 - **Ready plans (reviewed, awaiting implementation)** → `plans/ready/` — promoted out of drafts after review; current design intent.
 - **Shipped plans** → `plans/done/` — historical record, frozen at ship time. May describe stale state. Read only when explicitly referenced.
-- **Research archive** → `research/` — past research, not current design. Do not read unless explicitly instructed. See also: `research/weapon-model.md` for weapon-model / weapon-instance design intent; `research/combat-events.md` for the on-hit / on-kill combat-event substrate (XP, scoring, kill credit, resource economy) design intent; `research/enemy-aggro-model.md` for the enemy aggro / perception model design intent (growth past the two detection/leash scalars; select_target and visibility seams); `research/co-op-triggers-trap-pools.md` for the Epic 18 trigger fan-out / pressure-plate / spawner / semi-random trap-pool design intent; `research/coop-session-lobby.md` for the Epic 15 session/lobby design intent (mod matching, server-chosen maps, session and player identity, join-policy authoring).
+- **Research archive** → `research/` — past research, not current design. Do not read unless explicitly instructed. See also: `research/weapon-model.md` for weapon-model / weapon-instance design intent; `research/combat-events.md` for the on-hit / on-kill combat-event substrate (XP, scoring, kill credit, resource economy) design intent; `research/enemy-aggro-model.md` for the enemy aggro / perception model design intent (growth past the two detection/leash scalars; select_target and visibility seams); `research/co-op-triggers-trap-pools.md` for the Epic 18 trigger fan-out / pressure-plate / spawner / semi-random trap-pool design intent; `research/coop-session-lobby.md` for the Epic 15 session/lobby design intent (mod matching, server-chosen maps, session and player identity, join-policy authoring); `research/coop-content-compatibility.md` for what content divergence can actually break a co-op session (the three-tier model of what server authority absorbs, the compatibility-digest domains, and the knowingly uncovered set).
 - **3rd party library docs** → use `context7` tool (wgpu, winit, kira, glam).
 
 ---

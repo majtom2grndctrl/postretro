@@ -58,6 +58,38 @@ When testing code that bridges two subsystems, derive mock inputs from the sourc
 
 A test guarding two representations against divergence — a Rust enum vs. its generated SDK union, a registry vs. its committed snapshot — derives its expectation from the source of truth, never a second hand-written copy. Map each variant through an exhaustive `match` (no `_` arm) so a new variant is a compile error, not a silently-passing test. Comparing two hand-maintained lists proves only that someone updated both — not that either is correct.
 
+### Log assertions
+
+Some degradation paths emit nothing but a log record — a refusal that still returns
+success to its caller, two failure causes that share one return value, a value the design
+forbids from gating. Assert on the record. Entry point: `crates/test-log-capture`, a
+dev-dependency-only crate; read it for the current surface rather than trusting a copy
+here.
+
+The contract:
+
+- **One logger per test process, installed once.** `log::set_logger` is process-global and
+  settable once, so a second test logger in the same binary is a correctness bug. Never
+  add a private `log::Log` impl to a crate — the harness exists because four of those
+  accreted and started losing races to each other.
+- **Losing the race panics.** A harness that skips silently when another logger won reads
+  green while asserting nothing. That failure mode is why the ad-hoc loggers were retired.
+- **Per-thread buffers, so no serializing mutex.** Tests asserting on logs run in parallel
+  like any others. A suite-wide test mutex to work around capture reintroduces the problem.
+- **Match on level plus message-body substring**, with module-path target as an optional
+  filter. Body is primary because the subsystem tag is in the body (see
+  [Development Guide](./development_guide.md) §6.1).
+- **Records are retained in order**, so exactly-once and negative assertions are both
+  available. Negative assertions carry half the value: "warns here and nowhere else" is
+  the common shape.
+- **Records logged on a thread with no guard are counted, not captured.** A worker thread's
+  output does not reach the test that spawned it; the count surfaces in failure messages so
+  an empty capture is explained rather than mysterious.
+
+**A log line an acceptance criterion names becomes contract.** Rewording it breaks a test.
+Every other log line stays freely editable noise — do not let asserted strings spread
+beyond the criteria that need them.
+
 ### Test naming
 
 Names describe the exact behavior and boundary under test. Pattern: `<subject>_<verb>_<expected_outcome>`.

@@ -93,17 +93,39 @@ needs the rejoin key above to be settled first.
 
 Two mechanisms, two jobs — conflating them is the obvious mistake.
 
-- **Mod identity is declared.** The manifest declares an id and a version; the client sends
-  them at admission; the host compares. This catches honest drift (wrong mod, stale version),
-  which is the actual failure mode among friends. It does not catch tampering, and should not
-  claim to.
-- **Map content is hashed.** The fingerprint stays content-derived because prediction
-  correctness depends on byte-level parity of mover authoring, not on anyone's honesty.
+- **Mod identity is declared.** The manifest declares an id and a version. The **id** gates
+  admission — it is the namespace that makes a map catalog id resolvable on both peers. The
+  **version** is carried for display and never compared. Neither catches tampering, and
+  neither should claim to.
+- **Compatibility is hashed, not declared.** Two content digests decide whether peers can
+  play together: one over the mod's simulated surface — per entity type, the canonical name
+  and the player-movement descriptor a client predicts with, minus that descriptor's
+  render-only view-feel field — and one over the level's (mover authoring plus static world
+  collision). Host-authoritative fields (health, weapon, behavior) and presentation
+  fields (light, emitter, mesh) stay unhashed, because server authority already absorbs
+  them; state-slot parity is owned by the shipped replicated-slot schema fingerprint both
+  peers already compare. Prediction correctness depends on byte-level parity of what a
+  client simulates against, not on anyone's honesty — and not on an author remembering to
+  bump a string. The full tiering of what server authority absorbs and what it cannot is in
+  [Co-op Content Compatibility](./coop-content-compatibility.md).
+- **A declared mismatch closes; a hashed one holds.** Only the id can refuse a connection,
+  because only the id is immutable for a connection's lifetime. Both digests can be
+  reinstalled while a peer is connected — the level digest at every install, the mod digest
+  at every staged reload — so a divergence on either demotes the peer and tells it why,
+  and it re-participates when the two sides agree again.
 
-A content hash over the whole mod was considered and is wrong here: it breaks every dev
+> **History note.** Before the session-lifecycle spec, this section said the manifest declares
+> an id and a version and the host compares **both**, catching "wrong mod, stale version."
+> That is the position the digests overturn: a declared version does not track the breaking
+> surface in either direction — it blocks a friend over a lighting tweak, and it stays put
+> when someone retunes player movement. Recorded so the change reads as a decision rather
+> than as how it always was.
+
+A content hash over the *whole* mod was considered and is wrong here: it breaks every dev
 iteration loop (hot reload changes the hash mid-session), makes legitimate client-side
 differences fatal, and buys a property — tamper detection — that is an explicit non-goal
-(`index.md` §4, anti-cheat).
+(`index.md` §4, anti-cheat). Scoping the digest to the fields a client actually simulates
+against keeps the property and drops the breakage.
 
 The manifest carries a mod name today and no id or version. Adding them is small; the
 consequence is that mod identity becomes a wire-visible contract.
@@ -129,7 +151,7 @@ What the author can own is the shape the engine already uses everywhere else.
 |---|---|
 | Roster, seats, session id | The predicate that gates admission |
 | The admission decision itself | The UI that displays the lobby |
-| Session phase (lobby / loading / in-level) | Reactions fired on lifecycle edges |
+| Only the phases netcode must distinguish | The session's phase vocabulary, and reactions on lifecycle edges |
 | Map authority and the relevel protocol | Which map the session starts on |
 | Connection lifecycle and cleanup | What "ready" means |
 
@@ -149,10 +171,16 @@ Each publishes a dispatch scope. The mod's *response* to a join lives here; the 
 lives in the predicate. Separating them is what keeps the decision synchronous and the
 response deferred.
 
+**Session phase is authored, not an engine enum.** The engine distinguishes only what netcode
+needs for correctness — whether a level is installed, whether a load is in flight — and
+publishes that as a fact. The session's *own* phases are a mod-declared store slot the join
+predicate reads. A lobby-then-match shooter, a persistent hub world, and a campaign with no
+lobby at all are validly different games; a Rust enum picks a winner among them. The slot
+machinery already ships, so this costs nothing.
+
 **The lobby UI is mostly already shipped.** The frontend hub gives a menu tree, a menu camera,
 and an optional background level (`boot_sequence.md` §4). A lobby is the Frontend state with a
-live endpoint accepting connections. Session phase should be a *fact published from* the
-existing app state, not a new top-level app state.
+live endpoint accepting connections — not a new top-level app state.
 
 ---
 
@@ -177,27 +205,43 @@ existing app state, not a new top-level app state.
 - **The store is never cleared on level unload.** Anything keyed by a pawn id resets at every
   level change while global slots survive.
 - **Networked mod sync and mid-level mod hot-swap are non-goals** (`boot_sequence.md` §8).
-  Matching mods is in scope; shipping them to a client is not.
+  Matching mods is in scope; shipping them to a client is not. Scripts are small enough to
+  send (160K against 337M of art in the dev mod) but sending them fixes only the script-side
+  third of the breaking surface, inverts boot ordering, and feeds peer-controlled input to a
+  C interpreter — reasoned through in
+  [Co-op Content Compatibility](./coop-content-compatibility.md) §5.
+- **Session state must be enumerable, not scattered.** What survives a level transition should
+  be a named set, because a future host migration is that same set plus a live-world layer,
+  handed to a different destination. Level unload already clears the world and keeps the store;
+  the risk is a transition built as ad-hoc patches to whichever tables happen to break, which
+  works and leaves no boundary anyone can later serialize. Name the boundary — building a
+  serializer for it is the later spec's job, not this band's.
 
 ---
 
 ## 7. Spec sequence
 
-Four specs, in dependency order. The first two are engine-only; the third unblocks per-player
-mod state; the fourth is the authoring surface.
+Three specs, in dependency order. The first is engine-only; the second unblocks per-player
+mod state; the third is the authoring surface.
 
-1. **Session admission.** Split the handshake; add mod id/version to the manifest and to gate
-   2's admission stage. No map involvement. Unblocks a client that exists before it has a map.
-2. **Server-authoritative level transitions.** The relevel message, host-side net reset on
-   unload, per-level fingerprint re-validation, transport polling across the load window, and
-   the fail-open fix. The largest spec and the one that fixes both live defects.
-3. **Seat, session identity, and roster.** The durable per-player key, the client-asserted
+1. **Session lifecycle.** Split the handshake into admission and content parity; add mod
+   id/version to the manifest; demote rather than close on a level change; the relevel
+   message and client-follow; host-side net reset on unload; transport polling across the
+   load window; the fail-open fix. The largest spec, and the one that fixes both live
+   defects. Drafted: `plans/drafts/E15--session-lifecycle/`.
+2. **Seat, session identity, and roster.** The durable per-player key, the client-asserted
    player id, and the engine-published roster facts the UI and the predicate read.
-4. **Lobby authoring surface.** The session scope and its join predicate, the lifecycle
+3. **Lobby authoring surface.** The session scope and its join predicate, the lifecycle
    reaction addresses, and the reference lobby in the dev mod.
 
-`E16--per-player-currency` is parked on spec 3 — its three failed shapes were all attempts to
-key per-player state without a durable identity.
+Spec 1 was first scoped as two — admission, then transitions — and merged after direction
+review. The split failed on its own evidence: the admission half had to pull the fail-open
+fix across the seam because its central invariant failed silently without it, and both its
+headline criteria were claims about surviving a window the other half owned. The work
+divides by layer (gate, wire, engine lifecycle), not by capability.
+
+`E16--per-player-currency` is parked on spec 2 — its shapes were all attempts to key
+per-player state without a durable identity.
 
 ---
 

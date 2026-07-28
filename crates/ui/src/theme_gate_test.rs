@@ -10,16 +10,17 @@
 //     and proves the rebuild produces new token values while a settled
 //     descriptor+generation reuses the tree.
 //   - Each unknown token logs EXACTLY ONE `log::warn!` per tree build (per
-//     rebuild on the retained path, NOT per frame). A counting `log::Log` records
-//     the warnings emitted while one `from_descriptor` runs.
+//     rebuild on the retained path, NOT per frame). Each test captures the
+//     warnings emitted while one `from_descriptor` runs.
 //
 // Pure CPU — no GPU adapter, no wgpu call.
 //
 // See: context/lib/ui.md
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, Once};
+
+use log::Level;
+use postretro_test_log_capture::LogCapture;
 
 use super::descriptor::{
     Align, AnchoredTree, CaptureMode, ColorValue, ContainerWidget, SpacingValue, TextWidget, Widget,
@@ -197,65 +198,17 @@ fn unchanged_generation_and_descriptor_does_not_rebuild() {
     );
 }
 
-// --- Exactly-one-warning-per-build (counting logger) -------------------------
-
-static WARN_COUNT: AtomicUsize = AtomicUsize::new(0);
-static LOGGER_INIT: Once = Once::new();
-/// Serializes the warning-count tests so the shared global `WARN_COUNT` is not
-/// raced by parallel tests (the rest of the suite never inspects it).
-static WARN_TEST_LOCK: Mutex<()> = Mutex::new(());
-
-struct CountingLogger;
-
-impl log::Log for CountingLogger {
-    fn enabled(&self, metadata: &log::Metadata) -> bool {
-        metadata.level() <= log::Level::Warn
-    }
-    fn log(&self, record: &log::Record) {
-        // Count only the UI subsystem warnings the resolution sites emit.
-        if record.level() == log::Level::Warn && record.args().to_string().contains("[UI]") {
-            WARN_COUNT.fetch_add(1, Ordering::SeqCst);
-        }
-    }
-    fn flush(&self) {}
-}
-
-fn install_logger() {
-    LOGGER_INIT.call_once(|| {
-        // Ignore an Err: another test (or env_logger) may have set a logger
-        // first; the count is only meaningful under the serial lock anyway, and a
-        // pre-installed logger means our counter never increments — guarded below.
-        let _ = log::set_logger(&CountingLogger);
-        log::set_max_level(log::LevelFilter::Warn);
-    });
-}
-
-/// Build `desc` once against the engine default and return how many `[UI]`
-/// warnings the single build emitted. Returns `None` if our counting logger is
-/// not the active logger (some other test installed one first) so the caller can
-/// skip rather than assert a meaningless zero.
-fn warns_for_build(desc: &AnchoredTree) -> Option<usize> {
-    let _guard = WARN_TEST_LOCK.lock().unwrap();
-    install_logger();
-    // If our logger isn't the global one, a probe warn won't register.
-    WARN_COUNT.store(0, Ordering::SeqCst);
-    log::warn!("[UI] logger-probe");
-    if WARN_COUNT.load(Ordering::SeqCst) == 0 {
-        return None;
-    }
-    WARN_COUNT.store(0, Ordering::SeqCst);
-    let _ui = UiTree::from_descriptor(desc, &UiTheme::engine_default());
-    Some(WARN_COUNT.load(Ordering::SeqCst))
-}
+// --- Exactly-one-warning-per-build -------------------------------------------
 
 #[test]
 fn unknown_color_token_warns_exactly_once_per_build() {
     let desc = token_text("no.such.color");
-    if let Some(n) = warns_for_build(&desc) {
-        assert_eq!(n, 1, "one unknown color token logs exactly one warning");
-    } else {
-        eprintln!("[theme_gate_test] skipping: another logger is installed");
-    }
+    let capture = LogCapture::start();
+    let _ui = UiTree::from_descriptor(&desc, &UiTheme::engine_default());
+    capture.assert_logged_once(
+        Level::Warn,
+        "[UI] unknown color token 'no.such.color' — using opaque magenta fallback",
+    );
 }
 
 #[test]
@@ -284,11 +237,12 @@ fn unknown_spacing_token_warns_exactly_once_per_build() {
         accessible_name: None,
         role: None,
     };
-    if let Some(n) = warns_for_build(&desc) {
-        assert_eq!(n, 1, "one unknown spacing token logs exactly one warning");
-    } else {
-        eprintln!("[theme_gate_test] skipping: another logger is installed");
-    }
+    let capture = LogCapture::start();
+    let _ui = UiTree::from_descriptor(&desc, &UiTheme::engine_default());
+    capture.assert_logged_once(
+        Level::Warn,
+        "[UI] unknown spacing token 'no.such.spacing' — using 0.0 fallback",
+    );
 }
 
 #[test]
@@ -314,9 +268,10 @@ fn unknown_font_token_warns_exactly_once_per_build() {
         accessible_name: None,
         role: None,
     };
-    if let Some(n) = warns_for_build(&desc) {
-        assert_eq!(n, 1, "one unknown font token logs exactly one warning");
-    } else {
-        eprintln!("[theme_gate_test] skipping: another logger is installed");
-    }
+    let capture = LogCapture::start();
+    let _ui = UiTree::from_descriptor(&desc, &UiTheme::engine_default());
+    capture.assert_logged_once(
+        Level::Warn,
+        "[UI] unknown font token 'no.such.font' — using primary family fallback",
+    );
 }

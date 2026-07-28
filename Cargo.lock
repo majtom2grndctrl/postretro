@@ -3923,6 +3923,7 @@ dependencies = [
  "log",
  "postretro-entities",
  "postretro-scripting-core",
+ "postretro-test-log-capture",
  "serde",
  "serde_json",
  "taffy",

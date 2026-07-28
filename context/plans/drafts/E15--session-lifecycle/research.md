@@ -1,6 +1,158 @@
 # Research — Session Lifecycle
 
-Findings behind the spec's decisions, including why its scope changed once.
+The decision record behind `index.md`: the problem it answers, the commitments it keeps and the
+four it overturns, the rivals it rejected, the code it is grounded in, and the drafting errors
+worth remembering. The spec says what to build; this says what was considered.
+
+## Problem and evidence
+
+One structural coupling in a shipped message causes all of it: gate 2 carries protocol constants
+and a map fingerprint in a single payload, and both peers early-return until a level installs.
+That makes "connected" and "on the host's map" the same state, so no state exists for a client
+that has connected but has not yet been told what to load — and with no such state, there is
+nowhere for a relevel protocol to live. Every remaining capability in the band sits behind it.
+
+The evidence is mostly **anticipation**. No join flow exists at all, and both peers are launched
+with the same map on the command line, so nobody has hit the inversion because nobody can reach
+it. That is legitimate here because the band's other two specs are blocked on it and the roadmap
+has committed to them.
+
+Two **live defects** are folded in. The fingerprint fails open **twice**: it covers mover data
+only, so two mover-less maps hash identically, and — the larger hole — it never covers the static
+world collision that client movement prediction and client-authoritative hit declaration both run
+against, so two maps with different brushwork pass the gate and leave clients fighting
+reconciliation and having legitimate shots false-rejected. And the transport goes unpolled across
+every load.
+
+## Prior commitments, and four divergences
+
+Ten theses this spec preserves, and four it overturns on purpose. None of it changes what gets
+built; all of it is what a later reader will check the spec against.
+
+**Preserved.**
+
+- *Two gates catch different failures at different layers* (`networking.md`). Extended along the
+  same reasoning: "compatible build and mod" and "same map" are also different failures, and they
+  become true at different times.
+- *No entity state reaches a client that has not passed the gate.* The send path gates on
+  participation, strictly narrower than today's accepted.
+- *Exact-match validation, refuse rather than migrate* (`networking.md`, mirroring the `BakedIr`
+  version-epoch discipline). Preserved in substance and moved to a better carrier: what is
+  matched exactly is a content digest, not an author-typed version string. Refuse, never migrate,
+  still holds.
+- *Explicit author-assigned id, not a content-derived hash* (`E16--impact-policy-substrate`,
+  which spells out why: a derived id changes when content is edited and silently orphans
+  references). This is the project rule that makes declared mod identity correct rather than
+  merely convenient.
+- *The catalog `id` is the stable logical handle every reference uses, decoupled from `path`*
+  (`mod-map-catalog`). The relevel message and the parity message both name that handle rather
+  than a path.
+- *The manifest is the foundation for mod identity* (`M7--mod-script-layer`, which anticipated
+  exactly this field). Redeemed here.
+- *Session state must be enumerable, not scattered* (roadmap Phase 3.75,
+  `context/research/coop-session-lobby.md` §6). This spec opens that ledger with one entry.
+- *Design against host-as-client from day one* (roadmap Epic 15). Honored: every path runs
+  through slots, and map authority is server-owned with no client-issued load request, so a
+  future loopback host-client demotes and follows like any other peer.
+- *Server authority absorbs divergence; a digest only lets peers refuse each other*
+  (`context/research/coop-content-compatibility.md`'s three-tier model). The spec previously
+  applied this to world gravity alone. Generalized here into the governing rule: replicate what
+  the host can send, hash only the remainder.
+- *The net crate is registry-blind and postretro-free.* Preserved, at a new cost. Mod identity
+  and level identity cross as opaque strings the crate compares and never interprets; the
+  replicated tuning crosses as opaque bytes it forwards without comparing anything.
+
+**Divergence 1 — the fingerprint binding.** `networking.md`: "a connection is bound to that
+fingerprint for its lifetime. Installing different static mover content closes it." Overturned
+deliberately. That rule encodes a *missing feature*, not a safety property — closing is the only
+safe response to unvalidatable content when no protocol exists for reaching agreement. Demotion
+preserves the actual guarantee (nothing replicates while content is unproven) and drops only the
+disconnection.
+
+**Divergence 2 — hot-reload identity, and it is narrowed to identity alone.** `mod-map-catalog`
+establishes the manifest's hot-reload discipline as *atomic replace at the staged-commit
+boundary*, degrade-never-abort. Mod **id and version** are **first-commit-wins across reloads**
+instead. Deliberate: mid-session identity churn would silently invalidate admission decisions
+already made for live connections, and admission is the one stage with no recovery path. But a
+manifest lane that is not atomic-replaced already ships: **`fonts`** is absent from
+`StagedManifest` entirely and is therefore never re-committed. It is the only one — a staged
+reload re-commits far more than `mod-map-catalog`'s note suggests, including `entities`,
+`store_declarations`, `maps`, `reactions`, `crossings`, `trigger_events`, `trigger_pools`,
+`events`, the `render` profile, `ui_trees`, `theme`, and `frontend`. Mod identity joins an
+existing minority of one rather than becoming the first exception, which is worth a comment at
+the commit site as a second instance rather than as a warning about a unique one. The mod
+**digest** does *not* diverge: it re-hashes on every staged commit, because a staged reload
+re-commits the trigger and crossing lanes it reads, and freezing it would leave a live connection
+gated on a value that no longer describes the content the host is running.
+
+**Divergence 3 — the declared-version gate, and it is the spec's headline decision.**
+`context/research/coop-session-lobby.md` §4 as written before this spec read: "the manifest
+declares an id and a version; the client sends them at admission; the host compares. This catches
+honest drift (wrong mod, stale version), which is the actual failure mode among friends." That is
+the position the content-digest decision overturns, and the reasoning for overturning it is in
+`context/research/coop-content-compatibility.md`: a declared version does not track the breaking
+surface in either direction. Recorded as a divergence because the two documents that now agree
+with this spec were rewritten in the same commit that made the decision — see "Which
+corroborating documents are independent, and which are not".
+
+**Divergence 4 — the mod-sync non-goal.** `boot_sequence.md` §8 lists "networked mod sync" as a
+non-goal, and a strict reading of it forbids sending anything a mod authored, including this
+spec's tuning payload. Read narrowly instead. §8's stated rationale is art bytes, boot ordering,
+and feeding peer-controlled input to a C interpreter. A movement tuning struct and four weapon
+scalars touch none of the three: they are values the host already resolved, not content the
+client loads, executes, or renders from, and they arrive after boot rather than reordering it.
+Replicating them is server authority, not distribution. Recorded as a divergence because the
+strict reading would forbid it and a later reader is entitled to check the reasoning rather than
+the conclusion.
+
+**One more thesis bent, and it is worth naming.** Putting the digest domain in engine Rust with
+no authoring surface runs against a thesis this repo has applied twice:
+`E18--coop-activation-policy` put co-op activation in script rather than a KVP, and
+`E16--impact-policy-substrate` split
+engine-emitted *facts* from mod-authored *policy*. The distinction that makes engine ownership
+right here is that those are preferences with no correct answer — how a game wants co-op to
+behave is the author's to decide — whereas "do these two peers compute the same thing" has
+exactly one correct answer, determined by what the engine's own prediction and hit-declaration
+code reads. Handing it to an author does not give them expressive room; it gives them a way to be
+wrong silently. Replication also shrank the surface being claimed: the engine no longer owns a
+per-field disposition over a descriptor closure, it owns three whole registry lanes hashed
+wholesale, so the policy no longer contains a judgement to get wrong.
+
+## Exclusions
+
+The index lists what is out of scope. This is why each item is out.
+
+- **Player identity, seats, the roster, and authored join policy.** Specs 2 and 3 of the band.
+  Admission is engine mechanism, and the predicate that would gate it has nothing to bind against
+  until a roster exists.
+- **Reconnect after a close.** Demotion is what keeps a connection alive. A closed connection is
+  a dropped peer, and a dropped peer relaunches.
+- **Host migration and graceful host-leave.** Recorded on the roadmap as a later aspiration. This
+  spec opens the session-state ledger but does not serialize it.
+- **A client asking the host to change level.** Map authority is server-owned; the
+  authorized-requester concept arrives with host-as-client packaging (Phase 4).
+- **`loadLevel`'s co-op semantics.** `context/research/coop-session-lobby.md` §6 records that it
+  must eventually become a request the server may refuse, inert on a non-authoritative client — a
+  semantic change to a published primitive (`index.md` §2). Deferred to spec 3 with the rest of
+  the authoring surface, and named rather than left to silence. Under the hold-on-mismatch rule
+  the interim behavior is benign: a client whose mod loads a different level stops participating,
+  is told why, and re-participates at the host's next relevel. It is not a disconnect.
+- **Shipping mod content to a client that lacks it.** Networked mod sync is a stated non-goal
+  (`boot_sequence.md` §8), and it stays one on its own merits, not by inheritance. Scripts are the
+  cheap part — 160K against 337M of art in the dev mod, and small by construction since the IR
+  cannot iterate — but sending them fixes only the script-side third of the breaking surface and
+  leaves static collision, which is the expensive part and the part with the worst failure mode.
+  It also inverts boot ordering (mod init runs after `Session::build`), requires re-committing
+  manifest lanes the staged path does not cover, and feeds peer-controlled input to a C
+  interpreter. If it ever lands it belongs out-of-band, not on a reliable game channel. Reasoned
+  through in `context/research/coop-content-compatibility.md`.
+- **Replicating world gravity.** Same principle as the tuning payload, different mechanism. See
+  "What the digests do not cover".
+- **Tamper resistance.** Mod identity is declared, not proven, and proving it is a different
+  project.
+- **Hashing the `.prl` bytes wholesale.** See "Why level identity is a field, not more hash".
+- **Frontend/lobby presentation.** Menus and roster UI are spec 3; a demoted client with no level
+  renders the ordinary world-less Frontend state.
 
 ## Code grounding
 
@@ -186,6 +338,13 @@ obvious next worry is a latch nothing clears. Checked rather than assumed:
 "arm (or re-arm)", so arming is derived from the snapshot stream. The first `local_player`
 record after promotion re-arms the client. Had it been latched, the predicate would have owed
 the wire a promotion message.
+
+**The cheapest rival, and why it does not survive.** Keep `Pending`/`Accepted`/`Closed` and make
+participation `accepted && parity_ok` in a side map. Rejected because every engine-visible action
+here hangs on a transition *edge* — the cleanup on leaving participation, the pawn spawn on
+entering it — and a boolean flipping in a side table gives you nothing to hang either on. The
+cleanup is the half that matters. A side map is also exactly the "second waiting mechanism" the
+gate design refuses on its own terms.
 
 ## Why this merged with the level-transition spec
 
@@ -430,6 +589,30 @@ retired the entity-closure digest. Gravity itself still does not ship in E15, an
 now mechanical rather than one of scope: `worldSetGravity` mutates it mid-level, so it is not a
 participation-transition value and needs a continuous replication lane instead.
 
+## Foreclosures and one-way doors
+
+- **One mod id/version pair on the wire forecloses mod stacking** without a protocol change.
+  `M7--mod-script-layer` anticipates mod inheritance; a stack needs an ordered set and
+  set-comparison semantics, not a wider field. Cheap to accept today because the active mod root
+  is singular and fixed at init, but it is a foreclosure, not an accident.
+- **The one-way door is the *requiredness* of mod identity, not its wire visibility.** A
+  wire-visible-but-optional identity (required to pass admission, warn-and-continue at mod init)
+  would be reversible. Required costs a protocol bump plus a manifest migration for every mod,
+  and a breaking edit to a published SDK type. Accepted: it is consistent with how the manifest
+  already fails on a missing `name`, and an optional identity is meaningless for exactly the mods
+  most likely to drift.
+- **Level identity distinguishes addressing modes, not just maps.** A host on the raw-path dev
+  bypass and a client on the catalog id for the same `.prl` will not match. Mitigated rather than
+  accepted: identity falls back to the content-root-relative path for uncatalogued levels, so the
+  documented two-process loopback recipe still matches, and the mismatch that remains is reported
+  by name rather than as a hash diff.
+- **The opaque tuning payload is reversible, and cheaply.** Replacing it with a typed wire mirror
+  costs a protocol bump and nothing else — no manifest migration, no authoring surface, no
+  persisted bytes. It is a named cost in the index's Decisions, not a door.
+- Everything else is net-crate-local behind two hand-bumped constants: the new messages, the new
+  slot state, the rename of accepted to participating, the participation predicate and its two
+  transitions, the deferred disconnect. Backing any of them out is a normal change.
+
 ## Which corroborating documents are independent, and which are not
 
 Direction review flagged this and it belongs on the record, because the next reviewer will
@@ -455,7 +638,7 @@ count it three times. Two corollaries for anyone validating this spec later:
 
 ## Drafting errors, and the pattern behind each
 
-Three from this review round. The correction is cheap; the pattern is the part worth keeping.
+The correction is cheap in each case; the pattern is the part worth keeping.
 
 - **The spec claimed its chosen digest domain avoided the IR enum.** It did not. `movement`
   reached `dash`, and `DashParams` reached the same `IrNode` the spec cites elsewhere as a
@@ -473,8 +656,76 @@ Three from this review round. The correction is cheap; the pattern is the part w
   them. The pattern: *a guarantee was scoped to the types the recipe names rather than the
   types it reaches.* Overtaken rather than fixed — both types left the domain — but the pattern
   is the durable part and it binds on any future recursive recipe.
+- **The manifest's non-re-committed lanes were named as *theme and fonts*.** Theme *is*
+  re-committed, through `commit_mod_ui_theme`. `fonts` is the only lane absent from
+  `StagedManifest`, so mod identity's freeze joins a minority of one rather than a pair. The
+  pattern: *a claim about a set was made from two examples without enumerating the set.*
+- **`SlotSchema::accumulate`'s `IrNode` was offered as a reason to leave state-slot parity to
+  `ReplicatedSlotSchema`, and counted at ~30 variants.** It has 15, and the mod-digest recipe
+  walks the same enum anyway, so it was never a reason. The decision stands on duplication and on
+  `SlotRecord`'s and `StoreDeclarationSet`'s private fields. Same pattern as the first entry: a
+  rationale written without opening the type.
+- **The unpolled transport window was scoped to level loading.** The larger hole is Frontend: the
+  redraw arm returns early on `BootState::Frontend` before the snapshot-apply stage, so a peer
+  launched with no map argument never advances renet at all — which made the spec's own headline
+  case unreachable. The pattern: *a defect was scoped to the case that prompted it rather than to
+  the code path that causes it.*
+- **The replicated-slot schema was specified as a check.** "Confirm the host state-replication
+  schema is rebuilt per level rather than cached for the process." It is not rebuilt:
+  `HostStateReplication::schema` is `get_or_insert_with`-cached with no reset path, and the
+  client-side caches are identical. The pattern: *a check was written where the answer was
+  already readable, and the answer was work.*
+- **Task 6's recipe was described as having no caller until Phase 4.**
+  `kinematic_static_fingerprint` is called from `install_level_payload` today, and Task 6 both
+  renames it and changes its parameter. The pattern: *a dependency claim was made about the new
+  function rather than about the one it replaces.*
+
+## Questions closed while drafting
+
+Each was an open question in the index until it was answered. The answers now live in the
+Decisions and Tasks; the reasoning that produced them is here.
+
+- **Version-mismatch strictness.** Neither exact equality nor an author-declared compatibility
+  key. Compatibility is decided by replication first and two content digests second; the version
+  does not gate at all. The durable part is the tiering of what server authority already absorbs,
+  in `context/research/coop-content-compatibility.md`.
+- **Stable-key sort versus canonical serialization.** Each mod-global lane carries its own sort
+  order. The nested question a detail review raised — map-valued fields whose iteration order
+  varies per *process* — turned out not to arise: no map-valued field is reachable in the domain.
+  The rule survives as a forward-looking guard; the determinism hazards that are real here are
+  float bit patterns and the `IrNode` walk.
+- **Whether a mod-digest demotion should suppress the relevel message.** Do not suppress. The
+  send is already idempotent under the active/in-flight rule, and a cause filter would be a
+  second policy in the send path. The diagnostic carries the cause, which is what stops a client
+  reading the relevel as a fix.
+- **Mid-load relevel.** Settled by the shipped path: `App::enqueue_level_request` already
+  replaces a queued `Load` and applies the newer one on completion. Its one exception — an early
+  return during the **boot** load — is benign, since a client in boot load has not been admitted
+  yet.
+- **Whether the client should despawn materialized remotes on a mod-digest demotion.** Answered
+  with the reversible default: despawn mapped remotes and disarm prediction on both triggers, so
+  the two converge on one client-side state. The alternative — accept the frozen tableau — is
+  defensible if the freeze turns out to read better than a vanish during a brief hot-reload
+  demotion. Changing it is an edit to one Task 7 paragraph and AC-LIFECYCLE-5.
+- **Whether the client needs a promotion signal.** It does not. Stating participation as a
+  predicate raised the question, because the host side recovers on its own while prediction
+  arming is client-local state. Checked against the code rather than reasoned about: arming is
+  derived, not latched. Had it been a latch, this would have cost a server→client promotion
+  message and its own criterion. See "Why the slot machine was reshaped".
+- **The `networking.md` update.** Not a promotion chore — Task 7 work. The
+  fingerprint-binds-the-connection sentence is overturned, the slot lifecycle gains a state and a
+  transition, the handshake section describes one app message where there will be three, the
+  crate boundary gains a server→client control message family, and the session-state ledger the
+  roadmap requires is written there.
 
 ## Rejected while drafting
+
+The larger rivals have sections of their own: two specs instead of one ("Why this merged with the
+level-transition spec"), hashing the entity-descriptor closure and the typed wire mirror ("Why
+hashing the entity closure was tried, and what dropped it"), folding level identity into the
+fingerprint ("Why level identity is a field, not more hash"), gating admission on the mod digest
+("Slot lifecycle"), and no new slot state ("Why the slot machine was reshaped"). The rest are
+here.
 
 - **Telling the client only that it was admitted.** Superseded by the merge: the relevel
   message is the useful form, and a bare admitted-acknowledgement would have been
@@ -496,9 +747,37 @@ Three from this review round. The correction is cheap; the pattern is the part w
   value that does not track the breaking surface: an author who edits a light bumps it and
   blocks a friend, and an author who retunes player movement may not bump it at all. The
   version is still required and still crosses the wire — for display, never for comparison.
-- **Reusing `ProtocolVersion` with the mod fields appended.** It is `Copy` and the mod id
-  is a string. More importantly the two stages fire at different times, so one message
-  re-creates the ordering inversion the spec exists to remove.
+- **Reusing `ProtocolVersion` with the mod fields appended, and its honest variant: one message
+  evaluated twice.** It is `Copy` and the mod id is a string. Keeping the shipped handshake and
+  having the client resend it on every level install is the cheapest rival — with the fingerprint
+  field required, a client with no level cannot send one, so the honest form makes the
+  fingerprint optional. Rejected on timing rather than typing: admission becomes true at mod init
+  and parity at every level install, so one message either blocks on the later fact or re-sends
+  the earlier one redundantly, and the reject reason cannot say which half diverged.
+- **Admitting on protocol alone, checking the mod at first level install.** Fewer moving parts.
+  Rejected because it reports the wrong cause — a player on the wrong mod would be told the map
+  does not match — and because a relevel naming a catalog id is only sound if the mods match,
+  since the catalog is mod-supplied.
+- **Closing and reconnecting on every level change.** Preserves the shipped invariant verbatim
+  and reaches the same end state. Two obvious objections do not survive scrutiny, and are named
+  so they are not reached for again: the unpolled window is fixed by this spec's own Task 5, so
+  it cannot also be a reason to reject the rival; and the client-id re-mint (wall-clock nanos per
+  connection) is precisely what spec 2's seat exists to stop keying off. What does reject it: no
+  reconnect path exists at all — the client's handshake flag never resets and the endpoint is
+  constructed once in `Session::build` — so the rival is *more* work, not less; and it turns
+  every level change into a fresh renet_netcode teardown and rebuild, which on a direct-connect
+  transport with no relay is a fresh NAT, firewall, and handshake failure opportunity. A session
+  that plays four maps runs that gauntlet four times. Downstream it is also what
+  `E16--per-player-currency`'s third shape died on: its "value survives a level transition"
+  criterion contradicted its seat-released-on-disconnect rule, because a level change closed
+  every connection.
+- **Shipping mod id and the level digest only, deferring the mod digest.** A smaller first step.
+  Rejected on the crossing lane, which is the one part of the mod surface replication cannot
+  absorb: both peers evaluate mod-global crossings over the same replicated slot values, so
+  differing thresholds or predicates dispatch different events off identical state, with no map
+  involved and nothing else to catch it. Deferring the mod digest leaves a hole of precisely the
+  class the static-collision widening exists to close — and leaves it open while the spec claims
+  to have closed that class.
 - **Making the relevel message carry a path rather than a catalog id.** A path is
   machine-local and resolves against a filesystem the peer does not share. The catalog is
   the only namespace in which one string resolves on both peers. The catalog's *mod-scoped*

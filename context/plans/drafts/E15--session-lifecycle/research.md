@@ -10,6 +10,13 @@ Findings behind the spec's decisions, including why its scope changed once.
 | A fingerprint change closes every slot and retains the close for the next poll; the client half disconnects itself | `crates/net/src/transport.rs` — `NetServer::set_kinematic_static_fingerprint`, `NetClient::set_kinematic_static_fingerprint` |
 | The client sends its handshake exactly once, gated on a fingerprint being present, and never re-arms | `crates/net/src/transport.rs` — `NetClient::update`, `handshake_sent` |
 | Slot states are `Pending`/`Accepted`/`Closed`; `Closed` is terminal and only an `Accepted → Closed` transition emits an event | `crates/net/src/slots.rs` — `SlotState`, `SlotTable::on_close` |
+| Both mutating primitives decide their event **inside the method**, and both are once-only edges: `on_accept` returns `None` when the slot is already `Accepted`, `on_close` returns an event only from `Accepted`. Nothing computes an event from the (old, new) state pair | `crates/net/src/slots.rs` — `SlotTable::on_accept`, `SlotTable::on_close` |
+| **Client prediction arming is derived from the snapshot stream, not latched.** `maybe_arm_local_pawn` runs on every applied record — the `FullBaseline` arm and the `Delta` arm both call it — and surfaces `ApplyOutcome::armed_local_pawn`, which the caller hands to `ClientPrediction::arm`. That method is documented "arm (or re-arm)", is a no-op for the same pawn, and clears history for a different one. So a promotion needs no client-side signal: the next `local_player` record re-arms | `crates/postretro/src/netcode/client.rs` — `maybe_arm_local_pawn`, `apply_snapshot`; `crates/postretro/src/netcode/prediction.rs` — `ClientPrediction::arm`; `crates/postretro/src/netcode/mod.rs` — the `armed_local_pawn` → `prediction.arm` hand-off |
+| The client-side reset a demotion needs already ships as one function: it clears the `NetworkId → EntityId` map, queues a `BaselineRefresh` per known id, and sets `armed` to `None` | `crates/postretro/src/netcode/mod.rs` — `reset_level_scoped_client_state`; `ClientReplication::reset_for_level_unload`; `ClientPrediction::reset_for_level_unload` |
+| The repo already has a doc string for exactly this id rule — "Must be non-empty ASCII, at most 64 bytes, and use only [A-Za-z0-9_.:-]." — on the ammo `type` and weapon `creditSource` ids | `crates/postretro/src/scripting/primitives/mod.rs` — `register_sdk_type` |
+| The impact-event id rule validates a charset and a length but frames the namespace as an example — "must be a namespaced ASCII string (for example \"salvage:crate-break\")" — so a namespaced form is documented rather than a namespace prescribed | `crates/scripting-core/src/data_descriptors/validate/runtime.rs` |
+| The map catalog `id` has **no charset validation**: it is registered as "Stable logical map handle … Required; exact string match" and nothing checks its characters or length. So the mod id is the first catalog-adjacent id with an enforced charset | `crates/postretro/src/scripting/primitives/mod.rs` — `register_type("ModMapEntry")` |
+| The one shipped manifest imports its catalog rather than inlining it: `maps: mapCatalog`, imported from `./scripts/frontend-menu`. No shipped manifest calls `defineMapCatalog([...])` at the `defineMod` site | `content/dev/start-script.ts`; `content/dev/scripts/frontend-menu.ts` |
 | Entity state is gated on accepted slots at the send call | `crates/net/src/transport.rs` — `send_snapshot`, `accepted_clients` |
 | An app-level reject closes the slot and disconnects in the same call, so no reliable message can reach the peer first | `crates/net/src/transport.rs` — `NetServer::reject` |
 | The handshake carries three fields and is `Copy` | `crates/net/src/wire.rs` — `ProtocolVersion` |
@@ -64,18 +71,23 @@ stateDiagram-v2
     [*] --> Pending: transport connect
     Pending --> Admitted: admission matches<br/>(protocol constants + mod id)
     Pending --> Closed: admission mismatch<br/>(typed reason sent, disconnect deferred one poll)
-    Admitted --> Participating: content parity matches<br/>(mod digest + level identity + level digest)
+    Admitted --> Participating: declaration matches the<br/>installed parity triple<br/>(mod digest + level identity + level digest)
     Admitted --> Admitted: parity mismatch —<br/>no state flows, connection survives
-    Participating --> Admitted: host replaces the parity triple<br/>(level install, or staged commit moving the mod digest;<br/>demotion runs the existing close cleanup)
+    Participating --> Admitted: declaration stops matching<br/>(level install, or staged commit moving the mod digest)
     Admitted --> Closed: disconnect or timeout
     Participating --> Closed: disconnect or timeout
     Closed --> [*]
 ```
 
+The two middle edges are **not two features**. Both are readings of one predicate — a slot
+participates iff its retained declaration matches the installed triple — re-evaluated after
+every parity source install. Drawing them as independent transitions is what let an earlier
+draft specify the downward one alone; see "Why the slot machine was reshaped" below.
+
 Three properties fall out and become acceptance criteria: no entity state reaches a slot
-below `Participating`; a demotion runs the same per-slot cleanup a close runs, because
-level unload invalidates every id those tables hold; and the slot survives the whole
-transition, which is only true if the transport is polled across it.
+below `Participating`; the per-slot cleanup runs on any exit from `Participating`, whichever
+the destination; and the slot survives the whole transition, which is only true if the
+transport is polled across it.
 
 **The self-loop is the load-bearing edge.** `Admitted → Admitted` on a parity mismatch —
 rather than `Admitted → Closed` — is what makes the two gate stages structurally different
@@ -110,6 +122,70 @@ byte of every script and its consequence was a **closed** connection; this one m
 when a hashed field changes and its consequence is a **hold** that resolves the moment the
 peers agree again. Same mechanism, two orders of magnitude apart in both trigger frequency
 and blast radius.
+
+## Why the slot machine was reshaped
+
+The spec's first shape kept the shipped `SlotTable` and added edges to it: a demotion
+transition, a demotion event, and prose rules covering the cases the additions broke. Review
+found the same drafting error in three places, and the third is what made it a mechanism
+rather than three bugs.
+
+**The three instances.** Each reasons from one transition and generalizes wrong.
+
+- **Demotion was specified without promotion.** The spec said installing a different parity
+  triple demotes non-matching `Participating` slots. Nothing re-compared a *retained*
+  declaration against a *newly-installed* triple to promote an `Admitted` slot back up. The
+  level path recovers by accident — the host relevels, the client installs, the client re-arms
+  its parity flag and re-sends — so the omission is invisible there. The mod-digest path cannot:
+  the host's digest moves and the client's does not, so the client never re-sends, and a slot
+  demoted by a host staged commit could never re-participate even after the host reverted the
+  edit. That falsified the spec's own "a hold that resolves the moment the peers agree again"
+  and the recovery half of two acceptance criteria.
+- **The promotion event needed a "must re-emit" rider.** `SlotTable::on_accept` returns `None`
+  when the slot is already accepted — once-only per `ClientId`, which is right until a slot can
+  leave and re-enter participation. The draft handled it with a prose rule telling the
+  implementer to re-emit, which is a rule that exists only because the primitive was written as
+  an edge.
+- **The close event needed a hand-written exception.** "`on_close` continues to emit only from
+  `Participating`; `Admitted → Closed` is silent" was written to stop the cleanup double-running
+  after a demotion had already run it. Same shape: a rule compensating for a method that decides
+  its own event.
+
+**What the three have in common.** Each was reasoned from the transition the author had in
+front of them — level change, first admission, close — and stated as a rule about that
+transition. A fourth instance predates them and is recorded elsewhere in this file: the
+demotion cleanup was justified from "level unload invalidates every id the per-slot tables
+hold," which is true of the level trigger and false of the mod-digest one, where the level
+stays loaded and the cleanup runs anyway.
+
+**The fix is to state the invariant and derive the transitions.** Two statements replace every
+rule above:
+
+- **A slot participates if and only if its retained declaration matches the installed parity
+  triple.** Re-evaluated after every parity source install, in one function every install setter
+  calls. Demotion and promotion become two readings of one comparison. A fourth parity source
+  cannot implement half of it, because it does not implement any of it.
+- **Events are computed from the (old, new) state pair.** Cleanup fires on any exit from
+  `Participating`; the pawn spawn fires on any entry. The Invariants table's "a demotion clears
+  exactly what a close clears" stops being an assertion two sites must both honor and becomes a
+  shared trigger. `Admitted → Closed` is silent because no exit from `Participating` occurred —
+  unreachable rather than guarded.
+
+**And it is verified as a property, not a case list.** After any install, for every slot,
+participating iff matching. The case list is the same enumeration that missed promotion once;
+running it again catches the cases someone already thought of. Recorded as a pattern, because
+it generalizes past this spec: *when a spec adds a state, restate the rules that referenced the
+old states as invariants over the new ones, and check both directions of every edge it adds.*
+That is the companion to the pattern already recorded above — when a spec adds a state,
+re-examine every decision it made before the state existed.
+
+**One thing the reshape did not cost: a client-side promotion signal.** Host-side promotion
+re-spawns the pawn and snapshots resume, but prediction arming is client-local state, so the
+obvious next worry is a latch nothing clears. Checked rather than assumed:
+`maybe_arm_local_pawn` runs on every applied record and `ClientPrediction::arm` is documented
+"arm (or re-arm)", so arming is derived from the snapshot stream. The first `local_player`
+record after promotion re-arms the client. Had it been latched, the predicate would have owed
+the wire a promotion message.
 
 ## Why this merged with the level-transition spec
 

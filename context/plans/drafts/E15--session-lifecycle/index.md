@@ -35,7 +35,9 @@ outlives the map it joined on.
   lifetime, so a mismatch there is terminal. Every content-derived value sits in parity and is
   re-evaluated whenever its source is reinstalled.
 - **A slot state between pending and participating.** An admitted slot holds a live connection and
-  receives no entity state.
+  receives no entity state. Both directions are gated: it is also sent no entity state and has its
+  inbound traffic drained and discarded, since an undrained reliable channel eventually
+  disconnects the peer it was supposed to hold.
 - **Participation as a predicate over installed values.** A slot participates exactly while its
   declaration matches the host's installed parity triple. Demotion and promotion are two readings
   of that one comparison. A demotion runs the same per-slot cleanup a close runs today.
@@ -474,10 +476,11 @@ AC-DIGEST-3, AC-DIGEST-6, AC-LEVEL-4, AC-BOOT-4.
       rather than retaining a tableau that no longer updates. On re-promotion it re-arms from the
       host's next `local_player` baseline, with no promotion message and no client-side latch to
       clear.
-- [ ] **AC-LIFECYCLE-6** — A host that unloads to Frontend without installing another level
+- [ ] **AC-LIFECYCLE-6** — A host that stops holding a level without installing another
       **demotes** every participating slot and closes none. Its clients hold at admitted with no
       level parity installed — the same state a client joining a level-less host reaches — and
-      re-participate at the host's next matching install.
+      re-participate at the host's next matching install. Exercised on **both** paths that reach
+      it: an unload to Frontend, and a suspend, which tears down level state without unloading.
 - [ ] **AC-LIFECYCLE-7** — A participating client that unloads its level without installing
       another re-declares parity with no level half. The host demotes it with the level-absent
       cause; entity records stop; the connection survives; it re-participates at its next matching
@@ -492,6 +495,11 @@ AC-DIGEST-3, AC-DIGEST-6, AC-LEVEL-4, AC-BOOT-4.
 - [ ] **AC-BOOT-4** — Single-player boot constructs no endpoint and reaches Running unchanged.
 - [ ] **AC-GATE-9** — A peer built before this change is refused at the transport gate, before
       any app message is decoded.
+- [ ] **AC-GATE-10** — A slot held at admitted that keeps sending input traffic **stays
+      connected** past the point its Input channel would have overflowed, and none of that traffic
+      reaches the simulation. Its time-sync continues to be answered. Asserted over sustained
+      sends, not a single message — the failure this criterion exists for is a buffer filling
+      over time, not a message being mishandled once.
 
 ## Tasks
 
@@ -1484,7 +1492,7 @@ Task 5's and Task 6's lists, so Task 7 is a fourth `main.rs` toucher rather than
 | A connection's id survives a level change | Task 3 (demote, never close), Task 5 (world-less frames stay polled) | Later specs key player identity off a connection that must not be re-minted | AC-LEVEL-3, AC-BOOT-1 |
 | Admission and parity queue independently until their source installs | Task 3 (separate `Option`s, separate early returns, both roles) | Coupling them re-creates the ordering inversion this spec removes | AC-GATE-1, AC-GATE-2 |
 | A peer refused at admission learns the cause before teardown | Task 3 (deferred disconnect, best-effort) | A future reject path that disconnects inline drops the message entirely | AC-GATE-3, AC-GATE-6, AC-GATE-7 |
-| No content divergence ever closes a connection | Task 3 (hold at admitted, closing and holding causes separated at the type level) | Any later content check that rejects instead of holding re-creates the disconnect this spec removes, and races an in-flight parity message against a just-installed level | AC-GATE-4, AC-GATE-8, AC-LIFECYCLE-1, AC-DIGEST-9, AC-LEVEL-7 |
+| No content divergence ever closes a connection | Task 3 (hold at admitted, closing and holding causes separated at the type level; inbound drained for held slots) | Any later content check that rejects instead of holding re-creates the disconnect this spec removes, and races an in-flight parity message against a just-installed level. The subtler threat is not a check at all: a held slot whose inbound channel stops being drained overflows its reliable-channel budget and is disconnected by the transport, so the invariant falls to a path that never decided anything | AC-GATE-4, AC-GATE-8, AC-GATE-10, AC-LIFECYCLE-1, AC-DIGEST-9, AC-LEVEL-7 |
 | A relevel never restarts the load it names | Task 4 (active/in-flight suppression) | Late-join and transition both send; a third sender must suppress too | AC-LEVEL-5, AC-LEVEL-6 |
 
 ## Boundary inventory

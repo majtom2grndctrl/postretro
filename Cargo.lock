@@ -3808,6 +3808,7 @@ version = "0.1.0"
 dependencies = [
  "bitcode",
  "log",
+ "postretro-test-log-capture",
  "renet",
  "renet_netcode",
 ]
@@ -3903,6 +3904,7 @@ dependencies = [
  "postretro-foundation",
  "postretro-level-format",
  "postretro-script-compiler",
+ "postretro-test-log-capture",
  "rquickjs",
  "serde",
  "serde_json",

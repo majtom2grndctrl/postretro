@@ -25,4 +25,5 @@ postretro-level-format = { workspace = true }
 postretro-script-compiler = { path = "../script-compiler" }
 
 [dev-dependencies]
+postretro-test-log-capture.workspace = true
 postretro-script-compiler = { path = "../script-compiler" }

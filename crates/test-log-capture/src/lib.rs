@@ -16,15 +16,21 @@ pub struct CapturedRecord {
     pub message: String,
 }
 
+struct SequencedRecord {
+    sequence: u64,
+    record: CapturedRecord,
+}
+
 struct TestLogger;
 
 static LOGGER: TestLogger = TestLogger;
 static LOGGER_INSTALLER: Once = Once::new();
 static LOGGER_INSTALLED: AtomicBool = AtomicBool::new(false);
+static NEXT_RECORD_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static ORPHAN_RECORDS: AtomicU64 = AtomicU64::new(0);
 
 thread_local! {
-    static CAPTURE_BUFFER: RefCell<Option<Arc<Mutex<Vec<CapturedRecord>>>>> = const { RefCell::new(None) };
+    static CAPTURE_BUFFER: RefCell<Option<Arc<Mutex<Vec<SequencedRecord>>>>> = const { RefCell::new(None) };
 }
 
 impl Log for TestLogger {
@@ -33,6 +39,8 @@ impl Log for TestLogger {
     }
 
     fn log(&self, record: &Record<'_>) {
+        let sequence = NEXT_RECORD_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+
         // Formatting can call a `Display` implementation that logs. Do it before
         // entering the thread-local state so that re-entrant record has no live
         // `RefCell` borrow to contend with.
@@ -56,7 +64,14 @@ impl Log for TestLogger {
             let mut records = buffer
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            records.push(captured);
+            let insert_at = records.partition_point(|existing| existing.sequence < sequence);
+            records.insert(
+                insert_at,
+                SequencedRecord {
+                    sequence,
+                    record: captured,
+                },
+            );
         } else {
             record_orphan(&captured);
         }
@@ -88,7 +103,7 @@ fn install_logger() {
     );
 }
 
-fn active_buffer() -> Arc<Mutex<Vec<CapturedRecord>>> {
+fn active_buffer() -> Arc<Mutex<Vec<SequencedRecord>>> {
     CAPTURE_BUFFER
         .try_with(|slot| {
             let slot = slot.borrow();
@@ -131,10 +146,13 @@ impl LogCapture {
 
     /// Return an ordered snapshot of records captured by this thread.
     pub fn records(&self) -> Vec<CapturedRecord> {
-        active_buffer()
+        let buffer = active_buffer();
+        buffer
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
+            .iter()
+            .map(|captured| captured.record.clone())
+            .collect()
     }
 
     /// Remove records captured by this thread without affecting other threads.
@@ -319,6 +337,42 @@ mod tests {
                     level: Level::Warn,
                     target: TEST_TARGET.to_owned(),
                     message: "[Test] warning record".to_owned(),
+                },
+            ]
+        );
+    }
+
+    // Regression: re-entrant formatting appended a nested record before its outer record.
+    #[test]
+    fn reentrant_formatting_preserves_logger_entry_order() {
+        struct ReentrantFormatter;
+
+        impl std::fmt::Display for ReentrantFormatter {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                log::warn!(target: TEST_TARGET, "[Test] nested formatting record");
+                formatter.write_str("formatted body")
+            }
+        }
+
+        let capture = LogCapture::start();
+        log::info!(
+            target: TEST_TARGET,
+            "[Test] outer record with {}",
+            ReentrantFormatter
+        );
+
+        assert_eq!(
+            capture.records(),
+            vec![
+                CapturedRecord {
+                    level: Level::Info,
+                    target: TEST_TARGET.to_owned(),
+                    message: "[Test] outer record with formatted body".to_owned(),
+                },
+                CapturedRecord {
+                    level: Level::Warn,
+                    target: TEST_TARGET.to_owned(),
+                    message: "[Test] nested formatting record".to_owned(),
                 },
             ]
         );

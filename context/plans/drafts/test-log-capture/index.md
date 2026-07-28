@@ -413,11 +413,15 @@ line. Last chance to move the surface.
   `log()` on it directly, never installing globally — no race, nothing to gain. Out of
   scope, recorded so it is not re-derived.
 - **Two `context/lib` updates land at promotion.** Neither can slip past it.
-  `testing_guide.md` gains the log-assertion pattern and the pinned surface — this is the
-  blocking one. `/orchestrate` gives an E15 task agent only its own paragraph, E15's Goal,
-  AC list, and Invariants, never this plan, so `testing_guide.md` is the only channel
-  through which an E15 implementer learns the harness exists. Separately,
-  `development_guide.md` §Workspace types `postretro-level-compiler` as binary-only, which
-  this plan's Scope bullet contradicts — it has a `lib.rs` that `xtask` depends on. The
-  §Workspace crate count and table are not promotion work: they go stale the moment the
-  18th crate exists, so Task 1 owns them.
+  `testing_guide.md` §3 gains the log-assertion pattern — the blocking one.
+  `/orchestrate` gives an E15 task agent only its own paragraph, E15's Goal, AC list, and
+  Invariants, never this plan, so that entry is the only channel through which an E15
+  implementer learns the harness exists. **It carries no signatures.** Per
+  `context_style_guide.md`, method names and code samples are ephemeral and belong in this
+  plan; the durable content is the contract in prose — one test logger per process,
+  per-thread buffers, collision panics rather than skips, assertions keyed on level plus
+  body substring with target as a filter — plus `crates/test-log-capture` as the entry
+  point to read for the shape. Separately, `development_guide.md` §Workspace types
+  `postretro-level-compiler` as binary-only, which this plan's Scope bullet contradicts —
+  it has a `lib.rs` that `xtask` depends on. The §Workspace crate count and table are not
+  promotion work: they go stale the moment the 18th crate exists, so Task 1 owns them.

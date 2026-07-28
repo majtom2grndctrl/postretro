@@ -413,9 +413,9 @@ gate itself is checked by reading the diff.
 - [ ] **AC-DIGEST-3** — Adding an entity type to one peer's mod **demotes nobody** and changes no
       digest. A client that receives a remote entity of an unregistered class stays participating
       and leaves that entity transform-only — the shipped degradation, observed through
-      `materialize_net_mesh_presentation`'s existing `Warn` record, pinned substring `not
-      registered; leaving remote entity transform-only`. That is the unregistered-class arm; the
-      meshless arm beside it logs at `Debug` and is a different case.
+      `materialize_net_mesh_presentation`'s existing `Warn` record, whose pinned body substring is
+      `not registered; leaving remote entity transform-only`. That is the unregistered-class arm;
+      the meshless arm beside it logs at `Debug` and is a different case.
 - [ ] **AC-DIGEST-4** — Two mods differing only in a mod-global **crossing** — a threshold, an
       edge, or an IR predicate — produce different mod digests; so do two differing only in a
       mod-global trigger event or trigger pool. Structurally different `IrNode` trees must be
@@ -542,11 +542,12 @@ gate itself is checked by reading the diff.
       logs exactly one `Warn` record at the first connect that arrives, pinned substring `no mod
       identity installed`, and one only however many connects follow. The slot queues at `Pending`
       under the queue-until-installed rule, so without the record the hang is silent.
-- [ ] **AC-GATE-9** — **Review gate.** A peer built before this change is refused at the transport
-      gate, before any app message is decoded — no in-tree test can build the old peer. Runnable
-      substitute: a client offering the pre-change protocol id and wire version, both written as
-      literals in the test, is refused with no control message decoded. Review confirms those
-      literals are the values this change moved away from.
+- [ ] **AC-GATE-9** — A peer built before this change is refused at the transport gate, before any
+      app message is decoded. Satisfied by re-staging
+      `mover_replay_provenance_wire_version_refuses_previous_peer_on_both_gates` to the new constant
+      pair with the previous pair as the refused peer: it hard-asserts both constants, then asserts
+      `transport_protocol_id()` differs from the previous composition — gate 1, before any app
+      decode — so the previous pair as literals is what "an older peer" means at this gate.
 - [ ] **AC-GATE-10** — A slot held at admitted that keeps sending input traffic has its Input
       channel **drained and discarded every poll**: the channel is empty after each poll, and no
       message of any kind — time-sync included — reaches the simulation while the slot is held.
@@ -1573,8 +1574,8 @@ on the loopback host-as-client path, where both halves are produced in the same 
 same frame; it bites only a real remote client, which is why it must be specified rather than
 discovered.
 
-`view_feel` is the one field the payload omits, so the client fills it from its own local
-descriptor for that class if it has one and leaves it absent otherwise.
+`view_feel` is the one field the payload always carries empty, so the client fills it from its own
+local descriptor for that class if it has one and leaves it absent otherwise.
 `ClientWeaponState::from_local_pawn_descriptor` resolves the pawn class, then `default_weapon`,
 then copies four fields; it takes those four from the payload instead. Both sites keep their
 current degradation: an absent half logs and leaves that prediction inert, as they already do when
@@ -1785,7 +1786,7 @@ Task 5's and Task 6's lists, so Task 7 is a fourth `main.rs` toucher rather than
 | mod version | `String` on both, same as above; any non-empty string, never parsed | admission variant field, carried not compared | `version: string` | `version: string` |
 | protocol constants | `ProtocolVersion { app_protocol_id: u32, wire_version: u32 }` — `kinematic_static_fingerprint` dropped | admission variant field | n/a | n/a |
 | mod compatibility digest | `[u8; 32]`, engine-derived from three `ScriptCtx::data_registry` slices (`global_trigger_events`, `global_trigger_pools`, `global_crossings`), re-derived per staged commit | **parity** variant field | n/a (derived) | n/a (derived) |
-| replicated tuning payload | engine-side type in `crates/postretro/src/netcode/tuning_payload.rs`: `PlayerMovementDescriptor` minus `view_feel`, plus `range`/`cooldown_ms`/`fire_mode`/`resolution`; both halves `Option`; leading `TUNING_PAYLOAD_EPOCH: u32` checked at decode, mismatch a typed error naming both epochs; client stores the decoded value behind a generation counter, bumped per install and shared with the staged-retune re-send (AC-DIGEST-10) | `Vec<u8>` in a server→client Control variant — **opaque**, and the only variable-length opaque value on the wire. `crates/net` does not decode, compare, or validate it, and must not learn to: a typed mirror would break its registry-blindness | n/a (host-resolved) | n/a (host-resolved) |
+| replicated tuning payload | engine-side type in `crates/postretro/src/netcode/tuning_payload.rs`: `PlayerMovementDescriptor` with `view_feel` cleared — rendered as JSON `null`, not omitted, and refilled from the client's own descriptor on install — plus `range`/`cooldown_ms`/`fire_mode`/`resolution`; both halves `Option`; leading `TUNING_PAYLOAD_EPOCH: u32` checked at decode, mismatch a typed error naming both epochs; client stores the decoded value behind a generation counter, bumped per install and shared with the staged-retune re-send (AC-DIGEST-10) | `Vec<u8>` in a server→client Control variant — **opaque**, and the only variable-length opaque value on the wire. `crates/net` does not decode, compare, or validate it, and must not learn to: a typed mirror would break its registry-blindness | n/a (host-resolved) | n/a (host-resolved) |
 | level identity (parity) | engine-derived `String` — catalog id, else normalized content-root-relative path | parity variant field, inside the `level: Option<(String, [u8; 32])>` half, absent while the client has no level installed | catalog `id` (existing) | same |
 | relevel catalog id | `Option<String>` on `NetServer`, installed only for a catalogued level | relevel variant field | catalog `id` (existing) | same |
 | level content digest | `[u8; 32]`, widened domain, epoch 2 | parity variant field, inside the same `level: Option<(String, [u8; 32])>` half | n/a | n/a |

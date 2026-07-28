@@ -1,0 +1,10 @@
+[package]
+name = "postretro-test-log-capture"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Per-thread log capture for Postretro tests"
+license.workspace = true
+
+[dependencies]
+log.workspace = true

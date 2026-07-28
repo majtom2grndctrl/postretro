@@ -16,5 +16,8 @@ serde.workspace = true
 serde_json.workspace = true
 log.workspace = true
 
+[dev-dependencies]
+postretro-test-log-capture.workspace = true
+
 [features]
 test-fixtures = []

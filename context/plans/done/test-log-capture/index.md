@@ -249,15 +249,20 @@ calls `set_logger` and `set_max_level(LevelFilter::Trace)`, storing the `set_log
 result in an `AtomicBool`; `Once::call_once` establishes the happens-before that lets a
 concurrent `start()` read it safely.
 
-The thread-local is `RefCell<Option<Arc<Mutex<Vec<CapturedRecord>>>>>`. Two disciplines,
-both load-bearing and both violated by the loggers this replaces. First, `log` formats
-`record.args()` into a `String` before touching the thread-local, then clones the `Arc`
-out and lets the `Ref` drop **before** locking — no `RefCell` borrow may be live across a
-`Mutex` acquisition, or a caller `Display` impl that itself logs deadlocks. The shipped
-helpers all hold a `borrow_mut` across the push; do not copy them. Second, access the
-thread-local through `try_with`: the slot holds a destructor, so a `log` call during TLS
-teardown would otherwise panic inside an unwind and abort. Treat `Err(AccessError)` as an
-orphan.
+The thread-local is `RefCell<Option<Arc<Mutex<Vec<_>>>>>`. Its element type is private:
+it may retain sequence metadata, while `records()` exposes only the pinned
+`Vec<CapturedRecord>` surface. Reserve a monotonically increasing sequence on entry to
+`Log::log`, then order the public record list by that sequence. A `Display` impl that logs
+while the outer record formats therefore cannot reverse logger-entry order.
+
+Two disciplines are load-bearing and both were violated by the loggers this replaces.
+First, `log` formats `record.args()` into a `String` before touching the capture slot, then
+clones the `Arc` out and lets the `Ref` drop **before** locking — no `RefCell` borrow may
+be live across a `Mutex` acquisition, or a caller `Display` impl that itself logs
+deadlocks. The shipped helpers all hold a `borrow_mut` across the push; do not copy them.
+Second, access the thread-local through `try_with`: the slot holds a destructor, so a
+`log` call during TLS teardown would otherwise panic inside an unwind and abort. Treat
+`Err(AccessError)` as an orphan.
 
 `start()` runs the installer, panics if the stored flag says another logger owns the
 process, panics if the thread's slot is occupied, then installs a fresh empty buffer —

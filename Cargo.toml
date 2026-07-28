@@ -16,6 +16,7 @@ members = [
     "crates/level-compiler",
     "crates/script-compiler",
     "crates/net",
+    "crates/test-log-capture",
     "crates/xtask",
 ]
 resolver = "2"
@@ -169,6 +170,7 @@ postretro-entities = { path = "crates/entities" }
 postretro-scripting-core = { path = "crates/scripting-core" }
 postretro-ui = { path = "crates/ui" }
 postretro-net = { path = "crates/net" }
+postretro-test-log-capture = { path = "crates/test-log-capture" }
 
 [profile.release]
 opt-level = 3

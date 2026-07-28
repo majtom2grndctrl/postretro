@@ -102,6 +102,7 @@ capture = []
 postretro-script-compiler = { path = "../script-compiler" }
 
 [dev-dependencies]
+postretro-test-log-capture.workspace = true
 postretro-entities = { workspace = true, features = ["script-ffi", "test-support"] }
 postretro-ui = { workspace = true, features = ["test-fixtures"] }
 # Exercise shipped TypeScript data scripts through the same SWC bundler used by

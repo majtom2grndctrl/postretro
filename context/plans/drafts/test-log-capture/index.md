@@ -11,8 +11,9 @@ not duplication. `crates/ui` has two, and the loser skips silently on every run.
 
 E15 (`context/plans/drafts/E15--session-lifecycle`) has log-keyed criteria that survived
 several review rounds. This plan is its prerequisite and merges to `main` first; E15 is
-code-anchored against the merged crate afterward. AC-SURFACE-1 pins the surface E15's
-criteria cite by name — a rename or reordered argument after that costs a re-anchor pass.
+code-anchored against the merged crate afterward. AC-SURFACE-1 pins the surface that
+re-anchor pass will cite by name — E15 names nothing from this crate yet, and a rename
+once it does costs a second re-anchor.
 
 ## Scope
 
@@ -39,14 +40,15 @@ criteria cite by name — a rename or reordered argument after that costs a re-a
 - **`RUST_LOG` / `env_filter` directives.** Capture everything, filter at assertion time.
 - **E15's negative-existence criteria** — "no digest moves", "demotes nobody", "no table
   retains an entry". Value assertions on state; capture adds nothing.
-- **E15's AC-DIGEST-8** (a field addition must fail to compile). Review gate plus the
-  sentinel module. No `trybuild`.
+- **E15's AC-DIGEST-8** (a field addition must fail to compile). Review gate on the
+  exhaustive destructure. No `trybuild`.
 
 ## Direction
 
-**Problem.** Four crates each grew a private `log::Log` impl with a private buffer and a
-probe that skips when `set_logger` returns `Err`. Two share the `postretro-ui` lib test
-binary, so one always loses. `local_bind_with_no_enclosing_scope_degrades_to_literal_and_warns_at_build`
+**Problem.** Four private `log::Log` impls across three crates, each with its own store —
+counters in `crates/ui`, record buffers in `crates/postretro` and `crates/renderer` — and
+three of the four probing to see whether they lost the `set_logger` race, then skipping if
+so. Two share the `postretro-ui` lib test binary, so one always loses. `local_bind_with_no_enclosing_scope_degrades_to_literal_and_warns_at_build`
 (`crates/ui/src/tree/tests/local_state.rs`) is the loser on every run: both its warn
 assertions are dead and it reports `ok` on its fallback-text assertion alone. The three
 `theme_gate_test.rs` cases win the race today, so their skip arms are latent — adding any
@@ -108,11 +110,14 @@ is what is being retired.
   acceptance criterion names is contract; every other log line stays noise.
 - **Cross-thread capture** is not built. The per-thread slot holds `Arc<Mutex<Vec<_>>>` so
   a `Send` handle is additive, not a rewrite.
-- **Orphaned records reach stderr.** `set_max_level(Trace)` is process-global, so this
-  logger becomes the sink for every call site in the binary. Discarding unbuffered records
-  would foreclose a future chaining sink. Stderr keeps it open for one line. Note the
-  routing: same-thread orphans are captured by libtest and attributed to whichever test
-  owns that thread; cross-thread orphans bypass capture and always print.
+- **Orphaned records are counted, not lost.** `set_max_level(Trace)` is process-global, so
+  this logger becomes the sink for every call site in the binary. Silently dropping
+  unbuffered records would foreclose a future chaining sink. The counter is unconditional
+  and feeds every assertion failure (AC-CAP-8); a full stderr echo is available behind
+  `POSTRETRO_LOG_CAPTURE_ORPHANS`, opt-in because `crates/ui` alone runs 237 tests with
+  several deliberately emitting `[UI]` warns. When the echo is on, same-thread orphans are
+  captured by libtest and attributed to whichever test owns that thread, and cross-thread
+  orphans bypass capture and always print.
 
 Reversal costs one crate deletion, five manifest lines, and restoring four loggers from
 git history. Not a one-way door. What decays is the assertion style: cheap now, expensive
@@ -131,7 +136,9 @@ once E15's criteria are written against it.
       AC-CAP-8 describes, so the failing direction is exercised through `catch_unwind` with
       the payload downcast and inspected — not `#[should_panic]` alone. The deliberate
       panics run under a suppressed panic hook, restored after, so a passing suite does not
-      print backtraces.
+      print backtraces. The hook is process-global, so the in-crate tests that touch it
+      serialize among themselves — permitted, since AC-CAP-5's no-mutex gate covers the
+      converted consumer tests, not the harness's own.
 - [ ] **AC-CAP-4** — `trace` and `debug` records are captured, not only `warn` and above.
 - [ ] **AC-CAP-5** — **Parallel isolation.** Two threads, each holding a guard, each
       emitting distinct records, see only their own. Runnable test. The companion claim —
@@ -166,11 +173,12 @@ once E15's criteria are written against it.
       arm, no `Option` return, no test-serializing mutex anywhere in the crate. The orphan
       local-bind case asserts both halves it currently skips — one warn at build, none on
       the retained draw path.
-- [ ] **AC-ADAPT-1** — Compile gate. Every existing call site of the `crates/postretro`
-      and `crates/renderer` capture helpers compiles unchanged. Each helper keeps its own
-      parameter shape — they differ (`impl FnOnce()` vs. a generic `F`) and neither moves.
-      The renderer helper's return type drops from `Option<Vec<_>>` to `Vec<_>`; that is
-      the one deliberate signature change, and its single caller is updated with it.
+- [ ] **AC-ADAPT-1** — Compile gate, with one deliberate exception. Every existing call
+      site of the `crates/postretro` and `crates/renderer` capture helpers compiles
+      unchanged. Each helper keeps its own parameter shape — they differ (`postretro` takes
+      a generic `F`, `renderer` an `impl FnOnce()`) and neither moves. The exception: the
+      renderer helper's return type drops from `Option<Vec<_>>` to `Vec<_>`, and its single
+      caller is updated with it.
 - [ ] **AC-REACH-1** — Three shipped degradation paths gain a log assertion. **Netcode:**
       the accept path logs its accept and no reject, the divergent path the reverse —
       extending tests that today assert only the `HandshakeOutcome`. The negative half must
@@ -186,9 +194,9 @@ once E15's criteria are written against it.
       the dependents ranking. Review half: the `env_logger` runtime path is unchanged.
 - [ ] **AC-BUILD-2** — `crate-graph --check` passes with the new member, and
       `layering_invariants_hold` still passes.
-- [ ] **AC-SURFACE-1** — **The pinned surface.** E15 cites these names, so a rename,
-      reordered argument, or changed argument type is a contract change. Bodies and
-      internals are free.
+- [ ] **AC-SURFACE-1** — **The pinned surface.** E15's post-merge re-anchor pass will cite
+      these names, so a rename, reordered argument, or changed argument type is a contract
+      change from that point. Bodies and internals are free.
 
       ```rust
       // crates/test-log-capture/src/lib.rs
@@ -221,9 +229,10 @@ once E15's criteria are written against it.
 
       **Review gate.** Each assertion method has a caller outside
       `crates/test-log-capture` — the crate's own tests do not count, since downstream use
-      is what the pin exists to protect. Derives on `CapturedRecord` (`Debug`, `Clone`,
-      and whatever `records()` and the failure messages need) are exempt from "nothing
-      beyond the pinned set".
+      is what the pin exists to protect. The target-scoped variant is the one with no
+      natural consumer, so the netcode tests use it deliberately. Derives on
+      `CapturedRecord` (`Debug`, `Clone`, and whatever `records()` and the failure messages
+      need) are exempt from "nothing beyond the pinned set".
 
 ## Tasks
 
@@ -310,7 +319,8 @@ which lives inside a `#[cfg(test)] mod tests`.
 `capture_logs` drops its `Option`: the `None` arm existed only to signal a lost race,
 which now panics, so it returns `Vec<(Level, String)>`. Delete the skip arm in its one
 caller, `oversize_section_logs_renderer_prefixed_error`. The two helpers' parameter shapes
-differ (`impl FnOnce()` vs. a generic `F`); leave each as it is.
+differ — `postretro` takes a generic `F`, `renderer` an `impl FnOnce()`; leave each as it
+is.
 
 Two things a grep for `log_capture::capture(` will miss. `crates/postretro/src/netcode/state_slots.rs`
 imports the function directly (`use crate::scripting::reactions::log_capture::capture;`),
@@ -335,7 +345,10 @@ the reject at `warn`, both `[Net]`-tagged. `loopback_matching_version_is_accepte
 `loopback_diverged_app_version_is_rejected_with_typed_reason` already drive both arms and
 assert the `HandshakeOutcome`; the operator-facing diagnostic has never been asserted.
 `renet` is polled, not threaded, so both records land on the test thread. Assert the
-accept path logs the accept and no reject, and the divergent path the reverse.
+accept path logs the accept and no reject, and the divergent path the reverse. Use the
+target-scoped assertion here — `"postretro_net"` as the prefix — rather than the plain
+level-plus-body form. These are the only tests that exercise that variant, and
+AC-SURFACE-1's review gate requires it to have a caller outside the capture crate.
 
 *`crates/scripting-core`.* Three functions in `store_bridge.rs` refuse a write to a
 read-only slot, log `[Scripting] … rejected write to readonly slot`, and return `Ok(())`:
@@ -371,7 +384,7 @@ in only `log` — `crates/net`'s no-async-runtime `cargo tree` gate is unaffecte
 
 ## Sequencing
 
-All four phases land before merge; E15 starts after.
+All three phases land before merge; E15 starts after.
 
 **Phase 1 (sequential):** Task 1 — the crate must exist first.
 **Phase 2 (sequential):** Task 2 — thin slice. Two loggers in one binary is the hardest
@@ -388,7 +401,7 @@ line. Last chance to move the surface.
 |---|---|---|---|
 | One test logger per binary, workspace-wide; losing the race panics rather than skipping | Task 1 (`Once` installer, stored `set_logger` result, panic on collision) | Tasks 2 and 3 delete all four incumbents. A fifth would break only its own binary, which no per-crate test can catch — the grep gate is what generalizes | AC-CAP-7, AC-LOGGER-1 |
 | No test needs a serializing lock to assert on logs | Task 1 (per-thread buffers) | Task 2 removes `WARN_TEST_LOCK` and `WARN_LOCK`; re-adding a suite-wide mutex restores the defect | AC-CAP-5, AC-UI-1 |
-| Existing capture call sites do not move | Task 3 (adapters keep each helper's parameter shape) | 40 `postretro` references across 17 files, one of them a bare `use`-imported `capture(..)`; a parameter change turns a 2-file task into an 18-file one. The renderer helper's return type is the one deliberate exception, with a single caller | AC-ADAPT-1 |
+| Existing capture call sites do not move | Task 3 (adapters keep each helper's parameter shape) | 40 `postretro` references across 16 files plus the module declaration, one of them a bare `use`-imported `capture(..)`; a parameter change turns a 2-file task into an 18-file one. The renderer helper's return type is the one deliberate exception, with a single caller | AC-ADAPT-1 |
 | Runtime logging is unchanged | Task 1 (dev-dependency only) | Tasks 2–4 add five manifest lines; promoting any out of `[dev-dependencies]` links the logger into the shipped binary | AC-BUILD-1 |
 
 ## Open questions
@@ -399,10 +412,12 @@ line. Last chance to move the surface.
 - **`crates/level-compiler`'s reporter tests.** They construct `CollectingLogger` and call
   `log()` on it directly, never installing globally — no race, nothing to gain. Out of
   scope, recorded so it is not re-derived.
-- **`context/lib` updates are blocking.** `development_guide.md` §Workspace says "17
-  crates" and its table types `postretro-level-compiler` as binary-only, which Task 1's
-  Scope note contradicts. `testing_guide.md` gains the log-assertion pattern and the
-  pinned surface. These land at promotion, and cannot be deferred past it:
-  `/orchestrate` gives an E15 task agent only its own paragraph, E15's Goal, AC list, and
-  Invariants — never this plan. `testing_guide.md` is the only channel through which an
-  E15 implementer learns the harness exists.
+- **Two `context/lib` updates land at promotion.** Neither can slip past it.
+  `testing_guide.md` gains the log-assertion pattern and the pinned surface — this is the
+  blocking one. `/orchestrate` gives an E15 task agent only its own paragraph, E15's Goal,
+  AC list, and Invariants, never this plan, so `testing_guide.md` is the only channel
+  through which an E15 implementer learns the harness exists. Separately,
+  `development_guide.md` §Workspace types `postretro-level-compiler` as binary-only, which
+  this plan's Scope bullet contradicts — it has a `lib.rs` that `xtask` depends on. The
+  §Workspace crate count and table are not promotion work: they go stale the moment the
+  18th crate exists, so Task 1 owns them.

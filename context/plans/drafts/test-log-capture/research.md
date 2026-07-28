@@ -97,9 +97,12 @@ that keeps a `Send` handle additive.
 `log::` calls; it returns `StagedManifestDiagnostic` over `mpsc`. Not a hazard for E15's
 hot-reload criteria, whose commit-and-warn site runs on the polling thread.
 
-libtest capture routing, for the stderr decision: output capture is per test thread, so
-same-thread orphans are captured and attributed to whichever test owns that thread, and
-cross-thread orphans always print.
+libtest capture routing, which is why the stderr echo is opt-in
+(`POSTRETRO_LOG_CAPTURE_ORPHANS`) rather than unconditional: output capture is per test
+thread, so with the echo on, same-thread orphans are captured and attributed to whichever
+test owns that thread, while cross-thread orphans bypass capture and always print. Neither
+is useful by default in a binary like `postretro-ui`, where 237 tests run and several
+emit `[UI]` warns deliberately. The counter is unconditional regardless.
 
 ## Workspace-member side effects
 
@@ -152,9 +155,11 @@ stateDiagram-v2
     }
 
     note right of Detached
-        No buffer: orphan counter += 1,
-        record to stderr. try_with also
-        lands here during TLS teardown.
+        No buffer: orphan counter += 1.
+        Stderr echo only under
+        POSTRETRO_LOG_CAPTURE_ORPHANS.
+        try_with also lands here
+        during TLS teardown.
     end note
 ```
 

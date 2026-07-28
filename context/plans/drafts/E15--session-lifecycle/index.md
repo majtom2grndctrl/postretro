@@ -51,7 +51,11 @@ outlives the map it joined on.
   where content cannot be replicated.
 - **A relevel message** — server→client, naming the next map's catalog id — and the client-side
   follow that enqueues the load through the shipped request path.
-- **Host-side net reset on level unload**, which today early-returns for the host role.
+- **Host-side net reset on level unload**, which today early-returns for the host role. Unload
+  also clears the host's installed level parity, so a host returning to Frontend demotes its
+  clients instead of holding them participating against a world it has torn down.
+- **A reserved `CloseCause` variant for a host-initiated leave.** Vocabulary only; nothing emits
+  it here.
 - **Transport polling across every world-less frame** — Frontend as well as Loading — so a load
   longer than the netcode timeout does not drop every peer, and so a client with no level
   installed can be admitted at all.
@@ -70,7 +74,8 @@ outlives the map it joined on.
 - **Reconnect after a close.** A closed connection stays closed. Demotion keeps a connection
   alive; a dropped peer relaunches.
 - **Host migration and graceful host-leave.** A later roadmap aspiration. This spec opens the
-  session-state ledger but does not serialize it.
+  session-state ledger but does not serialize it, and reserves the close cause a graceful leave
+  will use without implementing the departure.
 - **A client asking the host to change level.** Map authority is server-owned. The
   authorized-requester concept arrives with host-as-client packaging (Phase 4).
 - **`loadLevel`'s co-op semantics.** The shipped system reaction still loads locally on every
@@ -314,8 +319,16 @@ Rivals are listed in Direction and argued in `research.md`.
   cannot land in the wrong lane by omission. `RejectReason` is **deleted**, not wrapped.
 - **Both protocol constants bump.** New message vocabulary bumps the app protocol id; the changed
   layout bumps the wire version. Independent bumps, both apply.
-- **Single-player is untouched.** No endpoint is constructed, so no gate runs, no relevel is sent,
-  and no path branches on player count.
+- **No endpoint, no gate.** Single-player constructs no endpoint, so no gate runs, no relevel is
+  sent, and no path branches on player count. Both digests are computed only where an endpoint
+  exists. The level recipe now hashes the world collision buffers, and Phase 4's host-as-client
+  packaging installs each level in two worlds on one thread, so an unconditional hash is paid
+  twice on a host and for nothing in solo play.
+- **`CloseCause` reserves a host-initiated leave.** The roadmap models host migration as a
+  handoff, which only works on graceful departure, so the lifecycle needs a leave distinguishable
+  from a crash or a timeout. This spec does not implement the departure. It reserves the variant,
+  at the one moment the close causes are already being reshaped and both protocol constants are
+  already bumping — later the same variant costs another bump.
 
 ## Acceptance criteria
 
@@ -445,6 +458,10 @@ AC-DIGEST-3, AC-DIGEST-6, AC-LEVEL-4, AC-BOOT-4.
       rather than retaining a tableau that no longer updates. On re-promotion it re-arms from the
       host's next `local_player` baseline, with no promotion message and no client-side latch to
       clear.
+- [ ] **AC-LIFECYCLE-6** — A host that unloads to Frontend without installing another level
+      **demotes** every participating slot and closes none. Its clients hold at admitted with no
+      level parity installed — the same state a client joining a level-less host reaches — and
+      re-participate at the host's next matching install.
 - [ ] **AC-LEVEL-5** — A redundant relevel naming the level already active or already in flight
       does not restart the load.
 - [ ] **AC-LEVEL-6** — A client joining a host that **already has a catalogued level installed**
@@ -615,7 +632,10 @@ matching on it, which is the convention this replaces. `ClosingCause` covers pro
 already defines `CloseCause { Disconnect, Timeout }`, used as
 `SlotState::Closed { cause: CloseCause }` and `SlotEvent::Closed { cause: CloseCause }`;
 `ClosingCause` is a distinct type and both coexist in the crate. `CloseCause` says how a
-connection ended; `ClosingCause` says why admission refused it. Each carries expected and
+connection ended; `ClosingCause` says why admission refused it. `CloseCause` gains a third
+variant for a host-initiated leave. Nothing emits it in this spec — it is reserved so a graceful
+departure stays distinguishable from a crash, at the one point the close vocabulary is open.
+Each `ClosingCause` carries expected and
 received, with the mod-id cause quoting both peers' declared versions and the level causes
 distinguishing an identity mismatch from a same-identity digest mismatch. Each cause's payload is
 pinned:
@@ -829,8 +849,10 @@ since the mods matched but the catalogs diverged.
 **Mid-load relevel is settled, not open.** `App::enqueue_level_request` already queues a newer
 `Load` over a queued one and applies it when the in-flight load completes, so the v1 rule is the
 shipped behavior — with one exception: it early-returns with a warning during the **boot** load.
-A relevel arriving during boot load is dropped, which is acceptable because a client in boot load
-has not yet been admitted.
+A relevel arriving there is dropped. Scoped rather than fixed: a boot load only runs for a peer
+launched with a map argument, which is the loopback dev recipe (AC-LEVEL-4) and not the join flow
+this spec opens — a client joining from Frontend has no boot load to race. The dropped case leaves
+that client admitted until the host's next transition, recoverable and rare.
 
 ### Task 5: Poll the transport across every world-less frame
 
@@ -1105,6 +1127,17 @@ it only matches a peer launched identically. Install it alongside Task 6's widen
 computed from the same `world` already in scope. Also install the relevel catalog id Task 4
 needs — set when the source is `Catalog`, cleared otherwise.
 
+Both installs happen only where an endpoint exists. `install_level_payload` computes the
+fingerprint today before it tests for one; move the computation inside that test, since Task 6's
+recipe now walks the world collision buffers and Phase 4 installs every level twice on a host.
+
+**Unload clears the level parity.** The same setter takes `None`, called from the unload path
+beside the host-role reset below. Frontend-with-clients-connected is a session state this spec
+already reaches from the join side — a client admitted before any level installs — and returning
+to it from a loaded level must land in the same place. Clearing routes through Task 3's one
+re-evaluation function like every other install, so demotion follows from the predicate and no
+unload-specific transition is written.
+
 **Participation seam:** the pawn spawn currently keyed off the accept outcome in `main.rs` moves
 to `SlotEvent::Participating`; a pawn needs a level, which is what parity now proves. That event
 fires on **every** entry to `Participating` under Task 3's derivation rule, so a re-promoted slot
@@ -1259,7 +1292,7 @@ Task 5's and Task 6's lists, so Task 7 is a fourth `main.rs` toucher rather than
 |---|---|---|---|
 | No entity state reaches a slot below participating | Task 3 (send gating) | Every new send path must gate on participation, not admission or connection | AC-GATE-1, AC-GATE-3, AC-GATE-4, AC-LIFECYCLE-1 |
 | **Admission carries only values that cannot change for a live connection** | Task 3 (lane assignment), Task 2 (identity frozen at first commit) | A compared value placed in admission because it is known early becomes an unrecoverable close the moment it can be reinstalled | AC-GATE-4, AC-DIGEST-9 |
-| Content parity is proven for the *current* content, not the joining one | Task 3 (predicate re-evaluated on source replacement), Task 7 (per-install level pair, per-commit mod digest) | A demotion that failed to clear state would leave stale ids addressable; a parity value that stopped being reinstalled would gate on history | AC-LIFECYCLE-1, AC-LEVEL-3, AC-DIGEST-9 |
+| Content parity is proven for the *current* content, not the joining one | Task 3 (predicate re-evaluated on source replacement), Task 7 (per-install level pair, per-commit mod digest) | A demotion that failed to clear state would leave stale ids addressable; a parity value that stopped being reinstalled would gate on history, and one never *cleared* would gate on a world the host has torn down | AC-LIFECYCLE-1, AC-LIFECYCLE-6, AC-LEVEL-3, AC-DIGEST-9 |
 | **A slot participates if and only if its retained declaration matches the installed parity triple** | Task 3 (one re-evaluation function every install setter calls), Task 7 (both install sites route through it) | Specified as a transition instead of an invariant, it becomes one-directional. The level path hides that, because the client re-sends at every install; the mod-digest path has no re-send and no recovery. A fourth parity source that installs without re-evaluating reintroduces it | AC-DIGEST-9, AC-LIFECYCLE-3, AC-LIFECYCLE-4 |
 | A demotion clears exactly what a close clears, **host side** | Task 3 (both events derived from one edge: any exit from `Participating`), Task 7 (routed into the existing cleanup) | A shared trigger, not a convention two paths must both honor. Both demotion triggers, level and mod digest, run the one host path; `Admitted → Closed` runs it not at all. The client side has no close cleanup to reuse — Task 7 defines client-side demotion (despawn mapped remotes, disarm prediction) by reusing the level-unload reset | AC-LIFECYCLE-1, AC-LIFECYCLE-2, AC-DIGEST-9, AC-LIFECYCLE-5 |
 | **The pawn spawn fires on any entry to `Participating`** | Task 3 (event derived from the transition, not from a once-only method), Task 7 (spawn keyed to `SlotEvent::Participating`) | The shipped `on_accept` is once-only per `ClientId`, correct until a slot can re-enter participation. A re-promotion that emitted nothing leaves a participating slot with no pawn and snapshots flowing about entities the client never spawned | AC-LIFECYCLE-2, AC-LIFECYCLE-3, AC-LIFECYCLE-4 |
@@ -1328,8 +1361,10 @@ export default defineMod({
   content divergence holds the connection open, so its diagnostic rides an ordinary reliable
   message with no deferral — leaving one pending-disconnect list and one poll on the
   protocol/mod-id path. The rest of the spec works without it. If it fights renet's teardown, the
-  fallback is a host-side log only, at the cost of a player who cannot tell a wrong mod from an
-  unreachable host. With the mod digest in the parity lane, the common mismatch among friends on
-  slightly different builds no longer travels this path.
+  fallback is a **client-side** message with no cause — "incompatible host" — never a host-side
+  log alone. Under player hosting the host is a player, not an operator, and nobody reads its
+  log; the person who needs the reason is the one who could not join. With the mod digest in the
+  parity lane, the common mismatch among friends on slightly different builds no longer travels
+  this path.
 
 Questions closed while drafting are recorded in `research.md` §Questions closed while drafting.

@@ -26,7 +26,8 @@ but the E15 half is a forecast, not debt.
   records logged on threads with no buffer, surfaced in every assertion failure.
 - Converting the three `crates/ui` warning-count tests off their ad-hoc counting logger.
 - Wiring the dev-dependency into `crates/net`, `crates/postretro`, and
-  `crates/scripting-core` with a guard test per crate.
+  `crates/scripting-core`, each with a test covering a shipped degradation path whose
+  only observable is a log record.
 
 ### Out of scope
 
@@ -82,9 +83,14 @@ won the race. A harness that reads green when it is broken is worse than none.
   "Degradation paths" a priority target, and for the version-skew info line, the
   transform-only fallback, and the absent-catalog-id diagnostic the log record is the
   *only* observable the degradation produces. The guide gains a §3 entry at promotion.
-- **`testing_guide.md` §1-2** would exclude AC-CAP-1 through AC-CAP-8 as testing a crate
-  API rather than Postretro behavior. Accepted for a harness whose own correctness is
-  the thing every downstream assertion rests on; noted rather than argued away.
+- **`testing_guide.md` §2** excludes "testing crate behavior." AC-CAP-1 through AC-CAP-8
+  do not fall under it: each asserts on code this plan writes — our install, our
+  per-thread routing, our guard's drop, our assertion messages — not on whether the
+  `log` facade dispatches correctly. The rule that separates them, and the one applied
+  throughout: **keep a test if it exercises our logger; if it only exercises someone
+  else's, it is testing a crate API and should be replaced by one that covers real
+  behavior.** Task 3 is shaped by that rule — its three tests assert on shipped engine
+  diagnostics, not on the tautology that logging a string logs the string.
 
 **Alternatives rejected.**
 - **Diagnostic-as-value at the emission site** — the strongest rival, and it is not a
@@ -189,10 +195,16 @@ landing this before E15, not after.
       unconditionally: no skip path, no `Option` return, and no test-serializing mutex
       remain in that file. They pass under the default parallel runner, and the
       unknown-token cases still assert exactly one warning per build.
-- [ ] **AC-REACH-1** — `crates/net`, `crates/postretro`, and `crates/scripting-core`
-      each contain a test that captures a record emitted inside that crate's own test
-      binary and asserts on it. Each fails loudly, per AC-CAP-7, if a competing logger is
-      ever introduced into that binary.
+- [ ] **AC-REACH-1** — Three shipped degradation paths whose only observable is a log
+      record are asserted through the harness, one per consumer crate. **Netcode:** a
+      co-op handshake refused for a divergent protocol version logs its reject
+      diagnostic and no accept; an accepted handshake logs the accept, at a different
+      level, and no reject. **Scripting:** each of the three script write paths to a
+      read-only state slot logs a refusal naming the slot while still returning success
+      to the caller — the refusal is otherwise invisible. **Engine:** a remote entity
+      whose class is unregistered is left transform-only with a warning, and the
+      meshless-descriptor case producing the identical return value is distinguished
+      from it by level and body alone.
 - [ ] **AC-BUILD-1** — A non-test build of the engine links none of this: the capture
       crate does not appear among `postretro`'s normal-edge dependencies, and the shipped
       `env_logger` runtime path is unchanged.
@@ -250,19 +262,45 @@ assertion rather than a counter delta. This is the thin slice — it is the only
 exactly-once consumer that exists today, and it exercises the guard under the default
 parallel runner against three tests in one binary that previously had to serialize.
 
-### Task 3: Wire the three E15 consumer crates
+### Task 3: Cover three log-only degradation paths
 
-Add `postretro-test-log-capture` to `[dev-dependencies]` in `crates/net/Cargo.toml`,
-`crates/postretro/Cargo.toml`, and `crates/scripting-core/Cargo.toml` (all three already
-have a `[dev-dependencies]` section except `net`, which needs one). In each crate add a
-single guard test that constructs a capture, emits a record from within that crate, and
-asserts on it by level and body substring. These are not filler: they verify the one
-property that can silently regress per-binary — that no competing logger owns that
-crate's test process — and they will fail loudly rather than silently the day one is
-introduced. Use each crate's own `[Subsystem]` tag convention in the emitted body
-(`development_guide.md` §6.1) so the test also demonstrates the substring-matching shape
-that E15's criteria will use. Do not add assertions against E15 behavior that does not
-exist yet; E15's own tasks own those.
+Add `postretro-test-log-capture` to `[dev-dependencies]` in `crates/net/Cargo.toml`
+(which has no such section yet), `crates/postretro/Cargo.toml`, and
+`crates/scripting-core/Cargo.toml`. Then add one real behavioral test per crate against
+an **existing** log site — not a synthetic emission. Each of the three is a shipped
+degradation path in the sense of `testing_guide.md` §1, and each is currently untested.
+
+*`crates/net`.* `transport.rs:390` logs `[Net] client {id} accepted (protocol …)` at
+`info` and `:394` logs `[Net] rejecting client {id}: {reason}` at `warn`. Both already
+run under the existing loopback tests — `loopback_matching_version_is_accepted` and
+`loopback_diverged_app_version_is_rejected_with_typed_reason` in the `transport.rs` test
+module, which drive a real `NetServer` over a bound UDP socket. Wrap a capture around
+each and assert the accept path logs the accept and **not** a reject, and the divergent
+path the reverse. This is the exact pair of `[Net]` diagnostics E15's admission criteria
+build on, so the assertion shape lands before E15 needs it.
+
+*`crates/scripting-core`.* `store_bridge.rs:75`, `:116`, and `:139` reject a script write
+to a read-only state slot — `storeWrite`, `setState`, and the text-edit path — each
+logging `[Scripting] … rejected write to readonly slot` and then **returning `Ok(())`**.
+The caller cannot distinguish a refused write from a successful one, so the warning is
+the sole observable and the refusal is unverifiable without capture. The only existing
+readonly test (`store_declaration_rejects_accumulator_on_non_number_or_readonly_slot`)
+covers declaration validation, not the write refusal. Assert the warning names the slot
+on all three paths.
+
+*`crates/postretro`.* `scripting/builtins/net_descriptor.rs:226` warns
+`[Net] remote entity_class … not registered; leaving remote entity transform-only` and
+`:233` logs the meshless-descriptor case at **`debug`** with a different body. Both
+return `false` from the same function, so the return value cannot tell the two apart —
+the level and body are what discriminate. Assert both, from the same capture. This is
+E15's AC-DIGEST-3 site, and it doubles as the one place the harness's level-plus-body
+matching (AC-CAP-1) and its trace/debug capture (AC-CAP-4) are exercised against real
+engine code rather than the harness's own fixtures.
+
+Add no assertions against E15 behavior that does not exist yet; E15's own tasks own
+those. These three also carry the per-binary property that no competing logger owns
+that crate's test process — but that is now a side effect of a test worth having, not
+its justification.
 
 ## Sequencing
 
@@ -276,7 +314,7 @@ the wiring three more times.
 
 | Invariant | Established by | Preserved / threatened at | Verified by |
 |---|---|---|---|
-| Exactly one logger is installed per test process, and losing that race is loud rather than silent | Task 1 (`Once` installer + stored `set_logger` result + panic on collision) | Task 2 deletes the competing `crates/ui` logger; Task 3 must add no logger of its own. Any future crate introducing a second test logger breaks this in *that binary only* — which is why Task 3's per-crate tests exist | AC-CAP-7, AC-UI-1, AC-REACH-1 |
+| Exactly one logger is installed per test process, and losing that race is loud rather than silent | Task 1 (`Once` installer + stored `set_logger` result + panic on collision) | Task 2 deletes the competing `crates/ui` logger; Task 3 must add no logger of its own. A future crate introducing a second test logger breaks this in *that binary only*, so Task 3's three tests are what would catch it in the E15 consumer crates — a side effect of tests worth having on their own merits, not their purpose | AC-CAP-7, AC-UI-1, AC-REACH-1 |
 | No test needs a serializing lock to assert on logs | Task 1 (per-thread buffers) | Task 2 removes the shipped `WARN_TEST_LOCK`; re-adding any suite-wide test mutex to work around capture would silently restore the shipped defect | AC-CAP-5, AC-UI-1 |
 | Runtime logging behavior is unchanged | Task 1 (dev-dependency only, no `env_logger` interaction) | Task 3 adds three manifest lines; promoting any of them out of `[dev-dependencies]` links the capture logger into the shipped binary | AC-BUILD-1 |
 
@@ -320,14 +358,12 @@ capture.assert_not_logged(Level::Warn, "[Net] rejecting client 1");
 
 ## Open questions
 
-- **Owner decision — keep or cut Task 3.** `/validate-plan` argues it should go: a test
-  asserting that logging a string logs the string is what `testing_guide.md` §2 excludes,
-  and the "no competing logger owns this binary" property it guards is already covered by
-  AC-CAP-7 inside the harness's own suite. The counter-argument is that AC-CAP-7 proves
-  it for *one* binary, and the property is per-binary. If cut, drop AC-REACH-1 with it and
-  either keep the three `[dev-dependencies]` lines (proven by `cargo check`) or let E15
-  add each edge alongside its first real assertion. Left standing pending the call —
-  scaling down is the owner's, not the drafter's.
+- ~~**Keep or cut Task 3.**~~ **Resolved.** `/validate-plan` was right that the original
+  shape — emit a record, assert the record — tested the `log` crate rather than this one.
+  It was wrong that the answer was deletion: all three crates turn out to have shipped
+  log sites where the record is the sole observable, and none of them were tested. Task 3
+  now covers those instead, and AC-REACH-1 with it. The per-binary no-competing-logger
+  property rides along as a side effect rather than as the justification.
 - **Upstream lock this spec rests on.** E15 Task 6: "The version field is carried for
   diagnostics and **must not gate**. The only permitted comparison emits a host-side
   `info` log." That decision is what makes AC-GATE-5 log-only, and it is the strongest

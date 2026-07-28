@@ -82,6 +82,23 @@ the boot-load early-return warning (`:807`). The `[Net]` body tag is live today:
 `[Subsystem]` prefix a rule, which is why **body substring is the primary key** and
 target is a secondary filter.
 
+## Shipped log-only degradation paths (Task 3's real targets)
+
+Task 3 was originally "emit a record, assert the record" — a test of the `log` crate, not
+of this one. Grounding turned up three shipped sites per the keep-if-it-tests-our-logger
+rule, all currently untested:
+
+| Crate | Site | Why the log is the only observable |
+|---|---|---|
+| `net` | `transport.rs:390` (`info`, `[Net] client {id} accepted`), `:394` (`warn`, `[Net] rejecting client {id}`) | Reached today by `loopback_matching_version_is_accepted` and `loopback_diverged_app_version_is_rejected_with_typed_reason`, which drive a real `NetServer` over a bound UDP socket. `HandshakeOutcome` is asserted; the operator-facing diagnostic never is. Exactly the pair E15's admission criteria extend |
+| `scripting-core` | `store_bridge.rs:75`, `:116`, `:139` — `storeWrite`, `setState`, text-edit | All three **return `Ok(())`** after refusing a write to a read-only slot. The caller cannot distinguish refusal from success. The only existing readonly test (`:806`) covers declaration validation, not the write refusal |
+| `postretro` | `scripting/builtins/net_descriptor.rs:226` (`warn`, unregistered class), `:233` (`debug`, no mesh block) | Both return `false` from `materialize_net_mesh_presentation`, so the return value cannot discriminate the two causes — level and body are the only signal. This is E15's AC-DIGEST-3 site, and the one place `debug`-level capture (AC-CAP-4) is exercised against real engine code |
+
+The `postretro` row is also the clearest illustration of the boundary in
+`Alternatives rejected`: a return value *does* exist here, so a value assertion covers
+"transform-only." It cannot cover *why*, and the two reasons are deliberately logged at
+different levels.
+
 ## Workspace-member side effects
 
 `crates/xtask/src/crate_graph.rs` builds its graph from `cargo metadata --no-deps`,

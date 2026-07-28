@@ -276,11 +276,11 @@ isolation and a `catch_unwind` unwind case. AC-CAP-7's foreign-logger half needs
 calls `start()` — because the condition can only be produced once per process. No `unsafe`
 (`development_guide.md` §3.5).
 
-Two `context/lib` updates land in the same change. Regenerate `crate-graph.md` with
-`cargo run -p xtask -- crate-graph --write`: `layers` ranks every workspace member, so the
-zero-edge member lands in `Layer 0 (leaves)` and `check_committed_doc` fails until the doc
-is rewritten. Then update `development_guide.md` §Workspace, which opens "17 crates in a
-Cargo workspace" above a 17-row table — both go stale, and no gate catches it.
+Regenerate `context/lib/crate-graph.md` with `cargo run -p xtask -- crate-graph --write` in
+the same change: `layers` ranks every workspace member, so the zero-edge member lands in
+`Layer 0 (leaves)` and `check_committed_doc` fails until the doc is rewritten. That is the
+only `context/lib` edit this task owns — §Workspace no longer carries a hand-maintained
+crate roster, so adding a member goes stale nowhere else.
 
 ### Task 2: Retire the two `crates/ui` loggers
 
@@ -412,16 +412,12 @@ line. Last chance to move the surface.
 - **`crates/level-compiler`'s reporter tests.** They construct `CollectingLogger` and call
   `log()` on it directly, never installing globally — no race, nothing to gain. Out of
   scope, recorded so it is not re-derived.
-- **Two `context/lib` updates land at promotion.** Neither can slip past it.
-  `testing_guide.md` §3 gains the log-assertion pattern — the blocking one.
-  `/orchestrate` gives an E15 task agent only its own paragraph, E15's Goal, AC list, and
-  Invariants, never this plan, so that entry is the only channel through which an E15
-  implementer learns the harness exists. **It carries no signatures.** Per
-  `context_style_guide.md`, method names and code samples are ephemeral and belong in this
-  plan; the durable content is the contract in prose — one test logger per process,
-  per-thread buffers, collision panics rather than skips, assertions keyed on level plus
-  body substring with target as a filter — plus `crates/test-log-capture` as the entry
-  point to read for the shape. Separately, `development_guide.md` §Workspace types
-  `postretro-level-compiler` as binary-only, which this plan's Scope bullet contradicts —
-  it has a `lib.rs` that `xtask` depends on. The §Workspace crate count and table are not
-  promotion work: they go stale the moment the 18th crate exists, so Task 1 owns them.
+- **The `context/lib` capture is written, and its timing is the open part.**
+  `testing_guide.md` §3 carries the log-assertion contract in prose — one logger per test
+  process, collision panics rather than skips, per-thread buffers, level-plus-body
+  matching, orphan counting, and the rule that an asserted log line becomes contract. It
+  names no signatures: per `context_style_guide.md`, method names and code samples are
+  ephemeral, so it points at `crates/test-log-capture` for the shape. **That pointer is
+  the open question** — it references a crate Task 1 has not built yet, so the entry must
+  not reach `main` ahead of the implementation. Land it with Task 1's branch, not with a
+  plan-only merge.

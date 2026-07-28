@@ -604,7 +604,9 @@ three committed `defineMod` call sites under `content/` to declare both fields:
 review gate — `content/dev/scripts/tsconfig.json`'s `"include": ["./**/*.ts"]` covers
 `content/dev/scripts/frontend-level-select-fixture.ts`, so a missing required field there fails
 that gate. It does **not** cover `content/dev/start-script.ts`, one directory up: a missing or
-malformed field there is caught only at runtime, by the new parse validation, never by CI. The Script syntax examples block matches that manifest's shape: `maps` imports
+malformed field there is caught only at runtime, by the new parse validation, never by CI.
+
+The Script syntax examples block matches that manifest's shape: `maps` imports
 `mapCatalog` from `content/dev/scripts/frontend-menu`, because the example mirrors the *runtime*
 manifest, which imports its catalog; the two fixtures inline `defineMapCatalog([...])` instead.
 
@@ -1004,7 +1006,10 @@ introducing a `ClientPoll` return type, which would mean changing `NetClient::up
 value only this task consumes. **One router serves all four variants.** The drain returns every
 server→client Control variant — relevel, the divergence diagnostic in both its `Closing` and
 `Holding` arms, and the tuning payload — not just relevel; two drains over one reliable queue would
-steal each other's messages. One engine-side router dispatches by variant: relevel to
+steal each other's messages. Name the router `client_drain_control`, a `pub(crate)` function in
+`crates/postretro/src/netcode/mod.rs`, called from the Running client arm in
+`crates/postretro/src/main.rs` and from the world-less poll entry point Task 5 defines,
+`NetEndpoint::poll_world_less`. It dispatches by variant: relevel to
 `App::enqueue_level_request`, a `Closing` diagnostic to this task's own arm, a `Holding` diagnostic
 to Task 7's client-side demotion, and the tuning payload to Task 7's payload install. This task
 defines the drain, its relevel arm, and its `Closing` arm — the `Closing` arm logs the typed cause
@@ -1039,7 +1044,12 @@ Loading. Frontend is also where `finish_level_failure` and `unload_level` land.
 
 So: advance the net endpoint from **every world-less frame** — the loading frame in
 `crates/postretro/src/startup/lifecycle.rs` and the Frontend path in
-`crates/postretro/src/main.rs`. The boundary is stated as both a permission and a prohibition,
+`crates/postretro/src/main.rs`. Pin the entry point each site calls: add
+`NetEndpoint::poll_world_less(&mut self, dt: Duration, registry: &mut EntityRegistry) ->
+WorldLessPoll` in `crates/postretro/src/netcode/mod.rs`, doing exactly the `NetServer::update` /
+`NetClient::update` advance, the `pending_lifecycle` drain, and Task 4's `client_drain_control`
+Control drain — nothing else; no snapshot apply, no prediction, no command drain. Task 4 and Task
+7 both call it by this name. The boundary is stated as both a permission and a prohibition,
 since Task 4 drains relevel from these frames and calls `App::enqueue_level_request`, and Task 7's
 client-side demotion despawns remotes from them. Forbidden: snapshot apply, state-crossing
 detection, the simulation tick — there is no world outside Running, and the snapshot-apply
@@ -1055,19 +1065,27 @@ it would consume and permanently drop an unload- or suspend-driven demotion. Wha
 bounded by Task 7's two-cleanups distinction: the **per-slot cleanup** keyed by `ClientId` is
 world-independent and reachable on a world-less frame; the **level-scoped host table reset** keyed
 by level lifetime is bound to a level, and on the unload path it has already run by the time this
-poll executes. `host_handle_lifecycle` takes the registry borrow as its first parameter, so the
-world-less call site threads the session-owned `script_ctx.registry`. On the unload path the
+poll executes. `host_handle_lifecycle` takes thirteen parameters — `registry, allocator, replicable, replication,
+state_slots, slot_pawns, command_queues, owners, weapon_owners, open_shots,
+pending_hit_declarations, weaponless_fire_logged, lifecycle` — all but the first and last being
+`NetEndpoint::Host` fields, so the world-less call site must hold a `RefCell` borrow of
+`script_ctx.registry` while destructuring `Host`. Clone the `ScriptCtx` handle before the
+`session.net_endpoint.as_mut()` match, mirroring `install_level_payload`, then call
+`script_ctx.registry.borrow_mut()` inside the `Host` arm; the other eleven arguments come from the
+`Host` destructure. On the unload path the
 despawns are no-ops by the time the event drains, because the drain happens on a later poll, after
 `EntityRegistry::clear_for_level_unload` emptied the registry; the stale-id error is already
 swallowed. On the **suspend** path the registry is never cleared, so the despawns do real work
 there — which is the case that makes threading the borrow mandatory rather than optional.
 
-**The boundary is a predicate on endpoint presence, not a state enumeration.** Implementation:
-after the splash paint succeeds, if a session is installed, run the same world-less poll before
-returning. This does not move, delay, or conditionalize the splash: during normal boot the session
-is absent for all of frame 0 and most of frame 1, so the poll is a no-op and the pixels-first
-schedule is unchanged — the endpoint gets polled from the moment it exists, not from a boot-phase
-boundary. A state enumeration would be wrong: `App::suspended` resets boot state to `Booting` and
+**The boundary is a predicate on endpoint presence, not a state enumeration.** Implementation: in
+`crates/postretro/src/startup/splash_lifecycle.rs`, after `run_splash_frame_zero` or
+`run_splash_frame_one` paints succeeds, if `session.net_endpoint` is `Some`, run the same
+world-less poll before returning. Naming both matters: frame 0 can loop for many frames on a
+transient surface failure, which is the case this paragraph's argument rests on. This does not
+move, delay, or conditionalize the splash: during normal boot the session is absent for all of
+frame 0 and most of frame 1, so the poll is a no-op and the pixels-first schedule is unchanged —
+the endpoint gets polled from the moment it exists, not from a boot-phase boundary. A state enumeration would be wrong: `App::suspended` resets boot state to `Booting` and
 re-drives the splash loop from frame 0, but simply never drops the installed `Session` (and the
 endpoint it owns) — its own comment states the rule directly: "The rest of the session survives
 suspend" (`crates/postretro/src/main.rs`). `install_pending_session`'s `take_once` guard
@@ -1280,7 +1298,10 @@ content hashes identically **in two separate processes**.
 client resolving them. Pure encode and decode plus their tests; Task 7 owns both call sites.
 
 Put the payload type and its codec in `crates/postretro/src/netcode/tuning_payload.rs`, engine
-side, where the descriptor vocabulary already lives. It carries, for one slot's pawn: the
+side, where the descriptor vocabulary already lives. Name them: `pub(crate) struct TuningPayload`,
+`pub(crate) fn encode_tuning_payload(&TuningPayload) -> Vec<u8>`, and `pub(crate) fn
+decode_tuning_payload(&[u8]) -> Result<TuningPayload, TuningPayloadError>`, all in this file. It
+carries, for one slot's pawn: the
 `PlayerMovementDescriptor` with `view_feel` cleared, and the four weapon fire fields reached
 through `default_weapon` — `range`, `cooldown_ms`, `fire_mode`, `resolution`. Both halves are
 `Option`: a pawn class with no `movement` block, or no resolvable `default_weapon`, sends `None`,
@@ -1347,8 +1368,10 @@ decodes to an error rather than a panic.
 
 ### Task 7: Engine lifecycle wiring
 
-Wire the engine's halves to the new gate. **Mod identity:** read Task 2's committed-identity cell
-after mod init and after each committed staged poll, and install it on the net endpoint through
+Wire the engine's halves to the new gate. **Mod identity:** read the committed identity through
+`ScriptRuntime::committed_mod_identity()` (`crates/scripting-core/src/runtime/core.rs`), which
+returns `Option<(&str, &str)>` — the id and version of the first commit that carried them — after
+mod init and after each committed staged poll, and install it on the net endpoint through
 `set_mod_identity`, reached through the same `session.net_endpoint` borrow `install_level_payload`
 uses — mirroring the fingerprint setter's shape. This is mechanical: idempotent first-wins
 installation, no comparison and no warning — Task 2's cell already decided which commit wins, this
@@ -1373,7 +1396,9 @@ the client arm, since `NetClient` has nothing to relevel. Single-player has no e
 `global_trigger_events`, `global_trigger_pools`, and `global_crossings` as the three slices its
 signature takes — and install it through `set_mod_digest` as the parity lane's first source, at
 mod init **and again after every staged commit**, since a staged reload re-commits the trigger and
-crossing lanes the recipe reads. The staged seam is `App::poll_staged_manifest_results`
+crossing lanes the recipe reads. Compute it only inside a `session.net_endpoint.is_some()` guard,
+at both `run_deferred_mod_init` and `App::poll_staged_manifest_results` — single-player pays no
+hash. The staged seam is `App::poll_staged_manifest_results`
 (`crates/postretro/src/startup/staged_manifest_lifecycle.rs`). The entire staged-manifest
 mechanism is debug-build-only: `ScriptRuntime::poll_staged_manifest_builds` returns an empty `Vec`
 in release, and `ScriptRuntime::commit_staged_manifest_result` wraps its body in
@@ -1405,7 +1430,12 @@ argument exactly as typed, absolute or CWD-relative, so two peers launched from 
 directories would diverge on identity while running the same file. Relativize against
 `App.content_root`, emit forward slashes, case-sensitive, no `.`/`..` segments, and state the
 behavior for a path outside the content root: use the normalized absolute path, and accept that
-it only matches a peer launched identically. Install it alongside Task 6's widened level digest,
+it only matches a peer launched identically. This normalization is a pure helper, not inline work
+in `install_level_payload`: `fn level_identity(source: &LevelSource, content_root: &Path) ->
+String` in `crates/postretro/src/startup/lifecycle.rs`, called from `install_level_payload` —
+`install_level_payload` itself needs `self.renderer` and cannot run under `cargo test`, so the
+normalization must live where it is testable without one. Install it alongside Task 6's widened
+level digest,
 computed from the same `world` already in scope, through `set_level_parity(Some((identity,
 digest)))` on both roles' `NetEndpoint` arms. Also install the relevel catalog id Task 4 needs
 through `set_relevel_catalog_id`, set when the source is `Catalog`, cleared otherwise.
@@ -1431,28 +1461,39 @@ slots participating against a world it no longer has. Route the suspend path thr
 through the same host-side level-scoped table reset — `reset_level_scoped_client_state`'s host
 arm, below — since suspend calls `clear_surface_lifetime_level_state`, not `unload_level`, and that
 host arm otherwise never runs on this path. So routed, a suspend leaves the same net-endpoint and
-host-table state an unload does.
+host-table state an unload does. `App::suspended` takes `&ActiveEventLoop`, so its clears cannot
+be exercised under `cargo test` directly: extract them into `pub(crate) fn
+clear_net_level_parity(&mut self)` on `App`, called from both `unload_level` and `suspended`, so
+the clears themselves are testable independent of the winit callback.
 
-**Participation seam:** the pawn spawn currently keyed off the accept outcome in `main.rs` moves
-to `SlotEvent::Participating`; a pawn needs a level, which is what parity now proves. That event
-fires on **every** entry to `Participating` under Task 3's derivation rule, so a re-promoted slot
-is spawned a fresh pawn by the same code path that spawns a first-time one. This site needs no
-re-promotion branch and must not grow one.
+**Participation seam:** the `SlotEvent::Participating` handler calls
+`replication.register_client(client_id)` and `state_slots.register_client(client_id)` **before**
+the pawn spawn, on every entry — first admission and re-promotion alike, so "any exit from
+`Participating` removes, any entry registers" is symmetric by derivation exactly as the spawn is.
+The pawn spawn currently keyed off the accept outcome in `main.rs` moves to this same handler; a
+pawn needs a level, which is what parity now proves. That event fires on **every** entry to
+`Participating` under Task 3's derivation rule, so a re-promoted slot is re-registered and spawned
+a fresh pawn by the same code path that handles a first-time one. This site needs no re-promotion
+branch and must not grow one.
 
 **Replicated tuning — the host half.** At the same participation transition, immediately after
-the pawn spawn, resolve that slot's pawn class against the host's descriptors, build Task 6's
-payload, and send it on Control through `NetServer::send_control`. The host resolves; the client
+the pawn spawn, resolve that slot's pawn class against the `EntityTypeDescriptor`
+`host_handle_accept_descriptor` resolved for that slot's spawn point, build Task 6's
+`TuningPayload` via `encode_tuning_payload`, and send it on Control through
+`NetServer::send_control`. The host resolves; the client
 never does. Re-send on a staged commit that changes either half for a participating slot's pawn:
 recompute each participating slot's payload, compare it against the last one sent, and send only
-what moved. Retain it engine-side, keyed by `ClientId`, cleared on the `Closed` and `Demoted`
-lifecycle events — a re-participating slot is sent a fresh payload on its next promotion, so the
-retained copy is a change detector, not a cache the client depends on.
+what moved. Retain it in a `last_sent_tuning: HashMap<ClientId, TuningPayload>` field on
+`NetEndpoint::Host`, cleared in the `Closed` and `Demoted` cleanup — a re-participating slot is
+sent a fresh payload on its next promotion, so the retained copy is a change detector, not a cache
+the client depends on.
 
 **Replicated tuning — the client half.** The payload rides Control (reliable-ordered); the pawn's
 `FullBaseline` rides Snapshot (unreliable) — there is no cross-channel ordering, so "install the
 decoded payload before the pawn's components are built" is not a precondition this task can lean
-on. Whichever half arrives second completes the arm. The client stores the decoded payload behind
-a **generation counter**, bumped on every install. `materialize_net_local_movement_component`
+on. Whichever half arrives second completes the arm. The client decodes the bytes through
+`decode_tuning_payload` and stores the resulting `TuningPayload` behind a **generation counter**,
+bumped on every install. `materialize_net_local_movement_component`
 stays on the every-applied-record path — it resolves `entity_class` → `canonical_name` →
 `descriptor.movement` today, and takes the stored `PlayerMovementDescriptor` instead, calling
 `PlayerMovementComponent::from_descriptor` on it — and rebuilds only when the stored generation is
@@ -1476,9 +1517,13 @@ fallback would silently restore the divergence replication exists to remove, and
 whose content differs. Their unit tests move with them, from local descriptor tables to payloads.
 
 **Demotion:** route `SlotEvent::Demoted` into `host_handle_lifecycle` so it runs the same per-slot
-cleanup a close runs. Do not duplicate that cleanup: the two events are the two exits from
-`Participating`, derived by Task 3 from one edge, so routing them to one cleanup is what Task 3's
-derivation already guarantees. `host_handle_lifecycle` needs a call site outside the Running block
+cleanup a close runs — the same cleanup whose first statement, `replication.remove_client`,
+mirrors the registration the participation seam adds on entry: any exit from `Participating`
+removes, any entry registers, symmetric by derivation, not by convention, so a re-promoted slot
+always has a `ClientReplicationState` and receives baselines again. Do not duplicate that cleanup:
+the two events are the two exits from `Participating`, derived by Task 3 from one edge, so routing
+them to one cleanup is what Task 3's derivation already guarantees. `host_handle_lifecycle` needs
+a call site outside the Running block
 for this: Task 5's world-less poll drains `pending_lifecycle` into `ServerPoll.lifecycle` on every
 world-less frame, but `host_handle_lifecycle` today runs only inside the Running gameplay block in
 `main.rs` — add the call at Task 5's three world-less sites too: the loading frame in
@@ -1503,16 +1548,19 @@ the map but never despawns from the entity registry — on the shipped path the 
 because its caller, `App::unload_level`, clears the registry wholesale immediately after. Split the
 reset into two named layers instead.
 
-Layer one, new: a despawn-all-mapped step over the map's keys, reusing the per-entity despawn shape
-`apply_despawn` and `clear_identity_state` already implement (`crates/postretro/src/netcode/client.rs`),
-swallowing stale-id errors as that path does. Layer two: the existing clears — prediction
+Layer one, new: `pub(crate) fn despawn_all_mapped(&mut self, registry: &mut EntityRegistry)` on
+`ClientReplication`, iterating a snapshot of `self.map.keys()` and calling the existing private
+`apply_despawn` per key (`crates/postretro/src/netcode/client.rs`), swallowing stale-id errors as
+that path does. Layer two: the existing clears — prediction
 armed-state and command history, interpolation, replication caches — **minus** the baseline-refresh
 queuing: a demoted client has nothing to repair, and the host drops the requests anyway under this
 spec's Input-gating rule.
 
-On any holding diagnostic received while participating, both triggers run despawn-all-mapped and
-then the clear-only reset — this is the client-side half of Task 3's demotion pipeline, and the
-two triggers converge on one function with **no branch**. Despawn-all-mapped is idempotent, so it
+On any holding diagnostic received while participating, both triggers call
+`NetEndpoint::demote_client_state(&mut self, registry: &mut EntityRegistry)`, which calls
+`despawn_all_mapped` and then the clear-only reset — this is the client-side half of Task 3's
+demotion pipeline, and the two triggers converge on this one function with **no branch**.
+Despawn-all-mapped is idempotent, so it
 is correct whether or not the registry has already been cleared — it is not a no-op on the
 level-change trigger. `App::drain_level_requests` (`crates/postretro/src/startup/lifecycle.rs`)
 calls `unload_level` when it pops the queued `Load` **and `self.boot_state ==
@@ -1564,8 +1612,9 @@ sentence the first edit rewrites; the handshake section describes one app messag
 now two client→server gate messages; and the crate boundary gains a server→client control message
 family.
 
-Keep the `main.rs` edit to redirecting the two tuning-consuming call sites, adding Task 4's Control router (the
-`Holding` and tuning-payload arms), plus the deferred `accepted_clients`/`is_accepted` mechanical
+Keep the `main.rs` edit to redirecting the two tuning-consuming call sites, adding the `Holding`
+and tuning-payload arms to Task 4's `client_drain_control` router, plus the deferred
+`accepted_clients`/`is_accepted` mechanical
 rename pass and the `set_kinematic_static_fingerprint` deprecated-alias deletion Sequencing assigns
 this task. Splitting that file is out of scope and explicitly deferred by
 `runtime-level-lifecycle`.

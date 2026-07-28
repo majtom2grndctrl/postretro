@@ -199,12 +199,31 @@ fn luau_virtual_module_types_and_require_overloads_are_generated() {
         "luau output missing literal require overloads with string fallback:\n{luau}"
     );
 
-    for export in POSTRETRO_ROOT_MODULE_EXPORTS {
-        assert!(
-            luau.contains(&format!("{export}:")),
-            "PostretroModule missing root export `{export}`"
-        );
-    }
+    let root_module = luau
+        .split_once("export type PostretroModule = {\n")
+        .and_then(|(_, rest)| rest.split_once("\n}\n\ndeclare require:"))
+        .map(|(block, _)| block)
+        .expect("Luau output must contain a complete PostretroModule declaration");
+    let actual_root_exports = root_module
+        .lines()
+        .filter_map(|line| {
+            line.strip_prefix("  ")
+                .and_then(|field| field.split_once(": "))
+                .and_then(|(name, _)| {
+                    name.bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+                        .then_some(name)
+                })
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    let expected_root_exports = POSTRETRO_ROOT_MODULE_EXPORTS
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        actual_root_exports, expected_root_exports,
+        "PostretroModule fields must match the runtime root-module export inventory"
+    );
 
     for export in POSTRETRO_UI_MODULE_EXPORTS {
         assert!(

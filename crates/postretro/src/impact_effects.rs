@@ -1,4 +1,4 @@
-// Command-buffer effects addressed to one live impact target.
+// Command-buffer effects applied to live recipients resolved from impact target tokens.
 // See: context/lib/scripting.md §11 · context/lib/entity_model.md §5.
 
 use postretro_entities::components::brain::BrainComponent;

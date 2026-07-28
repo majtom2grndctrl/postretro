@@ -1304,7 +1304,9 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
     let registry = Rc::new(RefCell::new(EntityRegistry::new()));
     let enemy = {
         let mut registry = registry.borrow_mut();
-        spawn_player(&mut registry, Vec3::new(30.0, 1.21, 5.0));
+        // Keep acquisition in its near band so this isolates same-tick
+        // steering/rate scaling from acquisition-stride timing.
+        spawn_player(&mut registry, Vec3::new(10.0, 1.21, 5.0));
         let enemy = spawn_driven_agent(
             &mut registry,
             Vec3::new(5.0, 1.21, 5.0),
@@ -1732,6 +1734,21 @@ fn spawner_path_first_rate_pass_uses_derived_clip_calibration_before_index_resol
         },
     );
     mesh_desc.default_state = Some("walk".to_string());
+    descriptor
+        .behavior
+        .as_mut()
+        .expect("behavior enemy fixture declares a graph")
+        .states
+        .insert(
+            "walk".to_string(),
+            BehaviorStateDescriptor {
+                animation: "walk".to_string(),
+                motion: MotionVerb::ChaseTarget,
+                action: None,
+                transitions: Vec::new(),
+                on_enter: None,
+            },
+        );
 
     let context = SpawnContext::default();
     context.replace_level_data(

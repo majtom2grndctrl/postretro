@@ -1072,9 +1072,19 @@ fn malformed_grant_reactions_reject_the_whole_manifest_identically_in_both_vms()
             "requires exactly one",
         ),
         (
+            r#"({ reactions: [{ name: "emptyTag", primitive: "grantHealth", tag: "", args: { amount: 1 } }, { name: "good", primitive: "playSound" }] })"#,
+            r#"return { reactions = { { name = "emptyTag", primitive = "grantHealth", tag = "", args = { amount = 1 } }, { name = "good", primitive = "playSound" } } }"#,
+            "non-empty `tag`",
+        ),
+        (
             r#"({ reactions: [{ name: "runtimeAmount", primitive: "grantHealth", tag: "player", args: { amount: { op: "const", value: 1 } } }] })"#,
             r#"return { reactions = { { name = "runtimeAmount", primitive = "grantHealth", tag = "player", args = { amount = { op = "const", value = 1 } } } } }"#,
             "args.amount",
+        ),
+        (
+            r#"({ reactions: [{ name: "f64OnlyAmount", primitive: "grantAmmo", tag: "player", args: { type: "bullets.light", amount: 1e100 } }, { name: "good", primitive: "playSound" }] })"#,
+            r#"return { reactions = { { name = "f64OnlyAmount", primitive = "grantAmmo", tag = "player", args = { type = "bullets.light", amount = 1e100 } }, { name = "good", primitive = "playSound" } } }"#,
+            "representable as f32",
         ),
         (
             r#"({ reactions: [{ name: "badPool", primitive: "grantAmmo", tag: "player", args: { type: "bad pool", amount: 1 } }] })"#,

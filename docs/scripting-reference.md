@@ -1383,14 +1383,14 @@ or the `on.activators` token supplied to a trigger-event reaction. The tag form
 fans out across every current match; the activator form credits the one player
 whose trigger edge fired.
 
-Amounts are finite numbers declared at load. A negative amount is a warn-and-no-op
-at the chokepoint, never a subtraction path. `grantAmmo` pool keys must use the
-same ASCII identifier grammar as weapon resource types; a well-formed pool does
-not need a weapon to exist yet. Missing health or ammo-reserve components warn
-and skip that recipient while sibling targets continue. These reaction grants
-are independent of impact-policy producer gating, so a trigger pickup can grant
-resources even though source-addressed impact grants run only for in-tick weapon
-and AI impacts in v1.
+Amounts are finite `f32`-representable numbers declared at load. A negative
+amount is a warn-and-no-op at the chokepoint, never a subtraction path.
+`grantAmmo` pool keys must use the same ASCII identifier grammar as weapon
+resource types; a well-formed pool does not need a weapon to exist yet. Missing
+health or ammo-reserve components warn and skip that recipient while sibling
+targets continue. These reaction grants are independent of impact-policy
+producer gating, so a trigger pickup can grant resources even though
+source-addressed impact grants run only for in-tick weapon and AI impacts in v1.
 
 ### Impact policies
 
@@ -1557,8 +1557,8 @@ export function setupLevel(): LevelManifest {
 | Fog reaction primitive targets an entity lacking `FogVolumeComponent` | Skipped with `log::warn!` (tag-typo guard). |
 | `applyDamage` `amount` is negative or non-finite | The whole dispatch is a `log::warn!` no-op — no target takes damage (healing is out of scope). |
 | `applyDamage` targets an entity lacking a health component | Skipped with `log::warn!` (tag-typo guard); other matched targets still take damage. |
-| `grantHealth` / `grantAmmo` names no tag or `@activators` target | Rejected while the setup descriptor loads. |
-| `grantHealth` / `grantAmmo` amount is not a finite JSON number | Rejected while the setup descriptor loads. |
+| `grantHealth` / `grantAmmo` names no non-empty tag or `@activators` target | Rejected with the whole setup manifest while its descriptors load. |
+| `grantHealth` / `grantAmmo` amount is not a finite `f32`-representable JSON number | Rejected with the whole setup manifest while its descriptors load. |
 | `grantAmmo` pool key is malformed | Rejected while the setup descriptor loads using the weapon-resource identifier grammar. |
 | A grant recipient lacks the required component | The chokepoint emits one `log::warn!` and skips that recipient; sibling targets still receive their grants. |
 

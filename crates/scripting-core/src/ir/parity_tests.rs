@@ -342,6 +342,56 @@ fn spawner_fire_descriptors_match_across_authoring_runtimes() {
 }
 
 #[test]
+fn grant_reaction_builders_match_across_root_sdk_surfaces() {
+    const TYPESCRIPT_FIXTURE: &str = r#"
+        import { grantAmmo, grantHealth } from "postretro";
+        JSON.stringify({
+          health: grantHealth("players", 12.5),
+          ammo: grantAmmo("players", "bullets.light", 8),
+        });
+    "#;
+    const LUAU_FIXTURE: &str = r#"
+        local Postretro = require("postretro")
+        return {
+          module = {
+            health = Postretro.grantHealth("players", 12.5),
+            ammo = Postretro.grantAmmo("players", "bullets.light", 8),
+          },
+          globals = {
+            health = grantHealth("players", 12.5),
+            ammo = grantAmmo("players", "bullets.light", 8),
+          },
+        }
+    "#;
+
+    let typescript = quickjs_fixture_value(TYPESCRIPT_FIXTURE);
+    let luau = luau_fixture_value(LUAU_FIXTURE);
+    assert_eq!(
+        typescript, luau["module"],
+        "TypeScript imports and Luau `require(\"postretro\")` grants diverged"
+    );
+    assert_eq!(
+        typescript, luau["globals"],
+        "TypeScript imports and Luau bare-global grants diverged"
+    );
+    assert_eq!(
+        typescript,
+        serde_json::json!({
+            "health": {
+                "primitive": "grantHealth",
+                "tag": "players",
+                "args": { "amount": 12.5 },
+            },
+            "ammo": {
+                "primitive": "grantAmmo",
+                "tag": "players",
+                "args": { "type": "bullets.light", "amount": 8 },
+            },
+        })
+    );
+}
+
+#[test]
 fn trigger_pool_manifest_data_is_byte_identical_across_authoring_runtimes() {
     // This exercises both public root-module spellings: the level-local count
     // form and the mod-global percentage form with a map-tag selector.

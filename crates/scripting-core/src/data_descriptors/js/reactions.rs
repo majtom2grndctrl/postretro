@@ -194,10 +194,14 @@ fn validate_grant_reaction(
         return Ok(());
     }
 
-    if tag.is_none() && target != Some("@activators") {
+    let has_non_empty_tag = tag.is_some_and(|tag| !tag.is_empty());
+    if !matches!(
+        (has_non_empty_tag, target),
+        (true, None) | (false, Some("@activators"))
+    ) {
         return Err(DescriptorError::InvalidShape {
             reason: format!(
-                "primitive `{primitive}` requires exactly one of a `tag` or target `@activators`"
+                "primitive `{primitive}` requires exactly one of a non-empty `tag` or target `@activators`"
             ),
         });
     }
@@ -212,9 +216,11 @@ fn validate_grant_reaction(
             reason: format!("primitive `{primitive}` `args.amount` must be a finite number"),
         });
     };
-    if !amount.is_finite() {
+    if !amount.is_finite() || !(amount as f32).is_finite() {
         return Err(DescriptorError::InvalidShape {
-            reason: format!("primitive `{primitive}` `args.amount` must be a finite number"),
+            reason: format!(
+                "primitive `{primitive}` `args.amount` must be a finite number representable as f32"
+            ),
         });
     }
 

@@ -139,6 +139,8 @@ const DATA_SCRIPT_FIELDS: &[&str] = &[
     "defineImpactEvent",
     "onTriggerEvent",
     "damage",
+    "grantHealth",
+    "grantAmmo",
     "enemies",
     "spawner",
     "armTrigger",
@@ -275,8 +277,11 @@ pub const POSTRETRO_ROOT_MODULE_EXPORTS: &[&str] = &[
     "timeline",
     "sequence",
     "defineReaction",
+    "defineImpactEvent",
     "onTriggerEvent",
     "damage",
+    "grantHealth",
+    "grantAmmo",
     "enemies",
     "spawner",
     "armTrigger",
@@ -287,6 +292,7 @@ pub const POSTRETRO_ROOT_MODULE_EXPORTS: &[&str] = &[
     "defineMapCatalog",
     "defineTriggerPool",
     "defineStore",
+    "slot",
     "brain",
     "candidate",
     "state",
@@ -888,4 +894,56 @@ fn copy_fields_to_table(
             })?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn data_script_export_inventory_matches_returned_sdk_fields() {
+        let lua = Lua::new();
+        let sdk: Table = lua
+            .load(DATA_SCRIPT_LUAU_SRC)
+            .set_name("postretro/sdk/data_script.luau")
+            .eval()
+            .expect("data-script SDK must evaluate");
+
+        let actual = sdk
+            .pairs::<String, mlua::Value>()
+            .map(|entry| entry.map(|(field, _)| field))
+            .collect::<Result<BTreeSet<_>, _>>()
+            .expect("data-script SDK fields must be string-keyed");
+        let expected = DATA_SCRIPT_FIELDS
+            .iter()
+            .map(|field| (*field).to_string())
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(
+            actual, expected,
+            "every returned data-script SDK builder must be promoted as a bare global and copied into `require(\"postretro\")`"
+        );
+    }
+
+    #[test]
+    fn root_module_export_inventory_matches_composed_runtime_fields() {
+        let expected = ["world", "runtime"]
+            .into_iter()
+            .chain(GAME_STATE_FIELDS.iter().copied())
+            .chain(BRAIN_LUAU_FIELDS.iter().copied())
+            .chain(KEYFRAMES_LUAU_FIELDS.iter().copied())
+            .chain(DATA_SCRIPT_FIELDS.iter().copied())
+            .chain(EMITTERS_LUAU_FIELDS.iter().copied())
+            .collect::<BTreeSet<_>>();
+        let actual = POSTRETRO_ROOT_MODULE_EXPORTS
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(
+            actual, expected,
+            "the generated root-module type inventory must match the runtime module composition"
+        );
+    }
 }

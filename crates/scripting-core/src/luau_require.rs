@@ -432,6 +432,8 @@ mod tests {
                 "defineImpactEvent",
                 "onTriggerEvent",
                 "damage",
+                "grantHealth",
+                "grantAmmo",
                 "enemies",
                 "spawner",
                 "armTrigger",

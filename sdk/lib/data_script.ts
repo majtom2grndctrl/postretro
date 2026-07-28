@@ -35,7 +35,7 @@ export type ProgressReactionDescriptor = {
   progress: { tag: string; at: number; fire: string };
 };
 
-/** Invokes a named Rust primitive. With `tag`, it targets entities carrying that tag and mutates them. Tag-targeted primitives include emitter/fog/mover commands, `applyDamage`, `setAnimationState`, `updateEnemyState`, `armTrigger`, and `disarmTrigger`; arm/disarm use empty args. Without `tag`, it is a system reaction (no entities) that enqueues a typed engine command — `playSound`, `rumble`, `flashScreen`, the UI-stack reactions. `args` carries the primitive's typed payload. */
+/** Invokes a named Rust primitive. A non-empty `tag` targets matching entities; tag-targeted primitives include emitter/fog/mover commands, `applyDamage`, `grantHealth`, `grantAmmo`, `setAnimationState`, `updateEnemyState`, `armTrigger`, and `disarmTrigger`. In a trigger-event reaction, `applyDamage`, `grantHealth`, and `grantAmmo` may instead carry `target: "@activators"`. True system reactions carry neither `tag` nor `target` and enqueue typed engine commands such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the primitive's typed payload. */
 export type PrimitiveReactionDescriptor = {
   primitive: string;
   tag?: string;
@@ -209,7 +209,7 @@ type ImpactEffectWire =
   | { primitive: "grantAmmo"; target: "@impact.source"; args: { type: string; amount: RuntimeValue } }
   | { primitive: "slot.add"; args: { slot: string; delta: RuntimeValue } };
 
-/** Opaque closed impact effect. Construct through TargetHandle or slot(...).add(). */
+/** Opaque closed impact effect. Construct through TargetHandle, SourceHandle, or slot(...).add(). */
 export interface Effect {
   readonly [effectBrand]: true;
 }

@@ -60,12 +60,15 @@ export type ProgressReactionDescriptor = {
   progress: { tag: string, at: number, fire: string },
 }
 
---- Primitive reaction body: invokes the named Rust primitive. With `tag`, it
---- targets entities carrying that tag and mutates them. Tag-targeted primitives
--- include emitter/fog/mover commands, `applyDamage`, `grantHealth`, `grantAmmo`, `setAnimationState`,
--- `updateEnemyState`, `spawnFromSpawner`, `armTrigger`, and `disarmTrigger`; arm/disarm use empty args. Without `tag`,
---- it is a system reaction (no entities) that enqueues a typed engine command
---- — `playSound`, `rumble`, `flashScreen`, the UI-stack reactions. `args`
+--- Primitive reaction body: invokes the named Rust primitive. A non-empty
+--- `tag` targets matching entities. Tag-targeted primitives include
+--- emitter/fog/mover commands, `applyDamage`, `grantHealth`, `grantAmmo`,
+--- `setAnimationState`, `updateEnemyState`, `spawnFromSpawner`, `armTrigger`,
+--- and `disarmTrigger`. In a trigger-event reaction, `applyDamage`,
+--- `grantHealth`, and `grantAmmo` may instead target `@activators`. True system
+--- reactions carry neither `tag` nor `target` and enqueue typed engine commands
+--- such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions.
+--- `args`
 --- carries the primitive's typed payload (e.g. `{ rate = 0 }` for
 --- `setEmitterRate`).
 export type PrimitiveReactionDescriptor = {

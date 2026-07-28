@@ -898,7 +898,7 @@ declare module "postretro" {
     progress: { tag: string; at: number; fire: string };
   };
 
-  /** Primitive reaction body: invokes the named Rust primitive. With `tag`, it targets entities carrying that tag and mutates them. Tag-targeted primitives include emitter/fog/mover commands, `applyDamage`, `grantHealth`, `grantAmmo`, `setAnimationState`, `updateEnemyState`, `spawnFromSpawner`, `armTrigger`, and `disarmTrigger`; arm/disarm use their empty typed args below. Without `tag`, it is a system reaction (no entities) that enqueues a typed engine command — `playSound`, `rumble`, `flashScreen`, the UI-stack reactions. `args` carries the primitive's typed payload (e.g. `{ rate: 0 }` for `setEmitterRate`, `{ sound: "alarm" }` for `playSound`). */
+  /** Primitive reaction body: invokes the named Rust primitive. A non-empty `tag` targets matching entities; tag-targeted primitives include emitter/fog/mover commands, `applyDamage`, `grantHealth`, `grantAmmo`, `setAnimationState`, `updateEnemyState`, `spawnFromSpawner`, `armTrigger`, and `disarmTrigger`. In a trigger-event reaction, `applyDamage`, `grantHealth`, and `grantAmmo` may instead carry `target: "@activators"`. True system reactions carry neither `tag` nor `target` and enqueue typed engine commands such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the primitive's typed payload (e.g. `{ rate: 0 }` for `setEmitterRate`, `{ sound: "alarm" }` for `playSound`). */
   export type PrimitiveReactionDescriptor = {
     primitive: string;
     tag?: string;
@@ -1065,7 +1065,7 @@ declare module "postretro" {
     not(): BoolRef;
     select(whenTrue: NumberValue, whenFalse: NumberValue): NumberRef;
   }
-  /** Opaque closed impact effect. Construct through TargetHandle or slot(...).add(). */
+  /** Opaque closed impact effect. Construct through TargetHandle, SourceHandle, or slot(...).add(). */
   export interface Effect { readonly [effectBrand]: true; }
   export type GatedEffect = { when?: BoolRef; do: readonly Effect[] };
   export type EffectOrGroup = Effect | GatedEffect;

@@ -1,5 +1,5 @@
 // Runtime-owned impact-policy binding and per-fire evaluation.
-// See: context/plans/in-progress/E16--impact-policy-substrate/index.md (Task 5).
+// See: context/lib/scripting.md (Impact-policy composition and evaluation).
 
 use postretro_entities::ScriptCtx;
 use postretro_entities::components::health::{

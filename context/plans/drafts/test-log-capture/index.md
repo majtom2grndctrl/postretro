@@ -10,8 +10,13 @@ Separately, three `crates/ui` criteria are manual gates today whose test code pa
 without asserting anything, and Task 3 covers three more shipped degradation paths whose
 only observable is a log record.
 
-**This is a prerequisite of E15.** E15 is unblocked once the guard semantics are
-validated against a real consumer — the end of Phase 2 — not at the end of this plan.
+**This ships and merges to `main` before E15 proceeds**, and E15 is then code-anchored
+against the merged harness. Two consequences the rest of the spec is shaped by. First,
+there is no concurrency to exploit between the two — every task here is pre-merge, and
+Task 3 is not a fast-follow. Second, **the public surface merged here is the contract
+E15's acceptance criteria will cite by name.** Renaming a method or reordering an
+argument after E15 anchors costs an E15 re-anchor pass, so the surface below is a pinned
+decision rather than an implementer's choice.
 
 ## Scope
 
@@ -213,6 +218,10 @@ landing this before E15, not after.
       `env_logger` runtime path is unchanged.
 - [ ] **AC-BUILD-2** — `cargo run -p xtask -- crate-graph --check` passes with the new
       member present, and `layering_invariants_hold` still passes.
+- [ ] **AC-SURFACE-1** — Every method on the pinned public surface is exercised by at
+      least one test in the merged change, and the crate exposes nothing beyond it. A
+      pinned method with no caller is a contract E15 would anchor to without anyone
+      having run it; an unpinned public item is surface E15 might anchor to by accident.
 
 ## Tasks
 
@@ -249,17 +258,16 @@ change: `crate_graph.rs` enumerates every workspace member when rendering layers
 the new zero-edge member lands in `Layer 0 (leaves)` and `crate-graph --check` returns
 non-zero until the doc is rewritten.
 
-Add the `[dev-dependencies]` edge to all four consumer crates in this task, not in the
-tasks that first use it: `crates/ui`, `crates/net`, and `crates/scripting-core` need the
-section created; `crates/postretro` already has one. The three E15 crates carry the edge
-unused until Task 3, which is deliberate — E15 needs those manifest lines and must not
-wait on Task 3's tests to get them. `unused_crate_dependencies` is allow-by-default, so
-an unused dev edge is silent.
+Each consumer crate's `[dev-dependencies]` edge is added by the task that first uses it —
+Task 2 for `crates/ui`, Task 3 for the other three — so nothing merges with a dead
+manifest entry. (An earlier revision hoisted all four here to unblock E15 sooner; that
+is moot now that the whole plan merges before E15 starts.)
 
 ### Task 2: Convert the UI warning-count tests
 
-Rewrite the block at `crates/ui/src/theme_gate_test.rs:200-322`; Task 1 has already added
-the `[dev-dependencies]` edge. Delete `CountingLogger`, the `WARN_COUNT`
+Add `postretro-test-log-capture` to a new `[dev-dependencies]` section in
+`crates/ui/Cargo.toml` (the file has none today) and rewrite the block at
+`crates/ui/src/theme_gate_test.rs:200-322`. Delete `CountingLogger`, the `WARN_COUNT`
 static, the `LOGGER_INIT` `Once`, the `WARN_TEST_LOCK` mutex, and `install_logger`.
 Rewrite `warns_for_build` to construct a guard, build the tree, and return a plain
 `usize` rather than `Option<usize>` — the probe-and-skip branch exists only because the
@@ -273,11 +281,14 @@ parallel runner against three tests in one binary that previously had to seriali
 
 ### Task 3: Cover three log-only degradation paths
 
-Task 1 has already added the three `[dev-dependencies]` edges, so this task is tests
-only and blocks nothing. Add one real behavioral test per crate against an **existing**
-log site — not a synthetic emission. Each of the three is a shipped degradation path in
-the sense of `testing_guide.md` §1, and each is currently untested. None is an E15
-behavior; this task can land alongside E15 work rather than ahead of it.
+Add `postretro-test-log-capture` to `[dev-dependencies]` in `crates/net/Cargo.toml`
+(which has no such section yet), `crates/postretro/Cargo.toml`, and
+`crates/scripting-core/Cargo.toml`. Then add one real behavioral test per crate against
+an **existing** log site — not a synthetic emission. Each of the three is a shipped
+degradation path in the sense of `testing_guide.md` §1, and each is currently untested.
+None is an E15 behavior, but all three merge before E15 starts: they are what proves the
+pinned surface works from the three crates E15 will anchor against, in the three test
+binaries where a competing logger would break it.
 
 *`crates/net`.* `transport.rs:390` logs `[Net] client {id} accepted (protocol …)` at
 `info` and `:394` logs `[Net] rejecting client {id}: {reason}` at `warn`. Both already
@@ -313,14 +324,14 @@ its justification.
 
 ## Sequencing
 
-**Phase 1 (sequential):** Task 1 — the crate and all four dev-dependency edges must exist
-before anything can depend on them.
+All three phases land before merge; E15 starts after.
+
+**Phase 1 (sequential):** Task 1 — the crate must exist before anything can depend on it.
 **Phase 2 (sequential):** Task 2 — thin slice. Falsifies parallel isolation, exactly-once
-semantics, and the dev-dependency edge against the one real consumer that exists today.
-**E15 unblocks here**, not at the end of Phase 3.
-**Phase 3 (concurrent with E15):** Task 3 — consumes the guard semantics Task 2
-validates, and gates nothing. Off the critical path by construction: Task 1 carries the
-manifest edges, and none of Task 3's three tests touches E15 behavior.
+semantics, and the dev-dependency edge against the one real consumer that exists today,
+while the pinned surface is still cheap to change.
+**Phase 3 (sequential):** Task 3 — consumes the guard semantics Task 2 validates, and is
+the last chance to move the surface before E15 anchors to it.
 
 ## Invariants
 
@@ -330,25 +341,37 @@ manifest edges, and none of Task 3's three tests touches E15 behavior.
 | No test needs a serializing lock to assert on logs | Task 1 (per-thread buffers) | Task 2 removes the shipped `WARN_TEST_LOCK`; re-adding any suite-wide test mutex to work around capture would silently restore the shipped defect | AC-CAP-5, AC-UI-1 |
 | Runtime logging behavior is unchanged | Task 1 (dev-dependency only, no `env_logger` interaction) | Task 3 adds three manifest lines; promoting any of them out of `[dev-dependencies]` links the capture logger into the shipped binary | AC-BUILD-1 |
 
-## Rough sketch
+## Public surface
+
+**Pinned, not sketched.** E15 is code-anchored against the merged crate, so its criteria
+and task paragraphs will cite these names. Everything below is a decision: an
+implementer may change the bodies freely, and the private internals entirely, but a
+rename, a reordered argument, or a changed argument type is a breaking change for E15
+and needs the same sign-off any contract change does. Nothing else in the crate is
+public.
 
 ```rust
 // crates/test-log-capture/src/lib.rs
-pub struct CapturedRecord { pub level: Level, pub target: String, pub message: String }
+pub struct CapturedRecord { pub level: log::Level, pub target: String, pub message: String }
 
-pub struct LogCapture { buffer: Arc<Mutex<Vec<CapturedRecord>>>, orphans_at_start: usize }
+pub struct LogCapture { /* private */ }
 
 impl LogCapture {
     pub fn start() -> Self;                                            // install + attach fresh buffer
     pub fn records(&self) -> Vec<CapturedRecord>;                      // ordered
     pub fn clear(&self);
-    pub fn assert_logged(&self, level: Level, body: &str);             // >= 1
-    pub fn assert_logged_once(&self, level: Level, body: &str);        // == 1
-    pub fn assert_not_logged(&self, level: Level, body: &str);         // == 0
-    pub fn assert_logged_from(&self, level: Level, target_prefix: &str, body: &str);
+    pub fn assert_logged(&self, level: log::Level, body: &str);        // >= 1
+    pub fn assert_logged_once(&self, level: log::Level, body: &str);   // == 1
+    pub fn assert_not_logged(&self, level: log::Level, body: &str);    // == 0
+    pub fn assert_logged_from(&self, level: log::Level, target_prefix: &str, body: &str);
 }
 impl Drop for LogCapture { /* detach: slot = None */ }
 ```
+
+Argument order is `(level, …, body)` on every assertion, with `body` last, so the
+target-scoped variant reads as the unscoped one with a filter inserted rather than as a
+different call shape. `level` is `log::Level` — an exact match, never a threshold — so
+an assertion written for `Warn` is not satisfied by an `Error`.
 
 Target matching is a **prefix** test against `record.target()`, which defaults to the
 emitting module path — so `"postretro_net"` scopes to the whole crate and
@@ -357,6 +380,8 @@ emitting module path — so `"postretro_net"` scopes to the whole crate and
 `LogCapture` must not be `Send`: the buffer it detaches on drop is the *thread's* slot,
 so moving the guard across threads would detach the wrong one. A `PhantomData<*const ()>`
 field is the usual way to express that.
+
+## Rough sketch
 
 Shape of the E15 assertions this enables, for reference — AC-GATE-5's host-side version
 skew, AC-MANIFEST-2's staged-reload warning, AC-LEVEL-7's absent catalog id:
@@ -391,7 +416,13 @@ capture.assert_not_logged(Level::Warn, "[Net] rejecting client 1");
 - **Migrating `crates/level-compiler`'s reporter tests.** `logger.rs` tests its
   `CollectingLogger` directly, without ever installing it globally, so they have no race
   and nothing to gain. Out of scope, noted so a later reader does not re-derive it.
-- **`context/lib` updates at promotion.** `development_guide.md` §Workspace says
-  "17 crates" and carries a per-crate table; `testing_guide.md` §3 gains the
-  log-assertion pattern and §4 the harness's placement. Per the drafting process these
-  land at promotion, not now.
+- **`context/lib` updates are blocking, not housekeeping.** `development_guide.md`
+  §Workspace says "17 crates" and carries a per-crate table; `testing_guide.md` §3 gains
+  the log-assertion pattern and §4 the harness's placement and the pinned surface. Per
+  the drafting process these land at promotion rather than now — but they cannot be
+  deferred past it. `/orchestrate` hands an E15 task agent only its own task paragraph,
+  E15's Goal, its AC list, and its Invariants table; that agent never sees this plan.
+  `testing_guide.md` is therefore the **only** channel through which an E15 implementer
+  learns the harness exists, what its surface is, and that a log-keyed criterion is meant
+  to be asserted rather than review-gated. Merging the crate without that entry ships a
+  harness E15's agents will not find.

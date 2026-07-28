@@ -3908,6 +3908,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "postretro-test-log-capture"
+version = "0.1.0"
+dependencies = [
+ "log",
+]
+
+[[package]]
 name = "postretro-ui"
 version = "0.1.0"
 dependencies = [

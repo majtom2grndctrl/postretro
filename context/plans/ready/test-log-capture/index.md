@@ -412,12 +412,11 @@ line. Last chance to move the surface.
 - **`crates/level-compiler`'s reporter tests.** They construct `CollectingLogger` and call
   `log()` on it directly, never installing globally — no race, nothing to gain. Out of
   scope, recorded so it is not re-derived.
-- **The `context/lib` capture is written, and its timing is the open part.**
+- **The `context/lib` capture is landed, deliberately ahead of the code.**
   `testing_guide.md` §3 carries the log-assertion contract in prose — one logger per test
   process, collision panics rather than skips, per-thread buffers, level-plus-body
   matching, orphan counting, and the rule that an asserted log line becomes contract. It
   names no signatures: per `context_style_guide.md`, method names and code samples are
-  ephemeral, so it points at `crates/test-log-capture` for the shape. **That pointer is
-  the open question** — it references a crate Task 1 has not built yet, so the entry must
-  not reach `main` ahead of the implementation. Land it with Task 1's branch, not with a
-  plan-only merge.
+  ephemeral, so it points at `crates/test-log-capture` for the shape. That pointer
+  resolves when Task 1 lands. The router entry is in place, which is what makes the
+  harness discoverable to an E15 task agent that never reads this plan.

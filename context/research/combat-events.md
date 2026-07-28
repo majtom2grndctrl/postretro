@@ -1,5 +1,10 @@
 # Combat Events — Design Exploration
 
+> **Superseded API sketch.** Section 5's `defineCombatHandler` / `getCombatEvent`
+> / `onKill` / `grant("player.health", 25)` surface is superseded by the shipped
+> impact-policy substrate and E16 resource grants. Section 2's principles and
+> Section 6's attribution model remain valid design context.
+
 **Date investigated:** 2026-06-19
 **Status:** Pre-spec exploration. Not yet a draft plan. Captures the long-term
 target so the first limited-scope sprints don't paint the engine into a corner.

@@ -22,8 +22,10 @@ impl LevelManifest {
             let mut out = Vec::with_capacity(len);
             for i in 1..=(len as i64) {
                 let item: LuaValue = arr.get(i).map_err(lua_err)?;
+                let is_resource_grant = is_resource_grant_reaction_lua(&item);
                 match named_reaction_from_lua(item) {
                     Ok(reaction) => out.push(reaction),
+                    Err(error) if is_resource_grant => return Err(error),
                     Err(error) => log::warn!(
                         "[Scripting] setupLevel: reactions[{i}] is malformed and was skipped: {error}"
                     ),
@@ -61,6 +63,24 @@ impl LevelManifest {
             ui_trees,
         })
     }
+}
+
+/// Luau twin of [`is_resource_grant_reaction_js`]. Resource-grant descriptor
+/// errors reject setup rather than degrading one reaction entry.
+fn is_resource_grant_reaction_lua(value: &LuaValue) -> bool {
+    let LuaValue::Table(table) = value else {
+        return false;
+    };
+    let Ok(primitive) = table.get::<LuaValue>("primitive") else {
+        return false;
+    };
+    let LuaValue::String(primitive) = primitive else {
+        return false;
+    };
+    matches!(
+        primitive.to_str().ok().as_deref(),
+        Some("grantHealth" | "grantAmmo")
+    )
 }
 
 /// Drain the optional static renderer profile from a Luau mod manifest.

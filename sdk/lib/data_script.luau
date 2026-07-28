@@ -60,12 +60,15 @@ export type ProgressReactionDescriptor = {
   progress: { tag: string, at: number, fire: string },
 }
 
---- Primitive reaction body: invokes the named Rust primitive. With `tag`, it
---- targets entities carrying that tag and mutates them. Tag-targeted primitives
--- include emitter/fog/mover commands, `applyDamage`, `setAnimationState`,
--- `updateEnemyState`, `spawnFromSpawner`, `armTrigger`, and `disarmTrigger`; arm/disarm use empty args. Without `tag`,
---- it is a system reaction (no entities) that enqueues a typed engine command
---- — `playSound`, `rumble`, `flashScreen`, the UI-stack reactions. `args`
+--- Primitive reaction body: invokes the named Rust primitive. A non-empty
+--- `tag` targets matching entities. Tag-targeted primitives include
+--- emitter/fog/mover commands, `applyDamage`, `grantHealth`, `grantAmmo`,
+--- `setAnimationState`, `updateEnemyState`, `spawnFromSpawner`, `armTrigger`,
+--- and `disarmTrigger`. In a trigger-event reaction, `applyDamage`,
+--- `grantHealth`, and `grantAmmo` may instead target `@activators`. True system
+--- reactions carry neither `tag` nor `target` and enqueue typed engine commands
+--- such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions.
+--- `args`
 --- carries the primitive's typed payload (e.g. `{ rate = 0 }` for
 --- `setEmitterRate`).
 export type PrimitiveReactionDescriptor = {
@@ -233,6 +236,8 @@ type ImpactEffectWire =
   | { primitive: "playAnim", target: "@impact.target", args: { clip: string } }
   | { primitive: "setHealth", target: "@impact.target", args: { value: any, afterMs: number? } }
   | { primitive: "setState", target: "@impact.target", args: { name: string, value: any } }
+  | { primitive: "grantHealth", target: "@impact.source", args: { amount: any } }
+  | { primitive: "grantAmmo", target: "@impact.source", args: { type: string, amount: any } }
   | { primitive: "slot.add", args: { slot: string, delta: any } }
 type ImpactEffectCapability = { __impactEffectCapability: true }
 -- Constructors retain the only lowering capability. A hand-authored table is
@@ -257,7 +262,17 @@ export type TargetHandle = {
   setState: (self: TargetHandle, name: string, value: NumberValue) -> Effect,
 }
 
-export type SourceHandle = { __impactSourceBrand: true }
+export type SourceHandle = {
+  __impactSourceBrand: true,
+  --- Add health to the impact damager. A fire with no damager skips this
+  --- effect; app-drain impacts run no policy in v1. Amount expressions read
+  --- impact-target facts/state only: v1 has no source-scoped fact vocabulary.
+  grantHealth: (self: SourceHandle, amount: NumberValue) -> Effect,
+  --- Add an ammo-pool balance to the impact damager. A fire with no damager
+  --- skips this effect; app-drain impacts run no policy in v1. Amount
+  --- expressions remain impact-target scoped; v1 has no source facts.
+  grantAmmo: (self: SourceHandle, type: string, amount: NumberValue) -> Effect,
+}
 
 export type NumberSlot = {
   add: (self: NumberSlot, delta: NumberValue) -> Effect,
@@ -377,6 +392,24 @@ function DataScriptSdk.damage(target: ActivatorsTarget | string, amount: number)
   end
   local wireTarget: any = if target == ACTIVATORS_TARGET then "@activators" else "@invalid"
   return { primitive = "applyDamage", target = wireTarget, args = { amount = amount } }
+end
+
+--- Grant health to the current trigger activators or every entity with a tag.
+function DataScriptSdk.grantHealth(target: ActivatorsTarget | string, amount: number): PrimitiveReactionDescriptor
+  if type(target) == "string" then
+    return { primitive = "grantHealth", tag = target, args = { amount = amount } }
+  end
+  local wireTarget: any = if target == ACTIVATORS_TARGET then "@activators" else "@invalid"
+  return { primitive = "grantHealth", target = wireTarget, args = { amount = amount } }
+end
+
+--- Grant an ammo-reserve pool to the current trigger activators or every entity with a tag.
+function DataScriptSdk.grantAmmo(target: ActivatorsTarget | string, ammoType: string, amount: number): PrimitiveReactionDescriptor
+  if type(target) == "string" then
+    return { primitive = "grantAmmo", tag = target, args = { type = ammoType, amount = amount } }
+  end
+  local wireTarget: any = if target == ACTIVATORS_TARGET then "@activators" else "@invalid"
+  return { primitive = "grantAmmo", target = wireTarget, args = { type = ammoType, amount = amount } }
 end
 
 --- Selects a live enemy group addressed when a reaction fires.
@@ -581,6 +614,16 @@ local function impactEffect(primitive: string, args: { [string]: any }?): Effect
   end
 end
 
+local function sourceImpactEffect(primitive: string, args: { [string]: any }?): Effect
+  local wire = { primitive = primitive, target = "@impact.source", args = args } :: any
+  return function(capability: ImpactEffectCapability): ImpactEffectWire
+    if capability ~= IMPACT_EFFECT_CAPABILITY then
+      error("impact effects can only be lowered by the SDK", 2)
+    end
+    return wire
+  end
+end
+
 local IMPACT_TARGET: TargetHandle = table.freeze({
   healthBefore = numberRef({ op = "input", name = "@impact.healthBefore" }),
   healthAfter = numberRef({ op = "input", name = "@impact.healthAfter" }),
@@ -606,9 +649,19 @@ local IMPACT_TARGET: TargetHandle = table.freeze({
   end,
 })
 
+local IMPACT_SOURCE: SourceHandle = table.freeze({
+  __impactSourceBrand = true,
+  grantHealth = function(_self: SourceHandle, amount: NumberValue): Effect
+    return sourceImpactEffect("grantHealth", { amount = numberNode(amount) })
+  end,
+  grantAmmo = function(_self: SourceHandle, ammoType: string, amount: NumberValue): Effect
+    return sourceImpactEffect("grantAmmo", { type = ammoType, amount = numberNode(amount) })
+  end,
+}) :: any
+
 local IMPACT: Impact = table.freeze({
   target = IMPACT_TARGET,
-  source = table.freeze({}) :: any,
+  source = IMPACT_SOURCE,
   amount = numberRef({ op = "input", name = "@impact.amount" }),
 })
 

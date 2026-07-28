@@ -1360,6 +1360,38 @@ only when the kill threshold is reached, however many ticks later that is. The
 canonical progress use is a threshold that fires an event of the same name — see
 [the combat-demo walkthrough](../content/dev/maps/combat-demo.README.md).
 
+### `grantHealth` and `grantAmmo`
+
+```typescript
+import { defineReaction, grantAmmo } from "postretro";
+
+const ammoPickup = defineReaction((on) =>
+  grantAmmo(on.activators, "bullets.light", 24),
+);
+
+const healStation = defineReaction("healStation", {
+  primitive: "grantHealth",
+  tag: "player",
+  args: { amount: 25 },
+});
+```
+
+`grantHealth(target, amount)` adds health through the engine's shared resource
+grant chokepoint. `grantAmmo(target, type, amount)` credits the named ammo
+reserve pool through that same chokepoint. Each target is either a tag string
+or the `on.activators` token supplied to a trigger-event reaction. The tag form
+fans out across every current match; the activator form credits the one player
+whose trigger edge fired.
+
+Amounts are finite `f32`-representable numbers declared at load. A negative
+amount is a warn-and-no-op at the chokepoint, never a subtraction path.
+`grantAmmo` pool keys must use the same ASCII identifier grammar as weapon
+resource types; a well-formed pool does not need a weapon to exist yet. Missing
+health or ammo-reserve components warn and skip that recipient while sibling
+targets continue. These reaction grants are independent of impact-policy
+producer gating, so a trigger pickup can grant resources even though
+source-addressed impact grants run only for in-tick weapon and AI impacts in v1.
+
 ### Impact policies
 
 `defineImpactEvent("namespace:id", filter, build)` declares what an in-tick hit means. IDs are portable ASCII addresses: colon-separated non-empty segments using letters, digits, `_`, `.`, or `-`, up to 128 bytes. An override must add a `tag`; it can only narrow the base target set.
@@ -1368,7 +1400,11 @@ Every fire evaluates gates and effect operands from one pre-effect snapshot, the
 
 `setHealth` clamps its evaluated value to `[0, maxHealth]`. Only a finite positive stored result counts as recovery: it re-arms death detection and clears pending and live kill credit from the recovered down. A value stored as zero leaves the target down and preserves its one-shot latch and credit. Numeric literals must be finite. If IR arithmetic produces a non-finite result, the total evaluator converts it to zero before `setHealth` runs.
 
+`impact.source.grantHealth(amount)` and `impact.source.grantAmmo(type, amount)` add a resource to the damager, not to the entity that was hit. They accept only `@impact.source`; an authored `@impact.target` grant is rejected while the policy binds. This is deliberately asymmetric: target healing remains expressible as `target.setHealth(target.healthAfter.plus(amount))`, but v1 has no target-addressed absolute-ammo write. Amount expressions still read the impact target's snapshot (`@impact.*` and `target.state(...)`); there is no source-scoped fact vocabulary. An absent or stale source skips that one effect, and a source without the required health or ammo-reserve component warns and skips it without aborting sibling effects. Ammo pool keys use the same identifier grammar as weapon resource types.
+
 `slot(ref).add(delta)` is snapshot read-modify-write, not an atomic increment. If one fire writes the same slot more than once, every operand reads the same starting value and the last applied write wins. Impact policies currently run only for in-tick weapon and AI damage; `applyDamage` reactions and other app-drain producers run no policy in v1.
+
+That producer gate also applies to source grants: a script-fired `applyDamage` can create an impact record but never evaluates `impact.source.grantHealth` or `impact.source.grantAmmo` in v1. In-tick weapon and AI impacts are the only producers that can credit their damager through this arm.
 
 The E16 TypeScript spikes are executable when a local TypeScript compiler is available:
 
@@ -1521,6 +1557,10 @@ export function setupLevel(): LevelManifest {
 | Fog reaction primitive targets an entity lacking `FogVolumeComponent` | Skipped with `log::warn!` (tag-typo guard). |
 | `applyDamage` `amount` is negative or non-finite | The whole dispatch is a `log::warn!` no-op — no target takes damage (healing is out of scope). |
 | `applyDamage` targets an entity lacking a health component | Skipped with `log::warn!` (tag-typo guard); other matched targets still take damage. |
+| `grantHealth` / `grantAmmo` names no non-empty tag or `@activators` target | Rejected with the whole setup manifest while its descriptors load. |
+| `grantHealth` / `grantAmmo` amount is not a finite `f32`-representable JSON number | Rejected with the whole setup manifest while its descriptors load. |
+| `grantAmmo` pool key is malformed | Rejected while the setup descriptor loads using the weapon-resource identifier grammar. |
+| A grant recipient lacks the required component | The chokepoint emits one `log::warn!` and skips that recipient; sibling targets still receive their grants. |
 
 ---
 

@@ -966,13 +966,15 @@ export type ProgressReactionDescriptor = {
   progress: { tag: string, at: number, fire: string },
 }
 
---- Primitive reaction body: invokes the named Rust primitive. With `tag`, it
---- targets entities carrying that tag and mutates them. Tag-targeted primitives
--- include emitter/fog/mover commands, `applyDamage`, `setAnimationState`,
--- `updateEnemyState`, `spawnFromSpawner`, `armTrigger`, and `disarmTrigger`; arm/disarm use their empty typed args
---- below. Without `tag`, it is a system reaction (no entities) that enqueues a
---- typed engine command — `playSound`, `rumble`, `flashScreen`, the UI-stack
---- reactions. `args` carries the primitive's typed payload (e.g. `{ rate = 0 }`
+--- Primitive reaction body: invokes the named Rust primitive. A non-empty
+--- `tag` targets matching entities. Tag-targeted primitives include
+--- emitter/fog/mover commands, `applyDamage`, `grantHealth`, `grantAmmo`,
+--- `setAnimationState`, `updateEnemyState`, `spawnFromSpawner`, `armTrigger`,
+--- and `disarmTrigger`. In a trigger-event reaction, `applyDamage`,
+--- `grantHealth`, and `grantAmmo` may instead target `@activators`. True system
+--- reactions carry neither `tag` nor `target` and enqueue typed engine commands
+--- such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions.
+--- `args` carries the primitive's typed payload (e.g. `{ rate = 0 }`
 --- for `setEmitterRate`, `{ sound = "alarm" }` for `playSound`).
 export type PrimitiveReactionDescriptor = {
   primitive: string,
@@ -1143,6 +1145,8 @@ type ImpactEffectWire =
   | { primitive: "playAnim", target: "@impact.target", args: { clip: string } }
   | { primitive: "setHealth", target: "@impact.target", args: { value: any, afterMs: number? } }
   | { primitive: "setState", target: "@impact.target", args: { name: string, value: any } }
+  | { primitive: "grantHealth", target: "@impact.source", args: { amount: any } }
+  | { primitive: "grantAmmo", target: "@impact.source", args: { type: string, amount: any } }
   | { primitive: "slot.add", args: { slot: string, delta: any } }
 type ImpactEffectCapability = { __impactEffectCapability: true }
 --- Closed impact effect lowered only by SDK constructors.
@@ -1164,7 +1168,17 @@ export type TargetHandle = {
   state: (self: TargetHandle, name: string) -> NumberRef,
   setState: (self: TargetHandle, name: string, value: NumberValue) -> Effect,
 }
-export type SourceHandle = { __impactSourceBrand: true }
+export type SourceHandle = {
+  __impactSourceBrand: true,
+  --- Add health to the impact damager. A fire with no damager skips this
+  --- effect; app-drain impacts run no policy in v1. Amount expressions read
+  --- impact-target facts/state only: v1 has no source-scoped fact vocabulary.
+  grantHealth: (self: SourceHandle, amount: NumberValue) -> Effect,
+  --- Add an ammo-pool balance to the impact damager. A fire with no damager
+  --- skips this effect; app-drain impacts run no policy in v1. Amount
+  --- expressions remain impact-target scoped; v1 has no source facts.
+  grantAmmo: (self: SourceHandle, type: string, amount: NumberValue) -> Effect,
+}
 export type NumberSlot = { add: (self: NumberSlot, delta: NumberValue) -> Effect }
 export type Impact = { target: TargetHandle, source: SourceHandle, amount: NumberRef }
 export type ImpactEvent = {
@@ -1255,6 +1269,8 @@ export type TriggerPoolDescriptor = { tag: string, arm: number?, armPercentage: 
 export type TriggerEventOptions = { levels: {string}? }
 declare function onTriggerEvent(filter: { tag: string }, event: "enter" | "exit", fire: {Reaction<any> | string}, options: TriggerEventOptions?): TriggerEventDescriptor
 declare function damage(target: ActivatorsTarget | string, amount: number): PrimitiveReactionDescriptor
+declare function grantHealth(target: ActivatorsTarget | string, amount: number): PrimitiveReactionDescriptor
+declare function grantAmmo(target: ActivatorsTarget | string, type: string, amount: number): PrimitiveReactionDescriptor
 --- Select a live enemy group by tag. Its tag resolves at reaction fire time.
 export type EnemyGroupFilter = { tag: string? }
 --- Typed, additive partial for consequential enemy-state updates.
@@ -1834,6 +1850,8 @@ export type PostretroModule = {
   --- Define a pure impact-policy descriptor. Register it only through `events`.
   defineImpactEvent: typeof(defineImpactEvent),
   damage: typeof(damage),
+  grantHealth: typeof(grantHealth),
+  grantAmmo: typeof(grantAmmo),
   enemies: typeof(enemies),
   spawner: typeof(spawner),
   armTrigger: typeof(armTrigger),

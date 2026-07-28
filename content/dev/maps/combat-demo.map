@@ -259,3 +259,23 @@
 "angles" "-15 180 0"
 "style" "0"
 }
+// entity 16
+// Scripts-first repeating pickup. Its onTriggerEvent binding lives in the map
+// data script, so prl-build's inert-trigger warning is expected.
+{
+"classname" "trigger_volume"
+"name" "ammo_pickup_volume"
+"activation" "touch"
+"fire_mode" "multiple"
+"rearm_ms" "3000"
+"_tags" "ammo_pickup"
+// brush 0
+{
+( 128 288 0 ) ( 128 224 64 ) ( 128 224 0 ) concrete_pavement_036 0 0 0 1 1
+( 128 224 64 ) ( 176 224 0 ) ( 128 224 0 ) concrete_pavement_036 0 0 0 1 1
+( 128 224 0 ) ( 176 288 0 ) ( 128 288 0 ) concrete_pavement_036 0 0 0 1 1
+( 128 288 64 ) ( 176 224 0 ) ( 128 224 0 ) concrete_pavement_036 0 0 0 1 1
+( 176 288 0 ) ( 128 288 64 ) ( 128 288 0 ) concrete_pavement_036 0 0 0 1 1
+( 176 224 0 ) ( 176 288 64 ) ( 176 288 0 ) concrete_pavement_036 0 0 0 1 1
+}
+}

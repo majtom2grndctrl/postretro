@@ -10,6 +10,7 @@ import { hud, hudTheme, reloadMeterTree, reticle } from "./scripts/hud";
 import { pauseMenu } from "./scripts/pause-menu";
 import { frontendMenu, frontendReactions, mapCatalog } from "./scripts/frontend-menu";
 import {
+  ammoOnKill,
   combatDummyLifecycle,
   combatZombieLifecycle,
   enemyDeath,
@@ -45,7 +46,7 @@ export default defineMod({
   // `combatZombieLifecycle` override: registration order is iteration order, and
   // an override registered before its base is dropped as targeting an unknown
   // event.
-  events: [combatDummyLifecycle, enemyDeath, combatZombieLifecycle],
+  events: [combatDummyLifecycle, enemyDeath, ammoOnKill, combatZombieLifecycle],
   // Fixture-only mod-global tier: this composes on the tagged trap-pools map
   // while its level-local script owns the independent closet_trap count pool.
   triggerPools: [

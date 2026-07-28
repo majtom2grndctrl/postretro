@@ -898,7 +898,7 @@ declare module "postretro" {
     progress: { tag: string; at: number; fire: string };
   };
 
-  /** Primitive reaction body: invokes the named Rust primitive. With `tag`, it targets entities carrying that tag and mutates them. Tag-targeted primitives include emitter/fog/mover commands, `applyDamage`, `setAnimationState`, `updateEnemyState`, `spawnFromSpawner`, `armTrigger`, and `disarmTrigger`; arm/disarm use their empty typed args below. Without `tag`, it is a system reaction (no entities) that enqueues a typed engine command — `playSound`, `rumble`, `flashScreen`, the UI-stack reactions. `args` carries the primitive's typed payload (e.g. `{ rate: 0 }` for `setEmitterRate`, `{ sound: "alarm" }` for `playSound`). */
+  /** Primitive reaction body: invokes the named Rust primitive. A non-empty `tag` targets matching entities; tag-targeted primitives include emitter/fog/mover commands, `applyDamage`, `grantHealth`, `grantAmmo`, `setAnimationState`, `updateEnemyState`, `spawnFromSpawner`, `armTrigger`, and `disarmTrigger`. In a trigger-event reaction, `applyDamage`, `grantHealth`, and `grantAmmo` may instead carry `target: "@activators"`. True system reactions carry neither `tag` nor `target` and enqueue typed engine commands such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the primitive's typed payload (e.g. `{ rate: 0 }` for `setEmitterRate`, `{ sound: "alarm" }` for `playSound`). */
   export type PrimitiveReactionDescriptor = {
     primitive: string;
     tag?: string;
@@ -1065,7 +1065,7 @@ declare module "postretro" {
     not(): BoolRef;
     select(whenTrue: NumberValue, whenFalse: NumberValue): NumberRef;
   }
-  /** Opaque closed impact effect. Construct through TargetHandle or slot(...).add(). */
+  /** Opaque closed impact effect. Construct through TargetHandle, SourceHandle, or slot(...).add(). */
   export interface Effect { readonly [effectBrand]: true; }
   export type GatedEffect = { when?: BoolRef; do: readonly Effect[] };
   export type EffectOrGroup = Effect | GatedEffect;
@@ -1082,7 +1082,13 @@ declare module "postretro" {
     state(name: string): NumberRef;
     setState(name: string, value: NumberValue): Effect;
   }
-  export interface SourceHandle { readonly [sourceBrand]: true; }
+  export interface SourceHandle {
+    readonly [sourceBrand]: true;
+    /** Add health to the impact damager. A fire with no damager skips this effect; app-drain impacts run no policy in v1. Amount expressions read impact-target facts and state only: v1 has no source-scoped fact vocabulary. */
+    grantHealth(amount: NumberValue): Effect;
+    /** Add an ammo-pool balance to the impact damager. A fire with no damager skips this effect; app-drain impacts run no policy in v1. Amount expressions remain impact-target scoped; v1 has no source facts. */
+    grantAmmo(type: string, amount: NumberValue): Effect;
+  }
   export interface NumberSlot { add(delta: NumberValue): Effect; }
   export type Impact = Readonly<{ target: TargetHandle; source: SourceHandle; amount: NumberRef }>;
   export interface ImpactEvent {
@@ -1188,6 +1194,8 @@ declare module "postretro" {
   export type TriggerEventOptions = { levels?: string[] };
   export function onTriggerEvent(filter: { tag: string }, event: "enter" | "exit", fire: (Reaction<{}> | Reaction<TriggerEventParams> | string)[], options?: TriggerEventOptions): TriggerEventDescriptor;
   export function damage(target: ActivatorsTarget | string, amount: number): PrimitiveReactionDescriptor;
+  export function grantHealth(target: ActivatorsTarget | string, amount: number): PrimitiveReactionDescriptor;
+  export function grantAmmo(target: ActivatorsTarget | string, type: string, amount: number): PrimitiveReactionDescriptor;
   /** Select a live enemy group by tag. Its tag resolves at reaction fire time. */
   export type EnemyGroupFilter = { tag?: string };
   /** Typed, additive partial for consequential enemy-state updates. */

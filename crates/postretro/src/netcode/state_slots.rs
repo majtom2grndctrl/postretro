@@ -1342,7 +1342,7 @@ mod tests {
     }
 
     #[test]
-    fn owner_private_reload_projection_preserves_endpoints_and_hot_refresh_timer() {
+    fn owner_private_reload_projection_preserves_endpoints_until_cadence_gated_clear() {
         let mut registry = EntityRegistry::new();
         let mut owners = MovementOwners::new();
         let mut weapon_owners = WeaponOwners::new();
@@ -1375,12 +1375,28 @@ mod tests {
             .get_component::<WeaponComponent>(weapon_id)
             .unwrap()
             .clone();
+        weapon.state = WieldableState::ShellLoading;
         weapon.reload_feedback = Some(ReloadFeedback::Completed);
-        weapon.state_remaining_ms = 0;
         registry.set_component(weapon_id, weapon).unwrap();
         assert_eq!(
             descriptor_ammo_for_pawn(&registry, "player.reloadProgress", pawn, &weapon_owners),
             Some(Some(SlotValue::Number(1.0)))
+        );
+        assert_eq!(
+            descriptor_ammo_for_pawn(&registry, "player.reloadActive", pawn, &weapon_owners),
+            Some(Some(SlotValue::Boolean(true)))
+        );
+
+        // A remote owner projects at half the fixed-tick cadence, so the
+        // endpoint remains available until that projection has sampled it.
+        assert_eq!(
+            descriptor_ammo_for_pawn(&registry, "player.reloadProgress", pawn, &weapon_owners),
+            Some(Some(SlotValue::Number(1.0)))
+        );
+        crate::sim::clear_all_reload_feedback(&mut registry);
+        assert_eq!(
+            descriptor_ammo_for_pawn(&registry, "player.reloadProgress", pawn, &weapon_owners),
+            Some(Some(SlotValue::Number(0.5)))
         );
         assert_eq!(
             descriptor_ammo_for_pawn(&registry, "player.reloadActive", pawn, &weapon_owners),

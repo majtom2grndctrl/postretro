@@ -1626,6 +1626,16 @@ the engine is its sole producer, so a script reads it to drive UI but cannot
 write it. If the player descriptor declares no `health` block, no HP is published
 and the slot keeps its prior range.
 
+### The readonly `player.reloadProgress` and `player.reloadActive` slots
+
+`player.reloadProgress` and `player.reloadActive` are readonly, engine-owned HUD
+store slots. The engine publishes `player.reloadProgress` as the current reload
+step's progress from `0` to `1`: one step covers a whole magazine reload, while a
+per-shell reload repeats the progress ramp for each shell. It publishes
+`player.reloadActive` as `true` for the whole reload, including the boundary
+between per-shell steps. Both slots are **read-only from scripts**; HUD authors
+bind to them for presentation, but scripts cannot write reload state.
+
 ## Operable UI
 
 The UI is operable: a closed nav-intent vocabulary, focusable

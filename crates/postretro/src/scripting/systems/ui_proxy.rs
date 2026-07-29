@@ -372,6 +372,65 @@ mod tests {
     }
 
     #[test]
+    fn tick_publishes_a_per_shell_boundary_before_the_next_step_ramp() {
+        use crate::scripting::primitives::store::read_store_slot;
+
+        let ctx = ScriptCtx::new();
+        let pawn = spawn_pawn_with_health(&ctx, 100.0);
+        let weapon_id = spawn_ammo_weapon(&ctx, pawn);
+        let mut weapon = ctx
+            .registry
+            .borrow()
+            .get_component::<WeaponComponent>(weapon_id)
+            .unwrap()
+            .clone();
+        weapon.state = WieldableState::ShellLoading;
+        weapon.state_remaining_ms = 100;
+        weapon.state_total_ms = 100;
+        weapon.reload_feedback = Some(ReloadFeedback::Completed);
+        ctx.registry
+            .borrow_mut()
+            .set_component(weapon_id, weapon)
+            .unwrap();
+        let mut publisher = PlayerHudStatePublisher::new(ctx.clone());
+
+        publisher.tick(Some(weapon_id));
+        assert_eq!(
+            read_store_slot(&ctx, "player.reloadProgress").unwrap(),
+            SlotValue::Number(1.0)
+        );
+        assert_eq!(
+            read_store_slot(&ctx, "player.reloadActive").unwrap(),
+            SlotValue::Boolean(true)
+        );
+
+        // The local publisher observes the endpoint before the frame clear. The
+        // next frame can then publish the active next-step ramp.
+        crate::sim::clear_reload_feedback_for_weapon(&mut ctx.registry.borrow_mut(), weapon_id);
+        let mut weapon = ctx
+            .registry
+            .borrow()
+            .get_component::<WeaponComponent>(weapon_id)
+            .unwrap()
+            .clone();
+        weapon.state_remaining_ms = 50;
+        ctx.registry
+            .borrow_mut()
+            .set_component(weapon_id, weapon)
+            .unwrap();
+
+        publisher.tick(Some(weapon_id));
+        assert_eq!(
+            read_store_slot(&ctx, "player.reloadProgress").unwrap(),
+            SlotValue::Number(0.5)
+        );
+        assert_eq!(
+            read_store_slot(&ctx, "player.reloadActive").unwrap(),
+            SlotValue::Boolean(true)
+        );
+    }
+
+    #[test]
     fn weapon_hud_values_use_movement_pawn_without_requiring_health() {
         let ctx = ScriptCtx::new();
         let pawn = spawn_movement_pawn(&ctx);

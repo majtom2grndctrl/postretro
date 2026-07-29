@@ -409,7 +409,7 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         range: None,
         persist: false,
         capability: EngineStateCapability::Readonly,
-        // Reload lifecycle is authoritative per pawn and visible only to that pawn's owner.
+        // Engine-owned whole-reload activity stays true across per-shell boundaries.
         network: ReplicationScope::OwnerPrivatePlayer,
     },
     EngineStateCatalogEntry {
@@ -420,7 +420,7 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         range: Some(NumericRange { min: 0.0, max: 1.0 }),
         persist: false,
         capability: EngineStateCapability::Readonly,
-        // Reload timing pairs with reload lifecycle under the same owner-private projection.
+        // Engine-owned progress is the current reload step's meter under the same projection.
         network: ReplicationScope::OwnerPrivatePlayer,
     },
     EngineStateCatalogEntry {

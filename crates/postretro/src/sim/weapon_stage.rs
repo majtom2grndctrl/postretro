@@ -251,6 +251,9 @@ fn transition_wieldable_state(
                 && reserve.available(&ammo_type) > 0
                 && reload_style == ReloadStyle::PerShell;
             if continues {
+                // A per-shell boundary completes the current meter step even
+                // though the loop immediately starts the next one.
+                component.reload_feedback = Some(ReloadFeedback::Completed);
                 StateTransition::ReloadStep {
                     shell_loaded: true,
                     completed: None,
@@ -1689,6 +1692,98 @@ mod tests {
     }
 
     #[test]
+    fn per_shell_reload_status_repeats_step_progress_without_blinking_inactive() {
+        let mut registry = EntityRegistry::new();
+        let (pawn, weapon) = spawn_reload_pair(&mut registry, 5, 3, 100, 2);
+        set_reload_style(&mut registry, weapon, ReloadStyle::PerShell);
+
+        assert_eq!(
+            deliver_reload_to_weapon(&mut registry, pawn, weapon, true, 0.0),
+            vec![ReloadDelivery {
+                pawn,
+                weapon,
+                outcome: ReloadOutcome::Started,
+            }]
+        );
+        let (progress, active) = registry
+            .get_component::<WeaponComponent>(weapon)
+            .unwrap()
+            .reload_status();
+        assert!((progress - 0.0).abs() < f32::EPSILON);
+        assert!(active);
+
+        // The local HUD samples this start endpoint before the per-frame clear.
+        crate::sim::clear_reload_feedback_for_weapon(&mut registry, weapon);
+        assert!(deliver_reload_to_weapon(&mut registry, pawn, weapon, false, 0.05).is_empty());
+        let (progress, active) = registry
+            .get_component::<WeaponComponent>(weapon)
+            .unwrap()
+            .reload_status();
+        assert!((progress - 0.5).abs() < f32::EPSILON);
+        assert!(active);
+
+        assert_eq!(
+            deliver_reload_to_weapon(&mut registry, pawn, weapon, false, 0.05),
+            vec![ReloadDelivery {
+                pawn,
+                weapon,
+                outcome: ReloadOutcome::ShellLoaded,
+            }]
+        );
+        let (progress, active) = registry
+            .get_component::<WeaponComponent>(weapon)
+            .unwrap()
+            .reload_status();
+        assert!((progress - 1.0).abs() < f32::EPSILON);
+        assert!(active, "a completed shell boundary stays reload-active");
+
+        crate::sim::clear_reload_feedback_for_weapon(&mut registry, weapon);
+        assert!(deliver_reload_to_weapon(&mut registry, pawn, weapon, false, 0.05).is_empty());
+        let (progress, active) = registry
+            .get_component::<WeaponComponent>(weapon)
+            .unwrap()
+            .reload_status();
+        assert!((progress - 0.5).abs() < f32::EPSILON);
+        assert!(active);
+
+        assert_eq!(
+            deliver_reload_to_weapon(&mut registry, pawn, weapon, false, 0.05),
+            vec![ReloadDelivery {
+                pawn,
+                weapon,
+                outcome: ReloadOutcome::ShellLoaded,
+            }]
+        );
+        let (progress, active) = registry
+            .get_component::<WeaponComponent>(weapon)
+            .unwrap()
+            .reload_status();
+        assert!((progress - 1.0).abs() < f32::EPSILON);
+        assert!(
+            active,
+            "every per-shell boundary retains the completion sample"
+        );
+
+        crate::sim::clear_reload_feedback_for_weapon(&mut registry, weapon);
+        let _ = deliver_reload_to_weapon(&mut registry, pawn, weapon, false, 0.1);
+        let (progress, active) = registry
+            .get_component::<WeaponComponent>(weapon)
+            .unwrap()
+            .reload_status();
+        assert!((progress - 1.0).abs() < f32::EPSILON);
+        assert!(active, "the final completion endpoint remains active");
+
+        crate::sim::clear_reload_feedback_for_weapon(&mut registry, weapon);
+        assert_eq!(
+            registry
+                .get_component::<WeaponComponent>(weapon)
+                .unwrap()
+                .reload_status(),
+            (0.0, false)
+        );
+    }
+
+    #[test]
     fn per_shell_overshoot_credits_multiple_steps_from_one_reserve_working_copy() {
         let mut registry = EntityRegistry::new();
         let (pawn, weapon) = spawn_reload_pair(&mut registry, 12, 10, 50, 2);
@@ -1726,6 +1821,11 @@ mod tests {
                 .unwrap()
                 .available("bullets.light"),
             7
+        );
+        assert_eq!(
+            component.reload_feedback,
+            Some(ReloadFeedback::Completed),
+            "the boundary endpoint survives the same-tick cancel"
         );
     }
 

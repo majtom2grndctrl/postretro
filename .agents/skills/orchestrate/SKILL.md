@@ -85,7 +85,7 @@ Run sequential workers on `feature/<plan-name>`. They share its warmed `target/`
 
 **Concurrent:** Spawn all independent phase `worker` agents simultaneously via multiple `spawn_agent` calls in one message. Choose `reasoning_effort` per task using the sizing guide above.
 
-> **Cargo under concurrency.** Run concurrent agents in isolated worktrees with separate `target/` dirs. Cap at 3 (see `development_guide.md`). Separate targets avoid Cargo locks. Do not run worker checks in a shared target; defer them to one post-phase pass instead. Sequential work shares the integration branch and its warm target.
+> **Cargo under concurrency.** Run concurrent agents in isolated worktrees with separate `target/` dirs. Cap at 3 (see `development_guide.md`). A fresh worktree's first build is cold — the engine's most expensive compile. Don't pay that cost per task: concurrent workers skip `cargo check` and tests entirely, and verify once, after merge, against `feature/<plan-name>`'s warm target. Sequential work shares the integration branch and its warm target, so it checks and tests per task as usual — no cold build, no lock contention to avoid.
 
 Create worktrees only for concurrent workers. Integrate their completed work back to `feature/<plan-name>`.
 
@@ -95,8 +95,8 @@ Create worktrees only for concurrent workers. Integrate their completed work bac
 3. The agent's **specific task** — description, acceptance criteria
 4. Instruction to read relevant `context/lib/` files for architectural guidance
 5. Instruction to follow `context/lib/development_guide.md` conventions
-6. Instruction to run `cargo check` before considering the task complete. For concurrent workers, use their isolated target; for shared-target workers, sequence checks after each task.
-7. Instruction to run focused tests for the touched crate/module/behavior, not a full workspace `cargo test`. Full workspace tests are the coordinator's final gate. Never run a bare `cargo test -p postretro-level-compiler` (cold `prl-build` bakes, ~1h).
+6. Instruction to run `cargo check` before considering the task complete — sequential workers only, sequenced after each task on the shared warm target. Concurrent workers in isolated worktrees skip this: their first build is cold, and verification waits for the post-merge pass.
+7. For sequential workers only: instruction to run focused tests for the touched crate/module/behavior, not a full workspace `cargo test`. Full workspace tests are the coordinator's final gate. Never run a bare `cargo test -p postretro-level-compiler` (cold `prl-build` bakes, ~1h). Concurrent workers in isolated worktrees skip tests entirely — hold off until their work merges into `feature/<plan-name>`.
 
 For layout or contract tasks, also provide:
 - Existing fields, offsets, bindings, and versions that must remain stable.
@@ -116,6 +116,7 @@ After each phase:
 - Verify acceptance criteria are met
 - If a task completed partially or blocked, surface to the user with context
 - If using worktrees, merge completed work back to `feature/<plan-name>`
+- After merging worktree work, run `cargo check` and focused tests for the touched areas against `feature/<plan-name>`'s warm target — this is where a concurrent phase's build verification lands, not in the individual worktrees
 
 Between phases, check that prerequisites for the next phase are satisfied.
 

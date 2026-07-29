@@ -198,8 +198,9 @@ the ordering constraints between three become unwritable. The rest: `research.md
 |---|---|---|---|
 | A weapon is in exactly one state; the fire gate authorizes a shot only from `Idle` **and only when no reload started on this tick**; a `ShellLoading` cancel must transition to `Idle` before the shot is authorized, never authorize from `ShellLoading` directly | Task 2 | the state added in Task 4 must extend the legality predicates, not bypass them | AC 2, 6, 7, 17 behaviorally; AC 13's grep gate for the code shape, since an implementation returning `true` from `allows_fire()` for `ShellLoading` while still emitting `reload_cancelled` passes every behavioral check |
 | The machine stays open for extension: new states are arms and rows, never a reshape | Task 2 | Task 4 is the first extension and must land as arms and rows itself; Task 6 runs the demonstration and records its output | AC 14 |
-| Rounds credited by a per-shell loop are never rolled back — not by cancel, not by hot reload | Task 4 | Task 2's hot-reload policy | AC 4, 6, 9 |
-| The pawn `AmmoReserve` is debited exactly once per credited round, through `AmmoReserve::take` only | Task 4 | the tick where one step completes and the next starts | AC 3, 6, 13 |
+| Rounds credited by a per-shell loop are never rolled back — not by cancel, not by hot reload | Task 4 | Task 2's hot-reload policy; the tick where a step expiry and a cancel land together | AC 4, 6, 9; the ordering matrix |
+| The pawn `AmmoReserve` is debited exactly once per credited round, through `AmmoReserve::take` only | Task 4 | the tick where one step completes and the next starts; the working reserve copy a multi-credit tick drains | AC 3, 6, 13; the ordering matrix |
+| A reload level held across a pawnless window still produces a rising edge on the tick the pawn returns | Task 2 | the fusion runs the machine unconditionally, where `reload::tick` was skipped wholesale | AC 17; the ordering matrix |
 | Hot reload never changes the current state or its remaining time; it refreshes durations and style only | Task 2 | every field Task 2 adds must stay out of `refresh_from_descriptor`'s assignment list — preservation is by omission | AC 9 |
 | The local-pawn and host-simulated-remote-pawn vantages run the identical machine | Task 2 | Task 4 adding a path only one caller reaches | AC 10 |
 | Tests are independent of dev content: no test's outcome depends on which archetype the dev mod equips as `defaultWeapon` | Task 2 (fixture convention) | every task that adds a test; Task 6's `defaultWeapon` flip | AC 15 |
@@ -227,9 +228,13 @@ the ordering constraints between three become unwritable. The rest: `research.md
   `local_reload_completion_refills_before_same_tick_fire`, and
   `reload_start_tick_advances_and_can_complete_immediately`. No fire-gate test is dropped
   in the fusion: every `weapon/mod.rs` test whose assertions are on gate outputs exists by
-  name in `sim/weapon_stage.rs`'s test module afterwards, and `weapon/mod.rs` retains no
-  test asserting on `cooldown_remaining_ms`, `magazine`, or `WeaponFireAuthorization`
-  (grep gate).
+  name in `sim/weapon_stage.rs`'s test module afterwards, and no test retained in
+  `weapon/mod.rs` asserts on a `WeaponComponent`'s `cooldown_remaining_ms` or `magazine`, or
+  on a `WeaponFireAuthorization` returned by a `weapon::tick*` call (scoped review gate, not
+  a grep). The `ClientWeaponState` prediction tests are exempt and stay put:
+  `ClientWeaponState` declares its own `cooldown_remaining_ms`, so the field name alone
+  separates nothing, and the retained resolution tests carry the literal
+  `WeaponFireAuthorization::Accepted` in their text by construction.
 - [ ] A `perShell` reload loads one round per `reloadMs`: after N steps the magazine has
   grown by exactly N and the pawn reserve shrunk by exactly N, one `reload_shell_loaded`
   per step, and exactly one `reload_started` for the whole loop rather than one per step.
@@ -241,20 +246,33 @@ the ordering constraints between three become unwritable. The rest: `research.md
   descriptor hot reload mid-loop. The `take`→`0` ending is unreachable from ordinary play —
   the loop-continue predicate already checked the reserve — so it is exercised from a
   fabricated `ShellLoading` fixture whose reserve is zeroed between check and credit. It is
-  a guard, not dead code.
+  a guard, not dead code. A fourth ending is silent: an expiry reached with no owning pawn
+  returns to `Idle` crediting nothing and emitting nothing, because `ReloadDelivery` carries
+  a non-optional `pawn` and no outcome is constructible without one. A `reload_started`
+  therefore has no terminator across a pawn loss, and mods must treat the loss as an
+  implicit one. Every transition to `Idle`, this one included, zeroes `reload_credited`.
 - [ ] A reload press with a full magazine, or an empty reserve, emits the blocked
   outcome and starts no loop — both styles, for a weapon with an owning pawn. (A pawnless
   weapon emits nothing at all: AC 17.)
 - [ ] An otherwise-authorized shot during a `perShell` loop cancels it: the shot resolves
-  on that same tick, the in-flight step is discarded with no round credited, previously
-  credited rounds stay in the magazine, the reserve is not refunded, one
-  `reload_cancelled` fires carrying the cumulative credited count, and `reload_feedback`
-  clears so the meter reads inactive from the cancel tick onward. The cumulative count
-  rides on the Rust `ReloadOutcome` variant and is asserted through
+  on that same tick, the in-flight step is forfeited with no round credited for it,
+  previously credited rounds stay in the magazine, the reserve is not refunded, one
+  `reload_cancelled` fires carrying the cumulative credited count, `reload_press_consumed`
+  clears, and `reload_feedback` clears so the meter reads inactive from the cancel tick
+  onward. The one exception to that clear is a `Completed` marker written earlier in the
+  same tick, which survives it, so the meter's last sample is the shell that landed. The
+  cumulative count rides on the Rust `ReloadOutcome` variant and is asserted through
   `TickEvents.reload_deliveries`; the script-visible event carries the name only, since the
   drain calls `fire_named_event(delivery.outcome.event_name(), …)` with no payload.
-  Cancelling at the first step (zero credited) and on the step that would have filled the
-  magazine (the loop's final step) both behave this way.
+  Cancelling at the first step (zero credited) and cancelling while the loop's final step is
+  in flight — the fire arriving on a tick before that step expires — both behave this way.
+  A step that expires on the cancel tick resolves first, because expiry precedes fire
+  intent: its shell is credited, counted in `reload_credited`, and included in the count
+  `reload_cancelled` carries; only the restarted step is forfeited. When that same-tick
+  expiry fills the magazine, completion wins outright — `reload_completed`, `Idle`, no
+  `reload_cancelled` — and the shot is authorized by the ordinary gate rather than by a
+  cancel. Because `reload_press_consumed` clears, a reload level still held through any
+  cancel produces a rising edge on the following tick and restarts the loop.
   `docs/scripting-reference.md` carries the `reload_cancelled` name.
 - [ ] A trigger pull during a `perShell` loop that would *not* be authorized anyway —
   cooldown not elapsed, or magazine below `costPerShot` — does not cancel the loop, emits
@@ -267,7 +285,10 @@ the ordering constraints between three become unwritable. The rest: `research.md
   magazine, and input-edge flags, while
   adopting the new `reloadMs` and `reloadStyle` from the next decision point onward. A
   `perShell` → `magazine` flip mid-loop lets the in-flight step credit its round, then
-  ends the reload rather than looping.
+  ends the reload rather than looping. A refresh that removes the ammo block entirely is the
+  same shape one step further: with no ammo there is no type to credit and no style to read,
+  so the next expiry credits nothing and ends the reload with `reload_completed` carrying the
+  cumulative count, both styles.
 - [ ] A co-op remote client's pawn, simulated host-side, matches the single-player pawn on
   four points, driven through the same command path: per-shell steps credit one round
   each; an authorized shot cancels a `ShellLoading` loop; a `magazine` reload locks fire
@@ -281,20 +302,38 @@ the ordering constraints between three become unwritable. The rest: `research.md
   has since landed**, per `ClientPredictedShots::apply_verdict`'s
   `cooldown_authority_generation` guard. The same predicted shot mid-`ShellLoading`
   with the magazine at or above `costPerShot` is authorized instead and cancels the loop.
-- [ ] `player.reloadActive` is true for the entire duration of a reload of either style,
-  including across step boundaries, and false at every other time except endpoint frames,
-  which keep today's `(1.0, true)` sample — under `perShell` a `Completed` endpoint now
-  lands at every step boundary, not only at the end of the reload.
-  `player.reloadProgress` ramps `0 → 1` once per reload for `magazine`. For `perShell` the
-  sample sequence is: an exact `0.0` on the start tick (the `Started` endpoint), a rising
-  ramp to the first step's expiry, `1.0` on each step-boundary tick (the `Completed`
-  endpoint, which wins over the next step's start in the same tick), then a ramp rising
-  from just above `0` to the next boundary — so steps 2..N publish no exact `0.0`, and a
-  step shorter than one tick publishes endpoint samples only. `player.ammo` follows the
-  live magazine and is published once per frame, so it rises by however many shells were
-  credited on that tick — one per tick at ordinary step durations, more when several steps
-  complete inside one tick. The owner-private projection publishes the same values to a
-  remote client's owner.
+- [ ] The reload meter carries two guarantees at two cadences, because the machine ticks at
+  60 Hz while both consumers publish once per rendered frame, after the whole catch-up tick
+  loop.
+
+  **Machine-level, per tick, assertable directly against `reload_status()`:**
+  `active` is true for the entire duration of a reload of either style, including across
+  step boundaries, and false at every other time except endpoint frames, which keep today's
+  `(1.0, true)` sample — under `perShell` a `Completed` endpoint now lands at every step
+  boundary, not only at the end of the reload. `progress` ramps `0 → 1` once per reload for
+  `magazine`. For `perShell` the sample sequence is: an exact `0.0` on the start tick (the
+  `Started` endpoint), a rising ramp to the first step's expiry, `1.0` on each step-boundary
+  tick (the `Completed` endpoint, which wins over the next step's start in the same tick),
+  then a ramp rising from just above `0` to the next boundary — so steps 2..N publish no
+  exact `0.0`, and a step shorter than one tick produces endpoint samples only.
+
+  **Publication-level, weaker, for `player.reloadProgress` / `player.reloadActive` /
+  `player.ammo` at the HUD and at the owner-private projection:** every endpoint the machine
+  produces is published at least once, quantized to the publishing cadence, and may arrive up
+  to one snapshot interval after the tick it describes. `player.ammo` follows the live
+  magazine, so it rises by however many shells were credited since the last publication —
+  one per tick at ordinary step durations, more when several steps complete inside one tick.
+  The projection carries every endpoint to a remote client's owner under that same
+  quantization; it does not carry the per-tick sample sequence.
+
+  The bound on "at least once" is real and stated rather than hidden: `reload_feedback` holds
+  one endpoint, and `clear_all_reload_feedback` runs only on
+  `host_owner_state_projection_due()` — every second tick. Two step boundaries inside one
+  snapshot window therefore coalesce and one endpoint never reaches a remote owner. Reaching
+  it needs an effective `reloadMs` at or below roughly one snapshot interval (two fixed
+  ticks, ~33 ms at 60 Hz). No shipped or dev content reaches it; authored content is expected
+  to. The fix seam is the marker: it would have to carry a count of endpoints rather than a
+  single endpoint. This spec does not build it.
 - [ ] No wire message, `WIRE_VERSION`, app-protocol constant, replicated-slot schema
   entry, or state-slot fingerprint input changes (review/grep gate). `DefaultWeaponFirePayload`
   and `TUNING_PAYLOAD_EPOCH` (`crates/postretro/src/netcode/tuning_payload.rs`) are unchanged:
@@ -328,14 +367,19 @@ the ordering constraints between three become unwritable. The rest: `research.md
   substantially; this criterion is not re-run at epic close.
 - [ ] A weapon ticked with no owning pawn still advances timers, resolves expiries, and
   gates fire, but refuses every reload silently, emitting no delivery — it can fire and
-  cool, it cannot reload or credit a shell.
+  cool, it cannot reload or credit a shell. A pawnless window consumes no input edge: a
+  reload level held across a death, a respawn, or a fly-camera stretch still produces a
+  rising edge on the tick the pawn returns, and starts a loop there.
 - [ ] The per-shell loop is demoable from dev content alone on `combat-demo`. Compile it
   (`cargo run -p postretro-level-compiler -- content/dev/maps/combat-demo.map -o
   content/dev/maps/combat-demo.prl`) and launch it (`cargo run -p xtask -- run
   content/dev/maps/combat-demo.prl`); the dev player equips `reference_shotgun`, its
   viewmodel renders in first person exactly as the pistol's does, and firing to empty,
   holding reload, watching the magazine climb one round at a time, and firing mid-loop to
-  cancel are all observable in that session. The kill payout and the pickup volume on that
+  cancel are all observable in that session. The cancel has two observable shapes and both
+  are walked: release reload before firing and the weapon stays idle with its loaded shells;
+  hold reload through the shot and the loop restarts on the next tick, because the cancel
+  clears the consumed-press flag. The kill payout and the pickup volume on that
   map credit the shotgun's ammo type, so both grant walkthroughs still show a reserve the
   player can load. The map choice is deliberate: those two grants exist only on
   `combat-demo`, not on CLAUDE.md's default `campaign-test`.
@@ -345,6 +389,39 @@ the ordering constraints between three become unwritable. The rest: `research.md
   materialization, and the dev player mesh is `shadowOnly: true` — so it renders on a
   remote pawn in co-op only, and this criterion is discharged by declaration and preload
   rather than by looking at it.
+
+## Ordering matrix
+
+The invariants above say what holds. This says in what order, for every case where two
+producers could resolve a tick differently. Each row is one test. Task 6's test list defers
+to this table rather than restating it; where a row and an AC disagree, the row is the
+defect report and the AC is wrong.
+
+Stage order within one machine tick, from Task 2: **1** reload intent → **2** advance the
+state timer → **3** resolve any expiry → **4** fire intent.
+
+| Scenario | Ordering | Expected outcome |
+|---|---|---|
+| Cooldown decrement vs. cancel predicate | The per-tick `cooldown_remaining_ms` decrement is the first act of stage 4, ahead of the cancel predicate; the real gate reads the decremented value and does not decrement again | A `ShellLoading` weapon whose cooldown reaches `0` within this tick cancels and fires on this tick. Left inside the gate, the shot is swallowed on the exact tick it became legal |
+| Reload edge + authorized fire, same tick, `magazine` | Stage 1 enters `Reloading` and sets the started-this-tick latch; stage 4 consults it | `reload_started` emitted, fire `Rejected`, no `dry_fire`, cooldown untouched beyond the decrement, magazine unchanged — including when `reloadMs` is shorter than one tick and the weapon is already back at `Idle` by stage 4 |
+| Reload edge + authorized fire, same tick, `perShell` | Identical stages | Identical outcome. The latch refuses the shot, not `allows_fire(state)`; the two styles must not diverge on a start tick, and no `reload_cancelled` is emitted |
+| Step expiry + authorized fire, same tick, loop would continue | Stage 3 credits the expiring step and restarts; stage 4 cancels | The credited shell is kept and counted: magazine +1, reserve −1, `reload_shell_loaded`, `reload_credited` +1. Only the restarted step is forfeited. `reload_cancelled` carries the count including that shell. The shot resolves this tick |
+| Step expiry + authorized fire, same tick, expiry fills the magazine | Stage 3 credits, sees the magazine at capacity, emits `reload_completed`, lands `Idle` — before stage 4 | Completion wins. No `reload_cancelled`. The shot is authorized by the ordinary gate from `Idle`, not by a cancel |
+| Fire gate internal check order | `can_fire` → `wants_fire` → cooldown → started-this-tick latch → `allows_fire(state)` → cost → magazine debit → cooldown reset | A below-cost trigger pull during a reload of either style returns `Rejected`: no `dry_fire`, no cooldown reset. Moving `allows_fire(state)` below the cost check returns `Empty` and breaks AC 7 |
+| `shoot_press_consumed` and the shared predicate | The predicate reads `shoot_press_consumed`; the real gate writes it only after calling the predicate | One `Semi` press cancels a loop and fires exactly once. Held into the next tick it neither cancels nor fires. A predicate omitting the flag re-means semi fire |
+| Reload level held across a pawnless window | `reload_press_consumed` is written inside the pawn guard, not ahead of it | Pawnless ticks leave the flag untouched. The first tick with a pawn sees a rising edge and starts the loop |
+| Pawnless expiry | Stage 2 advances, stage 3 resolves the expiry with no pawn | Transition to `Idle`, no transfer, no delivery, `reload_credited` zeroed. The `reload_started` gets no terminator |
+| Hot reload removes the ammo block mid-loop | Refresh preserves state and timers; the next expiry reads `effective().ammo == None` | Credits nothing, emits `reload_completed { transferred: reload_credited }`, returns to `Idle`. Same for `ShellLoading` and `Reloading` |
+| Style flip mid-loop | Refreshed classifiers take effect at the next decision point | `perShell` → `magazine`: the in-flight step credits its round, the loop-continue predicate fails on style, `reload_completed`. `magazine` → `perShell` mid-`Reloading`: the in-flight timer completes atomically, as today |
+| `reload_credited` on the atomic path | The atomic completion adds its single `reserve.take` result to `reload_credited` before emitting | `reload_completed { transferred: reload_credited }` is one expression serving both endings. A `magazine` reload reports its real transfer, never `0` |
+| Every transition to `Idle` | The transition zeroes as it lands, not the caller afterwards | `state_remaining_ms`, `state_total_ms`, `state_elapsed_sub_ms`, and `reload_credited` all `0` — for cancel, capacity end, reserve end, `take → 0`, pawnless expiry, and ammo removed alike |
+| Non-restarting expiry and the sub-ms carry | An ending that does not restart a step discards the overshoot rather than storing it | Remaining time and carry both `0`, so no surviving fraction biases the next reload's first tick |
+| N steps inside one tick | Expiry returns the whole overshoot in ms; the restart subtracts its integer part and loops while the overshoot is `>=` a full step; the loop-continue predicate and the credit `take` read one working `AmmoReserve` copy, written back once after the loop | N shells credited, N `reload_shell_loaded`, `reload_credited` +N, reserve −N. The HUD publishes one `+N` step and one progress sample. The `take → 0` guard does not fire |
+| Catch-up frame containing both a start and an expiry | Events accumulate across every fixed tick and drain once, after the loop | `reload_started` then `reload_shell_loaded`, in tick order, in one frame. Every handler reads the same final ammo state |
+| Step boundary between snapshots | `clear_all_reload_feedback` runs only when `host_owner_state_projection_due()` | The `Completed` marker survives to the next projection, so a remote owner sees the endpoint, up to one snapshot interval late. Two boundaries inside one window coalesce to one published endpoint — the bound AC 12 states |
+| Cancel with the reload level still held | The cancel clears `reload_press_consumed` | The following tick sees a rising edge and restarts the loop from `Idle` |
+| Reload edge on the tick a loop ends by capacity | Stage 1 evaluates the edge against the pre-expiry state, where `allows_reload()` is false | The edge is a no-op, matching the shipped rising-edge dedup. Stage 3 still ends the loop with `reload_completed`. The consumed-press flag is set, so no second loop starts until the key is released |
+| Event drain order on a cancel tick | `main.rs` drains `pending_weapon_events` before `pending_reload_deliveries` | Scripts observe `activate` (or `dry_fire`) before `reload_cancelled` |
 
 ## Tasks
 
@@ -451,6 +528,17 @@ at `dt 0.25` against a 1000 ms reload must leave the timer at `750`, not `1000`)
 `reload_completion_atomically_transfers_partial_live_reserve_only_at_zero`. Advancing
 before the start edge breaks all three.
 
+The fire stage's *internal* order is the shipped one too, and Task 4's cancel edge sits
+inside it, so pin it here: the per-tick `cooldown_remaining_ms` decrement first, then
+`can_fire` → `wants_fire` → cooldown → the started-this-tick latch → `allows_fire(state)` →
+cost → magazine debit → cooldown reset. Hoisting the decrement out of the gate to the top of
+the stage is the one deliberate change, so Task 4's side-effect-free predicate and the real
+gate read the same decremented value and the gate does not decrement twice. The state check
+sitting *above* the cost check is why a below-cost trigger pull during a reload returns
+`Rejected` today — no `dry_fire`, no cooldown reset. Place `allows_fire()` after the resource
+checks and that case returns `Empty` instead, firing `dry_fire` and arming the cooldown, and
+AC 7 fails.
+
 `reload_started_this_tick` disappears as a *parameter*, not as a *rule*. The fire gate
 must still refuse a shot on a tick where a reload started, even when that reload was
 shorter than the tick and the weapon is already back at `Idle` by the time fire is
@@ -485,9 +573,9 @@ feedback-clear pair. Only `reload::tick`'s orchestration is absorbed. Concretely
 it, if the machine needs it directly) and is **not** duplicated into `weapon_stage.rs` —
 Task 4 extends that one helper's return rather than forking a second copy that would drift
 on the carry contract. The `#[cfg(test)]
-deliver_reload_to_weapon` harness in `sim/mod.rs` re-points at the machine entry point with
-a no-fire command, so its roughly twenty call sites in that test module keep their shape
-and their assertions.
+deliver_reload_to_weapon` harness — moved to `sim/weapon_stage.rs` by Task 1, together with
+its roughly twenty call sites — re-points at the machine entry point with a no-fire command,
+so those call sites keep their shape and their assertions.
 
 That leaves the two `weapon::tick_*` entry points with different fates.
 `tick_state_only_component` did nothing but derive the fire mode, cooldown, and per-shot
@@ -534,6 +622,27 @@ stays: its assertions are on the resolution wrapper's early return for a missing
 non-weapon wieldable, and a literal `Accepted` makes it strictly stronger. Everything else
 in that module is resolution or `ClientWeaponState` and needs only the literal.
 
+Those ten tests have no fixture driver in their new home, so state the disposition rather
+than leaving it to discovery. They run on `fire_tick` / `fire_tick_with` plus `spawn_weapon`,
+`weapon_descriptor`, `input_system`, `shoot_snapshot`, and `wall_world` — all private
+helpers of `weapon/mod.rs`'s own `mod tests`, none of which exists in `weapon_stage.rs`.
+`fire_tick` and `fire_tick_with` are gate drivers: they **move**, re-pointed at the machine
+entry point followed by the resolution entry point. The other five still serve retained
+resolution tests: they **stay**, widen to `pub(super)`, and `weapon_stage.rs`'s test module
+imports them by path through `crate::weapon::tests`, the same shape Task 1 uses for
+`crate::sim::tests`.
+
+Two names collide and the winner is decided here. `weapon_component` and
+`ammo_weapon_component` exist in **both** test modules with incompatible signatures:
+`sim/mod.rs`'s take `(credit_source)` and `(credit_source, capacity, reserve, reload_ms)`
+returning `(WeaponComponent, AmmoReserve)`; `weapon/mod.rs`'s take `(fire_mode, cooldown_ms)`
+and `(fire_mode, cooldown_ms, magazine, cost_per_shot)` returning a bare `WeaponComponent`.
+In `weapon_stage.rs`'s test module the `sim/mod.rs` pair keeps the bare names — Task 1
+already routes that module through `crate::sim::tests`, and the reload fixtures outnumber
+the gate fixtures there. Import the `weapon/mod.rs` pair aliased, `gate_weapon_component` and
+`gate_ammo_weapon_component`, and rewrite the ten migrated bodies to the aliases. Leaving the
+pair to resolve by import order is the failure this rule exists to prevent.
+
 Build it **open for extension** — the equip lifecycle (`Raising`, `Lowering`, `Stowed`)
 and a switch interrupt land in a later spec and must not force a reshape. Six rules, all
 load-bearing: (a) one transition function keyed by (current state, event), so a new state
@@ -558,6 +667,17 @@ meaning to, because rule (d) forbids a `_` arm and the enum ships complete:
 `Reloading` → false, false, true; `ShellLoading` → **false, false, true**. Task 4 changes
 none of these — it adds the cancel edge ahead of the gate, so a `ShellLoading` weapon
 reaches `Idle` before `allows_fire()` is consulted.
+
+The `ShellLoading` transition arms ship here for the same reason, and with the same
+placeholder honesty: rule (d) forbids a `_` arm, so every arm must exist before Task 4 gives
+it meaning. They return the no-op outcome and hold the state. Not `unreachable!()` — nothing
+in production reaches `ShellLoading` after this task, but a mis-sequenced merge that does
+should hold state rather than panic.
+
+**Resets belong to the transition, not to its callers.** Every transition to `Idle` zeroes
+`state_remaining_ms`, `state_total_ms`, `state_elapsed_sub_ms`, and `reload_credited`. Every
+ending that does not restart a step zeroes both the remaining time and the sub-millisecond
+carry, so a surviving fraction cannot bias the next reload's first tick.
 
 Cooldown is **not** one of these predicates and never becomes a state. A reload can start
 while the weapon is cooling today — `reload::tick` never reads `cooldown_remaining_ms` —
@@ -584,6 +704,14 @@ transfer and no delivery. Timers advance pawnlessly under the machine where toda
 `reload::tick` is skipped wholesale, so a weapon that entered a reload with a pawn and
 then ticks without one would otherwise sit in `Reloading` forever with fire locked. A
 pawnless weapon fires and cools; it cannot reload.
+
+One piece of that stays behind the pawn guard, against the pull to hoist it. `reload::tick`'s
+first statement is edge bookkeeping — `reload_press_consumed = reload`, written ahead of
+every guard — and it is only reached today because the whole call is skipped without a pawn.
+The fused machine runs unconditionally, so that write must sit **inside** the pawn guard.
+Run it pawnlessly and a reload level held across a death, a respawn, or a fly-camera stretch
+is consumed by ticks that could never serve it, and produces no rising edge when the pawn
+returns.
 
 Define the **hot-reload policy** the later tasks depend on. `refresh_from_descriptor` has
 no preserved set to extend — it assigns the authored tuning and nothing else, and
@@ -709,6 +837,18 @@ the loop-continue predicate already checked the reserve; it is exercised from a 
 `ShellLoading` fixture whose reserve is zeroed between check and credit. Write it as a
 guard, not as dead code, and say so in a comment.
 
+Two more endings share that endpoint. `Reloading`'s atomic completion accumulates its single
+`reserve.take` result into `reload_credited` before emitting, so
+`reload_completed { transferred: reload_credited }` is one expression serving both styles;
+unify the two endings without that accumulation and every `magazine` reload reports
+`transferred: 0`. And a hot reload can remove the ammo block outright —
+`refresh_from_descriptor` assigns `self.ammo` from the descriptor's resource, which is `None`
+for a resourceless one, and `refresh_can_remove_ammo_tuning_without_aborting_live_reload`
+pins that a live reload survives it. The per-shell credit then has no `ammo_type` and the
+loop-continue predicate has no `reloadStyle` to read. Outcome, both styles: an expiry with
+`effective().ammo == None` credits nothing and ends the reload with
+`reload_completed { transferred: reload_credited }`, returning to `Idle`.
+
 Continuing restarts the step timer within the same tick so there is no idle gap between
 shells, and the restart is where the sub-millisecond carry needs care. `advance_timer` in
 `crates/postretro/src/sim/reload.rs` is the helper in question: today its expiry path
@@ -724,29 +864,64 @@ is inclusive on purpose: at an overshoot of exactly `reloadMs` a strict `>` leav
 step at `0` remaining without looping, deferring that shell a whole tick — precisely the
 drift the anti-drift test in Task 6 targets.
 
+That loop reads the reserve more than once per tick, and the shipped transfer shape makes
+that a trap. It clones the pawn `AmmoReserve`, takes from the clone, and writes the clone
+back. Within one tick's multi-credit loop the loop-continue predicate and the credit `take`
+must read the **same working copy**, with a single write-back after the loop. Hoist the clone
+but leave the predicate on the registry's copy and the predicate re-reads a stale reserve
+while the clone drains: the `take → 0` guard then fires from ordinary play, contradicting the
+premise that makes it a guard.
+
 The multi-credit loop is where the per-shell HUD guarantees stop being per-shell. AC 12's
-`player.ammo` and `reloadProgress` claims are **per-tick**, not per-shell: the HUD publishes
-once per frame from the live magazine, so two shells credited inside one tick surface as a
-single `+2` step and a single progress sample. That is intended and is what AC 12 states.
-Do not add a per-shell publish to compensate.
+machine-level guarantee is **per tick**, not per shell, and its publication guarantee is
+weaker again: both consumers publish once per rendered frame from the live magazine, so two
+shells credited inside one tick surface as a single `+2` step and a single progress sample.
+That is intended and is what AC 12 states. Do not add a per-shell publish to compensate.
 
 Add the cancel edge, the reason Task 2's fusion exists. The decision must be made from a
-**side-effect-free** predicate. Today's gate mutates while it decides — it sets
-`shoot_press_consumed`, then the cooldown, then debits the magazine — so asking it "would
-this shot be authorized?" cannot be done by running it. Factor the authorization question
-into a pure predicate over (command, fire mode, cooldown, cost, magazine, state) that writes
-nothing, evaluate that during `ShellLoading`, and run the real mutating gate only **after**
-the `ShellLoading → Idle` transition has landed. Name the predicate once and have the real
-gate call it too, so the two cannot drift apart. The predicate includes `can_fire`, since the
+**side-effect-free** predicate. Today's gate mutates while it decides — it decrements the
+cooldown, sets `shoot_press_consumed`, debits the magazine, then resets the cooldown — so
+asking it "would this shot be authorized?" cannot be done by running it. Factor the
+authorization question into a pure predicate over
+(command, fire mode, `shoot_press_consumed`, cooldown, cost, magazine) that writes nothing,
+evaluate that during `ShellLoading`, and run the real mutating gate only **after** the
+`ShellLoading → Idle` transition has landed. Name the predicate once and have the real gate
+call it too, so the two cannot drift apart.
+
+`state` is deliberately **not** a predicate term, and neither is the started-this-tick latch.
+Task 2 gives `ShellLoading` `allows_fire = false`, so a predicate consulting `state` returns
+false for every `ShellLoading` weapon and the cancel edge can never fire. The machine applies
+both as separate conjuncts instead: the cancel edge is `predicate && !started_this_tick`, the
+real gate is `predicate && allows_fire(state) && !started_this_tick`. `shoot_press_consumed`
+*is* a term, because `wants_fire` under `FireMode::Semi` is
+`command.button.pressed && !weapon.shoot_press_consumed`; a predicate omitting it silently
+re-means semi fire. The real gate must not write `shoot_press_consumed` until after it has
+called the predicate, or the predicate answers a question the gate has already altered. The
+per-tick cooldown decrement is hoisted to the top of the fire stage per Task 2, ahead of the
+predicate, so predicate and gate read the same value and the gate does not decrement twice —
+without that, a `ShellLoading` weapon whose cooldown reaches zero within a tick fails to
+cancel and the shot is swallowed on the exact tick it became legal.
+
+The predicate includes `can_fire`, since the
 remote path repurposes it to mean "pawn has a `NetworkId`" and a remote pawn with no
 `shot_id` would otherwise cancel its own loop every tick while firing nothing. On a true
-result `ShellLoading` does not reject the shot: it cancels, discards the in-flight step with
-no round credited and no reserve debit, emits `reload_cancelled` carrying `reload_credited`,
-clears `reload_feedback` outright, transitions to `Idle`,
-and lets the shot resolve on that same tick. The feedback clear lands
+result `ShellLoading` does not reject the shot: it cancels, forfeits the in-flight step with
+no round credited for it and no reserve debit, emits `reload_cancelled` carrying
+`reload_credited`, clears `reload_press_consumed` so a held reload key restarts the loop on
+the following tick, clears `reload_feedback`, transitions to `Idle`,
+and lets the shot resolve on that same tick. The one thing the feedback clear leaves alone is
+a `Completed` marker written earlier in the same tick by a step that expired at stage 3: it
+survives, so the meter's last sample is the shell that landed rather than a blank. The
+feedback clear lands
 here rather than in Task 5 because phases are sequential: without it, the end of this task
 leaves a cancelled weapon `Idle` with `Some(ReloadFeedback::Started)`, so `reload_status()`
 reports `(0.0, true)` and AC 6 fails until Task 5 ships.
+
+Two drain-order facts are contract, not incident, and the cancel is where they become
+script-visible. `main.rs` drains `pending_weapon_events` before `pending_reload_deliveries`,
+so on a cancel tick a script observes the fire or `dry_fire` event before `reload_cancelled`.
+Both drains run only after every catch-up tick in the frame has completed, so several
+`reload_shell_loaded` handlers firing in one frame all read the same final ammo state.
 
 A trigger pull that would not be authorized anyway leaves the loop running and emits no
 `dry_fire`. The warrant is parity with `Reloading`, which already rejects before the
@@ -797,7 +972,21 @@ across every boundary. Assert that sequence, not "a `0.0` per shell". This is a 
 lifecycle only — independent of Task 4's one
 `reload_started` per whole reload, and neither constrains the other. Task 4's cancel
 already clears `reload_feedback`; the rationale belongs to this task's subject, which is
-that a stale `Some(Started)` would report `(0.0, true)` on an `Idle` weapon.
+that a stale `Some(Started)` would report `(0.0, true)` on an `Idle` weapon. The one marker
+that clear spares is a `Completed` written earlier in the same tick — the meter's last sample
+must be the shell that landed.
+
+**The clear cadence does not change.** `clear_reload_feedback_for_weapon` runs per frame for
+the local active wieldable and `clear_all_reload_feedback` stays gated on
+`host_owner_state_projection_due()`, true only every second tick. That gate is the reason a
+marker reaches a remote owner at all — it must outlive the tick that wrote it until every
+consumer has sampled it — so tightening it to fix the sample sequence would break the
+projection instead. What it costs is the bound AC 12 states: two step boundaries inside one
+snapshot window coalesce, and one endpoint never publishes to a remote owner. The seam that
+would fix it is the marker's shape — a count of endpoints rather than a single endpoint — and
+this spec does not build it. Assert the per-tick sequence against `reload_status()` directly;
+assert only "every endpoint publishes at least once, cadence-quantized" against the two
+producers.
 
 Neither producer needs a new input — both already read `reload_status()` off the component —
 and no slot is added, so the replicated schema and its
@@ -874,10 +1063,13 @@ and guards passing; `Idle → ShellLoading` on the same edge with style `perShel
 expiry, crediting one round and continuing; `ShellLoading → Idle` on expiry with the
 magazine full or the reserve empty; and `ShellLoading → Idle` on an authorized fire, the
 in-flight shell forfeited. The two `magazine` arms are not optional — they are the shipped
-behavior AC 2 protects, re-asserted against the new state names. Plus: cancel at the first
-step and on the step that would have filled the magazine, a would-be-unauthorized trigger
-pull not cancelling, a step duration that is not a tick multiple not drifting over many
-steps, and reload-while-cooling still starting.
+behavior AC 2 protects, re-asserted against the new state names.
+
+Ordering layer: one test per row of the ordering matrix, which owns those cases — do not
+restate them here and do not write them from the ACs, since the matrix is what the ACs were
+reconciled against. Two more the matrix does not cover: a would-be-unauthorized trigger pull
+not cancelling, and a step duration that is not a tick multiple not drifting over many steps.
+Reload-while-cooling still starting sits with the machine layer above.
 
 Hot-reload layer: state, timers, cumulative credited
 count, magazine, and edge
@@ -905,10 +1097,12 @@ conditional — `apply_verdict` restores `cooldown_before_ms` only while
 fresh authoritative sample — so pin the generation by interleaving no `reconcile_cooldown`
 across the in-flight window, or assert the guard rather than the restored value.
 
-V4 / HUD layer: `reloadActive` not blinking across a step boundary, `reloadProgress`
-following Task 5's per-step sample sequence, `player.ammo` rising by the shells credited on
-that tick, and the owner-private
-projection reporting the pawn's own values.
+V4 / HUD layer, split the way AC 12 is: against `reload_status()` per tick, `active` not
+blinking across a step boundary and `progress` following Task 5's per-step sample sequence;
+against the two producers, `player.ammo` rising by the shells credited since the last
+publication and the owner-private projection carrying every endpoint at least once for the
+pawn's own values, cadence-quantized. Do not assert a producer sample per tick — the
+producers run per frame.
 
 Close the epic by discharging AC 14, the spec's sole extension-openness guarantee, on a
 throwaway branch: add a placeholder timed `WieldableState` variant, run

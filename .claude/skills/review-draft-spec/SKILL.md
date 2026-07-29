@@ -37,6 +37,8 @@ Read the full spec yourself before delegating. Decisions about which reviewers t
 
 One message, three `Agent` tool calls. No sequential rounds.
 
+**One lens per agent.** A lens needs sustained attention; an agent handed two satisfices and does both shallowly. Never blend them — a lens that does not fit the spec is skipped whole, not folded into another. Independence is the point: the same defect reported by two lenses that could not see each other is the signal worth acting on, and it is how a confidently wrong finding gets caught. Merging costs that and saves only a duplicated spec read.
+
 #### Broad reviewer (Opus)
 
 Receives:

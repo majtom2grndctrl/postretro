@@ -1224,8 +1224,8 @@ fn digest_hex(digest: &[u8; 32]) -> String {
     hex
 }
 
-/// Tagged server -> client Control envelope. Task 4 appends relevel here; this
-/// task deliberately reserves no placeholder discriminant.
+/// Tagged server -> client Control envelope for divergence causes, opaque
+/// engine-serialized tuning, and host-selected catalog map ids.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub enum ServerControlMessage {
     Divergence(DivergenceReason),
@@ -1235,6 +1235,26 @@ pub enum ServerControlMessage {
     /// Host-selected map catalog id. The engine resolves it against the local
     /// catalog and follows through its normal queued level-load path.
     Relevel(String),
+}
+
+/// Transport-owned frame around one server Control payload. The optional epoch
+/// names the slot participation generation in which the payload was produced.
+/// A holding diagnostic retires that generation on the client even when no
+/// snapshot from it arrived.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub(crate) struct ServerControlFrame {
+    pub participation_epoch: Option<u64>,
+    /// `None` is a transport-only participation-start marker and the only frame
+    /// that may arm an epoch. Engine Control messages always carry `Some`.
+    pub payload: Option<Vec<u8>>,
+}
+
+/// Transport-owned frame around Snapshot and client Input payloads. The engine
+/// payload remains opaque so participation lifecycle gating stays registry-blind.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub(crate) struct ParticipationFrame {
+    pub participation_epoch: u64,
+    pub payload: Vec<u8>,
 }
 
 /// Wire codec failure. Today the only failure mode is a bitcode decode error

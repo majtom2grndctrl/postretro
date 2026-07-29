@@ -5,8 +5,8 @@
 //! digest by design.
 
 use postretro_entities::{
-    CrossingCondition, CrossingDescriptor, ScopedCrossing, TriggerEventDescriptor, TriggerPoolArm,
-    TriggerPoolDescriptor,
+    CrossingCondition, CrossingDescriptor, DataRegistry, ScopedCrossing, TriggerEventDescriptor,
+    TriggerPoolArm, TriggerPoolDescriptor,
 };
 
 use crate::content_hash::{hash_f32, hash_f64, hash_ir_node, hash_len, hash_str, hash_u32};
@@ -31,6 +31,15 @@ pub(crate) fn mod_compatibility_digest(
     hash_lane(&mut hasher, trigger_pools, hash_trigger_pool_descriptor);
     hash_lane(&mut hasher, crossings, hash_scoped_crossing);
     *hasher.finalize().as_bytes()
+}
+
+/// Produce the compatibility digest from committed mod-global registry state.
+pub(crate) fn mod_compatibility_digest_from_registry(registry: &DataRegistry) -> [u8; 32] {
+    mod_compatibility_digest(
+        &registry.global_trigger_events,
+        &registry.global_trigger_pools,
+        &registry.global_crossings,
+    )
 }
 
 fn hash_lane<T>(
@@ -146,11 +155,21 @@ fn hash_strings(hasher: &mut blake3::Hasher, values: &[String]) {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{BTreeMap, HashMap};
     use std::fmt::Write as _;
     use std::fs;
     use std::path::PathBuf;
 
+    use postretro_entities::slot_table::StoreDeclarationSet;
+    use postretro_entities::{
+        AirParams, BehaviorGraphDescriptor, BehaviorStateDescriptor, CapsuleParams,
+        EntityTypeDescriptor, FallParams, FireMode, GroundParams, HealthDescriptor,
+        ImpactEventDescriptor, MeshDescriptor, MotionVerb, PlayerMovementDescriptor,
+        PrimitiveDescriptor, ReactionDescriptor, ScopedReaction, SpeedParams, WeaponDescriptor,
+    };
     use postretro_foundation::ir::{IrNode, IrValue};
+    use postretro_scripting_core::data_descriptors::{ModFontAssets, ModThemeTokens};
+    use postretro_scripting_core::runtime::{ModManifestResult, ModRenderProfile};
 
     use super::*;
 
@@ -221,6 +240,167 @@ mod tests {
         mod_compatibility_digest(&events(), &pools(), &crossings())
     }
 
+    fn manifest() -> ModManifestResult {
+        ModManifestResult {
+            name: "Digest fixture".to_string(),
+            id: "com.postretro.digest-fixture".to_string(),
+            version: "1.0.0".to_string(),
+            render: ModRenderProfile::default(),
+            entities: vec![entity_descriptor()],
+            ui_trees: Vec::new(),
+            theme: ModThemeTokens::default(),
+            frontend: None,
+            fonts: ModFontAssets::default(),
+            maps: Vec::new(),
+            reactions: Vec::new(),
+            crossings: crossings(),
+            events: Vec::new(),
+            trigger_events: events(),
+            trigger_pools: pools(),
+            store_declarations: StoreDeclarationSet::default(),
+        }
+    }
+
+    fn manifest_digest(manifest: &ModManifestResult) -> [u8; 32] {
+        let mut registry = DataRegistry::new();
+        for entity in manifest.entities.clone() {
+            registry.upsert_entity_type(entity);
+        }
+        registry.replace_global_reactions(manifest.reactions.clone());
+        registry.replace_global_crossings(manifest.crossings.clone());
+        registry.replace_global_trigger_events(manifest.trigger_events.clone());
+        registry.replace_global_trigger_pools(manifest.trigger_pools.clone());
+        mod_compatibility_digest_from_registry(&registry)
+    }
+
+    fn entity_descriptor() -> EntityTypeDescriptor {
+        EntityTypeDescriptor {
+            canonical_name: Some("fixture-entity".to_string()),
+            default_weapon: None,
+            light: None,
+            emitter: None,
+            movement: None,
+            weapon: None,
+            mesh: None,
+            health: None,
+            behavior: None,
+        }
+    }
+
+    fn movement_descriptor() -> PlayerMovementDescriptor {
+        PlayerMovementDescriptor {
+            capsule: CapsuleParams {
+                radius: 0.4,
+                half_height: 0.8,
+                eye_height: 0.5,
+            },
+            ground: GroundParams {
+                speed: SpeedParams {
+                    walk: 4.0,
+                    run: 7.0,
+                    crouch: 2.0,
+                },
+                accel: 18.0,
+                step_height: 0.35,
+                max_slope: 48.0,
+            },
+            air: AirParams {
+                forward_steer: 0.25,
+                accel: 3.0,
+                max_control_speed: 8.0,
+                bunny_hop: true,
+                jumps: 2,
+                jump_velocity: 5.5,
+                jump_ceiling: 1.5,
+            },
+            fall: FallParams {
+                terminal_velocity: 42.0,
+            },
+            stuck_stop_enabled: true,
+            stuck_stop_threshold: PlayerMovementDescriptor::DEFAULT_STUCK_STOP_THRESHOLD,
+            dash: None,
+            forgiveness: None,
+            crouch: None,
+            view_feel: None,
+        }
+    }
+
+    fn behavior_descriptor() -> BehaviorGraphDescriptor {
+        BehaviorGraphDescriptor {
+            initial: "idle".to_string(),
+            states: BTreeMap::from([(
+                "idle".to_string(),
+                BehaviorStateDescriptor {
+                    animation: "idle".to_string(),
+                    motion: MotionVerb::Hold,
+                    action: None,
+                    transitions: Vec::new(),
+                    on_enter: None,
+                },
+            )]),
+            interrupts: Vec::new(),
+            candidate_filter: None,
+            attack: None,
+            engagement_radius: None,
+            move_speed: 3.0,
+        }
+    }
+
+    fn entity_descriptor_edits() -> Vec<(&'static str, EntityTypeDescriptor)> {
+        let mut movement = entity_descriptor();
+        movement.movement = Some(movement_descriptor());
+
+        let mut weapon = entity_descriptor();
+        weapon.weapon = Some(WeaponDescriptor {
+            damage: 10.0,
+            range: 64.0,
+            cooldown_ms: 100.0,
+            fire_mode: FireMode::Semi,
+            resolution: postretro_entities::ResolutionMode::Hitscan,
+            credit_source: None,
+            third_person_model: None,
+            viewmodel: None,
+            resource: None,
+        });
+
+        let mut default_weapon = entity_descriptor();
+        default_weapon.default_weapon = Some("fixture-weapon".to_string());
+
+        let mut health = entity_descriptor();
+        health.health = Some(HealthDescriptor {
+            max: 100.0,
+            hitbox: None,
+            zone_multipliers: HashMap::new(),
+        });
+
+        let mut behavior = entity_descriptor();
+        behavior.behavior = Some(behavior_descriptor());
+
+        let mut canonical_name = entity_descriptor();
+        canonical_name.canonical_name = Some("changed-fixture-entity".to_string());
+
+        let mut presentation = entity_descriptor();
+        presentation.mesh = Some(MeshDescriptor {
+            model: "models/fixture.glb".to_string(),
+            shadow_only: false,
+            attachments: HashMap::new(),
+            shadow_bias_scale: 1.0,
+            animations: HashMap::new(),
+            default_state: None,
+            locomotion: None,
+        });
+
+        vec![
+            ("movement", movement),
+            ("weapon", weapon),
+            ("default_weapon", default_weapon),
+            ("health", health),
+            ("behavior", behavior),
+            ("canonical_name", canonical_name),
+            ("presentation", presentation),
+        ]
+    }
+
     #[test]
     fn digest_is_order_independent_within_each_lane() {
         let events = events();
@@ -286,6 +466,54 @@ mod tests {
             baseline,
             mod_compatibility_digest(&events(), &changed_pools, &crossings())
         );
+    }
+
+    #[test]
+    fn digest_ignores_declared_entity_descriptor_lanes() {
+        let baseline = manifest();
+        let expected = manifest_digest(&baseline);
+
+        for (field, entity) in entity_descriptor_edits() {
+            let mut changed = baseline.clone();
+            changed.entities = vec![entity];
+            assert_eq!(
+                expected,
+                manifest_digest(&changed),
+                "entity descriptor {field} is intentionally outside the mod digest"
+            );
+        }
+    }
+
+    #[test]
+    fn digest_ignores_declared_reaction_and_impact_event_lanes() {
+        let baseline = manifest();
+        let expected = manifest_digest(&baseline);
+
+        let mut reaction_changed = baseline.clone();
+        reaction_changed.reactions.push(ScopedReaction {
+            reaction: postretro_entities::NamedReaction {
+                name: "fixture-reaction".to_string(),
+                descriptor: ReactionDescriptor::Primitive(PrimitiveDescriptor {
+                    primitive: "playSound".to_string(),
+                    target: None,
+                    tag: None,
+                    on_complete: None,
+                    args: serde_json::json!({ "sound": "fixture" }),
+                }),
+            },
+            levels: vec!["arena".to_string()],
+        });
+        assert_eq!(expected, manifest_digest(&reaction_changed));
+
+        let mut impact_event_changed = baseline;
+        impact_event_changed.events.push(ImpactEventDescriptor {
+            id: "fixture-impact".to_string(),
+            is_override: false,
+            levels: vec!["arena".to_string()],
+            filter_tag: Some("enemy".to_string()),
+            policy: vec![serde_json::json!({ "kind": "damage", "amount": 5 })],
+        });
+        assert_eq!(expected, manifest_digest(&impact_event_changed));
     }
 
     #[test]

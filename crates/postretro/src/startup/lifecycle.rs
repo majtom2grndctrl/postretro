@@ -111,11 +111,7 @@ impl App {
             .map(|(id, version)| (id.to_owned(), version.to_owned()));
         let digest = {
             let registry = session.scripting.script_ctx.data_registry.borrow();
-            crate::mod_digest::mod_compatibility_digest(
-                &registry.global_trigger_events,
-                &registry.global_trigger_pools,
-                &registry.global_crossings,
-            )
+            crate::mod_digest::mod_compatibility_digest_from_registry(&registry)
         };
         if let Some(endpoint) = self
             .session

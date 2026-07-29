@@ -1,6 +1,7 @@
 // Polled, registry-blind renet transport and E15 two-stage control gate.
+// See: context/lib/networking.md
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::net::{SocketAddr, UdpSocket};
 use std::time::Duration;
 
@@ -14,7 +15,10 @@ use renet_netcode::{
 };
 
 use crate::slots::{CloseCause, SlotEvent, SlotState, SlotTable};
-use crate::wire::{self, ClientControlMessage, ParityDeclaration, ServerControlMessage};
+use crate::wire::{
+    self, ClientControlMessage, ParityDeclaration, ParticipationFrame, ServerControlFrame,
+    ServerControlMessage,
+};
 
 pub use crate::handshake::*;
 
@@ -102,7 +106,9 @@ pub struct NetServer {
     parity_declarations: HashMap<ClientId, ParityDeclaration>,
     pending_lifecycle: Vec<SlotEvent>,
     pending_disconnects: Vec<ClientId>,
-    holding_diagnostic_sent: HashSet<ClientId>,
+    holding_diagnostics: HashMap<ClientId, HoldingCause>,
+    next_participation_epoch: u64,
+    participation_epochs: HashMap<ClientId, u64>,
     mod_identity: Option<(String, String)>,
     mod_digest: Option<[u8; 32]>,
     level_parity: Option<(String, [u8; 32])>,
@@ -137,7 +143,9 @@ impl NetServer {
             parity_declarations: HashMap::new(),
             pending_lifecycle: Vec::new(),
             pending_disconnects: Vec::new(),
-            holding_diagnostic_sent: HashSet::new(),
+            holding_diagnostics: HashMap::new(),
+            next_participation_epoch: 1,
+            participation_epochs: HashMap::new(),
             mod_identity: None,
             mod_digest: None,
             level_parity: None,
@@ -276,6 +284,7 @@ impl NetServer {
         let expected_protocol = protocol_version();
 
         for client_id in self.server.clients_id() {
+            let mut parity_moved = false;
             if self.slots.is_closed(client_id) {
                 while self
                     .server
@@ -341,6 +350,7 @@ impl NetServer {
                         }
                         let _ = self.slots.admit(client_id);
                         outcomes.push(HandshakeOutcome::Admitted { client_id });
+                        parity_moved = self.parity_declarations.contains_key(&client_id);
                         if let Some(catalog_id) = self.relevel_catalog_id.clone() {
                             self.send_relevel(client_id, &catalog_id);
                         }
@@ -350,27 +360,31 @@ impl NetServer {
                     }
                     ClientControlMessage::Parity(declaration) => {
                         self.parity_declarations.insert(client_id, declaration);
+                        parity_moved = true;
                         if self.mod_digest.is_none() {
                             break;
-                        }
-                        let was_participating = self.is_participating(client_id);
-                        if let Some(cause) = self.reevaluate_parity(Some(client_id)) {
-                            let report_hold = if was_participating {
-                                true
-                            } else if self.holding_diagnostic_sent.insert(client_id) {
-                                self.send_divergence(client_id, cause.clone());
-                                true
-                            } else {
-                                false
-                            };
-                            if report_hold {
-                                outcomes.push(HandshakeOutcome::ParityHeld { client_id, cause });
-                            }
                         }
                     }
                 }
                 if self.mod_digest.is_none() {
                     break;
+                }
+            }
+            // Control is reliable-ordered. Evaluate the final retained declaration
+            // once after draining this batch so an earlier stale declaration cannot
+            // emit a transient diagnostic before a later same-batch replacement.
+            if parity_moved
+                && self.mod_digest.is_some()
+                && matches!(
+                    self.slots.state(client_id),
+                    Some(SlotState::Admitted | SlotState::Participating)
+                )
+            {
+                let previous = self.holding_diagnostics.get(&client_id).cloned();
+                if let Some(cause) = self.reevaluate_parity(Some(client_id)) {
+                    if previous.as_ref() != Some(&cause) {
+                        outcomes.push(HandshakeOutcome::ParityHeld { client_id, cause });
+                    }
                 }
             }
         }
@@ -392,14 +406,18 @@ impl NetServer {
         }
     }
 
-    fn send_divergence(&mut self, client_id: ClientId, cause: HoldingCause) {
-        self.holding_diagnostic_sent.insert(client_id);
+    fn send_divergence(&mut self, client_id: ClientId, cause: HoldingCause) -> bool {
+        if self.holding_diagnostics.get(&client_id) == Some(&cause) {
+            return false;
+        }
+        self.holding_diagnostics.insert(client_id, cause.clone());
         self.send_control(
             client_id,
             wire::encode(&ServerControlMessage::Divergence(
                 DivergenceReason::Holding(cause),
             )),
         );
+        true
     }
 
     fn relevel_recipients(&self) -> Vec<ClientId> {
@@ -440,7 +458,8 @@ impl NetServer {
             match cause {
                 None => {
                     if let Some(event) = self.slots.participate(client_id) {
-                        self.holding_diagnostic_sent.remove(&client_id);
+                        self.holding_diagnostics.remove(&client_id);
+                        self.begin_participation(client_id);
                         self.pending_lifecycle.push(event);
                     }
                 }
@@ -448,8 +467,10 @@ impl NetServer {
                     if matches!(state, Some(SlotState::Participating)) {
                         if let Some(event) = self.slots.demote(client_id, cause.clone()) {
                             self.pending_lifecycle.push(event);
-                            self.send_divergence(client_id, cause.clone());
                         }
+                    }
+                    if self.parity_declarations.contains_key(&client_id) {
+                        let _ = self.send_divergence(client_id, cause.clone());
                     }
                     if only == Some(client_id) {
                         selected_cause = Some(cause);
@@ -462,13 +483,38 @@ impl NetServer {
 
     fn close_slot(&mut self, client_id: ClientId, cause: CloseCause) -> Option<SlotEvent> {
         self.parity_declarations.remove(&client_id);
-        self.holding_diagnostic_sent.remove(&client_id);
+        self.holding_diagnostics.remove(&client_id);
+        self.participation_epochs.remove(&client_id);
         self.slots.close(client_id, cause)
+    }
+
+    fn begin_participation(&mut self, client_id: ClientId) {
+        let epoch = self.next_participation_epoch;
+        self.next_participation_epoch = self.next_participation_epoch.wrapping_add(1);
+        self.participation_epochs.insert(client_id, epoch);
+        self.server.send_message(
+            client_id,
+            Channel::Control,
+            wire::encode(&ServerControlFrame {
+                participation_epoch: Some(epoch),
+                payload: None,
+            }),
+        );
     }
 
     #[must_use]
     pub fn is_participating(&self, client_id: ClientId) -> bool {
         self.slots.is_participating(client_id)
+    }
+
+    /// Whether a reported entry edge still agrees with the slot's final state
+    /// after the poll's complete ordered lifecycle batch.
+    #[must_use]
+    pub fn is_current_participation_entry(&self, event: &SlotEvent) -> bool {
+        matches!(
+            event,
+            SlotEvent::Participating { client_id } if self.is_participating(*client_id)
+        )
     }
 
     #[deprecated(note = "use is_participating")]
@@ -509,28 +555,48 @@ impl NetServer {
         if !self.is_participating(client_id) {
             return false;
         }
-        self.server
-            .send_message(client_id, Channel::Snapshot, snapshot);
+        let Some(participation_epoch) = self.participation_epochs.get(&client_id).copied() else {
+            return false;
+        };
+        self.server.send_message(
+            client_id,
+            Channel::Snapshot,
+            wire::encode(&ParticipationFrame {
+                participation_epoch,
+                payload: snapshot,
+            }),
+        );
         true
     }
 
     pub fn drain_input(&mut self, client_id: ClientId) -> Vec<Vec<u8>> {
         let participating = self.is_participating(client_id);
+        let expected_epoch = self.participation_epochs.get(&client_id).copied();
         let mut messages = Vec::new();
         while let Some(bytes) = self.server.receive_message(client_id, Channel::Input) {
             if !participating {
                 continue;
             }
+            let frame: ParticipationFrame = match wire::decode(&bytes) {
+                Ok(frame) => frame,
+                Err(err) => {
+                    log::warn!("[Net] dropping unframed client Input from {client_id}: {err}");
+                    continue;
+                }
+            };
+            if Some(frame.participation_epoch) != expected_epoch {
+                continue;
+            }
             // Exhaustively classify recognized input envelopes. Net still leaves
             // their interpretation to the engine and forwards malformed bytes.
-            match wire::decode::<crate::wire::ClientMessage>(&bytes) {
+            match wire::decode::<crate::wire::ClientMessage>(&frame.payload) {
                 Ok(crate::wire::ClientMessage::Input(_))
                 | Ok(crate::wire::ClientMessage::Ack(_))
                 | Ok(crate::wire::ClientMessage::BaselineRefresh(_))
                 | Ok(crate::wire::ClientMessage::TimeSync(_))
                 | Ok(crate::wire::ClientMessage::StateBaselineRefresh(_))
                 | Ok(crate::wire::ClientMessage::HitDeclaration(_))
-                | Err(_) => messages.push(bytes.to_vec()),
+                | Err(_) => messages.push(frame.payload),
             }
         }
         messages
@@ -546,8 +612,14 @@ impl NetServer {
     /// Control may be sent to an admitted/closed slot to deliver a hold/reject
     /// diagnostic before socket teardown. Payload semantics remain engine-owned.
     pub fn send_control(&mut self, client_id: ClientId, payload: Vec<u8>) {
-        self.server
-            .send_message(client_id, Channel::Control, payload);
+        self.server.send_message(
+            client_id,
+            Channel::Control,
+            wire::encode(&ServerControlFrame {
+                participation_epoch: self.participation_epochs.get(&client_id).copied(),
+                payload: Some(payload),
+            }),
+        );
     }
 
     pub fn send_input(&mut self, client_id: ClientId, payload: Vec<u8>) {
@@ -649,6 +721,8 @@ pub struct NetClient {
     mod_identity: Option<(String, String)>,
     mod_digest: Option<[u8; 32]>,
     level_parity: Option<(String, [u8; 32])>,
+    active_participation_epoch: Option<u64>,
+    retired_participation_epoch: Option<u64>,
     legacy_kinematic_static_fingerprint: Option<[u8; 32]>,
 }
 
@@ -679,6 +753,8 @@ impl NetClient {
             mod_identity: None,
             mod_digest: None,
             level_parity: None,
+            active_participation_epoch: None,
+            retired_participation_epoch: None,
             legacy_kinematic_static_fingerprint: kinematic_static_fingerprint,
         })
     }
@@ -768,7 +844,16 @@ impl NetClient {
     }
 
     pub fn send_input(&mut self, input: Vec<u8>) {
-        self.client.send_message(Channel::Input, input);
+        let Some(participation_epoch) = self.active_participation_epoch else {
+            return;
+        };
+        self.client.send_message(
+            Channel::Input,
+            wire::encode(&ParticipationFrame {
+                participation_epoch,
+                payload: input,
+            }),
+        );
     }
 
     pub fn drain_input(&mut self) -> Vec<Vec<u8>> {
@@ -776,36 +861,99 @@ impl NetClient {
     }
 
     pub fn drain_snapshots(&mut self) -> Vec<Vec<u8>> {
-        drain_client_channel(&mut self.client, Channel::Snapshot)
+        let mut accepted = Vec::new();
+        for bytes in drain_client_channel(&mut self.client, Channel::Snapshot) {
+            let frame: ParticipationFrame = match wire::decode(&bytes) {
+                Ok(frame) => frame,
+                Err(err) => {
+                    log::warn!("[Net] dropping unframed server Snapshot: {err}");
+                    continue;
+                }
+            };
+            if self.accept_snapshot_epoch(frame.participation_epoch) {
+                accepted.push(frame.payload);
+            }
+        }
+        accepted
     }
 
     /// Decode every server Control envelope currently queued by renet. Malformed
     /// payloads are isolated to this message: later reliable controls remain
     /// deliverable and the engine never needs to guess an untagged payload type.
+    /// Route returned lifecycle controls before draining snapshots: epoch filtering
+    /// keeps a later same-batch promotion's snapshots available.
     pub fn drain_control(&mut self) -> Vec<ServerControlMessage> {
-        let messages: Vec<ServerControlMessage> =
-            drain_client_channel(&mut self.client, Channel::Control)
-                .into_iter()
-                .filter_map(|bytes| match wire::decode(&bytes) {
-                    Ok(message) => Some(message),
+        drain_client_channel(&mut self.client, Channel::Control)
+            .into_iter()
+            .filter_map(|bytes| {
+                let frame: ServerControlFrame = match wire::decode(&bytes) {
+                    Ok(frame) => frame,
+                    Err(err) => {
+                        log::warn!("[Net] dropping unframed server Control message: {err}");
+                        return None;
+                    }
+                };
+                let Some(payload) = frame.payload else {
+                    if let Some(epoch) = frame.participation_epoch {
+                        self.activate_participation(epoch);
+                    } else {
+                        log::warn!("[Net] dropping participation marker without an epoch");
+                    }
+                    return None;
+                };
+                let message: ServerControlMessage = match wire::decode(&payload) {
+                    Ok(message) => message,
                     Err(err) => {
                         log::warn!("[Net] dropping malformed server Control message: {err}");
-                        None
+                        return None;
                     }
-                })
-                .collect();
-        if messages.iter().any(|message| {
-            matches!(
-                message,
-                ServerControlMessage::Divergence(DivergenceReason::Holding(_))
-            )
-        }) {
-            // Snapshot and Control are separate channels. Discard snapshots that
-            // were already queued when a hold arrived so the engine cannot restore
-            // state between the hold diagnostic and its registry cleanup.
-            let _ = drain_client_channel(&mut self.client, Channel::Snapshot);
+                };
+                if matches!(
+                    message,
+                    ServerControlMessage::Divergence(DivergenceReason::Holding(_))
+                ) {
+                    if let Some(epoch) = frame.participation_epoch {
+                        self.retire_participation(epoch);
+                    }
+                }
+                Some(message)
+            })
+            .collect()
+    }
+
+    fn accept_snapshot_epoch(&self, epoch: u64) -> bool {
+        self.active_participation_epoch == Some(epoch)
+    }
+
+    fn retire_participation(&mut self, epoch: u64) {
+        if self
+            .retired_participation_epoch
+            .is_none_or(|retired| epoch_is_newer(epoch, retired))
+        {
+            self.retired_participation_epoch = Some(epoch);
         }
-        messages
+        if self
+            .active_participation_epoch
+            .is_some_and(|active| !epoch_is_newer(active, epoch))
+        {
+            self.active_participation_epoch = None;
+        }
+    }
+
+    fn activate_participation(&mut self, epoch: u64) {
+        if self.active_participation_epoch == Some(epoch) {
+            return;
+        }
+        if self.active_participation_epoch.is_some() {
+            return;
+        }
+        if self
+            .retired_participation_epoch
+            .is_some_and(|retired| !epoch_is_newer(epoch, retired))
+        {
+            return;
+        }
+        self.active_participation_epoch = Some(epoch);
     }
 
     pub fn packets_to_send(&mut self) -> Vec<Vec<u8>> {
@@ -824,6 +972,10 @@ impl NetClient {
         self.client.update(dt);
         self.queue_control_messages();
     }
+}
+
+fn epoch_is_newer(candidate: u64, reference: u64) -> bool {
+    candidate != reference && candidate.wrapping_sub(reference) < (1_u64 << 63)
 }
 
 fn drain_client_channel(client: &mut RenetClient, channel: Channel) -> Vec<Vec<u8>> {
@@ -929,6 +1081,63 @@ mod tests {
         assert!(
             client.drain_control().is_empty(),
             "matching admission and parity must not emit a holding diagnostic"
+        );
+    }
+
+    // Regression: parity retained while Pending was never reconsidered when the
+    // following ordered admission moved the slot to Admitted.
+    #[test]
+    fn pending_parity_is_reconsidered_after_admission_without_stale_batch_diagnostic() {
+        let (mut server, mut client) = relay_pair();
+        server.set_mod_identity("postretro.test".to_string(), "1".to_string());
+        server.set_mod_digest(Some([7; 32]));
+        server.set_level_parity(Some(("test-level".to_string(), [9; 32])));
+
+        let stale = ParityDeclaration {
+            mod_digest: [3; 32],
+            level: None,
+        };
+        let matching = ParityDeclaration {
+            mod_digest: [7; 32],
+            level: Some(("test-level".to_string(), [9; 32])),
+        };
+        client.client.send_message(
+            Channel::Control,
+            wire::encode(&ClientControlMessage::Parity(stale)),
+        );
+        client.client.send_message(
+            Channel::Control,
+            wire::encode(&ClientControlMessage::Admission {
+                protocol: protocol_version(),
+                mod_id: "postretro.test".to_string(),
+                mod_version: "1".to_string(),
+            }),
+        );
+        client.client.send_message(
+            Channel::Control,
+            wire::encode(&ClientControlMessage::Parity(matching)),
+        );
+
+        relay_client_to_server(&mut client, &mut server);
+        let poll = server.poll_handshakes();
+        assert_eq!(
+            poll.handshakes,
+            vec![HandshakeOutcome::Admitted {
+                client_id: RELAY_CLIENT_ID
+            }]
+        );
+        assert_eq!(
+            poll.lifecycle,
+            vec![SlotEvent::Participating {
+                client_id: RELAY_CLIENT_ID
+            }]
+        );
+        assert!(server.is_participating(RELAY_CLIENT_ID));
+
+        relay_server_to_client(&mut server, &mut client);
+        assert!(
+            client.drain_control().is_empty(),
+            "only the final ordered declaration may determine the batch verdict"
         );
     }
 
@@ -1054,10 +1263,10 @@ mod tests {
         );
     }
 
-    // Regression: each repeated held declaration enqueued another reliable
+    // Regression: each duplicate held declaration enqueued another reliable
     // diagnostic, allowing a parity flood to exhaust Control memory.
     #[test]
-    fn held_parity_flood_emits_one_diagnostic_per_hold_epoch() {
+    fn duplicate_held_parity_flood_emits_one_diagnostic_for_one_cause() {
         let (mut server, mut client) = relay_pair();
         server.set_mod_identity("postretro.test".to_string(), "1".to_string());
         server.set_mod_digest(Some([7; 32]));
@@ -1066,8 +1275,15 @@ mod tests {
 
         relay_client_to_server(&mut client, &mut server);
         let _ = server.poll_handshakes();
-        for index in 0..64 {
-            client.set_level_parity(Some((format!("wrong-{index}"), [index as u8; 32])));
+        let duplicate = ParityDeclaration {
+            mod_digest: [7; 32],
+            level: None,
+        };
+        for _ in 0..64 {
+            client.client.send_message(
+                Channel::Control,
+                wire::encode(&ClientControlMessage::Parity(duplicate.clone())),
+            );
             relay_client_to_server(&mut client, &mut server);
             let _ = server.poll_handshakes();
         }
@@ -1083,6 +1299,225 @@ mod tests {
                 ))
                 .count(),
             1
+        );
+    }
+
+    // Regression: the first holding diagnostic suppressed every later mismatch,
+    // leaving both the client and gate-outcome consumer with a stale cause.
+    #[test]
+    fn changed_holding_causes_reach_control_and_message_outcomes() {
+        let (mut server, mut client) = relay_pair();
+        server.set_mod_identity("postretro.test".to_string(), "1".to_string());
+        server.set_mod_digest(Some([7; 32]));
+        client.set_mod_identity("postretro.test".to_string(), "1".to_string());
+        client.set_mod_digest(Some([7; 32]));
+
+        relay_client_to_server(&mut client, &mut server);
+        let initial = server.poll_handshakes();
+        assert!(matches!(
+            initial.handshakes.as_slice(),
+            [
+                HandshakeOutcome::Admitted { .. },
+                HandshakeOutcome::ParityHeld {
+                    cause: HoldingCause::HostLevelAbsent,
+                    ..
+                }
+            ]
+        ));
+        relay_server_to_client(&mut server, &mut client);
+        assert!(matches!(
+            client.drain_control().as_slice(),
+            [ServerControlMessage::Divergence(DivergenceReason::Holding(
+                HoldingCause::HostLevelAbsent
+            ))]
+        ));
+
+        server.set_level_parity(Some(("host-map".to_string(), [9; 32])));
+        relay_server_to_client(&mut server, &mut client);
+        assert!(matches!(
+            client.drain_control().as_slice(),
+            [ServerControlMessage::Divergence(DivergenceReason::Holding(
+                HoldingCause::LevelAbsent { .. }
+            ))]
+        ));
+
+        client.set_level_parity(Some(("client-map".to_string(), [9; 32])));
+        relay_client_to_server(&mut client, &mut server);
+        let changed = server.poll_handshakes();
+        assert!(matches!(
+            changed.handshakes.as_slice(),
+            [HandshakeOutcome::ParityHeld {
+                cause: HoldingCause::LevelIdentity { .. },
+                ..
+            }]
+        ));
+        relay_server_to_client(&mut server, &mut client);
+        assert!(matches!(
+            client.drain_control().as_slice(),
+            [ServerControlMessage::Divergence(DivergenceReason::Holding(
+                HoldingCause::LevelIdentity { .. }
+            ))]
+        ));
+    }
+
+    // Regression: delayed Snapshot and Input packets from a retired participation
+    // generation could mutate the fresh client world and newly-spawned host pawn.
+    #[test]
+    fn participation_epoch_rejects_stale_cross_boundary_traffic_and_accepts_current() {
+        let (mut server, mut client) = participate_relay_pair();
+        relay_server_to_client(&mut server, &mut client);
+        assert!(client.drain_control().is_empty());
+
+        assert!(server.send_snapshot(RELAY_CLIENT_ID, vec![1]));
+        relay_server_to_client(&mut server, &mut client);
+        assert_eq!(client.drain_snapshots(), vec![vec![1]]);
+
+        client.send_input(vec![10]);
+        let stale_input_packets = client.packets_to_send();
+        assert!(server.send_snapshot(RELAY_CLIENT_ID, vec![2]));
+        let stale_snapshot_packets = server.packets_to_send(RELAY_CLIENT_ID);
+
+        server.set_level_parity(None);
+        assert!(matches!(
+            server.poll_handshakes().lifecycle.as_slice(),
+            [SlotEvent::Demoted { .. }]
+        ));
+        relay_server_to_client(&mut server, &mut client);
+        assert!(matches!(
+            client.drain_control().as_slice(),
+            [ServerControlMessage::Divergence(DivergenceReason::Holding(
+                HoldingCause::HostLevelAbsent
+            ))]
+        ));
+
+        server.set_level_parity(Some(("test-level".to_string(), [9; 32])));
+        assert!(matches!(
+            server.poll_handshakes().lifecycle.as_slice(),
+            [SlotEvent::Participating { .. }]
+        ));
+        relay_server_to_client(&mut server, &mut client);
+        assert!(client.drain_control().is_empty());
+
+        for packet in stale_snapshot_packets {
+            client.process_packet(&packet);
+        }
+        assert!(
+            client.drain_snapshots().is_empty(),
+            "retired-generation snapshots must not reach engine apply"
+        );
+        for packet in stale_input_packets {
+            server.process_packet_from(&packet, RELAY_CLIENT_ID);
+        }
+        assert!(
+            server.drain_input(RELAY_CLIENT_ID).is_empty(),
+            "retired-generation Input must not reach the re-promoted pawn"
+        );
+
+        assert!(server.send_snapshot(RELAY_CLIENT_ID, vec![3]));
+        relay_server_to_client(&mut server, &mut client);
+        assert_eq!(client.drain_snapshots(), vec![vec![3]]);
+        client.send_input(vec![11]);
+        relay_client_to_server(&mut client, &mut server);
+        assert_eq!(server.drain_input(RELAY_CLIENT_ID), vec![vec![11]]);
+    }
+
+    // Regression: a host-side promote followed by demotion before one poll was
+    // returned left the engine to apply historical participation side effects.
+    #[test]
+    fn rapid_promotion_then_demotion_reports_both_edges_but_finishes_holding() {
+        let (mut server, _client) = participate_relay_pair();
+        server.set_level_parity(None);
+        assert!(matches!(
+            server.poll_handshakes().lifecycle.as_slice(),
+            [SlotEvent::Demoted { .. }]
+        ));
+
+        server.set_level_parity(Some(("test-level".to_string(), [9; 32])));
+        server.set_level_parity(None);
+        let poll = server.poll_handshakes();
+
+        assert!(matches!(
+            poll.lifecycle.as_slice(),
+            [SlotEvent::Participating { .. }, SlotEvent::Demoted { .. }]
+        ));
+        assert!(
+            !server.is_current_participation_entry(&poll.lifecycle[0]),
+            "historical entry must not trigger spawn or tuning side effects"
+        );
+        assert!(
+            !server.is_participating(RELAY_CLIENT_ID),
+            "engine participation side effects must follow the final predicate"
+        );
+    }
+
+    // Regression: an unreliable Snapshot that overtook both its participation
+    // marker and a later hold armed a retired epoch and restored demoted state.
+    #[test]
+    fn snapshot_overtaking_marker_and_hold_cannot_arm_participation_epoch() {
+        let (mut server, mut client) = participate_relay_pair();
+        let marker_packets = server.packets_to_send(RELAY_CLIENT_ID);
+        assert!(
+            !marker_packets.is_empty(),
+            "promotion must queue a reliable participation marker"
+        );
+
+        assert!(server.send_snapshot(RELAY_CLIENT_ID, vec![1]));
+        let snapshot_packets = server.packets_to_send(RELAY_CLIENT_ID);
+        assert!(
+            !snapshot_packets.is_empty(),
+            "participating host must queue the snapshot"
+        );
+
+        server.set_level_parity(None);
+        assert!(matches!(
+            server.poll_handshakes().lifecycle.as_slice(),
+            [SlotEvent::Demoted { .. }]
+        ));
+        let holding_packets = server.packets_to_send(RELAY_CLIENT_ID);
+        assert!(
+            !holding_packets.is_empty(),
+            "demotion must queue a reliable holding diagnostic"
+        );
+
+        for packet in snapshot_packets {
+            client.process_packet(&packet);
+        }
+        assert!(
+            client.drain_snapshots().is_empty(),
+            "Snapshot cannot establish participation before reliable Control"
+        );
+
+        for packet in marker_packets {
+            client.process_packet(&packet);
+        }
+        for packet in holding_packets {
+            client.process_packet(&packet);
+        }
+        assert!(matches!(
+            client.drain_control().as_slice(),
+            [ServerControlMessage::Divergence(DivergenceReason::Holding(
+                HoldingCause::HostLevelAbsent
+            ))]
+        ));
+        assert!(
+            client.drain_snapshots().is_empty(),
+            "the overtaking snapshot must remain dropped after epoch retirement"
+        );
+
+        server.set_level_parity(Some(("test-level".to_string(), [9; 32])));
+        assert!(matches!(
+            server.poll_handshakes().lifecycle.as_slice(),
+            [SlotEvent::Participating { .. }]
+        ));
+        relay_server_to_client(&mut server, &mut client);
+        assert!(client.drain_control().is_empty());
+
+        assert!(server.send_snapshot(RELAY_CLIENT_ID, vec![2]));
+        relay_server_to_client(&mut server, &mut client);
+        assert_eq!(
+            client.drain_snapshots(),
+            vec![vec![2]],
+            "re-promotion marker must arm its new epoch"
         );
     }
 
@@ -1104,6 +1539,39 @@ mod tests {
         assert!(
             client.drain_snapshots().is_empty(),
             "the pre-hold snapshot must not survive for engine apply"
+        );
+    }
+
+    // Regression: Holding N and a later marker N+1 in one reliable Control drain
+    // caused the client to discard N+1 snapshots along with retired N traffic.
+    #[test]
+    fn coalesced_hold_and_repromotion_keep_only_current_epoch_snapshot() {
+        let (mut server, mut client) = participate_relay_pair();
+        assert!(server.send_snapshot(RELAY_CLIENT_ID, vec![1]));
+
+        server.set_level_parity(None);
+        assert!(matches!(
+            server.poll_handshakes().lifecycle.as_slice(),
+            [SlotEvent::Demoted { .. }]
+        ));
+        server.set_level_parity(Some(("test-level".to_string(), [9; 32])));
+        assert!(matches!(
+            server.poll_handshakes().lifecycle.as_slice(),
+            [SlotEvent::Participating { .. }]
+        ));
+        assert!(server.send_snapshot(RELAY_CLIENT_ID, vec![2]));
+
+        relay_server_to_client(&mut server, &mut client);
+        assert!(matches!(
+            client.drain_control().as_slice(),
+            [ServerControlMessage::Divergence(DivergenceReason::Holding(
+                HoldingCause::HostLevelAbsent
+            ))]
+        ));
+        assert_eq!(
+            client.drain_snapshots(),
+            vec![vec![2]],
+            "retired N is fenced while current N+1 remains available to engine apply"
         );
     }
 
@@ -1155,23 +1623,117 @@ mod tests {
         );
     }
 
+    #[derive(Debug, Clone)]
+    enum ParityOperation {
+        InstallMod(Option<u8>),
+        InstallLevel(Option<(u8, u8)>),
+        Declare {
+            mod_digest: u8,
+            level: Option<(u8, u8)>,
+        },
+    }
+
+    fn parity_operation() -> impl Strategy<Value = ParityOperation> {
+        prop_oneof![
+            proptest::option::of(any::<u8>()).prop_map(ParityOperation::InstallMod),
+            proptest::option::of((any::<u8>(), any::<u8>()))
+                .prop_map(ParityOperation::InstallLevel),
+            (
+                any::<u8>(),
+                proptest::option::of((any::<u8>(), any::<u8>()))
+            )
+                .prop_map(|(mod_digest, level)| ParityOperation::Declare { mod_digest, level }),
+        ]
+    }
+
+    fn level_pair((identity, digest): (u8, u8)) -> (String, [u8; 32]) {
+        (format!("map-{identity}"), [digest; 32])
+    }
+
+    #[derive(Default)]
+    struct ParityModel {
+        installed_mod: Option<u8>,
+        installed_level: Option<(u8, u8)>,
+        declaration: Option<(u8, Option<(u8, u8)>)>,
+    }
+
+    fn apply_parity_operation(
+        server: &mut NetServer,
+        model: &mut ParityModel,
+        operation: ParityOperation,
+    ) -> (bool, bool) {
+        match operation {
+            ParityOperation::InstallMod(value) => {
+                model.installed_mod = value;
+                server.set_mod_digest(value.map(|byte| [byte; 32]));
+            }
+            ParityOperation::InstallLevel(value) => {
+                model.installed_level = value;
+                server.set_level_parity(value.map(level_pair));
+            }
+            ParityOperation::Declare { mod_digest, level } => {
+                model.declaration = Some((mod_digest, level));
+                server.parity_declarations.insert(
+                    RELAY_CLIENT_ID,
+                    ParityDeclaration {
+                        mod_digest: [mod_digest; 32],
+                        level: level.map(level_pair),
+                    },
+                );
+                let _ = server.reevaluate_parity(Some(RELAY_CLIENT_ID));
+            }
+        }
+        let expected = matches!(
+            (
+                model.installed_mod,
+                model.installed_level,
+                model.declaration
+            ),
+            (
+                Some(installed_mod),
+                Some((installed_identity, installed_digest)),
+                Some((declared_mod, Some((declared_identity, declared_digest))))
+            ) if installed_mod == declared_mod
+                && installed_identity == declared_identity
+                && installed_digest == declared_digest
+        );
+        (server.is_participating(RELAY_CLIENT_ID), expected)
+    }
+
     proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
         #[test]
-        fn participation_predicate_matches_complete_installed_triple(
-            mod_byte in any::<u8>(),
-            level_byte in any::<u8>(),
-            declared_mod_byte in any::<u8>(),
-            declared_level_byte in any::<u8>(),
-            installed_level in any::<bool>(),
-            declared_level in any::<bool>(),
+        fn participation_predicate_holds_after_generated_server_operations(
+            operations in proptest::collection::vec(parity_operation(), 0..32),
         ) {
-            let installed = installed_level.then(|| ("map".to_string(), [level_byte; 32]));
-            let declaration = ParityDeclaration {
-                mod_digest: [declared_mod_byte; 32],
-                level: declared_level.then(|| ("map".to_string(), [declared_level_byte; 32])),
-            };
-            let participates = parity_cause(Some([mod_byte; 32]), installed.as_ref(), Some(&declaration)).is_none();
-            prop_assert_eq!(participates, installed_level && declared_level && mod_byte == declared_mod_byte && level_byte == declared_level_byte);
+            let (mut server, _client) = relay_pair();
+            let _ = server.slots.admit(RELAY_CLIENT_ID);
+            let mut model = ParityModel::default();
+
+            for operation in operations {
+                let (actual, expected) =
+                    apply_parity_operation(&mut server, &mut model, operation);
+                prop_assert_eq!(actual, expected);
+            }
+
+            // Every generated sequence finishes with an explicit demotion and
+            // recovery using the retained declaration, so both directions are
+            // exercised rather than left to random operation selection.
+            for operation in [
+                ParityOperation::Declare {
+                    mod_digest: 17,
+                    level: Some((4, 23)),
+                },
+                ParityOperation::InstallLevel(Some((4, 23))),
+                ParityOperation::InstallMod(Some(17)),
+                ParityOperation::InstallMod(Some(18)),
+                ParityOperation::InstallMod(Some(17)),
+            ] {
+                let (actual, expected) =
+                    apply_parity_operation(&mut server, &mut model, operation);
+                prop_assert_eq!(actual, expected);
+            }
+            prop_assert!(server.is_participating(RELAY_CLIENT_ID));
         }
     }
 }

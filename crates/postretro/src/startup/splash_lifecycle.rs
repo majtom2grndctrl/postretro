@@ -52,6 +52,10 @@ impl App {
     /// schedule, so the timing marks a real presented frame.
     fn run_splash_frame_zero(&mut self, event_loop: &ActiveEventLoop, frame_dt: f32) -> bool {
         if !self.paint_splash(event_loop) {
+            // Resume keeps the session endpoint alive. Surface acquisition may
+            // fail for an unbounded number of redraws, so transport still advances
+            // before retrying this same splash frame.
+            let _ = self.poll_world_less_transport(frame_dt);
             self.request_redraw();
             return false;
         }
@@ -97,6 +101,7 @@ impl App {
         // (logo) frame actually presents — a transient surface failure just
         // re-requests the redraw, holding the schedule on frame 1.
         if !self.paint_splash_after_black(event_loop) {
+            let _ = self.poll_world_less_transport(frame_dt);
             self.request_redraw();
             return false;
         }

@@ -1868,7 +1868,7 @@ export type PostretroModule = {
   scopeReactions: typeof(scopeReactions),
   --- Pure identity builder for entity type descriptors returned from `ModManifest.entities`.
   defineEntity: typeof(defineEntity),
-  --- Pure identity builder for the mod manifest. `config.name` is required.
+  --- Pure identity builder for the mod manifest. `config.name`, `config.id`, and `config.version` are required.
   defineMod: typeof(defineMod),
   --- Pure identity builder for map catalog entries with required `id`, `path`, and `name`.
   defineMapCatalog: typeof(defineMapCatalog),

@@ -82,7 +82,8 @@ impl App {
                 {
                     // Store removal is invisible to reconcile plans, so every
                     // committed manifest rebuilds the cache rather than trying to
-                    // detect only additions.
+                    // detect only additions. Host participants are re-registered
+                    // against the fresh tracker so their next records are baselines.
                     endpoint.reset_state_slot_schema();
                 }
             }

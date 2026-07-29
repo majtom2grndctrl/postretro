@@ -1,4 +1,5 @@
-// Pure immutable-admission comparison and protocol constants.
+// Immutable-admission comparison and protocol constants.
+// See: context/lib/networking.md
 
 use crate::wire::{ProtocolVersion, WireError};
 
@@ -6,8 +7,8 @@ pub use crate::wire::{ClosingCause, DivergenceReason, HoldingCause};
 
 /// E15's tagged-control vocabulary.
 pub const PROTOCOL_ID: u32 = 0x_5052_4C35; // "PRL5"
-/// E15's admission/parity envelopes and bitcode wire-type layouts.
-pub const WIRE_VERSION: u32 = 14;
+/// E15's admission/parity envelopes and participation-framed traffic layouts.
+pub const WIRE_VERSION: u32 = 15;
 
 #[must_use]
 pub const fn transport_protocol_id() -> u64 {
@@ -56,22 +57,26 @@ mod tests {
     }
 
     #[test]
-    fn mover_replay_provenance_wire_version_refuses_previous_peer_on_both_gates() {
-        const PRE_E15_PROTOCOL_ID: u32 = 0x_5052_4C34;
-        const PRE_E15_WIRE_VERSION: u32 = 13;
+    fn participation_epoch_wire_version_refuses_previous_peer_on_both_gates() {
+        const PRE_PARTICIPATION_EPOCH_PROTOCOL_ID: u32 = 0x_5052_4C35;
+        const PRE_PARTICIPATION_EPOCH_WIRE_VERSION: u32 = 14;
         assert_eq!(
             PROTOCOL_ID, 0x_5052_4C35,
             "tagged E15 control requires PRL5"
         );
-        assert_eq!(WIRE_VERSION, 14, "E15 wire layout requires wire version 14");
+        assert_eq!(
+            WIRE_VERSION, 15,
+            "participation-framed traffic requires wire version 15"
+        );
         assert_ne!(
             transport_protocol_id(),
-            ((PRE_E15_PROTOCOL_ID as u64) << 32) | u64::from(PRE_E15_WIRE_VERSION),
+            ((PRE_PARTICIPATION_EPOCH_PROTOCOL_ID as u64) << 32)
+                | u64::from(PRE_PARTICIPATION_EPOCH_WIRE_VERSION),
             "gate 1 rejects the previous layout before app decode"
         );
         let previous = ProtocolVersion {
-            app_protocol_id: PRE_E15_PROTOCOL_ID,
-            wire_version: PRE_E15_WIRE_VERSION,
+            app_protocol_id: PRE_PARTICIPATION_EPOCH_PROTOCOL_ID,
+            wire_version: PRE_PARTICIPATION_EPOCH_WIRE_VERSION,
         };
         assert!(matches!(
             validate_handshake(protocol_version(), previous),

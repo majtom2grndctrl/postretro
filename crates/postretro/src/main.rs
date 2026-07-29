@@ -4758,13 +4758,13 @@ impl App {
             return;
         };
         // Capture the host's descriptor-spawn inputs before the `net_endpoint` borrow:
-        // the accept arm materializes each accepted client's descriptor-backed remote
+        // participation entry materializes each client's descriptor-backed remote
         // pawn (M15 Phase 3 Task 4), and these reads alias the session script context /
         // `self.nav_graph` / `self.host_spawn_points`, which the endpoint borrow would
         // otherwise lock out. Cheap on the non-accept path (descriptors clone is the
         // only cost, paid once per frame on the host).
-        // Both the host accept arm and the client apply arm need the shared descriptor
-        // table: the host materializes each accepted client's descriptor-backed pawn
+        // Both host participation entry and client apply need the shared descriptor
+        // table: the host materializes each client's descriptor-backed pawn
         // (Task 4), and the client materializes its LOCAL pawn's descriptor-backed
         // `PlayerMovementComponent` from the wire `entity_class` (Task 7). Both peers
         // load the same content, so the same descriptor table serves both roles — clone
@@ -4780,6 +4780,26 @@ impl App {
         } else {
             Vec::new()
         };
+        // Apply reliable lifecycle controls before draining Snapshot. A same-drain
+        // hold for epoch N followed by the marker for N+1 must clear N's engine
+        // state first; transport epoch filtering can then admit N+1 snapshots into
+        // the clean replication state during this frame.
+        let client_controls = {
+            let endpoint = self
+                .session
+                .as_mut()
+                .and_then(|session| session.net_endpoint.as_mut());
+            match endpoint {
+                Some(netcode::NetEndpoint::Client { client, .. }) => {
+                    if let Err(err) = client.update(dt) {
+                        log::error!("[Net] client update failed: {err}");
+                    }
+                    client.drain_control()
+                }
+                _ => Vec::new(),
+            }
+        };
+        netcode::client_drain_control(self, client_controls);
         let host_agent_params = self.nav_graph.as_ref().map(|g| g.agent_params());
         let host_spawn_points = std::mem::take(&mut self.host_spawn_points);
         // M15 Phase 3 Task 5: the client reconcile replay threads collision + gravity
@@ -4798,7 +4818,6 @@ impl App {
         };
         let hit_zone_store = &session.hit_zone_store;
         let mesh_clip_tables = &session.mesh_clip_tables;
-        let mut client_controls = Vec::new();
         match session.net_endpoint.as_mut() {
             None => {}
             Some(netcode::NetEndpoint::Host {
@@ -4825,19 +4844,13 @@ impl App {
                 // Drive the listen server (accept handshakes, drain the socket).
                 // Snapshots are sent post-loop in `net_serialize_and_send`.
                 match server.update(dt) {
-                    // Drive this frame's connection transitions through the game-logic-
-                    // owned registry borrow: an accept verdict registers the client and
-                    // spawns its slot-owned inert pawn; a lifecycle close despawns it.
+                    // Drive this frame's ordered participation transitions through
+                    // the game-logic-owned registry borrow.
                     Ok(poll) => {
                         use postretro_net::transport::HandshakeOutcome;
-                        // The accept verdict is the production spawn seam. An accepted
-                        // client must get its slot-owned pawn spawned + registered HERE,
-                        // so it is in the replicable set before `net_serialize_and_send`
-                        // runs `host_replicate` post-loop and the pawn lands in the first
-                        // snapshot. `SlotEvent::Accepted` never reaches `poll.lifecycle`
-                        // (`HandshakeOutcome::Accepted` is the accept lane); lifecycle
-                        // carries `Closed` only, including map-fingerprint closes retained
-                        // between polls. Both paths mutate the registry, so take one
+                        // Gate verdicts log diagnostics. Ordered lifecycle edges own
+                        // participation state: entry registers/spawns, while either exit
+                        // cleans up. Both paths mutate the registry, so take one
                         // game-logic-owned borrow when either has work.
                         if !poll.handshakes.is_empty() || !poll.lifecycle.is_empty() {
                             let mut registry = script_ctx.registry.borrow_mut();
@@ -4858,34 +4871,37 @@ impl App {
                                     }
                                 }
                             }
-                            // Any exit from participation shares this cleanup. Entries
-                            // are handled immediately below by the symmetric spawn path.
-                            netcode::host_handle_lifecycle(
-                                &mut registry,
-                                allocator,
-                                replicable,
-                                replication,
-                                state_slots,
-                                slot_pawns,
-                                command_queues,
-                                owners,
-                                weapon_owners,
-                                open_shots,
-                                pending_hit_declarations,
-                                weaponless_fire_logged,
-                                last_sent_tuning,
-                                &poll.lifecycle,
-                            );
-                            // Every entry to participating gets the same registration
-                            // and pawn path. The admission outcome is deliberately not
-                            // sufficient: a demoted slot can later re-enter without a
-                            // second handshake.
+                            // Preserve edge order. One poll can contain entry followed
+                            // by demotion; batch-cleaning every exit before batch-spawning
+                            // every entry would leave a pawn for a finally-admitted slot.
                             for event in &poll.lifecycle {
+                                netcode::host_handle_lifecycle(
+                                    &mut registry,
+                                    allocator,
+                                    replicable,
+                                    replication,
+                                    state_slots,
+                                    slot_pawns,
+                                    command_queues,
+                                    owners,
+                                    weapon_owners,
+                                    open_shots,
+                                    pending_hit_declarations,
+                                    weaponless_fire_logged,
+                                    last_sent_tuning,
+                                    std::slice::from_ref(event),
+                                );
                                 let postretro_net::slots::SlotEvent::Participating { client_id } =
                                     event
                                 else {
                                     continue;
                                 };
+                                // A poll can contain a complete promote-then-demote
+                                // history. Do not materialize a historical entry for
+                                // a slot whose final participation predicate is false.
+                                if !server.is_current_participation_entry(event) {
+                                    continue;
+                                }
                                 replication.register_client(*client_id);
                                 state_slots.register_client(*client_id);
                                 let pawn = if host_spawn_points.is_empty() {
@@ -4939,7 +4955,7 @@ impl App {
                     }
                     Err(err) => log::error!("[Net] host update failed: {err}"),
                 }
-                // Drain each accepted client's reliable Channel::Input: apply
+                // Drain each participating client's reliable Channel::Input: apply
                 // replication acks and baseline-refresh requests into the tracker,
                 // and echo time-sync probes with the current server tick. The echo
                 // microseconds are telemetry only, derived from the monotonic tick.
@@ -4970,10 +4986,6 @@ impl App {
                 applied_movement_tuning_generation,
                 ..
             }) => {
-                if let Err(err) = client.update(dt) {
-                    log::error!("[Net] client update failed: {err}");
-                }
-                client_controls = client.drain_control();
                 // Drive the 5 Hz time-sync send loop + echo ingest. The client's
                 // local sim tick is the engine frame counter; the estimator reads
                 // its own monotonic clock for send/receive microseconds.
@@ -5072,7 +5084,6 @@ impl App {
         // Restore the spawn-point cache taken before the endpoint borrow. The host
         // needs it on every future accept; `mem::take` only borrowed it for this call.
         self.host_spawn_points = host_spawn_points;
-        netcode::client_drain_control(self, client_controls);
         let client_host_tuning = self.session.as_ref().and_then(|session| {
             let endpoint = session.net_endpoint.as_ref()?;
             let netcode::NetEndpoint::Client { replication, .. } = endpoint else {

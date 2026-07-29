@@ -9,8 +9,11 @@
 // conditioned `PacketConditioner` link with real wire encode/decode, and the production
 // stage order from `netcode::frame_order` — this harness cannot detect crossings before
 // applying the frame's snapshots, because `run_crossing_stage` consumes the witness that
-// `run_snapshot_apply_stage` mints. A break in decode, the ack gate, fingerprint
-// validation, baseline/refresh plumbing, or the apply-before-detect order fails a test here.
+// `run_snapshot_apply_stage` mints. The client stage also drains reliable Control before
+// Snapshot, matching `App::net_poll_and_apply`; that drain arms the transport-owned
+// participation epoch without exposing a promotion message to the engine. A break in
+// decode, the ack gate, fingerprint validation, baseline/refresh plumbing, or the
+// apply-before-detect order fails a test here.
 //
 // NOT COVERED — role gating. This harness never constructs a `NetEndpoint`. The
 // `NetEndpoint::Client` match arm in `App::net_poll_and_apply` and `App::is_connected_client`
@@ -727,10 +730,16 @@ impl PersistentAtmosphereHarness {
 /// production is never entered (see the file header).
 impl ReplicatedStateFrame for PersistentAtmosphereHarness {
     /// Deliver the conditioned link's due packets — the harness's stand-in for the socket
-    /// read production does inside `NetClient::update` — then run the production
-    /// `client_receive_and_apply`, the same function `App::net_poll_and_apply` calls.
+    /// read production does inside `NetClient::update` — then drain reliable Control
+    /// before running `client_receive_and_apply`, matching `App::net_poll_and_apply`.
     fn apply_received_snapshots(&mut self, frame_dt: f32) {
         self.relay_server_to_client();
+        // Regression: the conditioned harness skipped Control and therefore rejected
+        // every correctly epoch-framed Snapshot as inactive participation traffic.
+        assert!(
+            self.client.drain_control().is_empty(),
+            "the fixture expects only the transport-owned participation marker"
+        );
         let previous_sequence = self.client_replication.latest_sequence();
         let collision = CollisionWorld::new();
         {

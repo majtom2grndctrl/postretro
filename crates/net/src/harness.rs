@@ -485,7 +485,15 @@ mod tests {
         );
         pump_server_to_client(&mut server, &mut client, &mut cond);
 
-        // 3. The client must receive the snapshot and decode it byte-faithfully.
+        // 3. Runtime drains reliable Control before Snapshot each frame. The
+        // transport-only participation marker arms this snapshot's epoch and
+        // must not escape as an engine Control message.
+        assert!(
+            client.drain_control().is_empty(),
+            "participation marker must remain transport-only"
+        );
+
+        // 4. The client must receive the snapshot and decode it byte-faithfully.
         let received = client.drain_snapshots();
         assert_eq!(received.len(), 1, "exactly one snapshot should arrive");
         let decoded: RawSnapshotMessage =
@@ -574,6 +582,10 @@ mod tests {
         assert!(server.send_snapshot(CLIENT_ID, wire::encode(&snapshot)));
         pump_server_to_client(&mut server, &mut client, &mut cond);
 
+        assert!(
+            client.drain_control().is_empty(),
+            "participation marker must remain transport-only"
+        );
         let received = client.drain_snapshots();
         assert_eq!(received.len(), 1);
         let decoded: RawSnapshotMessage = wire::decode(&received[0]).expect("decodes");

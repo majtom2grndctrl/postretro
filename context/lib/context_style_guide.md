@@ -93,7 +93,13 @@ _Scope: context/ files._
 
 Context files describe what survives refactoring. Task descriptions describe what to change right now.
 
-**Litmus test:** "If we rewrote this module with a different approach, would this sentence still be true?" "Does this sentence describe something I wouldn't find quickly by searching strings and rapidly reading code files?" Yes → context file. No → task description or code comment.
+**Litmus test:** would an agent speed-reading the code learn this? Yes → code comment or task description. No → context file.
+
+Code shows what is, never what must remain. A rule's modality does not survive the read, which is why a constraint that looks obvious in source still earns its line — the reader cannot tell a rule from an accident.
+
+**Cross-folder exception.** A contract smeared across folders belongs here even when each half reads plainly on its own, because an agent speed-reading one folder learns a coherent half-truth. A contract living inside one module does not qualify: a code comment reaches whoever edits that line, and that is the only reader who needs it.
+
+**Bias to lean.** The exception is not a licence. Every line here is loaded by agents who needed one other thing in the same file. Prefer one sentence naming the coupling over a paragraph explaining it; the source carries the detail.
 
 **Belongs in context files (durable):**
 - Design principles and intent
@@ -101,6 +107,7 @@ Context files describe what survives refactoring. Task descriptions describe wha
 - Pipeline topology as semantic stages (not function names)
 - Lifecycle ordering constraints and why alternatives fail
 - Data contracts at module boundaries (what a subsystem expects to receive and promises to emit)
+- Couplings spanning folders, where a local-looking change breaks a distant consumer
 - Architectural invariants
 - Unsafe/FFI boundary rules (raw pointer contracts)
 

@@ -108,9 +108,9 @@ use postretro_net::timesync::{
 };
 use postretro_net::transport::{NetClient, NetServer, ServerPoll};
 use postretro_net::wire::{
-    self, ComponentPayload, EntityRecord, NetworkId, RawSnapshotMessage, SnapshotMessage,
-    ValidationError, WireError, WireKinematicMoverState, WireMovementState,
-    WirePlayerMovementState, WireTransform,
+    self, ComponentPayload, DivergenceReason, EntityRecord, NetworkId, RawSnapshotMessage,
+    ServerControlMessage, SnapshotMessage, ValidationError, WireError, WireKinematicMoverState,
+    WireMovementState, WirePlayerMovementState, WireTransform,
 };
 
 use crate::collision::{self, CollisionWorld};
@@ -522,9 +522,9 @@ pub(crate) enum WorldLessPoll {
         reason = "Task 7 consumes host lifecycle events after its cleanup seam lands"
     )]
     Host(ServerPoll),
-    /// A client transport advance. Task 4 adds the typed Control drain carried
-    /// by this variant's world-less path.
-    Client,
+    /// A client transport advance plus every typed server Control message that
+    /// arrived during it. The App routes these after the endpoint borrow ends.
+    Client(Vec<ServerControlMessage>),
     /// The transport failed after logging its diagnostic. Keep the frame alive,
     /// matching the Running-path error handling.
     Failed,
@@ -542,7 +542,32 @@ impl WorldLessPoll {
     pub(crate) fn into_host_poll(self) -> Option<ServerPoll> {
         match self {
             Self::Host(poll) => Some(poll),
-            Self::Client | Self::Failed => None,
+            Self::Client(_) | Self::Failed => None,
+        }
+    }
+}
+
+/// Route every server Control variant through the one client-side drain. Control
+/// is reliable and ordered, so splitting relevel, diagnostic, and tuning drains
+/// would let one consumer steal another consumer's message.
+pub(crate) fn client_drain_control(app: &mut crate::App, controls: Vec<ServerControlMessage>) {
+    for control in controls {
+        match control {
+            ServerControlMessage::Relevel(catalog_id) => {
+                app.follow_relevel_catalog(catalog_id);
+            }
+            ServerControlMessage::Divergence(DivergenceReason::Closing(cause)) => {
+                // Admission failure is terminal, so this is the client-visible
+                // diagnostic for a player who cannot join the host.
+                log::error!(
+                    "[Net] incompatible host: {}",
+                    DivergenceReason::Closing(cause)
+                );
+            }
+            // Holding and tuning controls share this drain. Their engine effects
+            // land with the lifecycle and payload wiring that owns those states.
+            ServerControlMessage::Divergence(DivergenceReason::Holding(_))
+            | ServerControlMessage::Tuning(_) => {}
         }
     }
 }
@@ -650,7 +675,7 @@ impl NetEndpoint {
                     log::error!("[Net] client update failed: {err}");
                     WorldLessPoll::Failed
                 } else {
-                    WorldLessPoll::Client
+                    WorldLessPoll::Client(client.drain_control())
                 }
             }
         }
@@ -2635,7 +2660,7 @@ mod tests {
         .expect("connect role yields an endpoint");
         assert!(matches!(
             client.poll_world_less(Duration::from_millis(16), &mut registry),
-            WorldLessPoll::Client
+            WorldLessPoll::Client(_)
         ));
 
         assert_eq!(

@@ -3624,9 +3624,15 @@ impl App {
             .session
             .as_ref()
             .map(|session| session.scripting.script_ctx.clone())?;
-        let endpoint = self.session.as_mut()?.net_endpoint.as_mut()?;
-        let mut registry = script_ctx.registry.borrow_mut();
-        Some(endpoint.poll_world_less(std::time::Duration::from_secs_f32(frame_dt), &mut registry))
+        let poll = {
+            let endpoint = self.session.as_mut()?.net_endpoint.as_mut()?;
+            let mut registry = script_ctx.registry.borrow_mut();
+            endpoint.poll_world_less(std::time::Duration::from_secs_f32(frame_dt), &mut registry)
+        };
+        if let netcode::WorldLessPoll::Client(controls) = &poll {
+            netcode::client_drain_control(self, controls.clone());
+        }
+        Some(poll)
     }
 
     /// Finish deferred session startup on the first visible logo frame. Takes
@@ -4749,6 +4755,7 @@ impl App {
         let hit_zone_store = &session.hit_zone_store;
         let mesh_clip_tables = &session.mesh_clip_tables;
         let mut armed_local_pawn = None;
+        let mut client_controls = Vec::new();
         match session.net_endpoint.as_mut() {
             None => {}
             Some(netcode::NetEndpoint::Host {
@@ -4907,6 +4914,7 @@ impl App {
                 if let Err(err) = client.update(dt) {
                     log::error!("[Net] client update failed: {err}");
                 }
+                client_controls = client.drain_control();
                 // Drive the 5 Hz time-sync send loop + echo ingest. The client's
                 // local sim tick is the engine frame counter; the estimator reads
                 // its own monotonic clock for send/receive microseconds.
@@ -4991,6 +4999,7 @@ impl App {
         // Restore the spawn-point cache taken before the endpoint borrow. The host
         // needs it on every future accept; `mem::take` only borrowed it for this call.
         self.host_spawn_points = host_spawn_points;
+        netcode::client_drain_control(self, client_controls);
         if let Some(armed) = armed_local_pawn {
             self.seed_client_weapon_state(
                 armed.entity_id,

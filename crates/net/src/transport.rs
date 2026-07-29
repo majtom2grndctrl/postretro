@@ -105,6 +105,7 @@ pub struct NetServer {
     mod_identity: Option<(String, String)>,
     mod_digest: Option<[u8; 32]>,
     level_parity: Option<(String, [u8; 32])>,
+    relevel_catalog_id: Option<String>,
     // Retained only for the Phase-2 compatibility setter below.
     legacy_kinematic_static_fingerprint: Option<[u8; 32]>,
 }
@@ -138,6 +139,7 @@ impl NetServer {
             mod_identity: None,
             mod_digest: None,
             level_parity: None,
+            relevel_catalog_id: None,
             legacy_kinematic_static_fingerprint: kinematic_static_fingerprint,
         })
     }
@@ -157,6 +159,19 @@ impl NetServer {
     pub fn set_level_parity(&mut self, level: Option<(String, [u8; 32])>) {
         self.level_parity = level;
         let _ = self.reevaluate_parity(None);
+    }
+
+    /// Install the catalog id clients should follow. This is intentionally
+    /// separate from level parity: the net crate cannot distinguish a catalog
+    /// id from a raw-path fallback inside that opaque identity string.
+    pub fn set_relevel_catalog_id(&mut self, catalog_id: Option<String>) {
+        self.relevel_catalog_id = catalog_id;
+        let Some(catalog_id) = self.relevel_catalog_id.clone() else {
+            return;
+        };
+        for client_id in self.relevel_recipients() {
+            self.send_relevel(client_id, &catalog_id);
+        }
     }
 
     /// Phase-2 compatibility shim. Its old close-on-change behavior is preserved;
@@ -288,6 +303,9 @@ impl NetServer {
                         }
                         let _ = self.slots.admit(client_id);
                         outcomes.push(HandshakeOutcome::Admitted { client_id });
+                        if let Some(catalog_id) = self.relevel_catalog_id.clone() {
+                            self.send_relevel(client_id, &catalog_id);
+                        }
                         if self.mod_digest.is_some() {
                             if let Some(cause) = self.reevaluate_parity(Some(client_id)) {
                                 self.send_divergence(client_id, cause.clone());
@@ -338,6 +356,26 @@ impl NetServer {
             wire::encode(&ServerControlMessage::Divergence(
                 DivergenceReason::Holding(cause),
             )),
+        );
+    }
+
+    fn relevel_recipients(&self) -> Vec<ClientId> {
+        self.server
+            .clients_id()
+            .into_iter()
+            .filter(|client_id| {
+                matches!(
+                    self.slots.state(*client_id),
+                    Some(SlotState::Admitted | SlotState::Participating)
+                )
+            })
+            .collect()
+    }
+
+    fn send_relevel(&mut self, client_id: ClientId, catalog_id: &str) {
+        self.send_control(
+            client_id,
+            wire::encode(&ServerControlMessage::Relevel(catalog_id.to_owned())),
         );
     }
 
@@ -687,8 +725,20 @@ impl NetClient {
         drain_client_channel(&mut self.client, Channel::Snapshot)
     }
 
-    pub fn drain_control(&mut self) -> Vec<Vec<u8>> {
+    /// Decode every server Control envelope currently queued by renet. Malformed
+    /// payloads are isolated to this message: later reliable controls remain
+    /// deliverable and the engine never needs to guess an untagged payload type.
+    pub fn drain_control(&mut self) -> Vec<ServerControlMessage> {
         drain_client_channel(&mut self.client, Channel::Control)
+            .into_iter()
+            .filter_map(|bytes| match wire::decode(&bytes) {
+                Ok(message) => Some(message),
+                Err(err) => {
+                    log::warn!("[Net] dropping malformed server Control message: {err}");
+                    None
+                }
+            })
+            .collect()
     }
 
     pub fn packets_to_send(&mut self) -> Vec<Vec<u8>> {
@@ -722,6 +772,43 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
+    const RELAY_CLIENT_ID: ClientId = 41;
+
+    fn relay_pair() -> (NetServer, NetClient) {
+        let server_socket =
+            UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, 0)).expect("bind server socket");
+        let server_addr = server_socket.local_addr().expect("server local address");
+        let mut server =
+            NetServer::new(server_socket, server_addr, 8, Duration::from_secs(1), None)
+                .expect("construct relay server");
+        let client_socket =
+            UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, 0)).expect("bind client socket");
+        let mut client = NetClient::new(
+            client_socket,
+            server_addr,
+            RELAY_CLIENT_ID,
+            Duration::from_secs(1),
+            None,
+        )
+        .expect("construct relay client");
+        server.add_relay_connection(RELAY_CLIENT_ID);
+        client.set_connected();
+        (server, client)
+    }
+
+    fn relay_client_to_server(client: &mut NetClient, server: &mut NetServer) {
+        client.update_connections(Duration::from_millis(16));
+        for packet in client.packets_to_send() {
+            server.process_packet_from(&packet, RELAY_CLIENT_ID);
+        }
+    }
+
+    fn relay_server_to_client(server: &mut NetServer, client: &mut NetClient) {
+        for packet in server.packets_to_send(RELAY_CLIENT_ID) {
+            client.process_packet(&packet);
+        }
+    }
+
     #[test]
     fn parity_precedence_reports_mod_before_level() {
         let declaration = ParityDeclaration {
@@ -732,6 +819,54 @@ mod tests {
             parity_cause(Some([1; 32]), None, Some(&declaration)),
             Some(HoldingCause::ModDigest { .. })
         ));
+    }
+
+    #[test]
+    fn late_admission_receives_the_installed_relevel_catalog_id() {
+        let (mut server, mut client) = relay_pair();
+        server.set_mod_identity("postretro.test".to_string(), "1".to_string());
+        server.set_relevel_catalog_id(Some("e1m1".to_string()));
+        client.set_mod_identity("postretro.test".to_string(), "1".to_string());
+
+        relay_client_to_server(&mut client, &mut server);
+        let poll = server.poll_handshakes();
+        assert!(matches!(
+            poll.handshakes.as_slice(),
+            [HandshakeOutcome::Admitted {
+                client_id: RELAY_CLIENT_ID
+            }]
+        ));
+
+        relay_server_to_client(&mut server, &mut client);
+        assert_eq!(
+            client.drain_control(),
+            vec![ServerControlMessage::Relevel("e1m1".to_string())],
+            "a client admitted after the host installed a catalog level must be told the current map"
+        );
+    }
+
+    #[test]
+    fn installing_a_catalog_level_notifies_an_already_admitted_client() {
+        let (mut server, mut client) = relay_pair();
+        server.set_mod_identity("postretro.test".to_string(), "1".to_string());
+        client.set_mod_identity("postretro.test".to_string(), "1".to_string());
+
+        relay_client_to_server(&mut client, &mut server);
+        assert!(matches!(
+            server.poll_handshakes().handshakes.as_slice(),
+            [HandshakeOutcome::Admitted {
+                client_id: RELAY_CLIENT_ID
+            }]
+        ));
+        assert!(client.drain_control().is_empty());
+
+        server.set_relevel_catalog_id(Some("e1m2".to_string()));
+        relay_server_to_client(&mut server, &mut client);
+        assert_eq!(
+            client.drain_control(),
+            vec![ServerControlMessage::Relevel("e1m2".to_string())],
+            "a catalog install must announce the next map to admitted clients"
+        );
     }
 
     proptest! {

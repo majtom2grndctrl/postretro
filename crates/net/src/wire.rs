@@ -1231,6 +1231,9 @@ pub enum ServerControlMessage {
     /// Opaque engine-serialized tuning. Net is a registry-blind courier and must
     /// never decode, compare, or validate this descriptor payload.
     Tuning(Vec<u8>),
+    /// Host-selected map catalog id. The engine resolves it against the local
+    /// catalog and follows through its normal queued level-load path.
+    Relevel(String),
 }
 
 /// Wire codec failure. Today the only failure mode is a bitcode decode error
@@ -1634,6 +1637,9 @@ mod tests {
             DivergenceReason::Holding(HoldingCause::HostLevelAbsent),
         )));
         assert!(round_trips(&ServerControlMessage::Tuning(vec![1, 2, 3])));
+        assert!(round_trips(&ServerControlMessage::Relevel(
+            "e1m1".to_string()
+        )));
     }
 
     #[test]

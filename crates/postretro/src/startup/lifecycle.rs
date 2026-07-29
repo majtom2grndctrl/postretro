@@ -245,6 +245,45 @@ impl App {
         self.level_requests.push_back(request);
     }
 
+    /// Follow a server-selected catalog level through the ordinary runtime
+    /// request path. A catalog mismatch is recoverable content divergence, not
+    /// a transport failure: leave the connection alive for a later relevel.
+    pub(crate) fn follow_relevel_catalog(&mut self, catalog_id: String) {
+        let catalog_has_id = self.session.as_ref().is_some_and(|session| {
+            session
+                .scripting
+                .script_ctx
+                .data_registry
+                .borrow()
+                .maps
+                .iter()
+                .any(|entry| entry.id == catalog_id)
+        });
+        if !catalog_has_id {
+            log::warn!("[Net] relevel names unknown catalog id `{catalog_id}`");
+            return;
+        }
+
+        if self.relevel_is_already_selected(&catalog_id) {
+            return;
+        }
+
+        self.enqueue_level_request(LevelRequest::Load(LevelSource::Catalog(catalog_id)));
+    }
+
+    fn relevel_is_already_selected(&self, catalog_id: &str) -> bool {
+        let source_is_catalog =
+            |source: &LevelSource| matches!(source, LevelSource::Catalog(id) if id == catalog_id);
+        self.active_level_source.as_ref().is_some_and(source_is_catalog)
+            || self
+                .level_load
+                .as_ref()
+                .is_some_and(|load| load.entry.catalog_id.as_deref() == Some(catalog_id))
+            || self.level_requests.iter().any(|request| {
+                matches!(request, LevelRequest::Load(source) if source_is_catalog(source))
+            })
+    }
+
     #[cfg(feature = "dev-tools")]
     pub(crate) fn enqueue_dev_level_cycle(&mut self) {
         self.enqueue_dev_level_cycle_target(PathBuf::from(DEV_LEVEL_CYCLE_TARGET));
@@ -3393,6 +3432,101 @@ mod tests {
                 "final".to_string()
             ))),
             "rapid frontend activations should not install intermediate maps",
+        );
+    }
+
+    #[test]
+    fn relevel_does_not_restart_an_active_or_already_selected_catalog_load() {
+        let mut app = test_app();
+        script_ctx(&app)
+            .data_registry
+            .borrow_mut()
+            .replace_maps(vec![catalog_map("e1m1", "maps/e1m1.prl", "Entryway", &[])]);
+
+        app.active_level_source = Some(LevelSource::Catalog("e1m1".to_string()));
+        app.follow_relevel_catalog("e1m1".to_string());
+        assert!(
+            app.level_requests.is_empty(),
+            "a relevel naming the active catalog map must not restart it"
+        );
+
+        app.active_level_source = None;
+        app.level_load = Some(InFlightLevelLoad {
+            map_path: PathBuf::from("content/dev/maps/e1m1.prl"),
+            content_root: PathBuf::from("content/dev"),
+            entry: LevelLoadEntry {
+                catalog_id: Some("e1m1".to_string()),
+                path: "maps/e1m1.prl".to_string(),
+                name: "Entryway".to_string(),
+                tags: Vec::new(),
+            },
+        });
+        app.follow_relevel_catalog("e1m1".to_string());
+        assert!(
+            app.level_requests.is_empty(),
+            "a relevel naming the in-flight catalog map must not restart it"
+        );
+
+        app.level_load = None;
+        app.follow_relevel_catalog("e1m1".to_string());
+        app.follow_relevel_catalog("e1m1".to_string());
+        assert_eq!(
+            app.level_requests,
+            VecDeque::from([LevelRequest::Load(LevelSource::Catalog("e1m1".to_string()))]),
+            "duplicate relevels queued before the lifecycle drain coalesce too"
+        );
+    }
+
+    #[test]
+    fn unknown_relevel_catalog_warns_and_does_not_queue_a_load() {
+        let mut app = test_app();
+        let logs = crate::scripting::reactions::log_capture::capture(|| {
+            app.follow_relevel_catalog("missing-map".to_string());
+        });
+
+        assert!(
+            logs.iter().any(|(level, message)| {
+                *level == log::Level::Warn
+                    && message.contains("[Net] relevel names unknown catalog id")
+                    && message.contains("missing-map")
+            }),
+            "unknown catalog id must produce the pinned recoverable relevel warning: {logs:?}"
+        );
+        assert!(
+            app.level_requests.is_empty(),
+            "an unknown relevel catalog must not queue a load or otherwise alter the client"
+        );
+    }
+
+    #[test]
+    fn closing_control_surfaces_a_client_side_incompatible_host_diagnostic() {
+        let mut app = test_app();
+        let expected = postretro_net::wire::ProtocolVersion {
+            app_protocol_id: 7,
+            wire_version: 3,
+        };
+        let received = postretro_net::wire::ProtocolVersion {
+            app_protocol_id: 8,
+            wire_version: 3,
+        };
+        let logs = crate::scripting::reactions::log_capture::capture(|| {
+            crate::netcode::client_drain_control(
+                &mut app,
+                vec![postretro_net::wire::ServerControlMessage::Divergence(
+                    postretro_net::wire::DivergenceReason::Closing(
+                        postretro_net::wire::ClosingCause::Protocol { expected, received },
+                    ),
+                )],
+            );
+        });
+
+        assert!(
+            logs.iter().any(|(level, message)| {
+                *level == log::Level::Error
+                    && message.contains("[Net] incompatible host")
+                    && message.contains("protocol mismatch")
+            }),
+            "a typed admission refusal must reach the client-side incompatible-host diagnostic: {logs:?}"
         );
     }
 

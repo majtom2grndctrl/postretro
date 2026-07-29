@@ -15,7 +15,7 @@ paint the engine into a corner.
 > rests on.
 > **Related:** `context/lib/scripting.md` · `context/lib/entity_model.md` ·
 > `context/lib/input.md` · `context/research/ui-layer.md` ·
-> `context/plans/drafts/M10--weapon-primitives/`
+> `context/plans/done/M10--weapon-primitives/`
 
 ---
 
@@ -49,6 +49,16 @@ held/inventory machinery must not be weapon-exclusive. Three layers:
   damage payload, a consumable resource. "Fire" is weapon's flavor of
   primary-use; the resource is weapon's flavor of a consumable (ammo, heat, or a
   rechargeable cell — a tagged union, §3).
+
+The consequence for the container: when a per-owner container lands it is a
+general **`Inventory`**, not a weapon list. Wieldables are a subset *view* of
+what it holds, never the container's definition — augment modules are owned and
+never wielded, and they are the first thing that breaks a weapon-named
+container. Naming it for weapons buys nothing now and costs a rename plus a
+re-key of every reference the moment augments land. Inventory sits as a **peer**
+of the pawn's `Health` and `AmmoReserve`, not a parent of them: their lifetimes
+are independent, and losing your last plasma rifle must not zero your cell
+reserve.
 
 We do **not** build other wieldable kinds now — the hedge is purely about naming
 the load-bearing machinery for *wieldables*, not *weapons*, so a second kind is
@@ -89,9 +99,9 @@ kind filling them in.
   archetype.
 - **Instance** — a wieldable entity carrying its kind's component (a weapon
   carries a weapon component): a reference to its
-  archetype, mutable runtime state (for a weapon: cooldown; later loaded
-  magazine, heat, charge), instance rolls, and slotted augments. The reserve it
-  draws from is not here — it's pooled on the inventory (§6). The entity id *is*
+  archetype, mutable runtime state (for a weapon: cooldown and loaded magazine;
+  later heat, charge), instance rolls, and slotted augments. The reserve it
+  draws from is not here — it's pooled on the owning pawn (§6). The entity id *is*
   the wieldable's identity — what inventory tracks, what a pickup is, what
   switching repoints to.
 - **Augment** — a script-declared, slottable modifier. Carries stat deltas
@@ -117,19 +127,22 @@ defineWeapon({
     damage: 8,                 // number → f32 — base damage, pre-roll/augment
     range: 1200,               // number → f32 — world units; clamps the cast's max_toi
     fireRateMs: 90,            // number → f32 — ms; converted to ticks at materialization
-    magazine: 30,              // number → u32 — rounds per magazine (ammo-kind stat)
-    reloadMs: 1800,            // number → f32 — ms; reload *speed* is a stat
   },
   fireMode: "auto",            // FireMode = "semi" | "auto" — orthogonal, stays flat
   resolution: "hitscan",       // ResolutionMode = "hitscan" — orthogonal, stays flat
   augmentSlots: 2,             // number → u32 — slot count this archetype exposes
   // Resource is a tagged union: fields differ per kind, so a flat field set
   // would carry meaningless members (an `ammoType` on a heat gun). Tag it.
+  // The ammo variant's numbers live in this block, not in `initialStats`.
   resource: {
-    kind: "ammo",              // ResourceKind = "ammo" | "heat" | "cell"
-    type: "heavy",             // AmmoType union — key into the shared reserve pool
-    reloadStyle: "magazine",   // ReloadStyle = "magazine" | "per-shell" | "internal" | "energy"
-                               //   — a fixed classifier (a trait), not a number
+    kind: "ammo",              // ResourceKind — "ammo" today; "heat" | "cell" are open
+    type: "heavy",             // string — authored ASCII identifier; the reserve pool key
+    magazine: 30,              // number → u32 — rounds the magazine holds
+    costPerShot: 1,            // number → u32 — rounds debited per shot
+    reserve: 90,               // number → u32 — reserve credited to the pawn at spawn
+    reloadMs: 1800,            // number → u32 — ms for one atomic reload
+    // Unbuilt: `reloadStyle` ("magazine" | "per-shell" | "internal" | "energy")
+    //   — a fixed classifier (a trait), not a number. Only atomic reload exists.
   },
   // Per-activation blocks. `emits` is co-located on the activation that fires it
   // — there is NO top-level emits. The activation is the single source of truth
@@ -144,7 +157,10 @@ defineWeapon({
   secondary: { use: "none" },  // a `use: "none"` activation carries no emits — no desync risk
 })
 
-// Resource variants (alternatives to the ammo block above):
+// Resource variants — unbuilt, sketched here so the union's shape is legible.
+// Note the two sketches still put their numbers in `initialStats`, where the
+// shipped ammo variant puts its own on the resource; which placement generalizes
+// is settled when the first of these lands.
 //   Heat — passive dissipation + an overheat punish state, no reserve, no reload:
 //     resource: { kind: "heat", overheatBehavior: "lockout" }
 //       // overheatBehavior = "lockout" | "vent"
@@ -207,8 +223,9 @@ defineAugment({
 //   defineAugment({ name: "extended-mag", slot: "magazine",
 //     mount: { point: "mag-well", mesh: "extmag_v1" },
 //     modifiers: [{ stat: "magazine", add: 15 }] })
-// This is exactly why `magazine` is a stat: the visible-mount and stat-delta
-// decisions compose for free.
+// The delta lands on the effective-stats projection, not on the authored block,
+// so the visible-mount and stat-delta decisions compose regardless of where the
+// number is authored.
 ```
 
 **Why `resource` is a tagged union, not flat fields.** `ammoType` and
@@ -216,11 +233,12 @@ defineAugment({
 meaningless on a heat weapon. That's exactly when a tagged union beats flat
 fields: members that don't apply to every variant. `fireMode` and `resolution`
 stay flat top-level fields because they *are* orthogonal — a heat weapon still
-has both. The modifiable *numbers* stay in `initialStats`, but the set is
-resource-dependent: an ammo weapon carries `magazine`; a heat weapon carries
-`heatPerShot` / `overheatAt` / `ventRate`. `reloadMs` is a stat (speed is a
-number); `reloadStyle` is a fixed classifier (a trait), so it lives on the
-resource, not in `initialStats`.
+has both. Ammo's *numbers* turned out to be variant-local as well, so they're
+authored on the resource rather than in `initialStats`: `magazine`,
+`costPerShot`, `reserve`, `reloadMs`. Authoring placement is not the modifier
+seam — `effective()` projects the resource's numbers beside the flat stats (§3),
+so an augment raising magazine capacity or reload speed has somewhere to land
+without a stat-map entry.
 
 **Why `emits` is co-located on the activation.** Better than a top-level emits
 keyed by primary/secondary: the activation is the single source of truth for
@@ -269,9 +287,9 @@ and additive-vs-multiplicative application order — is an open fork (§9); pin 
 before this is durable:
 
 ```rust
-// Proposed design — the seam, not a layout.
-// For M10 this is identity passthrough (base stats, no rolls/augments yet);
-// rolls and augment modifiers slot in here later without touching the fire tick.
+// The seam, not a layout. Today an identity passthrough — the flat stats plus
+// the resource's projected numbers (capacity, cost per shot, reload duration),
+// no rolls or augments. Those slot in here later without touching the fire tick.
 // Resolve lazily, cache the result, invalidate when rolls/augments change.
 impl WeaponComponent {
     fn effective(&self) -> EffectiveStats { /* base → rolls → augments; cached */ }
@@ -416,9 +434,11 @@ kind later:
   own.
 - **Inventory** — the loot items the player owns. Wieldables (weapons, future
   tools) are the equippable subset; augment modules are owned but not wielded.
-  The active reference selects one wieldable. Ammunition reserves are pooled here
-  by ammo type — shared across every instance that uses that type. The loaded
-  magazine stays per-instance.
+  The active reference selects one wieldable. Inventory does not own the
+  ammunition reserve: reserves are pooled on the **pawn**, keyed by the authored
+  ammo type and shared across every instance drawing that type, so a wieldable
+  leaving the inventory never takes its reserve with it. The loaded magazine
+  stays per-instance.
 
 Because equip-at-spawn and pickup spawn the *same* kind of thing, they should
 share one spawn-and-activate path. Per `ui-layer.md`, the active wieldable's
@@ -477,10 +497,13 @@ M10 leaves these as open seams — not built, not blocked:
 
 - Instance rolls, augments, and any non-passthrough stat resolution.
 - Inventory, switching, switch input, pickups.
-- The full **resource discriminated union** (ammo / heat / cell); ammo's
-  pooled-by-type reserve and magazine.
-- **`reloadStyle`** and the cancellable **per-shell reload** state machine
-  (atomic magazine reload vs. per-shell).
+- The **heat and cell** variants of the resource union, and the per-tick resource
+  update they need. The union itself and its ammo variant closed in
+  `context/plans/done/E16--ammo-resource/`: the pawn's pooled-by-type reserve,
+  the per-instance magazine, and atomic reload.
+- **`reloadStyle`** and the cancellable **per-shell reload** state machine.
+  Atomic magazine reload is the only style built, and nothing yet names the
+  classifier that would select between them.
 - **Charge-on-activation** (charge level scaling stats at release).
 - **Visible-mount / attachment augments** (mount point + mesh) and the separate
   thin **cosmetic layer** (skins, charms).
@@ -517,10 +540,6 @@ These aren't decided — they want a human call before this becomes durable:
 - **Roll model:** are rolls fixed deltas baked at instance spawn, or live
   modifiers re-resolved each shot? Affects whether effective-stat caching is
   optional or required.
-- **Ammo reserve model:** pooled by ammo type (shared across weapons of that
-  type — the dominant looter pattern, and what "ammo *type*" implies) vs.
-  per-weapon-instance reserves. Lean pooled; the type is the sharing key. The
-  loaded magazine stays per-instance either way.
 - **Augment resolution order.** `effective()` says "base → rolls → augments" but
   doesn't define the order *among* augments, nor the additive-vs-multiplicative
   application order — a notorious looter balance footgun (the Borderlands-style
@@ -538,6 +557,10 @@ These aren't decided — they want a human call before this becomes durable:
   toward "in scope" (immersive sim implies it), but this wants a human call: if
   yes, reaction triggers gain an entity-state-change source and it becomes an
   invariant — do not commit it silently.
+
+**Settled: the ammo reserve model.** Pooled by ammo type, not per-instance. The
+authored type string is the sharing key, the reserve lives on the pawn, and the
+loaded magazine stays per-instance (§6). Built, so it is no longer a fork.
 
 ## 10. Stress Test — Remote-Detonated Explosive
 

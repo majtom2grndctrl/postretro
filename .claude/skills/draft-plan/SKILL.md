@@ -52,6 +52,8 @@ State the warrant inline — the specific reason, grounded in source, not a rest
 
 **Enumerate observers, not just the flow.** A flow diagram traces one path and renders every vantage on it as a single line. When the same state is observed from more than one position — host and client, local and remote, live and replayed, authored and generated — the spec owes the cross-product of vantage × lifecycle stage, not the flow. Name the vantages explicitly, then say which ones differ and which are the same. A vantage asserted identical to another is a work-eliminating claim and needs its warrant.
 
+**Enumerate orderings, not just the sequence.** A lifecycle diagram traces one ordering and renders every other as impossible. When the plan introduces mutable state, a timer, or an event, the spec owes the orderings that actually occur: two events the prose separates landing on one tick, B arriving before A, a timer crossing a reset or unload, N of an event where the handler expects one, a duration authored at zero, a consumer sampling slower than the producer mutates. Pin them as a table of scenario, ordering, and expected outcome. Prose states invariants but cannot hold their mechanics — that gap is where ordering defects survive review. Unlike the diagram, this table is spec text, not `research.md`: task agents need it, and the test task cites its rows rather than restating them.
+
 ### 3. Write the spec
 
 Create `context/plans/drafts/<feature-name>/index.md`.
@@ -134,7 +136,7 @@ Show examples of what scripts authored by modders utilizing this functionality w
 Unresolved items, risks, alternatives considered, if applicable (only use section when necessary).
 ```
 
-**Length smell:** most plans land at 50–200 lines. Past 250 lines usually means the spec carries research notes (→ `research.md`) or scope should split into multiple plans.
+**Size smell:** measure the task paragraph, not the document. Past ~150 lines a task is doing two things; past ~4 ACs its contract is not settled. Total length is descriptive — the task-paragraph contract below makes every paragraph restate what its agent cannot otherwise see, so specs grow with tasks × restated surface rather than with sprawl. Move derivation to `research.md`, and split scope when the Scope section covers two problems; neither is a line count.
 
 **Plumbing rule.** Every "edit X to do Y" instruction must say how X gets access to what it needs. New side-tables need owners. New struct fields need writer call-sites. Function signature changes need their callers enumerated. Don't punt access plumbing to the implementer — the implementer has less context than the spec author.
 

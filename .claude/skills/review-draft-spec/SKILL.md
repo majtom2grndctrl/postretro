@@ -2,8 +2,9 @@
 name: review-draft-spec
 description: >
   Multi-agent review of a draft spec in `context/plans/drafts/`. Spawns
-  two parallel reviewers — a broad reviewer and a codebase-anchor
-  reviewer that fact-checks every named identifier against source.
+  three parallel reviewers — a broad reviewer, a codebase-anchor
+  reviewer that fact-checks every named identifier against source, and a
+  temporal reviewer that attacks the spec's orderings.
   Auto-applies mechanical fixes via a Sonnet sub-agent unless
   --no-auto-apply is set. Recommends apply / re-review / promote.
   Use after a draft session, or when a human wants to validate before
@@ -12,7 +13,7 @@ description: >
 
 # Review Draft Spec
 
-Two reviewers in parallel. One broad, one anchored to source. Aggregate findings, auto-apply mechanical fixes, recommend whether to apply more, re-review, or promote.
+Three reviewers in parallel. One broad, one anchored to source, one attacking orderings. Aggregate findings, auto-apply mechanical fixes, recommend whether to apply more, re-review, or promote.
 
 Detail altitude. Direction — is this a reasonable solution to the problem at all — belongs to `/validate-plan` and runs first; findings here are keyed to the spec's current shape, and a reshape invalidates them.
 
@@ -34,7 +35,7 @@ Read the full spec yourself before delegating. Decisions about which reviewers t
 
 ### 3. Run reviewers in parallel
 
-One message, two `Agent` tool calls. No sequential rounds.
+One message, three `Agent` tool calls. No sequential rounds.
 
 #### Broad reviewer (Opus)
 
@@ -73,6 +74,36 @@ Receives:
 - Additional instruction: "Where the spec warrants a work-eliminating claim by citing source — two paths called identical because they share a function, state called derivable because a field already holds it — verify the warrant, not just that the identifier exists. A warrant that names real code and still does not support the claim is the highest-value finding in this pass."
 
 Output: same `{ location, problem, fix }` triples. Each fix references the source location that contradicts the spec — cite by identifier and file, never by line number: fixes land in spec text (often AC or task paragraphs) that must survive future edits, and a line number is stale the moment the file changes.
+
+#### Temporal reviewer (Opus)
+
+Skip only for a spec that introduces no mutable state, no timer, and no event ordering — rare enough to justify inline.
+
+Receives:
+- Full spec content inline
+- Instruction to ground orderings in source: where the spec asserts an order of operations, open the function and confirm the real order. A spec sentence describing a tick as "advance timers, then evaluate intents" is worthless if the shipped function does the reverse.
+- This posture, stated as its own pass:
+
+> Do not ask whether the spec discusses ordering. Ask whether you can
+> construct an ordering that satisfies every sentence the spec writes and
+> still violates what it clearly intends. Apply each probe below to every
+> invariant the spec states and every piece of mutable state or timer it
+> introduces. A finding without a constructible ordering — an actual
+> sequence of events, not an abstract worry — is not a finding.
+
+| Probe | Question |
+|---|---|
+| Same-tick collision | Two events the prose implies land on different ticks arrive on one. Which wins? Is the intermediate state observable? |
+| Reversed arrival | B arrives before A, where the prose implies A precedes B. |
+| Boundary crossing | A timer, queued intent, or in-flight message crosses a reset, unload, respawn, or authority handoff. Survives when it should not, or dies when it should not? |
+| Batching | N of the same event in one tick. All processed, first only, last only? Does the invariant hold for every N including 0? |
+| Zero-duration | A duration authored at 0 or shorter than one tick. Is the state entered? Observed? Does completion fire on the start tick? |
+| Stage order | Where in Input → Game logic → Audio → Render → Present does each read and write land? Does an observer read pre- or post-mutation state, and is that stated or accidental? |
+| Sampling cadence | A consumer sampling slower than the producer mutates — a snapshot interval, a per-frame publish over a per-tick change. Which samples are dropped or repeated? |
+
+Output: `{ location, problem, fix }` triples, **plus a pin table** — `(scenario, ordering, expected outcome)` rows the spec ought to state and does not, each concrete enough to write a test from.
+
+The pin table is the lens's primary artifact. The defect class it targets is "invariant stated, mechanics unpinned," and prose findings get applied and forgotten while a table becomes a spec section later rounds check against. Fold it in as its own section rather than dissolving its rows into existing paragraphs, and have the spec's test task reference the rows instead of restating them.
 
 ### 4. Aggregate
 

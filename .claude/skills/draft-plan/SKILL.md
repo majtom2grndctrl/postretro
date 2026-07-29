@@ -134,7 +134,7 @@ Show examples of what scripts authored by modders utilizing this functionality w
 Unresolved items, risks, alternatives considered, if applicable (only use section when necessary).
 ```
 
-**Length smell:** most plans land at 50–200 lines. Past 250 lines usually means the spec carries research notes (→ `research.md`) or scope should split into multiple plans.
+**Size smell:** measure the task paragraph, not the document. Past ~150 lines a task is doing two things; past ~4 ACs its contract is not settled. Total length is descriptive — the task-paragraph contract below makes every paragraph restate what its agent cannot otherwise see, so specs grow with tasks × restated surface rather than with sprawl. Move derivation to `research.md`, and split scope when the Scope section covers two problems; neither is a line count.
 
 **Plumbing rule.** Every "edit X to do Y" instruction must say how X gets access to what it needs. New side-tables need owners. New struct fields need writer call-sites. Function signature changes need their callers enumerated. Don't punt access plumbing to the implementer — the implementer has less context than the spec author.
 

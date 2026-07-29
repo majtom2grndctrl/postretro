@@ -282,7 +282,7 @@ fn relay_pair() -> (NetServer, NetClient) {
     let client_socket =
         UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("fixture client binds loopback socket");
     let static_fingerprint = [0x5a; 32];
-    let server = NetServer::new(
+    let mut server = NetServer::new(
         server_socket,
         server_addr,
         1,
@@ -290,7 +290,7 @@ fn relay_pair() -> (NetServer, NetClient) {
         Some(static_fingerprint),
     )
     .expect("fixture server transport constructs");
-    let client = NetClient::new(
+    let mut client = NetClient::new(
         client_socket,
         server_addr,
         CLIENT_ID,
@@ -298,6 +298,15 @@ fn relay_pair() -> (NetServer, NetClient) {
         Some(static_fingerprint),
     )
     .expect("fixture client transport constructs");
+
+    // E15 requires matching admission and parity declarations before participation.
+    server.set_mod_identity("test.mod".to_string(), "1.0.0".to_string());
+    server.set_mod_digest(Some(static_fingerprint));
+    server.set_level_parity(Some(("test-level".to_string(), static_fingerprint)));
+    client.set_mod_identity("test.mod".to_string(), "1.0.0".to_string());
+    client.set_mod_digest(Some(static_fingerprint));
+    client.set_level_parity(Some(("test-level".to_string(), static_fingerprint)));
+
     (server, client)
 }
 

@@ -108,6 +108,10 @@ fn committed_sdk_types_contain_weapon_ammo_resource() {
         assert!(output.contains("resource?: WeaponResource;"));
         assert!(output.contains("costPerShot?: number;"));
         assert!(output.contains("reloadMs?: number;"));
+        assert!(output.contains("export type ReloadStyle ="));
+        assert!(output.contains("\"magazine\""));
+        assert!(output.contains("| \"perShell\""));
+        assert!(output.contains("reloadStyle?: ReloadStyle;"));
     }
     for output in [&generated_luau, &committed_luau] {
         assert!(output.contains("export type AmmoResource = {"));
@@ -115,6 +119,10 @@ fn committed_sdk_types_contain_weapon_ammo_resource() {
         assert!(output.contains("resource: WeaponResource?,"));
         assert!(output.contains("costPerShot: number?,"));
         assert!(output.contains("reloadMs: number?,"));
+        assert!(output.contains("export type ReloadStyle ="));
+        assert!(output.contains("\"magazine\""));
+        assert!(output.contains("| \"perShell\""));
+        assert!(output.contains("reloadStyle: ReloadStyle?,"));
     }
 }
 

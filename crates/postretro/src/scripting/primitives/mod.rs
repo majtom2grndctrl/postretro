@@ -291,13 +291,19 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         )
         .finish();
     registry
+        .register_enum("ReloadStyle")
+        .variant("magazine", "Reload the whole magazine in one step.")
+        .variant("perShell", "Reload one shell per step.")
+        .finish();
+    registry
         .register_type("AmmoResource")
         .doc("Finite-ammunition tuning for a weapon. Defines the authored magazine, starting reserve balance, shot cost, and reload timing contract.")
         .field("type", "String", "Ammo resource identifier. Must be non-empty ASCII, at most 64 bytes, and use only [A-Za-z0-9_.:-].")
         .field("magazine", "u32", "Magazine capacity. Range: 1..=4,294,967,295.")
         .field("costPerShot?", "u32", "Units consumed per shot. Range: 1..=4,294,967,295; defaults to 1.")
         .field("reserve", "u32", "Starting reserve balance credited at spawn. Range: 0..=4,294,967,295.")
-        .field("reloadMs?", "u32", "Reload duration in milliseconds. Range: 1..=4,294,967,295; defaults to 1000.")
+        .field("reloadMs?", "u32", "Duration of one reload step in milliseconds: the whole reload for `magazine`, one shell for `perShell`. Range: 1..=4,294,967,295; defaults to 1000.")
+        .field("reloadStyle?", "ReloadStyle", "Reload behavior. `magazine` reloads the whole magazine in one step; `perShell` reloads one shell per step. Defaults to `magazine`.")
         .finish();
     registry
         .register_tagged_union("WeaponResource")

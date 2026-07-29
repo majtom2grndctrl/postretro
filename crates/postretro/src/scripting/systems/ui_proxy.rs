@@ -149,8 +149,8 @@ mod tests {
     use postretro_entities::registry::{EntityId, Transform};
     use postretro_scripting_core::data_descriptors::{
         AirParams, AmmoResource, CapsuleParams, FallParams, FireMode, GroundParams,
-        HealthDescriptor, PlayerMovementDescriptor, ResolutionMode, SpeedParams, WeaponDescriptor,
-        WeaponResource,
+        HealthDescriptor, PlayerMovementDescriptor, ReloadStyle, ResolutionMode, SpeedParams,
+        WeaponDescriptor, WeaponResource,
     };
 
     /// A minimal movement descriptor so a spawned entity qualifies as the pawn
@@ -237,6 +237,7 @@ mod tests {
                 cost_per_shot: 1,
                 reserve: 48,
                 reload_ms: 500,
+                reload_style: ReloadStyle::Magazine,
             })),
         };
         let mut weapon = WeaponComponent::from_descriptor(&descriptor);

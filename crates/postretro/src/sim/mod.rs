@@ -28,9 +28,9 @@ use crate::trigger_commands::TriggerFireContext;
 #[cfg(test)]
 use crate::trigger_system::TriggerEvent;
 use crate::trigger_system::{AuthoritativePlayer, PlayerId, TriggerSystem};
-use crate::weapon::FireButtonState;
 #[cfg(test)]
 use crate::weapon;
+use crate::weapon::FireButtonState;
 use postretro_entities::PoseInputs;
 use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::components::brain::BrainComponent;
@@ -1093,11 +1093,11 @@ mod reload;
 mod weapon_stage;
 
 pub(crate) use reload::{ReloadDelivery, ReloadOutcome};
-pub(crate) use weapon_stage::apply_authorized_weapon_impact_damage;
 pub(crate) use reload::{
     clear_all_feedback as clear_all_reload_feedback,
     clear_feedback_for_weapon as clear_reload_feedback_for_weapon,
 };
+pub(crate) use weapon_stage::apply_authorized_weapon_impact_damage;
 
 #[cfg(test)]
 pub(crate) use host_movement::run_host_movement_tick;
@@ -1216,8 +1216,8 @@ mod tests {
     };
     use postretro_foundation::{
         AirParams, AmmoResource, CapsuleParams, FallParams, FireMode, GroundParams,
-        PlayerMovementComponent, PlayerMovementDescriptor, ResolutionMode, SpeedParams,
-        WeaponDescriptor, WeaponResource,
+        PlayerMovementComponent, PlayerMovementDescriptor, ReloadStyle, ResolutionMode,
+        SpeedParams, WeaponDescriptor, WeaponResource,
     };
     use postretro_net::wire::NetworkId;
     use postretro_scripting_core::reaction_dispatch::fire_prepartitioned_reactions_with_sequences;
@@ -1347,6 +1347,7 @@ mod tests {
                 cost_per_shot: 1,
                 reserve,
                 reload_ms,
+                reload_style: ReloadStyle::Magazine,
             })),
         };
         let descriptor = descriptor.validate().unwrap();

@@ -22,6 +22,13 @@ pub enum ResolutionMode {
     Hitscan,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ReloadStyle {
+    Magazine,
+    PerShell,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum WeaponResource {
@@ -39,6 +46,8 @@ pub struct AmmoResource {
     pub reserve: u32,
     #[serde(default = "default_reload_ms", rename = "reloadMs")]
     pub reload_ms: u32,
+    #[serde(default = "default_reload_style", rename = "reloadStyle")]
+    pub reload_style: ReloadStyle,
 }
 
 const fn default_cost_per_shot() -> u32 {
@@ -47,6 +56,10 @@ const fn default_cost_per_shot() -> u32 {
 
 const fn default_reload_ms() -> u32 {
     1000
+}
+
+const fn default_reload_style() -> ReloadStyle {
+    ReloadStyle::Magazine
 }
 
 /// Authored weapon component preset. This is descriptor-owned tuning data:
@@ -276,6 +289,7 @@ mod tests {
             cost_per_shot: 1,
             reserve: 0,
             reload_ms: 1000,
+            reload_style: ReloadStyle::Magazine,
         }));
         assert!(descriptor.validate().is_ok());
 
@@ -298,6 +312,36 @@ mod tests {
         };
         assert_eq!(ammo.cost_per_shot, 1);
         assert_eq!(ammo.reload_ms, 1000);
+        assert_eq!(ammo.reload_style, ReloadStyle::Magazine);
+    }
+
+    #[test]
+    fn weapon_ammo_resource_reload_style_serde_accepts_known_values_and_rejects_unknown() {
+        for (value, expected) in [
+            ("magazine", ReloadStyle::Magazine),
+            ("perShell", ReloadStyle::PerShell),
+        ] {
+            let resource: WeaponResource = serde_json::from_value(serde_json::json!({
+                "kind": "ammo",
+                "type": "shells",
+                "magazine": 8,
+                "reserve": 32,
+                "reloadStyle": value,
+            }))
+            .unwrap();
+            let WeaponResource::Ammo(ammo) = resource;
+            assert_eq!(ammo.reload_style, expected);
+        }
+
+        let error = serde_json::from_value::<WeaponResource>(serde_json::json!({
+            "kind": "ammo",
+            "type": "shells",
+            "magazine": 8,
+            "reserve": 32,
+            "reloadStyle": "belt",
+        }))
+        .unwrap_err();
+        assert!(error.to_string().contains("unknown variant"), "{error}");
     }
 
     #[test]
@@ -369,6 +413,7 @@ mod tests {
                 cost_per_shot: 1,
                 reserve: 32,
                 reload_ms: 1000,
+                reload_style: ReloadStyle::Magazine,
             }));
             assert!(descriptor.validate().is_err(), "accepted {invalid_type:?}");
         }
@@ -380,6 +425,7 @@ mod tests {
             cost_per_shot: 1,
             reserve: 32,
             reload_ms: 1000,
+            reload_style: ReloadStyle::Magazine,
         }));
         let err = descriptor.validate().unwrap_err();
         assert!(err.to_string().contains("64 bytes"));

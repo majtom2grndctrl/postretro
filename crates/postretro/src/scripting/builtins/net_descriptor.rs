@@ -276,7 +276,7 @@ mod tests {
     use postretro_scripting_core::data_descriptors::{
         AirParams, AmmoResource, BehaviorGraphDescriptor, BehaviorStateDescriptor, CapsuleParams,
         FallParams, FireMode, GroundParams, MeshDescriptor, MotionVerb, PlayerMovementDescriptor,
-        ResolutionMode, SpeedParams, WeaponDescriptor, WeaponResource,
+        ReloadStyle, ResolutionMode, SpeedParams, WeaponDescriptor, WeaponResource,
     };
     use postretro_test_log_capture::LogCapture;
     use std::collections::HashMap;
@@ -697,6 +697,7 @@ mod tests {
             cost_per_shot: 1,
             reserve: 48,
             reload_ms: 900,
+            reload_style: ReloadStyle::Magazine,
         }));
         descriptor
     }

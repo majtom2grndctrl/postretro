@@ -880,6 +880,7 @@ mod tests {
     use super::*;
     use postretro_entities::components::weapon::{ReloadFeedback, WeaponAmmoTuning};
     use postretro_entities::components::wieldable_state::WieldableState;
+    use postretro_entities::data_descriptors::ReloadStyle;
     use postretro_entities::{SlotOwnership, SlotRecord, SlotSchema};
 
     fn replicated_number(name: &str, scope: ReplicationScope) -> (String, SlotRecord) {
@@ -1216,6 +1217,7 @@ mod tests {
                         capacity: 12,
                         cost_per_shot: 1,
                         reload_ms: 500,
+                        reload_style: ReloadStyle::Magazine,
                     }),
                     magazine: spec.magazine,
                     state: if spec.state_remaining_ms > 0 {

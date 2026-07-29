@@ -6,7 +6,9 @@ use serde::{Deserialize, Serialize};
 use std::sync::Once;
 
 use crate::components::wieldable_state::WieldableState;
-use crate::data_descriptors::{FireMode, ResolutionMode, WeaponDescriptor, WeaponResource};
+use crate::data_descriptors::{
+    FireMode, ReloadStyle, ResolutionMode, WeaponDescriptor, WeaponResource,
+};
 
 pub const UNKNOWN_WEAPON_CREDIT_SOURCE: &str = "weapon.unknown";
 
@@ -19,6 +21,7 @@ pub struct EffectiveAmmoStats<'a> {
     pub capacity: u32,
     pub cost_per_shot: u32,
     pub reload_ms: u32,
+    pub reload_style: ReloadStyle,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -38,6 +41,8 @@ pub struct WeaponAmmoTuning {
     pub capacity: u32,
     pub cost_per_shot: u32,
     pub reload_ms: u32,
+    #[serde(default = "default_reload_style")]
+    pub reload_style: ReloadStyle,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,6 +135,7 @@ impl WeaponComponent {
                 capacity: ammo.capacity,
                 cost_per_shot: ammo.cost_per_shot,
                 reload_ms: ammo.reload_ms,
+                reload_style: ammo.reload_style,
             }),
         }
     }
@@ -178,6 +184,7 @@ fn ammo_tuning(desc: &WeaponDescriptor) -> Option<WeaponAmmoTuning> {
             capacity: ammo.magazine,
             cost_per_shot: ammo.cost_per_shot,
             reload_ms: ammo.reload_ms,
+            reload_style: ammo.reload_style,
         },
     })
 }
@@ -195,6 +202,10 @@ fn resolve_credit_source(desc: &WeaponDescriptor, canonical_name: Option<&str>) 
 
 fn default_credit_source() -> String {
     UNKNOWN_WEAPON_CREDIT_SOURCE.to_string()
+}
+
+const fn default_reload_style() -> ReloadStyle {
+    ReloadStyle::Magazine
 }
 
 #[cfg(debug_assertions)]
@@ -241,6 +252,7 @@ mod tests {
             cost_per_shot,
             reserve: 48,
             reload_ms,
+            reload_style: ReloadStyle::Magazine,
         }));
         descriptor
     }
@@ -257,6 +269,7 @@ mod tests {
                 capacity: 12,
                 cost_per_shot: 2,
                 reload_ms: 850,
+                reload_style: ReloadStyle::Magazine,
             })
         );
         assert_eq!(component.magazine, 12);
@@ -282,8 +295,12 @@ mod tests {
 
     #[test]
     fn effective_projects_authored_ammo_stats() {
-        let component =
-            WeaponComponent::from_descriptor(&ammo_descriptor("shells.heavy", 8, 1, 1200));
+        let mut descriptor = ammo_descriptor("shells.heavy", 8, 1, 1200);
+        let Some(WeaponResource::Ammo(ammo)) = descriptor.resource.as_mut() else {
+            panic!("expected ammo resource");
+        };
+        ammo.reload_style = ReloadStyle::PerShell;
+        let component = WeaponComponent::from_descriptor(&descriptor);
 
         assert_eq!(
             component.effective().ammo,
@@ -292,6 +309,7 @@ mod tests {
                 capacity: 8,
                 cost_per_shot: 1,
                 reload_ms: 1200,
+                reload_style: ReloadStyle::PerShell,
             })
         );
     }
@@ -320,6 +338,7 @@ mod tests {
                 capacity: 30,
                 cost_per_shot: 3,
                 reload_ms: 1400,
+                reload_style: ReloadStyle::Magazine,
             })
         );
         assert_eq!(component.effective().ammo.unwrap().reload_ms, 1400);
@@ -333,6 +352,32 @@ mod tests {
         assert_eq!(component.cooldown_remaining_ms, 42.0);
         assert!(component.shoot_press_consumed);
         assert!(component.reload_press_consumed);
+    }
+
+    #[test]
+    fn weapon_ammo_tuning_persistence_defaults_and_round_trips_reload_style() {
+        let legacy: WeaponAmmoTuning = serde_json::from_value(serde_json::json!({
+            "ammo_type": "shells.heavy",
+            "capacity": 8,
+            "cost_per_shot": 1,
+            "reload_ms": 1200,
+        }))
+        .unwrap();
+        assert_eq!(legacy.reload_style, ReloadStyle::Magazine);
+
+        let per_shell = WeaponAmmoTuning {
+            ammo_type: "shells.heavy".to_string(),
+            capacity: 8,
+            cost_per_shot: 1,
+            reload_ms: 1200,
+            reload_style: ReloadStyle::PerShell,
+        };
+        let persisted = serde_json::to_value(&per_shell).unwrap();
+        assert_eq!(persisted["reload_style"], serde_json::json!("perShell"));
+        assert_eq!(
+            serde_json::from_value::<WeaponAmmoTuning>(persisted).unwrap(),
+            per_shell
+        );
     }
 
     #[test]

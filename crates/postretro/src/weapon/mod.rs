@@ -656,7 +656,7 @@ pub(crate) mod tests {
     use postretro_entities::components::health::{HealthComponent, Hitbox};
     use postretro_entities::registry::{ComponentKind, Transform};
     use postretro_entities::{EntityTypeDescriptor, MeshDescriptor};
-    use postretro_foundation::{AmmoResource, WeaponDescriptor, WeaponResource};
+    use postretro_foundation::{AmmoResource, ReloadStyle, WeaponDescriptor, WeaponResource};
     use winit::event::MouseButton;
 
     const EPSILON: f32 = 1.0e-5;
@@ -707,6 +707,7 @@ pub(crate) mod tests {
             cost_per_shot,
             reserve: 48,
             reload_ms: 900,
+            reload_style: ReloadStyle::Magazine,
         }));
         WeaponComponent::from_descriptor(&descriptor)
     }

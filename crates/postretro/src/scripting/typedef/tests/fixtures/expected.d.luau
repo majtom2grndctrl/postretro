@@ -234,6 +234,13 @@ export type ResolutionMode =
   --- Resolve instantly against the static-world collision ray.
   "hitscan"
 
+--- Valid values: `magazine`, `perShell`.
+export type ReloadStyle =
+  --- Reload the whole magazine in one step.
+  "magazine"
+  --- Reload one shell per step.
+  | "perShell"
+
 --- Finite-ammunition tuning for a weapon. Defines the authored magazine, starting reserve balance, shot cost, and reload timing contract.
 export type AmmoResource = {
   --- Ammo resource identifier. Must be non-empty ASCII, at most 64 bytes, and use only [A-Za-z0-9_.:-].
@@ -244,8 +251,10 @@ export type AmmoResource = {
   costPerShot: number?,
   --- Starting reserve balance credited at spawn. Range: 0..=4,294,967,295.
   reserve: number,
-  --- Reload duration in milliseconds. Range: 1..=4,294,967,295; defaults to 1000.
+  --- Duration of one reload step in milliseconds: the whole reload for `magazine`, one shell for `perShell`. Range: 1..=4,294,967,295; defaults to 1000.
   reloadMs: number?,
+  --- Reload behavior. `magazine` reloads the whole magazine in one step; `perShell` reloads one shell per step. Defaults to `magazine`.
+  reloadStyle: ReloadStyle?,
 }
 
 --- Optional resource model for a weapon. Omit the weapon resource to preserve unlimited-fire behavior.

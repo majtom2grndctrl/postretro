@@ -949,7 +949,7 @@ mod tests {
     use super::*;
     use postretro_scripting_core::data_descriptors::{
         AirParams, AmmoResource, CapsuleParams, FallParams, FireMode, GroundParams,
-        PlayerMovementDescriptor, ResolutionMode, SpeedParams, WeaponDescriptor,
+        PlayerMovementDescriptor, ReloadStyle, ResolutionMode, SpeedParams, WeaponDescriptor,
     };
 
     // Shared descriptor/placement builders live in the sibling fixture module so
@@ -2014,6 +2014,7 @@ mod tests {
             cost_per_shot: 1,
             reserve: 48,
             reload_ms: 900,
+            reload_style: ReloadStyle::Magazine,
         }));
         descriptor
     }

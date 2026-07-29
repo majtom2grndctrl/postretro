@@ -423,7 +423,7 @@ impl PersistentAtmosphereHarness {
         self.client.set_connected();
         for _ in 0..128 {
             self.relay_client_to_server();
-            if self.server.is_accepted(CLIENT_ID) {
+            if self.server.is_participating(CLIENT_ID) {
                 self.host_state.register_client(CLIENT_ID);
                 self.connected = true;
                 return;
@@ -519,7 +519,7 @@ impl PersistentAtmosphereHarness {
     /// the state producer it wraps.
     fn enqueue_host_snapshot(&mut self) {
         assert!(
-            self.connected && self.server.is_accepted(CLIENT_ID),
+            self.connected && self.server.is_participating(CLIENT_ID),
             "only an accepted client receives state"
         );
         let sequence = self.sequence;
@@ -698,7 +698,7 @@ impl PersistentAtmosphereHarness {
         }
     }
 
-    fn state_send_is_accepted(&mut self) -> bool {
+    fn state_send_is_participating(&mut self) -> bool {
         self.server.send_snapshot(CLIENT_ID, Vec::new())
     }
 
@@ -742,6 +742,8 @@ impl ReplicatedStateFrame for PersistentAtmosphereHarness {
                 1.0 / 60.0,
                 Duration::from_secs_f32(frame_dt),
                 None,
+                None,
+                false,
             );
         }
         let accepted = self.client_replication.latest_sequence() != previous_sequence;
@@ -909,14 +911,14 @@ fn repeated_same_value_snapshot_stays_quiet_after_crossing() {
 fn pending_and_disconnected_clients_receive_no_state_records() {
     let mut harness = PersistentAtmosphereHarness::new();
     assert!(
-        !harness.state_send_is_accepted(),
+        !harness.state_send_is_participating(),
         "a disconnected client has no transport slot and receives no state"
     );
 
     harness.connect_client();
     harness.close_client();
     assert!(
-        !harness.state_send_is_accepted(),
+        !harness.state_send_is_participating(),
         "a closed client slot refuses all later state records"
     );
 }

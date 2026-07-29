@@ -5,6 +5,7 @@ use std::collections::HashMap;
 
 use glam::Vec3;
 use parry3d::math::{Point, Vector};
+#[cfg(test)]
 use postretro_entities::EntityTypeDescriptor;
 use postretro_entities::components::weapon::WeaponComponent;
 use postretro_entities::registry::{EntityId, EntityRegistry};
@@ -67,6 +68,27 @@ pub(crate) struct ClientWeaponState {
 }
 
 impl ClientWeaponState {
+    /// Build client prediction state from the host-resolved payload. Connected
+    /// clients must not consult their local registry for these values: doing so
+    /// would make the divergent peer predict with precisely the data replication
+    /// was introduced to replace.
+    pub(crate) fn from_host_tuning(
+        pawn: EntityId,
+        tuning: &crate::netcode::DefaultWeaponFirePayload,
+    ) -> Self {
+        Self {
+            pawn,
+            cooldown_remaining_ms: 0.0,
+            cooldown_ms: tuning.cooldown_ms,
+            cooldown_authority_generation: 0,
+            fire_mode: tuning.fire_mode,
+            resolution: tuning.resolution,
+            range: tuning.range,
+            shoot_press_consumed: false,
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn from_local_pawn_descriptor(
         pawn: EntityId,
         entity_class: &str,
@@ -618,6 +640,7 @@ fn local_hit_record(entity: EntityRayHit) -> LocalHitRecord {
     }
 }
 
+#[cfg(test)]
 fn find_descriptor<'a>(
     descriptors: &'a [EntityTypeDescriptor],
     name: &str,

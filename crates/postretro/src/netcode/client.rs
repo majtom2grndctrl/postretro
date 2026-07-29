@@ -518,6 +518,33 @@ impl ClientReplication {
         requests
     }
 
+    /// Despawn every entity still owned by the replication map. Used by content
+    /// demotion before the ordinary clear-only reset; unlike a level unload the
+    /// registry remains populated, so clearing maps alone would leave a tableau.
+    pub(crate) fn despawn_all_mapped(&mut self, registry: &mut EntityRegistry) {
+        let network_ids: Vec<NetworkId> = self.map.keys().copied().collect();
+        for network_id in network_ids {
+            self.apply_despawn(registry, network_id);
+        }
+    }
+
+    /// Clear demoted-client replication bookkeeping without queueing baseline repair
+    /// requests. The host intentionally sends no snapshots until parity returns.
+    pub(crate) fn reset_for_demotion(&mut self) {
+        self.map.clear();
+        self.reverse_map.clear();
+        self.baselines.clear();
+        self.active_weapon_archetypes.clear();
+        self.pending_repairs.clear();
+        self.interp = RemoteInterpolationBuffer::default();
+        self.remote_enemy_walk_playback.clear();
+        self.remote_player_locomotion.clear();
+        self.presented_player_inputs = ClientPresentationInputs::default();
+        self.local_pawn = None;
+        self.mover_network_ids.clear();
+        self.mover_history.clear();
+    }
+
     /// Read-only view of the current `NetworkId -> EntityId` map. Test-only; the
     /// dev-tools overlay uses `remote_debug_entity_ids` so it can exclude the local
     /// predicted pawn.
@@ -536,6 +563,11 @@ impl ClientReplication {
     /// baseline has armed prediction.
     pub(crate) fn local_pawn_network_id(&self) -> Option<NetworkId> {
         self.local_pawn
+    }
+
+    pub(crate) fn local_pawn_entity(&self) -> Option<EntityId> {
+        self.local_pawn
+            .and_then(|network_id| self.map.get(&network_id).copied())
     }
 
     /// Shared-visible active weapon for the recipient-local pawn. Connected clients

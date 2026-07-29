@@ -350,6 +350,9 @@ impl App {
         if let Some(render_profile) = committed_render_profile {
             self.apply_mod_bloom_render_profile(render_profile);
         }
+        // Admission identity is frozen by the scripting runtime; the digest is
+        // recomputed from the committed registry each time this deferred init runs.
+        self.install_network_mod_content();
         self.mod_timings.record("mod_init");
     }
 

@@ -83,6 +83,7 @@ pub(crate) use replication::produce_owned_snapshots;
 pub(crate) use replication::{
     ReplicableSet, host_register_loaded_movers, host_register_map_enemies,
 };
+pub(crate) use tuning_payload::{DefaultWeaponFirePayload, TuningPayload};
 pub(crate) use wire_convert::sim_command_to_input;
 
 // The conversion/merge helpers (`wire_convert`, `movement_state`) live in their focused
@@ -118,6 +119,7 @@ use crate::movement::MovementCollisionSource;
 use crate::scripting_systems;
 use crate::sim::SimCommand;
 use crate::weapon::{self, ActivationOutcome, WeaponImpact};
+use tuning_payload::decode_tuning_payload;
 
 /// Synchronize the host's active-weapon table into third-person presentation
 /// attachments immediately before snapshot production. The table remains the
@@ -398,6 +400,11 @@ pub(crate) enum NetEndpoint {
         /// projected values and produces per-client state records spliced into the
         /// entity snapshot envelope. Boxed to keep the variant compact.
         state_slots: Box<state_slots::HostStateReplication>,
+        /// Last authoritative tuning sent for each participating slot. This is a
+        /// change detector only: demotion removes the entry and promotion sends a
+        /// fresh payload.
+        last_sent_tuning: HashMap<u64, TuningPayload>,
+        missing_identity_warned: bool,
     },
     /// Client plus the Phase 2 client replication state (the `NetworkId -> EntityId`
     /// map, per-entity baseline table, pending-repair set, sequence tracking). The
@@ -423,6 +430,12 @@ pub(crate) enum NetEndpoint {
         /// the schema and applies it all-or-nothing through the store-write path before
         /// the UI read snapshot is built.
         state_slots: Box<state_slots::ClientStateApply>,
+        /// Host-resolved values the client predicts with. The generation lets the
+        /// movement materializer rebuild after a staged host retune without relying
+        /// on Control/Snapshot ordering.
+        tuning: Option<TuningPayload>,
+        tuning_generation: u64,
+        applied_movement_tuning_generation: u64,
     },
 }
 
@@ -564,10 +577,22 @@ pub(crate) fn client_drain_control(app: &mut crate::App, controls: Vec<ServerCon
                     DivergenceReason::Closing(cause)
                 );
             }
-            // Holding and tuning controls share this drain. Their engine effects
-            // land with the lifecycle and payload wiring that owns those states.
-            ServerControlMessage::Divergence(DivergenceReason::Holding(_))
-            | ServerControlMessage::Tuning(_) => {}
+            ServerControlMessage::Divergence(DivergenceReason::Holding(cause)) => {
+                log::warn!("[Net] host is holding this client for content parity: {cause:?}");
+                if let Some(session) = app.session.as_mut()
+                    && let Some(endpoint) = session.net_endpoint.as_mut()
+                {
+                    let mut registry = session.scripting.script_ctx.registry.borrow_mut();
+                    endpoint.demote_client_state(&mut registry);
+                }
+            }
+            ServerControlMessage::Tuning(bytes) => {
+                if let Some(session) = app.session.as_mut()
+                    && let Some(endpoint) = session.net_endpoint.as_mut()
+                {
+                    endpoint.install_tuning_payload(&bytes);
+                }
+            }
         }
     }
 }
@@ -608,6 +633,8 @@ impl NetEndpoint {
                     loaded_movers: std::collections::HashSet::new(),
                     demo_mover: DemoMoverState::from_env(),
                     state_slots: Box::new(state_slots::HostStateReplication::new()),
+                    last_sent_tuning: HashMap::new(),
+                    missing_identity_warned: false,
                 }))
             }
             NetRole::Connect { addr } => {
@@ -627,24 +654,57 @@ impl NetEndpoint {
                     interpolation_delay: InterpolationDelayState::new(),
                     prediction: ClientPrediction::new(),
                     state_slots: Box::new(state_slots::ClientStateApply::new()),
+                    tuning: None,
+                    tuning_generation: 0,
+                    applied_movement_tuning_generation: 0,
                 }))
             }
         }
     }
 
-    /// Bind multiplayer acceptance to the loaded map's canonical static mover
-    /// inputs. Transport handshakes wait for this value. Changing it closes the
-    /// existing connection and delivers a close on the next poll, so ordinary host
-    /// lifecycle cleanup despawns remote pawns and clears slot-owned state before
-    /// prediction can reuse different PRL authoring.
-    pub(crate) fn set_kinematic_static_fingerprint(&mut self, fingerprint: [u8; 32]) {
+    pub(crate) fn set_mod_identity(&mut self, id: String, version: String) {
         match self {
-            NetEndpoint::Host { server, .. } => {
-                server.set_kinematic_static_fingerprint(fingerprint);
-            }
-            NetEndpoint::Client { client, .. } => {
-                client.set_kinematic_static_fingerprint(fingerprint);
-            }
+            Self::Host { server, .. } => server.set_mod_identity(id, version),
+            Self::Client { client, .. } => client.set_mod_identity(id, version),
+        }
+    }
+
+    /// A debug no-start-script session otherwise looks exactly like a stalled
+    /// pending handshake. Emit the operator-facing warning once when a peer has
+    /// actually arrived, rather than noisily at boot before anyone connects.
+    pub(crate) fn warn_once_if_mod_identity_missing(&mut self) {
+        let Self::Host {
+            server,
+            missing_identity_warned,
+            ..
+        } = self
+        else {
+            return;
+        };
+        if !*missing_identity_warned && server.has_connected_clients() && !server.has_mod_identity()
+        {
+            log::warn!("[Net] no mod identity installed");
+            *missing_identity_warned = true;
+        }
+    }
+
+    pub(crate) fn set_mod_digest(&mut self, digest: [u8; 32]) {
+        match self {
+            Self::Host { server, .. } => server.set_mod_digest(Some(digest)),
+            Self::Client { client, .. } => client.set_mod_digest(Some(digest)),
+        }
+    }
+
+    pub(crate) fn set_level_parity(&mut self, level: Option<(String, [u8; 32])>) {
+        match self {
+            Self::Host { server, .. } => server.set_level_parity(level),
+            Self::Client { client, .. } => client.set_level_parity(level),
+        }
+    }
+
+    pub(crate) fn set_relevel_catalog_id(&mut self, catalog_id: Option<String>) {
+        if let Self::Host { server, .. } = self {
+            server.set_relevel_catalog_id(catalog_id);
         }
     }
 
@@ -703,6 +763,109 @@ impl NetEndpoint {
         }
         prediction.reset_for_level_unload();
         interpolation_delay.reset_for_level_unload();
+    }
+
+    /// Clear state whose entity ids belong to the old host level. This is separate
+    /// from per-slot demotion cleanup: a level unload invalidates even host-owned
+    /// and unowned replicated objects.
+    pub(crate) fn reset_level_scoped_host_state(&mut self) {
+        let Self::Host {
+            allocator,
+            replication,
+            replicable,
+            slot_pawns,
+            command_queues,
+            owners,
+            weapon_owners,
+            open_shots,
+            pending_hit_declarations,
+            weaponless_fire_logged,
+            host_pawn,
+            map_enemies,
+            loaded_movers,
+            demo_mover,
+            state_slots,
+            last_sent_tuning,
+            ..
+        } = self
+        else {
+            return;
+        };
+        *allocator = NetworkIdAllocator::new();
+        *replication = Box::new(ServerReplication::new());
+        *replicable = ReplicableSet::new();
+        *slot_pawns = SlotPawns::new();
+        *command_queues = HostCommandQueues::new();
+        *owners = MovementOwners::new();
+        *weapon_owners = WeaponOwners::new();
+        *open_shots = OpenAuthorizedShots::new();
+        *pending_hit_declarations = PendingHitDeclarations::new();
+        weaponless_fire_logged.clear();
+        *host_pawn = None;
+        map_enemies.clear();
+        loaded_movers.clear();
+        *demo_mover = DemoMoverState::from_env();
+        state_slots.reset_schema();
+        last_sent_tuning.clear();
+    }
+
+    pub(crate) fn reset_state_slot_schema(&mut self) {
+        match self {
+            Self::Host { state_slots, .. } => state_slots.reset_schema(),
+            Self::Client { state_slots, .. } => state_slots.reset_schema(),
+        }
+    }
+
+    /// Client demotion is not a normal unload reset: no repair requests are useful
+    /// while the host intentionally holds the slot. Despawn mapped entities first so
+    /// this is also correct for a following relevel unload.
+    pub(crate) fn demote_client_state(&mut self, registry: &mut EntityRegistry) {
+        let Self::Client {
+            replication,
+            interpolation_delay,
+            prediction,
+            tuning,
+            applied_movement_tuning_generation,
+            ..
+        } = self
+        else {
+            return;
+        };
+        replication.despawn_all_mapped(registry);
+        replication.reset_for_demotion();
+        prediction.reset_for_level_unload();
+        interpolation_delay.reset_for_level_unload();
+        *tuning = None;
+        *applied_movement_tuning_generation = 0;
+    }
+
+    fn install_tuning_payload(&mut self, bytes: &[u8]) {
+        let Self::Client {
+            tuning,
+            tuning_generation,
+            ..
+        } = self
+        else {
+            return;
+        };
+        match decode_tuning_payload(bytes) {
+            Ok(payload) => {
+                *tuning = Some(payload);
+                *tuning_generation = tuning_generation.wrapping_add(1);
+            }
+            Err(error) => log::error!("[Net] tuning payload epoch/decode failure: {error}"),
+        }
+    }
+
+    pub(crate) fn client_tuning(&self) -> Option<(&TuningPayload, u64)> {
+        match self {
+            Self::Client {
+                tuning: Some(tuning),
+                tuning_generation,
+                ..
+            } => Some((tuning, *tuning_generation)),
+            _ => None,
+        }
     }
 }
 
@@ -1105,6 +1268,8 @@ pub(crate) fn client_receive_and_apply(
     tick_dt: f32,
     frame_dt: Duration,
     mover_target_tick: Option<u32>,
+    host_movement_tuning: Option<&postretro_foundation::PlayerMovementDescriptor>,
+    rebuild_movement_tuning: bool,
 ) -> ClientApplyFrameOutcome {
     let mut frame_outcome = ClientApplyFrameOutcome::default();
     for bytes in client.drain_snapshots() {
@@ -1181,7 +1346,13 @@ pub(crate) fn client_receive_and_apply(
         if let Some(armed) = &outcome.armed_local_pawn {
             prediction.arm(armed.network_id, armed.entity_id);
             frame_outcome.materialized_remote_entity_presentation |=
-                remote_materialize::materialize_armed_local_pawn(armed, descriptors, registry);
+                remote_materialize::materialize_armed_local_pawn(
+                    armed,
+                    descriptors,
+                    registry,
+                    host_movement_tuning,
+                    rebuild_movement_tuning,
+                );
             frame_outcome.armed_local_pawn = Some(ClientArmedLocalPawn {
                 entity_id: armed.entity_id,
                 entity_class: armed.entity_class.clone(),
@@ -1712,8 +1883,8 @@ pub(crate) fn host_replicate(
         return;
     }
 
-    let accepted = server.accepted_clients();
-    if accepted.is_empty() {
+    let participating = server.participating_clients();
+    if participating.is_empty() {
         return;
     }
     // The replicated-state schema fingerprint is stamped into every snapshot carrying
@@ -1727,7 +1898,7 @@ pub(crate) fn host_replicate(
     // One sequence shared across all clients in this 30 Hz batch — and shared with the
     // state tracker's `produce_for_client` so one ack describes one server frame.
     let sequence = replication.begin_batch();
-    for client_id in accepted {
+    for client_id in participating {
         // Register lazily: an accepted client gets a fresh per-client state on first
         // sight (all-FullBaseline first snapshot). Idempotent for both trackers.
         replication.register_client(client_id);
@@ -1958,12 +2129,13 @@ pub(crate) fn host_handle_lifecycle(
     open_shots: &mut OpenAuthorizedShots,
     pending_hit_declarations: &mut PendingHitDeclarations,
     weaponless_fire_logged: &mut std::collections::HashSet<EntityId>,
+    last_sent_tuning: &mut HashMap<u64, TuningPayload>,
     lifecycle: &[postretro_net::slots::SlotEvent],
 ) {
     use postretro_net::slots::SlotEvent;
     for event in lifecycle {
         match event {
-            SlotEvent::Closed { client_id, .. } => {
+            SlotEvent::Closed { client_id, .. } | SlotEvent::Demoted { client_id, .. } => {
                 let previous_pawn = slot_pawns.pawn_for(*client_id);
                 if let Some(pawn) = previous_pawn {
                     pending_hit_declarations.remove_pawn_shots(allocator, pawn);
@@ -1984,6 +2156,7 @@ pub(crate) fn host_handle_lifecycle(
                 // M15 Phase 3.5: drop the closed client's replicated-state baselines and
                 // its owner-private slot values so none leak past the connection.
                 state_slots.remove_client(*client_id);
+                last_sent_tuning.remove(client_id);
                 if let Some(pawn) = despawned {
                     cleanup_remote_pawn_owned_state(
                         registry,
@@ -2012,14 +2185,64 @@ pub(crate) fn host_handle_lifecycle(
                     );
                 }
             }
-            // Accepts never reach lifecycle (the transport uses
-            // `HandshakeOutcome::Accepted` instead); the spawn is driven from that
-            // verdict. Kept exhaustive so a new SlotEvent variant is a compile error.
+            // Entry is handled by the App's participation seam, which registers
+            // replication and spawns the pawn. Kept exhaustive so a new slot event
+            // is a compile error here as well.
             SlotEvent::Participating { .. } => {}
-            // Task 7 routes a demotion through the same cleanup path as close.
-            SlotEvent::Demoted { .. } => {}
         }
     }
+}
+
+/// Resolve the host-authoritative prediction values for one spawned slot pawn.
+/// Descriptor lookup remains engine-side; the net crate carries the resulting JSON
+/// bytes without learning this vocabulary.
+pub(crate) fn tuning_payload_for_pawn(
+    registry: &EntityRegistry,
+    pawn: EntityId,
+    descriptors: &[EntityTypeDescriptor],
+) -> TuningPayload {
+    let class = registry
+        .get_component::<DescriptorProvenance>(pawn)
+        .ok()
+        .map(|provenance| provenance.canonical_name.as_str())
+        .unwrap_or("player");
+    let descriptor = descriptors
+        .iter()
+        .find(|descriptor| descriptor.canonical_name.as_deref() == Some(class));
+    let movement = descriptor.and_then(|descriptor| descriptor.movement.clone());
+    let default_weapon = descriptor
+        .and_then(|descriptor| descriptor.default_weapon.as_deref())
+        .and_then(|name| {
+            descriptors
+                .iter()
+                .find(|descriptor| descriptor.canonical_name.as_deref() == Some(name))
+        })
+        .and_then(|descriptor| descriptor.weapon.as_ref())
+        .map(|weapon| tuning_payload::DefaultWeaponFirePayload {
+            range: weapon.range,
+            cooldown_ms: weapon.cooldown_ms,
+            fire_mode: weapon.fire_mode,
+            resolution: weapon.resolution,
+        });
+    TuningPayload::new(movement, default_weapon)
+}
+
+pub(crate) fn host_send_tuning_if_changed(
+    server: &mut NetServer,
+    last_sent_tuning: &mut HashMap<u64, TuningPayload>,
+    client_id: u64,
+    payload: TuningPayload,
+) {
+    if last_sent_tuning.get(&client_id) == Some(&payload) {
+        return;
+    }
+    server.send_control(
+        client_id,
+        wire::encode(&ServerControlMessage::Tuning(
+            tuning_payload::encode_tuning_payload(&payload),
+        )),
+    );
+    last_sent_tuning.insert(client_id, payload);
 }
 
 #[allow(clippy::too_many_arguments)]

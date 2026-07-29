@@ -316,6 +316,17 @@ impl HostStateReplication {
         self.tracker.remove_client(client_id);
     }
 
+    /// The source declarations changed or the level lifetime ended. Rebuild lazily
+    /// on the next send rather than comparing partial store-reconcile plans.
+    pub(crate) fn reset_schema(&mut self) {
+        self.schema = None;
+        self.tracker = ServerStateReplication::new();
+        #[cfg(debug_assertions)]
+        {
+            self.ingested = false;
+        }
+    }
+
     /// Apply a client's `AckMessage.slot_baselines` (inbound reliable path).
     pub(crate) fn apply_ack(
         &mut self,
@@ -631,6 +642,13 @@ impl ClientStateApply {
             net_schema: None,
             held_baselines: HashMap::new(),
         }
+    }
+
+    /// Drop a schema derived from declarations no longer installed.
+    pub(crate) fn reset_schema(&mut self) {
+        self.schema = None;
+        self.net_schema = None;
+        self.held_baselines.clear();
     }
 
     /// Build the schema (and its lowered net form) once from the live slot table,

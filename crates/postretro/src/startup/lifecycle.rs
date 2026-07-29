@@ -1,7 +1,7 @@
 //! Runtime level lifecycle state-machine helpers.
 //! See: context/lib/boot_sequence.md §1
 
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::sync::mpsc;
 
 use glam::Vec3;
@@ -48,6 +48,45 @@ fn level_source_for_load_entry(entry: &LevelLoadEntry) -> LevelSource {
     }
 }
 
+/// Stable logical identity for the level parity gate. Catalog loads use their
+/// author-declared handle; raw paths are lexically normalized relative to the
+/// content root (or retain an absolute identity when outside it). A `path:` tag
+/// keeps the two addressing modes distinct even when they name the same file.
+pub(crate) fn level_identity(source: &LevelSource, content_root: &Path) -> String {
+    match source {
+        LevelSource::Catalog(id) => id.clone(),
+        LevelSource::Path(path) => {
+            let cwd = std::env::current_dir().unwrap_or_default();
+            let absolute = lexical_normalize(if path.is_absolute() {
+                path.clone()
+            } else {
+                cwd.join(path)
+            });
+            let root = lexical_normalize(if content_root.is_absolute() {
+                content_root.to_path_buf()
+            } else {
+                cwd.join(content_root)
+            });
+            let normalized = absolute.strip_prefix(&root).unwrap_or(&absolute);
+            format!("path:{}", normalized.to_string_lossy().replace('\\', "/"))
+        }
+    }
+}
+
+fn lexical_normalize(path: PathBuf) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
+}
+
 enum LoadingPoll {
     Pending,
     Disconnected,
@@ -55,6 +94,80 @@ enum LoadingPoll {
 }
 
 impl App {
+    /// Install the immutable admission identity and current mod-parity digest on
+    /// an already-constructed endpoint. This is deliberately a no-op for
+    /// single-player, keeping hash work out of the ordinary boot path.
+    pub(crate) fn install_network_mod_content(&mut self) {
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        if session.net_endpoint.is_none() {
+            return;
+        }
+        let identity = session
+            .scripting
+            .script_runtime
+            .committed_mod_identity()
+            .map(|(id, version)| (id.to_owned(), version.to_owned()));
+        let digest = {
+            let registry = session.scripting.script_ctx.data_registry.borrow();
+            crate::mod_digest::mod_compatibility_digest(
+                &registry.global_trigger_events,
+                &registry.global_trigger_pools,
+                &registry.global_crossings,
+            )
+        };
+        if let Some(endpoint) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.net_endpoint.as_mut())
+        {
+            if let Some((id, version)) = identity {
+                endpoint.set_mod_identity(id, version);
+            }
+            endpoint.set_mod_digest(digest);
+        }
+        self.refresh_host_tuning();
+    }
+
+    /// Re-resolve participating pawns after a committed manifest changes. The
+    /// retained payload map makes this cheap on reloads that did not alter movement
+    /// or default-weapon fire values.
+    fn refresh_host_tuning(&mut self) {
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        let descriptors = session
+            .scripting
+            .script_ctx
+            .data_registry
+            .borrow()
+            .entities
+            .clone();
+        let registry = session.scripting.script_ctx.registry.borrow();
+        let Some(crate::netcode::NetEndpoint::Host {
+            server,
+            slot_pawns,
+            last_sent_tuning,
+            ..
+        }) = session.net_endpoint.as_mut()
+        else {
+            return;
+        };
+        for client_id in server.participating_clients() {
+            let Some(pawn) = slot_pawns.pawn_for(client_id) else {
+                continue;
+            };
+            let payload = crate::netcode::tuning_payload_for_pawn(&registry, pawn, &descriptors);
+            crate::netcode::host_send_tuning_if_changed(
+                server,
+                last_sent_tuning,
+                client_id,
+                payload,
+            );
+        }
+    }
+
     pub(crate) fn initial_boot_state() -> BootState {
         BootState::Booting
     }
@@ -121,6 +234,7 @@ impl App {
     /// | level-scope UI trees (`modal_stack` `ScopeTier::Level`) | |
     /// | progress tracker, death-event carryover, active wieldable, client weapon prediction state, camera pose | |
     pub(crate) fn unload_level(&mut self) {
+        self.clear_net_level_parity();
         // `net_endpoint` and `audio` are session-owned; reset/release them through
         // the session borrow.
         if let Some(session) = self.session.as_mut() {
@@ -183,6 +297,21 @@ impl App {
         self.script_time = 0.0;
         self.anim_time = 0.0;
         self.boot_state = BootState::Frontend;
+    }
+
+    /// Forget the installed level on a still-live endpoint. Both unload and
+    /// platform suspend reach this helper so neither leaves peers participating
+    /// against a torn-down world.
+    pub(crate) fn clear_net_level_parity(&mut self) {
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        let Some(endpoint) = session.net_endpoint.as_mut() else {
+            return;
+        };
+        endpoint.set_level_parity(None);
+        endpoint.set_relevel_catalog_id(None);
+        endpoint.reset_level_scoped_host_state();
     }
 
     pub(crate) fn drive_boot_state_for_redraw(
@@ -609,8 +738,6 @@ impl App {
         prm_cache_root: PathBuf,
     ) {
         self.retain_active_level_tags_for_install();
-        let level_content_digest =
-            crate::runtime_movers::level_content_digest(&world.kinematic_geometry, &world);
         if let Some(endpoint) = self
             .session
             .as_mut()
@@ -618,7 +745,20 @@ impl App {
             .net_endpoint
             .as_mut()
         {
-            endpoint.set_kinematic_static_fingerprint(level_content_digest);
+            let level_content_digest =
+                crate::runtime_movers::level_content_digest(&world.kinematic_geometry, &world);
+            let source = self
+                .active_level_source
+                .as_ref()
+                .expect("active level source retained before parity installation");
+            endpoint.set_level_parity(Some((
+                level_identity(source, &self.content_root),
+                level_content_digest,
+            )));
+            endpoint.set_relevel_catalog_id(match source {
+                LevelSource::Catalog(id) => Some(id.clone()),
+                LevelSource::Path(_) => None,
+            });
         }
         // The whole script tranche lives on `Session` (built post-first-pixel).
         // Level install only runs in Loading/Running, where the session is
@@ -3389,6 +3529,31 @@ mod tests {
         );
 
         drop_in_flight_worker(&mut app);
+    }
+
+    #[test]
+    fn level_identity_distinguishes_catalog_and_normalizes_raw_paths() {
+        let root = PathBuf::from("/mods/demo");
+        assert_eq!(
+            level_identity(&LevelSource::Catalog("e1m1".to_string()), &root),
+            "e1m1"
+        );
+        assert_eq!(
+            level_identity(
+                &LevelSource::Path(PathBuf::from("/mods/demo/maps/./episode/../e1m1.prl")),
+                &root,
+            ),
+            "path:maps/e1m1.prl"
+        );
+    }
+
+    #[test]
+    fn level_identity_keeps_outside_content_root_absolute() {
+        let root = PathBuf::from("/mods/demo");
+        assert_eq!(
+            level_identity(&LevelSource::Path(PathBuf::from("/tmp/test.prl")), &root),
+            "path:/tmp/test.prl"
+        );
     }
 
     #[test]

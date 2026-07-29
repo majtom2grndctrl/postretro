@@ -146,17 +146,31 @@ pub(super) fn materialize_armed_local_pawn(
     armed: &ArmedLocalPawn,
     descriptors: &[EntityTypeDescriptor],
     registry: &mut EntityRegistry,
+    host_movement: Option<&postretro_foundation::PlayerMovementDescriptor>,
+    rebuild_movement: bool,
 ) -> bool {
     let entity_class = armed.entity_class.as_deref().unwrap_or("player");
     let had_mesh = registry
         .has_component_kind(armed.entity_id, postretro_entities::ComponentKind::Mesh)
         .unwrap_or(false);
-    crate::scripting::builtins::net_descriptor::materialize_net_local_movement_component(
-        entity_class,
-        descriptors,
-        registry,
-        armed.entity_id,
-    );
+    if let Some(host_movement) = host_movement {
+        // View feel is deliberately local presentation. The host payload carries
+        // it as null, so recover only this one field from the local descriptor.
+        let mut movement = host_movement.clone();
+        movement.view_feel = descriptors
+            .iter()
+            .find(|descriptor| descriptor.canonical_name.as_deref() == Some(entity_class))
+            .and_then(|descriptor| descriptor.movement.as_ref())
+            .and_then(|descriptor| descriptor.view_feel.clone());
+        crate::scripting::builtins::net_descriptor::materialize_net_local_movement_component_from_tuning(
+            &movement,
+            registry,
+            armed.entity_id,
+            rebuild_movement,
+        );
+    } else {
+        log::warn!("[Net] local pawn has no host movement tuning; movement prediction stays inert");
+    }
     crate::scripting::builtins::net_descriptor::materialize_net_mesh_presentation(
         entity_class,
         descriptors,
@@ -682,6 +696,8 @@ mod tests {
             },
             &descriptors,
             &mut reg,
+            descriptors[0].movement.as_ref(),
+            false,
         );
 
         assert!(

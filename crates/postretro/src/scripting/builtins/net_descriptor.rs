@@ -184,6 +184,27 @@ pub(crate) fn materialize_net_local_movement_component(
     true
 }
 
+/// Materialize a connected client's local movement component from the host's
+/// replicated tuning payload. `view_feel` has already been restored from the
+/// local descriptor by the caller; every simulation field remains host-owned.
+pub(crate) fn materialize_net_local_movement_component_from_tuning(
+    movement: &postretro_foundation::PlayerMovementDescriptor,
+    registry: &mut EntityRegistry,
+    id: EntityId,
+    rebuild: bool,
+) -> bool {
+    if rebuild {
+        let _ = registry.remove_component::<PlayerMovementComponent>(id);
+    } else if matches!(
+        registry.has_component_kind(id, ComponentKind::PlayerMovement),
+        Ok(true)
+    ) {
+        return true;
+    }
+    let _ = registry.set_component(id, PlayerMovementComponent::from_descriptor(movement));
+    true
+}
+
 /// Materialize the presentation-only components for a client's remote descriptor
 /// entity. A connected client does not simulate the remote entity's authoritative
 /// state: the host owns its movement, AI (when any), combat, health, and despawn,

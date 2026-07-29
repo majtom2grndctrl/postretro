@@ -1368,6 +1368,7 @@ impl ApplicationHandler for App {
         if let Some(session) = self.session.as_mut() {
             session.debug_ui = None;
         }
+        self.clear_net_level_parity();
         self.clear_surface_lifetime_level_state();
         // Drop any in-flight level-load worker handoff. On resume the splash
         // state machine starts over from frame 0 and will spawn a fresh
@@ -3627,10 +3628,53 @@ impl App {
         let poll = {
             let endpoint = self.session.as_mut()?.net_endpoint.as_mut()?;
             let mut registry = script_ctx.registry.borrow_mut();
-            endpoint.poll_world_less(std::time::Duration::from_secs_f32(frame_dt), &mut registry)
+            let poll = endpoint
+                .poll_world_less(std::time::Duration::from_secs_f32(frame_dt), &mut registry);
+            endpoint.warn_once_if_mod_identity_missing();
+            poll
         };
         if let netcode::WorldLessPoll::Client(controls) = &poll {
             netcode::client_drain_control(self, controls.clone());
+        }
+        if let netcode::WorldLessPoll::Host(host_poll) = &poll {
+            let Some(session) = self.session.as_mut() else {
+                return Some(poll);
+            };
+            let Some(netcode::NetEndpoint::Host {
+                allocator,
+                replicable,
+                replication,
+                state_slots,
+                slot_pawns,
+                command_queues,
+                owners,
+                weapon_owners,
+                open_shots,
+                pending_hit_declarations,
+                weaponless_fire_logged,
+                last_sent_tuning,
+                ..
+            }) = session.net_endpoint.as_mut()
+            else {
+                return Some(poll);
+            };
+            let mut registry = script_ctx.registry.borrow_mut();
+            netcode::host_handle_lifecycle(
+                &mut registry,
+                allocator,
+                replicable,
+                replication,
+                state_slots,
+                slot_pawns,
+                command_queues,
+                owners,
+                weapon_owners,
+                open_shots,
+                pending_hit_declarations,
+                weaponless_fire_logged,
+                last_sent_tuning,
+                &host_poll.lifecycle,
+            );
         }
         Some(poll)
     }
@@ -4754,7 +4798,6 @@ impl App {
         };
         let hit_zone_store = &session.hit_zone_store;
         let mesh_clip_tables = &session.mesh_clip_tables;
-        let mut armed_local_pawn = None;
         let mut client_controls = Vec::new();
         match session.net_endpoint.as_mut() {
             None => {}
@@ -4776,6 +4819,8 @@ impl App {
                 loaded_movers: _,
                 demo_mover: _,
                 state_slots,
+                last_sent_tuning,
+                missing_identity_warned: _,
             }) => {
                 // Drive the listen server (accept handshakes, drain the socket).
                 // Snapshots are sent post-loop in `net_serialize_and_send`.
@@ -4799,58 +4844,9 @@ impl App {
                             for outcome in &poll.handshakes {
                                 match outcome {
                                     HandshakeOutcome::Admitted { client_id } => {
-                                        log::info!("[Net] client {client_id} accepted");
-                                        replication.register_client(*client_id);
-                                        // M15 Phase 3.5: register the accepted client with
-                                        // the state tracker too, so its first snapshot
-                                        // carries a full state baseline (a late joiner gets
-                                        // one without waiting for a value change).
-                                        state_slots.register_client(*client_id);
-                                        if host_spawn_points.is_empty() {
-                                            // No descriptor-backed player spawn on this
-                                            // map: fall back to the inert Transform-only
-                                            // fixture (dev/test path; never local).
-                                            netcode::host_handle_accept(
-                                                &mut registry,
-                                                allocator,
-                                                replicable,
-                                                slot_pawns,
-                                                *client_id,
-                                            );
-                                        } else {
-                                            // Phase 3 movement session: materialize the
-                                            // descriptor-backed remote PlayerMovement pawn
-                                            // from the slot's assigned placement.
-                                            if let Some(pawn) =
-                                                netcode::host_handle_accept_descriptor(
-                                                    &mut registry,
-                                                    allocator,
-                                                    replicable,
-                                                    slot_pawns,
-                                                    command_queues,
-                                                    owners,
-                                                    weapon_owners,
-                                                    open_shots,
-                                                    pending_hit_declarations,
-                                                    weaponless_fire_logged,
-                                                    *client_id,
-                                                    &host_spawn_points,
-                                                    &net_descriptors,
-                                                    host_agent_params,
-                                                )
-                                            {
-                                                // The accepted pawn materializes after the
-                                                // level-wide model sweep. Resolve its clips and
-                                                // sockets now even when it has no weapon model;
-                                                // later weapon changes resolve only the new prop.
-                                                resolve_accepted_host_pawn_presentation(
-                                                    &mut registry,
-                                                    mesh_clip_tables,
-                                                    hit_zone_store,
-                                                    pawn,
-                                                );
-                                            }
-                                        }
+                                        log::info!(
+                                            "[Net] client {client_id} admitted; awaiting content parity"
+                                        );
                                     }
                                     HandshakeOutcome::Rejected { client_id, cause } => {
                                         log::warn!("[Net] client {client_id} rejected: {cause:?}");
@@ -4862,8 +4858,8 @@ impl App {
                                     }
                                 }
                             }
-                            // Lifecycle carries only `Closed` events; the accept-spawn
-                            // above is the sole accept seam.
+                            // Any exit from participation shares this cleanup. Entries
+                            // are handled immediately below by the symmetric spawn path.
                             netcode::host_handle_lifecycle(
                                 &mut registry,
                                 allocator,
@@ -4877,8 +4873,68 @@ impl App {
                                 open_shots,
                                 pending_hit_declarations,
                                 weaponless_fire_logged,
+                                last_sent_tuning,
                                 &poll.lifecycle,
                             );
+                            // Every entry to participating gets the same registration
+                            // and pawn path. The admission outcome is deliberately not
+                            // sufficient: a demoted slot can later re-enter without a
+                            // second handshake.
+                            for event in &poll.lifecycle {
+                                let postretro_net::slots::SlotEvent::Participating { client_id } =
+                                    event
+                                else {
+                                    continue;
+                                };
+                                replication.register_client(*client_id);
+                                state_slots.register_client(*client_id);
+                                let pawn = if host_spawn_points.is_empty() {
+                                    netcode::host_handle_accept(
+                                        &mut registry,
+                                        allocator,
+                                        replicable,
+                                        slot_pawns,
+                                        *client_id,
+                                    );
+                                    slot_pawns.pawn_for(*client_id)
+                                } else {
+                                    netcode::host_handle_accept_descriptor(
+                                        &mut registry,
+                                        allocator,
+                                        replicable,
+                                        slot_pawns,
+                                        command_queues,
+                                        owners,
+                                        weapon_owners,
+                                        open_shots,
+                                        pending_hit_declarations,
+                                        weaponless_fire_logged,
+                                        *client_id,
+                                        &host_spawn_points,
+                                        &net_descriptors,
+                                        host_agent_params,
+                                    )
+                                };
+                                if let Some(pawn) = pawn {
+                                    resolve_accepted_host_pawn_presentation(
+                                        &mut registry,
+                                        mesh_clip_tables,
+                                        hit_zone_store,
+                                        pawn,
+                                    );
+                                    let payload = netcode::tuning_payload_for_pawn(
+                                        &registry,
+                                        pawn,
+                                        &net_descriptors,
+                                    );
+                                    netcode::host_send_tuning_if_changed(
+                                        server,
+                                        last_sent_tuning,
+                                        *client_id,
+                                        payload,
+                                    );
+                                }
+                            }
                         }
                     }
                     Err(err) => log::error!("[Net] host update failed: {err}"),
@@ -4889,8 +4945,8 @@ impl App {
                 // microseconds are telemetry only, derived from the monotonic tick.
                 let server_tick = *tick;
                 let server_now_us = u64::from(server_tick) * netcode::SERVER_TICK_MICROS;
-                let accepted_clients = server.accepted_clients();
-                for client_id in accepted_clients {
+                let participating_clients = server.participating_clients();
+                for client_id in participating_clients {
                     netcode::host_handle_client_messages(
                         server,
                         replication,
@@ -4909,6 +4965,9 @@ impl App {
                 time_sync,
                 prediction,
                 state_slots,
+                tuning,
+                tuning_generation,
+                applied_movement_tuning_generation,
                 ..
             }) => {
                 if let Err(err) = client.update(dt) {
@@ -4962,8 +5021,20 @@ impl App {
                         crate::frame_timing::TICK_DURATION.as_secs_f32(),
                         dt,
                         mover_target_tick,
+                        tuning
+                            .as_ref()
+                            .and_then(|payload| payload.movement.as_ref()),
+                        *applied_movement_tuning_generation != *tuning_generation,
                     )
                 };
+                if apply_outcome.armed_local_pawn.is_some()
+                    && tuning
+                        .as_ref()
+                        .and_then(|payload| payload.movement.as_ref())
+                        .is_some()
+                {
+                    *applied_movement_tuning_generation = *tuning_generation;
+                }
                 apply_authoritative_mover_corrections(
                     &mut self.camera,
                     self.mover_yaw_carry_ground,
@@ -4979,7 +5050,6 @@ impl App {
                         );
                     }
                 }
-                armed_local_pawn = apply_outcome.armed_local_pawn;
                 if apply_outcome.materialized_remote_entity_presentation {
                     // `mesh_clip_tables` is a disjoint field of the same `session`
                     // bound for the `net_endpoint` match above.
@@ -4996,34 +5066,44 @@ impl App {
                 // clobbered by the snapshot pass.
             }
         }
+        if let Some(endpoint) = session.net_endpoint.as_mut() {
+            endpoint.warn_once_if_mod_identity_missing();
+        }
         // Restore the spawn-point cache taken before the endpoint borrow. The host
         // needs it on every future accept; `mem::take` only borrowed it for this call.
         self.host_spawn_points = host_spawn_points;
         netcode::client_drain_control(self, client_controls);
-        if let Some(armed) = armed_local_pawn {
-            self.seed_client_weapon_state(
-                armed.entity_id,
-                armed.entity_class.as_deref().unwrap_or("player"),
-                &net_descriptors,
-            );
+        let client_host_tuning = self.session.as_ref().and_then(|session| {
+            let endpoint = session.net_endpoint.as_ref()?;
+            let netcode::NetEndpoint::Client { replication, .. } = endpoint else {
+                return None;
+            };
+            let pawn = replication.local_pawn_entity()?;
+            let (payload, _) = endpoint.client_tuning()?;
+            Some((pawn, payload.default_weapon.clone()))
+        });
+        if let Some((pawn, Some(tuning))) = client_host_tuning {
+            self.seed_client_weapon_state(pawn, &tuning);
         }
     }
 
     fn seed_client_weapon_state(
         &mut self,
         pawn: postretro_entities::EntityId,
-        entity_class: &str,
-        descriptors: &[postretro_entities::EntityTypeDescriptor],
+        tuning: &netcode::DefaultWeaponFirePayload,
     ) {
-        if self
+        if let Some(state) = self
             .client_weapon_state
-            .as_ref()
-            .is_some_and(|state| state.pawn == pawn)
+            .as_mut()
+            .filter(|state| state.pawn == pawn)
         {
+            state.cooldown_ms = tuning.cooldown_ms;
+            state.fire_mode = tuning.fire_mode;
+            state.resolution = tuning.resolution;
+            state.range = tuning.range;
             return;
         }
-        self.client_weapon_state =
-            weapon::ClientWeaponState::from_local_pawn_descriptor(pawn, entity_class, descriptors);
+        self.client_weapon_state = Some(weapon::ClientWeaponState::from_host_tuning(pawn, tuning));
         self.client_fire_resolutions.clear();
         self.client_predicted_shots.clear();
     }
@@ -5209,6 +5289,8 @@ impl App {
             loaded_movers: _,
             demo_mover,
             state_slots,
+            last_sent_tuning: _,
+            missing_identity_warned: _,
         }) = session.net_endpoint.as_mut()
         else {
             return;

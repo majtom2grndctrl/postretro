@@ -56,7 +56,13 @@ impl App {
                         &session.scripting.sequence_registry,
                     )
             };
-            let committed = matches!(outcome, StagedManifestCommitOutcome::Committed { .. });
+            let committed = match &outcome {
+                StagedManifestCommitOutcome::Committed { .. } => true,
+                StagedManifestCommitOutcome::DiscardedStale { .. }
+                | StagedManifestCommitOutcome::FailedBuild { .. }
+                | StagedManifestCommitOutcome::Rejected { .. }
+                | StagedManifestCommitOutcome::ReleaseNoop => false,
+            };
             if committed {
                 let events = match &result.status {
                     StagedManifestBuildStatus::Built(manifest) => manifest.events.clone(),
@@ -68,6 +74,16 @@ impl App {
                         .scripting
                         .impact_policy_runtime
                         .replace_global_events(events);
+                }
+                if let Some(endpoint) = self
+                    .session
+                    .as_mut()
+                    .and_then(|session| session.net_endpoint.as_mut())
+                {
+                    // Store removal is invisible to reconcile plans, so every
+                    // committed manifest rebuilds the cache rather than trying to
+                    // detect only additions.
+                    endpoint.reset_state_slot_schema();
                 }
             }
             if committed && self.has_installed_level() {
@@ -89,6 +105,9 @@ impl App {
                 self.apply_mod_bloom_render_profile(render_profile);
             }
             self.commit_staged_ui_manifest(&result, &outcome);
+            if committed {
+                self.install_network_mod_content();
+            }
         }
     }
 }

@@ -148,6 +148,17 @@ impl NetServer {
         self.mod_identity = Some((id, version));
     }
 
+    /// Whether admission can be evaluated. Kept as a transport query so the
+    /// engine can surface a missing-manifest diagnostic without learning slot
+    /// internals.
+    pub fn has_mod_identity(&self) -> bool {
+        self.mod_identity.is_some()
+    }
+
+    pub fn has_connected_clients(&self) -> bool {
+        !self.server.clients_id().is_empty()
+    }
+
     pub fn set_mod_digest(&mut self, digest: Option<[u8; 32]>) {
         self.mod_digest = digest;
         // Parity deliberately queues until its first required source exists.

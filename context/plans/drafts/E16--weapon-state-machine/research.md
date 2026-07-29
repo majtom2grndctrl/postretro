@@ -241,8 +241,8 @@ papering over it here.
 
 Long form of `index.md` §Direction → *Prior commitments*.
 
-- `context/research/weapon-model.md` §3 names per-shell reload "a cancellable state
-  machine" and puts `reloadStyle` on the resource, not on the weapon. Honored. It spells
+- `context/research/weapon-model.md` §4 names per-shell reload "a cancellable state
+  machine"; §3 puts `reloadStyle` on the resource, not on the weapon. Honored. It spells
   the value `"per-shell"`; the repo's enum serde convention (§7) makes that `"perShell"`.
   Stated divergence: two sibling classifiers in one milestone should not disagree on
   casing.

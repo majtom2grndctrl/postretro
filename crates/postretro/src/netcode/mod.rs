@@ -315,7 +315,9 @@ pub(crate) enum NetEndpoint {
     /// indirection is paid once.
     Host {
         server: Box<NetServer>,
-        allocator: NetworkIdAllocator,
+        /// Boxed to keep the endpoint variants compact. It remains owned by the
+        /// host endpoint with the slot lifecycle it serves.
+        allocator: Box<NetworkIdAllocator>,
         /// Monotonic fixed-simulation tick stamp written into each snapshot.
         /// Advanced once per completed host fixed tick, not once per network send.
         tick: u32,
@@ -408,10 +410,10 @@ pub(crate) enum NetEndpoint {
     },
     /// Client plus the Phase 2 client replication state (the `NetworkId -> EntityId`
     /// map, per-entity baseline table, pending-repair set, sequence tracking). The
-    /// `NetClient` is boxed for the same reason the `Host` server is.
+    /// `NetClient` and replication tracker are boxed to keep this variant compact.
     Client {
         client: Box<NetClient>,
-        replication: ClientReplication,
+        replication: Box<ClientReplication>,
         /// Task 5 time-sync substrate: the 5 Hz probe sender, the clock/jitter
         /// estimator (consumed by Task 6 interpolation), and the production
         /// monotonic clock the estimator reads through.
@@ -617,7 +619,7 @@ impl NetEndpoint {
                     .map_err(|e| format!("host transport init failed: {e}"))?;
                 Ok(Some(NetEndpoint::Host {
                     server: Box::new(server),
-                    allocator: NetworkIdAllocator::new(),
+                    allocator: Box::new(NetworkIdAllocator::new()),
                     tick: 0,
                     replication: Box::new(ServerReplication::new()),
                     replicable: ReplicableSet::new(),
@@ -649,7 +651,7 @@ impl NetEndpoint {
                     .map_err(|e| format!("client transport init failed: {e}"))?;
                 Ok(Some(NetEndpoint::Client {
                     client: Box::new(client),
-                    replication: ClientReplication::new(),
+                    replication: Box::new(ClientReplication::new()),
                     time_sync: Box::new(ClientTimeSync::new()),
                     interpolation_delay: InterpolationDelayState::new(),
                     prediction: ClientPrediction::new(),
@@ -791,8 +793,8 @@ impl NetEndpoint {
         else {
             return;
         };
-        *allocator = NetworkIdAllocator::new();
-        *replication = Box::new(ServerReplication::new());
+        **allocator = NetworkIdAllocator::new();
+        **replication = ServerReplication::new();
         *replicable = ReplicableSet::new();
         *slot_pawns = SlotPawns::new();
         *command_queues = HostCommandQueues::new();

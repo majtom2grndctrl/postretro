@@ -6,9 +6,9 @@ Investigation notes behind `index.md`. Not the spec.
 
 ## 1. What "state" means today (grounded)
 
-There is no `WeaponState` enum anywhere in the workspace (grep: `raising`,
-`lowering`, `holster`, `WeaponState` — no production hits). State is implied by
-which timer on `WeaponComponent` is nonzero:
+There is no wieldable- or weapon-state enum anywhere in the workspace (grep: `raising`,
+`lowering`, `holster`, `WeaponState`, `WieldableState` — no production hits). State is
+implied by which timer on `WeaponComponent` is nonzero:
 
 | Implied state | Predicate | Read at |
 |---|---|---|
@@ -35,18 +35,12 @@ and it is the load-bearing structural finding of this research.**
 ```mermaid
 stateDiagram-v2
     [*] --> Idle : from_descriptor materializes
-    Idle --> Raising : begin_raise, raiseMs > 0
-    Idle --> Idle : begin_raise, raiseMs == 0 (collapse at entry)
-    Raising --> Idle : state timer expires
-    Raising --> Raising : begin_raise preempts, timer restarts
     Idle --> Reloading : reload edge, style magazine, guards pass
     Idle --> ShellLoading : reload edge, style perShell, guards pass
     Reloading --> Idle : timer expires, one atomic transfer
-    Reloading --> Raising : begin_raise preempts, no transfer
     ShellLoading --> ShellLoading : timer expires, credit 1 round, loop continues
     ShellLoading --> Idle : timer expires, credit 1 round, magazine full or reserve empty
     ShellLoading --> Idle : authorized fire cancels, in-flight shell forfeited
-    ShellLoading --> Raising : begin_raise preempts, credited shells kept
 ```
 
 Read call sites the arrows require:
@@ -56,16 +50,21 @@ Read call sites the arrows require:
 | every `--> Idle` from a timer | the fused machine tick, called from `run_local_weapon_command` (`sim/mod.rs:1255`) and `run_remote_weapon_commands` (`:1171`) |
 | `Idle --> Reloading/ShellLoading` | reload rising edge, derived from `SimCommand.reload` + `WeaponComponent::reload_press_consumed` (`sim/reload.rs:41-43`) |
 | `ShellLoading --> Idle` (fire) | the `wants_fire` + cooldown + magazine gate now inside the machine, today `apply_weapon_fire_state` (`weapon/mod.rs:439-477`) |
-| `* --> Raising` | `begin_raise`; equip-at-spawn — `spawn_from_player_starts` (`crates/postretro/src/scripting/builtins/data_archetype.rs:823`, the arm that resolves `weapon_id` and calls `seed_weapon_reserve`) and `spawn_net_slot_pawn` (`crates/postretro/src/scripting/builtins/net_descriptor.rs:40`) |
 
 Cooldown is deliberately **not** a state. `reload::tick` never consults
 `cooldown_remaining_ms`, so a reload can start while cooling today; making
 `Cooling` a state would serialize the two and change shipped behavior. Cooldown
 stays an orthogonal rate limiter that composes with `Idle`.
 
-`Lowering` and `Stowed` are **not** in this diagram. They have no driver until
-weapon switching exists, and the switching spec owns them. §9 records the
-extension points that make adding them additive.
+The equip lifecycle is **not** in this diagram. `Lowering` and `Stowed` have no
+driver until weapon switching exists. `Raising` and its `raiseMs` were in an
+earlier draft and came out on the owner's call: equip belongs to the spec that
+owns equip, and shipping half the lifecycle here would pin equip legality from a
+spec that never repoints `active_wieldable`. Its driver was manufactured rather
+than found — `raiseMs` would have defaulted to `0` and every existing weapon
+would have collapsed it away, leaving the dev shotgun this same spec authors as
+its only live consumer. The switching spec owns all three. §9 records the
+extension points that make adding them additive, and the one thing the cut costs.
 
 ## 3. Observers (vantage x lifecycle stage)
 
@@ -76,17 +75,17 @@ them are *not* simulations at all.
 |---|---|---|
 | **V1** single-player / listen-host local pawn | `run_local_weapon_command` (`sim/mod.rs:1255`) | yes, plus a local hitscan ray |
 | **V2** host-simulated remote pawn | `run_remote_weapon_commands` (`sim/mod.rs:1171`) → `weapon::tick_state_only_component` (`weapon/mod.rs:418`) | yes, no ray; `can_fire` is repurposed to mean "pawn has a NetworkId" (`sim/mod.rs:1210-1212`) |
-| **V3** connected client, local prediction | `ClientWeaponState` (`weapon/mod.rs:58`), `resolve_client_fire` (`:530`) | **no** — rebuilt from the pawn descriptor's `defaultWeapon` (`from_local_pawn_descriptor`, `:70`); models cooldown/fire-mode/range only, no ammo, no reload |
+| **V3** connected client, local prediction | `ClientWeaponState` (`weapon/mod.rs:58`), `resolve_client_fire` (`:530`) | **no** — rebuilt from the pawn descriptor's `defaultWeapon` (`from_local_pawn_descriptor`, `:70`); models cooldown / fire mode / resolution / range only, no ammo, no reload |
 | **V4** owner-private replication projection | `AmmoSlotProjection::for_pawn` (`crates/postretro/src/netcode/state_slots.rs:498`) | no — reads V1/V2's component through `WeaponOwners` |
 
 | Stage | V1 | V2 | V3 | V4 |
 |---|---|---|---|---|
-| materialize + raise | enters `Raising` at equip (collapses at `raiseMs == 0`) | same, at the net-slot equip site | unaware — no state modelled | `reloadActive=false` throughout |
+| materialize | `from_descriptor` lands `Idle` at equip | same, at the net-slot equip site | unaware — no state modelled | `reloadActive=false` throughout |
 | idle fire | full gate | same gate, no ray | predicts cooldown only | `player.ammo` follows magazine |
 | reload start / advance | machine | machine | unaware; keeps predicting fire | `reloadActive=true`, step progress |
 | per-shell step credit | machine credits 1 from `AmmoReserve` | same | unaware | `player.ammo` increments per shell |
 | fire cancels shell loop | machine | machine | predicts the shot; host accepts | `reloadActive` drops to false |
-| fire during raise/reload | rejected silently | rejected silently | **predicts, then rolls back on `ShotVerdict`** | unchanged |
+| fire during reload | rejected silently | rejected silently | **predicts, then rolls back on `ShotVerdict`** | unchanged |
 | hot reload | preserves live state | preserves live state | rebuilt from descriptor on pawn respawn only | reads whatever V1/V2 hold |
 
 **Warrant, V1 == V2 for the machine.** Both call `reload::tick` with the same
@@ -98,13 +97,13 @@ signature and then a `weapon::tick_*_component` with the same
 callee therefore serves both vantages with one implementation. If the machine were
 placed in `tick_resolved_component` instead, V2 would silently skip it.
 
-**Warrant, V3 needs no new work.** A host-side rejection during `Raising` or a
-reload takes the identical path a reload rejection takes today:
+**Warrant, V3 needs no new work.** A host-side rejection during a `ShellLoading`
+loop takes the identical path a reload rejection takes today:
 `run_remote_weapon_commands` returns before `authorized.push` (`sim/mod.rs:1225-1232`),
 so no `AuthorizedShot` is minted, the client's `HitDeclaration` binds to nothing, and
 `ClientPredictedShots::apply_verdict` (`weapon/mod.rs:191`) restores
 `cooldown_remaining_ms` from `cooldown_before_ms` and clears `muzzle_fx_visible` /
-`hitmarker_visible`. The new states widen *when* that path fires, not what it does.
+`hitmarker_visible`. The new state widens *when* that path fires, not what it does.
 
 **Warrant, V4 needs no new slot.** `AmmoSlotProjection::for_pawn` already calls
 `WeaponComponent::reload_status()` (`state_slots.rs:503`) and reads
@@ -159,7 +158,6 @@ already crosses on `FireButtonState` and is decided host-side by the same gate t
 authorizes the shot. There is no separate cancel intent to transport, so the lane is
 not extended and no wire field is added. A dropped fire command produces no shot and
 therefore no cancel — the loop simply continues, which is the correct degradation.
-`begin_raise` is host-internal: it runs at spawn, not off a command.
 
 ## 7. Descriptor / SDK surface as it stands
 
@@ -167,11 +165,9 @@ therefore no cancel — the loop simply continues, which is the correct degradat
   `ammo_type` (wire `type`), `magazine`, `cost_per_shot` (`costPerShot`, default 1),
   `reserve`, `reload_ms` (`reloadMs`, default 1000). Validation at `:119-133` requires
   `magazine`, `costPerShot`, `reloadMs` all `>= 1`.
-- `WeaponDescriptor` (`:56`) has no `Default` impl and already carries
-  `third_person_model` / `viewmodel` (shipped by `plans/done/E21--coop-avatar-weapon-presentation/`).
-  Adding a field therefore breaks every struct literal in the workspace — the compiler
-  enumerates them, and no other in-flight plan is enumerating at the same time
-  (`plans/in-progress/` holds only `E15--session-lifecycle` and `emissive-surfaces-bloom`).
+- `WeaponDescriptor` (`:56`) has no `Default` impl, so any field added to it breaks every
+  struct literal in the workspace. This spec adds none — the only new authored field is
+  `reloadStyle`, on the nested `AmmoResource`.
 - Enum serde convention is `#[serde(rename_all = "camelCase")]` on the enum, so variant
   wire values are camelCase — `FireMode::Semi` → `"semi"` (`combat.rs:12-17`). This is
   why `PerShell` serializes `"perShell"`, **not** the `"per-shell"` kebab spelling
@@ -196,29 +192,36 @@ Those two precedents settle the new field's policy: **state and its timers are l
 instance state (preserved); durations and style are authored tuning (refreshed, and
 honored at the next decision point).**
 
-## 9. Extension points — how `Lowering`, `Stowed`, and a switch interrupt land later
+## 9. Extension points — how the equip lifecycle and a switch interrupt land later
 
-This spec ships four states. The switching spec adds at least two more plus a
-switch-driven interrupt. The mechanics below are what make that additive rather than a
-restructure; `index.md` states the requirement, this section records why each piece
-suffices.
+This spec ships three states. The switching spec adds at least three more —
+`Raising`, `Lowering`, `Stowed` — plus a switch-driven interrupt and whatever
+equip-timing field it decides to author. The mechanics below are what make that additive
+rather than a restructure; `index.md` states the requirement, this section records why
+each piece suffices and where the coverage stops.
 
 | Extension | What absorbs it | Why no restructure |
 |---|---|---|
-| A new state variant | one `WeaponState` enum, one transition function keyed by (state, event) | new arms, not a new dispatch shape |
+| A new state variant | one `WieldableState` enum, one transition function keyed by (state, event) | new arms, not a new dispatch shape |
 | A new *timed* state | the generalized timed-state triple (remaining / total / sub-ms carry) | the triple is state-agnostic — no per-state timer field exists to add |
-| A new state's fire/reload legality | `WeaponState::allows_fire()` / `allows_reload()`, exhaustive per-variant predicates | legality is one place, not scattered `state != Idle` tests |
-| A new preempting entry point (`begin_lower`, switch interrupt) | `begin_raise`'s shape: legal from every state, forfeits the in-flight timed step, keeps credited rounds | the preempt-from-anywhere path is implemented and tested by this spec, not invented by the next one |
-| Finding every site that must decide about a new state | no `_` wildcard arms over `WeaponState` in production | adding a variant is a compile error at each decision site |
+| A new state's fire/reload legality | `WieldableState::allows_fire()` / `allows_reload()`, exhaustive per-variant predicates | legality is one place, not scattered `state != Idle` tests |
+| A new preempting entry point (`begin_lower`, switch interrupt) | the transition function's (state, event) keying — an entry point legal from every source state is arms from every source state | structurally absorbed, but **untested here**: this spec ships no preempting entry point, so the switching spec is the first to exercise the path, not the second |
+| Finding every site that must decide about a new state | no `_` wildcard arms over `WieldableState` in production | adding a variant is a compile error at each decision site |
 | A new endpoint event pair | `ReloadOutcome` variants → `event_name` | the drain is name-driven; new variants need no new plumbing |
 
-Two things deferral does *not* buy. First, `Stowed`'s "no weapon is live" semantics
+Three things deferral does *not* buy. First, `Stowed`'s "no weapon is live" semantics
 interact with `active_wieldable` repointing, the switching spec's own hard problem; that
 was never resolvable here, so deferring `Stowed` moves it to the spec that can answer it.
-Second, the table above is scoped to the *enum*. It does not cover the machine moving
-**layers** — off `WeaponComponent` onto a wieldable component, per `weapon-model.md` §2.
-That is the one extension this shape does not absorb, and it is stated as a divergence in
-`index.md` §Direction rather than papered over here.
+Second, the preempt row above is a shape guarantee, not a validated path. The rule the
+switching spec will want — a preempting entry point forfeits the in-flight timed step and
+keeps every credited round — follows from the cancel edge Task 4 does build, but nothing
+in this spec calls a transition from *every* source state, so that generalization ships
+argued rather than exercised. It is the one thing the `Raising` cut costs. Third, the
+table is scoped to the *enum*. It does not cover the machine moving **layers** — off
+`WeaponComponent` onto a wieldable component, per `weapon-model.md` §2. That is the one
+extension this shape does not absorb; naming it `WieldableState` removes the rename but
+not the move, and `index.md` §Direction states the residue as a divergence rather than
+papering over it here.
 
 ## 10. Prior-commitment citation trail
 
@@ -237,11 +240,17 @@ Long form of `index.md` §Direction → *Prior commitments*.
   never the raw field. Honored, and generalized: `reloadMs` is the duration of one reload
   step, so a reload-speed modifier scales per-shell cadence for free rather than needing a
   second augmentable number.
+- `context/research/weapon-model.md` §7 invariant 7 — "Inventory, equip, and switch are
+  named for wieldables, not weapons" — and §2's placement of identity, inventory, equip,
+  switch, and augment on the wieldable layer. Naming honored literally: the state type is
+  `WieldableState`, in its own module in the entities component barrel. Hosting diverges:
+  the field sits on `WeaponComponent`, and §12 records the price. Naming was free, so the
+  divergence narrows to hosting alone rather than covering both.
 - `context/lib/networking.md` §Combat authority: fire-rate and ammo stay
   host-authoritative; client-side ammo and reload prediction stay out of scope. Honored —
   V3 is untouched.
 - `plans/done/reload-feedback-ui/` promised that a later timed-reload spec would "point a
-  real reload state machine at the already-defined slot… no UI rework." Task 6's
+  real reload state machine at the already-defined slot… no UI rework." Task 5's
   re-meaning of `player.reloadProgress` is that promise being kept, not a new liberty
   taken with a shipped scripting slot.
 - `plans/done/movement--state-machine/` is the structural precedent: extract the
@@ -265,24 +274,27 @@ Long form of `index.md` §Direction → *Prior commitments*.
 Long form of `index.md` §Direction → *Alternatives rejected*, plus the ones that did not
 earn a line there.
 
-- **Ship `Lowering` and `Stowed` alongside `Raising`** (the previous draft's choice).
+- **Ship `Lowering` and `Stowed` alongside `Raising`** (an early draft's choice).
   Case for: the two halves of an equip transition are conceptually one thing, and pinning
   transition legality now means the switching spec does not re-open it. Rejected on the
   owner's call: neither has a production caller, both would ship as test-only states, and
-  §9's extension points make adding them a matter of new arms rather than a reshape. The
-  argument they were carrying — that an uninterruptible timed state is a genuinely
-  different shape from an interruptible loop, and that the preempt-from-any-state path
-  needs a live implementation — is carried by `Raising` alone, which is timed, is
-  uninterruptible by fire, and is legal-and-preempting from every source state.
-- **Drop `Raising` too; ship `Idle` / `Reloading` / `ShellLoading` only.** Rejected: two
-  of the machine's rules — zero-duration collapse and preempt-from-any-source — would
-  then be exercised by nothing, and `Raising` has a real driver today (equip-at-spawn) in
-  a way `Lowering` does not.
+  §9's extension points make adding them a matter of new arms rather than a reshape.
+- **Ship `Raising` and a `raiseMs` without the other two** (a later draft's choice).
+  Case for: `Raising` is timed, uninterruptible by fire, and legal-and-preempting from
+  every source state, so it validates three machine properties an interruptible loop does
+  not; a draw delay is wanted gameplay for this genre; and its call site already exists
+  and is unambiguous (equip-at-spawn, two sites), where `begin_lower`'s does not exist in
+  any form. Rejected on the owner's call, on two counts. The driver was manufactured:
+  `raiseMs` defaults to `0` and every existing weapon collapses it away, so the only live
+  consumer would have been the dev shotgun this same spec authors. And half a lifecycle
+  is worse than none — shipping `Raising` alone pins equip legality, the forfeit rule, and
+  an authored equip-timing field from a spec that never repoints `active_wieldable`, so
+  the switching spec would inherit equip semantics it did not choose. The whole lifecycle
+  moves to the spec that owns equip. What the cut costs is recorded in §9: the
+  preempt-from-any-state path ships argued, not exercised.
 - **Zero-duration `Raising`, given a duration later by the switching spec.** Keeps the
-  state but never times it. Rejected: a state machine whose timed transitions are never
-  timed is an unvalidated abstraction. A real duration with a `0` default gets both — the
-  timed path is exercised by the dev shotgun and by tests, every existing weapon is
-  bit-identical to today.
+  state but never times it. Rejected on its own terms before the cut above subsumed it: a
+  state machine whose timed transitions are never timed is an unvalidated abstraction.
 - **Keep the two producers; add a second boolean (`fire_wants_cancel`) back into
   `reload::tick`.** The minimal diff, and it works for exactly this one interrupt.
   Rejected because it re-derives the implicit-state scheme one interrupt later: switching
@@ -291,22 +303,23 @@ earn a line there.
 - **Multi-pellet shotgun spread in this spec.** See §5.
 - **A rack / finish stage after a cancelled per-shell reload.** Classic shotguns play a
   close-bolt animation on cancel, and modelling it would give cancellation a real cost.
-  Rejected for v1: it is a third uninterruptible-timed-stage shape and `Raising` already
-  validates that shape. Purely additive later (one state, one duration field), and with
-  no weapon animation system it would be an invisible delay today.
-- **A dev-tools-only input binding to drive equip transitions manually.** Rejected: it
-  adds an `Action` variant and binding-table churn for a demo, and the switching spec
-  removes it weeks later.
+  Rejected for v1: with no weapon animation system it would be an invisible delay today,
+  and it is purely additive later (one state, one duration field).
+- **A dev-tools-only input binding to drive equip transitions manually.** Considered while
+  equip was still in scope, as a way to demo raise and lower without switching. Rejected
+  then and moot now: it adds an `Action` variant and binding-table churn for a demo, and
+  the switching spec would remove it weeks later.
 
 ## 12. Foreclosures and one-way doors (long form)
 
 - **Cooldown can never become a state without a behavior change.** A reload can start
   while cooling today and the machine keeps that true, so a future `Cooling` state would
   have to break it. Named so the switching spec does not treat it as free.
-- **One state at a time.** A weapon cannot be simultaneously equipping and reloading.
-  Dual-wield (roadmap, later) generalizes the *active reference* to a pair and each
-  instance keeps its own machine, so the pair case is unaffected — but a single instance
-  with two concurrent activities is now unrepresentable.
+- **One state at a time.** A weapon cannot be in two activities at once — reloading and
+  equipping, once equip lands. Dual-wield (roadmap, later) generalizes the *active
+  reference* to a pair and each instance keeps its own machine, so the pair case is
+  unaffected — but a single instance with two concurrent activities is now
+  unrepresentable.
 - **`reloadMs` stops being readable on its own.** It means "the whole reload" or "one
   shell" depending on the sibling `reloadStyle`, so every consumer — HUD, docs, a future
   augment tooltip, a modder — must read both. Accepted over a separate `shellReloadMs` so
@@ -315,27 +328,43 @@ earn a line there.
 - **The `reloadStyle` discriminant is the one hard-to-reverse piece.** Same class of bet
   as the `WeaponResource` tag, on the same authored surface, so changing its spelling or
   shape after content exists costs a content migration. Everything else reverses cheaply:
-  adding a state is additive, `raiseMs` defaults to `0` (removing it restores today's
-  behavior exactly), and the timer generalization is internal to two crates.
-- **The switching spec inherits a naming question, not just two states.** `weapon-model.md`
-  §2 puts equip on the *wieldable* layer and says to name the machinery for wieldables.
-  `Raising` / `raiseMs` land on `WeaponComponent` / `WeaponDescriptor` instead, because
-  weapon is the only wieldable kind and no wieldable component exists to host them. If
-  switching needs the machine to serve a second kind, lifting it off `WeaponComponent` is
-  the one reshape §9's extension table does not cover. Renaming while weapons are the only
-  kind is mechanical; the price rises per wieldable kind added.
-- **What this hands to the switching spec.** `ClientWeaponState` owns no
-  `WeaponComponent` and models cooldown, fire mode, and range only, so a connected client
-  cannot see any state this spec adds. Acceptable here — a shot predicted during a
-  host-side raise or reload rolls back through the shipped `ShotVerdict` path, and
-  reloads are rare and player-initiated. One case is *not* player-initiated and is worth
-  naming: with the dev default's non-zero `raiseMs`, a co-op client that fires immediately
-  on spawn mispredicts exactly one shot and rolls it back. Tolerable at one shot per
-  spawn; it becomes one per swap under switching, which is the point below. It will
-  *not* be acceptable for switching, where
-  a raise lockout fires on every swap and a per-swap mispredict-and-rollback would be
-  visible. The switching spec inherits that choice: accept the per-swap rollback, or
-  teach the client's prediction state about equip transitions.
+  adding a state is additive, and the timer generalization is internal to two crates. No
+  authored field is added to `WeaponDescriptor` at all, so the weapon block's shape is
+  unchanged.
+- **The switching spec inherits a hosting question, not a naming one.** Naming is settled
+  here: `WieldableState` satisfies `weapon-model.md` §7 invariant 7 literally, at the cost
+  of a type name and a module name, so nothing is left to rename. Hosting is not: the
+  field sits on `WeaponComponent`, because weapon is the only wieldable kind and no
+  wieldable component exists to host it. If switching needs the machine to serve a second
+  kind, lifting it off `WeaponComponent` is the one reshape §9's table does not cover.
+  Moving a correctly-named type between hosts is mechanical while weapons are the only
+  kind; the price rises per wieldable kind added.
+- **What this hands to the switching spec.** `ClientWeaponState`
+  (`crates/postretro/src/weapon/mod.rs`) owns no `WeaponComponent` and carries cooldown,
+  fire mode, resolution, and range only — no ammo, no reload — so a connected client
+  cannot see any state this spec adds. Accepted here, because every divergence resolves
+  through the shipped `ShotVerdict` rollback — but the dev-default flip makes it common
+  rather than rare, and that is stated at decision altitude in `index.md` §Direction. Mid
+  per-shell loop, whether a predicted shot is authorized turns on the host's magazine
+  count: below `costPerShot` it is refused and rolled back, at or above it the loop cancels
+  and the shot fires. The client models neither number. Against the reference pistol's 12
+  rounds and one 500 ms atomic transfer (`content/dev/scripts/reference-pistol.ts`), a
+  magazine of 8 refilled one shell at a time puts a co-op client in that window for
+  seconds per reload instead of a fraction of a second. It stops being acceptable at
+  equip: a raise lockout fires on every swap, so a per-swap mispredict-and-rollback would
+  be visible on every weapon change rather than at the edges of an ammo count.
+
+  The standard that choice must be argued against is already written down.
+  `plans/in-progress/E15--session-lifecycle` §Decisions commits that "the host replicates
+  the values a client predicts with," and gives the reason: "a client predicting with its
+  own numbers fights reconciliation instead of diverging cleanly." E15 replicates the four
+  weapon fire fields a client reads through `default_weapon` — `range`, `cooldown_ms`,
+  `fire_mode`, `resolution` — precisely so prediction and authority agree. An equip-timing
+  field is the same shape of number, and cutting `raiseMs` means this spec introduces no
+  such field for E15's rule to bite on. Whichever spec authors one owes the argument
+  against that thesis: either replicate it and teach `ClientWeaponState` the equip
+  transition, or state why a per-swap rollback is the cheaper trade here than the
+  reconciliation fight E15 is avoiding.
 
 ## 13. Test-independence audit — does anything depend on `reference_pistol` being the dev default?
 
